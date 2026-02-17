@@ -6,19 +6,19 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ```bash
 # Build
-dotnet build RockBot.sln
+dotnet build RockBot.slnx
 
 # Run all tests (unit only, no RabbitMQ needed)
-dotnet test RockBot.sln
+dotnet test RockBot.slnx
 
 # Run all tests including integration tests (requires RabbitMQ)
-ROCKBOT_RABBITMQ_HOST=localhost dotnet test RockBot.sln
+ROCKBOT_RABBITMQ_HOST=localhost dotnet test RockBot.slnx
 
 # Run a single test by fully qualified name
-dotnet test RockBot.sln --filter "FullyQualifiedName~MessageEnvelopeTests.Create_SetsDefaults"
+dotnet test RockBot.slnx --filter "FullyQualifiedName~MessageEnvelopeTests.Create_SetsDefaults"
 
 # Run tests by category/class
-dotnet test RockBot.sln --filter "ClassName~RabbitMqIntegrationTests"
+dotnet test RockBot.slnx --filter "ClassName~RabbitMqIntegrationTests"
 ```
 
 ## Architecture

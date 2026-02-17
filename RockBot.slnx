@@ -1,0 +1,17 @@
+<Solution>
+  <Configurations>
+    <Platform Name="Any CPU" />
+    <Platform Name="x64" />
+    <Platform Name="x86" />
+  </Configurations>
+  <Folder Name="/src/">
+    <Project Path="src/RockBot.Host.Abstractions/RockBot.Host.Abstractions.csproj" />
+    <Project Path="src/RockBot.Host/RockBot.Host.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/RockBot.Host.Tests/RockBot.Host.Tests.csproj" />
+  </Folder>
+  <Project Path="src/RockBot.Messaging.Abstractions/RockBot.Messaging.Abstractions.csproj" />
+  <Project Path="src/RockBot.Messaging.RabbitMQ/RockBot.Messaging.RabbitMQ.csproj" />
+  <Project Path="tests/RockBot.Messaging.Tests/RockBot.Messaging.Tests.csproj" />
+</Solution>
