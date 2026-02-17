@@ -43,6 +43,7 @@ else
 builder.Services.AddRockBotHost(agent =>
 {
     agent.WithIdentity("sample-agent");
+    agent.WithProfile();
     agent.HandleMessage<UserMessage, UserMessageHandler>();
     agent.SubscribeTo(UserProxyTopics.UserMessage);
 });
