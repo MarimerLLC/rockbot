@@ -1,6 +1,6 @@
 # Open Questions
 
-Design decisions that need further thought or experimentation.
+Design decisions that needed further thought or experimentation. All questions have been resolved — see **Decision** entries below.
 
 ## Agent Host
 
@@ -8,13 +8,13 @@ Design decisions that need further thought or experimentation.
 
 The chain-of-responsibility model (like ASP.NET Core middleware) is more flexible but adds complexity. Is it worth it for the initial implementation, or should we start with simple single-dispatch and refactor later?
 
-**Leaning toward**: Start with chain. The middleware pattern is well-understood in the .NET ecosystem, and cross-cutting concerns (logging, error handling, rate limiting) will be needed almost immediately.
+**Decision**: Chain-of-responsibility. The middleware pattern is well-understood in the .NET ecosystem, and cross-cutting concerns (logging, error handling, rate limiting) are needed immediately.
 
 ### Hosted Service or Standalone?
 
 Should agent hosts be `IHostedService` implementations that run inside a generic .NET host, or standalone executables?
 
-**Leaning toward**: `IHostedService`. This gives us built-in configuration, logging, DI, and graceful shutdown for free. Agents are just background services in a standard `Host.CreateDefaultBuilder()` application.
+**Decision**: `IHostedService`. Built-in configuration, logging, DI, and graceful shutdown. Agents are background services in a standard `Host.CreateDefaultBuilder()` application.
 
 ## Scripting
 
@@ -28,7 +28,7 @@ Options:
 - **WASM-first**: Most secure. But LLMs are poor at generating WASM-compatible code directly. Would need a compilation step.
 - **Python in containers, with WASM for trusted/simple scripts**: Hybrid approach.
 
-**Leaning toward**: Python in containers initially. Add WASM later for performance-sensitive or trusted workloads.
+**Decision**: Python only, in containers. LLMs generate the best Python. Add more languages later if needed.
 
 ### Script Output Format
 
@@ -38,7 +38,7 @@ How should scripts return results? Options:
 - Write to a designated output file (supports binary output)
 - All of the above, with a convention for which to use
 
-**Leaning toward**: JSON on stdout as the primary mechanism, with file output for binary data.
+**Decision**: JSON on stdout as the primary mechanism, with file output for binary data (images, files, etc.).
 
 ## State Management
 
@@ -50,7 +50,7 @@ Options:
 - **Event sourcing**: Reconstruct state from message history. Elegant but complex.
 - **In the messages themselves**: Pass full context with every message. Stateless agents, but messages grow large.
 
-**Leaning toward**: Redis for active state, with periodic snapshots to a durable store. Event sourcing is appealing but probably overkill for v1.
+**Decision**: In the messages themselves — stateless agents. Most agents will be external (in other containers or environments, possibly authored by different teams). Requiring shared infrastructure (Redis, a database) beyond the message bus creates coupling and operational burden. The message bus is the only shared infrastructure. The orchestrating agent owns responsibility for accumulating conversation context and deciding what to forward to downstream agents ("need to know" principle). Worker agents are truly simple: receive a message with everything needed, do work, return a result.
 
 ### Context Window Management
 
@@ -62,7 +62,7 @@ Options:
 - RAG over conversation history
 - Combination
 
-**Leaning toward**: Sliding window with summarization. Simple and effective.
+**Decision**: Sliding window with summarization. The orchestrator handles summarization before publishing — it owns the conversation history and is responsible for managing context size.
 
 ## A2A Protocol
 
@@ -73,7 +73,7 @@ The A2A spec assumes HTTP. We want to run it over RabbitMQ. This means:
 - Implementing A2A task lifecycle (create, status, result, cancel) as message types
 - Agent discovery via message bus rather than HTTP endpoints
 
-Is this a clean mapping, or are we fighting the spec? Need to prototype.
+**Decision**: Map A2A over RabbitMQ. Define A2A task lifecycle (create/status/result/cancel) as `MessageEnvelope` payloads routed via topics.
 
 ### Agent Discovery
 
@@ -82,7 +82,7 @@ How do agents find each other? Options:
 - **Registry service**: A dedicated agent that maintains a directory. Agents register on startup.
 - **Topic-based discovery**: Agents subscribe to a `discovery.announce` topic and broadcast capabilities. Other agents listen and maintain a local cache.
 
-**Leaning toward**: Topic-based discovery. It uses the existing message infrastructure and doesn't require a separate service.
+**Decision**: Topic-based discovery. Agents broadcast capabilities on `discovery.announce` topic at startup. Uses existing message infrastructure — no separate registry service required.
 
 ## Infrastructure
 
@@ -96,4 +96,14 @@ Should we develop against a real RabbitMQ instance or build the in-memory provid
 
 OpenTelemetry is the obvious choice. But how much instrumentation in v1?
 
-**Leaning toward**: Minimal but meaningful. Trace IDs in message headers from day one (cheap to add, painful to retrofit). Full OTel integration (spans, metrics, exporters) can come later.
+**Decision**: OTel traces + structured logging from the start, exporting to existing Loki/Grafana in the cluster. Distributed tracing (spans, trace context propagation in message headers) and structured logging wired up in Phase 2. Custom metrics (counters, histograms) deferred to Phase 6.
+
+## Standing Conventions
+
+### Configuration
+
+Use the standard .NET 10 configuration stack: `appsettings.json`, environment variables, `dotnet user-secrets` for local dev, Kubernetes Secrets for deployment. No custom config mechanisms.
+
+### Console Applications
+
+Use `Spectre.Console` for argument parsing, prompts, and CLI output in any console applications.

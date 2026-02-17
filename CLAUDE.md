@@ -57,3 +57,5 @@ Topics use hierarchical dot-separated naming: `agent.task.*`, `llm.request`, `to
 - **Rocks** (not Moq) is the mocking framework for tests
 - Integration tests return `Assert.Inconclusive` when RabbitMQ is unavailable rather than failing
 - Integration tests use unique exchange names per run to avoid cross-contamination
+- **Configuration** — Use the standard .NET 10 configuration stack: `appsettings.json`, environment variables, `dotnet user-secrets` for local dev, Kubernetes Secrets for deployment. No custom config mechanisms.
+- **Console apps** — Use `Spectre.Console` for argument parsing, prompts, and CLI output in any console applications
