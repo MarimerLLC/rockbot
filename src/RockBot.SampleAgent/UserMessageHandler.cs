@@ -14,6 +14,8 @@ internal sealed class UserMessageHandler(
     IChatClient chatClient,
     IMessagePublisher publisher,
     AgentIdentity agent,
+    AgentProfile profile,
+    ISystemPromptBuilder promptBuilder,
     ILogger<UserMessageHandler> logger) : IMessageHandler<UserMessage>
 {
     public async Task HandleAsync(UserMessage message, MessageHandlerContext context)
@@ -26,9 +28,10 @@ internal sealed class UserMessageHandler(
 
         try
         {
+            var systemPrompt = promptBuilder.Build(profile, agent);
             var chatMessages = new List<ChatMessage>
             {
-                new(ChatRole.System, "You are a helpful assistant named " + agent.Name + "."),
+                new(ChatRole.System, systemPrompt),
                 new(ChatRole.User, message.Content)
             };
 
