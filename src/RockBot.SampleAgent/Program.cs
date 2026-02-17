@@ -1,8 +1,9 @@
-using Azure.AI.OpenAI;
+using System.ClientModel;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using OpenAI;
 using RockBot.Host;
 using RockBot.Messaging.RabbitMQ;
 using RockBot.SampleAgent;
@@ -23,12 +24,12 @@ var deploymentName = aiConfig["DeploymentName"];
 
 if (!string.IsNullOrEmpty(endpoint) && !string.IsNullOrEmpty(key) && !string.IsNullOrEmpty(deploymentName))
 {
-    var azureClient = new AzureOpenAIClient(
-        new Uri(endpoint),
-        new System.ClientModel.ApiKeyCredential(key));
+    var openAiClient = new OpenAIClient(
+        new ApiKeyCredential(key),
+        new OpenAIClientOptions { Endpoint = new Uri(endpoint) });
 
     builder.Services.AddSingleton<IChatClient>(
-        azureClient.GetChatClient(deploymentName).AsIChatClient());
+        openAiClient.GetChatClient(deploymentName).AsIChatClient());
 
     Console.WriteLine("Using Azure AI Foundry model: {0}", deploymentName);
 }

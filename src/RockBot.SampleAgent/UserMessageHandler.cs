@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Text.Json;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
 using RockBot.Host;
@@ -169,11 +170,78 @@ internal sealed class UserMessageHandler(
 
             if (functionCalls.Count == 0)
             {
-                // No tool calls — this is the final text response
+                // No structured tool calls — check for text-based tool invocations
+                // (some models write tool calls as plain text instead of using the API)
                 var text = ExtractAssistantText(response);
-                logger.LogInformation("Final response text ({Length} chars): {Preview}",
-                    text.Length, text.Length > 200 ? text[..200] + "..." : text);
-                return text;
+                var knownTools = (chatOptions.Tools?
+                    .OfType<AIFunction>()
+                    .Select(t => t.Name)
+                    ?? [])
+                    .ToHashSet(StringComparer.OrdinalIgnoreCase);
+                var textCalls = ParseTextToolCalls(text, knownTools);
+
+                if (textCalls.Count == 0)
+                {
+                    // True final response — no tool calls of any kind
+                    logger.LogInformation("Final response text ({Length} chars): {Preview}",
+                        text.Length, text.Length > 200 ? text[..200] + "..." : text);
+                    return text;
+                }
+
+                logger.LogInformation(
+                    "Detected {Count} text-based tool call(s) on iteration {Iteration}",
+                    textCalls.Count, iteration + 1);
+
+                // Add only the pre-tool portion as the assistant turn
+                var preToolText = GetPreToolText(text);
+                if (!string.IsNullOrWhiteSpace(preToolText))
+                    chatMessages.Add(new ChatMessage(ChatRole.Assistant, preToolText));
+
+                // Execute each tool and inject the real result
+                foreach (var (toolName, argsJson) in textCalls)
+                {
+                    var tool = chatOptions.Tools?
+                        .OfType<AIFunction>()
+                        .FirstOrDefault(t => t.Name.Equals(toolName, StringComparison.OrdinalIgnoreCase));
+
+                    if (tool is null)
+                    {
+                        logger.LogWarning("Text tool call references unknown tool: {Name}", toolName);
+                        chatMessages.Add(new ChatMessage(ChatRole.User,
+                            $"[Tool result for {toolName}]: Error: unknown tool '{toolName}'"));
+                        continue;
+                    }
+
+                    AIFunctionArguments args;
+                    try
+                    {
+                        var dict = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(argsJson);
+                        args = dict is not null
+                            ? new AIFunctionArguments(
+                                dict.ToDictionary(k => k.Key, k => ToNativeValue(k.Value)))
+                            : new AIFunctionArguments();
+                    }
+                    catch (JsonException ex)
+                    {
+                        logger.LogWarning(ex, "Failed to parse tool args for {Name}: {Args}", toolName, argsJson);
+                        chatMessages.Add(new ChatMessage(ChatRole.User,
+                            $"[Tool result for {toolName}]: Error: invalid arguments JSON"));
+                        continue;
+                    }
+
+                    var toolSw = Stopwatch.StartNew();
+                    var result = await tool.InvokeAsync(args, cancellationToken);
+                    toolSw.Stop();
+
+                    logger.LogInformation("Text-based tool {Name} returned in {ElapsedMs}ms: {Result}",
+                        toolName, toolSw.ElapsedMilliseconds, result);
+
+                    chatMessages.Add(new ChatMessage(ChatRole.User,
+                        $"[Tool result for {toolName}]: {result}"));
+                }
+
+                // Loop continues — call LLM again with actual tool results
+                continue;
             }
 
             logger.LogInformation(
@@ -231,6 +299,114 @@ internal sealed class UserMessageHandler(
             chatMessages, new ChatOptions(), cancellationToken);
         return ExtractAssistantText(finalResponse);
     }
+
+    /// <summary>
+    /// Parses text-based tool invocations from a model response.
+    /// Handles two formats that models may use instead of the API's structured function-call mechanism:
+    /// <list type="bullet">
+    ///   <item><c>tool_call_name: X</c> followed by <c>tool_call_arguments: {...}</c></item>
+    ///   <item>A bare known tool name on its own line, optionally followed by a JSON args block</item>
+    /// </list>
+    /// </summary>
+    private List<(string Name, string ArgsJson)> ParseTextToolCalls(string text, IReadOnlySet<string> knownTools)
+    {
+        var results = new List<(string, string)>();
+        var lines = text.Split('\n');
+
+        for (var i = 0; i < lines.Length; i++)
+        {
+            var line = lines[i].Trim();
+
+            // Format 1: tool_call_name: X followed by tool_call_arguments: {...}
+            if (line.StartsWith("tool_call_name:", StringComparison.OrdinalIgnoreCase))
+            {
+                var toolName = line["tool_call_name:".Length..].Trim();
+                if (string.IsNullOrEmpty(toolName))
+                    continue;
+
+                var argsJson = "{}";
+
+                for (var j = i + 1; j < Math.Min(i + 4, lines.Length); j++)
+                {
+                    var argsLine = lines[j].Trim();
+                    if (!argsLine.StartsWith("tool_call_arguments:", StringComparison.OrdinalIgnoreCase))
+                        continue;
+
+                    argsJson = argsLine["tool_call_arguments:".Length..].Trim();
+
+                    if (argsJson.StartsWith("{") && !IsBalancedJson(argsJson))
+                    {
+                        var sb = new System.Text.StringBuilder(argsJson);
+                        for (var k = j + 1; k < lines.Length; k++)
+                        {
+                            sb.Append('\n').Append(lines[k]);
+                            if (IsBalancedJson(sb.ToString()))
+                                break;
+                        }
+                        argsJson = sb.ToString();
+                    }
+
+                    i = j; // skip past the consumed args line
+                    break;
+                }
+
+                logger.LogDebug("Parsed tool_call_name format: {Name}({Args})", toolName, argsJson);
+                results.Add((toolName, argsJson));
+            }
+            // Format 2: bare known tool name on its own line
+            else if (knownTools.Contains(line))
+            {
+                var argsJson = "{}";
+
+                // Check if the next non-empty line is a JSON args block
+                if (i + 1 < lines.Length)
+                {
+                    var nextLine = lines[i + 1].Trim();
+                    if (nextLine.StartsWith("{") && IsBalancedJson(nextLine))
+                    {
+                        argsJson = nextLine;
+                        i++;
+                    }
+                }
+
+                logger.LogDebug("Parsed bare tool name format: {Name}({Args})", line, argsJson);
+                results.Add((line, argsJson));
+            }
+        }
+
+        return results;
+    }
+
+    /// <summary>Returns true when the string contains at least one '{' and all braces are balanced.</summary>
+    private static bool IsBalancedJson(string s)
+    {
+        var depth = 0;
+        var hasOpen = false;
+        foreach (var c in s)
+        {
+            if (c == '{') { depth++; hasOpen = true; }
+            else if (c == '}') depth--;
+        }
+        return hasOpen && depth == 0;
+    }
+
+    /// <summary>Returns the portion of <paramref name="text"/> before the first tool invocation block.</summary>
+    private static string GetPreToolText(string text)
+    {
+        var idx = text.IndexOf("tool_call_name:", StringComparison.OrdinalIgnoreCase);
+        return idx <= 0 ? text : text[..idx].TrimEnd();
+    }
+
+    /// <summary>Converts a <see cref="JsonElement"/> to its native .NET equivalent for AIFunctionArguments.</summary>
+    private static object? ToNativeValue(JsonElement element) => element.ValueKind switch
+    {
+        JsonValueKind.String => element.GetString(),
+        JsonValueKind.True => true,
+        JsonValueKind.False => false,
+        JsonValueKind.Null => null,
+        JsonValueKind.Number => element.TryGetInt64(out var l) ? (object)l : element.GetDouble(),
+        _ => element.ToString()
+    };
 
     /// <summary>
     /// Extracts text from the LLM response, walking backwards to find
