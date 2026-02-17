@@ -1,9 +1,8 @@
-using System.ClientModel;
+using Azure.AI.OpenAI;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
-using OpenAI;
 using RockBot.Host;
 using RockBot.Messaging.RabbitMQ;
 using RockBot.SampleAgent;
@@ -24,12 +23,12 @@ var deploymentName = aiConfig["DeploymentName"];
 
 if (!string.IsNullOrEmpty(endpoint) && !string.IsNullOrEmpty(key) && !string.IsNullOrEmpty(deploymentName))
 {
-    var openAiClient = new OpenAIClient(
-        new ApiKeyCredential(key),
-        new OpenAIClientOptions { Endpoint = new Uri(endpoint) });
+    var azureClient = new AzureOpenAIClient(
+        new Uri(endpoint),
+        new System.ClientModel.ApiKeyCredential(key));
 
     builder.Services.AddSingleton<IChatClient>(
-        openAiClient.GetChatClient(deploymentName).AsIChatClient());
+        azureClient.GetChatClient(deploymentName).AsIChatClient());
 
     Console.WriteLine("Using Azure AI Foundry model: {0}", deploymentName);
 }
@@ -40,10 +39,14 @@ else
     Console.WriteLine("Run 'dotnet user-secrets set AzureAI:Endpoint <url>' etc. to configure.");
 }
 
+// Register memory tools as singleton — AIFunction instances are built once at construction
+builder.Services.AddSingleton<MemoryTools>();
+
 builder.Services.AddRockBotHost(agent =>
 {
     agent.WithIdentity("sample-agent");
     agent.WithProfile();
+    agent.WithMemory();
     agent.HandleMessage<UserMessage, UserMessageHandler>();
     agent.SubscribeTo(UserProxyTopics.UserMessage);
 });
