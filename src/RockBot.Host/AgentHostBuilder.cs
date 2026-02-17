@@ -23,6 +23,12 @@ public sealed class AgentHostBuilder
     public IServiceCollection Services => _services;
 
     /// <summary>
+    /// The current agent identity. Available for extension methods that need the agent name
+    /// at registration time (e.g. for agent-specific topic subscriptions).
+    /// </summary>
+    public AgentIdentity Identity => _identity;
+
+    /// <summary>
     /// Set the agent identity.
     /// </summary>
     public AgentHostBuilder WithIdentity(string name, string? instanceId = null)

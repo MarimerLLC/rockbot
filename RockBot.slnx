@@ -15,12 +15,15 @@
     <Project Path="src/RockBot.Tools.Rest/RockBot.Tools.Rest.csproj" />
     <Project Path="src/RockBot.Scripts.Abstractions/RockBot.Scripts.Abstractions.csproj" />
     <Project Path="src/RockBot.Scripts.Container/RockBot.Scripts.Container.csproj" />
+    <Project Path="src/RockBot.A2A.Abstractions/RockBot.A2A.Abstractions.csproj" />
+    <Project Path="src/RockBot.A2A/RockBot.A2A.csproj" />
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/RockBot.Host.Tests/RockBot.Host.Tests.csproj" />
     <Project Path="tests/RockBot.Llm.Tests/RockBot.Llm.Tests.csproj" />
     <Project Path="tests/RockBot.Tools.Tests/RockBot.Tools.Tests.csproj" />
     <Project Path="tests/RockBot.Scripts.Tests/RockBot.Scripts.Tests.csproj" />
+    <Project Path="tests/RockBot.A2A.Tests/RockBot.A2A.Tests.csproj" />
   </Folder>
   <Project Path="src/RockBot.Messaging.Abstractions/RockBot.Messaging.Abstractions.csproj" />
   <Project Path="src/RockBot.Messaging.RabbitMQ/RockBot.Messaging.RabbitMQ.csproj" />

@@ -183,9 +183,9 @@ rockbot/
 - [ ] Script execution with container-based isolation
 
 ### Phase 5: A2A Protocol
-- [ ] A2A message types and task lifecycle
-- [ ] Agent discovery and capability advertisement
-- [ ] Multi-agent task delegation over RabbitMQ
+- [x] A2A message types and task lifecycle
+- [x] Agent discovery and capability advertisement
+- [x] Multi-agent task delegation over RabbitMQ
 
 ### Phase 6: Hardening
 - [ ] Observability (OpenTelemetry traces and metrics)

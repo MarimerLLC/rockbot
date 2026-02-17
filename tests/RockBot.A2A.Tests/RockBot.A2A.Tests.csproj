@@ -1,0 +1,28 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.*" />
+    <PackageReference Include="MSTest.TestAdapter" Version="3.*" />
+    <PackageReference Include="MSTest.TestFramework" Version="3.*" />
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="10.0.*" />
+    <PackageReference Include="Microsoft.Extensions.Logging" Version="10.0.*" />
+    <PackageReference Include="Microsoft.Extensions.Hosting" Version="10.0.*" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\RockBot.A2A.Abstractions\RockBot.A2A.Abstractions.csproj" />
+    <ProjectReference Include="..\..\src\RockBot.A2A\RockBot.A2A.csproj" />
+    <ProjectReference Include="..\..\src\RockBot.Host.Abstractions\RockBot.Host.Abstractions.csproj" />
+    <ProjectReference Include="..\..\src\RockBot.Host\RockBot.Host.csproj" />
+    <ProjectReference Include="..\..\src\RockBot.Messaging.Abstractions\RockBot.Messaging.Abstractions.csproj" />
+  </ItemGroup>
+
+</Project>
