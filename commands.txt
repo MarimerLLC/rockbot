@@ -1,0 +1,2 @@
+ROCKBOT_RABBITMQ_HOST=localhost dotnet run --project src/RockBot.SampleAgent
+ROCKBOT_RABBITMQ_HOST=localhost dotnet run --project src/RockBot.UserProxy.Cli
