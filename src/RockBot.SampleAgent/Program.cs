@@ -1,6 +1,9 @@
+using System.ClientModel;
 using Microsoft.Extensions.AI;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using OpenAI;
 using RockBot.Host;
 using RockBot.Messaging.RabbitMQ;
 using RockBot.SampleAgent;
@@ -8,11 +11,34 @@ using RockBot.UserProxy;
 
 var builder = Host.CreateApplicationBuilder(args);
 
+// Always load user secrets (CreateApplicationBuilder only loads them in Development)
+builder.Configuration.AddUserSecrets<Program>();
+
 builder.Services.AddRockBotRabbitMq();
 
-// Use EchoChatClient by default. Replace with a real LLM provider:
-//   builder.Services.AddSingleton<IChatClient>(new OpenAIChatClient("gpt-4o", apiKey));
-builder.Services.AddSingleton<IChatClient, EchoChatClient>();
+// Configure the LLM chat client from user secrets / config
+var aiConfig = builder.Configuration.GetSection("AzureAI");
+var endpoint = aiConfig["Endpoint"];
+var key = aiConfig["Key"];
+var deploymentName = aiConfig["DeploymentName"];
+
+if (!string.IsNullOrEmpty(endpoint) && !string.IsNullOrEmpty(key) && !string.IsNullOrEmpty(deploymentName))
+{
+    var openAiClient = new OpenAIClient(
+        new ApiKeyCredential(key),
+        new OpenAIClientOptions { Endpoint = new Uri(endpoint) });
+
+    builder.Services.AddSingleton<IChatClient>(
+        openAiClient.GetChatClient(deploymentName).AsIChatClient());
+
+    Console.WriteLine("Using Azure AI Foundry model: {0}", deploymentName);
+}
+else
+{
+    builder.Services.AddSingleton<IChatClient, EchoChatClient>();
+    Console.WriteLine("No AzureAI config found — using EchoChatClient.");
+    Console.WriteLine("Run 'dotnet user-secrets set AzureAI:Endpoint <url>' etc. to configure.");
+}
 
 builder.Services.AddRockBotHost(agent =>
 {
