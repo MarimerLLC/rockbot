@@ -9,10 +9,18 @@
     <Project Path="src/RockBot.Host/RockBot.Host.csproj" />
     <Project Path="src/RockBot.Llm.Abstractions/RockBot.Llm.Abstractions.csproj" />
     <Project Path="src/RockBot.Llm/RockBot.Llm.csproj" />
+    <Project Path="src/RockBot.Tools.Abstractions/RockBot.Tools.Abstractions.csproj" />
+    <Project Path="src/RockBot.Tools/RockBot.Tools.csproj" />
+    <Project Path="src/RockBot.Tools.Mcp/RockBot.Tools.Mcp.csproj" />
+    <Project Path="src/RockBot.Tools.Rest/RockBot.Tools.Rest.csproj" />
+    <Project Path="src/RockBot.Scripts.Abstractions/RockBot.Scripts.Abstractions.csproj" />
+    <Project Path="src/RockBot.Scripts.Container/RockBot.Scripts.Container.csproj" />
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/RockBot.Host.Tests/RockBot.Host.Tests.csproj" />
     <Project Path="tests/RockBot.Llm.Tests/RockBot.Llm.Tests.csproj" />
+    <Project Path="tests/RockBot.Tools.Tests/RockBot.Tools.Tests.csproj" />
+    <Project Path="tests/RockBot.Scripts.Tests/RockBot.Scripts.Tests.csproj" />
   </Folder>
   <Project Path="src/RockBot.Messaging.Abstractions/RockBot.Messaging.Abstractions.csproj" />
   <Project Path="src/RockBot.Messaging.RabbitMQ/RockBot.Messaging.RabbitMQ.csproj" />
