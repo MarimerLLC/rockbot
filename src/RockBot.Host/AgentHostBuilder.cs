@@ -18,6 +18,11 @@ public sealed class AgentHostBuilder
     }
 
     /// <summary>
+    /// The service collection for external extension methods to register services.
+    /// </summary>
+    public IServiceCollection Services => _services;
+
+    /// <summary>
     /// Set the agent identity.
     /// </summary>
     public AgentHostBuilder WithIdentity(string name, string? instanceId = null)

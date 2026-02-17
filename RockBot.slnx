@@ -7,9 +7,12 @@
   <Folder Name="/src/">
     <Project Path="src/RockBot.Host.Abstractions/RockBot.Host.Abstractions.csproj" />
     <Project Path="src/RockBot.Host/RockBot.Host.csproj" />
+    <Project Path="src/RockBot.Llm.Abstractions/RockBot.Llm.Abstractions.csproj" />
+    <Project Path="src/RockBot.Llm/RockBot.Llm.csproj" />
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/RockBot.Host.Tests/RockBot.Host.Tests.csproj" />
+    <Project Path="tests/RockBot.Llm.Tests/RockBot.Llm.Tests.csproj" />
   </Folder>
   <Project Path="src/RockBot.Messaging.Abstractions/RockBot.Messaging.Abstractions.csproj" />
   <Project Path="src/RockBot.Messaging.RabbitMQ/RockBot.Messaging.RabbitMQ.csproj" />
