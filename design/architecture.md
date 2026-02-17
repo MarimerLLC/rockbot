@@ -188,7 +188,7 @@ rockbot/
 - [x] Multi-agent task delegation over RabbitMQ
 
 ### Phase 6: Hardening
-- [ ] Observability (OpenTelemetry traces and metrics)
+- [x] Observability (OpenTelemetry traces and metrics)
 - [ ] Rate limiting and back-pressure
 - [ ] Azure Service Bus provider
 - [ ] Admin UI / dashboard

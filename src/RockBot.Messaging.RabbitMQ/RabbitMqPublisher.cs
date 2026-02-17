@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
 using Microsoft.Extensions.Logging;
@@ -33,39 +34,73 @@ public sealed class RabbitMqPublisher : IMessagePublisher
         MessageEnvelope envelope,
         CancellationToken cancellationToken = default)
     {
-        var channel = await GetChannelAsync(cancellationToken);
+        using var activity = RabbitMqDiagnostics.Source.StartActivity(
+            "publish", ActivityKind.Producer);
 
-        var properties = new BasicProperties
+        if (activity is not null)
         {
-            MessageId = envelope.MessageId,
-            Type = envelope.MessageType,
-            CorrelationId = envelope.CorrelationId ?? string.Empty,
-            ReplyTo = envelope.ReplyTo ?? string.Empty,
-            Timestamp = new AmqpTimestamp(envelope.Timestamp.ToUnixTimeSeconds()),
-            ContentType = "application/json",
-            DeliveryMode = DeliveryModes.Persistent,
-            Headers = new Dictionary<string, object?>()
-        };
+            activity.SetTag("messaging.system", "rabbitmq");
+            activity.SetTag("messaging.destination", topic);
+            activity.SetTag("messaging.message_id", envelope.MessageId);
+        }
 
-        // Pack envelope metadata into AMQP headers
-        properties.Headers["rb-source"] = envelope.Source;
-        if (envelope.Destination is not null)
-            properties.Headers["rb-destination"] = envelope.Destination;
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        try
+        {
+            var channel = await GetChannelAsync(cancellationToken);
 
-        foreach (var header in envelope.Headers)
-            properties.Headers[$"rb-{header.Key}"] = header.Value;
+            var properties = new BasicProperties
+            {
+                MessageId = envelope.MessageId,
+                Type = envelope.MessageType,
+                CorrelationId = envelope.CorrelationId ?? string.Empty,
+                ReplyTo = envelope.ReplyTo ?? string.Empty,
+                Timestamp = new AmqpTimestamp(envelope.Timestamp.ToUnixTimeSeconds()),
+                ContentType = "application/json",
+                DeliveryMode = DeliveryModes.Persistent,
+                Headers = new Dictionary<string, object?>()
+            };
 
-        _logger.LogDebug(
-            "Publishing message {MessageId} to topic {Topic} (type: {Type})",
-            envelope.MessageId, topic, envelope.MessageType);
+            // Pack envelope metadata into AMQP headers
+            properties.Headers["rb-source"] = envelope.Source;
+            if (envelope.Destination is not null)
+                properties.Headers["rb-destination"] = envelope.Destination;
 
-        await channel.BasicPublishAsync(
-            exchange: _options.ExchangeName,
-            routingKey: topic,
-            mandatory: false,
-            basicProperties: properties,
-            body: envelope.Body,
-            cancellationToken: cancellationToken);
+            foreach (var header in envelope.Headers)
+                properties.Headers[$"rb-{header.Key}"] = header.Value;
+
+            // Inject trace context into AMQP headers for propagation
+            var traceHeaders = new Dictionary<string, string>();
+            TraceContextPropagator.Inject(activity, traceHeaders);
+            foreach (var th in traceHeaders)
+                properties.Headers[$"rb-{th.Key}"] = th.Value;
+
+            _logger.LogDebug(
+                "Publishing message {MessageId} to topic {Topic} (type: {Type})",
+                envelope.MessageId, topic, envelope.MessageType);
+
+            await channel.BasicPublishAsync(
+                exchange: _options.ExchangeName,
+                routingKey: topic,
+                mandatory: false,
+                basicProperties: properties,
+                body: envelope.Body,
+                cancellationToken: cancellationToken);
+
+            sw.Stop();
+            RabbitMqDiagnostics.PublishDuration.Record(sw.Elapsed.TotalMilliseconds,
+                new KeyValuePair<string, object?>("messaging.destination", topic));
+            RabbitMqDiagnostics.PublishMessages.Add(1,
+                new KeyValuePair<string, object?>("messaging.destination", topic));
+        }
+        catch (Exception ex)
+        {
+            sw.Stop();
+            activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
+            RabbitMqDiagnostics.PublishDuration.Record(sw.Elapsed.TotalMilliseconds,
+                new KeyValuePair<string, object?>("messaging.destination", topic));
+            throw;
+        }
     }
 
     private async Task<IChannel> GetChannelAsync(CancellationToken cancellationToken)

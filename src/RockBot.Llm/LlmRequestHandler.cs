@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
 using RockBot.Host;
@@ -21,6 +22,14 @@ internal sealed class LlmRequestHandler(
         var replyTo = context.Envelope.ReplyTo ?? options.DefaultResponseTopic;
         var correlationId = context.Envelope.CorrelationId;
 
+        using var activity = LlmDiagnostics.Source.StartActivity(
+            "llm.request", ActivityKind.Client);
+
+        activity?.SetTag("rockbot.llm.model", request.ModelId ?? options.DefaultModelId ?? "(default)");
+
+        var sw = Stopwatch.StartNew();
+        string status = "ok";
+
         try
         {
             var messages = LlmMessageMapper.ToChatMessages(request.Messages);
@@ -39,6 +48,13 @@ internal sealed class LlmRequestHandler(
 
             await publisher.PublishAsync(replyTo, envelope, context.CancellationToken);
 
+            // Record token usage metrics
+            if (llmResponse.Usage is { } usage)
+            {
+                LlmDiagnostics.TokenInput.Add(usage.InputTokens);
+                LlmDiagnostics.TokenOutput.Add(usage.OutputTokens);
+            }
+
             logger.LogDebug("Published LLM response to {ReplyTo} (finish: {FinishReason})",
                 replyTo, llmResponse.FinishReason);
         }
@@ -51,11 +67,23 @@ internal sealed class LlmRequestHandler(
             logger.LogWarning(ex, "LLM provider error for correlation {CorrelationId}", correlationId);
 
             var error = LlmMessageMapper.ClassifyError(ex);
+            status = error.Code;
+            activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
+            activity?.SetTag("rockbot.llm.error_code", error.Code);
+
             var envelope = error.ToEnvelope<LlmError>(
                 source: agent.Name,
                 correlationId: correlationId);
 
             await publisher.PublishAsync(replyTo, envelope, context.CancellationToken);
+        }
+        finally
+        {
+            sw.Stop();
+            LlmDiagnostics.RequestDuration.Record(sw.Elapsed.TotalMilliseconds,
+                new KeyValuePair<string, object?>("rockbot.llm.status", status));
+            LlmDiagnostics.Requests.Add(1,
+                new KeyValuePair<string, object?>("rockbot.llm.status", status));
         }
     }
 }

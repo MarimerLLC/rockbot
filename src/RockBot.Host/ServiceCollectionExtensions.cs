@@ -1,5 +1,6 @@
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using RockBot.Host.Middleware;
 
 namespace RockBot.Host;
 
@@ -16,6 +17,10 @@ public static class ServiceCollectionExtensions
         Action<AgentHostBuilder> configure)
     {
         var builder = new AgentHostBuilder(services);
+
+        // Register TracingMiddleware first so it's the outermost wrapper
+        builder.UseMiddleware<TracingMiddleware>();
+
         configure(builder);
         builder.Build();
 

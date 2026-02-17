@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Text;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -90,15 +91,36 @@ public sealed class RabbitMqSubscriber : IMessageSubscriber
         var consumer = new AsyncEventingBasicConsumer(channel);
         consumer.ReceivedAsync += async (sender, ea) =>
         {
+            var envelope = MapToEnvelope(ea);
+
+            // Extract parent trace context from envelope headers
+            var parentContext = TraceContextPropagator.Extract(envelope.Headers);
+
+            using var activity = RabbitMqDiagnostics.Source.StartActivity(
+                "process", ActivityKind.Consumer,
+                parentContext ?? default);
+
+            if (activity is not null)
+            {
+                activity.SetTag("messaging.system", "rabbitmq");
+                activity.SetTag("messaging.destination", topic);
+                activity.SetTag("messaging.message_id", envelope.MessageId);
+            }
+
+            RabbitMqDiagnostics.ActiveMessages.Add(1);
+            var sw = Stopwatch.StartNew();
+            MessageResult result;
+
             try
             {
-                var envelope = MapToEnvelope(ea);
-
                 _logger.LogDebug(
                     "Received message {MessageId} on topic {Topic}",
                     envelope.MessageId, topic);
 
-                var result = await handler(envelope, cancellationToken);
+                result = await handler(envelope, cancellationToken);
+
+                sw.Stop();
+                activity?.SetTag("messaging.result", result.ToString().ToLowerInvariant());
 
                 switch (result)
                 {
@@ -115,8 +137,24 @@ public sealed class RabbitMqSubscriber : IMessageSubscriber
             }
             catch (Exception ex)
             {
+                sw.Stop();
+                result = MessageResult.Retry;
+                activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
+                activity?.SetTag("messaging.result", "error");
                 _logger.LogError(ex, "Error processing message {DeliveryTag}", ea.DeliveryTag);
                 await channel.BasicNackAsync(ea.DeliveryTag, multiple: false, requeue: true, cancellationToken);
+            }
+            finally
+            {
+                RabbitMqDiagnostics.ActiveMessages.Add(-1);
+                RabbitMqDiagnostics.ProcessDuration.Record(sw.Elapsed.TotalMilliseconds,
+                    new KeyValuePair<string, object?>("messaging.destination", topic),
+                    new KeyValuePair<string, object?>("messaging.result",
+                        activity?.GetTagItem("messaging.result") ?? "unknown"));
+                RabbitMqDiagnostics.ProcessMessages.Add(1,
+                    new KeyValuePair<string, object?>("messaging.destination", topic),
+                    new KeyValuePair<string, object?>("messaging.result",
+                        activity?.GetTagItem("messaging.result") ?? "unknown"));
             }
         };
 

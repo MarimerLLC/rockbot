@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using Microsoft.Extensions.Logging;
 using RockBot.Host;
 using RockBot.Messaging;
@@ -20,10 +21,21 @@ internal sealed class ToolInvokeHandler(
         var replyTo = context.Envelope.ReplyTo ?? options.DefaultResultTopic;
         var correlationId = context.Envelope.CorrelationId;
 
+        using var activity = ToolDiagnostics.Source.StartActivity(
+            $"tool.invoke {request.ToolName}", ActivityKind.Internal);
+
+        activity?.SetTag("rockbot.tool.name", request.ToolName);
+        activity?.SetTag("rockbot.tool.call_id", request.ToolCallId);
+
         var executor = registry.GetExecutor(request.ToolName);
         if (executor is null)
         {
             logger.LogWarning("Tool not found: {ToolName}", request.ToolName);
+
+            activity?.SetStatus(ActivityStatusCode.Error, "Tool not found");
+            activity?.SetTag("rockbot.tool.error_code", ToolError.Codes.ToolNotFound);
+            ToolDiagnostics.Invocations.Add(1,
+                new KeyValuePair<string, object?>("rockbot.tool.status", ToolError.Codes.ToolNotFound));
 
             var error = new ToolError
             {
@@ -40,6 +52,9 @@ internal sealed class ToolInvokeHandler(
             await publisher.PublishAsync(replyTo, errorEnvelope, context.CancellationToken);
             return;
         }
+
+        var sw = Stopwatch.StartNew();
+        string status = "ok";
 
         try
         {
@@ -66,11 +81,25 @@ internal sealed class ToolInvokeHandler(
                 request.ToolName, request.ToolCallId);
 
             var error = ClassifyError(ex, request);
+            status = error.Code;
+            activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
+            activity?.SetTag("rockbot.tool.error_code", error.Code);
+
             var errorEnvelope = error.ToEnvelope<ToolError>(
                 source: agent.Name,
                 correlationId: correlationId);
 
             await publisher.PublishAsync(replyTo, errorEnvelope, context.CancellationToken);
+        }
+        finally
+        {
+            sw.Stop();
+            ToolDiagnostics.InvokeDuration.Record(sw.Elapsed.TotalMilliseconds,
+                new KeyValuePair<string, object?>("rockbot.tool.name", request.ToolName),
+                new KeyValuePair<string, object?>("rockbot.tool.status", status));
+            ToolDiagnostics.Invocations.Add(1,
+                new KeyValuePair<string, object?>("rockbot.tool.name", request.ToolName),
+                new KeyValuePair<string, object?>("rockbot.tool.status", status));
         }
     }
 
