@@ -12,7 +12,7 @@ namespace RockBot.Scripts.Container;
 internal sealed class ContainerScriptRunner(
     IKubernetes kubernetes,
     ContainerScriptOptions options,
-    ILogger<ContainerScriptRunner> logger)
+    ILogger<ContainerScriptRunner> logger) : IScriptRunner
 {
     public async Task<ScriptInvokeResponse> ExecuteAsync(ScriptInvokeRequest request, CancellationToken ct)
     {
