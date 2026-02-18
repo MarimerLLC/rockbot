@@ -16,8 +16,14 @@ internal sealed class HybridCacheWorkingMemory : IWorkingMemory
     private readonly WorkingMemoryOptions _options;
     private readonly ILogger<HybridCacheWorkingMemory> _logger;
 
-    // sessionId -> { key -> (storedAt, expiresAt) }
-    private readonly ConcurrentDictionary<string, ConcurrentDictionary<string, (DateTimeOffset StoredAt, DateTimeOffset ExpiresAt)>> _index = new();
+    // sessionId -> { key -> EntryMeta }
+    private readonly ConcurrentDictionary<string, ConcurrentDictionary<string, EntryMeta>> _index = new();
+
+    private sealed record EntryMeta(
+        DateTimeOffset StoredAt,
+        DateTimeOffset ExpiresAt,
+        string? Category,
+        IReadOnlyList<string> Tags);
 
     public HybridCacheWorkingMemory(
         IMemoryCache cache,
@@ -31,7 +37,8 @@ internal sealed class HybridCacheWorkingMemory : IWorkingMemory
 
     private static string CacheKey(string sessionId, string key) => $"wm:{sessionId}:{key}";
 
-    public Task SetAsync(string sessionId, string key, string value, TimeSpan? ttl = null)
+    public Task SetAsync(string sessionId, string key, string value, TimeSpan? ttl = null,
+        string? category = null, IReadOnlyList<string>? tags = null)
     {
         var effectiveTtl = ttl ?? _options.DefaultTtl;
         var now = DateTimeOffset.UtcNow;
@@ -48,7 +55,7 @@ internal sealed class HybridCacheWorkingMemory : IWorkingMemory
             return Task.CompletedTask;
         }
 
-        sessionIndex[key] = (now, expiresAt);
+        sessionIndex[key] = new EntryMeta(now, expiresAt, category, tags ?? []);
         _cache.Set(CacheKey(sessionId, key), value, new MemoryCacheEntryOptions
         {
             AbsoluteExpiration = expiresAt
@@ -91,7 +98,8 @@ internal sealed class HybridCacheWorkingMemory : IWorkingMemory
 
             if (_cache.TryGetValue<string>(CacheKey(sessionId, kvp.Key), out var value))
             {
-                entries.Add(new WorkingMemoryEntry(kvp.Key, value!, kvp.Value.StoredAt, kvp.Value.ExpiresAt));
+                var meta = kvp.Value;
+                entries.Add(new WorkingMemoryEntry(kvp.Key, value!, meta.StoredAt, meta.ExpiresAt, meta.Category, meta.Tags));
             }
             else
             {
@@ -121,5 +129,67 @@ internal sealed class HybridCacheWorkingMemory : IWorkingMemory
         }
 
         return Task.CompletedTask;
+    }
+
+    public async Task<IReadOnlyList<WorkingMemoryEntry>> SearchAsync(string sessionId, MemorySearchCriteria criteria)
+    {
+        var allEntries = await ListAsync(sessionId);
+        if (allEntries.Count == 0)
+            return allEntries;
+
+        // Apply structural filters (category prefix + tag intersection)
+        var candidates = allEntries.Where(e => PassesStructuralFilters(e, criteria)).ToList();
+
+        // No query: return most-recently stored entries up to MaxResults
+        if (criteria.Query is null)
+            return candidates.OrderByDescending(e => e.StoredAt).Take(criteria.MaxResults).ToList();
+
+        // With query: BM25 ranking
+        return Bm25Ranker.Rank(candidates, GetDocumentText, criteria.Query)
+            .Take(criteria.MaxResults)
+            .ToList();
+    }
+
+    // ── BM25 document text ────────────────────────────────────────────────────
+
+    private static string GetDocumentText(WorkingMemoryEntry entry)
+    {
+        // Include the key (with punctuation normalised) so searches like "calendar" find
+        // an entry stored under key "calendar_2026-03" even if the value doesn't mention it.
+        var parts = new List<string>
+        {
+            entry.Key.Replace('_', ' ').Replace('-', ' '),
+            entry.Value
+        };
+        if (entry.Tags is { Count: > 0 })
+            parts.Add(string.Join(" ", entry.Tags));
+        if (entry.Category is not null)
+            parts.Add(entry.Category.Replace('/', ' ').Replace('-', ' '));
+        return string.Join(" ", parts);
+    }
+
+    // ── Structural filters ────────────────────────────────────────────────────
+
+    private static bool PassesStructuralFilters(WorkingMemoryEntry entry, MemorySearchCriteria criteria)
+    {
+        if (criteria.Category is not null)
+        {
+            if (entry.Category is null) return false;
+
+            // Prefix match: "pricing" matches "pricing" and "pricing/strategies"
+            if (!entry.Category.Equals(criteria.Category, StringComparison.OrdinalIgnoreCase) &&
+                !entry.Category.StartsWith(criteria.Category + "/", StringComparison.OrdinalIgnoreCase))
+                return false;
+        }
+
+        if (criteria.Tags is { Count: > 0 })
+        {
+            var entryTags = entry.Tags ?? [];
+            if (!criteria.Tags.All(tag =>
+                    entryTags.Any(t => t.Equals(tag, StringComparison.OrdinalIgnoreCase))))
+                return false;
+        }
+
+        return true;
     }
 }

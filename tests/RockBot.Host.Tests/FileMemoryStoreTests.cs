@@ -407,7 +407,7 @@ public class FileMemoryStoreTests
     [TestMethod]
     public void Tokenize_FiltersShortTokens()
     {
-        var tokens = FileMemoryStore.Tokenize("hi is a cat");
+        var tokens = Bm25Ranker.Tokenize("hi is a cat");
         // "hi"=2, "is"=2, "a"=1 filtered; "cat"=3 kept
         CollectionAssert.AreEqual(new[] { "cat" }, tokens);
     }
@@ -415,14 +415,14 @@ public class FileMemoryStoreTests
     [TestMethod]
     public void Tokenize_LowercasesInput()
     {
-        var tokens = FileMemoryStore.Tokenize("Rock Music FESTIVAL");
+        var tokens = Bm25Ranker.Tokenize("Rock Music FESTIVAL");
         CollectionAssert.AreEqual(new[] { "rock", "music", "festival" }, tokens);
     }
 
     [TestMethod]
     public void Tokenize_SplitsOnNonAlphanumeric()
     {
-        var tokens = FileMemoryStore.Tokenize("rock-music festival_2026");
+        var tokens = Bm25Ranker.Tokenize("rock-music festival_2026");
         CollectionAssert.AreEqual(new[] { "rock", "music", "festival", "2026" }, tokens);
     }
 
