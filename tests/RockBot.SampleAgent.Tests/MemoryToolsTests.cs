@@ -142,7 +142,7 @@ public class MemoryToolsTests
     // -------------------------------------------------------------------------
 
     private static MemoryTools MakeTools(StubLongTermMemory memory) =>
-        new(memory, new StubChatClient(), NullLogger<MemoryTools>.Instance);
+        new(memory, new StubChatClient(), Microsoft.Extensions.Options.Options.Create(new AgentProfileOptions()), NullLogger<MemoryTools>.Instance);
 
     private static MemoryEntry Entry(string id, string content, DateTimeOffset createdAt) =>
         new(id, content, null, [], createdAt);

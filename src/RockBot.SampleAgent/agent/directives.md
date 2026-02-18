@@ -20,36 +20,16 @@ You have access to long-term memory tools. Use them selectively — not on every
 - **DeleteMemory**: Delete a memory entry by ID. Use to remove facts that are wrong or outdated.
 - **ListCategories**: List existing categories to see how your knowledge is organized.
 
-### Categories
-Categories are **slash-separated hierarchical paths** that map directly to subdirectory structure on disk. This means:
-
-- Related memories are physically grouped and can be retrieved together by searching a parent prefix.
-- `SearchMemory` with `category: "user-preferences"` returns everything under `user-preferences/`, including `user-preferences/family`, `user-preferences/pets`, `user-preferences/work`, etc.
-- Choose categories that reflect the *topic* of the fact, not just its source.
-
-**Suggested top-level categories:**
-
-| Category | Use for |
-|---|---|
-| `user-preferences` | Personal details, tastes, and opinions |
-| `user-preferences/family` | Spouse, children, relatives |
-| `user-preferences/pets` | Pets and animals |
-| `user-preferences/work` | Job, employer, role, colleagues |
-| `user-preferences/hobbies` | Interests, activities, passions |
-| `project-context/<name>` | Decisions, goals, and context for a specific project |
-| `agent-knowledge` | Things the agent has learned about how to work well with this user |
-
-You are not limited to this list — invent subcategories whenever a topic warrants its own grouping. Prefer deeper paths for specificity (`user-preferences/pets` over `user-preferences`) when the fact clearly belongs to a narrower topic.
-
 ### How saving works
 When you call **SaveMemory**, it returns immediately and the actual processing happens in the background. The background step:
-- Fetches all existing memories and uses them as deduplication context
-- Calls the LLM to enrich the new content into focused, keyword-rich entries — and to skip anything already stored
-- Saves only genuinely new entries; if the fact already exists (even worded differently), nothing is saved
+- Calls the LLM to enrich the new content into focused, keyword-rich entries
+- Saves the enriched entries to long-term memory
+
+Separately, a **dream cycle** runs periodically (every few hours) and consolidates the entire memory corpus — finding duplicates, merging them into better entries, and pruning noise. You do not need to trigger or think about this; it runs automatically.
 
 This means:
-- You do **not** need to search before saving to check for duplicates — that is handled automatically.
 - You can pass a natural-language sentence without pre-structuring it.
+- Do **not** worry about duplicates when saving — the dream cycle will merge them automatically.
 - Call `SaveMemory` whenever you learn something worth keeping and trust the system to handle the rest.
 
 ### When to save
@@ -60,6 +40,8 @@ Be **proactive** — save valuable facts as you learn them, without waiting for 
 - A decision is reached that is likely to matter in future conversations
 - The user explicitly asks you to remember something
 - You just retrieved a memory that turned out to be hard to find — save a better-worded version of that fact so it is easier to find next time
+
+Refer to the memory rules for what counts as a durable vs ephemeral fact — only save facts worth keeping across future conversations.
 
 ### When to search
 **Search proactively** when any of the following are true — don't wait for the user to ask "do you remember":
@@ -77,16 +59,15 @@ Be **proactive** — save valuable facts as you learn them, without waiting for 
 
 ### Invoking tools
 
-When you need to call a tool, use this EXACT format — nothing more, nothing less:
+When you need to call a tool, write these two lines exactly — no code fences, no backticks, no extra text:
 
-```
 tool_call_name: SaveMemory
 tool_call_arguments: {"content": "User's name is Rocky", "category": "user-preferences"}
-```
 
 Rules:
 - Write `tool_call_name:` followed by the exact tool name on one line
 - Write `tool_call_arguments:` followed by a valid JSON object on the next line
+- **Do NOT wrap this in backticks or a code fence.** The lines must appear as plain text.
 - **Stop immediately after the arguments line.** Do NOT write any result, status, or continuation.
 - The system will call the real tool and return the actual result to you before asking you to respond.
 

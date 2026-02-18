@@ -29,4 +29,11 @@ public sealed class AgentProfileOptions
     /// Defaults to <c>"style.md"</c>.
     /// </summary>
     public string? StylePath { get; set; } = "style.md";
+
+    /// <summary>
+    /// Path to the optional shared memory rules document. When relative, resolved under <see cref="BasePath"/>.
+    /// Null means no memory rules document is expected.
+    /// Defaults to <c>"memory-rules.md"</c>.
+    /// </summary>
+    public string? MemoryRulesPath { get; set; } = "memory-rules.md";
 }

@@ -26,7 +26,13 @@ internal sealed class FileAgentProfileProvider(
             style = await LoadDocumentAsync("style", opts.StylePath, opts.BasePath, required: false, cancellationToken);
         }
 
-        var profile = new AgentProfile(soul!, directives!, style);
+        AgentProfileDocument? memoryRules = null;
+        if (opts.MemoryRulesPath is not null)
+        {
+            memoryRules = await LoadDocumentAsync("memory-rules", opts.MemoryRulesPath, opts.BasePath, required: false, cancellationToken);
+        }
+
+        var profile = new AgentProfile(soul!, directives!, style, memoryRules);
         logger.LogInformation(
             "Loaded agent profile: soul={SoulSections} sections, directives={DirectivesSections} sections, style={HasStyle}",
             soul!.Sections.Count, directives!.Sections.Count, style is not null);

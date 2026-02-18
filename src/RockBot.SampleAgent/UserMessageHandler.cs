@@ -317,10 +317,14 @@ internal sealed class UserMessageHandler(
         {
             var line = lines[i].Trim();
 
+            // Strip leading markdown code-fence characters (``` or `) that some models
+            // add when they mistakenly wrap the tool call in a fenced block.
+            var cleanLine = line.TrimStart('`').Trim();
+
             // Format 1: tool_call_name: X followed by tool_call_arguments: {...}
-            if (line.StartsWith("tool_call_name:", StringComparison.OrdinalIgnoreCase))
+            if (cleanLine.StartsWith("tool_call_name:", StringComparison.OrdinalIgnoreCase))
             {
-                var toolName = line["tool_call_name:".Length..].Trim();
+                var toolName = cleanLine["tool_call_name:".Length..].Trim();
                 if (string.IsNullOrEmpty(toolName))
                     continue;
 
@@ -332,7 +336,8 @@ internal sealed class UserMessageHandler(
                     if (!argsLine.StartsWith("tool_call_arguments:", StringComparison.OrdinalIgnoreCase))
                         continue;
 
-                    argsJson = argsLine["tool_call_arguments:".Length..].Trim();
+                    // Strip any trailing code-fence chars the model may have appended
+                    argsJson = argsLine["tool_call_arguments:".Length..].Trim().TrimEnd('`').Trim();
 
                     if (argsJson.StartsWith("{") && !IsBalancedJson(argsJson))
                     {
@@ -354,7 +359,7 @@ internal sealed class UserMessageHandler(
                 results.Add((toolName, argsJson));
             }
             // Format 2: bare known tool name on its own line
-            else if (knownTools.Contains(line))
+            else if (knownTools.Contains(cleanLine))
             {
                 var argsJson = "{}";
 
@@ -394,6 +399,12 @@ internal sealed class UserMessageHandler(
     private static string GetPreToolText(string text)
     {
         var idx = text.IndexOf("tool_call_name:", StringComparison.OrdinalIgnoreCase);
+        if (idx <= 0) return text;
+
+        // Walk back past any backtick code-fence characters on the same line as tool_call_name:
+        while (idx > 0 && (text[idx - 1] == '`' || text[idx - 1] == ' '))
+            idx--;
+
         return idx <= 0 ? text : text[..idx].TrimEnd();
     }
 
