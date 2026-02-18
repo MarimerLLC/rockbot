@@ -6,18 +6,21 @@ namespace RockBot.Host;
 /// <param name="Soul">Who the agent IS — stable personality document.</param>
 /// <param name="Directives">HOW the agent operates — deployment-specific instructions.</param>
 /// <param name="Style">Optional voice/tone document for user-facing agents.</param>
+/// <param name="MemoryRules">Optional shared memory rules document included in every system prompt.</param>
 public sealed record AgentProfile(
     AgentProfileDocument Soul,
     AgentProfileDocument Directives,
-    AgentProfileDocument? Style = null)
+    AgentProfileDocument? Style = null,
+    AgentProfileDocument? MemoryRules = null)
 {
     /// <summary>
-    /// All loaded documents in composition order (soul, directives, then style if present).
+    /// All loaded documents in composition order: soul, directives, memory-rules (if present), style (if present).
     /// </summary>
     public IReadOnlyList<AgentProfileDocument> Documents { get; } =
-        Style is not null
-            ? [Soul, Directives, Style]
-            : [Soul, Directives];
+        new[] { Soul, Directives, MemoryRules, Style }
+            .Where(d => d is not null)
+            .Select(d => d!)
+            .ToList();
 
     /// <summary>
     /// Finds a section by name across all documents (first match wins).

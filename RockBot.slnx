@@ -31,6 +31,7 @@
     <Project Path="tests/RockBot.A2A.Tests/RockBot.A2A.Tests.csproj" />
     <Project Path="tests/RockBot.Telemetry.Tests/RockBot.Telemetry.Tests.csproj" />
     <Project Path="tests/RockBot.UserProxy.Tests/RockBot.UserProxy.Tests.csproj" />
+    <Project Path="tests/RockBot.SampleAgent.Tests/RockBot.SampleAgent.Tests.csproj" />
   </Folder>
   <Project Path="src/RockBot.Messaging.Abstractions/RockBot.Messaging.Abstractions.csproj" />
   <Project Path="src/RockBot.Messaging.RabbitMQ/RockBot.Messaging.RabbitMQ.csproj" />

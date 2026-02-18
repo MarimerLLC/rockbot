@@ -4,13 +4,19 @@ namespace RockBot.Host;
 
 /// <summary>
 /// Builds a system prompt by prepending the agent's name and appending
-/// each profile document's raw content in order.
+/// each profile document's raw content in order. The result is cached
+/// after the first call since profile documents and identity are immutable.
 /// </summary>
 public sealed class DefaultSystemPromptBuilder : ISystemPromptBuilder
 {
+    private string? _cached;
+
     /// <inheritdoc />
     public string Build(AgentProfile profile, AgentIdentity identity)
     {
+        if (_cached is not null)
+            return _cached;
+
         ArgumentNullException.ThrowIfNull(profile);
         ArgumentNullException.ThrowIfNull(identity);
 
@@ -26,6 +32,7 @@ public sealed class DefaultSystemPromptBuilder : ISystemPromptBuilder
             sb.AppendLine();
         }
 
-        return sb.ToString().TrimEnd();
+        _cached = sb.ToString().TrimEnd();
+        return _cached;
     }
 }

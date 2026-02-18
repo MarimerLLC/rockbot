@@ -1,0 +1,6 @@
+docker run -d --name rabbitmq -p 5672:5672 -p 15672:15672 rabbitmq:management
+dotnet user-secrets set "AzureAI:Endpoint" "https://rockbot-ai.services.ai.azure.com/openai/v1/" --project src/RockBot.SampleAgent
+dotnet user-secrets set "AzureAI:Key" "<your-key>" --project src/RockBot.SampleAgent
+dotnet user-secrets set "AzureAI:DeploymentName" "DeepSeek-V3.2" --project src/RockBot.SampleAgent
+ROCKBOT_RABBITMQ_HOST=localhost dotnet run --project src/RockBot.SampleAgent
+ROCKBOT_RABBITMQ_HOST=localhost dotnet run --project src/RockBot.UserProxy.Cli

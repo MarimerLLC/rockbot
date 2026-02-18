@@ -3,6 +3,7 @@ using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
 using OpenAI;
 using RockBot.Host;
 using RockBot.Messaging.RabbitMQ;
@@ -30,8 +31,6 @@ if (!string.IsNullOrEmpty(endpoint) && !string.IsNullOrEmpty(key) && !string.IsN
 
     builder.Services.AddSingleton<IChatClient>(
         openAiClient.GetChatClient(deploymentName).AsIChatClient());
-
-    Console.WriteLine("Using Azure AI Foundry model: {0}", deploymentName);
 }
 else
 {
@@ -40,18 +39,31 @@ else
     Console.WriteLine("Run 'dotnet user-secrets set AzureAI:Endpoint <url>' etc. to configure.");
 }
 
+// Register memory tools as singleton — AIFunction instances are built once at construction
+builder.Services.AddSingleton<MemoryTools>();
+// Tracks which memory IDs have been injected per session, enabling delta recall across topic shifts
+builder.Services.AddSingleton<InjectedMemoryTracker>();
+
 builder.Services.AddRockBotHost(agent =>
 {
     agent.WithIdentity("sample-agent");
     agent.WithProfile();
+    agent.WithMemory();
+    agent.WithDreaming(opts =>
+    {
+        opts.Interval = TimeSpan.FromHours(4);
+        opts.InitialDelay = TimeSpan.FromMinutes(5);
+    });
     agent.HandleMessage<UserMessage, UserMessageHandler>();
     agent.SubscribeTo(UserProxyTopics.UserMessage);
 });
 
 var app = builder.Build();
 
-Console.WriteLine("Sample agent started. Listening for user messages on '{0}'...",
-    UserProxyTopics.UserMessage);
-Console.WriteLine("Press Ctrl+C to stop.");
+var startupLogger = app.Services.GetRequiredService<ILoggerFactory>().CreateLogger("Startup");
+var chatClient = app.Services.GetRequiredService<IChatClient>();
+var llmId = chatClient.GetService<ChatClientMetadata>()?.DefaultModelId ?? chatClient.GetType().Name;
+startupLogger.LogInformation("LLM: {ModelId}", llmId);
+startupLogger.LogInformation("Listening for user messages on '{Topic}'", UserProxyTopics.UserMessage);
 
 await app.RunAsync();
