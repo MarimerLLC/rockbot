@@ -15,7 +15,13 @@ public sealed class DreamOptions
     public TimeSpan Interval { get; set; } = TimeSpan.FromHours(4);
 
     /// <summary>
-    /// Path to the dream directive file, relative to <see cref="AgentProfileOptions.BasePath"/>.
+    /// Path to the memory consolidation directive file, relative to <see cref="AgentProfileOptions.BasePath"/>.
     /// </summary>
     public string DirectivePath { get; set; } = "dream.md";
+
+    /// <summary>
+    /// Path to the skill consolidation directive file, relative to <see cref="AgentProfileOptions.BasePath"/>.
+    /// When the file does not exist, a built-in fallback directive is used.
+    /// </summary>
+    public string SkillDirectivePath { get; set; } = "skill-dream.md";
 }
