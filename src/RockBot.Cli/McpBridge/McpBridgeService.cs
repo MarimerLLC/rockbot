@@ -19,6 +19,7 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
     private readonly IMessagePublisher _publisher;
     private readonly IMessageSubscriber _subscriber;
     private readonly McpBridgeOptions _options;
+    private readonly string _configPath;
     private readonly ILogger<McpBridgeService> _logger;
 
     private readonly Dictionary<string, McpClient> _clients = [];
@@ -51,6 +52,9 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
         _publisher = publisher;
         _subscriber = subscriber;
         _options = options.Value;
+        _configPath = Path.IsPathRooted(_options.ConfigPath)
+            ? _options.ConfigPath
+            : Path.Combine(AppContext.BaseDirectory, _options.ConfigPath);
         _logger = logger;
     }
 
@@ -93,22 +97,22 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
 
     private async Task LoadConfigAndConnectAsync(CancellationToken ct)
     {
-        if (!File.Exists(_options.ConfigPath))
+        if (!File.Exists(_configPath))
         {
-            _logger.LogWarning("MCP config file not found at {Path}", _options.ConfigPath);
+            _logger.LogWarning("MCP config file not found at {Path}", _configPath);
             return;
         }
 
         McpBridgeConfig config;
         try
         {
-            var json = await File.ReadAllTextAsync(_options.ConfigPath, ct);
+            var json = await File.ReadAllTextAsync(_configPath, ct);
             config = JsonSerializer.Deserialize<McpBridgeConfig>(json, JsonOptions)
                 ?? new McpBridgeConfig();
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Failed to read MCP config from {Path}", _options.ConfigPath);
+            _logger.LogError(ex, "Failed to read MCP config from {Path}", _configPath);
             return;
         }
 
@@ -472,12 +476,11 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
 
     private void SetupConfigWatcher()
     {
-        var configPath = Path.GetFullPath(_options.ConfigPath);
-        var directory = Path.GetDirectoryName(configPath);
-        var fileName = Path.GetFileName(configPath);
+        var directory = Path.GetDirectoryName(_configPath);
 
         if (directory is null) return;
 
+        var fileName = Path.GetFileName(_configPath);
         _configWatcher = new FileSystemWatcher(directory, fileName)
         {
             NotifyFilter = NotifyFilters.LastWrite | NotifyFilters.CreationTime,
