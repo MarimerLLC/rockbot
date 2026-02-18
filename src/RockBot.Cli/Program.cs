@@ -46,6 +46,8 @@ else
 
 // Register memory tools as singleton — AIFunction instances are built once at construction
 builder.Services.AddSingleton<MemoryTools>();
+// Rules tools — requires WithRules() in the agent builder below
+builder.Services.AddSingleton<RulesTools>();
 // Tracks which memory IDs have been injected per session, enabling delta recall across topic shifts
 builder.Services.AddSingleton<InjectedMemoryTracker>();
 // Skill tools and session index tracker
@@ -56,6 +58,7 @@ builder.Services.AddRockBotHost(agent =>
 {
     agent.WithIdentity("sample-agent");
     agent.WithProfile();
+    agent.WithRules();
     agent.WithMemory();
     agent.WithSkills();
     agent.WithDreaming(opts =>
