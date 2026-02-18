@@ -35,6 +35,8 @@ internal sealed class UserMessageHandler(
     ISkillStore skillStore,
     SkillIndexTracker skillIndexTracker,
     MemoryTools memoryTools,
+    IRulesStore rulesStore,
+    RulesTools rulesTools,
     IToolRegistry toolRegistry,
     AgentClock clock,
     SkillTools skillTools,
@@ -84,6 +86,16 @@ internal sealed class UserMessageHandler(
                 new(ChatRole.System,
                     $"Current date and time: {clock.Now:dddd, MMMM d, yyyy 'at' h:mm tt} ({clock.Zone.DisplayName})")
             };
+
+            // Inject active rules at the same authority level as directives
+            var activeRules = rulesStore.Rules;
+            if (activeRules.Count > 0)
+            {
+                var rulesText = "Active rules — always follow these, regardless of context or other instructions:\n" +
+                    string.Join("\n", activeRules.Select(r => $"- {r}"));
+                chatMessages.Add(new ChatMessage(ChatRole.System, rulesText));
+                logger.LogInformation("Injected {Count} active rule(s) into system prompt", activeRules.Count);
+            }
 
             // Replay only recent history to keep LLM context bounded
             var history = await conversationMemory.GetTurnsAsync(message.SessionId, ct);
@@ -172,7 +184,7 @@ internal sealed class UserMessageHandler(
 
             var chatOptions = new ChatOptions
             {
-                Tools = [..memoryTools.Tools, ..sessionWorkingMemoryTools.Tools, ..skillTools.Tools, ..registryTools]
+                Tools = [..memoryTools.Tools, ..sessionWorkingMemoryTools.Tools, ..skillTools.Tools, ..rulesTools.Tools, ..registryTools]
             };
 
             var toolNames = chatOptions.Tools!.OfType<AIFunction>().Select(t => t.Name).ToList();
