@@ -174,10 +174,13 @@ internal sealed class UserMessageHandler(
                     var remainingStr = remaining.TotalMinutes >= 1
                         ? $"{(int)remaining.TotalMinutes}m{remaining.Seconds:D2}s"
                         : $"{Math.Max(0, remaining.Seconds)}s";
-                    return $"- {e.Key}: expires in {remainingStr}";
+                    var meta = new System.Text.StringBuilder($"- {e.Key}: expires in {remainingStr}");
+                    if (e.Category is not null) meta.Append($", category: {e.Category}");
+                    if (e.Tags is { Count: > 0 }) meta.Append($", tags: {string.Join(", ", e.Tags)}");
+                    return meta.ToString();
                 });
                 var workingMemoryContext =
-                    "Working memory (scratch space — use get_from_working_memory to retrieve):\n" +
+                    "Working memory (scratch space — use search_working_memory or get_from_working_memory to retrieve):\n" +
                     string.Join("\n", lines);
                 chatMessages.Add(new ChatMessage(ChatRole.System, workingMemoryContext));
                 logger.LogInformation("Injected {Count} working memory entries into context", workingEntries.Count);
