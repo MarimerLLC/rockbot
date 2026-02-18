@@ -30,7 +30,15 @@ internal sealed class HttpWebBrowseProvider(
 
         var cleanedHtml = document.Body?.InnerHtml ?? html;
 
-        var converter = new ReverseMarkdown.Converter();
+        var converterConfig = new ReverseMarkdown.Config
+        {
+            // Drop unrecognised tags (div, section, main, etc.) instead of passing
+            // their raw HTML through — keeps the output clean Markdown.
+            UnknownTags = ReverseMarkdown.Config.UnknownTagsOption.Drop,
+            GithubFlavored = true,
+            RemoveComments = true,
+        };
+        var converter = new ReverseMarkdown.Converter(converterConfig);
         var markdown = converter.Convert(cleanedHtml);
 
         var maxLen = options.MaxBrowseContentLength;
