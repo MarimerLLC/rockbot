@@ -45,7 +45,18 @@ public sealed class McpToolProxy : IToolExecutor, IAsyncDisposable
     /// </summary>
     public string ResponseTopic => $"tool.result.{_identity.Name}";
 
-    public async Task<ToolInvokeResponse> ExecuteAsync(ToolInvokeRequest request, CancellationToken ct)
+    public Task<ToolInvokeResponse> ExecuteAsync(ToolInvokeRequest request, CancellationToken ct)
+        => ExecuteAsync(request, null, ct);
+
+    /// <summary>
+    /// Publishes a tool invoke request with optional extra headers merged in.
+    /// Used by <see cref="McpManagementExecutor"/> to attach the <c>rb-mcp-server</c>
+    /// routing header when invoking via <c>mcp_invoke_tool</c>.
+    /// </summary>
+    internal async Task<ToolInvokeResponse> ExecuteAsync(
+        ToolInvokeRequest request,
+        IReadOnlyDictionary<string, string>? extraHeaders,
+        CancellationToken ct)
     {
         await EnsureSubscribedAsync(ct);
 
@@ -61,6 +72,12 @@ public sealed class McpToolProxy : IToolExecutor, IAsyncDisposable
                 [WellKnownHeaders.ToolProvider] = "mcp",
                 [WellKnownHeaders.TimeoutMs] = ((int)_timeout.TotalMilliseconds).ToString()
             };
+
+            if (extraHeaders is not null)
+            {
+                foreach (var (key, value) in extraHeaders)
+                    headers[key] = value;
+            }
 
             var envelope = request.ToEnvelope(
                 source: _identity.Name,

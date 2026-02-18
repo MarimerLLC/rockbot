@@ -26,18 +26,25 @@ public static class McpServiceCollectionExtensions
     }
 
     /// <summary>
-    /// Registers the MCP tool proxy for agents that invoke MCP tools via the message bus.
-    /// Subscribes to tool responses and tool discovery messages for this agent.
+    /// Registers the MCP management proxy for agents that interact with MCP servers via
+    /// the message bus. On startup the bridge sends <see cref="McpServersIndexed"/>;
+    /// the handler registers exactly 5 management tools in <see cref="IToolRegistry"/>
+    /// instead of one tool per schema.
     /// </summary>
     public static AgentHostBuilder AddMcpToolProxy(this AgentHostBuilder builder)
     {
         var agentName = builder.Identity.Name;
 
         builder.Services.AddSingleton<McpToolProxy>();
+        builder.Services.AddSingleton<McpServerIndex>();
+        builder.Services.AddSingleton<McpManagementExecutor>();
         builder.Services.AddHostedService<McpStartupProbeService>();
 
-        builder.HandleMessage<McpToolsAvailable, McpToolsAvailableHandler>();
+        builder.HandleMessage<McpServersIndexed, McpServersIndexedHandler>();
         builder.SubscribeTo($"tool.meta.mcp.{agentName}");
+
+        // Note: mcp.manage.response.{agentName} is subscribed directly by
+        // McpManagementExecutor (lazy, on first management call) — not via the pipeline.
 
         return builder;
     }

@@ -43,59 +43,6 @@ public class McpMessageSerializationTests
     }
 
     [TestMethod]
-    public void McpToolsAvailable_RoundTrips()
-    {
-        var original = new McpToolsAvailable
-        {
-            ServerName = "filesystem",
-            Tools =
-            [
-                new McpToolDefinition
-                {
-                    Name = "read_file",
-                    Description = "Reads a file",
-                    ParametersSchema = """{"type":"object"}"""
-                },
-                new McpToolDefinition
-                {
-                    Name = "write_file",
-                    Description = "Writes a file"
-                }
-            ],
-            RemovedTools = ["old_tool", "deprecated_tool"]
-        };
-
-        var envelope = original.ToEnvelope("test");
-        var deserialized = envelope.GetPayload<McpToolsAvailable>();
-
-        Assert.IsNotNull(deserialized);
-        Assert.AreEqual("filesystem", deserialized.ServerName);
-        Assert.AreEqual(2, deserialized.Tools.Count);
-        Assert.AreEqual("read_file", deserialized.Tools[0].Name);
-        Assert.AreEqual("write_file", deserialized.Tools[1].Name);
-        Assert.AreEqual(2, deserialized.RemovedTools.Count);
-        Assert.AreEqual("old_tool", deserialized.RemovedTools[0]);
-    }
-
-    [TestMethod]
-    public void McpToolsAvailable_EmptyLists_RoundTrips()
-    {
-        var original = new McpToolsAvailable
-        {
-            ServerName = "empty-server",
-            Tools = [],
-            RemovedTools = []
-        };
-
-        var envelope = original.ToEnvelope("test");
-        var deserialized = envelope.GetPayload<McpToolsAvailable>();
-
-        Assert.IsNotNull(deserialized);
-        Assert.AreEqual(0, deserialized.Tools.Count);
-        Assert.AreEqual(0, deserialized.RemovedTools.Count);
-    }
-
-    [TestMethod]
     public void McpMetadataRefreshRequest_WithServerName_RoundTrips()
     {
         var original = new McpMetadataRefreshRequest
@@ -123,20 +70,5 @@ public class McpMessageSerializationTests
 
         Assert.IsNotNull(deserialized);
         Assert.IsNull(deserialized.ServerName);
-    }
-
-    [TestMethod]
-    public void McpToolsAvailable_MessageType_IsClrTypeName()
-    {
-        var message = new McpToolsAvailable
-        {
-            ServerName = "test",
-            Tools = [],
-            RemovedTools = []
-        };
-
-        var envelope = message.ToEnvelope("test");
-
-        Assert.AreEqual(typeof(McpToolsAvailable).FullName, envelope.MessageType);
     }
 }
