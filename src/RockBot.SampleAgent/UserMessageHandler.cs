@@ -172,6 +172,8 @@ internal sealed class UserMessageHandler(
                 toolNames.Count, string.Join(", ", toolNames));
 
             // First LLM call
+            logger.LogInformation("Calling LLM — iteration 1 ({MessageCount} messages in context)",
+                chatMessages.Count);
             var sw = Stopwatch.StartNew();
             var firstResponse = await llmClient.GetResponseAsync(chatMessages, chatOptions, ct);
             sw.Stop();
@@ -249,7 +251,8 @@ internal sealed class UserMessageHandler(
         {
             logger.LogInformation("Background tool loop started for session {SessionId}", sessionId);
 
-            var finalContent = await CallWithToolLoopAsync(chatMessages, chatOptions, firstResponse, ct);
+            var finalContent = await CallWithToolLoopAsync(chatMessages, chatOptions, firstResponse, ct,
+                onProgress: (msg, ct2) => PublishReplyAsync(msg, replyTo, correlationId, sessionId, isFinal: false, ct2));
 
             await conversationMemory.AddTurnAsync(
                 sessionId,
@@ -326,7 +329,8 @@ internal sealed class UserMessageHandler(
         List<ChatMessage> chatMessages,
         ChatOptions chatOptions,
         ChatResponse firstResponse,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        Func<string, CancellationToken, Task>? onProgress = null)
     {
         // pendingResponse holds the pre-fetched first response for iteration 0.
         // After that it's null, and the loop calls the LLM for each iteration.
@@ -344,6 +348,8 @@ internal sealed class UserMessageHandler(
             }
             else
             {
+                logger.LogInformation("Calling LLM — iteration {Iteration} ({MessageCount} messages in context)",
+                    iteration + 2, chatMessages.Count);
                 var sw = Stopwatch.StartNew();
                 response = await llmClient.GetResponseAsync(chatMessages, chatOptions, cancellationToken);
                 sw.Stop();
@@ -433,6 +439,12 @@ internal sealed class UserMessageHandler(
                         $"[Tool result for {toolName}]: {result}"));
                 }
 
+                if (onProgress is not null)
+                {
+                    var names = string.Join(", ", textCalls.Select(t => t.Name));
+                    await onProgress($"Called {names}. Still working…", cancellationToken);
+                }
+
                 continue;
             }
 
@@ -476,6 +488,12 @@ internal sealed class UserMessageHandler(
 
                 chatMessages.Add(new ChatMessage(ChatRole.Tool,
                     [new FunctionResultContent(fc.CallId, result)]));
+            }
+
+            if (onProgress is not null)
+            {
+                var names = string.Join(", ", functionCalls.Select(f => f.Name));
+                await onProgress($"Called {names}. Still working…", cancellationToken);
             }
 
             // On the last iteration, remove tools so the LLM must produce a text response
