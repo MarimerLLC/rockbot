@@ -17,7 +17,7 @@ public sealed class ServiceCollectionExtensionsTests
         var options = provider.GetRequiredService<UserProxyOptions>();
 
         Assert.AreEqual("user-proxy", options.ProxyId);
-        Assert.AreEqual(TimeSpan.FromSeconds(60), options.DefaultReplyTimeout);
+        Assert.AreEqual(TimeSpan.FromMinutes(3), options.DefaultReplyTimeout);
     }
 
     [TestMethod]
