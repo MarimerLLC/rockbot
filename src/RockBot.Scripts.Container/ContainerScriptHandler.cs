@@ -21,7 +21,8 @@ internal sealed class ContainerScriptHandler(
     {
         var replyTo = context.Envelope.ReplyTo ?? options.DefaultResultTopic;
         var correlationId = context.Envelope.CorrelationId;
-        var podName = $"rockbot-script-{request.ToolCallId[..Math.Min(8, request.ToolCallId.Length)]}-{Guid.NewGuid():N}"[..63].TrimEnd('-');
+        var podNameRaw = $"rockbot-script-{request.ToolCallId[..Math.Min(8, request.ToolCallId.Length)]}-{Guid.NewGuid():N}";
+        var podName = podNameRaw[..Math.Min(63, podNameRaw.Length)].TrimEnd('-');
 
         try
         {
@@ -125,7 +126,7 @@ internal sealed class ContainerScriptHandler(
         {
             scriptCommand += $"pip install --quiet {string.Join(' ', request.PipPackages)} && ";
         }
-        scriptCommand += "python -c \"$ROCKBOT_SCRIPT\"";
+        scriptCommand += "python -c \"$ROCKBOT_SCRIPT\" 2>&1";
 
         command.Add(scriptCommand);
 

@@ -12,8 +12,9 @@ namespace RockBot.Scripts.Container;
 public static class ContainerScriptServiceCollectionExtensions
 {
     /// <summary>
-    /// Registers <see cref="IScriptRunner"/> backed by ephemeral K8s pods.
-    /// Use this when hosting the script runner as a standalone service (e.g. RockBot.Scripts.Bridge).
+    /// Registers <see cref="IScriptRunner"/> backed by ephemeral K8s pods, and registers
+    /// the <c>execute_python_script</c> tool in the <see cref="IToolRegistry"/> via
+    /// <see cref="ScriptToolRegistrar"/> so the LLM can invoke scripts directly.
     /// </summary>
     public static IServiceCollection AddContainerScriptRunner(
         this IServiceCollection services,
@@ -27,6 +28,7 @@ public static class ContainerScriptServiceCollectionExtensions
             new Kubernetes(KubernetesClientConfiguration.BuildDefaultConfig()));
 
         services.AddSingleton<IScriptRunner, ContainerScriptRunner>();
+        services.AddHostedService<ScriptToolRegistrar>();
 
         return services;
     }

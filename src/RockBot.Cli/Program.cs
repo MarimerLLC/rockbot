@@ -15,6 +15,7 @@ using RockBot.Memory;
 using RockBot.Skills;
 using RockBot.Tools;
 using RockBot.Tools.Mcp;
+using RockBot.Tools.Web;
 using RockBot.UserProxy;
 
 var builder = Host.CreateApplicationBuilder(args);
@@ -70,6 +71,7 @@ builder.Services.AddRockBotHost(agent =>
     });
     agent.AddToolHandler();
     agent.AddMcpToolProxy();
+    agent.AddWebTools(opts => builder.Configuration.GetSection("WebTools").Bind(opts));
     agent.HandleMessage<UserMessage, UserMessageHandler>();
     agent.SubscribeTo(UserProxyTopics.UserMessage);
 });
