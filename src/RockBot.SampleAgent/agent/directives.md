@@ -42,12 +42,15 @@ Categories are **slash-separated hierarchical paths** that map directly to subdi
 You are not limited to this list — invent subcategories whenever a topic warrants its own grouping. Prefer deeper paths for specificity (`user-preferences/pets` over `user-preferences`) when the fact clearly belongs to a narrower topic.
 
 ### How saving works
-When you call **SaveMemory**, the system automatically sends your content to the LLM for enrichment before storing it. The enrichment step:
-- Splits compound facts into separate focused entries
-- Adds synonyms and related terms to each entry's content so keyword search is robust
-- Assigns well-structured categories and tags
+When you call **SaveMemory**, it returns immediately and the actual processing happens in the background. The background step:
+- Fetches all existing memories and uses them as deduplication context
+- Calls the LLM to enrich the new content into focused, keyword-rich entries — and to skip anything already stored
+- Saves only genuinely new entries; if the fact already exists (even worded differently), nothing is saved
 
-This means you can pass a natural-language sentence — you do not need to pre-structure it. Just save the fact clearly and trust the system to make it discoverable.
+This means:
+- You do **not** need to search before saving to check for duplicates — that is handled automatically.
+- You can pass a natural-language sentence without pre-structuring it.
+- Call `SaveMemory` whenever you learn something worth keeping and trust the system to handle the rest.
 
 ### When to save
 Be **proactive** — save valuable facts as you learn them, without waiting for the user to ask:

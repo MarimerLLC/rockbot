@@ -22,13 +22,27 @@ internal sealed class MemoryTools
 
     /// <summary>
     /// System prompt used when asking the LLM to expand a raw memory string into
-    /// one or more well-structured, keyword-rich entries.
+    /// one or more well-structured, keyword-rich entries — while skipping anything
+    /// already captured in existing memories.
     /// </summary>
     private const string ExtractionSystemPrompt = """
         You are a memory extraction assistant. Your job is to take a piece of information
-        and expand it into one or more well-structured, easily searchable memory entries.
+        and expand it into one or more well-structured, easily searchable memory entries —
+        but ONLY for facts that are genuinely new (not already in the existing memories).
+
+        You will receive:
+        - EXISTING MEMORIES currently stored (may be empty)
+        - NEW CONTENT to process
 
         Rules:
+        - Before creating an entry, check whether the fact already exists in the provided
+          memories — even if worded differently. Near-synonyms count as duplicates.
+          Example: "Rocky lives in Minnesota" and "Rocky is from Minnesota" are the same fact.
+          Example: "Rocky enjoys ice fishing" and "Rocky goes ice fishing" are the same fact.
+        - Only produce entries for facts that are NOT already captured.
+        - If the new content adds genuinely specific detail beyond what exists (e.g., names a
+          specific venue for an activity already stored), DO include it.
+        - If everything is already covered, return an EMPTY JSON array: []
         - Split compound facts into separate entries — one distinct fact per entry.
         - Write each "content" field as a natural sentence that includes synonyms and
           related terms so keyword search is robust. Example: write
@@ -47,16 +61,7 @@ internal sealed class MemoryTools
           "category" : string or null
           "tags"     : array of strings
 
-        Example input:
-          Content: "Rocky's wife is Teresa, has two adult children, and a Sheltie named Milo"
-          Hints — category: user-preferences, tags: (none)
-
-        Example output:
-        [
-          {"content":"Rocky's wife is named Teresa","category":"user-preferences/family","tags":["family","wife","spouse","Teresa"]},
-          {"content":"Rocky has two adult children","category":"user-preferences/family","tags":["family","children","kids","adult-children"]},
-          {"content":"Rocky has a dog — a Sheltie (Shetland Sheepdog) named Milo","category":"user-preferences/pets","tags":["pet","dog","sheltie","shetland-sheepdog","Milo"]}
-        ]
+        If everything is already covered, return: []
         """;
 
     private readonly ILongTermMemory _memory;
@@ -86,32 +91,20 @@ internal sealed class MemoryTools
     public IList<AITool> Tools => _tools;
 
     [Description("Save an important fact, user preference, or learned pattern to long-term memory. " +
-                 "The system will automatically expand the content into one or more focused, keyword-rich entries " +
-                 "to improve future search recall — so you can pass a natural-language description and trust " +
-                 "that it will be stored well. Use category to give a starting hint for organization " +
-                 "(e.g. 'user-preferences', 'project-context/rockbot'). Use tags for cross-cutting labels.")]
-    public async Task<string> SaveMemory(
+                 "Returns immediately — the actual enrichment and deduplication happens in the background. " +
+                 "The system will automatically expand the content into focused, keyword-rich entries " +
+                 "and skip anything already stored. Pass a natural-language description; no pre-structuring needed.")]
+    public Task<string> SaveMemory(
         [Description("The content to remember — can be a natural-language sentence or a compound fact")] string content,
         [Description("Optional category hint (e.g. 'user-preferences/pets')")] string? category = null,
         [Description("Optional comma-separated tags hint")] string? tags = null)
     {
-        _logger.LogInformation("Tool call: SaveMemory(content={Content}, category={Category}, tags={Tags})",
-            content, category, tags);
+        _logger.LogInformation("Tool call: SaveMemory (queuing background task) content={Content}, category={Category}",
+            content, category);
 
-        var entries = await ExpandToMemoryEntriesAsync(content, category, tags);
+        _ = Task.Run(() => SaveMemoryBackgroundAsync(content, category, tags));
 
-        var savedIds = new List<string>();
-        foreach (var entry in entries)
-        {
-            await _memory.SaveAsync(entry);
-            savedIds.Add(entry.Id);
-            _logger.LogInformation("Saved memory entry {Id} ({Category}): {Content}",
-                entry.Id, entry.Category ?? "(none)", entry.Content);
-        }
-
-        return entries.Count == 1
-            ? $"Saved 1 memory entry (id={savedIds[0]})."
-            : $"Saved {entries.Count} memory entries (ids={string.Join(", ", savedIds)}).";
+        return Task.FromResult("Memory save queued.");
     }
 
     [Description("Search long-term memory for previously saved facts, preferences, or patterns. " +
@@ -194,24 +187,70 @@ internal sealed class MemoryTools
     }
 
     /// <summary>
+    /// Background worker for <see cref="SaveMemory"/>. Fetches existing memories,
+    /// calls the LLM to enrich and deduplicate in a single pass, then persists
+    /// only genuinely new entries.
+    /// </summary>
+    private async Task SaveMemoryBackgroundAsync(string content, string? category, string? tags)
+    {
+        try
+        {
+            // Fetch all existing memories to give the LLM full dedup context.
+            // MaxResults is set high because the store is small and we want complete coverage.
+            var existing = await _memory.SearchAsync(new MemorySearchCriteria(MaxResults: 1000));
+
+            _logger.LogDebug("Background SaveMemory: {ExistingCount} existing entries for dedup context", existing.Count);
+
+            var entries = await ExpandToMemoryEntriesAsync(content, category, tags, existing);
+
+            foreach (var entry in entries)
+            {
+                await _memory.SaveAsync(entry);
+                _logger.LogInformation("Background save: {Id} ({Category}): {Content}",
+                    entry.Id, entry.Category ?? "(none)", entry.Content);
+            }
+
+            _logger.LogInformation("Background SaveMemory complete: {Count} new entries saved for content '{Content}'",
+                entries.Count, content);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Background SaveMemory failed for content: {Content}", content);
+        }
+    }
+
+    /// <summary>
     /// Calls the LLM to expand <paramref name="content"/> into one or more focused,
-    /// keyword-rich <see cref="MemoryEntry"/> records. Falls back to a single direct
-    /// save if the LLM call fails or returns unparseable output.
+    /// keyword-rich <see cref="MemoryEntry"/> records, skipping facts already present
+    /// in <paramref name="existingMemories"/>. Falls back to a single direct save if
+    /// the LLM call fails or returns unparseable output.
     /// </summary>
     private async Task<List<MemoryEntry>> ExpandToMemoryEntriesAsync(
-        string content, string? category, string? tags)
+        string content, string? category, string? tags,
+        IReadOnlyList<MemoryEntry>? existingMemories = null)
     {
-        var hint = new StringBuilder("Content: ").AppendLine(content);
-        hint.Append("Hints — category: ").Append(category ?? "(none)");
-        hint.Append(", tags: ").AppendLine(tags ?? "(none)");
+        var userMessage = new StringBuilder();
+
+        if (existingMemories is { Count: > 0 })
+        {
+            userMessage.AppendLine("EXISTING MEMORIES:");
+            foreach (var e in existingMemories)
+                userMessage.AppendLine($"- [{e.Id}] ({e.Category ?? "uncategorized"}): {e.Content}");
+            userMessage.AppendLine();
+            userMessage.AppendLine("NEW CONTENT TO PROCESS:");
+        }
+
+        userMessage.Append("Content: ").AppendLine(content);
+        userMessage.Append("Hints — category: ").Append(category ?? "(none)");
+        userMessage.Append(", tags: ").AppendLine(tags ?? "(none)");
 
         var messages = new List<ChatMessage>
         {
             new(ChatRole.System, ExtractionSystemPrompt),
-            new(ChatRole.User, hint.ToString())
+            new(ChatRole.User, userMessage.ToString())
         };
 
-        // Explicit options: no tools (avoids recursive SaveMemory calls), no special overrides
+        // Explicit options: no tools (avoids recursive SaveMemory calls)
         var options = new ChatOptions();
 
         try
@@ -237,6 +276,13 @@ internal sealed class MemoryTools
                     .ToList();
             }
 
+            // LLM returned [] — everything was a duplicate or content was empty
+            if (json == "[]")
+            {
+                _logger.LogInformation("Memory extraction: all facts already exist, nothing new to save");
+                return [];
+            }
+
             _logger.LogWarning("Memory extraction returned empty or null list; falling back");
         }
         catch (Exception ex)
@@ -244,7 +290,7 @@ internal sealed class MemoryTools
             _logger.LogWarning(ex, "Memory extraction LLM call failed; falling back to direct save");
         }
 
-        // Fallback: save the raw content as-is
+        // Fallback: save the raw content as-is (no dedup in this path)
         var tagList = string.IsNullOrWhiteSpace(tags)
             ? (IReadOnlyList<string>)[]
             : tags.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
