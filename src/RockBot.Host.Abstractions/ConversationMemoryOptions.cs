@@ -1,7 +1,7 @@
 namespace RockBot.Host;
 
 /// <summary>
-/// Options for in-memory conversation memory.
+/// Options for conversation memory.
 /// </summary>
 public sealed class ConversationMemoryOptions
 {
@@ -16,4 +16,11 @@ public sealed class ConversationMemoryOptions
     /// Defaults to 1 hour.
     /// </summary>
     public TimeSpan SessionIdleTimeout { get; set; } = TimeSpan.FromHours(1);
+
+    /// <summary>
+    /// Base directory for persisting conversation sessions to disk.
+    /// Defaults to <c>"conversations"</c>, resolved under <see cref="AgentProfileOptions.BasePath"/>.
+    /// Set to an absolute path to override. Sessions are stored as <c>{BasePath}/{sessionId}.json</c>.
+    /// </summary>
+    public string BasePath { get; set; } = "conversations";
 }

@@ -1,4 +1,5 @@
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
 using RockBot.Host;
 
 namespace RockBot.Tools.Mcp;
@@ -33,6 +34,7 @@ public static class McpServiceCollectionExtensions
         var agentName = builder.Identity.Name;
 
         builder.Services.AddSingleton<McpToolProxy>();
+        builder.Services.AddHostedService<McpStartupProbeService>();
 
         builder.HandleMessage<McpToolsAvailable, McpToolsAvailableHandler>();
         builder.SubscribeTo($"tool.meta.mcp.{agentName}");

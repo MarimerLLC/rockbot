@@ -27,6 +27,14 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
     private ISubscription? _refreshSubscription;
     private FileSystemWatcher? _configWatcher;
 
+    /// <summary>
+    /// Set after the initial MCP connections are established in <see cref="StartAsync"/>.
+    /// Refresh requests whose envelope timestamp predates this moment are stale —
+    /// they were queued before the bridge started and the startup publication already
+    /// covers them, so we discard them to avoid sending tool lists twice.
+    /// </summary>
+    private DateTimeOffset _startupCompletedAt;
+
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
@@ -63,6 +71,7 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
 
         // Load config and connect to servers
         await LoadConfigAndConnectAsync(cancellationToken);
+        _startupCompletedAt = DateTimeOffset.UtcNow;
 
         // Watch for config changes
         SetupConfigWatcher();
@@ -309,6 +318,27 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
             timeoutCts.CancelAfter(timeoutMs);
 
             var arguments = McpToolExecutor.ParseArguments(request.Arguments);
+
+            // Detect and unwrap self-referential double-wrapped invoke_tool calls.
+            // This occurs when the aggregator's skill instructs the LLM to call invoke_tool
+            // on the aggregator itself (serverName matching "aggregator", toolName="invoke_tool"),
+            // nesting the real target call inside the "arguments" field.
+            if (request.ToolName == "invoke_tool"
+                && GetStringArgument(arguments, "serverName") is { } wrappedServer
+                && wrappedServer.Contains("aggregator", StringComparison.OrdinalIgnoreCase)
+                && GetStringArgument(arguments, "toolName") == "invoke_tool"
+                && GetStringArgument(arguments, "arguments") is { } innerArgsJson)
+            {
+                var unwrapped = McpToolExecutor.ParseArguments(innerArgsJson);
+                if (unwrapped.Count > 0)
+                {
+                    _logger.LogInformation(
+                        "Unwrapping self-referential invoke_tool call (serverName={WrappedServer}); routing inner call: {InnerArgs}",
+                        wrappedServer, innerArgsJson);
+                    arguments = unwrapped;
+                }
+            }
+
             var result = await client.CallToolAsync(
                 request.ToolName, arguments, cancellationToken: timeoutCts.Token);
 
@@ -316,8 +346,29 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
             var content = McpToolExecutor.FormatResult(result);
 
             if (result.IsError == true)
+            {
                 _logger.LogWarning("← MCP {Server}/{Tool} ERROR in {ElapsedMs}ms: {Content}",
                     serverName, request.ToolName, sw.ElapsedMilliseconds, content);
+
+                // When invoke_tool fails, check whether the 'arguments' field was a plain
+                // string instead of a JSON object. The aggregator expects arguments to be
+                // a JSON-encoded object (e.g. {"message":"..."}) so it can forward them to
+                // the downstream tool. A plain string causes the downstream call to fail.
+                // Append a corrective hint so the LLM can fix its next call.
+                if (request.ToolName == "invoke_tool"
+                    && GetStringArgument(arguments, "arguments") is { } innerArgs
+                    && !innerArgs.TrimStart().StartsWith('{'))
+                {
+                    var targetTool = GetStringArgument(arguments, "toolName") ?? "the target tool";
+                    content = (content ?? string.Empty) +
+                        $"\n\nThe 'arguments' field must be a JSON object string, not a plain string. " +
+                        $"Re-call invoke_tool with arguments formatted as a JSON object. " +
+                        $"For example, if {targetTool} takes a 'message' parameter: " +
+                        $"arguments = {{\"message\": \"{innerArgs}\"}}";
+                    _logger.LogInformation(
+                        "Appended invoke_tool arguments-format hint (inner args was a plain string)");
+                }
+            }
             else
                 _logger.LogInformation("← MCP {Server}/{Tool} OK in {ElapsedMs}ms ({ContentLen} chars)",
                     serverName, request.ToolName, sw.ElapsedMilliseconds, content?.Length ?? 0);
@@ -390,6 +441,17 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
 
     private async Task<MessageResult> HandleRefreshRequestAsync(MessageEnvelope envelope, CancellationToken ct)
     {
+        // Discard refresh requests that were published before this bridge instance finished
+        // its startup connection pass. Those messages are stale: the startup already published
+        // full tool lists, so acting on them would send duplicate McpToolsAvailable messages.
+        if (envelope.Timestamp < _startupCompletedAt)
+        {
+            _logger.LogDebug(
+                "Ignoring stale MCP refresh request from {Source} (sent at {Sent}, startup completed at {Ready})",
+                envelope.Source, envelope.Timestamp, _startupCompletedAt);
+            return MessageResult.Ack;
+        }
+
         var request = envelope.GetPayload<McpMetadataRefreshRequest>();
 
         if (request?.ServerName is not null)
@@ -477,6 +539,23 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
         _clients.Clear();
         _serverTools.Clear();
         _serverConfigs.Clear();
+    }
+
+    /// <summary>
+    /// Extracts a string value from a parsed argument dictionary, handling
+    /// the <see cref="JsonElement"/> boxing that System.Text.Json produces
+    /// when deserializing to <c>Dictionary&lt;string, object?&gt;</c>.
+    /// </summary>
+    private static string? GetStringArgument(Dictionary<string, object?> args, string key)
+    {
+        if (!args.TryGetValue(key, out var val)) return null;
+        return val switch
+        {
+            JsonElement je when je.ValueKind == JsonValueKind.String => je.GetString(),
+            JsonElement je => je.GetRawText(),
+            string s => s,
+            _ => val?.ToString()
+        };
     }
 
     public async ValueTask DisposeAsync()

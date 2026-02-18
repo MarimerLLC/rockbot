@@ -1,3 +1,4 @@
+using System.ClientModel;
 using System.Diagnostics;
 using System.Text.Json;
 using Microsoft.Extensions.AI;
@@ -49,7 +50,7 @@ internal sealed class UserMessageHandler(
     /// Maximum number of tool-calling round-trips in the background loop
     /// before forcing a final text response.
     /// </summary>
-    private const int MaxToolIterations = 5;
+    private const int MaxToolIterations = 12;
 
     /// <summary>
     /// Minimum time since the last user-visible message before a mid-loop
@@ -178,6 +179,19 @@ internal sealed class UserMessageHandler(
             logger.LogInformation("Calling LLM with {ToolCount} tools: [{Tools}]",
                 toolNames.Count, string.Join(", ", toolNames));
 
+            // Log registry tool schemas at debug level so we can diagnose grammar-compiler
+            // rejections (e.g. LM Studio "Channel Error" from unsupported schema features).
+            if (logger.IsEnabled(LogLevel.Debug))
+            {
+                foreach (var rt in registryTools.OfType<RegistryToolFunction>())
+                {
+                    var schema = rt.JsonSchema;
+                    logger.LogDebug("Registry tool schema [{Name}]: {Schema}",
+                        rt.Name,
+                        schema.ValueKind == JsonValueKind.Undefined ? "(undefined)" : schema.GetRawText());
+                }
+            }
+
             // First LLM call
             logger.LogInformation("Calling LLM — iteration 1 ({MessageCount} messages in context)",
                 chatMessages.Count);
@@ -216,27 +230,72 @@ internal sealed class UserMessageHandler(
             }
             else
             {
-                // No tool calls — first response is the final answer
                 var text = ExtractAssistantText(firstResponse);
 
-                await conversationMemory.AddTurnAsync(
-                    message.SessionId,
-                    new ConversationTurn("assistant", text, DateTimeOffset.UtcNow),
-                    ct);
+                // If the first response is an incomplete setup phrase (e.g. "Let me search:"),
+                // the model intended to make a tool call but didn't. Treat it like a tool-call
+                // response: publish an ACK and push into the background loop so it can be nudged.
+                if (IsIncompleteSetupPhrase(text))
+                {
+                    logger.LogInformation(
+                        "First response is an incomplete setup phrase ({Length} chars); routing to background loop",
+                        text.Length);
 
-                await PublishReplyAsync(text, replyTo, correlationId, message.SessionId, isFinal: true, ct);
+                    await PublishReplyAsync(
+                        "I'm working on that — I'll follow up shortly.",
+                        replyTo, correlationId, message.SessionId, isFinal: false, ct);
 
-                logger.LogInformation("Published reply to {ReplyTo} for correlation {CorrelationId}",
-                    replyTo, correlationId);
+                    _ = BackgroundToolLoopAsync(
+                        chatMessages, chatOptions, firstResponse,
+                        message.SessionId, replyTo, correlationId, ct);
+                }
+                else
+                {
+                    // No tool calls and a genuine final answer
+                    await conversationMemory.AddTurnAsync(
+                        message.SessionId,
+                        new ConversationTurn("assistant", text, DateTimeOffset.UtcNow),
+                        ct);
+
+                    await PublishReplyAsync(text, replyTo, correlationId, message.SessionId, isFinal: true, ct);
+
+                    logger.LogInformation("Published reply to {ReplyTo} for correlation {CorrelationId}",
+                        replyTo, correlationId);
+                }
             }
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
+            // For API-level errors (e.g. 400 Bad Request), log the raw response body so we
+            // can see the actual reason (invalid tool schema, context too long, etc.).
+            if (ex is ClientResultException cre)
+            {
+                var body = cre.GetRawResponse()?.Content?.ToString();
+                logger.LogWarning("LLM API error {Status}: {Body}", cre.Status, body);
+            }
+
             logger.LogWarning(ex, "Failed to process user message {CorrelationId}", correlationId);
 
-            await PublishReplyAsync(
-                $"Sorry, I encountered an error: {ex.Message}",
-                replyTo, correlationId, message.SessionId, isFinal: true, ct);
+            var errorText = $"Sorry, I encountered an error: {ex.Message}";
+
+            // Record the error reply as an assistant turn so conversation history stays in a
+            // valid alternating user/assistant state. Without this, the next message would
+            // send two consecutive user turns, which can itself cause a 400 and make the
+            // failure sticky across all subsequent messages.
+            try
+            {
+                await conversationMemory.AddTurnAsync(
+                    message.SessionId,
+                    new ConversationTurn("assistant", errorText, DateTimeOffset.UtcNow),
+                    CancellationToken.None);
+            }
+            catch (Exception memEx)
+            {
+                logger.LogWarning(memEx, "Failed to record error assistant turn for session {SessionId}",
+                    message.SessionId);
+            }
+
+            await PublishReplyAsync(errorText, replyTo, correlationId, message.SessionId, isFinal: true, ct);
         }
     }
 
@@ -398,6 +457,21 @@ internal sealed class UserMessageHandler(
 
                 if (textCalls.Count == 0)
                 {
+                    // Check whether the response looks like an incomplete setup phrase
+                    // (e.g. "Let me search for that:" or "Now I'll try:") rather than a
+                    // genuine final answer. A trailing colon or ellipsis is a strong signal
+                    // the LLM intended to follow up with a tool call but didn't produce one.
+                    if (IsIncompleteSetupPhrase(text))
+                    {
+                        logger.LogInformation(
+                            "Response looks like an incomplete setup phrase ({Length} chars); nudging LLM to continue",
+                            text.Length);
+                        chatMessages.Add(new ChatMessage(ChatRole.Assistant, text));
+                        chatMessages.Add(new ChatMessage(ChatRole.User,
+                            "Stop narrating. Emit the tool call now — do not describe what you are about to do."));
+                        continue;
+                    }
+
                     // True final response
                     logger.LogInformation("Final response text ({Length} chars): {Preview}",
                         text.Length, text.Length > 200 ? text[..200] + "..." : text);
@@ -446,11 +520,21 @@ internal sealed class UserMessageHandler(
                     }
 
                     var toolSw = Stopwatch.StartNew();
-                    var result = await tool.InvokeAsync(args, cancellationToken);
-                    toolSw.Stop();
-
-                    logger.LogInformation("Text-based tool {Name} returned in {ElapsedMs}ms: {Result}",
-                        toolName, toolSw.ElapsedMilliseconds, result);
+                    object? result;
+                    try
+                    {
+                        result = await tool.InvokeAsync(args, cancellationToken);
+                        toolSw.Stop();
+                        logger.LogInformation("Text-based tool {Name} returned in {ElapsedMs}ms: {Result}",
+                            toolName, toolSw.ElapsedMilliseconds, result);
+                    }
+                    catch (Exception ex) when (ex is not OperationCanceledException)
+                    {
+                        toolSw.Stop();
+                        logger.LogWarning(ex, "Text-based tool {Name} threw after {ElapsedMs}ms",
+                            toolName, toolSw.ElapsedMilliseconds);
+                        result = $"Error: {ex.Message}";
+                    }
 
                     chatMessages.Add(new ChatMessage(ChatRole.User,
                         $"[Tool result for {toolName}]: {result}"));
@@ -497,11 +581,21 @@ internal sealed class UserMessageHandler(
                     ? new AIFunctionArguments(fc.Arguments!)
                     : new AIFunctionArguments();
                 var toolSw = Stopwatch.StartNew();
-                var result = await tool.InvokeAsync(args, cancellationToken);
-                toolSw.Stop();
-
-                logger.LogInformation("Tool {Name} returned in {ElapsedMs}ms: {Result}",
-                    fc.Name, toolSw.ElapsedMilliseconds, result);
+                object? result;
+                try
+                {
+                    result = await tool.InvokeAsync(args, cancellationToken);
+                    toolSw.Stop();
+                    logger.LogInformation("Tool {Name} returned in {ElapsedMs}ms: {Result}",
+                        fc.Name, toolSw.ElapsedMilliseconds, result);
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    toolSw.Stop();
+                    logger.LogWarning(ex, "Tool {Name} threw after {ElapsedMs}ms",
+                        fc.Name, toolSw.ElapsedMilliseconds);
+                    result = $"Error: {ex.Message}";
+                }
 
                 chatMessages.Add(new ChatMessage(ChatRole.Tool,
                     [new FunctionResultContent(fc.CallId, result)]));
@@ -619,6 +713,18 @@ internal sealed class UserMessageHandler(
         return results;
     }
 
+    /// <summary>
+    /// Returns true when the response text looks like an incomplete agentic setup phrase
+    /// rather than a genuine final answer. Detects cases where the LLM says what it's
+    /// about to do (e.g. "Let me search for that:") without actually emitting a tool call.
+    /// A trailing colon or ellipsis after trimming is the primary signal.
+    /// </summary>
+    private static bool IsIncompleteSetupPhrase(string text)
+    {
+        var trimmed = text.TrimEnd();
+        return trimmed.EndsWith(':') || trimmed.EndsWith("...");
+    }
+
     /// <summary>Returns true when the string contains at least one '{' and all braces are balanced.</summary>
     private static bool IsBalancedJson(string s)
     {
@@ -653,6 +759,15 @@ internal sealed class UserMessageHandler(
     {
         private static readonly JsonSerializerOptions SerializerOptions = new();
 
+        /// <summary>
+        /// Minimal valid OpenAI tool schema used as a fallback when a tool has no schema
+        /// or an unparseable one. LM Studio's grammar compiler requires at minimum
+        /// <c>{"type":"object","properties":{}}</c> — returning <c>default(JsonElement)</c>
+        /// causes a Channel Error.
+        /// </summary>
+        private static readonly JsonElement FallbackSchema =
+            JsonDocument.Parse("""{"type":"object","properties":{}}""").RootElement;
+
         public override string Name => registration.Name;
         public override string Description => registration.Description;
 
@@ -660,9 +775,9 @@ internal sealed class UserMessageHandler(
         {
             get
             {
-                if (string.IsNullOrEmpty(registration.ParametersSchema)) return default;
+                if (string.IsNullOrEmpty(registration.ParametersSchema)) return FallbackSchema;
                 try { return JsonDocument.Parse(registration.ParametersSchema).RootElement; }
-                catch { return default; }
+                catch { return FallbackSchema; }
             }
         }
 
@@ -711,15 +826,27 @@ internal sealed class UserMessageHandler(
         {
             var msg = response.Messages[i];
             if (msg.Role == ChatRole.Assistant && !string.IsNullOrWhiteSpace(msg.Text))
-                return msg.Text.Trim();
+                return StripModelToolTokens(msg.Text).Trim();
         }
 
         // Fallback: concatenated text from all messages
         if (!string.IsNullOrWhiteSpace(response.Text))
-            return response.Text.Trim();
+            return StripModelToolTokens(response.Text).Trim();
 
         logger.LogWarning("LLM response contained no usable text across {Count} messages",
             response.Messages.Count);
         return string.Empty;
+    }
+
+    /// <summary>
+    /// Strips model-internal tool-call token sequences from assistant text so they
+    /// are never surfaced to the user. Handles Qwen-style delimiters
+    /// (<c>&lt;｜tool▁calls▁begin｜&gt;…&lt;｜tool▁calls▁end｜&gt;</c>).
+    /// </summary>
+    private static string StripModelToolTokens(string text)
+    {
+        const string begin = "<｜tool▁calls▁begin｜>";
+        var idx = text.IndexOf(begin, StringComparison.Ordinal);
+        return idx >= 0 ? text[..idx] : text;
     }
 }
