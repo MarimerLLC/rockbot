@@ -1,6 +1,6 @@
 bin/
 obj/
 .vs/
+.claude/
 *.user
 *.suo
-.claude/
