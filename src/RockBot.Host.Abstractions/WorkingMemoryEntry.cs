@@ -7,4 +7,6 @@ public sealed record WorkingMemoryEntry(
     string Key,
     string Value,
     DateTimeOffset StoredAt,
-    DateTimeOffset ExpiresAt);
+    DateTimeOffset ExpiresAt,
+    string? Category = null,
+    IReadOnlyList<string>? Tags = null);

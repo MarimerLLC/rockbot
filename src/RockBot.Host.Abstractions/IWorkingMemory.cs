@@ -8,7 +8,8 @@ namespace RockBot.Host;
 public interface IWorkingMemory
 {
     /// <summary>Sets or overwrites an entry for <paramref name="key"/> in the given session.</summary>
-    Task SetAsync(string sessionId, string key, string value, TimeSpan? ttl = null);
+    Task SetAsync(string sessionId, string key, string value, TimeSpan? ttl = null,
+        string? category = null, IReadOnlyList<string>? tags = null);
 
     /// <summary>Returns the cached value, or <c>null</c> if not found or expired.</summary>
     Task<string?> GetAsync(string sessionId, string key);
@@ -21,4 +22,11 @@ public interface IWorkingMemory
 
     /// <summary>Removes all entries for the session.</summary>
     Task ClearAsync(string sessionId);
+
+    /// <summary>
+    /// Searches live entries for the session using BM25 ranking, with optional
+    /// category and tag filters applied before ranking.
+    /// Mirrors <see cref="ILongTermMemory.SearchAsync"/> semantics.
+    /// </summary>
+    Task<IReadOnlyList<WorkingMemoryEntry>> SearchAsync(string sessionId, MemorySearchCriteria criteria);
 }

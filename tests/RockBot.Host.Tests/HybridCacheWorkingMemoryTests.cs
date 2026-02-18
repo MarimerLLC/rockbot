@@ -303,6 +303,211 @@ public class HybridCacheWorkingMemoryTests
         Assert.IsNotNull(provider.GetService<IWorkingMemory>());
     }
 
+    // ── Search — BM25 ──────────────────────────────────────────────────────
+
+    [TestMethod]
+    public async Task SearchAsync_TermInValue_ReturnsMatch()
+    {
+        await _memory.SetAsync("s1", "doc-a", "The quick brown fox");
+        await _memory.SetAsync("s1", "doc-b", "A slow blue turtle");
+
+        var results = await _memory.SearchAsync("s1", new MemorySearchCriteria(Query: "quick"));
+
+        Assert.AreEqual(1, results.Count);
+        Assert.AreEqual("doc-a", results[0].Key);
+    }
+
+    [TestMethod]
+    public async Task SearchAsync_TermInKey_ReturnsMatch()
+    {
+        await _memory.SetAsync("s1", "calendar_2026-03", "March events");
+        await _memory.SetAsync("s1", "emails_inbox", "50 unread");
+
+        var results = await _memory.SearchAsync("s1", new MemorySearchCriteria(Query: "calendar"));
+
+        Assert.AreEqual(1, results.Count);
+        Assert.AreEqual("calendar_2026-03", results[0].Key);
+    }
+
+    [TestMethod]
+    public async Task SearchAsync_TermInTag_ReturnsMatch()
+    {
+        await _memory.SetAsync("s1", "doc-a", "Some data", tags: ["urgent", "finance"]);
+        await _memory.SetAsync("s1", "doc-b", "Other data", tags: ["routine"]);
+
+        var results = await _memory.SearchAsync("s1", new MemorySearchCriteria(Query: "urgent"));
+
+        Assert.AreEqual(1, results.Count);
+        Assert.AreEqual("doc-a", results[0].Key);
+    }
+
+    [TestMethod]
+    public async Task SearchAsync_TermInCategory_ReturnsMatch()
+    {
+        await _memory.SetAsync("s1", "doc-a", "Negotiation details", category: "research/pricing");
+        await _memory.SetAsync("s1", "doc-b", "Meeting notes", category: "calendar");
+
+        var results = await _memory.SearchAsync("s1", new MemorySearchCriteria(Query: "pricing"));
+
+        Assert.AreEqual(1, results.Count);
+        Assert.AreEqual("doc-a", results[0].Key);
+    }
+
+    [TestMethod]
+    public async Task SearchAsync_BothTermsMatch_RanksHigherThanOneTermMatch()
+    {
+        await _memory.SetAsync("s1", "a", "quick brown fox");
+        await _memory.SetAsync("s1", "b", "quick blue turtle");
+
+        // "a" matches both "quick" and "fox"; "b" matches only "quick"
+        var results = await _memory.SearchAsync("s1", new MemorySearchCriteria(Query: "quick fox"));
+
+        Assert.IsTrue(results.Count >= 1);
+        Assert.AreEqual("a", results[0].Key, "Entry matching both terms should rank first");
+    }
+
+    [TestMethod]
+    public async Task SearchAsync_CaseInsensitive()
+    {
+        await _memory.SetAsync("s1", "k", "Hello World");
+
+        var results = await _memory.SearchAsync("s1", new MemorySearchCriteria(Query: "hello world"));
+
+        Assert.AreEqual(1, results.Count);
+    }
+
+    [TestMethod]
+    public async Task SearchAsync_NoMatch_ReturnsEmpty()
+    {
+        await _memory.SetAsync("s1", "k", "some content here");
+
+        var results = await _memory.SearchAsync("s1", new MemorySearchCriteria(Query: "zxyzxyzxy"));
+
+        Assert.AreEqual(0, results.Count);
+    }
+
+    [TestMethod]
+    public async Task SearchAsync_NullQuery_ReturnsAllEntriesOrderedByRecency()
+    {
+        await _memory.SetAsync("s1", "a", "alpha");
+        await _memory.SetAsync("s1", "b", "beta");
+
+        var results = await _memory.SearchAsync("s1", new MemorySearchCriteria());
+
+        Assert.AreEqual(2, results.Count);
+    }
+
+    [TestMethod]
+    public async Task SearchAsync_UnknownSession_ReturnsEmpty()
+    {
+        var results = await _memory.SearchAsync("no-such-session", new MemorySearchCriteria(Query: "query"));
+
+        Assert.AreEqual(0, results.Count);
+    }
+
+    [TestMethod]
+    public async Task SearchAsync_DoesNotReturnExpiredEntries()
+    {
+        await _memory.SetAsync("s1", "live", "quick fox", TimeSpan.FromMinutes(5));
+        await _memory.SetAsync("s1", "dead", "quick fox", TimeSpan.FromMilliseconds(1));
+        await Task.Delay(50);
+
+        var results = await _memory.SearchAsync("s1", new MemorySearchCriteria(Query: "quick"));
+
+        Assert.AreEqual(1, results.Count);
+        Assert.AreEqual("live", results[0].Key);
+    }
+
+    // ── Search — category filter ────────────────────────────────────────────
+
+    [TestMethod]
+    public async Task SearchAsync_CategoryFilter_ExcludesOtherCategories()
+    {
+        await _memory.SetAsync("s1", "a", "pricing data", category: "research/pricing");
+        await _memory.SetAsync("s1", "b", "pricing data", category: "calendar");
+
+        var results = await _memory.SearchAsync("s1", new MemorySearchCriteria(Query: "pricing", Category: "research"));
+
+        Assert.AreEqual(1, results.Count);
+        Assert.AreEqual("a", results[0].Key);
+    }
+
+    [TestMethod]
+    public async Task SearchAsync_CategoryFilter_PrefixMatch()
+    {
+        await _memory.SetAsync("s1", "a", "data", category: "research/pricing");
+        await _memory.SetAsync("s1", "b", "data", category: "research/competitors");
+        await _memory.SetAsync("s1", "c", "data", category: "calendar");
+
+        // "research" prefix should match both research/* entries
+        var results = await _memory.SearchAsync("s1", new MemorySearchCriteria(Category: "research"));
+
+        Assert.AreEqual(2, results.Count);
+        var keys = results.Select(e => e.Key).ToHashSet();
+        Assert.IsTrue(keys.Contains("a"));
+        Assert.IsTrue(keys.Contains("b"));
+    }
+
+    [TestMethod]
+    public async Task SearchAsync_CategoryFilter_NoQuery_ReturnsMatchingEntries()
+    {
+        await _memory.SetAsync("s1", "a", "stuff", category: "email");
+        await _memory.SetAsync("s1", "b", "stuff", category: "calendar");
+
+        var results = await _memory.SearchAsync("s1", new MemorySearchCriteria(Category: "email"));
+
+        Assert.AreEqual(1, results.Count);
+        Assert.AreEqual("a", results[0].Key);
+    }
+
+    // ── Search — tag filter ─────────────────────────────────────────────────
+
+    [TestMethod]
+    public async Task SearchAsync_TagFilter_RequiresAllTags()
+    {
+        await _memory.SetAsync("s1", "a", "data", tags: ["urgent", "finance"]);
+        await _memory.SetAsync("s1", "b", "data", tags: ["urgent"]);
+        await _memory.SetAsync("s1", "c", "data", tags: ["finance"]);
+
+        var results = await _memory.SearchAsync("s1",
+            new MemorySearchCriteria(Tags: ["urgent", "finance"]));
+
+        Assert.AreEqual(1, results.Count);
+        Assert.AreEqual("a", results[0].Key);
+    }
+
+    [TestMethod]
+    public async Task SearchAsync_TagFilter_WithQuery_CombinesFilters()
+    {
+        await _memory.SetAsync("s1", "a", "pricing strategy doc", tags: ["urgent"]);
+        await _memory.SetAsync("s1", "b", "pricing strategy doc");  // no tags
+
+        var results = await _memory.SearchAsync("s1",
+            new MemorySearchCriteria(Query: "pricing", Tags: ["urgent"]));
+
+        Assert.AreEqual(1, results.Count);
+        Assert.AreEqual("a", results[0].Key);
+    }
+
+    // ── Search — metadata on entries ────────────────────────────────────────
+
+    [TestMethod]
+    public async Task SetAsync_WithCategoryAndTags_PersistedInEntry()
+    {
+        await _memory.SetAsync("s1", "key1", "value",
+            category: "research/pricing",
+            tags: ["urgent", "finance"]);
+
+        var entries = await _memory.ListAsync("s1");
+
+        Assert.AreEqual(1, entries.Count);
+        var e = entries[0];
+        Assert.AreEqual("research/pricing", e.Category);
+        Assert.AreEqual(2, e.Tags!.Count);
+        Assert.IsTrue(e.Tags.Contains("urgent"));
+        Assert.IsTrue(e.Tags.Contains("finance"));
+    }
+
     // ── Helpers ────────────────────────────────────────────────────────────
 
     private HybridCacheWorkingMemory CreateMemory(int maxEntries = 20, TimeSpan? defaultTtl = null)
