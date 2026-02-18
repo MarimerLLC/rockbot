@@ -8,7 +8,7 @@ namespace RockBot.Scripts.Container;
 /// Converts a ToolInvokeRequest into a direct script execution.
 /// </summary>
 internal sealed class ScriptToolExecutor(
-    ContainerScriptRunner runner) : IToolExecutor
+    IScriptRunner runner) : IToolExecutor
 {
     public async Task<ToolInvokeResponse> ExecuteAsync(ToolInvokeRequest request, CancellationToken ct)
     {
@@ -31,7 +31,9 @@ internal sealed class ScriptToolExecutor(
         {
             ToolCallId = request.ToolCallId,
             ToolName = request.ToolName,
-            Content = response.IsSuccess ? response.Output : $"Error (exit {response.ExitCode}): {response.Stderr ?? response.Output}",
+            Content = response.IsSuccess
+                ? (response.Output ?? "(no output)")
+                : $"Script failed (exit {response.ExitCode}):\n{response.Output ?? response.Stderr ?? "(no output)"}",
             IsError = !response.IsSuccess
         };
     }
@@ -45,6 +47,11 @@ internal sealed class ScriptToolExecutor(
         if (dict is null)
             return [];
 
-        return dict.ToDictionary(kv => kv.Key, kv => kv.Value.ValueKind == JsonValueKind.Null ? null : kv.Value.GetRawText().Trim('"'));
+        return dict.ToDictionary(kv => kv.Key, kv => kv.Value.ValueKind switch
+        {
+            JsonValueKind.Null => null,
+            JsonValueKind.String => kv.Value.GetString(),
+            _ => kv.Value.GetRawText()
+        });
     }
 }

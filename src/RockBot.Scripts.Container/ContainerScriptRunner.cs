@@ -16,7 +16,8 @@ internal sealed class ContainerScriptRunner(
 {
     public async Task<ScriptInvokeResponse> ExecuteAsync(ScriptInvokeRequest request, CancellationToken ct)
     {
-        var podName = $"rockbot-script-{request.ToolCallId[..Math.Min(8, request.ToolCallId.Length)]}-{Guid.NewGuid():N}"[..63].TrimEnd('-');
+        var podNameRaw = $"rockbot-script-{request.ToolCallId[..Math.Min(8, request.ToolCallId.Length)]}-{Guid.NewGuid():N}";
+        var podName = podNameRaw[..Math.Min(63, podNameRaw.Length)].TrimEnd('-');
 
         try
         {
@@ -86,7 +87,7 @@ internal sealed class ContainerScriptRunner(
         {
             scriptCommand += $"pip install --quiet {string.Join(' ', request.PipPackages)} && ";
         }
-        scriptCommand += "python -c \"$ROCKBOT_SCRIPT\"";
+        scriptCommand += "python -c \"$ROCKBOT_SCRIPT\" 2>&1";
 
         return new V1Pod
         {
