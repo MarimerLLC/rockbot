@@ -11,7 +11,14 @@ public sealed class WebToolOptions
     public string SearchProvider { get; set; } = "brave";
 
     /// <summary>
-    /// Environment variable name containing the search API key.
+    /// The search API key. Takes precedence over <see cref="ApiKeyEnvVar"/> when set.
+    /// Store via dotnet user-secrets as "WebTools:ApiKey".
+    /// </summary>
+    public string? ApiKey { get; set; }
+
+    /// <summary>
+    /// Fallback environment variable name to read the API key from when
+    /// <see cref="ApiKey"/> is not set. Defaults to "BRAVE_API_KEY".
     /// </summary>
     public string ApiKeyEnvVar { get; set; } = "BRAVE_API_KEY";
 
