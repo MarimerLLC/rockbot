@@ -48,6 +48,46 @@ internal static class TestEnvelopeHelper
 }
 
 /// <summary>
+/// Stub subscriber that records subscriptions and allows injecting messages.
+/// </summary>
+internal sealed class StubSubscriber : IMessageSubscriber
+{
+    public List<(string Topic, string SubscriptionName, Func<MessageEnvelope, CancellationToken, Task<MessageResult>> Handler)> Subscriptions { get; } = [];
+
+    public Task<ISubscription> SubscribeAsync(
+        string topic,
+        string subscriptionName,
+        Func<MessageEnvelope, CancellationToken, Task<MessageResult>> handler,
+        CancellationToken cancellationToken = default)
+    {
+        Subscriptions.Add((topic, subscriptionName, handler));
+        ISubscription sub = new StubSubscription(topic, subscriptionName);
+        return Task.FromResult(sub);
+    }
+
+    /// <summary>
+    /// Delivers a message to the handler for the given topic.
+    /// </summary>
+    public async Task<MessageResult> DeliverAsync(string topic, MessageEnvelope envelope, CancellationToken ct = default)
+    {
+        var sub = Subscriptions.FirstOrDefault(s => s.Topic == topic);
+        if (sub.Handler is null)
+            throw new InvalidOperationException($"No subscription found for topic '{topic}'");
+        return await sub.Handler(envelope, ct);
+    }
+
+    public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+
+    private sealed class StubSubscription(string topic, string subscriptionName) : ISubscription
+    {
+        public string Topic => topic;
+        public string SubscriptionName => subscriptionName;
+        public bool IsActive => true;
+        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+    }
+}
+
+/// <summary>
 /// Stub tool executor that returns a configurable response.
 /// </summary>
 internal sealed class StubToolExecutor : IToolExecutor

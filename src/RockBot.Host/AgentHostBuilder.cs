@@ -74,6 +74,7 @@ public sealed class AgentHostBuilder
         _services.AddSingleton(_identity);
         _services.AddSingleton(_resolver);
         _services.AddSingleton<IMessageTypeResolver>(_resolver);
+        _services.AddSingleton<AgentClock>();
         _services.Configure<AgentHostOptions>(opts =>
         {
             foreach (var topic in _options.Topics)

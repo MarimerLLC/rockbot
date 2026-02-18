@@ -4,6 +4,7 @@ using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
 using RockBot.Host;
 using RockBot.Messaging;
+using RockBot.Tools;
 using RockBot.UserProxy;
 
 namespace RockBot.SampleAgent;
@@ -25,6 +26,8 @@ internal sealed class UserMessageHandler(
     ILongTermMemory longTermMemory,
     InjectedMemoryTracker injectedMemoryTracker,
     MemoryTools memoryTools,
+    IToolRegistry toolRegistry,
+    AgentClock clock,
     ILogger<UserMessageHandler> logger) : IMessageHandler<UserMessage>
 {
     /// <summary>
@@ -58,7 +61,9 @@ internal sealed class UserMessageHandler(
             var systemPrompt = promptBuilder.Build(profile, agent);
             var chatMessages = new List<ChatMessage>
             {
-                new(ChatRole.System, systemPrompt)
+                new(ChatRole.System, systemPrompt),
+                new(ChatRole.System,
+                    $"Current date and time: {clock.Now:dddd, MMMM d, yyyy 'at' h:mm tt} ({clock.Zone.DisplayName})")
             };
 
             // Replay only recent history to keep LLM context bounded
@@ -126,9 +131,14 @@ internal sealed class UserMessageHandler(
             // Per-message working memory tools (session ID is baked in at construction)
             var sessionWorkingMemoryTools = new WorkingMemoryTools(workingMemory, message.SessionId, logger);
 
+            // Snapshot registry tools (MCP, REST, etc.) as AIFunction wrappers
+            var registryTools = toolRegistry.GetTools()
+                .Select(r => (AIFunction)new RegistryToolFunction(r, toolRegistry.GetExecutor(r.Name)!))
+                .ToArray();
+
             var chatOptions = new ChatOptions
             {
-                Tools = [..memoryTools.Tools, ..sessionWorkingMemoryTools.Tools]
+                Tools = [..memoryTools.Tools, ..sessionWorkingMemoryTools.Tools, ..registryTools]
             };
 
             // Tool-calling loop: call LLM, execute any tool calls, feed results back, repeat
@@ -462,6 +472,51 @@ internal sealed class UserMessageHandler(
             idx--;
 
         return idx <= 0 ? text : text[..idx].TrimEnd();
+    }
+
+    /// <summary>
+    /// Wraps a <see cref="ToolRegistration"/> + <see cref="IToolExecutor"/> as an <see cref="AIFunction"/>
+    /// so registry tools (e.g. MCP) can be passed directly to the LLM via <see cref="ChatOptions.Tools"/>.
+    /// </summary>
+    private sealed class RegistryToolFunction(ToolRegistration registration, IToolExecutor executor) : AIFunction
+    {
+        private static readonly JsonSerializerOptions SerializerOptions = new();
+
+        public override string Name => registration.Name;
+        public override string Description => registration.Description;
+
+        public override JsonElement JsonSchema
+        {
+            get
+            {
+                if (string.IsNullOrEmpty(registration.ParametersSchema)) return default;
+                try { return JsonDocument.Parse(registration.ParametersSchema).RootElement; }
+                catch { return default; }
+            }
+        }
+
+        protected override async ValueTask<object?> InvokeCoreAsync(
+            AIFunctionArguments arguments,
+            CancellationToken cancellationToken)
+        {
+            string? argsJson = null;
+            if (arguments is { Count: > 0 })
+            {
+                argsJson = JsonSerializer.Serialize(
+                    arguments.ToDictionary(k => k.Key, k => k.Value),
+                    SerializerOptions);
+            }
+
+            var request = new ToolInvokeRequest
+            {
+                ToolCallId = Guid.NewGuid().ToString("N"),
+                ToolName = registration.Name,
+                Arguments = argsJson
+            };
+
+            var response = await executor.ExecuteAsync(request, cancellationToken);
+            return response.IsError ? $"Error: {response.Content}" : response.Content;
+        }
     }
 
     /// <summary>Converts a <see cref="JsonElement"/> to its native .NET equivalent for AIFunctionArguments.</summary>

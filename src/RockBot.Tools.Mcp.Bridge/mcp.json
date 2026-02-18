@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "aggregator": {
+      "type": "sse",
+      "url": "https://mcp-aggregator.tail920062.ts.net/"
+    }
+  }
+}

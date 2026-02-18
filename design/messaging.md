@@ -102,7 +102,12 @@ Topics follow a hierarchical dot-separated naming scheme:
 | `llm.request` | Requests to LLM providers |
 | `llm.response` | LLM completions and tool calls |
 | `tool.invoke.*` | Tool/MCP invocation requests |
+| `tool.invoke.mcp` | MCP-specific tool invocation requests (handled by bridge) |
 | `tool.result.*` | Tool execution results |
+| `tool.result.{agentName}` | Tool results routed to a specific agent |
+| `tool.meta.mcp.*` | MCP tool discovery/availability messages |
+| `tool.meta.mcp.{agentName}` | MCP tool availability for a specific agent |
+| `tool.meta.mcp.refresh` | Request MCP bridge to re-discover tools |
 | `script.invoke` | Script execution requests |
 | `script.result` | Script execution results |
 | `system.error` | System-level error events |
