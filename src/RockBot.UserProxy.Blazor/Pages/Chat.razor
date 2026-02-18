@@ -1,8 +1,10 @@
 @page "/"
 @using Markdig
 @using RockBot.UserProxy.Blazor.Services
+@using Microsoft.JSInterop
 @inject UserProxyService ProxyService
 @inject ChatStateService ChatState
+@inject IJSRuntime JSRuntime
 @implements IDisposable
 
 <PageTitle>RockBot Chat</PageTitle>
@@ -10,7 +12,7 @@
 <div class="chat-container d-flex flex-column vh-100">
     <div class="chat-header bg-primary text-white p-3 d-flex justify-content-between align-items-center">
         <h1 class="h4 mb-0">RockBot Chat</h1>
-        <button class="btn btn-sm btn-outline-light" @onclick="ToggleDarkMode">
+        <button class="btn btn-sm btn-outline-light" @onclick="ToggleDarkMode" title="Toggle dark/light mode">
             @(IsDarkMode ? "☀️" : "🌙")
         </button>
     </div>
@@ -39,7 +41,7 @@
             <div class="message-wrapper mb-3 agent-message">
                 <div class="message-bubble p-3 rounded bg-light">
                     <div class="thinking-indicator">
-                        <span class="spinner-border spinner-border-sm me-2" role="status"></span>
+                        <span class="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></span>
                         @if (!string.IsNullOrEmpty(ChatState.CurrentThinkingMessage))
                         {
                             <span>@ChatState.CurrentThinkingMessage</span>
@@ -55,18 +57,21 @@
     </div>
 
     <div class="chat-input bg-light p-3 border-top">
-        <form @onsubmit="SendMessage" class="d-flex gap-2">
+        <form @onsubmit="SendMessage" @onsubmit:preventDefault="true" class="d-flex gap-2">
             <input 
                 type="text" 
                 class="form-control" 
                 placeholder="Type your message..." 
                 @bind="currentMessage"
                 @bind:event="oninput"
-                disabled="@ChatState.IsProcessing" />
+                @ref="messageInput"
+                disabled="@ChatState.IsProcessing" 
+                aria-label="Message input" />
             <button 
                 type="submit" 
                 class="btn btn-primary"
-                disabled="@(string.IsNullOrWhiteSpace(currentMessage) || ChatState.IsProcessing)">
+                disabled="@(string.IsNullOrWhiteSpace(currentMessage) || ChatState.IsProcessing)"
+                aria-label="Send message">
                 Send
             </button>
         </form>
@@ -79,6 +84,7 @@
 
     private string currentMessage = string.Empty;
     private ElementReference messagesContainer;
+    private ElementReference messageInput;
     private bool IsDarkMode = false;
     private static readonly MarkdownPipeline MarkdownPipeline = new MarkdownPipelineBuilder()
         .UseAdvancedExtensions()
@@ -87,17 +93,24 @@
     protected override void OnInitialized()
     {
         ChatState.OnStateChanged += StateHasChanged;
-        
-        // Check system preference for dark mode
-        IsDarkMode = false; // Default to light mode
     }
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
-        if (!firstRender && ChatState.Messages.Count > 0)
+        if (firstRender)
+        {
+            // Check for system dark mode preference
+            IsDarkMode = await JSRuntime.InvokeAsync<bool>("eval", 
+                "window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches");
+            await ApplyDarkMode();
+        }
+        
+        if (ChatState.Messages.Count > 0)
         {
             // Auto-scroll to bottom when new messages arrive
-            await Task.Delay(100); // Small delay to ensure DOM is updated
+            await Task.Delay(50);
+            await JSRuntime.InvokeVoidAsync("eval", 
+                $"document.querySelector('.chat-messages')?.scrollTo(0, document.querySelector('.chat-messages').scrollHeight)");
         }
     }
 
@@ -159,9 +172,18 @@
         }
     }
 
-    private void ToggleDarkMode()
+    private async Task ToggleDarkMode()
     {
         IsDarkMode = !IsDarkMode;
+        await ApplyDarkMode();
+    }
+
+    private async Task ApplyDarkMode()
+    {
+        await JSRuntime.InvokeVoidAsync("eval", 
+            IsDarkMode 
+                ? "document.body.classList.add('dark-mode')" 
+                : "document.body.classList.remove('dark-mode')");
         StateHasChanged();
     }
 
