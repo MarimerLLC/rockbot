@@ -24,7 +24,10 @@ internal sealed class UserMessageHandler(
     IWorkingMemory workingMemory,
     ILongTermMemory longTermMemory,
     InjectedMemoryTracker injectedMemoryTracker,
+    ISkillStore skillStore,
+    SkillIndexTracker skillIndexTracker,
     MemoryTools memoryTools,
+    SkillTools skillTools,
     ILogger<UserMessageHandler> logger) : IMessageHandler<UserMessage>
 {
     /// <summary>
@@ -103,6 +106,28 @@ internal sealed class UserMessageHandler(
                 }
             }
 
+            // Inject the skill index once per session so the LLM knows what procedures are available.
+            // The full content of each skill is loaded on-demand via get_skill.
+            if (skillIndexTracker.TryMarkAsInjected(message.SessionId))
+            {
+                var skills = await skillStore.ListAsync();
+                if (skills.Count > 0)
+                {
+                    var indexText =
+                        "Available skills (use get_skill to load full instructions):\n" +
+                        string.Join("\n", skills.Select(s =>
+                        {
+                            var summary = string.IsNullOrWhiteSpace(s.Summary)
+                                ? "(summary pending)"
+                                : s.Summary;
+                            return $"- {s.Name}: {summary}";
+                        }));
+                    chatMessages.Add(new ChatMessage(ChatRole.System, indexText));
+                    logger.LogInformation("Injected skill index ({Count} skills) for session {SessionId}",
+                        skills.Count, message.SessionId);
+                }
+            }
+
             // Inject working memory inventory as a system message so the LLM knows what's cached
             var workingEntries = await workingMemory.ListAsync(message.SessionId);
             if (workingEntries.Count > 0)
@@ -128,7 +153,7 @@ internal sealed class UserMessageHandler(
 
             var chatOptions = new ChatOptions
             {
-                Tools = [..memoryTools.Tools, ..sessionWorkingMemoryTools.Tools]
+                Tools = [..memoryTools.Tools, ..sessionWorkingMemoryTools.Tools, ..skillTools.Tools]
             };
 
             // Tool-calling loop: call LLM, execute any tool calls, feed results back, repeat

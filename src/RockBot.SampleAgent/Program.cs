@@ -43,12 +43,16 @@ else
 builder.Services.AddSingleton<MemoryTools>();
 // Tracks which memory IDs have been injected per session, enabling delta recall across topic shifts
 builder.Services.AddSingleton<InjectedMemoryTracker>();
+// Skill tools and session index tracker
+builder.Services.AddSingleton<SkillTools>();
+builder.Services.AddSingleton<SkillIndexTracker>();
 
 builder.Services.AddRockBotHost(agent =>
 {
     agent.WithIdentity("sample-agent");
     agent.WithProfile();
     agent.WithMemory();
+    agent.WithSkills();
     agent.WithDreaming(opts =>
     {
         opts.Interval = TimeSpan.FromHours(4);
