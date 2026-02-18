@@ -20,7 +20,7 @@ internal sealed class DreamService : IHostedService, IDisposable
     };
 
     private readonly ILongTermMemory _memory;
-    private readonly IChatClient _chatClient;
+    private readonly ILlmClient _llmClient;
     private readonly DreamOptions _options;
     private readonly AgentProfileOptions _profileOptions;
     private readonly ILogger<DreamService> _logger;
@@ -29,13 +29,13 @@ internal sealed class DreamService : IHostedService, IDisposable
 
     public DreamService(
         ILongTermMemory memory,
-        IChatClient chatClient,
+        ILlmClient llmClient,
         IOptions<DreamOptions> options,
         IOptions<AgentProfileOptions> profileOptions,
         ILogger<DreamService> logger)
     {
         _memory = memory;
-        _chatClient = chatClient;
+        _llmClient = llmClient;
         _options = options.Value;
         _profileOptions = profileOptions.Value;
         _logger = logger;
@@ -97,6 +97,14 @@ internal sealed class DreamService : IHostedService, IDisposable
 
         try
         {
+            // Dream is low-priority. If another LLM call is in flight, back off and
+            // retry rather than queueing immediately behind an active user request.
+            while (!_llmClient.IsIdle)
+            {
+                _logger.LogDebug("DreamService: LLM busy, delaying dream cycle by 5s");
+                await Task.Delay(TimeSpan.FromSeconds(5));
+            }
+
             var all = await _memory.SearchAsync(new MemorySearchCriteria(MaxResults: 1000));
 
             if (all.Count < 2)
@@ -128,7 +136,7 @@ internal sealed class DreamService : IHostedService, IDisposable
                 new(ChatRole.User, userMessage.ToString())
             };
 
-            var response = await _chatClient.GetResponseAsync(messages, new ChatOptions());
+            var response = await _llmClient.GetResponseAsync(messages, new ChatOptions());
             var raw = response.Text?.Trim() ?? string.Empty;
             var json = ExtractJsonObject(raw);
 

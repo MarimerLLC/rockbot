@@ -16,7 +16,6 @@ public sealed class RabbitMqSubscriber : IMessageSubscriber
     private readonly RabbitMqConnectionManager _connectionManager;
     private readonly RabbitMqOptions _options;
     private readonly ILogger<RabbitMqSubscriber> _logger;
-    private bool _disposed;
 
     public RabbitMqSubscriber(
         RabbitMqConnectionManager connectionManager,
@@ -205,9 +204,5 @@ public sealed class RabbitMqSubscriber : IMessageSubscriber
         };
     }
 
-    public ValueTask DisposeAsync()
-    {
-        _disposed = true;
-        return ValueTask.CompletedTask;
-    }
+    public ValueTask DisposeAsync() => ValueTask.CompletedTask;
 }

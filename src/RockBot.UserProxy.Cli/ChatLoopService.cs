@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using Microsoft.Extensions.Hosting;
 using Spectre.Console;
 
@@ -45,13 +46,39 @@ internal sealed class ChatLoopService(
                 UserId = UserId
             };
 
+            // Tracks the latest intermediate progress message from the agent.
+            // Updated via IProgress<AgentReply> as IsFinal=false replies arrive.
+            string? progressText = null;
+            var progress = new Progress<AgentReply>(r => progressText = r.Content);
+
             AgentReply? reply = null;
             await AnsiConsole.Status()
                 .Spinner(Spinner.Known.Dots)
                 .SpinnerStyle(new Style(Color.Blue))
-                .StartAsync("Waiting for reply...", async ctx =>
+                .StartAsync("Thinking...", async ctx =>
                 {
-                    reply = await proxy.SendAsync(message, cancellationToken: stoppingToken);
+                    var sw = Stopwatch.StartNew();
+                    var replyTask = proxy.SendAsync(message, progress: progress, cancellationToken: stoppingToken);
+
+                    while (!replyTask.IsCompleted)
+                    {
+                        var elapsed = (int)sw.Elapsed.TotalSeconds;
+
+                        // Once the agent sends an ack, show it in the spinner instead of the timer.
+                        ctx.Status(progressText is not null
+                            ? Markup.Escape(progressText)
+                            : elapsed switch
+                            {
+                                < 5  => "Thinking...",
+                                < 15 => $"Working on it... ({elapsed}s)",
+                                < 30 => $"Still thinking... ({elapsed}s)",
+                                _    => $"Complex request, please wait... ({elapsed}s)"
+                            });
+
+                        await Task.WhenAny(replyTask, Task.Delay(1000, stoppingToken));
+                    }
+
+                    reply = await replyTask;
                 });
 
             if (reply is not null)

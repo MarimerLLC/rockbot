@@ -74,6 +74,23 @@ public static class AgentMemoryExtensions
     }
 
     /// <summary>
+    /// Registers the file-based skill store with optional configuration.
+    /// </summary>
+    public static AgentHostBuilder WithSkills(
+        this AgentHostBuilder builder,
+        Action<SkillOptions>? configure = null)
+    {
+        if (configure is not null)
+            builder.Services.Configure(configure);
+        else
+            builder.Services.Configure<SkillOptions>(_ => { });
+
+        builder.Services.AddSingleton<ISkillStore, FileSkillStore>();
+
+        return builder;
+    }
+
+    /// <summary>
     /// Registers the periodic memory consolidation service (dreaming).
     /// Requires <see cref="ILongTermMemory"/> and <see cref="Microsoft.Extensions.AI.IChatClient"/>
     /// to be registered — call after <see cref="WithLongTermMemory"/> and the chat client setup.

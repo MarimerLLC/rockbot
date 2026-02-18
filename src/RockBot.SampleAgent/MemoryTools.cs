@@ -45,19 +45,19 @@ internal sealed class MemoryTools
         """;
 
     private readonly ILongTermMemory _memory;
-    private readonly IChatClient _chatClient;
+    private readonly ILlmClient _llmClient;
     private readonly ILogger<MemoryTools> _logger;
     private readonly IList<AITool> _tools;
     private readonly string _extractionSystemPrompt;
 
     public MemoryTools(
         ILongTermMemory memory,
-        IChatClient chatClient,
+        ILlmClient llmClient,
         IOptions<AgentProfileOptions> profileOptions,
         ILogger<MemoryTools> logger)
     {
         _memory = memory;
-        _chatClient = chatClient;
+        _llmClient = llmClient;
         _logger = logger;
 
         // Load shared memory rules and prepend to the extraction prompt
@@ -237,7 +237,7 @@ internal sealed class MemoryTools
 
         try
         {
-            var response = await _chatClient.GetResponseAsync(messages, options);
+            var response = await _llmClient.GetResponseAsync(messages, options);
             var raw = response.Text?.Trim() ?? string.Empty;
             var json = ExtractJsonArray(raw);
 
