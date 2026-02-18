@@ -1,4 +1,4 @@
-namespace RockBot.Tools.Mcp.Bridge;
+namespace RockBot.Cli.McpBridge;
 
 /// <summary>
 /// Configuration for a single MCP server in the bridge's mcp.json.
@@ -6,22 +6,22 @@ namespace RockBot.Tools.Mcp.Bridge;
 public sealed class McpBridgeServerConfig
 {
     /// <summary>
-    /// Transport type: "stdio" (default) or "sse".
+    /// Transport type: "sse" (only SSE is supported in this embedded mode).
     /// </summary>
     public string? Type { get; set; }
 
     /// <summary>
-    /// Command to launch (stdio transport).
+    /// Command to launch (stdio transport — not supported in embedded mode).
     /// </summary>
     public string? Command { get; set; }
 
     /// <summary>
-    /// Arguments for the command (stdio transport).
+    /// Arguments for the command (stdio transport — not supported in embedded mode).
     /// </summary>
     public List<string> Args { get; set; } = [];
 
     /// <summary>
-    /// Environment variables for the server process (stdio transport).
+    /// Environment variables for the server process (stdio transport — not supported in embedded mode).
     /// </summary>
     public Dictionary<string, string> Env { get; set; } = [];
 

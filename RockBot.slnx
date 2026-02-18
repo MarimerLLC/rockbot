@@ -12,11 +12,9 @@
     <Project Path="src/RockBot.Tools.Abstractions/RockBot.Tools.Abstractions.csproj" />
     <Project Path="src/RockBot.Tools/RockBot.Tools.csproj" />
     <Project Path="src/RockBot.Tools.Mcp/RockBot.Tools.Mcp.csproj" />
-    <Project Path="src/RockBot.Tools.Mcp.Bridge/RockBot.Tools.Mcp.Bridge.csproj" />
     <Project Path="src/RockBot.Tools.Rest/RockBot.Tools.Rest.csproj" />
     <Project Path="src/RockBot.Scripts.Abstractions/RockBot.Scripts.Abstractions.csproj" />
     <Project Path="src/RockBot.Scripts.Container/RockBot.Scripts.Container.csproj" />
-    <Project Path="src/RockBot.Scripts.Bridge/RockBot.Scripts.Bridge.csproj" />
     <Project Path="src/RockBot.A2A.Abstractions/RockBot.A2A.Abstractions.csproj" />
     <Project Path="src/RockBot.A2A/RockBot.A2A.csproj" />
     <Project Path="src/RockBot.Telemetry/RockBot.Telemetry.csproj" />
@@ -37,5 +35,6 @@
   </Folder>
   <Project Path="src/RockBot.Messaging.Abstractions/RockBot.Messaging.Abstractions.csproj" />
   <Project Path="src/RockBot.Messaging.RabbitMQ/RockBot.Messaging.RabbitMQ.csproj" />
+  <Project Path="src/RockBot.Messaging.InProcess/RockBot.Messaging.InProcess.csproj" />
   <Project Path="tests/RockBot.Messaging.Tests/RockBot.Messaging.Tests.csproj" />
 </Solution>

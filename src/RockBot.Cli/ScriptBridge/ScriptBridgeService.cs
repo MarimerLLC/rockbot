@@ -4,7 +4,7 @@ using Microsoft.Extensions.Options;
 using RockBot.Messaging;
 using RockBot.Scripts;
 
-namespace RockBot.Scripts.Bridge;
+namespace RockBot.Cli.ScriptBridge;
 
 /// <summary>
 /// Hosted service that listens for script invocation requests on the message bus,
