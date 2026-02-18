@@ -6,8 +6,9 @@ using ModelContextProtocol.Client;
 using ModelContextProtocol.Protocol;
 using RockBot.Messaging;
 using RockBot.Tools;
+using RockBot.Tools.Mcp;
 
-namespace RockBot.Tools.Mcp.Bridge;
+namespace RockBot.Cli.McpBridge;
 
 /// <summary>
 /// Hosted service that manages MCP server connections, handles tool invoke requests
@@ -135,38 +136,25 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
 
         try
         {
-            McpClient client;
-
-            if (config.IsSse)
+            if (!config.IsSse)
             {
-                if (string.IsNullOrEmpty(config.Url))
-                {
-                    _logger.LogError("SSE server {Name} missing URL", name);
-                    return;
-                }
-
-                var transport = new HttpClientTransport(new HttpClientTransportOptions
-                {
-                    Endpoint = new Uri(config.Url)
-                });
-                client = await McpClient.CreateAsync(transport, cancellationToken: ct);
+                _logger.LogWarning(
+                    "MCP server {Name} uses stdio transport which is not supported in embedded mode; skipping",
+                    name);
+                return;
             }
-            else
+
+            if (string.IsNullOrEmpty(config.Url))
             {
-                if (string.IsNullOrEmpty(config.Command))
-                {
-                    _logger.LogError("Stdio server {Name} missing command", name);
-                    return;
-                }
-
-                var transport = new StdioClientTransport(new StdioClientTransportOptions
-                {
-                    Command = config.Command,
-                    Arguments = config.Args,
-                    EnvironmentVariables = config.Env!
-                });
-                client = await McpClient.CreateAsync(transport, cancellationToken: ct);
+                _logger.LogError("SSE server {Name} missing URL", name);
+                return;
             }
+
+            var transport = new HttpClientTransport(new HttpClientTransportOptions
+            {
+                Endpoint = new Uri(config.Url)
+            });
+            var client = await McpClient.CreateAsync(transport, cancellationToken: ct);
 
             _clients[name] = client;
             _serverConfigs[name] = config;
@@ -320,9 +308,6 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
             var arguments = McpToolExecutor.ParseArguments(request.Arguments);
 
             // Detect and unwrap self-referential double-wrapped invoke_tool calls.
-            // This occurs when the aggregator's skill instructs the LLM to call invoke_tool
-            // on the aggregator itself (serverName matching "aggregator", toolName="invoke_tool"),
-            // nesting the real target call inside the "arguments" field.
             if (request.ToolName == "invoke_tool"
                 && GetStringArgument(arguments, "serverName") is { } wrappedServer
                 && wrappedServer.Contains("aggregator", StringComparison.OrdinalIgnoreCase)
@@ -350,11 +335,6 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
                 _logger.LogWarning("← MCP {Server}/{Tool} ERROR in {ElapsedMs}ms: {Content}",
                     serverName, request.ToolName, sw.ElapsedMilliseconds, content);
 
-                // When invoke_tool fails, check whether the 'arguments' field was a plain
-                // string instead of a JSON object. The aggregator expects arguments to be
-                // a JSON-encoded object (e.g. {"message":"..."}) so it can forward them to
-                // the downstream tool. A plain string causes the downstream call to fail.
-                // Append a corrective hint so the LLM can fix its next call.
                 if (request.ToolName == "invoke_tool"
                     && GetStringArgument(arguments, "arguments") is { } innerArgs
                     && !innerArgs.TrimStart().StartsWith('{'))
@@ -441,9 +421,6 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
 
     private async Task<MessageResult> HandleRefreshRequestAsync(MessageEnvelope envelope, CancellationToken ct)
     {
-        // Discard refresh requests that were published before this bridge instance finished
-        // its startup connection pass. Those messages are stale: the startup already published
-        // full tool lists, so acting on them would send duplicate McpToolsAvailable messages.
         if (envelope.Timestamp < _startupCompletedAt)
         {
             _logger.LogDebug(
@@ -515,7 +492,6 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
     {
         _logger.LogInformation("MCP config file changed, reloading...");
 
-        // Debounce — file watchers often fire multiple events
         Task.Delay(500).ContinueWith(async _ =>
         {
             try

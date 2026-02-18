@@ -7,6 +7,9 @@ using Microsoft.Extensions.Logging;
 using OpenAI;
 using RockBot.Host;
 using RockBot.Messaging.RabbitMQ;
+using RockBot.Cli.McpBridge;
+using RockBot.Cli.ScriptBridge;
+using RockBot.Scripts.Container;
 using RockBot.Cli;
 using RockBot.Tools;
 using RockBot.Tools.Mcp;
@@ -65,6 +68,16 @@ builder.Services.AddRockBotHost(agent =>
     agent.HandleMessage<UserMessage, UserMessageHandler>();
     agent.SubscribeTo(UserProxyTopics.UserMessage);
 });
+
+// MCP bridge (replaces external RockBot.Tools.Mcp.Bridge process)
+builder.Services.Configure<McpBridgeOptions>(builder.Configuration.GetSection("McpBridge"));
+builder.Services.AddHostedService<McpBridgeService>();
+
+// Script bridge (replaces external RockBot.Scripts.Bridge process)
+builder.Services.AddContainerScriptRunner(opts =>
+    builder.Configuration.GetSection("Scripts:Container").Bind(opts));
+builder.Services.Configure<ScriptBridgeOptions>(builder.Configuration.GetSection("ScriptBridge"));
+builder.Services.AddHostedService<ScriptBridgeService>();
 
 var app = builder.Build();
 
