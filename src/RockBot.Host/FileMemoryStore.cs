@@ -203,7 +203,9 @@ internal sealed partial class FileMemoryStore : ILongTermMemory
 
         if (queryTokens.Length == 0) return [];
 
-        var queryPhrases = GetTwoWordPhrases(Tokenize(query));
+        var queryPhrases = GetTwoWordPhrases(Tokenize(query))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
 
         // Build per-document token sets once
         var docs = candidates.Select(e =>

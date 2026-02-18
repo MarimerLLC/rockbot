@@ -20,21 +20,25 @@ internal sealed class DreamService : IHostedService, IDisposable
     };
 
     private readonly ILongTermMemory _memory;
+    private readonly ISkillStore? _skillStore;
     private readonly ILlmClient _llmClient;
     private readonly DreamOptions _options;
     private readonly AgentProfileOptions _profileOptions;
     private readonly ILogger<DreamService> _logger;
     private Timer? _timer;
     private string? _dreamDirective;
+    private string? _skillDreamDirective;
 
     public DreamService(
         ILongTermMemory memory,
+        IEnumerable<ISkillStore> skillStores,
         ILlmClient llmClient,
         IOptions<DreamOptions> options,
         IOptions<AgentProfileOptions> profileOptions,
         ILogger<DreamService> logger)
     {
         _memory = memory;
+        _skillStore = skillStores.FirstOrDefault();
         _llmClient = llmClient;
         _options = options.Value;
         _profileOptions = profileOptions.Value;
@@ -68,6 +72,19 @@ internal sealed class DreamService : IHostedService, IDisposable
         _dreamDirective = string.IsNullOrEmpty(memoryRules)
             ? dreamDirective
             : memoryRules + "\n\n---\n\n" + dreamDirective;
+
+        if (_skillStore is not null)
+        {
+            var skillDirectivePath = ResolvePath(_options.SkillDirectivePath, _profileOptions.BasePath);
+            _skillDreamDirective = File.Exists(skillDirectivePath)
+                ? File.ReadAllText(skillDirectivePath)
+                : BuiltInSkillDirective;
+
+            if (!File.Exists(skillDirectivePath))
+                _logger.LogWarning("DreamService: skill directive not found at {Path}; using built-in fallback", skillDirectivePath);
+            else
+                _logger.LogInformation("DreamService: loaded skill directive from {Path}", skillDirectivePath);
+        }
 
         _timer = new Timer(
             state => { _ = DreamAsync(); },
@@ -208,6 +225,9 @@ internal sealed class DreamService : IHostedService, IDisposable
                     entry.Id, entry.Category ?? "(none)", entry.Content);
             }
 
+            if (_skillStore is not null)
+                await ConsolidateSkillsAsync();
+
             sw.Stop();
             _logger.LogInformation(
                 "DreamService: dream cycle complete — {Deleted} deleted, {Saved} saved, elapsed {Elapsed}",
@@ -217,6 +237,113 @@ internal sealed class DreamService : IHostedService, IDisposable
         {
             _logger.LogError(ex, "DreamService: dream cycle failed");
         }
+    }
+
+    private async Task ConsolidateSkillsAsync()
+    {
+        var all = await _skillStore!.ListAsync();
+
+        if (all.Count < 2)
+        {
+            _logger.LogInformation(
+                "DreamService: only {Count} skill(s) — nothing to consolidate; skipping",
+                all.Count);
+            return;
+        }
+
+        _logger.LogDebug("DreamService: fetched {Count} skills for consolidation", all.Count);
+
+        var userMessage = new StringBuilder();
+        userMessage.AppendLine($"The agent currently has {all.Count} skills. Consolidate them:");
+        userMessage.AppendLine();
+
+        for (var i = 0; i < all.Count; i++)
+        {
+            var s = all[i];
+            userMessage.AppendLine($"{i + 1}. [NAME:{s.Name}] summary: {s.Summary}");
+            userMessage.AppendLine(s.Content);
+            userMessage.AppendLine();
+        }
+
+        var messages = new List<ChatMessage>
+        {
+            new(ChatRole.System, _skillDreamDirective!),
+            new(ChatRole.User, userMessage.ToString())
+        };
+
+        var response = await _llmClient.GetResponseAsync(messages, new ChatOptions());
+        var raw = response.Text?.Trim() ?? string.Empty;
+        var json = ExtractJsonObject(raw);
+
+        if (string.IsNullOrEmpty(json))
+        {
+            _logger.LogWarning("DreamService: skill LLM returned no parseable JSON; skipping skill consolidation");
+            return;
+        }
+
+        _logger.LogDebug("DreamService: skill LLM response JSON ({Length} chars): {Json}", json.Length, json);
+
+        var result = JsonSerializer.Deserialize<SkillDreamResultDto>(json, JsonOptions);
+        if (result is null)
+        {
+            _logger.LogWarning("DreamService: failed to deserialize skill dream result; skipping");
+            return;
+        }
+
+        var deleted = 0;
+        var saved = 0;
+
+        // Union of explicit toDelete names and all sourceNames referenced by saved skills.
+        // Mirrors the exhaustive-deletion contract used for memory consolidation.
+        var allToDelete = new HashSet<string>(
+            result.ToDelete ?? [],
+            StringComparer.OrdinalIgnoreCase);
+
+        foreach (var dto in result.ToSave ?? [])
+            foreach (var srcName in dto.SourceNames ?? [])
+                allToDelete.Add(srcName);
+
+        foreach (var name in allToDelete)
+        {
+            await _skillStore!.DeleteAsync(name);
+            deleted++;
+            _logger.LogDebug("DreamService: deleted skill '{Name}'", name);
+        }
+
+        // Carry forward the earliest CreatedAt from merged source skills
+        var createdAtByName = all.ToDictionary(
+            s => s.Name, s => s.CreatedAt,
+            StringComparer.OrdinalIgnoreCase);
+
+        foreach (var dto in result.ToSave ?? [])
+        {
+            if (string.IsNullOrWhiteSpace(dto.Name) || string.IsNullOrWhiteSpace(dto.Content))
+                continue;
+
+            var sourceNames = dto.SourceNames ?? [];
+            var minCreatedAt = sourceNames.Count > 0
+                ? sourceNames
+                    .Where(createdAtByName.ContainsKey)
+                    .Select(n => createdAtByName[n])
+                    .DefaultIfEmpty(DateTimeOffset.UtcNow)
+                    .Min()
+                : DateTimeOffset.UtcNow;
+
+            var skill = new Skill(
+                Name: dto.Name.Trim(),
+                Summary: dto.Summary?.Trim() ?? string.Empty,
+                Content: dto.Content.Trim(),
+                CreatedAt: minCreatedAt,
+                UpdatedAt: DateTimeOffset.UtcNow);
+
+            await _skillStore!.SaveAsync(skill);
+            saved++;
+            _logger.LogDebug("DreamService: saved merged skill '{Name}'", skill.Name);
+        }
+
+        _logger.LogInformation(
+            "DreamService: skill consolidation complete — {Deleted} deleted, {Saved} saved",
+            deleted, saved);
     }
 
     /// <summary>
@@ -259,6 +386,16 @@ internal sealed class DreamService : IHostedService, IDisposable
         If nothing needs consolidation, return: { "toDelete": [], "toSave": [] }
         """;
 
+    private const string BuiltInSkillDirective = """
+        You are a skill consolidation assistant. Review all skill documents for semantic overlap or near-duplication.
+        Merge overlapping skills into improved combined ones and return structured JSON:
+        { "toDelete": [...names to remove...], "toSave": [...new/merged skills...] }
+        Each skill in toSave: { "name", "summary", "content", "sourceNames" }
+        The summary must be one sentence of 15 words or fewer.
+        Every name in any sourceNames list must also appear in toDelete.
+        If nothing needs consolidation, return: { "toDelete": [], "toSave": [] }
+        """;
+
     private sealed record DreamResultDto(
         List<string>? ToDelete,
         List<DreamEntryDto>? ToSave);
@@ -268,4 +405,14 @@ internal sealed class DreamService : IHostedService, IDisposable
         string? Category,
         IReadOnlyList<string>? Tags,
         IReadOnlyList<string>? SourceIds);
+
+    private sealed record SkillDreamResultDto(
+        List<string>? ToDelete,
+        List<SkillDreamEntryDto>? ToSave);
+
+    private sealed record SkillDreamEntryDto(
+        string Name,
+        string? Summary,
+        string Content,
+        IReadOnlyList<string>? SourceNames);
 }

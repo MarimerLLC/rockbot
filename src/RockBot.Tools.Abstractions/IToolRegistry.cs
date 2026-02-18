@@ -19,4 +19,9 @@ public interface IToolRegistry
     /// Register a tool with its executor.
     /// </summary>
     void Register(ToolRegistration registration, IToolExecutor executor);
+
+    /// <summary>
+    /// Removes a tool by name. Returns true if the tool was found and removed.
+    /// </summary>
+    bool Unregister(string toolName);
 }

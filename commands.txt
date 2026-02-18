@@ -4,3 +4,4 @@ dotnet user-secrets set "AzureAI:Key" "<your-key>" --project src/RockBot.SampleA
 dotnet user-secrets set "AzureAI:DeploymentName" "DeepSeek-V3.2" --project src/RockBot.SampleAgent
 ROCKBOT_RABBITMQ_HOST=localhost dotnet run --project src/RockBot.SampleAgent
 ROCKBOT_RABBITMQ_HOST=localhost dotnet run --project src/RockBot.UserProxy.Cli
+ROCKBOT_RABBITMQ_HOST=localhost dotnet run --project src/RockBot.Tools.Mcp.Bridge

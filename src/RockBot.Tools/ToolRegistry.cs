@@ -23,4 +23,7 @@ internal sealed class ToolRegistry : IToolRegistry
         if (!_tools.TryAdd(registration.Name, (registration, executor)))
             throw new InvalidOperationException($"Tool '{registration.Name}' is already registered.");
     }
+
+    public bool Unregister(string toolName) =>
+        _tools.TryRemove(toolName, out _);
 }

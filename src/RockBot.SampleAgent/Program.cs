@@ -8,6 +8,8 @@ using OpenAI;
 using RockBot.Host;
 using RockBot.Messaging.RabbitMQ;
 using RockBot.SampleAgent;
+using RockBot.Tools;
+using RockBot.Tools.Mcp;
 using RockBot.UserProxy;
 
 var builder = Host.CreateApplicationBuilder(args);
@@ -58,6 +60,8 @@ builder.Services.AddRockBotHost(agent =>
         opts.Interval = TimeSpan.FromHours(4);
         opts.InitialDelay = TimeSpan.FromMinutes(5);
     });
+    agent.AddToolHandler();
+    agent.AddMcpToolProxy();
     agent.HandleMessage<UserMessage, UserMessageHandler>();
     agent.SubscribeTo(UserProxyTopics.UserMessage);
 });

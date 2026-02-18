@@ -21,7 +21,8 @@ public static class AgentMemoryExtensions
     }
 
     /// <summary>
-    /// Registers in-memory conversation memory with optional configuration.
+    /// Registers conversation memory with optional configuration.
+    /// Sessions are persisted to disk so history survives agent restarts.
     /// </summary>
     public static AgentHostBuilder WithConversationMemory(
         this AgentHostBuilder builder,
@@ -33,7 +34,9 @@ public static class AgentMemoryExtensions
             builder.Services.Configure<ConversationMemoryOptions>(_ => { });
 
         builder.Services.AddSingleton<InMemoryConversationMemory>();
-        builder.Services.AddSingleton<IConversationMemory>(sp => sp.GetRequiredService<InMemoryConversationMemory>());
+        builder.Services.AddSingleton<FileConversationMemory>();
+        builder.Services.AddSingleton<IConversationMemory>(sp => sp.GetRequiredService<FileConversationMemory>());
+        builder.Services.AddSingleton<IHostedService>(sp => sp.GetRequiredService<FileConversationMemory>());
 
         return builder;
     }

@@ -100,6 +100,51 @@ public class ToolRegistryTests
     }
 
     [TestMethod]
+    public void Unregister_RemovesExistingTool()
+    {
+        var executor = new StubToolExecutor();
+        _registry.Register(new ToolRegistration
+        {
+            Name = "test_tool",
+            Description = "A test tool",
+            Source = "test"
+        }, executor);
+
+        var removed = _registry.Unregister("test_tool");
+
+        Assert.IsTrue(removed);
+        Assert.AreEqual(0, _registry.GetTools().Count);
+        Assert.IsNull(_registry.GetExecutor("test_tool"));
+    }
+
+    [TestMethod]
+    public void Unregister_ReturnsFalseForUnknownTool()
+    {
+        var removed = _registry.Unregister("nonexistent");
+        Assert.IsFalse(removed);
+    }
+
+    [TestMethod]
+    public void Unregister_AllowsReregistration()
+    {
+        var executor = new StubToolExecutor();
+        var registration = new ToolRegistration
+        {
+            Name = "test_tool",
+            Description = "A test tool",
+            Source = "test"
+        };
+
+        _registry.Register(registration, executor);
+        _registry.Unregister("test_tool");
+
+        // Should not throw
+        _registry.Register(registration, executor);
+
+        Assert.AreEqual(1, _registry.GetTools().Count);
+    }
+
+    [TestMethod]
     public void Register_ThrowsOnNullExecutor()
     {
         var registration = new ToolRegistration
