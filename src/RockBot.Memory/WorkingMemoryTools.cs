@@ -4,7 +4,7 @@ using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
 using RockBot.Host;
 
-namespace RockBot.Cli;
+namespace RockBot.Memory;
 
 /// <summary>
 /// LLM-callable tools for session-scoped working memory — a scratch space for caching
@@ -13,7 +13,7 @@ namespace RockBot.Cli;
 ///
 /// Instantiated per-message with the session ID baked in so no ambient session state is needed.
 /// </summary>
-internal sealed class WorkingMemoryTools
+public sealed class WorkingMemoryTools
 {
     private readonly IWorkingMemory _workingMemory;
     private readonly string _sessionId;

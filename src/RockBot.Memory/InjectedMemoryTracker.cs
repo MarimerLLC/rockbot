@@ -1,6 +1,6 @@
 using System.Collections.Concurrent;
 
-namespace RockBot.Cli;
+namespace RockBot.Memory;
 
 /// <summary>
 /// Tracks which long-term memory entry IDs have already been injected into each session's
@@ -11,7 +11,7 @@ namespace RockBot.Cli;
 /// Registered as a singleton. State is in-process and resets on restart (intentional — the
 /// LLM's context window resets too, so re-injection on the next process start is correct).
 /// </summary>
-internal sealed class InjectedMemoryTracker
+public sealed class InjectedMemoryTracker
 {
     // sessionId -> set of already-injected memory IDs
     // ConcurrentDictionary<string, byte> is the standard concurrent hash-set pattern.
