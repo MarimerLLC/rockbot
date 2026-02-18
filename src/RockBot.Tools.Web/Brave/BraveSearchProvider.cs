@@ -13,10 +13,10 @@ internal sealed class BraveSearchProvider(
 
     public async Task<IReadOnlyList<WebSearchResult>> SearchAsync(string query, int maxResults, CancellationToken ct)
     {
-        var apiKey = Environment.GetEnvironmentVariable(options.ApiKeyEnvVar);
+        var apiKey = options.ApiKey ?? Environment.GetEnvironmentVariable(options.ApiKeyEnvVar);
         if (string.IsNullOrEmpty(apiKey))
         {
-            logger.LogWarning("Brave API key not found in environment variable '{EnvVar}'", options.ApiKeyEnvVar);
+            logger.LogWarning("Brave API key not set. Configure WebTools:ApiKey in user secrets or set the {EnvVar} environment variable", options.ApiKeyEnvVar);
             return [];
         }
 
