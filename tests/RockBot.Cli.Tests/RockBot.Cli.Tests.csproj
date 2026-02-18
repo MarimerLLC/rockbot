@@ -17,6 +17,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\RockBot.Cli\RockBot.Cli.csproj" />
+    <ProjectReference Include="..\..\src\RockBot.Memory\RockBot.Memory.csproj" />
   </ItemGroup>
 
 </Project>

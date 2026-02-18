@@ -6,14 +6,14 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using RockBot.Host;
 
-namespace RockBot.Cli;
+namespace RockBot.Memory;
 
 /// <summary>
 /// LLM-callable tools for managing long-term agent memory.
 /// Methods are discovered by <c>AIFunctionFactory.Create</c> and exposed to the LLM.
 /// Registered as a singleton so <see cref="AIFunction"/> instances are built once.
 /// </summary>
-internal sealed class MemoryTools
+public sealed class MemoryTools
 {
     private static readonly JsonSerializerOptions JsonOptions = new()
     {

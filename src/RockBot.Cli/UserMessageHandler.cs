@@ -4,6 +4,7 @@ using System.Text.Json;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
 using RockBot.Host;
+using RockBot.Memory;
 using RockBot.Messaging;
 using RockBot.Tools;
 using RockBot.UserProxy;

@@ -1,6 +1,6 @@
-using RockBot.Cli;
+using RockBot.Memory;
 
-namespace RockBot.Cli.Tests;
+namespace RockBot.Memory.Tests;
 
 [TestClass]
 public class InjectedMemoryTrackerTests
