@@ -1,13 +1,13 @@
 using System.Collections.Concurrent;
 
-namespace RockBot.Cli;
+namespace RockBot.Skills;
 
 /// <summary>
 /// Tracks which sessions have already received the skill index injection,
 /// so it is only injected once per session rather than on every turn.
 /// Registered as a singleton.
 /// </summary>
-internal sealed class SkillIndexTracker
+public sealed class SkillIndexTracker
 {
     private readonly ConcurrentDictionary<string, byte> _injectedSessions = new();
 
