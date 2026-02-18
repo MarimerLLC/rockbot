@@ -24,13 +24,13 @@ internal sealed class SkillTools
         """;
 
     private readonly ISkillStore _skillStore;
-    private readonly IChatClient _chatClient;
+    private readonly ILlmClient _llmClient;
     private readonly ILogger<SkillTools> _logger;
 
-    public SkillTools(ISkillStore skillStore, IChatClient chatClient, ILogger<SkillTools> logger)
+    public SkillTools(ISkillStore skillStore, ILlmClient llmClient, ILogger<SkillTools> logger)
     {
         _skillStore = skillStore;
-        _chatClient = chatClient;
+        _llmClient = llmClient;
         _logger = logger;
 
         Tools =
@@ -124,7 +124,7 @@ internal sealed class SkillTools
                 new(ChatRole.User, content)
             };
 
-            var response = await _chatClient.GetResponseAsync(messages, new ChatOptions());
+            var response = await _llmClient.GetResponseAsync(messages, new ChatOptions());
             var summary = response.Text?.Trim() ?? string.Empty;
 
             if (string.IsNullOrWhiteSpace(summary))

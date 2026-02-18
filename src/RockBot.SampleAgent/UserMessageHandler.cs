@@ -15,7 +15,7 @@ namespace RockBot.SampleAgent;
 /// call → tool → result → response cycle.
 /// </summary>
 internal sealed class UserMessageHandler(
-    IChatClient chatClient,
+    ILlmClient llmClient,
     IMessagePublisher publisher,
     AgentIdentity agent,
     AgentProfile profile,
@@ -224,7 +224,7 @@ internal sealed class UserMessageHandler(
         for (var iteration = 0; iteration < MaxToolIterations; iteration++)
         {
             var sw = Stopwatch.StartNew();
-            var response = await chatClient.GetResponseAsync(
+            var response = await llmClient.GetResponseAsync(
                 chatMessages, chatOptions, cancellationToken);
             sw.Stop();
 
@@ -376,7 +376,7 @@ internal sealed class UserMessageHandler(
 
         // Exhausted iterations — one last call without tools to force a text response
         logger.LogWarning("Tool loop reached {Max} iterations; forcing final response", MaxToolIterations);
-        var finalResponse = await chatClient.GetResponseAsync(
+        var finalResponse = await llmClient.GetResponseAsync(
             chatMessages, new ChatOptions(), cancellationToken);
         return ExtractAssistantText(finalResponse);
     }

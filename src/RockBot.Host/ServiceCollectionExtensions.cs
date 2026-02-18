@@ -24,6 +24,7 @@ public static class ServiceCollectionExtensions
         configure(builder);
         builder.Build();
 
+        services.AddSingleton<ILlmClient, LlmClient>();
         services.AddSingleton<IMessagePipeline, MessagePipeline>();
         services.AddSingleton<IHostedService, AgentHost>();
 

@@ -168,17 +168,12 @@ public class SkillToolsTests
         public Task DeleteAsync(string name) { _skills.Remove(name); return Task.CompletedTask; }
     }
 
-    private sealed class StubChatClient : IChatClient
+    private sealed class StubChatClient : ILlmClient
     {
+        public bool IsIdle => true;
+
         public Task<ChatResponse> GetResponseAsync(IEnumerable<ChatMessage> messages,
             ChatOptions? options = null, CancellationToken cancellationToken = default) =>
             Task.FromResult(new ChatResponse([new ChatMessage(ChatRole.Assistant, "stub summary")]));
-
-        public IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(IEnumerable<ChatMessage> messages,
-            ChatOptions? options = null, CancellationToken cancellationToken = default) =>
-            throw new NotImplementedException();
-
-        public object? GetService(Type serviceType, object? key = null) => null;
-        public void Dispose() { }
     }
 }

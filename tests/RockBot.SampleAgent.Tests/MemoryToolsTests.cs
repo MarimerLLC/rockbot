@@ -1,4 +1,3 @@
-using System.Runtime.CompilerServices;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging.Abstractions;
 using RockBot.Host;
@@ -191,26 +190,17 @@ internal sealed class StubLongTermMemory : ILongTermMemory
 }
 
 /// <summary>
-/// Minimal <see cref="IChatClient"/> stub. Returns an empty JSON array by default
+/// Minimal <see cref="ILlmClient"/> stub. Returns an empty JSON array by default
 /// so that <see cref="MemoryTools.SaveMemory"/> falls back to direct save gracefully.
 /// Not called by SearchMemory or DeleteMemory.
 /// </summary>
-internal sealed class StubChatClient : IChatClient
+internal sealed class StubChatClient : ILlmClient
 {
+    public bool IsIdle => true;
+
     public Task<ChatResponse> GetResponseAsync(
-        IEnumerable<ChatMessage> chatMessages,
+        IEnumerable<ChatMessage> messages,
         ChatOptions? options = null,
         CancellationToken cancellationToken = default) =>
         Task.FromResult(new ChatResponse(new ChatMessage(ChatRole.Assistant, "[]")));
-
-    public async IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(
-        IEnumerable<ChatMessage> chatMessages,
-        ChatOptions? options = null,
-        [EnumeratorCancellation] CancellationToken cancellationToken = default)
-    {
-        yield break;
-    }
-
-    public object? GetService(Type serviceType, object? serviceKey = null) => null;
-    public void Dispose() { }
 }
