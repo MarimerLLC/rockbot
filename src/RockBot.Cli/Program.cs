@@ -7,7 +7,7 @@ using Microsoft.Extensions.Logging;
 using OpenAI;
 using RockBot.Host;
 using RockBot.Messaging.RabbitMQ;
-using RockBot.SampleAgent;
+using RockBot.Cli;
 using RockBot.Tools;
 using RockBot.Tools.Mcp;
 using RockBot.UserProxy;

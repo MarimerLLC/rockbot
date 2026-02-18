@@ -16,7 +16,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\..\src\RockBot.SampleAgent\RockBot.SampleAgent.csproj" />
+    <ProjectReference Include="..\..\src\RockBot.Cli\RockBot.Cli.csproj" />
   </ItemGroup>
 
 </Project>

@@ -1,6 +1,6 @@
 using System.Collections.Concurrent;
 
-namespace RockBot.SampleAgent;
+namespace RockBot.Cli;
 
 /// <summary>
 /// Tracks which long-term memory entry IDs have already been injected into each session's

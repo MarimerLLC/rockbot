@@ -4,7 +4,7 @@ using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
 using RockBot.Host;
 
-namespace RockBot.SampleAgent;
+namespace RockBot.Cli;
 
 /// <summary>
 /// LLM-callable tools for session-scoped working memory — a scratch space for caching

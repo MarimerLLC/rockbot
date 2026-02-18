@@ -1,6 +1,6 @@
 using System.Collections.Concurrent;
 
-namespace RockBot.SampleAgent;
+namespace RockBot.Cli;
 
 /// <summary>
 /// Tracks which sessions have already received the skill index injection,
