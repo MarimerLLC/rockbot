@@ -8,7 +8,7 @@ using RockBot.Messaging;
 using RockBot.Tools;
 using RockBot.UserProxy;
 
-namespace RockBot.SampleAgent;
+namespace RockBot.Cli;
 
 /// <summary>
 /// Handles incoming <see cref="UserMessage"/> by calling the LLM and publishing

@@ -1,9 +1,9 @@
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging.Abstractions;
 using RockBot.Host;
-using RockBot.SampleAgent;
+using RockBot.Cli;
 
-namespace RockBot.SampleAgent.Tests;
+namespace RockBot.Cli.Tests;
 
 [TestClass]
 public class MemoryToolsTests
