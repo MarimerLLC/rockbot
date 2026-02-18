@@ -13,9 +13,15 @@ namespace RockBot.SampleAgent;
 /// an <see cref="AgentReply"/> back to the user. Maintains conversation history
 /// and executes tool calls in an explicit loop for full control over the
 /// call → tool → result → response cycle.
+///
+/// When the first LLM response contains tool calls, an immediate acknowledgment
+/// (<see cref="AgentReply.IsFinal"/> = false) is published so the CLI can update
+/// its spinner with the agent's words. The tool loop then continues in the
+/// background, publishing the final reply (<see cref="AgentReply.IsFinal"/> = true)
+/// with the same correlation ID when done.
 /// </summary>
 internal sealed class UserMessageHandler(
-    IChatClient chatClient,
+    ILlmClient llmClient,
     IMessagePublisher publisher,
     AgentIdentity agent,
     AgentProfile profile,
@@ -24,7 +30,10 @@ internal sealed class UserMessageHandler(
     IWorkingMemory workingMemory,
     ILongTermMemory longTermMemory,
     InjectedMemoryTracker injectedMemoryTracker,
+    ISkillStore skillStore,
+    SkillIndexTracker skillIndexTracker,
     MemoryTools memoryTools,
+    SkillTools skillTools,
     ILogger<UserMessageHandler> logger) : IMessageHandler<UserMessage>
 {
     /// <summary>
@@ -34,7 +43,8 @@ internal sealed class UserMessageHandler(
     private const int MaxLlmContextTurns = 20;
 
     /// <summary>
-    /// Maximum number of tool-calling round-trips before forcing a final text response.
+    /// Maximum number of tool-calling round-trips in the background loop
+    /// before forcing a final text response.
     /// </summary>
     private const int MaxToolIterations = 5;
 
@@ -42,6 +52,7 @@ internal sealed class UserMessageHandler(
     {
         var replyTo = context.Envelope.ReplyTo ?? UserProxyTopics.UserResponse;
         var correlationId = context.Envelope.CorrelationId;
+        var ct = context.CancellationToken;
 
         logger.LogInformation("Received message from {UserId} in session {SessionId}: {Content}",
             message.UserId, message.SessionId, message.Content);
@@ -52,7 +63,7 @@ internal sealed class UserMessageHandler(
             await conversationMemory.AddTurnAsync(
                 message.SessionId,
                 new ConversationTurn("user", message.Content, DateTimeOffset.UtcNow),
-                context.CancellationToken);
+                ct);
 
             // Build chat messages: system prompt + recent conversation history
             var systemPrompt = promptBuilder.Build(profile, agent);
@@ -62,9 +73,7 @@ internal sealed class UserMessageHandler(
             };
 
             // Replay only recent history to keep LLM context bounded
-            var history = await conversationMemory.GetTurnsAsync(
-                message.SessionId, context.CancellationToken);
-
+            var history = await conversationMemory.GetTurnsAsync(message.SessionId, ct);
             var startIndex = Math.Max(0, history.Count - MaxLlmContextTurns);
             for (var i = startIndex; i < history.Count; i++)
             {
@@ -74,10 +83,6 @@ internal sealed class UserMessageHandler(
             }
 
             // BM25-score memories against the current message on every turn.
-            // Filter to entries not yet injected this session (delta injection) — this naturally
-            // handles topic drift: when the conversation shifts, newly relevant entries surface
-            // without re-injecting context the LLM has already seen.
-            // First turn only: fall back to most-recent entries when the message is too short to score.
             {
                 var recalled = await longTermMemory.SearchAsync(
                     new MemorySearchCriteria(Query: message.Content, MaxResults: 8));
@@ -103,7 +108,28 @@ internal sealed class UserMessageHandler(
                 }
             }
 
-            // Inject working memory inventory as a system message so the LLM knows what's cached
+            // Inject the skill index once per session
+            if (skillIndexTracker.TryMarkAsInjected(message.SessionId))
+            {
+                var skills = await skillStore.ListAsync();
+                if (skills.Count > 0)
+                {
+                    var indexText =
+                        "Available skills (use get_skill to load full instructions):\n" +
+                        string.Join("\n", skills.Select(s =>
+                        {
+                            var summary = string.IsNullOrWhiteSpace(s.Summary)
+                                ? "(summary pending)"
+                                : s.Summary;
+                            return $"- {s.Name}: {summary}";
+                        }));
+                    chatMessages.Add(new ChatMessage(ChatRole.System, indexText));
+                    logger.LogInformation("Injected skill index ({Count} skills) for session {SessionId}",
+                        skills.Count, message.SessionId);
+                }
+            }
+
+            // Inject working memory inventory
             var workingEntries = await workingMemory.ListAsync(message.SessionId);
             if (workingEntries.Count > 0)
             {
@@ -125,99 +151,200 @@ internal sealed class UserMessageHandler(
 
             // Per-message working memory tools (session ID is baked in at construction)
             var sessionWorkingMemoryTools = new WorkingMemoryTools(workingMemory, message.SessionId, logger);
-
             var chatOptions = new ChatOptions
             {
-                Tools = [..memoryTools.Tools, ..sessionWorkingMemoryTools.Tools]
+                Tools = [..memoryTools.Tools, ..sessionWorkingMemoryTools.Tools, ..skillTools.Tools]
             };
 
-            // Tool-calling loop: call LLM, execute any tool calls, feed results back, repeat
-            var content = await CallWithToolLoopAsync(chatMessages, chatOptions, context.CancellationToken);
+            var toolNames = chatOptions.Tools!.OfType<AIFunction>().Select(t => t.Name).ToList();
+            logger.LogInformation("Calling LLM with {ToolCount} tools: [{Tools}]",
+                toolNames.Count, string.Join(", ", toolNames));
 
-            // Record the assistant turn (includes tool results incorporated by the LLM)
-            await conversationMemory.AddTurnAsync(
-                message.SessionId,
-                new ConversationTurn("assistant", content, DateTimeOffset.UtcNow),
-                context.CancellationToken);
+            // First LLM call
+            var sw = Stopwatch.StartNew();
+            var firstResponse = await llmClient.GetResponseAsync(chatMessages, chatOptions, ct);
+            sw.Stop();
 
-            var reply = new AgentReply
+            logger.LogInformation(
+                "LLM responded in {ElapsedMs}ms — {MsgCount} message(s), iteration 1",
+                sw.ElapsedMilliseconds, firstResponse.Messages.Count);
+
+            LogResponseMessages(firstResponse, iterationLabel: "1");
+
+            // Detect whether the first response contains tool calls and extract ack text
+            var (hasToolCalls, ackText) = GetFirstIterationAck(firstResponse, chatOptions);
+
+            if (hasToolCalls)
             {
-                Content = content,
-                SessionId = message.SessionId,
-                AgentName = agent.Name,
-                IsFinal = true
-            };
+                // Publish an immediate acknowledgment (IsFinal=false) so the CLI spinner
+                // can update from elapsed-time text to the agent's actual words.
+                var effectiveAck = string.IsNullOrWhiteSpace(ackText)
+                    ? "I'm working on that — I'll follow up shortly."
+                    : ackText;
 
-            var envelope = reply.ToEnvelope<AgentReply>(
-                source: agent.Name,
-                correlationId: correlationId);
+                logger.LogInformation(
+                    "Tool calls detected on iteration 1; sending ack ({AckLen} chars) and continuing in background",
+                    effectiveAck.Length);
 
-            await publisher.PublishAsync(replyTo, envelope, context.CancellationToken);
+                await PublishReplyAsync(effectiveAck, replyTo, correlationId, message.SessionId, isFinal: false, ct);
 
-            logger.LogInformation("Published reply to {ReplyTo} for correlation {CorrelationId}",
-                replyTo, correlationId);
+                // Continue the tool loop in the background.
+                // BackgroundToolLoopAsync publishes IsFinal=true with the same correlationId when done.
+                _ = BackgroundToolLoopAsync(
+                    chatMessages, chatOptions, firstResponse,
+                    message.SessionId, replyTo, correlationId, ct);
+            }
+            else
+            {
+                // No tool calls — first response is the final answer
+                var text = ExtractAssistantText(firstResponse);
+
+                await conversationMemory.AddTurnAsync(
+                    message.SessionId,
+                    new ConversationTurn("assistant", text, DateTimeOffset.UtcNow),
+                    ct);
+
+                await PublishReplyAsync(text, replyTo, correlationId, message.SessionId, isFinal: true, ct);
+
+                logger.LogInformation("Published reply to {ReplyTo} for correlation {CorrelationId}",
+                    replyTo, correlationId);
+            }
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             logger.LogWarning(ex, "Failed to process user message {CorrelationId}", correlationId);
 
-            var errorReply = new AgentReply
-            {
-                Content = $"Sorry, I encountered an error: {ex.Message}",
-                SessionId = message.SessionId,
-                AgentName = agent.Name,
-                IsFinal = true
-            };
-
-            var envelope = errorReply.ToEnvelope<AgentReply>(
-                source: agent.Name,
-                correlationId: correlationId);
-
-            await publisher.PublishAsync(replyTo, envelope, context.CancellationToken);
+            await PublishReplyAsync(
+                $"Sorry, I encountered an error: {ex.Message}",
+                replyTo, correlationId, message.SessionId, isFinal: true, ct);
         }
     }
 
     /// <summary>
-    /// Calls the LLM and handles any tool calls in an explicit loop.
-    /// After each LLM response, checks for <see cref="FunctionCallContent"/>; if present,
-    /// executes the tools, appends results, and calls the LLM again. Repeats until the
-    /// LLM returns a plain text response (no tool calls) or the iteration limit is reached.
+    /// Continues the tool loop started in <see cref="HandleAsync"/> as a background task.
+    /// Processes the tool calls from <paramref name="firstResponse"/>, executes further
+    /// LLM iterations as needed, then publishes the final reply with <c>IsFinal=true</c>.
+    /// </summary>
+    private async Task BackgroundToolLoopAsync(
+        List<ChatMessage> chatMessages,
+        ChatOptions chatOptions,
+        ChatResponse firstResponse,
+        string sessionId,
+        string replyTo,
+        string? correlationId,
+        CancellationToken ct)
+    {
+        try
+        {
+            logger.LogInformation("Background tool loop started for session {SessionId}", sessionId);
+
+            var finalContent = await CallWithToolLoopAsync(chatMessages, chatOptions, firstResponse, ct);
+
+            await conversationMemory.AddTurnAsync(
+                sessionId,
+                new ConversationTurn("assistant", finalContent, DateTimeOffset.UtcNow),
+                ct);
+
+            await PublishReplyAsync(finalContent, replyTo, correlationId, sessionId, isFinal: true, ct);
+
+            logger.LogInformation(
+                "Background tool loop published final reply for session {SessionId}", sessionId);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            logger.LogError(ex, "Background tool loop failed for session {SessionId}", sessionId);
+
+            await PublishReplyAsync(
+                $"Sorry, I ran into an error while working on your request: {ex.Message}",
+                replyTo, correlationId, sessionId, isFinal: true, ct);
+        }
+    }
+
+    /// <summary>
+    /// Publishes an <see cref="AgentReply"/> to the given topic.
+    /// </summary>
+    private async Task PublishReplyAsync(
+        string content, string replyTo, string? correlationId,
+        string sessionId, bool isFinal, CancellationToken ct)
+    {
+        var reply = new AgentReply
+        {
+            Content = content,
+            SessionId = sessionId,
+            AgentName = agent.Name,
+            IsFinal = isFinal
+        };
+        var envelope = reply.ToEnvelope<AgentReply>(source: agent.Name, correlationId: correlationId);
+        await publisher.PublishAsync(replyTo, envelope, ct);
+    }
+
+    /// <summary>
+    /// Determines whether the first LLM response contains tool calls and extracts
+    /// acknowledgment text to show the user while the background loop runs.
+    /// For text-based tool calls, the ack is the text before the first tool invocation.
+    /// For native tool calls, the ack is the full assistant text.
+    /// </summary>
+    private (bool hasToolCalls, string ackText) GetFirstIterationAck(
+        ChatResponse response, ChatOptions chatOptions)
+    {
+        // Native function calls take priority
+        var nativeCalls = response.Messages
+            .SelectMany(m => m.Contents.OfType<FunctionCallContent>())
+            .ToList();
+
+        if (nativeCalls.Count > 0)
+            return (true, ExtractAssistantText(response));
+
+        // Text-based tool calls
+        var text = ExtractAssistantText(response);
+        var knownTools = (chatOptions.Tools?.OfType<AIFunction>().Select(t => t.Name) ?? [])
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        if (ParseTextToolCalls(text, knownTools).Count > 0)
+            return (true, GetPreToolText(text));
+
+        return (false, text);
+    }
+
+    /// <summary>
+    /// Runs the tool-calling loop starting from a pre-fetched <paramref name="firstResponse"/>.
+    /// Processes the tool calls contained in that response, then calls the LLM for subsequent
+    /// iterations until no tool calls remain or <see cref="MaxToolIterations"/> is exhausted.
     /// </summary>
     private async Task<string> CallWithToolLoopAsync(
         List<ChatMessage> chatMessages,
         ChatOptions chatOptions,
+        ChatResponse firstResponse,
         CancellationToken cancellationToken)
     {
-        // Log the tools being offered to the LLM
-        var toolNames = chatOptions.Tools?
-            .OfType<AIFunction>()
-            .Select(t => t.Name)
-            .ToList() ?? [];
-        logger.LogInformation("Calling LLM with {ToolCount} tools: [{Tools}]",
-            toolNames.Count, string.Join(", ", toolNames));
+        // pendingResponse holds the pre-fetched first response for iteration 0.
+        // After that it's null, and the loop calls the LLM for each iteration.
+        ChatResponse? pendingResponse = firstResponse;
 
         for (var iteration = 0; iteration < MaxToolIterations; iteration++)
         {
-            var sw = Stopwatch.StartNew();
-            var response = await chatClient.GetResponseAsync(
-                chatMessages, chatOptions, cancellationToken);
-            sw.Stop();
+            ChatResponse response;
 
-            // Log response structure for diagnostics
-            logger.LogInformation(
-                "LLM responded in {ElapsedMs}ms — {MsgCount} message(s), iteration {Iteration}",
-                sw.ElapsedMilliseconds, response.Messages.Count, iteration + 1);
-
-            for (var i = 0; i < response.Messages.Count; i++)
+            if (pendingResponse is not null)
             {
-                var msg = response.Messages[i];
-                var contentParts = string.Join(", ", msg.Contents.Select(c => c.GetType().Name));
+                response = pendingResponse;
+                pendingResponse = null;
+                logger.LogInformation("Processing pre-fetched first response in background — iteration 2");
+            }
+            else
+            {
+                var sw = Stopwatch.StartNew();
+                response = await llmClient.GetResponseAsync(chatMessages, chatOptions, cancellationToken);
+                sw.Stop();
+
                 logger.LogInformation(
-                    "  Message[{Index}] role={Role} text={TextLen} chars, contents=[{ContentParts}]",
-                    i, msg.Role, msg.Text?.Length ?? 0, contentParts);
+                    "LLM responded in {ElapsedMs}ms — {MsgCount} message(s), iteration {Iteration}",
+                    sw.ElapsedMilliseconds, response.Messages.Count, iteration + 2);
             }
 
-            // Collect any tool calls from the response
+            LogResponseMessages(response, iterationLabel: (iteration + 2).ToString());
+
+            // Collect any native tool calls from the response
             var functionCalls = response.Messages
                 .SelectMany(m => m.Contents.OfType<FunctionCallContent>())
                 .ToList();
@@ -226,8 +353,7 @@ internal sealed class UserMessageHandler(
 
             if (functionCalls.Count == 0)
             {
-                // No structured tool calls — check for text-based tool invocations
-                // (some models write tool calls as plain text instead of using the API)
+                // No native tool calls — check for text-based tool invocations
                 var text = ExtractAssistantText(response);
                 var knownTools = (chatOptions.Tools?
                     .OfType<AIFunction>()
@@ -238,7 +364,7 @@ internal sealed class UserMessageHandler(
 
                 if (textCalls.Count == 0)
                 {
-                    // True final response — no tool calls of any kind
+                    // True final response
                     logger.LogInformation("Final response text ({Length} chars): {Preview}",
                         text.Length, text.Length > 200 ? text[..200] + "..." : text);
                     return text;
@@ -246,7 +372,7 @@ internal sealed class UserMessageHandler(
 
                 logger.LogInformation(
                     "Detected {Count} text-based tool call(s) on iteration {Iteration}",
-                    textCalls.Count, iteration + 1);
+                    textCalls.Count, iteration + 2);
 
                 // Add only the pre-tool portion as the assistant turn
                 var preToolText = GetPreToolText(text);
@@ -296,13 +422,12 @@ internal sealed class UserMessageHandler(
                         $"[Tool result for {toolName}]: {result}"));
                 }
 
-                // Loop continues — call LLM again with actual tool results
                 continue;
             }
 
             logger.LogInformation(
                 "LLM requested {Count} tool call(s) on iteration {Iteration}",
-                functionCalls.Count, iteration + 1);
+                functionCalls.Count, iteration + 2);
 
             // Add the assistant message(s) containing the tool calls to the conversation
             chatMessages.AddRange(response.Messages);
@@ -344,16 +469,26 @@ internal sealed class UserMessageHandler(
 
             // On the last iteration, remove tools so the LLM must produce a text response
             if (iteration == MaxToolIterations - 2)
-            {
                 chatOptions = new ChatOptions();
-            }
         }
 
         // Exhausted iterations — one last call without tools to force a text response
         logger.LogWarning("Tool loop reached {Max} iterations; forcing final response", MaxToolIterations);
-        var finalResponse = await chatClient.GetResponseAsync(
+        var finalResponse = await llmClient.GetResponseAsync(
             chatMessages, new ChatOptions(), cancellationToken);
         return ExtractAssistantText(finalResponse);
+    }
+
+    private void LogResponseMessages(ChatResponse response, string iterationLabel)
+    {
+        for (var i = 0; i < response.Messages.Count; i++)
+        {
+            var msg = response.Messages[i];
+            var contentParts = string.Join(", ", msg.Contents.Select(c => c.GetType().Name));
+            logger.LogInformation(
+                "  Message[{Index}] role={Role} text={TextLen} chars, contents=[{ContentParts}]",
+                i, msg.Role, msg.Text?.Length ?? 0, contentParts);
+        }
     }
 
     /// <summary>
