@@ -13,6 +13,7 @@
     <PackageReference Include="MSTest.TestAdapter" Version="3.*" />
     <PackageReference Include="MSTest.TestFramework" Version="3.*" />
     <PackageReference Include="Rocks" Version="9.3.0" />
+    <PackageReference Include="Microsoft.Extensions.Caching.Memory" Version="10.0.*" />
     <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="10.0.*" />
     <PackageReference Include="Microsoft.Extensions.Logging" Version="10.0.*" />
     <PackageReference Include="Microsoft.Extensions.Hosting" Version="10.0.*" />

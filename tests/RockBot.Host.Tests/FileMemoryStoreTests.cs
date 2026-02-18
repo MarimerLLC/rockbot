@@ -279,6 +279,168 @@ public class FileMemoryStoreTests
         Assert.AreEqual("good", results[0].Id);
     }
 
+    // ── BM25 ranking ──────────────────────────────────────────────────────────
+
+    [TestMethod]
+    public async Task SearchAsync_WithQuery_RanksMoreRelevantEntryFirst()
+    {
+        var store = CreateStore();
+        // Entry "weak" mentions "concert" once; entry "strong" mentions it three times
+        await store.SaveAsync(CreateEntry("weak", "I went to a concert last summer"));
+        await store.SaveAsync(CreateEntry("strong", "concert concert concert — huge music fan, loves concerts"));
+
+        var results = await store.SearchAsync(new MemorySearchCriteria(Query: "concert music"));
+
+        Assert.AreEqual(2, results.Count);
+        Assert.AreEqual("strong", results[0].Id, "Higher-frequency match should rank first");
+    }
+
+    [TestMethod]
+    public async Task SearchAsync_WithQuery_MultiWordQuery_MatchesEitherTerm()
+    {
+        var store = CreateStore();
+        await store.SaveAsync(CreateEntry("music", "loves rock music and concerts"));
+        await store.SaveAsync(CreateEntry("sport", "plays basketball every weekend"));
+        await store.SaveAsync(CreateEntry("both",  "music and sport are daily hobbies"));
+
+        var results = await store.SearchAsync(new MemorySearchCriteria(Query: "rock music"));
+
+        // "music" and "both" contain at least one query term; "sport" contains neither
+        Assert.IsTrue(results.Any(r => r.Id == "music"));
+        Assert.IsTrue(results.Any(r => r.Id == "both"));
+        Assert.IsFalse(results.Any(r => r.Id == "sport"));
+    }
+
+    [TestMethod]
+    public async Task SearchAsync_WithQuery_TwoWordPhrase_BoostsAdjacentMatch()
+    {
+        var store = CreateStore();
+        // "adjacent" has both words next to each other; "scattered" has them separated
+        await store.SaveAsync(CreateEntry("adjacent",  "Rocky loves rock music at every festival"));
+        await store.SaveAsync(CreateEntry("scattered", "Rocky plays rock. He also enjoys music sometimes."));
+
+        var results = await store.SearchAsync(new MemorySearchCriteria(Query: "rock music"));
+
+        Assert.AreEqual(2, results.Count);
+        // "adjacent" contains the phrase "rock music" → phrase bonus → should score higher
+        Assert.AreEqual("adjacent", results[0].Id, "Phrase match should outrank scattered terms");
+    }
+
+    [TestMethod]
+    public async Task SearchAsync_WithQuery_NoMatchingTerms_ReturnsEmpty()
+    {
+        var store = CreateStore();
+        await store.SaveAsync(CreateEntry("1", "The cat sat on the mat"));
+        await store.SaveAsync(CreateEntry("2", "Dogs bark loudly outside"));
+
+        var results = await store.SearchAsync(new MemorySearchCriteria(Query: "quantum physics"));
+
+        Assert.AreEqual(0, results.Count);
+    }
+
+    [TestMethod]
+    public async Task SearchAsync_WithQuery_ShortQueryTokensFiltered_FallsBackToEmpty()
+    {
+        // Tokens shorter than 3 chars are stripped; "hi" alone yields no tokens → empty
+        var store = CreateStore();
+        await store.SaveAsync(CreateEntry("1", "Hello world hi there"));
+
+        var results = await store.SearchAsync(new MemorySearchCriteria(Query: "hi"));
+
+        Assert.AreEqual(0, results.Count);
+    }
+
+    [TestMethod]
+    public async Task SearchAsync_NoQuery_ReturnsMostRecentFirst()
+    {
+        var store = CreateStore();
+        var now = DateTimeOffset.UtcNow;
+        await store.SaveAsync(new MemoryEntry("old",    "Old entry",    null, [], now.AddDays(-10)));
+        await store.SaveAsync(new MemoryEntry("middle", "Middle entry", null, [], now.AddDays(-5)));
+        await store.SaveAsync(new MemoryEntry("recent", "Recent entry", null, [], now));
+
+        var results = await store.SearchAsync(new MemorySearchCriteria());
+
+        Assert.AreEqual(3, results.Count);
+        Assert.AreEqual("recent", results[0].Id);
+        Assert.AreEqual("middle", results[1].Id);
+        Assert.AreEqual("old",    results[2].Id);
+    }
+
+    [TestMethod]
+    public async Task SearchAsync_NoQuery_UpdatedAtTakesPrecedenceOverCreatedAt()
+    {
+        var store = CreateStore();
+        var now = DateTimeOffset.UtcNow;
+        // Created long ago but updated very recently
+        var recentlyUpdated = new MemoryEntry("updated", "Updated entry", null, [],
+            CreatedAt: now.AddDays(-30), UpdatedAt: now);
+        var recentlyCreated = new MemoryEntry("created", "Created entry", null, [],
+            CreatedAt: now.AddDays(-1));
+
+        await store.SaveAsync(recentlyUpdated);
+        await store.SaveAsync(recentlyCreated);
+
+        var results = await store.SearchAsync(new MemorySearchCriteria());
+
+        Assert.AreEqual("updated", results[0].Id, "Most-recently updated entry should rank first");
+    }
+
+    [TestMethod]
+    public async Task SearchAsync_WithQuery_TagsContributeToScore()
+    {
+        var store = CreateStore();
+        // "tagged" has the word only in tags; "content" has it in content
+        await store.SaveAsync(CreateEntry("tagged",  "Rocky is an avid outdoorsman", tags: ["fishing", "hiking"]));
+        await store.SaveAsync(CreateEntry("content", "Rocky enjoys fishing in frozen lakes"));
+
+        var results = await store.SearchAsync(new MemorySearchCriteria(Query: "fishing"));
+
+        // Both should score > 0 since tags are included in the document text
+        Assert.AreEqual(2, results.Count);
+        Assert.IsTrue(results.Any(r => r.Id == "tagged"));
+        Assert.IsTrue(results.Any(r => r.Id == "content"));
+    }
+
+    // ── Tokenizer unit tests ──────────────────────────────────────────────────
+
+    [TestMethod]
+    public void Tokenize_FiltersShortTokens()
+    {
+        var tokens = FileMemoryStore.Tokenize("hi is a cat");
+        // "hi"=2, "is"=2, "a"=1 filtered; "cat"=3 kept
+        CollectionAssert.AreEqual(new[] { "cat" }, tokens);
+    }
+
+    [TestMethod]
+    public void Tokenize_LowercasesInput()
+    {
+        var tokens = FileMemoryStore.Tokenize("Rock Music FESTIVAL");
+        CollectionAssert.AreEqual(new[] { "rock", "music", "festival" }, tokens);
+    }
+
+    [TestMethod]
+    public void Tokenize_SplitsOnNonAlphanumeric()
+    {
+        var tokens = FileMemoryStore.Tokenize("rock-music festival_2026");
+        CollectionAssert.AreEqual(new[] { "rock", "music", "festival", "2026" }, tokens);
+    }
+
+    [TestMethod]
+    public void GetDocumentText_IncludesContentTagsAndCategory()
+    {
+        var entry = new MemoryEntry("id", "Rocky loves festivals", "user-preferences/music",
+            ["rock", "live-music"], DateTimeOffset.UtcNow);
+
+        var text = FileMemoryStore.GetDocumentText(entry);
+
+        Assert.IsTrue(text.Contains("Rocky loves festivals"));
+        Assert.IsTrue(text.Contains("rock"));
+        Assert.IsTrue(text.Contains("live-music"));
+        // Category slashes and hyphens become spaces
+        Assert.IsTrue(text.Contains("user preferences music"));
+    }
+
     [TestMethod]
     public void ValidateCategory_RejectsTraversalAttack()
     {

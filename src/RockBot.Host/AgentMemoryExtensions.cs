@@ -1,3 +1,4 @@
+using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 
@@ -9,12 +10,13 @@ namespace RockBot.Host;
 public static class AgentMemoryExtensions
 {
     /// <summary>
-    /// Registers both conversation memory and long-term memory with default options.
+    /// Registers conversation memory, long-term memory, and working memory with default options.
     /// </summary>
     public static AgentHostBuilder WithMemory(this AgentHostBuilder builder)
     {
         builder.WithConversationMemory();
         builder.WithLongTermMemory();
+        builder.WithWorkingMemory();
         return builder;
     }
 
@@ -49,6 +51,24 @@ public static class AgentMemoryExtensions
             builder.Services.Configure<MemoryOptions>(_ => { });
 
         builder.Services.AddSingleton<ILongTermMemory, FileMemoryStore>();
+
+        return builder;
+    }
+
+    /// <summary>
+    /// Registers session-scoped working memory (TTL-based scratch space for tool call results).
+    /// </summary>
+    public static AgentHostBuilder WithWorkingMemory(
+        this AgentHostBuilder builder,
+        Action<WorkingMemoryOptions>? configure = null)
+    {
+        if (configure is not null)
+            builder.Services.Configure(configure);
+        else
+            builder.Services.Configure<WorkingMemoryOptions>(_ => { });
+
+        builder.Services.AddMemoryCache();
+        builder.Services.AddSingleton<IWorkingMemory, HybridCacheWorkingMemory>();
 
         return builder;
     }

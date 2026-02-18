@@ -41,6 +41,8 @@ else
 
 // Register memory tools as singleton — AIFunction instances are built once at construction
 builder.Services.AddSingleton<MemoryTools>();
+// Tracks which memory IDs have been injected per session, enabling delta recall across topic shifts
+builder.Services.AddSingleton<InjectedMemoryTracker>();
 
 builder.Services.AddRockBotHost(agent =>
 {

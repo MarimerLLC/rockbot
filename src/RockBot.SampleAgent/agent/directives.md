@@ -46,7 +46,7 @@ Refer to the memory rules for what counts as a durable vs ephemeral fact — onl
 ### When to search
 **Search proactively** when any of the following are true — don't wait for the user to ask "do you remember":
 
-- **First message of a session**: Search broadly (no query, or query "user") to load context about who you're talking to. This restores identity, preferences, and key facts lost when the conversation history resets.
+- **Every message**: Your context may include a "Recalled from long-term memory" block containing entries relevant to the current message that you haven't seen yet this session. Read it before responding. You do **not** need to call `SearchMemory` for facts already shown in that block. Do call it if you need to search for something specific not covered by what was recalled.
 - **Personal or user-specific questions**: The user asks about themselves, their family, pets, projects, preferences, or past decisions — even without referencing memory explicitly. Examples: "what's my name?", "do I have any kids?", "what framework am I using?", "remind me what we decided."
 - **You're uncertain about a user-specific fact**: Before saying "I don't know" or making a guess about something personal, search first.
 - **Personalization opportunity**: You're about to give advice or make a recommendation and user preferences might affect the answer.

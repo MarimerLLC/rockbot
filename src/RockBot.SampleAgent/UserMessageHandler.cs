@@ -21,6 +21,9 @@ internal sealed class UserMessageHandler(
     AgentProfile profile,
     ISystemPromptBuilder promptBuilder,
     IConversationMemory conversationMemory,
+    IWorkingMemory workingMemory,
+    ILongTermMemory longTermMemory,
+    InjectedMemoryTracker injectedMemoryTracker,
     MemoryTools memoryTools,
     ILogger<UserMessageHandler> logger) : IMessageHandler<UserMessage>
 {
@@ -70,9 +73,62 @@ internal sealed class UserMessageHandler(
                 chatMessages.Add(new ChatMessage(role, turn.Content));
             }
 
+            // BM25-score memories against the current message on every turn.
+            // Filter to entries not yet injected this session (delta injection) — this naturally
+            // handles topic drift: when the conversation shifts, newly relevant entries surface
+            // without re-injecting context the LLM has already seen.
+            // First turn only: fall back to most-recent entries when the message is too short to score.
+            {
+                var recalled = await longTermMemory.SearchAsync(
+                    new MemorySearchCriteria(Query: message.Content, MaxResults: 8));
+
+                if (recalled.Count == 0 && history.Count == 1)
+                    recalled = await longTermMemory.SearchAsync(new MemorySearchCriteria(MaxResults: 5));
+
+                var newEntries = recalled
+                    .Where(e => injectedMemoryTracker.TryMarkAsInjected(message.SessionId, e.Id))
+                    .ToList();
+
+                if (newEntries.Count > 0)
+                {
+                    var lines = newEntries.Select(e =>
+                        $"- [{e.Id}] ({e.Category ?? "general"}): {e.Content}");
+                    var recallContext =
+                        "Recalled from long-term memory (relevant to this message):\n" +
+                        string.Join("\n", lines);
+                    chatMessages.Add(new ChatMessage(ChatRole.System, recallContext));
+                    logger.LogInformation(
+                        "Injected {Count} new long-term memory entries (BM25 delta) for session {SessionId}",
+                        newEntries.Count, message.SessionId);
+                }
+            }
+
+            // Inject working memory inventory as a system message so the LLM knows what's cached
+            var workingEntries = await workingMemory.ListAsync(message.SessionId);
+            if (workingEntries.Count > 0)
+            {
+                var now = DateTimeOffset.UtcNow;
+                var lines = workingEntries.Select(e =>
+                {
+                    var remaining = e.ExpiresAt - now;
+                    var remainingStr = remaining.TotalMinutes >= 1
+                        ? $"{(int)remaining.TotalMinutes}m{remaining.Seconds:D2}s"
+                        : $"{Math.Max(0, remaining.Seconds)}s";
+                    return $"- {e.Key}: expires in {remainingStr}";
+                });
+                var workingMemoryContext =
+                    "Working memory (scratch space — use get_from_working_memory to retrieve):\n" +
+                    string.Join("\n", lines);
+                chatMessages.Add(new ChatMessage(ChatRole.System, workingMemoryContext));
+                logger.LogInformation("Injected {Count} working memory entries into context", workingEntries.Count);
+            }
+
+            // Per-message working memory tools (session ID is baked in at construction)
+            var sessionWorkingMemoryTools = new WorkingMemoryTools(workingMemory, message.SessionId, logger);
+
             var chatOptions = new ChatOptions
             {
-                Tools = memoryTools.Tools
+                Tools = [..memoryTools.Tools, ..sessionWorkingMemoryTools.Tools]
             };
 
             // Tool-calling loop: call LLM, execute any tool calls, feed results back, repeat
