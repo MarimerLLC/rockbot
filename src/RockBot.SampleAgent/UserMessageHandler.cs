@@ -51,6 +51,13 @@ internal sealed class UserMessageHandler(
     /// </summary>
     private const int MaxToolIterations = 5;
 
+    /// <summary>
+    /// Minimum time since the last user-visible message before a mid-loop
+    /// progress update is worth sending. Suppresses noisy interim messages
+    /// when the agent is responding quickly.
+    /// </summary>
+    private static readonly TimeSpan ProgressMessageThreshold = TimeSpan.FromSeconds(5);
+
     public async Task HandleAsync(UserMessage message, MessageHandlerContext context)
     {
         var replyTo = context.Envelope.ReplyTo ?? UserProxyTopics.UserResponse;
@@ -251,8 +258,18 @@ internal sealed class UserMessageHandler(
         {
             logger.LogInformation("Background tool loop started for session {SessionId}", sessionId);
 
+            // Track when the last user-visible message was sent (the ACK went out just before this)
+            // so we can suppress progress updates when the agent is responding quickly.
+            var lastProgressAt = DateTimeOffset.UtcNow;
+
             var finalContent = await CallWithToolLoopAsync(chatMessages, chatOptions, firstResponse, ct,
-                onProgress: (msg, ct2) => PublishReplyAsync(msg, replyTo, correlationId, sessionId, isFinal: false, ct2));
+                onProgress: async (msg, ct2) =>
+                {
+                    if (DateTimeOffset.UtcNow - lastProgressAt < ProgressMessageThreshold)
+                        return;
+                    await PublishReplyAsync(msg, replyTo, correlationId, sessionId, isFinal: false, ct2);
+                    lastProgressAt = DateTimeOffset.UtcNow;
+                });
 
             await conversationMemory.AddTurnAsync(
                 sessionId,
