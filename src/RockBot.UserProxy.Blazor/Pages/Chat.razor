@@ -1,0 +1,194 @@
+@page "/"
+@using Markdig
+@using RockBot.UserProxy.Blazor.Services
+@using Microsoft.JSInterop
+@inject UserProxyService ProxyService
+@inject ChatStateService ChatState
+@inject IJSRuntime JSRuntime
+@implements IDisposable
+
+<PageTitle>RockBot Chat</PageTitle>
+
+<div class="chat-container d-flex flex-column vh-100">
+    <div class="chat-header bg-primary text-white p-3 d-flex justify-content-between align-items-center">
+        <h1 class="h4 mb-0">RockBot Chat</h1>
+        <button class="btn btn-sm btn-outline-light" @onclick="ToggleDarkMode" title="Toggle dark/light mode">
+            @(IsDarkMode ? "☀️" : "🌙")
+        </button>
+    </div>
+
+    <div class="chat-messages flex-grow-1 overflow-auto p-3" @ref="messagesContainer">
+        @foreach (var message in ChatState.Messages)
+        {
+            <div class="message-wrapper mb-3 @(message.IsFromUser ? "user-message" : "agent-message")">
+                <div class="message-bubble p-3 rounded @(message.IsError ? "bg-danger text-white" : (message.IsFromUser ? "bg-primary text-white" : "bg-light"))">
+                    @if (!message.IsFromUser && !message.IsError && !string.IsNullOrEmpty(message.AgentName))
+                    {
+                        <div class="fw-bold small mb-2">@message.AgentName</div>
+                    }
+                    <div class="message-content">
+                        @((MarkupString)ConvertMarkdownToHtml(message.Content))
+                    </div>
+                    <div class="message-time small opacity-75 mt-2">
+                        @message.Timestamp.ToLocalTime().ToString("HH:mm:ss")
+                    </div>
+                </div>
+            </div>
+        }
+
+        @if (ChatState.IsProcessing)
+        {
+            <div class="message-wrapper mb-3 agent-message">
+                <div class="message-bubble p-3 rounded bg-light">
+                    <div class="thinking-indicator">
+                        <span class="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></span>
+                        @if (!string.IsNullOrEmpty(ChatState.CurrentThinkingMessage))
+                        {
+                            <span>@ChatState.CurrentThinkingMessage</span>
+                        }
+                        else
+                        {
+                            <span>Thinking...</span>
+                        }
+                    </div>
+                </div>
+            </div>
+        }
+    </div>
+
+    <div class="chat-input bg-light p-3 border-top">
+        <form @onsubmit="SendMessage" @onsubmit:preventDefault="true" class="d-flex gap-2">
+            <input 
+                type="text" 
+                class="form-control" 
+                placeholder="Type your message..." 
+                @bind="currentMessage"
+                @bind:event="oninput"
+                @ref="messageInput"
+                disabled="@ChatState.IsProcessing" 
+                aria-label="Message input" />
+            <button 
+                type="submit" 
+                class="btn btn-primary"
+                disabled="@(string.IsNullOrWhiteSpace(currentMessage) || ChatState.IsProcessing)"
+                aria-label="Send message">
+                Send
+            </button>
+        </form>
+    </div>
+</div>
+
+@code {
+    private const string SessionId = "blazor-session";
+    private const string UserId = "blazor-user";
+
+    private string currentMessage = string.Empty;
+    private ElementReference messagesContainer;
+    private ElementReference messageInput;
+    private bool IsDarkMode = false;
+    private static readonly MarkdownPipeline MarkdownPipeline = new MarkdownPipelineBuilder()
+        .UseAdvancedExtensions()
+        .Build();
+
+    protected override void OnInitialized()
+    {
+        ChatState.OnStateChanged += StateHasChanged;
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            // Check for system dark mode preference
+            IsDarkMode = await JSRuntime.InvokeAsync<bool>("eval", 
+                "window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches");
+            await ApplyDarkMode();
+        }
+        
+        if (ChatState.Messages.Count > 0)
+        {
+            // Auto-scroll to bottom when new messages arrive
+            await Task.Delay(50);
+            await JSRuntime.InvokeVoidAsync("eval", 
+                $"document.querySelector('.chat-messages')?.scrollTo(0, document.querySelector('.chat-messages').scrollHeight)");
+        }
+    }
+
+    private async Task SendMessage()
+    {
+        if (string.IsNullOrWhiteSpace(currentMessage))
+            return;
+
+        var messageContent = currentMessage.Trim();
+        currentMessage = string.Empty;
+
+        ChatState.AddUserMessage(messageContent, UserId, SessionId);
+        ChatState.SetProcessing(true);
+
+        var message = new UserMessage
+        {
+            Content = messageContent,
+            SessionId = SessionId,
+            UserId = UserId
+        };
+
+        var progressTracker = new Progress<AgentReply>(reply =>
+        {
+            ChatState.SetThinkingMessage(reply.Content);
+        });
+
+        try
+        {
+            var reply = await ProxyService.SendAsync(message, progress: progressTracker);
+            
+            if (reply is null)
+            {
+                ChatState.AddError("No reply received (timeout)");
+            }
+        }
+        catch (Exception ex)
+        {
+            ChatState.AddError($"Error: {ex.Message}");
+        }
+        finally
+        {
+            ChatState.SetProcessing(false);
+        }
+    }
+
+    private string ConvertMarkdownToHtml(string markdown)
+    {
+        if (string.IsNullOrEmpty(markdown))
+            return string.Empty;
+
+        try
+        {
+            return Markdown.ToHtml(markdown, MarkdownPipeline);
+        }
+        catch
+        {
+            // Fallback to plain text if markdown parsing fails
+            return System.Net.WebUtility.HtmlEncode(markdown).Replace("\n", "<br/>");
+        }
+    }
+
+    private async Task ToggleDarkMode()
+    {
+        IsDarkMode = !IsDarkMode;
+        await ApplyDarkMode();
+    }
+
+    private async Task ApplyDarkMode()
+    {
+        await JSRuntime.InvokeVoidAsync("eval", 
+            IsDarkMode 
+                ? "document.body.classList.add('dark-mode')" 
+                : "document.body.classList.remove('dark-mode')");
+        StateHasChanged();
+    }
+
+    public void Dispose()
+    {
+        ChatState.OnStateChanged -= StateHasChanged;
+    }
+}

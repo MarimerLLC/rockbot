@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <RootNamespace>RockBot.UserProxy.Blazor</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Markdig" Version="0.41.*" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\RockBot.UserProxy.Abstractions\RockBot.UserProxy.Abstractions.csproj" />
+    <ProjectReference Include="..\RockBot.UserProxy\RockBot.UserProxy.csproj" />
+    <ProjectReference Include="..\RockBot.Messaging.RabbitMQ\RockBot.Messaging.RabbitMQ.csproj" />
+  </ItemGroup>
+
+</Project>
