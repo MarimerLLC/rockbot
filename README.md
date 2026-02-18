@@ -1,6 +1,6 @@
 # RockBot
 
-An event-driven autonomous agent framework for .NET 10.
+An event-driven autonomous agent framework.
 
 ---
 
