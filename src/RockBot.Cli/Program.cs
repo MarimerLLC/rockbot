@@ -58,7 +58,7 @@ builder.Services.AddSingleton<SkillIndexTracker>();
 
 builder.Services.AddRockBotHost(agent =>
 {
-    agent.WithIdentity("sample-agent");
+    agent.WithIdentity("RockBot");
     agent.WithProfile();
     agent.WithRules();
     agent.WithMemory();
