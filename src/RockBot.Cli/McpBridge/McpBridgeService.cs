@@ -4,6 +4,7 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using ModelContextProtocol.Client;
 using ModelContextProtocol.Protocol;
+using RockBot.Host;
 using RockBot.Messaging;
 using RockBot.Tools;
 using RockBot.Tools.Mcp;
@@ -19,6 +20,7 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
     private readonly IMessagePublisher _publisher;
     private readonly IMessageSubscriber _subscriber;
     private readonly McpBridgeOptions _options;
+    private readonly string _agentName;
     private readonly string _configPath;
     private readonly ILogger<McpBridgeService> _logger;
 
@@ -46,12 +48,14 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
     public McpBridgeService(
         IMessagePublisher publisher,
         IMessageSubscriber subscriber,
+        AgentIdentity identity,
         IOptions<McpBridgeOptions> options,
         ILogger<McpBridgeService> logger)
     {
         _publisher = publisher;
         _subscriber = subscriber;
         _options = options.Value;
+        _agentName = identity.Name;
         _configPath = Path.IsPathRooted(_options.ConfigPath)
             ? _options.ConfigPath
             : Path.Combine(AppContext.BaseDirectory, _options.ConfigPath);
@@ -63,14 +67,14 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
         // Subscribe to tool invoke requests
         _invokeSubscription = await _subscriber.SubscribeAsync(
             McpToolProxy.InvokeTopic,
-            $"mcp-bridge.{_options.AgentName}",
+            $"mcp-bridge.{_agentName}",
             HandleToolInvokeAsync,
             cancellationToken);
 
         // Subscribe to metadata refresh requests
         _refreshSubscription = await _subscriber.SubscribeAsync(
             "tool.meta.mcp.refresh",
-            $"mcp-bridge.{_options.AgentName}.refresh",
+            $"mcp-bridge.{_agentName}.refresh",
             HandleRefreshRequestAsync,
             cancellationToken);
 
@@ -240,9 +244,9 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
             RemovedTools = removedTools
         };
 
-        var topic = $"tool.meta.mcp.{_options.AgentName}";
+        var topic = $"tool.meta.mcp.{_agentName}";
         var envelope = message.ToEnvelope(
-            source: $"mcp-bridge.{_options.AgentName}",
+            source: $"mcp-bridge.{_agentName}",
             headers: new Dictionary<string, string>
             {
                 [WellKnownHeaders.ContentTrust] = WellKnownHeaders.ContentTrustValues.System
@@ -260,7 +264,7 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
             return MessageResult.DeadLetter;
         }
 
-        var replyTo = envelope.ReplyTo ?? $"tool.result.{_options.AgentName}";
+        var replyTo = envelope.ReplyTo ?? $"tool.result.{_agentName}";
 
         // Find which server has this tool
         string? serverName = null;
@@ -412,7 +416,7 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
         CancellationToken ct)
     {
         var envelope = payload.ToEnvelope(
-            source: $"mcp-bridge.{_options.AgentName}",
+            source: $"mcp-bridge.{_agentName}",
             correlationId: correlationId,
             headers: new Dictionary<string, string>
             {
