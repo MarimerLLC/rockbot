@@ -12,6 +12,7 @@ using RockBot.Cli.ScriptBridge;
 using RockBot.Scripts.Container;
 using RockBot.Cli;
 using RockBot.Memory;
+using RockBot.Skills;
 using RockBot.Tools;
 using RockBot.Tools.Mcp;
 using RockBot.UserProxy;

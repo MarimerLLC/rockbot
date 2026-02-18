@@ -6,6 +6,7 @@ using Microsoft.Extensions.Logging;
 using RockBot.Host;
 using RockBot.Memory;
 using RockBot.Messaging;
+using RockBot.Skills;
 using RockBot.Tools;
 using RockBot.UserProxy;
 

@@ -1,7 +1,7 @@
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging.Abstractions;
 using RockBot.Host;
-using RockBot.Cli;
+using RockBot.Skills;
 
 namespace RockBot.Cli.Tests;
 

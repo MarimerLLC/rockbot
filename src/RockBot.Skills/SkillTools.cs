@@ -4,7 +4,7 @@ using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
 using RockBot.Host;
 
-namespace RockBot.Cli;
+namespace RockBot.Skills;
 
 /// <summary>
 /// LLM-callable tools for managing agent skills — named markdown procedure documents
@@ -14,7 +14,7 @@ namespace RockBot.Cli;
 /// Background LLM calls generate summaries for newly saved skills, mirroring the memory
 /// enrichment pattern in <see cref="MemoryTools"/>.
 /// </summary>
-internal sealed class SkillTools
+public sealed class SkillTools
 {
     private const string SummarySystemPrompt =
         """
@@ -152,7 +152,7 @@ internal sealed class SkillTools
     }
 
     /// <summary>Formats the skill list as the index block shown to the LLM.</summary>
-    internal static string FormatIndex(IReadOnlyList<Skill> skills)
+    public static string FormatIndex(IReadOnlyList<Skill> skills)
     {
         if (skills.Count == 0)
             return "No skills saved yet.";
