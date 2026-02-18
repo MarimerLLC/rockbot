@@ -418,12 +418,12 @@ internal sealed class UserMessageHandler(
         {
             var msg = response.Messages[i];
             if (msg.Role == ChatRole.Assistant && !string.IsNullOrWhiteSpace(msg.Text))
-                return msg.Text;
+                return msg.Text.Trim();
         }
 
         // Fallback: concatenated text from all messages
         if (!string.IsNullOrWhiteSpace(response.Text))
-            return response.Text;
+            return response.Text.Trim();
 
         logger.LogWarning("LLM response contained no usable text across {Count} messages",
             response.Messages.Count);
