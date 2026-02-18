@@ -26,4 +26,11 @@ public sealed class WebToolOptions
     /// Maximum number of search results to return. Defaults to 10.
     /// </summary>
     public int MaxSearchResults { get; set; } = 10;
+
+    /// <summary>
+    /// Maximum number of characters to return from a browsed page.
+    /// Content exceeding this limit is truncated with a notice.
+    /// Defaults to 8000.
+    /// </summary>
+    public int MaxBrowseContentLength { get; set; } = 8000;
 }

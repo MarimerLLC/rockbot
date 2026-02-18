@@ -1,6 +1,7 @@
 using System.ClientModel;
 using System.Diagnostics;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
 using RockBot.Host;
@@ -62,6 +63,12 @@ internal sealed class UserMessageHandler(
     /// when the agent is responding quickly.
     /// </summary>
     private static readonly TimeSpan ProgressMessageThreshold = TimeSpan.FromSeconds(5);
+
+    /// <summary>
+    /// Context window limit in tokens, learned from the first overflow error.
+    /// Null until an overflow has been observed.
+    /// </summary>
+    private int? _knownContextLimit;
 
     public async Task HandleAsync(UserMessage message, MessageHandlerContext context)
     {
@@ -438,10 +445,29 @@ internal sealed class UserMessageHandler(
             }
             else
             {
+                // Proactively trim if we've already learned the context limit from a prior overflow.
+                if (_knownContextLimit is int preLimit)
+                    TrimLargeToolResults(chatMessages, preLimit);
+
                 logger.LogInformation("Calling LLM — iteration {Iteration} ({MessageCount} messages in context)",
                     iteration + 2, chatMessages.Count);
                 var sw = Stopwatch.StartNew();
-                response = await llmClient.GetResponseAsync(chatMessages, chatOptions, cancellationToken);
+
+                try
+                {
+                    response = await llmClient.GetResponseAsync(chatMessages, chatOptions, cancellationToken);
+                }
+                catch (ClientResultException ex)
+                    when (ex.Status == 400 && TryParseContextOverflow(ex.Message, out var max, out var used))
+                {
+                    _knownContextLimit = max;
+                    logger.LogWarning(
+                        "Context overflow ({Used:N0}/{Max:N0} tokens); trimming tool results and retrying once",
+                        used, max);
+                    TrimLargeToolResults(chatMessages, max);
+                    response = await llmClient.GetResponseAsync(chatMessages, chatOptions, cancellationToken);
+                }
+
                 sw.Stop();
 
                 logger.LogInformation(
@@ -631,6 +657,83 @@ internal sealed class UserMessageHandler(
         var finalResponse = await llmClient.GetResponseAsync(
             chatMessages, new ChatOptions(), cancellationToken);
         return ExtractAssistantText(finalResponse);
+    }
+
+    /// <summary>
+    /// Iteratively trims the largest <see cref="FunctionResultContent"/> items in
+    /// <paramref name="messages"/> until the estimated total fits within 90% of
+    /// <paramref name="maxTokens"/>. Uses a 4 chars-per-token heuristic.
+    /// </summary>
+    private void TrimLargeToolResults(List<ChatMessage> messages, int maxTokens)
+    {
+        const int CharsPerToken = 4;
+        var charBudget = (int)(maxTokens * CharsPerToken * 0.9);
+
+        while (true)
+        {
+            var totalChars = messages.Sum(EstimateMessageChars);
+            if (totalChars <= charBudget)
+                break;
+
+            // Find the largest FunctionResultContent across all Tool messages
+            int bestMsg = -1, bestContent = -1, bestLen = 0;
+            for (var i = 0; i < messages.Count; i++)
+            {
+                if (messages[i].Role != ChatRole.Tool) continue;
+                for (var j = 0; j < messages[i].Contents.Count; j++)
+                {
+                    if (messages[i].Contents[j] is FunctionResultContent frc)
+                    {
+                        var len = frc.Result?.ToString()?.Length ?? 0;
+                        if (len > bestLen) { bestMsg = i; bestContent = j; bestLen = len; }
+                    }
+                }
+            }
+
+            if (bestMsg < 0)
+                break; // nothing left to trim
+
+            var old = (FunctionResultContent)messages[bestMsg].Contents[bestContent];
+            var oldStr = old.Result?.ToString() ?? string.Empty;
+            var excess = totalChars - charBudget;
+            var targetLen = Math.Max(200, oldStr.Length - excess - 60);
+            var trimmed = oldStr[..targetLen] + "\n[truncated to fit context window]";
+
+            messages[bestMsg].Contents[bestContent] = new FunctionResultContent(old.CallId, trimmed);
+
+            logger.LogInformation(
+                "Trimmed tool result for call {CallId}: {Before:N0} → {After:N0} chars",
+                old.CallId, bestLen, trimmed.Length);
+        }
+    }
+
+    private static int EstimateMessageChars(ChatMessage m) =>
+        m.Contents.Sum(static c => c switch
+        {
+            TextContent tc => tc.Text?.Length ?? 0,
+            FunctionResultContent frc => frc.Result?.ToString()?.Length ?? 0,
+            _ => 50
+        });
+
+    /// <summary>
+    /// Detects OpenAI-style context-overflow 400 errors and extracts the token counts.
+    /// Matches messages such as:
+    /// "This model's maximum context length is 128000 tokens. However, your messages resulted in 131721 tokens."
+    /// </summary>
+    private static bool TryParseContextOverflow(string message, out int maxTokens, out int usedTokens)
+    {
+        maxTokens = 0;
+        usedTokens = 0;
+
+        var maxMatch = Regex.Match(message, @"maximum context length is (\d+)");
+        var usedMatch = Regex.Match(message, @"resulted in (\d+) tokens");
+
+        if (!maxMatch.Success || !usedMatch.Success)
+            return false;
+
+        maxTokens = int.Parse(maxMatch.Groups[1].Value);
+        usedTokens = int.Parse(usedMatch.Groups[1].Value);
+        return true;
     }
 
     private void LogResponseMessages(ChatResponse response, string iterationLabel)
