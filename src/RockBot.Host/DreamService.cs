@@ -243,6 +243,25 @@ internal sealed class DreamService : IHostedService, IDisposable
     {
         var all = await _skillStore!.ListAsync();
 
+        // Prune skills that have not been used in 18 months
+        var threshold = DateTimeOffset.UtcNow.AddMonths(-18);
+        var pruned = 0;
+        foreach (var skill in all)
+        {
+            var lastActivity = skill.LastUsedAt ?? skill.UpdatedAt ?? skill.CreatedAt;
+            if (lastActivity < threshold)
+            {
+                await _skillStore!.DeleteAsync(skill.Name);
+                pruned++;
+                _logger.LogInformation(
+                    "DreamService: pruned stale skill '{Name}' (last activity: {Date})",
+                    skill.Name, lastActivity);
+            }
+        }
+
+        if (pruned > 0)
+            all = await _skillStore!.ListAsync();
+
         if (all.Count < 2)
         {
             _logger.LogInformation(
@@ -310,9 +329,13 @@ internal sealed class DreamService : IHostedService, IDisposable
             _logger.LogDebug("DreamService: deleted skill '{Name}'", name);
         }
 
-        // Carry forward the earliest CreatedAt from merged source skills
+        // Carry forward the earliest CreatedAt and most recent LastUsedAt from merged source skills
         var createdAtByName = all.ToDictionary(
             s => s.Name, s => s.CreatedAt,
+            StringComparer.OrdinalIgnoreCase);
+
+        var lastUsedAtByName = all.ToDictionary(
+            s => s.Name, s => s.LastUsedAt,
             StringComparer.OrdinalIgnoreCase);
 
         foreach (var dto in result.ToSave ?? [])
@@ -329,12 +352,21 @@ internal sealed class DreamService : IHostedService, IDisposable
                     .Min()
                 : DateTimeOffset.UtcNow;
 
+            var maxLastUsedAt = sourceNames.Count > 0
+                ? sourceNames
+                    .Where(n => lastUsedAtByName.ContainsKey(n) && lastUsedAtByName[n].HasValue)
+                    .Select(n => lastUsedAtByName[n])
+                    .DefaultIfEmpty(null)
+                    .Max()
+                : null;
+
             var skill = new Skill(
                 Name: dto.Name.Trim(),
                 Summary: dto.Summary?.Trim() ?? string.Empty,
                 Content: dto.Content.Trim(),
                 CreatedAt: minCreatedAt,
-                UpdatedAt: DateTimeOffset.UtcNow);
+                UpdatedAt: DateTimeOffset.UtcNow,
+                LastUsedAt: maxLastUsedAt);
 
             await _skillStore!.SaveAsync(skill);
             saved++;

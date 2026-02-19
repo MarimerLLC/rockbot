@@ -11,9 +11,14 @@ namespace RockBot.Host;
 /// after the skill is saved; may be empty while generation is in progress.
 /// </param>
 /// <param name="Content">Full markdown procedure content.</param>
+/// <param name="LastUsedAt">
+/// When the skill was last loaded via <c>get_skill</c>, or <c>null</c> if it has never been used.
+/// Used by the dream pass to prune skills that have not been accessed for an extended period.
+/// </param>
 public sealed record Skill(
     string Name,
     string Summary,
     string Content,
     DateTimeOffset CreatedAt,
-    DateTimeOffset? UpdatedAt = null);
+    DateTimeOffset? UpdatedAt = null,
+    DateTimeOffset? LastUsedAt = null);

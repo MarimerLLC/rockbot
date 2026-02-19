@@ -1,11 +1,12 @@
 using System.Text.Json;
+using RockBot.Scripts;
 using RockBot.Tools;
 
-namespace RockBot.Scripts.Container;
+namespace RockBot.Scripts.Remote;
 
 /// <summary>
 /// Adapter that allows scripts to be invoked via the tool registry (tool.invoke topic).
-/// Converts a ToolInvokeRequest into a direct script execution.
+/// Converts a <see cref="ToolInvokeRequest"/> into a script execution via <see cref="IScriptRunner"/>.
 /// </summary>
 internal sealed class ScriptToolExecutor(
     IScriptRunner runner) : IToolExecutor

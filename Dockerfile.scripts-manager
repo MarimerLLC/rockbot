@@ -1,0 +1,32 @@
+# syntax=docker/dockerfile:1
+# Build stage
+FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
+WORKDIR /src
+
+# Clear Windows-specific NuGet fallback folders that break Linux builds
+RUN printf '<configuration><fallbackPackageFolders><clear /></fallbackPackageFolders></configuration>' \
+    > /src/NuGet.config
+
+COPY RockBot.slnx .
+COPY src/ src/
+
+# BuildKit cache mount avoids re-downloading packages on every build
+RUN --mount=type=cache,target=/root/.nuget/packages \
+    dotnet publish src/RockBot.Scripts.Manager/RockBot.Scripts.Manager.csproj \
+    -c Release -o /app/publish
+
+# Runtime stage — console app only
+FROM mcr.microsoft.com/dotnet/runtime:10.0 AS runtime
+WORKDIR /app
+
+# Non-root user
+RUN groupadd -r rockbot && useradd -r -g rockbot rockbot
+
+# Published app
+COPY --from=build /app/publish .
+
+RUN chown -R rockbot:rockbot /app
+
+USER rockbot
+
+ENTRYPOINT ["dotnet", "RockBot.Scripts.Manager.dll"]

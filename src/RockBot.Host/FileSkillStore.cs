@@ -116,6 +116,35 @@ internal sealed partial class FileSkillStore : ISkillStore
         }
     }
 
+    public async Task<IReadOnlyList<Skill>> SearchAsync(string query, int maxResults, CancellationToken cancellationToken = default)
+    {
+        await _semaphore.WaitAsync(cancellationToken);
+        try
+        {
+            var index = await EnsureIndexAsync();
+            var candidates = index.Values.ToList();
+            return Bm25Ranker.Rank(candidates, GetDocumentText, query)
+                .Take(maxResults)
+                .ToList();
+        }
+        finally
+        {
+            _semaphore.Release();
+        }
+    }
+
+    /// <summary>
+    /// Returns the text used as the BM25 document for a skill:
+    /// name (hyphens replaced with spaces) + summary.
+    /// </summary>
+    internal static string GetDocumentText(Skill skill)
+    {
+        var namePart = skill.Name.Replace('/', ' ').Replace('-', ' ');
+        if (string.IsNullOrWhiteSpace(skill.Summary))
+            return namePart;
+        return $"{namePart} {skill.Summary}";
+    }
+
     // ── Infrastructure ────────────────────────────────────────────────────────
 
     private async Task<Dictionary<string, Skill>> EnsureIndexAsync()

@@ -1,10 +1,10 @@
 using RockBot.Tools;
 
-namespace RockBot.Scripts.Container;
+namespace RockBot.Scripts.Remote;
 
 /// <summary>
 /// Provides the agent with a usage guide for the Python script execution tool.
-/// Registered automatically when <c>AddContainerScriptRunner()</c> is called.
+/// Registered automatically when <c>AddRemoteScriptRunner()</c> is called.
 /// </summary>
 internal sealed class ScriptToolSkillProvider : IToolSkillProvider
 {

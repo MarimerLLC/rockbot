@@ -1,0 +1,78 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "rockbot.fullname" . }}-scripts-manager
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "rockbot.labels" . | nindent 4 }}
+    app.kubernetes.io/component: scripts-manager
+spec:
+  replicas: {{ .Values.manager.replicaCount }}
+  selector:
+    matchLabels:
+      app: rockbot-scripts-manager
+      {{- include "rockbot.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        app: rockbot-scripts-manager
+        {{- include "rockbot.labels" . | nindent 8 }}
+        {{- include "rockbot.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: scripts-manager
+    spec:
+      serviceAccountName: rockbot-scripts-manager
+
+      containers:
+        - name: scripts-manager
+          image: {{ .Values.manager.image.repository }}:{{ .Values.manager.image.tag }}
+          imagePullPolicy: {{ .Values.imagePullPolicy }}
+          env:
+            - name: RabbitMq__HostName
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ include "rockbot.configmapName" . }}
+                  key: RabbitMq__HostName
+            - name: RabbitMq__Port
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ include "rockbot.configmapName" . }}
+                  key: RabbitMq__Port
+            - name: RabbitMq__UserName
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ include "rockbot.configmapName" . }}
+                  key: RabbitMq__UserName
+            - name: RabbitMq__VirtualHost
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ include "rockbot.configmapName" . }}
+                  key: RabbitMq__VirtualHost
+            - name: RabbitMq__Password
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "rockbot.secretName" . }}
+                  key: RabbitMq__Password
+            - name: Scripts__Container__Namespace
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ include "rockbot.configmapName" . }}
+                  key: Scripts__Container__Namespace
+            - name: Scripts__Container__Image
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ include "rockbot.configmapName" . }}
+                  key: Scripts__Container__Image
+            - name: Scripts__Container__CpuLimit
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ include "rockbot.configmapName" . }}
+                  key: Scripts__Container__CpuLimit
+            - name: Scripts__Container__MemoryLimit
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ include "rockbot.configmapName" . }}
+                  key: Scripts__Container__MemoryLimit
+            - name: DOTNET_ENVIRONMENT
+              value: "Production"
+          resources:
+            {{- toYaml .Values.manager.resources | nindent 12 }}

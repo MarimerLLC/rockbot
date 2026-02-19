@@ -153,6 +153,61 @@ public class SkillToolsTests
         Assert.IsTrue(tracker.TryMarkAsInjected("session-2"));
     }
 
+    // ── SkillRecallTracker ────────────────────────────────────────────────────
+
+    [TestMethod]
+    public void SkillRecallTracker_FirstCall_ReturnsTrue()
+    {
+        var tracker = new SkillRecallTracker();
+        Assert.IsTrue(tracker.TryMarkAsRecalled("session-1", "plan-meeting"));
+    }
+
+    [TestMethod]
+    public void SkillRecallTracker_SecondCall_ReturnsFalse()
+    {
+        var tracker = new SkillRecallTracker();
+        tracker.TryMarkAsRecalled("session-1", "plan-meeting");
+        Assert.IsFalse(tracker.TryMarkAsRecalled("session-1", "plan-meeting"));
+    }
+
+    [TestMethod]
+    public void SkillRecallTracker_SameSkillDifferentSessions_BothReturnTrue()
+    {
+        var tracker = new SkillRecallTracker();
+        Assert.IsTrue(tracker.TryMarkAsRecalled("session-1", "plan-meeting"));
+        Assert.IsTrue(tracker.TryMarkAsRecalled("session-2", "plan-meeting"));
+    }
+
+    [TestMethod]
+    public void SkillRecallTracker_DifferentSkillsInSameSession_AllReturnTrue()
+    {
+        var tracker = new SkillRecallTracker();
+        Assert.IsTrue(tracker.TryMarkAsRecalled("session-1", "plan-meeting"));
+        Assert.IsTrue(tracker.TryMarkAsRecalled("session-1", "send-email"));
+        Assert.IsTrue(tracker.TryMarkAsRecalled("session-1", "summarize-paper"));
+    }
+
+    [TestMethod]
+    public void SkillRecallTracker_Clear_AllowsReRecall()
+    {
+        var tracker = new SkillRecallTracker();
+        tracker.TryMarkAsRecalled("session-1", "plan-meeting");
+        tracker.Clear("session-1");
+        Assert.IsTrue(tracker.TryMarkAsRecalled("session-1", "plan-meeting"));
+    }
+
+    [TestMethod]
+    public void SkillRecallTracker_Clear_OnlyAffectsTargetSession()
+    {
+        var tracker = new SkillRecallTracker();
+        tracker.TryMarkAsRecalled("session-1", "plan-meeting");
+        tracker.TryMarkAsRecalled("session-2", "plan-meeting");
+        tracker.Clear("session-1");
+
+        Assert.IsTrue(tracker.TryMarkAsRecalled("session-1", "plan-meeting"));
+        Assert.IsFalse(tracker.TryMarkAsRecalled("session-2", "plan-meeting"));
+    }
+
     // ── Stubs ─────────────────────────────────────────────────────────────────
 
     private sealed class StubSkillStore : ISkillStore
@@ -166,6 +221,8 @@ public class SkillToolsTests
         public Task<IReadOnlyList<Skill>> ListAsync() =>
             Task.FromResult<IReadOnlyList<Skill>>(_skills.Values.OrderBy(s => s.Name).ToList());
         public Task DeleteAsync(string name) { _skills.Remove(name); return Task.CompletedTask; }
+        public Task<IReadOnlyList<Skill>> SearchAsync(string query, int maxResults, CancellationToken cancellationToken = default) =>
+            Task.FromResult<IReadOnlyList<Skill>>([]);
     }
 
     private sealed class StubChatClient : ILlmClient

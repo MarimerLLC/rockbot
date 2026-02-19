@@ -17,4 +17,11 @@ public interface ISkillStore
 
     /// <summary>Removes a skill. No-op if the skill does not exist.</summary>
     Task DeleteAsync(string name);
+
+    /// <summary>
+    /// Returns skills ranked by BM25 relevance against <paramref name="query"/>.
+    /// Skills with no matching terms are excluded.
+    /// Returns at most <paramref name="maxResults"/> entries.
+    /// </summary>
+    Task<IReadOnlyList<Skill>> SearchAsync(string query, int maxResults, CancellationToken cancellationToken = default);
 }
