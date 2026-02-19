@@ -12,9 +12,13 @@
 <div class="chat-container d-flex flex-column vh-100">
     <div class="chat-header bg-primary text-white p-3 d-flex justify-content-between align-items-center">
         <h1 class="h4 mb-0">RockBot Chat</h1>
-        <button class="btn btn-sm btn-outline-light" @onclick="ToggleDarkMode" title="Toggle dark/light mode">
-            @(IsDarkMode ? "☀️" : "🌙")
-        </button>
+        <div class="d-flex align-items-center gap-2">
+            <span class="connection-dot @(ProxyService.IsConnected ? "connected" : "disconnected")"
+                  title="@(ProxyService.IsConnected ? "Connected to message bus" : "Disconnected from message bus")"></span>
+            <button class="btn btn-sm btn-outline-light" @onclick="ToggleDarkMode" title="Toggle dark/light mode">
+                @(IsDarkMode ? "☀️" : "🌙")
+            </button>
+        </div>
     </div>
 
     <div class="chat-messages flex-grow-1 overflow-auto p-3" @ref="messagesContainer">
@@ -71,7 +75,7 @@
             <button 
                 type="submit" 
                 class="btn btn-primary"
-                disabled="@(string.IsNullOrWhiteSpace(currentMessage) || ChatState.IsProcessing)"
+                disabled="@(string.IsNullOrWhiteSpace(currentMessage) || ChatState.IsProcessing || !ProxyService.IsConnected)"
                 aria-label="Send message">
                 Send
             </button>
@@ -88,6 +92,7 @@
     private ElementReference messageInput;
     private bool IsDarkMode = false;
     private Action? _stateChangedHandler;
+    private Action? _connectionChangedHandler;
     private int _renderedMessageCount = 0;
     private static readonly MarkdownPipeline MarkdownPipeline = new MarkdownPipelineBuilder()
         .UseAdvancedExtensions()
@@ -97,12 +102,17 @@
     {
         _stateChangedHandler = () => InvokeAsync(StateHasChanged);
         ChatState.OnStateChanged += _stateChangedHandler;
+
+        _connectionChangedHandler = () => InvokeAsync(StateHasChanged);
+        ProxyService.OnConnectionChanged += _connectionChangedHandler;
     }
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
         if (firstRender)
         {
+            await JSRuntime.InvokeVoidAsync("chatHelpers.preventEnterNewline", messageInput);
+
             // Check for system dark mode preference
             IsDarkMode = await JSRuntime.InvokeAsync<bool>("eval",
                 "window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches");
@@ -208,5 +218,6 @@
     public void Dispose()
     {
         ChatState.OnStateChanged -= _stateChangedHandler;
+        ProxyService.OnConnectionChanged -= _connectionChangedHandler;
     }
 }

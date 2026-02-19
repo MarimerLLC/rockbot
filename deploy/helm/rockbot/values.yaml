@@ -1,5 +1,5 @@
 # ── Image pull policy ────────────────────────────────────────────────────────
-imagePullPolicy: IfNotPresent
+imagePullPolicy: Always
 
 # ── Namespace ─────────────────────────────────────────────────────────────────
 namespace: rockbot
