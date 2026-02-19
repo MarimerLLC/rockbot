@@ -17,6 +17,7 @@ public sealed class ChatStateService
 
     public void LoadHistory(IReadOnlyList<ConversationHistoryTurn> turns, string sessionId)
     {
+        _messages.Clear();
         foreach (var turn in turns)
         {
             _messages.Add(new ChatMessage
