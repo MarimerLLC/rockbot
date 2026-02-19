@@ -148,6 +148,10 @@ body.dark-mode .message-content pre {
     border: 1px solid #444;
 }
 
+body.dark-mode .message-content pre code {
+    background-color: transparent;
+}
+
 body.dark-mode .agent-message .message-bubble {
     background-color: #2d2d2d;
     color: white;
