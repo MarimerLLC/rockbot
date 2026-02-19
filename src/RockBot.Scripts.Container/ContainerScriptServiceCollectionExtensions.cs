@@ -23,8 +23,7 @@ public static class ContainerScriptServiceCollectionExtensions
         configure?.Invoke(options);
         services.AddSingleton(options);
 
-        services.TryAddSingleton<IKubernetes>(_ =>
-            new Kubernetes(KubernetesClientConfiguration.BuildDefaultConfig()));
+        services.TryAddSingleton<IKubernetes>(_ => BuildKubernetesClient());
 
         services.AddSingleton<IScriptRunner, ContainerScriptRunner>();
 
@@ -44,8 +43,7 @@ public static class ContainerScriptServiceCollectionExtensions
         builder.Services.AddSingleton(options);
 
         // Register K8s client if not already registered
-        builder.Services.TryAddSingleton<IKubernetes>(_ =>
-            new Kubernetes(KubernetesClientConfiguration.BuildDefaultConfig()));
+        builder.Services.TryAddSingleton<IKubernetes>(_ => BuildKubernetesClient());
 
         builder.Services.AddSingleton<ContainerScriptRunner>();
 
@@ -54,5 +52,18 @@ public static class ContainerScriptServiceCollectionExtensions
         builder.SubscribeTo("script.invoke");
 
         return builder;
+    }
+
+    /// <summary>
+    /// Builds a Kubernetes client configured for in-cluster or local use.
+    /// SkipTlsVerify works around a NullReferenceException in KubernetesClient 16.x's
+    /// custom CertificateValidationCallBack on Linux (OpenSslX509ChainProcessor.FindFirstChain).
+    /// Authentication remains secure via the mounted service account token.
+    /// </summary>
+    private static IKubernetes BuildKubernetesClient()
+    {
+        var config = KubernetesClientConfiguration.BuildDefaultConfig();
+        config.SkipTlsVerify = true;
+        return new Kubernetes(config);
     }
 }
