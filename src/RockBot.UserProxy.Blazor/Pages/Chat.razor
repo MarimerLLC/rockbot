@@ -107,20 +107,6 @@
         ProxyService.OnConnectionChanged += _connectionChangedHandler;
     }
 
-    protected override async Task OnInitializedAsync()
-    {
-        try
-        {
-            var history = await ProxyService.GetHistoryAsync(SessionId, timeout: TimeSpan.FromSeconds(10));
-            if (history is not null && history.Turns.Count > 0)
-                ChatState.LoadHistory(history.Turns, SessionId);
-        }
-        catch (Exception ex)
-        {
-            ChatState.AddError($"Could not load conversation history: {ex.Message}");
-        }
-    }
-
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
         if (firstRender)
@@ -132,6 +118,21 @@
             IsDarkMode = await JSRuntime.InvokeAsync<bool>("eval",
                 "window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches");
             await ApplyDarkMode();
+
+            // Load history after the real SignalR circuit is established.
+            // This runs only on first render (never during static prerendering),
+            // which avoids a 10-second blank-page wait and prevents duplicate
+            // messages when the singleton ChatStateService outlives the component.
+            try
+            {
+                var history = await ProxyService.GetHistoryAsync(SessionId, timeout: TimeSpan.FromSeconds(10));
+                if (history is not null && history.Turns.Count > 0)
+                    ChatState.LoadHistory(history.Turns, SessionId);
+            }
+            catch (Exception ex)
+            {
+                ChatState.AddError($"Could not load conversation history: {ex.Message}");
+            }
         }
 
         // Only scroll when a new message has been added — not on every re-render
