@@ -180,7 +180,7 @@
 
     private async Task HandleKeyDown(KeyboardEventArgs e)
     {
-        if (e.Key == "Enter" && !e.ShiftKey)
+        if (e.Key == "Enter" && !e.ShiftKey && !e.CtrlKey)
             await SendMessage();
     }
 
