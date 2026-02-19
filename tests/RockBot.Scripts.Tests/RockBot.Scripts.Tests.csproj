@@ -20,6 +20,7 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\RockBot.Scripts.Abstractions\RockBot.Scripts.Abstractions.csproj" />
     <ProjectReference Include="..\..\src\RockBot.Scripts.Container\RockBot.Scripts.Container.csproj" />
+    <ProjectReference Include="..\..\src\RockBot.Scripts.Local\RockBot.Scripts.Local.csproj" />
     <ProjectReference Include="..\..\src\RockBot.Tools.Abstractions\RockBot.Tools.Abstractions.csproj" />
     <ProjectReference Include="..\..\src\RockBot.Host.Abstractions\RockBot.Host.Abstractions.csproj" />
     <ProjectReference Include="..\..\src\RockBot.Host\RockBot.Host.csproj" />
