@@ -110,7 +110,16 @@ body {
     z-index: 10;
 }
 
-.chat-input input:focus {
+.chat-input textarea {
+    field-sizing: content;
+    min-height: 38px;
+    max-height: 150px;
+    overflow-y: auto;
+    resize: none;
+    line-height: 1.5;
+}
+
+.chat-input textarea:focus {
     box-shadow: 0 0 0 0.25rem rgba(13, 110, 253, 0.25);
 }
 
@@ -126,6 +135,17 @@ body.dark-mode .chat-container {
 
 body.dark-mode .chat-messages {
     background-color: #1a1a1a;
+}
+
+body.dark-mode .message-content code {
+    background-color: rgba(255, 255, 255, 0.1);
+    color: #e8e8e8;
+}
+
+body.dark-mode .message-content pre {
+    background-color: #1a1a1a;
+    color: #e8e8e8;
+    border: 1px solid #444;
 }
 
 body.dark-mode .agent-message .message-bubble {
