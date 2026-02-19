@@ -76,7 +76,9 @@ builder.Services.AddRockBotHost(agent =>
     agent.AddMcpToolProxy();
     agent.AddWebTools(opts => builder.Configuration.GetSection("WebTools").Bind(opts));
     agent.HandleMessage<UserMessage, UserMessageHandler>();
+    agent.HandleMessage<ConversationHistoryRequest, ConversationHistoryRequestHandler>();
     agent.SubscribeTo(UserProxyTopics.UserMessage);
+    agent.SubscribeTo(UserProxyTopics.ConversationHistoryRequest);
 });
 
 // MCP bridge (replaces external RockBot.Tools.Mcp.Bridge process)

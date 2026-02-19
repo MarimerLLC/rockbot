@@ -107,6 +107,20 @@
         ProxyService.OnConnectionChanged += _connectionChangedHandler;
     }
 
+    protected override async Task OnInitializedAsync()
+    {
+        try
+        {
+            var history = await ProxyService.GetHistoryAsync(SessionId, timeout: TimeSpan.FromSeconds(10));
+            if (history is not null && history.Turns.Count > 0)
+                ChatState.LoadHistory(history.Turns, SessionId);
+        }
+        catch (Exception ex)
+        {
+            ChatState.AddError($"Could not load conversation history: {ex.Message}");
+        }
+    }
+
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
         if (firstRender)

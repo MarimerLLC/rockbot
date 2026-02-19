@@ -18,7 +18,11 @@ public sealed class UserProxyService(
     ILogger<UserProxyService> logger) : IHostedService
 {
     private readonly ConcurrentDictionary<string, (TaskCompletionSource<AgentReply> Tcs, IProgress<AgentReply>? Progress)> _pending = new();
+    private readonly ConcurrentDictionary<string, TaskCompletionSource<ConversationHistoryResponse>> _pendingHistory = new();
     private ISubscription? _subscription;
+    private ISubscription? _historySubscription;
+    private bool _historyInitialized;
+    private readonly SemaphoreSlim _historyInitLock = new(1, 1);
     private CancellationTokenSource? _cts;
 
     public bool IsConnected { get; private set; }
@@ -62,9 +66,19 @@ public sealed class UserProxyService(
                 entry.Tcs.TrySetCanceled();
         }
 
+        foreach (var kvp in _pendingHistory)
+        {
+            if (_pendingHistory.TryRemove(kvp.Key, out var tcs))
+                tcs.TrySetCanceled();
+        }
+
         if (_subscription is not null)
             await _subscription.DisposeAsync();
 
+        if (_historySubscription is not null)
+            await _historySubscription.DisposeAsync();
+
+        _historyInitLock.Dispose();
         _cts?.Dispose();
     }
 
@@ -195,6 +209,118 @@ public sealed class UserProxyService(
             logger.LogDebug("Unsolicited reply from {Agent}, displaying via frontend", reply.AgentName);
             _ = frontend.DisplayReplyAsync(reply, ct);
         }
+
+        return Task.FromResult(MessageResult.Ack);
+    }
+
+    /// <summary>
+    /// Requests the full conversation history for the given session from the agent.
+    /// Returns null if the request times out or the agent is unavailable.
+    /// </summary>
+    public async Task<ConversationHistoryResponse?> GetHistoryAsync(
+        string sessionId,
+        TimeSpan? timeout = null,
+        CancellationToken cancellationToken = default)
+    {
+        var effectiveTimeout = timeout ?? options.DefaultReplyTimeout;
+        var correlationId = Guid.NewGuid().ToString("N");
+        var tcs = new TaskCompletionSource<ConversationHistoryResponse>(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        _pendingHistory[correlationId] = tcs;
+
+        try
+        {
+            await EnsureHistorySubscribedAsync(cancellationToken);
+
+            var request = new ConversationHistoryRequest { SessionId = sessionId };
+            var envelope = request.ToEnvelope<ConversationHistoryRequest>(
+                source: options.ProxyId,
+                correlationId: correlationId,
+                replyTo: HistoryResponseTopic);
+
+            await publisher.PublishAsync(UserProxyTopics.ConversationHistoryRequest, envelope, cancellationToken);
+
+            logger.LogDebug("Published ConversationHistoryRequest {CorrelationId} for session {SessionId}",
+                correlationId, sessionId);
+
+            using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            timeoutCts.CancelAfter(effectiveTimeout);
+
+            try
+            {
+                return await tcs.Task.WaitAsync(timeoutCts.Token);
+            }
+            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+            {
+                logger.LogWarning("History request timeout for correlation {CorrelationId} after {Timeout}",
+                    correlationId, effectiveTimeout);
+                return null;
+            }
+        }
+        finally
+        {
+            _pendingHistory.TryRemove(correlationId, out _);
+        }
+    }
+
+    private string HistoryResponseTopic => $"{UserProxyTopics.ConversationHistoryResponse}.{options.ProxyId}";
+
+    private async Task EnsureHistorySubscribedAsync(CancellationToken ct)
+    {
+        if (_historyInitialized) return;
+
+        await _historyInitLock.WaitAsync(ct);
+        try
+        {
+            if (_historyInitialized) return;
+
+            _historySubscription = await subscriber.SubscribeAsync(
+                HistoryResponseTopic,
+                $"user-proxy.{options.ProxyId}.history",
+                HandleHistoryResponseAsync,
+                ct);
+
+            _historyInitialized = true;
+        }
+        finally
+        {
+            _historyInitLock.Release();
+        }
+    }
+
+    internal Task<MessageResult> HandleHistoryResponseAsync(MessageEnvelope envelope, CancellationToken ct)
+    {
+        if (envelope.CorrelationId is null ||
+            !_pendingHistory.TryGetValue(envelope.CorrelationId, out var tcs))
+        {
+            logger.LogWarning("Received history response with unknown correlation ID: {CorrelationId}",
+                envelope.CorrelationId);
+            return Task.FromResult(MessageResult.Ack);
+        }
+
+        ConversationHistoryResponse? response;
+        try
+        {
+            response = envelope.GetPayload<ConversationHistoryResponse>();
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "Failed to deserialize ConversationHistoryResponse");
+            tcs.TrySetException(ex);
+            return Task.FromResult(MessageResult.DeadLetter);
+        }
+
+        if (response is null)
+        {
+            logger.LogWarning("Received null ConversationHistoryResponse");
+            return Task.FromResult(MessageResult.DeadLetter);
+        }
+
+        _pendingHistory.TryRemove(envelope.CorrelationId, out _);
+        tcs.TrySetResult(response);
+
+        logger.LogDebug("History response correlated for {CorrelationId} with {TurnCount} turns",
+            envelope.CorrelationId, response.Turns.Count);
 
         return Task.FromResult(MessageResult.Ack);
     }

@@ -226,4 +226,98 @@ public sealed class UserProxyServiceTests
             SessionId = "session-1",
             UserId = "user-1"
         };
+
+    // ── GetHistoryAsync tests ────────────────────────────────────────────────
+
+    [TestMethod]
+    public async Task GetHistoryAsync_PublishesToConversationHistoryRequestTopic()
+    {
+        var historyTask = _service.GetHistoryAsync("session-1", timeout: TimeSpan.FromMilliseconds(50));
+        await Task.Delay(10);
+
+        Assert.AreEqual(1, _publisher.Published.Count);
+        Assert.AreEqual(UserProxyTopics.ConversationHistoryRequest, _publisher.Published[0].Topic);
+
+        await historyTask; // let it timeout
+    }
+
+    [TestMethod]
+    public async Task GetHistoryAsync_SetsCorrectCorrelationIdAndReplyTo()
+    {
+        var historyTask = _service.GetHistoryAsync("session-1", timeout: TimeSpan.FromMilliseconds(50));
+        await Task.Delay(10);
+
+        var envelope = _publisher.Published[0].Envelope;
+        Assert.IsNotNull(envelope.CorrelationId);
+        Assert.AreEqual($"{UserProxyTopics.ConversationHistoryResponse}.{_options.ProxyId}", envelope.ReplyTo);
+        Assert.AreEqual("test-proxy", envelope.Source);
+
+        await historyTask;
+    }
+
+    [TestMethod]
+    public async Task GetHistoryAsync_ReturnsNull_OnTimeout()
+    {
+        var result = await _service.GetHistoryAsync("session-1", timeout: TimeSpan.FromMilliseconds(50));
+        Assert.IsNull(result);
+    }
+
+    [TestMethod]
+    public async Task GetHistoryAsync_ReturnsHistory_OnCorrelatedResponse()
+    {
+        var historyTask = _service.GetHistoryAsync("session-1", timeout: TimeSpan.FromSeconds(5));
+        await Task.Delay(10);
+
+        var correlationId = _publisher.Published[0].Envelope.CorrelationId!;
+        var expectedTopic = $"{UserProxyTopics.ConversationHistoryResponse}.{_options.ProxyId}";
+
+        var response = new ConversationHistoryResponse
+        {
+            Turns =
+            [
+                new ConversationHistoryTurn { Role = "user", Content = "Hello", Timestamp = DateTimeOffset.UtcNow },
+                new ConversationHistoryTurn { Role = "assistant", Content = "Hi!", Timestamp = DateTimeOffset.UtcNow }
+            ]
+        };
+
+        var responseEnvelope = TestEnvelopeHelper.CreateEnvelope(response,
+            source: "RockBot",
+            correlationId: correlationId);
+
+        var historyHandler = _subscriber.GetHandlerForTopic(expectedTopic);
+        Assert.IsNotNull(historyHandler, "History response handler should be subscribed");
+
+        await historyHandler(responseEnvelope, CancellationToken.None);
+
+        var result = await historyTask;
+        Assert.IsNotNull(result);
+        Assert.AreEqual(2, result.Turns.Count);
+        Assert.AreEqual("Hello", result.Turns[0].Content);
+        Assert.AreEqual("user", result.Turns[0].Role);
+        Assert.AreEqual("Hi!", result.Turns[1].Content);
+        Assert.AreEqual("assistant", result.Turns[1].Role);
+    }
+
+    [TestMethod]
+    public async Task GetHistoryAsync_ReturnsEmpty_WhenNoHistory()
+    {
+        var historyTask = _service.GetHistoryAsync("session-empty", timeout: TimeSpan.FromSeconds(5));
+        await Task.Delay(10);
+
+        var correlationId = _publisher.Published[0].Envelope.CorrelationId!;
+        var expectedTopic = $"{UserProxyTopics.ConversationHistoryResponse}.{_options.ProxyId}";
+
+        var response = new ConversationHistoryResponse { Turns = [] };
+        var responseEnvelope = TestEnvelopeHelper.CreateEnvelope(response,
+            source: "RockBot",
+            correlationId: correlationId);
+
+        var historyHandler = _subscriber.GetHandlerForTopic(expectedTopic);
+        Assert.IsNotNull(historyHandler);
+        await historyHandler(responseEnvelope, CancellationToken.None);
+
+        var result = await historyTask;
+        Assert.IsNotNull(result);
+        Assert.AreEqual(0, result.Turns.Count);
+    }
 }
