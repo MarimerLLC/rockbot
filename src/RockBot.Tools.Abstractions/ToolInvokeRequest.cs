@@ -19,4 +19,10 @@ public sealed record ToolInvokeRequest
     /// JSON arguments string, or null if the tool takes no arguments.
     /// </summary>
     public string? Arguments { get; init; }
+
+    /// <summary>
+    /// Session ID of the originating conversation, used to key working memory entries.
+    /// Null when invoked outside a session context (e.g. tests, CLI tools).
+    /// </summary>
+    public string? SessionId { get; init; }
 }

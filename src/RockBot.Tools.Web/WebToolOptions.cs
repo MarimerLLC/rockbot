@@ -33,4 +33,21 @@ public sealed class WebToolOptions
     /// Defaults to 8000.
     /// </summary>
     public int MaxBrowseContentLength { get; set; } = 8000;
+
+    /// <summary>
+    /// Character threshold above which page content is chunked into working memory
+    /// rather than returned inline. Defaults to 8000.
+    /// </summary>
+    public int ChunkingThreshold { get; set; } = 8_000;
+
+    /// <summary>
+    /// Maximum size in characters of each chunk saved to working memory (~5000 tokens).
+    /// Defaults to 20000.
+    /// </summary>
+    public int ChunkMaxLength { get; set; } = 20_000;
+
+    /// <summary>
+    /// Time-to-live in minutes for web chunks saved to working memory. Defaults to 20.
+    /// </summary>
+    public int ChunkTtlMinutes { get; set; } = 20;
 }

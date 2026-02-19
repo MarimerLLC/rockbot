@@ -211,7 +211,7 @@ internal sealed class UserMessageHandler(
 
             // Snapshot registry tools (MCP, REST, etc.) as AIFunction wrappers
             var registryTools = toolRegistry.GetTools()
-                .Select(r => (AIFunction)new RegistryToolFunction(r, toolRegistry.GetExecutor(r.Name)!))
+                .Select(r => (AIFunction)new RegistryToolFunction(r, toolRegistry.GetExecutor(r.Name)!, message.SessionId))
                 .ToArray();
 
             var chatOptions = new ChatOptions
@@ -917,7 +917,7 @@ internal sealed class UserMessageHandler(
     /// Wraps a <see cref="ToolRegistration"/> + <see cref="IToolExecutor"/> as an <see cref="AIFunction"/>
     /// so registry tools (e.g. MCP) can be passed directly to the LLM via <see cref="ChatOptions.Tools"/>.
     /// </summary>
-    private sealed class RegistryToolFunction(ToolRegistration registration, IToolExecutor executor) : AIFunction
+    private sealed class RegistryToolFunction(ToolRegistration registration, IToolExecutor executor, string? sessionId) : AIFunction
     {
         private static readonly JsonSerializerOptions SerializerOptions = new();
 
@@ -959,7 +959,8 @@ internal sealed class UserMessageHandler(
             {
                 ToolCallId = Guid.NewGuid().ToString("N"),
                 ToolName = registration.Name,
-                Arguments = argsJson
+                Arguments = argsJson,
+                SessionId = sessionId
             };
 
             var response = await executor.ExecuteAsync(request, cancellationToken);

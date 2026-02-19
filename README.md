@@ -61,74 +61,201 @@ The result is a swarm of agents that coordinate through messages, where the fail
 
 ### Prerequisites
 
-- [.NET 10 SDK](https://dotnet.microsoft.com/download)
-- [RabbitMQ](https://www.rabbitmq.com/download.html) (or Docker: `docker run -d -p 5672:5672 rabbitmq:4`)
-- Kubernetes cluster (required only for ephemeral script execution)
+- [.NET 10 SDK](https://dotnet.microsoft.com/download) — for local development and building
+- [Docker](https://www.docker.com/) — for building container images
+- Kubernetes cluster with [Helm](https://helm.sh/) — for production deployment
+- [RabbitMQ](https://www.rabbitmq.com/) running in or accessible from the cluster
+- [Longhorn](https://longhorn.io/) (or another `ReadWriteOnce` storage class) — for the agent data PVC
+- [Tailscale Kubernetes Operator](https://tailscale.com/kb/1236/kubernetes-operator) *(optional)* — for exposing the Blazor UI on your tailnet
 
-### Build
+---
+
+### Build and test locally
 
 ```bash
+# Build
 dotnet build RockBot.slnx
-```
 
-### Run tests
-
-Unit tests only (no external dependencies):
-
-```bash
+# Unit tests only (no external dependencies)
 dotnet test RockBot.slnx
-```
 
-Unit tests + RabbitMQ integration tests:
-
-```bash
+# Unit tests + RabbitMQ integration tests
 ROCKBOT_RABBITMQ_HOST=localhost dotnet test RockBot.slnx
 ```
 
-### Configuration
+---
 
-RockBot uses the standard .NET configuration stack. Create an `appsettings.json` alongside `RockBot.Cli` or use environment variables:
+### Container images
 
-```json
-{
-  "RabbitMq": {
-    "Host": "localhost",
-    "Port": 5672,
-    "Username": "guest",
-    "Password": "guest"
-  }
-}
-```
+Three images are published to Docker Hub and must be built from the repo root:
 
-For local secrets (do not commit credentials):
+| Image | Dockerfile | Purpose |
+|---|---|---|
+| `rockylhotka/rockbot-cli` | `deploy/Dockerfile.cli` | Agent host (RockBot.Cli) |
+| `rockylhotka/rockbot-blazor` | `src/RockBot.UserProxy.Blazor/Dockerfile` | Blazor chat UI |
+| `rockylhotka/rockbot-scripts-manager` | `Dockerfile.scripts-manager` | Trusted script execution sidecar |
 
 ```bash
-dotnet user-secrets set "RabbitMq:Password" "your-password" --project src/RockBot.Cli
+# Build all three from the repo root
+docker build -f deploy/Dockerfile.cli          -t rockylhotka/rockbot-cli:latest .
+docker build -f src/RockBot.UserProxy.Blazor/Dockerfile -t rockylhotka/rockbot-blazor:latest .
+docker build -f Dockerfile.scripts-manager     -t rockylhotka/rockbot-scripts-manager:latest .
+
+# Push
+docker push rockylhotka/rockbot-cli:latest
+docker push rockylhotka/rockbot-blazor:latest
+docker push rockylhotka/rockbot-scripts-manager:latest
 ```
 
-For production, inject secrets via Kubernetes Secrets as environment variables.
+---
 
-### Run the agent host
+### Kubernetes deployment (Helm)
 
-```bash
-dotnet run --project src/RockBot.Cli
-```
+The Helm chart at `deploy/helm/rockbot` deploys the full stack into two namespaces:
 
-### Agent profiles
-
-Each agent is configured through three markdown files in its working directory:
-
-| File | Purpose |
+| Namespace | Contents |
 |---|---|
-| `soul.md` | Core identity, values, and goals |
-| `directives.md` | Behavioral rules and constraints |
-| `style.md` | Tone, formatting, and communication style |
+| `rockbot` | Agent, Blazor UI, Scripts Manager, ConfigMap, Secret |
+| `rockbot-scripts` | Ephemeral Python execution pods (created on demand) |
 
-These files are human-readable, version-controlled, and composed at runtime into the agent's system prompt.
+#### 1. Create your values file
+
+```bash
+cp deploy/values.personal.example.yaml deploy/values.personal.yaml
+```
+
+Edit `deploy/values.personal.yaml` — it is gitignored and must never be committed:
+
+```yaml
+rabbitmq:
+  hostName: "rabbitmq-svc.rabbitmq.svc.cluster.local"
+  userName: "rockbot"
+
+secrets:
+  create: true
+  azureAI:
+    endpoint: "https://<your-resource>.openai.azure.com/"
+    key: "<your-api-key>"
+    deploymentName: "<your-deployment-name>"
+  webTools:
+    apiKey: "<your-brave-search-api-key>"
+  rabbitmq:
+    password: "<your-rabbitmq-password>"
+
+blazor:
+  tailscale:
+    hostname: "rockbot"   # exposes the UI at http://rockbot on your tailnet
+```
+
+#### 2. Install or upgrade
+
+```bash
+helm upgrade --install rockbot deploy/helm/rockbot \
+  -f deploy/values.personal.yaml \
+  --create-namespace
+```
+
+#### 3. Restart pods to pick up new images
+
+After pushing updated images (all tagged `latest`):
+
+```bash
+kubectl rollout restart deployment/rockbot-agent \
+                          deployment/rockbot-blazor \
+                          deployment/rockbot-scripts-manager \
+  -n rockbot
+```
+
+---
+
+### What Helm deploys
+
+#### Agent (`rockbot-agent`)
+
+- Runs `RockBot.Cli` as a single replica with `strategy: Recreate` — only one agent may run at a time.
+- Mounts a 10 Gi Longhorn PVC at `/data/agent` containing soul, directives, memory, skills, and `mcp.json`.
+- An **init container** seeds the PVC with default agent files from the image on first start (existing files are never overwritten).
+- Runs with a dedicated ServiceAccount (`rockbot-agent`) that has **no Kubernetes API permissions** (`automountServiceAccountToken: false`). Script execution is delegated to the Scripts Manager via RabbitMQ — the agent never touches the Kubernetes API directly.
+
+#### Scripts Manager (`rockbot-scripts-manager`)
+
+- Runs `RockBot.Scripts.Manager` as the **trusted sidecar** for script execution.
+- Has its own ServiceAccount (`rockbot-scripts-manager`) with `automountServiceAccountToken: true`.
+- Bound via a cross-namespace `RoleBinding` to the `rockbot-script-runner` Role in the `rockbot-scripts` namespace.
+
+**RBAC — least privilege:**
+
+| Resource | Verbs | Why |
+|---|---|---|
+| `pods` | `create`, `get`, `list`, `watch`, `delete` | Spin up and clean up ephemeral script containers |
+| `pods/log`, `pods/status` | `get` | Stream script output back to the agent |
+
+The agent has *no* pod permissions. A compromised agent cannot create or access Kubernetes pods.
+
+#### Blazor UI (`rockbot-blazor`)
+
+- Runs `RockBot.UserProxy.Blazor` on port 8080 with liveness and readiness probes.
+- Exposed on your Tailscale network via the Tailscale Kubernetes Operator using the hostname set in `blazor.tailscale.hostname`.
+- Receives only the RabbitMQ credentials it needs — not the full agent ConfigMap.
+
+#### Scripts namespace (`rockbot-scripts`)
+
+- Created and owned by the Helm chart.
+- Ephemeral Python pods are launched here by the Scripts Manager and deleted immediately after the script completes.
+- The agent namespace (`rockbot`) has no permissions in this namespace.
+
+---
+
+### Agent data volume
+
+The agent PVC holds all persistent state:
+
+```
+/data/agent/
+├── soul.md          # Core identity and values
+├── directives.md    # Behavioral rules and constraints
+├── style.md         # Tone and communication style
+├── memory-rules.md  # Rules governing memory formation
+├── dream.md         # Background reasoning prompts
+├── skill-dream.md   # Skill acquisition prompts
+├── mcp.json         # MCP server connections
+├── memory/          # Long-term memory entries
+└── skills/          # Saved skills
+```
+
+To replace the default files with your own after first deployment:
+
+```bash
+# Find the agent pod
+kubectl get pods -n rockbot -l app=rockbot-agent
+
+# Copy your local agent directory to the PVC
+kubectl cp src/RockBot.Cli/agent/ <pod-name>:/data/agent/ -n rockbot
+
+# Copy a custom mcp.json
+kubectl cp src/RockBot.Cli/mcp.json <pod-name>:/data/agent/mcp.json -n rockbot
+```
+
+---
 
 ### MCP tool configuration
 
-Place an `mcp.json` file alongside `RockBot.Cli` to configure MCP server connections. The MCP bridge will discover and register available tools automatically.
+Edit `/data/agent/mcp.json` on the PVC (or copy it in as shown above) to configure MCP server connections. The MCP bridge discovers and registers available tools automatically on startup.
+
+---
+
+### Telemetry (optional)
+
+Set the following in your `values.personal.yaml` to enable OpenTelemetry export:
+
+```yaml
+telemetry:
+  enabled: true
+  otlpEndpoint: "http://alloy.monitoring.svc.cluster.local:4317"
+  serviceName: rockbot
+```
+
+Logs stream to stdout and are picked up automatically by Promtail or any standard log collector. Filter in Grafana with `{namespace="rockbot"}`.
 
 ---
 

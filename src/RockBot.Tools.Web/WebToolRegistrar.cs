@@ -1,5 +1,6 @@
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using RockBot.Host;
 
 namespace RockBot.Tools.Web;
 
@@ -7,6 +8,7 @@ internal sealed class WebToolRegistrar(
     IToolRegistry registry,
     IWebSearchProvider searchProvider,
     IWebBrowseProvider browseProvider,
+    IWorkingMemory workingMemory,
     WebToolOptions options,
     ILogger<WebToolRegistrar> logger) : IHostedService
 {
@@ -59,7 +61,7 @@ internal sealed class WebToolRegistrar(
             Description = "Fetch a web page and return its content as Markdown",
             ParametersSchema = BrowseSchema,
             Source = "web"
-        }, new WebBrowseToolExecutor(browseProvider));
+        }, new WebBrowseToolExecutor(browseProvider, workingMemory, options));
         logger.LogInformation("Registered web tool: web_browse");
 
         return Task.CompletedTask;

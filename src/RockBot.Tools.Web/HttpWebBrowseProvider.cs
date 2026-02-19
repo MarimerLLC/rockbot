@@ -6,7 +6,6 @@ namespace RockBot.Tools.Web;
 
 internal sealed class HttpWebBrowseProvider(
     IHttpClientFactory httpClientFactory,
-    WebToolOptions options,
     ILogger<HttpWebBrowseProvider> logger) : IWebBrowseProvider
 {
     // Elements that add noise without useful content
@@ -40,13 +39,6 @@ internal sealed class HttpWebBrowseProvider(
         };
         var converter = new ReverseMarkdown.Converter(converterConfig);
         var markdown = converter.Convert(cleanedHtml);
-
-        var maxLen = options.MaxBrowseContentLength;
-        if (markdown.Length > maxLen)
-        {
-            markdown = markdown[..maxLen] +
-                $"\n\n[Content truncated — {markdown.Length - maxLen:N0} chars omitted]";
-        }
 
         logger.LogDebug("Fetched and converted {Url} ({Length} chars of Markdown)", url, markdown.Length);
 
