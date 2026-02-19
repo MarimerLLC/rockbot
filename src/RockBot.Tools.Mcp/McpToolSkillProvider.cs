@@ -19,6 +19,30 @@ internal sealed class McpToolSkillProvider : IToolSkillProvider
         databases, APIs, and more. Five management tools let you discover, inspect, and
         invoke whatever servers the operator has configured.
 
+        ## When to Use MCP Tools
+
+        Reach for MCP tools when the user needs **live, personal, or external data** —
+        anything you cannot answer from general knowledge or the current conversation:
+
+        - Calendar events, email, contacts, tasks
+        - Current weather, prices, news, or any real-time data
+        - File contents, documents, or external databases
+        - Actions in external systems: create events, send messages, update records
+
+        **When in doubt, call `mcp_list_services` first** to see what's available rather
+        than guessing or fabricating data.
+
+        ## When NOT to Use MCP Tools
+
+        Do not call any MCP tool when:
+
+        - **The answer is already in your context** — if the system prompt, conversation
+          history, or recalled memories contain the information, answer directly.
+          The current date and time are injected into every prompt — do not call an MCP
+          tool to look them up.
+        - **The question is purely general knowledge** — "how does HTTP work?",
+          "what's the capital of France?" need no external lookup.
+
         ## When to Use This Guide
 
         Consult this guide when you need live, personal, or external data and don't yet
