@@ -15,6 +15,21 @@ public sealed class ChatStateService
     public string? CurrentThinkingMessage => _currentThinkingMessage;
     public bool IsProcessing => _isProcessing;
 
+    public void LoadHistory(IReadOnlyList<ConversationHistoryTurn> turns, string sessionId)
+    {
+        foreach (var turn in turns)
+        {
+            _messages.Add(new ChatMessage
+            {
+                Content = turn.Content,
+                IsFromUser = turn.Role == "user",
+                Timestamp = turn.Timestamp.UtcDateTime,
+                SessionId = sessionId
+            });
+        }
+        NotifyStateChanged();
+    }
+
     public void AddUserMessage(string content, string userId, string sessionId)
     {
         _messages.Add(new ChatMessage

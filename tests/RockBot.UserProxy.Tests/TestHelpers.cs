@@ -21,12 +21,24 @@ internal sealed class TrackingPublisher : IMessagePublisher
 
 /// <summary>
 /// Stub subscriber that captures the handler so tests can simulate incoming messages.
+/// Supports multiple subscriptions, exposing the last-registered subscription for
+/// backward-compatible access via <see cref="CapturedHandler"/> etc.
 /// </summary>
 internal sealed class StubSubscriber : IMessageSubscriber
 {
-    public Func<MessageEnvelope, CancellationToken, Task<MessageResult>>? CapturedHandler { get; private set; }
-    public string? CapturedTopic { get; private set; }
-    public string? CapturedSubscriptionName { get; private set; }
+    private readonly List<(string Topic, string SubscriptionName, Func<MessageEnvelope, CancellationToken, Task<MessageResult>> Handler)> _subscriptions = [];
+
+    // Backward-compat: expose the first registered subscription (StartAsync registers user response first)
+    public Func<MessageEnvelope, CancellationToken, Task<MessageResult>>? CapturedHandler =>
+        _subscriptions.Count > 0 ? _subscriptions[0].Handler : null;
+    public string? CapturedTopic =>
+        _subscriptions.Count > 0 ? _subscriptions[0].Topic : null;
+    public string? CapturedSubscriptionName =>
+        _subscriptions.Count > 0 ? _subscriptions[0].SubscriptionName : null;
+
+    /// <summary>Returns the message handler registered for the given topic, or null.</summary>
+    public Func<MessageEnvelope, CancellationToken, Task<MessageResult>>? GetHandlerForTopic(string topic) =>
+        _subscriptions.FirstOrDefault(s => s.Topic == topic).Handler;
 
     public Task<ISubscription> SubscribeAsync(
         string topic,
@@ -34,9 +46,7 @@ internal sealed class StubSubscriber : IMessageSubscriber
         Func<MessageEnvelope, CancellationToken, Task<MessageResult>> handler,
         CancellationToken cancellationToken = default)
     {
-        CapturedTopic = topic;
-        CapturedSubscriptionName = subscriptionName;
-        CapturedHandler = handler;
+        _subscriptions.Add((topic, subscriptionName, handler));
         return Task.FromResult<ISubscription>(new StubSubscription(topic, subscriptionName));
     }
 
