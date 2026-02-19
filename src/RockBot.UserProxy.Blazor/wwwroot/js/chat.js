@@ -28,9 +28,21 @@ window.chatHelpers = {
         // When the window gains focus, auto-focus the textarea unless:
         //   • the user clicked an interactive element (let the browser handle focus), or
         //   • the textarea is disabled (message is being processed).
+        //
+        // We defer via setTimeout(0) so this runs AFTER the browser finishes
+        // processing the activating click. Without the defer, the browser's own
+        // click-focus logic (which may reset focus to document.body for clicks on
+        // non-focusable elements) fires after our handler and steals focus back.
         window.addEventListener('focus', function () {
             if (!activatedByInteractiveClick && !element.disabled) {
-                element.focus();
+                setTimeout(function () {
+                    // Only claim focus when nothing interactive has it already.
+                    const active = document.activeElement;
+                    const focusOnBody = !active || active === document.body || active === document.documentElement;
+                    if (focusOnBody && !element.disabled) {
+                        element.focus();
+                    }
+                }, 0);
             }
             activatedByInteractiveClick = false; // reset for next activation
         });
