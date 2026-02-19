@@ -1,12 +1,19 @@
-# Build stage
+FROM mcr.microsoft.com/dotnet/aspnet:10.0 AS base
+USER $APP_UID
+WORKDIR /app
+EXPOSE 8080
+ENV ASPNETCORE_URLS=http://+:8080
+ENV ASPNETCORE_ENVIRONMENT=Production
+
 FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
+ARG BUILD_CONFIGURATION=Release
 WORKDIR /src
 
 # Clear Windows-specific NuGet fallback folders that break Linux builds
 RUN printf '<configuration><fallbackPackageFolders><clear /></fallbackPackageFolders></configuration>' \
     > /src/NuGet.config
 
-# Copy solution and project files
+# Copy solution and project files for layer-cached restore
 COPY RockBot.slnx .
 COPY src/RockBot.UserProxy.Blazor/RockBot.UserProxy.Blazor.csproj src/RockBot.UserProxy.Blazor/
 COPY src/RockBot.UserProxy/RockBot.UserProxy.csproj src/RockBot.UserProxy/
@@ -14,37 +21,18 @@ COPY src/RockBot.UserProxy.Abstractions/RockBot.UserProxy.Abstractions.csproj sr
 COPY src/RockBot.Messaging.RabbitMQ/RockBot.Messaging.RabbitMQ.csproj src/RockBot.Messaging.RabbitMQ/
 COPY src/RockBot.Messaging.Abstractions/RockBot.Messaging.Abstractions.csproj src/RockBot.Messaging.Abstractions/
 
-# Restore dependencies
 RUN dotnet restore src/RockBot.UserProxy.Blazor/RockBot.UserProxy.Blazor.csproj
 
-# Copy source code
 COPY src/ src/
 
-# Build and publish
 WORKDIR /src/src/RockBot.UserProxy.Blazor
-RUN dotnet publish -c Release -o /app/publish --no-restore
+RUN dotnet build RockBot.UserProxy.Blazor.csproj -c $BUILD_CONFIGURATION -o /app/build --no-restore
 
-# Runtime stage
-FROM mcr.microsoft.com/dotnet/aspnet:10.0 AS runtime
+FROM build AS publish
+ARG BUILD_CONFIGURATION=Release
+RUN dotnet publish RockBot.UserProxy.Blazor.csproj -c $BUILD_CONFIGURATION -o /app/publish /p:UseAppHost=false
+
+FROM base AS final
 WORKDIR /app
-
-# Create non-root user
-RUN groupadd -r rockbot && useradd -r -g rockbot rockbot
-
-# Copy published files
-COPY --from=build /app/publish .
-
-# Set ownership
-RUN chown -R rockbot:rockbot /app
-
-# Switch to non-root user
-USER rockbot
-
-# Expose port
-EXPOSE 8080
-
-# Set environment variables
-ENV ASPNETCORE_URLS=http://+:8080
-ENV ASPNETCORE_ENVIRONMENT=Production
-
+COPY --from=publish /app/publish .
 ENTRYPOINT ["dotnet", "RockBot.UserProxy.Blazor.dll"]

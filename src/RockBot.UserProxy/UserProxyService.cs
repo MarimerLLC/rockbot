@@ -21,22 +21,40 @@ public sealed class UserProxyService(
     private ISubscription? _subscription;
     private CancellationTokenSource? _cts;
 
+    public bool IsConnected { get; private set; }
+    public event Action? OnConnectionChanged;
+
     public async Task StartAsync(CancellationToken cancellationToken)
     {
         _cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
 
-        _subscription = await subscriber.SubscribeAsync(
-            UserProxyTopics.UserResponse,
-            $"user-proxy.{options.ProxyId}",
-            HandleResponseAsync,
-            cancellationToken);
+        try
+        {
+            _subscription = await subscriber.SubscribeAsync(
+                UserProxyTopics.UserResponse,
+                $"user-proxy.{options.ProxyId}",
+                HandleResponseAsync,
+                cancellationToken);
 
-        logger.LogInformation("User proxy {ProxyId} subscribed to {Topic}",
-            options.ProxyId, UserProxyTopics.UserResponse);
+            IsConnected = true;
+            OnConnectionChanged?.Invoke();
+            logger.LogInformation("User proxy {ProxyId} subscribed to {Topic}",
+                options.ProxyId, UserProxyTopics.UserResponse);
+        }
+        catch (Exception ex)
+        {
+            IsConnected = false;
+            OnConnectionChanged?.Invoke();
+            logger.LogError(ex, "User proxy {ProxyId} failed to subscribe to {Topic}",
+                options.ProxyId, UserProxyTopics.UserResponse);
+        }
     }
 
     public async Task StopAsync(CancellationToken cancellationToken)
     {
+        IsConnected = false;
+        OnConnectionChanged?.Invoke();
+
         // Cancel all pending requests
         foreach (var kvp in _pending)
         {
