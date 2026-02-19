@@ -159,6 +159,7 @@
         finally
         {
             ChatState.SetProcessing(false);
+            await messageInput.FocusAsync();
         }
     }
 
