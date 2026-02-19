@@ -1,0 +1,10 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ .Values.scripts.namespace }}
+  labels:
+    {{- include "rockbot.labels" . | nindent 4 }}
+    app.kubernetes.io/component: scripts
+    # Prevents accidental deletion — script pods are ephemeral but the
+    # namespace should persist across agent restarts.
+    rockbot/managed-by: rockbot-agent

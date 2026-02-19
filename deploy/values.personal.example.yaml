@@ -1,0 +1,31 @@
+# Copy this file to values.personal.yaml and fill in your values.
+# values.personal.yaml is gitignored — never commit it.
+#
+# Usage:
+#   helm upgrade --install rockbot deploy/helm/rockbot \
+#     -f deploy/values.personal.yaml \
+#     --create-namespace
+
+rabbitmq:
+  host: "rabbitmq-svc.rabbitmq.svc.cluster.local"   # k8s service name for your RabbitMQ
+  username: "rockbot"
+
+secrets:
+  create: true
+  azureAI:
+    endpoint: "https://<your-resource>.openai.azure.com/"
+    key: "<your-azure-openai-api-key>"
+    deploymentName: "<your-deployment-name>"
+  webTools:
+    apiKey: "<your-brave-search-api-key>"
+  rabbitmq:
+    password: "<your-rabbitmq-password>"
+
+blazor:
+  tailscale:
+    hostname: "rockbot-ui"   # accessible at http://rockbot-ui on your tailnet
+
+# Optional — configure if you have Grafana Alloy or otel-collector running
+# telemetry:
+#   enabled: true
+#   otlpEndpoint: "http://alloy.monitoring.svc.cluster.local:4317"

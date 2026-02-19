@@ -1,0 +1,35 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "rockbot.configmapName" . }}
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "rockbot.labels" . | nindent 4 }}
+data:
+  # ── RabbitMQ (non-secret) ──────────────────────────────────────────────────
+  RabbitMq__Host: {{ required "rabbitmq.host is required" .Values.rabbitmq.host | quote }}
+  RabbitMq__Port: {{ .Values.rabbitmq.port | quote }}
+  RabbitMq__Username: {{ required "rabbitmq.username is required" .Values.rabbitmq.username | quote }}
+  RabbitMq__VirtualHost: {{ .Values.rabbitmq.virtualHost | quote }}
+
+  # ── Ephemeral script runner ────────────────────────────────────────────────
+  Scripts__Container__Namespace: {{ .Values.scripts.namespace | quote }}
+  Scripts__Container__Image: {{ .Values.scripts.image | quote }}
+  Scripts__Container__CpuLimit: {{ .Values.scripts.cpuLimit | quote }}
+  Scripts__Container__MemoryLimit: {{ .Values.scripts.memoryLimit | quote }}
+
+  # ── Agent data paths (all under the PVC mount at /data/agent) ─────────────
+  AgentProfile__BasePath: "/data/agent"
+  Memory__BasePath: "/data/agent/memory"
+  Skill__BasePath: "/data/agent/skills"
+  McpBridge__ConfigPath: "/data/agent/mcp.json"
+
+  # ── Runtime ───────────────────────────────────────────────────────────────
+  DOTNET_ENVIRONMENT: "Production"
+
+  {{- if .Values.telemetry.enabled }}
+  # ── OpenTelemetry ──────────────────────────────────────────────────────────
+  Telemetry__Enabled: "true"
+  Telemetry__OtlpEndpoint: {{ required "telemetry.otlpEndpoint is required when telemetry.enabled=true" .Values.telemetry.otlpEndpoint | quote }}
+  Telemetry__ServiceName: {{ .Values.telemetry.serviceName | quote }}
+  {{- end }}

@@ -1,0 +1,23 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "rockbot.fullname" . }}-blazor
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "rockbot.labels" . | nindent 4 }}
+    app.kubernetes.io/component: blazor
+  annotations:
+    # Tailscale Kubernetes Operator — exposes this service on your tailnet
+    # at <hostname> (no Funnel, private to tailnet only).
+    # Requires: https://tailscale.com/kb/1236/kubernetes-operator
+    tailscale.com/hostname: {{ .Values.blazor.tailscale.hostname | quote }}
+spec:
+  type: LoadBalancer
+  loadBalancerClass: tailscale
+  selector:
+    app: rockbot-blazor
+    {{- include "rockbot.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8080
