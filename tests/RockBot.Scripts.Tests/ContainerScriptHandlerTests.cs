@@ -158,10 +158,11 @@ public class ContainerScriptHandlerTests
         var pod = handler.BuildPodSpec("test-pod", request);
         var command = pod.Spec.Containers[0].Command;
 
-        // sh -c "pip install ... && python -c ..."
+        // sh -c "pip install --target /tmp/pypackages ... && PYTHONPATH=... python -c ..."
         Assert.AreEqual("sh", command[0]);
         Assert.AreEqual("-c", command[1]);
-        Assert.IsTrue(command[2].Contains("pip install --quiet requests beautifulsoup4"));
+        Assert.IsTrue(command[2].Contains("pip install --quiet --target /tmp/pypackages requests beautifulsoup4"));
+        Assert.IsTrue(command[2].Contains("PYTHONPATH=/tmp/pypackages"));
     }
 
     [TestMethod]

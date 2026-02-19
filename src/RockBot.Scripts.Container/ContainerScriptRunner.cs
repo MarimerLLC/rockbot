@@ -85,7 +85,8 @@ internal sealed class ContainerScriptRunner(
         var scriptCommand = "";
         if (request.PipPackages is { Count: > 0 })
         {
-            scriptCommand += $"pip install --quiet {string.Join(' ', request.PipPackages)} && ";
+            scriptCommand += $"pip install --quiet --target /tmp/pypackages {string.Join(' ', request.PipPackages)} 2>&1 && ";
+            scriptCommand += "PYTHONPATH=/tmp/pypackages ";
         }
         scriptCommand += "python -c \"$ROCKBOT_SCRIPT\" 2>&1";
 
