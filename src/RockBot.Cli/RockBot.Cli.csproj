@@ -40,7 +40,7 @@
     <ProjectReference Include="..\RockBot.Host\RockBot.Host.csproj" />
     <ProjectReference Include="..\RockBot.Messaging.Abstractions\RockBot.Messaging.Abstractions.csproj" />
     <ProjectReference Include="..\RockBot.Messaging.RabbitMQ\RockBot.Messaging.RabbitMQ.csproj" />
-    <ProjectReference Include="..\RockBot.Scripts.Container\RockBot.Scripts.Container.csproj" />
+    <ProjectReference Include="..\RockBot.Scripts.Remote\RockBot.Scripts.Remote.csproj" />
     <ProjectReference Include="..\RockBot.UserProxy.Abstractions\RockBot.UserProxy.Abstractions.csproj" />
   </ItemGroup>
 

@@ -8,12 +8,10 @@ using OpenAI;
 using RockBot.Host;
 using RockBot.Messaging.RabbitMQ;
 using RockBot.Cli.McpBridge;
-using RockBot.Cli.ScriptBridge;
-using RockBot.Scripts.Container;
+using RockBot.Scripts.Remote;
 using RockBot.Cli;
 using RockBot.Memory;
 using RockBot.Skills;
-using RockBot.Tools;
 using RockBot.Tools;
 using RockBot.Tools.Mcp;
 using RockBot.Tools.Web;
@@ -85,11 +83,8 @@ builder.Services.AddRockBotHost(agent =>
 builder.Services.Configure<McpBridgeOptions>(builder.Configuration.GetSection("McpBridge"));
 builder.Services.AddHostedService<McpBridgeService>();
 
-// Script bridge (replaces external RockBot.Scripts.Bridge process)
-builder.Services.AddContainerScriptRunner(opts =>
-    builder.Configuration.GetSection("Scripts:Container").Bind(opts));
-builder.Services.Configure<ScriptBridgeOptions>(builder.Configuration.GetSection("ScriptBridge"));
-builder.Services.AddHostedService<ScriptBridgeService>();
+// Remote script runner — delegates script execution to the Script Manager pod via RabbitMQ
+builder.Services.AddRemoteScriptRunner("RockBot");
 
 var app = builder.Build();
 

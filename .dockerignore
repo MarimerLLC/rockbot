@@ -1,0 +1,9 @@
+**/.vs
+**/bin
+**/obj
+**/*.user
+**/*.suo
+.git
+.github
+.claude
+deploy/values.personal.yaml

@@ -44,6 +44,23 @@ rabbitmq:
   userName: ""      # REQUIRED
   virtualHost: /
 
+# ── Script Manager pod ────────────────────────────────────────────────────────
+# Trusted sidecar that owns all pod RBAC in the scripts namespace.
+# The agent has no Kubernetes API permissions; it delegates script execution
+# to this pod via the RabbitMQ message bus.
+manager:
+  image:
+    repository: rockylhotka/rockbot-scripts-manager
+    tag: latest
+  replicaCount: 1
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 250m
+      memory: 256Mi
+
 # ── Ephemeral script runner ───────────────────────────────────────────────────
 scripts:
   namespace: rockbot-scripts   # isolated from the main rockbot namespace

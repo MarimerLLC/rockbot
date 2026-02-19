@@ -1,11 +1,12 @@
-# Binds the agent's ServiceAccount (in namespace: rockbot) to the
+# Binds the Script Manager's ServiceAccount (in namespace: rockbot) to the
 # rockbot-script-runner Role (in namespace: rockbot-scripts).
-# Cross-namespace binding is intentional — the agent runs in its own
+# Cross-namespace binding is intentional — the manager runs in its own
 # namespace but must create pods in the isolated scripts namespace.
+# The agent ServiceAccount has no pod permissions (automountServiceAccountToken: false).
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
-  name: rockbot-agent-script-runner
+  name: rockbot-scripts-manager-script-runner
   namespace: {{ .Values.scripts.namespace }}
   labels:
     {{- include "rockbot.labels" . | nindent 4 }}
@@ -15,5 +16,5 @@ roleRef:
   name: rockbot-script-runner
 subjects:
   - kind: ServiceAccount
-    name: {{ include "rockbot.agentServiceAccountName" . }}
+    name: rockbot-scripts-manager
     namespace: {{ .Values.namespace }}

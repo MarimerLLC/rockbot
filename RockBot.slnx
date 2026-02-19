@@ -15,6 +15,8 @@
     <Project Path="src/RockBot.Tools.Rest/RockBot.Tools.Rest.csproj" />
     <Project Path="src/RockBot.Scripts.Abstractions/RockBot.Scripts.Abstractions.csproj" />
     <Project Path="src/RockBot.Scripts.Container/RockBot.Scripts.Container.csproj" />
+    <Project Path="src/RockBot.Scripts.Remote/RockBot.Scripts.Remote.csproj" />
+    <Project Path="src/RockBot.Scripts.Manager/RockBot.Scripts.Manager.csproj" />
     <Project Path="src/RockBot.A2A.Abstractions/RockBot.A2A.Abstractions.csproj" />
     <Project Path="src/RockBot.A2A/RockBot.A2A.csproj" />
     <Project Path="src/RockBot.Telemetry/RockBot.Telemetry.csproj" />

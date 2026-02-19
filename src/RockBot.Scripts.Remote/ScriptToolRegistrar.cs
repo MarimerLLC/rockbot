@@ -1,17 +1,16 @@
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
-using RockBot.Scripts;
 using RockBot.Tools;
 
-namespace RockBot.Scripts.Container;
+namespace RockBot.Scripts.Remote;
 
 /// <summary>
 /// Registers the <c>execute_python_script</c> tool in <see cref="IToolRegistry"/> at startup
-/// so the LLM can invoke script execution directly via the tool registry.
+/// so the LLM can invoke script execution via the message bus.
 /// </summary>
 internal sealed class ScriptToolRegistrar(
     IToolRegistry registry,
-    IScriptRunner scriptRunner,
+    ScriptToolExecutor executor,
     ILogger<ScriptToolRegistrar> logger) : IHostedService
 {
     private const string ToolName = "execute_python_script";
@@ -49,7 +48,6 @@ internal sealed class ScriptToolRegistrar(
 
     public Task StartAsync(CancellationToken cancellationToken)
     {
-        var executor = new ScriptToolExecutor(scriptRunner);
         var registration = new ToolRegistration
         {
             Name = ToolName,
