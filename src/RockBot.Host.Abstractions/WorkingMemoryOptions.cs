@@ -13,5 +13,5 @@ public sealed class WorkingMemoryOptions
     /// New entries are rejected (with a warning) once this limit is reached.
     /// Defaults to 20.
     /// </summary>
-    public int MaxEntriesPerSession { get; set; } = 20;
+    public int MaxEntriesPerSession { get; set; } = 50;
 }

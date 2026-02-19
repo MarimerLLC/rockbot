@@ -1,8 +1,13 @@
+using System.Text;
 using System.Text.Json;
+using RockBot.Host;
 
 namespace RockBot.Tools.Web;
 
-internal sealed class WebBrowseToolExecutor(IWebBrowseProvider browseProvider) : IToolExecutor
+internal sealed class WebBrowseToolExecutor(
+    IWebBrowseProvider browseProvider,
+    IWorkingMemory? workingMemory,
+    WebToolOptions options) : IToolExecutor
 {
     public async Task<ToolInvokeResponse> ExecuteAsync(ToolInvokeRequest request, CancellationToken ct)
     {
@@ -25,15 +30,36 @@ internal sealed class WebBrowseToolExecutor(IWebBrowseProvider browseProvider) :
         {
             var page = await browseProvider.FetchAsync(url, ct);
 
-            var content = string.IsNullOrWhiteSpace(page.Title)
+            var fullContent = string.IsNullOrWhiteSpace(page.Title)
                 ? page.Content
                 : $"# {page.Title}\n\n{page.Content}";
+
+            if (fullContent.Length <= options.ChunkingThreshold)
+            {
+                return new ToolInvokeResponse
+                {
+                    ToolCallId = request.ToolCallId,
+                    ToolName = request.ToolName,
+                    Content = fullContent,
+                    IsError = false
+                };
+            }
+
+            // Large content path
+            if (workingMemory != null && request.SessionId != null)
+            {
+                return await ChunkIntoWorkingMemoryAsync(request, page, fullContent, url, ct);
+            }
+
+            // Fallback: no session or working memory — truncate for backward compatibility
+            var truncated = fullContent[..options.ChunkingThreshold] +
+                $"\n\n[Content truncated — {fullContent.Length - options.ChunkingThreshold:N0} chars omitted]";
 
             return new ToolInvokeResponse
             {
                 ToolCallId = request.ToolCallId,
                 ToolName = request.ToolName,
-                Content = content,
+                Content = truncated,
                 IsError = false
             };
         }
@@ -41,6 +67,65 @@ internal sealed class WebBrowseToolExecutor(IWebBrowseProvider browseProvider) :
         {
             return Error(request, $"Failed to fetch page: {ex.Message}");
         }
+    }
+
+    private async Task<ToolInvokeResponse> ChunkIntoWorkingMemoryAsync(
+        ToolInvokeRequest request,
+        WebPageContent page,
+        string fullContent,
+        string url,
+        CancellationToken ct)
+    {
+        var chunks = MarkdownChunker.Chunk(fullContent, options.ChunkMaxLength);
+        var ttl = TimeSpan.FromMinutes(options.ChunkTtlMinutes);
+        var sanitizedUrl = SanitizeUrlForKey(url);
+        var index = new StringBuilder();
+
+        index.AppendLine($"Page \"{page.Title}\" is large and has been split into {chunks.Count} chunk(s) in working memory.");
+        index.AppendLine($"Use `GetFromWorkingMemory(key)` to retrieve each chunk on demand.");
+        index.AppendLine();
+        index.AppendLine("| # | Heading | Key |");
+        index.AppendLine("|---|---------|-----|");
+
+        for (var i = 0; i < chunks.Count; i++)
+        {
+            var (heading, content) = chunks[i];
+            var key = $"web:{sanitizedUrl}:chunk{i}";
+
+            await workingMemory!.SetAsync(
+                request.SessionId!,
+                key,
+                content,
+                ttl: ttl,
+                category: "web");
+
+            var displayHeading = string.IsNullOrWhiteSpace(heading) ? $"Section {i}" : heading;
+            index.AppendLine($"| {i} | {displayHeading} | `{key}` |");
+        }
+
+        return new ToolInvokeResponse
+        {
+            ToolCallId = request.ToolCallId,
+            ToolName = request.ToolName,
+            Content = index.ToString().Trim(),
+            IsError = false
+        };
+    }
+
+    private static string SanitizeUrlForKey(string url)
+    {
+        // Keep only alphanumerics, dots, and hyphens; collapse the rest to underscores
+        var sb = new StringBuilder(url.Length);
+        foreach (var c in url)
+        {
+            if (char.IsLetterOrDigit(c) || c == '.' || c == '-')
+                sb.Append(c);
+            else
+                sb.Append('_');
+        }
+        // Trim leading protocol noise (https___) and cap length
+        var key = sb.ToString().TrimStart('_');
+        return key.Length > 80 ? key[..80] : key;
     }
 
     private static ToolInvokeResponse Error(ToolInvokeRequest request, string message) =>

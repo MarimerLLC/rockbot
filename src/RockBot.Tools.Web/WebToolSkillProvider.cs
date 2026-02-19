@@ -85,10 +85,31 @@ internal sealed class WebToolSkillProvider : IToolSkillProvider
         ```
 
         - Browse the highest-confidence URL from Step 2 first
-        - If the page is truncated and the answer is incomplete, search for a more
-          targeted URL or browse a different result
         - You can browse a URL directly without searching first when you already know
           the authoritative source (e.g. official docs, GitHub releases page)
+
+        ### Large Pages — Automatic Chunking
+
+        When a page is large, `web_browse` automatically splits it into chunks and saves
+        them to working memory. Instead of returning all the content at once, it returns
+        a **chunk index** — a table listing each chunk's heading and key:
+
+        ```
+        | # | Heading          | Key                              |
+        |---|------------------|----------------------------------|
+        | 0 | Introduction     | `web:learn.microsoft.com_...:chunk0` |
+        | 1 | Getting Started  | `web:learn.microsoft.com_...:chunk1` |
+        | 2 | API Reference    | `web:learn.microsoft.com_...:chunk2` |
+        ```
+
+        To read a chunk, call:
+        ```
+        GetFromWorkingMemory(key: "web:learn.microsoft.com_...:chunk1")
+        ```
+
+        - Only load the chunks you actually need — read headings to pick the relevant ones
+        - Use `ListWorkingMemory()` to see all cached chunks and their expiry times
+        - Chunks expire after 20 minutes; re-browse the page if they are gone
 
 
         ## Step 4 — Synthesize and Report
@@ -135,8 +156,8 @@ internal sealed class WebToolSkillProvider : IToolSkillProvider
           speculatively
         - **Prefer primary sources** — official docs, release pages, and canonical
           references over aggregators and summaries
-        - **Check for truncation** — if `web_browse` output ends abruptly, the page was
-          cut off; search for a more specific URL or acknowledge the limitation
+        - **Large pages are chunked** — if `web_browse` returns a chunk index, use
+          `GetFromWorkingMemory` to load only the sections you need
         - **Don't over-search** — two to three targeted searches are usually better than
           ten vague ones
 
@@ -146,7 +167,7 @@ internal sealed class WebToolSkillProvider : IToolSkillProvider
         - Vague queries that return off-topic results — be specific
         - Browsing every search result instead of evaluating snippets first
         - Treating a snippet as the full answer when the detail is in the page body
-        - Ignoring truncation and reporting incomplete content as complete
+        - Ignoring the chunk index and reporting incomplete content as complete
         - Not citing sources, making it hard for the user to verify findings
         """;
 }

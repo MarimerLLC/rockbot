@@ -89,7 +89,7 @@ public class HttpWebBrowseProviderTests
         {
             Content = new StringContent(html, Encoding.UTF8, "text/html")
         };
-        return new HttpWebBrowseProvider(new StubFactory(new StubHandler(response)), new WebToolOptions(), NullLogger<HttpWebBrowseProvider>.Instance);
+        return new HttpWebBrowseProvider(new StubFactory(new StubHandler(response)), NullLogger<HttpWebBrowseProvider>.Instance);
     }
 
     private sealed class StubHandler(HttpResponseMessage response) : HttpMessageHandler
