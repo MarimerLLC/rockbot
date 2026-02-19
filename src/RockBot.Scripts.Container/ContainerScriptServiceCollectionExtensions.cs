@@ -2,7 +2,6 @@ using k8s;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using RockBot.Host;
-using RockBot.Tools;
 
 namespace RockBot.Scripts.Container;
 
@@ -12,9 +11,9 @@ namespace RockBot.Scripts.Container;
 public static class ContainerScriptServiceCollectionExtensions
 {
     /// <summary>
-    /// Registers <see cref="IScriptRunner"/> backed by ephemeral K8s pods, and registers
-    /// the <c>execute_python_script</c> tool in the <see cref="IToolRegistry"/> via
-    /// <see cref="ScriptToolRegistrar"/> so the LLM can invoke scripts directly.
+    /// Registers <see cref="IScriptRunner"/> backed by ephemeral K8s pods directly.
+    /// For the agent-side integration that delegates to the Script Manager pod via the
+    /// message bus, use <c>AddRemoteScriptRunner()</c> from <c>RockBot.Scripts.Remote</c>.
     /// </summary>
     public static IServiceCollection AddContainerScriptRunner(
         this IServiceCollection services,
@@ -28,15 +27,13 @@ public static class ContainerScriptServiceCollectionExtensions
             new Kubernetes(KubernetesClientConfiguration.BuildDefaultConfig()));
 
         services.AddSingleton<IScriptRunner, ContainerScriptRunner>();
-        services.AddHostedService<ScriptToolRegistrar>();
-        services.AddSingleton<IToolSkillProvider, ScriptToolSkillProvider>();
 
         return services;
     }
 
     /// <summary>
     /// Registers the container script handler and subscribes to "script.invoke".
-    /// Also registers a ScriptToolExecutor in the tool registry for LLM tool invocation.
+    /// Used by the Script Manager pod to bridge RabbitMQ requests to ephemeral K8s pods.
     /// </summary>
     public static AgentHostBuilder AddContainerScriptHandler(
         this AgentHostBuilder builder,
@@ -55,9 +52,6 @@ public static class ContainerScriptServiceCollectionExtensions
         // Register message handler for script.invoke topic
         builder.HandleMessage<ScriptInvokeRequest, ContainerScriptHandler>();
         builder.SubscribeTo("script.invoke");
-
-        // Register script tool executor adapter for tool.invoke integration
-        builder.Services.AddSingleton<ScriptToolExecutor>();
 
         return builder;
     }
