@@ -37,6 +37,7 @@ internal sealed class UserMessageHandler(
     InjectedMemoryTracker injectedMemoryTracker,
     ISkillStore skillStore,
     SkillIndexTracker skillIndexTracker,
+    SkillRecallTracker skillRecallTracker,
     MemoryTools memoryTools,
     IRulesStore rulesStore,
     RulesTools rulesTools,
@@ -161,6 +162,24 @@ internal sealed class UserMessageHandler(
                     chatMessages.Add(new ChatMessage(ChatRole.System, indexText));
                     logger.LogInformation("Injected skill index ({Count} skills) for session {SessionId}",
                         skills.Count, message.SessionId);
+                }
+            }
+
+            // BM25-score skills against the current message on every turn (per-turn recall).
+            {
+                var recalledSkills = await skillStore.SearchAsync(message.Content, maxResults: 5, ct);
+                var newSkills = recalledSkills
+                    .Where(s => skillRecallTracker.TryMarkAsRecalled(message.SessionId, s.Name))
+                    .ToList();
+
+                if (newSkills.Count > 0)
+                {
+                    var skillNames = string.Join(", ", newSkills.Select(s => s.Name));
+                    var recallText = $"Relevant skills for this message: {skillNames}";
+                    chatMessages.Add(new ChatMessage(ChatRole.System, recallText));
+                    logger.LogInformation(
+                        "Injected {Count} relevant skill(s) (BM25 recall) for session {SessionId}: {Skills}",
+                        newSkills.Count, message.SessionId, skillNames);
                 }
             }
 

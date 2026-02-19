@@ -204,7 +204,73 @@ public class FileSkillStoreTests
         FileSkillStore.ValidateName("A_B/c-d/E123");
     }
 
-    // ── DI registration ───────────────────────────────────────────────────────
+    // ── SearchAsync (BM25) ────────────────────────────────────────────────────
+
+    [TestMethod]
+    public async Task SearchAsync_ReturnsRelevantSkills()
+    {
+        var store = CreateStore();
+        await store.SaveAsync(MakeSkill("plan-meeting", "Schedule meetings and invite attendees", "content"));
+        await store.SaveAsync(MakeSkill("send-email", "Send an email to a recipient", "content"));
+        await store.SaveAsync(MakeSkill("summarize-paper", "Summarize a research paper", "content"));
+
+        var results = await store.SearchAsync("meeting schedule", maxResults: 5);
+
+        Assert.IsTrue(results.Count > 0);
+        Assert.AreEqual("plan-meeting", results[0].Name);
+    }
+
+    [TestMethod]
+    public async Task SearchAsync_EmptyStore_ReturnsEmpty()
+    {
+        var results = await CreateStore().SearchAsync("anything", maxResults: 5);
+        Assert.AreEqual(0, results.Count);
+    }
+
+    [TestMethod]
+    public async Task SearchAsync_NoMatchingSkills_ReturnsEmpty()
+    {
+        var store = CreateStore();
+        await store.SaveAsync(MakeSkill("plan-meeting", "Schedule meetings", "content"));
+
+        var results = await store.SearchAsync("xyzzy", maxResults: 5);
+
+        Assert.AreEqual(0, results.Count);
+    }
+
+    [TestMethod]
+    public async Task SearchAsync_RespectsMaxResults()
+    {
+        var store = CreateStore();
+        await store.SaveAsync(MakeSkill("plan-meeting", "Schedule meetings efficiently", "content"));
+        await store.SaveAsync(MakeSkill("book-meeting", "Book a meeting room for meetings", "content"));
+        await store.SaveAsync(MakeSkill("cancel-meeting", "Cancel a scheduled meeting", "content"));
+
+        var results = await store.SearchAsync("meeting", maxResults: 2);
+
+        Assert.IsTrue(results.Count <= 2);
+    }
+
+    [TestMethod]
+    public void GetDocumentText_CombinesNameAndSummary()
+    {
+        var skill = MakeSkill("plan-meeting", "Schedule meetings", "content");
+        var text = FileSkillStore.GetDocumentText(skill);
+
+        Assert.IsTrue(text.Contains("plan"));
+        Assert.IsTrue(text.Contains("meeting"));
+        Assert.IsTrue(text.Contains("Schedule"));
+    }
+
+    [TestMethod]
+    public void GetDocumentText_EmptySummary_ReturnsNameOnly()
+    {
+        var skill = MakeSkill("plan-meeting", "", "content");
+        var text = FileSkillStore.GetDocumentText(skill);
+
+        Assert.IsTrue(text.Contains("plan"));
+        Assert.IsTrue(text.Contains("meeting"));
+    }
 
     [TestMethod]
     public void WithSkills_RegistersISkillStore()
