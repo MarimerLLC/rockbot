@@ -29,7 +29,7 @@
                     <div class="message-content">
                         @((MarkupString)ConvertMarkdownToHtml(message.Content))
                     </div>
-                    <div class="message-time small opacity-75 mt-2">
+                    <div class="message-time">
                         @message.Timestamp.ToLocalTime().ToString("HH:mm:ss")
                     </div>
                 </div>
