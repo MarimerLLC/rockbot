@@ -86,13 +86,15 @@
     private ElementReference messagesContainer;
     private ElementReference messageInput;
     private bool IsDarkMode = false;
+    private Action? _stateChangedHandler;
     private static readonly MarkdownPipeline MarkdownPipeline = new MarkdownPipelineBuilder()
         .UseAdvancedExtensions()
         .Build();
 
     protected override void OnInitialized()
     {
-        ChatState.OnStateChanged += StateHasChanged;
+        _stateChangedHandler = () => InvokeAsync(StateHasChanged);
+        ChatState.OnStateChanged += _stateChangedHandler;
     }
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
@@ -145,6 +147,10 @@
             {
                 ChatState.AddError("No reply received (timeout)");
             }
+            else
+            {
+                ChatState.AddAgentReply(reply);
+            }
         }
         catch (Exception ex)
         {
@@ -189,6 +195,6 @@
 
     public void Dispose()
     {
-        ChatState.OnStateChanged -= StateHasChanged;
+        ChatState.OnStateChanged -= _stateChangedHandler;
     }
 }
