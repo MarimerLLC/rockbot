@@ -14,6 +14,7 @@ using RockBot.Cli;
 using RockBot.Memory;
 using RockBot.Skills;
 using RockBot.Tools;
+using RockBot.Tools;
 using RockBot.Tools.Mcp;
 using RockBot.Tools.Web;
 using RockBot.UserProxy;
@@ -56,6 +57,9 @@ builder.Services.AddSingleton<InjectedMemoryTracker>();
 // Skill tools and session index tracker
 builder.Services.AddSingleton<SkillTools>();
 builder.Services.AddSingleton<SkillIndexTracker>();
+// Tool guides for memory and skill subsystems
+builder.Services.AddSingleton<IToolSkillProvider, MemoryToolSkillProvider>();
+builder.Services.AddSingleton<IToolSkillProvider, SkillToolSkillProvider>();
 
 builder.Services.AddRockBotHost(agent =>
 {
