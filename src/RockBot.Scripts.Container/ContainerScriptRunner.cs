@@ -50,19 +50,10 @@ internal sealed class ContainerScriptRunner(
                 .FirstOrDefault(c => c.Name == "script")?
                 .State?.Terminated?.ExitCode ?? -1;
 
-            string? stderr = null;
-            if (exitCode != 0)
-            {
-                stderr = completedPod.Status?.ContainerStatuses?
-                    .FirstOrDefault(c => c.Name == "script")?
-                    .State?.Terminated?.Reason;
-            }
-
             return new ScriptInvokeResponse
             {
                 ToolCallId = request.ToolCallId,
                 Output = stdout,
-                Stderr = stderr,
                 ExitCode = exitCode,
                 ElapsedMs = sw.ElapsedMilliseconds
             };

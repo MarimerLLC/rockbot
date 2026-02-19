@@ -51,14 +51,6 @@ internal sealed class ContainerScriptHandler(
                 exitCode = completedPod.Status?.ContainerStatuses?
                     .FirstOrDefault(c => c.Name == "script")?
                     .State?.Terminated?.ExitCode ?? -1;
-
-                // Try to get stderr from terminated reason if exit code is non-zero
-                if (exitCode != 0)
-                {
-                    stderr = completedPod.Status?.ContainerStatuses?
-                        .FirstOrDefault(c => c.Name == "script")?
-                        .State?.Terminated?.Reason;
-                }
             }
             else
             {
