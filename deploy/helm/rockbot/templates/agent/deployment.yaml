@@ -1,0 +1,91 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "rockbot.fullname" . }}-agent
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "rockbot.labels" . | nindent 4 }}
+    app.kubernetes.io/component: agent
+spec:
+  replicas: {{ .Values.agent.replicaCount }}
+  # Recreate ensures only one agent runs at a time — the agent is stateful
+  # (memory, working state) and must not run as concurrent replicas.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: rockbot-agent
+      {{- include "rockbot.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        app: rockbot-agent
+        {{- include "rockbot.labels" . | nindent 8 }}
+        {{- include "rockbot.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: agent
+    spec:
+      serviceAccountName: {{ include "rockbot.agentServiceAccountName" . }}
+
+      initContainers:
+        - name: init-agent-data
+          # Use the same image so we can copy the baked-in default agent files
+          # to the PVC. cp -n (no-clobber) means customised files are never overwritten.
+          image: {{ .Values.agent.image.repository }}:{{ .Values.agent.image.tag }}
+          imagePullPolicy: {{ .Values.imagePullPolicy }}
+          # Run as root so we can write to the freshly-provisioned PVC (owned by root)
+          # and then chown it to the rockbot user before the main container starts.
+          securityContext:
+            runAsUser: 0
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -e
+              echo "Initializing agent data volume..."
+
+              # Profile documents — live at /app/agent/ in the image
+              for f in soul.md directives.md style.md memory-rules.md dream.md skill-dream.md; do
+                src="/app/agent/$f"
+                dst="/data/agent/$f"
+                if [ -f "$src" ] && [ ! -f "$dst" ]; then
+                  echo "  Copying default $f"
+                  cp "$src" "$dst"
+                fi
+              done
+
+              # mcp.json lives at /app/mcp.json in the image (not under agent/)
+              if [ ! -f /data/agent/mcp.json ]; then
+                echo "  Copying default mcp.json"
+                cp /app/mcp.json /data/agent/mcp.json
+              fi
+
+              # Runtime directories
+              mkdir -p /data/agent/memory /data/agent/skills
+
+              # Hand ownership to the rockbot user so the main container (non-root)
+              # can read and write the volume. The user exists in the image.
+              chown -R rockbot:rockbot /data/agent
+              echo "Agent data volume ready."
+          volumeMounts:
+            - name: agent-data
+              mountPath: /data/agent
+
+      containers:
+        - name: agent
+          image: {{ .Values.agent.image.repository }}:{{ .Values.agent.image.tag }}
+          imagePullPolicy: {{ .Values.imagePullPolicy }}
+          envFrom:
+            - configMapRef:
+                name: {{ include "rockbot.configmapName" . }}
+            - secretRef:
+                name: {{ include "rockbot.secretName" . }}
+          volumeMounts:
+            - name: agent-data
+              mountPath: /data/agent
+          resources:
+            {{- toYaml .Values.agent.resources | nindent 12 }}
+
+      volumes:
+        - name: agent-data
+          persistentVolumeClaim:
+            claimName: {{ include "rockbot.agentPvcName" . }}

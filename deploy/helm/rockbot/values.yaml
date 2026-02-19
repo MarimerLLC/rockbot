@@ -1,0 +1,87 @@
+# ── Image pull policy ────────────────────────────────────────────────────────
+imagePullPolicy: IfNotPresent
+
+# ── Namespace ─────────────────────────────────────────────────────────────────
+namespace: rockbot
+
+# ── Agent (RockBot.Cli) ───────────────────────────────────────────────────────
+agent:
+  image:
+    repository: rockylhotka/rockbot-cli
+    tag: latest
+  # Always Recreate — only one agent may run at a time (stateful)
+  replicaCount: 1
+  resources:
+    requests:
+      cpu: 500m
+      memory: 512Mi
+    limits:
+      cpu: "2"
+      memory: 2Gi
+
+# ── Blazor UI (RockBot.UserProxy.Blazor) ─────────────────────────────────────
+blazor:
+  image:
+    repository: rockylhotka/rockbot-blazor
+    tag: latest
+  replicaCount: 1
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+  tailscale:
+    # Tailscale hostname — the UI becomes accessible at <hostname> on your tailnet.
+    # Requires the Tailscale Kubernetes Operator to be installed.
+    hostname: rockbot
+
+# ── RabbitMQ ──────────────────────────────────────────────────────────────────
+rabbitmq:
+  hostName: ""      # REQUIRED — hostname or k8s service name of your RabbitMQ instance
+  port: 5672
+  userName: ""      # REQUIRED
+  virtualHost: /
+
+# ── Ephemeral script runner ───────────────────────────────────────────────────
+scripts:
+  namespace: rockbot-scripts   # isolated from the main rockbot namespace
+  image: python:3.12-slim
+  cpuLimit: 500m
+  memoryLimit: 256Mi
+
+# ── Persistent storage (Longhorn) ─────────────────────────────────────────────
+storage:
+  storageClass: longhorn
+  # Holds soul.md, directives.md, mcp.json, memory/, skills/, and other agent data
+  agentDataSize: 10Gi
+
+# ── Telemetry (OpenTelemetry) ─────────────────────────────────────────────────
+telemetry:
+  enabled: false
+  # OTLP gRPC endpoint — e.g. Grafana Alloy, otel-collector
+  otlpEndpoint: ""
+  serviceName: rockbot
+
+# ── Secrets ───────────────────────────────────────────────────────────────────
+# create: true  → Helm creates a Secret from the values below (convenient, but
+#                  secret values end up in Helm release history — use for dev/test
+#                  or seal with helm-secrets / external-secrets for production).
+# create: false → Provide existingSecretName pointing to a pre-existing Secret.
+#                  The Secret must contain all keys listed under stringData in
+#                  templates/secret.yaml.
+secrets:
+  create: true
+  existingSecretName: ""   # used only when create: false
+
+  azureAI:
+    endpoint: ""            # REQUIRED — Azure OpenAI endpoint URL
+    key: ""                 # REQUIRED — Azure OpenAI API key
+    deploymentName: ""      # REQUIRED — model deployment name
+
+  webTools:
+    apiKey: ""              # REQUIRED — Brave Search API key
+
+  rabbitmq:
+    password: ""            # REQUIRED — RabbitMQ password

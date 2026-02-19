@@ -1,0 +1,63 @@
+╔══════════════════════════════════════════════════════════════════╗
+║  RockBot {{ .Chart.Version }} installed successfully                        ║
+╚══════════════════════════════════════════════════════════════════╝
+
+NEXT STEPS
+──────────
+
+1. BUILD AND PUSH IMAGES
+
+   From the repository root:
+
+   # Agent
+   docker build -t {{ .Values.agent.image.repository }}:{{ .Values.agent.image.tag }} \
+     -f deploy/Dockerfile.cli .
+   docker push {{ .Values.agent.image.repository }}:{{ .Values.agent.image.tag }}
+
+   # Blazor UI
+   docker build -t {{ .Values.blazor.image.repository }}:{{ .Values.blazor.image.tag }} \
+     -f src/RockBot.UserProxy.Blazor/Dockerfile .
+   docker push {{ .Values.blazor.image.repository }}:{{ .Values.blazor.image.tag }}
+
+
+2. POPULATE THE AGENT DATA VOLUME
+
+   On first start the init container copies default agent files from the
+   image onto the Longhorn PVC. To replace them with your own files:
+
+   # Find the agent pod name
+   kubectl -n {{ .Values.namespace }} get pods -l app=rockbot-agent
+
+   # Copy your local agent directory to the PVC
+   kubectl -n {{ .Values.namespace }} cp \
+     src/RockBot.Cli/agent/ <pod-name>:/data/agent/
+
+   # Copy your mcp.json
+   kubectl -n {{ .Values.namespace }} cp \
+     src/RockBot.Cli/mcp.json <pod-name>:/data/agent/mcp.json
+
+   Or exec in and edit directly:
+   kubectl -n {{ .Values.namespace }} exec -it deploy/{{ include "rockbot.fullname" . }}-agent -- /bin/sh
+
+
+3. ACCESS THE BLAZOR UI
+
+   The Blazor UI is exposed on your Tailscale network via the
+   Tailscale Kubernetes Operator at:
+
+     http://{{ .Values.blazor.tailscale.hostname }}
+
+   It may take 30–60 s after the service is created for the Tailscale
+   device to register. Check operator status with:
+
+     kubectl -n {{ .Values.namespace }} describe svc {{ include "rockbot.fullname" . }}-blazor
+
+
+4. LOGS IN GRAFANA / LOKI
+
+   Pod logs stream to stdout and are picked up automatically by Promtail.
+   Filter in Grafana with:
+
+     {namespace="{{ .Values.namespace }}"}
+     {namespace="{{ .Values.namespace }}", app="rockbot-agent"}
+     {namespace="{{ .Values.namespace }}", app="rockbot-blazor"}

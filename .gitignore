@@ -4,3 +4,7 @@ obj/
 .claude/
 *.user
 *.suo
+
+# Helm personal values files contain secrets — never commit these
+deploy/values.personal.yaml
+deploy/values.*.personal.yaml
