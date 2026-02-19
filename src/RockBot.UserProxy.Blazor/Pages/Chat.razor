@@ -21,7 +21,7 @@
         @foreach (var message in ChatState.Messages)
         {
             <div class="message-wrapper mb-3 @(message.IsFromUser ? "user-message" : "agent-message")">
-                <div class="message-bubble p-3 rounded @(message.IsError ? "bg-danger text-white" : (message.IsFromUser ? "bg-primary text-white" : "bg-light"))">
+                <div class="message-bubble p-3 rounded @(message.IsError ? "bg-danger text-white" : (message.IsFromUser ? "bg-primary text-white" : ""))">
                     @if (!message.IsFromUser && !message.IsError && !string.IsNullOrEmpty(message.AgentName))
                     {
                         <div class="fw-bold small mb-2">@message.AgentName</div>
@@ -39,7 +39,7 @@
         @if (ChatState.IsProcessing)
         {
             <div class="message-wrapper mb-3 agent-message">
-                <div class="message-bubble p-3 rounded bg-light">
+                <div class="message-bubble p-3 rounded">
                     <div class="thinking-indicator">
                         <span class="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></span>
                         @if (!string.IsNullOrEmpty(ChatState.CurrentThinkingMessage))
