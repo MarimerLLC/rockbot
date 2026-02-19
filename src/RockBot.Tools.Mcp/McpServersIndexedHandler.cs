@@ -36,7 +36,7 @@ public sealed class McpServersIndexedHandler(
         registry.Register(new ToolRegistration
         {
             Name = "mcp_list_services",
-            Description = "List all available MCP servers with their summaries and tool counts.",
+            Description = "List all connected MCP servers with their summaries and tool counts. Call this first when you need live, personal, or external data (calendar, email, files, etc.) and don't know which server to use.",
             ParametersSchema = """{"type":"object","properties":{},"required":[]}""",
             Source = "mcp:management"
         }, executor);
@@ -44,15 +44,15 @@ public sealed class McpServersIndexedHandler(
         registry.Register(new ToolRegistration
         {
             Name = "mcp_get_service_details",
-            Description = "Get the full list of tools (names, descriptions, schemas) for a specific MCP server.",
-            ParametersSchema = """{"type":"object","properties":{"server_name":{"type":"string","description":"Name of the MCP server"}},"required":["server_name"]}""",
+            Description = "Get tool details (name, description, parameter schema) for an MCP server. Pass tool_name to get details for one specific tool (preferred — avoids returning all tool schemas). Omit tool_name to list all tools on the server.",
+            ParametersSchema = """{"type":"object","properties":{"server_name":{"type":"string","description":"Name of the MCP server"},"tool_name":{"type":"string","description":"Optional: return details for this specific tool only. Recommended when you know the tool name."}},"required":["server_name"]}""",
             Source = "mcp:management"
         }, executor);
 
         registry.Register(new ToolRegistration
         {
             Name = "mcp_invoke_tool",
-            Description = "Invoke a specific tool on a specific MCP server.",
+            Description = "Execute a tool on an MCP server to access live external data or perform actions (e.g. read calendar events, send email, query files). This is the gateway to all external MCP capabilities. Requires server_name and tool_name from mcp_list_services/mcp_get_service_details.",
             ParametersSchema = """{"type":"object","properties":{"server_name":{"type":"string","description":"Name of the MCP server"},"tool_name":{"type":"string","description":"Name of the tool to invoke"},"arguments":{"type":"object","description":"Arguments to pass to the tool (as a JSON object)"}},"required":["server_name","tool_name"]}""",
             Source = "mcp:management"
         }, executor);

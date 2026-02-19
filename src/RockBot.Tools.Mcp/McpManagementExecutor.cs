@@ -103,11 +103,21 @@ public sealed class McpManagementExecutor : IToolExecutor, IAsyncDisposable
         if (response.Error is not null)
             return Error(request, response.Error);
 
+        var tools = response.Tools;
+        if (TryGetString(args, "tool_name", out var toolName))
+        {
+            tools = tools
+                .Where(t => t.Name.Equals(toolName, StringComparison.OrdinalIgnoreCase))
+                .ToList();
+            if (tools.Count == 0)
+                return Error(request, $"No tool named '{toolName}' found on server '{serverName}'");
+        }
+
         return new ToolInvokeResponse
         {
             ToolCallId = request.ToolCallId,
             ToolName = request.ToolName,
-            Content = JsonSerializer.Serialize(response.Tools, JsonOptions)
+            Content = JsonSerializer.Serialize(tools, JsonOptions)
         };
     }
 
