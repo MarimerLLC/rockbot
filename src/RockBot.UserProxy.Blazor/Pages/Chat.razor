@@ -88,6 +88,7 @@
     private ElementReference messageInput;
     private bool IsDarkMode = false;
     private Action? _stateChangedHandler;
+    private int _renderedMessageCount = 0;
     private static readonly MarkdownPipeline MarkdownPipeline = new MarkdownPipelineBuilder()
         .UseAdvancedExtensions()
         .Build();
@@ -103,17 +104,20 @@
         if (firstRender)
         {
             // Check for system dark mode preference
-            IsDarkMode = await JSRuntime.InvokeAsync<bool>("eval", 
+            IsDarkMode = await JSRuntime.InvokeAsync<bool>("eval",
                 "window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches");
             await ApplyDarkMode();
         }
-        
-        if (ChatState.Messages.Count > 0)
+
+        // Only scroll when a new message has been added — not on every re-render
+        // (e.g. theme toggles should not move the scroll position).
+        // Scroll to the TOP of the new message so long responses are read top-to-bottom.
+        var currentCount = ChatState.Messages.Count;
+        if (currentCount > _renderedMessageCount)
         {
-            // Auto-scroll to bottom when new messages arrive
-            await Task.Delay(50);
-            await JSRuntime.InvokeVoidAsync("eval", 
-                $"document.querySelector('.chat-messages')?.scrollTo(0, document.querySelector('.chat-messages').scrollHeight)");
+            _renderedMessageCount = currentCount;
+            await JSRuntime.InvokeVoidAsync("eval",
+                "var msgs = document.querySelectorAll('.message-wrapper'); if (msgs.length) msgs[msgs.length - 1].scrollIntoView({ behavior: 'smooth', block: 'start' });");
         }
     }
 
