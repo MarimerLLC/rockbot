@@ -11,25 +11,28 @@ window.chatHelpers = {
     },
 
     focusInputOnWindowFocus: function (element) {
-        // When the OS-level focus switches to this window, move focus to the
-        // input element so the user can start typing immediately.  This only
-        // fires when the window was previously out of focus (e.g. the user was
-        // in another application), so it does not interfere with in-app clicks
-        // where the user may be trying to select text.
-        //
-        // The setTimeout defers the focus call until after the browser's own
-        // click-focus logic completes.  Without it, clicking a focusable element
-        // (e.g. the Send button) to activate the window would cause a flicker:
-        // our handler gives focus to the textarea, then the browser immediately
-        // moves focus to the clicked element.  By deferring and only focusing
-        // when nothing else has claimed focus (activeElement is body/null), we
-        // avoid stealing focus from elements the user intentionally clicked.
+        const focusable = 'input, textarea, button, select, a[href], [tabindex]:not([tabindex="-1"])';
+        let activatedByInteractiveClick = false;
+
+        // When the window loses focus, reset so that Alt+Tab back always focuses the textarea.
+        window.addEventListener('blur', function () {
+            activatedByInteractiveClick = false;
+        });
+
+        // pointerdown fires before window.focus, so we know whether the click
+        // that is about to activate the window targeted an interactive element.
+        document.addEventListener('pointerdown', function (e) {
+            activatedByInteractiveClick = !!e.target.closest(focusable);
+        });
+
+        // When the window gains focus, auto-focus the textarea unless:
+        //   • the user clicked an interactive element (let the browser handle focus), or
+        //   • the textarea is disabled (message is being processed).
         window.addEventListener('focus', function () {
-            setTimeout(function () {
-                if (!document.activeElement || document.activeElement === document.body) {
-                    element.focus();
-                }
-            }, 0);
+            if (!activatedByInteractiveClick && !element.disabled) {
+                element.focus();
+            }
+            activatedByInteractiveClick = false; // reset for next activation
         });
     }
 };
