@@ -21,7 +21,7 @@
         @foreach (var message in ChatState.Messages)
         {
             <div class="message-wrapper mb-3 @(message.IsFromUser ? "user-message" : "agent-message")">
-                <div class="message-bubble p-3 rounded @(message.IsError ? "bg-danger text-white" : (message.IsFromUser ? "bg-primary text-white" : "bg-light"))">
+                <div class="message-bubble p-3 rounded @(message.IsError ? "bg-danger text-white" : (message.IsFromUser ? "bg-primary text-white" : ""))">
                     @if (!message.IsFromUser && !message.IsError && !string.IsNullOrEmpty(message.AgentName))
                     {
                         <div class="fw-bold small mb-2">@message.AgentName</div>
@@ -29,7 +29,7 @@
                     <div class="message-content">
                         @((MarkupString)ConvertMarkdownToHtml(message.Content))
                     </div>
-                    <div class="message-time small opacity-75 mt-2">
+                    <div class="message-time">
                         @message.Timestamp.ToLocalTime().ToString("HH:mm:ss")
                     </div>
                 </div>
@@ -39,7 +39,7 @@
         @if (ChatState.IsProcessing)
         {
             <div class="message-wrapper mb-3 agent-message">
-                <div class="message-bubble p-3 rounded bg-light">
+                <div class="message-bubble p-3 rounded">
                     <div class="thinking-indicator">
                         <span class="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></span>
                         @if (!string.IsNullOrEmpty(ChatState.CurrentThinkingMessage))
@@ -58,15 +58,16 @@
 
     <div class="chat-input bg-light p-3 border-top">
         <form @onsubmit="SendMessage" @onsubmit:preventDefault="true" class="d-flex gap-2">
-            <input 
-                type="text" 
-                class="form-control" 
-                placeholder="Type your message..." 
+            <textarea
+                class="form-control"
+                placeholder="Type your message..."
                 @bind="currentMessage"
                 @bind:event="oninput"
                 @ref="messageInput"
-                disabled="@ChatState.IsProcessing" 
-                aria-label="Message input" />
+                @onkeydown="HandleKeyDown"
+                disabled="@ChatState.IsProcessing"
+                rows="1"
+                aria-label="Message input"></textarea>
             <button 
                 type="submit" 
                 class="btn btn-primary"
@@ -86,13 +87,16 @@
     private ElementReference messagesContainer;
     private ElementReference messageInput;
     private bool IsDarkMode = false;
+    private Action? _stateChangedHandler;
+    private int _renderedMessageCount = 0;
     private static readonly MarkdownPipeline MarkdownPipeline = new MarkdownPipelineBuilder()
         .UseAdvancedExtensions()
         .Build();
 
     protected override void OnInitialized()
     {
-        ChatState.OnStateChanged += StateHasChanged;
+        _stateChangedHandler = () => InvokeAsync(StateHasChanged);
+        ChatState.OnStateChanged += _stateChangedHandler;
     }
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
@@ -100,17 +104,20 @@
         if (firstRender)
         {
             // Check for system dark mode preference
-            IsDarkMode = await JSRuntime.InvokeAsync<bool>("eval", 
+            IsDarkMode = await JSRuntime.InvokeAsync<bool>("eval",
                 "window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches");
             await ApplyDarkMode();
         }
-        
-        if (ChatState.Messages.Count > 0)
+
+        // Only scroll when a new message has been added — not on every re-render
+        // (e.g. theme toggles should not move the scroll position).
+        // Scroll to the TOP of the new message so long responses are read top-to-bottom.
+        var currentCount = ChatState.Messages.Count;
+        if (currentCount > _renderedMessageCount)
         {
-            // Auto-scroll to bottom when new messages arrive
-            await Task.Delay(50);
-            await JSRuntime.InvokeVoidAsync("eval", 
-                $"document.querySelector('.chat-messages')?.scrollTo(0, document.querySelector('.chat-messages').scrollHeight)");
+            _renderedMessageCount = currentCount;
+            await JSRuntime.InvokeVoidAsync("eval",
+                "var msgs = document.querySelectorAll('.message-wrapper'); if (msgs.length) msgs[msgs.length - 1].scrollIntoView({ behavior: 'smooth', block: 'start' });");
         }
     }
 
@@ -145,6 +152,10 @@
             {
                 ChatState.AddError("No reply received (timeout)");
             }
+            else
+            {
+                ChatState.AddAgentReply(reply);
+            }
         }
         catch (Exception ex)
         {
@@ -153,7 +164,14 @@
         finally
         {
             ChatState.SetProcessing(false);
+            await messageInput.FocusAsync();
         }
+    }
+
+    private async Task HandleKeyDown(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter" && !e.ShiftKey)
+            await SendMessage();
     }
 
     private string ConvertMarkdownToHtml(string markdown)
@@ -189,6 +207,6 @@
 
     public void Dispose()
     {
-        ChatState.OnStateChanged -= StateHasChanged;
+        ChatState.OnStateChanged -= _stateChangedHandler;
     }
 }
