@@ -1,0 +1,33 @@
+name: CI
+
+on:
+  push:
+    paths:
+      - 'src/**'
+      - 'tests/**'
+      - '*.slnx'
+  pull_request:
+    paths:
+      - 'src/**'
+      - 'tests/**'
+      - '*.slnx'
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.x'
+
+      - name: Build
+        run: dotnet build RockBot.slnx
+
+      - name: Test
+        run: dotnet test RockBot.slnx
