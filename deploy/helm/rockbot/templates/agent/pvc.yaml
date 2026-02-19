@@ -3,6 +3,10 @@ kind: PersistentVolumeClaim
 metadata:
   name: {{ include "rockbot.agentPvcName" . }}
   namespace: {{ .Values.namespace }}
+  annotations:
+    # Helm will not update or delete this PVC on upgrade/uninstall —
+    # stateful volumes must survive chart upgrades and releases.
+    helm.sh/resource-policy: keep
   labels:
     {{- include "rockbot.labels" . | nindent 4 }}
     app.kubernetes.io/component: agent

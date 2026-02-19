@@ -23,7 +23,7 @@ var builder = Host.CreateApplicationBuilder(args);
 // Always load user secrets (CreateApplicationBuilder only loads them in Development)
 builder.Configuration.AddUserSecrets<Program>();
 
-builder.Services.AddRockBotRabbitMq();
+builder.Services.AddRockBotRabbitMq(opts => builder.Configuration.GetSection("RabbitMq").Bind(opts));
 
 // Configure the LLM chat client from user secrets / config
 var aiConfig = builder.Configuration.GetSection("AzureAI");

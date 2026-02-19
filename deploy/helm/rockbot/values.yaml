@@ -39,9 +39,9 @@ blazor:
 
 # ── RabbitMQ ──────────────────────────────────────────────────────────────────
 rabbitmq:
-  host: ""          # REQUIRED — hostname or k8s service name of your RabbitMQ instance
+  hostName: ""      # REQUIRED — hostname or k8s service name of your RabbitMQ instance
   port: 5672
-  username: ""      # REQUIRED
+  userName: ""      # REQUIRED
   virtualHost: /
 
 # ── Ephemeral script runner ───────────────────────────────────────────────────

@@ -21,6 +21,7 @@ spec:
       labels:
         app: rockbot-agent
         {{- include "rockbot.labels" . | nindent 8 }}
+        {{- include "rockbot.selectorLabels" . | nindent 8 }}
         app.kubernetes.io/component: agent
     spec:
       serviceAccountName: {{ include "rockbot.agentServiceAccountName" . }}
@@ -31,6 +32,10 @@ spec:
           # to the PVC. cp -n (no-clobber) means customised files are never overwritten.
           image: {{ .Values.agent.image.repository }}:{{ .Values.agent.image.tag }}
           imagePullPolicy: {{ .Values.imagePullPolicy }}
+          # Run as root so we can write to the freshly-provisioned PVC (owned by root)
+          # and then chown it to the rockbot user before the main container starts.
+          securityContext:
+            runAsUser: 0
           command:
             - /bin/sh
             - -c
@@ -56,6 +61,10 @@ spec:
 
               # Runtime directories
               mkdir -p /data/agent/memory /data/agent/skills
+
+              # Hand ownership to the rockbot user so the main container (non-root)
+              # can read and write the volume. The user exists in the image.
+              chown -R rockbot:rockbot /data/agent
               echo "Agent data volume ready."
           volumeMounts:
             - name: agent-data

@@ -3,6 +3,10 @@
 FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
 WORKDIR /src
 
+# Clear Windows-specific NuGet fallback folders that break Linux builds
+RUN printf '<configuration><fallbackPackageFolders><clear /></fallbackPackageFolders></configuration>' \
+    > /src/NuGet.config
+
 COPY RockBot.slnx .
 COPY src/ src/
 

@@ -2,6 +2,10 @@
 FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
 WORKDIR /src
 
+# Clear Windows-specific NuGet fallback folders that break Linux builds
+RUN printf '<configuration><fallbackPackageFolders><clear /></fallbackPackageFolders></configuration>' \
+    > /src/NuGet.config
+
 # Copy solution and project files
 COPY RockBot.slnx .
 COPY src/RockBot.UserProxy.Blazor/RockBot.UserProxy.Blazor.csproj src/RockBot.UserProxy.Blazor/

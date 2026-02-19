@@ -7,8 +7,8 @@
 #     --create-namespace
 
 rabbitmq:
-  host: "rabbitmq-svc.rabbitmq.svc.cluster.local"   # k8s service name for your RabbitMQ
-  username: "rockbot"
+  hostName: "rabbitmq-svc.rabbitmq.svc.cluster.local"   # k8s service name for your RabbitMQ
+  userName: "rockbot"
 
 secrets:
   create: true
@@ -23,7 +23,7 @@ secrets:
 
 blazor:
   tailscale:
-    hostname: "rockbot"   # accessible at http://rockbot.tail920062.ts.net on your tailnet
+    hostname: "rockbot"   # accessible at http://rockbot.<your-tailnet>.ts.net on your tailnet
 
 # Optional — configure if you have Grafana Alloy or otel-collector running
 # telemetry:
