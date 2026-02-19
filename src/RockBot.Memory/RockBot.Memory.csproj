@@ -15,6 +15,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\RockBot.Host.Abstractions\RockBot.Host.Abstractions.csproj" />
+    <ProjectReference Include="..\RockBot.Tools.Abstractions\RockBot.Tools.Abstractions.csproj" />
   </ItemGroup>
 
 </Project>

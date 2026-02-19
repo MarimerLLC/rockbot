@@ -43,6 +43,7 @@ internal sealed class UserMessageHandler(
     IToolRegistry toolRegistry,
     AgentClock clock,
     SkillTools skillTools,
+    ToolGuideTools toolGuideTools,
     ILogger<UserMessageHandler> logger) : IMessageHandler<UserMessage>
 {
     /// <summary>
@@ -196,7 +197,7 @@ internal sealed class UserMessageHandler(
 
             var chatOptions = new ChatOptions
             {
-                Tools = [..memoryTools.Tools, ..sessionWorkingMemoryTools.Tools, ..skillTools.Tools, ..rulesTools.Tools, ..registryTools]
+                Tools = [..memoryTools.Tools, ..sessionWorkingMemoryTools.Tools, ..skillTools.Tools, ..rulesTools.Tools, ..toolGuideTools.Tools, ..registryTools]
             };
 
             var toolNames = chatOptions.Tools!.OfType<AIFunction>().Select(t => t.Name).ToList();
@@ -776,38 +777,56 @@ internal sealed class UserMessageHandler(
             var cleanLine = line.TrimStart('`').Trim();
 
             // Format 1: tool_call_name: X followed by tool_call_arguments: {...}
+            // Handles both two-line form (tool_call_name and tool_call_arguments on separate
+            // lines) and single-line form (both on one line separated by a space).
             if (cleanLine.StartsWith("tool_call_name:", StringComparison.OrdinalIgnoreCase))
             {
-                var toolName = cleanLine["tool_call_name:".Length..].Trim();
-                if (string.IsNullOrEmpty(toolName))
+                var afterName = cleanLine["tool_call_name:".Length..].Trim();
+                if (string.IsNullOrEmpty(afterName))
                     continue;
 
+                string toolName;
                 var argsJson = "{}";
 
-                for (var j = i + 1; j < Math.Min(i + 4, lines.Length); j++)
+                // Check for same-line format: "tool_call_name: X tool_call_arguments: {...}"
+                var sameLineArgsIdx = afterName.IndexOf("tool_call_arguments:", StringComparison.OrdinalIgnoreCase);
+                if (sameLineArgsIdx >= 0)
                 {
-                    var argsLine = lines[j].Trim();
-                    if (!argsLine.StartsWith("tool_call_arguments:", StringComparison.OrdinalIgnoreCase))
-                        continue;
-
-                    // Strip any trailing code-fence chars the model may have appended
-                    argsJson = argsLine["tool_call_arguments:".Length..].Trim().TrimEnd('`').Trim();
-
-                    if (argsJson.StartsWith("{") && !IsBalancedJson(argsJson))
-                    {
-                        var sb = new System.Text.StringBuilder(argsJson);
-                        for (var k = j + 1; k < lines.Length; k++)
-                        {
-                            sb.Append('\n').Append(lines[k]);
-                            if (IsBalancedJson(sb.ToString()))
-                                break;
-                        }
-                        argsJson = sb.ToString();
-                    }
-
-                    i = j; // skip past the consumed args line
-                    break;
+                    toolName = afterName[..sameLineArgsIdx].Trim();
+                    argsJson = afterName[(sameLineArgsIdx + "tool_call_arguments:".Length)..].Trim().TrimEnd('`').Trim();
                 }
+                else
+                {
+                    toolName = afterName;
+
+                    for (var j = i + 1; j < Math.Min(i + 4, lines.Length); j++)
+                    {
+                        var argsLine = lines[j].Trim();
+                        if (!argsLine.StartsWith("tool_call_arguments:", StringComparison.OrdinalIgnoreCase))
+                            continue;
+
+                        // Strip any trailing code-fence chars the model may have appended
+                        argsJson = argsLine["tool_call_arguments:".Length..].Trim().TrimEnd('`').Trim();
+
+                        if (argsJson.StartsWith("{") && !IsBalancedJson(argsJson))
+                        {
+                            var sb = new System.Text.StringBuilder(argsJson);
+                            for (var k = j + 1; k < lines.Length; k++)
+                            {
+                                sb.Append('\n').Append(lines[k]);
+                                if (IsBalancedJson(sb.ToString()))
+                                    break;
+                            }
+                            argsJson = sb.ToString();
+                        }
+
+                        i = j; // skip past the consumed args line
+                        break;
+                    }
+                }
+
+                if (string.IsNullOrEmpty(toolName))
+                    continue;
 
                 logger.LogDebug("Parsed tool_call_name format: {Name}({Args})", toolName, argsJson);
                 results.Add((toolName, argsJson));
@@ -865,13 +884,14 @@ internal sealed class UserMessageHandler(
     private static string GetPreToolText(string text)
     {
         var idx = text.IndexOf("tool_call_name:", StringComparison.OrdinalIgnoreCase);
-        if (idx <= 0) return text;
+        if (idx < 0) return text;   // not found — no tool call, return full text
+        if (idx == 0) return string.Empty;  // text starts with tool call — no preamble
 
         // Walk back past any backtick code-fence characters on the same line as tool_call_name:
         while (idx > 0 && (text[idx - 1] == '`' || text[idx - 1] == ' '))
             idx--;
 
-        return idx <= 0 ? text : text[..idx].TrimEnd();
+        return idx <= 0 ? string.Empty : text[..idx].TrimEnd();
     }
 
     /// <summary>
