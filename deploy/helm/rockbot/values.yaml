@@ -35,7 +35,7 @@ blazor:
   tailscale:
     # Tailscale hostname — the UI becomes accessible at <hostname> on your tailnet.
     # Requires the Tailscale Kubernetes Operator to be installed.
-    hostname: rockbot-ui
+    hostname: rockbot
 
 # ── RabbitMQ ──────────────────────────────────────────────────────────────────
 rabbitmq:

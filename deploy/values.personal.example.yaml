@@ -23,7 +23,7 @@ secrets:
 
 blazor:
   tailscale:
-    hostname: "rockbot-ui"   # accessible at http://rockbot-ui on your tailnet
+    hostname: "rockbot"   # accessible at http://rockbot.tail920062.ts.net on your tailnet
 
 # Optional — configure if you have Grafana Alloy or otel-collector running
 # telemetry:
