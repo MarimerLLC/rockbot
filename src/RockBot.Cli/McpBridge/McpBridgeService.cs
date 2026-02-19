@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -23,12 +24,14 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
     private readonly string _agentName;
     private readonly string _configPath;
     private readonly ILogger<McpBridgeService> _logger;
+    private readonly ILlmClient? _llmClient;
 
     private readonly Dictionary<string, McpClient> _clients = [];
     private readonly Dictionary<string, McpBridgeServerConfig> _serverConfigs = [];
     private readonly Dictionary<string, List<McpClientTool>> _serverTools = [];
     private ISubscription? _invokeSubscription;
     private ISubscription? _refreshSubscription;
+    private ISubscription? _manageSubscription;
     private FileSystemWatcher? _configWatcher;
 
     /// <summary>
@@ -50,7 +53,8 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
         IMessageSubscriber subscriber,
         AgentIdentity identity,
         IOptions<McpBridgeOptions> options,
-        ILogger<McpBridgeService> logger)
+        ILogger<McpBridgeService> logger,
+        ILlmClient? llmClient = null)
     {
         _publisher = publisher;
         _subscriber = subscriber;
@@ -60,6 +64,7 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
             ? _options.ConfigPath
             : Path.Combine(AppContext.BaseDirectory, _options.ConfigPath);
         _logger = logger;
+        _llmClient = llmClient;
     }
 
     public async Task StartAsync(CancellationToken cancellationToken)
@@ -76,6 +81,13 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
             "tool.meta.mcp.refresh",
             $"mcp-bridge.{_agentName}.refresh",
             HandleRefreshRequestAsync,
+            cancellationToken);
+
+        // Subscribe to management requests (get-details, register, unregister)
+        _manageSubscription = await _subscriber.SubscribeAsync(
+            McpManagementExecutor.ManageTopic,
+            $"mcp-bridge.{_agentName}.manage",
+            HandleManagementRequestAsync,
             cancellationToken);
 
         // Load config and connect to servers
@@ -95,6 +107,8 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
             await _invokeSubscription.DisposeAsync();
         if (_refreshSubscription is not null)
             await _refreshSubscription.DisposeAsync();
+        if (_manageSubscription is not null)
+            await _manageSubscription.DisposeAsync();
 
         await DisposeClientsAsync();
     }
@@ -175,8 +189,9 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
             _logger.LogInformation("Connected to MCP server {Name} with {Count} tools",
                 name, filteredTools.Count);
 
-            // Publish tool availability
-            await PublishToolsAvailableAsync(name, filteredTools, [], ct);
+            // Build and publish server summary
+            var summary = await GenerateSummaryAsync(name, filteredTools, ct);
+            await PublishServersIndexedAsync([summary], [], ct);
         }
         catch (Exception ex)
         {
@@ -192,17 +207,10 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
             catch { /* Best-effort cleanup */ }
         }
 
-        var removedTools = new List<string>();
-        if (_serverTools.Remove(name, out var tools))
-        {
-            removedTools.AddRange(tools.Select(t => t.Name));
-        }
+        _serverTools.Remove(name);
         _serverConfigs.Remove(name);
 
-        if (removedTools.Count > 0)
-        {
-            await PublishToolsAvailableAsync(name, [], removedTools, CancellationToken.None);
-        }
+        await PublishServersIndexedAsync([], [name], CancellationToken.None);
 
         _logger.LogInformation("Disconnected from MCP server {Name}", name);
     }
@@ -224,24 +232,62 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
         return tools;
     }
 
-    private async Task PublishToolsAvailableAsync(
+    private async Task<McpServerSummary> GenerateSummaryAsync(
         string serverName,
         List<McpClientTool> tools,
-        List<string> removedTools,
         CancellationToken ct)
     {
-        var message = new McpToolsAvailable
+        var toolNames = tools.Select(t => t.Name).ToList();
+
+        string? summaryText = null;
+
+        if (_options.GenerateLlmSummaries && _llmClient is not null && tools.Count > 0)
+        {
+            try
+            {
+                var toolList = string.Join("\n", tools.Take(20).Select(t =>
+                    $"- {t.Name}: {t.Description}"));
+
+                var prompt = $"""
+                    Write a single brief sentence (15-25 words) describing what the '{serverName}' MCP server provides.
+                    Based on these tools:
+                    {toolList}
+                    Respond with only the sentence, no preamble or explanation.
+                    """;
+
+                var messages = new[] { new ChatMessage(ChatRole.User, prompt) };
+                var response = await _llmClient.GetResponseAsync(messages, cancellationToken: ct);
+                summaryText = response.Text?.Trim();
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Failed to generate LLM summary for {ServerName}, using fallback", serverName);
+            }
+        }
+
+        summaryText ??= tools.Count > 0
+            ? $"Provides {tools.Count} tool(s): {string.Join(", ", toolNames.Take(10))}" +
+              (toolNames.Count > 10 ? $" and {toolNames.Count - 10} more." : ".")
+            : "No tools available.";
+
+        return new McpServerSummary
         {
             ServerName = serverName,
-            Tools = tools.Select(t => new McpToolDefinition
-            {
-                Name = t.Name,
-                Description = t.Description ?? string.Empty,
-                ParametersSchema = t.JsonSchema.ValueKind != JsonValueKind.Undefined
-                    ? t.JsonSchema.GetRawText()
-                    : null
-            }).ToList(),
-            RemovedTools = removedTools
+            Summary = summaryText,
+            ToolCount = tools.Count,
+            ToolNames = toolNames
+        };
+    }
+
+    private async Task PublishServersIndexedAsync(
+        List<McpServerSummary> servers,
+        List<string> removedServers,
+        CancellationToken ct)
+    {
+        var message = new McpServersIndexed
+        {
+            Servers = servers,
+            RemovedServers = removedServers
         };
 
         var topic = $"tool.meta.mcp.{_agentName}";
@@ -266,17 +312,41 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
 
         var replyTo = envelope.ReplyTo ?? $"tool.result.{_agentName}";
 
-        // Find which server has this tool
+        // Check for direct server routing via rb-mcp-server header
         string? serverName = null;
         McpClient? client = null;
 
-        foreach (var (name, tools) in _serverTools)
+        if (envelope.Headers.TryGetValue(McpHeaders.ServerName, out var headerServer)
+            && !string.IsNullOrEmpty(headerServer))
         {
-            if (tools.Any(t => t.Name == request.ToolName))
+            serverName = headerServer;
+            client = _clients.GetValueOrDefault(headerServer);
+
+            if (client is null)
             {
-                serverName = name;
-                client = _clients.GetValueOrDefault(name);
-                break;
+                var error = new ToolError
+                {
+                    ToolCallId = request.ToolCallId,
+                    ToolName = request.ToolName,
+                    Code = ToolError.Codes.ToolNotFound,
+                    Message = $"MCP server '{headerServer}' is not connected",
+                    IsRetryable = false
+                };
+                await PublishResponseAsync(error, replyTo, envelope.CorrelationId, ct);
+                return MessageResult.Ack;
+            }
+        }
+        else
+        {
+            // Fall back to searching by tool name
+            foreach (var (name, tools) in _serverTools)
+            {
+                if (tools.Any(t => t.Name == request.ToolName))
+                {
+                    serverName = name;
+                    client = _clients.GetValueOrDefault(name);
+                    break;
+                }
             }
         }
 
@@ -409,6 +479,154 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
         return MessageResult.Ack;
     }
 
+    private async Task<MessageResult> HandleManagementRequestAsync(MessageEnvelope envelope, CancellationToken ct)
+    {
+        var replyTo = envelope.ReplyTo;
+        if (replyTo is null)
+        {
+            _logger.LogWarning("Management request from {Source} has no ReplyTo — cannot respond", envelope.Source);
+            return MessageResult.DeadLetter;
+        }
+
+        if (envelope.MessageType == typeof(McpGetServiceDetailsRequest).FullName)
+        {
+            var req = envelope.GetPayload<McpGetServiceDetailsRequest>();
+            if (req is null) return MessageResult.DeadLetter;
+
+            var tools = _serverTools.GetValueOrDefault(req.ServerName) ?? [];
+            var response = new McpGetServiceDetailsResponse
+            {
+                ServerName = req.ServerName,
+                Tools = tools.Select(t => new McpToolDefinition
+                {
+                    Name = t.Name,
+                    Description = t.Description ?? string.Empty,
+                    ParametersSchema = t.JsonSchema.ValueKind != JsonValueKind.Undefined
+                        ? t.JsonSchema.GetRawText()
+                        : null
+                }).ToList(),
+                Error = _clients.ContainsKey(req.ServerName) ? null
+                    : $"Server '{req.ServerName}' is not connected"
+            };
+
+            await PublishResponseAsync(response, replyTo, envelope.CorrelationId, ct);
+        }
+        else if (envelope.MessageType == typeof(McpRegisterServerRequest).FullName)
+        {
+            var req = envelope.GetPayload<McpRegisterServerRequest>();
+            if (req is null) return MessageResult.DeadLetter;
+
+            try
+            {
+                var config = new McpBridgeServerConfig
+                {
+                    Type = req.Type,
+                    Url = req.Url,
+                    Command = req.Command,
+                    Args = req.Args,
+                    Env = req.Env
+                };
+
+                await ConnectServerAsync(req.ServerName, config, ct);
+                await PersistServerConfigAsync(req.ServerName, config, remove: false);
+
+                var summary = _serverTools.ContainsKey(req.ServerName)
+                    ? $"{_serverTools[req.ServerName].Count} tool(s) available."
+                    : null;
+
+                var response = new McpRegisterServerResponse
+                {
+                    ServerName = req.ServerName,
+                    Success = _clients.ContainsKey(req.ServerName),
+                    Summary = summary,
+                    Error = _clients.ContainsKey(req.ServerName) ? null : "Connection failed"
+                };
+
+                await PublishResponseAsync(response, replyTo, envelope.CorrelationId, ct);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Failed to register server {ServerName}", req.ServerName);
+                var response = new McpRegisterServerResponse
+                {
+                    ServerName = req.ServerName,
+                    Success = false,
+                    Error = ex.Message
+                };
+                await PublishResponseAsync(response, replyTo, envelope.CorrelationId, ct);
+            }
+        }
+        else if (envelope.MessageType == typeof(McpUnregisterServerRequest).FullName)
+        {
+            var req = envelope.GetPayload<McpUnregisterServerRequest>();
+            if (req is null) return MessageResult.DeadLetter;
+
+            try
+            {
+                await DisconnectServerAsync(req.ServerName);
+                await PersistServerConfigAsync(req.ServerName, null, remove: true);
+
+                var response = new McpUnregisterServerResponse
+                {
+                    ServerName = req.ServerName,
+                    Success = true
+                };
+                await PublishResponseAsync(response, replyTo, envelope.CorrelationId, ct);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Failed to unregister server {ServerName}", req.ServerName);
+                var response = new McpUnregisterServerResponse
+                {
+                    ServerName = req.ServerName,
+                    Success = false,
+                    Error = ex.Message
+                };
+                await PublishResponseAsync(response, replyTo, envelope.CorrelationId, ct);
+            }
+        }
+        else
+        {
+            _logger.LogWarning("Unknown management message type: {MessageType}", envelope.MessageType);
+        }
+
+        return MessageResult.Ack;
+    }
+
+    private async Task PersistServerConfigAsync(string name, McpBridgeServerConfig? config, bool remove)
+    {
+        try
+        {
+            McpBridgeConfig current;
+            if (File.Exists(_configPath))
+            {
+                var json = await File.ReadAllTextAsync(_configPath);
+                current = JsonSerializer.Deserialize<McpBridgeConfig>(json, JsonOptions)
+                    ?? new McpBridgeConfig();
+            }
+            else
+            {
+                current = new McpBridgeConfig();
+            }
+
+            if (remove)
+                current.McpServers.Remove(name);
+            else if (config is not null)
+                current.McpServers[name] = config;
+
+            var updated = JsonSerializer.Serialize(current, new JsonSerializerOptions
+            {
+                PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+                WriteIndented = true
+            });
+            await File.WriteAllTextAsync(_configPath, updated);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to persist server config change for {ServerName}", name);
+        }
+    }
+
     private async Task PublishResponseAsync<T>(
         T payload,
         string topic,
@@ -446,33 +664,28 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
             {
                 var tools = await client.ListToolsAsync(cancellationToken: ct);
                 var filtered = ApplyToolFilters(tools.ToList(), config);
-
-                var removedTools = _serverTools.GetValueOrDefault(request.ServerName)?
-                    .Select(t => t.Name)
-                    .Except(filtered.Select(t => t.Name))
-                    .ToList() ?? [];
-
                 _serverTools[request.ServerName] = filtered;
-                await PublishToolsAvailableAsync(request.ServerName, filtered, removedTools, ct);
+
+                var summary = await GenerateSummaryAsync(request.ServerName, filtered, ct);
+                await PublishServersIndexedAsync([summary], [], ct);
             }
         }
         else
         {
+            var summaries = new List<McpServerSummary>();
             foreach (var (name, client) in _clients)
             {
                 if (!_serverConfigs.TryGetValue(name, out var config)) continue;
 
                 var tools = await client.ListToolsAsync(cancellationToken: ct);
                 var filtered = ApplyToolFilters(tools.ToList(), config);
-
-                var removedTools = _serverTools.GetValueOrDefault(name)?
-                    .Select(t => t.Name)
-                    .Except(filtered.Select(t => t.Name))
-                    .ToList() ?? [];
-
                 _serverTools[name] = filtered;
-                await PublishToolsAvailableAsync(name, filtered, removedTools, ct);
+
+                summaries.Add(await GenerateSummaryAsync(name, filtered, ct));
             }
+
+            if (summaries.Count > 0)
+                await PublishServersIndexedAsync(summaries, [], ct);
         }
 
         return MessageResult.Ack;
@@ -550,5 +763,7 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
             await _invokeSubscription.DisposeAsync();
         if (_refreshSubscription is not null)
             await _refreshSubscription.DisposeAsync();
+        if (_manageSubscription is not null)
+            await _manageSubscription.DisposeAsync();
     }
 }

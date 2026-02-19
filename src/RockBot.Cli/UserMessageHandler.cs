@@ -530,8 +530,12 @@ internal sealed class UserMessageHandler(
                 if (!string.IsNullOrWhiteSpace(preToolText))
                     chatMessages.Add(new ChatMessage(ChatRole.Assistant, preToolText));
 
-                // Execute each tool and inject the real result
-                foreach (var (toolName, argsJson) in textCalls)
+                // Execute only the FIRST tool call per iteration so the LLM sees each result
+                // before deciding on the next step. When the LLM batches multiple calls in one
+                // response it can't have seen the results of the earlier calls, so it guesses
+                // parameter names — causing failures on chained workflows like the MCP discovery
+                // sequence (list_services → get_service_details → invoke_tool).
+                foreach (var (toolName, argsJson) in textCalls.Take(1))
                 {
                     var tool = chatOptions.Tools?
                         .OfType<AIFunction>()
@@ -585,8 +589,7 @@ internal sealed class UserMessageHandler(
 
                 if (onProgress is not null)
                 {
-                    var names = string.Join(", ", textCalls.Select(t => t.Name));
-                    await onProgress($"Called {names}. Still working…", cancellationToken);
+                    await onProgress($"Called {textCalls[0].Name}. Still working…", cancellationToken);
                 }
 
                 continue;
@@ -933,7 +936,7 @@ internal sealed class UserMessageHandler(
         JsonValueKind.False => false,
         JsonValueKind.Null => null,
         JsonValueKind.Number => element.TryGetInt64(out var l) ? (object)l : element.GetDouble(),
-        _ => element.ToString()
+        _ => (object)element  // Object/Array: keep as JsonElement so JsonSerializer.Serialize emits a JSON object, not a string
     };
 
     /// <summary>
