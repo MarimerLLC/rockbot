@@ -55,6 +55,8 @@ public sealed class SkillTools
         if (skill is null)
             return $"Skill '{name}' not found. Call list_skills to see available skills.";
 
+        await _skillStore.SaveAsync(skill with { LastUsedAt = DateTimeOffset.UtcNow });
+
         return skill.Content;
     }
 
@@ -157,12 +159,17 @@ public sealed class SkillTools
         if (skills.Count == 0)
             return "No skills saved yet.";
 
+        var now = DateTimeOffset.UtcNow;
         var sb = new StringBuilder();
         sb.AppendLine($"Available skills ({skills.Count}):");
         foreach (var s in skills)
         {
             var summary = string.IsNullOrWhiteSpace(s.Summary) ? "(summary pending)" : s.Summary;
-            sb.AppendLine($"- {s.Name}: {summary}");
+            var ageDays = (int)(now - s.CreatedAt).TotalDays;
+            var lastUsedPart = s.LastUsedAt.HasValue
+                ? $"last used {(int)(now - s.LastUsedAt.Value).TotalDays}d ago"
+                : "never used";
+            sb.AppendLine($"- {s.Name} ({ageDays}d old, {lastUsedPart}): {summary}");
         }
         return sb.ToString().TrimEnd();
     }
