@@ -1,6 +1,7 @@
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using RockBot.Host;
+using RockBot.Tools;
 
 namespace RockBot.Tools.Mcp;
 
@@ -39,6 +40,7 @@ public static class McpServiceCollectionExtensions
         builder.Services.AddSingleton<McpServerIndex>();
         builder.Services.AddSingleton<McpManagementExecutor>();
         builder.Services.AddHostedService<McpStartupProbeService>();
+        builder.Services.AddSingleton<IToolSkillProvider, McpToolSkillProvider>();
 
         builder.HandleMessage<McpServersIndexed, McpServersIndexedHandler>();
         builder.SubscribeTo($"tool.meta.mcp.{agentName}");

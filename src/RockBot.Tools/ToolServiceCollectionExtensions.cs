@@ -22,6 +22,10 @@ public static class ToolServiceCollectionExtensions
         builder.Services.AddSingleton<ToolRegistry>();
         builder.Services.AddSingleton<IToolRegistry>(sp => sp.GetRequiredService<ToolRegistry>());
 
+        // ToolGuideTools aggregates all IToolSkillProvider registrations so the agent
+        // can discover and read usage docs for whichever tool services are in scope.
+        builder.Services.AddSingleton<ToolGuideTools>();
+
         builder.HandleMessage<ToolInvokeRequest, ToolInvokeHandler>();
         builder.SubscribeTo("tool.invoke");
 

@@ -29,6 +29,7 @@ public static class ContainerScriptServiceCollectionExtensions
 
         services.AddSingleton<IScriptRunner, ContainerScriptRunner>();
         services.AddHostedService<ScriptToolRegistrar>();
+        services.AddSingleton<IToolSkillProvider, ScriptToolSkillProvider>();
 
         return services;
     }

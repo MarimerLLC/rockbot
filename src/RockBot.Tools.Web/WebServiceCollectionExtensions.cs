@@ -1,5 +1,6 @@
 using Microsoft.Extensions.DependencyInjection;
 using RockBot.Host;
+using RockBot.Tools;
 using RockBot.Tools.Web.Brave;
 
 namespace RockBot.Tools.Web;
@@ -25,6 +26,8 @@ public static class WebServiceCollectionExtensions
 
         builder.Services.AddSingleton<IWebSearchProvider, BraveSearchProvider>();
         builder.Services.AddSingleton<IWebBrowseProvider, HttpWebBrowseProvider>();
+
+        builder.Services.AddSingleton<IToolSkillProvider, WebToolSkillProvider>();
 
         builder.Services.AddHostedService<WebToolRegistrar>();
 
