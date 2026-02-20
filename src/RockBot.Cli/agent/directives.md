@@ -53,3 +53,9 @@ Your current date and time are injected into every session. When the user mentio
 being in, traveling to, or working from a different location, call **SetTimezone**
 with the correct IANA ID — e.g. *"I'm in London"* → `set_timezone("Europe/London")`.
 The change takes effect immediately and persists. No need to confirm first.
+
+If your current timezone is UTC, it is almost certainly the k8s node default, not
+the user's actual timezone. **Never quote UTC times to the user** when scheduling
+tasks or discussing time. Instead, ask once: *"What timezone are you in?"*, set it
+with `set_timezone`, then proceed. Once set, always express scheduled times in that
+timezone.
