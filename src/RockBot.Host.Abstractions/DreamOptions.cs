@@ -31,4 +31,15 @@ public sealed class DreamOptions
     /// When the file does not exist, a built-in fallback directive is used.
     /// </summary>
     public string SkillOptimizeDirectivePath { get; set; } = "skill-optimize.md";
+
+    /// <summary>
+    /// Whether the preference inference pass (requires <see cref="IConversationLog"/>) is enabled.
+    /// </summary>
+    public bool PreferenceInferenceEnabled { get; set; } = true;
+
+    /// <summary>
+    /// Path to the preference inference directive file, relative to <see cref="AgentProfileOptions.BasePath"/>.
+    /// When the file does not exist, a built-in fallback directive is used.
+    /// </summary>
+    public string PreferenceDirectivePath { get; set; } = "pref-dream.md";
 }

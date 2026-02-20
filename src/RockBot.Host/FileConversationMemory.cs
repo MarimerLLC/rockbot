@@ -19,6 +19,7 @@ internal sealed class FileConversationMemory : IConversationMemory, IHostedServi
     private readonly ConversationMemoryOptions _options;
     private readonly string _basePath;
     private readonly ILogger<FileConversationMemory> _logger;
+    private readonly IConversationLog? _conversationLog;
 
     /// <summary>Per-session semaphores prevent concurrent writes racing on the same file.</summary>
     private readonly ConcurrentDictionary<string, SemaphoreSlim> _writeLocks = new();
@@ -33,12 +34,14 @@ internal sealed class FileConversationMemory : IConversationMemory, IHostedServi
         InMemoryConversationMemory inner,
         IOptions<ConversationMemoryOptions> options,
         IOptions<AgentProfileOptions> profileOptions,
-        ILogger<FileConversationMemory> logger)
+        ILogger<FileConversationMemory> logger,
+        IConversationLog? conversationLog = null)
     {
         _inner = inner;
         _options = options.Value;
         _basePath = ResolvePath(_options.BasePath, profileOptions.Value.BasePath);
         _logger = logger;
+        _conversationLog = conversationLog;
 
         Directory.CreateDirectory(_basePath);
         _logger.LogInformation("Conversation persistence path: {Path}", _basePath);
@@ -100,6 +103,8 @@ internal sealed class FileConversationMemory : IConversationMemory, IHostedServi
     {
         await _inner.AddTurnAsync(sessionId, turn, cancellationToken);
         await PersistSessionAsync(sessionId, cancellationToken);
+        if (_conversationLog is not null)
+            _ = _conversationLog.AppendAsync(new ConversationLogEntry(sessionId, turn.Role, turn.Content, turn.Timestamp));
     }
 
     public Task<IReadOnlyList<ConversationTurn>> GetTurnsAsync(string sessionId, CancellationToken cancellationToken = default)

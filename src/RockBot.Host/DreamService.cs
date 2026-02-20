@@ -23,6 +23,7 @@ internal sealed class DreamService : IHostedService, IDisposable
     private readonly ISkillStore? _skillStore;
     private readonly IFeedbackStore? _feedbackStore;
     private readonly ISkillUsageStore? _skillUsageStore;
+    private readonly IConversationLog? _conversationLog;
     private readonly ILlmClient _llmClient;
     private readonly DreamOptions _options;
     private readonly AgentProfileOptions _profileOptions;
@@ -31,6 +32,7 @@ internal sealed class DreamService : IHostedService, IDisposable
     private string? _dreamDirective;
     private string? _skillDreamDirective;
     private string? _skillOptimizeDirective;
+    private string? _prefDreamDirective;
 
     public DreamService(
         ILongTermMemory memory,
@@ -40,12 +42,14 @@ internal sealed class DreamService : IHostedService, IDisposable
         IOptions<AgentProfileOptions> profileOptions,
         ILogger<DreamService> logger,
         IFeedbackStore? feedbackStore = null,
-        ISkillUsageStore? skillUsageStore = null)
+        ISkillUsageStore? skillUsageStore = null,
+        IConversationLog? conversationLog = null)
     {
         _memory = memory;
         _skillStore = skillStores.FirstOrDefault();
         _feedbackStore = feedbackStore;
         _skillUsageStore = skillUsageStore;
+        _conversationLog = conversationLog;
         _llmClient = llmClient;
         _options = options.Value;
         _profileOptions = profileOptions.Value;
@@ -101,6 +105,19 @@ internal sealed class DreamService : IHostedService, IDisposable
                 _logger.LogWarning("DreamService: skill optimize directive not found at {Path}; using built-in fallback", skillOptimizeDirectivePath);
             else
                 _logger.LogInformation("DreamService: loaded skill optimize directive from {Path}", skillOptimizeDirectivePath);
+        }
+
+        if (_conversationLog is not null)
+        {
+            var prefDirectivePath = ResolvePath(_options.PreferenceDirectivePath, _profileOptions.BasePath);
+            _prefDreamDirective = File.Exists(prefDirectivePath)
+                ? File.ReadAllText(prefDirectivePath)
+                : BuiltInPrefDirective;
+
+            if (!File.Exists(prefDirectivePath))
+                _logger.LogWarning("DreamService: pref directive not found at {Path}; using built-in fallback", prefDirectivePath);
+            else
+                _logger.LogInformation("DreamService: loaded pref directive from {Path}", prefDirectivePath);
         }
 
         _timer = new Timer(
@@ -265,6 +282,8 @@ internal sealed class DreamService : IHostedService, IDisposable
 
             if (_skillStore is not null)
                 await ConsolidateSkillsAsync();
+
+            await RunPreferenceInferencePassAsync();
 
             sw.Stop();
             _logger.LogInformation(
@@ -664,6 +683,129 @@ internal sealed class DreamService : IHostedService, IDisposable
     }
 
     /// <summary>
+    /// Analyzes the accumulated conversation log for durable user preference patterns
+    /// and saves inferred preferences as tagged memory entries.
+    /// Always clears the log after the pass to prevent unbounded growth.
+    /// </summary>
+    private async Task RunPreferenceInferencePassAsync()
+    {
+        if (_conversationLog is null || !_options.PreferenceInferenceEnabled)
+            return;
+
+        var entries = await _conversationLog.ReadAllAsync();
+        if (entries.Count == 0)
+            return;
+
+        _logger.LogInformation("DreamService: preference inference pass — {Count} log entries to analyze", entries.Count);
+
+        try
+        {
+            // Build user message: turns grouped by session
+            var userMessage = new StringBuilder();
+            userMessage.AppendLine("Review the following conversation log for durable user preference patterns:");
+            userMessage.AppendLine();
+
+            var bySession = entries
+                .GroupBy(e => e.SessionId)
+                .ToDictionary(g => g.Key, g => g.ToList());
+
+            foreach (var (sessionId, sessionEntries) in bySession)
+            {
+                userMessage.AppendLine($"## Session: {sessionId}");
+                foreach (var e in sessionEntries)
+                    userMessage.AppendLine($"[{e.Role}] {e.Content}");
+                userMessage.AppendLine();
+            }
+
+            // Append recent feedback signals as additional quality context
+            if (_feedbackStore is not null)
+            {
+                var recentFeedback = await _feedbackStore.QueryRecentAsync(
+                    since: DateTimeOffset.UtcNow.AddDays(-7),
+                    maxResults: 50);
+
+                if (recentFeedback.Count > 0)
+                {
+                    userMessage.AppendLine("Recent feedback signals (last 7 days):");
+                    foreach (var fb in recentFeedback)
+                    {
+                        var detail = string.IsNullOrWhiteSpace(fb.Detail) ? string.Empty : $" (\"{fb.Detail}\")";
+                        userMessage.AppendLine($"- [{fb.SignalType}] session {fb.SessionId}: {fb.Summary}{detail}");
+                    }
+                    userMessage.AppendLine();
+                    _logger.LogDebug("DreamService: injected {Count} feedback signal(s) into pref inference prompt", recentFeedback.Count);
+                }
+            }
+
+            var messages = new List<ChatMessage>
+            {
+                new(ChatRole.System, _prefDreamDirective ?? BuiltInPrefDirective),
+                new(ChatRole.User, userMessage.ToString())
+            };
+
+            var response = await _llmClient.GetResponseAsync(messages, new ChatOptions());
+            var raw = response.Text?.Trim() ?? string.Empty;
+            var json = ExtractJsonObject(raw);
+
+            if (string.IsNullOrEmpty(json))
+            {
+                _logger.LogWarning("DreamService: preference inference LLM returned no parseable JSON; skipping");
+            }
+            else
+            {
+                _logger.LogDebug("DreamService: pref inference JSON ({Length} chars): {Json}", json.Length, json);
+
+                var result = JsonSerializer.Deserialize<PrefDreamResultDto>(json, JsonOptions);
+                var saved = 0;
+
+                foreach (var dto in result?.ToSave ?? [])
+                {
+                    if (string.IsNullOrWhiteSpace(dto.Content))
+                        continue;
+
+                    // Ensure "inferred" tag is present
+                    var tags = new List<string>(dto.Tags ?? []);
+                    if (!tags.Contains("inferred", StringComparer.OrdinalIgnoreCase))
+                        tags.Insert(0, "inferred");
+
+                    // Merge metadata, ensuring source=inferred
+                    var metadata = new Dictionary<string, string>(
+                        dto.Metadata ?? new Dictionary<string, string>(),
+                        StringComparer.OrdinalIgnoreCase)
+                    {
+                        ["source"] = "inferred"
+                    };
+
+                    var entry = new MemoryEntry(
+                        Id: Guid.NewGuid().ToString("N")[..12],
+                        Content: dto.Content.Trim(),
+                        Category: string.IsNullOrWhiteSpace(dto.Category) ? "user-preferences/inferred" : dto.Category.Trim(),
+                        Tags: tags,
+                        CreatedAt: DateTimeOffset.UtcNow,
+                        UpdatedAt: DateTimeOffset.UtcNow,
+                        Metadata: metadata);
+
+                    await _memory.SaveAsync(entry);
+                    saved++;
+                    _logger.LogDebug("DreamService: saved inferred preference {Id}: {Content}", entry.Id, entry.Content);
+                }
+
+                _logger.LogInformation("DreamService: preference inference pass complete — {Saved} preference(s) inferred", saved);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "DreamService: preference inference pass failed");
+        }
+        finally
+        {
+            // Always clear the log regardless of LLM success/failure to prevent unbounded growth
+            await _conversationLog.ClearAsync();
+            _logger.LogDebug("DreamService: conversation log cleared after preference inference pass");
+        }
+    }
+
+    /// <summary>
     /// Extracts the outermost JSON object from <paramref name="text"/>, tolerating
     /// DeepSeek-style thinking blocks and prose preamble.
     /// </summary>
@@ -724,6 +866,26 @@ internal sealed class DreamService : IHostedService, IDisposable
         If no improvements are warranted, return: { "toDelete": [], "toSave": [] }
         """;
 
+    private const string BuiltInPrefDirective = """
+        You are a user preference inference assistant. Review the conversation log for durable, recurring preference patterns.
+        Look for: formatting preferences, comment style, tool corrections, topic clusters, and communication style signals.
+
+        Apply these sentiment-based thresholds before writing a preference:
+        - Very irritated (repeated strong correction, visible frustration): 1 occurrence is enough
+        - Mildly frustrated (mild correction, gentle pushback): 2 occurrences needed
+        - Minor/casual suggestion: 3 or more occurrences needed
+
+        For preferences touching security keys, passwords, financial decisions, or sending sensitive information:
+        add "requires_user_permission": "true" to metadata and note in content that user confirmation is required before acting.
+
+        Return ONLY a JSON object in this exact format:
+        { "toSave": [ { "content": "...", "category": "user-preferences/inferred", "tags": ["inferred"], "metadata": { "source": "inferred" } } ] }
+
+        If no durable patterns are evident, return: { "toSave": [] }
+        Each entry needs: content (what was learned), category (defaults to "user-preferences/inferred"),
+        tags (must include "inferred"), metadata (must include "source": "inferred").
+        """;
+
     private sealed record DreamResultDto(
         List<string>? ToDelete,
         List<DreamEntryDto>? ToSave);
@@ -743,4 +905,12 @@ internal sealed class DreamService : IHostedService, IDisposable
         string? Summary,
         string Content,
         IReadOnlyList<string>? SourceNames);
+
+    private sealed record PrefDreamResultDto(List<PrefEntryDto>? ToSave);
+
+    private sealed record PrefEntryDto(
+        string Content,
+        string? Category,
+        IReadOnlyList<string>? Tags,
+        IReadOnlyDictionary<string, string>? Metadata);
 }
