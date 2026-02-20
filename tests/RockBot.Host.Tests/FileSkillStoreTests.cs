@@ -204,6 +204,52 @@ public class FileSkillStoreTests
         FileSkillStore.ValidateName("A_B/c-d/E123");
     }
 
+    // ── SeeAlso round-trip ────────────────────────────────────────────────────
+
+    [TestMethod]
+    public async Task SaveAsync_And_GetAsync_PreservesSeeAlso()
+    {
+        var store = CreateStore();
+        var skill = MakeSkillWithSeeAlso("mcp/email", "Send emails via MCP", "# Send Email\n\nStep 1...",
+            "mcp/calendar", "mcp/guide");
+
+        await store.SaveAsync(skill);
+        var result = await store.GetAsync("mcp/email");
+
+        Assert.IsNotNull(result);
+        Assert.IsNotNull(result.SeeAlso);
+        Assert.AreEqual(2, result.SeeAlso.Count);
+        CollectionAssert.Contains(result.SeeAlso.ToList(), "mcp/calendar");
+        CollectionAssert.Contains(result.SeeAlso.ToList(), "mcp/guide");
+    }
+
+    [TestMethod]
+    public async Task SaveAsync_And_GetAsync_NullSeeAlso_RoundTrips()
+    {
+        var store = CreateStore();
+        var skill = MakeSkill("plan-meeting", "Schedule meetings", "# Plan Meeting\n\nStep 1...");
+
+        await store.SaveAsync(skill);
+        var result = await store.GetAsync("plan-meeting");
+
+        Assert.IsNotNull(result);
+        // SeeAlso should be null (not set) on round-trip
+        Assert.IsNull(result.SeeAlso);
+    }
+
+    [TestMethod]
+    public async Task SeeAlso_PersistedAcrossInstances()
+    {
+        var store1 = CreateStore();
+        await store1.SaveAsync(MakeSkillWithSeeAlso("mcp/email", "Send email", "content", "mcp/guide"));
+
+        var store2 = CreateStore();
+        var result = await store2.GetAsync("mcp/email");
+
+        Assert.IsNotNull(result?.SeeAlso);
+        CollectionAssert.Contains(result!.SeeAlso!.ToList(), "mcp/guide");
+    }
+
     // ── SearchAsync (BM25) ────────────────────────────────────────────────────
 
     [TestMethod]
@@ -314,4 +360,7 @@ public class FileSkillStoreTests
 
     private static Skill MakeSkill(string name, string summary, string content) =>
         new(name, summary, content, DateTimeOffset.UtcNow);
+
+    private static Skill MakeSkillWithSeeAlso(string name, string summary, string content, params string[] seeAlso) =>
+        new(name, summary, content, DateTimeOffset.UtcNow, SeeAlso: seeAlso);
 }

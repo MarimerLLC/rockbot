@@ -15,10 +15,16 @@ namespace RockBot.Host;
 /// When the skill was last loaded via <c>get_skill</c>, or <c>null</c> if it has never been used.
 /// Used by the dream pass to prune skills that have not been accessed for an extended period.
 /// </param>
+/// <param name="SeeAlso">
+/// Names of related skills the agent should consider alongside this one — sibling skills in the same
+/// prefix cluster, commonly co-used skills, or logical complements. Populated by the dream
+/// consolidation pass; <c>null</c> or empty if no cross-references have been established.
+/// </param>
 public sealed record Skill(
     string Name,
     string Summary,
     string Content,
     DateTimeOffset CreatedAt,
     DateTimeOffset? UpdatedAt = null,
-    DateTimeOffset? LastUsedAt = null);
+    DateTimeOffset? LastUsedAt = null,
+    IReadOnlyList<string>? SeeAlso = null);
