@@ -89,7 +89,7 @@ public sealed class McpManagementExecutor : IToolExecutor, IAsyncDisposable
     private async Task<ToolInvokeResponse> GetServiceDetailsAsync(ToolInvokeRequest request, CancellationToken ct)
     {
         var args = ParseArguments(request.Arguments);
-        if (!TryGetString(args, "server_name", out var serverName))
+        if (!TryGetServerName(args, out var serverName))
             return Error(request, "Missing required parameter: server_name");
 
         var mgmtRequest = new McpGetServiceDetailsRequest { ServerName = serverName };
@@ -126,7 +126,7 @@ public sealed class McpManagementExecutor : IToolExecutor, IAsyncDisposable
     private async Task<ToolInvokeResponse> InvokeToolAsync(ToolInvokeRequest request, CancellationToken ct)
     {
         var args = ParseArguments(request.Arguments);
-        if (!TryGetString(args, "server_name", out var serverName))
+        if (!TryGetServerName(args, out var serverName))
             return Error(request, "Missing required parameter: server_name");
         if (!TryGetString(args, "tool_name", out var toolName))
             return Error(request, "Missing required parameter: tool_name");
@@ -199,7 +199,7 @@ public sealed class McpManagementExecutor : IToolExecutor, IAsyncDisposable
     private async Task<ToolInvokeResponse> UnregisterServerAsync(ToolInvokeRequest request, CancellationToken ct)
     {
         var args = ParseArguments(request.Arguments);
-        if (!TryGetString(args, "server_name", out var serverName))
+        if (!TryGetServerName(args, out var serverName))
             return Error(request, "Missing required parameter: server_name");
 
         var mgmtRequest = new McpUnregisterServerRequest { ServerName = serverName };
@@ -330,6 +330,14 @@ public sealed class McpManagementExecutor : IToolExecutor, IAsyncDisposable
             _ => raw.ToString() ?? string.Empty
         };
         return !string.IsNullOrEmpty(value);
+    }
+
+    private static bool TryGetServerName(Dictionary<string, object?> args, out string serverName)
+    {
+        if (!TryGetString(args, "server_name", out serverName))
+            return false;
+        serverName = serverName.ToLowerInvariant();
+        return true;
     }
 
     private static ToolInvokeResponse Error(ToolInvokeRequest request, string message) => new()
