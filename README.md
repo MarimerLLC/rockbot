@@ -391,6 +391,7 @@ Deep-dive documentation for individual subsystems lives in [`docs/`](docs/):
 | [`docs/blazor-ui.md`](docs/blazor-ui.md) | Blazor chat UI architecture, UserProxyService, feedback, history replay, deployment |
 | [`docs/messaging.md`](docs/messaging.md) | MessageEnvelope, publisher/subscriber interfaces, RabbitMQ provider, topics, trust levels, trace propagation |
 | [`docs/agent-host.md`](docs/agent-host.md) | AgentHostBuilder, pipeline, identity, profile, conversation memory, session evaluation, LLM client, data volume layout |
+| [`docs/tools.md`](docs/tools.md) | Tool execution model, IToolRegistry, MCP bridge, web search/browse, REST, scheduling, script execution, OpenRouter MCP |
 
 ---
 
