@@ -1,27 +1,36 @@
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
+using RockBot.Messaging;
+using RockBot.UserProxy;
 
 namespace RockBot.Host;
 
 /// <summary>
-/// Handles <see cref="ScheduledTaskMessage"/> by invoking the LLM with the task description.
-/// The LLM executes the task as if it received a user message.
+/// Handles <see cref="ScheduledTaskMessage"/> by invoking the LLM with the task description
+/// and publishing the response as an <see cref="AgentReply"/> so the user sees it in the UI.
 /// </summary>
 internal sealed class ScheduledTaskHandler : IMessageHandler<ScheduledTaskMessage>
 {
     private readonly ILlmClient _llmClient;
+    private readonly IMessagePublisher _publisher;
+    private readonly AgentIdentity _agent;
     private readonly ILogger<ScheduledTaskHandler> _logger;
 
-    public ScheduledTaskHandler(ILlmClient llmClient, ILogger<ScheduledTaskHandler> logger)
+    public ScheduledTaskHandler(
+        ILlmClient llmClient,
+        IMessagePublisher publisher,
+        AgentIdentity agent,
+        ILogger<ScheduledTaskHandler> logger)
     {
         _llmClient = llmClient;
+        _publisher = publisher;
+        _agent = agent;
         _logger = logger;
     }
 
     public async Task HandleAsync(ScheduledTaskMessage message, MessageHandlerContext context)
     {
-        _logger.LogInformation(
-            "Executing scheduled task '{TaskName}'", message.TaskName);
+        _logger.LogInformation("Executing scheduled task '{TaskName}'", message.TaskName);
 
         var messages = new List<ChatMessage>
         {
@@ -36,8 +45,21 @@ internal sealed class ScheduledTaskHandler : IMessageHandler<ScheduledTaskMessag
             messages,
             cancellationToken: context.CancellationToken);
 
+        var text = response.Text ?? string.Empty;
+
         _logger.LogInformation(
             "Scheduled task '{TaskName}' completed. Response: {Response}",
-            message.TaskName, response.Text);
+            message.TaskName, text);
+
+        var reply = new AgentReply
+        {
+            Content = text,
+            SessionId = "scheduled",
+            AgentName = _agent.Name,
+            IsFinal = true
+        };
+
+        var envelope = reply.ToEnvelope<AgentReply>(source: _agent.Name);
+        await _publisher.PublishAsync(UserProxyTopics.UserResponse, envelope, context.CancellationToken);
     }
 }
