@@ -115,6 +115,25 @@ public static class AgentMemoryExtensions
     }
 
     /// <summary>
+    /// Registers the file-based conversation log, enabling the preference-inference dream pass.
+    /// Call after <see cref="WithConversationMemory"/> and before <see cref="WithDreaming"/>.
+    /// <see cref="WithMemory"/> does NOT call this — callers opt in explicitly.
+    /// </summary>
+    public static AgentHostBuilder WithConversationLog(
+        this AgentHostBuilder builder,
+        Action<ConversationLogOptions>? configure = null)
+    {
+        if (configure is not null)
+            builder.Services.Configure(configure);
+        else
+            builder.Services.Configure<ConversationLogOptions>(_ => { });
+
+        builder.Services.AddSingleton<IConversationLog, FileConversationLog>();
+
+        return builder;
+    }
+
+    /// <summary>
     /// Registers the feedback capture system: <see cref="IFeedbackStore"/> (file-backed) and
     /// the <see cref="SessionSummaryService"/> background evaluator.
     /// Requires <see cref="IConversationMemory"/> and an LLM client to be registered.
