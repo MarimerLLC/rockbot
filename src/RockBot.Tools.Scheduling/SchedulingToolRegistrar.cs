@@ -23,7 +23,7 @@ internal sealed class SchedulingToolRegistrar(
             },
             "cron": {
               "type": "string",
-              "description": "5-field cron expression (minute hour day month weekday), e.g. '0 8 * * 1-5'"
+              "description": "Cron expression for when the task fires. Two formats are supported: standard 5-field (minute hour day-of-month month day-of-week, e.g. '0 8 * * 1-5') or 6-field with a leading seconds field (second minute hour day-of-month month day-of-week, e.g. '0 0 9 * * *'). Use specific values for one-time tasks, wildcards for recurring. Current time is in your system prompt — use it to compute target times."
             },
             "description": {
               "type": "string",
@@ -52,7 +52,7 @@ internal sealed class SchedulingToolRegistrar(
         registry.Register(new ToolRegistration
         {
             Name = "schedule_task",
-            Description = "Schedule a recurring task using a cron expression. The agent will execute the description when the task fires.",
+            Description = "Schedule a one-time or recurring task using a cron expression. The agent will execute the description when the task fires and the response will be shown to the user. Supports 5-field (minute-resolution) and 6-field (second-resolution) cron. Use specific field values for one-time tasks.",
             ParametersSchema = ScheduleSchema,
             Source = "scheduling"
         }, new ScheduleTaskExecutor(scheduler));
