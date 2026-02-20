@@ -452,6 +452,17 @@ internal sealed class DreamService : IHostedService, IDisposable
             foreach (var srcName in dto.SourceNames ?? [])
                 allToDelete.Add(srcName);
 
+        // Safety guard: refuse to delete skills when nothing is being saved in return.
+        // The directive says "never delete without replacement" — enforce it in code so an
+        // LLM that violates the rule cannot silently destroy the skill library.
+        if (allToDelete.Count > 0 && (result.ToSave is null || result.ToSave.Count == 0))
+        {
+            _logger.LogWarning(
+                "DreamService: skill consolidation LLM proposed deleting {Count} skill(s) with no replacements — refusing to execute (possible LLM directive violation)",
+                allToDelete.Count);
+            return;
+        }
+
         foreach (var name in allToDelete)
         {
             await _skillStore!.DeleteAsync(name);

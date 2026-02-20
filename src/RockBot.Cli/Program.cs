@@ -67,6 +67,7 @@ builder.Services.AddRockBotHost(agent =>
     agent.WithProfile();
     agent.WithRules();
     agent.WithMemory();
+    agent.WithConversationLog();
     agent.WithFeedback();
     agent.WithSkills();
     agent.WithDreaming(opts =>
