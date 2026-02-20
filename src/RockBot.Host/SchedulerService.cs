@@ -197,6 +197,15 @@ internal sealed class SchedulerService : IHostedService, ISchedulerService
 
         await _store.UpdateLastFiredAsync(task.Name, firedAt);
 
+        if (task.RunOnce)
+        {
+            // One-time task — delete from store and remove the timer slot.
+            await _store.DeleteAsync(task.Name);
+            lock (_timerLock) { _timers.Remove(task.Name); }
+            _logger.LogInformation("One-time task '{Name}' completed and removed", task.Name);
+            return;
+        }
+
         // Re-arm for the next occurrence
         var updated = task with { LastFiredAt = firedAt };
         ArmTimer(updated);

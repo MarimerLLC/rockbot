@@ -26,7 +26,9 @@ public static class AgentHostBuilderSchedulingExtensions
         builder.Services.AddSingleton<IHostedService>(
             sp => sp.GetRequiredService<SchedulerService>());
 
-        builder.HandleMessage<ScheduledTaskMessage, ScheduledTaskHandler>();
+        // Note: ScheduledTaskMessage handler is intentionally NOT registered here.
+        // The host application (e.g. RockBot.Cli) must register its own handler so it
+        // can supply the full tool set and a context-appropriate system prompt.
 
         return builder;
     }

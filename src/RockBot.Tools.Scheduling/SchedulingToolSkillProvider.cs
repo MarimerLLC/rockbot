@@ -118,22 +118,20 @@ internal sealed class SchedulingToolSkillProvider : IToolSkillProvider
 
         ## One-Time Tasks
 
-        To fire once at a specific future time, pin all fields to that exact moment.
-        Your system prompt contains the current date and time — use it to compute the
-        target.
+        To fire once at a specific future time, pin all fields to that exact moment
+        and set `runOnce: true` — the task is automatically deleted after it fires.
 
         **Example:** Current time is 14:22:10 on March 5. User says "remind me in 2 minutes."
-        Target = 14:24. Use 5-field: `24 14 5 3 *`
+        Target = 14:24. Use 5-field: `24 14 5 3 *`, `runOnce: true`
 
         **Example:** Current time is 14:22:45 on March 5. User says "do this in 30 seconds."
-        Target = 14:23:15. Use 6-field: `15 23 14 5 3 *`
+        Target = 14:23:15. Use 6-field: `15 23 14 5 3 *`, `runOnce: true`
 
         **Example:** User says "remind me at 3 PM today" and today is March 5.
-        Use 5-field: `0 15 5 3 *`
+        Use 5-field: `0 15 5 3 *`, `runOnce: true`
 
-        One-time tasks remain in the task list after they fire (at their next
-        occurrence, which may be a year away for day+month pins). Cancel them after
-        they fire if they are no longer needed.
+        Always set `runOnce: true` for one-time tasks. Tasks without `runOnce` remain
+        in the schedule and re-fire on their next occurrence (which may be a year away).
 
 
         ## Relative-Time Requests

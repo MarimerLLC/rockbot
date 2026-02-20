@@ -8,9 +8,14 @@ namespace RockBot.Host;
 /// <param name="Description">What the agent should do when this task fires.</param>
 /// <param name="CreatedAt">When the task was first scheduled.</param>
 /// <param name="LastFiredAt">When the task most recently fired, or null if never.</param>
+/// <param name="RunOnce">
+/// When true the task is automatically cancelled after it fires once.
+/// Use this for one-time reminders and deferred actions.
+/// </param>
 public sealed record ScheduledTask(
     string Name,
     string CronExpression,
     string Description,
     DateTimeOffset CreatedAt,
-    DateTimeOffset? LastFiredAt = null);
+    DateTimeOffset? LastFiredAt = null,
+    bool RunOnce = false);

@@ -23,11 +23,15 @@ internal sealed class SchedulingToolRegistrar(
             },
             "cron": {
               "type": "string",
-              "description": "Cron expression. 5-field: 'minute hour day month dow' (e.g. '0 8 * * 1-5'). 6-field with seconds: 'second minute hour day month dow' (e.g. '15 23 14 5 3 *'). For one-time tasks pin every field to the exact target moment — read the current time WITH SECONDS from your system prompt, add the offset, and pin each field. Always use * for day-of-week on one-time tasks."
+                "description": "Cron expression. 5-field: 'minute hour day month dow' (e.g. '0 8 * * 1-5'). 6-field with seconds: 'second minute hour day month dow' (e.g. '15 23 14 5 3 *'). For one-time tasks pin every field to the exact target moment — read the current time WITH SECONDS from your system prompt, add the offset, and pin each field. Always use * for day-of-week on one-time tasks."
             },
             "description": {
               "type": "string",
               "description": "What the agent should do when this task fires"
+            },
+            "runOnce": {
+              "type": "boolean",
+              "description": "Set to true for one-time tasks (reminders, deferred actions). The task is automatically deleted after it fires. Omit or set false for recurring tasks."
             }
           },
           "required": ["name", "cron", "description"]
@@ -75,6 +79,7 @@ internal sealed class SchedulingToolRegistrar(
                   (minute=24, hour=14, day=5, month=3, day-of-week=*)
 
                 Always set day-of-week to * for one-time tasks to avoid AND-logic issues.
+                Set runOnce=true for one-time tasks so they are automatically removed after firing.
                 """,
             ParametersSchema = ScheduleSchema,
             Source = "scheduling"
