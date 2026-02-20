@@ -216,6 +216,22 @@ internal sealed class UserMessageHandler(
                     logger.LogInformation(
                         "Injected {Count} relevant skill(s) (BM25 recall) for session {SessionId}: {Skills}",
                         newSkills.Count, message.SessionId, skillNames);
+
+                    // Surface see-also references from newly recalled skills (serendipitous discovery)
+                    var seeAlsoNames = newSkills
+                        .SelectMany(s => s.SeeAlso ?? [])
+                        .Distinct(StringComparer.OrdinalIgnoreCase)
+                        .Where(name => skillRecallTracker.TryMarkAsRecalled(message.SessionId, name))
+                        .ToList();
+
+                    if (seeAlsoNames.Count > 0)
+                    {
+                        chatMessages.Add(new ChatMessage(ChatRole.System,
+                            $"Related skills (see-also): {string.Join(", ", seeAlsoNames)}"));
+                        logger.LogInformation(
+                            "Injected {Count} see-also skill(s) for session {SessionId}: {Skills}",
+                            seeAlsoNames.Count, message.SessionId, string.Join(", ", seeAlsoNames));
+                    }
                 }
             }
 

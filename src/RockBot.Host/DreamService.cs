@@ -388,6 +388,7 @@ internal sealed class DreamService : IHostedService, IDisposable
         userMessage.AppendLine($"The agent currently has {all.Count} skills. Consolidate them:");
         userMessage.AppendLine();
 
+        var sparseThreshold = DateTimeOffset.UtcNow.AddDays(-7);
         for (var i = 0; i < all.Count; i++)
         {
             var s = all[i];
@@ -396,7 +397,9 @@ internal sealed class DreamService : IHostedService, IDisposable
             var coUsedAnnotation = coUsed.TryGetValue(s.Name, out var coSkills) && coSkills.Count > 0
                 ? $" [co-used with: {string.Join(", ", coSkills.Take(3))}]"
                 : string.Empty;
-            userMessage.AppendLine($"{i + 1}. [NAME:{s.Name}]{usageAnnotation}{coUsedAnnotation} summary: {s.Summary}");
+            var isSparse = s.Content.Length < 200 && s.CreatedAt < sparseThreshold;
+            var sparseAnnotation = isSparse ? " [sparse-content: may need examples or steps]" : string.Empty;
+            userMessage.AppendLine($"{i + 1}. [NAME:{s.Name}]{usageAnnotation}{coUsedAnnotation}{sparseAnnotation} summary: {s.Summary}");
             userMessage.AppendLine(s.Content);
             userMessage.AppendLine();
         }
@@ -411,6 +414,25 @@ internal sealed class DreamService : IHostedService, IDisposable
             {
                 var parts = pair.Split('|');
                 userMessage.AppendLine($"- {parts[0]} + {parts[1]}: {cnt} session(s)");
+            }
+        }
+
+        // Append prefix cluster section for abstract parent guide detection
+        var prefixClusters = all
+            .Where(s => s.Name.Contains('/'))
+            .GroupBy(s => s.Name[..s.Name.IndexOf('/')])
+            .Where(g => g.Count() >= 2)
+            .OrderByDescending(g => g.Count())
+            .ToList();
+
+        if (prefixClusters.Count > 0)
+        {
+            userMessage.AppendLine();
+            userMessage.AppendLine("Skill name-prefix clusters (consider whether each cluster warrants an abstract parent guide skill):");
+            foreach (var cluster in prefixClusters)
+            {
+                var names = cluster.OrderBy(s => s.Name).Select(s => s.Name).ToList();
+                userMessage.AppendLine($"- '{cluster.Key}/*': {string.Join(", ", names)}");
             }
         }
 
@@ -501,17 +523,24 @@ internal sealed class DreamService : IHostedService, IDisposable
                     .Max()
                 : null;
 
+            var seeAlso = dto.SeeAlso?
+                .Where(n => !string.IsNullOrWhiteSpace(n))
+                .Select(n => n.Trim())
+                .ToList();
+
             var skill = new Skill(
                 Name: dto.Name.Trim(),
                 Summary: dto.Summary?.Trim() ?? string.Empty,
                 Content: dto.Content.Trim(),
                 CreatedAt: minCreatedAt,
                 UpdatedAt: DateTimeOffset.UtcNow,
-                LastUsedAt: maxLastUsedAt);
+                LastUsedAt: maxLastUsedAt,
+                SeeAlso: seeAlso is { Count: > 0 } ? seeAlso : null);
 
             await _skillStore!.SaveAsync(skill);
             saved++;
-            _logger.LogDebug("DreamService: saved merged skill '{Name}'", skill.Name);
+            _logger.LogDebug("DreamService: saved merged skill '{Name}' (seeAlso: {SeeAlso})",
+                skill.Name, skill.SeeAlso is { Count: > 0 } ? string.Join(", ", skill.SeeAlso) : "none");
         }
 
         await OptimizeSkillsAsync();
@@ -592,20 +621,30 @@ internal sealed class DreamService : IHostedService, IDisposable
                 atRiskSkills.Add(skill);
         }
 
-        if (atRiskSkills.Count == 0)
+        // Also include structurally sparse skills for proactive review, even without failure signals.
+        // A sparse skill (very short content, not brand-new) may have been recalled many times
+        // but never actually improved — the agent should add examples or steps.
+        var sparseCutoff = DateTimeOffset.UtcNow.AddDays(-7);
+        var sparseSkills = (await _skillStore!.ListAsync())
+            .Where(s => s.Content.Length < 200 && s.CreatedAt < sparseCutoff
+                        && !atRiskSkillNames.Contains(s.Name))
+            .ToList();
+
+        if (atRiskSkills.Count == 0 && sparseSkills.Count == 0)
         {
-            _logger.LogDebug("DreamService: at-risk skill names not found in store; skipping optimization pass");
+            _logger.LogDebug("DreamService: no at-risk or sparse skills found; skipping optimization pass");
             return;
         }
 
         _logger.LogInformation(
-            "DreamService: optimization pass — {SkillCount} at-risk skill(s) from {SessionCount} at-risk session(s)",
-            atRiskSkills.Count, atRiskSessions.Count);
+            "DreamService: optimization pass — {SkillCount} at-risk skill(s) from {SessionCount} at-risk session(s), {SparseCount} sparse skill(s)",
+            atRiskSkills.Count, atRiskSessions.Count, sparseSkills.Count);
 
         // Build the optimization prompt
         var userMessage = new StringBuilder();
-        userMessage.AppendLine($"The following {atRiskSkills.Count} skill(s) were used in sessions with quality problems.");
-        userMessage.AppendLine("Review each skill and improve it based on the associated failure context.");
+        userMessage.AppendLine($"The following skill(s) need review.");
+        userMessage.AppendLine("At-risk skills were used in sessions with quality problems; improve them based on failure context.");
+        userMessage.AppendLine("Sparse skills have minimal content and should be expanded with concrete examples or steps.");
         userMessage.AppendLine();
 
         foreach (var skill in atRiskSkills)
@@ -633,6 +672,21 @@ internal sealed class DreamService : IHostedService, IDisposable
                     var detail = string.IsNullOrWhiteSpace(fb.Detail) ? string.Empty : $" — \"{fb.Detail}\"";
                     userMessage.AppendLine($"- [{fb.SignalType}] {fb.Summary}{detail}");
                 }
+                userMessage.AppendLine();
+            }
+        }
+
+        // Add sparse skills with a structural review context (no failure context, just expansion needed)
+        if (sparseSkills.Count > 0)
+        {
+            userMessage.AppendLine("## Sparse skills (need expansion — add examples, steps, or clarifying detail):");
+            userMessage.AppendLine();
+            foreach (var skill in sparseSkills)
+            {
+                userMessage.AppendLine($"## Skill: {skill.Name} [SPARSE]");
+                userMessage.AppendLine(skill.Content);
+                userMessage.AppendLine();
+                userMessage.AppendLine("### Review note: This skill has minimal content. Expand it with concrete steps, examples, and edge cases.");
                 userMessage.AppendLine();
             }
         }
@@ -757,6 +811,50 @@ internal sealed class DreamService : IHostedService, IDisposable
             foreach (var s in existingSkills)
                 userMessage.AppendLine($"- {s.Name}: {s.Summary}");
             userMessage.AppendLine();
+        }
+
+        // Compute recurring term frequency across sessions as a stronger proactive signal.
+        // Extract the first user message per session as the intent proxy, tokenize, and count
+        // terms that appear in 2 or more sessions.
+        var sessionFirstMessages = bySession
+            .Select(kvp => kvp.Value.FirstOrDefault(e => e.Role == "user")?.Content ?? string.Empty)
+            .Where(c => !string.IsNullOrWhiteSpace(c))
+            .ToList();
+
+        if (sessionFirstMessages.Count >= 2)
+        {
+            var termFreq = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            foreach (var msg in sessionFirstMessages)
+            {
+                var tokens = msg.ToLowerInvariant()
+                    .Split([' ', '\n', '\t', ',', '.', '!', '?', ';', ':', '(', ')', '[', ']'],
+                        StringSplitOptions.RemoveEmptyEntries)
+                    .Where(t => t.Length >= 4)
+                    .Distinct(StringComparer.OrdinalIgnoreCase);
+                foreach (var token in tokens)
+                {
+                    termFreq.TryGetValue(token, out var cnt);
+                    termFreq[token] = cnt + 1;
+                }
+            }
+
+            var recurringTerms = termFreq
+                .Where(kvp => kvp.Value >= 2)
+                .OrderByDescending(kvp => kvp.Value)
+                .Take(15)
+                .ToList();
+
+            if (recurringTerms.Count > 0)
+            {
+                userMessage.AppendLine("## Recurring topics across sessions (term frequency ≥ 2 sessions):");
+                userMessage.AppendLine("Use these as stronger signals — high-frequency terms indicate recurring user needs.");
+                foreach (var (term, count) in recurringTerms)
+                    userMessage.AppendLine($"- \"{term}\": {count} session(s)");
+                userMessage.AppendLine();
+                _logger.LogDebug(
+                    "DreamService: skill gap — {Count} recurring term(s) injected as pattern-frequency signal",
+                    recurringTerms.Count);
+            }
         }
 
         var messages = new List<ChatMessage>
@@ -962,13 +1060,35 @@ internal sealed class DreamService : IHostedService, IDisposable
         { "toDelete": [...IDs to remove...], "toSave": [...new/merged entries...] }
         Each entry in toSave: { "content", "category", "tags", "sourceIds" }
         If nothing needs consolidation, return: { "toDelete": [], "toSave": [] }
+
+        Additionally, review any Correction feedback signals for anti-patterns — approaches the agent
+        took that produced wrong or unhelpful results. Write these as new memory entries with:
+        - category: "anti-patterns/{domain}" (e.g. "anti-patterns/file-operations", "anti-patterns/email")
+        - content: "Don't [do X] for [reason Y] — instead [do Z]"
+        - tags: ["anti-pattern"]
+        Anti-pattern entries must be specific and actionable. Only write one if a clear failure pattern
+        is evident from the Correction feedback. Do not speculate.
         """;
 
     private const string BuiltInSkillDirective = """
         You are a skill consolidation assistant. Review all skill documents for semantic overlap or near-duplication.
-        Merge overlapping skills into improved combined ones and return structured JSON:
+        Merge overlapping skills into improved combined ones.
+
+        For skills sharing a name prefix (e.g. mcp/email, mcp/calendar, mcp/weather) shown in the
+        prefix-cluster section: consider creating an abstract parent guide skill (e.g. mcp/guide) as
+        a "when to use which" dispatch reference. The parent skill should be conceptual — a decision
+        tree or selection guide — not a step-by-step procedure. Leaf skills remain procedural.
+        Only create a parent guide if the cluster has 2 or more members and no adequate guide exists.
+
+        For any skill, populate seeAlso with names of related skills the agent should consider alongside it:
+        - Sibling skills in the same prefix cluster
+        - Skills frequently co-used in the same session (shown in co-occurrence section)
+        - Logical complements or prerequisites
+
+        Return structured JSON:
         { "toDelete": [...names to remove...], "toSave": [...new/merged skills...] }
-        Each skill in toSave: { "name", "summary", "content", "sourceNames" }
+        Each skill in toSave: { "name", "summary", "content", "sourceNames", "seeAlso" }
+        - seeAlso: optional list of related skill names (omit or use [] if none)
         The summary must be one sentence of 15 words or fewer.
         Every name in any sourceNames list must also appear in toDelete.
         If nothing needs consolidation, return: { "toDelete": [], "toSave": [] }
@@ -1044,7 +1164,8 @@ internal sealed class DreamService : IHostedService, IDisposable
         string Name,
         string? Summary,
         string Content,
-        IReadOnlyList<string>? SourceNames);
+        IReadOnlyList<string>? SourceNames,
+        IReadOnlyList<string>? SeeAlso);
 
     private sealed record PrefDreamResultDto(List<PrefEntryDto>? ToSave);
 

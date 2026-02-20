@@ -85,9 +85,12 @@ The result is a swarm of agents that coordinate through messages, where the fail
 Skills are reusable knowledge documents the agent learns through experience and saves for future sessions. The system includes:
 
 - **Automatic recall** — BM25 search runs every turn to surface relevant skills as the conversation evolves.
+- **See-also cross-references** — when a skill is recalled, its `seeAlso` references are also surfaced, enabling serendipitous discovery of related skills the agent didn't know to look for.
 - **Skill index** — a summary of all skills is injected at session start so the agent knows what it has.
 - **Usage tracking** — invocation counts and last-used timestamps enable pruning of stale skills.
 - **Dream-based optimization** — a background dream pass periodically consolidates related skills, prunes unused ones, and refines content based on accumulated experience.
+- **Prefix cluster detection** — skills sharing a name prefix (e.g. `mcp/email`, `mcp/calendar`) are detected during consolidation; the dream cycle can create abstract parent guide skills (`mcp/guide`) that describe when to use each sibling.
+- **Structural staleness** — sparse skills (very short content, not recently improved) are flagged in consolidation and included in the optimization pass proactively, not only after failures.
 
 ### Tool guides
 
@@ -117,9 +120,11 @@ The agent can schedule tasks for future execution. Results are delivered back th
 A background hosted service that runs periodically (configurable interval) to autonomously refine the agent's knowledge:
 
 - **Memory consolidation** — finds duplicates, merges related entries, refines categories.
-- **Skill optimization** — consolidates related skills, prunes stale ones, improves content.
-- **Session evaluation** — analyzes conversation quality from logs.
-- **Implicit preference learning** — extracts user preferences from conversation patterns.
+- **Anti-pattern mining** — scans Correction feedback for failure patterns and writes `anti-patterns/{domain}` memory entries (e.g. "Don't use X for Y — use Z instead"). These surface via BM25 alongside regular memories as actionable constraints.
+- **Skill consolidation** — merges overlapping skills, prunes stale ones, populates `seeAlso` cross-references, and detects prefix clusters to propose abstract parent guide skills.
+- **Skill optimization** — improves skills involved in poor sessions; also proactively expands structurally sparse skills (very short content) even without failure signals.
+- **Skill gap detection** — scans conversation logs for recurring request patterns and creates new skills; uses cross-session term frequency as a stronger signal for patterns the agent hasn't formalized yet.
+- **Implicit preference learning** — extracts durable user preferences from conversation patterns.
 
 ### Model-specific behaviors
 
@@ -371,6 +376,17 @@ telemetry:
 ```
 
 Logs stream to stdout and are picked up automatically by Promtail or any standard log collector. Filter in Grafana with `{namespace="rockbot"}`.
+
+---
+
+## Subsystem documentation
+
+Deep-dive documentation for individual subsystems lives in [`docs/`](docs/):
+
+| Document | Contents |
+|---|---|
+| [`docs/skills.md`](docs/skills.md) | Skills data model, BM25 recall, see-also, dream consolidation, prefix clusters, optimization, gap detection |
+| [`docs/memory.md`](docs/memory.md) | Three-tier memory architecture, long-term storage, anti-patterns, working memory, dream passes |
 
 ---
 
