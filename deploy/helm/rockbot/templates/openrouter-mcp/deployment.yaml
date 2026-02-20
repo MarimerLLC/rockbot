@@ -1,0 +1,52 @@
+{{- if .Values.openrouterMcp.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "rockbot.fullname" . }}-openrouter-mcp
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "rockbot.labels" . | nindent 4 }}
+    app.kubernetes.io/component: openrouter-mcp
+spec:
+  replicas: {{ .Values.openrouterMcp.replicaCount }}
+  selector:
+    matchLabels:
+      app: rockbot-openrouter-mcp
+      {{- include "rockbot.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        app: rockbot-openrouter-mcp
+        {{- include "rockbot.labels" . | nindent 8 }}
+        {{- include "rockbot.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: openrouter-mcp
+    spec:
+      containers:
+        - name: openrouter-mcp
+          image: {{ .Values.openrouterMcp.image.repository }}:{{ .Values.openrouterMcp.image.tag }}
+          imagePullPolicy: {{ .Values.imagePullPolicy }}
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: OpenRouter__ApiKey
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "rockbot.secretName" . }}
+                  key: OpenRouter__ApiKey
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 15
+            periodSeconds: 15
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          resources:
+            {{- toYaml .Values.openrouterMcp.resources | nindent 12 }}
+{{- end }}

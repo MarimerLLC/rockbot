@@ -21,9 +21,16 @@ secrets:
   rabbitmq:
     password: "<your-rabbitmq-password>"
 
+  # openRouter:
+  #   apiKey: "<your-openrouter-management-api-key>"  # required when openrouterMcp.enabled=true
+
 blazor:
   tailscale:
     hostname: "rockbot"   # accessible at http://rockbot.<your-tailnet>.ts.net on your tailnet
+
+# Optional — enable the OpenRouter MCP server (provides credit, model, and usage info to the agent)
+# openrouterMcp:
+#   enabled: true
 
 # Optional — configure if you have Grafana Alloy or otel-collector running
 # telemetry:

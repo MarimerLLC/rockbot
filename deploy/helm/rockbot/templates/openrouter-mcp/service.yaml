@@ -1,0 +1,19 @@
+{{- if .Values.openrouterMcp.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "rockbot.fullname" . }}-openrouter-mcp
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "rockbot.labels" . | nindent 4 }}
+    app.kubernetes.io/component: openrouter-mcp
+spec:
+  type: ClusterIP
+  selector:
+    app: rockbot-openrouter-mcp
+    {{- include "rockbot.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8080
+{{- end }}
