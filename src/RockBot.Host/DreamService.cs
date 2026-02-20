@@ -33,6 +33,7 @@ internal sealed class DreamService : IHostedService, IDisposable
     private string? _skillDreamDirective;
     private string? _skillOptimizeDirective;
     private string? _prefDreamDirective;
+    private string? _skillGapDirective;
 
     public DreamService(
         ILongTermMemory memory,
@@ -118,6 +119,19 @@ internal sealed class DreamService : IHostedService, IDisposable
                 _logger.LogWarning("DreamService: pref directive not found at {Path}; using built-in fallback", prefDirectivePath);
             else
                 _logger.LogInformation("DreamService: loaded pref directive from {Path}", prefDirectivePath);
+        }
+
+        if (_skillStore is not null && _conversationLog is not null)
+        {
+            var skillGapDirectivePath = ResolvePath(_options.SkillGapDirectivePath, _profileOptions.BasePath);
+            _skillGapDirective = File.Exists(skillGapDirectivePath)
+                ? File.ReadAllText(skillGapDirectivePath)
+                : BuiltInSkillGapDirective;
+
+            if (!File.Exists(skillGapDirectivePath))
+                _logger.LogWarning("DreamService: skill gap directive not found at {Path}; using built-in fallback", skillGapDirectivePath);
+            else
+                _logger.LogInformation("DreamService: loaded skill gap directive from {Path}", skillGapDirectivePath);
         }
 
         _timer = new Timer(
@@ -281,6 +295,9 @@ internal sealed class DreamService : IHostedService, IDisposable
             }
 
             if (_skillStore is not null)
+                await RunSkillGapDetectionPassAsync();
+
+            if (_skillStore is not null)
                 await ConsolidateSkillsAsync();
 
             await RunPreferenceInferencePassAsync();
@@ -434,6 +451,17 @@ internal sealed class DreamService : IHostedService, IDisposable
         foreach (var dto in result.ToSave ?? [])
             foreach (var srcName in dto.SourceNames ?? [])
                 allToDelete.Add(srcName);
+
+        // Safety guard: refuse to delete skills when nothing is being saved in return.
+        // The directive says "never delete without replacement" — enforce it in code so an
+        // LLM that violates the rule cannot silently destroy the skill library.
+        if (allToDelete.Count > 0 && (result.ToSave is null || result.ToSave.Count == 0))
+        {
+            _logger.LogWarning(
+                "DreamService: skill consolidation LLM proposed deleting {Count} skill(s) with no replacements — refusing to execute (possible LLM directive violation)",
+                allToDelete.Count);
+            return;
+        }
 
         foreach (var name in allToDelete)
         {
@@ -683,6 +711,97 @@ internal sealed class DreamService : IHostedService, IDisposable
     }
 
     /// <summary>
+    /// Scans the conversation log for recurring request patterns that would benefit
+    /// from a reusable skill and saves any discovered skills directly to the skill store.
+    /// Runs before skill consolidation so that the consolidation pass can deduplicate
+    /// any new skills alongside existing ones.
+    /// </summary>
+    private async Task RunSkillGapDetectionPassAsync()
+    {
+        if (_conversationLog is null || _skillStore is null || !_options.SkillGapEnabled)
+            return;
+
+        var entries = await _conversationLog.ReadAllAsync();
+        if (entries.Count == 0)
+        {
+            _logger.LogDebug("DreamService: skill gap detection — no log entries; skipping");
+            return;
+        }
+
+        var existingSkills = await _skillStore.ListAsync();
+
+        _logger.LogInformation(
+            "DreamService: skill gap detection pass — {EntryCount} log entries, {SkillCount} existing skills",
+            entries.Count, existingSkills.Count);
+
+        // Build user message: turns grouped by session + existing skill catalog
+        var userMessage = new StringBuilder();
+        userMessage.AppendLine("Review the following conversation log for recurring request patterns:");
+        userMessage.AppendLine();
+
+        var bySession = entries
+            .GroupBy(e => e.SessionId)
+            .ToDictionary(g => g.Key, g => g.ToList());
+
+        foreach (var (sessionId, sessionEntries) in bySession)
+        {
+            userMessage.AppendLine($"## Session: {sessionId}");
+            foreach (var e in sessionEntries)
+                userMessage.AppendLine($"[{e.Role}] {e.Content}");
+            userMessage.AppendLine();
+        }
+
+        if (existingSkills.Count > 0)
+        {
+            userMessage.AppendLine("## Existing skills (do not duplicate these):");
+            foreach (var s in existingSkills)
+                userMessage.AppendLine($"- {s.Name}: {s.Summary}");
+            userMessage.AppendLine();
+        }
+
+        var messages = new List<ChatMessage>
+        {
+            new(ChatRole.System, _skillGapDirective ?? BuiltInSkillGapDirective),
+            new(ChatRole.User, userMessage.ToString())
+        };
+
+        var response = await _llmClient.GetResponseAsync(messages, new ChatOptions());
+        var raw = response.Text?.Trim() ?? string.Empty;
+        var json = ExtractJsonObject(raw);
+
+        if (string.IsNullOrEmpty(json))
+        {
+            _logger.LogWarning("DreamService: skill gap LLM returned no parseable JSON; skipping");
+            return;
+        }
+
+        _logger.LogDebug("DreamService: skill gap JSON ({Length} chars): {Json}", json.Length, json);
+
+        var result = JsonSerializer.Deserialize<SkillGapResultDto>(json, JsonOptions);
+        var saved = 0;
+
+        foreach (var dto in result?.ToSave ?? [])
+        {
+            if (string.IsNullOrWhiteSpace(dto.Name) || string.IsNullOrWhiteSpace(dto.Content))
+                continue;
+
+            var skill = new Skill(
+                Name: dto.Name.Trim(),
+                Summary: dto.Summary?.Trim() ?? string.Empty,
+                Content: dto.Content.Trim(),
+                CreatedAt: DateTimeOffset.UtcNow,
+                UpdatedAt: DateTimeOffset.UtcNow,
+                LastUsedAt: null);
+
+            await _skillStore.SaveAsync(skill);
+            saved++;
+            _logger.LogDebug("DreamService: skill gap created new skill '{Name}'", skill.Name);
+        }
+
+        _logger.LogInformation("DreamService: skill gap detection complete — {Saved} new skill(s) created", saved);
+    }
+
+    /// <summary>
     /// Analyzes the accumulated conversation log for durable user preference patterns
     /// and saves inferred preferences as tagged memory entries.
     /// Always clears the log after the pass to prevent unbounded growth.
@@ -866,6 +985,27 @@ internal sealed class DreamService : IHostedService, IDisposable
         If no improvements are warranted, return: { "toDelete": [], "toSave": [] }
         """;
 
+    private const string BuiltInSkillGapDirective = """
+        You are a skill gap detection assistant. Review the conversation log for recurring request
+        patterns that would benefit from a reusable skill.
+
+        Only suggest a new skill when the same type of request appears 2 or more times across
+        different sessions, or with clear recurring intent in a single session.
+
+        Existing skills are listed below — do not suggest skills already adequately covered by them.
+
+        Return ONLY a JSON object:
+        { "toSave": [ { "name": "...", "summary": "...", "content": "..." } ] }
+
+        Rules:
+        - name: short, lowercase, hyphen-separated (e.g. "summarize-emails", "daily-standup")
+        - summary: one sentence, 15 words or fewer
+        - content: step-by-step instructions the agent should follow when executing this skill
+        - Only suggest skills with clear, repeatable value across sessions
+
+        If no recurring patterns warrant a new skill, return: { "toSave": [] }
+        """;
+
     private const string BuiltInPrefDirective = """
         You are a user preference inference assistant. Review the conversation log for durable, recurring preference patterns.
         Look for: formatting preferences, comment style, tool corrections, topic clusters, and communication style signals.
@@ -913,4 +1053,8 @@ internal sealed class DreamService : IHostedService, IDisposable
         string? Category,
         IReadOnlyList<string>? Tags,
         IReadOnlyDictionary<string, string>? Metadata);
+
+    private sealed record SkillGapResultDto(List<SkillGapEntryDto>? ToSave);
+
+    private sealed record SkillGapEntryDto(string Name, string? Summary, string Content);
 }
