@@ -7,7 +7,7 @@ namespace RockBot.Tools.Scheduling;
 /// <summary>
 /// Executes the <c>schedule_task</c> tool: creates or replaces a cron-scheduled task.
 /// </summary>
-internal sealed class ScheduleTaskExecutor(ISchedulerService scheduler) : IToolExecutor
+internal sealed class ScheduleTaskExecutor(ISchedulerService scheduler, AgentClock clock) : IToolExecutor
 {
     public async Task<ToolInvokeResponse> ExecuteAsync(ToolInvokeRequest request, CancellationToken ct)
     {
@@ -37,11 +37,17 @@ internal sealed class ScheduleTaskExecutor(ISchedulerService scheduler) : IToolE
 
             await scheduler.ScheduleAsync(task, ct);
 
+            var next = scheduler.GetNextOccurrence(task);
+            var now = clock.Now;
+            var confirmation = next.HasValue
+                ? $"Scheduled task '{name}' with cron '{cron}'. Next fire: {next.Value:yyyy-MM-dd HH:mm:ss} ({clock.Zone.Id}). Current time: {now:yyyy-MM-dd HH:mm:ss}."
+                : $"Scheduled task '{name}' with cron '{cron}'. WARNING: no future occurrence found — task will never fire. Please cancel and reschedule with a valid future cron.";
+
             return new ToolInvokeResponse
             {
                 ToolCallId = request.ToolCallId,
                 ToolName = request.ToolName,
-                Content = $"Scheduled task '{name}' with cron '{cron}'.",
+                Content = confirmation,
                 IsError = false
             };
         }

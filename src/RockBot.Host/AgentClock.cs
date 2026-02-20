@@ -40,6 +40,7 @@ public sealed class AgentClock
             baseDir = Path.Combine(AppContext.BaseDirectory, baseDir);
 
         _persistPath = Path.Combine(baseDir, "timezone");
+        _logger.LogInformation("AgentClock timezone persist path: {Path}", _persistPath);
         _zone = LoadZone(config);
     }
 

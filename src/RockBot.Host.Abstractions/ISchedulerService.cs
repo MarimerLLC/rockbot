@@ -20,4 +20,10 @@ public interface ISchedulerService
 
     /// <summary>Returns all currently scheduled tasks.</summary>
     Task<IReadOnlyList<ScheduledTask>> ListAsync(CancellationToken ct = default);
+
+    /// <summary>
+    /// Returns the next time the given task will fire (in the agent's configured timezone),
+    /// or null if the cron expression has no future occurrence.
+    /// </summary>
+    DateTimeOffset? GetNextOccurrence(ScheduledTask task);
 }

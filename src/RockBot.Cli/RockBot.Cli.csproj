@@ -23,6 +23,7 @@
 
   <ItemGroup>
     <Content Include="agent\**\*.md" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="model-behaviors\**\*" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
   <ItemGroup>
@@ -32,6 +33,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\RockBot.Host.Abstractions\RockBot.Host.Abstractions.csproj" />
+    <ProjectReference Include="..\RockBot.Llm\RockBot.Llm.csproj" />
     <ProjectReference Include="..\RockBot.Memory\RockBot.Memory.csproj" />
     <ProjectReference Include="..\RockBot.Skills\RockBot.Skills.csproj" />
     <ProjectReference Include="..\RockBot.Tools\RockBot.Tools.csproj" />

@@ -100,6 +100,19 @@ internal sealed class SchedulerService : IHostedService, ISchedulerService
     public Task<IReadOnlyList<ScheduledTask>> ListAsync(CancellationToken ct = default)
         => _store.ListAsync();
 
+    public DateTimeOffset? GetNextOccurrence(ScheduledTask task)
+    {
+        try
+        {
+            var cron = ParseCron(task.CronExpression);
+            return cron.GetNextOccurrence(_clock.Now, _clock.Zone);
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
     // ── Internals ─────────────────────────────────────────────────────────────
 
     // System.Threading.Timer requires dueTime < uint.MaxValue milliseconds (~49.7 days).
@@ -125,8 +138,9 @@ internal sealed class SchedulerService : IHostedService, ISchedulerService
         if (next is null)
         {
             _logger.LogWarning(
-                "No next occurrence for task '{Name}' cron '{Cron}' — task will not fire",
+                "No next occurrence for task '{Name}' cron '{Cron}' — removing orphaned task",
                 task.Name, task.CronExpression);
+            _ = _store.DeleteAsync(task.Name);
             return;
         }
 

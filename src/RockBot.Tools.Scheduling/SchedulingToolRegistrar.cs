@@ -11,6 +11,7 @@ namespace RockBot.Tools.Scheduling;
 internal sealed class SchedulingToolRegistrar(
     IToolRegistry registry,
     ISchedulerService scheduler,
+    AgentClock clock,
     ILogger<SchedulingToolRegistrar> logger) : IHostedService
 {
     private const string ScheduleSchema = """
@@ -83,7 +84,7 @@ internal sealed class SchedulingToolRegistrar(
                 """,
             ParametersSchema = ScheduleSchema,
             Source = "scheduling"
-        }, new ScheduleTaskExecutor(scheduler));
+        }, new ScheduleTaskExecutor(scheduler, clock));
         logger.LogInformation("Registered scheduling tool: schedule_task");
 
         registry.Register(new ToolRegistration
@@ -101,7 +102,7 @@ internal sealed class SchedulingToolRegistrar(
             Description = "List all currently scheduled tasks with their cron expressions and descriptions.",
             ParametersSchema = null,
             Source = "scheduling"
-        }, new ListScheduledTasksExecutor(scheduler));
+        }, new ListScheduledTasksExecutor(scheduler, clock));
         logger.LogInformation("Registered scheduling tool: list_scheduled_tasks");
 
         return Task.CompletedTask;

@@ -1,6 +1,8 @@
+using System.Text.RegularExpressions;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
 using RockBot.Host;
+using RockBot.Llm;
 using RockBot.Messaging;
 using RockBot.Tools;
 using RockBot.UserProxy;
@@ -19,27 +21,49 @@ internal sealed class ScheduledTaskHandler(
     AgentIdentity agent,
     IToolRegistry toolRegistry,
     RulesTools rulesTools,
+    ModelBehavior modelBehavior,
     ILogger<ScheduledTaskHandler> logger) : IMessageHandler<ScheduledTaskMessage>
 {
     private const int MaxToolIterations = 8;
+
+    private static readonly Regex HallucinatedActionRegex = new(
+        @"\bI(?:['\u2019]ve| have)\s+(cancell?ed|scheduled|created|updated|rescheduled|deleted|removed|completed|added|saved)\b",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
     public async Task HandleAsync(ScheduledTaskMessage message, MessageHandlerContext context)
     {
         var ct = context.CancellationToken;
         logger.LogInformation("Executing scheduled task '{TaskName}'", message.TaskName);
 
+        var resultInstruction = modelBehavior.ScheduledTaskResultMode switch
+        {
+            ScheduledTaskResultMode.VerbatimOutput =>
+                "When presenting results, include the complete verbatim output from every " +
+                "tool you called. Do not paraphrase, summarise, or describe what the output " +
+                "showed — paste it in full so the user can see the actual content.",
+            ScheduledTaskResultMode.SummarizeWithOutput =>
+                "When presenting results, first write a brief natural-language summary, " +
+                "then include the complete verbatim output from every tool you called.",
+            _ => // Summarize (default)
+                "When you are done, present the result directly and naturally — as if you " +
+                "are proactively messaging the user with completed work."
+        };
+
         var systemPrompt =
             "You are an autonomous agent. A background scheduled task has just fired and you " +
-            "are executing it now. Use your available tools as needed to complete the work. " +
-            "When you are done, present the result directly and naturally — as if you are " +
-            "proactively messaging the user with completed work. Do not say 'I was asked to' " +
-            "or reference the scheduling system; just deliver the result clearly.";
+            $"are executing it now. Use your available tools as needed to complete the work. " +
+            $"{resultInstruction} " +
+            "Do not say 'I was asked to' or reference the scheduling system; just deliver the result clearly.";
 
         var chatMessages = new List<ChatMessage>
         {
             new(ChatRole.System, systemPrompt),
-            new(ChatRole.User, message.Description)
         };
+
+        if (!string.IsNullOrEmpty(modelBehavior.AdditionalSystemPrompt))
+            chatMessages.Add(new ChatMessage(ChatRole.System, modelBehavior.AdditionalSystemPrompt));
+
+        chatMessages.Add(new ChatMessage(ChatRole.User, message.Description));
 
         var registryTools = toolRegistry.GetTools()
             .Select(r => (AIFunction)new RegistryToolFunction(r, toolRegistry.GetExecutor(r.Name)!, sessionId: null))
@@ -84,6 +108,7 @@ internal sealed class ScheduledTaskHandler(
         ChatOptions chatOptions,
         CancellationToken ct)
     {
+        var anyToolCalled = false;
         for (var iteration = 0; iteration < MaxToolIterations; iteration++)
         {
             var response = await llmClient.GetResponseAsync(chatMessages, chatOptions, ct);
@@ -94,20 +119,32 @@ internal sealed class ScheduledTaskHandler(
 
             if (functionCalls.Count == 0)
             {
-                // No tool calls — this is the final text response
-                for (var i = response.Messages.Count - 1; i >= 0; i--)
+                var text = response.Messages
+                    .LastOrDefault(m => m.Role == ChatRole.Assistant && !string.IsNullOrWhiteSpace(m.Text))
+                    ?.Text?.Trim()
+                    ?? response.Text?.Trim()
+                    ?? string.Empty;
+
+                if (modelBehavior.NudgeOnHallucinatedToolCalls
+                    && !anyToolCalled
+                    && HallucinatedActionRegex.IsMatch(text))
                 {
-                    var msg = response.Messages[i];
-                    if (msg.Role == ChatRole.Assistant && !string.IsNullOrWhiteSpace(msg.Text))
-                        return msg.Text.Trim();
+                    logger.LogWarning(
+                        "Scheduled task: hallucinated tool actions detected; nudging LLM to call tools");
+                    chatMessages.Add(new ChatMessage(ChatRole.Assistant, text));
+                    chatMessages.Add(new ChatMessage(ChatRole.User,
+                        "You described taking actions but no tool calls were detected. Please call the required tools now."));
+                    continue;
                 }
-                return response.Text?.Trim() ?? string.Empty;
+
+                return text;
             }
 
             logger.LogInformation(
                 "Scheduled task tool loop iteration {N}: {Count} tool call(s)",
                 iteration + 1, functionCalls.Count);
 
+            anyToolCalled = true;
             chatMessages.AddRange(response.Messages);
 
             foreach (var fc in functionCalls)

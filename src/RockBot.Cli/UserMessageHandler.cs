@@ -5,6 +5,7 @@ using System.Text.RegularExpressions;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
 using RockBot.Host;
+using RockBot.Llm;
 using RockBot.Memory;
 using RockBot.Messaging;
 using RockBot.Skills;
@@ -45,6 +46,7 @@ internal sealed class UserMessageHandler(
     AgentClock clock,
     SkillTools skillTools,
     ToolGuideTools toolGuideTools,
+    ModelBehavior modelBehavior,
     ILogger<UserMessageHandler> logger) : IMessageHandler<UserMessage>
 {
     /// <summary>
@@ -72,6 +74,16 @@ internal sealed class UserMessageHandler(
     /// </summary>
     private int? _knownContextLimit;
 
+    /// <summary>
+    /// Detects when a model claims to have performed tool actions in plain text without
+    /// actually emitting function calls — a hallucination pattern seen in DeepSeek and similar models.
+    /// </summary>
+    // Matches "I've", "I\u2019ve" (curly apostrophe), or "I have" followed by a past-tense action verb.
+    // LLMs commonly output curly/smart apostrophes, so both variants are handled.
+    private static readonly Regex HallucinatedActionRegex = new(
+        @"\bI(?:['\u2019]ve| have)\s+(cancell?ed|scheduled|created|updated|rescheduled|deleted|removed|completed|added|saved)\b",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
     public async Task HandleAsync(UserMessage message, MessageHandlerContext context)
     {
         var replyTo = context.Envelope.ReplyTo ?? UserProxyTopics.UserResponse;
@@ -95,7 +107,7 @@ internal sealed class UserMessageHandler(
             {
                 new(ChatRole.System, systemPrompt),
                 new(ChatRole.System,
-                    $"Current date and time: {clock.Now:dddd, MMMM d, yyyy 'at' h:mm:ss tt} ({clock.Zone.DisplayName})")
+                    $"Current date and time: {clock.Now:dddd, MMMM d, yyyy} {clock.Now:HH:mm:ss} ({clock.Zone.Id}) — 24-hour clock")
             };
 
             // Inject active rules at the same authority level as directives
@@ -107,6 +119,10 @@ internal sealed class UserMessageHandler(
                 chatMessages.Add(new ChatMessage(ChatRole.System, rulesText));
                 logger.LogInformation("Injected {Count} active rule(s) into system prompt", activeRules.Count);
             }
+
+            // Model-specific guardrails injected just before conversation history
+            if (!string.IsNullOrEmpty(modelBehavior.AdditionalSystemPrompt))
+                chatMessages.Add(new ChatMessage(ChatRole.System, modelBehavior.AdditionalSystemPrompt));
 
             // Replay only recent history to keep LLM context bounded
             var history = await conversationMemory.GetTurnsAsync(message.SessionId, ct);
@@ -293,6 +309,20 @@ internal sealed class UserMessageHandler(
                         chatMessages, chatOptions, firstResponse,
                         message.SessionId, replyTo, correlationId, ct);
                 }
+                else if (modelBehavior.NudgeOnHallucinatedToolCalls && HallucinatedActionRegex.IsMatch(text))
+                {
+                    logger.LogWarning(
+                        "Hallucinated tool actions detected on first response ({Length} chars); routing to background loop for nudge",
+                        text.Length);
+
+                    await PublishReplyAsync(
+                        "I'm working on that — I'll follow up shortly.",
+                        replyTo, correlationId, message.SessionId, isFinal: false, ct);
+
+                    _ = BackgroundToolLoopAsync(
+                        chatMessages, chatOptions, firstResponse,
+                        message.SessionId, replyTo, correlationId, ct);
+                }
                 else
                 {
                     // No tool calls and a genuine final answer
@@ -455,6 +485,7 @@ internal sealed class UserMessageHandler(
         // pendingResponse holds the pre-fetched first response for iteration 0.
         // After that it's null, and the loop calls the LLM for each iteration.
         ChatResponse? pendingResponse = firstResponse;
+        var anyToolCalled = false; // tracks whether any tool has fired this loop
 
         for (var iteration = 0; iteration < MaxToolIterations; iteration++)
         {
@@ -532,6 +563,22 @@ internal sealed class UserMessageHandler(
                         chatMessages.Add(new ChatMessage(ChatRole.Assistant, text));
                         chatMessages.Add(new ChatMessage(ChatRole.User,
                             "Stop narrating. Emit the tool call now — do not describe what you are about to do."));
+                        continue;
+                    }
+
+                    // Detect hallucinated tool-call claims: model says "I've scheduled/cancelled/etc."
+                    // but no function calls were emitted. Only nudge when no tools have fired yet —
+                    // after real tool calls the model may legitimately summarise what it just did.
+                    if (modelBehavior.NudgeOnHallucinatedToolCalls
+                        && !anyToolCalled
+                        && HallucinatedActionRegex.IsMatch(text))
+                    {
+                        logger.LogWarning(
+                            "Hallucinated tool actions detected ({Length} chars); nudging LLM to actually call tools",
+                            text.Length);
+                        chatMessages.Add(new ChatMessage(ChatRole.Assistant, text));
+                        chatMessages.Add(new ChatMessage(ChatRole.User,
+                            "You described taking actions but no tool calls were detected. Please call the required tools now."));
                         continue;
                     }
 
@@ -618,6 +665,8 @@ internal sealed class UserMessageHandler(
             logger.LogInformation(
                 "LLM requested {Count} tool call(s) on iteration {Iteration}",
                 functionCalls.Count, iteration + 2);
+
+            anyToolCalled = true;
 
             // Add the assistant message(s) containing the tool calls to the conversation
             chatMessages.AddRange(response.Messages);

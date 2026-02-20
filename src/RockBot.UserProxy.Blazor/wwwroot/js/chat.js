@@ -1,4 +1,13 @@
 window.chatHelpers = {
+    getBrowserTimezone: function () {
+        try {
+            return Intl.DateTimeFormat().resolvedOptions().timeZone;
+        } catch (e) {
+            return 'UTC';
+        }
+    },
+
+
     preventEnterNewline: function (element) {
         element.addEventListener('keydown', function (e) {
             if (e.key === 'Enter' && !e.shiftKey && !e.ctrlKey) {

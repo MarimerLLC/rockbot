@@ -47,7 +47,7 @@ spec:
               for f in soul.md directives.md style.md memory-rules.md dream.md skill-dream.md; do
                 src="/app/agent/$f"
                 dst="/data/agent/$f"
-                if [ -f "$src" ] && [ ! -f "$dst" ]; then
+                if [ -f "$src" ] && [ ! -s "$dst" ]; then
                   echo "  Copying default $f"
                   cp "$src" "$dst"
                 fi
@@ -58,6 +58,22 @@ spec:
                 echo "  Copying default mcp.json"
                 cp /app/mcp.json /data/agent/mcp.json
               fi
+
+              # Per-model behavior prompt files — copy per-file so users can customise
+              # individual prompts without losing others on upgrade
+              for model_dir in /app/model-behaviors/*/; do
+                [ -d "$model_dir" ] || continue
+                model_name=$(basename "$model_dir")
+                mkdir -p "/data/agent/model-behaviors/$model_name"
+                for src in "$model_dir"*; do
+                  [ -f "$src" ] || continue
+                  dst="/data/agent/model-behaviors/$model_name/$(basename "$src")"
+                  if [ ! -s "$dst" ]; then
+                    echo "  Copying model-behaviors/$model_name/$(basename $src)"
+                    cp "$src" "$dst"
+                  fi
+                done
+              done
 
               # Runtime directories
               mkdir -p /data/agent/memory /data/agent/skills

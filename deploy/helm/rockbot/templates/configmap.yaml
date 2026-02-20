@@ -23,6 +23,7 @@ data:
   Memory__BasePath: "/data/agent/memory"
   Skill__BasePath: "/data/agent/skills"
   McpBridge__ConfigPath: "/data/agent/mcp.json"
+  ModelBehaviors__BasePath: "/data/agent/model-behaviors"
 
   # ── Runtime ───────────────────────────────────────────────────────────────
   DOTNET_ENVIRONMENT: "Production"
