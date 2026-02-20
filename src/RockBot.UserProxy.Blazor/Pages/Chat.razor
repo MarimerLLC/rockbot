@@ -130,6 +130,7 @@
         if (firstRender)
         {
             await JSRuntime.InvokeVoidAsync("chatHelpers.preventEnterNewline", messageInput);
+            await JSRuntime.InvokeVoidAsync("chatHelpers.initInputHistory", messageInput);
             await JSRuntime.InvokeVoidAsync("chatHelpers.focusInputOnWindowFocus", messageInput);
 
             var tzId = await JSRuntime.InvokeAsync<string>("chatHelpers.getBrowserTimezone");
@@ -176,6 +177,7 @@
 
         var messageContent = currentMessage.Trim();
         currentMessage = string.Empty;
+        await JSRuntime.InvokeVoidAsync("chatHelpers.addToHistory", messageInput, messageContent);
 
         ChatState.AddUserMessage(messageContent, UserId, SessionId);
         ChatState.SetProcessing(true);
