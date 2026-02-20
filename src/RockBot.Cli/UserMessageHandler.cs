@@ -44,11 +44,11 @@ internal sealed class UserMessageHandler(
     RulesTools rulesTools,
     IToolRegistry toolRegistry,
     AgentClock clock,
-    SkillTools skillTools,
     ToolGuideTools toolGuideTools,
     ModelBehavior modelBehavior,
     IFeedbackStore feedbackStore,
-    ILogger<UserMessageHandler> logger) : IMessageHandler<UserMessage>
+    ILogger<UserMessageHandler> logger,
+    ISkillUsageStore? skillUsageStore = null) : IMessageHandler<UserMessage>
 {
     /// <summary>
     /// Maximum conversation turns to include in the LLM prompt.
@@ -245,6 +245,9 @@ internal sealed class UserMessageHandler(
             // Per-message working memory tools (session ID is baked in at construction)
             var sessionWorkingMemoryTools = new WorkingMemoryTools(workingMemory, message.SessionId, logger);
 
+            // Per-session skill tools with usage tracking baked in
+            var sessionSkillTools = new SkillTools(skillStore, llmClient, logger, message.SessionId, skillUsageStore);
+
             // Snapshot registry tools (MCP, REST, etc.) as AIFunction wrappers
             var registryTools = toolRegistry.GetTools()
                 .Select(r => (AIFunction)new RegistryToolFunction(r, toolRegistry.GetExecutor(r.Name)!, message.SessionId))
@@ -252,7 +255,7 @@ internal sealed class UserMessageHandler(
 
             var chatOptions = new ChatOptions
             {
-                Tools = [..memoryTools.Tools, ..sessionWorkingMemoryTools.Tools, ..skillTools.Tools, ..rulesTools.Tools, ..toolGuideTools.Tools, ..registryTools]
+                Tools = [..memoryTools.Tools, ..sessionWorkingMemoryTools.Tools, ..sessionSkillTools.Tools, ..rulesTools.Tools, ..toolGuideTools.Tools, ..registryTools]
             };
 
             var toolNames = chatOptions.Tools!.OfType<AIFunction>().Select(t => t.Name).ToList();

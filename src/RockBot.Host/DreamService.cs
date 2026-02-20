@@ -22,6 +22,7 @@ internal sealed class DreamService : IHostedService, IDisposable
     private readonly ILongTermMemory _memory;
     private readonly ISkillStore? _skillStore;
     private readonly IFeedbackStore? _feedbackStore;
+    private readonly ISkillUsageStore? _skillUsageStore;
     private readonly ILlmClient _llmClient;
     private readonly DreamOptions _options;
     private readonly AgentProfileOptions _profileOptions;
@@ -29,6 +30,7 @@ internal sealed class DreamService : IHostedService, IDisposable
     private Timer? _timer;
     private string? _dreamDirective;
     private string? _skillDreamDirective;
+    private string? _skillOptimizeDirective;
 
     public DreamService(
         ILongTermMemory memory,
@@ -37,11 +39,13 @@ internal sealed class DreamService : IHostedService, IDisposable
         IOptions<DreamOptions> options,
         IOptions<AgentProfileOptions> profileOptions,
         ILogger<DreamService> logger,
-        IFeedbackStore? feedbackStore = null)
+        IFeedbackStore? feedbackStore = null,
+        ISkillUsageStore? skillUsageStore = null)
     {
         _memory = memory;
         _skillStore = skillStores.FirstOrDefault();
         _feedbackStore = feedbackStore;
+        _skillUsageStore = skillUsageStore;
         _llmClient = llmClient;
         _options = options.Value;
         _profileOptions = profileOptions.Value;
@@ -87,6 +91,16 @@ internal sealed class DreamService : IHostedService, IDisposable
                 _logger.LogWarning("DreamService: skill directive not found at {Path}; using built-in fallback", skillDirectivePath);
             else
                 _logger.LogInformation("DreamService: loaded skill directive from {Path}", skillDirectivePath);
+
+            var skillOptimizeDirectivePath = ResolvePath(_options.SkillOptimizeDirectivePath, _profileOptions.BasePath);
+            _skillOptimizeDirective = File.Exists(skillOptimizeDirectivePath)
+                ? File.ReadAllText(skillOptimizeDirectivePath)
+                : BuiltInSkillOptimizeDirective;
+
+            if (!File.Exists(skillOptimizeDirectivePath))
+                _logger.LogWarning("DreamService: skill optimize directive not found at {Path}; using built-in fallback", skillOptimizeDirectivePath);
+            else
+                _logger.LogInformation("DreamService: loaded skill optimize directive from {Path}", skillOptimizeDirectivePath);
         }
 
         _timer = new Timer(
@@ -296,6 +310,44 @@ internal sealed class DreamService : IHostedService, IDisposable
 
         _logger.LogDebug("DreamService: fetched {Count} skills for consolidation", all.Count);
 
+        // Load recent usage events and build annotation maps
+        var usageEvents = _skillUsageStore is not null
+            ? await _skillUsageStore.QueryRecentAsync(DateTimeOffset.UtcNow.AddDays(-30), maxResults: 10000)
+            : (IReadOnlyList<SkillInvocationEvent>)Array.Empty<SkillInvocationEvent>();
+
+        var usageCount = usageEvents
+            .GroupBy(e => e.SkillName, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(g => g.Key, g => g.Count(), StringComparer.OrdinalIgnoreCase);
+
+        // Build co-occurrence map: for each session, which skills were invoked together
+        var skillsBySession = usageEvents
+            .GroupBy(e => e.SessionId)
+            .ToDictionary(g => g.Key, g => g.Select(e => e.SkillName).Distinct(StringComparer.OrdinalIgnoreCase).ToList());
+
+        var coOccurrences = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        foreach (var (_, skills) in skillsBySession)
+        {
+            var sortedSkills = skills.OrderBy(s => s, StringComparer.OrdinalIgnoreCase).ToList();
+            for (var i = 0; i < sortedSkills.Count; i++)
+                for (var j = i + 1; j < sortedSkills.Count; j++)
+                {
+                    var pair = $"{sortedSkills[i]}|{sortedSkills[j]}";
+                    coOccurrences.TryGetValue(pair, out var cnt);
+                    coOccurrences[pair] = cnt + 1;
+                }
+        }
+
+        // Build per-skill co-occurrence list (skills that appear together more than once)
+        var coUsed = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
+        foreach (var (pair, cnt) in coOccurrences.OrderByDescending(p => p.Value))
+        {
+            var parts = pair.Split('|');
+            if (!coUsed.ContainsKey(parts[0])) coUsed[parts[0]] = [];
+            if (!coUsed.ContainsKey(parts[1])) coUsed[parts[1]] = [];
+            coUsed[parts[0]].Add(parts[1]);
+            coUsed[parts[1]].Add(parts[0]);
+        }
+
         var userMessage = new StringBuilder();
         userMessage.AppendLine($"The agent currently has {all.Count} skills. Consolidate them:");
         userMessage.AppendLine();
@@ -303,9 +355,27 @@ internal sealed class DreamService : IHostedService, IDisposable
         for (var i = 0; i < all.Count; i++)
         {
             var s = all[i];
-            userMessage.AppendLine($"{i + 1}. [NAME:{s.Name}] summary: {s.Summary}");
+            var count = usageCount.TryGetValue(s.Name, out var c) ? c : 0;
+            var usageAnnotation = $" [usage: {count}x in last 30d]";
+            var coUsedAnnotation = coUsed.TryGetValue(s.Name, out var coSkills) && coSkills.Count > 0
+                ? $" [co-used with: {string.Join(", ", coSkills.Take(3))}]"
+                : string.Empty;
+            userMessage.AppendLine($"{i + 1}. [NAME:{s.Name}]{usageAnnotation}{coUsedAnnotation} summary: {s.Summary}");
             userMessage.AppendLine(s.Content);
             userMessage.AppendLine();
+        }
+
+        // Append co-occurrence section for the top pairs
+        var topPairs = coOccurrences.OrderByDescending(p => p.Value).Take(10).ToList();
+        if (topPairs.Count > 0)
+        {
+            userMessage.AppendLine();
+            userMessage.AppendLine("Frequently co-used skill pairs (across sessions in last 30 days):");
+            foreach (var (pair, cnt) in topPairs)
+            {
+                var parts = pair.Split('|');
+                userMessage.AppendLine($"- {parts[0]} + {parts[1]}: {cnt} session(s)");
+            }
         }
 
         var messages = new List<ChatMessage>
@@ -397,8 +467,199 @@ internal sealed class DreamService : IHostedService, IDisposable
             _logger.LogDebug("DreamService: saved merged skill '{Name}'", skill.Name);
         }
 
+        await OptimizeSkillsAsync();
+
         _logger.LogInformation(
             "DreamService: skill consolidation complete — {Deleted} deleted, {Saved} saved",
+            deleted, saved);
+    }
+
+    /// <summary>
+    /// Identifies skills associated with poor-quality sessions and asks the LLM to improve them.
+    /// Skipped when the skill usage store or feedback store is unavailable, or no at-risk skills are found.
+    /// </summary>
+    private async Task OptimizeSkillsAsync()
+    {
+        if (_skillUsageStore is null || _feedbackStore is null || _skillOptimizeDirective is null)
+            return;
+
+        var since = DateTimeOffset.UtcNow.AddDays(-30);
+
+        var usageEvents = await _skillUsageStore.QueryRecentAsync(since, maxResults: 10000);
+        if (usageEvents.Count == 0)
+        {
+            _logger.LogDebug("DreamService: no skill usage events in last 30 days; skipping optimization pass");
+            return;
+        }
+
+        var recentFeedback = await _feedbackStore.QueryRecentAsync(since, maxResults: 1000);
+
+        // Sessions that invoked at least one skill
+        var sessionsWithSkills = usageEvents
+            .Select(e => e.SessionId)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        // Mark sessions as at-risk if they have Correction signals or poor/fair SessionSummary
+        var atRiskSessions = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var feedbackBySession = new Dictionary<string, List<FeedbackEntry>>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var fb in recentFeedback)
+        {
+            if (!sessionsWithSkills.Contains(fb.SessionId)) continue;
+
+            if (!feedbackBySession.TryGetValue(fb.SessionId, out var list))
+            {
+                list = [];
+                feedbackBySession[fb.SessionId] = list;
+            }
+            list.Add(fb);
+
+            if (fb.SignalType == FeedbackSignalType.Correction)
+                atRiskSessions.Add(fb.SessionId);
+            else if (fb.SignalType == FeedbackSignalType.SessionSummary)
+            {
+                var text = (fb.Summary + " " + fb.Detail).ToLowerInvariant();
+                if (text.Contains("poor") || text.Contains("fair"))
+                    atRiskSessions.Add(fb.SessionId);
+            }
+        }
+
+        if (atRiskSessions.Count == 0)
+        {
+            _logger.LogDebug("DreamService: no at-risk sessions found; skipping optimization pass");
+            return;
+        }
+
+        // Collect at-risk skill names from those sessions
+        var atRiskSkillNames = usageEvents
+            .Where(e => atRiskSessions.Contains(e.SessionId))
+            .Select(e => e.SkillName)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        // Load full content of at-risk skills
+        var atRiskSkills = new List<Skill>();
+        foreach (var name in atRiskSkillNames)
+        {
+            var skill = await _skillStore!.GetAsync(name);
+            if (skill is not null)
+                atRiskSkills.Add(skill);
+        }
+
+        if (atRiskSkills.Count == 0)
+        {
+            _logger.LogDebug("DreamService: at-risk skill names not found in store; skipping optimization pass");
+            return;
+        }
+
+        _logger.LogInformation(
+            "DreamService: optimization pass — {SkillCount} at-risk skill(s) from {SessionCount} at-risk session(s)",
+            atRiskSkills.Count, atRiskSessions.Count);
+
+        // Build the optimization prompt
+        var userMessage = new StringBuilder();
+        userMessage.AppendLine($"The following {atRiskSkills.Count} skill(s) were used in sessions with quality problems.");
+        userMessage.AppendLine("Review each skill and improve it based on the associated failure context.");
+        userMessage.AppendLine();
+
+        foreach (var skill in atRiskSkills)
+        {
+            userMessage.AppendLine($"## Skill: {skill.Name}");
+            userMessage.AppendLine(skill.Content);
+            userMessage.AppendLine();
+
+            // Gather feedback from sessions that used this skill and were at-risk
+            var sessionsUsingSkill = usageEvents
+                .Where(e => e.SkillName.Equals(skill.Name, StringComparison.OrdinalIgnoreCase) && atRiskSessions.Contains(e.SessionId))
+                .Select(e => e.SessionId)
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+            var relevantFeedback = sessionsUsingSkill
+                .Where(feedbackBySession.ContainsKey)
+                .SelectMany(s => feedbackBySession[s])
+                .ToList();
+
+            if (relevantFeedback.Count > 0)
+            {
+                userMessage.AppendLine("### Associated failure context:");
+                foreach (var fb in relevantFeedback)
+                {
+                    var detail = string.IsNullOrWhiteSpace(fb.Detail) ? string.Empty : $" — \"{fb.Detail}\"";
+                    userMessage.AppendLine($"- [{fb.SignalType}] {fb.Summary}{detail}");
+                }
+                userMessage.AppendLine();
+            }
+        }
+
+        var messages = new List<ChatMessage>
+        {
+            new(ChatRole.System, _skillOptimizeDirective),
+            new(ChatRole.User, userMessage.ToString())
+        };
+
+        var response = await _llmClient.GetResponseAsync(messages, new ChatOptions());
+        var raw = response.Text?.Trim() ?? string.Empty;
+        var json = ExtractJsonObject(raw);
+
+        if (string.IsNullOrEmpty(json))
+        {
+            _logger.LogWarning("DreamService: skill optimize LLM returned no parseable JSON; skipping optimization");
+            return;
+        }
+
+        var result = JsonSerializer.Deserialize<SkillDreamResultDto>(json, JsonOptions);
+        if (result is null)
+        {
+            _logger.LogWarning("DreamService: failed to deserialize skill optimize result; skipping");
+            return;
+        }
+
+        var deleted = 0;
+        var saved = 0;
+
+        var allToDelete = new HashSet<string>(result.ToDelete ?? [], StringComparer.OrdinalIgnoreCase);
+        foreach (var dto in result.ToSave ?? [])
+            foreach (var srcName in dto.SourceNames ?? [])
+                allToDelete.Add(srcName);
+
+        foreach (var name in allToDelete)
+        {
+            await _skillStore!.DeleteAsync(name);
+            deleted++;
+            _logger.LogDebug("DreamService: optimization deleted skill '{Name}'", name);
+        }
+
+        var createdAtByName = (await _skillStore!.ListAsync())
+            .ToDictionary(s => s.Name, s => s.CreatedAt, StringComparer.OrdinalIgnoreCase);
+
+        foreach (var dto in result.ToSave ?? [])
+        {
+            if (string.IsNullOrWhiteSpace(dto.Name) || string.IsNullOrWhiteSpace(dto.Content))
+                continue;
+
+            var sourceNames = dto.SourceNames ?? [];
+            var minCreatedAt = sourceNames.Count > 0
+                ? sourceNames
+                    .Where(createdAtByName.ContainsKey)
+                    .Select(n => createdAtByName[n])
+                    .DefaultIfEmpty(DateTimeOffset.UtcNow)
+                    .Min()
+                : DateTimeOffset.UtcNow;
+
+            var skill = new Skill(
+                Name: dto.Name.Trim(),
+                Summary: dto.Summary?.Trim() ?? string.Empty,
+                Content: dto.Content.Trim(),
+                CreatedAt: minCreatedAt,
+                UpdatedAt: DateTimeOffset.UtcNow,
+                LastUsedAt: null);
+
+            await _skillStore!.SaveAsync(skill);
+            saved++;
+            _logger.LogDebug("DreamService: optimization saved improved skill '{Name}'", skill.Name);
+        }
+
+        _logger.LogInformation(
+            "DreamService: skill optimization complete — {Deleted} deleted, {Saved} saved",
             deleted, saved);
     }
 
@@ -450,6 +711,17 @@ internal sealed class DreamService : IHostedService, IDisposable
         The summary must be one sentence of 15 words or fewer.
         Every name in any sourceNames list must also appear in toDelete.
         If nothing needs consolidation, return: { "toDelete": [], "toSave": [] }
+        """;
+
+    private const string BuiltInSkillOptimizeDirective = """
+        You are a skill improvement assistant. Review each skill and its associated failure context.
+        Identify what step or gap likely caused the failure and produce an improved skill that addresses it.
+        Return structured JSON: { "toDelete": [...names to remove...], "toSave": [...improved skills...] }
+        Each skill in toSave: { "name", "summary", "content", "sourceNames" }
+        List the original skill name in sourceNames to trigger replacement.
+        The summary must be one sentence of 15 words or fewer.
+        Only improve skills where the failure is clearly addressable by better instructions.
+        If no improvements are warranted, return: { "toDelete": [], "toSave": [] }
         """;
 
     private sealed record DreamResultDto(

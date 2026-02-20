@@ -24,4 +24,11 @@ public sealed class DreamOptions
     /// When the file does not exist, a built-in fallback directive is used.
     /// </summary>
     public string SkillDirectivePath { get; set; } = "skill-dream.md";
+
+    /// <summary>
+    /// Path to the skill optimization directive file, relative to <see cref="AgentProfileOptions.BasePath"/>.
+    /// Used by the post-consolidation pass that improves skills associated with poor sessions.
+    /// When the file does not exist, a built-in fallback directive is used.
+    /// </summary>
+    public string SkillOptimizeDirectivePath { get; set; } = "skill-optimize.md";
 }

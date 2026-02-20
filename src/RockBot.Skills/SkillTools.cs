@@ -10,7 +10,8 @@ namespace RockBot.Skills;
 /// LLM-callable tools for managing agent skills — named markdown procedure documents
 /// the agent can create, consult, and refine over time.
 ///
-/// Registered as a singleton; <see cref="AIFunction"/> instances are built once at construction.
+/// Instantiated per-session so the session ID is baked in at construction time,
+/// enabling fire-and-forget skill invocation tracking.
 /// Background LLM calls generate summaries for newly saved skills, mirroring the memory
 /// enrichment pattern in <see cref="MemoryTools"/>.
 /// </summary>
@@ -25,13 +26,22 @@ public sealed class SkillTools
 
     private readonly ISkillStore _skillStore;
     private readonly ILlmClient _llmClient;
-    private readonly ILogger<SkillTools> _logger;
+    private readonly ILogger _logger;
+    private readonly string? _sessionId;
+    private readonly ISkillUsageStore? _usageStore;
 
-    public SkillTools(ISkillStore skillStore, ILlmClient llmClient, ILogger<SkillTools> logger)
+    public SkillTools(
+        ISkillStore skillStore,
+        ILlmClient llmClient,
+        ILogger logger,
+        string? sessionId = null,
+        ISkillUsageStore? usageStore = null)
     {
         _skillStore = skillStore;
         _llmClient = llmClient;
         _logger = logger;
+        _sessionId = sessionId;
+        _usageStore = usageStore;
 
         Tools =
         [
@@ -56,6 +66,16 @@ public sealed class SkillTools
             return $"Skill '{name}' not found. Call list_skills to see available skills.";
 
         await _skillStore.SaveAsync(skill with { LastUsedAt = DateTimeOffset.UtcNow });
+
+        // Fire-and-forget usage tracking — no latency impact
+        if (_usageStore is not null && _sessionId is not null)
+        {
+            _ = _usageStore.AppendAsync(new SkillInvocationEvent(
+                Id: Guid.NewGuid().ToString("N")[..12],
+                SkillName: name,
+                SessionId: _sessionId,
+                Timestamp: DateTimeOffset.UtcNow));
+        }
 
         return skill.Content;
     }

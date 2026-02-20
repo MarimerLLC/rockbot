@@ -54,8 +54,7 @@ builder.Services.AddSingleton<MemoryTools>();
 builder.Services.AddSingleton<RulesTools>();
 // Tracks which memory IDs have been injected per session, enabling delta recall across topic shifts
 builder.Services.AddSingleton<InjectedMemoryTracker>();
-// Skill tools and session index tracker
-builder.Services.AddSingleton<SkillTools>();
+// Skill index tracker (SkillTools is created per-session in UserMessageHandler)
 builder.Services.AddSingleton<SkillIndexTracker>();
 builder.Services.AddSingleton<SkillRecallTracker>();
 // Tool guides for memory and skill subsystems

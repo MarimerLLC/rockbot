@@ -89,6 +89,7 @@ public static class AgentMemoryExtensions
             builder.Services.Configure<SkillOptions>(_ => { });
 
         builder.Services.AddSingleton<ISkillStore, FileSkillStore>();
+        builder.Services.AddSingleton<ISkillUsageStore, FileSkillUsageStore>();
 
         return builder;
     }
