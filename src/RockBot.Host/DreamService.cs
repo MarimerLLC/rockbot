@@ -21,6 +21,7 @@ internal sealed class DreamService : IHostedService, IDisposable
 
     private readonly ILongTermMemory _memory;
     private readonly ISkillStore? _skillStore;
+    private readonly IFeedbackStore? _feedbackStore;
     private readonly ILlmClient _llmClient;
     private readonly DreamOptions _options;
     private readonly AgentProfileOptions _profileOptions;
@@ -35,10 +36,12 @@ internal sealed class DreamService : IHostedService, IDisposable
         ILlmClient llmClient,
         IOptions<DreamOptions> options,
         IOptions<AgentProfileOptions> profileOptions,
-        ILogger<DreamService> logger)
+        ILogger<DreamService> logger,
+        IFeedbackStore? feedbackStore = null)
     {
         _memory = memory;
         _skillStore = skillStores.FirstOrDefault();
+        _feedbackStore = feedbackStore;
         _llmClient = llmClient;
         _options = options.Value;
         _profileOptions = profileOptions.Value;
@@ -138,6 +141,27 @@ internal sealed class DreamService : IHostedService, IDisposable
             var userMessage = new StringBuilder();
             userMessage.AppendLine($"The agent currently has {all.Count} memory entries. Consolidate them:");
             userMessage.AppendLine();
+
+            // Append recent feedback signals so the dream LLM has quality context
+            if (_feedbackStore is not null)
+            {
+                var recentFeedback = await _feedbackStore.QueryRecentAsync(
+                    since: DateTimeOffset.UtcNow.AddDays(-7),
+                    maxResults: 50);
+
+                if (recentFeedback.Count > 0)
+                {
+                    userMessage.AppendLine();
+                    userMessage.AppendLine("Recent feedback signals (last 7 days):");
+                    foreach (var fb in recentFeedback)
+                    {
+                        var detail = string.IsNullOrWhiteSpace(fb.Detail) ? string.Empty : $" (\"{fb.Detail}\")";
+                        userMessage.AppendLine($"- [{fb.SignalType}] session {fb.SessionId}: {fb.Summary}{detail}");
+                    }
+                    userMessage.AppendLine();
+                    _logger.LogDebug("DreamService: injected {Count} feedback signal(s) into dream prompt", recentFeedback.Count);
+                }
+            }
 
             for (var i = 0; i < all.Count; i++)
             {

@@ -20,4 +20,9 @@ public interface IConversationMemory
     /// Clears all turns for the specified session.
     /// </summary>
     Task ClearAsync(string sessionId, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Returns the IDs of all sessions currently held in memory.
+    /// </summary>
+    Task<IReadOnlyList<string>> ListSessionsAsync(CancellationToken cancellationToken = default);
 }

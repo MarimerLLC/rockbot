@@ -66,6 +66,9 @@ internal sealed class InMemoryConversationMemory : IConversationMemory, IDisposa
         return Task.CompletedTask;
     }
 
+    public Task<IReadOnlyList<string>> ListSessionsAsync(CancellationToken cancellationToken = default)
+        => Task.FromResult<IReadOnlyList<string>>([.. _sessions.Keys]);
+
     private void CleanupIdleSessions(object? state)
     {
         var cutoff = DateTimeOffset.UtcNow - _options.SessionIdleTimeout;

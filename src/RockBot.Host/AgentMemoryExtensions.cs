@@ -112,4 +112,25 @@ public static class AgentMemoryExtensions
 
         return builder;
     }
+
+    /// <summary>
+    /// Registers the feedback capture system: <see cref="IFeedbackStore"/> (file-backed) and
+    /// the <see cref="SessionSummaryService"/> background evaluator.
+    /// Requires <see cref="IConversationMemory"/> and an LLM client to be registered.
+    /// </summary>
+    public static AgentHostBuilder WithFeedback(
+        this AgentHostBuilder builder,
+        Action<FeedbackOptions>? configure = null)
+    {
+        if (configure is not null)
+            builder.Services.Configure(configure);
+        else
+            builder.Services.Configure<FeedbackOptions>(_ => { });
+
+        builder.Services.AddSingleton<IFeedbackStore, FileFeedbackStore>();
+        builder.Services.AddSingleton<SessionSummaryService>();
+        builder.Services.AddSingleton<IHostedService>(sp => sp.GetRequiredService<SessionSummaryService>());
+
+        return builder;
+    }
 }
