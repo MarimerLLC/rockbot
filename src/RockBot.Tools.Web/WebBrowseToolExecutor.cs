@@ -81,8 +81,10 @@ internal sealed class WebBrowseToolExecutor(
         var sanitizedUrl = SanitizeUrlForKey(url);
         var index = new StringBuilder();
 
-        index.AppendLine($"Page \"{page.Title}\" is large and has been split into {chunks.Count} chunk(s) in working memory.");
-        index.AppendLine($"Use `GetFromWorkingMemory(key)` to retrieve each chunk on demand.");
+        index.AppendLine($"Page \"{page.Title}\" has been split into {chunks.Count} chunk(s) stored in working memory.");
+        index.AppendLine("Read the Heading column below to identify which sections contain the information you need,");
+        index.AppendLine("then call GetFromWorkingMemory(key) for each relevant chunk BEFORE drawing any conclusions.");
+        index.AppendLine("Do not summarise or answer based on this index alone — retrieve the chunks first.");
         index.AppendLine();
         index.AppendLine("| # | Heading | Key |");
         index.AppendLine("|---|---------|-----|");
