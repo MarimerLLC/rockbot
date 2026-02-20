@@ -91,6 +91,10 @@ internal sealed class McpToolSkillProvider : IToolSkillProvider
         - Look for servers whose description or tool names match the type of data or action
           needed (calendar, email, files, weather, etc.)
         - Note the exact `server_name` and `tool_name` — spelling must be exact
+        - **The `server_name` from `mcp_list_services` is the canonical identifier.** Always
+          use it verbatim in every subsequent call (`mcp_get_service_details`, `mcp_invoke_tool`).
+          Never substitute a skill folder name, display name, or guessed name — only the exact
+          value returned by `mcp_list_services` will work.
 
 
         ## Step 3 — Get Tool Details
@@ -156,7 +160,13 @@ internal sealed class McpToolSkillProvider : IToolSkillProvider
         2. Call `save_skill` with:
            - **name**: `mcp/{server-name}` using the exact server name in lowercase
              (e.g. `mcp/ms365`, `mcp/github`, `mcp/weather`)
-           - **content**: a markdown document covering:
+           - **content**: a markdown document that **starts with** the exact server name
+             so any future reader knows what to pass as `server_name`:
+             ```
+             ## Server Name
+             `server_name`: `calendar-mcp`   ← exact value for mcp_invoke_tool
+             ```
+             Then cover:
              - What the server does and when to use it
              - Each available tool: name, purpose, required and optional parameters,
                and a concrete usage example
@@ -215,5 +225,8 @@ internal sealed class McpToolSkillProvider : IToolSkillProvider
         - Passing `arguments` as a JSON string instead of an object
         - Assuming a server from a previous session is still connected
         - Returning raw tool output verbatim instead of summarizing for the user
+        - Using a skill folder name, display name, or other label as the `server_name` instead
+          of the exact value from `mcp_list_services` — e.g. calling with `calendar-email` when
+          the actual server name is `calendar-mcp`
         """;
 }
