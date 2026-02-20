@@ -143,6 +143,27 @@ public sealed class UserProxyService(
     }
 
     /// <summary>
+    /// Publishes thumbs-up or thumbs-down feedback for a specific agent reply.
+    /// Fire-and-forget: the agent is expected to react without sending a direct reply
+    /// for positive feedback, or to re-evaluate and send an unsolicited reply for negative feedback.
+    /// </summary>
+    public async Task SendFeedbackAsync(
+        UserFeedback feedback,
+        CancellationToken cancellationToken = default)
+    {
+        var envelope = feedback.ToEnvelope<UserFeedback>(
+            source: options.ProxyId,
+            destination: feedback.AgentName);
+
+        await publisher.PublishAsync(UserProxyTopics.UserFeedback, envelope, cancellationToken);
+
+        logger.LogDebug("Published {FeedbackType} feedback for message {MessageId} to {Agent}",
+            feedback.IsPositive ? "positive" : "negative",
+            feedback.MessageId,
+            feedback.AgentName ?? "(broadcast)");
+    }
+
+    /// <summary>
     /// Sends a user message without waiting for a reply.
     /// </summary>
     public async Task SendFireAndForgetAsync(

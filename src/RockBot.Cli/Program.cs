@@ -6,6 +6,7 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using OpenAI;
 using RockBot.Host;
+using RockBot.Llm;
 using RockBot.Messaging.RabbitMQ;
 using RockBot.Cli.McpBridge;
 using RockBot.Scripts.Remote;
@@ -14,6 +15,7 @@ using RockBot.Memory;
 using RockBot.Skills;
 using RockBot.Tools;
 using RockBot.Tools.Mcp;
+using RockBot.Tools.Scheduling;
 using RockBot.Tools.Web;
 using RockBot.UserProxy;
 
@@ -75,11 +77,21 @@ builder.Services.AddRockBotHost(agent =>
     agent.AddToolHandler();
     agent.AddMcpToolProxy();
     agent.AddWebTools(opts => builder.Configuration.GetSection("WebTools").Bind(opts));
+    agent.AddSchedulingTools();
+    agent.HandleMessage<ScheduledTaskMessage, ScheduledTaskHandler>();
     agent.HandleMessage<UserMessage, UserMessageHandler>();
     agent.HandleMessage<ConversationHistoryRequest, ConversationHistoryRequestHandler>();
     agent.SubscribeTo(UserProxyTopics.UserMessage);
     agent.SubscribeTo(UserProxyTopics.ConversationHistoryRequest);
 });
+
+// Per-model behavioral tweaks — resolved once from the configured IChatClient model ID.
+builder.Services.AddModelBehaviors(opts =>
+    builder.Configuration.GetSection("ModelBehaviors").Bind(opts));
+
+// Bind AgentProfileOptions from the AgentProfile config section so AgentProfile__BasePath
+// (set in the k8s ConfigMap) overrides the default "agent" relative path → /data/agent (PVC).
+builder.Services.Configure<AgentProfileOptions>(builder.Configuration.GetSection("AgentProfile"));
 
 // MCP bridge (replaces external RockBot.Tools.Mcp.Bridge process)
 builder.Services.Configure<McpBridgeOptions>(builder.Configuration.GetSection("McpBridge"));
@@ -94,6 +106,12 @@ var startupLogger = app.Services.GetRequiredService<ILoggerFactory>().CreateLogg
 var chatClient = app.Services.GetRequiredService<IChatClient>();
 var llmId = chatClient.GetService<ChatClientMetadata>()?.DefaultModelId ?? chatClient.GetType().Name;
 startupLogger.LogInformation("LLM: {ModelId}", llmId);
+var resolvedBehavior = app.Services.GetRequiredService<ModelBehavior>();
+startupLogger.LogInformation(
+    "ModelBehavior: NudgeOnHallucinatedToolCalls={Nudge}, AdditionalSystemPrompt={HasPrompt}, ScheduledTaskResultMode={ResultMode}",
+    resolvedBehavior.NudgeOnHallucinatedToolCalls,
+    resolvedBehavior.AdditionalSystemPrompt is not null ? "yes" : "no",
+    resolvedBehavior.ScheduledTaskResultMode);
 startupLogger.LogInformation("Listening for user messages on '{Topic}'", UserProxyTopics.UserMessage);
 
 await app.RunAsync();

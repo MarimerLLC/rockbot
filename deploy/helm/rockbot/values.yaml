@@ -11,6 +11,10 @@ agent:
     tag: latest
   # Always Recreate — only one agent may run at a time (stateful)
   replicaCount: 1
+  # IANA timezone ID injected into every LLM prompt as current date/time context.
+  # e.g. "America/Chicago", "Europe/London", "Asia/Tokyo"
+  # Defaults to UTC (the k8s node timezone) if unset.
+  timezone: ""
   resources:
     requests:
       cpu: 500m

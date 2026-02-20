@@ -58,6 +58,20 @@ public sealed class ChatStateService
         NotifyStateChanged();
     }
 
+    /// <summary>
+    /// Records the user's thumbs-up or thumbs-down on a specific agent message.
+    /// Has no effect if the message has already been rated.
+    /// </summary>
+    public void RecordFeedback(string messageId, bool isPositive)
+    {
+        var msg = _messages.FirstOrDefault(m => m.MessageId == messageId);
+        if (msg is null || msg.Feedback != FeedbackState.None)
+            return;
+
+        msg.Feedback = isPositive ? FeedbackState.ThumbsUp : FeedbackState.ThumbsDown;
+        NotifyStateChanged();
+    }
+
     public void SetThinkingMessage(string? message)
     {
         _currentThinkingMessage = message;
@@ -89,8 +103,11 @@ public sealed class ChatStateService
     private void NotifyStateChanged() => OnStateChanged?.Invoke();
 }
 
+public enum FeedbackState { None, ThumbsUp, ThumbsDown }
+
 public sealed class ChatMessage
 {
+    public string MessageId { get; init; } = Guid.NewGuid().ToString("N");
     public required string Content { get; init; }
     public required bool IsFromUser { get; init; }
     public required DateTime Timestamp { get; init; }
@@ -99,4 +116,7 @@ public sealed class ChatMessage
     public string? SessionId { get; init; }
     public string? ContentType { get; init; }
     public bool IsError { get; init; }
+
+    /// <summary>Mutable so <see cref="ChatStateService.RecordFeedback"/> can update it in place.</summary>
+    public FeedbackState Feedback { get; set; } = FeedbackState.None;
 }

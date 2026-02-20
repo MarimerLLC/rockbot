@@ -1,4 +1,13 @@
 window.chatHelpers = {
+    getBrowserTimezone: function () {
+        try {
+            return Intl.DateTimeFormat().resolvedOptions().timeZone;
+        } catch (e) {
+            return 'UTC';
+        }
+    },
+
+
     preventEnterNewline: function (element) {
         element.addEventListener('keydown', function (e) {
             if (e.key === 'Enter' && !e.shiftKey && !e.ctrlKey) {
@@ -8,6 +17,68 @@ window.chatHelpers = {
             }
             // Shift+Enter and Ctrl+Enter: allow default so the browser inserts a newline.
         });
+    },
+
+    initInputHistory: function (element) {
+        element._inputHistory = [];
+        element._historyIndex = -1;
+        element._draft = '';
+
+        element.addEventListener('keydown', function (e) {
+            if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return;
+
+            const history = element._inputHistory;
+            if (history.length === 0 && e.key === 'ArrowUp') return;
+
+            const value = element.value;
+            const selStart = element.selectionStart;
+            const selEnd = element.selectionEnd;
+
+            if (e.key === 'ArrowUp') {
+                // Only navigate if cursor is on the first line (no newline before it)
+                if (value.substring(0, selStart).includes('\n')) return;
+
+                e.preventDefault();
+                if (element._historyIndex === -1) {
+                    element._draft = value;
+                    element._historyIndex = history.length - 1;
+                } else if (element._historyIndex > 0) {
+                    element._historyIndex--;
+                }
+                element.value = history[element._historyIndex];
+
+            } else { // ArrowDown
+                if (element._historyIndex === -1) return;
+                // Only navigate if cursor is on the last line (no newline after it)
+                if (value.substring(selEnd).includes('\n')) return;
+
+                e.preventDefault();
+                if (element._historyIndex < history.length - 1) {
+                    element._historyIndex++;
+                    element.value = history[element._historyIndex];
+                } else {
+                    // Past the end — restore the draft
+                    element._historyIndex = -1;
+                    element.value = element._draft;
+                }
+            }
+
+            element.selectionStart = element.selectionEnd = element.value.length;
+            // Notify Blazor's @bind so currentMessage stays in sync
+            element.dispatchEvent(new Event('input', { bubbles: true }));
+        });
+    },
+
+    addToHistory: function (element, text) {
+        if (!text || !text.trim()) return;
+        const trimmed = text.trim();
+        const history = element._inputHistory || (element._inputHistory = []);
+        // Skip consecutive duplicates
+        if (history.length === 0 || history[history.length - 1] !== trimmed) {
+            history.push(trimmed);
+        }
+        element._historyIndex = -1;
+        element._draft = '';
     },
 
     focusInputOnWindowFocus: function (element) {

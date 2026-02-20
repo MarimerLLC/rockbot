@@ -29,3 +29,7 @@ blazor:
 # telemetry:
 #   enabled: true
 #   otlpEndpoint: "http://alloy.monitoring.svc.cluster.local:4317"
+
+# Recommended — set your local IANA timezone so the agent uses your time, not UTC
+# agent:
+#   timezone: "America/Chicago"

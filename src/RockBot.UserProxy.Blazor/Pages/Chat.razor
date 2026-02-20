@@ -34,8 +34,25 @@
                         @((MarkupString)ConvertMarkdownToHtml(message.Content))
                     </div>
                     <div class="message-time">
-                        @message.Timestamp.ToLocalTime().ToString("HH:mm:ss")
+                        @TimeZoneInfo.ConvertTimeFromUtc(message.Timestamp, _displayZone).ToString("HH:mm:ss")
                     </div>
+                    @if (!message.IsFromUser && !message.IsError)
+                    {
+                        <div class="feedback-bar">
+                            <button class="btn-feedback @(message.Feedback == FeedbackState.ThumbsUp ? "active" : "")"
+                                    title="This was helpful"
+                                    disabled="@(message.Feedback != FeedbackState.None)"
+                                    @onclick="() => SendFeedback(message, isPositive: true)">
+                                👍
+                            </button>
+                            <button class="btn-feedback @(message.Feedback == FeedbackState.ThumbsDown ? "active" : "")"
+                                    title="This wasn't helpful — please try again"
+                                    disabled="@(message.Feedback != FeedbackState.None)"
+                                    @onclick="() => SendFeedback(message, isPositive: false)">
+                                👎
+                            </button>
+                        </div>
+                    }
                 </div>
             </div>
         }
@@ -91,6 +108,7 @@
     private ElementReference messagesContainer;
     private ElementReference messageInput;
     private bool IsDarkMode = false;
+    private TimeZoneInfo _displayZone = TimeZoneInfo.Utc;
     private Action? _stateChangedHandler;
     private Action? _connectionChangedHandler;
     private int _renderedMessageCount = 0;
@@ -112,7 +130,12 @@
         if (firstRender)
         {
             await JSRuntime.InvokeVoidAsync("chatHelpers.preventEnterNewline", messageInput);
+            await JSRuntime.InvokeVoidAsync("chatHelpers.initInputHistory", messageInput);
             await JSRuntime.InvokeVoidAsync("chatHelpers.focusInputOnWindowFocus", messageInput);
+
+            var tzId = await JSRuntime.InvokeAsync<string>("chatHelpers.getBrowserTimezone");
+            try { _displayZone = TimeZoneInfo.FindSystemTimeZoneById(tzId); }
+            catch { _displayZone = TimeZoneInfo.Utc; }
 
             // Check for system dark mode preference
             IsDarkMode = await JSRuntime.InvokeAsync<bool>("eval",
@@ -154,6 +177,7 @@
 
         var messageContent = currentMessage.Trim();
         currentMessage = string.Empty;
+        await JSRuntime.InvokeVoidAsync("chatHelpers.addToHistory", messageInput, messageContent);
 
         ChatState.AddUserMessage(messageContent, UserId, SessionId);
         ChatState.SetProcessing(true);
@@ -191,6 +215,28 @@
         {
             ChatState.SetProcessing(false);
             await messageInput.FocusAsync();
+        }
+    }
+
+    private async Task SendFeedback(ChatMessage message, bool isPositive)
+    {
+        ChatState.RecordFeedback(message.MessageId, isPositive);
+
+        var feedback = new UserFeedback
+        {
+            SessionId = message.SessionId ?? SessionId,
+            MessageId = message.MessageId,
+            IsPositive = isPositive,
+            AgentName = message.AgentName
+        };
+
+        try
+        {
+            await ProxyService.SendFeedbackAsync(feedback);
+        }
+        catch (Exception ex)
+        {
+            ChatState.AddError($"Could not send feedback: {ex.Message}");
         }
     }
 
