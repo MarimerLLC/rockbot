@@ -387,6 +387,8 @@ Deep-dive documentation for individual subsystems lives in [`docs/`](docs/):
 |---|---|
 | [`docs/skills.md`](docs/skills.md) | Skills data model, BM25 recall, see-also, dream consolidation, prefix clusters, optimization, gap detection |
 | [`docs/memory.md`](docs/memory.md) | Three-tier memory architecture, long-term storage, anti-patterns, working memory, dream passes |
+| [`docs/dream-service.md`](docs/dream-service.md) | Dream cycle passes, scheduling, directive files, LLM response contracts, configuration |
+| [`docs/blazor-ui.md`](docs/blazor-ui.md) | Blazor chat UI architecture, UserProxyService, feedback, history replay, deployment |
 
 ---
 
