@@ -4,6 +4,9 @@
     <Platform Name="x64" />
     <Platform Name="x86" />
   </Configurations>
+  <Folder Name="/mcp-servers/">
+    <Project Path="src/McpServer.OpenRouter/McpServer.OpenRouter.csproj" />
+  </Folder>
   <Folder Name="/src/">
     <Project Path="src/RockBot.Host.Abstractions/RockBot.Host.Abstractions.csproj" />
     <Project Path="src/RockBot.Host/RockBot.Host.csproj" />
