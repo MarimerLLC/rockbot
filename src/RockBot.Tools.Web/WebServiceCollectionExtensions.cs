@@ -23,9 +23,18 @@ public static class WebServiceCollectionExtensions
 
         builder.Services.AddHttpClient("RockBot.Tools.Web.Brave");
         builder.Services.AddHttpClient("RockBot.Tools.Web.Browse");
+        builder.Services.AddHttpClient("RockBot.Tools.Web.GitHub", client =>
+        {
+            // GitHub API requires a User-Agent header
+            client.DefaultRequestHeaders.UserAgent.ParseAdd("RockBot/1.0");
+            client.DefaultRequestHeaders.Accept.ParseAdd("application/vnd.github.v3+json");
+        });
 
         builder.Services.AddSingleton<IWebSearchProvider, BraveSearchProvider>();
-        builder.Services.AddSingleton<IWebBrowseProvider, HttpWebBrowseProvider>();
+        // HttpWebBrowseProvider registered as concrete type so GitHubApiWebBrowseProvider
+        // can inject it directly as a fallback for non-GitHub URLs.
+        builder.Services.AddSingleton<HttpWebBrowseProvider>();
+        builder.Services.AddSingleton<IWebBrowseProvider, GitHubApiWebBrowseProvider>();
 
         builder.Services.AddSingleton<IToolSkillProvider, WebToolSkillProvider>();
 

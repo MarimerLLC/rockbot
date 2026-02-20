@@ -72,6 +72,26 @@ body {
     margin-bottom: 0;
 }
 
+/* Links inside user bubbles (blue bg) must be white to stay visible */
+.user-message .message-bubble .message-content a {
+    color: rgba(255, 255, 255, 0.9);
+    text-decoration: underline;
+}
+
+.user-message .message-bubble .message-content a:hover {
+    color: white;
+}
+
+/* Links inside error bubbles (red bg) — same issue */
+.message-bubble.bg-danger .message-content a {
+    color: rgba(255, 255, 255, 0.9);
+    text-decoration: underline;
+}
+
+.message-bubble.bg-danger .message-content a:hover {
+    color: white;
+}
+
 .message-content code {
     background-color: rgba(0, 0, 0, 0.05);
     padding: 2px 4px;
