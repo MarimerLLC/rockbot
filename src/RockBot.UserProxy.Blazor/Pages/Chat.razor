@@ -36,6 +36,23 @@
                     <div class="message-time">
                         @TimeZoneInfo.ConvertTimeFromUtc(message.Timestamp, _displayZone).ToString("HH:mm:ss")
                     </div>
+                    @if (!message.IsFromUser && !message.IsError)
+                    {
+                        <div class="feedback-bar">
+                            <button class="btn-feedback @(message.Feedback == FeedbackState.ThumbsUp ? "active" : "")"
+                                    title="This was helpful"
+                                    disabled="@(message.Feedback != FeedbackState.None)"
+                                    @onclick="() => SendFeedback(message, isPositive: true)">
+                                👍
+                            </button>
+                            <button class="btn-feedback @(message.Feedback == FeedbackState.ThumbsDown ? "active" : "")"
+                                    title="This wasn't helpful — please try again"
+                                    disabled="@(message.Feedback != FeedbackState.None)"
+                                    @onclick="() => SendFeedback(message, isPositive: false)">
+                                👎
+                            </button>
+                        </div>
+                    }
                 </div>
             </div>
         }
@@ -196,6 +213,28 @@
         {
             ChatState.SetProcessing(false);
             await messageInput.FocusAsync();
+        }
+    }
+
+    private async Task SendFeedback(ChatMessage message, bool isPositive)
+    {
+        ChatState.RecordFeedback(message.MessageId, isPositive);
+
+        var feedback = new UserFeedback
+        {
+            SessionId = message.SessionId ?? SessionId,
+            MessageId = message.MessageId,
+            IsPositive = isPositive,
+            AgentName = message.AgentName
+        };
+
+        try
+        {
+            await ProxyService.SendFeedbackAsync(feedback);
+        }
+        catch (Exception ex)
+        {
+            ChatState.AddError($"Could not send feedback: {ex.Message}");
         }
     }
 

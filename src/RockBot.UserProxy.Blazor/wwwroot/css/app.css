@@ -218,6 +218,48 @@ body.dark-mode .form-control:focus {
     }
 }
 
+/* Feedback thumbs */
+.feedback-bar {
+    display: flex;
+    gap: 0.25rem;
+    margin-top: 0.5rem;
+    padding-top: 0.4rem;
+    border-top: 1px solid rgba(0, 0, 0, 0.08);
+}
+
+.btn-feedback {
+    background: none;
+    border: none;
+    padding: 2px 6px;
+    cursor: pointer;
+    font-size: 0.95rem;
+    opacity: 0.35;
+    border-radius: 4px;
+    transition: opacity 0.15s, background-color 0.15s;
+    line-height: 1;
+}
+
+.btn-feedback:hover:not(:disabled) {
+    opacity: 0.85;
+    background-color: rgba(0, 0, 0, 0.06);
+}
+
+.btn-feedback.active {
+    opacity: 1;
+}
+
+.btn-feedback:disabled {
+    cursor: default;
+}
+
+body.dark-mode .feedback-bar {
+    border-top-color: rgba(255, 255, 255, 0.1);
+}
+
+body.dark-mode .btn-feedback:hover:not(:disabled) {
+    background-color: rgba(255, 255, 255, 0.08);
+}
+
 /* Accessibility */
 .btn:focus,
 .form-control:focus {
