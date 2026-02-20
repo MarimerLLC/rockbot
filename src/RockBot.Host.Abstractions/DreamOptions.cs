@@ -42,4 +42,13 @@ public sealed class DreamOptions
     /// When the file does not exist, a built-in fallback directive is used.
     /// </summary>
     public string PreferenceDirectivePath { get; set; } = "pref-dream.md";
+
+    /// <summary>Whether the skill gap detection pass is enabled.</summary>
+    public bool SkillGapEnabled { get; set; } = true;
+
+    /// <summary>
+    /// Path to the skill gap detection directive file, relative to <see cref="AgentProfileOptions.BasePath"/>.
+    /// When the file does not exist, a built-in fallback directive is used.
+    /// </summary>
+    public string SkillGapDirectivePath { get; set; } = "skill-gap.md";
 }
