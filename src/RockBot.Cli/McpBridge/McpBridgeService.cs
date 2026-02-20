@@ -150,12 +150,6 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
 
     private async Task ConnectServerAsync(string name, McpBridgeServerConfig config, CancellationToken ct)
     {
-        // Disconnect existing connection if any
-        if (_clients.ContainsKey(name))
-        {
-            await DisconnectServerAsync(name);
-        }
-
         try
         {
             if (!config.IsSse)
@@ -176,14 +170,21 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
             {
                 Endpoint = new Uri(config.Url)
             });
-            var client = await McpClient.CreateAsync(transport, cancellationToken: ct);
+            var newClient = await McpClient.CreateAsync(transport, cancellationToken: ct);
 
-            _clients[name] = client;
-            _serverConfigs[name] = config;
-
-            // Discover tools
-            var tools = await client.ListToolsAsync(cancellationToken: ct);
+            // Discover tools before committing the swap so a failure leaves the old client intact
+            var tools = await newClient.ListToolsAsync(cancellationToken: ct);
             var filteredTools = ApplyToolFilters(tools.ToList(), config);
+
+            // Connection succeeded — atomically replace the old client without publishing a removal
+            if (_clients.Remove(name, out var oldClient))
+            {
+                try { await oldClient.DisposeAsync(); }
+                catch { /* Best-effort cleanup */ }
+            }
+
+            _clients[name] = newClient;
+            _serverConfigs[name] = config;
             _serverTools[name] = filteredTools;
 
             _logger.LogInformation("Connected to MCP server {Name} with {Count} tools",
@@ -461,8 +462,30 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
         catch (Exception ex)
         {
             sw.Stop();
-            _logger.LogError(ex, "← MCP {Server}/{Tool} FAILED after {ElapsedMs}ms",
-                serverName, request.ToolName, sw.ElapsedMilliseconds);
+
+            // Any exception from CallToolAsync likely means the SSE connection is dead
+            // (server restarted, session expired, network reset, etc.).
+            // Trigger a background reconnect so the next agent retry will succeed.
+            if (serverName is not null && _serverConfigs.TryGetValue(serverName, out var staleConfig))
+            {
+                _logger.LogWarning(ex,
+                    "← MCP {Server}/{Tool} FAILED after {ElapsedMs}ms — reconnecting",
+                    serverName, request.ToolName, sw.ElapsedMilliseconds);
+
+                _ = Task.Run(async () =>
+                {
+                    try { await ConnectServerAsync(serverName, staleConfig, CancellationToken.None); }
+                    catch (Exception reconnectEx)
+                    {
+                        _logger.LogError(reconnectEx, "Reconnect to MCP server {Server} failed", serverName);
+                    }
+                });
+            }
+            else
+            {
+                _logger.LogError(ex, "← MCP {Server}/{Tool} FAILED after {ElapsedMs}ms",
+                    serverName, request.ToolName, sw.ElapsedMilliseconds);
+            }
 
             var error = new ToolError
             {
@@ -470,7 +493,7 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
                 ToolName = request.ToolName,
                 Code = ToolError.Codes.ExecutionFailed,
                 Message = ex.Message,
-                IsRetryable = false
+                IsRetryable = true
             };
 
             await PublishResponseAsync(error, replyTo, envelope.CorrelationId, ct);
@@ -659,33 +682,29 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
 
         if (request?.ServerName is not null)
         {
-            if (_clients.TryGetValue(request.ServerName, out var client)
-                && _serverConfigs.TryGetValue(request.ServerName, out var config))
+            if (_serverConfigs.TryGetValue(request.ServerName, out var config))
             {
-                var tools = await client.ListToolsAsync(cancellationToken: ct);
-                var filtered = ApplyToolFilters(tools.ToList(), config);
-                _serverTools[request.ServerName] = filtered;
-
-                var summary = await GenerateSummaryAsync(request.ServerName, filtered, ct);
-                await PublishServersIndexedAsync([summary], [], ct);
+                // Reconnect rather than refresh the stale client — this handles server restarts.
+                await ConnectServerAsync(request.ServerName, config, ct);
             }
         }
         else
         {
-            var summaries = new List<McpServerSummary>();
-            foreach (var (name, client) in _clients)
+            foreach (var (name, _) in _clients.ToList())
             {
                 if (!_serverConfigs.TryGetValue(name, out var config)) continue;
 
-                var tools = await client.ListToolsAsync(cancellationToken: ct);
-                var filtered = ApplyToolFilters(tools.ToList(), config);
-                _serverTools[name] = filtered;
-
-                summaries.Add(await GenerateSummaryAsync(name, filtered, ct));
+                try
+                {
+                    // Reconnect to pick up any server restarts that happened since startup.
+                    // ConnectServerAsync handles its own summary publication.
+                    await ConnectServerAsync(name, config, ct);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Failed to refresh/reconnect MCP server {Name} — skipping", name);
+                }
             }
-
-            if (summaries.Count > 0)
-                await PublishServersIndexedAsync(summaries, [], ct);
         }
 
         return MessageResult.Ack;
