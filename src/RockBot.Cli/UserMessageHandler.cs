@@ -47,6 +47,7 @@ internal sealed class UserMessageHandler(
     SkillTools skillTools,
     ToolGuideTools toolGuideTools,
     ModelBehavior modelBehavior,
+    IFeedbackStore feedbackStore,
     ILogger<UserMessageHandler> logger) : IMessageHandler<UserMessage>
 {
     /// <summary>
@@ -84,6 +85,13 @@ internal sealed class UserMessageHandler(
         @"\bI(?:['\u2019]ve| have)\s+(cancell?ed|scheduled|created|updated|rescheduled|deleted|removed|completed|added|saved)\b",
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
+    /// <summary>
+    /// Detects user messages that are correcting the agent — an implicit quality signal.
+    /// </summary>
+    private static readonly Regex CorrectionRegex = new(
+        @"\b(no[,\s]|that'?s?\s+(wrong|incorrect|not right)|you were wrong|actually[,\s]|that didn'?t work|try again)\b",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
     public async Task HandleAsync(UserMessage message, MessageHandlerContext context)
     {
         var replyTo = context.Envelope.ReplyTo ?? UserProxyTopics.UserResponse;
@@ -100,6 +108,18 @@ internal sealed class UserMessageHandler(
                 message.SessionId,
                 new ConversationTurn("user", message.Content, DateTimeOffset.UtcNow),
                 ct);
+
+            // Correction detection — fire-and-forget to avoid adding latency
+            if (CorrectionRegex.IsMatch(message.Content))
+            {
+                _ = feedbackStore.AppendAsync(new FeedbackEntry(
+                    Id: Guid.NewGuid().ToString("N")[..12],
+                    SessionId: message.SessionId,
+                    SignalType: FeedbackSignalType.Correction,
+                    Summary: "User message detected as a correction",
+                    Detail: message.Content.Length > 200 ? message.Content[..200] : message.Content,
+                    Timestamp: DateTimeOffset.UtcNow));
+            }
 
             // Build chat messages: system prompt + recent conversation history
             var systemPrompt = promptBuilder.Build(profile, agent);
@@ -396,6 +416,7 @@ internal sealed class UserMessageHandler(
             var lastProgressAt = DateTimeOffset.UtcNow;
 
             var finalContent = await CallWithToolLoopAsync(chatMessages, chatOptions, firstResponse, ct,
+                sessionId: sessionId,
                 onProgress: async (msg, ct2) =>
                 {
                     if (DateTimeOffset.UtcNow - lastProgressAt < ProgressMessageThreshold)
@@ -480,6 +501,7 @@ internal sealed class UserMessageHandler(
         ChatOptions chatOptions,
         ChatResponse firstResponse,
         CancellationToken cancellationToken,
+        string? sessionId = null,
         Func<string, CancellationToken, Task>? onProgress = null)
     {
         // pendingResponse holds the pre-fetched first response for iteration 0.
@@ -648,6 +670,15 @@ internal sealed class UserMessageHandler(
                         logger.LogWarning(ex, "Text-based tool {Name} threw after {ElapsedMs}ms",
                             toolName, toolSw.ElapsedMilliseconds);
                         result = $"Error: {ex.Message}";
+
+                        // Tool failure signal — fire-and-forget
+                        _ = feedbackStore.AppendAsync(new FeedbackEntry(
+                            Id: Guid.NewGuid().ToString("N")[..12],
+                            SessionId: sessionId ?? string.Empty,
+                            SignalType: FeedbackSignalType.ToolFailure,
+                            Summary: toolName,
+                            Detail: ex.Message,
+                            Timestamp: DateTimeOffset.UtcNow));
                     }
 
                     chatMessages.Add(new ChatMessage(ChatRole.User,
@@ -710,6 +741,15 @@ internal sealed class UserMessageHandler(
                     logger.LogWarning(ex, "Tool {Name} threw after {ElapsedMs}ms",
                         fc.Name, toolSw.ElapsedMilliseconds);
                     result = $"Error: {ex.Message}";
+
+                    // Tool failure signal — fire-and-forget
+                    _ = feedbackStore.AppendAsync(new FeedbackEntry(
+                        Id: Guid.NewGuid().ToString("N")[..12],
+                        SessionId: sessionId ?? string.Empty,
+                        SignalType: FeedbackSignalType.ToolFailure,
+                        Summary: fc.Name,
+                        Detail: ex.Message,
+                        Timestamp: DateTimeOffset.UtcNow));
                 }
 
                 chatMessages.Add(new ChatMessage(ChatRole.Tool,

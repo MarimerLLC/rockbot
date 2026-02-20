@@ -111,6 +111,20 @@ internal sealed class FileConversationMemory : IConversationMemory, IHostedServi
         DeleteSessionFile(sessionId);
     }
 
+    public Task<IReadOnlyList<string>> ListSessionsAsync(CancellationToken cancellationToken = default)
+    {
+        if (!Directory.Exists(_basePath))
+            return Task.FromResult<IReadOnlyList<string>>(Array.Empty<string>());
+
+        var sessionIds = Directory.EnumerateFiles(_basePath, "*.json")
+            .Select(Path.GetFileNameWithoutExtension)
+            .Where(id => id is not null)
+            .Cast<string>()
+            .ToList();
+
+        return Task.FromResult<IReadOnlyList<string>>(sessionIds);
+    }
+
     // ── Internals ─────────────────────────────────────────────────────────────
 
     private async Task PersistSessionAsync(string sessionId, CancellationToken ct)
