@@ -95,7 +95,7 @@ internal sealed class UserMessageHandler(
             {
                 new(ChatRole.System, systemPrompt),
                 new(ChatRole.System,
-                    $"Current date and time: {clock.Now:dddd, MMMM d, yyyy 'at' h:mm tt} ({clock.Zone.DisplayName})")
+                    $"Current date and time: {clock.Now:dddd, MMMM d, yyyy 'at' h:mm:ss tt} ({clock.Zone.DisplayName})")
             };
 
             // Inject active rules at the same authority level as directives

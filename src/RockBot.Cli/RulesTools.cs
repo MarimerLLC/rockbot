@@ -7,26 +7,29 @@ using RockBot.Host;
 namespace RockBot.Cli;
 
 /// <summary>
-/// LLM-callable tools for managing hard behavioral rules.
+/// LLM-callable tools for managing hard behavioral rules and persistent agent settings.
 /// Rules are persisted to disk and injected into every system prompt,
 /// giving them the same authority as the agent's directives file.
 /// </summary>
 internal sealed class RulesTools
 {
     private readonly IRulesStore _rulesStore;
+    private readonly AgentClock _clock;
     private readonly ILogger<RulesTools> _logger;
     private readonly IList<AITool> _tools;
 
-    public RulesTools(IRulesStore rulesStore, ILogger<RulesTools> logger)
+    public RulesTools(IRulesStore rulesStore, AgentClock clock, ILogger<RulesTools> logger)
     {
         _rulesStore = rulesStore;
+        _clock = clock;
         _logger = logger;
 
         _tools =
         [
             AIFunctionFactory.Create(AddRule),
             AIFunctionFactory.Create(RemoveRule),
-            AIFunctionFactory.Create(ListRules)
+            AIFunctionFactory.Create(ListRules),
+            AIFunctionFactory.Create(SetTimezone)
         ];
     }
 
@@ -79,5 +82,29 @@ internal sealed class RulesTools
             sb.AppendLine($"- {rule}");
 
         return sb.ToString();
+    }
+
+    [Description("Update the timezone used for all date and time calculations. Call this when the user " +
+                 "says they are in, traveling to, or working from a different timezone. Takes effect " +
+                 "immediately and persists across sessions. Use IANA timezone IDs. When the user names " +
+                 "a city or region, convert it to the correct IANA ID — e.g. 'Chicago' → " +
+                 "'America/Chicago', 'London' → 'Europe/London', 'Tokyo' → 'Asia/Tokyo'.")]
+    public async Task<string> SetTimezone(
+        [Description("IANA timezone ID, e.g. 'America/New_York', 'Europe/Paris', 'Asia/Singapore'")] string timezoneId)
+    {
+        _logger.LogInformation("Tool call: SetTimezone({TimezoneId})", timezoneId);
+
+        TimeZoneInfo zone;
+        try
+        {
+            zone = TimeZoneInfo.FindSystemTimeZoneById(timezoneId);
+        }
+        catch (TimeZoneNotFoundException)
+        {
+            return $"Unknown timezone '{timezoneId}'. Use an IANA timezone ID such as 'America/Chicago' or 'Europe/London'.";
+        }
+
+        await _clock.SetZoneAsync(zone);
+        return $"Timezone updated to {zone.DisplayName} ({zone.Id}). All times will now be shown in this timezone.";
     }
 }

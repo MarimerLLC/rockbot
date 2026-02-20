@@ -8,7 +8,9 @@ namespace RockBot.Host.Tests;
 public sealed class SchedulerServiceTests
 {
     private static AgentClock MakeClock() =>
-        new(new ConfigurationBuilder().Build(), NullLogger<AgentClock>.Instance);
+        new(new ConfigurationBuilder().Build(),
+            Microsoft.Extensions.Options.Options.Create(new AgentProfileOptions()),
+            NullLogger<AgentClock>.Instance);
 
     private static SchedulerService MakeService(
         IScheduledTaskStore store,

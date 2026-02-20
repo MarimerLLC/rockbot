@@ -27,6 +27,11 @@ data:
   # ── Runtime ───────────────────────────────────────────────────────────────
   DOTNET_ENVIRONMENT: "Production"
 
+  {{- if .Values.agent.timezone }}
+  # ── Agent timezone (IANA ID) ───────────────────────────────────────────────
+  Agent__Timezone: {{ .Values.agent.timezone | quote }}
+  {{- end }}
+
   {{- if .Values.telemetry.enabled }}
   # ── OpenTelemetry ──────────────────────────────────────────────────────────
   Telemetry__Enabled: "true"
