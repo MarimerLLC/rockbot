@@ -2,6 +2,8 @@
 
 An event-driven autonomous agent framework.
 
+<img width="200" height="200" alt="rockbot" src="https://github.com/user-attachments/assets/bdc07b74-eaca-4255-acf2-6522c29c91ba" />
+
 ---
 
 ## What is RockBot?
