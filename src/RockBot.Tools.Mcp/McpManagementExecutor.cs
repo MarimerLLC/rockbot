@@ -91,6 +91,7 @@ public sealed class McpManagementExecutor : IToolExecutor, IAsyncDisposable
         var args = ParseArguments(request.Arguments);
         if (!TryGetString(args, "server_name", out var serverName))
             return Error(request, "Missing required parameter: server_name");
+        serverName = serverName.ToLowerInvariant();
 
         var mgmtRequest = new McpGetServiceDetailsRequest { ServerName = serverName };
         var responseEnvelope = await SendRequestAsync(mgmtRequest, ct);
@@ -128,6 +129,7 @@ public sealed class McpManagementExecutor : IToolExecutor, IAsyncDisposable
         var args = ParseArguments(request.Arguments);
         if (!TryGetString(args, "server_name", out var serverName))
             return Error(request, "Missing required parameter: server_name");
+        serverName = serverName.ToLowerInvariant();
         if (!TryGetString(args, "tool_name", out var toolName))
             return Error(request, "Missing required parameter: tool_name");
 
@@ -201,6 +203,7 @@ public sealed class McpManagementExecutor : IToolExecutor, IAsyncDisposable
         var args = ParseArguments(request.Arguments);
         if (!TryGetString(args, "server_name", out var serverName))
             return Error(request, "Missing required parameter: server_name");
+        serverName = serverName.ToLowerInvariant();
 
         var mgmtRequest = new McpUnregisterServerRequest { ServerName = serverName };
 

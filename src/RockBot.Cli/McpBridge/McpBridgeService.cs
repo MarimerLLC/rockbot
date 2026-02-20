@@ -26,9 +26,9 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
     private readonly ILogger<McpBridgeService> _logger;
     private readonly ILlmClient? _llmClient;
 
-    private readonly Dictionary<string, McpClient> _clients = [];
-    private readonly Dictionary<string, McpBridgeServerConfig> _serverConfigs = [];
-    private readonly Dictionary<string, List<McpClientTool>> _serverTools = [];
+    private readonly Dictionary<string, McpClient> _clients = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, McpBridgeServerConfig> _serverConfigs = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, List<McpClientTool>> _serverTools = new(StringComparer.OrdinalIgnoreCase);
     private ISubscription? _invokeSubscription;
     private ISubscription? _refreshSubscription;
     private ISubscription? _manageSubscription;

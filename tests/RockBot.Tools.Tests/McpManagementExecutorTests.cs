@@ -352,4 +352,103 @@ public class McpManagementExecutorTests
         var (executor, _, _) = CreateExecutor();
         Assert.AreEqual($"mcp.manage.response.{_identity.Name}", executor.ResponseTopic);
     }
+
+    // ── case-insensitive server_name ─────────────────────────────────────────
+
+    [TestMethod]
+    public async Task GetServiceDetails_UppercaseServerName_NormalizesToLowercase()
+    {
+        var (executor, publisher, subscriber) = CreateExecutor();
+
+        var request = new ToolInvokeRequest
+        {
+            ToolCallId = "call-1",
+            ToolName = "mcp_get_service_details",
+            Arguments = """{"server_name":"FileSystem"}"""
+        };
+
+        var executeTask = executor.ExecuteAsync(request, CancellationToken.None);
+        await Task.Delay(100);
+
+        Assert.AreEqual(1, publisher.Published.Count);
+        var published = publisher.Published[0].Envelope;
+        var req = published.GetPayload<McpGetServiceDetailsRequest>();
+        Assert.IsNotNull(req);
+        Assert.AreEqual("filesystem", req.ServerName);
+
+        // Simulate bridge response
+        var response = new McpGetServiceDetailsResponse
+        {
+            ServerName = "filesystem",
+            Tools = [new McpToolDefinition { Name = "read_file", Description = "Reads a file" }]
+        };
+        var responseEnvelope = response.ToEnvelope("bridge", correlationId: published.CorrelationId);
+        await subscriber.DeliverAsync(executor.ResponseTopic, responseEnvelope);
+
+        var result = await executeTask;
+        Assert.IsFalse(result.IsError);
+    }
+
+    [TestMethod]
+    public async Task InvokeTool_UppercaseServerName_NormalizesToLowercaseInHeader()
+    {
+        var (executor, publisher, subscriber) = CreateExecutor();
+
+        var request = new ToolInvokeRequest
+        {
+            ToolCallId = "call-1",
+            ToolName = "mcp_invoke_tool",
+            Arguments = """{"server_name":"FileSystem","tool_name":"read_file"}"""
+        };
+
+        var executeTask = executor.ExecuteAsync(request, CancellationToken.None);
+        await Task.Delay(100);
+
+        Assert.AreEqual(1, publisher.Published.Count);
+        var published = publisher.Published[0].Envelope;
+        Assert.AreEqual("filesystem", published.Headers[McpHeaders.ServerName]);
+
+        // Simulate response
+        var response = new ToolInvokeResponse
+        {
+            ToolCallId = "call-1",
+            ToolName = "read_file",
+            Content = "file contents"
+        };
+        var responseEnvelope = response.ToEnvelope("bridge", correlationId: published.CorrelationId);
+        await subscriber.DeliverAsync($"tool.result.{_identity.Name}", responseEnvelope);
+
+        var result = await executeTask;
+        Assert.IsFalse(result.IsError);
+    }
+
+    [TestMethod]
+    public async Task UnregisterServer_UppercaseServerName_NormalizesToLowercase()
+    {
+        var (executor, publisher, subscriber) = CreateExecutor();
+
+        var request = new ToolInvokeRequest
+        {
+            ToolCallId = "call-1",
+            ToolName = "mcp_unregister_server",
+            Arguments = """{"server_name":"FileSystem"}"""
+        };
+
+        var executeTask = executor.ExecuteAsync(request, CancellationToken.None);
+        await Task.Delay(100);
+
+        Assert.AreEqual(1, publisher.Published.Count);
+        var published = publisher.Published[0].Envelope;
+        var req = published.GetPayload<McpUnregisterServerRequest>();
+        Assert.IsNotNull(req);
+        Assert.AreEqual("filesystem", req.ServerName);
+
+        // Simulate bridge response
+        var response = new McpUnregisterServerResponse { ServerName = "filesystem", Success = true };
+        var responseEnvelope = response.ToEnvelope("bridge", correlationId: published.CorrelationId);
+        await subscriber.DeliverAsync(executor.ResponseTopic, responseEnvelope);
+
+        var result = await executeTask;
+        Assert.IsFalse(result.IsError);
+    }
 }
