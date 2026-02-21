@@ -102,9 +102,15 @@ internal sealed class SubagentRunner(
                 cancellationToken: ct);
             isSuccess = true;
         }
-        catch (OperationCanceledException)
+        catch (OperationCanceledException oce)
         {
-            throw; // propagate cancellation
+            // Timeout or explicit cancellation — always notify the primary agent
+            // so it isn't left waiting indefinitely.
+            var reason = ct.IsCancellationRequested ? "cancelled" : "timed out";
+            logger.LogWarning("Subagent {TaskId} {Reason}", taskId, reason);
+            finalOutput = $"Subagent task was {reason} before completing.";
+            isSuccess = false;
+            error = oce.Message;
         }
         catch (Exception ex)
         {
