@@ -26,16 +26,54 @@ internal sealed class ScriptToolExecutor(
                 : null
         };
 
-        var response = await runner.ExecuteAsync(scriptRequest, ct);
+        ScriptInvokeResponse response;
+        try
+        {
+            response = await runner.ExecuteAsync(scriptRequest, ct);
+        }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+        {
+            // Timeout escaped from the runner (race condition between the internal
+            // timeout and the external ct) — same treatment as MCP proxy timeouts.
+            return new ToolInvokeResponse
+            {
+                ToolCallId = request.ToolCallId,
+                ToolName = request.ToolName,
+                Content = $"execute_python_script timed out after {scriptRequest.TimeoutSeconds}s. " +
+                          $"Either increase timeout_seconds, simplify the script, or consider " +
+                          $"an alternative approach that does not require script execution.",
+                IsError = true
+            };
+        }
+
+        if (response.IsSuccess)
+        {
+            return new ToolInvokeResponse
+            {
+                ToolCallId = request.ToolCallId,
+                ToolName = request.ToolName,
+                Content = response.Output ?? "(no output)",
+                IsError = false
+            };
+        }
+
+        // Distinguish timeout failures from other failures so the LLM gets actionable guidance.
+        var isTimeout = response.ExitCode == -1 &&
+                        (response.Stderr?.Contains("timed out", StringComparison.OrdinalIgnoreCase) == true ||
+                         response.Stderr?.Contains("Timed out", StringComparison.OrdinalIgnoreCase) == true);
+
+        var errorContent = isTimeout
+            ? $"execute_python_script timed out after {scriptRequest.TimeoutSeconds}s. " +
+              $"Either increase timeout_seconds, simplify the script, or consider " +
+              $"an alternative approach that does not require script execution."
+            : $"Script failed (exit {response.ExitCode}):\n{response.Output ?? response.Stderr ?? "(no output)"}";
 
         return new ToolInvokeResponse
         {
             ToolCallId = request.ToolCallId,
             ToolName = request.ToolName,
-            Content = response.IsSuccess
-                ? (response.Output ?? "(no output)")
-                : $"Script failed (exit {response.ExitCode}):\n{response.Output ?? response.Stderr ?? "(no output)"}",
-            IsError = !response.IsSuccess
+            Content = errorContent,
+            IsError = true
         };
     }
 
