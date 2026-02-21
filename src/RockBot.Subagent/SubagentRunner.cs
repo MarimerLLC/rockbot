@@ -1,8 +1,10 @@
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
 using RockBot.Host;
+using RockBot.Llm;
 using RockBot.Memory;
 using RockBot.Messaging;
+using RockBot.Skills;
 using RockBot.Tools;
 
 namespace RockBot.Subagent;
@@ -14,7 +16,10 @@ namespace RockBot.Subagent;
 /// </summary>
 internal sealed class SubagentRunner(
     AgentLoopRunner agentLoopRunner,
+    ILlmClient llmClient,
     IWorkingMemory workingMemory,
+    MemoryTools memoryTools,
+    ISkillStore skillStore,
     IToolRegistry toolRegistry,
     IMessagePublisher publisher,
     AgentIdentity agentIdentity,
@@ -48,6 +53,12 @@ internal sealed class SubagentRunner(
 
         chatMessages.Add(new ChatMessage(ChatRole.User, description));
 
+        // Long-term memory tools (search_memory, save_memory, etc.)
+        // MemoryTools is a singleton — safe to use directly.
+
+        // Skill tools (get_skill, list_skills, save_skill) — no usage tracking needed for subagents
+        var skillTools = new SkillTools(skillStore, llmClient, logger, subagentSessionId);
+
         // Working memory tools scoped to the subagent's session
         var sessionWorkingMemoryTools = new WorkingMemoryTools(workingMemory, subagentSessionId, logger);
 
@@ -67,7 +78,9 @@ internal sealed class SubagentRunner(
         var chatOptions = new ChatOptions
         {
             Tools = [
+                ..memoryTools.Tools,
                 ..sessionWorkingMemoryTools.Tools,
+                ..skillTools.Tools,
                 ..registryTools,
                 ..reportProgressFunctions.Tools,
                 ..whiteboardFunctions.Tools
