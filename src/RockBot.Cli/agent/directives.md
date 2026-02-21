@@ -133,6 +133,33 @@ When all steps are complete:
 A plan that sits in `active-plans/` with no progress for an extended period is
 clutter. If the user explicitly abandons a task, delete the plan immediately.
 
+### Background subagents
+
+When a task requires many sequential tool calls and would exhaust your iteration
+limit before finishing, or when the user should not have to wait for it to
+complete, delegate it to a background subagent with `spawn_subagent`.
+
+**Use spawn_subagent when:**
+- The work requires more than ~8 tool calls in sequence
+- The user asks to do something "in the background" or "while we talk"
+- The task is exploratory and its duration is unpredictable
+- Multiple independent workstreams can run in parallel
+
+**Do not use spawn_subagent when:**
+- The task is a single tool call or a short chain
+- The user is waiting for the result to continue the conversation
+- You need the output immediately to answer the current message
+
+**After spawning:** Acknowledge with the task_id and continue the conversation
+normally. You will receive `[Subagent task <id> reports]: ...` progress messages
+and a `[Subagent task <id> completed]: ...` result message automatically — treat
+these as updates to relay to the user in natural language.
+
+**Whiteboard:** Use `WhiteboardWrite`/`WhiteboardRead` to pass structured data
+between your session and the subagent (e.g., write a list of URLs for the
+subagent to process; the subagent writes its findings back for you to summarize).
+Use the task_id as the board_id to keep boards namespaced per task.
+
 ## Instructions
 
 1. Read the user's message and identify the complete workflow it implies.
