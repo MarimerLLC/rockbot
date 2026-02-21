@@ -5,33 +5,18 @@ namespace RockBot.Host;
 
 /// <summary>
 /// Default implementation of <see cref="ILlmClient"/>.
-/// Serializes all LLM calls through a <see cref="SemaphoreSlim"/> so that
-/// at most one request is in flight at any time. Background tasks (memory
-/// enrichment, skill summary generation, dreaming) queue behind the active
-/// user-facing request rather than racing with it and triggering rate limits.
+/// Thin wrapper around <see cref="IChatClient"/> that adds retry logic for
+/// known model-specific SDK quirks. Registered as transient so each consumer
+/// gets its own instance — concurrent calls from the user loop, background tasks,
+/// dreaming, and session evaluation proceed independently without queuing.
 /// </summary>
 internal sealed class LlmClient(IChatClient chatClient, ILogger<LlmClient> logger) : ILlmClient
 {
-    private readonly SemaphoreSlim _gate = new(1, 1);
-
-    /// <inheritdoc/>
-    public bool IsIdle => _gate.CurrentCount > 0;
-
-    public async Task<ChatResponse> GetResponseAsync(
+    public Task<ChatResponse> GetResponseAsync(
         IEnumerable<ChatMessage> messages,
         ChatOptions? options = null,
         CancellationToken cancellationToken = default)
-    {
-        await _gate.WaitAsync(cancellationToken);
-        try
-        {
-            return await InvokeWithNullArgRetryAsync(messages, options, cancellationToken);
-        }
-        finally
-        {
-            _gate.Release();
-        }
-    }
+        => InvokeWithNullArgRetryAsync(messages, options, cancellationToken);
 
     /// <summary>
     /// Calls the underlying chat client, retrying once on known model-specific SDK

@@ -25,6 +25,7 @@ internal sealed class DreamService : IHostedService, IDisposable
     private readonly ISkillUsageStore? _skillUsageStore;
     private readonly IConversationLog? _conversationLog;
     private readonly ILlmClient _llmClient;
+    private readonly IUserActivityMonitor _userActivityMonitor;
     private readonly DreamOptions _options;
     private readonly AgentProfileOptions _profileOptions;
     private readonly ILogger<DreamService> _logger;
@@ -39,6 +40,7 @@ internal sealed class DreamService : IHostedService, IDisposable
         ILongTermMemory memory,
         IEnumerable<ISkillStore> skillStores,
         ILlmClient llmClient,
+        IUserActivityMonitor userActivityMonitor,
         IOptions<DreamOptions> options,
         IOptions<AgentProfileOptions> profileOptions,
         ILogger<DreamService> logger,
@@ -52,6 +54,7 @@ internal sealed class DreamService : IHostedService, IDisposable
         _skillUsageStore = skillUsageStore;
         _conversationLog = conversationLog;
         _llmClient = llmClient;
+        _userActivityMonitor = userActivityMonitor;
         _options = options.Value;
         _profileOptions = profileOptions.Value;
         _logger = logger;
@@ -164,9 +167,9 @@ internal sealed class DreamService : IHostedService, IDisposable
         {
             // Dream is low-priority. If another LLM call is in flight, back off and
             // retry rather than queueing immediately behind an active user request.
-            while (!_llmClient.IsIdle)
+            while (_userActivityMonitor.IsUserActive(TimeSpan.FromSeconds(30)))
             {
-                _logger.LogDebug("DreamService: LLM busy, delaying dream cycle by 5s");
+                _logger.LogDebug("DreamService: user recently active, delaying dream cycle by 5s");
                 await Task.Delay(TimeSpan.FromSeconds(5));
             }
 

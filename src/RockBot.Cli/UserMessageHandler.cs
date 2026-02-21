@@ -48,6 +48,7 @@ internal sealed class UserMessageHandler(
     ToolGuideTools toolGuideTools,
     ModelBehavior modelBehavior,
     IFeedbackStore feedbackStore,
+    IUserActivityMonitor userActivityMonitor,
     ILogger<UserMessageHandler> logger,
     ISkillUsageStore? skillUsageStore = null) : IMessageHandler<UserMessage>
 {
@@ -123,6 +124,7 @@ internal sealed class UserMessageHandler(
         var correlationId = context.Envelope.CorrelationId;
         var ct = context.CancellationToken;
 
+        userActivityMonitor.RecordActivity();
         logger.LogInformation("Received message from {UserId} in session {SessionId}: {Content}",
             message.UserId, message.SessionId, message.Content);
 
