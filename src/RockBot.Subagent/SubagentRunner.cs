@@ -62,8 +62,10 @@ internal sealed class SubagentRunner(
         // Working memory tools scoped to the subagent's session
         var sessionWorkingMemoryTools = new WorkingMemoryTools(workingMemory, subagentSessionId, logger);
 
-        // Registry tools (MCP, REST, scheduling, etc.)
+        // Registry tools (MCP, REST, scheduling, etc.) — exclude subagent management tools
+        // since a subagent should not spawn or cancel other subagents.
         var registryTools = toolRegistry.GetTools()
+            .Where(r => r.Source != "subagent")
             .Select(r => (AIFunction)new SubagentRegistryToolFunction(
                 r, toolRegistry.GetExecutor(r.Name)!, subagentSessionId))
             .ToArray();
