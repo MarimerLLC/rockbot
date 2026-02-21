@@ -27,6 +27,7 @@ internal sealed class SessionSummaryService : IHostedService, IDisposable
     private readonly IConversationMemory _conversationMemory;
     private readonly IFeedbackStore _feedbackStore;
     private readonly ILlmClient _llmClient;
+    private readonly IUserActivityMonitor _userActivityMonitor;
     private readonly FeedbackOptions _options;
     private readonly AgentProfileOptions _profileOptions;
     private readonly ILogger<SessionSummaryService> _logger;
@@ -41,6 +42,7 @@ internal sealed class SessionSummaryService : IHostedService, IDisposable
         IConversationMemory conversationMemory,
         IFeedbackStore feedbackStore,
         ILlmClient llmClient,
+        IUserActivityMonitor userActivityMonitor,
         IOptions<FeedbackOptions> options,
         IOptions<AgentProfileOptions> profileOptions,
         ILogger<SessionSummaryService> logger)
@@ -48,6 +50,7 @@ internal sealed class SessionSummaryService : IHostedService, IDisposable
         _conversationMemory = conversationMemory;
         _feedbackStore = feedbackStore;
         _llmClient = llmClient;
+        _userActivityMonitor = userActivityMonitor;
         _options = options.Value;
         _profileOptions = profileOptions.Value;
         _logger = logger;
@@ -125,9 +128,9 @@ internal sealed class SessionSummaryService : IHostedService, IDisposable
     private async Task EvaluateSessionAsync(string sessionId, IReadOnlyList<ConversationTurn> turns)
     {
         // Back off if LLM is busy
-        while (!_llmClient.IsIdle)
+        while (_userActivityMonitor.IsUserActive(TimeSpan.FromSeconds(30)))
         {
-            _logger.LogDebug("SessionSummaryService: LLM busy, delaying evaluation for session {SessionId}", sessionId);
+            _logger.LogDebug("SessionSummaryService: user recently active, delaying evaluation for session {SessionId}", sessionId);
             await Task.Delay(TimeSpan.FromSeconds(5));
         }
 

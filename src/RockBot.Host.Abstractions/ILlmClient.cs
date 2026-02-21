@@ -3,23 +3,16 @@ using Microsoft.Extensions.AI;
 namespace RockBot.Host;
 
 /// <summary>
-/// Serialized gateway for all LLM calls in an agent process.
-/// Ensures only one LLM request is in flight at a time, preventing concurrent
-/// API calls from triggering rate limiting.
+/// Wrapper around <see cref="IChatClient"/> for all LLM calls in an agent process.
+/// Adds retry logic for known model-specific SDK quirks. Registered as transient
+/// so concurrent callers (user loop, background tasks, dreaming, session evaluation)
+/// each get their own instance and never queue behind each other.
 ///
-/// All subsystems that need to call the LLM — the main tool loop, background
-/// memory enrichment, skill summary generation, and dreaming — should inject
-/// and use this service rather than <see cref="IChatClient"/> directly.
+/// To avoid starting background LLM work while the user is actively waiting
+/// for a response, use <see cref="IUserActivityMonitor"/> instead of this interface.
 /// </summary>
 public interface ILlmClient
 {
-    /// <summary>
-    /// True when no LLM call is currently in flight.
-    /// Low-priority callers (e.g. dreaming) can poll this before queuing
-    /// to avoid blocking user-facing requests.
-    /// </summary>
-    bool IsIdle { get; }
-
     Task<ChatResponse> GetResponseAsync(
         IEnumerable<ChatMessage> messages,
         ChatOptions? options = null,

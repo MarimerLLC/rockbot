@@ -134,6 +134,7 @@ public class SessionSummaryServiceTests
             memory,
             feedbackStore,
             llm,
+            new UserActivityMonitor(),
             options,
             profileOptions,
             NullLogger<SessionSummaryService>.Instance);
