@@ -71,7 +71,10 @@ public static class AgentMemoryExtensions
             builder.Services.Configure<WorkingMemoryOptions>(_ => { });
 
         builder.Services.AddMemoryCache();
-        builder.Services.AddSingleton<IWorkingMemory, HybridCacheWorkingMemory>();
+        builder.Services.AddSingleton<HybridCacheWorkingMemory>();
+        builder.Services.AddSingleton<FileWorkingMemory>();
+        builder.Services.AddSingleton<IWorkingMemory>(sp => sp.GetRequiredService<FileWorkingMemory>());
+        builder.Services.AddSingleton<IHostedService>(sp => sp.GetRequiredService<FileWorkingMemory>());
 
         return builder;
     }
