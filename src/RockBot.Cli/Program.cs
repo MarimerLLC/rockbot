@@ -15,6 +15,7 @@ using RockBot.Memory;
 using RockBot.Skills;
 using RockBot.Tools;
 using RockBot.Tools.Mcp;
+using RockBot.Subagent;
 using RockBot.Tools.Scheduling;
 using RockBot.Tools.Web;
 using RockBot.UserProxy;
@@ -81,6 +82,7 @@ builder.Services.AddRockBotHost(agent =>
     agent.AddMcpToolProxy();
     agent.AddWebTools(opts => builder.Configuration.GetSection("WebTools").Bind(opts));
     agent.AddSchedulingTools();
+    agent.AddSubagents();
     agent.HandleMessage<ScheduledTaskMessage, ScheduledTaskHandler>();
     agent.HandleMessage<UserMessage, UserMessageHandler>();
     agent.HandleMessage<ConversationHistoryRequest, ConversationHistoryRequestHandler>();

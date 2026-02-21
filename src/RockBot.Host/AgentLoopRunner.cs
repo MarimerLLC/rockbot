@@ -1,0 +1,603 @@
+using System.ClientModel;
+using System.Diagnostics;
+using System.Text;
+using System.Text.Json;
+using System.Text.RegularExpressions;
+using Microsoft.Extensions.AI;
+using Microsoft.Extensions.Logging;
+using RockBot.Llm;
+
+namespace RockBot.Host;
+
+/// <summary>
+/// Reusable LLM tool-calling loop shared by UserMessageHandler, ScheduledTaskHandler,
+/// SubagentRunner, and subagent update handlers.
+/// </summary>
+public sealed class AgentLoopRunner(
+    ILlmClient llmClient,
+    IWorkingMemory workingMemory,
+    ModelBehavior modelBehavior,
+    IFeedbackStore feedbackStore,
+    ILogger<AgentLoopRunner> logger)
+{
+    private const int MaxToolIterations = 12;
+    private const int ToolResultChunkMaxLength = 20_000;
+    private static readonly TimeSpan ToolResultChunkTtl = TimeSpan.FromMinutes(20);
+
+    private static readonly HashSet<string> ChunkingExemptTools = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "GetFromWorkingMemory",
+        "SearchWorkingMemory",
+        "ListWorkingMemory",
+    };
+
+    /// <summary>
+    /// Detects when a model claims to have performed tool actions in plain text without
+    /// actually emitting function calls.
+    /// </summary>
+    private static readonly Regex HallucinatedActionRegex = new(
+        @"\bI(?:['\u2019]ve| have)\s+(cancell?ed|scheduled|created|updated|rescheduled|deleted|removed|completed|added|saved)\b",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+    /// <summary>
+    /// Context window limit in tokens, learned from the first overflow error.
+    /// </summary>
+    private int? _knownContextLimit;
+
+    /// <summary>
+    /// Runs the LLM tool-calling loop.
+    /// </summary>
+    /// <param name="chatMessages">Messages to send (modified in place as tool results are added).</param>
+    /// <param name="chatOptions">Chat options including available tools.</param>
+    /// <param name="sessionId">Session ID for working memory scoping.</param>
+    /// <param name="firstResponse">Pre-fetched first LLM response; if null, the first call is made here.</param>
+    /// <param name="onProgress">Optional callback invoked after each tool call batch with a progress message.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>The final text response from the LLM.</returns>
+    public async Task<string> RunAsync(
+        List<ChatMessage> chatMessages,
+        ChatOptions chatOptions,
+        string? sessionId,
+        ChatResponse? firstResponse = null,
+        Func<string, CancellationToken, Task>? onProgress = null,
+        CancellationToken cancellationToken = default)
+    {
+        ChatResponse? pendingResponse = firstResponse;
+        var anyToolCalled = false;
+        var maxIterations = modelBehavior.MaxToolIterationsOverride ?? MaxToolIterations;
+
+        for (var iteration = 0; iteration < maxIterations; iteration++)
+        {
+            ChatResponse response;
+
+            if (pendingResponse is not null)
+            {
+                response = pendingResponse;
+                pendingResponse = null;
+                logger.LogInformation("Processing pre-fetched first response in background — iteration 2");
+            }
+            else
+            {
+                if (_knownContextLimit is int preLimit)
+                    TrimLargeToolResults(chatMessages, preLimit);
+
+                logger.LogInformation("Calling LLM — iteration {Iteration} ({MessageCount} messages in context)",
+                    iteration + 2, chatMessages.Count);
+                var sw = Stopwatch.StartNew();
+
+                try
+                {
+                    response = await llmClient.GetResponseAsync(chatMessages, chatOptions, cancellationToken);
+                }
+                catch (ClientResultException ex)
+                    when (ex.Status == 400 && TryParseContextOverflow(ex.Message, out var max, out var used))
+                {
+                    _knownContextLimit = max;
+                    logger.LogWarning(
+                        "Context overflow ({Used:N0}/{Max:N0} tokens); trimming tool results and retrying once",
+                        used, max);
+                    TrimLargeToolResults(chatMessages, max);
+                    response = await llmClient.GetResponseAsync(chatMessages, chatOptions, cancellationToken);
+                }
+
+                sw.Stop();
+                logger.LogInformation(
+                    "LLM responded in {ElapsedMs}ms — {MsgCount} message(s), iteration {Iteration}",
+                    sw.ElapsedMilliseconds, response.Messages.Count, iteration + 2);
+            }
+
+            LogResponseMessages(response, iterationLabel: (iteration + 2).ToString());
+
+            var functionCalls = response.Messages
+                .SelectMany(m => m.Contents.OfType<FunctionCallContent>())
+                .ToList();
+
+            logger.LogInformation("  FunctionCallContent count: {Count}", functionCalls.Count);
+
+            if (functionCalls.Count == 0)
+            {
+                var text = ExtractAssistantText(response);
+                var knownTools = (chatOptions.Tools?
+                    .OfType<AIFunction>()
+                    .Select(t => t.Name)
+                    ?? [])
+                    .ToHashSet(StringComparer.OrdinalIgnoreCase);
+                var textCalls = ParseTextToolCalls(text, knownTools);
+
+                if (textCalls.Count == 0)
+                {
+                    if (IsIncompleteSetupPhrase(text))
+                    {
+                        logger.LogInformation(
+                            "Response looks like an incomplete setup phrase ({Length} chars); nudging LLM to continue",
+                            text.Length);
+                        chatMessages.Add(new ChatMessage(ChatRole.Assistant, text));
+                        chatMessages.Add(new ChatMessage(ChatRole.User,
+                            "Stop narrating. Emit the tool call now — do not describe what you are about to do."));
+                        continue;
+                    }
+
+                    if (modelBehavior.NudgeOnHallucinatedToolCalls
+                        && !anyToolCalled
+                        && HallucinatedActionRegex.IsMatch(text))
+                    {
+                        logger.LogWarning(
+                            "Hallucinated tool actions detected ({Length} chars); nudging LLM to actually call tools",
+                            text.Length);
+                        chatMessages.Add(new ChatMessage(ChatRole.Assistant, text));
+                        chatMessages.Add(new ChatMessage(ChatRole.User,
+                            "You described taking actions but no tool calls were detected. Please call the required tools now."));
+                        continue;
+                    }
+
+                    logger.LogInformation("Final response text ({Length} chars): {Preview}",
+                        text.Length, text.Length > 200 ? text[..200] + "..." : text);
+                    return text;
+                }
+
+                logger.LogInformation(
+                    "Detected {Count} text-based tool call(s) on iteration {Iteration}",
+                    textCalls.Count, iteration + 2);
+
+                var preToolText = GetPreToolText(text);
+                if (!string.IsNullOrWhiteSpace(preToolText))
+                    chatMessages.Add(new ChatMessage(ChatRole.Assistant, preToolText));
+
+                foreach (var (toolName, argsJson) in textCalls)
+                {
+                    var tool = chatOptions.Tools?
+                        .OfType<AIFunction>()
+                        .FirstOrDefault(t => t.Name.Equals(toolName, StringComparison.OrdinalIgnoreCase));
+
+                    if (tool is null)
+                    {
+                        logger.LogWarning("Text tool call references unknown tool: {Name}", toolName);
+                        chatMessages.Add(new ChatMessage(ChatRole.User,
+                            $"[Tool result for {toolName}]: Error: unknown tool '{toolName}'"));
+                        continue;
+                    }
+
+                    AIFunctionArguments args;
+                    try
+                    {
+                        var dict = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(argsJson);
+                        args = dict is not null
+                            ? new AIFunctionArguments(
+                                dict.ToDictionary(k => k.Key, k => ToNativeValue(k.Value)))
+                            : new AIFunctionArguments();
+                    }
+                    catch (JsonException ex)
+                    {
+                        logger.LogWarning(ex, "Failed to parse tool args for {Name}: {Args}", toolName, argsJson);
+                        chatMessages.Add(new ChatMessage(ChatRole.User,
+                            $"[Tool result for {toolName}]: Error: invalid arguments JSON"));
+                        continue;
+                    }
+
+                    var toolSw = Stopwatch.StartNew();
+                    object? result;
+                    try
+                    {
+                        result = await tool.InvokeAsync(args, cancellationToken);
+                        toolSw.Stop();
+                        logger.LogInformation("Text-based tool {Name} returned in {ElapsedMs}ms: {Result}",
+                            toolName, toolSw.ElapsedMilliseconds, result);
+                    }
+                    catch (Exception ex) when (ex is not OperationCanceledException)
+                    {
+                        toolSw.Stop();
+                        logger.LogWarning(ex, "Text-based tool {Name} threw after {ElapsedMs}ms",
+                            toolName, toolSw.ElapsedMilliseconds);
+                        result = $"Error: {ex.Message}";
+
+                        _ = feedbackStore.AppendAsync(new FeedbackEntry(
+                            Id: Guid.NewGuid().ToString("N")[..12],
+                            SessionId: sessionId ?? string.Empty,
+                            SignalType: FeedbackSignalType.ToolFailure,
+                            Summary: toolName,
+                            Detail: ex.Message,
+                            Timestamp: DateTimeOffset.UtcNow));
+                    }
+
+                    var textResultStr = await ChunkToolResultAsync(
+                        toolName, result?.ToString() ?? string.Empty, sessionId, cancellationToken);
+                    chatMessages.Add(new ChatMessage(ChatRole.User,
+                        $"[Tool result for {toolName}]: {textResultStr}"));
+                }
+
+                if (onProgress is not null)
+                {
+                    var names = string.Join(", ", textCalls.Select(t => t.Name));
+                    await onProgress($"Called {names}. Still working…", cancellationToken);
+                }
+
+                continue;
+            }
+
+            logger.LogInformation(
+                "LLM requested {Count} tool call(s) on iteration {Iteration}",
+                functionCalls.Count, iteration + 2);
+
+            anyToolCalled = true;
+            chatMessages.AddRange(response.Messages);
+
+            foreach (var fc in functionCalls)
+            {
+                var argsSummary = fc.Arguments is not null
+                    ? string.Join(", ", fc.Arguments.Select(a => $"{a.Key}={a.Value}"))
+                    : "(none)";
+                logger.LogInformation("Executing tool {Name}(callId={CallId}, args={Args})",
+                    fc.Name, fc.CallId, argsSummary);
+
+                var tool = chatOptions.Tools?
+                    .OfType<AIFunction>()
+                    .FirstOrDefault(t => t.Name.Equals(fc.Name, StringComparison.OrdinalIgnoreCase));
+
+                if (tool is null)
+                {
+                    logger.LogWarning("LLM requested unknown tool: {Name}", fc.Name);
+                    chatMessages.Add(new ChatMessage(ChatRole.Tool,
+                        [new FunctionResultContent(fc.CallId, $"Error: unknown tool '{fc.Name}'")]));
+                    continue;
+                }
+
+                var args = fc.Arguments is not null
+                    ? new AIFunctionArguments(fc.Arguments!)
+                    : new AIFunctionArguments();
+                var toolSw = Stopwatch.StartNew();
+                object? result;
+                try
+                {
+                    result = await tool.InvokeAsync(args, cancellationToken);
+                    toolSw.Stop();
+                    logger.LogInformation("Tool {Name} returned in {ElapsedMs}ms: {Result}",
+                        fc.Name, toolSw.ElapsedMilliseconds, result);
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    toolSw.Stop();
+                    logger.LogWarning(ex, "Tool {Name} threw after {ElapsedMs}ms",
+                        fc.Name, toolSw.ElapsedMilliseconds);
+                    result = $"Error: {ex.Message}";
+
+                    _ = feedbackStore.AppendAsync(new FeedbackEntry(
+                        Id: Guid.NewGuid().ToString("N")[..12],
+                        SessionId: sessionId ?? string.Empty,
+                        SignalType: FeedbackSignalType.ToolFailure,
+                        Summary: fc.Name,
+                        Detail: ex.Message,
+                        Timestamp: DateTimeOffset.UtcNow));
+                }
+
+                var nativeResultStr = await ChunkToolResultAsync(
+                    fc.Name, result?.ToString() ?? string.Empty, sessionId, cancellationToken);
+                chatMessages.Add(new ChatMessage(ChatRole.Tool,
+                    [new FunctionResultContent(fc.CallId, nativeResultStr)]));
+            }
+
+            if (onProgress is not null)
+            {
+                var names = string.Join(", ", functionCalls.Select(f => f.Name));
+                await onProgress($"Called {names}. Still working…", cancellationToken);
+            }
+
+            if (iteration == maxIterations - 2)
+                chatOptions = new ChatOptions();
+        }
+
+        logger.LogWarning("Tool loop reached {Max} iterations; forcing final response", maxIterations);
+        var finalResponse = await llmClient.GetResponseAsync(
+            chatMessages, new ChatOptions(), cancellationToken);
+        return ExtractAssistantText(finalResponse);
+    }
+
+    private void TrimLargeToolResults(List<ChatMessage> messages, int maxTokens)
+    {
+        const int CharsPerToken = 4;
+        var charBudget = (int)(maxTokens * CharsPerToken * 0.9);
+
+        while (true)
+        {
+            var totalChars = messages.Sum(EstimateMessageChars);
+            if (totalChars <= charBudget)
+                break;
+
+            int bestMsg = -1, bestContent = -1, bestLen = 0;
+            for (var i = 0; i < messages.Count; i++)
+            {
+                if (messages[i].Role != ChatRole.Tool) continue;
+                for (var j = 0; j < messages[i].Contents.Count; j++)
+                {
+                    if (messages[i].Contents[j] is FunctionResultContent frc)
+                    {
+                        var len = frc.Result?.ToString()?.Length ?? 0;
+                        if (len > bestLen) { bestMsg = i; bestContent = j; bestLen = len; }
+                    }
+                }
+            }
+
+            if (bestMsg < 0)
+                break;
+
+            var old = (FunctionResultContent)messages[bestMsg].Contents[bestContent];
+            var oldStr = old.Result?.ToString() ?? string.Empty;
+            var excess = totalChars - charBudget;
+            var targetLen = Math.Max(200, oldStr.Length - excess - 60);
+            var trimmed = oldStr[..targetLen] + "\n[truncated to fit context window]";
+
+            messages[bestMsg].Contents[bestContent] = new FunctionResultContent(old.CallId, trimmed);
+
+            logger.LogInformation(
+                "Trimmed tool result for call {CallId}: {Before:N0} → {After:N0} chars",
+                old.CallId, bestLen, trimmed.Length);
+        }
+    }
+
+    private async Task<string> ChunkToolResultAsync(
+        string toolName, string result, string? sessionId, CancellationToken ct)
+    {
+        if (ChunkingExemptTools.Contains(toolName))
+            return result;
+
+        var threshold = modelBehavior.ToolResultChunkingThreshold;
+        if (result.Length <= threshold)
+            return result;
+
+        if (sessionId is not null)
+        {
+            var chunks = ContentChunker.Chunk(result, ToolResultChunkMaxLength);
+            var sanitizedName = SanitizeKeySegment(toolName);
+            var runId = Guid.NewGuid().ToString("N")[..8];
+            var keyBase = $"tool:{sanitizedName}:{runId}";
+
+            var index = new StringBuilder();
+            index.AppendLine(
+                $"Tool result for '{toolName}' is large ({result.Length:N0} chars) and has been " +
+                $"split into {chunks.Count} chunk(s) stored in working memory.");
+            index.AppendLine(
+                "Call get_from_working_memory(key) for each relevant chunk BEFORE drawing conclusions. " +
+                "Do not summarise based on this index alone.");
+            index.AppendLine();
+            index.AppendLine("| # | Heading | Key |");
+            index.AppendLine("|---|---------|-----|");
+
+            for (var i = 0; i < chunks.Count; i++)
+            {
+                var (heading, content) = chunks[i];
+                var key = $"{keyBase}:chunk{i}";
+                await workingMemory.SetAsync(sessionId, key, content, ttl: ToolResultChunkTtl, category: "tool-result");
+                var label = string.IsNullOrWhiteSpace(heading) ? $"Part {i}" : heading;
+                index.AppendLine($"| {i} | {label} | `{key}` |");
+            }
+
+            logger.LogInformation(
+                "Chunked large tool result for {ToolName}: {Length:N0} chars → {ChunkCount} chunk(s) (threshold {Threshold:N0})",
+                toolName, result.Length, chunks.Count, threshold);
+
+            return index.ToString().Trim();
+        }
+
+        var truncated = result[..threshold] +
+            $"\n[result truncated — {result.Length - threshold:N0} chars omitted]";
+        logger.LogWarning(
+            "Truncated large tool result for {ToolName}: {Length:N0} chars (no working memory available, threshold {Threshold:N0})",
+            toolName, result.Length, threshold);
+        return truncated;
+    }
+
+    private static string SanitizeKeySegment(string s)
+    {
+        var sb = new StringBuilder(Math.Min(s.Length, 40));
+        foreach (var c in s)
+        {
+            if (char.IsLetterOrDigit(c) || c == '-' || c == '_')
+                sb.Append(c);
+            else
+                sb.Append('_');
+            if (sb.Length == 40) break;
+        }
+        return sb.ToString();
+    }
+
+    private static int EstimateMessageChars(ChatMessage m) =>
+        m.Contents.Sum(static c => c switch
+        {
+            TextContent tc => tc.Text?.Length ?? 0,
+            FunctionResultContent frc => frc.Result?.ToString()?.Length ?? 0,
+            _ => 50
+        });
+
+    private static bool TryParseContextOverflow(string message, out int maxTokens, out int usedTokens)
+    {
+        maxTokens = 0;
+        usedTokens = 0;
+
+        var maxMatch = Regex.Match(message, @"maximum context length is (\d+)");
+        var usedMatch = Regex.Match(message, @"resulted in (\d+) tokens");
+
+        if (!maxMatch.Success || !usedMatch.Success)
+            return false;
+
+        maxTokens = int.Parse(maxMatch.Groups[1].Value);
+        usedTokens = int.Parse(usedMatch.Groups[1].Value);
+        return true;
+    }
+
+    private void LogResponseMessages(ChatResponse response, string iterationLabel)
+    {
+        for (var i = 0; i < response.Messages.Count; i++)
+        {
+            var msg = response.Messages[i];
+            var contentParts = string.Join(", ", msg.Contents.Select(c => c.GetType().Name));
+            logger.LogInformation(
+                "  Message[{Index}] role={Role} text={TextLen} chars, contents=[{ContentParts}]",
+                i, msg.Role, msg.Text?.Length ?? 0, contentParts);
+        }
+    }
+
+    public List<(string Name, string ArgsJson)> ParseTextToolCalls(string text, IReadOnlySet<string> knownTools)
+    {
+        var results = new List<(string, string)>();
+        var lines = text.Split('\n');
+
+        for (var i = 0; i < lines.Length; i++)
+        {
+            var line = lines[i].Trim();
+            var cleanLine = line.TrimStart('`').Trim();
+
+            if (cleanLine.StartsWith("tool_call_name:", StringComparison.OrdinalIgnoreCase))
+            {
+                var afterName = cleanLine["tool_call_name:".Length..].Trim();
+                if (string.IsNullOrEmpty(afterName))
+                    continue;
+
+                string toolName;
+                var argsJson = "{}";
+
+                var sameLineArgsIdx = afterName.IndexOf("tool_call_arguments:", StringComparison.OrdinalIgnoreCase);
+                if (sameLineArgsIdx >= 0)
+                {
+                    toolName = afterName[..sameLineArgsIdx].Trim();
+                    argsJson = afterName[(sameLineArgsIdx + "tool_call_arguments:".Length)..].Trim().TrimEnd('`').Trim();
+                }
+                else
+                {
+                    toolName = afterName;
+
+                    for (var j = i + 1; j < Math.Min(i + 4, lines.Length); j++)
+                    {
+                        var argsLine = lines[j].Trim();
+                        if (!argsLine.StartsWith("tool_call_arguments:", StringComparison.OrdinalIgnoreCase))
+                            continue;
+
+                        argsJson = argsLine["tool_call_arguments:".Length..].Trim().TrimEnd('`').Trim();
+
+                        if (argsJson.StartsWith("{") && !IsBalancedJson(argsJson))
+                        {
+                            var sb = new StringBuilder(argsJson);
+                            for (var k = j + 1; k < lines.Length; k++)
+                            {
+                                sb.Append('\n').Append(lines[k]);
+                                if (IsBalancedJson(sb.ToString()))
+                                    break;
+                            }
+                            argsJson = sb.ToString();
+                        }
+
+                        i = j;
+                        break;
+                    }
+                }
+
+                if (string.IsNullOrEmpty(toolName))
+                    continue;
+
+                logger.LogDebug("Parsed tool_call_name format: {Name}({Args})", toolName, argsJson);
+                results.Add((toolName, argsJson));
+            }
+            else if (knownTools.Contains(cleanLine))
+            {
+                var argsJson = "{}";
+
+                if (i + 1 < lines.Length)
+                {
+                    var nextLine = lines[i + 1].Trim();
+                    if (nextLine.StartsWith("{") && IsBalancedJson(nextLine))
+                    {
+                        argsJson = nextLine;
+                        i++;
+                    }
+                }
+
+                logger.LogDebug("Parsed bare tool name format: {Name}({Args})", line, argsJson);
+                results.Add((line, argsJson));
+            }
+        }
+
+        return results;
+    }
+
+    public static bool IsIncompleteSetupPhrase(string text)
+    {
+        var trimmed = text.TrimEnd();
+        return trimmed.EndsWith(':') || trimmed.EndsWith("...");
+    }
+
+    public static bool IsBalancedJson(string s)
+    {
+        var depth = 0;
+        var hasOpen = false;
+        foreach (var c in s)
+        {
+            if (c == '{') { depth++; hasOpen = true; }
+            else if (c == '}') depth--;
+        }
+        return hasOpen && depth == 0;
+    }
+
+    public static string GetPreToolText(string text)
+    {
+        var idx = text.IndexOf("tool_call_name:", StringComparison.OrdinalIgnoreCase);
+        if (idx < 0) return text;
+        if (idx == 0) return string.Empty;
+
+        while (idx > 0 && (text[idx - 1] == '`' || text[idx - 1] == ' '))
+            idx--;
+
+        return idx <= 0 ? string.Empty : text[..idx].TrimEnd();
+    }
+
+    public string ExtractAssistantText(ChatResponse response)
+    {
+        for (var i = response.Messages.Count - 1; i >= 0; i--)
+        {
+            var msg = response.Messages[i];
+            if (msg.Role == ChatRole.Assistant && !string.IsNullOrWhiteSpace(msg.Text))
+                return StripModelToolTokens(msg.Text).Trim();
+        }
+
+        if (!string.IsNullOrWhiteSpace(response.Text))
+            return StripModelToolTokens(response.Text).Trim();
+
+        logger.LogWarning("LLM response contained no usable text across {Count} messages",
+            response.Messages.Count);
+        return string.Empty;
+    }
+
+    private static string StripModelToolTokens(string text)
+    {
+        const string begin = "<｜tool▁calls▁begin｜>";
+        var idx = text.IndexOf(begin, StringComparison.Ordinal);
+        return idx >= 0 ? text[..idx] : text;
+    }
+
+    public static object? ToNativeValue(JsonElement element) => element.ValueKind switch
+    {
+        JsonValueKind.String => element.GetString(),
+        JsonValueKind.True => true,
+        JsonValueKind.False => false,
+        JsonValueKind.Null => null,
+        JsonValueKind.Number => element.TryGetInt64(out var l) ? (object)l : element.GetDouble(),
+        _ => (object)element
+    };
+}

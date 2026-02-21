@@ -40,6 +40,7 @@
     <ProjectReference Include="..\RockBot.Tools.Mcp\RockBot.Tools.Mcp.csproj" />
     <ProjectReference Include="..\RockBot.Tools.Web\RockBot.Tools.Web.csproj" />
     <ProjectReference Include="..\RockBot.Tools.Scheduling\RockBot.Tools.Scheduling.csproj" />
+    <ProjectReference Include="..\RockBot.Subagent\RockBot.Subagent.csproj" />
     <ProjectReference Include="..\RockBot.Host\RockBot.Host.csproj" />
     <ProjectReference Include="..\RockBot.Messaging.Abstractions\RockBot.Messaging.Abstractions.csproj" />
     <ProjectReference Include="..\RockBot.Messaging.RabbitMQ\RockBot.Messaging.RabbitMQ.csproj" />

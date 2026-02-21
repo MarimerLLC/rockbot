@@ -25,6 +25,8 @@ public static class ServiceCollectionExtensions
         builder.Build();
 
         services.AddTransient<ILlmClient, LlmClient>();
+        services.AddTransient<AgentLoopRunner>();
+        services.AddScoped<AgentContextBuilder>();
         services.AddSingleton<IUserActivityMonitor, UserActivityMonitor>();
         services.AddSingleton<IMessagePipeline, MessagePipeline>();
         services.AddSingleton<IHostedService, AgentHost>();
