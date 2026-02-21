@@ -27,23 +27,25 @@ Categories are **slash-separated hierarchical paths** that map directly to subdi
 | `user-preferences/lifestyle` | Living situation, travel, daily life |
 | `user-preferences/attitudes` | Opinions, values, outlook on life |
 | `project-context/<name>` | Decisions, goals, and context for a specific project |
+| `active-plans/<n>` | In-progress multi-session task plans (see directives for lifecycle) |
 | `agent-knowledge` | Things learned about how to work well with this user |
 
 ## Content style
 
 - Write content as a natural sentence that includes **synonyms and related terms** so keyword search is robust
-- Example: write "Rocky has a dog — a Sheltie (Shetland Sheepdog) named Milo" rather than "Rocky has a Sheltie named Milo", so searches for "dog", "pet", "sheltie", or "Milo" all match
+- Example: write "The user has a dog — a Golden Retriever named Max" rather than "Has a Golden Retriever named Max", so searches for "dog", "pet", "golden retriever", or "Max" all match
 - Be specific and factual; do not pad with filler
 
 ## Tags
 
 - Lowercase single words or short hyphenated phrases
 - Include synonyms and related terms
-- Examples: `ice-fishing`, `rv-living`, `hard-rock`, `eden-prairie`, `fifth-wheel`
+- Examples: `woodworking`, `remote-work`, `jazz`, `minneapolis`, `home-lab`
 
 ## Durable vs ephemeral
 
 Only store facts that will still be true and useful in a future conversation:
 
 - **Save**: stable facts, preferences, relationships, named entities, recurring patterns, decisions
-- **Do not save**: current physical position ("sitting by the fireplace"), what someone is momentarily doing ("Teresa is on a phone call"), temporary real-time states ("RV in storage because it's cold"), passing observations with no lasting significance
+- **Do not save**: current physical position ("sitting on the patio"), what someone is momentarily doing ("spouse is on a phone call"), temporary real-time states ("car is at the mechanic"), passing observations with no lasting significance
+- **Plans are temporary by design**: entries in `active-plans/` exist only while work is in progress. Delete them when the plan is complete or abandoned. Extract any durable facts (decisions made, preferences discovered) into their proper category before deleting the plan.
