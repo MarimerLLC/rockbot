@@ -12,10 +12,10 @@ rabbitmq:
 
 secrets:
   create: true
-  azureAI:
-    endpoint: "https://<your-resource>.openai.azure.com/"
-    key: "<your-azure-openai-api-key>"
-    deploymentName: "<your-deployment-name>"
+  llm:
+    endpoint: "https://openrouter.ai/api/v1"
+    apiKey: "<your-openrouter-api-key>"
+    modelId: "anthropic/claude-haiku-4.5"   # any OpenRouter model ID works here
   webTools:
     apiKey: "<your-brave-search-api-key>"
   rabbitmq:
@@ -23,6 +23,7 @@ secrets:
 
   # openRouter:
   #   apiKey: "<your-openrouter-management-api-key>"  # required when openrouterMcp.enabled=true
+  #                                                    # separate from llm.apiKey
 
 blazor:
   tailscale:

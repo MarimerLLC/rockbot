@@ -34,12 +34,26 @@ internal sealed class LlmClient(IChatClient chatClient, ILogger<LlmClient> logge
     }
 
     /// <summary>
-    /// Calls the underlying chat client, retrying once if the model emits a tool call
-    /// with null arguments. Some local models occasionally omit the arguments JSON entirely
-    /// (returning <c>null</c> instead of the required minimum <c>{}</c>), which causes
-    /// Microsoft.Extensions.AI to throw <see cref="ArgumentNullException"/> with parameter
-    /// name <c>encodedArguments</c> during response parsing. A single retry usually produces
-    /// a well-formed call.
+    /// Calls the underlying chat client, retrying once on known model-specific SDK
+    /// deserialization quirks:
+    /// <list type="bullet">
+    ///   <item>
+    ///     <description>
+    ///       <b>Null tool-call arguments</b> — some models omit the arguments JSON entirely
+    ///       (returning <c>null</c> instead of <c>{}</c>), causing
+    ///       <see cref="ArgumentNullException"/> with <c>encodedArguments</c>.
+    ///     </description>
+    ///   </item>
+    ///   <item>
+    ///     <description>
+    ///       <b>Unknown finish_reason</b> — some models (e.g. DeepSeek, Qwen via OpenRouter)
+    ///       return finish reason values the OpenAI SDK does not recognise, causing
+    ///       <see cref="ArgumentOutOfRangeException"/> from
+    ///       <c>ChatFinishReasonExtensions.ToChatFinishReason</c>. A single retry usually
+    ///       produces a well-formed response.
+    ///     </description>
+    ///   </item>
+    /// </list>
     /// </summary>
     private async Task<ChatResponse> InvokeWithNullArgRetryAsync(
         IEnumerable<ChatMessage> messages,
@@ -54,6 +68,12 @@ internal sealed class LlmClient(IChatClient chatClient, ILogger<LlmClient> logge
         {
             logger.LogWarning(
                 "LLM returned a tool call with null arguments (encodedArguments); retrying once");
+            return await chatClient.GetResponseAsync(messages, options, cancellationToken);
+        }
+        catch (ArgumentOutOfRangeException ex) when (ex.Message.Contains("ChatFinishReason"))
+        {
+            logger.LogWarning(
+                "LLM returned an unrecognised finish_reason; retrying once. Detail: {Message}", ex.Message);
             return await chatClient.GetResponseAsync(messages, options, cancellationToken);
         }
     }

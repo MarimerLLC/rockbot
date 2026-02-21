@@ -1,11 +1,12 @@
+{{- if not (lookup "v1" "PersistentVolumeClaim" .Values.namespace (include "rockbot.agentPvcName" .)) }}
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
   name: {{ include "rockbot.agentPvcName" . }}
   namespace: {{ .Values.namespace }}
   annotations:
-    # Helm will not update or delete this PVC on upgrade/uninstall —
-    # stateful volumes must survive chart upgrades and releases.
+    # Helm will not delete this PVC on uninstall — stateful agent data must
+    # survive chart upgrades and releases.
     helm.sh/resource-policy: keep
   labels:
     {{- include "rockbot.labels" . | nindent 4 }}
@@ -17,3 +18,4 @@ spec:
   resources:
     requests:
       storage: {{ .Values.storage.agentDataSize }}
+{{- end }}
