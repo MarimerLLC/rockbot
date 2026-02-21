@@ -29,7 +29,8 @@ internal sealed class LocalScriptRunner(
             if (createdWorkDir)
                 Directory.CreateDirectory(workDir);
 
-            var timeout = request.TimeoutSeconds > 0 ? request.TimeoutSeconds : options.DefaultTimeoutSeconds;
+            var rawTimeout = request.TimeoutSeconds > 0 ? request.TimeoutSeconds : options.DefaultTimeoutSeconds;
+            var timeout = Math.Clamp(rawTimeout, 1, options.MaxTimeoutSeconds);
 
             // Install pip packages into a per-execution temp directory so they don't
             // pollute the host environment. Packages are cleaned up with workDir.

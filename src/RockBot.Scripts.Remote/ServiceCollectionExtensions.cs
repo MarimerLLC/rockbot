@@ -22,8 +22,13 @@ public static class ServiceCollectionExtensions
     /// </param>
     public static IServiceCollection AddRemoteScriptRunner(
         this IServiceCollection services,
-        string agentName)
+        string agentName,
+        Action<ScriptToolOptions>? configure = null)
     {
+        var toolOptions = new ScriptToolOptions();
+        configure?.Invoke(toolOptions);
+        services.AddSingleton(toolOptions);
+
         // Core message-bus runner (singleton so pending-request dictionary is shared)
         services.AddSingleton<MessageBusScriptRunner>(sp =>
             new MessageBusScriptRunner(
