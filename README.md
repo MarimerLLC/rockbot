@@ -403,6 +403,7 @@ Deep-dive documentation for individual subsystems lives in [`docs/`](docs/):
 | [`docs/messaging.md`](docs/messaging.md) | MessageEnvelope, publisher/subscriber interfaces, RabbitMQ provider, topics, trust levels, trace propagation |
 | [`docs/agent-host.md`](docs/agent-host.md) | AgentHostBuilder, pipeline, identity, profile, conversation memory, session evaluation, LLM client, data volume layout |
 | [`docs/tools.md`](docs/tools.md) | Tool execution model, IToolRegistry, MCP bridge, web search/browse, REST, scheduling, script execution, OpenRouter MCP |
+| [`docs/subagents.md`](docs/subagents.md) | Background subagent spawning, whiteboard data handoff, progress/result flow, configuration |
 
 ---
 
