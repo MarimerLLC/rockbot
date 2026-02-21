@@ -14,4 +14,11 @@ public sealed class WorkingMemoryOptions
     /// Defaults to 20.
     /// </summary>
     public int MaxEntriesPerSession { get; set; } = 50;
+
+    /// <summary>
+    /// Base directory for persisting working memory sessions to disk.
+    /// Defaults to <c>"working-memory"</c>, resolved under <see cref="AgentProfileOptions.BasePath"/>.
+    /// Set to an absolute path to override. Sessions are stored as <c>{BasePath}/{sessionId}.json</c>.
+    /// </summary>
+    public string BasePath { get; set; } = "working-memory";
 }

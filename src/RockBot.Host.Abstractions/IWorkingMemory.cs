@@ -2,8 +2,8 @@ namespace RockBot.Host;
 
 /// <summary>
 /// Session-scoped, TTL-based scratch space for caching tool call results within a conversation.
-/// Entries expire automatically and are never persisted — designed for large or expensive-to-fetch
-/// data that the LLM can reference across turns without re-calling the external source.
+/// Entries expire automatically based on their TTL and are persisted across pod restarts —
+/// live entries are restored on startup so longer-running work can continue uninterrupted.
 /// </summary>
 public interface IWorkingMemory
 {
