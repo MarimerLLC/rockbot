@@ -34,7 +34,7 @@ internal sealed class ScriptToolRegistrar(
             },
             "timeout_seconds": {
               "type": "integer",
-              "description": "Maximum execution time in seconds (default: 30)"
+              "description": "Maximum execution time in seconds (default: 30, capped by operator configuration)"
             },
             "pip_packages": {
               "type": "array",

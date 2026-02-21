@@ -9,18 +9,22 @@ namespace RockBot.Scripts.Remote;
 /// Converts a <see cref="ToolInvokeRequest"/> into a script execution via <see cref="IScriptRunner"/>.
 /// </summary>
 internal sealed class ScriptToolExecutor(
-    IScriptRunner runner) : IToolExecutor
+    IScriptRunner runner,
+    ScriptToolOptions options) : IToolExecutor
 {
     public async Task<ToolInvokeResponse> ExecuteAsync(ToolInvokeRequest request, CancellationToken ct)
     {
         var args = ParseArguments(request.Arguments);
+
+        var requestedTimeout = int.TryParse(args.GetValueOrDefault("timeout_seconds"), out var t) ? t : 30;
+        var clampedTimeout = Math.Clamp(requestedTimeout, 1, options.MaxTimeoutSeconds);
 
         var scriptRequest = new ScriptInvokeRequest
         {
             ToolCallId = request.ToolCallId,
             Script = args.GetValueOrDefault("script") ?? throw new ArgumentException("Missing 'script' argument"),
             InputData = args.GetValueOrDefault("input_data"),
-            TimeoutSeconds = int.TryParse(args.GetValueOrDefault("timeout_seconds"), out var t) ? t : 30,
+            TimeoutSeconds = clampedTimeout,
             PipPackages = args.TryGetValue("pip_packages", out var packages) && packages is not null
                 ? JsonSerializer.Deserialize<List<string>>(packages)
                 : null

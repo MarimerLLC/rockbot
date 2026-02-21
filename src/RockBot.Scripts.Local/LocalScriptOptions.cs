@@ -23,4 +23,10 @@ public sealed class LocalScriptOptions
     /// Defaults to 30 seconds.
     /// </summary>
     public int DefaultTimeoutSeconds { get; set; } = 30;
+
+    /// <summary>
+    /// Maximum timeout in seconds. Any script request exceeding this is clamped down.
+    /// Defaults to 300 seconds (5 minutes).
+    /// </summary>
+    public int MaxTimeoutSeconds { get; set; } = 300;
 }
