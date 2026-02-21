@@ -53,8 +53,8 @@ Subagent (background task, isolated DI scope)
 │                                                         │
 │  SubagentRunner.RunAsync()                              │
 │     │  Builds system prompt + user turn                 │
-│     │  Tools: working memory (scoped) + registry +      │
-│     │         ReportProgress + whiteboard               │
+│     │  Tools: long-term memory + working memory +       │
+│     │         skills + registry + ReportProgress        │
 │     │                                                   │
 │     │  AgentLoopRunner.RunAsync()                       │
 │     │     ├── LLM call → tool call → result → …         │
@@ -140,6 +140,10 @@ These tools are injected directly into the subagent's `ChatOptions.Tools` with
 `taskId` and `primarySessionId` baked in. They are not registered in the global
 `IToolRegistry` and are not available to the primary agent.
 
+Subagents also receive the full long-term memory tools (`SaveMemory`, `SearchMemory`,
+`DeleteMemory`), working memory tools, and skill tools — the same set as the primary
+agent, minus the subagent management tools (`spawn_subagent` etc.).
+
 ### `ReportProgress`
 
 ```
@@ -154,56 +158,38 @@ runs the LLM, and delivers a natural-language update to the user.
 Call this periodically — after completing a significant step, not after every
 tool call.
 
-### Whiteboard tools
-
-```
-WhiteboardWrite(key, value)   // Write a value to the shared board
-WhiteboardRead(key)           // Read a value by key (null if missing)
-WhiteboardList()              // List all keys + value previews
-WhiteboardDelete(key)         // Remove a key
-```
-
-Each subagent's whiteboard is namespaced by its `taskId` (used as the `boardId`).
-The primary agent can read the same board using the same `taskId`.
-
 ---
 
-## Whiteboard (`IWhiteboardMemory`)
+## Data handoff via long-term memory
 
-The whiteboard is a concurrent-safe, cross-session key-value store used to pass
-structured data between the primary agent and subagents.
+Both the primary agent and the subagent share the same long-term memory store. Use
+the category convention `subagent-whiteboards/{task_id}` as a per-subagent scratchpad.
 
-```csharp
-public interface IWhiteboardMemory
-{
-    Task WriteAsync(string boardId, string key, string value, CancellationToken ct = default);
-    Task<string?> ReadAsync(string boardId, string key, CancellationToken ct = default);
-    Task DeleteAsync(string boardId, string key, CancellationToken ct = default);
-    Task<IReadOnlyDictionary<string, string>> ListAsync(string boardId, CancellationToken ct = default);
-    Task ClearBoardAsync(string boardId, CancellationToken ct = default);
-}
-```
+**Why long-term memory instead of a separate whiteboard:**
 
-The default implementation (`InMemoryWhiteboardMemory`) uses a
-`ConcurrentDictionary<boardId, ConcurrentDictionary<key, value>>`. It is
-ephemeral — boards are lost on pod restart. A file-backed implementation is
-deferred to a future iteration.
+- No new tools, no new infrastructure — `SaveMemory`/`SearchMemory`/`DeleteMemory`
+  are already in every context
+- File-backed and persistent across pod restarts
+- Per-subagent isolation via the `task_id` category namespace
+- `SubagentResultHandler` automatically deletes all `subagent-whiteboards/{taskId}`
+  entries after the primary agent has processed the result
 
 **Usage pattern:**
 
 ```
-Primary agent:
-  WhiteboardWrite("abc123", "urls-to-scrape", "[url1, url2, url3]")
-  spawn_subagent("Scrape each URL in whiteboard key 'urls-to-scrape' and write findings to 'scraped-results'")
+Primary agent (before spawning):
+  SaveMemory(content="[url1, url2, url3]", category="subagent-whiteboards/abc123")
+  spawn_subagent("Read urls from subagent-whiteboards/abc123 and scrape each one")
 
 Subagent:
-  WhiteboardRead("urls-to-scrape") → "[url1, url2, url3]"
+  SearchMemory(query="urls", category="subagent-whiteboards/abc123") → "[url1, url2, url3]"
   [processes each URL]
-  WhiteboardWrite("scraped-results", "summary", "...")
-  ReportProgress("Done scraping. Results written to whiteboard.")
+  SaveMemory(content="...", category="subagent-whiteboards/abc123", tags=["results"])
+  ReportProgress("Done scraping. Results saved to subagent-whiteboards/abc123.")
 
-Primary agent (on result):
-  WhiteboardRead("scraped-results") → "..."
+Primary agent (on result, via SubagentResultHandler):
+  SearchMemory(category="subagent-whiteboards/abc123") → results
+  [SubagentResultHandler then deletes the subagent-whiteboards/abc123 entries]
 ```
 
 ---
@@ -280,10 +266,11 @@ Its `RunAsync` method:
 2. Optionally injects a `Context:` system message from the caller
 3. Adds the task `description` as the first user turn (no prior history)
 4. Constructs `ChatOptions.Tools`:
+   - Long-term memory tools (`SaveMemory`, `SearchMemory`, `DeleteMemory`, `ListCategories`)
    - Working memory tools scoped to `subagentSessionId`
-   - Registry tools (MCP, REST, scheduling, etc.) via `SubagentRegistryToolFunction`
+   - Skill tools (`GetSkill`, `ListSkills`, `SaveSkill`)
+   - Registry tools (MCP, REST, scheduling, etc.) — subagent management tools excluded
    - `ReportProgress` (baked with `taskId` + `primarySessionId`)
-   - Whiteboard tools (baked with `taskId` as board ID)
 5. Calls `AgentLoopRunner.RunAsync` — the same loop used by `UserMessageHandler`
 6. On `OperationCanceledException`: re-throws (propagates to `SubagentManager`)
 7. On other exceptions: captures as `isSuccess=false`, `error=ex.Message`
@@ -308,6 +295,9 @@ Both handlers follow the same pattern:
 5. Call `AgentLoopRunner.RunAsync` to let the LLM react naturally
 6. Record the assistant response in conversation memory
 7. Publish `AgentReply` (IsFinal=true) to `UserProxyTopics.UserResponse`
+
+`SubagentResultHandler` additionally cleans up all `subagent-whiteboards/{taskId}`
+long-term memory entries in a `finally` block after the LLM has responded.
 
 **Synthetic user turns:**
 
@@ -367,7 +357,6 @@ Registers:
 | Service | Lifetime | Purpose |
 |---|---|---|
 | `ISubagentManager` / `SubagentManager` | Singleton | Task lifecycle + concurrency |
-| `IWhiteboardMemory` / `InMemoryWhiteboardMemory` | Singleton | Cross-session data handoff |
 | `SubagentRunner` | Transient | Per-task LLM loop |
 | `IMessageHandler<SubagentProgressMessage>` / `SubagentProgressHandler` | Scoped | Primary-side progress handler |
 | `IMessageHandler<SubagentResultMessage>` / `SubagentResultHandler` | Scoped | Primary-side result handler |
