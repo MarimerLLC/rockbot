@@ -76,7 +76,7 @@ internal sealed class WebBrowseToolExecutor(
         string url,
         CancellationToken ct)
     {
-        var chunks = MarkdownChunker.Chunk(fullContent, options.ChunkMaxLength);
+        var chunks = ContentChunker.Chunk(fullContent, options.ChunkMaxLength);
         var ttl = TimeSpan.FromMinutes(options.ChunkTtlMinutes);
         var sanitizedUrl = SanitizeUrlForKey(url);
         var index = new StringBuilder();

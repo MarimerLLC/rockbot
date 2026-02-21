@@ -275,7 +275,7 @@ ReverseMarkdown. Noise elements (scripts, styles, nav, footer, sidebars) are str
 conversion.
 
 **Large page chunking:** When the markdown content exceeds `ChunkingThreshold` (default 8000
-characters), the page is split into chunks using `MarkdownChunker`:
+characters), the page is split into chunks using `ContentChunker` (from `RockBot.Host`):
 
 1. Splits on H1/H2/H3 headings first (respects document structure)
 2. Falls back to blank-line splitting for oversized sections
@@ -306,6 +306,64 @@ agent.AddWebTools(opts =>
     opts.ChunkTtlMinutes = 30;
 });
 ```
+
+---
+
+---
+
+## Tool result chunking (all tools)
+
+Any tool — MCP, REST, web, or built-in — can return a response large enough to overflow the
+model's context window when the result is appended to the conversation history. The agent host
+defends against this automatically in `UserMessageHandler`.
+
+**How it works:**
+
+After each tool call (both native function calls and text-based calls), the result string is
+checked against a per-model threshold. If the result exceeds that threshold:
+
+1. `ContentChunker` splits it into chunks (heading-aware, then blank-line, then hard-split)
+2. Each chunk is stored in working memory: `tool:{name}:{runId}:chunk{n}`, TTL 20 minutes
+3. A compact index table is returned to the LLM instead of the raw content:
+
+```
+Tool result for 'list_models' is large (462 000 chars) and has been split into 23 chunk(s)
+stored in working memory.
+Call get_from_working_memory(key) for each relevant chunk BEFORE drawing conclusions.
+
+| # | Heading | Key                           |
+|---|---------|-------------------------------|
+| 0 | Part 0  | `tool:list_models:a1b2c3:chunk0` |
+| 1 | Part 1  | `tool:list_models:a1b2c3:chunk1` |
+...
+```
+
+If working memory is unavailable (no session context), the result is truncated at the threshold
+with a `[result truncated — N chars omitted]` notice — same fallback as `web_browse`.
+
+**Per-model threshold configuration:**
+
+The default threshold is **16 000 characters** (~4 000 tokens), suitable for most 32K–128K
+context models. Tune it per model in `appsettings.json`:
+
+```json
+{
+  "ModelBehaviors": {
+    "Models": {
+      "openrouter/google/gemini-2.0-flash": {
+        "ToolResultChunkingThreshold": 64000
+      },
+      "openrouter/deepseek": {
+        "ToolResultChunkingThreshold": 8000
+      }
+    }
+  }
+}
+```
+
+Raise the threshold for large-context models (1M tokens) or lower it for small-context models.
+Setting it very high effectively disables proactive chunking while still relying on the reactive
+`TrimLargeToolResults` overflow recovery as a safety net.
 
 ---
 

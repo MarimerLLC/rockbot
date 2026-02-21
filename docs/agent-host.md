@@ -229,8 +229,30 @@ data volume. The model prefix is matched case-insensitively against the deployed
 | `additional-system-prompt.md` | Appended to every system prompt (guardrails, output constraints) |
 | `pre-tool-loop-prompt.md` | Injected before each tool-calling iteration |
 
-Additional properties (hallucination nudge, tool iteration limits, result modes for scheduled
-tasks) are configurable in `appsettings.json` under `ModelBehaviors:{prefix}`.
+Additional properties are configurable in `appsettings.json` under `ModelBehaviors:Models:{prefix}`:
+
+| Property | Type | Default | Purpose |
+|---|---|---|---|
+| `NudgeOnHallucinatedToolCalls` | bool | false | Inject a nudge when the model describes tool actions without emitting calls |
+| `MaxToolIterationsOverride` | int? | null (uses 12) | Override the per-request tool-loop iteration cap |
+| `ToolResultChunkingThreshold` | int? | null (uses 16 000) | Char count above which tool results are chunked into working memory instead of appended inline |
+| `ScheduledTaskResultMode` | enum | `Summarize` | How scheduled task output is presented (`Summarize`, `VerbatimOutput`, `SummarizeWithOutput`) |
+
+Example — raising the chunking threshold for a large-context model:
+
+```json
+{
+  "ModelBehaviors": {
+    "Models": {
+      "openrouter/google/gemini-2.0-flash": {
+        "ToolResultChunkingThreshold": 64000
+      }
+    }
+  }
+}
+```
+
+See [Tool result chunking](tools.md#tool-result-chunking-all-tools) for full details.
 
 ---
 

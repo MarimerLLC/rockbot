@@ -1,5 +1,6 @@
 using System.ClientModel;
 using System.Diagnostics;
+using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using Microsoft.Extensions.AI;
@@ -61,6 +62,17 @@ internal sealed class UserMessageHandler(
     /// before forcing a final text response.
     /// </summary>
     private const int MaxToolIterations = 12;
+
+    /// <summary>
+    /// Maximum character length of each chunk when a tool result is too large to
+    /// send inline. Matches <see cref="WebToolOptions.ChunkMaxLength"/> default.
+    /// </summary>
+    private const int ToolResultChunkMaxLength = 20_000;
+
+    /// <summary>
+    /// Time-to-live for tool result chunks stored in working memory.
+    /// </summary>
+    private static readonly TimeSpan ToolResultChunkTtl = TimeSpan.FromMinutes(20);
 
     /// <summary>
     /// Minimum time since the last user-visible message before a mid-loop
@@ -704,8 +716,10 @@ internal sealed class UserMessageHandler(
                             Timestamp: DateTimeOffset.UtcNow));
                     }
 
+                    var textResultStr = await ChunkToolResultAsync(
+                        toolName, result?.ToString() ?? string.Empty, sessionId, cancellationToken);
                     chatMessages.Add(new ChatMessage(ChatRole.User,
-                        $"[Tool result for {toolName}]: {result}"));
+                        $"[Tool result for {toolName}]: {textResultStr}"));
                 }
 
                 if (onProgress is not null)
@@ -776,8 +790,10 @@ internal sealed class UserMessageHandler(
                         Timestamp: DateTimeOffset.UtcNow));
                 }
 
+                var nativeResultStr = await ChunkToolResultAsync(
+                    fc.Name, result?.ToString() ?? string.Empty, sessionId, cancellationToken);
                 chatMessages.Add(new ChatMessage(ChatRole.Tool,
-                    [new FunctionResultContent(fc.CallId, result)]));
+                    [new FunctionResultContent(fc.CallId, nativeResultStr)]));
             }
 
             if (onProgress is not null)
@@ -844,6 +860,79 @@ internal sealed class UserMessageHandler(
                 "Trimmed tool result for call {CallId}: {Before:N0} → {After:N0} chars",
                 old.CallId, bestLen, trimmed.Length);
         }
+    }
+
+    /// <summary>
+    /// Checks whether <paramref name="result"/> exceeds the per-model chunking threshold.
+    /// If it does and a session is available, stores the content as numbered chunks in
+    /// working memory (matching the web-browse pattern) and returns a compact index
+    /// the LLM can use to retrieve relevant chunks on demand.
+    /// Falls back to truncation when no working memory is available.
+    /// Returns <paramref name="result"/> unchanged when within the threshold.
+    /// </summary>
+    private async Task<string> ChunkToolResultAsync(
+        string toolName, string result, string? sessionId, CancellationToken ct)
+    {
+        var threshold = modelBehavior.ToolResultChunkingThreshold;
+        if (result.Length <= threshold)
+            return result;
+
+        if (sessionId is not null)
+        {
+            var chunks = ContentChunker.Chunk(result, ToolResultChunkMaxLength);
+            var sanitizedName = SanitizeKeySegment(toolName);
+            var runId = Guid.NewGuid().ToString("N")[..8];
+            var keyBase = $"tool:{sanitizedName}:{runId}";
+
+            var index = new StringBuilder();
+            index.AppendLine(
+                $"Tool result for '{toolName}' is large ({result.Length:N0} chars) and has been " +
+                $"split into {chunks.Count} chunk(s) stored in working memory.");
+            index.AppendLine(
+                "Call get_from_working_memory(key) for each relevant chunk BEFORE drawing conclusions. " +
+                "Do not summarise based on this index alone.");
+            index.AppendLine();
+            index.AppendLine("| # | Heading | Key |");
+            index.AppendLine("|---|---------|-----|");
+
+            for (var i = 0; i < chunks.Count; i++)
+            {
+                var (heading, content) = chunks[i];
+                var key = $"{keyBase}:chunk{i}";
+                await workingMemory.SetAsync(sessionId, key, content, ttl: ToolResultChunkTtl, category: "tool-result");
+                var label = string.IsNullOrWhiteSpace(heading) ? $"Part {i}" : heading;
+                index.AppendLine($"| {i} | {label} | `{key}` |");
+            }
+
+            logger.LogInformation(
+                "Chunked large tool result for {ToolName}: {Length:N0} chars → {ChunkCount} chunk(s) (threshold {Threshold:N0})",
+                toolName, result.Length, chunks.Count, threshold);
+
+            return index.ToString().Trim();
+        }
+
+        // Fallback: no working memory — truncate with a notice
+        var truncated = result[..threshold] +
+            $"\n[result truncated — {result.Length - threshold:N0} chars omitted]";
+        logger.LogWarning(
+            "Truncated large tool result for {ToolName}: {Length:N0} chars (no working memory available, threshold {Threshold:N0})",
+            toolName, result.Length, threshold);
+        return truncated;
+    }
+
+    /// <summary>Sanitizes a string for use as a working-memory key segment.</summary>
+    private static string SanitizeKeySegment(string s)
+    {
+        var sb = new StringBuilder(Math.Min(s.Length, 40));
+        foreach (var c in s)
+        {
+            if (char.IsLetterOrDigit(c) || c == '-' || c == '_')
+                sb.Append(c);
+            else
+                sb.Append('_');
+            if (sb.Length == 40) break;
+        }
+        return sb.ToString();
     }
 
     private static int EstimateMessageChars(ChatMessage m) =>

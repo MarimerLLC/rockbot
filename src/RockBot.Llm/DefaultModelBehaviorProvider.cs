@@ -34,6 +34,9 @@ internal sealed class DefaultModelBehaviorProvider(ModelBehaviorOptions options)
             MaxToolIterationsOverride = entry?.MaxToolIterationsOverride,
             ScheduledTaskResultMode = entry?.ScheduledTaskResultMode ?? ScheduledTaskResultMode.Summarize,
 
+            ToolResultChunkingThreshold =
+                entry?.ToolResultChunkingThreshold ?? ModelBehavior.Default.ToolResultChunkingThreshold,
+
             // String properties: file takes priority over config value
             AdditionalSystemPrompt =
                 ReadFile(modelDir, AdditionalSystemPromptFile) ?? entry?.AdditionalSystemPrompt,

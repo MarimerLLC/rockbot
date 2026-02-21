@@ -1,33 +1,36 @@
-namespace RockBot.Tools.Web;
+namespace RockBot.Host;
 
 /// <summary>
-/// Splits a Markdown document into heading-based chunks with a max-size fallback.
+/// Splits text content into chunks with a configurable maximum size.
+/// Prefers splitting at Markdown H1/H2/H3 heading boundaries, falls back to
+/// blank-line boundaries, and hard-splits as a last resort. Works correctly
+/// with both Markdown documents and arbitrary text (JSON, plain text, etc.).
 /// </summary>
-internal static class MarkdownChunker
+public static class ContentChunker
 {
     /// <summary>
-    /// Splits <paramref name="markdown"/> into chunks no larger than <paramref name="maxLength"/>.
+    /// Splits <paramref name="content"/> into chunks no larger than <paramref name="maxLength"/>.
     /// Chunks are split at H1/H2/H3 heading boundaries first; oversized sections are further
     /// split at blank lines, and hard-split at <paramref name="maxLength"/> as a last resort.
     /// </summary>
-    /// <param name="markdown">The Markdown content to chunk.</param>
+    /// <param name="content">The content to chunk.</param>
     /// <param name="maxLength">Maximum character length of each chunk.</param>
     /// <returns>A list of (Heading, Content) pairs.</returns>
-    public static IReadOnlyList<(string Heading, string Content)> Chunk(string markdown, int maxLength)
+    public static IReadOnlyList<(string Heading, string Content)> Chunk(string content, int maxLength)
     {
-        var sections = SplitAtHeadings(markdown);
+        var sections = SplitAtHeadings(content);
         var result = new List<(string Heading, string Content)>();
 
-        foreach (var (heading, content) in sections)
+        foreach (var (heading, body) in sections)
         {
-            if (content.Length <= maxLength)
+            if (body.Length <= maxLength)
             {
-                result.Add((heading, content));
+                result.Add((heading, body));
                 continue;
             }
 
             // Section is too large — split at blank lines first
-            var subChunks = SplitAtBlankLines(content, maxLength);
+            var subChunks = SplitAtBlankLines(body, maxLength);
             var chunkIndex = 0;
             foreach (var chunk in subChunks)
             {
@@ -40,11 +43,11 @@ internal static class MarkdownChunker
         return result;
     }
 
-    /// <summary>Splits markdown at H1/H2/H3 heading lines into (heading, content) pairs.</summary>
-    private static List<(string Heading, string Content)> SplitAtHeadings(string markdown)
+    /// <summary>Splits content at H1/H2/H3 heading lines into (heading, content) pairs.</summary>
+    private static List<(string Heading, string Content)> SplitAtHeadings(string content)
     {
         var result = new List<(string Heading, string Content)>();
-        var lines = markdown.Split('\n');
+        var lines = content.Split('\n');
         var currentHeading = string.Empty;
         var currentContent = new System.Text.StringBuilder();
 
