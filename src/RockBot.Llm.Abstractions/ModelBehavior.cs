@@ -7,6 +7,14 @@ namespace RockBot.Llm;
 /// </summary>
 public sealed class ModelBehavior
 {
+    /// <summary>
+    /// Character count above which a tool result is chunked into working memory
+    /// rather than appended inline to the chat history. Operators can raise this
+    /// for models with large context windows or lower it for small-context models.
+    /// Defaults to 16 000 characters (~4 000 tokens).
+    /// </summary>
+    public int ToolResultChunkingThreshold { get; init; } = 16_000;
+
     /// <summary>Behavior profile that applies no tweaks — used when no overrides are configured.</summary>
     public static readonly ModelBehavior Default = new();
 

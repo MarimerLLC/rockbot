@@ -18,6 +18,7 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\RockBot.Tools.Web\RockBot.Tools.Web.csproj" />
     <ProjectReference Include="..\..\src\RockBot.Tools.Abstractions\RockBot.Tools.Abstractions.csproj" />
+    <ProjectReference Include="..\..\src\RockBot.Host\RockBot.Host.csproj" />
   </ItemGroup>
 
 </Project>

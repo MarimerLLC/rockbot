@@ -44,4 +44,7 @@ public sealed class ModelBehaviorEntry
 
     /// <inheritdoc cref="ModelBehavior.ScheduledTaskResultMode"/>
     public ScheduledTaskResultMode ScheduledTaskResultMode { get; set; } = ScheduledTaskResultMode.Summarize;
+
+    /// <inheritdoc cref="ModelBehavior.ToolResultChunkingThreshold"/>
+    public int? ToolResultChunkingThreshold { get; set; }
 }

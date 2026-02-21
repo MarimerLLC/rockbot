@@ -112,7 +112,7 @@ original content is saved immediately; expansion never blocks the response.
 
 Short-lived, session-scoped scratch space for intermediate results. Typical uses:
 
-- Large tool results that are too big to keep in conversation context (e.g. chunked web pages)
+- Large tool results that are too big to keep in conversation context (e.g. chunked web pages, oversized MCP responses)
 - Partial results being assembled across tool calls
 - Temporary state needed within a session but not worth persisting long-term
 
