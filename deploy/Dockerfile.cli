@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
 # Build stage
-FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
+FROM mcr.microsoft.com/dotnet/sdk:10.0@sha256:0a506ab0c8aa077361af42f82569d364ab1b8741e967955d883e3f23683d473a AS build
 WORKDIR /src
 
 # Clear Windows-specific NuGet fallback folders that break Linux builds
@@ -16,7 +16,7 @@ RUN --mount=type=cache,target=/root/.nuget/packages \
     -c Release -o /app/publish
 
 # Runtime stage — console app only, no ASP.NET Core needed
-FROM mcr.microsoft.com/dotnet/runtime:10.0 AS runtime
+FROM mcr.microsoft.com/dotnet/runtime:10.0@sha256:3de49150e48790fa845547e14bff5add0e4194a8901e727cf88f83423bcbe2b0 AS runtime
 WORKDIR /app
 
 # Non-root user
