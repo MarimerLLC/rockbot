@@ -21,6 +21,8 @@ internal sealed class FileWorkingMemory : IWorkingMemory, IHostedService
     /// <summary>Per-session semaphores prevent concurrent writes racing on the same file.</summary>
     private readonly ConcurrentDictionary<string, SemaphoreSlim> _writeLocks = new();
 
+    private Timer? _sweepTimer;
+
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
@@ -96,9 +98,54 @@ internal sealed class FileWorkingMemory : IWorkingMemory, IHostedService
             _logger.LogInformation(
                 "Restored {Sessions} working memory session(s) with {Entries} live entry(ies) from disk",
                 sessionsRestored, entriesRestored);
+
+        // Periodically sweep for session files whose entries have all expired.
+        _sweepTimer = new Timer(_ => _ = SweepExpiredSessionsAsync(), null,
+            TimeSpan.FromHours(1), TimeSpan.FromHours(1));
     }
 
-    public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+    /// <summary>
+    /// Deletes session files where every entry has passed its <c>ExpiresAt</c>.
+    /// Runs on a 1-hour timer to clean up sessions that went quiet without triggering a write.
+    /// </summary>
+    private async Task SweepExpiredSessionsAsync()
+    {
+        if (!Directory.Exists(_basePath)) return;
+
+        var now = DateTimeOffset.UtcNow;
+        var deleted = 0;
+
+        foreach (var file in Directory.EnumerateFiles(_basePath, "*.json"))
+        {
+            try
+            {
+                var json = await File.ReadAllTextAsync(file);
+                var entries = JsonSerializer.Deserialize<List<PersistedEntry>>(json, JsonOptions);
+                if (entries is null || entries.All(e => e.ExpiresAt <= now))
+                {
+                    File.Delete(file);
+                    var sessionId = Path.GetFileNameWithoutExtension(file);
+                    _writeLocks.TryRemove(sessionId, out var sem);
+                    sem?.Dispose();
+                    deleted++;
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Error during working memory sweep of {File}", file);
+            }
+        }
+
+        if (deleted > 0)
+            _logger.LogInformation("Working memory sweep removed {Count} expired session file(s)", deleted);
+    }
+
+    public Task StopAsync(CancellationToken cancellationToken)
+    {
+        _sweepTimer?.Dispose();
+        _sweepTimer = null;
+        return Task.CompletedTask;
+    }
 
     // ── IWorkingMemory ────────────────────────────────────────────────────────
 
