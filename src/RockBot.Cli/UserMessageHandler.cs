@@ -75,6 +75,19 @@ internal sealed class UserMessageHandler(
     private static readonly TimeSpan ToolResultChunkTtl = TimeSpan.FromMinutes(20);
 
     /// <summary>
+    /// Tools whose results must never be re-chunked into working memory.
+    /// Working memory read tools are exempt because their results are already
+    /// managed chunks — re-chunking them creates a meta-loop where the agent
+    /// can never retrieve the underlying data.
+    /// </summary>
+    private static readonly HashSet<string> ChunkingExemptTools = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "GetFromWorkingMemory",
+        "SearchWorkingMemory",
+        "ListWorkingMemory",
+    };
+
+    /// <summary>
     /// Minimum time since the last user-visible message before a mid-loop
     /// progress update is worth sending. Suppresses noisy interim messages
     /// when the agent is responding quickly.
@@ -873,6 +886,9 @@ internal sealed class UserMessageHandler(
     private async Task<string> ChunkToolResultAsync(
         string toolName, string result, string? sessionId, CancellationToken ct)
     {
+        if (ChunkingExemptTools.Contains(toolName))
+            return result;
+
         var threshold = modelBehavior.ToolResultChunkingThreshold;
         if (result.Length <= threshold)
             return result;
