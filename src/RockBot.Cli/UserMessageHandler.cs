@@ -7,7 +7,6 @@ using RockBot.Llm;
 using RockBot.Memory;
 using RockBot.Messaging;
 using RockBot.Skills;
-using RockBot.Subagent;
 using RockBot.Tools;
 using RockBot.UserProxy;
 
@@ -42,8 +41,7 @@ internal sealed class UserMessageHandler(
     AgentLoopRunner agentLoopRunner,
     AgentContextBuilder agentContextBuilder,
     ILogger<UserMessageHandler> logger,
-    ISkillUsageStore? skillUsageStore = null,
-    IWhiteboardMemory? whiteboardMemory = null) : IMessageHandler<UserMessage>
+    ISkillUsageStore? skillUsageStore = null) : IMessageHandler<UserMessage>
 {
     private static readonly TimeSpan ProgressMessageThreshold = TimeSpan.FromSeconds(5);
 
@@ -97,14 +95,9 @@ internal sealed class UserMessageHandler(
                 .Select(r => (AIFunction)new RegistryToolFunction(r, toolRegistry.GetExecutor(r.Name)!, message.SessionId))
                 .ToArray();
 
-            // Whiteboard tools — only available when the subagent subsystem is registered
-            var primaryWhiteboardTools = whiteboardMemory is not null
-                ? new PrimaryWhiteboardFunctions(whiteboardMemory, logger).Tools
-                : (IList<AITool>)[];
-
             var chatOptions = new ChatOptions
             {
-                Tools = [..memoryTools.Tools, ..sessionWorkingMemoryTools.Tools, ..sessionSkillTools.Tools, ..rulesTools.Tools, ..toolGuideTools.Tools, ..primaryWhiteboardTools, ..registryTools]
+                Tools = [..memoryTools.Tools, ..sessionWorkingMemoryTools.Tools, ..sessionSkillTools.Tools, ..rulesTools.Tools, ..toolGuideTools.Tools, ..registryTools]
             };
 
             var toolNames = chatOptions.Tools!.OfType<AIFunction>().Select(t => t.Name).ToList();

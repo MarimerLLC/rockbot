@@ -8,7 +8,7 @@ namespace RockBot.Subagent;
 public sealed class SubagentToolSkillProvider : IToolSkillProvider
 {
     public string Name => "subagent";
-    public string Summary => "Spawn background subagents for long-running tasks (spawn_subagent, cancel_subagent, list_subagents, whiteboard_*).";
+    public string Summary => "Spawn background subagents for long-running tasks (spawn_subagent, cancel_subagent, list_subagents).";
 
     public string GetDocument() =>
         """
@@ -32,22 +32,23 @@ public sealed class SubagentToolSkillProvider : IToolSkillProvider
         ## list_subagents
         List all currently running subagent tasks.
 
-        ## WhiteboardWrite
-        Write a key-value pair to a shared board. Use board_id to namespace data.
+        ## Sharing data with a subagent (whiteboard convention)
+        Both you and the subagent have full access to long-term memory. Use the category
+        convention 'subagent-whiteboards/{task_id}' as a per-subagent scratchpad:
 
-        ## WhiteboardRead
-        Read a value from a shared board by key.
+        - You write input data before spawning:
+            SaveMemory(content="...", category="subagent-whiteboards/{task_id}")
+        - The subagent reads it with SearchMemory(query="...", category="subagent-whiteboards/{task_id}")
+        - The subagent writes results back to the same category
+        - You read them back after receiving the result message
 
-        ## WhiteboardList
-        List all keys and values on a shared board.
-
-        ## WhiteboardDelete
-        Delete a key from a shared board.
+        Clean up with DeleteMemory when done.
 
         ## Usage pattern
-        1. Use spawn_subagent to start a task
-        2. Continue the conversation normally while the subagent works
-        3. Subagent progress and results arrive as messages in this session
-        4. Use whiteboard tools to share data between your session and the subagent
+        1. (Optional) Write input data to 'subagent-whiteboards/{task_id}' before spawning
+        2. Use spawn_subagent to start the task — tell the subagent the task_id to read from
+        3. Continue the conversation normally while the subagent works
+        4. Subagent progress and final result arrive as messages in this session
+        5. (Optional) Read output data from 'subagent-whiteboards/{task_id}'
         """;
 }

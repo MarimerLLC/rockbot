@@ -23,7 +23,6 @@ public static class SubagentServiceCollectionExtensions
 
         // Core infrastructure
         builder.Services.AddSingleton<ISubagentManager, SubagentManager>();
-        builder.Services.AddSingleton<IWhiteboardMemory, InMemoryWhiteboardMemory>();
         builder.Services.AddTransient<SubagentRunner>();
 
         // Message handlers for primary agent side

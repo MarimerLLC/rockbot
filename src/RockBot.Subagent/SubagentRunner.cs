@@ -23,7 +23,6 @@ internal sealed class SubagentRunner(
     IToolRegistry toolRegistry,
     IMessagePublisher publisher,
     AgentIdentity agentIdentity,
-    IWhiteboardMemory whiteboard,
     ILogger<SubagentRunner> logger)
 {
     public async Task RunAsync(
@@ -41,6 +40,9 @@ internal sealed class SubagentRunner(
             "You are a subagent executing a specific background task. " +
             "Use your available tools to complete the work. " +
             "Call ReportProgress periodically to send updates back to the primary agent. " +
+            $"To share structured data with the primary agent, save it to long-term memory " +
+            $"using the category 'subagent-whiteboards/{taskId}' — the primary agent will " +
+            $"read it from there using SearchMemory or ListCategories. " +
             "Produce your final answer as the last message.";
 
         var chatMessages = new List<ChatMessage>
@@ -74,9 +76,6 @@ internal sealed class SubagentRunner(
         var reportProgressFunctions = new ReportProgressFunctions(
             taskId, primarySessionId, publisher, agentIdentity, logger);
 
-        // Whiteboard tools — use taskId as boardId for namespacing
-        var whiteboardFunctions = new WhiteboardFunctions(whiteboard, taskId, logger);
-
         var chatOptions = new ChatOptions
         {
             Tools = [
@@ -84,8 +83,7 @@ internal sealed class SubagentRunner(
                 ..sessionWorkingMemoryTools.Tools,
                 ..skillTools.Tools,
                 ..registryTools,
-                ..reportProgressFunctions.Tools,
-                ..whiteboardFunctions.Tools
+                ..reportProgressFunctions.Tools
             ]
         };
 

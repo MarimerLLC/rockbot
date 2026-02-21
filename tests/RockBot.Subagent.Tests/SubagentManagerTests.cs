@@ -5,6 +5,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using RockBot.Host;
 using RockBot.Llm;
+using RockBot.Memory;
 using RockBot.Messaging;
 using RockBot.Tools;
 
@@ -21,22 +22,29 @@ public class SubagentManagerTests
     /// no-op (immediately-completing) LLM client so background tasks
     /// complete cleanly without needing real infrastructure.
     /// </summary>
-    private static SubagentManager CreateManager(int maxConcurrent = 3)
+    /// <summary>Registers all stubs needed by SubagentRunner into the service collection.</summary>
+    private static void AddSubagentRunnerStubs(IServiceCollection services, ILlmClient llmClient)
     {
-        var services = new ServiceCollection();
-        services.AddLogging();
-
-        // Infrastructure stubs
-        services.AddSingleton<ILlmClient>(new NoopLlmClient());
+        services.AddSingleton(llmClient);
         services.AddSingleton<IWorkingMemory>(new NoopWorkingMemory());
         services.AddSingleton<IFeedbackStore>(new NoopFeedbackStore());
         services.AddSingleton<IToolRegistry>(new EmptyToolRegistry());
         services.AddSingleton<IMessagePublisher>(new NoopPublisher());
-        services.AddSingleton<IWhiteboardMemory>(new InMemoryWhiteboardMemory());
+        services.AddSingleton<ILongTermMemory>(new NoopLongTermMemory());
+        services.AddSingleton<ISkillStore>(new NoopSkillStore());
+        services.AddSingleton(Options.Create(new AgentProfileOptions()));
         services.AddSingleton(new AgentIdentity("test-agent"));
         services.AddSingleton(ModelBehavior.Default);
+        services.AddSingleton<MemoryTools>();
         services.AddTransient<AgentLoopRunner>();
         services.AddTransient<SubagentRunner>();
+    }
+
+    private static SubagentManager CreateManager(int maxConcurrent = 3)
+    {
+        var services = new ServiceCollection();
+        services.AddLogging();
+        AddSubagentRunnerStubs(services, new NoopLlmClient());
 
         var provider = services.BuildServiceProvider();
 
@@ -58,17 +66,7 @@ public class SubagentManagerTests
 
         var services = new ServiceCollection();
         services.AddLogging();
-
-        services.AddSingleton<ILlmClient>(new BlockingLlmClient(tcs));
-        services.AddSingleton<IWorkingMemory>(new NoopWorkingMemory());
-        services.AddSingleton<IFeedbackStore>(new NoopFeedbackStore());
-        services.AddSingleton<IToolRegistry>(new EmptyToolRegistry());
-        services.AddSingleton<IMessagePublisher>(new NoopPublisher());
-        services.AddSingleton<IWhiteboardMemory>(new InMemoryWhiteboardMemory());
-        services.AddSingleton(new AgentIdentity("test-agent"));
-        services.AddSingleton(ModelBehavior.Default);
-        services.AddTransient<AgentLoopRunner>();
-        services.AddTransient<SubagentRunner>();
+        AddSubagentRunnerStubs(services, new BlockingLlmClient(tcs));
 
         var provider = services.BuildServiceProvider();
 
@@ -265,6 +263,39 @@ public class SubagentManagerTests
         public IToolExecutor? GetExecutor(string toolName) => null;
         public void Register(ToolRegistration registration, IToolExecutor executor) { }
         public bool Unregister(string toolName) => false;
+    }
+
+    private sealed class NoopLongTermMemory : ILongTermMemory
+    {
+        public Task SaveAsync(MemoryEntry entry, CancellationToken cancellationToken = default) =>
+            Task.CompletedTask;
+
+        public Task<IReadOnlyList<MemoryEntry>> SearchAsync(MemorySearchCriteria criteria,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult<IReadOnlyList<MemoryEntry>>([]);
+
+        public Task<MemoryEntry?> GetAsync(string id, CancellationToken cancellationToken = default) =>
+            Task.FromResult<MemoryEntry?>(null);
+
+        public Task DeleteAsync(string id, CancellationToken cancellationToken = default) =>
+            Task.CompletedTask;
+
+        public Task<IReadOnlyList<string>> ListTagsAsync(CancellationToken cancellationToken = default) =>
+            Task.FromResult<IReadOnlyList<string>>([]);
+
+        public Task<IReadOnlyList<string>> ListCategoriesAsync(CancellationToken cancellationToken = default) =>
+            Task.FromResult<IReadOnlyList<string>>([]);
+    }
+
+    private sealed class NoopSkillStore : ISkillStore
+    {
+        public Task SaveAsync(Skill skill) => Task.CompletedTask;
+        public Task<Skill?> GetAsync(string name) => Task.FromResult<Skill?>(null);
+        public Task<IReadOnlyList<Skill>> ListAsync() => Task.FromResult<IReadOnlyList<Skill>>([]);
+        public Task DeleteAsync(string name) => Task.CompletedTask;
+        public Task<IReadOnlyList<Skill>> SearchAsync(string query, int maxResults,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult<IReadOnlyList<Skill>>([]);
     }
 
     private sealed class NoopPublisher : IMessagePublisher

@@ -18,7 +18,7 @@ internal sealed class SubagentResultHandler(
     IMessagePublisher publisher,
     AgentIdentity agent,
     IWorkingMemory workingMemory,
-    IWhiteboardMemory whiteboardMemory,
+    ILongTermMemory longTermMemory,
     MemoryTools memoryTools,
     IToolRegistry toolRegistry,
     ToolGuideTools toolGuideTools,
@@ -54,11 +54,9 @@ internal sealed class SubagentResultHandler(
                 r, toolRegistry.GetExecutor(r.Name)!, message.PrimarySessionId))
             .ToArray();
 
-        var primaryWhiteboardTools = new PrimaryWhiteboardFunctions(whiteboardMemory, logger).Tools;
-
         var chatOptions = new ChatOptions
         {
-            Tools = [..memoryTools.Tools, ..sessionWorkingMemoryTools.Tools, ..toolGuideTools.Tools, ..primaryWhiteboardTools, ..registryTools]
+            Tools = [..memoryTools.Tools, ..sessionWorkingMemoryTools.Tools, ..toolGuideTools.Tools, ..registryTools]
         };
 
         try
@@ -84,6 +82,34 @@ internal sealed class SubagentResultHandler(
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             logger.LogError(ex, "Failed to handle subagent result for task {TaskId}", message.TaskId);
+        }
+        finally
+        {
+            // Clean up whiteboard entries now that the primary agent has processed the result.
+            // The category 'subagent-whiteboards/{taskId}' is the agreed naming convention.
+            await CleanupWhiteboardAsync(message.TaskId, CancellationToken.None);
+        }
+    }
+
+    private async Task CleanupWhiteboardAsync(string taskId, CancellationToken ct)
+    {
+        try
+        {
+            var category = $"subagent-whiteboards/{taskId}";
+            var entries = await longTermMemory.SearchAsync(
+                new MemorySearchCriteria(Category: category, MaxResults: 100), ct);
+
+            foreach (var entry in entries)
+                await longTermMemory.DeleteAsync(entry.Id, ct);
+
+            if (entries.Count > 0)
+                logger.LogInformation(
+                    "Cleaned up {Count} whiteboard entry(ies) for task {TaskId}",
+                    entries.Count, taskId);
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "Failed to clean up whiteboard for task {TaskId}", taskId);
         }
     }
 }

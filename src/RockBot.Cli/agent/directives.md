@@ -155,10 +155,10 @@ normally. You will receive `[Subagent task <id> reports]: ...` progress messages
 and a `[Subagent task <id> completed]: ...` result message automatically — treat
 these as updates to relay to the user in natural language.
 
-**Whiteboard:** Use `WhiteboardWrite`/`WhiteboardRead` to pass structured data
-between your session and the subagent (e.g., write a list of URLs for the
-subagent to process; the subagent writes its findings back for you to summarize).
-Use the task_id as the board_id to keep boards namespaced per task.
+**Sharing data:** Both you and the subagent have full access to long-term memory.
+Use the category `subagent-whiteboards/{task_id}` as a per-subagent scratchpad —
+write input data before spawning, tell the subagent the task_id to read from, and
+read its results back after the completion message. Clean up with DeleteMemory when done.
 
 ## Instructions
 

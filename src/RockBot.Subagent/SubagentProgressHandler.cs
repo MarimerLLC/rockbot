@@ -19,7 +19,6 @@ internal sealed class SubagentProgressHandler(
     IMessagePublisher publisher,
     AgentIdentity agent,
     IWorkingMemory workingMemory,
-    IWhiteboardMemory whiteboardMemory,
     MemoryTools memoryTools,
     IToolRegistry toolRegistry,
     ToolGuideTools toolGuideTools,
@@ -52,11 +51,9 @@ internal sealed class SubagentProgressHandler(
                 r, toolRegistry.GetExecutor(r.Name)!, message.PrimarySessionId))
             .ToArray();
 
-        var primaryWhiteboardTools = new PrimaryWhiteboardFunctions(whiteboardMemory, logger).Tools;
-
         var chatOptions = new ChatOptions
         {
-            Tools = [..memoryTools.Tools, ..sessionWorkingMemoryTools.Tools, ..toolGuideTools.Tools, ..primaryWhiteboardTools, ..registryTools]
+            Tools = [..memoryTools.Tools, ..sessionWorkingMemoryTools.Tools, ..toolGuideTools.Tools, ..registryTools]
         };
 
         try
