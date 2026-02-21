@@ -106,7 +106,10 @@ public sealed class McpToolProxy : IToolExecutor, IAsyncDisposable
                 {
                     ToolCallId = request.ToolCallId,
                     ToolName = request.ToolName,
-                    Content = $"Tool invocation timed out after {_timeout.TotalSeconds}s",
+                    Content = $"MCP tool '{request.ToolName}' timed out after {_timeout.TotalSeconds}s — " +
+                              $"the MCP bridge did not respond. The underlying MCP server may be temporarily " +
+                              $"unavailable. Call mcp_list_services to check which servers are registered, " +
+                              $"or try an alternative approach.",
                     IsError = true
                 };
             }

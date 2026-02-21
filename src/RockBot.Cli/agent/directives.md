@@ -203,6 +203,7 @@ Work through these alternatives before saying you cannot do something:
    - An API requires auth → search for an unauthenticated equivalent or a
      cached/mirror version
    - A URL is blocked → search for the same information from another source
+   - An MCP tool timed out → see **MCP tool failures** below
 
 3. **Write and run a script** — if web tools can't get the data, use
    `execute_python_script` to fetch it directly (e.g. `requests.get` with
@@ -216,6 +217,22 @@ Work through these alternatives before saying you cannot do something:
 5. **Report to the user only after exhausting the above** — and when you do,
    explain specifically what you tried and why each approach failed. Never
    report "I can't access that" after only one failed attempt.
+
+### MCP tool failures
+
+When an MCP-brokered tool returns a timeout or error:
+
+1. **Call `mcp_list_services`** — verify the server is still registered and
+   confirm which tools it exposes. A timeout does not mean the server is gone;
+   the bridge may still know about it.
+2. **Retry if the server is listed** — a single timeout is often transient.
+   Retry the same tool call once before concluding the server is unavailable.
+3. **Try an alternative server or approach** — if the server appears missing or
+   is still unreachable after retry, look for another registered server covering
+   the same domain, or fall back to web/script approaches.
+4. **Never report failure after a single timeout** — one timeout is not
+   definitive. Always run through the steps above before telling the user you
+   cannot proceed.
 
 ## Safety
 
