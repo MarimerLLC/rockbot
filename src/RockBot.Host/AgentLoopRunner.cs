@@ -308,7 +308,32 @@ public sealed class AgentLoopRunner(
         logger.LogWarning("Tool loop reached {Max} iterations; forcing final response", maxIterations);
         var finalResponse = await llmClient.GetResponseAsync(
             chatMessages, new ChatOptions(), cancellationToken);
-        return ExtractAssistantText(finalResponse);
+        var forcedText = ExtractAssistantText(finalResponse);
+
+        if (!string.IsNullOrWhiteSpace(forcedText))
+            return forcedText;
+
+        // The forced final response had no usable text (model returned only tool calls or
+        // an empty message). Fall back to the last non-empty assistant turn in history so
+        // the caller still receives a meaningful result rather than an empty string.
+        for (var i = chatMessages.Count - 1; i >= 0; i--)
+        {
+            var m = chatMessages[i];
+            if (m.Role == ChatRole.Assistant && !string.IsNullOrWhiteSpace(m.Text))
+            {
+                var fallback = StripModelToolTokens(m.Text).Trim();
+                if (!string.IsNullOrWhiteSpace(fallback))
+                {
+                    logger.LogWarning(
+                        "Forced final response was empty; using last assistant turn from history ({Len} chars)",
+                        fallback.Length);
+                    return fallback;
+                }
+            }
+        }
+
+        logger.LogWarning("Forced final response empty and no usable assistant history found; returning empty string");
+        return string.Empty;
     }
 
     private void TrimLargeToolResults(List<ChatMessage> messages, int maxTokens)

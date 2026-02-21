@@ -29,8 +29,11 @@ internal sealed class SubagentResultHandler(
         var ct = context.CancellationToken;
 
         logger.LogInformation(
-            "Subagent result for task {TaskId} in primary session {SessionId}: success={Success}",
-            message.TaskId, message.PrimarySessionId, message.IsSuccess);
+            "Subagent result for task {TaskId} in primary session {SessionId}: success={Success}, output={OutputLen} chars",
+            message.TaskId, message.PrimarySessionId, message.IsSuccess, message.Output.Length);
+
+        if (string.IsNullOrWhiteSpace(message.Output))
+            logger.LogWarning("Subagent {TaskId} returned empty output — primary agent will have nothing to relay", message.TaskId);
 
         var syntheticUserTurn = message.IsSuccess
             ? $"[Subagent task {message.TaskId} completed]: {message.Output}"
