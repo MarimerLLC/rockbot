@@ -50,6 +50,9 @@ else
     Console.WriteLine("Set LLM:Endpoint, LLM:ApiKey, and LLM:ModelId to configure.");
 }
 
+// Tracks in-flight background tool loops so they can be cancelled when a new message arrives
+builder.Services.AddSingleton<SessionBackgroundTaskTracker>();
+
 // Register memory tools as singleton — AIFunction instances are built once at construction
 builder.Services.AddSingleton<MemoryTools>();
 // Rules tools — requires WithRules() in the agent builder below
