@@ -211,8 +211,11 @@ internal sealed class UserMessageHandler(
                 if (newSkills.Count > 0)
                 {
                     var skillNames = string.Join(", ", newSkills.Select(s => s.Name));
-                    var recallText = $"Relevant skills for this message: {skillNames}";
-                    chatMessages.Add(new ChatMessage(ChatRole.System, recallText));
+                    foreach (var skill in newSkills)
+                    {
+                        var skillText = $"Skill: {skill.Name}\n{skill.Content}";
+                        chatMessages.Add(new ChatMessage(ChatRole.System, skillText));
+                    }
                     logger.LogInformation(
                         "Injected {Count} relevant skill(s) (BM25 recall) for session {SessionId}: {Skills}",
                         newSkills.Count, message.SessionId, skillNames);
@@ -638,12 +641,12 @@ internal sealed class UserMessageHandler(
                 if (!string.IsNullOrWhiteSpace(preToolText))
                     chatMessages.Add(new ChatMessage(ChatRole.Assistant, preToolText));
 
-                // Execute only the FIRST tool call per iteration so the LLM sees each result
-                // before deciding on the next step. When the LLM batches multiple calls in one
-                // response it can't have seen the results of the earlier calls, so it guesses
-                // parameter names — causing failures on chained workflows like the MCP discovery
-                // sequence (list_services → get_service_details → invoke_tool).
-                foreach (var (toolName, argsJson) in textCalls.Take(1))
+                // Execute all text-based tool calls in the order the LLM emitted them.
+                // For parallel/independent calls (e.g. update + verify) this is correct.
+                // For chained calls where output N feeds input N+1 the LLM may guess
+                // parameters, but any resulting error is fed back and the LLM can retry —
+                // which is preferable to silently skipping the later calls.
+                foreach (var (toolName, argsJson) in textCalls)
                 {
                     var tool = chatOptions.Tools?
                         .OfType<AIFunction>()
@@ -706,7 +709,8 @@ internal sealed class UserMessageHandler(
 
                 if (onProgress is not null)
                 {
-                    await onProgress($"Called {textCalls[0].Name}. Still working…", cancellationToken);
+                    var names = string.Join(", ", textCalls.Select(t => t.Name));
+                    await onProgress($"Called {names}. Still working…", cancellationToken);
                 }
 
                 continue;
