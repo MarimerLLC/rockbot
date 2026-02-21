@@ -142,8 +142,77 @@ public class McpToolExecutorTests
     {
         var result = McpToolExecutor.ParseArguments("""{"key": "value", "num": 42}""");
         Assert.AreEqual(2, result.Count);
-        Assert.IsTrue(result.ContainsKey("key"));
-        Assert.IsTrue(result.ContainsKey("num"));
+        Assert.AreEqual("value", result["key"]);
+        Assert.AreEqual(42L, result["num"]);
+    }
+
+    [TestMethod]
+    public void ParseArguments_ConvertsArrayOfObjects()
+    {
+        var json = """
+            {
+                "provider": "m365",
+                "emails": [
+                    {"messageId": "msg-001", "folderId": "inbox"},
+                    {"messageId": "msg-002", "folderId": "archive"}
+                ]
+            }
+            """;
+        var result = McpToolExecutor.ParseArguments(json);
+
+        Assert.AreEqual("m365", result["provider"]);
+
+        var emails = result["emails"] as List<object?>;
+        Assert.IsNotNull(emails);
+        Assert.AreEqual(2, emails.Count);
+
+        var first = emails[0] as Dictionary<string, object?>;
+        Assert.IsNotNull(first);
+        Assert.AreEqual("msg-001", first["messageId"]);
+        Assert.AreEqual("inbox", first["folderId"]);
+    }
+
+    [TestMethod]
+    public void ConvertJsonElement_HandlesAllValueKinds()
+    {
+        var json = """{"s":"hello","n":42,"d":3.14,"t":true,"f":false,"nil":null}""";
+        var result = McpToolExecutor.ParseArguments(json);
+
+        Assert.AreEqual("hello", result["s"]);
+        Assert.IsInstanceOfType<long>(result["n"]);
+        Assert.AreEqual(42L, result["n"]);
+        Assert.IsInstanceOfType<double>(result["d"]);
+        Assert.AreEqual(3.14, result["d"]);
+        Assert.AreEqual(true, result["t"]);
+        Assert.AreEqual(false, result["f"]);
+        Assert.IsNull(result["nil"]);
+    }
+
+    [TestMethod]
+    public void ConvertJsonElement_HandlesNestedStructures()
+    {
+        var json = """
+            {
+                "items": [
+                    {"id": "1", "tags": ["a", "b"]},
+                    {"id": "2", "active": true}
+                ],
+                "count": 2
+            }
+            """;
+        var result = McpToolExecutor.ParseArguments(json);
+
+        Assert.AreEqual(2L, result["count"]);
+
+        var items = result["items"] as List<object?>;
+        Assert.IsNotNull(items);
+        Assert.AreEqual(2, items.Count);
+
+        var first = items[0] as Dictionary<string, object?>;
+        Assert.IsNotNull(first);
+        var tags = first["tags"] as List<object?>;
+        Assert.IsNotNull(tags);
+        CollectionAssert.AreEqual(new object[] { "a", "b" }, tags);
     }
 
     [TestMethod]

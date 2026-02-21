@@ -37,7 +37,29 @@ internal sealed class McpToolExecutor(CallToolDelegate callTool) : IToolExecutor
         if (string.IsNullOrWhiteSpace(json))
             return [];
 
-        return JsonSerializer.Deserialize<Dictionary<string, object?>>(json) ?? [];
+        var raw = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(json);
+        if (raw is null)
+            return [];
+
+        return raw.ToDictionary(kvp => kvp.Key, kvp => ConvertJsonElement(kvp.Value));
+    }
+
+    internal static object? ConvertJsonElement(JsonElement element)
+    {
+        return element.ValueKind switch
+        {
+            JsonValueKind.String => element.GetString(),
+            JsonValueKind.Number => element.TryGetInt64(out var l) ? (object)l : element.GetDouble(),
+            JsonValueKind.True => true,
+            JsonValueKind.False => false,
+            JsonValueKind.Null => null,
+            JsonValueKind.Array => element.EnumerateArray()
+                .Select(ConvertJsonElement)
+                .ToList(),
+            JsonValueKind.Object => element.EnumerateObject()
+                .ToDictionary(p => p.Name, p => ConvertJsonElement(p.Value)),
+            _ => element.GetRawText(),
+        };
     }
 
     internal static string? FormatResult(CallToolResult result)
