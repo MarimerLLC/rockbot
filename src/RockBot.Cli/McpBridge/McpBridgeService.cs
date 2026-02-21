@@ -366,12 +366,13 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
             return MessageResult.Ack;
         }
 
-        // Parse timeout from headers
+        // Parse timeout from headers — callers may request more time than the default (e.g. for
+        // large MCP operations), so allow header values up to MaxTimeoutMs (default 120s).
         var timeoutMs = _options.DefaultTimeoutMs;
         if (envelope.Headers.TryGetValue(WellKnownHeaders.TimeoutMs, out var timeoutStr)
             && int.TryParse(timeoutStr, out var parsedTimeout))
         {
-            timeoutMs = Math.Min(parsedTimeout, _options.DefaultTimeoutMs);
+            timeoutMs = Math.Min(parsedTimeout, _options.MaxTimeoutMs);
         }
 
         _logger.LogInformation("→ MCP {Server}/{Tool} args={Args}",
@@ -453,7 +454,8 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
                 ToolCallId = request.ToolCallId,
                 ToolName = request.ToolName,
                 Code = ToolError.Codes.Timeout,
-                Message = $"MCP server '{serverName}' timed out after {timeoutMs}ms",
+                Message = $"MCP server '{serverName}' timed out after {timeoutMs}ms. " +
+                          $"This is a transient error — retry the same tool call to continue.",
                 IsRetryable = true
             };
 

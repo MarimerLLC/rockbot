@@ -530,8 +530,9 @@ internal sealed class UserMessageHandler(
         // After that it's null, and the loop calls the LLM for each iteration.
         ChatResponse? pendingResponse = firstResponse;
         var anyToolCalled = false; // tracks whether any tool has fired this loop
+        var maxIterations = modelBehavior.MaxToolIterationsOverride ?? MaxToolIterations;
 
-        for (var iteration = 0; iteration < MaxToolIterations; iteration++)
+        for (var iteration = 0; iteration < maxIterations; iteration++)
         {
             ChatResponse response;
 
@@ -786,12 +787,12 @@ internal sealed class UserMessageHandler(
             }
 
             // On the last iteration, remove tools so the LLM must produce a text response
-            if (iteration == MaxToolIterations - 2)
+            if (iteration == maxIterations - 2)
                 chatOptions = new ChatOptions();
         }
 
         // Exhausted iterations — one last call without tools to force a text response
-        logger.LogWarning("Tool loop reached {Max} iterations; forcing final response", MaxToolIterations);
+        logger.LogWarning("Tool loop reached {Max} iterations; forcing final response", maxIterations);
         var finalResponse = await llmClient.GetResponseAsync(
             chatMessages, new ChatOptions(), cancellationToken);
         return ExtractAssistantText(finalResponse);

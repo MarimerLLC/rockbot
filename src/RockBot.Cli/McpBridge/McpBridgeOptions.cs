@@ -11,9 +11,15 @@ public sealed class McpBridgeOptions
     public string ConfigPath { get; set; } = "mcp.json";
 
     /// <summary>
-    /// Default timeout in milliseconds for MCP server calls.
+    /// Default timeout in milliseconds for MCP server calls when no per-request timeout is supplied.
     /// </summary>
-    public int DefaultTimeoutMs { get; set; } = 30_000;
+    public int DefaultTimeoutMs { get; set; } = 60_000;
+
+    /// <summary>
+    /// Maximum timeout in milliseconds that a caller may request via the TimeoutMs header.
+    /// Callers can exceed DefaultTimeoutMs up to this ceiling for large/slow operations.
+    /// </summary>
+    public int MaxTimeoutMs { get; set; } = 120_000;
 
     /// <summary>
     /// When true, the bridge calls the LLM to generate a one-sentence summary of each
