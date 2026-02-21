@@ -2,6 +2,8 @@ using System.Collections.Concurrent;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using RockBot.Host;
+using RockBot.Messaging;
 
 namespace RockBot.Subagent;
 
@@ -11,6 +13,8 @@ namespace RockBot.Subagent;
 public sealed class SubagentManager(
     IServiceScopeFactory scopeFactory,
     IOptions<SubagentOptions> options,
+    IMessagePublisher publisher,
+    AgentIdentity agentIdentity,
     ILogger<SubagentManager> logger) : ISubagentManager
 {
     private readonly ConcurrentDictionary<string, SubagentEntry> _active = new();
@@ -96,20 +100,41 @@ public sealed class SubagentManager(
         string primarySessionId,
         CancellationToken ct)
     {
-        await using var scope = scopeFactory.CreateAsyncScope();
-        var runner = scope.ServiceProvider.GetRequiredService<SubagentRunner>();
-
+        // SubagentRunner.RunAsync handles all its own exit paths (success, failure,
+        // cancellation) and always publishes a SubagentResultMessage before returning.
+        // This outer try/catch covers failures that occur before the runner even starts
+        // (e.g. DI resolution errors) so the primary agent is always notified.
         try
         {
+            await using var scope = scopeFactory.CreateAsyncScope();
+            var runner = scope.ServiceProvider.GetRequiredService<SubagentRunner>();
             await runner.RunAsync(taskId, subagentSessionId, description, context, primarySessionId, ct);
-        }
-        catch (OperationCanceledException)
-        {
-            logger.LogInformation("Subagent {TaskId} was cancelled", taskId);
         }
         catch (Exception ex)
         {
-            logger.LogError(ex, "Subagent {TaskId} failed unexpectedly", taskId);
+            logger.LogError(ex, "Subagent {TaskId} failed before runner could start", taskId);
+
+            // Publish a failure result so the primary agent is always informed,
+            // even when the runner never started.
+            try
+            {
+                var result = new SubagentResultMessage
+                {
+                    TaskId = taskId,
+                    SubagentSessionId = subagentSessionId,
+                    PrimarySessionId = primarySessionId,
+                    Output = $"Subagent failed to start: {ex.Message}",
+                    IsSuccess = false,
+                    Error = ex.Message,
+                    Timestamp = DateTimeOffset.UtcNow
+                };
+                var envelope = result.ToEnvelope<SubagentResultMessage>(source: agentIdentity.Name);
+                await publisher.PublishAsync(SubagentTopics.Result, envelope, CancellationToken.None);
+            }
+            catch (Exception pubEx)
+            {
+                logger.LogError(pubEx, "Failed to publish failure result for subagent {TaskId}", taskId);
+            }
         }
         finally
         {

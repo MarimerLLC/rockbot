@@ -52,6 +52,8 @@ public class SubagentManagerTests
         return new SubagentManager(
             provider.GetRequiredService<IServiceScopeFactory>(),
             opts,
+            provider.GetRequiredService<IMessagePublisher>(),
+            new AgentIdentity("test-agent"),
             NullLogger<SubagentManager>.Instance);
     }
 
@@ -74,6 +76,8 @@ public class SubagentManagerTests
         var manager = new SubagentManager(
             provider.GetRequiredService<IServiceScopeFactory>(),
             opts,
+            provider.GetRequiredService<IMessagePublisher>(),
+            new AgentIdentity("test-agent"),
             NullLogger<SubagentManager>.Instance);
 
         return (manager, tcs);
