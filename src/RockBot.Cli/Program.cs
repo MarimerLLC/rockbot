@@ -26,26 +26,28 @@ builder.Configuration.AddUserSecrets<Program>();
 
 builder.Services.AddRockBotRabbitMq(opts => builder.Configuration.GetSection("RabbitMq").Bind(opts));
 
-// Configure the LLM chat client from user secrets / config
-var aiConfig = builder.Configuration.GetSection("AzureAI");
-var endpoint = aiConfig["Endpoint"];
-var key = aiConfig["Key"];
-var deploymentName = aiConfig["DeploymentName"];
+// Configure the LLM chat client.
+// Reads from the "LLM" config section (env vars LLM__Endpoint, LLM__ApiKey, LLM__ModelId).
+// Any OpenAI-compatible endpoint works — OpenRouter, Azure OpenAI, local Ollama, etc.
+var llmConfig = builder.Configuration.GetSection("LLM");
+var endpoint = llmConfig["Endpoint"];
+var apiKey = llmConfig["ApiKey"];
+var modelId = llmConfig["ModelId"];
 
-if (!string.IsNullOrEmpty(endpoint) && !string.IsNullOrEmpty(key) && !string.IsNullOrEmpty(deploymentName))
+if (!string.IsNullOrEmpty(endpoint) && !string.IsNullOrEmpty(apiKey) && !string.IsNullOrEmpty(modelId))
 {
     var openAiClient = new OpenAIClient(
-        new ApiKeyCredential(key),
+        new ApiKeyCredential(apiKey),
         new OpenAIClientOptions { Endpoint = new Uri(endpoint) });
 
     builder.Services.AddSingleton<IChatClient>(
-        openAiClient.GetChatClient(deploymentName).AsIChatClient());
+        openAiClient.GetChatClient(modelId).AsIChatClient());
 }
 else
 {
     builder.Services.AddSingleton<IChatClient, EchoChatClient>();
-    Console.WriteLine("No AzureAI config found — using EchoChatClient.");
-    Console.WriteLine("Run 'dotnet user-secrets set AzureAI:Endpoint <url>' etc. to configure.");
+    Console.WriteLine("No LLM config found — using EchoChatClient.");
+    Console.WriteLine("Set LLM:Endpoint, LLM:ApiKey, and LLM:ModelId to configure.");
 }
 
 // Register memory tools as singleton — AIFunction instances are built once at construction

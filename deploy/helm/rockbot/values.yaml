@@ -114,10 +114,12 @@ secrets:
   create: true
   existingSecretName: ""   # used only when create: false
 
-  azureAI:
-    endpoint: ""            # REQUIRED — Azure OpenAI endpoint URL
-    key: ""                 # REQUIRED — Azure OpenAI API key
-    deploymentName: ""      # REQUIRED — model deployment name
+  llm:
+    # Any OpenAI-compatible endpoint works: OpenRouter, Azure OpenAI, local Ollama, etc.
+    # OpenRouter: endpoint = https://openrouter.ai/api/v1
+    endpoint: ""            # REQUIRED — base URL of the OpenAI-compatible API
+    apiKey: ""              # REQUIRED — API key
+    modelId: ""             # REQUIRED — model ID (e.g. anthropic/claude-haiku-4.5)
 
   webTools:
     apiKey: ""              # REQUIRED — Brave Search API key
@@ -127,3 +129,4 @@ secrets:
 
   openRouter:
     apiKey: ""              # required when openrouterMcp.enabled=true — OpenRouter management API key
+                            # (separate from llm.apiKey — this is the account management key)
