@@ -306,7 +306,9 @@ public sealed class McpManagementExecutor : IToolExecutor, IAsyncDisposable
         if (string.IsNullOrWhiteSpace(json)) return [];
         try
         {
-            return JsonSerializer.Deserialize<Dictionary<string, object?>>(json, JsonOptions) ?? [];
+            var raw = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(json, JsonOptions);
+            if (raw is null) return [];
+            return raw.ToDictionary(kvp => kvp.Key, kvp => McpToolExecutor.ConvertJsonElement(kvp.Value));
         }
         catch
         {
