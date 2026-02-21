@@ -40,10 +40,14 @@ internal sealed class SubagentRunner(
             "You are a subagent executing a specific background task. " +
             "Use your available tools to complete the work. " +
             "Call ReportProgress periodically to send updates back to the primary agent. " +
-            $"To share structured data with the primary agent, save it to long-term memory " +
-            $"using the category 'subagent-whiteboards/{taskId}' — the primary agent will " +
-            $"read it from there using SearchMemory or ListCategories. " +
-            "Produce your final answer as the last message.";
+            "Your final message is your report — include all results, findings, and data " +
+            "directly in that text so the primary agent receives them immediately. " +
+            "Do not rely on memory saves as the delivery mechanism: SaveMemory is asynchronous " +
+            "and may not be visible yet when the primary agent reads your report. " +
+            "Save to memory as a durable side-effect, but always put the data in your final " +
+            "text response too. " +
+            $"To share structured data via long-term memory, use the category " +
+            $"'subagent-whiteboards/{taskId}' — but again, also include it in your final text.";
 
         var chatMessages = new List<ChatMessage>
         {

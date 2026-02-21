@@ -36,8 +36,11 @@ internal sealed class SubagentResultHandler(
         if (string.IsNullOrWhiteSpace(message.Output))
             logger.LogWarning("Subagent {TaskId} returned empty output — primary agent will have nothing to relay", message.TaskId);
 
+        // Note: SaveMemory is fire-and-forget — any saves the subagent made may not yet be
+        // visible in memory searches. The output below is the authoritative result; use it
+        // directly rather than searching memory to verify what the subagent saved.
         var syntheticUserTurn = message.IsSuccess
-            ? $"[Subagent task {message.TaskId} completed]: {message.Output}"
+            ? $"[Subagent task {message.TaskId} completed — use the output below directly, do not search memory to verify]: {message.Output}"
             : $"[Subagent task {message.TaskId} completed with error: {message.Error}]: {message.Output}";
 
         await conversationMemory.AddTurnAsync(
