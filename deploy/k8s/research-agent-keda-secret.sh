@@ -24,7 +24,12 @@ RABBIT_HOST=$(kubectl get configmap rockbot-config -n "$NAMESPACE" \
 RABBIT_PORT=$(kubectl get configmap rockbot-config -n "$NAMESPACE" \
   -o jsonpath='{.data.RabbitMq__Port}')
 
-RABBIT_URI="amqp://${RABBIT_USER}:${RABBIT_PASS}@${RABBIT_HOST}:${RABBIT_PORT}/"
+# URL-encode user and password so special characters (^, $, @, etc.) don't
+# break URI parsing in KEDA's RabbitMQ scaler.
+RABBIT_USER_ENC=$(python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1],safe=''))" "$RABBIT_USER")
+RABBIT_PASS_ENC=$(python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1],safe=''))" "$RABBIT_PASS")
+
+RABBIT_URI="amqp://${RABBIT_USER_ENC}:${RABBIT_PASS_ENC}@${RABBIT_HOST}:${RABBIT_PORT}/"
 
 echo "Creating/updating secret rockbot-keda-rabbitmq in namespace $NAMESPACE..."
 
