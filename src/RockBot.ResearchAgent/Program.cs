@@ -41,8 +41,9 @@ else
     Console.WriteLine("Set LLM:Endpoint, LLM:ApiKey, and LLM:ModelId to configure.");
 }
 
-// ModelBehavior: use the default profile (no model-specific tweaks needed for ephemeral agent)
-builder.Services.AddSingleton(ModelBehavior.Default);
+// ModelBehavior: raise iteration limit — research tasks routinely need more than the default 12
+// to search, browse, cache, and then synthesise without hitting the wall mid-loop.
+builder.Services.AddSingleton(new ModelBehavior { MaxToolIterationsOverride = 50 });
 
 // AgentLoopRunner requires IFeedbackStore — use no-op since we have no dreaming pipeline
 builder.Services.AddSingleton<IFeedbackStore, NullFeedbackStore>();

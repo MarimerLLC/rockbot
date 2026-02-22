@@ -1,3 +1,4 @@
+using System.Text;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
 using RockBot.A2A;
@@ -14,6 +15,7 @@ namespace RockBot.ResearchAgent;
 /// </summary>
 internal sealed class ResearchAgentTaskHandler(
     AgentLoopRunner agentLoopRunner,
+    IChatClient chatClient,
     IToolRegistry toolRegistry,
     IWorkingMemory workingMemory,
     EphemeralShutdownCoordinator shutdown,
@@ -95,6 +97,18 @@ internal sealed class ResearchAgentTaskHandler(
             var finalContent = await agentLoopRunner.RunAsync(
                 chatMessages, chatOptions, sessionId, onProgress: onProgress, cancellationToken: ct);
 
+            // If the loop exhausted iterations before synthesising (returns empty or very short),
+            // the model likely saved findings to working memory. Read them back and synthesise
+            // directly so the caller always gets a usable answer.
+            if (finalContent.Length < 100)
+            {
+                logger.LogWarning(
+                    "Research task {TaskId} loop returned {Len} chars — attempting fallback synthesis from working memory",
+                    request.TaskId, finalContent.Length);
+
+                finalContent = await SynthesiseFromWorkingMemoryAsync(sessionId, question, ct);
+            }
+
             logger.LogInformation("Research task {TaskId} completed, output length={Len}",
                 request.TaskId, finalContent.Length);
 
@@ -118,9 +132,64 @@ internal sealed class ResearchAgentTaskHandler(
         finally
         {
             // Always signal shutdown — whether success or failure.
-            // The framework (AgentTaskRequestHandler) has already received the result/exception
-            // and will publish the response/error before graceful shutdown completes.
             shutdown.NotifyTaskComplete();
         }
     }
+
+    /// <summary>
+    /// Fallback: reads all working memory entries saved during the research loop and
+    /// calls the LLM once (no tools) to synthesise a final answer from them.
+    /// Used when the tool loop exhausts its iteration limit before producing output.
+    /// </summary>
+    private async Task<string> SynthesiseFromWorkingMemoryAsync(
+        string sessionId, string question, CancellationToken ct)
+    {
+        var entries = await workingMemory.ListAsync(sessionId);
+        if (entries.Count == 0)
+        {
+            logger.LogWarning("Fallback synthesis: no working memory entries found for session {SessionId}", sessionId);
+            return "Research completed but the synthesis step was unable to produce a result. Please try again.";
+        }
+
+        var sb = new StringBuilder();
+        sb.AppendLine("You were researching a question but ran out of tool-calling iterations before writing your final answer.");
+        sb.AppendLine("Below are the research findings you saved to working memory during the research loop.");
+        sb.AppendLine("Synthesise a comprehensive, well-structured answer to the original question from these findings.");
+        sb.AppendLine();
+        sb.AppendLine($"Original question: {question}");
+        sb.AppendLine();
+        sb.AppendLine("--- Saved Research Findings ---");
+
+        foreach (var entry in entries)
+        {
+            var value = await workingMemory.GetAsync(sessionId, entry.Key);
+            if (!string.IsNullOrWhiteSpace(value))
+            {
+                sb.AppendLine();
+                sb.AppendLine($"### {entry.Key}");
+                sb.AppendLine(value);
+            }
+        }
+
+        logger.LogInformation(
+            "Fallback synthesis: collected {Count} working memory entries ({Len} chars total) for session {SessionId}",
+            entries.Count, sb.Length, sessionId);
+
+        var messages = new List<ChatMessage>
+        {
+            new(ChatRole.System, SystemPrompt),
+            new(ChatRole.User, sb.ToString())
+        };
+
+        var response = await chatClient.GetResponseAsync(messages, cancellationToken: ct);
+        var synthesised = response.Text?.Trim() ?? string.Empty;
+
+        logger.LogInformation(
+            "Fallback synthesis produced {Len} chars for session {SessionId}", synthesised.Length, sessionId);
+
+        return string.IsNullOrWhiteSpace(synthesised)
+            ? "Research completed but synthesis produced no output. Please try again."
+            : synthesised;
+    }
+
 }
