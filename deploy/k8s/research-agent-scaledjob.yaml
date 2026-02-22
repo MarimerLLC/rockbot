@@ -1,0 +1,63 @@
+---
+# TriggerAuthentication — references the KEDA RabbitMQ secret created by
+# research-agent-keda-secret.sh. The URI contains credentials and is stored
+# in a Kubernetes Secret (base64-encoded, same protection level as rockbot-secrets).
+apiVersion: keda.sh/v1alpha1
+kind: TriggerAuthentication
+metadata:
+  name: rockbot-keda-rabbitmq-auth
+  namespace: rockbot
+spec:
+  secretTargetRef:
+    - parameter: host
+      name: rockbot-keda-rabbitmq
+      key: uri
+
+---
+# ScaledJob — KEDA watches the ResearchAgent queue depth and launches one pod
+# per pending message. Each pod processes one AgentTaskRequest and exits.
+apiVersion: keda.sh/v1alpha1
+kind: ScaledJob
+metadata:
+  name: rockbot-research-agent
+  namespace: rockbot
+spec:
+  jobTargetRef:
+    template:
+      spec:
+        restartPolicy: Never
+        containers:
+          - name: research-agent
+            image: rockylhotka/rockbot-research-agent:latest
+            imagePullPolicy: Always
+            env:
+              # Ephemeral working memory path — lives on the container's local filesystem
+              # and vanishes when the pod exits. No PVC needed.
+              - name: Memory__BasePath
+                value: /tmp/memory
+            envFrom:
+              - configMapRef:
+                  name: rockbot-config
+              - secretRef:
+                  name: rockbot-secrets
+            resources:
+              requests:
+                cpu: 200m
+                memory: 256Mi
+              limits:
+                cpu: "1"
+                memory: 1Gi
+    ttlSecondsAfterFinished: 300
+  maxReplicaCount: 3
+  minReplicaCount: 0
+  scalingStrategy:
+    strategy: accurate
+  triggers:
+    - type: rabbitmq
+      metadata:
+        protocol: amqp
+        queueName: rockbot.ResearchAgent.agent-task-ResearchAgent
+        mode: QueueLength
+        value: "1"
+      authenticationRef:
+        name: rockbot-keda-rabbitmq-auth

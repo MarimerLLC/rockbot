@@ -1,0 +1,60 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: research-agent-queue-init
+  namespace: rockbot
+  annotations:
+    description: |
+      One-time job that pre-declares the ResearchAgent queue and binding via the
+      RabbitMQ management API. Run once before deploying the KEDA ScaledJob so the
+      queue exists for KEDA to watch. Safe to re-run — the declare operations are idempotent.
+spec:
+  ttlSecondsAfterFinished: 600
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: queue-init
+          image: curlimages/curl:latest
+          env:
+            - name: RABBIT_USER
+              valueFrom:
+                configMapKeyRef:
+                  name: rockbot-config
+                  key: RabbitMq__UserName
+            - name: RABBIT_PASS
+              valueFrom:
+                secretKeyRef:
+                  name: rockbot-secrets
+                  key: RabbitMq__Password
+            - name: RABBIT_MGMT
+              value: "rabbitmq-mgmt.default.svc.cluster.local:15672"
+            - name: VHOST
+              value: "%2F"
+            - name: EXCHANGE
+              value: "rockbot"
+            - name: QUEUE_NAME
+              value: "rockbot.ResearchAgent.agent-task-ResearchAgent"
+            - name: ROUTING_KEY
+              value: "agent.task.ResearchAgent"
+          command:
+            - sh
+            - -c
+            - |
+              set -e
+
+              echo "Declaring queue: $QUEUE_NAME"
+              curl -sf -u "$RABBIT_USER:$RABBIT_PASS" \
+                -X PUT \
+                -H "Content-Type: application/json" \
+                -d '{"durable":true,"arguments":{"x-dead-letter-exchange":"rockbot.dlx"}}' \
+                "http://$RABBIT_MGMT/api/queues/$VHOST/$QUEUE_NAME"
+
+              echo "Binding queue to exchange $EXCHANGE with routing key $ROUTING_KEY"
+              curl -sf -u "$RABBIT_USER:$RABBIT_PASS" \
+                -X POST \
+                -H "Content-Type: application/json" \
+                -d "{\"routing_key\":\"$ROUTING_KEY\"}" \
+                "http://$RABBIT_MGMT/api/bindings/$VHOST/e/$EXCHANGE/q/$QUEUE_NAME"
+
+              echo "Queue init complete."
