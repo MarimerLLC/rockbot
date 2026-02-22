@@ -30,10 +30,15 @@ public static class A2ACallerServiceCollectionExtensions
         builder.Services.TryAddSingleton<IAgentDirectory>(
             sp => sp.GetRequiredService<AgentDirectory>());
 
-        // Discovery hosted service — shared with AddA2A if both are called
-        builder.Services.TryAddSingleton<AgentDiscoveryService>();
-        builder.Services.TryAddSingleton<Microsoft.Extensions.Hosting.IHostedService>(
-            sp => sp.GetRequiredService<AgentDiscoveryService>());
+        // Discovery hosted service — shared with AddA2A if both are called.
+        // Guard on the concrete type: IHostedService has many registrations, so
+        // TryAddSingleton<IHostedService> would always be skipped.
+        if (!builder.Services.Any(sd => sd.ServiceType == typeof(AgentDiscoveryService)))
+        {
+            builder.Services.AddSingleton<AgentDiscoveryService>();
+            builder.Services.AddSingleton<Microsoft.Extensions.Hosting.IHostedService>(
+                sp => sp.GetRequiredService<AgentDiscoveryService>());
+        }
 
         // Pending task tracker
         builder.Services.AddSingleton<A2ATaskTracker>();
