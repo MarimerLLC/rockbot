@@ -81,10 +81,14 @@ public sealed class ChatStateService
     public void SetProcessing(bool isProcessing)
     {
         _isProcessing = isProcessing;
-        if (!isProcessing)
+        if (isProcessing)
         {
+            // Clear thinking message when a new user request starts so it shows
+            // "Thinking..." rather than the previous background status
             _currentThinkingMessage = null;
         }
+        // Not cleared on false — background agents may still be running and will
+        // update the indicator via SetThinkingMessage as their status arrives
         NotifyStateChanged();
     }
 
