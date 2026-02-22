@@ -76,6 +76,26 @@ internal sealed class AgentDirectory(
         {
             logger.LogWarning(ex, "Could not load agent directory from {Path}", path);
         }
+
+        // Seed well-known agents. If the agent was already loaded from the persisted file,
+        // preserve its last-seen timestamp but mark it as well-known so it survives pruning.
+        foreach (var card in options.WellKnownAgents)
+        {
+            if (_agents.TryGetValue(card.AgentName, out var existing))
+            {
+                _agents[card.AgentName] = existing with { IsWellKnown = true };
+            }
+            else
+            {
+                _agents[card.AgentName] = new AgentDirectoryEntry
+                {
+                    Card = card,
+                    LastSeenAt = DateTimeOffset.MinValue,
+                    IsWellKnown = true
+                };
+            }
+            logger.LogInformation("Seeded well-known agent '{AgentName}'", card.AgentName);
+        }
     }
 
     public Task StopAsync(CancellationToken cancellationToken) =>
@@ -105,16 +125,30 @@ internal sealed class AgentDirectory(
 
     internal void AddOrUpdate(AgentCard card)
     {
+        // Preserve the IsWellKnown flag if already set — live announcements update
+        // the card and last-seen time but don't demote a well-known agent.
+        var isWellKnown = _agents.TryGetValue(card.AgentName, out var existing) && existing.IsWellKnown;
         _agents[card.AgentName] = new AgentDirectoryEntry
         {
             Card = card,
-            LastSeenAt = DateTimeOffset.UtcNow
+            LastSeenAt = DateTimeOffset.UtcNow,
+            IsWellKnown = isWellKnown
         };
         ScheduleWrite();
     }
 
     internal void Remove(string agentName)
     {
+        // Well-known agents are always callable — don't remove them from the directory
+        // just because they sent a deregistration announcement (e.g. KEDA pod shutting down).
+        if (_agents.TryGetValue(agentName, out var entry) && entry.IsWellKnown)
+        {
+            logger.LogInformation(
+                "Ignoring deregistration for well-known agent '{AgentName}' — it remains callable",
+                agentName);
+            return;
+        }
+
         if (_agents.TryRemove(agentName, out _))
         {
             logger.LogInformation("Removed deregistered agent '{AgentName}' from directory", agentName);

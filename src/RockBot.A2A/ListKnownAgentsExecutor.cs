@@ -51,9 +51,16 @@ internal sealed class ListKnownAgentsExecutor(IAgentDirectory directory) : ITool
 
         var items = agents.Select(a =>
         {
-            var lastSeen = entryMap.TryGetValue(a.AgentName, out var entry)
-                ? FormatAge(now - entry.LastSeenAt)
-                : "unknown";
+            var lastSeen = "unknown";
+            if (entryMap.TryGetValue(a.AgentName, out var entry))
+            {
+                if (entry.IsWellKnown && entry.LastSeenAt == DateTimeOffset.MinValue)
+                    lastSeen = "well-known (not yet seen this session)";
+                else if (entry.IsWellKnown)
+                    lastSeen = $"{FormatAge(now - entry.LastSeenAt)} (well-known)";
+                else
+                    lastSeen = FormatAge(now - entry.LastSeenAt);
+            }
             return new
             {
                 agentName = a.AgentName,

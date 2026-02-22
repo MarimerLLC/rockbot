@@ -99,6 +99,27 @@ builder.Services.AddRockBotHost(agent =>
             ?? builder.Configuration["AgentProfile__BasePath"]
             ?? AppContext.BaseDirectory;
         opts.DirectoryPersistencePath = Path.Combine(basePath, "known-agents.json");
+
+        // Well-known agents loaded from a JSON file on the PVC so the list can be
+        // updated without rebuilding the image. File path mirrors the other agent
+        // data files (soul.md, directives.md, etc.) under the agent base path.
+        var wellKnownPath = Path.Combine(basePath, "well-known-agents.json");
+        if (File.Exists(wellKnownPath))
+        {
+            try
+            {
+                var json = File.ReadAllText(wellKnownPath);
+                var cards = System.Text.Json.JsonSerializer.Deserialize<List<AgentCard>>(json,
+                    new System.Text.Json.JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+                if (cards is { Count: > 0 })
+                    opts.WellKnownAgents = cards;
+            }
+            catch (Exception ex)
+            {
+                // Non-fatal — log at startup but don't prevent the agent from starting
+                Console.Error.WriteLine($"[warn] Could not load well-known agents from {wellKnownPath}: {ex.Message}");
+            }
+        }
     });
     agent.HandleMessage<ScheduledTaskMessage, ScheduledTaskHandler>();
     agent.HandleMessage<UserMessage, UserMessageHandler>();

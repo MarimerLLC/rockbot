@@ -28,4 +28,12 @@ public sealed class A2AOptions
     /// Entries older than this are pruned on startup. Default: 24 hours.
     /// </summary>
     public TimeSpan DirectoryEntryTtl { get; set; } = TimeSpan.FromHours(24);
+
+    /// <summary>
+    /// Statically-configured agents that are always included in <c>list_known_agents</c>
+    /// regardless of whether they have announced themselves on the discovery bus.
+    /// Useful for ephemeral/KEDA agents that only run when invoked and therefore
+    /// may not be present in the directory at query time.
+    /// </summary>
+    public List<AgentCard> WellKnownAgents { get; set; } = [];
 }
