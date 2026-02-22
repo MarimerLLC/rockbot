@@ -53,7 +53,8 @@ public sealed class ChatStateService
             Timestamp = DateTime.UtcNow,
             AgentName = reply.AgentName,
             SessionId = reply.SessionId,
-            ContentType = reply.ContentType
+            ContentType = reply.ContentType,
+            IsInterim = !reply.IsFinal
         });
         NotifyStateChanged();
     }
@@ -120,6 +121,13 @@ public sealed class ChatMessage
     public string? SessionId { get; init; }
     public string? ContentType { get; init; }
     public bool IsError { get; init; }
+
+    /// <summary>
+    /// True for progress/interim messages (IsFinal=false) — subagent status updates,
+    /// A2A working state, and raw completion previews before primary synthesis.
+    /// Rendered with a muted style to distinguish from final primary-agent replies.
+    /// </summary>
+    public bool IsInterim { get; init; }
 
     /// <summary>Mutable so <see cref="ChatStateService.RecordFeedback"/> can update it in place.</summary>
     public FeedbackState Feedback { get; set; } = FeedbackState.None;
