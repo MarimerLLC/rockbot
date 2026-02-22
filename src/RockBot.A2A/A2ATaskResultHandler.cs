@@ -1,6 +1,7 @@
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
 using RockBot.Host;
+using RockBot.Llm;
 using RockBot.Memory;
 using RockBot.Messaging;
 using RockBot.Skills;
@@ -24,6 +25,7 @@ internal sealed class A2ATaskResultHandler(
     ToolGuideTools toolGuideTools,
     IConversationMemory conversationMemory,
     A2ATaskTracker tracker,
+    ModelBehavior modelBehavior,
     ILogger<A2ATaskResultHandler> logger) : IMessageHandler<AgentTaskResult>
 {
     public async Task HandleAsync(AgentTaskResult result, MessageHandlerContext context)
@@ -45,7 +47,35 @@ internal sealed class A2ATaskResultHandler(
             result.TaskId, pending.TargetAgent, pending.PrimarySessionId, result.State);
 
         var resultText = result.Message?.Parts.FirstOrDefault(p => p.Kind == "text")?.Text ?? "(no text output)";
-        var syntheticUserTurn = $"[Agent '{pending.TargetAgent}' completed task {result.TaskId} (state={result.State})]: {resultText}";
+        string syntheticUserTurn;
+
+        if (resultText.Length > modelBehavior.ToolResultChunkingThreshold)
+        {
+            // Result is large — store it in working memory rather than injecting it raw into
+            // conversation history. Raw injection would pollute every subsequent LLM call with
+            // the full text. Instead the LLM retrieves it on demand via get_from_working_memory.
+            var memoryKey = $"a2a:{pending.TargetAgent}:{result.TaskId}:result";
+            await workingMemory.SetAsync(
+                pending.PrimarySessionId,
+                memoryKey,
+                resultText,
+                ttl: TimeSpan.FromMinutes(60),
+                category: "a2a-result",
+                tags: [pending.TargetAgent, result.TaskId]);
+
+            logger.LogInformation(
+                "A2A result for task {TaskId} is large ({Len:N0} chars); stored in working memory at key '{Key}'",
+                result.TaskId, resultText.Length, memoryKey);
+
+            syntheticUserTurn =
+                $"[Agent '{pending.TargetAgent}' completed task {result.TaskId} (state={result.State})]: " +
+                $"The result is large ({resultText.Length:N0} chars) and has been stored in working memory. " +
+                $"Call get_from_working_memory with key '{memoryKey}' to read it before responding.";
+        }
+        else
+        {
+            syntheticUserTurn = $"[Agent '{pending.TargetAgent}' completed task {result.TaskId} (state={result.State})]: {resultText}";
+        }
 
         await conversationMemory.AddTurnAsync(
             pending.PrimarySessionId,
