@@ -2,6 +2,7 @@ using System.ClientModel;
 using System.Text.RegularExpressions;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using RockBot.Host;
 using RockBot.Llm;
 using RockBot.Memory;
@@ -41,6 +42,8 @@ internal sealed class UserMessageHandler(
     AgentLoopRunner agentLoopRunner,
     AgentContextBuilder agentContextBuilder,
     SessionBackgroundTaskTracker sessionTracker,
+    SessionStartTracker sessionStartTracker,
+    IOptions<AgentProfileOptions> profileOptions,
     ILogger<UserMessageHandler> logger,
     ISkillUsageStore? skillUsageStore = null) : IMessageHandler<UserMessage>
 {
@@ -88,6 +91,19 @@ internal sealed class UserMessageHandler(
 
             // Build context using shared builder
             var chatMessages = await agentContextBuilder.BuildAsync(message.SessionId, message.Content, ct);
+
+            // Session-start briefing: on the first turn of a new session, inject the
+            // session-start directive so the agent checks briefing queue, plans, etc.
+            if (sessionStartTracker.TryMarkAsFirstTurn(message.SessionId))
+            {
+                var sessionStartPath = Path.Combine(profileOptions.Value.BasePath, "session-start.md");
+                if (File.Exists(sessionStartPath))
+                {
+                    var sessionStartContent = await File.ReadAllTextAsync(sessionStartPath, ct);
+                    chatMessages.Insert(1, new ChatMessage(ChatRole.System, sessionStartContent));
+                    logger.LogInformation("Injected session-start directive for session {SessionId}", message.SessionId);
+                }
+            }
 
             // Per-message working memory tools
             var sessionWorkingMemoryTools = new WorkingMemoryTools(workingMemory, message.SessionId, logger);

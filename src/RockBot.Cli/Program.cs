@@ -92,6 +92,8 @@ builder.Services.AddRockBotHost(agent =>
     agent.AddMcpToolProxy();
     agent.AddWebTools(opts => builder.Configuration.GetSection("WebTools").Bind(opts));
     agent.AddSchedulingTools();
+    agent.AddHeartbeatBootstrap(opts =>
+        builder.Configuration.GetSection("HeartbeatPatrol").Bind(opts));
     agent.AddSubagents();
     agent.AddA2ACaller(opts =>
     {

@@ -1,5 +1,6 @@
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Options;
 
 namespace RockBot.Host;
 
@@ -50,6 +51,24 @@ public static class AgentHostBuilderSchedulingExtensions
         // Note: ScheduledTaskMessage handler is intentionally NOT registered here.
         // The host application (e.g. RockBot.Cli) must register its own handler so it
         // can supply the full tool set and a context-appropriate system prompt.
+
+        return builder;
+    }
+
+    /// <summary>
+    /// Registers <see cref="HeartbeatBootstrapService"/> which automatically creates
+    /// the heartbeat-patrol scheduled task on startup if it does not already exist.
+    /// </summary>
+    public static AgentHostBuilder AddHeartbeatBootstrap(
+        this AgentHostBuilder builder,
+        Action<HeartbeatBootstrapOptions>? configure = null)
+    {
+        if (configure is not null)
+            builder.Services.Configure(configure);
+        else
+            builder.Services.Configure<HeartbeatBootstrapOptions>(_ => { });
+
+        builder.Services.AddSingleton<IHostedService, HeartbeatBootstrapService>();
 
         return builder;
     }
