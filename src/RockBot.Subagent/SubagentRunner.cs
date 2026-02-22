@@ -66,16 +66,23 @@ internal sealed class SubagentRunner(
         // Working memory tools scoped to the subagent's session
         var sessionWorkingMemoryTools = new WorkingMemoryTools(workingMemory, subagentSessionId, logger);
 
-        // Registry tools — include MCP data tools and web/script tools;
-        // exclude subagent management, MCP infrastructure management, scheduling, and A2A
-        // caller tools. A2A invoke_agent is async — results fold into the primary session's
-        // conversation, not the subagent's. A subagent completes before any A2A response
-        // could arrive, so these tools are silently useless (and confusing) here.
+        // Registry tools — include MCP data tools and web/script tools.
+        // Excluded:
+        //   "subagent"           — no spawning nested subagents
+        //   "scheduling"         — no creating new scheduled tasks
+        //   "a2a"                — invoke_agent is async; results fold into the primary
+        //                          session, not the subagent's; silently useless here
+        //   mcp_register_server / mcp_unregister_server — infrastructure-only; subagents
+        //                          must not reconfigure the MCP bridge
+        // Allowed from source "mcp:management":
+        //   mcp_invoke_tool, mcp_list_services, mcp_get_service_details — subagents need
+        //   these to call MCP servers (calendar, email, openrouter, etc.)
         var registryTools = toolRegistry.GetTools()
             .Where(r => r.Source != "subagent"
-                     && r.Source != "mcp:management"
                      && r.Source != "scheduling"
-                     && r.Source != "a2a")
+                     && r.Source != "a2a"
+                     && r.Name != "mcp_register_server"
+                     && r.Name != "mcp_unregister_server")
             .Select(r => (AIFunction)new SubagentRegistryToolFunction(
                 r, toolRegistry.GetExecutor(r.Name)!, subagentSessionId))
             .ToArray();
