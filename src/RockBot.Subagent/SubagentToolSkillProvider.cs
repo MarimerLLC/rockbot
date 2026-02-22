@@ -33,22 +33,24 @@ public sealed class SubagentToolSkillProvider : IToolSkillProvider
         List all currently running subagent tasks.
 
         ## Sharing data with a subagent (whiteboard convention)
-        Both you and the subagent have full access to long-term memory. Use the category
-        convention 'subagent-whiteboards/{task_id}' as a per-subagent scratchpad:
+        Both you and the subagent have full access to long-term memory. The category
+        'subagent-whiteboards/{task_id}' is the per-subagent scratchpad:
 
-        - You write input data before spawning:
+        - Before spawning: write input data the subagent needs
             SaveMemory(content="...", category="subagent-whiteboards/{task_id}")
-        - The subagent reads it with SearchMemory(query="...", category="subagent-whiteboards/{task_id}")
-        - The subagent writes results back to the same category
-        - You read them back after receiving the result message
+        - The subagent reads input and writes results back to the same category with
+          tag 'subagent-whiteboard' — its system prompt instructs it to do this automatically
+        - After receiving the completion message: read results with
+            SearchMemory(category="subagent-whiteboards/{task_id}")
 
-        Clean up with DeleteMemory when done.
+        Whiteboard entries persist in long-term memory after the task completes so you can
+        reference them across multiple conversation turns. They are cleaned up by the dream
+        service as normal stale-memory consolidation.
 
         ## Usage pattern
         1. (Optional) Write input data to 'subagent-whiteboards/{task_id}' before spawning
-        2. Use spawn_subagent to start the task — tell the subagent the task_id to read from
-        3. Continue the conversation normally while the subagent works
-        4. Subagent progress and final result arrive as messages in this session
-        5. (Optional) Read output data from 'subagent-whiteboards/{task_id}'
+        2. Use spawn_subagent — include the task_id in the description if the subagent needs input
+        3. Continue conversation normally; progress and final result arrive as messages
+        4. After the completion message, search 'subagent-whiteboards/{task_id}' for detailed output
         """;
 }

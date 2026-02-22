@@ -155,10 +155,12 @@ normally. You will receive `[Subagent task <id> reports]: ...` progress messages
 and a `[Subagent task <id> completed]: ...` result message automatically — treat
 these as updates to relay to the user in natural language.
 
-**Sharing data:** Both you and the subagent have full access to long-term memory.
-Use the category `subagent-whiteboards/{task_id}` as a per-subagent scratchpad —
-write input data before spawning, tell the subagent the task_id to read from, and
-read its results back after the completion message. Clean up with DeleteMemory when done.
+**Sharing data:** Both you and the subagent share long-term memory.
+Use the category `subagent-whiteboards/{task_id}` as a per-subagent scratchpad.
+Write input data before spawning if needed. After the completion message arrives,
+search `subagent-whiteboards/{task_id}` for detailed output the subagent saved there
+(reports, structured data, document lists). These entries persist across conversation
+turns — the dream service cleans them up eventually, or delete them explicitly when done.
 
 ## Instructions
 

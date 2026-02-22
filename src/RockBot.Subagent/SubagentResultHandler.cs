@@ -18,7 +18,6 @@ internal sealed class SubagentResultHandler(
     IMessagePublisher publisher,
     AgentIdentity agent,
     IWorkingMemory workingMemory,
-    ILongTermMemory longTermMemory,
     MemoryTools memoryTools,
     IToolRegistry toolRegistry,
     ToolGuideTools toolGuideTools,
@@ -36,11 +35,15 @@ internal sealed class SubagentResultHandler(
         if (string.IsNullOrWhiteSpace(message.Output))
             logger.LogWarning("Subagent {TaskId} returned empty output — primary agent will have nothing to relay", message.TaskId);
 
-        // Note: SaveMemory is fire-and-forget — any saves the subagent made may not yet be
-        // visible in memory searches. The output below is the authoritative result; use it
-        // directly rather than searching memory to verify what the subagent saved.
+        // The subagent's final text is the primary result. Large data (reports, lists, documents)
+        // may have been written to working memory using WriteSharedOutput — keys are prefixed
+        // "subagent:{taskId}:". Use get_from_working_memory(key) to retrieve them.
+        var whiteboardHint = $" Large outputs are accessible via get_from_working_memory with " +
+            $"keys prefixed 'subagent:{message.TaskId}:' (visible in working memory inventory, " +
+            $"expire in 30 min). Retrieve and present them to the user.";
+
         var syntheticUserTurn = message.IsSuccess
-            ? $"[Subagent task {message.TaskId} completed — use the output below directly, do not search memory to verify]: {message.Output}"
+            ? $"[Subagent task {message.TaskId} completed]: {message.Output}{whiteboardHint}"
             : $"[Subagent task {message.TaskId} completed with error: {message.Error}]: {message.Output}";
 
         await conversationMemory.AddTurnAsync(
@@ -86,33 +89,9 @@ internal sealed class SubagentResultHandler(
         {
             logger.LogError(ex, "Failed to handle subagent result for task {TaskId}", message.TaskId);
         }
-        finally
-        {
-            // Clean up whiteboard entries now that the primary agent has processed the result.
-            // The category 'subagent-whiteboards/{taskId}' is the agreed naming convention.
-            await CleanupWhiteboardAsync(message.TaskId, CancellationToken.None);
-        }
-    }
-
-    private async Task CleanupWhiteboardAsync(string taskId, CancellationToken ct)
-    {
-        try
-        {
-            var category = $"subagent-whiteboards/{taskId}";
-            var entries = await longTermMemory.SearchAsync(
-                new MemorySearchCriteria(Category: category, MaxResults: 100), ct);
-
-            foreach (var entry in entries)
-                await longTermMemory.DeleteAsync(entry.Id, ct);
-
-            if (entries.Count > 0)
-                logger.LogInformation(
-                    "Cleaned up {Count} whiteboard entry(ies) for task {TaskId}",
-                    entries.Count, taskId);
-        }
-        catch (Exception ex)
-        {
-            logger.LogWarning(ex, "Failed to clean up whiteboard for task {TaskId}", taskId);
-        }
+        // Note: whiteboard entries (subagent-whiteboards/{taskId}) are intentionally NOT deleted
+        // here. They persist in long-term memory so the primary agent can reference them across
+        // multiple conversation turns. The dream service will clean them up as part of normal
+        // stale-memory consolidation.
     }
 }

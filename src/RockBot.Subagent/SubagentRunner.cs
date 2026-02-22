@@ -37,17 +37,16 @@ internal sealed class SubagentRunner(
             "Subagent {TaskId} starting (session {SessionId})", taskId, subagentSessionId);
 
         var systemPrompt =
-            "You are a subagent executing a specific background task. " +
-            "Use your available tools to complete the work. " +
-            "Call ReportProgress periodically to send updates back to the primary agent. " +
-            "Your final message is your report — include all results, findings, and data " +
-            "directly in that text so the primary agent receives them immediately. " +
-            "Do not rely on memory saves as the delivery mechanism: SaveMemory is asynchronous " +
-            "and may not be visible yet when the primary agent reads your report. " +
-            "Save to memory as a durable side-effect, but always put the data in your final " +
-            "text response too. " +
-            $"To share structured data via long-term memory, use the category " +
-            $"'subagent-whiteboards/{taskId}' — but again, also include it in your final text.";
+            "You are a subagent executing a specific background task. Execute the task directly " +
+            "using your tools — do not design frameworks, save skills, or plan methodology. " +
+            "Start calling the required tools immediately. " +
+            "Call ReportProgress after each significant step so the user stays informed. " +
+            "For large outputs (reports, document lists, structured data): use WriteSharedOutput " +
+            "to store them in shared memory (expires in 30 minutes) so the primary agent can " +
+            "retrieve them by key during the follow-up conversation. " +
+            "Your final message must summarise what was done and name each key you wrote to " +
+            "so the primary agent knows where to find the detailed data. " +
+            "Do not return an empty or vague final response.";
 
         var chatMessages = new List<ChatMessage>
         {
@@ -84,6 +83,11 @@ internal sealed class SubagentRunner(
         var reportProgressFunctions = new ReportProgressFunctions(
             taskId, primarySessionId, publisher, agentIdentity, logger);
 
+        // Shared output tools — write large results into the PRIMARY session's working memory
+        // so the primary agent can retrieve them by key after the task completes (30-min TTL).
+        var sharedOutputFunctions = new SubagentSharedOutputFunctions(
+            workingMemory, primarySessionId, taskId, logger);
+
         var chatOptions = new ChatOptions
         {
             Tools = [
@@ -91,7 +95,8 @@ internal sealed class SubagentRunner(
                 ..sessionWorkingMemoryTools.Tools,
                 ..skillTools.Tools,
                 ..registryTools,
-                ..reportProgressFunctions.Tools
+                ..reportProgressFunctions.Tools,
+                ..sharedOutputFunctions.Tools
             ]
         };
 
