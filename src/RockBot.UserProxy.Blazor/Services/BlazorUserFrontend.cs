@@ -15,9 +15,10 @@ public sealed class BlazorUserFrontend(ChatStateService chatState) : IUserFronte
         }
         else
         {
-            // Intermediate progress — update the thinking indicator in-place rather than
-            // adding a new chat bubble for each status update
+            // Intermediate progress — update thinking indicator AND add a bubble so
+            // all agent traffic is visible for debugging.
             chatState.SetThinkingMessage(reply.Content);
+            chatState.AddAgentReply(reply);
         }
         return Task.CompletedTask;
     }

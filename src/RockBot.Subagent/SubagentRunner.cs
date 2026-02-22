@@ -22,7 +22,6 @@ internal sealed class SubagentRunner(
     ISkillStore skillStore,
     IToolRegistry toolRegistry,
     IMessagePublisher publisher,
-    AgentIdentity agentIdentity,
     ILogger<SubagentRunner> logger)
 {
     public async Task RunAsync(
@@ -80,8 +79,9 @@ internal sealed class SubagentRunner(
             .ToArray();
 
         // report_progress tool — baked with taskId and primarySessionId
+        var subagentId = $"subagent-{taskId}";
         var reportProgressFunctions = new ReportProgressFunctions(
-            taskId, primarySessionId, publisher, agentIdentity, logger);
+            taskId, primarySessionId, publisher, subagentId, logger);
 
         // Shared output tools — write large results into the PRIMARY session's working memory
         // so the primary agent can retrieve them by key after the task completes (30-min TTL).
@@ -141,7 +141,7 @@ internal sealed class SubagentRunner(
             Timestamp = DateTimeOffset.UtcNow
         };
 
-        var envelope = result.ToEnvelope<SubagentResultMessage>(source: agentIdentity.Name);
+        var envelope = result.ToEnvelope<SubagentResultMessage>(source: subagentId);
         await publisher.PublishAsync(SubagentTopics.Result, envelope, CancellationToken.None);
 
         logger.LogInformation("Subagent {TaskId} published result (success={Success})", taskId, isSuccess);

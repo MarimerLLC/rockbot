@@ -45,7 +45,7 @@ internal sealed class SubagentProgressHandler(
             {
                 Content = message.Message,
                 SessionId = message.PrimarySessionId,
-                AgentName = agent.Name,
+                AgentName = $"subagent-{message.TaskId}",
                 IsFinal = false
             };
             var envelope = progressReply.ToEnvelope<AgentReply>(source: agent.Name);

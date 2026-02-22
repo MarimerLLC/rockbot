@@ -55,9 +55,9 @@ internal sealed class A2ATaskStatusHandler(
             {
                 var progressReply = new AgentReply
                 {
-                    Content = $"*{pending.TargetAgent}*: {statusText}",
+                    Content = statusText,
                     SessionId = pending.PrimarySessionId,
-                    AgentName = agent.Name,
+                    AgentName = pending.TargetAgent,
                     IsFinal = false
                 };
                 var progressEnvelope = progressReply.ToEnvelope<AgentReply>(source: agent.Name);
