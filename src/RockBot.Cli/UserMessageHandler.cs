@@ -40,6 +40,7 @@ internal sealed class UserMessageHandler(
     IUserActivityMonitor userActivityMonitor,
     AgentLoopRunner agentLoopRunner,
     AgentContextBuilder agentContextBuilder,
+    SessionBackgroundTaskTracker sessionTracker,
     ILogger<UserMessageHandler> logger,
     ISkillUsageStore? skillUsageStore = null) : IMessageHandler<UserMessage>
 {
@@ -60,6 +61,11 @@ internal sealed class UserMessageHandler(
         var ct = context.CancellationToken;
 
         userActivityMonitor.RecordActivity();
+
+        // Cancel any background loop still running for this session from a prior message.
+        // This prevents stale tool calls (e.g. sending an email from a previous topic)
+        // from executing after the user has already moved on.
+        var sessionCt = sessionTracker.BeginSession(message.SessionId, ct);
         logger.LogInformation("Received message from {UserId} in session {SessionId}: {Content}",
             message.UserId, message.SessionId, message.Content);
 
@@ -151,7 +157,7 @@ internal sealed class UserMessageHandler(
 
                 _ = BackgroundToolLoopAsync(
                     chatMessages, chatOptions, firstResponse,
-                    message.SessionId, replyTo, correlationId, ct);
+                    message.SessionId, replyTo, correlationId, sessionCt);
             }
             else
             {
@@ -169,7 +175,7 @@ internal sealed class UserMessageHandler(
 
                     _ = BackgroundToolLoopAsync(
                         chatMessages, chatOptions, firstResponse,
-                        message.SessionId, replyTo, correlationId, ct);
+                        message.SessionId, replyTo, correlationId, sessionCt);
                 }
                 else if (modelBehavior.NudgeOnHallucinatedToolCalls && HallucinatedActionRegex.IsMatch(text))
                 {
@@ -183,7 +189,7 @@ internal sealed class UserMessageHandler(
 
                     _ = BackgroundToolLoopAsync(
                         chatMessages, chatOptions, firstResponse,
-                        message.SessionId, replyTo, correlationId, ct);
+                        message.SessionId, replyTo, correlationId, sessionCt);
                 }
                 else
                 {
