@@ -7,7 +7,19 @@ public sealed class BlazorUserFrontend(ChatStateService chatState) : IUserFronte
 {
     public Task DisplayReplyAsync(AgentReply reply, CancellationToken cancellationToken = default)
     {
-        chatState.AddAgentReply(reply);
+        if (reply.IsFinal)
+        {
+            // Final result — add as a permanent chat bubble and clear the progress indicator
+            chatState.SetThinkingMessage(null);
+            chatState.AddAgentReply(reply);
+        }
+        else
+        {
+            // Intermediate progress — update thinking indicator AND add a bubble so
+            // all agent traffic is visible for debugging.
+            chatState.SetThinkingMessage(reply.Content);
+            chatState.AddAgentReply(reply);
+        }
         return Task.CompletedTask;
     }
 

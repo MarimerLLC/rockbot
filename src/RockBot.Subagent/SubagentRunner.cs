@@ -22,7 +22,6 @@ internal sealed class SubagentRunner(
     ISkillStore skillStore,
     IToolRegistry toolRegistry,
     IMessagePublisher publisher,
-    AgentIdentity agentIdentity,
     ILogger<SubagentRunner> logger)
 {
     public async Task RunAsync(
@@ -67,21 +66,31 @@ internal sealed class SubagentRunner(
         // Working memory tools scoped to the subagent's session
         var sessionWorkingMemoryTools = new WorkingMemoryTools(workingMemory, subagentSessionId, logger);
 
-        // Registry tools — include MCP data tools and web/script tools;
-        // exclude subagent management, MCP infrastructure management, and scheduling
-        // (subagents execute a specific task — they should not spawn other subagents,
-        //  reconfigure MCP servers, or schedule new cron jobs).
+        // Registry tools — include MCP data tools and web/script tools.
+        // Excluded:
+        //   "subagent"           — no spawning nested subagents
+        //   "scheduling"         — no creating new scheduled tasks
+        //   "a2a"                — invoke_agent is async; results fold into the primary
+        //                          session, not the subagent's; silently useless here
+        //   mcp_register_server / mcp_unregister_server — infrastructure-only; subagents
+        //                          must not reconfigure the MCP bridge
+        // Allowed from source "mcp:management":
+        //   mcp_invoke_tool, mcp_list_services, mcp_get_service_details — subagents need
+        //   these to call MCP servers (calendar, email, openrouter, etc.)
         var registryTools = toolRegistry.GetTools()
             .Where(r => r.Source != "subagent"
-                     && r.Source != "mcp:management"
-                     && r.Source != "scheduling")
+                     && r.Source != "scheduling"
+                     && r.Source != "a2a"
+                     && r.Name != "mcp_register_server"
+                     && r.Name != "mcp_unregister_server")
             .Select(r => (AIFunction)new SubagentRegistryToolFunction(
                 r, toolRegistry.GetExecutor(r.Name)!, subagentSessionId))
             .ToArray();
 
         // report_progress tool — baked with taskId and primarySessionId
+        var subagentId = $"subagent-{taskId}";
         var reportProgressFunctions = new ReportProgressFunctions(
-            taskId, primarySessionId, publisher, agentIdentity, logger);
+            taskId, primarySessionId, publisher, subagentId, logger);
 
         // Shared output tools — write large results into the PRIMARY session's working memory
         // so the primary agent can retrieve them by key after the task completes (30-min TTL).
@@ -141,7 +150,7 @@ internal sealed class SubagentRunner(
             Timestamp = DateTimeOffset.UtcNow
         };
 
-        var envelope = result.ToEnvelope<SubagentResultMessage>(source: agentIdentity.Name);
+        var envelope = result.ToEnvelope<SubagentResultMessage>(source: subagentId);
         await publisher.PublishAsync(SubagentTopics.Result, envelope, CancellationToken.None);
 
         logger.LogInformation("Subagent {TaskId} published result (success={Success})", taskId, isSuccess);

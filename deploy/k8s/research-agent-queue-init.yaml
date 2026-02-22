@@ -1,0 +1,69 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: research-agent-queue-init
+  namespace: rockbot
+  annotations:
+    description: |
+      Job that pre-declares the ResearchAgent queue and binding, then publishes
+      the agent's discovery card so any running RockBot instance registers it
+      immediately. Safe to re-run — all operations are idempotent.
+spec:
+  ttlSecondsAfterFinished: 600
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: queue-init
+          image: curlimages/curl:latest
+          env:
+            - name: RABBIT_USER
+              valueFrom:
+                configMapKeyRef:
+                  name: rockbot-config
+                  key: RabbitMq__UserName
+            - name: RABBIT_PASS
+              valueFrom:
+                secretKeyRef:
+                  name: rockbot-secrets
+                  key: RabbitMq__Password
+            - name: RABBIT_MGMT
+              value: "rabbitmq-mgmt.default.svc.cluster.local:15672"
+            - name: VHOST
+              value: "%2F"
+            - name: EXCHANGE
+              value: "rockbot"
+            - name: QUEUE_NAME
+              value: "rockbot.ResearchAgent.agent-task-ResearchAgent"
+            - name: ROUTING_KEY
+              value: "agent.task.ResearchAgent"
+          command:
+            - sh
+            - -c
+            - |
+              set -e
+
+              echo "Declaring queue: $QUEUE_NAME"
+              curl -sf -u "$RABBIT_USER:$RABBIT_PASS" \
+                -X PUT \
+                -H "Content-Type: application/json" \
+                -d "{\"durable\":true,\"arguments\":{\"x-dead-letter-exchange\":\"rockbot.dlx\",\"x-dead-letter-routing-key\":\"$ROUTING_KEY\"}}" \
+                "http://$RABBIT_MGMT/api/queues/$VHOST/$QUEUE_NAME"
+
+              echo "Binding queue to exchange $EXCHANGE with routing key $ROUTING_KEY"
+              curl -sf -u "$RABBIT_USER:$RABBIT_PASS" \
+                -X POST \
+                -H "Content-Type: application/json" \
+                -d "{\"routing_key\":\"$ROUTING_KEY\"}" \
+                "http://$RABBIT_MGMT/api/bindings/$VHOST/e/$EXCHANGE/q/$QUEUE_NAME"
+
+              echo "Publishing ResearchAgent discovery card"
+              CARD='{"agentName":"ResearchAgent","description":"On-demand research agent. Searches the web, fetches pages, and synthesises answers using an LLM.","version":"1.0","skills":[{"id":"research","name":"Research","description":"Research a topic using web search and page fetching, then synthesise a concise answer.","tags":null,"examples":null}],"isDeregistering":false}'
+              CARD_B64=$(printf '%s' "$CARD" | base64 | tr -d '\n')
+              curl -sf -u "$RABBIT_USER:$RABBIT_PASS" \
+                -X POST \
+                -H "Content-Type: application/json" \
+                -d "{\"vhost\":\"/\",\"name\":\"$EXCHANGE\",\"properties\":{\"delivery_mode\":2,\"content_type\":\"application/json\",\"type\":\"RockBot.A2A.AgentCard\"},\"routing_key\":\"discovery.announce\",\"payload\":\"$CARD_B64\",\"payload_encoding\":\"base64\",\"headers\":{\"rb-source\":\"ResearchAgent\"}}" \
+                "http://$RABBIT_MGMT/api/exchanges/$VHOST/$EXCHANGE/publish"
+
+              echo "Queue init complete."

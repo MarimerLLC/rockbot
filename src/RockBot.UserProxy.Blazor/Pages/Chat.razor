@@ -25,10 +25,10 @@
         @foreach (var message in ChatState.Messages)
         {
             <div class="message-wrapper mb-3 @(message.IsFromUser ? "user-message" : "agent-message")">
-                <div class="message-bubble p-3 rounded @(message.IsError ? "bg-danger text-white" : (message.IsFromUser ? "bg-primary text-white" : ""))">
+                <div class="message-bubble p-3 rounded @(message.IsError ? "bg-danger text-white" : (message.IsFromUser ? "bg-primary text-white" : "")) @(message.IsInterim ? "interim-message" : "")">
                     @if (!message.IsFromUser && !message.IsError && !string.IsNullOrEmpty(message.AgentName))
                     {
-                        <div class="fw-bold small mb-2">@message.AgentName</div>
+                        <div class="@(message.IsInterim ? "fst-italic" : "fw-bold") small mb-2">@message.AgentName</div>
                     }
                     <div class="message-content">
                         @((MarkupString)ConvertMarkdownToHtml(message.Content))
@@ -57,7 +57,7 @@
             </div>
         }
 
-        @if (ChatState.IsProcessing)
+        @if (ChatState.IsProcessing || !string.IsNullOrEmpty(ChatState.CurrentThinkingMessage))
         {
             <div class="message-wrapper mb-3 agent-message">
                 <div class="message-bubble p-3 rounded">
@@ -197,7 +197,10 @@
         try
         {
             var reply = await ProxyService.SendAsync(message, progress: progressTracker);
-            
+
+            // Clear any background status from the thinking indicator before showing result
+            ChatState.SetThinkingMessage(null);
+
             if (reply is null)
             {
                 ChatState.AddError("No reply received (timeout)");

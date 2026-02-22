@@ -1,4 +1,5 @@
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using RockBot.Host;
 
 namespace RockBot.A2A;
@@ -20,9 +21,16 @@ public static class A2AServiceCollectionExtensions
         configure?.Invoke(options);
         builder.Services.AddSingleton(options);
 
-        // Agent directory
-        builder.Services.AddSingleton<AgentDirectory>();
-        builder.Services.AddSingleton<IAgentDirectory>(sp => sp.GetRequiredService<AgentDirectory>());
+        // Agent directory — guard IHostedService registration with a marker so
+        // calling both AddA2A() and AddA2ACaller() doesn't wire StartAsync twice.
+        builder.Services.TryAddSingleton<AgentDirectory>();
+        builder.Services.TryAddSingleton<IAgentDirectory>(sp => sp.GetRequiredService<AgentDirectory>());
+        if (!builder.Services.Any(sd => sd.ServiceType == typeof(AgentDirectoryHostedServiceMarker)))
+        {
+            builder.Services.AddSingleton<AgentDirectoryHostedServiceMarker>();
+            builder.Services.AddSingleton<Microsoft.Extensions.Hosting.IHostedService>(
+                sp => sp.GetRequiredService<AgentDirectory>());
+        }
 
         // Discovery hosted service
         builder.Services.AddSingleton<AgentDiscoveryService>();

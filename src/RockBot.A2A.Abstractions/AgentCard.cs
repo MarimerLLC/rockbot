@@ -10,4 +10,10 @@ public sealed record AgentCard
     public string? Description { get; init; }
     public string? Version { get; init; }
     public IReadOnlyList<AgentSkill>? Skills { get; init; }
+
+    /// <summary>
+    /// When true, the agent is shutting down and should be removed from the directory.
+    /// Published by <c>AgentDiscoveryService.StopAsync</c> on graceful shutdown.
+    /// </summary>
+    public bool IsDeregistering { get; init; }
 }

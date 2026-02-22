@@ -134,7 +134,7 @@ public class A2ACallerTests
     [TestMethod]
     public async Task ListKnownAgentsExecutor_ReturnsAllAgents_WhenNoFilter()
     {
-        var directory = new AgentDirectory();
+        var directory = new AgentDirectory(new A2AOptions { DirectoryPersistencePath = string.Empty }, Microsoft.Extensions.Logging.Abstractions.NullLogger<AgentDirectory>.Instance);
         directory.AddOrUpdate(new AgentCard
         {
             AgentName = "AgentA",
@@ -159,7 +159,7 @@ public class A2ACallerTests
     [TestMethod]
     public async Task ListKnownAgentsExecutor_FiltersBySkill()
     {
-        var directory = new AgentDirectory();
+        var directory = new AgentDirectory(new A2AOptions { DirectoryPersistencePath = string.Empty }, Microsoft.Extensions.Logging.Abstractions.NullLogger<AgentDirectory>.Instance);
         directory.AddOrUpdate(new AgentCard
         {
             AgentName = "AgentA",
@@ -190,7 +190,7 @@ public class A2ACallerTests
     [TestMethod]
     public async Task ListKnownAgentsExecutor_ReturnsEmpty_WhenNoAgents()
     {
-        var directory = new AgentDirectory();
+        var directory = new AgentDirectory(new A2AOptions { DirectoryPersistencePath = string.Empty }, Microsoft.Extensions.Logging.Abstractions.NullLogger<AgentDirectory>.Instance);
         var executor = new ListKnownAgentsExecutor(directory);
         var request = new ToolInvokeRequest
         {

@@ -3,7 +3,11 @@ namespace RockBot.A2A.Tests;
 [TestClass]
 public class AgentDirectoryTests
 {
-    private readonly AgentDirectory _directory = new();
+    private static AgentDirectory CreateDirectory() =>
+        new(new A2AOptions { DirectoryPersistencePath = string.Empty },
+            Microsoft.Extensions.Logging.Abstractions.NullLogger<AgentDirectory>.Instance);
+
+    private readonly AgentDirectory _directory = CreateDirectory();
 
     private static AgentCard CreateCard(string name, params AgentSkill[] skills) =>
         new()

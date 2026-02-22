@@ -46,9 +46,8 @@ internal sealed class UserMessageHandler(
 {
     private static readonly TimeSpan ProgressMessageThreshold = TimeSpan.FromSeconds(5);
 
-    private static readonly Regex HallucinatedActionRegex = new(
-        @"\bI(?:['\u2019]ve| have)\s+(cancell?ed|scheduled|created|updated|rescheduled|deleted|removed|completed|added|saved)\b",
-        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+    // Shared with AgentLoopRunner — single source of truth for hallucinated-action detection.
+    private static readonly Regex HallucinatedActionRegex = AgentLoopRunner.HallucinatedActionRegex;
 
     private static readonly Regex CorrectionRegex = new(
         @"\b(no[,\s]|that'?s?\s+(wrong|incorrect|not right)|you were wrong|actually[,\s]|that didn'?t work|try again)\b",

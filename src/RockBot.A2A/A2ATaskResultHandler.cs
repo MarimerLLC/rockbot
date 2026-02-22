@@ -1,6 +1,7 @@
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
 using RockBot.Host;
+using RockBot.Llm;
 using RockBot.Memory;
 using RockBot.Messaging;
 using RockBot.Skills;
@@ -24,6 +25,7 @@ internal sealed class A2ATaskResultHandler(
     ToolGuideTools toolGuideTools,
     IConversationMemory conversationMemory,
     A2ATaskTracker tracker,
+    ModelBehavior modelBehavior,
     ILogger<A2ATaskResultHandler> logger) : IMessageHandler<AgentTaskResult>
 {
     public async Task HandleAsync(AgentTaskResult result, MessageHandlerContext context)
@@ -45,7 +47,76 @@ internal sealed class A2ATaskResultHandler(
             result.TaskId, pending.TargetAgent, pending.PrimarySessionId, result.State);
 
         var resultText = result.Message?.Parts.FirstOrDefault(p => p.Kind == "text")?.Text ?? "(no text output)";
-        var syntheticUserTurn = $"[Agent '{pending.TargetAgent}' completed task {result.TaskId} (state={result.State})]: {resultText}";
+        string syntheticUserTurn;
+
+        // Purge any previous result entries for this agent before storing the new one.
+        // Old entries linger in working memory (60-min TTL) and the LLM will find them
+        // in conversation history instructions — causing it to retrieve stale data instead
+        // of the current result when both share the same key pattern.
+        var stalePrefix = $"a2a:{pending.TargetAgent}:";
+        var staleEntries = await workingMemory.ListAsync(pending.PrimarySessionId);
+        foreach (var entry in staleEntries)
+        {
+            if (entry.Key.StartsWith(stalePrefix, StringComparison.OrdinalIgnoreCase) &&
+                entry.Key.EndsWith(":result", StringComparison.OrdinalIgnoreCase))
+            {
+                logger.LogDebug("Purging stale A2A result entry '{Key}' before storing new result", entry.Key);
+                await workingMemory.DeleteAsync(pending.PrimarySessionId, entry.Key);
+            }
+        }
+
+        if (resultText.Length > modelBehavior.ToolResultChunkingThreshold)
+        {
+            // Result is large — store it in working memory rather than injecting it raw into
+            // conversation history. Raw injection would pollute every subsequent LLM call with
+            // the full text. Instead the LLM retrieves it on demand via get_from_working_memory.
+            var memoryKey = $"a2a:{pending.TargetAgent}:{result.TaskId}:result";
+            await workingMemory.SetAsync(
+                pending.PrimarySessionId,
+                memoryKey,
+                resultText,
+                ttl: TimeSpan.FromMinutes(60),
+                category: "a2a-result",
+                tags: [pending.TargetAgent, result.TaskId]);
+
+            logger.LogInformation(
+                "A2A result for task {TaskId} is large ({Len:N0} chars); stored in working memory at key '{Key}'",
+                result.TaskId, resultText.Length, memoryKey);
+
+            syntheticUserTurn =
+                $"[Agent '{pending.TargetAgent}' completed task {result.TaskId} (state={result.State})]: " +
+                $"The result is large ({resultText.Length:N0} chars) and has been stored in working memory. " +
+                $"Call get_from_working_memory with key '{memoryKey}' to read it before responding.";
+        }
+        else
+        {
+            syntheticUserTurn = $"[Agent '{pending.TargetAgent}' completed task {result.TaskId} (state={result.State})]: {resultText}";
+        }
+
+        // Publish the agent's raw completion output as a non-final bubble so it is
+        // visible in the Blazor UI under the agent's own name before the primary agent
+        // synthesises and presents the final reply. For large results stored in working
+        // memory, show a truncated preview so the bubble remains readable.
+        try
+        {
+            const int PreviewMax = 500;
+            var previewText = resultText.Length > PreviewMax
+                ? resultText[..PreviewMax] + $"\n\n…({resultText.Length - PreviewMax:N0} more chars in working memory)"
+                : resultText;
+            var completionReply = new AgentReply
+            {
+                Content = previewText,
+                SessionId = pending.PrimarySessionId,
+                AgentName = pending.TargetAgent,
+                IsFinal = false
+            };
+            var completionEnvelope = completionReply.ToEnvelope<AgentReply>(source: pending.TargetAgent);
+            await publisher.PublishAsync(UserProxyTopics.UserResponse, completionEnvelope, ct);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            logger.LogWarning(ex, "Failed to publish completion bubble for A2A task {TaskId}", result.TaskId);
+        }
 
         await conversationMemory.AddTurnAsync(
             pending.PrimarySessionId,

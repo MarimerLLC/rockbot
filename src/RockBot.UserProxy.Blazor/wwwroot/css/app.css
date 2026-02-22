@@ -64,6 +64,15 @@ body {
     border: 1px solid var(--border-color);
 }
 
+/* Interim/progress messages (IsFinal=false): muted but legible in both themes.
+   Used for subagent status updates, A2A working state, and raw completion previews. */
+.agent-message .message-bubble.interim-message {
+    background-color: #f8f9fa;
+    color: #6c757d;
+    border: 1px dashed #ced4da;
+    box-shadow: none;
+}
+
 .message-content {
     line-height: 1.5;
 }
@@ -195,6 +204,13 @@ body.dark-mode .agent-message .message-bubble {
     background-color: #2d2d2d;
     color: white;
     border-color: #444;
+}
+
+body.dark-mode .agent-message .message-bubble.interim-message {
+    background-color: #1e1e1e;
+    color: #9ca3af;
+    border: 1px dashed #4b5563;
+    box-shadow: none;
 }
 
 body.dark-mode .chat-input {

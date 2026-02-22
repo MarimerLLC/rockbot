@@ -44,6 +44,30 @@ internal sealed class A2ATaskStatusHandler(
             "A2A status update for task {TaskId} from '{TargetAgent}' (state={State}): {StatusText}",
             update.TaskId, pending.TargetAgent, update.State, statusText ?? "(no message)");
 
+        // Working status updates are ephemeral progress indicators — relay them directly
+        // to the user without an LLM call. Running the LLM loop for every "Still working"
+        // message produces identical hallucinated filler ("delivery imminent" etc.) because
+        // the model has no real context to add. Skip conversation memory too: 20 "agent
+        // working" turns would pollute the LLM context when the result finally arrives.
+        if (update.State == AgentTaskState.Working)
+        {
+            if (statusText is not null)
+            {
+                var progressReply = new AgentReply
+                {
+                    Content = statusText,
+                    SessionId = pending.PrimarySessionId,
+                    AgentName = pending.TargetAgent,
+                    IsFinal = false
+                };
+                var progressEnvelope = progressReply.ToEnvelope<AgentReply>(source: agent.Name);
+                await publisher.PublishAsync(UserProxyTopics.UserResponse, progressEnvelope, ct);
+            }
+            return;
+        }
+
+        // Non-Working status (unexpected state transitions etc.) — fold into conversation
+        // so the primary agent can reason about them.
         var syntheticUserTurn = statusText is not null
             ? $"[Agent '{pending.TargetAgent}' task {update.TaskId} status={update.State}]: {statusText}"
             : $"[Agent '{pending.TargetAgent}' task {update.TaskId} status={update.State}]";

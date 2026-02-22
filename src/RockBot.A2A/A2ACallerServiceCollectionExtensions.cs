@@ -25,10 +25,18 @@ public static class A2ACallerServiceCollectionExtensions
         configure?.Invoke(options);
         builder.Services.TryAddSingleton(options);
 
-        // Agent directory — shared with AddA2A if both are called
+        // Agent directory — shared with AddA2A if both are called.
+        // TryAdd avoids double-registration of the singleton instance, and a marker type
+        // guards the IHostedService registration so StartAsync/StopAsync are called once.
         builder.Services.TryAddSingleton<AgentDirectory>();
         builder.Services.TryAddSingleton<IAgentDirectory>(
             sp => sp.GetRequiredService<AgentDirectory>());
+        if (!builder.Services.Any(sd => sd.ServiceType == typeof(AgentDirectoryHostedServiceMarker)))
+        {
+            builder.Services.AddSingleton<AgentDirectoryHostedServiceMarker>();
+            builder.Services.AddSingleton<Microsoft.Extensions.Hosting.IHostedService>(
+                sp => sp.GetRequiredService<AgentDirectory>());
+        }
 
         // Discovery hosted service — shared with AddA2A if both are called.
         // Guard on the concrete type: IHostedService has many registrations, so

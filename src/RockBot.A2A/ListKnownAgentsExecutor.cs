@@ -45,11 +45,29 @@ internal sealed class ListKnownAgentsExecutor(IAgentDirectory directory) : ITool
             });
         }
 
-        var items = agents.Select(a => new
+        var now = DateTimeOffset.UtcNow;
+        var entries = directory.GetAllEntries();
+        var entryMap = entries.ToDictionary(e => e.Card.AgentName, StringComparer.OrdinalIgnoreCase);
+
+        var items = agents.Select(a =>
         {
-            agentName = a.AgentName,
-            description = a.Description,
-            skills = a.Skills?.Select(s => new { id = s.Id, description = s.Description }).ToArray()
+            var lastSeen = "unknown";
+            if (entryMap.TryGetValue(a.AgentName, out var entry))
+            {
+                if (entry.IsWellKnown && entry.LastSeenAt == DateTimeOffset.MinValue)
+                    lastSeen = "well-known (not yet seen this session)";
+                else if (entry.IsWellKnown)
+                    lastSeen = $"{FormatAge(now - entry.LastSeenAt)} (well-known)";
+                else
+                    lastSeen = FormatAge(now - entry.LastSeenAt);
+            }
+            return new
+            {
+                agentName = a.AgentName,
+                description = a.Description,
+                lastSeen,
+                skills = a.Skills?.Select(s => new { id = s.Id, description = s.Description }).ToArray()
+            };
         });
 
         var json = JsonSerializer.Serialize(items, new JsonSerializerOptions
@@ -65,5 +83,13 @@ internal sealed class ListKnownAgentsExecutor(IAgentDirectory directory) : ITool
             Content = json,
             IsError = false
         });
+    }
+
+    private static string FormatAge(TimeSpan age)
+    {
+        if (age.TotalSeconds < 60) return "just now";
+        if (age.TotalMinutes < 60) return $"{(int)age.TotalMinutes}m ago";
+        if (age.TotalHours < 24) return $"{(int)age.TotalHours}h ago";
+        return $"{(int)age.TotalDays}d ago";
     }
 }
