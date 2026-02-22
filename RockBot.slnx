@@ -34,6 +34,7 @@
     <Project Path="src/RockBot.Tools.Web/RockBot.Tools.Web.csproj" />
     <Project Path="src/RockBot.Tools.Scheduling/RockBot.Tools.Scheduling.csproj" />
     <Project Path="src/RockBot.Subagent/RockBot.Subagent.csproj" />
+    <Project Path="src/RockBot.SampleAgent/RockBot.SampleAgent.csproj" />
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/RockBot.Host.Tests/RockBot.Host.Tests.csproj" />

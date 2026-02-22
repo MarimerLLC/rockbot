@@ -1,0 +1,40 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rockbot-sample-agent
+  namespace: rockbot
+  labels:
+    app: rockbot-sample-agent
+    app.kubernetes.io/component: sample-agent
+spec:
+  replicas: 1
+  # Recreate — only one instance should run at a time
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: rockbot-sample-agent
+  template:
+    metadata:
+      labels:
+        app: rockbot-sample-agent
+        app.kubernetes.io/component: sample-agent
+    spec:
+      containers:
+        - name: sample-agent
+          image: rockylhotka/rockbot-sample-agent:latest
+          imagePullPolicy: Always
+          envFrom:
+            # RabbitMq__HostName, RabbitMq__Port, RabbitMq__UserName, RabbitMq__VirtualHost
+            - configMapRef:
+                name: rockbot-config
+            # LLM__Endpoint, LLM__ApiKey, LLM__ModelId, RabbitMq__Password
+            - secretRef:
+                name: rockbot-secrets
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi

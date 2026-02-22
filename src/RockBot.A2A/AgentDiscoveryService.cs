@@ -6,8 +6,8 @@ namespace RockBot.A2A;
 
 /// <summary>
 /// Hosted service that publishes this agent's <see cref="AgentCard"/> on startup
-/// and subscribes to <see cref="A2AOptions.DiscoveryTopic"/> to maintain a local
-/// directory of known agents.
+/// (and periodically, so late-joining callers can discover it) and subscribes to
+/// <see cref="A2AOptions.DiscoveryTopic"/> to maintain a local directory of known agents.
 /// </summary>
 internal sealed class AgentDiscoveryService(
     IMessagePublisher publisher,
@@ -17,7 +17,11 @@ internal sealed class AgentDiscoveryService(
     Host.AgentIdentity agent,
     ILogger<AgentDiscoveryService> logger) : IHostedService
 {
+    /// <summary>How often to re-broadcast the agent card so late-joining callers can discover it.</summary>
+    private static readonly TimeSpan ReannounceInterval = TimeSpan.FromMinutes(2);
+
     private ISubscription? _subscription;
+    private CancellationTokenSource? _reAnnounceCts;
 
     public async Task StartAsync(CancellationToken cancellationToken)
     {
@@ -33,17 +37,44 @@ internal sealed class AgentDiscoveryService(
         // Announce our own card if configured
         if (options.Card is not null)
         {
-            var envelope = options.Card.ToEnvelope<AgentCard>(source: agent.Name);
-            await publisher.PublishAsync(options.DiscoveryTopic, envelope, cancellationToken);
-            logger.LogInformation("Published agent card for {AgentName}", options.Card.AgentName);
+            await PublishCardAsync(cancellationToken);
+
+            // Periodically re-announce so agents that start after us can discover this agent
+            _reAnnounceCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            _ = ReAnnounceLoopAsync(_reAnnounceCts.Token);
         }
     }
 
     public async Task StopAsync(CancellationToken cancellationToken)
     {
+        _reAnnounceCts?.Cancel();
+        _reAnnounceCts?.Dispose();
+
         if (_subscription is not null)
-        {
             await _subscription.DisposeAsync();
+    }
+
+    private async Task PublishCardAsync(CancellationToken ct)
+    {
+        var envelope = options.Card!.ToEnvelope<AgentCard>(source: agent.Name);
+        await publisher.PublishAsync(options.DiscoveryTopic, envelope, ct);
+        logger.LogInformation("Published agent card for {AgentName}", options.Card.AgentName);
+    }
+
+    private async Task ReAnnounceLoopAsync(CancellationToken ct)
+    {
+        try
+        {
+            while (!ct.IsCancellationRequested)
+            {
+                await Task.Delay(ReannounceInterval, ct);
+                await PublishCardAsync(ct);
+            }
+        }
+        catch (OperationCanceledException) { /* normal shutdown */ }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "Re-announce loop for {AgentName} failed", options.Card?.AgentName);
         }
     }
 

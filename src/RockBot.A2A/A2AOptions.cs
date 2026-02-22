@@ -11,4 +11,8 @@ public sealed class A2AOptions
     public string CancelTopic { get; set; } = "agent.task.cancel";
     public string DiscoveryTopic { get; set; } = "discovery.announce";
     public AgentCard? Card { get; set; }
+
+    /// <summary>Topic prefix where this agent receives A2A task results and errors.
+    /// The full per-agent topic is "{CallerResultTopic}.{agentName}".</summary>
+    public string CallerResultTopic { get; set; } = "agent.response";
 }
