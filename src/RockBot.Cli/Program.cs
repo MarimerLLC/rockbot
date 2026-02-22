@@ -93,7 +93,13 @@ builder.Services.AddRockBotHost(agent =>
     agent.AddWebTools(opts => builder.Configuration.GetSection("WebTools").Bind(opts));
     agent.AddSchedulingTools();
     agent.AddSubagents();
-    agent.AddA2ACaller();
+    agent.AddA2ACaller(opts =>
+    {
+        var basePath = builder.Configuration["AgentProfile:BasePath"]
+            ?? builder.Configuration["AgentProfile__BasePath"]
+            ?? AppContext.BaseDirectory;
+        opts.DirectoryPersistencePath = Path.Combine(basePath, "known-agents.json");
+    });
     agent.HandleMessage<ScheduledTaskMessage, ScheduledTaskHandler>();
     agent.HandleMessage<UserMessage, UserMessageHandler>();
     agent.HandleMessage<ConversationHistoryRequest, ConversationHistoryRequestHandler>();

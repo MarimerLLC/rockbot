@@ -50,6 +50,23 @@ internal sealed class AgentDiscoveryService(
         _reAnnounceCts?.Cancel();
         _reAnnounceCts?.Dispose();
 
+        // Notify other agents that we are going away so they can remove us immediately,
+        // rather than waiting for our entry to expire via TTL.
+        if (options.Card is not null)
+        {
+            try
+            {
+                var deregCard = options.Card with { IsDeregistering = true };
+                var envelope = deregCard.ToEnvelope<AgentCard>(source: agent.Name);
+                await publisher.PublishAsync(options.DiscoveryTopic, envelope, cancellationToken);
+                logger.LogInformation("Published deregistration for agent {AgentName}", options.Card.AgentName);
+            }
+            catch (Exception ex)
+            {
+                logger.LogWarning(ex, "Failed to publish deregistration for {AgentName}", options.Card.AgentName);
+            }
+        }
+
         if (_subscription is not null)
             await _subscription.DisposeAsync();
     }
@@ -87,8 +104,16 @@ internal sealed class AgentDiscoveryService(
             return Task.FromResult(MessageResult.DeadLetter);
         }
 
-        directory.AddOrUpdate(card);
-        logger.LogDebug("Discovered agent {AgentName}", card.AgentName);
+        if (card.IsDeregistering)
+        {
+            directory.Remove(card.AgentName);
+        }
+        else
+        {
+            directory.AddOrUpdate(card);
+            logger.LogDebug("Discovered agent {AgentName}", card.AgentName);
+        }
+
         return Task.FromResult(MessageResult.Ack);
     }
 }

@@ -20,9 +20,11 @@ public static class A2AServiceCollectionExtensions
         configure?.Invoke(options);
         builder.Services.AddSingleton(options);
 
-        // Agent directory
+        // Agent directory — persists to disk and loads on startup
         builder.Services.AddSingleton<AgentDirectory>();
         builder.Services.AddSingleton<IAgentDirectory>(sp => sp.GetRequiredService<AgentDirectory>());
+        builder.Services.AddSingleton<Microsoft.Extensions.Hosting.IHostedService>(
+            sp => sp.GetRequiredService<AgentDirectory>());
 
         // Discovery hosted service
         builder.Services.AddSingleton<AgentDiscoveryService>();

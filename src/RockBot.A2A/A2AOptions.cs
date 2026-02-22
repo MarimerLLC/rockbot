@@ -15,4 +15,17 @@ public sealed class A2AOptions
     /// <summary>Topic prefix where this agent receives A2A task results and errors.
     /// The full per-agent topic is "{CallerResultTopic}.{agentName}".</summary>
     public string CallerResultTopic { get; set; } = "agent.response";
+
+    /// <summary>
+    /// Path to the file where the agent directory is persisted across restarts.
+    /// Relative paths are resolved from <see cref="AppContext.BaseDirectory"/>.
+    /// Set to null or empty to disable persistence.
+    /// </summary>
+    public string DirectoryPersistencePath { get; set; } = "known-agents.json";
+
+    /// <summary>
+    /// How long a directory entry is kept after its last announcement.
+    /// Entries older than this are pruned on startup. Default: 24 hours.
+    /// </summary>
+    public TimeSpan DirectoryEntryTtl { get; set; } = TimeSpan.FromHours(24);
 }
