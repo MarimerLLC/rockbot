@@ -266,11 +266,23 @@ internal sealed class UserMessageHandler(
 
             var finalContent = await agentLoopRunner.RunAsync(
                 chatMessages, chatOptions, sessionId, firstResponse,
+                onPreToolCall: async (desc, ct2) =>
+                {
+                    await PublishReplyAsync($"Working on it — checking {desc}…", replyTo, correlationId, sessionId, isFinal: false, ct2);
+                    lastProgressAt = DateTimeOffset.UtcNow;
+                },
                 onProgress: async (msg, ct2) =>
                 {
                     if (DateTimeOffset.UtcNow - lastProgressAt < ProgressMessageThreshold)
                         return;
                     await PublishReplyAsync(msg, replyTo, correlationId, sessionId, isFinal: false, ct2);
+                    lastProgressAt = DateTimeOffset.UtcNow;
+                },
+                onToolTimeout: async (desc, ct2) =>
+                {
+                    await PublishReplyAsync(
+                        $"The {desc} service is taking too long to respond — trying a different approach…",
+                        replyTo, correlationId, sessionId, isFinal: false, ct2);
                     lastProgressAt = DateTimeOffset.UtcNow;
                 },
                 cancellationToken: ct);
