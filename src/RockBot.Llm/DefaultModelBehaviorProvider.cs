@@ -28,7 +28,7 @@ internal sealed class DefaultModelBehaviorProvider(ModelBehaviorOptions options)
 
         return new ModelBehavior
         {
-            NudgeOnHallucinatedToolCalls = entry?.NudgeOnHallucinatedToolCalls ?? false,
+            NudgeOnHallucinatedToolCalls = entry?.NudgeOnHallucinatedToolCalls ?? true,
             RequireExplicitConfirmationForDestructiveTools =
                 entry?.RequireExplicitConfirmationForDestructiveTools ?? false,
             MaxToolIterationsOverride = entry?.MaxToolIterationsOverride,
