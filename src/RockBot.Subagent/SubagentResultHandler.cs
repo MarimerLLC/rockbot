@@ -37,10 +37,18 @@ internal sealed class SubagentResultHandler(
 
         // The subagent's final text is the primary result. Large data (reports, lists, documents)
         // may have been written to working memory using WriteSharedOutput — keys are prefixed
-        // "subagent:{taskId}:". Use get_from_working_memory(key) to retrieve them.
-        var whiteboardHint = $" Large outputs are accessible via get_from_working_memory with " +
-            $"keys prefixed 'subagent:{message.TaskId}:' (visible in working memory inventory, " +
-            $"expire in 30 min). Retrieve and present them to the user.";
+        // "subagent:{taskId}:". Only tell the LLM to retrieve from working memory if entries
+        // actually exist — an unconditional hint causes the LLM to call get_from_working_memory
+        // and conclude the cache "expired" when nothing was ever written there.
+        var whiteboardPrefix = $"subagent:{message.TaskId}:";
+        var allEntries = await workingMemory.ListAsync(message.PrimarySessionId);
+        var whiteboardEntries = allEntries
+            .Where(e => e.Key.StartsWith(whiteboardPrefix, StringComparison.OrdinalIgnoreCase))
+            .ToList();
+
+        var whiteboardHint = whiteboardEntries.Count > 0
+            ? $" Additional outputs were written to working memory. Keys: {string.Join(", ", whiteboardEntries.Select(e => $"'{e.Key}'"))}. Retrieve and present them to the user."
+            : string.Empty;
 
         var syntheticUserTurn = message.IsSuccess
             ? $"[Subagent task {message.TaskId} completed]: {message.Output}{whiteboardHint}"

@@ -12,7 +12,9 @@ namespace RockBot.Subagent;
 /// </summary>
 internal sealed class SubagentSharedOutputFunctions
 {
-    private static readonly TimeSpan DefaultTtl = TimeSpan.FromMinutes(30);
+    // Long TTL: deep research subagents can run 30-60 minutes, so entries must
+    // survive well past the subagent's completion for the primary agent to read them.
+    private static readonly TimeSpan DefaultTtl = TimeSpan.FromHours(4);
 
     public IList<AITool> Tools { get; }
 
@@ -41,7 +43,7 @@ internal sealed class SubagentSharedOutputFunctions
     }
 
     [Description("Write a large output (report, document, structured data) into shared memory " +
-                 "where the primary agent can retrieve it. Entries expire automatically after 1 hour. " +
+                 "where the primary agent can retrieve it. Entries expire automatically after 4 hours. " +
                  "Use descriptive keys like 'email-report', 'summary', 'results'. " +
                  "Always mention the key in your final report so the primary agent knows where to look.")]
     public async Task<string> WriteSharedOutput(
