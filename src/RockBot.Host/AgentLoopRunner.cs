@@ -21,6 +21,7 @@ public sealed class AgentLoopRunner(
     ILogger<AgentLoopRunner> logger)
 {
     private const int MaxToolIterations = 12;
+    private const int MaxConsecutiveTimeoutIterations = 2;
     private const int ToolResultChunkMaxLength = 20_000;
     private static readonly TimeSpan ToolResultChunkTtl = TimeSpan.FromMinutes(20);
 
@@ -56,7 +57,9 @@ public sealed class AgentLoopRunner(
     /// <param name="chatOptions">Chat options including available tools.</param>
     /// <param name="sessionId">Session ID for working memory scoping.</param>
     /// <param name="firstResponse">Pre-fetched first LLM response; if null, the first call is made here.</param>
+    /// <param name="onPreToolCall">Optional callback invoked before each tool call batch with a description of what's being called.</param>
     /// <param name="onProgress">Optional callback invoked after each tool call batch with a progress message.</param>
+    /// <param name="onToolTimeout">Optional callback invoked immediately when a tool result is a timeout, bypassing normal throttling.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <returns>The final text response from the LLM.</returns>
     public async Task<string> RunAsync(
@@ -64,12 +67,15 @@ public sealed class AgentLoopRunner(
         ChatOptions chatOptions,
         string? sessionId,
         ChatResponse? firstResponse = null,
+        Func<string, CancellationToken, Task>? onPreToolCall = null,
         Func<string, CancellationToken, Task>? onProgress = null,
+        Func<string, CancellationToken, Task>? onToolTimeout = null,
         CancellationToken cancellationToken = default)
     {
         ChatResponse? pendingResponse = firstResponse;
         var anyToolCalled = false;
         var maxIterations = modelBehavior.MaxToolIterationsOverride ?? MaxToolIterations;
+        var consecutiveTimeoutIterations = 0;
 
         for (var iteration = 0; iteration < maxIterations; iteration++)
         {
@@ -246,6 +252,15 @@ public sealed class AgentLoopRunner(
             anyToolCalled = true;
             chatMessages.AddRange(response.Messages);
 
+            // Notify caller what tools are about to run so users see activity immediately.
+            if (onPreToolCall is not null)
+            {
+                var preDescriptions = functionCalls.Select(DescribeToolCall);
+                await onPreToolCall(string.Join("; ", preDescriptions), cancellationToken);
+            }
+
+            var iterationHadTimeout = false;
+
             foreach (var fc in functionCalls)
             {
                 var argsSummary = fc.Arguments is not null
@@ -298,6 +313,31 @@ public sealed class AgentLoopRunner(
                     fc.Name, result?.ToString() ?? string.Empty, sessionId, cancellationToken);
                 chatMessages.Add(new ChatMessage(ChatRole.Tool,
                     [new FunctionResultContent(fc.CallId, nativeResultStr)]));
+
+                if (IsTimeoutResult(nativeResultStr))
+                {
+                    iterationHadTimeout = true;
+                    if (onToolTimeout is not null)
+                        await onToolTimeout(DescribeToolCall(fc), cancellationToken);
+                }
+            }
+
+            // Track consecutive timeout iterations to detect a stalled service.
+            if (iterationHadTimeout)
+            {
+                consecutiveTimeoutIterations++;
+                if (consecutiveTimeoutIterations >= MaxConsecutiveTimeoutIterations)
+                {
+                    logger.LogWarning(
+                        "Aborting tool loop: {N} consecutive iterations with tool timeouts",
+                        consecutiveTimeoutIterations);
+                    return "I wasn't able to complete this task — the services I need aren't responding right now. " +
+                           "Please try again in a few minutes.";
+                }
+            }
+            else
+            {
+                consecutiveTimeoutIterations = 0;
             }
 
             if (onProgress is not null)
@@ -633,6 +673,13 @@ public sealed class AgentLoopRunner(
         return DescribeToolCall(fc.Name, argJson);
     }
 
+    /// <summary>
+    /// Returns true when a tool result string indicates the call timed out
+    /// rather than completing successfully or failing with a non-timeout error.
+    /// </summary>
+    private static bool IsTimeoutResult(string result) =>
+        result.Contains("timed out", StringComparison.OrdinalIgnoreCase);
+
     private static string DescribeToolCall(string name, string? argsJson)
     {
         if (string.IsNullOrEmpty(argsJson)) return name;
@@ -641,10 +688,21 @@ public sealed class AgentLoopRunner(
             var args = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(argsJson);
             if (args is null) return name;
 
+            // mcp_invoke_tool: show "server/tool" for clarity
+            if (name.Equals("mcp_invoke_tool", StringComparison.OrdinalIgnoreCase))
+            {
+                var server = args.TryGetValue("server_name", out var sn) ? sn.GetString() : null;
+                var toolName = args.TryGetValue("tool_name", out var tn) ? tn.GetString() : null;
+                if (server is not null && toolName is not null) return $"{server}/{toolName}";
+                if (toolName is not null) return $"mcp_invoke_tool({toolName})";
+                return name;
+            }
+
             // Extract the most useful single argument for progress display
             var hint = args.TryGetValue("query", out var q) ? q.GetString()
                 : args.TryGetValue("url", out var u) ? u.GetString()
                 : args.TryGetValue("key", out var k) ? k.GetString()
+                : args.TryGetValue("tool_name", out var tn2) ? tn2.GetString()
                 : null;
 
             if (hint is null) return name;

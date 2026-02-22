@@ -1,5 +1,6 @@
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using RockBot.Host;
 using RockBot.Llm;
 using RockBot.Messaging;
@@ -20,6 +21,8 @@ internal sealed class ScheduledTaskHandler(
     RulesTools rulesTools,
     ModelBehavior modelBehavior,
     AgentLoopRunner agentLoopRunner,
+    AgentContextBuilder agentContextBuilder,
+    IOptions<AgentProfileOptions> profileOptions,
     ILogger<ScheduledTaskHandler> logger) : IMessageHandler<ScheduledTaskMessage>
 {
     public async Task HandleAsync(ScheduledTaskMessage message, MessageHandlerContext context)
@@ -27,34 +30,24 @@ internal sealed class ScheduledTaskHandler(
         var ct = context.CancellationToken;
         logger.LogInformation("Executing scheduled task '{TaskName}'", message.TaskName);
 
-        var resultInstruction = modelBehavior.ScheduledTaskResultMode switch
+        // Build full agent context using an ephemeral session ID so no history accumulates
+        // across patrol runs. Pass the task description as the user content for BM25 recall.
+        var chatMessages = await agentContextBuilder.BuildAsync(
+            $"patrol-{message.TaskName}", message.Description, ct);
+
+        // If a task-specific directive file exists (e.g. heartbeat-patrol.md), inject it
+        // as a system message immediately after the main system prompt (index 1).
+        var basePath = profileOptions.Value.BasePath;
+        var directivePath = Path.Combine(basePath, $"{message.TaskName}.md");
+        if (File.Exists(directivePath))
         {
-            ScheduledTaskResultMode.VerbatimOutput =>
-                "When presenting results, include the complete verbatim output from every " +
-                "tool you called. Do not paraphrase, summarise, or describe what the output " +
-                "showed — paste it in full so the user can see the actual content.",
-            ScheduledTaskResultMode.SummarizeWithOutput =>
-                "When presenting results, first write a brief natural-language summary, " +
-                "then include the complete verbatim output from every tool you called.",
-            _ =>
-                "When you are done, present the result directly and naturally — as if you " +
-                "are proactively messaging the user with completed work."
-        };
+            var directiveContent = await File.ReadAllTextAsync(directivePath, ct);
+            chatMessages.Insert(1, new ChatMessage(ChatRole.System, directiveContent));
+            logger.LogInformation("Injected task directive from '{Path}'", directivePath);
+        }
 
-        var systemPrompt =
-            "You are an autonomous agent. A background scheduled task has just fired and you " +
-            $"are executing it now. Use your available tools as needed to complete the work. " +
-            $"{resultInstruction} " +
-            "Do not say 'I was asked to' or reference the scheduling system; just deliver the result clearly.";
-
-        var chatMessages = new List<ChatMessage>
-        {
-            new(ChatRole.System, systemPrompt),
-        };
-
-        if (!string.IsNullOrEmpty(modelBehavior.AdditionalSystemPrompt))
-            chatMessages.Add(new ChatMessage(ChatRole.System, modelBehavior.AdditionalSystemPrompt));
-
+        // Add the task description as the user turn (context builder doesn't add it;
+        // the ephemeral session has no conversation history).
         chatMessages.Add(new ChatMessage(ChatRole.User, message.Description));
 
         var registryTools = toolRegistry.GetTools()
@@ -82,6 +75,13 @@ internal sealed class ScheduledTaskHandler(
         }
 
         logger.LogInformation("Scheduled task '{TaskName}' completed", message.TaskName);
+
+        // Patrol tasks may produce no output when there is nothing to report — that is correct.
+        if (string.IsNullOrWhiteSpace(finalText))
+        {
+            logger.LogInformation("Scheduled task '{TaskName}' produced no output; suppressing reply", message.TaskName);
+            return;
+        }
 
         var reply = new AgentReply
         {
