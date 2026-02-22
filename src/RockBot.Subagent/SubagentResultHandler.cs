@@ -50,13 +50,22 @@ internal sealed class SubagentResultHandler(
             ? $" Additional outputs were written to working memory. Keys: {string.Join(", ", whiteboardEntries.Select(e => $"'{e.Key}'"))}. Retrieve and present them to the user."
             : string.Empty;
 
+        // If the subagent ran out of iterations its final text may be an incomplete setup
+        // phrase ("Now let me save the findings to shared memory:"). Annotate it so the
+        // primary LLM knows no data was actually written — prevents hallucinated
+        // "working memory expired" responses.
+        var safeOutput = message.IsSuccess && AgentLoopRunner.IsIncompleteSetupPhrase(message.Output)
+            ? message.Output.TrimEnd(':').TrimEnd() +
+              " — but the task ran out of steps before completing this action. No data was saved to shared memory."
+            : message.Output;
+
         // Publish the subagent's raw completion output as a non-final bubble so it is
         // visible in the Blazor UI under the subagent's own name before the primary agent
         // synthesises and presents the final reply.
         try
         {
             var completionContent = message.IsSuccess
-                ? message.Output
+                ? safeOutput
                 : $"Task failed: {message.Error}\n\n{message.Output}";
             var completionReply = new AgentReply
             {
@@ -75,7 +84,7 @@ internal sealed class SubagentResultHandler(
         }
 
         var syntheticUserTurn = message.IsSuccess
-            ? $"[Subagent task {message.TaskId} completed]: {message.Output}{whiteboardHint}"
+            ? $"[Subagent task {message.TaskId} completed]: {safeOutput}{whiteboardHint}"
             : $"[Subagent task {message.TaskId} completed with error: {message.Error}]: {message.Output}";
 
         await conversationMemory.AddTurnAsync(

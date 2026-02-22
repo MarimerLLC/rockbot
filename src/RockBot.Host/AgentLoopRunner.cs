@@ -351,9 +351,34 @@ public sealed class AgentLoopRunner(
         }
 
         logger.LogWarning("Tool loop reached {Max} iterations; forcing final response", maxIterations);
+
+        // Ask the LLM for a backward-looking summary so it reports what was done, not what
+        // it was planning to do next. Without this nudge the model often produces setup
+        // phrases ("Now let me save…", "Next I will…") that are useless as a final reply.
+        var summaryMessages = new List<ChatMessage>(chatMessages)
+        {
+            new(ChatRole.User,
+                "The task loop has ended. Write a concise summary of what was accomplished. " +
+                "Report only what was completed — do not describe intentions or future actions.")
+        };
+
         var finalResponse = await llmClient.GetResponseAsync(
-            chatMessages, new ChatOptions(), cancellationToken);
+            summaryMessages, new ChatOptions(), cancellationToken);
         var forcedText = ExtractAssistantText(finalResponse);
+
+        // If the forced response is itself an incomplete setup phrase, nudge once more.
+        if (!string.IsNullOrWhiteSpace(forcedText) && IsIncompleteSetupPhrase(forcedText))
+        {
+            logger.LogWarning(
+                "Forced final response was an incomplete setup phrase ({Length} chars); nudging for clean summary",
+                forcedText.Length);
+            summaryMessages.Add(new ChatMessage(ChatRole.Assistant, forcedText));
+            summaryMessages.Add(new ChatMessage(ChatRole.User,
+                "Do not narrate intentions. Summarise only what was completed."));
+            var nudgedResponse = await llmClient.GetResponseAsync(
+                summaryMessages, new ChatOptions(), cancellationToken);
+            forcedText = ExtractAssistantText(nudgedResponse);
+        }
 
         if (!string.IsNullOrWhiteSpace(forcedText))
             return forcedText;
