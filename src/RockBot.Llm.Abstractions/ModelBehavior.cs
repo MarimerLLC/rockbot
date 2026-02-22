@@ -16,7 +16,7 @@ public sealed class ModelBehavior
     public int ToolResultChunkingThreshold { get; init; } = 16_000;
 
     /// <summary>Behavior profile that applies no tweaks — used when no overrides are configured.</summary>
-    public static readonly ModelBehavior Default = new();
+    public static readonly ModelBehavior Default = new() { NudgeOnHallucinatedToolCalls = true };
 
     /// <summary>
     /// When true, detect responses where the model claims to have called tools (e.g. "I've

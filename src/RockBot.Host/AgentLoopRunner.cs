@@ -36,7 +36,11 @@ public sealed class AgentLoopRunner(
     /// actually emitting function calls.
     /// </summary>
     private static readonly Regex HallucinatedActionRegex = new(
-        @"\bI(?:['\u2019]ve| have)\s+(cancell?ed|scheduled|created|updated|rescheduled|deleted|removed|completed|added|saved)\b",
+        @"\bI(?:['\u2019]ve| have)\s+(cancell?ed|scheduled|created|updated|rescheduled|deleted|removed|completed|added|saved)\b" +
+        @"|(?:Task|Subagent|Agent)\s+(?:ID|Id|id)\s*[:=]\s*[a-f0-9]{8,}" +  // fabricated IDs: "Task ID: a7f8c2b91d3e"
+        @"|\bSubagent\s+[a-f0-9]{8,}\s+is\s+now\s+running\b" +              // "Subagent abc123 is now running"
+        @"|\bhas\s+been\s+dispatched\b" +                                     // "has been dispatched"
+        @"|\bis\s+now\s+running\s+(?:email|triage|research|the)\b",           // "is now running email triage"
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
     /// <summary>
