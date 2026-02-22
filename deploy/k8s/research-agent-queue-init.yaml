@@ -5,9 +5,9 @@ metadata:
   namespace: rockbot
   annotations:
     description: |
-      One-time job that pre-declares the ResearchAgent queue and binding via the
-      RabbitMQ management API. Run once before deploying the KEDA ScaledJob so the
-      queue exists for KEDA to watch. Safe to re-run — the declare operations are idempotent.
+      Job that pre-declares the ResearchAgent queue and binding, then publishes
+      the agent's discovery card so any running RockBot instance registers it
+      immediately. Safe to re-run — all operations are idempotent.
 spec:
   ttlSecondsAfterFinished: 600
   template:
@@ -56,5 +56,14 @@ spec:
                 -H "Content-Type: application/json" \
                 -d "{\"routing_key\":\"$ROUTING_KEY\"}" \
                 "http://$RABBIT_MGMT/api/bindings/$VHOST/e/$EXCHANGE/q/$QUEUE_NAME"
+
+              echo "Publishing ResearchAgent discovery card"
+              CARD='{"agentName":"ResearchAgent","description":"On-demand research agent. Searches the web, fetches pages, and synthesises answers using an LLM.","version":"1.0","skills":[{"id":"research","name":"Research","description":"Research a topic using web search and page fetching, then synthesise a concise answer.","tags":null,"examples":null}],"isDeregistering":false}'
+              CARD_B64=$(printf '%s' "$CARD" | base64 | tr -d '\n')
+              curl -sf -u "$RABBIT_USER:$RABBIT_PASS" \
+                -X POST \
+                -H "Content-Type: application/json" \
+                -d "{\"vhost\":\"/\",\"name\":\"$EXCHANGE\",\"properties\":{\"delivery_mode\":2,\"content_type\":\"application/json\",\"type\":\"RockBot.A2A.AgentCard\"},\"routing_key\":\"discovery.announce\",\"payload\":\"$CARD_B64\",\"payload_encoding\":\"base64\",\"headers\":{\"rb-source\":\"ResearchAgent\"}}" \
+                "http://$RABBIT_MGMT/api/exchanges/$VHOST/$EXCHANGE/publish"
 
               echo "Queue init complete."
