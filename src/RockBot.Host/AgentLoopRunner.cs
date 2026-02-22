@@ -227,8 +227,8 @@ public sealed class AgentLoopRunner(
 
                 if (onProgress is not null)
                 {
-                    var names = string.Join(", ", textCalls.Select(t => t.Name));
-                    await onProgress($"Called {names}. Still working…", cancellationToken);
+                    var descriptions = textCalls.Select(t => DescribeToolCall(t.Name, t.ArgsJson));
+                    await onProgress(string.Join("; ", descriptions), cancellationToken);
                 }
 
                 continue;
@@ -297,8 +297,8 @@ public sealed class AgentLoopRunner(
 
             if (onProgress is not null)
             {
-                var names = string.Join(", ", functionCalls.Select(f => f.Name));
-                await onProgress($"Called {names}. Still working…", cancellationToken);
+                var descriptions = functionCalls.Select(DescribeToolCall);
+                await onProgress(string.Join("; ", descriptions), cancellationToken);
             }
 
             if (iteration == maxIterations - 2)
@@ -614,6 +614,44 @@ public sealed class AgentLoopRunner(
         const string begin = "<｜tool▁calls▁begin｜>";
         var idx = text.IndexOf(begin, StringComparison.Ordinal);
         return idx >= 0 ? text[..idx] : text;
+    }
+
+    /// <summary>
+    /// Builds a human-readable description of a tool call, including key arguments
+    /// (query, url) where present, so progress messages carry real information.
+    /// </summary>
+    private static string DescribeToolCall(FunctionCallContent fc)
+    {
+        var argJson = fc.Arguments is { Count: > 0 }
+            ? JsonSerializer.Serialize(fc.Arguments.ToDictionary(k => k.Key, k => k.Value))
+            : null;
+        return DescribeToolCall(fc.Name, argJson);
+    }
+
+    private static string DescribeToolCall(string name, string? argsJson)
+    {
+        if (string.IsNullOrEmpty(argsJson)) return name;
+        try
+        {
+            var args = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(argsJson);
+            if (args is null) return name;
+
+            // Extract the most useful single argument for progress display
+            var hint = args.TryGetValue("query", out var q) ? q.GetString()
+                : args.TryGetValue("url", out var u) ? u.GetString()
+                : args.TryGetValue("key", out var k) ? k.GetString()
+                : null;
+
+            if (hint is null) return name;
+
+            const int maxLen = 80;
+            if (hint.Length > maxLen) hint = hint[..maxLen] + "…";
+            return $"{name}({hint})";
+        }
+        catch
+        {
+            return name;
+        }
     }
 
     public static object? ToNativeValue(JsonElement element) => element.ValueKind switch
