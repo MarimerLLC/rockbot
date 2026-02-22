@@ -50,6 +50,30 @@ internal sealed class SubagentResultHandler(
             ? $" Additional outputs were written to working memory. Keys: {string.Join(", ", whiteboardEntries.Select(e => $"'{e.Key}'"))}. Retrieve and present them to the user."
             : string.Empty;
 
+        // Publish the subagent's raw completion output as a non-final bubble so it is
+        // visible in the Blazor UI under the subagent's own name before the primary agent
+        // synthesises and presents the final reply.
+        try
+        {
+            var completionContent = message.IsSuccess
+                ? message.Output
+                : $"Task failed: {message.Error}\n\n{message.Output}";
+            var completionReply = new AgentReply
+            {
+                Content = completionContent,
+                SessionId = message.PrimarySessionId,
+                AgentName = $"subagent-{message.TaskId}",
+                IsFinal = false
+            };
+            var completionEnvelope = completionReply.ToEnvelope<AgentReply>(
+                source: $"subagent-{message.TaskId}");
+            await publisher.PublishAsync(UserProxyTopics.UserResponse, completionEnvelope, ct);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            logger.LogWarning(ex, "Failed to publish completion bubble for subagent {TaskId}", message.TaskId);
+        }
+
         var syntheticUserTurn = message.IsSuccess
             ? $"[Subagent task {message.TaskId} completed]: {message.Output}{whiteboardHint}"
             : $"[Subagent task {message.TaskId} completed with error: {message.Error}]: {message.Output}";

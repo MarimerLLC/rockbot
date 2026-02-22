@@ -93,6 +93,31 @@ internal sealed class A2ATaskResultHandler(
             syntheticUserTurn = $"[Agent '{pending.TargetAgent}' completed task {result.TaskId} (state={result.State})]: {resultText}";
         }
 
+        // Publish the agent's raw completion output as a non-final bubble so it is
+        // visible in the Blazor UI under the agent's own name before the primary agent
+        // synthesises and presents the final reply. For large results stored in working
+        // memory, show a truncated preview so the bubble remains readable.
+        try
+        {
+            const int PreviewMax = 500;
+            var previewText = resultText.Length > PreviewMax
+                ? resultText[..PreviewMax] + $"\n\n…({resultText.Length - PreviewMax:N0} more chars in working memory)"
+                : resultText;
+            var completionReply = new AgentReply
+            {
+                Content = previewText,
+                SessionId = pending.PrimarySessionId,
+                AgentName = pending.TargetAgent,
+                IsFinal = false
+            };
+            var completionEnvelope = completionReply.ToEnvelope<AgentReply>(source: pending.TargetAgent);
+            await publisher.PublishAsync(UserProxyTopics.UserResponse, completionEnvelope, ct);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            logger.LogWarning(ex, "Failed to publish completion bubble for A2A task {TaskId}", result.TaskId);
+        }
+
         await conversationMemory.AddTurnAsync(
             pending.PrimarySessionId,
             new ConversationTurn("user", syntheticUserTurn, DateTimeOffset.UtcNow),
