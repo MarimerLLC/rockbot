@@ -19,11 +19,15 @@
     <PackageReference Include="Microsoft.Extensions.Hosting.Abstractions" Version="10.0.*" />
     <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="10.0.*" />
     <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.*" />
+    <PackageReference Include="System.ClientModel" Version="1.*" />
   </ItemGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\RockBot.Host.Abstractions\RockBot.Host.Abstractions.csproj" />
+    <ProjectReference Include="..\RockBot.Llm.Abstractions\RockBot.Llm.Abstractions.csproj" />
+    <ProjectReference Include="..\RockBot.Memory\RockBot.Memory.csproj" />
     <ProjectReference Include="..\RockBot.Messaging.Abstractions\RockBot.Messaging.Abstractions.csproj" />
+    <ProjectReference Include="..\RockBot.Skills\RockBot.Skills.csproj" />
     <ProjectReference Include="..\RockBot.Tools.Abstractions\RockBot.Tools.Abstractions.csproj" />
     <ProjectReference Include="..\RockBot.UserProxy.Abstractions\RockBot.UserProxy.Abstractions.csproj" />
   </ItemGroup>

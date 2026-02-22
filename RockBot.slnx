@@ -33,6 +33,7 @@
     <Project Path="src/RockBot.Cli/RockBot.Cli.csproj" />
     <Project Path="src/RockBot.Tools.Web/RockBot.Tools.Web.csproj" />
     <Project Path="src/RockBot.Tools.Scheduling/RockBot.Tools.Scheduling.csproj" />
+    <Project Path="src/RockBot.Subagent/RockBot.Subagent.csproj" />
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/RockBot.Host.Tests/RockBot.Host.Tests.csproj" />
@@ -44,6 +45,7 @@
     <Project Path="tests/RockBot.UserProxy.Tests/RockBot.UserProxy.Tests.csproj" />
     <Project Path="tests/RockBot.Cli.Tests/RockBot.Cli.Tests.csproj" />
     <Project Path="tests/RockBot.Tools.Web.Tests/RockBot.Tools.Web.Tests.csproj" />
+    <Project Path="tests/RockBot.Subagent.Tests/RockBot.Subagent.Tests.csproj" />
   </Folder>
   <Project Path="src/RockBot.Messaging.Abstractions/RockBot.Messaging.Abstractions.csproj" />
   <Project Path="src/RockBot.Messaging.RabbitMQ/RockBot.Messaging.RabbitMQ.csproj" />

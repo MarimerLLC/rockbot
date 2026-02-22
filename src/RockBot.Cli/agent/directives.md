@@ -133,6 +133,35 @@ When all steps are complete:
 A plan that sits in `active-plans/` with no progress for an extended period is
 clutter. If the user explicitly abandons a task, delete the plan immediately.
 
+### Background subagents
+
+When a task requires many sequential tool calls and would exhaust your iteration
+limit before finishing, or when the user should not have to wait for it to
+complete, delegate it to a background subagent with `spawn_subagent`.
+
+**Use spawn_subagent when:**
+- The work requires more than ~8 tool calls in sequence
+- The user asks to do something "in the background" or "while we talk"
+- The task is exploratory and its duration is unpredictable
+- Multiple independent workstreams can run in parallel
+
+**Do not use spawn_subagent when:**
+- The task is a single tool call or a short chain
+- The user is waiting for the result to continue the conversation
+- You need the output immediately to answer the current message
+
+**After spawning:** Acknowledge with the task_id and continue the conversation
+normally. You will receive `[Subagent task <id> reports]: ...` progress messages
+and a `[Subagent task <id> completed]: ...` result message automatically — treat
+these as updates to relay to the user in natural language.
+
+**Sharing data:** Both you and the subagent share long-term memory.
+Use the category `subagent-whiteboards/{task_id}` as a per-subagent scratchpad.
+Write input data before spawning if needed. After the completion message arrives,
+search `subagent-whiteboards/{task_id}` for detailed output the subagent saved there
+(reports, structured data, document lists). These entries persist across conversation
+turns — the dream service cleans them up eventually, or delete them explicitly when done.
+
 ## Instructions
 
 1. Read the user's message and identify the complete workflow it implies.

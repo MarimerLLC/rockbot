@@ -15,6 +15,7 @@ using RockBot.Memory;
 using RockBot.Skills;
 using RockBot.Tools;
 using RockBot.Tools.Mcp;
+using RockBot.Subagent;
 using RockBot.Tools.Scheduling;
 using RockBot.Tools.Web;
 using RockBot.UserProxy;
@@ -38,7 +39,13 @@ if (!string.IsNullOrEmpty(endpoint) && !string.IsNullOrEmpty(apiKey) && !string.
 {
     var openAiClient = new OpenAIClient(
         new ApiKeyCredential(apiKey),
-        new OpenAIClientOptions { Endpoint = new Uri(endpoint) });
+        new OpenAIClientOptions
+        {
+            Endpoint = new Uri(endpoint),
+            // Extend from the 100s default — subagents with large tool sets generate
+            // longer responses that can exceed the default before the body is fully read.
+            NetworkTimeout = TimeSpan.FromMinutes(5)
+        });
 
     builder.Services.AddSingleton<IChatClient>(
         openAiClient.GetChatClient(modelId).AsIChatClient());
@@ -84,6 +91,7 @@ builder.Services.AddRockBotHost(agent =>
     agent.AddMcpToolProxy();
     agent.AddWebTools(opts => builder.Configuration.GetSection("WebTools").Bind(opts));
     agent.AddSchedulingTools();
+    agent.AddSubagents();
     agent.HandleMessage<ScheduledTaskMessage, ScheduledTaskHandler>();
     agent.HandleMessage<UserMessage, UserMessageHandler>();
     agent.HandleMessage<ConversationHistoryRequest, ConversationHistoryRequestHandler>();

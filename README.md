@@ -32,6 +32,7 @@ Each agent is an isolated process that reacts to messages, invokes tools, calls 
 | `RockBot.Scripts.Manager` | Trusted sidecar that creates ephemeral Kubernetes pods for script execution |
 | `RockBot.Scripts.Container` | Kubernetes container runner — isolated Python pods with resource limits |
 | `RockBot.Scripts.Local` | Local Python script runner for development (no Kubernetes needed) |
+| `RockBot.Subagent` | In-process subagent spawning — isolated LLM loops, progress reporting, and long-term memory data handoff |
 | `RockBot.A2A` | Agent-to-agent task delegation over the message bus |
 | `RockBot.UserProxy.Blazor` | Blazor Server chat UI with markdown rendering, conversation replay, and feedback signals |
 | `RockBot.UserProxy.Cli` | Console chat interface using Spectre.Console |
@@ -110,6 +111,16 @@ The agent hosts an embedded MCP bridge that connects to configured MCP servers a
 
 - **Remote (production)** — the agent publishes a `script.invoke` message to RabbitMQ. The Scripts Manager (a trusted sidecar with Kubernetes API access) creates an ephemeral Python 3.12-slim pod in the isolated `rockbot-scripts` namespace, runs the script, and returns the result. Pods have resource limits (500m CPU, 256Mi RAM by default), no network access, and are deleted immediately after use.
 - **Local (development)** — runs Python scripts directly on the local machine, no Kubernetes required.
+
+### Background subagents
+
+The agent can spawn isolated in-process subagents to handle long-running or complex tasks without blocking the primary conversation or exhausting its tool-call iteration limit.
+
+- **spawn_subagent** — launches a subagent with its own LLM tool loop, scoped working memory, and cancellation token. Returns a `task_id` immediately.
+- **Progress reporting** — the subagent calls `report_progress` periodically; each update is delivered to the primary session as a synthetic user turn so the agent can relay it naturally.
+- **Result delivery** — on completion, a `SubagentResultMessage` is published to the primary session and incorporated into the conversation.
+- **Data handoff** — the primary agent and subagent share the same long-term memory store. Structured data is exchanged using the category convention `subagent-whiteboards/{task_id}`, which is automatically cleaned up by the result handler after the primary agent processes the result.
+- **Concurrency limits** — configurable maximum concurrent subagents (default 3) with graceful rejection when the limit is reached.
 
 ### Scheduled tasks
 
@@ -392,6 +403,7 @@ Deep-dive documentation for individual subsystems lives in [`docs/`](docs/):
 | [`docs/messaging.md`](docs/messaging.md) | MessageEnvelope, publisher/subscriber interfaces, RabbitMQ provider, topics, trust levels, trace propagation |
 | [`docs/agent-host.md`](docs/agent-host.md) | AgentHostBuilder, pipeline, identity, profile, conversation memory, session evaluation, LLM client, data volume layout |
 | [`docs/tools.md`](docs/tools.md) | Tool execution model, IToolRegistry, MCP bridge, web search/browse, REST, scheduling, script execution, OpenRouter MCP |
+| [`docs/subagents.md`](docs/subagents.md) | Background subagent spawning, data handoff via memory convention, progress/result flow, configuration |
 
 ---
 
