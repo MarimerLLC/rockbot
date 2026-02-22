@@ -49,6 +49,22 @@ internal sealed class A2ATaskResultHandler(
         var resultText = result.Message?.Parts.FirstOrDefault(p => p.Kind == "text")?.Text ?? "(no text output)";
         string syntheticUserTurn;
 
+        // Purge any previous result entries for this agent before storing the new one.
+        // Old entries linger in working memory (60-min TTL) and the LLM will find them
+        // in conversation history instructions — causing it to retrieve stale data instead
+        // of the current result when both share the same key pattern.
+        var stalePrefix = $"a2a:{pending.TargetAgent}:";
+        var staleEntries = await workingMemory.ListAsync(pending.PrimarySessionId);
+        foreach (var entry in staleEntries)
+        {
+            if (entry.Key.StartsWith(stalePrefix, StringComparison.OrdinalIgnoreCase) &&
+                entry.Key.EndsWith(":result", StringComparison.OrdinalIgnoreCase))
+            {
+                logger.LogDebug("Purging stale A2A result entry '{Key}' before storing new result", entry.Key);
+                await workingMemory.DeleteAsync(pending.PrimarySessionId, entry.Key);
+            }
+        }
+
         if (resultText.Length > modelBehavior.ToolResultChunkingThreshold)
         {
             // Result is large — store it in working memory rather than injecting it raw into
