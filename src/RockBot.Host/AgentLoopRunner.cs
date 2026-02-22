@@ -33,14 +33,15 @@ public sealed class AgentLoopRunner(
 
     /// <summary>
     /// Detects when a model claims to have performed tool actions in plain text without
-    /// actually emitting function calls.
+    /// actually emitting function calls. Public so callers that pre-fetch the first
+    /// response (e.g. UserMessageHandler) can apply the same check before routing.
     /// </summary>
-    private static readonly Regex HallucinatedActionRegex = new(
+    public static readonly Regex HallucinatedActionRegex = new(
         @"\bI(?:['\u2019]ve| have)\s+(cancell?ed|scheduled|created|updated|rescheduled|deleted|removed|completed|added|saved)\b" +
-        @"|(?:Task|Subagent|Agent)\s+(?:ID|Id|id)\s*[:=]\s*[a-f0-9]{8,}" +  // fabricated IDs: "Task ID: a7f8c2b91d3e"
-        @"|\bSubagent\s+[a-f0-9]{8,}\s+is\s+now\s+running\b" +              // "Subagent abc123 is now running"
-        @"|\bhas\s+been\s+dispatched\b" +                                     // "has been dispatched"
-        @"|\bis\s+now\s+running\s+(?:email|triage|research|the)\b",           // "is now running email triage"
+        @"|(?:Task|Subagent|Agent)\s+(?:ID|Id|id)\s*[:=]\s*\*{0,2}[a-f0-9]{8,}\*{0,2}" +  // fabricated IDs (with optional markdown bold)
+        @"|\bSubagent\s+\*{0,2}[a-f0-9]{8,}\*{0,2}\s+is\s+now\s+running\b" +              // "Subagent **abc123** is now running"
+        @"|\bhas\s+been\s+dispatched\b" +                                                    // "has been dispatched"
+        @"|\bis\s+now\s+running\s+(?:email|triage|research|the)\b",                         // "is now running email triage"
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
     /// <summary>
