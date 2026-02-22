@@ -38,8 +38,8 @@ public sealed class AgentLoopRunner(
     /// </summary>
     public static readonly Regex HallucinatedActionRegex = new(
         @"\bI(?:['\u2019]ve| have)\s+(cancell?ed|scheduled|created|updated|rescheduled|deleted|removed|completed|added|saved)\b" +
-        @"|(?:Task|Subagent|Agent)\s+(?:ID|Id|id)\s*[:=]\s*\*{0,2}[a-f0-9]{8,}\*{0,2}" +  // fabricated IDs (with optional markdown bold)
-        @"|\bSubagent\s+\*{0,2}[a-f0-9]{8,}\*{0,2}\s+is\s+now\s+running\b" +              // "Subagent **abc123** is now running"
+        @"|(?:Task|Subagent|Agent)\s+(?:ID|Id|id)\s*[:=]\s*\*{0,2}[a-z0-9]{8,}\*{0,2}" +  // fabricated IDs — real IDs are hex but models invent non-hex alphanum too
+        @"|\bSubagent\s+\*{0,2}[a-z0-9]{8,}\*{0,2}\s+is\s+now\s+running\b" +              // "Subagent **abc123** is now running"
         @"|\bhas\s+been\s+dispatched\b" +                                                    // "has been dispatched"
         @"|\bis\s+now\s+running\s+(?:email|triage|research|the)\b",                         // "is now running email triage"
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
