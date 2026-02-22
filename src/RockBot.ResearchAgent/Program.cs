@@ -61,7 +61,7 @@ builder.Services.AddRockBotHost(agent =>
     // Web search + browse tools (Brave Search + HTTP page fetch)
     agent.AddWebTools(opts =>
     {
-        opts.ApiKey = builder.Configuration["WebTools__ApiKey"] ?? string.Empty;
+        opts.ApiKey = builder.Configuration["WebTools:ApiKey"] ?? string.Empty;
         opts.MaxSearchResults = 5;
     });
 
