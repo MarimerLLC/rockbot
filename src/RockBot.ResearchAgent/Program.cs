@@ -10,6 +10,7 @@ using RockBot.Host;
 using RockBot.Llm;
 using RockBot.Messaging.RabbitMQ;
 using RockBot.ResearchAgent;
+using RockBot.Tools;
 using RockBot.Tools.Web;
 
 var builder = Host.CreateApplicationBuilder(args);
@@ -53,6 +54,9 @@ builder.Services.AddRockBotHost(agent =>
     // Working memory (in-memory TTL cache backed by ephemeral file path /tmp/memory).
     // Must come before AddWebTools — WebToolRegistrar depends on IWorkingMemory.
     agent.WithWorkingMemory();
+
+    // Tool registry — required by WebToolRegistrar to register web tools.
+    agent.AddToolHandler();
 
     // Web search + browse tools (Brave Search + HTTP page fetch)
     agent.AddWebTools(opts =>

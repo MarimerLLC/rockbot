@@ -47,7 +47,7 @@ spec:
               curl -sf -u "$RABBIT_USER:$RABBIT_PASS" \
                 -X PUT \
                 -H "Content-Type: application/json" \
-                -d '{"durable":true,"arguments":{"x-dead-letter-exchange":"rockbot.dlx"}}' \
+                -d "{\"durable\":true,\"arguments\":{\"x-dead-letter-exchange\":\"rockbot.dlx\",\"x-dead-letter-routing-key\":\"$ROUTING_KEY\"}}" \
                 "http://$RABBIT_MGMT/api/queues/$VHOST/$QUEUE_NAME"
 
               echo "Binding queue to exchange $EXCHANGE with routing key $ROUTING_KEY"
