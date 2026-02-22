@@ -197,7 +197,10 @@
         try
         {
             var reply = await ProxyService.SendAsync(message, progress: progressTracker);
-            
+
+            // Clear any background status from the thinking indicator before showing result
+            ChatState.SetThinkingMessage(null);
+
             if (reply is null)
             {
                 ChatState.AddError("No reply received (timeout)");

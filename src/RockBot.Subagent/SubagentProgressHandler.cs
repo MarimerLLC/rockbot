@@ -33,52 +33,27 @@ internal sealed class SubagentProgressHandler(
             "Subagent progress for task {TaskId} in primary session {SessionId}: {Message}",
             message.TaskId, message.PrimarySessionId, message.Message);
 
-        var syntheticUserTurn = $"[Subagent task {message.TaskId} reports]: {message.Message}";
-
-        // Record synthetic turn in conversation history
-        await conversationMemory.AddTurnAsync(
-            message.PrimarySessionId,
-            new ConversationTurn("user", syntheticUserTurn, DateTimeOffset.UtcNow),
-            ct);
-
-        var chatMessages = await agentContextBuilder.BuildAsync(
-            message.PrimarySessionId, syntheticUserTurn, ct);
-
-        // Build the same tool set as the primary agent
-        var sessionWorkingMemoryTools = new WorkingMemoryTools(workingMemory, message.PrimarySessionId, logger);
-        var registryTools = toolRegistry.GetTools()
-            .Select(r => (AIFunction)new SubagentRegistryToolFunction(
-                r, toolRegistry.GetExecutor(r.Name)!, message.PrimarySessionId))
-            .ToArray();
-
-        var chatOptions = new ChatOptions
-        {
-            Tools = [..memoryTools.Tools, ..sessionWorkingMemoryTools.Tools, ..toolGuideTools.Tools, ..registryTools]
-        };
-
+        // Subagent progress updates are ephemeral status indicators — relay directly
+        // to the user without an LLM call. Running the LLM loop for each progress
+        // message produces a second full chat bubble before the subagent even finishes,
+        // causing results to appear twice in different formats.
+        // Skip conversation memory too: progress turns pollute context the same way
+        // A2A Working status updates do.
         try
         {
-            var finalContent = await agentLoopRunner.RunAsync(
-                chatMessages, chatOptions, message.PrimarySessionId, cancellationToken: ct);
-
-            await conversationMemory.AddTurnAsync(
-                message.PrimarySessionId,
-                new ConversationTurn("assistant", finalContent, DateTimeOffset.UtcNow),
-                ct);
-
-            var reply = new AgentReply
+            var progressReply = new AgentReply
             {
-                Content = finalContent,
+                Content = message.Message,
                 SessionId = message.PrimarySessionId,
                 AgentName = agent.Name,
-                IsFinal = true
+                IsFinal = false
             };
-            var envelope = reply.ToEnvelope<AgentReply>(source: agent.Name);
+            var envelope = progressReply.ToEnvelope<AgentReply>(source: agent.Name);
             await publisher.PublishAsync(UserProxyTopics.UserResponse, envelope, ct);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            logger.LogError(ex, "Failed to handle subagent progress for task {TaskId}", message.TaskId);
+            logger.LogError(ex, "Failed to relay subagent progress for task {TaskId}", message.TaskId);
         }
     }
 }
