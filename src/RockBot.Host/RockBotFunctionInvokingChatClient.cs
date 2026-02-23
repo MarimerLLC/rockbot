@@ -94,6 +94,9 @@ public class RockBotFunctionInvokingChatClient : FunctionInvokingChatClient
         CancellationToken cancellationToken = default)
     {
         _consecutiveTimeoutIterations = 0;
+        _logger.LogInformation(
+            "RockBotFunctionInvokingChatClient handling request (maxIterations={MaxIter})",
+            MaximumIterationsPerRequest);
         var messageList = messages as List<ChatMessage> ?? [.. messages];
 
         if (_knownContextLimit is int preLimit)

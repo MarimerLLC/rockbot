@@ -68,7 +68,7 @@ public sealed class AgentLoopRunner(
         // Native path: FunctionInvokingChatClient handles the tool loop.
         // A single GetResponseAsync call executes all tool roundtrips via the middleware.
         logger.LogInformation(
-            "Running native tool-calling path ({MessageCount} messages in context)",
+            "Tool execution path: NATIVE (M.E.AI FunctionInvokingChatClient) — {MessageCount} messages in context",
             chatMessages.Count);
 
         // If there's a pre-fetched first response with tool calls, add it to history
@@ -98,6 +98,10 @@ public sealed class AgentLoopRunner(
         Func<string, CancellationToken, Task>? onToolTimeout,
         CancellationToken cancellationToken)
     {
+        logger.LogInformation(
+            "Tool execution path: TEXT-BASED (manual parsing loop) — {MessageCount} messages in context",
+            chatMessages.Count);
+
         ChatResponse? pendingResponse = firstResponse;
         var anyToolCalled = false;
         var maxIterations = modelBehavior.MaxToolIterationsOverride ?? MaxToolIterations;
