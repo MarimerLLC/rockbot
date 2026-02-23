@@ -20,6 +20,7 @@ internal sealed class ScheduledTaskHandler(
     IToolRegistry toolRegistry,
     RulesTools rulesTools,
     ModelBehavior modelBehavior,
+    IAgentWorkSerializer workSerializer,
     AgentLoopRunner agentLoopRunner,
     AgentContextBuilder agentContextBuilder,
     IOptions<AgentProfileOptions> profileOptions,
@@ -59,13 +60,35 @@ internal sealed class ScheduledTaskHandler(
             Tools = [..rulesTools.Tools, ..registryTools]
         };
 
+        // Try to acquire the single execution slot. If a user loop is running,
+        // skip this tick — the next scheduled cron tick will try again.
+        var slot = await workSerializer.TryAcquireForScheduledAsync(ct);
+        if (slot is null)
+        {
+            logger.LogInformation(
+                "Skipping scheduled task '{TaskName}' — user session is active", message.TaskName);
+            return;
+        }
+
         string finalText;
         try
         {
-            finalText = await agentLoopRunner.RunAsync(chatMessages, chatOptions, sessionId: null, cancellationToken: ct);
+            // Use slot.Token so a new user message can preempt this task cleanly.
+            await using (slot)
+            {
+                finalText = await agentLoopRunner.RunAsync(
+                    chatMessages, chatOptions, sessionId: null, cancellationToken: slot.Token);
+            }
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
+            return;
+        }
+        catch (OperationCanceledException)
+        {
+            // Preempted by a user session — exit silently, no error to report.
+            logger.LogInformation(
+                "Scheduled task '{TaskName}' was preempted by a user session", message.TaskName);
             return;
         }
         catch (Exception ex)

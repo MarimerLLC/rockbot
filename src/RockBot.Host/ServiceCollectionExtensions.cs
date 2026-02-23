@@ -29,6 +29,7 @@ public static class ServiceCollectionExtensions
         services.AddScoped<AgentContextBuilder>();
         services.AddSingleton<SessionStartTracker>();
         services.AddSingleton<IUserActivityMonitor, UserActivityMonitor>();
+        services.AddSingleton<IAgentWorkSerializer, AgentWorkSerializer>();
         services.AddSingleton<IMessagePipeline, MessagePipeline>();
         services.AddSingleton<IHostedService, AgentHost>();
 
