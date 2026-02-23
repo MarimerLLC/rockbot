@@ -1,7 +1,10 @@
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
 using RockBot.Host;
+using RockBot.Llm;
+using RockBot.Memory;
 using RockBot.Messaging;
+using RockBot.Skills;
 using RockBot.Tools;
 using RockBot.UserProxy;
 
@@ -21,13 +24,18 @@ namespace RockBot.Agent;
 /// </summary>
 internal sealed class UserFeedbackHandler(
     IConversationMemory conversationMemory,
+    ILlmClient llmClient,
     IMessagePublisher publisher,
     AgentIdentity agent,
     IFeedbackStore feedbackStore,
     AgentLoopRunner agentLoopRunner,
     AgentContextBuilder agentContextBuilder,
+    IWorkingMemory workingMemory,
+    MemoryTools memoryTools,
+    ISkillStore skillStore,
     IToolRegistry toolRegistry,
     RulesTools rulesTools,
+    ToolGuideTools toolGuideTools,
     IAgentWorkSerializer workSerializer,
     ILogger<UserFeedbackHandler> logger) : IMessageHandler<UserFeedback>
 {
@@ -118,8 +126,10 @@ internal sealed class UserFeedbackHandler(
                     "Re-read the conversation and provide a better response. " +
                     "Try a different approach, add more detail, or correct any mistakes."));
 
-                // Give the re-evaluation loop access to registry tools + rules tools
-                // so it can take actions (web search, MCP tools, etc.) if needed.
+                // Give the re-evaluation loop the full agent tool set so it can
+                // use memory, skills, web search, MCP tools, etc. as needed.
+                var sessionWorkingMemoryTools = new WorkingMemoryTools(workingMemory, message.SessionId, logger);
+                var sessionSkillTools = new SkillTools(skillStore, llmClient, logger, message.SessionId);
                 var registryTools = toolRegistry.GetTools()
                     .Select(r => (AIFunction)new RegistryToolFunction(
                         r, toolRegistry.GetExecutor(r.Name)!, message.SessionId))
@@ -127,7 +137,8 @@ internal sealed class UserFeedbackHandler(
 
                 var chatOptions = new ChatOptions
                 {
-                    Tools = [.. rulesTools.Tools, .. registryTools]
+                    Tools = [..memoryTools.Tools, ..sessionWorkingMemoryTools.Tools, ..sessionSkillTools.Tools,
+                             ..rulesTools.Tools, ..toolGuideTools.Tools, ..registryTools]
                 };
 
                 freshResponse = await agentLoopRunner.RunAsync(

@@ -75,15 +75,27 @@ public class UserFeedbackHandlerTests
         var rulesTools = new RulesTools(
             new StubRulesStore(), clock, NullLogger<RulesTools>.Instance);
 
+        var workingMemory = new StubWorkingMemory();
+        var skillStore = new StubSkillStore();
+        var memoryTools = new MemoryTools(
+            new StubLongTermMemory(), _llmClient, profileOptions, NullLogger<MemoryTools>.Instance);
+        var toolGuideTools = new ToolGuideTools(
+            [], NullLogger<ToolGuideTools>.Instance);
+
         _handler = new UserFeedbackHandler(
             _conversationMemory,
+            _llmClient,
             _publisher,
             agent,
             _feedbackStore,
             agentLoopRunner,
             agentContextBuilder,
+            workingMemory,
+            memoryTools,
+            skillStore,
             _toolRegistry,
             rulesTools,
+            toolGuideTools,
             _workSerializer,
             NullLogger<UserFeedbackHandler>.Instance);
     }

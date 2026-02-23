@@ -36,6 +36,7 @@ public class SubagentManagerTests
         services.AddSingleton(new AgentIdentity("test-agent"));
         services.AddSingleton(ModelBehavior.Default);
         services.AddSingleton<MemoryTools>();
+        services.AddSingleton(new ToolGuideTools([], NullLoggerFactory.Instance.CreateLogger<ToolGuideTools>()));
         services.AddTransient<AgentLoopRunner>();
         services.AddTransient<SubagentRunner>();
     }

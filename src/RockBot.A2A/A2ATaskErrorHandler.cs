@@ -1,6 +1,7 @@
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
 using RockBot.Host;
+using RockBot.Llm;
 using RockBot.Memory;
 using RockBot.Messaging;
 using RockBot.Skills;
@@ -16,11 +17,14 @@ namespace RockBot.A2A;
 internal sealed class A2ATaskErrorHandler(
     AgentLoopRunner agentLoopRunner,
     AgentContextBuilder agentContextBuilder,
+    ILlmClient llmClient,
     IMessagePublisher publisher,
     AgentIdentity agent,
     IWorkingMemory workingMemory,
     MemoryTools memoryTools,
+    ISkillStore skillStore,
     IToolRegistry toolRegistry,
+    RulesTools rulesTools,
     ToolGuideTools toolGuideTools,
     IConversationMemory conversationMemory,
     A2ATaskTracker tracker,
@@ -55,6 +59,7 @@ internal sealed class A2ATaskErrorHandler(
             pending.PrimarySessionId, syntheticUserTurn, ct);
 
         var sessionWorkingMemoryTools = new WorkingMemoryTools(workingMemory, pending.PrimarySessionId, logger);
+        var sessionSkillTools = new SkillTools(skillStore, llmClient, logger, pending.PrimarySessionId);
         var registryTools = toolRegistry.GetTools()
             .Select(r => (AIFunction)new RegistryToolFunction(
                 r, toolRegistry.GetExecutor(r.Name)!, pending.PrimarySessionId))
@@ -62,7 +67,8 @@ internal sealed class A2ATaskErrorHandler(
 
         var chatOptions = new ChatOptions
         {
-            Tools = [..memoryTools.Tools, ..sessionWorkingMemoryTools.Tools, ..toolGuideTools.Tools, ..registryTools]
+            Tools = [..memoryTools.Tools, ..sessionWorkingMemoryTools.Tools, ..sessionSkillTools.Tools,
+                     ..rulesTools.Tools, ..toolGuideTools.Tools, ..registryTools]
         };
 
         try

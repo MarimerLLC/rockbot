@@ -1,6 +1,7 @@
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
 using RockBot.Host;
+using RockBot.Llm;
 using RockBot.Memory;
 using RockBot.Messaging;
 using RockBot.Skills;
@@ -15,11 +16,14 @@ namespace RockBot.Subagent;
 internal sealed class SubagentResultHandler(
     AgentLoopRunner agentLoopRunner,
     AgentContextBuilder agentContextBuilder,
+    ILlmClient llmClient,
     IMessagePublisher publisher,
     AgentIdentity agent,
     IWorkingMemory workingMemory,
     MemoryTools memoryTools,
+    ISkillStore skillStore,
     IToolRegistry toolRegistry,
+    RulesTools rulesTools,
     ToolGuideTools toolGuideTools,
     IConversationMemory conversationMemory,
     ILogger<SubagentResultHandler> logger) : IMessageHandler<SubagentResultMessage>
@@ -96,6 +100,7 @@ internal sealed class SubagentResultHandler(
             message.PrimarySessionId, syntheticUserTurn, ct);
 
         var sessionWorkingMemoryTools = new WorkingMemoryTools(workingMemory, message.PrimarySessionId, logger);
+        var sessionSkillTools = new SkillTools(skillStore, llmClient, logger, message.PrimarySessionId);
         var registryTools = toolRegistry.GetTools()
             .Select(r => (AIFunction)new SubagentRegistryToolFunction(
                 r, toolRegistry.GetExecutor(r.Name)!, message.PrimarySessionId))
@@ -103,7 +108,8 @@ internal sealed class SubagentResultHandler(
 
         var chatOptions = new ChatOptions
         {
-            Tools = [..memoryTools.Tools, ..sessionWorkingMemoryTools.Tools, ..toolGuideTools.Tools, ..registryTools]
+            Tools = [..memoryTools.Tools, ..sessionWorkingMemoryTools.Tools, ..sessionSkillTools.Tools,
+                     ..rulesTools.Tools, ..toolGuideTools.Tools, ..registryTools]
         };
 
         try

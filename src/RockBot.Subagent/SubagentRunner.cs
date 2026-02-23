@@ -21,6 +21,7 @@ internal sealed class SubagentRunner(
     MemoryTools memoryTools,
     ISkillStore skillStore,
     IToolRegistry toolRegistry,
+    ToolGuideTools toolGuideTools,
     IMessagePublisher publisher,
     ILogger<SubagentRunner> logger)
 {
@@ -103,6 +104,7 @@ internal sealed class SubagentRunner(
                 ..memoryTools.Tools,
                 ..sessionWorkingMemoryTools.Tools,
                 ..skillTools.Tools,
+                ..toolGuideTools.Tools,
                 ..registryTools,
                 ..reportProgressFunctions.Tools,
                 ..sharedOutputFunctions.Tools
