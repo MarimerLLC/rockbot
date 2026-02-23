@@ -10,7 +10,7 @@ using RockBot.Messaging;
 using RockBot.Tools;
 using RockBot.Tools.Mcp;
 
-namespace RockBot.Cli.McpBridge;
+namespace RockBot.Agent.McpBridge;
 
 /// <summary>
 /// Hosted service that manages MCP server connections, handles tool invoke requests

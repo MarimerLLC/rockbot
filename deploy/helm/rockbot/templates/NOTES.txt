@@ -11,7 +11,7 @@ NEXT STEPS
 
    # Agent
    docker build -t {{ .Values.agent.image.repository }}:{{ .Values.agent.image.tag }} \
-     -f deploy/Dockerfile.cli .
+     -f deploy/Dockerfile.agent .
    docker push {{ .Values.agent.image.repository }}:{{ .Values.agent.image.tag }}
 
    # Blazor UI
@@ -30,11 +30,11 @@ NEXT STEPS
 
    # Copy your local agent directory to the PVC
    kubectl -n {{ .Values.namespace }} cp \
-     src/RockBot.Cli/agent/ <pod-name>:/data/agent/
+     src/RockBot.Agent/agent/ <pod-name>:/data/agent/
 
    # Copy your mcp.json
    kubectl -n {{ .Values.namespace }} cp \
-     src/RockBot.Cli/mcp.json <pod-name>:/data/agent/mcp.json
+     src/RockBot.Agent/mcp.json <pod-name>:/data/agent/mcp.json
 
    Or exec in and edit directly:
    kubectl -n {{ .Values.namespace }} exec -it deploy/{{ include "rockbot.fullname" . }}-agent -- /bin/sh

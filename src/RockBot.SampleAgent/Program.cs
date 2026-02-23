@@ -16,7 +16,7 @@ builder.Configuration.AddUserSecrets<Program>();
 
 builder.Services.AddRockBotRabbitMq(opts => builder.Configuration.GetSection("RabbitMq").Bind(opts));
 
-// Configure the LLM chat client (same pattern as RockBot.Cli)
+// Configure the LLM chat client (same pattern as RockBot.Agent)
 var llmConfig = builder.Configuration.GetSection("LLM");
 var endpoint = llmConfig["Endpoint"];
 var apiKey = llmConfig["ApiKey"];

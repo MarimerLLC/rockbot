@@ -5,12 +5,12 @@
     <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
-    <RootNamespace>RockBot.Cli</RootNamespace>
+    <RootNamespace>RockBot.Agent</RootNamespace>
     <UserSecretsId>49db2617-d2b4-4d64-a2e7-bfee3b6c60a7</UserSecretsId>
   </PropertyGroup>
 
   <ItemGroup>
-    <InternalsVisibleTo Include="RockBot.Cli.Tests" />
+    <InternalsVisibleTo Include="RockBot.Agent.Tests" />
   </ItemGroup>
 
   <ItemGroup>

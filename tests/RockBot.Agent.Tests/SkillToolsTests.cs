@@ -3,7 +3,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 using RockBot.Host;
 using RockBot.Skills;
 
-namespace RockBot.Cli.Tests;
+namespace RockBot.Agent.Tests;
 
 [TestClass]
 public class SkillToolsTests

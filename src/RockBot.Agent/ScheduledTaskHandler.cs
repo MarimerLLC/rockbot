@@ -7,7 +7,7 @@ using RockBot.Messaging;
 using RockBot.Tools;
 using RockBot.UserProxy;
 
-namespace RockBot.Cli;
+namespace RockBot.Agent;
 
 /// <summary>
 /// Handles <see cref="ScheduledTaskMessage"/> by invoking the LLM with the full agent

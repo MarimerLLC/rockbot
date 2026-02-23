@@ -31,7 +31,7 @@
     <Project Path="src/RockBot.UserProxy.Blazor/RockBot.UserProxy.Blazor.csproj" />
     <Project Path="src/RockBot.Memory/RockBot.Memory.csproj" />
     <Project Path="src/RockBot.Skills/RockBot.Skills.csproj" />
-    <Project Path="src/RockBot.Cli/RockBot.Cli.csproj" />
+    <Project Path="src/RockBot.Agent/RockBot.Agent.csproj" />
     <Project Path="src/RockBot.Tools.Web/RockBot.Tools.Web.csproj" />
     <Project Path="src/RockBot.Tools.Scheduling/RockBot.Tools.Scheduling.csproj" />
     <Project Path="src/RockBot.Subagent/RockBot.Subagent.csproj" />
@@ -46,7 +46,7 @@
     <Project Path="tests/RockBot.A2A.Tests/RockBot.A2A.Tests.csproj" />
     <Project Path="tests/RockBot.Telemetry.Tests/RockBot.Telemetry.Tests.csproj" />
     <Project Path="tests/RockBot.UserProxy.Tests/RockBot.UserProxy.Tests.csproj" />
-    <Project Path="tests/RockBot.Cli.Tests/RockBot.Cli.Tests.csproj" />
+    <Project Path="tests/RockBot.Agent.Tests/RockBot.Agent.Tests.csproj" />
     <Project Path="tests/RockBot.Tools.Web.Tests/RockBot.Tools.Web.Tests.csproj" />
     <Project Path="tests/RockBot.Subagent.Tests/RockBot.Subagent.Tests.csproj" />
   </Folder>

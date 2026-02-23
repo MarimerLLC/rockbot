@@ -1,4 +1,4 @@
-namespace RockBot.Cli.ScriptBridge;
+namespace RockBot.Agent.ScriptBridge;
 
 /// <summary>
 /// Configuration options for the script bridge service.

@@ -25,7 +25,7 @@ UserProxyService (RockBot.UserProxy)
 RabbitMQ (rockbot topic exchange)
     │
     ▼
-Agent (RockBot.Cli)
+Agent (RockBot.Agent)
 ```
 
 The Blazor UI is stateless with respect to the agent — it holds only the current browser
