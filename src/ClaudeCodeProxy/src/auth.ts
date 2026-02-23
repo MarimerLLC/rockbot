@@ -39,7 +39,7 @@ export function resolveAuth(): AuthResult {
   // 3. Claude Code credentials file (Max/Pro subscription)
   const credentialsPath =
     process.env.CLAUDE_CREDENTIALS_PATH ??
-    path.join(process.env.HOME ?? "/root", ".claude", "credentials.json");
+    path.join(process.env.HOME ?? "/root", ".claude", ".credentials.json");
 
   if (fs.existsSync(credentialsPath)) {
     try {
