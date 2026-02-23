@@ -6,6 +6,7 @@
   </Configurations>
   <Folder Name="/mcp-servers/">
     <Project Path="src/McpServer.OpenRouter/McpServer.OpenRouter.csproj" />
+    <Project Path="src/McpServer.TodoApp/McpServer.TodoApp.csproj" />
   </Folder>
   <Folder Name="/src/">
     <Project Path="src/RockBot.Host.Abstractions/RockBot.Host.Abstractions.csproj" />

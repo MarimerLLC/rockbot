@@ -103,6 +103,25 @@ openrouterMcp:
       cpu: 200m
       memory: 256Mi
 
+# ── TodoApp MCP server ────────────────────────────────────────────────────────
+# Standalone MCP server that exposes a persistent to-do list to the agent.
+# Data is stored in a Longhorn PVC mounted at /data inside the container.
+todoappMcp:
+  enabled: false
+  image:
+    repository: rockylhotka/mcpserver-todoapp
+    tag: latest
+  replicaCount: 1
+  storage:
+    size: 1Gi
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 200m
+      memory: 256Mi
+
 # ── Secrets ───────────────────────────────────────────────────────────────────
 # create: true  → Helm creates a Secret from the values below (convenient, but
 #                  secret values end up in Helm release history — use for dev/test

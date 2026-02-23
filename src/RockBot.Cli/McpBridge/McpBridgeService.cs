@@ -380,29 +380,31 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
 
         var sw = System.Diagnostics.Stopwatch.StartNew();
 
+        // Parse and pre-process arguments outside the try block so they are accessible
+        // in the catch for transparent reconnect-and-retry.
+        var arguments = McpToolExecutor.ParseArguments(request.Arguments);
+
+        // Detect and unwrap self-referential double-wrapped invoke_tool calls.
+        if (request.ToolName == "invoke_tool"
+            && GetStringArgument(arguments, "serverName") is { } wrappedServer
+            && wrappedServer.Contains("aggregator", StringComparison.OrdinalIgnoreCase)
+            && GetStringArgument(arguments, "toolName") == "invoke_tool"
+            && GetStringArgument(arguments, "arguments") is { } innerArgsJson)
+        {
+            var unwrapped = McpToolExecutor.ParseArguments(innerArgsJson);
+            if (unwrapped.Count > 0)
+            {
+                _logger.LogInformation(
+                    "Unwrapping self-referential invoke_tool call (serverName={WrappedServer}); routing inner call: {InnerArgs}",
+                    wrappedServer, innerArgsJson);
+                arguments = unwrapped;
+            }
+        }
+
         try
         {
             using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
             timeoutCts.CancelAfter(timeoutMs);
-
-            var arguments = McpToolExecutor.ParseArguments(request.Arguments);
-
-            // Detect and unwrap self-referential double-wrapped invoke_tool calls.
-            if (request.ToolName == "invoke_tool"
-                && GetStringArgument(arguments, "serverName") is { } wrappedServer
-                && wrappedServer.Contains("aggregator", StringComparison.OrdinalIgnoreCase)
-                && GetStringArgument(arguments, "toolName") == "invoke_tool"
-                && GetStringArgument(arguments, "arguments") is { } innerArgsJson)
-            {
-                var unwrapped = McpToolExecutor.ParseArguments(innerArgsJson);
-                if (unwrapped.Count > 0)
-                {
-                    _logger.LogInformation(
-                        "Unwrapping self-referential invoke_tool call (serverName={WrappedServer}); routing inner call: {InnerArgs}",
-                        wrappedServer, innerArgsJson);
-                    arguments = unwrapped;
-                }
-            }
 
             var result = await client.CallToolAsync(
                 request.ToolName, arguments, cancellationToken: timeoutCts.Token);
@@ -465,23 +467,54 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
         {
             sw.Stop();
 
-            // Any exception from CallToolAsync likely means the SSE connection is dead
+            // Any exception from CallToolAsync likely means the connection is dead
             // (server restarted, session expired, network reset, etc.).
-            // Trigger a background reconnect so the next agent retry will succeed.
+            // Reconnect synchronously and retry the call once so the agent never sees
+            // a transient session failure — it's transparent from the agent's perspective.
             if (serverName is not null && _serverConfigs.TryGetValue(serverName, out var staleConfig))
             {
                 _logger.LogWarning(ex,
-                    "← MCP {Server}/{Tool} FAILED after {ElapsedMs}ms — reconnecting",
+                    "← MCP {Server}/{Tool} FAILED after {ElapsedMs}ms — reconnecting and retrying transparently",
                     serverName, request.ToolName, sw.ElapsedMilliseconds);
 
-                _ = Task.Run(async () =>
+                try
                 {
-                    try { await ConnectServerAsync(serverName, staleConfig, CancellationToken.None); }
-                    catch (Exception reconnectEx)
+                    await ConnectServerAsync(serverName, staleConfig, ct);
+
+                    var freshClient = _clients.GetValueOrDefault(serverName);
+                    if (freshClient is not null)
                     {
-                        _logger.LogError(reconnectEx, "Reconnect to MCP server {Server} failed", serverName);
+                        using var retryCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                        retryCts.CancelAfter(timeoutMs);
+
+                        var retryResult = await freshClient.CallToolAsync(
+                            request.ToolName, arguments, cancellationToken: retryCts.Token);
+
+                        sw.Stop();
+                        var retryContent = McpToolExecutor.FormatResult(retryResult);
+
+                        _logger.LogInformation(
+                            "← MCP {Server}/{Tool} OK after transparent reconnect ({ContentLen} chars)",
+                            serverName, request.ToolName, retryContent?.Length ?? 0);
+
+                        var retryResponse = new ToolInvokeResponse
+                        {
+                            ToolCallId = request.ToolCallId,
+                            ToolName = request.ToolName,
+                            Content = retryContent,
+                            IsError = retryResult.IsError == true
+                        };
+
+                        await PublishResponseAsync(retryResponse, replyTo, envelope.CorrelationId, ct);
+                        return MessageResult.Ack;
                     }
-                });
+                }
+                catch (Exception retryEx)
+                {
+                    _logger.LogError(retryEx,
+                        "Reconnect/retry for MCP {Server}/{Tool} also failed — returning error to agent",
+                        serverName, request.ToolName);
+                }
             }
             else
             {

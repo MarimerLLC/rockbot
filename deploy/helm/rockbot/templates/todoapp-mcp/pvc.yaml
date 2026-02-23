@@ -1,0 +1,17 @@
+{{- if .Values.todoappMcp.enabled }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: mcp-todo-data
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "rockbot.labels" . | nindent 4 }}
+    app.kubernetes.io/component: mcp-todo
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: {{ .Values.storage.storageClass }}
+  resources:
+    requests:
+      storage: {{ .Values.todoappMcp.storage.size }}
+{{- end }}

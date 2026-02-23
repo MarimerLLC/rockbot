@@ -1,0 +1,53 @@
+{{- if .Values.todoappMcp.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mcp-todo
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "rockbot.labels" . | nindent 4 }}
+    app.kubernetes.io/component: mcp-todo
+spec:
+  replicas: {{ .Values.todoappMcp.replicaCount }}
+  selector:
+    matchLabels:
+      app: mcp-todo
+  template:
+    metadata:
+      labels:
+        app: mcp-todo
+        {{- include "rockbot.labels" . | nindent 8 }}
+        app.kubernetes.io/component: mcp-todo
+    spec:
+      securityContext:
+        fsGroup: 1654
+      containers:
+        - name: mcp-todo
+          image: {{ .Values.todoappMcp.image.repository }}:{{ .Values.todoappMcp.image.tag }}
+          imagePullPolicy: {{ .Values.imagePullPolicy }}
+          ports:
+            - name: http
+              containerPort: 8080
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 15
+            periodSeconds: 15
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          resources:
+            {{- toYaml .Values.todoappMcp.resources | nindent 12 }}
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: mcp-todo-data
+{{- end }}
