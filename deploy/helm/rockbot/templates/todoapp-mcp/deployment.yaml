@@ -2,27 +2,25 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: {{ include "rockbot.fullname" . }}-todoapp-mcp
+  name: mcp-todo
   namespace: {{ .Values.namespace }}
   labels:
     {{- include "rockbot.labels" . | nindent 4 }}
-    app.kubernetes.io/component: todoapp-mcp
+    app.kubernetes.io/component: mcp-todo
 spec:
   replicas: {{ .Values.todoappMcp.replicaCount }}
   selector:
     matchLabels:
-      app: rockbot-todoapp-mcp
-      {{- include "rockbot.selectorLabels" . | nindent 6 }}
+      app: mcp-todo
   template:
     metadata:
       labels:
-        app: rockbot-todoapp-mcp
+        app: mcp-todo
         {{- include "rockbot.labels" . | nindent 8 }}
-        {{- include "rockbot.selectorLabels" . | nindent 8 }}
-        app.kubernetes.io/component: todoapp-mcp
+        app.kubernetes.io/component: mcp-todo
     spec:
       containers:
-        - name: todoapp-mcp
+        - name: mcp-todo
           image: {{ .Values.todoappMcp.image.repository }}:{{ .Values.todoappMcp.image.tag }}
           imagePullPolicy: {{ .Values.imagePullPolicy }}
           ports:
@@ -49,5 +47,5 @@ spec:
       volumes:
         - name: data
           persistentVolumeClaim:
-            claimName: {{ include "rockbot.fullname" . }}-todoapp-mcp-data
+            claimName: mcp-todo-data
 {{- end }}

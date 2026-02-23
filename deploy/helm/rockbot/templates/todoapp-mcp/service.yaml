@@ -2,16 +2,15 @@
 apiVersion: v1
 kind: Service
 metadata:
-  name: {{ include "rockbot.fullname" . }}-todoapp-mcp
+  name: mcp-todo
   namespace: {{ .Values.namespace }}
   labels:
     {{- include "rockbot.labels" . | nindent 4 }}
-    app.kubernetes.io/component: todoapp-mcp
+    app.kubernetes.io/component: mcp-todo
 spec:
   type: ClusterIP
   selector:
-    app: rockbot-todoapp-mcp
-    {{- include "rockbot.selectorLabels" . | nindent 4 }}
+    app: mcp-todo
   ports:
     - name: http
       port: 80
