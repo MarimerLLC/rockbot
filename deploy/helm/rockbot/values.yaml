@@ -14,7 +14,7 @@ agent:
   # IANA timezone ID injected into every LLM prompt as current date/time context.
   # e.g. "America/Chicago", "Europe/London", "Asia/Tokyo"
   # Defaults to UTC (the k8s node timezone) if unset.
-  timezone: ""
+  timezone: "America/Chicago"
   resources:
     requests:
       cpu: 500m
