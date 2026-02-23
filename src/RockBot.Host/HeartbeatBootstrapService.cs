@@ -31,7 +31,7 @@ internal sealed class HeartbeatBootstrapService(
         await scheduler.ScheduleAsync(new ScheduledTask(
             Name: "heartbeat-patrol",
             CronExpression: options.Value.CronExpression,
-            Description: "Execute the heartbeat patrol directive.",
+            Description: "Run the heartbeat patrol: check calendar, email, active plans, and scheduled task health.",
             CreatedAt: DateTimeOffset.UtcNow,
             RunOnce: false), ct);
 
