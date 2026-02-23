@@ -309,7 +309,8 @@ services.AddRockBotHost(agent =>
 | `WithConversationMemory()` | `IConversationMemory` (file-backed + in-memory) |
 | `WithLongTermMemory()` | `ILongTermMemory` (FileMemoryStore) |
 | `WithWorkingMemory()` | `IWorkingMemory` (HybridCacheWorkingMemory) |
-| `WithMemory()` | All three memory tiers above |
+| `WithSharedMemory()` | `ISharedMemory` (HybridCacheSharedMemory) |
+| `WithMemory()` | All four memory tiers above |
 | `WithConversationLog()` | `IConversationLog` (FileConversationLog) |
 | `WithFeedback()` | `IFeedbackStore` + `SessionSummaryService` |
 | `WithSkills()` | `ISkillStore` + `ISkillUsageStore` + `StarterSkillService` |

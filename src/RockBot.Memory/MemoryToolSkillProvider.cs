@@ -3,26 +3,27 @@ using RockBot.Tools;
 namespace RockBot.Memory;
 
 /// <summary>
-/// Provides the agent with a usage guide for all three memory tiers:
-/// long-term memory, working memory, and behavioral rules.
+/// Provides the agent with a usage guide for all memory tiers:
+/// long-term memory, working memory, shared memory, and behavioral rules.
 /// Registered automatically when <c>WithMemory()</c> is called.
 /// </summary>
 public sealed class MemoryToolSkillProvider : IToolSkillProvider
 {
     public string Name => "memory";
-    public string Summary => "Long-term memory, session working memory, and behavioral rules — when and how to use each.";
+    public string Summary => "Long-term memory, session working memory, cross-session shared memory, and behavioral rules — when and how to use each.";
 
     public string GetDocument() =>
         """
         # Memory Systems Guide
 
-        Three complementary memory systems let the agent persist knowledge and shape
+        Four complementary memory systems let the agent persist knowledge and shape
         its behavior over time. Knowing which to use — and when — is essential.
 
         | System | Scope | Purpose |
         |---|---|---|
         | Long-term memory | Permanent, cross-session | Facts, preferences, learned patterns |
         | Working memory | Session-scoped, TTL-based | Large tool results, scratch data |
+        | Shared memory | Cross-session, TTL-based | Data exchange between sessions, patrol tasks, subagents |
         | Rules | Permanent, injected every turn | Hard behavioral constraints |
 
 
@@ -206,6 +207,86 @@ public sealed class MemoryToolSkillProvider : IToolSkillProvider
 
         ---
 
+        ## Shared Memory
+
+        Shared memory is a cross-session scratch space accessible to all execution
+        contexts — user sessions, patrol tasks, and subagents. Unlike working memory,
+        keys are global (not session-scoped). Data is preserved verbatim — no LLM
+        processing or dream consolidation. Entries expire automatically (default: 30 min).
+
+        ### When to save
+
+        - Subagent outputs that the primary agent needs to retrieve (use category `subagent-output`)
+        - Data that a patrol task discovers and the primary agent should act on
+        - Any operational data that must be exchanged between isolated sessions verbatim
+
+        ### When NOT to save
+
+        - Data relevant only to the current session (use working memory instead)
+        - Facts worth keeping permanently (use long-term memory instead)
+        - Small results that can be communicated in the subagent's final message text
+
+
+        ### save_to_shared_memory
+
+        Stores data under a descriptive key with an optional TTL.
+
+        **Parameters**
+        - `key` (string, required) — short descriptive key (e.g. `results-abc123`, `patrol-alert-2026-02-23`)
+        - `data` (string, required) — the content to store
+        - `ttl_minutes` (integer, optional, default 30) — how long to keep this entry
+        - `category` (string, optional) — groups related entries (e.g. `subagent-output`, `patrol-finding`)
+        - `tags` (string, optional) — comma-separated tags for filtering
+
+        ```
+        save_to_shared_memory(
+          key: "email-report-abc123",
+          data: "<structured report>",
+          category: "subagent-output",
+          tags: "email,report"
+        )
+        ```
+
+
+        ### get_from_shared_memory
+
+        Retrieves a shared memory entry by its exact key.
+
+        **Parameters**
+        - `key` (string, required) — as shown by `list_shared_memory`
+
+        ```
+        get_from_shared_memory(key: "email-report-abc123")
+        ```
+
+
+        ### list_shared_memory
+
+        Lists all active shared memory entries with keys, categories, tags, and remaining TTL.
+        The system also shows a shared memory summary in your context at the start of each
+        turn — check that first before calling this tool.
+
+        ```
+        list_shared_memory()
+        ```
+
+
+        ### search_shared_memory
+
+        Searches shared memory entries by keyword, category, and/or tags using BM25 ranking.
+
+        **Parameters**
+        - `query` (string, optional) — keywords to search for
+        - `category` (string, optional) — category prefix filter
+        - `tags` (string, optional) — comma-separated tags that entries must have
+
+        ```
+        search_shared_memory(category: "subagent-output")
+        ```
+
+
+        ---
+
         ## Best Practices
 
         - **Prefer working memory for large payloads** — long-term memory is for facts,
@@ -214,8 +295,12 @@ public sealed class MemoryToolSkillProvider : IToolSkillProvider
           might already be remembered, check first
         - **Set realistic TTLs** — 5 minutes suits quick follow-ups; 15–30 minutes for
           research sessions; keep it short to avoid stale data
+        - **Use shared memory for cross-session data exchange** — when a patrol task or
+          subagent needs to pass structured data verbatim, use shared memory instead of
+          long-term memory (which gets LLM-enriched and dream-consolidated)
         - **Use consistent category conventions** — `user-preferences/*`, `project/*`,
-          `domain/*` for long-term; `email`, `calendar`, `research` for working memory
+          `domain/*` for long-term; `email`, `calendar`, `research` for working memory;
+          `subagent-output`, `patrol-finding` for shared memory
         - **Delete wrong facts promptly** — stale or incorrect long-term memories
           can silently degrade future responses
 
@@ -227,7 +312,7 @@ public sealed class MemoryToolSkillProvider : IToolSkillProvider
         - Forgetting that `save_memory` returns immediately — the actual save happens
           in the background; don't assume it's instantly searchable
         - Using working memory across sessions — it resets when the session ends;
-          long-term memory is the right store for anything that needs to survive
+          use shared memory for cross-session exchange, long-term memory for permanent facts
         - Ignoring the working memory context shown at the start of each turn — always
           check it before calling `list_working_memory`
         """;

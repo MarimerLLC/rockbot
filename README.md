@@ -77,11 +77,12 @@ The result is a swarm of agents that coordinate through messages, where the fail
 
 ## Key features
 
-### Memory (three tiers)
+### Memory (four tiers)
 
 - **Conversation memory** — sliding window of recent turns per session (default 50), auto-cleaned after idle timeout. Ephemeral and in-process.
 - **Long-term memory** — persistent file-based store organized by category. The framework automatically surfaces relevant entries each turn via BM25 keyword search against the user's message (delta injection — only unseen entries are added).
 - **Working memory** — fast session-scoped cache for intermediate results. Tools can save and retrieve data during a conversation without polluting long-term storage.
+- **Shared memory** — cross-session, TTL-based scratch space accessible to all execution contexts (user sessions, patrol tasks, subagents). Data is preserved verbatim — no LLM processing. Used for data exchange between isolated sessions.
 
 ### Skills
 
