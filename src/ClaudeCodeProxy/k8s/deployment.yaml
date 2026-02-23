@@ -1,0 +1,63 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: claude-code-proxy
+  namespace: rockbot
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: claude-code-proxy
+  template:
+    metadata:
+      labels:
+        app: claude-code-proxy
+    spec:
+      containers:
+        - name: proxy
+          image: rockylhotka/claude-code-proxy:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8080
+          env:
+            - name: DEFAULT_MODEL
+              value: "claude-sonnet-4-6"
+          volumeMounts:
+            - name: credentials
+              mountPath: /root/.claude
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 15
+            periodSeconds: 15
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+      volumes:
+        - name: credentials
+          persistentVolumeClaim:
+            claimName: claude-credentials
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: claude-code-proxy
+  namespace: rockbot
+spec:
+  type: ClusterIP
+  selector:
+    app: claude-code-proxy
+  ports:
+    - port: 80
+      targetPort: 8080

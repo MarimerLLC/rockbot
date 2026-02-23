@@ -37,6 +37,8 @@ Each agent is an isolated process that reacts to messages, invokes tools, calls 
 | `RockBot.UserProxy.Blazor` | Blazor Server chat UI with markdown rendering, conversation replay, and feedback signals |
 | `RockBot.UserProxy.Cli` | Console chat interface using Spectre.Console |
 | `McpServer.OpenRouter` | Standalone MCP server exposing OpenRouter account and usage information |
+| `McpServer.TodoApp` | Standalone MCP server providing a persistent to-do list with recurrence support |
+| `ClaudeCodeProxy` | OpenAI-compatible proxy for the Anthropic Messages API — enables use of a Claude Code Max subscription as the agent LLM |
 | `RockBot.Telemetry` | OpenTelemetry integration (OTLP gRPC export) |
 | `RockBot.Cli` | Unified host application — orchestrates all of the above as hosted services |
 
@@ -324,6 +326,18 @@ The agent has *no* pod permissions. A compromised agent cannot create or access 
 - Deployed when `openrouterMcp.enabled: true` in your values file.
 - Exposes read-only tools for querying OpenRouter account credits, available models, API keys, and generation logs.
 - Connected to the agent automatically via `mcp.json`.
+
+#### Todo MCP (`mcp-todo`) *(optional)*
+
+- Deployed when `todoappMcp.enabled: true` in your values file.
+- Provides the agent with a persistent to-do list (add, list, update, complete, delete) with due-date filtering and recurrence support (daily, weekly, monthly, quarterly, yearly).
+- Data stored in JSON files on a Longhorn PVC mounted at `/data`.
+
+#### Claude Code Proxy (`claude-code-proxy`) *(optional)*
+
+- OpenAI-compatible proxy that lets the agent use the Anthropic Messages API — including via a **Claude Code Max subscription** — with no changes to the agent code.
+- Handles full tool calling and automatic OAuth token refresh via the `claude` CLI.
+- See [`src/ClaudeCodeProxy/README.md`](src/ClaudeCodeProxy/README.md) for setup instructions, the ToS disclaimer, and links to Anthropic's February 2026 clarification that personal use is permitted.
 
 #### Scripts namespace (`rockbot-scripts`)
 
