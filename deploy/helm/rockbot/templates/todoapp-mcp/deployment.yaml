@@ -19,6 +19,8 @@ spec:
         {{- include "rockbot.labels" . | nindent 8 }}
         app.kubernetes.io/component: mcp-todo
     spec:
+      securityContext:
+        fsGroup: 1654
       containers:
         - name: mcp-todo
           image: {{ .Values.todoappMcp.image.repository }}:{{ .Values.todoappMcp.image.tag }}
