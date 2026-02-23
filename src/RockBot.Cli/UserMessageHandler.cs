@@ -117,9 +117,18 @@ internal sealed class UserMessageHandler(
                 .Select(r => (AIFunction)new RegistryToolFunction(r, toolRegistry.GetExecutor(r.Name)!, message.SessionId))
                 .ToArray();
 
+            var allTools = memoryTools.Tools
+                .Concat(sessionWorkingMemoryTools.Tools)
+                .Concat(sessionSkillTools.Tools)
+                .Concat(rulesTools.Tools)
+                .Concat(toolGuideTools.Tools)
+                .Concat(registryTools)
+                .OfType<AIFunction>()
+                .WithChunking(workingMemory, message.SessionId, modelBehavior, logger);
+
             var chatOptions = new ChatOptions
             {
-                Tools = [..memoryTools.Tools, ..sessionWorkingMemoryTools.Tools, ..sessionSkillTools.Tools, ..rulesTools.Tools, ..toolGuideTools.Tools, ..registryTools]
+                Tools = allTools
             };
 
             var toolNames = chatOptions.Tools!.OfType<AIFunction>().Select(t => t.Name).ToList();

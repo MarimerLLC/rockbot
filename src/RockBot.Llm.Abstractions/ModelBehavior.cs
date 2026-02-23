@@ -58,6 +58,15 @@ public sealed class ModelBehavior
     public bool RequireExplicitConfirmationForDestructiveTools { get; init; }
 
     /// <summary>
+    /// When true, the agent uses text-based tool-call parsing (the manual loop that
+    /// detects <c>tool_call_name:</c> patterns in free text) instead of M.E.AI's
+    /// <c>FunctionInvokingChatClient</c> middleware. This is required for models that
+    /// do not support native structured tool calling (e.g. DeepSeek).
+    /// Default is <c>false</c> — most models support native structured tool calling.
+    /// </summary>
+    public bool UseTextBasedToolCalling { get; init; }
+
+    /// <summary>
     /// Controls how the model presents results at the end of a scheduled-task run.
     /// Defaults to <see cref="ScheduledTaskResultMode.Summarize"/> (current behaviour).
     /// Set to <see cref="ScheduledTaskResultMode.VerbatimOutput"/> for models that tend

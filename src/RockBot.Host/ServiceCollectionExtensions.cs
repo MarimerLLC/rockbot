@@ -1,6 +1,10 @@
+using Microsoft.Extensions.AI;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
 using RockBot.Host.Middleware;
+using RockBot.Llm;
 
 namespace RockBot.Host;
 
@@ -32,6 +36,54 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<IAgentWorkSerializer, AgentWorkSerializer>();
         services.AddSingleton<IMessagePipeline, MessagePipeline>();
         services.AddSingleton<IHostedService, AgentHost>();
+
+        return services;
+    }
+
+    /// <summary>
+    /// Registers the <see cref="IChatClient"/> for the agent, optionally wrapping it in
+    /// <see cref="RockBotFunctionInvokingChatClient"/> for native structured tool calling.
+    /// When <see cref="ModelBehavior.UseTextBasedToolCalling"/> is true, the raw client is
+    /// registered as-is and <see cref="AgentLoopRunner"/> handles the manual tool loop.
+    /// <para>
+    /// Uses <see cref="ServiceCollectionDescriptorExtensions.TryAddSingleton{TService}"/>
+    /// for <see cref="ModelBehavior"/> so callers that pre-register it (e.g. with explicit
+    /// overrides) take priority. When no prior registration exists, resolves from
+    /// <see cref="IModelBehaviorProvider"/> using the inner client's model ID.
+    /// </para>
+    /// </summary>
+    public static IServiceCollection AddRockBotChatClient(
+        this IServiceCollection services,
+        IChatClient innerClient)
+    {
+        // TryAdd: only registers ModelBehavior if not already present.
+        // Agents that pre-register ModelBehavior (e.g. ResearchAgent with custom overrides)
+        // or use AddModelBehaviors() will keep their existing registration.
+        services.TryAddSingleton(sp =>
+        {
+            var provider = sp.GetService<IModelBehaviorProvider>();
+            if (provider is not null)
+            {
+                var modelId = innerClient.GetService<ChatClientMetadata>()?.DefaultModelId;
+                return provider.GetBehavior(modelId);
+            }
+
+            // No behavior provider registered — use defaults.
+            return ModelBehavior.Default;
+        });
+
+        services.AddSingleton<IChatClient>(sp =>
+        {
+            var behavior = sp.GetRequiredService<ModelBehavior>();
+            if (behavior.UseTextBasedToolCalling)
+                return innerClient;
+
+            return new RockBotFunctionInvokingChatClient(
+                innerClient,
+                sp.GetService<IToolProgressNotifier>(),
+                behavior,
+                sp.GetRequiredService<ILogger<RockBotFunctionInvokingChatClient>>());
+        });
 
         return services;
     }

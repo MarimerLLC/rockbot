@@ -37,6 +37,8 @@ internal sealed class DefaultModelBehaviorProvider(ModelBehaviorOptions options)
             ToolResultChunkingThreshold =
                 entry?.ToolResultChunkingThreshold ?? ModelBehavior.Default.ToolResultChunkingThreshold,
 
+            UseTextBasedToolCalling = entry?.UseTextBasedToolCalling ?? false,
+
             // String properties: file takes priority over config value
             AdditionalSystemPrompt =
                 ReadFile(modelDir, AdditionalSystemPromptFile) ?? entry?.AdditionalSystemPrompt,

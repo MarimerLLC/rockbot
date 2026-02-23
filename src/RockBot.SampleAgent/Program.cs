@@ -28,12 +28,12 @@ if (!string.IsNullOrEmpty(endpoint) && !string.IsNullOrEmpty(apiKey) && !string.
         new ApiKeyCredential(apiKey),
         new OpenAIClientOptions { Endpoint = new Uri(endpoint) });
 
-    builder.Services.AddSingleton<IChatClient>(
+    builder.Services.AddRockBotChatClient(
         openAiClient.GetChatClient(modelId).AsIChatClient());
 }
 else
 {
-    builder.Services.AddSingleton<IChatClient, EchoChatClient>();
+    builder.Services.AddRockBotChatClient(new EchoChatClient());
     Console.WriteLine("No LLM config found — using EchoChatClient.");
     Console.WriteLine("Set LLM:Endpoint, LLM:ApiKey, and LLM:ModelId to configure.");
 }
