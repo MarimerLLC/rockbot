@@ -17,10 +17,13 @@ ENV PORT=8080
 
 # Install the Claude Code CLI so the token refresh scheduler can run
 # `claude --version` daily to keep the OAuth credentials fresh.
-# Uses the official native installer (not npm).
+# The native installer places the binary at ~/.local/bin/claude.
 RUN apt-get update && apt-get install -y curl ca-certificates --no-install-recommends \
-    && curl -fsSL https://claude.ai/install.sh | sh \
+    && curl -fsSL https://claude.ai/install.sh | bash \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# Native installer puts the binary at ~/.local/bin — add to PATH
+ENV PATH="/root/.local/bin:${PATH}"
 
 COPY package.json ./
 RUN npm install --omit=dev
