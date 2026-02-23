@@ -16,7 +16,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\..\src\RockBot.Cli\RockBot.Cli.csproj" />
+    <ProjectReference Include="..\..\src\RockBot.Agent\RockBot.Agent.csproj" />
     <ProjectReference Include="..\..\src\RockBot.Memory\RockBot.Memory.csproj" />
     <ProjectReference Include="..\..\src\RockBot.Skills\RockBot.Skills.csproj" />
   </ItemGroup>

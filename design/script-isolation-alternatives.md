@@ -117,7 +117,7 @@ Deploy a persistent MCP server that exposes a `execute_python_script` tool. The 
 ```
 ┌─────────────────────┐        MCP/stdio or SSE        ┌──────────────────────────┐
 │   Agent Host        │ ──────────────────────────────► │  RockBot MCP Script      │
-│  (RockBot.Cli, etc) │                                  │  Server                  │
+│  (RockBot.Agent, etc)│                                  │  Server                  │
 └─────────────────────┘                                  │  (Docker container /     │
                                                          │   remote VM / local)     │
                                                          └──────────────────────────┘

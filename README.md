@@ -40,7 +40,7 @@ Each agent is an isolated process that reacts to messages, invokes tools, calls 
 | `McpServer.TodoApp` | Standalone MCP server providing a persistent to-do list with recurrence support |
 | `ClaudeCodeProxy` | OpenAI-compatible proxy for the Anthropic Messages API — enables use of a Claude Code Max subscription as the agent LLM |
 | `RockBot.Telemetry` | OpenTelemetry integration (OTLP gRPC export) |
-| `RockBot.Cli` | Unified host application — orchestrates all of the above as hosted services |
+| `RockBot.Agent` | Unified host application — orchestrates all of the above as hosted services |
 
 ---
 
@@ -195,20 +195,20 @@ Four images are published to Docker Hub and must be built from the repo root:
 
 | Image | Dockerfile | Purpose |
 |---|---|---|
-| `rockylhotka/rockbot-cli` | `deploy/Dockerfile.cli` | Agent host (RockBot.Cli) |
+| `rockylhotka/rockbot-agent` | `deploy/Dockerfile.agent` | Agent host (RockBot.Agent) |
 | `rockylhotka/rockbot-blazor` | `src/RockBot.UserProxy.Blazor/Dockerfile` | Blazor chat UI |
 | `rockylhotka/rockbot-scripts-manager` | `Dockerfile.scripts-manager` | Trusted script execution sidecar |
 | `rockylhotka/rockbot-openrouter-mcp` | `src/McpServer.OpenRouter/Dockerfile` | OpenRouter MCP server *(optional)* |
 
 ```bash
 # Build all from the repo root
-docker build -f deploy/Dockerfile.cli          -t rockylhotka/rockbot-cli:latest .
+docker build -f deploy/Dockerfile.agent         -t rockylhotka/rockbot-agent:latest .
 docker build -f src/RockBot.UserProxy.Blazor/Dockerfile -t rockylhotka/rockbot-blazor:latest .
 docker build -f Dockerfile.scripts-manager     -t rockylhotka/rockbot-scripts-manager:latest .
 docker build -f src/McpServer.OpenRouter/Dockerfile -t rockylhotka/rockbot-openrouter-mcp:latest .
 
 # Push
-docker push rockylhotka/rockbot-cli:latest
+docker push rockylhotka/rockbot-agent:latest
 docker push rockylhotka/rockbot-blazor:latest
 docker push rockylhotka/rockbot-scripts-manager:latest
 docker push rockylhotka/rockbot-openrouter-mcp:latest
@@ -294,7 +294,7 @@ kubectl rollout restart deployment/rockbot-agent \
 
 #### Agent (`rockbot-agent`)
 
-- Runs `RockBot.Cli` as a single replica with `strategy: Recreate` — only one agent may run at a time.
+- Runs `RockBot.Agent` as a single replica with `strategy: Recreate` — only one agent may run at a time.
 - Mounts a 10 Gi Longhorn PVC at `/data/agent` containing soul, directives, memory, skills, and `mcp.json`.
 - An **init container** seeds the PVC with default agent files from the image on first start (existing files are never overwritten). Per-model behavior prompts are also seeded per-file so customizations survive upgrades.
 - Runs with a dedicated ServiceAccount (`rockbot-agent`) that has **no Kubernetes API permissions** (`automountServiceAccountToken: false`). Script execution is delegated to the Scripts Manager via RabbitMQ — the agent never touches the Kubernetes API directly.
@@ -375,10 +375,10 @@ To replace the default files with your own after first deployment:
 kubectl get pods -n rockbot -l app=rockbot-agent
 
 # Copy your local agent directory to the PVC
-kubectl cp src/RockBot.Cli/agent/ <pod-name>:/data/agent/ -n rockbot
+kubectl cp src/RockBot.Agent/agent/ <pod-name>:/data/agent/ -n rockbot
 
 # Copy a custom mcp.json
-kubectl cp src/RockBot.Cli/mcp.json <pod-name>:/data/agent/mcp.json -n rockbot
+kubectl cp src/RockBot.Agent/mcp.json <pod-name>:/data/agent/mcp.json -n rockbot
 ```
 
 ---

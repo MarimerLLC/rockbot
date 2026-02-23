@@ -1,4 +1,4 @@
-namespace RockBot.Cli.McpBridge;
+namespace RockBot.Agent.McpBridge;
 
 /// <summary>
 /// Root configuration model for mcp.json.

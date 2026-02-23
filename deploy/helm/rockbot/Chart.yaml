@@ -2,7 +2,7 @@ apiVersion: v2
 name: rockbot
 description: >
   RockBot — an event-driven autonomous agent framework built on .NET.
-  Deploys the RockBot agent (CLI) and the Blazor Server web UI.
+  Deploys the RockBot agent and the Blazor Server web UI.
 type: application
 version: 0.1.0
 appVersion: latest

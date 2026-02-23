@@ -3,7 +3,7 @@ using RockBot.Host;
 using RockBot.Messaging;
 using RockBot.UserProxy;
 
-namespace RockBot.Cli;
+namespace RockBot.Agent;
 
 /// <summary>
 /// Handles <see cref="ConversationHistoryRequest"/> by reading turns from

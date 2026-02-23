@@ -1,6 +1,6 @@
 using System.Collections.Concurrent;
 
-namespace RockBot.Cli;
+namespace RockBot.Agent;
 
 /// <summary>
 /// Tracks one in-flight background tool loop per conversation session.

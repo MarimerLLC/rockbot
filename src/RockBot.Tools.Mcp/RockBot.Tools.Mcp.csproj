@@ -9,7 +9,7 @@
 
   <ItemGroup>
     <InternalsVisibleTo Include="RockBot.Tools.Tests" />
-    <InternalsVisibleTo Include="RockBot.Cli" />
+    <InternalsVisibleTo Include="RockBot.Agent" />
   </ItemGroup>
 
   <ItemGroup>

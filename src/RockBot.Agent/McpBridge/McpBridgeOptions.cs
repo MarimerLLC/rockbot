@@ -1,4 +1,4 @@
-namespace RockBot.Cli.McpBridge;
+namespace RockBot.Agent.McpBridge;
 
 /// <summary>
 /// Options for the MCP Bridge service.

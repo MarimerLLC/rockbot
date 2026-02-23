@@ -4,10 +4,10 @@ imagePullPolicy: Always
 # ── Namespace ─────────────────────────────────────────────────────────────────
 namespace: rockbot
 
-# ── Agent (RockBot.Cli) ───────────────────────────────────────────────────────
+# ── Agent (RockBot.Agent) ─────────────────────────────────────────────────────
 agent:
   image:
-    repository: rockylhotka/rockbot-cli
+    repository: rockylhotka/rockbot-agent
     tag: latest
   # Always Recreate — only one agent may run at a time (stateful)
   replicaCount: 1

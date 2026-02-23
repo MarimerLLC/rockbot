@@ -11,7 +11,7 @@ using RockBot.Skills;
 using RockBot.Tools;
 using RockBot.UserProxy;
 
-namespace RockBot.Cli;
+namespace RockBot.Agent;
 
 /// <summary>
 /// Handles incoming <see cref="UserMessage"/> by calling the LLM and publishing

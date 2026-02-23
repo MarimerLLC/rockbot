@@ -1,4 +1,4 @@
-namespace RockBot.Cli.McpBridge;
+namespace RockBot.Agent.McpBridge;
 
 /// <summary>
 /// Configuration for a single MCP server in the bridge's mcp.json.

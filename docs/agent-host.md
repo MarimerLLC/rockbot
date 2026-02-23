@@ -2,7 +2,7 @@
 
 The agent host is the runtime that wires together messaging, LLM calls, memory, skills, tools,
 and the dream cycle into a working agent process. It lives in `RockBot.Host` and
-`RockBot.Host.Abstractions`, with the concrete `RockBot.Cli` project providing the runnable
+`RockBot.Host.Abstractions`, with the concrete `RockBot.Agent` project providing the runnable
 executable.
 
 ---

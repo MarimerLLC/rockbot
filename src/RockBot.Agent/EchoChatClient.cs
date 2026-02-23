@@ -1,7 +1,7 @@
 using System.Runtime.CompilerServices;
 using Microsoft.Extensions.AI;
 
-namespace RockBot.Cli;
+namespace RockBot.Agent;
 
 /// <summary>
 /// A simple IChatClient that echoes the last user message back.
