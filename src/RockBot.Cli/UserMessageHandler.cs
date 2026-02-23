@@ -166,51 +166,48 @@ internal sealed class UserMessageHandler(
                     i, msg.Role, msg.Text?.Length ?? 0, contentParts);
             }
 
-            var (hasToolCalls, ackText) = GetFirstIterationAck(firstResponse, chatOptions);
-
-            if (hasToolCalls)
+            if (!modelBehavior.UseTextBasedToolCalling)
             {
-                var effectiveAck = string.IsNullOrWhiteSpace(ackText)
-                    ? "I'm working on that — I'll follow up shortly."
-                    : ackText;
+                // Native path: FunctionInvokingChatClient already executed all tool
+                // calls during the GetResponseAsync above. The response is complete —
+                // just extract the final assistant text and publish it.
+                var text = agentLoopRunner.ExtractAssistantText(firstResponse);
+
+                var toolCallCount = firstResponse.Messages
+                    .SelectMany(m => m.Contents.OfType<FunctionCallContent>())
+                    .Count();
 
                 logger.LogInformation(
-                    "Tool calls detected on iteration 1; sending ack ({AckLen} chars) and continuing in background",
-                    effectiveAck.Length);
+                    "Native path complete — {ToolCallCount} tool call(s) resolved, final text {TextLen} chars",
+                    toolCallCount, text.Length);
 
-                await PublishReplyAsync(effectiveAck, replyTo, correlationId, message.SessionId, isFinal: false, ct);
+                await conversationMemory.AddTurnAsync(
+                    message.SessionId,
+                    new ConversationTurn("assistant", text, DateTimeOffset.UtcNow),
+                    ct);
 
-                _ = BackgroundToolLoopAsync(
-                    chatMessages, chatOptions, firstResponse,
-                    message.SessionId, replyTo, correlationId, sessionCt);
+                await PublishReplyAsync(text, replyTo, correlationId, message.SessionId, isFinal: true, ct);
+
+                logger.LogInformation("Published reply to {ReplyTo} for correlation {CorrelationId}",
+                    replyTo, correlationId);
             }
             else
             {
-                var text = agentLoopRunner.ExtractAssistantText(firstResponse);
+                // Text-based path: check whether the first response contains tool
+                // calls that still need to be executed by the manual loop.
+                var (hasToolCalls, ackText) = GetFirstIterationAck(firstResponse, chatOptions);
 
-                if (AgentLoopRunner.IsIncompleteSetupPhrase(text))
+                if (hasToolCalls)
                 {
+                    var effectiveAck = string.IsNullOrWhiteSpace(ackText)
+                        ? "I'm working on that — I'll follow up shortly."
+                        : ackText;
+
                     logger.LogInformation(
-                        "First response is an incomplete setup phrase ({Length} chars); routing to background loop",
-                        text.Length);
+                        "Tool calls detected on iteration 1; sending ack ({AckLen} chars) and continuing in background",
+                        effectiveAck.Length);
 
-                    await PublishReplyAsync(
-                        "I'm working on that — I'll follow up shortly.",
-                        replyTo, correlationId, message.SessionId, isFinal: false, ct);
-
-                    _ = BackgroundToolLoopAsync(
-                        chatMessages, chatOptions, firstResponse,
-                        message.SessionId, replyTo, correlationId, sessionCt);
-                }
-                else if (modelBehavior.NudgeOnHallucinatedToolCalls && HallucinatedActionRegex.IsMatch(text))
-                {
-                    logger.LogWarning(
-                        "Hallucinated tool actions detected on first response ({Length} chars); routing to background loop for nudge",
-                        text.Length);
-
-                    await PublishReplyAsync(
-                        "I'm working on that — I'll follow up shortly.",
-                        replyTo, correlationId, message.SessionId, isFinal: false, ct);
+                    await PublishReplyAsync(effectiveAck, replyTo, correlationId, message.SessionId, isFinal: false, ct);
 
                     _ = BackgroundToolLoopAsync(
                         chatMessages, chatOptions, firstResponse,
@@ -218,15 +215,48 @@ internal sealed class UserMessageHandler(
                 }
                 else
                 {
-                    await conversationMemory.AddTurnAsync(
-                        message.SessionId,
-                        new ConversationTurn("assistant", text, DateTimeOffset.UtcNow),
-                        ct);
+                    var text = agentLoopRunner.ExtractAssistantText(firstResponse);
 
-                    await PublishReplyAsync(text, replyTo, correlationId, message.SessionId, isFinal: true, ct);
+                    if (AgentLoopRunner.IsIncompleteSetupPhrase(text))
+                    {
+                        logger.LogInformation(
+                            "First response is an incomplete setup phrase ({Length} chars); routing to background loop",
+                            text.Length);
 
-                    logger.LogInformation("Published reply to {ReplyTo} for correlation {CorrelationId}",
-                        replyTo, correlationId);
+                        await PublishReplyAsync(
+                            "I'm working on that — I'll follow up shortly.",
+                            replyTo, correlationId, message.SessionId, isFinal: false, ct);
+
+                        _ = BackgroundToolLoopAsync(
+                            chatMessages, chatOptions, firstResponse,
+                            message.SessionId, replyTo, correlationId, sessionCt);
+                    }
+                    else if (modelBehavior.NudgeOnHallucinatedToolCalls && HallucinatedActionRegex.IsMatch(text))
+                    {
+                        logger.LogWarning(
+                            "Hallucinated tool actions detected on first response ({Length} chars); routing to background loop for nudge",
+                            text.Length);
+
+                        await PublishReplyAsync(
+                            "I'm working on that — I'll follow up shortly.",
+                            replyTo, correlationId, message.SessionId, isFinal: false, ct);
+
+                        _ = BackgroundToolLoopAsync(
+                            chatMessages, chatOptions, firstResponse,
+                            message.SessionId, replyTo, correlationId, sessionCt);
+                    }
+                    else
+                    {
+                        await conversationMemory.AddTurnAsync(
+                            message.SessionId,
+                            new ConversationTurn("assistant", text, DateTimeOffset.UtcNow),
+                            ct);
+
+                        await PublishReplyAsync(text, replyTo, correlationId, message.SessionId, isFinal: true, ct);
+
+                        logger.LogInformation("Published reply to {ReplyTo} for correlation {CorrelationId}",
+                            replyTo, correlationId);
+                    }
                 }
             }
         }
