@@ -157,12 +157,12 @@ normally. You will receive `[Subagent task <id> reports]: ...` progress messages
 and a `[Subagent task <id> completed]: ...` result message automatically — treat
 these as updates to relay to the user in natural language.
 
-**Sharing data:** Both you and the subagent share long-term memory.
-Use the category `subagent-whiteboards/{task_id}` as a per-subagent scratchpad.
-Write input data before spawning if needed. After the completion message arrives,
-search `subagent-whiteboards/{task_id}` for detailed output the subagent saved there
-(reports, structured data, document lists). These entries persist across conversation
-turns — the dream service cleans them up eventually, or delete them explicitly when done.
+**Sharing data:** Both you and the subagent have access to shared memory — a
+cross-session scratch space. Use `SaveToSharedMemory` to write input data before
+spawning if needed. After the completion message arrives, use `GetFromSharedMemory`
+or `SearchSharedMemory(category="subagent-output")` to retrieve detailed output
+the subagent saved there (reports, structured data, document lists). These entries
+expire based on TTL (default 30 minutes) and are preserved verbatim — no LLM processing.
 
 ## Instructions
 

@@ -160,36 +160,36 @@ tool call.
 
 ---
 
-## Data handoff via long-term memory
+## Data handoff via shared memory
 
-Both the primary agent and the subagent share the same long-term memory store. Use
-the category convention `subagent-whiteboards/{task_id}` as a per-subagent scratchpad.
+Both the primary agent and the subagent have access to **shared memory** — a
+cross-session, TTL-based scratch space that all execution contexts can read and write.
+Subagents use the category `subagent-output` when saving results.
 
-**Why long-term memory instead of a separate whiteboard:**
+**Why shared memory instead of long-term memory whiteboards:**
 
-- No new tools, no new infrastructure — `SaveMemory`/`SearchMemory`/`DeleteMemory`
-  are already in every context
-- File-backed and persistent across pod restarts
-- Per-subagent isolation via the `task_id` category namespace
-- `SubagentResultHandler` automatically deletes all `subagent-whiteboards/{taskId}`
-  entries after the primary agent has processed the result
+- Data is preserved verbatim — no LLM processing or dream consolidation
+- TTL-based expiry (default 30 minutes) — automatic cleanup, no manual deletion
+- Cross-session by design — patrol tasks and subagents can exchange data without
+  knowing each other's session IDs
+- Dedicated tools: `SaveToSharedMemory`, `GetFromSharedMemory`, `SearchSharedMemory`
 
 **Usage pattern:**
 
 ```
 Primary agent (before spawning):
-  SaveMemory(content="[url1, url2, url3]", category="subagent-whiteboards/abc123")
-  spawn_subagent("Read urls from subagent-whiteboards/abc123 and scrape each one")
+  SaveToSharedMemory(key="input-abc123", data="[url1, url2, url3]", category="subagent-output")
+  spawn_subagent("Read urls from shared memory key 'input-abc123' and scrape each one")
 
 Subagent:
-  SearchMemory(query="urls", category="subagent-whiteboards/abc123") → "[url1, url2, url3]"
+  GetFromSharedMemory(key="input-abc123") → "[url1, url2, url3]"
   [processes each URL]
-  SaveMemory(content="...", category="subagent-whiteboards/abc123", tags=["results"])
-  ReportProgress("Done scraping. Results saved to subagent-whiteboards/abc123.")
+  SaveToSharedMemory(key="results-abc123", data="...", category="subagent-output")
+  ReportProgress("Done scraping. Results saved to shared memory key 'results-abc123'.")
 
 Primary agent (on result, via SubagentResultHandler):
-  SearchMemory(category="subagent-whiteboards/abc123") → results
-  [SubagentResultHandler then deletes the subagent-whiteboards/abc123 entries]
+  GetFromSharedMemory(key="results-abc123") → results
+  [entries expire automatically after TTL]
 ```
 
 ---
@@ -296,8 +296,8 @@ Both handlers follow the same pattern:
 6. Record the assistant response in conversation memory
 7. Publish `AgentReply` (IsFinal=true) to `UserProxyTopics.UserResponse`
 
-`SubagentResultHandler` additionally cleans up all `subagent-whiteboards/{taskId}`
-long-term memory entries in a `finally` block after the LLM has responded.
+`SubagentResultHandler` checks shared memory (category `subagent-output`) for
+entries matching the task ID and hints the LLM to retrieve them.
 
 **Synthetic user turns:**
 

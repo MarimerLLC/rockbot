@@ -121,7 +121,7 @@ The agent can spawn isolated in-process subagents to handle long-running or comp
 - **spawn_subagent** — launches a subagent with its own LLM tool loop, scoped working memory, and cancellation token. Returns a `task_id` immediately.
 - **Progress reporting** — the subagent calls `report_progress` periodically; each update is delivered to the primary session as a synthetic user turn so the agent can relay it naturally.
 - **Result delivery** — on completion, a `SubagentResultMessage` is published to the primary session and incorporated into the conversation.
-- **Data handoff** — the primary agent and subagent share the same long-term memory store. Structured data is exchanged using the category convention `subagent-whiteboards/{task_id}`, which is automatically cleaned up by the result handler after the primary agent processes the result.
+- **Data handoff** — the primary agent and subagent share a cross-session **shared memory** scratch space. Structured data is exchanged using `SaveToSharedMemory`/`GetFromSharedMemory` with the category `subagent-output`. Entries expire automatically based on TTL (default 30 minutes) and are preserved verbatim — no LLM processing.
 - **Concurrency limits** — configurable maximum concurrent subagents (default 3) with graceful rejection when the limit is reached.
 
 ### Scheduled tasks

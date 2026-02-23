@@ -32,25 +32,25 @@ public sealed class SubagentToolSkillProvider : IToolSkillProvider
         ## list_subagents
         List all currently running subagent tasks.
 
-        ## Sharing data with a subagent (whiteboard convention)
-        Both you and the subagent have full access to long-term memory. The category
-        'subagent-whiteboards/{task_id}' is the per-subagent scratchpad:
+        ## Sharing data with a subagent (shared memory)
+        Both you and the subagent have access to shared memory — a cross-session scratch
+        space that all execution contexts (user sessions, patrol tasks, subagents) can
+        read and write. Use SaveToSharedMemory / GetFromSharedMemory / SearchSharedMemory.
 
         - Before spawning: write input data the subagent needs
-            SaveMemory(content="...", category="subagent-whiteboards/{task_id}")
-        - The subagent reads input and writes results back to the same category with
-          tag 'subagent-whiteboard' — its system prompt instructs it to do this automatically
-        - After receiving the completion message: read results with
-            SearchMemory(category="subagent-whiteboards/{task_id}")
+            SaveToSharedMemory(key="input-{task_id}", data="...", category="subagent-output")
+        - The subagent writes results to shared memory with category 'subagent-output'
+          — its system prompt instructs it to do this automatically
+        - After receiving the completion message: retrieve results with
+            GetFromSharedMemory(key="...") or SearchSharedMemory(category="subagent-output")
 
-        Whiteboard entries persist in long-term memory after the task completes so you can
-        reference them across multiple conversation turns. They are cleaned up by the dream
-        service as normal stale-memory consolidation.
+        Shared memory entries expire based on TTL (default 30 minutes). They are not
+        processed by the LLM or dream service — data is preserved verbatim.
 
         ## Usage pattern
-        1. (Optional) Write input data to 'subagent-whiteboards/{task_id}' before spawning
-        2. Use spawn_subagent — include the task_id in the description if the subagent needs input
+        1. (Optional) Write input data to shared memory before spawning
+        2. Use spawn_subagent — mention the shared memory key in the description if needed
         3. Continue conversation normally; progress and final result arrive as messages
-        4. After the completion message, search 'subagent-whiteboards/{task_id}' for detailed output
+        4. After the completion message, check shared memory for detailed output
         """;
 }
