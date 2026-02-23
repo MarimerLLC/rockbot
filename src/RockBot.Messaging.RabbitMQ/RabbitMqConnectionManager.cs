@@ -74,7 +74,11 @@ public sealed class RabbitMqConnectionManager : IAsyncDisposable
                 Port = _options.Port,
                 UserName = _options.UserName,
                 Password = _options.Password,
-                VirtualHost = _options.VirtualHost
+                VirtualHost = _options.VirtualHost,
+                // Disable library-level auto-recovery: RabbitMqSubscription handles
+                // transparent channel reconnection itself.  Enabling both would race
+                // and create duplicate consumers on the same queue.
+                AutomaticRecoveryEnabled = false
             };
 
             _connection = await factory.CreateConnectionAsync(cancellationToken);
