@@ -10,7 +10,7 @@ namespace RockBot.Subagent;
 public static class SubagentServiceCollectionExtensions
 {
     /// <summary>
-    /// Adds subagent spawning support and associated tools.
+    /// Adds subagent spawning support, whiteboard memory, and associated tools.
     /// </summary>
     public static AgentHostBuilder AddSubagents(
         this AgentHostBuilder builder,

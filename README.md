@@ -77,12 +77,11 @@ The result is a swarm of agents that coordinate through messages, where the fail
 
 ## Key features
 
-### Memory (four tiers)
+### Memory (three tiers)
 
 - **Conversation memory** — sliding window of recent turns per session (default 50), auto-cleaned after idle timeout. Ephemeral and in-process.
 - **Long-term memory** — persistent file-based store organized by category. The framework automatically surfaces relevant entries each turn via BM25 keyword search against the user's message (delta injection — only unseen entries are added).
 - **Working memory** — fast session-scoped cache for intermediate results. Tools can save and retrieve data during a conversation without polluting long-term storage.
-- **Shared memory** — cross-session, TTL-based scratch space accessible to all execution contexts (user sessions, patrol tasks, subagents). Data is preserved verbatim — no LLM processing. Used for data exchange between isolated sessions.
 
 ### Skills
 
@@ -122,7 +121,7 @@ The agent can spawn isolated in-process subagents to handle long-running or comp
 - **spawn_subagent** — launches a subagent with its own LLM tool loop, scoped working memory, and cancellation token. Returns a `task_id` immediately.
 - **Progress reporting** — the subagent calls `report_progress` periodically; each update is delivered to the primary session as a synthetic user turn so the agent can relay it naturally.
 - **Result delivery** — on completion, a `SubagentResultMessage` is published to the primary session and incorporated into the conversation.
-- **Data handoff** — the primary agent and subagent share a cross-session **shared memory** scratch space. Structured data is exchanged using `SaveToSharedMemory`/`GetFromSharedMemory` with the category `subagent-output`. Entries expire automatically based on TTL (default 30 minutes) and are preserved verbatim — no LLM processing.
+- **Data handoff** — the primary agent and subagent share the same long-term memory store. Structured data is exchanged using the category convention `subagent-whiteboards/{task_id}`, which is automatically cleaned up by the result handler after the primary agent processes the result.
 - **Concurrency limits** — configurable maximum concurrent subagents (default 3) with graceful rejection when the limit is reached.
 
 ### Scheduled tasks

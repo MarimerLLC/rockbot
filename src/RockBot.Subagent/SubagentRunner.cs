@@ -19,7 +19,6 @@ internal sealed class SubagentRunner(
     ILlmClient llmClient,
     IWorkingMemory workingMemory,
     MemoryTools memoryTools,
-    SharedMemoryTools sharedMemoryTools,
     ISkillStore skillStore,
     IToolRegistry toolRegistry,
     ToolGuideTools toolGuideTools,
@@ -42,10 +41,9 @@ internal sealed class SubagentRunner(
             "using your tools — do not design frameworks, save skills, or plan methodology. " +
             "Start calling the required tools immediately. " +
             "Call ReportProgress after each significant step so the user stays informed. " +
-            "For large outputs (reports, document lists, structured data): use SaveToSharedMemory " +
-            "to store them in shared memory (cross-session scratch space, expires in 30 minutes) " +
-            "so the primary agent can retrieve them by key during the follow-up conversation. " +
-            "Use category 'subagent-output' when saving outputs. " +
+            "For large outputs (reports, document lists, structured data): use WriteSharedOutput " +
+            "to store them in shared memory (expires in 30 minutes) so the primary agent can " +
+            "retrieve them by key during the follow-up conversation. " +
             "Your final message must summarise what was done and name each key you wrote to " +
             "so the primary agent knows where to find the detailed data. " +
             "Do not return an empty or vague final response.";
@@ -90,20 +88,26 @@ internal sealed class SubagentRunner(
                 r, toolRegistry.GetExecutor(r.Name)!, subagentSessionId))
             .ToArray();
 
+        // report_progress tool — baked with taskId and primarySessionId
         var subagentId = $"subagent-{taskId}";
         var reportProgressFunctions = new ReportProgressFunctions(
             taskId, primarySessionId, publisher, subagentId, logger);
+
+        // Shared output tools — write large results into the PRIMARY session's working memory
+        // so the primary agent can retrieve them by key after the task completes (30-min TTL).
+        var sharedOutputFunctions = new SubagentSharedOutputFunctions(
+            workingMemory, primarySessionId, taskId, logger);
 
         var chatOptions = new ChatOptions
         {
             Tools = [
                 ..memoryTools.Tools,
                 ..sessionWorkingMemoryTools.Tools,
-                ..sharedMemoryTools.Tools,
                 ..skillTools.Tools,
                 ..toolGuideTools.Tools,
                 ..registryTools,
-                ..reportProgressFunctions.Tools
+                ..reportProgressFunctions.Tools,
+                ..sharedOutputFunctions.Tools
             ]
         };
 

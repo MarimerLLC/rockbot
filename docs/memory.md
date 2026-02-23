@@ -11,7 +11,6 @@ token bloat.
 | Tier | Class | Scope | Lifetime | Injection |
 |---|---|---|---|---|
 | **Long-term** | `FileMemoryStore` | Cross-session | Permanent | BM25 delta per turn |
-| **Shared** | `HybridCacheSharedMemory` | Cross-session | TTL (default 30 min) | Full inventory per turn |
 | **Working** | `HybridCacheWorkingMemory` | Session | TTL (default 5 min) | Full inventory per turn |
 | **Conversation** | `InMemoryConversationMemory` | Session | Process lifetime | Last N turns (default 20) |
 
@@ -163,64 +162,6 @@ actual content (which the agent loads on demand to avoid token bloat).
 
 ---
 
-## Shared memory
-
-### Purpose
-
-Cross-session, TTL-based scratch space accessible to all execution contexts (user sessions,
-patrol tasks, subagents). Unlike working memory, keys are global — not scoped to a session.
-No LLM processing is applied to entries; data is preserved verbatim.
-
-Typical uses:
-
-- Subagent output handoff (category `subagent-output`) — replaces the old whiteboard convention
-- Patrol task findings that the primary agent should act on
-- Cross-session data exchange between any execution contexts
-
-### Data model
-
-```csharp
-public sealed record SharedMemoryEntry(
-    string Key,           // Globally unique key
-    string Value,         // Stored content (string)
-    string? Category,     // Optional grouping
-    IReadOnlyList<string>? Tags,
-    DateTimeOffset ExpiresAt,
-    DateTimeOffset StoredAt
-);
-```
-
-### Storage
-
-`HybridCacheSharedMemory` uses `IMemoryCache` for TTL-based eviction plus a single
-`ConcurrentDictionary` side index for enumeration. `FileSharedMemory` wraps it with
-disk persistence to a single `{BasePath}/shared.json` file.
-
-- **Default TTL:** 30 minutes (configurable per entry)
-- **Global limit:** 100 entries (configurable)
-- **Cache key prefix:** `sm:{key}` (vs `wm:{sessionId}:{key}` for working memory)
-
-### Injection
-
-The full shared memory inventory is injected at the start of every turn as a compact list:
-
-```
-Shared memory (cross-session scratch space — use search_shared_memory or get_from_shared_memory to retrieve):
-- patrol-alert-2026-02-23: expires in 28m15s, category: patrol-finding
-- results-abc123: expires in 12m44s, category: subagent-output
-```
-
-### Shared memory tools
-
-| Tool | Purpose |
-|---|---|
-| `save_to_shared_memory(key, data, ttl_minutes?, category?, tags?)` | Store an entry |
-| `get_from_shared_memory(key)` | Retrieve an entry by key |
-| `search_shared_memory(query?, category?, tags?)` | BM25 search across all entries |
-| `list_shared_memory()` | List all keys with metadata (no data) |
-
----
-
 ## Conversation memory
 
 ### Purpose
@@ -305,14 +246,6 @@ public sealed class WorkingMemoryOptions
     public int MaxEntriesPerSession { get; set; } = 50;
 }
 
-// Shared memory
-public sealed class SharedMemoryOptions
-{
-    public TimeSpan DefaultTtl { get; set; } = TimeSpan.FromMinutes(30);
-    public int MaxEntries { get; set; } = 100;
-    public string BasePath { get; set; } = "shared-memory";
-}
-
 // Dream passes
 public sealed class DreamOptions
 {
@@ -330,7 +263,7 @@ Custom directive files override the built-in fallbacks. Place them on the agent 
 
 ```csharp
 builder
-    .WithMemory()             // Conversation + long-term + working memory + shared memory
+    .WithMemory()             // Conversation + long-term (FileMemoryStore) + working memory
     .WithConversationLog()    // Required for preference inference dream pass
     .WithFeedback()           // Required for anti-pattern mining in dream pass
     .WithDreaming()           // Enables memory consolidation and preference inference passes
@@ -346,6 +279,5 @@ builder
 3. Delta filter: only entries not yet injected this session (InjectedMemoryTracker)
 4. Inject as system message: "Recalled from long-term memory..."
 5. Inject working memory inventory (all keys, no data)
-6. Inject shared memory inventory (all keys, no data)
-7. Replay last 20 conversation turns
+6. Replay last 20 conversation turns
 ```

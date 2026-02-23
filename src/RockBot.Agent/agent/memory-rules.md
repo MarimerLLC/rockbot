@@ -1,7 +1,7 @@
 # Memory Rules
 
 These rules govern what to store, where to store it, and when to discard it
-across all four memory tiers.
+across all three memory tiers.
 
 ## Memory tiers
 
@@ -9,19 +9,15 @@ across all four memory tiers.
 |---|---|---|---|
 | **Conversation** | Current turn sequence | Ends when session closes | Chat history — managed by the framework, not by you |
 | **Working memory** | Current session | TTL-based, survives pod restarts | Situational awareness, intermediate results, transient context |
-| **Shared memory** | Cross-session | TTL-based (default 30 min), survives pod restarts | Data exchange between sessions, patrol tasks, and subagents |
 | **Long-term memory** | Permanent | Until explicitly deleted or consolidated by dreaming | Durable facts, preferences, relationships, plans |
 
 ### Choosing the right tier
 
-Ask: **"How long will this fact be useful?"** and **"Who needs it?"**
+Ask: **"How long will this fact be useful?"**
 
-- **Minutes to hours, same session** → working memory. Current physical location,
-  what the user is doing right now, intermediate tool results, transient system
-  state, in-flight research notes. Set a TTL that matches the expected useful life.
-- **Minutes to hours, cross-session** → shared memory. Data that patrol tasks,
-  subagents, or the primary agent need to exchange. Subagent outputs, patrol
-  findings for immediate action, operational data that must not be LLM-enriched.
+- **Minutes to hours** → working memory. Current physical location, what the user
+  is doing right now, intermediate tool results, transient system state, in-flight
+  research notes. Set a TTL that matches the expected useful life.
 - **Days to permanent** → long-term memory. Stable facts, preferences, decisions,
   relationships, project context, plans.
 - **If uncertain** → working memory with a generous TTL. It will expire naturally.

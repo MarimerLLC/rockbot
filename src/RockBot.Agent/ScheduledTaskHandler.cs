@@ -25,7 +25,6 @@ internal sealed class ScheduledTaskHandler(
     IWorkingMemory workingMemory,
     ISkillStore skillStore,
     ToolGuideTools toolGuideTools,
-    SharedMemoryTools sharedMemoryTools,
     ModelBehavior modelBehavior,
     IAgentWorkSerializer workSerializer,
     AgentLoopRunner agentLoopRunner,
@@ -70,7 +69,6 @@ internal sealed class ScheduledTaskHandler(
 
         var allTools = memoryTools.Tools
             .Concat(sessionWorkingMemoryTools.Tools)
-            .Concat(sharedMemoryTools.Tools)
             .Concat(sessionSkillTools.Tools)
             .Concat(rulesTools.Tools)
             .Concat(toolGuideTools.Tools)

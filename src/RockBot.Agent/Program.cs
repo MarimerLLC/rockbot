@@ -63,8 +63,6 @@ builder.Services.AddSingleton<SessionBackgroundTaskTracker>();
 
 // Register memory tools as singleton — AIFunction instances are built once at construction
 builder.Services.AddSingleton<MemoryTools>();
-// Shared memory tools — cross-session scratch space, singleton
-builder.Services.AddSingleton<SharedMemoryTools>();
 // Rules tools — requires WithRules() in the agent builder below
 builder.Services.AddSingleton<RulesTools>();
 // Tracks which memory IDs have been injected per session, enabling delta recall across topic shifts

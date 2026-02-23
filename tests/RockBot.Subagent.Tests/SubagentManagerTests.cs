@@ -36,8 +36,6 @@ public class SubagentManagerTests
         services.AddSingleton(new AgentIdentity("test-agent"));
         services.AddSingleton(ModelBehavior.Default);
         services.AddSingleton<MemoryTools>();
-        services.AddSingleton<ISharedMemory>(new NoopSharedMemory());
-        services.AddSingleton<SharedMemoryTools>();
         services.AddSingleton(new ToolGuideTools([], NullLoggerFactory.Instance.CreateLogger<ToolGuideTools>()));
         services.AddTransient<AgentLoopRunner>();
         services.AddTransient<SubagentRunner>();
@@ -246,19 +244,6 @@ public class SubagentManagerTests
 
         public Task<IReadOnlyList<WorkingMemoryEntry>> SearchAsync(string sessionId, MemorySearchCriteria criteria) =>
             Task.FromResult<IReadOnlyList<WorkingMemoryEntry>>([]);
-    }
-
-    private sealed class NoopSharedMemory : ISharedMemory
-    {
-        public Task SetAsync(string key, string value, TimeSpan? ttl = null,
-            string? category = null, IReadOnlyList<string>? tags = null) => Task.CompletedTask;
-        public Task<string?> GetAsync(string key) => Task.FromResult<string?>(null);
-        public Task<IReadOnlyList<SharedMemoryEntry>> ListAsync() =>
-            Task.FromResult<IReadOnlyList<SharedMemoryEntry>>([]);
-        public Task DeleteAsync(string key) => Task.CompletedTask;
-        public Task ClearAsync() => Task.CompletedTask;
-        public Task<IReadOnlyList<SharedMemoryEntry>> SearchAsync(MemorySearchCriteria criteria) =>
-            Task.FromResult<IReadOnlyList<SharedMemoryEntry>>([]);
     }
 
     private sealed class NoopFeedbackStore : IFeedbackStore

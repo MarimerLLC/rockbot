@@ -20,7 +20,6 @@ public sealed class AgentContextBuilder(
     ILongTermMemory longTermMemory,
     InjectedMemoryTracker injectedMemoryTracker,
     IWorkingMemory workingMemory,
-    ISharedMemory sharedMemory,
     ISkillStore skillStore,
     SkillIndexTracker skillIndexTracker,
     SkillRecallTracker skillRecallTracker,
@@ -174,29 +173,6 @@ public sealed class AgentContextBuilder(
                 string.Join("\n", lines);
             chatMessages.Add(new ChatMessage(ChatRole.System, workingMemoryContext));
             logger.LogInformation("Injected {Count} working memory entries into context", workingEntries.Count);
-        }
-
-        // Shared memory inventory (cross-session scratch space)
-        var sharedEntries = await sharedMemory.ListAsync();
-        if (sharedEntries.Count > 0)
-        {
-            var now = DateTimeOffset.UtcNow;
-            var lines = sharedEntries.Select(e =>
-            {
-                var remaining = e.ExpiresAt - now;
-                var remainingStr = remaining.TotalMinutes >= 1
-                    ? $"{(int)remaining.TotalMinutes}m{remaining.Seconds:D2}s"
-                    : $"{Math.Max(0, remaining.Seconds)}s";
-                var meta = new System.Text.StringBuilder($"- {e.Key}: expires in {remainingStr}");
-                if (e.Category is not null) meta.Append($", category: {e.Category}");
-                if (e.Tags is { Count: > 0 }) meta.Append($", tags: {string.Join(", ", e.Tags)}");
-                return meta.ToString();
-            });
-            var sharedMemoryContext =
-                "Shared memory (cross-session scratch space — use search_shared_memory or get_from_shared_memory to retrieve):\n" +
-                string.Join("\n", lines);
-            chatMessages.Add(new ChatMessage(ChatRole.System, sharedMemoryContext));
-            logger.LogInformation("Injected {Count} shared memory entries into context", sharedEntries.Count);
         }
 
         return chatMessages;
