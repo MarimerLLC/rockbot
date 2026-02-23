@@ -39,6 +39,7 @@ internal sealed class UserMessageHandler(
     ModelBehavior modelBehavior,
     IFeedbackStore feedbackStore,
     IUserActivityMonitor userActivityMonitor,
+    IAgentWorkSerializer workSerializer,
     AgentLoopRunner agentLoopRunner,
     AgentContextBuilder agentContextBuilder,
     SessionBackgroundTaskTracker sessionTracker,
@@ -260,6 +261,11 @@ internal sealed class UserMessageHandler(
     {
         try
         {
+            // Acquire the single execution slot, preempting any running scheduled
+            // task. If this session itself is cancelled (new user message) while
+            // waiting, the await throws OperationCanceledException and we exit.
+            await using var slot = await workSerializer.AcquireForUserAsync(ct);
+
             logger.LogInformation("Background tool loop started for session {SessionId}", sessionId);
 
             var lastProgressAt = DateTimeOffset.UtcNow;
