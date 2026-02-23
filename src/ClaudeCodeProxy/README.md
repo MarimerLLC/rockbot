@@ -77,7 +77,33 @@ kubectl create secret generic claude-credentials \
   --from-file=credentials.json=$HOME/.claude/credentials.json
 ```
 
-The proxy Helm chart (when added) mounts this secret at `/root/.claude/credentials.json`.
+**Important:** use a PVC, not a Secret. The CLI must write renewed tokens back to
+the credentials file — Secret volumes are read-only in Kubernetes.
+
+```bash
+# Create a PVC-backed credentials volume instead
+kubectl apply -f - <<EOF
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: claude-credentials
+  namespace: rockbot
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: longhorn
+  resources:
+    requests:
+      storage: 10Mi
+EOF
+
+# Seed it once from your local credentials
+kubectl run seed --image=busybox -n rockbot --rm -it \
+  --overrides='{"spec":{"volumes":[{"name":"creds","persistentVolumeClaim":{"claimName":"claude-credentials"}}],"containers":[{"name":"seed","image":"busybox","volumeMounts":[{"name":"creds","mountPath":"/creds"}],"command":["sh"]}]}}' \
+  -- sh -c "mkdir -p /creds && cat > /creds/credentials.json"
+# (paste contents of ~/.claude/credentials.json then Ctrl-D)
+```
+
+The proxy Helm chart (when added) mounts this PVC at `/root/.claude`.
 
 ## Supported Endpoints
 
@@ -102,11 +128,19 @@ LLM__ModelId: "claude-sonnet-4-6"
 No code changes to RockBot required — it already uses the OpenAI SDK with a
 configurable endpoint.
 
+## Token Refresh
+
+The proxy installs the `claude` CLI and runs `claude --version` at startup and
+every 23 hours. The CLI uses the stored refresh token to obtain a new access
+token and writes it back to `~/.claude/credentials.json`. Since `auth.ts` reads
+the credentials file fresh on every request, the proxy picks up renewed tokens
+automatically with no restart needed.
+
+The scheduler is skipped automatically when `ANTHROPIC_API_KEY` or
+`CLAUDE_ACCESS_TOKEN` is set (API key auth needs no refresh).
+
 ## Known Limitations
 
 - **No streaming** — RockBot currently uses non-streaming completions, so this is fine
-- **OAuth token expiry** — Max credentials expire and need re-login; the proxy reads
-  the credentials file on each request so a background token refresh daemon will
-  keep it current without restarts
 - **Model name passthrough** — request `model` field is sent as-is to Anthropic;
   use valid Anthropic model IDs (`claude-sonnet-4-6`, `claude-opus-4-6`, etc.)

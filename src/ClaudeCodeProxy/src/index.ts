@@ -1,6 +1,7 @@
 import "express-async-errors";
 import express, { Request, Response, NextFunction } from "express";
 import { resolveAuth } from "./auth.js";
+import { startTokenRefreshScheduler } from "./tokenRefresh.js";
 import {
   OpenAiRequest,
   AnthropicResponse,
@@ -122,4 +123,5 @@ app.listen(PORT, () => {
   console.log(`  default model : ${DEFAULT_MODEL}`);
   console.log(`  auth source   : ${authSource}`);
   console.log(`  anthropic api : ${ANTHROPIC_API_BASE}`);
+  startTokenRefreshScheduler();
 });
