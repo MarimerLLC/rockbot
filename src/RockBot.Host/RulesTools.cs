@@ -2,16 +2,15 @@ using System.ComponentModel;
 using System.Text;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
-using RockBot.Host;
 
-namespace RockBot.Agent;
+namespace RockBot.Host;
 
 /// <summary>
 /// LLM-callable tools for managing hard behavioral rules and persistent agent settings.
 /// Rules are persisted to disk and injected into every system prompt,
 /// giving them the same authority as the agent's directives file.
 /// </summary>
-internal sealed class RulesTools
+public sealed class RulesTools
 {
     private readonly IRulesStore _rulesStore;
     private readonly AgentClock _clock;

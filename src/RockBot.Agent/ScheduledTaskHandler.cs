@@ -3,7 +3,9 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using RockBot.Host;
 using RockBot.Llm;
+using RockBot.Memory;
 using RockBot.Messaging;
+using RockBot.Skills;
 using RockBot.Tools;
 using RockBot.UserProxy;
 
@@ -19,22 +21,28 @@ internal sealed class ScheduledTaskHandler(
     AgentIdentity agent,
     IToolRegistry toolRegistry,
     RulesTools rulesTools,
+    MemoryTools memoryTools,
+    IWorkingMemory workingMemory,
+    ISkillStore skillStore,
+    ToolGuideTools toolGuideTools,
     ModelBehavior modelBehavior,
     IAgentWorkSerializer workSerializer,
     AgentLoopRunner agentLoopRunner,
     AgentContextBuilder agentContextBuilder,
     IOptions<AgentProfileOptions> profileOptions,
-    ILogger<ScheduledTaskHandler> logger) : IMessageHandler<ScheduledTaskMessage>
+    ILogger<ScheduledTaskHandler> logger,
+    ISkillUsageStore? skillUsageStore = null) : IMessageHandler<ScheduledTaskMessage>
 {
     public async Task HandleAsync(ScheduledTaskMessage message, MessageHandlerContext context)
     {
         var ct = context.CancellationToken;
+        var sessionId = $"patrol-{message.TaskName}";
         logger.LogInformation("Executing scheduled task '{TaskName}'", message.TaskName);
 
         // Build full agent context using an ephemeral session ID so no history accumulates
         // across patrol runs. Pass the task description as the user content for BM25 recall.
         var chatMessages = await agentContextBuilder.BuildAsync(
-            $"patrol-{message.TaskName}", message.Description, ct);
+            sessionId, message.Description, ct);
 
         // If a task-specific directive file exists (e.g. heartbeat-patrol.md), inject it
         // as a system message immediately after the main system prompt (index 1).
@@ -51,13 +59,26 @@ internal sealed class ScheduledTaskHandler(
         // the ephemeral session has no conversation history).
         chatMessages.Add(new ChatMessage(ChatRole.User, message.Description));
 
+        // Per-session tools — same set the user handler builds
+        var sessionWorkingMemoryTools = new WorkingMemoryTools(workingMemory, sessionId, logger);
+        var sessionSkillTools = new SkillTools(skillStore, llmClient, logger, sessionId, skillUsageStore);
+
         var registryTools = toolRegistry.GetTools()
-            .Select(r => (AIFunction)new RegistryToolFunction(r, toolRegistry.GetExecutor(r.Name)!, sessionId: null))
+            .Select(r => (AIFunction)new RegistryToolFunction(r, toolRegistry.GetExecutor(r.Name)!, sessionId))
             .ToArray();
+
+        var allTools = memoryTools.Tools
+            .Concat(sessionWorkingMemoryTools.Tools)
+            .Concat(sessionSkillTools.Tools)
+            .Concat(rulesTools.Tools)
+            .Concat(toolGuideTools.Tools)
+            .Concat(registryTools)
+            .OfType<AIFunction>()
+            .WithChunking(workingMemory, sessionId, modelBehavior, logger);
 
         var chatOptions = new ChatOptions
         {
-            Tools = [..rulesTools.Tools, ..registryTools]
+            Tools = allTools
         };
 
         // Try to acquire the single execution slot. If a user loop is running,
@@ -77,7 +98,7 @@ internal sealed class ScheduledTaskHandler(
             await using (slot)
             {
                 finalText = await agentLoopRunner.RunAsync(
-                    chatMessages, chatOptions, sessionId: null, cancellationToken: slot.Token);
+                    chatMessages, chatOptions, sessionId: sessionId, cancellationToken: slot.Token);
             }
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)

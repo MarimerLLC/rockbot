@@ -12,5 +12,11 @@ public enum FeedbackSignalType
     ToolFailure,
 
     /// <summary>An LLM-produced evaluation of a completed session.</summary>
-    SessionSummary
+    SessionSummary,
+
+    /// <summary>The user explicitly marked an agent reply as helpful (thumbs up).</summary>
+    UserThumbsUp,
+
+    /// <summary>The user explicitly marked an agent reply as unhelpful (thumbs down).</summary>
+    UserThumbsDown
 }

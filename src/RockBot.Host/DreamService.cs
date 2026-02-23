@@ -593,7 +593,7 @@ internal sealed class DreamService : IHostedService, IDisposable
             }
             list.Add(fb);
 
-            if (fb.SignalType == FeedbackSignalType.Correction)
+            if (fb.SignalType is FeedbackSignalType.Correction or FeedbackSignalType.UserThumbsDown)
                 atRiskSessions.Add(fb.SessionId);
             else if (fb.SignalType == FeedbackSignalType.SessionSummary)
             {
@@ -814,6 +814,69 @@ internal sealed class DreamService : IHostedService, IDisposable
             foreach (var s in existingSkills)
                 userMessage.AppendLine($"- {s.Name}: {s.Summary}");
             userMessage.AppendLine();
+        }
+
+        // Append feedback signals correlated with skill usage to surface gap evidence.
+        // Sessions with negative feedback where no skill was matched are strong gap indicators;
+        // sessions with positive feedback on ad-hoc (no-skill) responses are codification candidates.
+        if (_feedbackStore is not null)
+        {
+            var recentFeedback = await _feedbackStore.QueryRecentAsync(
+                since: DateTimeOffset.UtcNow.AddDays(-14),
+                maxResults: 200);
+
+            if (recentFeedback.Count > 0)
+            {
+                // Determine which sessions had a skill invoked
+                var sessionsWithSkills = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                if (_skillUsageStore is not null)
+                {
+                    var usageEvents = await _skillUsageStore.QueryRecentAsync(
+                        DateTimeOffset.UtcNow.AddDays(-14), maxResults: 10000);
+                    foreach (var evt in usageEvents)
+                        sessionsWithSkills.Add(evt.SessionId);
+                }
+
+                var negativeNoSkill = recentFeedback
+                    .Where(fb => fb.SignalType is FeedbackSignalType.UserThumbsDown or FeedbackSignalType.Correction
+                                 && !sessionsWithSkills.Contains(fb.SessionId))
+                    .ToList();
+
+                var positiveNoSkill = recentFeedback
+                    .Where(fb => fb.SignalType == FeedbackSignalType.UserThumbsUp
+                                 && !sessionsWithSkills.Contains(fb.SessionId))
+                    .ToList();
+
+                if (negativeNoSkill.Count > 0)
+                {
+                    userMessage.AppendLine("## Negative feedback on sessions with NO skill match (strong gap signals):");
+                    userMessage.AppendLine("These sessions had quality problems and no existing skill was invoked — a new skill may have helped.");
+                    foreach (var fb in negativeNoSkill)
+                    {
+                        var detail = string.IsNullOrWhiteSpace(fb.Detail) ? string.Empty : $" — \"{fb.Detail}\"";
+                        userMessage.AppendLine($"- [{fb.SignalType}] session {fb.SessionId}: {fb.Summary}{detail}");
+                    }
+                    userMessage.AppendLine();
+                    _logger.LogDebug(
+                        "DreamService: skill gap — injected {Count} negative-no-skill feedback signal(s)",
+                        negativeNoSkill.Count);
+                }
+
+                if (positiveNoSkill.Count > 0)
+                {
+                    userMessage.AppendLine("## Positive feedback on sessions with NO skill match (codification candidates):");
+                    userMessage.AppendLine("The agent handled these well without a skill — consider codifying the approach into a reusable skill.");
+                    foreach (var fb in positiveNoSkill)
+                    {
+                        var detail = string.IsNullOrWhiteSpace(fb.Detail) ? string.Empty : $" — \"{fb.Detail}\"";
+                        userMessage.AppendLine($"- [{fb.SignalType}] session {fb.SessionId}: {fb.Summary}{detail}");
+                    }
+                    userMessage.AppendLine();
+                    _logger.LogDebug(
+                        "DreamService: skill gap — injected {Count} positive-no-skill feedback signal(s)",
+                        positiveNoSkill.Count);
+                }
+            }
         }
 
         // Compute recurring term frequency across sessions as a stronger proactive signal.
@@ -1117,6 +1180,16 @@ internal sealed class DreamService : IHostedService, IDisposable
 
         Existing skills are listed below — do not suggest skills already adequately covered by them.
 
+        Use feedback signals (if provided) as additional evidence:
+        - "Negative feedback on sessions with NO skill match" — these are the strongest gap signals.
+          The agent handled these requests poorly and had no skill to guide it. Prioritize creating
+          skills for request patterns that appear here, even from a single session if the feedback is
+          a direct UserThumbsDown or Correction.
+        - "Positive feedback on sessions with NO skill match" — these are codification candidates.
+          The agent handled these well ad-hoc; if the pattern is likely to recur, codify the approach
+          into a reusable skill so the agent handles it consistently in the future.
+        - Recurring topic terms combined with negative feedback on the same topic strengthen the signal.
+
         Return ONLY a JSON object:
         { "toSave": [ { "name": "...", "summary": "...", "content": "..." } ] }
 
@@ -1125,6 +1198,7 @@ internal sealed class DreamService : IHostedService, IDisposable
         - summary: one sentence, 15 words or fewer
         - content: step-by-step instructions the agent should follow when executing this skill
         - Only suggest skills with clear, repeatable value across sessions
+        - Feedback-backed gaps may warrant a skill even from fewer occurrences than the normal 2-session threshold
 
         If no recurring patterns warrant a new skill, return: { "toSave": [] }
         """;
