@@ -1,0 +1,19 @@
+{{- if .Values.todoappMcp.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "rockbot.fullname" . }}-todoapp-mcp
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "rockbot.labels" . | nindent 4 }}
+    app.kubernetes.io/component: todoapp-mcp
+spec:
+  type: ClusterIP
+  selector:
+    app: rockbot-todoapp-mcp
+    {{- include "rockbot.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8080
+{{- end }}
