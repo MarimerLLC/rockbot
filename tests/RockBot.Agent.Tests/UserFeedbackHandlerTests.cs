@@ -66,6 +66,7 @@ public class UserFeedbackHandlerTests
             new StubLongTermMemory(),
             new InjectedMemoryTracker(),
             new StubWorkingMemory(),
+            new StubSharedMemory(),
             new StubSkillStore(),
             new SkillIndexTracker(),
             new SkillRecallTracker(),
@@ -357,6 +358,19 @@ internal sealed class StubWorkingMemory : IWorkingMemory
         Task.FromResult<IReadOnlyList<WorkingMemoryEntry>>([]);
     public Task DeleteAsync(string sessionId, string key) => Task.CompletedTask;
     public Task ClearAsync(string sessionId) => Task.CompletedTask;
+}
+
+internal sealed class StubSharedMemory : ISharedMemory
+{
+    public Task SetAsync(string key, string value, TimeSpan? ttl = null,
+        string? category = null, IReadOnlyList<string>? tags = null) => Task.CompletedTask;
+    public Task<string?> GetAsync(string key) => Task.FromResult<string?>(null);
+    public Task<IReadOnlyList<SharedMemoryEntry>> ListAsync() =>
+        Task.FromResult<IReadOnlyList<SharedMemoryEntry>>([]);
+    public Task<IReadOnlyList<SharedMemoryEntry>> SearchAsync(MemorySearchCriteria criteria) =>
+        Task.FromResult<IReadOnlyList<SharedMemoryEntry>>([]);
+    public Task DeleteAsync(string key) => Task.CompletedTask;
+    public Task ClearAsync() => Task.CompletedTask;
 }
 
 internal sealed class StubSystemPromptBuilder : ISystemPromptBuilder

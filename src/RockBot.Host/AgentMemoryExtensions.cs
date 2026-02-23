@@ -17,6 +17,7 @@ public static class AgentMemoryExtensions
         builder.WithConversationMemory();
         builder.WithLongTermMemory();
         builder.WithWorkingMemory();
+        builder.WithSharedMemory();
         return builder;
     }
 
@@ -75,6 +76,27 @@ public static class AgentMemoryExtensions
         builder.Services.AddSingleton<FileWorkingMemory>();
         builder.Services.AddSingleton<IWorkingMemory>(sp => sp.GetRequiredService<FileWorkingMemory>());
         builder.Services.AddSingleton<IHostedService>(sp => sp.GetRequiredService<FileWorkingMemory>());
+
+        return builder;
+    }
+
+    /// <summary>
+    /// Registers cross-session shared memory (TTL-based scratch space accessible to all execution contexts).
+    /// </summary>
+    public static AgentHostBuilder WithSharedMemory(
+        this AgentHostBuilder builder,
+        Action<SharedMemoryOptions>? configure = null)
+    {
+        if (configure is not null)
+            builder.Services.Configure(configure);
+        else
+            builder.Services.Configure<SharedMemoryOptions>(_ => { });
+
+        builder.Services.AddMemoryCache();
+        builder.Services.AddSingleton<HybridCacheSharedMemory>();
+        builder.Services.AddSingleton<FileSharedMemory>();
+        builder.Services.AddSingleton<ISharedMemory>(sp => sp.GetRequiredService<FileSharedMemory>());
+        builder.Services.AddSingleton<IHostedService>(sp => sp.GetRequiredService<FileSharedMemory>());
 
         return builder;
     }

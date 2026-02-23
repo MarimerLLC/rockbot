@@ -20,7 +20,9 @@ internal sealed class SubagentResultHandler(
     IMessagePublisher publisher,
     AgentIdentity agent,
     IWorkingMemory workingMemory,
+    ISharedMemory sharedMemory,
     MemoryTools memoryTools,
+    SharedMemoryTools sharedMemoryTools,
     ISkillStore skillStore,
     IToolRegistry toolRegistry,
     RulesTools rulesTools,
@@ -40,18 +42,18 @@ internal sealed class SubagentResultHandler(
             logger.LogWarning("Subagent {TaskId} returned empty output — primary agent will have nothing to relay", message.TaskId);
 
         // The subagent's final text is the primary result. Large data (reports, lists, documents)
-        // may have been written to working memory using WriteSharedOutput — keys are prefixed
-        // "subagent:{taskId}:". Only tell the LLM to retrieve from working memory if entries
-        // actually exist — an unconditional hint causes the LLM to call get_from_working_memory
-        // and conclude the cache "expired" when nothing was ever written there.
-        var whiteboardPrefix = $"subagent:{message.TaskId}:";
-        var allEntries = await workingMemory.ListAsync(message.PrimarySessionId);
-        var whiteboardEntries = allEntries
-            .Where(e => e.Key.StartsWith(whiteboardPrefix, StringComparison.OrdinalIgnoreCase))
+        // may have been written to shared memory using SaveToSharedMemory with category
+        // "subagent-output". Only tell the LLM to retrieve from shared memory if entries
+        // actually exist — an unconditional hint causes the LLM to call get_from_shared_memory
+        // and conclude the data "expired" when nothing was ever written there.
+        var sharedEntries = await sharedMemory.SearchAsync(
+            new MemorySearchCriteria(Category: "subagent-output"));
+        var relevantEntries = sharedEntries
+            .Where(e => e.Key.Contains(message.TaskId, StringComparison.OrdinalIgnoreCase))
             .ToList();
 
-        var whiteboardHint = whiteboardEntries.Count > 0
-            ? $" Additional outputs were written to working memory. Keys: {string.Join(", ", whiteboardEntries.Select(e => $"'{e.Key}'"))}. Retrieve and present them to the user."
+        var sharedHint = relevantEntries.Count > 0
+            ? $" Additional outputs were written to shared memory. Keys: {string.Join(", ", relevantEntries.Select(e => $"'{e.Key}'"))}. Use get_from_shared_memory to retrieve and present them to the user."
             : string.Empty;
 
         // If the subagent ran out of iterations its final text may be an incomplete setup
@@ -88,7 +90,7 @@ internal sealed class SubagentResultHandler(
         }
 
         var syntheticUserTurn = message.IsSuccess
-            ? $"[Subagent task {message.TaskId} completed]: {safeOutput}{whiteboardHint}"
+            ? $"[Subagent task {message.TaskId} completed]: {safeOutput}{sharedHint}"
             : $"[Subagent task {message.TaskId} completed with error: {message.Error}]: {message.Output}";
 
         await conversationMemory.AddTurnAsync(
@@ -108,8 +110,8 @@ internal sealed class SubagentResultHandler(
 
         var chatOptions = new ChatOptions
         {
-            Tools = [..memoryTools.Tools, ..sessionWorkingMemoryTools.Tools, ..sessionSkillTools.Tools,
-                     ..rulesTools.Tools, ..toolGuideTools.Tools, ..registryTools]
+            Tools = [..memoryTools.Tools, ..sessionWorkingMemoryTools.Tools, ..sharedMemoryTools.Tools,
+                     ..sessionSkillTools.Tools, ..rulesTools.Tools, ..toolGuideTools.Tools, ..registryTools]
         };
 
         try
@@ -136,9 +138,5 @@ internal sealed class SubagentResultHandler(
         {
             logger.LogError(ex, "Failed to handle subagent result for task {TaskId}", message.TaskId);
         }
-        // Note: whiteboard entries (subagent-whiteboards/{taskId}) are intentionally NOT deleted
-        // here. They persist in long-term memory so the primary agent can reference them across
-        // multiple conversation turns. The dream service will clean them up as part of normal
-        // stale-memory consolidation.
     }
 }

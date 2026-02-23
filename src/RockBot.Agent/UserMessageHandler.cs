@@ -36,6 +36,7 @@ internal sealed class UserMessageHandler(
     IToolRegistry toolRegistry,
     AgentClock clock,
     ToolGuideTools toolGuideTools,
+    SharedMemoryTools sharedMemoryTools,
     ModelBehavior modelBehavior,
     IFeedbackStore feedbackStore,
     IUserActivityMonitor userActivityMonitor,
@@ -119,6 +120,7 @@ internal sealed class UserMessageHandler(
 
             var allTools = memoryTools.Tools
                 .Concat(sessionWorkingMemoryTools.Tools)
+                .Concat(sharedMemoryTools.Tools)
                 .Concat(sessionSkillTools.Tools)
                 .Concat(rulesTools.Tools)
                 .Concat(toolGuideTools.Tools)
