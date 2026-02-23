@@ -1,15 +1,14 @@
 using System.Text.Json;
 using Microsoft.Extensions.AI;
-using RockBot.Tools;
 
-namespace RockBot.Cli;
+namespace RockBot.Tools;
 
 /// <summary>
 /// Wraps a <see cref="ToolRegistration"/> and its <see cref="IToolExecutor"/> as an
 /// <see cref="AIFunction"/> so registry tools (MCP, REST, scheduling, etc.) can be
 /// passed directly to the LLM via <see cref="ChatOptions.Tools"/>.
 /// </summary>
-internal sealed class RegistryToolFunction(
+public sealed class RegistryToolFunction(
     ToolRegistration registration,
     IToolExecutor executor,
     string? sessionId) : AIFunction

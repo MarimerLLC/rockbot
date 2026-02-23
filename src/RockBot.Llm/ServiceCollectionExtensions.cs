@@ -1,5 +1,6 @@
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using RockBot.Host;
 
 namespace RockBot.Llm;
@@ -31,6 +32,9 @@ public static class LlmServiceCollectionExtensions
     /// Registers <see cref="IModelBehaviorProvider"/> and resolves a <see cref="ModelBehavior"/>
     /// singleton for the currently configured <see cref="IChatClient"/> model.
     /// Consumers can inject <see cref="ModelBehavior"/> directly to get tweaks for the active model.
+    /// Uses <c>TryAddSingleton</c> for <see cref="ModelBehavior"/> so that
+    /// <see cref="RockBot.Host.ServiceCollectionExtensions.AddRockBotChatClient"/> can
+    /// register it first (breaking the circular dependency with <see cref="IChatClient"/>).
     /// </summary>
     public static IServiceCollection AddModelBehaviors(
         this IServiceCollection services,
@@ -41,9 +45,10 @@ public static class LlmServiceCollectionExtensions
         services.AddSingleton(options);
         services.AddSingleton<IModelBehaviorProvider, DefaultModelBehaviorProvider>();
 
-        // Resolve the ModelBehavior for the configured model once at startup.
-        // Consumers inject ModelBehavior directly — no need to thread the model ID through call sites.
-        services.AddSingleton(sp =>
+        // TryAdd: if AddRockBotChatClient already registered ModelBehavior (using the
+        // inner client's model ID to avoid circular dependency), skip this registration.
+        // Otherwise, resolve from IChatClient → model ID → IModelBehaviorProvider.
+        services.TryAddSingleton(sp =>
         {
             var client = sp.GetRequiredService<IChatClient>();
             var provider = sp.GetRequiredService<IModelBehaviorProvider>();

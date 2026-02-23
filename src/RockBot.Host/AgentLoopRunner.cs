@@ -22,15 +22,6 @@ public sealed class AgentLoopRunner(
 {
     private const int MaxToolIterations = 12;
     private const int MaxConsecutiveTimeoutIterations = 2;
-    private const int ToolResultChunkMaxLength = 20_000;
-    private static readonly TimeSpan ToolResultChunkTtl = TimeSpan.FromMinutes(20);
-
-    private static readonly HashSet<string> ChunkingExemptTools = new(StringComparer.OrdinalIgnoreCase)
-    {
-        "GetFromWorkingMemory",
-        "SearchWorkingMemory",
-        "ListWorkingMemory",
-    };
 
     /// <summary>
     /// Detects when a model claims to have performed tool actions in plain text without
@@ -46,22 +37,17 @@ public sealed class AgentLoopRunner(
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
     /// <summary>
-    /// Context window limit in tokens, learned from the first overflow error.
+    /// Context window limit in tokens, learned from the first overflow error (text-based path only).
     /// </summary>
     private int? _knownContextLimit;
 
     /// <summary>
     /// Runs the LLM tool-calling loop.
+    /// For native models (UseTextBasedToolCalling = false), delegates to
+    /// <see cref="RockBotFunctionInvokingChatClient"/> which handles the full tool loop.
+    /// For text-based models (UseTextBasedToolCalling = true), uses the manual loop
+    /// that parses tool calls from free text.
     /// </summary>
-    /// <param name="chatMessages">Messages to send (modified in place as tool results are added).</param>
-    /// <param name="chatOptions">Chat options including available tools.</param>
-    /// <param name="sessionId">Session ID for working memory scoping.</param>
-    /// <param name="firstResponse">Pre-fetched first LLM response; if null, the first call is made here.</param>
-    /// <param name="onPreToolCall">Optional callback invoked before each tool call batch with a description of what's being called.</param>
-    /// <param name="onProgress">Optional callback invoked after each tool call batch with a progress message.</param>
-    /// <param name="onToolTimeout">Optional callback invoked immediately when a tool result is a timeout, bypassing normal throttling.</param>
-    /// <param name="cancellationToken">Cancellation token.</param>
-    /// <returns>The final text response from the LLM.</returns>
     public async Task<string> RunAsync(
         List<ChatMessage> chatMessages,
         ChatOptions chatOptions,
@@ -72,6 +58,50 @@ public sealed class AgentLoopRunner(
         Func<string, CancellationToken, Task>? onToolTimeout = null,
         CancellationToken cancellationToken = default)
     {
+        if (modelBehavior.UseTextBasedToolCalling)
+        {
+            return await RunTextBasedLoopAsync(
+                chatMessages, chatOptions, sessionId, firstResponse,
+                onPreToolCall, onProgress, onToolTimeout, cancellationToken);
+        }
+
+        // Native path: FunctionInvokingChatClient handles the tool loop.
+        // A single GetResponseAsync call executes all tool roundtrips via the middleware.
+        logger.LogInformation(
+            "Tool execution path: NATIVE (M.E.AI FunctionInvokingChatClient) — {MessageCount} messages in context",
+            chatMessages.Count);
+
+        // If there's a pre-fetched first response with tool calls, add it to history
+        // and let the middleware continue from there.
+        if (firstResponse is not null)
+        {
+            chatMessages.AddRange(firstResponse.Messages);
+            logger.LogInformation("Added pre-fetched first response to context for native path");
+        }
+
+        var response = await llmClient.GetResponseAsync(chatMessages, chatOptions, cancellationToken);
+        return ExtractAssistantText(response);
+    }
+
+    /// <summary>
+    /// Text-based tool-calling loop for models that do not support native structured
+    /// tool calling (e.g. DeepSeek). Parses tool calls from free text and manually
+    /// invokes tools.
+    /// </summary>
+    private async Task<string> RunTextBasedLoopAsync(
+        List<ChatMessage> chatMessages,
+        ChatOptions chatOptions,
+        string? sessionId,
+        ChatResponse? firstResponse,
+        Func<string, CancellationToken, Task>? onPreToolCall,
+        Func<string, CancellationToken, Task>? onProgress,
+        Func<string, CancellationToken, Task>? onToolTimeout,
+        CancellationToken cancellationToken)
+    {
+        logger.LogInformation(
+            "Tool execution path: TEXT-BASED (manual parsing loop) — {MessageCount} messages in context",
+            chatMessages.Count);
+
         ChatResponse? pendingResponse = firstResponse;
         var anyToolCalled = false;
         var maxIterations = modelBehavior.MaxToolIterationsOverride ?? MaxToolIterations;
@@ -230,10 +260,9 @@ public sealed class AgentLoopRunner(
                             Timestamp: DateTimeOffset.UtcNow));
                     }
 
-                    var textResultStr = await ChunkToolResultAsync(
-                        toolName, result?.ToString() ?? string.Empty, sessionId, cancellationToken);
+                    // Chunking is handled by ChunkingAIFunction wrapper on the tool itself.
                     chatMessages.Add(new ChatMessage(ChatRole.User,
-                        $"[Tool result for {toolName}]: {textResultStr}"));
+                        $"[Tool result for {toolName}]: {result?.ToString() ?? string.Empty}"));
                 }
 
                 if (onProgress is not null)
@@ -309,8 +338,8 @@ public sealed class AgentLoopRunner(
                         Timestamp: DateTimeOffset.UtcNow));
                 }
 
-                var nativeResultStr = await ChunkToolResultAsync(
-                    fc.Name, result?.ToString() ?? string.Empty, sessionId, cancellationToken);
+                // Chunking is handled by ChunkingAIFunction wrapper on the tool itself.
+                var nativeResultStr = result?.ToString() ?? string.Empty;
                 chatMessages.Add(new ChatMessage(ChatRole.Tool,
                     [new FunctionResultContent(fc.CallId, nativeResultStr)]));
 
@@ -406,6 +435,8 @@ public sealed class AgentLoopRunner(
         return string.Empty;
     }
 
+    // ── Context overflow handling (text-based path only) ──────────────────────
+
     private void TrimLargeToolResults(List<ChatMessage> messages, int maxTokens)
     {
         const int CharsPerToken = 4;
@@ -448,72 +479,6 @@ public sealed class AgentLoopRunner(
         }
     }
 
-    private async Task<string> ChunkToolResultAsync(
-        string toolName, string result, string? sessionId, CancellationToken ct)
-    {
-        if (ChunkingExemptTools.Contains(toolName))
-            return result;
-
-        var threshold = modelBehavior.ToolResultChunkingThreshold;
-        if (result.Length <= threshold)
-            return result;
-
-        if (sessionId is not null)
-        {
-            var chunks = ContentChunker.Chunk(result, ToolResultChunkMaxLength);
-            var sanitizedName = SanitizeKeySegment(toolName);
-            var runId = Guid.NewGuid().ToString("N")[..8];
-            var keyBase = $"tool:{sanitizedName}:{runId}";
-
-            var index = new StringBuilder();
-            index.AppendLine(
-                $"Tool result for '{toolName}' is large ({result.Length:N0} chars) and has been " +
-                $"split into {chunks.Count} chunk(s) stored in working memory.");
-            index.AppendLine(
-                "Call get_from_working_memory(key) for each relevant chunk BEFORE drawing conclusions. " +
-                "Do not summarise based on this index alone.");
-            index.AppendLine();
-            index.AppendLine("| # | Heading | Key |");
-            index.AppendLine("|---|---------|-----|");
-
-            for (var i = 0; i < chunks.Count; i++)
-            {
-                var (heading, content) = chunks[i];
-                var key = $"{keyBase}:chunk{i}";
-                await workingMemory.SetAsync(sessionId, key, content, ttl: ToolResultChunkTtl, category: "tool-result");
-                var label = string.IsNullOrWhiteSpace(heading) ? $"Part {i}" : heading;
-                index.AppendLine($"| {i} | {label} | `{key}` |");
-            }
-
-            logger.LogInformation(
-                "Chunked large tool result for {ToolName}: {Length:N0} chars → {ChunkCount} chunk(s) (threshold {Threshold:N0})",
-                toolName, result.Length, chunks.Count, threshold);
-
-            return index.ToString().Trim();
-        }
-
-        var truncated = result[..threshold] +
-            $"\n[result truncated — {result.Length - threshold:N0} chars omitted]";
-        logger.LogWarning(
-            "Truncated large tool result for {ToolName}: {Length:N0} chars (no working memory available, threshold {Threshold:N0})",
-            toolName, result.Length, threshold);
-        return truncated;
-    }
-
-    private static string SanitizeKeySegment(string s)
-    {
-        var sb = new StringBuilder(Math.Min(s.Length, 40));
-        foreach (var c in s)
-        {
-            if (char.IsLetterOrDigit(c) || c == '-' || c == '_')
-                sb.Append(c);
-            else
-                sb.Append('_');
-            if (sb.Length == 40) break;
-        }
-        return sb.ToString();
-    }
-
     private static int EstimateMessageChars(ChatMessage m) =>
         m.Contents.Sum(static c => c switch
         {
@@ -538,6 +503,8 @@ public sealed class AgentLoopRunner(
         return true;
     }
 
+    // ── Logging ──────────────────────────────────────────────────────────────
+
     private void LogResponseMessages(ChatResponse response, string iterationLabel)
     {
         for (var i = 0; i < response.Messages.Count; i++)
@@ -549,6 +516,8 @@ public sealed class AgentLoopRunner(
                 i, msg.Role, msg.Text?.Length ?? 0, contentParts);
         }
     }
+
+    // ── Text-based tool call parsing ─────────────────────────────────────────
 
     public List<(string Name, string ArgsJson)> ParseTextToolCalls(string text, IReadOnlySet<string> knownTools)
     {
@@ -662,6 +631,8 @@ public sealed class AgentLoopRunner(
         return idx <= 0 ? string.Empty : text[..idx].TrimEnd();
     }
 
+    // ── Text extraction ─────────────────────────────────────────────────────
+
     public string ExtractAssistantText(ChatResponse response)
     {
         for (var i = response.Messages.Count - 1; i >= 0; i--)
@@ -685,6 +656,8 @@ public sealed class AgentLoopRunner(
         var idx = text.IndexOf(begin, StringComparison.Ordinal);
         return idx >= 0 ? text[..idx] : text;
     }
+
+    // ── Tool call description ────────────────────────────────────────────────
 
     /// <summary>
     /// Builds a human-readable description of a tool call, including key arguments

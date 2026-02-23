@@ -47,4 +47,7 @@ public sealed class ModelBehaviorEntry
 
     /// <inheritdoc cref="ModelBehavior.ToolResultChunkingThreshold"/>
     public int? ToolResultChunkingThreshold { get; set; }
+
+    /// <inheritdoc cref="ModelBehavior.UseTextBasedToolCalling"/>
+    public bool UseTextBasedToolCalling { get; set; }
 }

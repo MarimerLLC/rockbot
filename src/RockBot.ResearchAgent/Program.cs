@@ -25,25 +25,26 @@ var endpoint = llmConfig["Endpoint"];
 var apiKey = llmConfig["ApiKey"];
 var modelId = llmConfig["ModelId"];
 
+// ModelBehavior: raise iteration limit — research tasks routinely need more than the default 12
+// to search, browse, cache, and then synthesise without hitting the wall mid-loop.
+// Pre-registered before AddRockBotChatClient so the TryAdd in that method respects this override.
+builder.Services.AddSingleton(new ModelBehavior { MaxToolIterationsOverride = 50 });
+
 if (!string.IsNullOrEmpty(endpoint) && !string.IsNullOrEmpty(apiKey) && !string.IsNullOrEmpty(modelId))
 {
     var openAiClient = new OpenAIClient(
         new ApiKeyCredential(apiKey),
         new OpenAIClientOptions { Endpoint = new Uri(endpoint) });
 
-    builder.Services.AddSingleton<IChatClient>(
+    builder.Services.AddRockBotChatClient(
         openAiClient.GetChatClient(modelId).AsIChatClient());
 }
 else
 {
-    builder.Services.AddSingleton<IChatClient, EchoChatClient>();
+    builder.Services.AddRockBotChatClient(new EchoChatClient());
     Console.WriteLine("No LLM config found — using EchoChatClient.");
     Console.WriteLine("Set LLM:Endpoint, LLM:ApiKey, and LLM:ModelId to configure.");
 }
-
-// ModelBehavior: raise iteration limit — research tasks routinely need more than the default 12
-// to search, browse, cache, and then synthesise without hitting the wall mid-loop.
-builder.Services.AddSingleton(new ModelBehavior { MaxToolIterationsOverride = 50 });
 
 // AgentLoopRunner requires IFeedbackStore — use no-op since we have no dreaming pipeline
 builder.Services.AddSingleton<IFeedbackStore, NullFeedbackStore>();

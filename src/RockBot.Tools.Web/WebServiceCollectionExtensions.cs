@@ -22,7 +22,12 @@ public static class WebServiceCollectionExtensions
         builder.Services.AddSingleton(options);
 
         builder.Services.AddHttpClient("RockBot.Tools.Web.Brave");
-        builder.Services.AddHttpClient("RockBot.Tools.Web.Browse");
+        builder.Services.AddHttpClient("RockBot.Tools.Web.Browse", client =>
+        {
+            // Use a realistic browser User-Agent so sites don't reject us as a bot.
+            client.DefaultRequestHeaders.UserAgent.ParseAdd(
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36");
+        });
         builder.Services.AddHttpClient("RockBot.Tools.Web.GitHub", client =>
         {
             // GitHub API requires a User-Agent header
