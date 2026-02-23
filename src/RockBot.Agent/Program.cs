@@ -125,8 +125,10 @@ builder.Services.AddRockBotHost(agent =>
     });
     agent.HandleMessage<ScheduledTaskMessage, ScheduledTaskHandler>();
     agent.HandleMessage<UserMessage, UserMessageHandler>();
+    agent.HandleMessage<UserFeedback, UserFeedbackHandler>();
     agent.HandleMessage<ConversationHistoryRequest, ConversationHistoryRequestHandler>();
     agent.SubscribeTo(UserProxyTopics.UserMessage);
+    agent.SubscribeTo(UserProxyTopics.UserFeedback);
     agent.SubscribeTo(UserProxyTopics.ConversationHistoryRequest);
 });
 

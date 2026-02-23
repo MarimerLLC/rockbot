@@ -593,7 +593,7 @@ internal sealed class DreamService : IHostedService, IDisposable
             }
             list.Add(fb);
 
-            if (fb.SignalType == FeedbackSignalType.Correction)
+            if (fb.SignalType is FeedbackSignalType.Correction or FeedbackSignalType.UserThumbsDown)
                 atRiskSessions.Add(fb.SessionId);
             else if (fb.SignalType == FeedbackSignalType.SessionSummary)
             {
