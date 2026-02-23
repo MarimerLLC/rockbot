@@ -10,6 +10,8 @@ namespace RockBot.Messaging.RabbitMQ;
 /// <summary>
 /// RabbitMQ implementation of IMessageSubscriber.
 /// Creates durable queues bound to the topic exchange for each subscription.
+/// Subscriptions self-heal: if the underlying channel is closed unexpectedly,
+/// <see cref="RabbitMqSubscription"/> reconnects transparently.
 /// </summary>
 public sealed class RabbitMqSubscriber : IMessageSubscriber
 {
@@ -33,137 +35,154 @@ public sealed class RabbitMqSubscriber : IMessageSubscriber
         Func<MessageEnvelope, CancellationToken, Task<MessageResult>> handler,
         CancellationToken cancellationToken = default)
     {
-        var channel = await _connectionManager.CreateChannelAsync(cancellationToken);
-
-        // Set QoS
-        await channel.BasicQosAsync(
-            prefetchSize: 0,
-            prefetchCount: _options.PrefetchCount,
-            global: false,
-            cancellationToken: cancellationToken);
-
-        // Queue name is derived from subscription name for durability
         var queueName = $"rockbot.{subscriptionName}";
         var dlqName = $"{queueName}.dlq";
+        var exchangeName = _options.ExchangeName;
+        var dlxName = _options.DeadLetterExchangeName;
+        var prefetchCount = _options.PrefetchCount;
+        var durable = _options.Durable;
 
-        // Declare dead-letter queue
-        await channel.QueueDeclareAsync(
-            queue: dlqName,
-            durable: _options.Durable,
-            exclusive: false,
-            autoDelete: false,
-            cancellationToken: cancellationToken);
-
-        await channel.QueueBindAsync(
-            queue: dlqName,
-            exchange: _options.DeadLetterExchangeName,
-            routingKey: topic,
-            cancellationToken: cancellationToken);
-
-        // Declare the main queue with dead-letter routing
-        var args = new Dictionary<string, object?>
+        // Factory that creates a fresh channel + consumer, called both for initial
+        // setup and for transparent reconnection after unexpected channel closure.
+        async Task<(IChannel channel, string consumerTag)> CreateChannelAndConsumerAsync(
+            CancellationToken ct)
         {
-            ["x-dead-letter-exchange"] = _options.DeadLetterExchangeName,
-            ["x-dead-letter-routing-key"] = topic
-        };
+            var channel = await _connectionManager.CreateChannelAsync(ct);
 
-        await channel.QueueDeclareAsync(
-            queue: queueName,
-            durable: _options.Durable,
-            exclusive: false,
-            autoDelete: false,
-            arguments: args,
-            cancellationToken: cancellationToken);
+            await channel.BasicQosAsync(
+                prefetchSize: 0,
+                prefetchCount: prefetchCount,
+                global: false,
+                cancellationToken: ct);
 
-        // Bind to the topic exchange
-        await channel.QueueBindAsync(
-            queue: queueName,
-            exchange: _options.ExchangeName,
-            routingKey: topic,
-            cancellationToken: cancellationToken);
+            // Declare dead-letter queue
+            await channel.QueueDeclareAsync(
+                queue: dlqName,
+                durable: durable,
+                exclusive: false,
+                autoDelete: false,
+                cancellationToken: ct);
+
+            await channel.QueueBindAsync(
+                queue: dlqName,
+                exchange: dlxName,
+                routingKey: topic,
+                cancellationToken: ct);
+
+            // Declare the main queue with dead-letter routing
+            var args = new Dictionary<string, object?>
+            {
+                ["x-dead-letter-exchange"] = dlxName,
+                ["x-dead-letter-routing-key"] = topic
+            };
+
+            await channel.QueueDeclareAsync(
+                queue: queueName,
+                durable: durable,
+                exclusive: false,
+                autoDelete: false,
+                arguments: args,
+                cancellationToken: ct);
+
+            await channel.QueueBindAsync(
+                queue: queueName,
+                exchange: exchangeName,
+                routingKey: topic,
+                cancellationToken: ct);
+
+            // Set up consumer — each factory call produces its own handler closure
+            // that captures the new channel, so ack/nack always targets the right channel.
+            var consumer = new AsyncEventingBasicConsumer(channel);
+            consumer.ReceivedAsync += async (_, ea) =>
+            {
+                var envelope = MapToEnvelope(ea);
+
+                var parentContext = TraceContextPropagator.Extract(envelope.Headers);
+
+                using var activity = RabbitMqDiagnostics.Source.StartActivity(
+                    "process", ActivityKind.Consumer,
+                    parentContext ?? default);
+
+                if (activity is not null)
+                {
+                    activity.SetTag("messaging.system", "rabbitmq");
+                    activity.SetTag("messaging.destination", topic);
+                    activity.SetTag("messaging.message_id", envelope.MessageId);
+                }
+
+                RabbitMqDiagnostics.ActiveMessages.Add(1);
+                var sw = Stopwatch.StartNew();
+                MessageResult result;
+
+                try
+                {
+                    _logger.LogDebug(
+                        "Received message {MessageId} on topic {Topic}",
+                        envelope.MessageId, topic);
+
+                    result = await handler(envelope, CancellationToken.None);
+
+                    sw.Stop();
+                    activity?.SetTag("messaging.result", result.ToString().ToLowerInvariant());
+
+                    switch (result)
+                    {
+                        case MessageResult.Ack:
+                            await channel.BasicAckAsync(ea.DeliveryTag, multiple: false);
+                            break;
+                        case MessageResult.Retry:
+                            await channel.BasicNackAsync(ea.DeliveryTag, multiple: false, requeue: true);
+                            break;
+                        case MessageResult.DeadLetter:
+                            await channel.BasicNackAsync(ea.DeliveryTag, multiple: false, requeue: false);
+                            break;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    sw.Stop();
+                    result = MessageResult.Retry;
+                    activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
+                    activity?.SetTag("messaging.result", "error");
+                    _logger.LogError(ex, "Error processing message {DeliveryTag}", ea.DeliveryTag);
+                    await channel.BasicNackAsync(ea.DeliveryTag, multiple: false, requeue: true);
+                }
+                finally
+                {
+                    RabbitMqDiagnostics.ActiveMessages.Add(-1);
+                    RabbitMqDiagnostics.ProcessDuration.Record(sw.Elapsed.TotalMilliseconds,
+                        new KeyValuePair<string, object?>("messaging.destination", topic),
+                        new KeyValuePair<string, object?>("messaging.result",
+                            activity?.GetTagItem("messaging.result") ?? "unknown"));
+                    RabbitMqDiagnostics.ProcessMessages.Add(1,
+                        new KeyValuePair<string, object?>("messaging.destination", topic),
+                        new KeyValuePair<string, object?>("messaging.result",
+                            activity?.GetTagItem("messaging.result") ?? "unknown"));
+                }
+            };
+
+            var consumerTag = await channel.BasicConsumeAsync(
+                queue: queueName,
+                autoAck: false,
+                consumer: consumer,
+                cancellationToken: ct);
+
+            return (channel, consumerTag);
+        }
 
         _logger.LogInformation(
             "Subscribing to topic {Topic} with queue {Queue}",
             topic, queueName);
 
-        // Set up consumer
-        var consumer = new AsyncEventingBasicConsumer(channel);
-        consumer.ReceivedAsync += async (sender, ea) =>
-        {
-            var envelope = MapToEnvelope(ea);
+        var (channel, consumerTag) = await CreateChannelAndConsumerAsync(cancellationToken);
 
-            // Extract parent trace context from envelope headers
-            var parentContext = TraceContextPropagator.Extract(envelope.Headers);
-
-            using var activity = RabbitMqDiagnostics.Source.StartActivity(
-                "process", ActivityKind.Consumer,
-                parentContext ?? default);
-
-            if (activity is not null)
-            {
-                activity.SetTag("messaging.system", "rabbitmq");
-                activity.SetTag("messaging.destination", topic);
-                activity.SetTag("messaging.message_id", envelope.MessageId);
-            }
-
-            RabbitMqDiagnostics.ActiveMessages.Add(1);
-            var sw = Stopwatch.StartNew();
-            MessageResult result;
-
-            try
-            {
-                _logger.LogDebug(
-                    "Received message {MessageId} on topic {Topic}",
-                    envelope.MessageId, topic);
-
-                result = await handler(envelope, cancellationToken);
-
-                sw.Stop();
-                activity?.SetTag("messaging.result", result.ToString().ToLowerInvariant());
-
-                switch (result)
-                {
-                    case MessageResult.Ack:
-                        await channel.BasicAckAsync(ea.DeliveryTag, multiple: false, cancellationToken);
-                        break;
-                    case MessageResult.Retry:
-                        await channel.BasicNackAsync(ea.DeliveryTag, multiple: false, requeue: true, cancellationToken);
-                        break;
-                    case MessageResult.DeadLetter:
-                        await channel.BasicNackAsync(ea.DeliveryTag, multiple: false, requeue: false, cancellationToken);
-                        break;
-                }
-            }
-            catch (Exception ex)
-            {
-                sw.Stop();
-                result = MessageResult.Retry;
-                activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
-                activity?.SetTag("messaging.result", "error");
-                _logger.LogError(ex, "Error processing message {DeliveryTag}", ea.DeliveryTag);
-                await channel.BasicNackAsync(ea.DeliveryTag, multiple: false, requeue: true, cancellationToken);
-            }
-            finally
-            {
-                RabbitMqDiagnostics.ActiveMessages.Add(-1);
-                RabbitMqDiagnostics.ProcessDuration.Record(sw.Elapsed.TotalMilliseconds,
-                    new KeyValuePair<string, object?>("messaging.destination", topic),
-                    new KeyValuePair<string, object?>("messaging.result",
-                        activity?.GetTagItem("messaging.result") ?? "unknown"));
-                RabbitMqDiagnostics.ProcessMessages.Add(1,
-                    new KeyValuePair<string, object?>("messaging.destination", topic),
-                    new KeyValuePair<string, object?>("messaging.result",
-                        activity?.GetTagItem("messaging.result") ?? "unknown"));
-            }
-        };
-
-        var consumerTag = await channel.BasicConsumeAsync(
-            queue: queueName,
-            autoAck: false,
-            consumer: consumer,
-            cancellationToken: cancellationToken);
-
-        return new RabbitMqSubscription(channel, consumerTag, topic, subscriptionName);
+        return new RabbitMqSubscription(
+            channel,
+            consumerTag,
+            topic,
+            subscriptionName,
+            CreateChannelAndConsumerAsync,
+            _logger);
     }
 
     private static MessageEnvelope MapToEnvelope(BasicDeliverEventArgs ea)
