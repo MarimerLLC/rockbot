@@ -41,15 +41,16 @@ public class UserFeedbackHandlerTests
         var agent = new AgentIdentity(AgentName);
         var modelBehavior = ModelBehavior.Default;
 
+        var config = new ConfigurationBuilder().Build();
+        var profileOptions = Options.Create(new AgentProfileOptions { BasePath = Path.GetTempPath() });
+
         var agentLoopRunner = new AgentLoopRunner(
             _llmClient,
             new StubWorkingMemory(),
             modelBehavior,
             _feedbackStore,
+            new AgentClock(config, profileOptions, NullLogger<AgentClock>.Instance),
             NullLogger<AgentLoopRunner>.Instance);
-
-        var config = new ConfigurationBuilder().Build();
-        var profileOptions = Options.Create(new AgentProfileOptions { BasePath = Path.GetTempPath() });
         var clock = new AgentClock(config, profileOptions, NullLogger<AgentClock>.Instance);
 
         var profile = new AgentProfile(

@@ -33,7 +33,12 @@ public class SubagentManagerTests
         services.AddSingleton<IMessagePublisher>(new NoopPublisher());
         services.AddSingleton<ILongTermMemory>(new NoopLongTermMemory());
         services.AddSingleton<ISkillStore>(new NoopSkillStore());
-        services.AddSingleton(Options.Create(new AgentProfileOptions()));
+        var agentProfileOptions = Options.Create(new AgentProfileOptions());
+        services.AddSingleton(agentProfileOptions);
+        services.AddSingleton(new AgentClock(
+            new Microsoft.Extensions.Configuration.ConfigurationBuilder().Build(),
+            agentProfileOptions,
+            NullLoggerFactory.Instance.CreateLogger<AgentClock>()));
         services.AddSingleton(new AgentIdentity("test-agent"));
         services.AddSingleton(ModelBehavior.Default);
         services.AddSingleton<MemoryTools>();

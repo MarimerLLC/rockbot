@@ -20,7 +20,7 @@ Each agent is an isolated process that reacts to messages, invokes tools, calls 
 | `RockBot.Messaging.RabbitMQ` | RabbitMQ provider with topic exchanges and dead-letter queues |
 | `RockBot.Messaging.InProcess` | In-memory bus for local development and testing |
 | `RockBot.Host` | Agent host runtime — handler pipeline, profile loading, system prompt composition, dream service |
-| `RockBot.Llm` | LLM integration via `Microsoft.Extensions.AI` with per-model behavior overrides |
+| `RockBot.Llm` | LLM integration via `Microsoft.Extensions.AI` — three-tier routing, per-model behavior overrides, keyword-based tier selection |
 | `RockBot.Memory` | Three-tier memory system — conversation (ephemeral), long-term (persistent), and working (session context) |
 | `RockBot.Skills` | Learned skill storage, BM25 recall, usage tracking, and dream-based optimization |
 | `RockBot.Tools` | Tool registry, invocation dispatch, and tool-guide discovery |
@@ -139,6 +139,16 @@ A background hosted service that runs periodically (configurable interval) to au
 - **Skill gap detection** — scans conversation logs for recurring request patterns and creates new skills; uses cross-session term frequency as a stronger signal for patterns the agent hasn't formalized yet.
 - **Implicit preference learning** — extracts durable user preferences from conversation patterns.
 
+### Three-tier LLM routing
+
+Prompts are routed to one of three model tiers based on estimated complexity, so simple questions use a cheap fast model while complex research uses a powerful one:
+
+- **Low** — short factual questions ("what is X?", "define Y"). Routed to the fastest/cheapest configured model.
+- **Balanced** — moderate-complexity requests. The default fallback; used when Low or High aren't explicitly configured.
+- **High** — deep analysis, research synthesis, dream consolidation. Routed to the most capable model.
+
+Tier selection uses `KeywordTierSelector` — a lightweight keyword + prompt-length heuristic with no external calls. The thresholds and keyword lists are hot-reloadable from `tier-selector.json` on the PVC without a pod restart. A background dream pass (`TierRoutingReviewPass`) periodically reviews routing decisions logged in `tier-routing-log.jsonl` and rewrites `tier-selector.json` if it detects systematic mis-routing.
+
 ### Model-specific behaviors
 
 Per-model behavior overrides are loaded from `model-behaviors/{model-prefix}/` and can include:
@@ -240,10 +250,27 @@ rabbitmq:
 
 secrets:
   create: true
-  azureAI:
-    endpoint: "https://<your-resource>.openai.azure.com/"
-    key: "<your-api-key>"
-    deploymentName: "<your-deployment-name>"
+  llm:
+    # Balanced tier — REQUIRED. Used for moderate-complexity user messages and patrol tasks.
+    balanced:
+      endpoint: "https://openrouter.ai/api/v1"
+      apiKey: "<your-openrouter-api-key>"
+      modelId: "anthropic/claude-haiku-4.5"
+
+    # Low tier — OPTIONAL. Fast/cheap model for simple factual questions.
+    # Falls back to balanced when not configured.
+    # low:
+    #   endpoint: "https://openrouter.ai/api/v1"
+    #   apiKey: "<your-openrouter-api-key>"
+    #   modelId: "google/gemini-flash-1.5-8b"
+
+    # High tier — OPTIONAL. Powerful model for dream consolidation and research.
+    # Falls back to balanced when not configured.
+    # high:
+    #   endpoint: "https://openrouter.ai/api/v1"
+    #   apiKey: "<your-openrouter-api-key>"
+    #   modelId: "anthropic/claude-opus-4-6"
+
   webTools:
     apiKey: "<your-brave-search-api-key>"
   rabbitmq:
