@@ -18,6 +18,7 @@ public sealed class AgentLoopRunner(
     IWorkingMemory workingMemory,
     ModelBehavior modelBehavior,
     IFeedbackStore feedbackStore,
+    AgentClock clock,
     ILogger<AgentLoopRunner> logger)
 {
     private const int MaxToolIterations = 12;
@@ -59,6 +60,12 @@ public sealed class AgentLoopRunner(
         Func<string, CancellationToken, Task>? onToolTimeout = null,
         CancellationToken cancellationToken = default)
     {
+        // Ensure a current datetime context is always present. For callers that went
+        // through AgentContextBuilder this refreshes the message (useful for long-running
+        // loops). For callers that build their own context this provides the injection
+        // automatically, so individual agents don't need to manage it.
+        EnsureDateTimeContext(chatMessages);
+
         if (modelBehavior.UseTextBasedToolCalling)
         {
             return await RunTextBasedLoopAsync(
@@ -82,6 +89,32 @@ public sealed class AgentLoopRunner(
 
         var response = await llmClient.GetResponseAsync(chatMessages, tier, chatOptions, cancellationToken);
         return ExtractAssistantText(response);
+    }
+
+    /// <summary>
+    /// Ensures a current datetime system message is present in <paramref name="chatMessages"/>.
+    /// Replaces an existing one if found (keeps the time current for long-running loops),
+    /// or inserts one after the first system message if absent.
+    /// </summary>
+    private void EnsureDateTimeContext(List<ChatMessage> chatMessages)
+    {
+        var text =
+            $"The user's local date and time is: {clock.Now:dddd, MMMM d, yyyy} {clock.Now:HH:mm:ss zzz} ({clock.Zone.Id}). " +
+            "Always express dates and times to the user in this timezone. Never assume UTC or any other timezone.";
+
+        for (var i = 0; i < chatMessages.Count; i++)
+        {
+            if (chatMessages[i].Role == ChatRole.System &&
+                chatMessages[i].Text?.StartsWith("The user's local date and time is:") == true)
+            {
+                chatMessages[i] = new ChatMessage(ChatRole.System, text);
+                return;
+            }
+        }
+
+        // Not already present — insert after the first system message (or at 0 if none)
+        var insertAt = chatMessages.Count > 0 && chatMessages[0].Role == ChatRole.System ? 1 : 0;
+        chatMessages.Insert(insertAt, new ChatMessage(ChatRole.System, text));
     }
 
     /// <summary>
