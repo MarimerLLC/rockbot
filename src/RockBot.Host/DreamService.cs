@@ -403,7 +403,13 @@ internal sealed class DreamService : IHostedService, IDisposable
             var isSparse = s.Content.Length < 200 && s.CreatedAt < sparseThreshold;
             var sparseAnnotation = isSparse ? " [sparse-content: may need examples or steps]" : string.Empty;
             userMessage.AppendLine($"{i + 1}. [NAME:{s.Name}]{usageAnnotation}{coUsedAnnotation}{sparseAnnotation} summary: {s.Summary}");
-            userMessage.AppendLine(s.Content);
+            // Cap content at 800 chars so the LLM doesn't reproduce long markdown verbatim
+            // (long content with inline double-quotes breaks JSON encoding in the response).
+            const int ContentCap = 800;
+            var displayContent = s.Content.Length > ContentCap
+                ? s.Content[..ContentCap] + "\n[... truncated for consolidation pass ...]"
+                : s.Content;
+            userMessage.AppendLine(displayContent);
             userMessage.AppendLine();
         }
 
@@ -653,7 +659,11 @@ internal sealed class DreamService : IHostedService, IDisposable
         foreach (var skill in atRiskSkills)
         {
             userMessage.AppendLine($"## Skill: {skill.Name}");
-            userMessage.AppendLine(skill.Content);
+            const int OptimizeCap = 800;
+            var displayContent = skill.Content.Length > OptimizeCap
+                ? skill.Content[..OptimizeCap] + "\n[... truncated ...]"
+                : skill.Content;
+            userMessage.AppendLine(displayContent);
             userMessage.AppendLine();
 
             // Gather feedback from sessions that used this skill and were at-risk
@@ -1180,6 +1190,12 @@ internal sealed class DreamService : IHostedService, IDisposable
         The summary must be one sentence of 15 words or fewer.
         Every name in any sourceNames list must also appear in toDelete.
         If nothing needs consolidation, return: { "toDelete": [], "toSave": [] }
+
+        IMPORTANT — JSON safety rules:
+        - Keep each skill's content concise (300–800 characters). Write clear prose; avoid markdown tables.
+        - Do NOT embed literal double-quote characters inside content strings. Use single quotes or
+          backtick notation instead (e.g. use 'value' instead of "value" in examples).
+        - Do not reproduce truncated source content verbatim — write fresh, improved content.
         """;
 
     private const string BuiltInSkillOptimizeDirective = """
