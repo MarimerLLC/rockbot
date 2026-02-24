@@ -88,7 +88,7 @@ internal sealed class SubagentRunner(
                      && r.Name != "mcp_register_server"
                      && r.Name != "mcp_unregister_server")
             .Select(r => (AIFunction)new SubagentRegistryToolFunction(
-                r, toolRegistry.GetExecutor(r.Name)!, subagentSessionId))
+                r, toolRegistry.GetExecutor(r.Name)!, subagentNamespace))
             .ToArray();
 
         // report_progress tool — baked with taskId and primarySessionId

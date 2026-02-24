@@ -112,8 +112,9 @@ public class WebBrowseToolExecutorTests
         var options = new WebToolOptions { ChunkingThreshold = 8_000, ChunkMaxLength = 5_000, ChunkTtlMinutes = 20 };
         var executor = new WebBrowseToolExecutor(provider, memory, options);
 
+        // Callers pass the full namespace as SessionId (e.g. "session/abc123", "patrol/heartbeat")
         var response = await executor.ExecuteAsync(
-            MakeRequest("""{"url": "https://example.com/big"}""", sessionId: "session-1"),
+            MakeRequest("""{"url": "https://example.com/big"}""", sessionId: "session/session-1"),
             CancellationToken.None);
 
         Assert.IsFalse(response.IsError);

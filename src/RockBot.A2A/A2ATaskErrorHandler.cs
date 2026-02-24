@@ -58,11 +58,12 @@ internal sealed class A2ATaskErrorHandler(
         var chatMessages = await agentContextBuilder.BuildAsync(
             pending.PrimarySessionId, syntheticUserTurn, ct);
 
-        var sessionWorkingMemoryTools = new WorkingMemoryTools(workingMemory, pending.PrimarySessionId, logger);
+        var sessionNamespace = $"session/{pending.PrimarySessionId}";
+        var sessionWorkingMemoryTools = new WorkingMemoryTools(workingMemory, sessionNamespace, logger);
         var sessionSkillTools = new SkillTools(skillStore, llmClient, logger, pending.PrimarySessionId);
         var registryTools = toolRegistry.GetTools()
             .Select(r => (AIFunction)new RegistryToolFunction(
-                r, toolRegistry.GetExecutor(r.Name)!, pending.PrimarySessionId))
+                r, toolRegistry.GetExecutor(r.Name)!, sessionNamespace))
             .ToArray();
 
         var chatOptions = new ChatOptions

@@ -128,11 +128,12 @@ internal sealed class UserFeedbackHandler(
 
                 // Give the re-evaluation loop the full agent tool set so it can
                 // use memory, skills, web search, MCP tools, etc. as needed.
-                var sessionWorkingMemoryTools = new WorkingMemoryTools(workingMemory, message.SessionId, logger);
+                var sessionNamespace = $"session/{message.SessionId}";
+                var sessionWorkingMemoryTools = new WorkingMemoryTools(workingMemory, sessionNamespace, logger);
                 var sessionSkillTools = new SkillTools(skillStore, llmClient, logger, message.SessionId);
                 var registryTools = toolRegistry.GetTools()
                     .Select(r => (AIFunction)new RegistryToolFunction(
-                        r, toolRegistry.GetExecutor(r.Name)!, message.SessionId))
+                        r, toolRegistry.GetExecutor(r.Name)!, sessionNamespace))
                     .ToArray();
 
                 var chatOptions = new ChatOptions
