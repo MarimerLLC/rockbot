@@ -26,6 +26,7 @@ public class SubagentManagerTests
     private static void AddSubagentRunnerStubs(IServiceCollection services, ILlmClient llmClient)
     {
         services.AddSingleton(llmClient);
+        services.AddSingleton<ILlmTierSelector>(new FixedTierSelector(ModelTier.Balanced));
         services.AddSingleton<IWorkingMemory>(new NoopWorkingMemory());
         services.AddSingleton<IFeedbackStore>(new NoopFeedbackStore());
         services.AddSingleton<IToolRegistry>(new EmptyToolRegistry());
