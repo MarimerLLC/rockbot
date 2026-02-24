@@ -53,6 +53,7 @@ public sealed class AgentLoopRunner(
         ChatOptions chatOptions,
         string? sessionId,
         ChatResponse? firstResponse = null,
+        ModelTier tier = ModelTier.Balanced,
         Func<string, CancellationToken, Task>? onPreToolCall = null,
         Func<string, CancellationToken, Task>? onProgress = null,
         Func<string, CancellationToken, Task>? onToolTimeout = null,
@@ -61,7 +62,7 @@ public sealed class AgentLoopRunner(
         if (modelBehavior.UseTextBasedToolCalling)
         {
             return await RunTextBasedLoopAsync(
-                chatMessages, chatOptions, sessionId, firstResponse,
+                chatMessages, chatOptions, sessionId, firstResponse, tier,
                 onPreToolCall, onProgress, onToolTimeout, cancellationToken);
         }
 
@@ -79,7 +80,7 @@ public sealed class AgentLoopRunner(
             logger.LogInformation("Added pre-fetched first response to context for native path");
         }
 
-        var response = await llmClient.GetResponseAsync(chatMessages, chatOptions, cancellationToken);
+        var response = await llmClient.GetResponseAsync(chatMessages, tier, chatOptions, cancellationToken);
         return ExtractAssistantText(response);
     }
 
@@ -93,6 +94,7 @@ public sealed class AgentLoopRunner(
         ChatOptions chatOptions,
         string? sessionId,
         ChatResponse? firstResponse,
+        ModelTier tier,
         Func<string, CancellationToken, Task>? onPreToolCall,
         Func<string, CancellationToken, Task>? onProgress,
         Func<string, CancellationToken, Task>? onToolTimeout,
@@ -128,7 +130,7 @@ public sealed class AgentLoopRunner(
 
                 try
                 {
-                    response = await llmClient.GetResponseAsync(chatMessages, chatOptions, cancellationToken);
+                    response = await llmClient.GetResponseAsync(chatMessages, tier, chatOptions, cancellationToken);
                 }
                 catch (ClientResultException ex)
                     when (ex.Status == 400 && TryParseContextOverflow(ex.Message, out var max, out var used))
@@ -138,7 +140,7 @@ public sealed class AgentLoopRunner(
                         "Context overflow ({Used:N0}/{Max:N0} tokens); trimming tool results and retrying once",
                         used, max);
                     TrimLargeToolResults(chatMessages, max);
-                    response = await llmClient.GetResponseAsync(chatMessages, chatOptions, cancellationToken);
+                    response = await llmClient.GetResponseAsync(chatMessages, tier, chatOptions, cancellationToken);
                 }
 
                 sw.Stop();
@@ -392,7 +394,7 @@ public sealed class AgentLoopRunner(
         };
 
         var finalResponse = await llmClient.GetResponseAsync(
-            summaryMessages, new ChatOptions(), cancellationToken);
+            summaryMessages, tier, new ChatOptions(), cancellationToken);
         var forcedText = ExtractAssistantText(finalResponse);
 
         // If the forced response is itself an incomplete setup phrase, nudge once more.
@@ -405,7 +407,7 @@ public sealed class AgentLoopRunner(
             summaryMessages.Add(new ChatMessage(ChatRole.User,
                 "Do not narrate intentions. Summarise only what was completed."));
             var nudgedResponse = await llmClient.GetResponseAsync(
-                summaryMessages, new ChatOptions(), cancellationToken);
+                summaryMessages, tier, new ChatOptions(), cancellationToken);
             forcedText = ExtractAssistantText(nudgedResponse);
         }
 

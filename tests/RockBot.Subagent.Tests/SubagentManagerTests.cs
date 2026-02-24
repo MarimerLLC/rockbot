@@ -26,6 +26,7 @@ public class SubagentManagerTests
     private static void AddSubagentRunnerStubs(IServiceCollection services, ILlmClient llmClient)
     {
         services.AddSingleton(llmClient);
+        services.AddSingleton<ILlmTierSelector>(new FixedTierSelector(ModelTier.Balanced));
         services.AddSingleton<IWorkingMemory>(new NoopWorkingMemory());
         services.AddSingleton<IFeedbackStore>(new NoopFeedbackStore());
         services.AddSingleton<IToolRegistry>(new EmptyToolRegistry());
@@ -39,6 +40,13 @@ public class SubagentManagerTests
         services.AddSingleton(new ToolGuideTools([], NullLoggerFactory.Instance.CreateLogger<ToolGuideTools>()));
         services.AddTransient<AgentLoopRunner>();
         services.AddTransient<SubagentRunner>();
+
+        // TierRoutingLogger requires a writable directory; point it at a temp folder
+        var tmpDir = Path.Combine(Path.GetTempPath(), Path.GetRandomFileName());
+        Directory.CreateDirectory(tmpDir);
+        services.AddSingleton(new TierRoutingLogger(
+            Options.Create(new AgentProfileOptions { BasePath = tmpDir }),
+            NullLoggerFactory.Instance.CreateLogger<TierRoutingLogger>()));
     }
 
     private static SubagentManager CreateManager(int maxConcurrent = 3)
@@ -207,6 +215,13 @@ public class SubagentManagerTests
             var msg = new ChatMessage(ChatRole.Assistant, "Task complete.");
             return Task.FromResult(new ChatResponse([msg]));
         }
+
+        public Task<ChatResponse> GetResponseAsync(
+            IEnumerable<ChatMessage> messages,
+            ModelTier tier,
+            ChatOptions? options = null,
+            CancellationToken cancellationToken = default) =>
+            GetResponseAsync(messages, options, cancellationToken);
     }
 
     /// <summary>LLM client that blocks until the TCS is completed or the token is cancelled.</summary>
@@ -224,6 +239,13 @@ public class SubagentManagerTests
             var msg = new ChatMessage(ChatRole.Assistant, "Done.");
             return new ChatResponse([msg]);
         }
+
+        public Task<ChatResponse> GetResponseAsync(
+            IEnumerable<ChatMessage> messages,
+            ModelTier tier,
+            ChatOptions? options = null,
+            CancellationToken cancellationToken = default) =>
+            GetResponseAsync(messages, options, cancellationToken);
     }
 
     private sealed class NoopWorkingMemory : IWorkingMemory

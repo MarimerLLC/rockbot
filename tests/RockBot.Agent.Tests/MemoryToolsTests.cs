@@ -203,4 +203,11 @@ internal sealed class StubChatClient : ILlmClient
         ChatOptions? options = null,
         CancellationToken cancellationToken = default) =>
         Task.FromResult(new ChatResponse(new ChatMessage(ChatRole.Assistant, "[]")));
+
+    public Task<ChatResponse> GetResponseAsync(
+        IEnumerable<ChatMessage> messages,
+        ModelTier tier,
+        ChatOptions? options = null,
+        CancellationToken cancellationToken = default) =>
+        GetResponseAsync(messages, options, cancellationToken);
 }

@@ -13,8 +13,20 @@ namespace RockBot.Host;
 /// </summary>
 public interface ILlmClient
 {
+    /// <summary>
+    /// Calls the LLM using the <see cref="ModelTier.Balanced"/> client.
+    /// </summary>
     Task<ChatResponse> GetResponseAsync(
         IEnumerable<ChatMessage> messages,
+        ChatOptions? options = null,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Calls the LLM using the client for the specified <paramref name="tier"/>.
+    /// </summary>
+    Task<ChatResponse> GetResponseAsync(
+        IEnumerable<ChatMessage> messages,
+        ModelTier tier,
         ChatOptions? options = null,
         CancellationToken cancellationToken = default);
 }

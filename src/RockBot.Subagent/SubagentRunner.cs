@@ -17,12 +17,14 @@ namespace RockBot.Subagent;
 internal sealed class SubagentRunner(
     AgentLoopRunner agentLoopRunner,
     ILlmClient llmClient,
+    ILlmTierSelector tierSelector,
     IWorkingMemory workingMemory,
     MemoryTools memoryTools,
     ISkillStore skillStore,
     IToolRegistry toolRegistry,
     ToolGuideTools toolGuideTools,
     IMessagePublisher publisher,
+    TierRoutingLogger tierRoutingLogger,
     ILogger<SubagentRunner> logger)
 {
     public async Task RunAsync(
@@ -33,8 +35,15 @@ internal sealed class SubagentRunner(
         string primarySessionId,
         CancellationToken ct)
     {
+        var tier = tierSelector.SelectTier(description);
         logger.LogInformation(
-            "Subagent {TaskId} starting (session {SessionId})", taskId, subagentSessionId);
+            "Subagent {TaskId} starting (session {SessionId}) tier={Tier}",
+            taskId, subagentSessionId, tier);
+
+        _ = tierRoutingLogger.AppendAsync(new TierRoutingEntry(
+            DateTimeOffset.UtcNow,
+            description.Length > 150 ? description[..150] : description,
+            tier, "subagent"));
 
         var subagentNamespace = $"subagent/{taskId}";
         var systemPrompt =
@@ -116,7 +125,7 @@ internal sealed class SubagentRunner(
         {
             finalOutput = await agentLoopRunner.RunAsync(
                 chatMessages, chatOptions, subagentSessionId,
-                cancellationToken: ct);
+                tier: tier, cancellationToken: ct);
             isSuccess = true;
         }
         catch (OperationCanceledException oce)

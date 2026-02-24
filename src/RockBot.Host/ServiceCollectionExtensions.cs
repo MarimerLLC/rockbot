@@ -85,6 +85,14 @@ public static class ServiceCollectionExtensions
                 sp.GetRequiredService<ILogger<RockBotFunctionInvokingChatClient>>());
         });
 
+        // LlmClient now requires TieredChatClientRegistry. When a single client is
+        // configured (non-tiered path), register a registry that uses it for all tiers.
+        services.AddSingleton(sp =>
+        {
+            var client = sp.GetRequiredService<IChatClient>();
+            return new TieredChatClientRegistry(client, client, client);
+        });
+
         return services;
     }
 }

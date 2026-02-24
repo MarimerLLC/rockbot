@@ -24,6 +24,7 @@ internal sealed class DreamService : IHostedService, IDisposable
     private readonly IFeedbackStore? _feedbackStore;
     private readonly ISkillUsageStore? _skillUsageStore;
     private readonly IConversationLog? _conversationLog;
+    private readonly TierRoutingLogger? _tierRoutingLogger;
     private readonly ILlmClient _llmClient;
     private readonly IUserActivityMonitor _userActivityMonitor;
     private readonly DreamOptions _options;
@@ -35,6 +36,7 @@ internal sealed class DreamService : IHostedService, IDisposable
     private string? _skillOptimizeDirective;
     private string? _prefDreamDirective;
     private string? _skillGapDirective;
+    private string? _tierRoutingDirective;
 
     public DreamService(
         ILongTermMemory memory,
@@ -46,13 +48,15 @@ internal sealed class DreamService : IHostedService, IDisposable
         ILogger<DreamService> logger,
         IFeedbackStore? feedbackStore = null,
         ISkillUsageStore? skillUsageStore = null,
-        IConversationLog? conversationLog = null)
+        IConversationLog? conversationLog = null,
+        TierRoutingLogger? tierRoutingLogger = null)
     {
         _memory = memory;
         _skillStore = skillStores.FirstOrDefault();
         _feedbackStore = feedbackStore;
         _skillUsageStore = skillUsageStore;
         _conversationLog = conversationLog;
+        _tierRoutingLogger = tierRoutingLogger;
         _llmClient = llmClient;
         _userActivityMonitor = userActivityMonitor;
         _options = options.Value;
@@ -135,6 +139,19 @@ internal sealed class DreamService : IHostedService, IDisposable
                 _logger.LogWarning("DreamService: skill gap directive not found at {Path}; using built-in fallback", skillGapDirectivePath);
             else
                 _logger.LogInformation("DreamService: loaded skill gap directive from {Path}", skillGapDirectivePath);
+        }
+
+        if (_options.TierRoutingReviewEnabled)
+        {
+            var tierRoutingDirectivePath = ResolvePath(_options.TierRoutingDirectivePath, _profileOptions.BasePath);
+            _tierRoutingDirective = File.Exists(tierRoutingDirectivePath)
+                ? File.ReadAllText(tierRoutingDirectivePath)
+                : null; // null → BuiltInTierRoutingDirective used in RunTierRoutingReviewPassAsync
+
+            if (!File.Exists(tierRoutingDirectivePath))
+                _logger.LogDebug("DreamService: tier routing directive not found at {Path}; using built-in", tierRoutingDirectivePath);
+            else
+                _logger.LogInformation("DreamService: loaded tier routing directive from {Path}", tierRoutingDirectivePath);
         }
 
         _timer = new Timer(
@@ -225,7 +242,7 @@ internal sealed class DreamService : IHostedService, IDisposable
                 new(ChatRole.User, userMessage.ToString())
             };
 
-            var response = await _llmClient.GetResponseAsync(messages, new ChatOptions());
+            var response = await _llmClient.GetResponseAsync(messages, ModelTier.High, new ChatOptions { ResponseFormat = ChatResponseFormat.Json });
             var raw = response.Text?.Trim() ?? string.Empty;
             var json = ExtractJsonObject(raw);
 
@@ -237,7 +254,7 @@ internal sealed class DreamService : IHostedService, IDisposable
 
             _logger.LogDebug("DreamService: LLM response JSON ({Length} chars): {Json}", json.Length, json);
 
-            var result = JsonSerializer.Deserialize<DreamResultDto>(json, JsonOptions);
+            var result = TryDeserializeJson<DreamResultDto>(json, "memory dream");
             if (result is null)
             {
                 _logger.LogWarning("DreamService: failed to deserialize dream result; skipping cycle");
@@ -304,6 +321,8 @@ internal sealed class DreamService : IHostedService, IDisposable
                 await ConsolidateSkillsAsync();
 
             await RunPreferenceInferencePassAsync();
+
+            await RunTierRoutingReviewPassAsync();
 
             sw.Stop();
             _logger.LogInformation(
@@ -403,7 +422,13 @@ internal sealed class DreamService : IHostedService, IDisposable
             var isSparse = s.Content.Length < 200 && s.CreatedAt < sparseThreshold;
             var sparseAnnotation = isSparse ? " [sparse-content: may need examples or steps]" : string.Empty;
             userMessage.AppendLine($"{i + 1}. [NAME:{s.Name}]{usageAnnotation}{coUsedAnnotation}{sparseAnnotation} summary: {s.Summary}");
-            userMessage.AppendLine(s.Content);
+            // Cap content at 800 chars so the LLM doesn't reproduce long markdown verbatim
+            // (long content with inline double-quotes breaks JSON encoding in the response).
+            const int ContentCap = 800;
+            var displayContent = s.Content.Length > ContentCap
+                ? s.Content[..ContentCap] + "\n[... truncated for consolidation pass ...]"
+                : s.Content;
+            userMessage.AppendLine(displayContent);
             userMessage.AppendLine();
         }
 
@@ -445,7 +470,7 @@ internal sealed class DreamService : IHostedService, IDisposable
             new(ChatRole.User, userMessage.ToString())
         };
 
-        var response = await _llmClient.GetResponseAsync(messages, new ChatOptions());
+        var response = await _llmClient.GetResponseAsync(messages, ModelTier.High, new ChatOptions { ResponseFormat = ChatResponseFormat.Json });
         var raw = response.Text?.Trim() ?? string.Empty;
         var json = ExtractJsonObject(raw);
 
@@ -457,7 +482,7 @@ internal sealed class DreamService : IHostedService, IDisposable
 
         _logger.LogDebug("DreamService: skill LLM response JSON ({Length} chars): {Json}", json.Length, json);
 
-        var result = JsonSerializer.Deserialize<SkillDreamResultDto>(json, JsonOptions);
+        var result = TryDeserializeJson<SkillDreamResultDto>(json, "skill consolidation");
         if (result is null)
         {
             _logger.LogWarning("DreamService: failed to deserialize skill dream result; skipping");
@@ -653,7 +678,11 @@ internal sealed class DreamService : IHostedService, IDisposable
         foreach (var skill in atRiskSkills)
         {
             userMessage.AppendLine($"## Skill: {skill.Name}");
-            userMessage.AppendLine(skill.Content);
+            const int OptimizeCap = 800;
+            var displayContent = skill.Content.Length > OptimizeCap
+                ? skill.Content[..OptimizeCap] + "\n[... truncated ...]"
+                : skill.Content;
+            userMessage.AppendLine(displayContent);
             userMessage.AppendLine();
 
             // Gather feedback from sessions that used this skill and were at-risk
@@ -700,7 +729,7 @@ internal sealed class DreamService : IHostedService, IDisposable
             new(ChatRole.User, userMessage.ToString())
         };
 
-        var response = await _llmClient.GetResponseAsync(messages, new ChatOptions());
+        var response = await _llmClient.GetResponseAsync(messages, ModelTier.High, new ChatOptions { ResponseFormat = ChatResponseFormat.Json });
         var raw = response.Text?.Trim() ?? string.Empty;
         var json = ExtractJsonObject(raw);
 
@@ -710,7 +739,7 @@ internal sealed class DreamService : IHostedService, IDisposable
             return;
         }
 
-        var result = JsonSerializer.Deserialize<SkillDreamResultDto>(json, JsonOptions);
+        var result = TryDeserializeJson<SkillDreamResultDto>(json, "skill optimization");
         if (result is null)
         {
             _logger.LogWarning("DreamService: failed to deserialize skill optimize result; skipping");
@@ -929,7 +958,7 @@ internal sealed class DreamService : IHostedService, IDisposable
             new(ChatRole.User, userMessage.ToString())
         };
 
-        var response = await _llmClient.GetResponseAsync(messages, new ChatOptions());
+        var response = await _llmClient.GetResponseAsync(messages, ModelTier.High, new ChatOptions { ResponseFormat = ChatResponseFormat.Json });
         var raw = response.Text?.Trim() ?? string.Empty;
         var json = ExtractJsonObject(raw);
 
@@ -941,7 +970,7 @@ internal sealed class DreamService : IHostedService, IDisposable
 
         _logger.LogDebug("DreamService: skill gap JSON ({Length} chars): {Json}", json.Length, json);
 
-        var result = JsonSerializer.Deserialize<SkillGapResultDto>(json, JsonOptions);
+        var result = TryDeserializeJson<SkillGapResultDto>(json, "skill gap");
         var saved = 0;
 
         foreach (var dto in result?.ToSave ?? [])
@@ -1026,7 +1055,7 @@ internal sealed class DreamService : IHostedService, IDisposable
                 new(ChatRole.User, userMessage.ToString())
             };
 
-            var response = await _llmClient.GetResponseAsync(messages, new ChatOptions());
+            var response = await _llmClient.GetResponseAsync(messages, ModelTier.High, new ChatOptions { ResponseFormat = ChatResponseFormat.Json });
             var raw = response.Text?.Trim() ?? string.Empty;
             var json = ExtractJsonObject(raw);
 
@@ -1038,7 +1067,7 @@ internal sealed class DreamService : IHostedService, IDisposable
             {
                 _logger.LogDebug("DreamService: pref inference JSON ({Length} chars): {Json}", json.Length, json);
 
-                var result = JsonSerializer.Deserialize<PrefDreamResultDto>(json, JsonOptions);
+                var result = TryDeserializeJson<PrefDreamResultDto>(json, "preference inference");
                 var saved = 0;
 
                 foreach (var dto in result?.ToSave ?? [])
@@ -1089,9 +1118,114 @@ internal sealed class DreamService : IHostedService, IDisposable
     }
 
     /// <summary>
+    /// Reviews recent tier-routing decisions and writes an updated <c>tier-selector.json</c>
+    /// when the LLM detects systematic mis-routing. Skipped when fewer than 10 entries exist.
+    /// </summary>
+    private async Task RunTierRoutingReviewPassAsync()
+    {
+        if (_tierRoutingLogger is null || !_options.TierRoutingReviewEnabled)
+            return;
+
+        var entries = await _tierRoutingLogger.ReadRecentAsync(200);
+        if (entries.Count < 10)
+        {
+            _logger.LogDebug(
+                "DreamService: tier routing review — only {Count} entries; skipping (need ≥ 10)",
+                entries.Count);
+            return;
+        }
+
+        _logger.LogInformation(
+            "DreamService: tier routing review pass — {Count} routing entries",
+            entries.Count);
+
+        var configPath = ResolvePath("tier-selector.json", _profileOptions.BasePath);
+
+        var userMessage = new StringBuilder();
+        userMessage.AppendLine("Recent tier-routing decisions to review:");
+        foreach (var e in entries)
+            userMessage.AppendLine(
+                $"[{e.Timestamp:O}] tier={e.Tier} context={e.Context} prompt=\"{e.PromptPreview}\"");
+
+        if (File.Exists(configPath))
+        {
+            userMessage.AppendLine();
+            userMessage.AppendLine("Current tier-selector.json:");
+            userMessage.AppendLine(await File.ReadAllTextAsync(configPath));
+        }
+
+        var messages = new List<ChatMessage>
+        {
+            new(ChatRole.System, _tierRoutingDirective ?? BuiltInTierRoutingDirective),
+            new(ChatRole.User, userMessage.ToString())
+        };
+
+        var response = await _llmClient.GetResponseAsync(
+            messages, ModelTier.High, new ChatOptions { ResponseFormat = ChatResponseFormat.Json });
+        var raw = response.Text?.Trim() ?? string.Empty;
+        var json = ExtractJsonObject(raw);
+
+        if (string.IsNullOrEmpty(json))
+        {
+            _logger.LogWarning("DreamService: tier routing review LLM returned no parseable JSON; skipping");
+            return;
+        }
+
+        _logger.LogDebug("DreamService: tier routing review JSON ({Length} chars): {Json}", json.Length, json);
+
+        var result = TryDeserializeJson<TierRoutingReviewResultDto>(json, "tier routing review");
+        if (result is null) return;
+
+        if (result.NoChangeNeeded == true)
+        {
+            _logger.LogInformation("DreamService: tier routing review — no change needed");
+            return;
+        }
+
+        if (result.Config is null)
+        {
+            _logger.LogWarning("DreamService: tier routing review — LLM said change needed but returned no config; skipping");
+            return;
+        }
+
+        var writeOptions = new JsonSerializerOptions
+        {
+            PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+            WriteIndented = true
+        };
+        await File.WriteAllTextAsync(configPath, JsonSerializer.Serialize(result.Config, writeOptions));
+
+        _logger.LogInformation(
+            "DreamService: tier routing review updated tier-selector.json — notes: {Notes}",
+            result.Config.Notes ?? "(none)");
+    }
+
+    /// <summary>
     /// Extracts the outermost JSON object from <paramref name="text"/>, tolerating
     /// DeepSeek-style thinking blocks and prose preamble.
     /// </summary>
+    /// <summary>
+    /// Deserializes <paramref name="json"/> into <typeparamref name="T"/>, returning
+    /// <c>null</c> and logging a warning if the LLM returned malformed JSON rather
+    /// than letting the exception bubble up and abort the entire dream cycle.
+    /// </summary>
+    private T? TryDeserializeJson<T>(string json, string context)
+    {
+        try
+        {
+            return JsonSerializer.Deserialize<T>(json, JsonOptions);
+        }
+        catch (System.Text.Json.JsonException ex)
+        {
+            var preview = json.Length > 300 ? json[..300] + "…" : json;
+            _logger.LogWarning(
+                "DreamService: {Context} — LLM returned malformed JSON (skipping). " +
+                "Detail: {Message} | Preview: {Preview}",
+                context, ex.Message, preview);
+            return default;
+        }
+    }
+
     private static string ExtractJsonObject(string text)
     {
         // Strip <think>...</think> blocks first (DeepSeek reasoning preamble)
@@ -1158,6 +1292,12 @@ internal sealed class DreamService : IHostedService, IDisposable
         The summary must be one sentence of 15 words or fewer.
         Every name in any sourceNames list must also appear in toDelete.
         If nothing needs consolidation, return: { "toDelete": [], "toSave": [] }
+
+        IMPORTANT — JSON safety rules:
+        - Keep each skill's content concise (300–800 characters). Write clear prose; avoid markdown tables.
+        - Do NOT embed literal double-quote characters inside content strings. Use single quotes or
+          backtick notation instead (e.g. use 'value' instead of "value" in examples).
+        - Do not reproduce truncated source content verbatim — write fresh, improved content.
         """;
 
     private const string BuiltInSkillOptimizeDirective = """
@@ -1222,6 +1362,36 @@ internal sealed class DreamService : IHostedService, IDisposable
         Each entry needs: content (what was learned), category (defaults to "user-preferences/inferred"),
         tags (must include "inferred"), metadata (must include "source": "inferred").
         """;
+
+    private const string BuiltInTierRoutingDirective = """
+        You are a tier-routing self-correction assistant.
+        Review the routing decisions provided and assess whether the keyword/threshold config is producing correct results.
+
+        Return ONLY a JSON object.
+        When routing looks correct: {"noChangeNeeded": true}
+        When you detect systematic mis-routing: {
+          "noChangeNeeded": false,
+          "config": {
+            "version": 1,
+            "notes": "YYYY-MM-DD: <what changed and why>",
+            "lowCeiling": <number>,
+            "balancedCeiling": <number>,
+            "highSignalKeywords": ["complete", "list", "..."],
+            "lowSignalKeywords": ["complete", "list", "..."]
+          }
+        }
+
+        Rules:
+        - lowCeiling must be in [0.05, 0.30]; balancedCeiling must be in [lowCeiling+0.10, 0.70]
+        - Return COMPLETE keyword lists — these replace the defaults entirely (no merging)
+        - Never return empty keyword lists; include all sensible defaults plus any additions/removals
+        - notes must state today's date and describe what changed; do not leave it blank
+        - Only change what is clearly mis-routed; err on the side of no change
+        """;
+
+    private sealed record TierRoutingReviewResultDto(
+        bool? NoChangeNeeded,
+        TierSelectorConfig? Config);
 
     private sealed record DreamResultDto(
         List<string>? ToDelete,

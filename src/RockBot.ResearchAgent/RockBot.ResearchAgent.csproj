@@ -22,6 +22,7 @@
     <PackageReference Include="Microsoft.Extensions.AI.Abstractions" Version="10.*" />
     <PackageReference Include="Microsoft.Extensions.AI.OpenAI" Version="10.3.0" />
     <PackageReference Include="Microsoft.Extensions.Hosting" Version="10.0.*" />
+    <PackageReference Include="System.ClientModel" Version="1.*" />
   </ItemGroup>
 
   <ItemGroup>
@@ -29,6 +30,7 @@
     <ProjectReference Include="..\RockBot.A2A.Abstractions\RockBot.A2A.Abstractions.csproj" />
     <ProjectReference Include="..\RockBot.Host.Abstractions\RockBot.Host.Abstractions.csproj" />
     <ProjectReference Include="..\RockBot.Host\RockBot.Host.csproj" />
+    <ProjectReference Include="..\RockBot.Llm\RockBot.Llm.csproj" />
     <ProjectReference Include="..\RockBot.Messaging.Abstractions\RockBot.Messaging.Abstractions.csproj" />
     <ProjectReference Include="..\RockBot.Messaging.RabbitMQ\RockBot.Messaging.RabbitMQ.csproj" />
     <ProjectReference Include="..\RockBot.Tools.Web\RockBot.Tools.Web.csproj" />

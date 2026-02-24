@@ -51,4 +51,13 @@ public sealed class DreamOptions
     /// When the file does not exist, a built-in fallback directive is used.
     /// </summary>
     public string SkillGapDirectivePath { get; set; } = "skill-gap.md";
+
+    /// <summary>Whether the tier routing self-correction review pass is enabled.</summary>
+    public bool TierRoutingReviewEnabled { get; set; } = true;
+
+    /// <summary>
+    /// Path to the tier routing review directive file, relative to <see cref="AgentProfileOptions.BasePath"/>.
+    /// When the file does not exist, a built-in fallback directive is used.
+    /// </summary>
+    public string TierRoutingDirectivePath { get; set; } = "tier-routing-directive.md";
 }

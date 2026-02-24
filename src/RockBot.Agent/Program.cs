@@ -28,35 +28,66 @@ builder.Configuration.AddUserSecrets<Program>();
 
 builder.Services.AddRockBotRabbitMq(opts => builder.Configuration.GetSection("RabbitMq").Bind(opts));
 
-// Configure the LLM chat client.
-// Reads from the "LLM" config section (env vars LLM__Endpoint, LLM__ApiKey, LLM__ModelId).
-// Any OpenAI-compatible endpoint works — OpenRouter, Azure OpenAI, local Ollama, etc.
-var llmConfig = builder.Configuration.GetSection("LLM");
-var endpoint = llmConfig["Endpoint"];
-var apiKey = llmConfig["ApiKey"];
-var modelId = llmConfig["ModelId"];
+// ── LLM configuration — three-tier (Low / Balanced / High) ──────────────────
+// Reads from the "LLM" config section. Three-tier keys:
+//   LLM__Balanced__Endpoint, LLM__Balanced__ApiKey, LLM__Balanced__ModelId
+//   LLM__Low__Endpoint, LLM__Low__ApiKey, LLM__Low__ModelId        (optional, falls back to Balanced)
+//   LLM__High__Endpoint, LLM__High__ApiKey, LLM__High__ModelId     (optional, falls back to Balanced)
+// Backward-compat flat keys (LLM__Endpoint, LLM__ApiKey, LLM__ModelId) are mapped to Balanced.
+var llmSection = builder.Configuration.GetSection("LLM");
 
-if (!string.IsNullOrEmpty(endpoint) && !string.IsNullOrEmpty(apiKey) && !string.IsNullOrEmpty(modelId))
+var tierOptions = new LlmTierOptions();
+llmSection.Bind(tierOptions);
+
+// Backward compat: flat LLM__{Endpoint/ApiKey/ModelId} → Balanced
+if (!tierOptions.Balanced.IsConfigured)
 {
-    var openAiClient = new OpenAIClient(
-        new ApiKeyCredential(apiKey),
-        new OpenAIClientOptions
-        {
-            Endpoint = new Uri(endpoint),
-            // Extend from the 100s default — subagents with large tool sets generate
-            // longer responses that can exceed the default before the body is fully read.
-            NetworkTimeout = TimeSpan.FromMinutes(5)
-        });
+    tierOptions.Balanced.Endpoint = llmSection["Endpoint"];
+    tierOptions.Balanced.ApiKey   = llmSection["ApiKey"];
+    tierOptions.Balanced.ModelId  = llmSection["ModelId"];
+}
 
-    builder.Services.AddRockBotChatClient(
-        openAiClient.GetChatClient(modelId).AsIChatClient());
+if (tierOptions.Balanced.IsConfigured)
+{
+    IChatClient BuildClient(LlmTierConfig config)
+    {
+        return new OpenAIClient(
+            new ApiKeyCredential(config.ApiKey!),
+            new OpenAIClientOptions
+            {
+                Endpoint = new Uri(config.Endpoint!),
+                // Extend from the 100s default — subagents with large tool sets generate
+                // longer responses that can exceed the default before the body is fully read.
+                NetworkTimeout = TimeSpan.FromMinutes(5)
+            })
+            .GetChatClient(config.ModelId!).AsIChatClient();
+    }
+
+    // AddRockBotTieredChatClients must be called BEFORE AddModelBehaviors so that
+    // its TryAddSingleton<ModelBehavior> (which uses the inner client closure directly)
+    // wins over AddModelBehaviors' factory (which resolves IChatClient from DI and would
+    // create a circular dependency: IChatClient → TieredChatClientRegistry → ModelBehavior
+    // → IChatClient → deadlock).
+    builder.Services.AddRockBotTieredChatClients(
+        lowInnerClient:      BuildClient(tierOptions.Resolve(ModelTier.Low)),
+        balancedInnerClient: BuildClient(tierOptions.Balanced),
+        highInnerClient:     BuildClient(tierOptions.Resolve(ModelTier.High)));
+
+    builder.Services.AddModelBehaviors(opts =>
+        builder.Configuration.GetSection("ModelBehaviors").Bind(opts));
+
+    builder.Services.AddSingleton<ILlmTierSelector, KeywordTierSelector>();
 }
 else
 {
     builder.Services.AddRockBotChatClient(new EchoChatClient());
+    builder.Services.AddSingleton<ILlmTierSelector>(_ => new FixedTierSelector(ModelTier.Balanced));
     Console.WriteLine("No LLM config found — using EchoChatClient.");
-    Console.WriteLine("Set LLM:Endpoint, LLM:ApiKey, and LLM:ModelId to configure.");
+    Console.WriteLine("Set LLM:Balanced:Endpoint (or legacy LLM:Endpoint), LLM:Balanced:ApiKey, and LLM:Balanced:ModelId to configure.");
 }
+
+// Tier routing logger — appends routing decisions to tier-routing-log.jsonl for dream self-correction
+builder.Services.AddSingleton<TierRoutingLogger>();
 
 // Tracks in-flight background tool loops so they can be cancelled when a new message arrives
 builder.Services.AddSingleton<SessionBackgroundTaskTracker>();
@@ -132,10 +163,6 @@ builder.Services.AddRockBotHost(agent =>
     agent.SubscribeTo(UserProxyTopics.ConversationHistoryRequest);
 });
 
-// Per-model behavioral tweaks — resolved once from the configured IChatClient model ID.
-builder.Services.AddModelBehaviors(opts =>
-    builder.Configuration.GetSection("ModelBehaviors").Bind(opts));
-
 // Bind AgentProfileOptions from the AgentProfile config section so AgentProfile__BasePath
 // (set in the k8s ConfigMap) overrides the default "agent" relative path → /data/agent (PVC).
 builder.Services.Configure<AgentProfileOptions>(builder.Configuration.GetSection("AgentProfile"));
@@ -152,7 +179,7 @@ var app = builder.Build();
 var startupLogger = app.Services.GetRequiredService<ILoggerFactory>().CreateLogger("Startup");
 var chatClient = app.Services.GetRequiredService<IChatClient>();
 var llmId = chatClient.GetService<ChatClientMetadata>()?.DefaultModelId ?? chatClient.GetType().Name;
-startupLogger.LogInformation("LLM: {ModelId}", llmId);
+startupLogger.LogInformation("LLM (Balanced): {ModelId}", llmId);
 var resolvedBehavior = app.Services.GetRequiredService<ModelBehavior>();
 startupLogger.LogInformation(
     "ModelBehavior: NudgeOnHallucinatedToolCalls={Nudge}, AdditionalSystemPrompt={HasPrompt}, ScheduledTaskResultMode={ResultMode}",

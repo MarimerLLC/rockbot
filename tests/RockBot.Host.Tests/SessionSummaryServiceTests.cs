@@ -205,5 +205,12 @@ public class SessionSummaryServiceTests
             var content = responseJson ?? """{"summary":"session completed","overallQuality":"fair"}""";
             return Task.FromResult(new ChatResponse([new ChatMessage(ChatRole.Assistant, content)]));
         }
+
+        public Task<ChatResponse> GetResponseAsync(
+            IEnumerable<ChatMessage> messages,
+            ModelTier tier,
+            ChatOptions? options = null,
+            CancellationToken cancellationToken = default) =>
+            GetResponseAsync(messages, options, cancellationToken);
     }
 }
