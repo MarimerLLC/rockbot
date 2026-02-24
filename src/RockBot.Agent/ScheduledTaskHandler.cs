@@ -36,13 +36,15 @@ internal sealed class ScheduledTaskHandler(
     public async Task HandleAsync(ScheduledTaskMessage message, MessageHandlerContext context)
     {
         var ct = context.CancellationToken;
-        var sessionId = $"patrol-{message.TaskName}";
+        var sessionId = $"patrol/{message.TaskName}";
         logger.LogInformation("Executing scheduled task '{TaskName}'", message.TaskName);
 
         // Build full agent context using an ephemeral session ID so no history accumulates
         // across patrol runs. Pass the task description as the user content for BM25 recall.
+        // workingMemoryNamespace must be passed explicitly because sessionId is "patrol/{name}",
+        // not a raw session ID — without it the context builder would look in "session/patrol/{name}".
         var chatMessages = await agentContextBuilder.BuildAsync(
-            sessionId, message.Description, ct);
+            sessionId, message.Description, ct, workingMemoryNamespace: sessionId);
 
         // If a task-specific directive file exists (e.g. heartbeat-patrol.md), inject it
         // as a system message immediately after the main system prompt (index 1).
@@ -59,7 +61,7 @@ internal sealed class ScheduledTaskHandler(
         // the ephemeral session has no conversation history).
         chatMessages.Add(new ChatMessage(ChatRole.User, message.Description));
 
-        // Per-session tools — same set the user handler builds
+        // Per-session tools — same set the user handler builds (sessionId already is "patrol/name")
         var sessionWorkingMemoryTools = new WorkingMemoryTools(workingMemory, sessionId, logger);
         var sessionSkillTools = new SkillTools(skillStore, llmClient, logger, sessionId, skillUsageStore);
 
@@ -74,7 +76,7 @@ internal sealed class ScheduledTaskHandler(
             .Concat(toolGuideTools.Tools)
             .Concat(registryTools)
             .OfType<AIFunction>()
-            .WithChunking(workingMemory, sessionId, modelBehavior, logger);
+            .WithChunking(workingMemory, sessionId, modelBehavior, logger); // sessionId = "patrol/{name}"
 
         var chatOptions = new ChatOptions
         {

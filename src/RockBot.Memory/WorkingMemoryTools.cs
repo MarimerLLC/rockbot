@@ -7,22 +7,23 @@ using RockBot.Host;
 namespace RockBot.Memory;
 
 /// <summary>
-/// LLM-callable tools for session-scoped working memory — a scratch space for caching
-/// large or expensive-to-fetch tool results so they can be referenced in follow-up turns
-/// without re-calling the external source.
+/// LLM-callable tools for working memory — a global, path-namespaced scratch space shared
+/// by all execution contexts (user sessions, patrol tasks, subagents).
 ///
-/// Instantiated per-message with the session ID baked in so no ambient session state is needed.
+/// Constructed with a <paramref name="@namespace"/> prefix (e.g. <c>session/abc123</c>,
+/// <c>patrol/heartbeat</c>, <c>subagent/task1</c>) that is automatically prepended to
+/// keys on write, providing namespace isolation without restricting cross-context reads.
 /// </summary>
 public sealed class WorkingMemoryTools
 {
     private readonly IWorkingMemory _workingMemory;
-    private readonly string _sessionId;
+    private readonly string _namespace;
     private readonly ILogger _logger;
 
-    public WorkingMemoryTools(IWorkingMemory workingMemory, string sessionId, ILogger logger)
+    public WorkingMemoryTools(IWorkingMemory workingMemory, string @namespace, ILogger logger)
     {
         _workingMemory = workingMemory;
-        _sessionId = sessionId;
+        _namespace = @namespace;
         _logger = logger;
 
         Tools =
@@ -36,50 +37,61 @@ public sealed class WorkingMemoryTools
 
     public IList<AITool> Tools { get; }
 
-    [Description("Cache data in working memory (session scratch space) so it can be retrieved " +
-                 "in follow-up questions without re-fetching from the external source. " +
-                 "Use this after receiving a large payload from any tool to save it temporarily. " +
-                 "Choose a descriptive key that summarises what is stored. " +
-                 "Assign a category and tags to make the data easier to find with SearchWorkingMemory.")]
+    [Description("Cache data in working memory so it can be retrieved in follow-up questions without re-fetching. " +
+                 "Data is stored under your namespace automatically — just provide a descriptive key. " +
+                 "Use this after receiving a large payload from any tool, or to store intermediate results " +
+                 "that a subagent or patrol task should leave for the primary agent to pick up. " +
+                 "Assign a category and tags to make the data easier to find with search_working_memory.")]
     public async Task<string> SaveToWorkingMemory(
-        [Description("Short descriptive key (e.g. 'calendar_2026-02-18', 'emails_inbox')")] string key,
+        [Description("Short descriptive key (e.g. 'emails_inbox', 'research_results', 'patrol_alert')")] string key,
         [Description("The data to cache — can be a large string, JSON payload, or formatted summary")] string data,
-        [Description("How long to keep this data in minutes (default: 5)")] int? ttl_minutes = null,
+        [Description("How long to keep this data in minutes (default: 5). " +
+                     "Use longer TTLs for subagent outputs (e.g. 240) or patrol state (e.g. 300).")] int? ttl_minutes = null,
         [Description("Optional category for grouping related entries (e.g. 'email', 'calendar', 'research/pricing')")] string? category = null,
         [Description("Optional comma-separated tags for filtering (e.g. 'inbox,unread,urgent')")] string? tags = null)
     {
-        _logger.LogInformation("Tool call: SaveToWorkingMemory(key={Key}, ttl={Ttl}min, category={Category})", key, ttl_minutes, category);
+        var fullKey = $"{_namespace}/{key}";
+        _logger.LogInformation("Tool call: SaveToWorkingMemory(key={Key}, ttl={Ttl}min, category={Category})", fullKey, ttl_minutes, category);
         var ttl = ttl_minutes.HasValue ? TimeSpan.FromMinutes(ttl_minutes.Value) : (TimeSpan?)null;
         var tagList = ParseTags(tags);
-        await _workingMemory.SetAsync(_sessionId, key, data, ttl, category, tagList);
-        return $"Saved to working memory under key '{key}'.";
+        await _workingMemory.SetAsync(fullKey, data, ttl, category, tagList);
+        return $"Saved to working memory under key '{fullKey}'.";
     }
 
     [Description("Retrieve previously cached data from working memory by key. " +
-                 "Use when the system context shows an entry in working memory that contains relevant data.")]
+                 "Use a plain key (e.g. 'emails_inbox') to retrieve from your own namespace, " +
+                 "or a full path (e.g. 'subagent/task1/results') to read from another namespace.")]
     public async Task<string> GetFromWorkingMemory(
-        [Description("The key to retrieve (as shown in the working memory list)")] string key)
+        [Description("Key to retrieve — plain key for own namespace, full path for cross-namespace (e.g. 'subagent/task1/results')")] string key)
     {
         _logger.LogInformation("Tool call: GetFromWorkingMemory(key={Key})", key);
-        var value = await _workingMemory.GetAsync(_sessionId, key);
+        // If the key contains '/', treat as an absolute path; otherwise prepend namespace.
+        var fullKey = key.Contains('/') ? key : $"{_namespace}/{key}";
+        var value = await _workingMemory.GetAsync(fullKey);
         if (value is null)
-            return $"Working memory entry '{key}' not found or has expired.";
+            return $"Working memory entry '{fullKey}' not found or has expired.";
         return value;
     }
 
     [Description("List all keys currently in working memory with their category, tags, and expiry times. " +
-                 "Use this to discover what cached data is available from earlier in this session.")]
-    public async Task<string> ListWorkingMemory()
+                 "Defaults to your own namespace. Pass a namespace prefix to browse another context — " +
+                 "for example 'subagent/task1' to see what a completed subagent stored, " +
+                 "or 'patrol' to see all patrol task outputs.")]
+    public async Task<string> ListWorkingMemory(
+        [Description("Optional namespace prefix to browse (e.g. 'subagent/task1', 'patrol'). Omit to list your own namespace.")] string? @namespace = null)
     {
-        _logger.LogInformation("Tool call: ListWorkingMemory()");
-        var entries = await _workingMemory.ListAsync(_sessionId);
+        var prefix = string.IsNullOrWhiteSpace(@namespace) ? _namespace : @namespace.Trim();
+        _logger.LogInformation("Tool call: ListWorkingMemory(prefix={Prefix})", prefix);
+        var entries = await _workingMemory.ListAsync(prefix);
 
         if (entries.Count == 0)
-            return "Working memory is empty.";
+            return prefix == _namespace
+                ? "Working memory is empty."
+                : $"No entries found in namespace '{prefix}'.";
 
         var now = DateTimeOffset.UtcNow;
         var sb = new StringBuilder();
-        sb.AppendLine($"Working memory ({entries.Count} entries):");
+        sb.AppendLine($"Working memory '{prefix}' ({entries.Count} entries):");
         foreach (var entry in entries)
         {
             var remaining = entry.ExpiresAt - now;
@@ -96,40 +108,41 @@ public sealed class WorkingMemoryTools
     }
 
     [Description("Search working memory by keyword, category, and/or tags. " +
-                 "Results are ranked by BM25 relevance — the most on-topic entries appear first. " +
-                 "Use this when you need to find cached data but do not know the exact key, " +
-                 "or when you want to filter entries by topic area.")]
+                 "Results are ranked by BM25 relevance. Defaults to your own namespace. " +
+                 "Pass a namespace prefix to search another context.")]
     public async Task<string> SearchWorkingMemory(
-        [Description("Keywords to search for in cached content (e.g. 'pricing strategies', 'inbox emails'). Omit to list all entries in the category/tag scope.")] string? query = null,
+        [Description("Keywords to search for in cached content. Omit to list all entries in the namespace/category/tag scope.")] string? query = null,
         [Description("Optional category prefix to filter by (e.g. 'research', 'email')")] string? category = null,
-        [Description("Optional comma-separated tags that entries must have (e.g. 'urgent,inbox')")] string? tags = null)
+        [Description("Optional comma-separated tags that entries must have (e.g. 'urgent,inbox')")] string? tags = null,
+        [Description("Optional namespace prefix to search (e.g. 'subagent/task1', 'patrol'). Omit to search your own namespace.")] string? @namespace = null)
     {
-        _logger.LogInformation("Tool call: SearchWorkingMemory(query={Query}, category={Category}, tags={Tags})", query, category, tags);
+        var prefix = string.IsNullOrWhiteSpace(@namespace) ? _namespace : @namespace.Trim();
+        _logger.LogInformation("Tool call: SearchWorkingMemory(query={Query}, category={Category}, prefix={Prefix})", query, category, prefix);
 
         var criteria = new MemorySearchCriteria(
             Query: string.IsNullOrWhiteSpace(query) ? null : query.Trim(),
             Category: string.IsNullOrWhiteSpace(category) ? null : category.Trim(),
             Tags: ParseTags(tags));
 
-        var entries = await _workingMemory.SearchAsync(_sessionId, criteria);
+        var entries = await _workingMemory.SearchAsync(criteria, prefix);
 
         if (entries.Count == 0)
         {
             var desc = BuildSearchDesc(query, category, tags);
-            return $"No working memory entries matched {desc}.";
+            return $"No working memory entries matched {desc} in namespace '{prefix}'.";
         }
 
         var now = DateTimeOffset.UtcNow;
         var sb = new StringBuilder();
         var desc2 = BuildSearchDesc(query, category, tags);
-        sb.AppendLine($"Working memory search {desc2} — {entries.Count} result(s):");
+        sb.AppendLine($"Working memory search {desc2} in '{prefix}' — {entries.Count} result(s):");
         foreach (var entry in entries)
         {
             var remaining = entry.ExpiresAt - now;
             var remainingStr = remaining.TotalMinutes >= 1
                 ? $"{(int)remaining.TotalMinutes}m{remaining.Seconds:D2}s"
                 : $"{Math.Max(0, remaining.Seconds)}s";
-            var preview = entry.Value.Length > 120 ? entry.Value[..120] + "…" : entry.Value;
+            var preview = entry.Value.Length > 120 ? entry.Value[..120] + "\u2026" : entry.Value;
             sb.Append($"- {entry.Key} (expires in {remainingStr}");
             if (entry.Category is not null) sb.Append($", category: {entry.Category}");
             if (entry.Tags is { Count: > 0 }) sb.Append($", tags: {string.Join(", ", entry.Tags)}");

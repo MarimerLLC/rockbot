@@ -32,10 +32,19 @@ public sealed class AgentContextBuilder(
     /// Builds the full chat message list for one LLM call: system prompt, rules, history,
     /// long-term memory recall, skill index + BM25 recall, and working memory inventory.
     /// </summary>
+    /// <param name="sessionId">The session ID for conversation memory, long-term memory tracking, and skill recall.</param>
+    /// <param name="currentUserContent">The current user message text (used for BM25 recall).</param>
+    /// <param name="ct">Cancellation token.</param>
+    /// <param name="workingMemoryNamespace">
+    /// The working memory namespace to inject as the own-session inventory.
+    /// Defaults to <c>session/{sessionId}</c> when <c>null</c>.
+    /// Pass <c>patrol/{taskName}</c> for scheduled tasks.
+    /// </param>
     public async Task<List<ChatMessage>> BuildAsync(
         string sessionId,
         string currentUserContent,
-        CancellationToken ct)
+        CancellationToken ct,
+        string? workingMemoryNamespace = null)
     {
         var systemPrompt = promptBuilder.Build(profile, agent);
         var chatMessages = new List<ChatMessage>
@@ -152,8 +161,12 @@ public sealed class AgentContextBuilder(
             }
         }
 
-        // Working memory inventory
-        var workingEntries = await workingMemory.ListAsync(sessionId);
+        // Resolve the working memory namespace for this context
+        var wmNamespace = workingMemoryNamespace ?? $"session/{sessionId}";
+        var isUserSession = wmNamespace.StartsWith("session/", StringComparison.OrdinalIgnoreCase);
+
+        // Working memory inventory — own namespace
+        var workingEntries = await workingMemory.ListAsync(wmNamespace);
         if (workingEntries.Count > 0)
         {
             var now = DateTimeOffset.UtcNow;
@@ -173,6 +186,33 @@ public sealed class AgentContextBuilder(
                 string.Join("\n", lines);
             chatMessages.Add(new ChatMessage(ChatRole.System, workingMemoryContext));
             logger.LogInformation("Injected {Count} working memory entries into context", workingEntries.Count);
+        }
+
+        // For user sessions: also surface any patrol findings so the primary agent is
+        // automatically aware of what patrol tasks have stored since the last session.
+        if (isUserSession)
+        {
+            var patrolEntries = await workingMemory.ListAsync("patrol");
+            if (patrolEntries.Count > 0)
+            {
+                var now = DateTimeOffset.UtcNow;
+                var lines = patrolEntries.Select(e =>
+                {
+                    var remaining = e.ExpiresAt - now;
+                    var remainingStr = remaining.TotalMinutes >= 1
+                        ? $"{(int)remaining.TotalMinutes}m{remaining.Seconds:D2}s"
+                        : $"{Math.Max(0, remaining.Seconds)}s";
+                    var meta = new System.Text.StringBuilder($"- {e.Key}: expires in {remainingStr}");
+                    if (e.Category is not null) meta.Append($", category: {e.Category}");
+                    if (e.Tags is { Count: > 0 }) meta.Append($", tags: {string.Join(", ", e.Tags)}");
+                    return meta.ToString();
+                });
+                var patrolContext =
+                    "Patrol findings in working memory (use get_from_working_memory with the full key to read):\n" +
+                    string.Join("\n", lines);
+                chatMessages.Add(new ChatMessage(ChatRole.System, patrolContext));
+                logger.LogInformation("Injected {Count} patrol working memory entries into context", patrolEntries.Count);
+            }
         }
 
         return chatMessages;

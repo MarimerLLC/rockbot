@@ -66,7 +66,8 @@ internal sealed class ResearchAgentTaskHandler(
                 .ToArray();
 
             // Working memory tools let the LLM retrieve chunked page content
-            var workingMemoryTools = new WorkingMemoryTools(workingMemory, sessionId, logger);
+            var workingMemoryNamespace = $"session/{sessionId}";
+            var workingMemoryTools = new WorkingMemoryTools(workingMemory, workingMemoryNamespace, logger);
 
             var chatOptions = new ChatOptions
             {
@@ -144,7 +145,7 @@ internal sealed class ResearchAgentTaskHandler(
     private async Task<string> SynthesiseFromWorkingMemoryAsync(
         string sessionId, string question, CancellationToken ct)
     {
-        var entries = await workingMemory.ListAsync(sessionId);
+        var entries = await workingMemory.ListAsync($"session/{sessionId}");
         if (entries.Count == 0)
         {
             logger.LogWarning("Fallback synthesis: no working memory entries found for session {SessionId}", sessionId);
@@ -162,7 +163,7 @@ internal sealed class ResearchAgentTaskHandler(
 
         foreach (var entry in entries)
         {
-            var value = await workingMemory.GetAsync(sessionId, entry.Key);
+            var value = await workingMemory.GetAsync(entry.Key);
             if (!string.IsNullOrWhiteSpace(value))
             {
                 sb.AppendLine();

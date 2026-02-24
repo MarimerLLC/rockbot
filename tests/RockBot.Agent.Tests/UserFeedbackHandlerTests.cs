@@ -346,17 +346,15 @@ internal sealed class ConfigurableLlmClient : ILlmClient
 
 internal sealed class StubWorkingMemory : IWorkingMemory
 {
-    public Task SetAsync(string sessionId, string key, string value, TimeSpan? ttl = null,
+    public Task SetAsync(string key, string value, TimeSpan? ttl = null,
         string? category = null, IReadOnlyList<string>? tags = null) => Task.CompletedTask;
-    public Task<string?> GetAsync(string sessionId, string key) => Task.FromResult<string?>(null);
-    public Task<IReadOnlyList<WorkingMemoryEntry>> ListAsync(string sessionId) =>
+    public Task<string?> GetAsync(string key) => Task.FromResult<string?>(null);
+    public Task<IReadOnlyList<WorkingMemoryEntry>> ListAsync(string? prefix = null) =>
         Task.FromResult<IReadOnlyList<WorkingMemoryEntry>>([]);
-    public Task<IReadOnlyList<WorkingMemoryEntry>> SearchAsync(string sessionId, string query, int maxResults = 5) =>
+    public Task<IReadOnlyList<WorkingMemoryEntry>> SearchAsync(MemorySearchCriteria criteria, string? prefix = null) =>
         Task.FromResult<IReadOnlyList<WorkingMemoryEntry>>([]);
-    public Task<IReadOnlyList<WorkingMemoryEntry>> SearchAsync(string sessionId, MemorySearchCriteria criteria) =>
-        Task.FromResult<IReadOnlyList<WorkingMemoryEntry>>([]);
-    public Task DeleteAsync(string sessionId, string key) => Task.CompletedTask;
-    public Task ClearAsync(string sessionId) => Task.CompletedTask;
+    public Task DeleteAsync(string key) => Task.CompletedTask;
+    public Task ClearAsync(string? prefix = null) => Task.CompletedTask;
 }
 
 internal sealed class StubSystemPromptBuilder : ISystemPromptBuilder

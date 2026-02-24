@@ -10,7 +10,7 @@ namespace RockBot.Memory;
 public sealed class MemoryToolSkillProvider : IToolSkillProvider
 {
     public string Name => "memory";
-    public string Summary => "Long-term memory, session working memory, and behavioral rules — when and how to use each.";
+    public string Summary => "Long-term memory, working memory (path-namespaced, cross-context), and behavioral rules — when and how to use each.";
 
     public string GetDocument() =>
         """
@@ -22,7 +22,7 @@ public sealed class MemoryToolSkillProvider : IToolSkillProvider
         | System | Scope | Purpose |
         |---|---|---|
         | Long-term memory | Permanent, cross-session | Facts, preferences, learned patterns |
-        | Working memory | Session-scoped, TTL-based | Large tool results, scratch data |
+        | Working memory | Global, path-namespaced, TTL-based | Tool results, intermediate data, cross-context handoff |
         | Rules | Permanent, injected every turn | Hard behavioral constraints |
 
 
@@ -122,9 +122,11 @@ public sealed class MemoryToolSkillProvider : IToolSkillProvider
 
         ## Working Memory
 
-        Working memory is a session-scoped scratch space for caching large or expensive
-        tool results so they can be referenced in follow-up questions without re-fetching
-        from the external source. Entries expire automatically (default: 5 minutes).
+        Working memory is a global, path-namespaced scratch space shared by all execution
+        contexts — user sessions, patrol tasks, and subagents. Your entries are automatically
+        stored under your session namespace. You can read from other namespaces (e.g. subagent
+        outputs, patrol findings) using `list_working_memory(namespace: ...)`. Entries expire
+        automatically based on their TTL (default: 5 minutes).
 
         ### When to save
 
@@ -141,12 +143,13 @@ public sealed class MemoryToolSkillProvider : IToolSkillProvider
 
         ### save_to_working_memory
 
-        Caches data under a descriptive key with an optional TTL.
+        Caches data under a descriptive key with an optional TTL. The key is automatically
+        stored under your session namespace — plain keys like `emails_inbox` are sufficient.
 
         **Parameters**
         - `key` (string, required) — short descriptive key (e.g. `emails_inbox_2026-02-19`)
         - `data` (string, required) — the content to cache; can be large JSON, formatted text, etc.
-        - `ttl_minutes` (integer, optional, default 5) — how long to keep this entry
+        - `ttl_minutes` (integer, optional, default 5) — how long to keep this entry. Use longer TTLs for subagent or patrol outputs (e.g. 240).
         - `category` (string, optional) — groups related entries (e.g. `email`, `calendar`)
         - `tags` (string, optional) — comma-separated tags for filtering
 
@@ -168,10 +171,12 @@ public sealed class MemoryToolSkillProvider : IToolSkillProvider
 
         ### get_from_working_memory
 
-        Retrieves a cached entry by its exact key.
+        Retrieves a cached entry by key. Use a plain key (e.g. `emails_inbox`) to read from
+        your own namespace, or a full path (e.g. `subagent/task1/results`) to read across
+        namespaces.
 
         **Parameters**
-        - `key` (string, required) — as shown by `list_working_memory`
+        - `key` (string, required) — plain key for own namespace, or full path for cross-namespace access
 
         ```
         get_from_working_memory(key: "inbox_emails_2026-02-19")
@@ -180,27 +185,35 @@ public sealed class MemoryToolSkillProvider : IToolSkillProvider
 
         ### list_working_memory
 
-        Lists all active entries with keys, categories, tags, and remaining TTL.
+        Lists all active entries in the given namespace. Defaults to your own session namespace.
+        Pass a `namespace` parameter to browse other contexts (subagents, patrol tasks).
         The system also shows a working memory summary in your context at the start
         of each turn — check that first before calling this tool.
 
+        **Parameters**
+        - `namespace` (string, optional) — namespace to list (e.g. `subagent/task1`, `patrol`). Omit to list your own.
+
         ```
-        list_working_memory()
+        list_working_memory()                                   # own namespace
+        list_working_memory(namespace: "subagent/task-abc123")  # subagent outputs
+        list_working_memory(namespace: "patrol")                # all patrol outputs
         ```
 
 
         ### search_working_memory
 
         Searches cached entries by keyword, category, and/or tags using BM25 relevance ranking.
-        Use this when you know data was cached but don't remember the exact key.
+        Defaults to your own namespace. Pass `namespace` to search another context.
 
         **Parameters**
         - `query` (string, optional) — keywords to search for in cached content
         - `category` (string, optional) — category prefix filter
         - `tags` (string, optional) — comma-separated tags that entries must have
+        - `namespace` (string, optional) — namespace to search (e.g. `subagent/task1`, `patrol`)
 
         ```
         search_working_memory(query: "unread emails", category: "email")
+        search_working_memory(query: "findings", namespace: "patrol/heartbeat")
         ```
 
 
@@ -226,8 +239,8 @@ public sealed class MemoryToolSkillProvider : IToolSkillProvider
           fact instead, or use working memory if the raw data is needed short-term
         - Forgetting that `save_memory` returns immediately — the actual save happens
           in the background; don't assume it's instantly searchable
-        - Using working memory across sessions — it resets when the session ends;
-          long-term memory is the right store for anything that needs to survive
+        - Confusing working memory scope — your writes go to your namespace only; cross-context
+          reads require explicit `namespace` parameter or a full path key
         - Ignoring the working memory context shown at the start of each turn — always
           check it before calling `list_working_memory`
         """;

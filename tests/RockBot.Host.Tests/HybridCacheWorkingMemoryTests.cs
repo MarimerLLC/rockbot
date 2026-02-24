@@ -29,31 +29,24 @@ public class HybridCacheWorkingMemoryTests
     [TestMethod]
     public async Task SetAsync_And_GetAsync_ReturnsValue()
     {
-        await _memory.SetAsync("s1", "key1", "hello");
-        var result = await _memory.GetAsync("s1", "key1");
+        await _memory.SetAsync("session/s1/key1", "hello");
+        var result = await _memory.GetAsync("session/s1/key1");
         Assert.AreEqual("hello", result);
     }
 
     [TestMethod]
     public async Task GetAsync_UnknownKey_ReturnsNull()
     {
-        var result = await _memory.GetAsync("s1", "missing");
-        Assert.IsNull(result);
-    }
-
-    [TestMethod]
-    public async Task GetAsync_UnknownSession_ReturnsNull()
-    {
-        var result = await _memory.GetAsync("no-such-session", "key");
+        var result = await _memory.GetAsync("session/s1/missing");
         Assert.IsNull(result);
     }
 
     [TestMethod]
     public async Task SetAsync_OverwritesExistingKey()
     {
-        await _memory.SetAsync("s1", "key1", "first");
-        await _memory.SetAsync("s1", "key1", "second");
-        var result = await _memory.GetAsync("s1", "key1");
+        await _memory.SetAsync("session/s1/key1", "first");
+        await _memory.SetAsync("session/s1/key1", "second");
+        var result = await _memory.GetAsync("session/s1/key1");
         Assert.AreEqual("second", result);
     }
 
@@ -62,62 +55,73 @@ public class HybridCacheWorkingMemoryTests
     [TestMethod]
     public async Task GetAsync_ExpiredEntry_ReturnsNull()
     {
-        await _memory.SetAsync("s1", "key1", "data", TimeSpan.FromMilliseconds(1));
+        await _memory.SetAsync("session/s1/key1", "data", TimeSpan.FromMilliseconds(1));
         await Task.Delay(50); // let it expire
-        var result = await _memory.GetAsync("s1", "key1");
+        var result = await _memory.GetAsync("session/s1/key1");
         Assert.IsNull(result);
     }
 
     [TestMethod]
     public async Task ListAsync_PrunesExpiredEntries()
     {
-        await _memory.SetAsync("s1", "live", "still here", TimeSpan.FromMinutes(5));
-        await _memory.SetAsync("s1", "dead", "gone", TimeSpan.FromMilliseconds(1));
+        await _memory.SetAsync("session/s1/live", "still here", TimeSpan.FromMinutes(5));
+        await _memory.SetAsync("session/s1/dead", "gone", TimeSpan.FromMilliseconds(1));
         await Task.Delay(50);
 
-        var entries = await _memory.ListAsync("s1");
+        var entries = await _memory.ListAsync("session/s1");
 
         Assert.AreEqual(1, entries.Count);
-        Assert.AreEqual("live", entries[0].Key);
+        Assert.AreEqual("session/s1/live", entries[0].Key);
     }
 
     // ── List ───────────────────────────────────────────────────────────────
 
     [TestMethod]
-    public async Task ListAsync_UnknownSession_ReturnsEmpty()
+    public async Task ListAsync_NoMatchingPrefix_ReturnsEmpty()
     {
-        var entries = await _memory.ListAsync("no-such-session");
+        var entries = await _memory.ListAsync("session/no-such-session");
         Assert.AreEqual(0, entries.Count);
     }
 
     [TestMethod]
-    public async Task ListAsync_ReturnsAllLiveEntries()
+    public async Task ListAsync_ReturnsAllLiveEntriesInNamespace()
     {
-        await _memory.SetAsync("s1", "a", "alpha");
-        await _memory.SetAsync("s1", "b", "beta");
-        await _memory.SetAsync("s1", "c", "gamma");
+        await _memory.SetAsync("session/s1/a", "alpha");
+        await _memory.SetAsync("session/s1/b", "beta");
+        await _memory.SetAsync("session/s1/c", "gamma");
 
-        var entries = await _memory.ListAsync("s1");
+        var entries = await _memory.ListAsync("session/s1");
 
         Assert.AreEqual(3, entries.Count);
         var keys = entries.Select(e => e.Key).ToHashSet();
-        Assert.IsTrue(keys.Contains("a"));
-        Assert.IsTrue(keys.Contains("b"));
-        Assert.IsTrue(keys.Contains("c"));
+        Assert.IsTrue(keys.Contains("session/s1/a"));
+        Assert.IsTrue(keys.Contains("session/s1/b"));
+        Assert.IsTrue(keys.Contains("session/s1/c"));
+    }
+
+    [TestMethod]
+    public async Task ListAsync_NullPrefix_ReturnsAllEntries()
+    {
+        await _memory.SetAsync("session/s1/a", "1");
+        await _memory.SetAsync("patrol/heartbeat/b", "2");
+
+        var entries = await _memory.ListAsync(null);
+
+        Assert.AreEqual(2, entries.Count);
     }
 
     [TestMethod]
     public async Task ListAsync_EntryHasCorrectMetadata()
     {
         var before = DateTimeOffset.UtcNow;
-        await _memory.SetAsync("s1", "key1", "value1", TimeSpan.FromMinutes(10));
+        await _memory.SetAsync("session/s1/key1", "value1", TimeSpan.FromMinutes(10));
         var after = DateTimeOffset.UtcNow;
 
-        var entries = await _memory.ListAsync("s1");
+        var entries = await _memory.ListAsync("session/s1");
 
         Assert.AreEqual(1, entries.Count);
         var entry = entries[0];
-        Assert.AreEqual("key1", entry.Key);
+        Assert.AreEqual("session/s1/key1", entry.Key);
         Assert.AreEqual("value1", entry.Value);
         Assert.IsTrue(entry.StoredAt >= before && entry.StoredAt <= after);
         Assert.IsTrue(entry.ExpiresAt > DateTimeOffset.UtcNow);
@@ -128,10 +132,10 @@ public class HybridCacheWorkingMemoryTests
     [TestMethod]
     public async Task DeleteAsync_RemovesEntry()
     {
-        await _memory.SetAsync("s1", "key1", "data");
-        await _memory.DeleteAsync("s1", "key1");
+        await _memory.SetAsync("session/s1/key1", "data");
+        await _memory.DeleteAsync("session/s1/key1");
 
-        var result = await _memory.GetAsync("s1", "key1");
+        var result = await _memory.GetAsync("session/s1/key1");
         Assert.IsNull(result);
     }
 
@@ -139,92 +143,135 @@ public class HybridCacheWorkingMemoryTests
     public async Task DeleteAsync_NonexistentKey_NoOp()
     {
         // Should not throw
-        await _memory.DeleteAsync("s1", "phantom");
+        await _memory.DeleteAsync("session/s1/phantom");
     }
 
     [TestMethod]
     public async Task DeleteAsync_DoesNotAffectOtherKeys()
     {
-        await _memory.SetAsync("s1", "keep", "safe");
-        await _memory.SetAsync("s1", "remove", "gone");
-        await _memory.DeleteAsync("s1", "remove");
+        await _memory.SetAsync("session/s1/keep", "safe");
+        await _memory.SetAsync("session/s1/remove", "gone");
+        await _memory.DeleteAsync("session/s1/remove");
 
-        Assert.IsNull(await _memory.GetAsync("s1", "remove"));
-        Assert.AreEqual("safe", await _memory.GetAsync("s1", "keep"));
+        Assert.IsNull(await _memory.GetAsync("session/s1/remove"));
+        Assert.AreEqual("safe", await _memory.GetAsync("session/s1/keep"));
     }
 
     // ── Clear ──────────────────────────────────────────────────────────────
 
     [TestMethod]
-    public async Task ClearAsync_RemovesAllSessionEntries()
+    public async Task ClearAsync_RemovesAllEntriesInNamespace()
     {
-        await _memory.SetAsync("s1", "a", "1");
-        await _memory.SetAsync("s1", "b", "2");
-        await _memory.ClearAsync("s1");
+        await _memory.SetAsync("session/s1/a", "1");
+        await _memory.SetAsync("session/s1/b", "2");
+        await _memory.ClearAsync("session/s1");
 
-        var entries = await _memory.ListAsync("s1");
+        var entries = await _memory.ListAsync("session/s1");
         Assert.AreEqual(0, entries.Count);
     }
 
     [TestMethod]
-    public async Task ClearAsync_NonexistentSession_NoOp()
+    public async Task ClearAsync_NullPrefix_RemovesEverything()
+    {
+        await _memory.SetAsync("session/s1/a", "1");
+        await _memory.SetAsync("patrol/heartbeat/b", "2");
+        await _memory.ClearAsync(null);
+
+        Assert.AreEqual(0, (await _memory.ListAsync(null)).Count);
+    }
+
+    [TestMethod]
+    public async Task ClearAsync_NoMatchingPrefix_NoOp()
     {
         // Should not throw
-        await _memory.ClearAsync("ghost");
+        await _memory.ClearAsync("session/ghost");
     }
 
-    // ── Session isolation ──────────────────────────────────────────────────
+    // ── Namespace isolation ────────────────────────────────────────────────
 
     [TestMethod]
-    public async Task Sessions_AreIsolated()
+    public async Task Namespaces_AreIsolated()
     {
-        await _memory.SetAsync("s1", "key", "session-one");
-        await _memory.SetAsync("s2", "key", "session-two");
+        await _memory.SetAsync("session/s1/key", "session-one");
+        await _memory.SetAsync("session/s2/key", "session-two");
 
-        Assert.AreEqual("session-one", await _memory.GetAsync("s1", "key"));
-        Assert.AreEqual("session-two", await _memory.GetAsync("s2", "key"));
+        Assert.AreEqual("session-one", await _memory.GetAsync("session/s1/key"));
+        Assert.AreEqual("session-two", await _memory.GetAsync("session/s2/key"));
     }
 
     [TestMethod]
-    public async Task ClearAsync_DoesNotAffectOtherSessions()
+    public async Task ClearAsync_DoesNotAffectOtherNamespaces()
     {
-        await _memory.SetAsync("s1", "key", "value");
-        await _memory.SetAsync("s2", "key", "other");
+        await _memory.SetAsync("session/s1/key", "value");
+        await _memory.SetAsync("session/s2/key", "other");
 
-        await _memory.ClearAsync("s1");
+        await _memory.ClearAsync("session/s1");
 
-        Assert.IsNull(await _memory.GetAsync("s1", "key"));
-        Assert.AreEqual("other", await _memory.GetAsync("s2", "key"));
+        Assert.IsNull(await _memory.GetAsync("session/s1/key"));
+        Assert.AreEqual("other", await _memory.GetAsync("session/s2/key"));
     }
 
-    // ── MaxEntriesPerSession ───────────────────────────────────────────────
+    [TestMethod]
+    public async Task CrossNamespace_Read_ReturnsCorrectValue()
+    {
+        await _memory.SetAsync("subagent/task1/result", "subagent output");
+
+        var value = await _memory.GetAsync("subagent/task1/result");
+        Assert.AreEqual("subagent output", value);
+    }
 
     [TestMethod]
-    public async Task MaxEntriesPerSession_RejectsNewKeys_WhenLimitReached()
+    public async Task ListAsync_TopLevelPrefix_ReturnsAllSubNamespaces()
+    {
+        await _memory.SetAsync("patrol/task-a/finding", "alert");
+        await _memory.SetAsync("patrol/task-b/finding", "ok");
+
+        var entries = await _memory.ListAsync("patrol");
+
+        Assert.AreEqual(2, entries.Count);
+    }
+
+    // ── MaxEntriesPerNamespace ─────────────────────────────────────────────
+
+    [TestMethod]
+    public async Task MaxEntriesPerNamespace_RejectsNewKeys_WhenLimitReached()
     {
         _memory = CreateMemory(maxEntries: 2);
 
-        await _memory.SetAsync("s1", "a", "1");
-        await _memory.SetAsync("s1", "b", "2");
-        await _memory.SetAsync("s1", "c", "SHOULD NOT BE STORED");
+        await _memory.SetAsync("session/s1/a", "1");
+        await _memory.SetAsync("session/s1/b", "2");
+        await _memory.SetAsync("session/s1/c", "SHOULD NOT BE STORED");
 
-        var entries = await _memory.ListAsync("s1");
+        var entries = await _memory.ListAsync("session/s1");
         Assert.AreEqual(2, entries.Count);
-        Assert.IsNull(await _memory.GetAsync("s1", "c"));
+        Assert.IsNull(await _memory.GetAsync("session/s1/c"));
     }
 
     [TestMethod]
-    public async Task MaxEntriesPerSession_AllowsOverwriteOfExistingKey()
+    public async Task MaxEntriesPerNamespace_AllowsOverwriteOfExistingKey()
     {
         _memory = CreateMemory(maxEntries: 2);
 
-        await _memory.SetAsync("s1", "a", "original");
-        await _memory.SetAsync("s1", "b", "b-value");
-        await _memory.SetAsync("s1", "a", "updated"); // overwrite — should succeed
+        await _memory.SetAsync("session/s1/a", "original");
+        await _memory.SetAsync("session/s1/b", "b-value");
+        await _memory.SetAsync("session/s1/a", "updated"); // overwrite — should succeed
 
-        Assert.AreEqual("updated", await _memory.GetAsync("s1", "a"));
-        var entries = await _memory.ListAsync("s1");
+        Assert.AreEqual("updated", await _memory.GetAsync("session/s1/a"));
+        var entries = await _memory.ListAsync("session/s1");
         Assert.AreEqual(2, entries.Count);
+    }
+
+    [TestMethod]
+    public async Task MaxEntriesPerNamespace_DoesNotLimitDifferentNamespaces()
+    {
+        _memory = CreateMemory(maxEntries: 2);
+
+        await _memory.SetAsync("session/s1/a", "1");
+        await _memory.SetAsync("session/s1/b", "2");
+        // s2 should still accept entries — separate namespace
+        await _memory.SetAsync("session/s2/a", "s2-value");
+
+        Assert.AreEqual("s2-value", await _memory.GetAsync("session/s2/a"));
     }
 
     // ── DI registration ────────────────────────────────────────────────────
@@ -257,7 +304,7 @@ public class HybridCacheWorkingMemoryTests
             agent.WithWorkingMemory(o =>
             {
                 o.DefaultTtl = TimeSpan.FromMinutes(10);
-                o.MaxEntriesPerSession = 5;
+                o.MaxEntriesPerNamespace = 5;
             });
         });
 
@@ -265,7 +312,7 @@ public class HybridCacheWorkingMemoryTests
         var options = provider.GetRequiredService<IOptions<WorkingMemoryOptions>>();
 
         Assert.AreEqual(TimeSpan.FromMinutes(10), options.Value.DefaultTtl);
-        Assert.AreEqual(5, options.Value.MaxEntriesPerSession);
+        Assert.AreEqual(5, options.Value.MaxEntriesPerNamespace);
     }
 
     [TestMethod]
@@ -308,70 +355,69 @@ public class HybridCacheWorkingMemoryTests
     [TestMethod]
     public async Task SearchAsync_TermInValue_ReturnsMatch()
     {
-        await _memory.SetAsync("s1", "doc-a", "The quick brown fox");
-        await _memory.SetAsync("s1", "doc-b", "A slow blue turtle");
+        await _memory.SetAsync("session/s1/doc-a", "The quick brown fox");
+        await _memory.SetAsync("session/s1/doc-b", "A slow blue turtle");
 
-        var results = await _memory.SearchAsync("s1", new MemorySearchCriteria(Query: "quick"));
+        var results = await _memory.SearchAsync(new MemorySearchCriteria(Query: "quick"), "session/s1");
 
         Assert.AreEqual(1, results.Count);
-        Assert.AreEqual("doc-a", results[0].Key);
+        Assert.AreEqual("session/s1/doc-a", results[0].Key);
     }
 
     [TestMethod]
     public async Task SearchAsync_TermInKey_ReturnsMatch()
     {
-        await _memory.SetAsync("s1", "calendar_2026-03", "March events");
-        await _memory.SetAsync("s1", "emails_inbox", "50 unread");
+        await _memory.SetAsync("session/s1/calendar_2026-03", "March events");
+        await _memory.SetAsync("session/s1/emails_inbox", "50 unread");
 
-        var results = await _memory.SearchAsync("s1", new MemorySearchCriteria(Query: "calendar"));
+        var results = await _memory.SearchAsync(new MemorySearchCriteria(Query: "calendar"), "session/s1");
 
         Assert.AreEqual(1, results.Count);
-        Assert.AreEqual("calendar_2026-03", results[0].Key);
+        Assert.AreEqual("session/s1/calendar_2026-03", results[0].Key);
     }
 
     [TestMethod]
     public async Task SearchAsync_TermInTag_ReturnsMatch()
     {
-        await _memory.SetAsync("s1", "doc-a", "Some data", tags: ["urgent", "finance"]);
-        await _memory.SetAsync("s1", "doc-b", "Other data", tags: ["routine"]);
+        await _memory.SetAsync("session/s1/doc-a", "Some data", tags: ["urgent", "finance"]);
+        await _memory.SetAsync("session/s1/doc-b", "Other data", tags: ["routine"]);
 
-        var results = await _memory.SearchAsync("s1", new MemorySearchCriteria(Query: "urgent"));
+        var results = await _memory.SearchAsync(new MemorySearchCriteria(Query: "urgent"), "session/s1");
 
         Assert.AreEqual(1, results.Count);
-        Assert.AreEqual("doc-a", results[0].Key);
+        Assert.AreEqual("session/s1/doc-a", results[0].Key);
     }
 
     [TestMethod]
     public async Task SearchAsync_TermInCategory_ReturnsMatch()
     {
-        await _memory.SetAsync("s1", "doc-a", "Negotiation details", category: "research/pricing");
-        await _memory.SetAsync("s1", "doc-b", "Meeting notes", category: "calendar");
+        await _memory.SetAsync("session/s1/doc-a", "Negotiation details", category: "research/pricing");
+        await _memory.SetAsync("session/s1/doc-b", "Meeting notes", category: "calendar");
 
-        var results = await _memory.SearchAsync("s1", new MemorySearchCriteria(Query: "pricing"));
+        var results = await _memory.SearchAsync(new MemorySearchCriteria(Query: "pricing"), "session/s1");
 
         Assert.AreEqual(1, results.Count);
-        Assert.AreEqual("doc-a", results[0].Key);
+        Assert.AreEqual("session/s1/doc-a", results[0].Key);
     }
 
     [TestMethod]
     public async Task SearchAsync_BothTermsMatch_RanksHigherThanOneTermMatch()
     {
-        await _memory.SetAsync("s1", "a", "quick brown fox");
-        await _memory.SetAsync("s1", "b", "quick blue turtle");
+        await _memory.SetAsync("session/s1/a", "quick brown fox");
+        await _memory.SetAsync("session/s1/b", "quick blue turtle");
 
-        // "a" matches both "quick" and "fox"; "b" matches only "quick"
-        var results = await _memory.SearchAsync("s1", new MemorySearchCriteria(Query: "quick fox"));
+        var results = await _memory.SearchAsync(new MemorySearchCriteria(Query: "quick fox"), "session/s1");
 
         Assert.IsTrue(results.Count >= 1);
-        Assert.AreEqual("a", results[0].Key, "Entry matching both terms should rank first");
+        Assert.AreEqual("session/s1/a", results[0].Key, "Entry matching both terms should rank first");
     }
 
     [TestMethod]
     public async Task SearchAsync_CaseInsensitive()
     {
-        await _memory.SetAsync("s1", "k", "Hello World");
+        await _memory.SetAsync("session/s1/k", "Hello World");
 
-        var results = await _memory.SearchAsync("s1", new MemorySearchCriteria(Query: "hello world"));
+        var results = await _memory.SearchAsync(new MemorySearchCriteria(Query: "hello world"), "session/s1");
 
         Assert.AreEqual(1, results.Count);
     }
@@ -379,9 +425,9 @@ public class HybridCacheWorkingMemoryTests
     [TestMethod]
     public async Task SearchAsync_NoMatch_ReturnsEmpty()
     {
-        await _memory.SetAsync("s1", "k", "some content here");
+        await _memory.SetAsync("session/s1/k", "some content here");
 
-        var results = await _memory.SearchAsync("s1", new MemorySearchCriteria(Query: "zxyzxyzxy"));
+        var results = await _memory.SearchAsync(new MemorySearchCriteria(Query: "zxyzxyzxy"), "session/s1");
 
         Assert.AreEqual(0, results.Count);
     }
@@ -389,18 +435,29 @@ public class HybridCacheWorkingMemoryTests
     [TestMethod]
     public async Task SearchAsync_NullQuery_ReturnsAllEntriesOrderedByRecency()
     {
-        await _memory.SetAsync("s1", "a", "alpha");
-        await _memory.SetAsync("s1", "b", "beta");
+        await _memory.SetAsync("session/s1/a", "alpha");
+        await _memory.SetAsync("session/s1/b", "beta");
 
-        var results = await _memory.SearchAsync("s1", new MemorySearchCriteria());
+        var results = await _memory.SearchAsync(new MemorySearchCriteria(), "session/s1");
 
         Assert.AreEqual(2, results.Count);
     }
 
     [TestMethod]
-    public async Task SearchAsync_UnknownSession_ReturnsEmpty()
+    public async Task SearchAsync_NullPrefix_ReturnsMatchAcrossAllNamespaces()
     {
-        var results = await _memory.SearchAsync("no-such-session", new MemorySearchCriteria(Query: "query"));
+        await _memory.SetAsync("session/s1/doc", "quick fox");
+        await _memory.SetAsync("patrol/task/doc", "quick fox");
+
+        var results = await _memory.SearchAsync(new MemorySearchCriteria(Query: "quick"));
+
+        Assert.AreEqual(2, results.Count);
+    }
+
+    [TestMethod]
+    public async Task SearchAsync_UnknownPrefix_ReturnsEmpty()
+    {
+        var results = await _memory.SearchAsync(new MemorySearchCriteria(Query: "query"), "session/no-such");
 
         Assert.AreEqual(0, results.Count);
     }
@@ -408,14 +465,14 @@ public class HybridCacheWorkingMemoryTests
     [TestMethod]
     public async Task SearchAsync_DoesNotReturnExpiredEntries()
     {
-        await _memory.SetAsync("s1", "live", "quick fox", TimeSpan.FromMinutes(5));
-        await _memory.SetAsync("s1", "dead", "quick fox", TimeSpan.FromMilliseconds(1));
+        await _memory.SetAsync("session/s1/live", "quick fox", TimeSpan.FromMinutes(5));
+        await _memory.SetAsync("session/s1/dead", "quick fox", TimeSpan.FromMilliseconds(1));
         await Task.Delay(50);
 
-        var results = await _memory.SearchAsync("s1", new MemorySearchCriteria(Query: "quick"));
+        var results = await _memory.SearchAsync(new MemorySearchCriteria(Query: "quick"), "session/s1");
 
         Assert.AreEqual(1, results.Count);
-        Assert.AreEqual("live", results[0].Key);
+        Assert.AreEqual("session/s1/live", results[0].Key);
     }
 
     // ── Search — category filter ────────────────────────────────────────────
@@ -423,41 +480,43 @@ public class HybridCacheWorkingMemoryTests
     [TestMethod]
     public async Task SearchAsync_CategoryFilter_ExcludesOtherCategories()
     {
-        await _memory.SetAsync("s1", "a", "pricing data", category: "research/pricing");
-        await _memory.SetAsync("s1", "b", "pricing data", category: "calendar");
+        await _memory.SetAsync("session/s1/a", "pricing data", category: "research/pricing");
+        await _memory.SetAsync("session/s1/b", "pricing data", category: "calendar");
 
-        var results = await _memory.SearchAsync("s1", new MemorySearchCriteria(Query: "pricing", Category: "research"));
+        var results = await _memory.SearchAsync(
+            new MemorySearchCriteria(Query: "pricing", Category: "research"), "session/s1");
 
         Assert.AreEqual(1, results.Count);
-        Assert.AreEqual("a", results[0].Key);
+        Assert.AreEqual("session/s1/a", results[0].Key);
     }
 
     [TestMethod]
     public async Task SearchAsync_CategoryFilter_PrefixMatch()
     {
-        await _memory.SetAsync("s1", "a", "data", category: "research/pricing");
-        await _memory.SetAsync("s1", "b", "data", category: "research/competitors");
-        await _memory.SetAsync("s1", "c", "data", category: "calendar");
+        await _memory.SetAsync("session/s1/a", "data", category: "research/pricing");
+        await _memory.SetAsync("session/s1/b", "data", category: "research/competitors");
+        await _memory.SetAsync("session/s1/c", "data", category: "calendar");
 
-        // "research" prefix should match both research/* entries
-        var results = await _memory.SearchAsync("s1", new MemorySearchCriteria(Category: "research"));
+        var results = await _memory.SearchAsync(
+            new MemorySearchCriteria(Category: "research"), "session/s1");
 
         Assert.AreEqual(2, results.Count);
         var keys = results.Select(e => e.Key).ToHashSet();
-        Assert.IsTrue(keys.Contains("a"));
-        Assert.IsTrue(keys.Contains("b"));
+        Assert.IsTrue(keys.Contains("session/s1/a"));
+        Assert.IsTrue(keys.Contains("session/s1/b"));
     }
 
     [TestMethod]
     public async Task SearchAsync_CategoryFilter_NoQuery_ReturnsMatchingEntries()
     {
-        await _memory.SetAsync("s1", "a", "stuff", category: "email");
-        await _memory.SetAsync("s1", "b", "stuff", category: "calendar");
+        await _memory.SetAsync("session/s1/a", "stuff", category: "email");
+        await _memory.SetAsync("session/s1/b", "stuff", category: "calendar");
 
-        var results = await _memory.SearchAsync("s1", new MemorySearchCriteria(Category: "email"));
+        var results = await _memory.SearchAsync(
+            new MemorySearchCriteria(Category: "email"), "session/s1");
 
         Assert.AreEqual(1, results.Count);
-        Assert.AreEqual("a", results[0].Key);
+        Assert.AreEqual("session/s1/a", results[0].Key);
     }
 
     // ── Search — tag filter ─────────────────────────────────────────────────
@@ -465,28 +524,28 @@ public class HybridCacheWorkingMemoryTests
     [TestMethod]
     public async Task SearchAsync_TagFilter_RequiresAllTags()
     {
-        await _memory.SetAsync("s1", "a", "data", tags: ["urgent", "finance"]);
-        await _memory.SetAsync("s1", "b", "data", tags: ["urgent"]);
-        await _memory.SetAsync("s1", "c", "data", tags: ["finance"]);
+        await _memory.SetAsync("session/s1/a", "data", tags: ["urgent", "finance"]);
+        await _memory.SetAsync("session/s1/b", "data", tags: ["urgent"]);
+        await _memory.SetAsync("session/s1/c", "data", tags: ["finance"]);
 
-        var results = await _memory.SearchAsync("s1",
-            new MemorySearchCriteria(Tags: ["urgent", "finance"]));
+        var results = await _memory.SearchAsync(
+            new MemorySearchCriteria(Tags: ["urgent", "finance"]), "session/s1");
 
         Assert.AreEqual(1, results.Count);
-        Assert.AreEqual("a", results[0].Key);
+        Assert.AreEqual("session/s1/a", results[0].Key);
     }
 
     [TestMethod]
     public async Task SearchAsync_TagFilter_WithQuery_CombinesFilters()
     {
-        await _memory.SetAsync("s1", "a", "pricing strategy doc", tags: ["urgent"]);
-        await _memory.SetAsync("s1", "b", "pricing strategy doc");  // no tags
+        await _memory.SetAsync("session/s1/a", "pricing strategy doc", tags: ["urgent"]);
+        await _memory.SetAsync("session/s1/b", "pricing strategy doc");  // no tags
 
-        var results = await _memory.SearchAsync("s1",
-            new MemorySearchCriteria(Query: "pricing", Tags: ["urgent"]));
+        var results = await _memory.SearchAsync(
+            new MemorySearchCriteria(Query: "pricing", Tags: ["urgent"]), "session/s1");
 
         Assert.AreEqual(1, results.Count);
-        Assert.AreEqual("a", results[0].Key);
+        Assert.AreEqual("session/s1/a", results[0].Key);
     }
 
     // ── Search — metadata on entries ────────────────────────────────────────
@@ -494,11 +553,11 @@ public class HybridCacheWorkingMemoryTests
     [TestMethod]
     public async Task SetAsync_WithCategoryAndTags_PersistedInEntry()
     {
-        await _memory.SetAsync("s1", "key1", "value",
+        await _memory.SetAsync("session/s1/key1", "value",
             category: "research/pricing",
             tags: ["urgent", "finance"]);
 
-        var entries = await _memory.ListAsync("s1");
+        var entries = await _memory.ListAsync("session/s1");
 
         Assert.AreEqual(1, entries.Count);
         var e = entries[0];
@@ -515,7 +574,7 @@ public class HybridCacheWorkingMemoryTests
         var opts = new WorkingMemoryOptions
         {
             DefaultTtl = defaultTtl ?? TimeSpan.FromMinutes(5),
-            MaxEntriesPerSession = maxEntries
+            MaxEntriesPerNamespace = maxEntries
         };
         return new HybridCacheWorkingMemory(
             _cache,
