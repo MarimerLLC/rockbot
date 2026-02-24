@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
@@ -14,7 +15,8 @@ public sealed class TierRoutingLogger
     {
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
         PropertyNameCaseInsensitive = true,
-        WriteIndented = false
+        WriteIndented = false,
+        Converters = { new JsonStringEnumConverter() }
     };
 
     private readonly string _filePath;
