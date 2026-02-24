@@ -48,10 +48,15 @@ if (tierOptions.Balanced.IsConfigured)
             .GetChatClient(config.ModelId!).AsIChatClient();
     }
 
+    // ResearchAgent only uses Balanced (fallback synthesis) and High (main research loop).
+    // Low is not needed — pass Balanced for the Low slot so it is never exercised.
+    var balancedClient = BuildClient(tierOptions.Balanced);
+    var highClient     = BuildClient(tierOptions.Resolve(ModelTier.High));
+
     builder.Services.AddRockBotTieredChatClients(
-        lowInnerClient:      BuildClient(tierOptions.Resolve(ModelTier.Low)),
-        balancedInnerClient: BuildClient(tierOptions.Balanced),
-        highInnerClient:     BuildClient(tierOptions.Resolve(ModelTier.High)));
+        lowInnerClient:      balancedClient,
+        balancedInnerClient: balancedClient,
+        highInnerClient:     highClient);
 }
 else
 {
