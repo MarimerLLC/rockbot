@@ -86,6 +86,9 @@ else
     Console.WriteLine("Set LLM:Balanced:Endpoint (or legacy LLM:Endpoint), LLM:Balanced:ApiKey, and LLM:Balanced:ModelId to configure.");
 }
 
+// Tier routing logger — appends routing decisions to tier-routing-log.jsonl for dream self-correction
+builder.Services.AddSingleton<TierRoutingLogger>();
+
 // Tracks in-flight background tool loops so they can be cancelled when a new message arrives
 builder.Services.AddSingleton<SessionBackgroundTaskTracker>();
 

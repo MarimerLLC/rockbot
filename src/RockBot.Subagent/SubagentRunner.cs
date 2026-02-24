@@ -24,6 +24,7 @@ internal sealed class SubagentRunner(
     IToolRegistry toolRegistry,
     ToolGuideTools toolGuideTools,
     IMessagePublisher publisher,
+    TierRoutingLogger tierRoutingLogger,
     ILogger<SubagentRunner> logger)
 {
     public async Task RunAsync(
@@ -38,6 +39,11 @@ internal sealed class SubagentRunner(
         logger.LogInformation(
             "Subagent {TaskId} starting (session {SessionId}) tier={Tier}",
             taskId, subagentSessionId, tier);
+
+        _ = tierRoutingLogger.AppendAsync(new TierRoutingEntry(
+            DateTimeOffset.UtcNow,
+            description.Length > 150 ? description[..150] : description,
+            tier, "subagent"));
 
         var subagentNamespace = $"subagent/{taskId}";
         var systemPrompt =

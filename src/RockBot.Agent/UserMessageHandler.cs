@@ -47,6 +47,7 @@ internal sealed class UserMessageHandler(
     SessionStartTracker sessionStartTracker,
     IOptions<AgentProfileOptions> profileOptions,
     ILogger<UserMessageHandler> logger,
+    TierRoutingLogger tierRoutingLogger,
     ISkillUsageStore? skillUsageStore = null) : IMessageHandler<UserMessage>
 {
     private static readonly TimeSpan ProgressMessageThreshold = TimeSpan.FromSeconds(5);
@@ -75,6 +76,11 @@ internal sealed class UserMessageHandler(
 
         var tier = tierSelector.SelectTier(message.Content);
         logger.LogInformation("Routing user message to tier={Tier}", tier);
+
+        _ = tierRoutingLogger.AppendAsync(new TierRoutingEntry(
+            DateTimeOffset.UtcNow,
+            message.Content.Length > 150 ? message.Content[..150] : message.Content,
+            tier, "user-message"));
 
         try
         {

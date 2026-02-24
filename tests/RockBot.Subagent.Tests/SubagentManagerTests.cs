@@ -40,6 +40,13 @@ public class SubagentManagerTests
         services.AddSingleton(new ToolGuideTools([], NullLoggerFactory.Instance.CreateLogger<ToolGuideTools>()));
         services.AddTransient<AgentLoopRunner>();
         services.AddTransient<SubagentRunner>();
+
+        // TierRoutingLogger requires a writable directory; point it at a temp folder
+        var tmpDir = Path.Combine(Path.GetTempPath(), Path.GetRandomFileName());
+        Directory.CreateDirectory(tmpDir);
+        services.AddSingleton(new TierRoutingLogger(
+            Options.Create(new AgentProfileOptions { BasePath = tmpDir }),
+            NullLoggerFactory.Instance.CreateLogger<TierRoutingLogger>()));
     }
 
     private static SubagentManager CreateManager(int maxConcurrent = 3)

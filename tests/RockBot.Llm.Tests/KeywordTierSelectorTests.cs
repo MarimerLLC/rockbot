@@ -1,3 +1,5 @@
+using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
 using RockBot.Host;
 using RockBot.Llm;
@@ -94,5 +96,73 @@ public class KeywordTierSelectorTests
         // and few words — should remain Low
         Assert.AreEqual(ModelTier.Low, tier,
             "Simplex keywords should keep short simple prompts in the Low tier");
+    }
+
+    // ── Config-file hot-reload tests ──────────────────────────────────────────
+
+    [TestMethod]
+    public void SelectTier_WithConfigFile_HighBalancedCeiling_PushesHighToBalanced()
+    {
+        var tempDir = Path.Combine(Path.GetTempPath(), Path.GetRandomFileName());
+        Directory.CreateDirectory(tempDir);
+        try
+        {
+            // balancedCeiling = 0.99 means only a theoretically perfect-score prompt
+            // can reach High; everything that previously scored High now scores Balanced.
+            var configJson = """{"version":1,"balancedCeiling":0.99}""";
+            File.WriteAllText(Path.Combine(tempDir, "tier-selector.json"), configJson);
+
+            var options = Options.Create(new AgentProfileOptions { BasePath = tempDir });
+            var selector = new KeywordTierSelector(options, NullLogger<KeywordTierSelector>.Instance);
+
+            // This prompt scores High with compiled defaults (verified by existing tests)
+            const string prompt =
+                "Design and architect a comprehensive distributed caching system for a high-traffic " +
+                "microservices platform. Analyze the trade-offs between consistency models including " +
+                "eventual consistency and strong consistency. Evaluate multiple approaches for cache " +
+                "invalidation, eviction policies, and partitions. Consider security implications and " +
+                "performance bottlenecks. Provide a thorough analysis with pros and cons for each " +
+                "recommended approach.";
+
+            var tier = selector.SelectTier(prompt);
+            Assert.AreEqual(ModelTier.Balanced, tier,
+                "balancedCeiling=0.99 should prevent any realistic prompt from reaching High");
+        }
+        finally
+        {
+            Directory.Delete(tempDir, recursive: true);
+        }
+    }
+
+    [TestMethod]
+    public void SelectTier_WithMissingConfigFile_BehavesLikeCompiledDefaults()
+    {
+        var tempDir = Path.Combine(Path.GetTempPath(), Path.GetRandomFileName());
+        Directory.CreateDirectory(tempDir);
+        try
+        {
+            // No tier-selector.json exists — DI ctor should fall back to compiled defaults
+            var options = Options.Create(new AgentProfileOptions { BasePath = tempDir });
+            var configSelector = new KeywordTierSelector(options, NullLogger<KeywordTierSelector>.Instance);
+
+            string[] prompts =
+            [
+                "What is the capital of France?",
+                "Define photosynthesis.",
+                "Analyze the pros and cons of using a monolithic versus microservices approach for a small startup.",
+            ];
+
+            foreach (var prompt in prompts)
+            {
+                var expected = _selector.SelectTier(prompt);
+                var actual   = configSelector.SelectTier(prompt);
+                Assert.AreEqual(expected, actual,
+                    $"Missing config file should produce same tier as compiled defaults for: \"{prompt}\"");
+            }
+        }
+        finally
+        {
+            Directory.Delete(tempDir, recursive: true);
+        }
     }
 }
