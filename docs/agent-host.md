@@ -192,6 +192,64 @@ builder. `WithMemory()` does not register it.
 
 ---
 
+## Three-tier LLM routing
+
+### `ModelTier`
+
+```csharp
+public enum ModelTier { Low, Balanced, High }
+```
+
+Every LLM call is tagged with a tier. The `TieredChatClientRegistry` singleton holds one
+`IChatClient` per tier and `LlmClient` selects the right one at call time.
+
+| Tier | Intended use | Falls back to |
+|---|---|---|
+| `Low` | Short factual questions, trivial single-step tasks | Balanced |
+| `Balanced` | Moderate-complexity requests, patrol tasks | — (required) |
+| `High` | Deep analysis, dream consolidation, research | Balanced |
+
+Low and High are optional in configuration; when absent they fall back to Balanced.
+
+### `KeywordTierSelector` (implements `ILlmTierSelector`)
+
+Scores prompts using a keyword + length heuristic — no embeddings, no external calls:
+
+- **Length score** (0 – 0.40) — longer prompts tend to be more complex
+- **Keyword score** (0 – 0.35) — high-signal words (`analyze`, `research`, `distributed`, …)
+  increase the score; simplex words (`what is`, `define`, `list the`, …) decrease it
+- **Structural score** (0 – 0.25) — code blocks, math notation, multi-step markers
+
+Scores at or below `lowCeiling` → Low; at or below `balancedCeiling` → Balanced; above → High.
+
+The parameterless constructor always uses compiled-in defaults (used in tests). The DI
+constructor hot-reloads `{BasePath}/tier-selector.json` every 60 seconds so thresholds and
+keyword lists can be tuned without a pod restart.
+
+### `tier-selector.json` (hot-reloadable)
+
+```json
+{
+  "version": 1,
+  "notes": "2026-02-24: tightened balancedCeiling after dream review",
+  "lowCeiling": 0.15,
+  "balancedCeiling": 0.46,
+  "highSignalKeywords": ["analyze", "research", "distributed", "..."],
+  "lowSignalKeywords":  ["what is", "define ", "list the", "..."]
+}
+```
+
+All fields are optional — omitted fields fall back to compiled defaults.
+
+### Dream self-correction pass
+
+Each routing decision is appended to `tier-routing-log.jsonl` on the PVC (capped at 200
+entries). The dream cycle's tier-routing review pass reads the log and — when it detects
+systematic mis-routing — rewrites `tier-selector.json` with corrected thresholds and keyword
+lists. The pass skips when fewer than 10 entries exist.
+
+---
+
 ## LLM client
 
 ### `ILlmClient`
@@ -204,6 +262,11 @@ public interface ILlmClient
         IList<ChatMessage> messages,
         ChatOptions? options = null,
         CancellationToken ct = default);
+    Task<ChatResponse> GetResponseAsync(
+        IList<ChatMessage> messages,
+        ModelTier tier,
+        ChatOptions? options = null,
+        CancellationToken ct = default);
 }
 ```
 
@@ -214,8 +277,8 @@ Enforces that only one LLM call is in flight at a time within the agent process:
 - `IsIdle` lets background services (dream cycle, session evaluator) back off while the user
   is waiting for a response
 
-This prevents rate-limit collisions and ensures the agent never makes concurrent LLM calls that
-could interleave tool results or corrupt conversation state.
+The tier-less overload defaults to `ModelTier.Balanced`. Calls log `tier=Balanced model=...`
+so routing decisions are visible in the pod logs.
 
 ---
 
@@ -333,7 +396,10 @@ configurable via `AgentProfileOptions.BasePath`):
 ├── skill-optimize.md          # Dream: skill optimization prompt
 ├── skill-gap.md               # Dream: skill gap detection prompt
 ├── pref-dream.md              # Dream: preference inference prompt
+├── tier-routing-directive.md  # (optional) Dream: tier routing review prompt override
 ├── session-evaluator.md       # Session quality evaluation prompt
+├── tier-selector.json         # (optional) Hot-reloadable tier routing config
+├── tier-routing-log.jsonl     # Routing decision log (auto-managed, capped at 200 entries)
 ├── mcp.json                   # MCP server connection configuration
 ├── rules/                     # Agent rules (markdown files)
 ├── model-behaviors/           # Per-model prompt overrides
@@ -392,10 +458,22 @@ Key configuration sections (from `appsettings.json` or environment variables):
     "UserName": "rockbot",
     "Password": "..."
   },
-  "AzureAI": {
-    "Endpoint": "https://your-resource.openai.azure.com/",
-    "Key": "...",
-    "DeploymentName": "gpt-4o"
+  "LLM": {
+    "Balanced": {
+      "Endpoint": "https://openrouter.ai/api/v1",
+      "ApiKey": "...",
+      "ModelId": "anthropic/claude-haiku-4.5"
+    },
+    "Low": {
+      "Endpoint": "https://openrouter.ai/api/v1",
+      "ApiKey": "...",
+      "ModelId": "google/gemini-flash-1.5-8b"
+    },
+    "High": {
+      "Endpoint": "https://openrouter.ai/api/v1",
+      "ApiKey": "...",
+      "ModelId": "anthropic/claude-opus-4-6"
+    }
   },
   "Memory": {
     "BasePath": "memory"
@@ -407,7 +485,8 @@ Key configuration sections (from `appsettings.json` or environment variables):
   "Dream": {
     "Enabled": true,
     "InitialDelay": "00:05:00",
-    "Interval": "04:00:00"
+    "Interval": "04:00:00",
+    "TierRoutingReviewEnabled": true
   },
   "Feedback": {
     "BasePath": "feedback",
@@ -416,3 +495,7 @@ Key configuration sections (from `appsettings.json` or environment variables):
   }
 }
 ```
+
+`LLM.Balanced` is required. `LLM.Low` and `LLM.High` are optional — when absent they fall back
+to Balanced. The flat legacy keys `LLM.Endpoint`, `LLM.ApiKey`, `LLM.ModelId` are still
+accepted for backward compatibility and are treated as Balanced.
