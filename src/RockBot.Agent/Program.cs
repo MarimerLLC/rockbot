@@ -63,13 +63,18 @@ if (tierOptions.Balanced.IsConfigured)
             .GetChatClient(config.ModelId!).AsIChatClient();
     }
 
-    builder.Services.AddModelBehaviors(opts =>
-        builder.Configuration.GetSection("ModelBehaviors").Bind(opts));
-
+    // AddRockBotTieredChatClients must be called BEFORE AddModelBehaviors so that
+    // its TryAddSingleton<ModelBehavior> (which uses the inner client closure directly)
+    // wins over AddModelBehaviors' factory (which resolves IChatClient from DI and would
+    // create a circular dependency: IChatClient → TieredChatClientRegistry → ModelBehavior
+    // → IChatClient → deadlock).
     builder.Services.AddRockBotTieredChatClients(
         lowInnerClient:      BuildClient(tierOptions.Resolve(ModelTier.Low)),
         balancedInnerClient: BuildClient(tierOptions.Balanced),
         highInnerClient:     BuildClient(tierOptions.Resolve(ModelTier.High)));
+
+    builder.Services.AddModelBehaviors(opts =>
+        builder.Configuration.GetSection("ModelBehaviors").Bind(opts));
 
     builder.Services.AddSingleton<ILlmTierSelector, KeywordTierSelector>();
 }
