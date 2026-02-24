@@ -6,56 +6,71 @@ namespace RockBot.UserProxy.Blazor.Services;
 public sealed class ChatStateService
 {
     private readonly List<ChatMessage> _messages = new();
+    private readonly object _lock = new();
     private string? _currentThinkingMessage;
     private bool _isProcessing;
 
     public event Action? OnStateChanged;
 
-    public IReadOnlyList<ChatMessage> Messages => _messages.AsReadOnly();
+    /// <summary>
+    /// Returns a point-in-time snapshot of the message list.
+    /// Callers (including Blazor's render loop) iterate the snapshot, so concurrent
+    /// mutations on background threads cannot cause "Collection was modified" exceptions.
+    /// </summary>
+    public IReadOnlyList<ChatMessage> Messages
+    {
+        get { lock (_lock) return _messages.ToList(); }
+    }
+
     public string? CurrentThinkingMessage => _currentThinkingMessage;
     public bool IsProcessing => _isProcessing;
 
     public void LoadHistory(IReadOnlyList<ConversationHistoryTurn> turns, string sessionId)
     {
-        _messages.Clear();
-        foreach (var turn in turns)
+        lock (_lock)
         {
-            _messages.Add(new ChatMessage
+            _messages.Clear();
+            foreach (var turn in turns)
             {
-                Content = turn.Content,
-                IsFromUser = turn.Role == "user",
-                Timestamp = turn.Timestamp.UtcDateTime,
-                SessionId = sessionId
-            });
+                _messages.Add(new ChatMessage
+                {
+                    Content = turn.Content,
+                    IsFromUser = turn.Role == "user",
+                    Timestamp = turn.Timestamp.UtcDateTime,
+                    SessionId = sessionId
+                });
+            }
         }
         NotifyStateChanged();
     }
 
     public void AddUserMessage(string content, string userId, string sessionId)
     {
-        _messages.Add(new ChatMessage
-        {
-            Content = content,
-            IsFromUser = true,
-            Timestamp = DateTime.UtcNow,
-            UserId = userId,
-            SessionId = sessionId
-        });
+        lock (_lock)
+            _messages.Add(new ChatMessage
+            {
+                Content = content,
+                IsFromUser = true,
+                Timestamp = DateTime.UtcNow,
+                UserId = userId,
+                SessionId = sessionId
+            });
         NotifyStateChanged();
     }
 
     public void AddAgentReply(AgentReply reply)
     {
-        _messages.Add(new ChatMessage
-        {
-            Content = reply.Content,
-            IsFromUser = false,
-            Timestamp = DateTime.UtcNow,
-            AgentName = reply.AgentName,
-            SessionId = reply.SessionId,
-            ContentType = reply.ContentType,
-            IsInterim = !reply.IsFinal
-        });
+        lock (_lock)
+            _messages.Add(new ChatMessage
+            {
+                Content = reply.Content,
+                IsFromUser = false,
+                Timestamp = DateTime.UtcNow,
+                AgentName = reply.AgentName,
+                SessionId = reply.SessionId,
+                ContentType = reply.ContentType,
+                IsInterim = !reply.IsFinal
+            });
         NotifyStateChanged();
     }
 
@@ -65,11 +80,13 @@ public sealed class ChatStateService
     /// </summary>
     public void RecordFeedback(string messageId, bool isPositive)
     {
-        var msg = _messages.FirstOrDefault(m => m.MessageId == messageId);
-        if (msg is null || msg.Feedback != FeedbackState.None)
-            return;
-
-        msg.Feedback = isPositive ? FeedbackState.ThumbsUp : FeedbackState.ThumbsDown;
+        lock (_lock)
+        {
+            var msg = _messages.FirstOrDefault(m => m.MessageId == messageId);
+            if (msg is null || msg.Feedback != FeedbackState.None)
+                return;
+            msg.Feedback = isPositive ? FeedbackState.ThumbsUp : FeedbackState.ThumbsDown;
+        }
         NotifyStateChanged();
     }
 
@@ -95,13 +112,14 @@ public sealed class ChatStateService
 
     public void AddError(string message)
     {
-        _messages.Add(new ChatMessage
-        {
-            Content = message,
-            IsFromUser = false,
-            IsError = true,
-            Timestamp = DateTime.UtcNow
-        });
+        lock (_lock)
+            _messages.Add(new ChatMessage
+            {
+                Content = message,
+                IsFromUser = false,
+                IsError = true,
+                Timestamp = DateTime.UtcNow
+            });
         NotifyStateChanged();
     }
 
