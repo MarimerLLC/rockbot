@@ -59,14 +59,18 @@ internal sealed class ResearchAgentTaskHandler(
 
             logger.LogInformation("Research question for task {TaskId}: {Question}", request.TaskId, question);
 
-            // Build web tool AIFunctions from the tool registry
+            // Working memory namespace: "research/{taskId}" — distinct from user sessions
+            // and surfaced in the primary agent's context if the primary agent browses "research/"
+            var workingMemoryNamespace = $"research/{sessionId}";
+
+            // Build web tool AIFunctions — pass the full namespace as SessionId so
+            // WebBrowseToolExecutor stores chunks under "research/{taskId}/web-..."
             var webTools = toolRegistry.GetTools()
                 .Select(r => (AIFunction)new ResearchToolFunction(
-                    r, toolRegistry.GetExecutor(r.Name)!, sessionId))
+                    r, toolRegistry.GetExecutor(r.Name)!, workingMemoryNamespace))
                 .ToArray();
 
             // Working memory tools let the LLM retrieve chunked page content
-            var workingMemoryNamespace = $"session/{sessionId}";
             var workingMemoryTools = new WorkingMemoryTools(workingMemory, workingMemoryNamespace, logger);
 
             var chatOptions = new ChatOptions
@@ -107,7 +111,7 @@ internal sealed class ResearchAgentTaskHandler(
                     "Research task {TaskId} loop returned {Len} chars — attempting fallback synthesis from working memory",
                     request.TaskId, finalContent.Length);
 
-                finalContent = await SynthesiseFromWorkingMemoryAsync(sessionId, question, ct);
+                finalContent = await SynthesiseFromWorkingMemoryAsync(workingMemoryNamespace, question, ct);
             }
 
             logger.LogInformation("Research task {TaskId} completed, output length={Len}",
@@ -143,12 +147,12 @@ internal sealed class ResearchAgentTaskHandler(
     /// Used when the tool loop exhausts its iteration limit before producing output.
     /// </summary>
     private async Task<string> SynthesiseFromWorkingMemoryAsync(
-        string sessionId, string question, CancellationToken ct)
+        string @namespace, string question, CancellationToken ct)
     {
-        var entries = await workingMemory.ListAsync($"session/{sessionId}");
+        var entries = await workingMemory.ListAsync(@namespace);
         if (entries.Count == 0)
         {
-            logger.LogWarning("Fallback synthesis: no working memory entries found for session {SessionId}", sessionId);
+            logger.LogWarning("Fallback synthesis: no working memory entries found for namespace {Namespace}", @namespace);
             return "Research completed but the synthesis step was unable to produce a result. Please try again.";
         }
 
@@ -173,8 +177,8 @@ internal sealed class ResearchAgentTaskHandler(
         }
 
         logger.LogInformation(
-            "Fallback synthesis: collected {Count} working memory entries ({Len} chars total) for session {SessionId}",
-            entries.Count, sb.Length, sessionId);
+            "Fallback synthesis: collected {Count} working memory entries ({Len} chars total) for namespace {Namespace}",
+            entries.Count, sb.Length, @namespace);
 
         var messages = new List<ChatMessage>
         {
@@ -186,7 +190,7 @@ internal sealed class ResearchAgentTaskHandler(
         var synthesised = response.Text?.Trim() ?? string.Empty;
 
         logger.LogInformation(
-            "Fallback synthesis produced {Len} chars for session {SessionId}", synthesised.Length, sessionId);
+            "Fallback synthesis produced {Len} chars for namespace {Namespace}", synthesised.Length, @namespace);
 
         return string.IsNullOrWhiteSpace(synthesised)
             ? "Research completed but synthesis produced no output. Please try again."

@@ -102,7 +102,7 @@ internal sealed class SubagentResultHandler(
         var sessionSkillTools = new SkillTools(skillStore, llmClient, logger, message.PrimarySessionId);
         var registryTools = toolRegistry.GetTools()
             .Select(r => (AIFunction)new SubagentRegistryToolFunction(
-                r, toolRegistry.GetExecutor(r.Name)!, message.PrimarySessionId))
+                r, toolRegistry.GetExecutor(r.Name)!, $"session/{message.PrimarySessionId}"))
             .ToArray();
 
         var chatOptions = new ChatOptions

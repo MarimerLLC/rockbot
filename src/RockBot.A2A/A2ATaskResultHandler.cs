@@ -133,7 +133,7 @@ internal sealed class A2ATaskResultHandler(
         var sessionSkillTools = new SkillTools(skillStore, llmClient, logger, pending.PrimarySessionId);
         var registryTools = toolRegistry.GetTools()
             .Select(r => (AIFunction)new RegistryToolFunction(
-                r, toolRegistry.GetExecutor(r.Name)!, pending.PrimarySessionId))
+                r, toolRegistry.GetExecutor(r.Name)!, $"session/{pending.PrimarySessionId}"))
             .ToArray();
 
         var chatOptions = new ChatOptions

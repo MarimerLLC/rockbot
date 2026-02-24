@@ -115,7 +115,7 @@ internal sealed class UserMessageHandler(
 
             // Registry tools (MCP, REST, etc.)
             var registryTools = toolRegistry.GetTools()
-                .Select(r => (AIFunction)new RegistryToolFunction(r, toolRegistry.GetExecutor(r.Name)!, message.SessionId))
+                .Select(r => (AIFunction)new RegistryToolFunction(r, toolRegistry.GetExecutor(r.Name)!, sessionNamespace))
                 .ToArray();
 
             var allTools = memoryTools.Tools

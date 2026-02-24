@@ -92,7 +92,8 @@ internal sealed class WebBrowseToolExecutor(
         for (var i = 0; i < chunks.Count; i++)
         {
             var (heading, content) = chunks[i];
-            var key = $"session/{request.SessionId}/web-{sanitizedUrl}-chunk{i}";
+            // SessionId is the full working memory namespace (e.g. "session/abc123", "patrol/heartbeat")
+            var key = $"{request.SessionId}/web-{sanitizedUrl}-chunk{i}";
 
             await workingMemory!.SetAsync(key, content, ttl, category: "web");
 
