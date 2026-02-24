@@ -20,7 +20,7 @@ public sealed class KeywordTierSelector : ILlmTierSelector
         "trade-off", "tradeoff", "trade off", "compare and contrast", "compare",
         "prove", "derive", "demonstrate why", "reason through",
         "implement a system", "build a system", "step by step",
-        "microservice", "distributed", "concurrent", "asynchronous",
+        "microservice", "distributed", "concurrent", "asynchronous", "async",
         "optimize", "performance bottleneck", "scalab",
         "security implication", "threat model",
         "explain in depth", "comprehensive", "thorough analysis",
