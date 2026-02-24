@@ -225,7 +225,7 @@ internal sealed class DreamService : IHostedService, IDisposable
                 new(ChatRole.User, userMessage.ToString())
             };
 
-            var response = await _llmClient.GetResponseAsync(messages, ModelTier.High, new ChatOptions());
+            var response = await _llmClient.GetResponseAsync(messages, ModelTier.High, new ChatOptions { ResponseFormat = ChatResponseFormat.Json });
             var raw = response.Text?.Trim() ?? string.Empty;
             var json = ExtractJsonObject(raw);
 
@@ -237,7 +237,7 @@ internal sealed class DreamService : IHostedService, IDisposable
 
             _logger.LogDebug("DreamService: LLM response JSON ({Length} chars): {Json}", json.Length, json);
 
-            var result = JsonSerializer.Deserialize<DreamResultDto>(json, JsonOptions);
+            var result = TryDeserializeJson<DreamResultDto>(json, "memory dream");
             if (result is null)
             {
                 _logger.LogWarning("DreamService: failed to deserialize dream result; skipping cycle");
@@ -445,7 +445,7 @@ internal sealed class DreamService : IHostedService, IDisposable
             new(ChatRole.User, userMessage.ToString())
         };
 
-        var response = await _llmClient.GetResponseAsync(messages, ModelTier.High, new ChatOptions());
+        var response = await _llmClient.GetResponseAsync(messages, ModelTier.High, new ChatOptions { ResponseFormat = ChatResponseFormat.Json });
         var raw = response.Text?.Trim() ?? string.Empty;
         var json = ExtractJsonObject(raw);
 
@@ -457,7 +457,7 @@ internal sealed class DreamService : IHostedService, IDisposable
 
         _logger.LogDebug("DreamService: skill LLM response JSON ({Length} chars): {Json}", json.Length, json);
 
-        var result = JsonSerializer.Deserialize<SkillDreamResultDto>(json, JsonOptions);
+        var result = TryDeserializeJson<SkillDreamResultDto>(json, "skill consolidation");
         if (result is null)
         {
             _logger.LogWarning("DreamService: failed to deserialize skill dream result; skipping");
@@ -700,7 +700,7 @@ internal sealed class DreamService : IHostedService, IDisposable
             new(ChatRole.User, userMessage.ToString())
         };
 
-        var response = await _llmClient.GetResponseAsync(messages, ModelTier.High, new ChatOptions());
+        var response = await _llmClient.GetResponseAsync(messages, ModelTier.High, new ChatOptions { ResponseFormat = ChatResponseFormat.Json });
         var raw = response.Text?.Trim() ?? string.Empty;
         var json = ExtractJsonObject(raw);
 
@@ -710,7 +710,7 @@ internal sealed class DreamService : IHostedService, IDisposable
             return;
         }
 
-        var result = JsonSerializer.Deserialize<SkillDreamResultDto>(json, JsonOptions);
+        var result = TryDeserializeJson<SkillDreamResultDto>(json, "skill optimization");
         if (result is null)
         {
             _logger.LogWarning("DreamService: failed to deserialize skill optimize result; skipping");
@@ -929,7 +929,7 @@ internal sealed class DreamService : IHostedService, IDisposable
             new(ChatRole.User, userMessage.ToString())
         };
 
-        var response = await _llmClient.GetResponseAsync(messages, ModelTier.High, new ChatOptions());
+        var response = await _llmClient.GetResponseAsync(messages, ModelTier.High, new ChatOptions { ResponseFormat = ChatResponseFormat.Json });
         var raw = response.Text?.Trim() ?? string.Empty;
         var json = ExtractJsonObject(raw);
 
@@ -941,7 +941,7 @@ internal sealed class DreamService : IHostedService, IDisposable
 
         _logger.LogDebug("DreamService: skill gap JSON ({Length} chars): {Json}", json.Length, json);
 
-        var result = JsonSerializer.Deserialize<SkillGapResultDto>(json, JsonOptions);
+        var result = TryDeserializeJson<SkillGapResultDto>(json, "skill gap");
         var saved = 0;
 
         foreach (var dto in result?.ToSave ?? [])
@@ -1026,7 +1026,7 @@ internal sealed class DreamService : IHostedService, IDisposable
                 new(ChatRole.User, userMessage.ToString())
             };
 
-            var response = await _llmClient.GetResponseAsync(messages, ModelTier.High, new ChatOptions());
+            var response = await _llmClient.GetResponseAsync(messages, ModelTier.High, new ChatOptions { ResponseFormat = ChatResponseFormat.Json });
             var raw = response.Text?.Trim() ?? string.Empty;
             var json = ExtractJsonObject(raw);
 
@@ -1038,7 +1038,7 @@ internal sealed class DreamService : IHostedService, IDisposable
             {
                 _logger.LogDebug("DreamService: pref inference JSON ({Length} chars): {Json}", json.Length, json);
 
-                var result = JsonSerializer.Deserialize<PrefDreamResultDto>(json, JsonOptions);
+                var result = TryDeserializeJson<PrefDreamResultDto>(json, "preference inference");
                 var saved = 0;
 
                 foreach (var dto in result?.ToSave ?? [])
@@ -1092,6 +1092,28 @@ internal sealed class DreamService : IHostedService, IDisposable
     /// Extracts the outermost JSON object from <paramref name="text"/>, tolerating
     /// DeepSeek-style thinking blocks and prose preamble.
     /// </summary>
+    /// <summary>
+    /// Deserializes <paramref name="json"/> into <typeparamref name="T"/>, returning
+    /// <c>null</c> and logging a warning if the LLM returned malformed JSON rather
+    /// than letting the exception bubble up and abort the entire dream cycle.
+    /// </summary>
+    private T? TryDeserializeJson<T>(string json, string context)
+    {
+        try
+        {
+            return JsonSerializer.Deserialize<T>(json, JsonOptions);
+        }
+        catch (System.Text.Json.JsonException ex)
+        {
+            var preview = json.Length > 300 ? json[..300] + "…" : json;
+            _logger.LogWarning(
+                "DreamService: {Context} — LLM returned malformed JSON (skipping). " +
+                "Detail: {Message} | Preview: {Preview}",
+                context, ex.Message, preview);
+            return default;
+        }
+    }
+
     private static string ExtractJsonObject(string text)
     {
         // Strip <think>...</think> blocks first (DeepSeek reasoning preamble)
