@@ -57,9 +57,12 @@ internal sealed class FileConversationMemory : IConversationMemory, IHostedServi
         var sessionsRestored = 0;
         var turnsRestored = 0;
 
-        foreach (var file in Directory.EnumerateFiles(_basePath, "*.json"))
+        foreach (var file in Directory.EnumerateFiles(_basePath, "*.json", SearchOption.AllDirectories))
         {
-            var sessionId = Path.GetFileNameWithoutExtension(file);
+            // Reconstruct session ID from the relative path so that slash-namespaced IDs
+            // (e.g. "session/blazor-session") round-trip correctly through the file system.
+            var relative = Path.GetRelativePath(_basePath, file);
+            var sessionId = relative[..^".json".Length].Replace('\\', '/');
             try
             {
                 var json = await File.ReadAllTextAsync(file, cancellationToken);
@@ -121,10 +124,9 @@ internal sealed class FileConversationMemory : IConversationMemory, IHostedServi
         if (!Directory.Exists(_basePath))
             return Task.FromResult<IReadOnlyList<string>>(Array.Empty<string>());
 
-        var sessionIds = Directory.EnumerateFiles(_basePath, "*.json")
-            .Select(Path.GetFileNameWithoutExtension)
-            .Where(id => id is not null)
-            .Cast<string>()
+        var sessionIds = Directory.EnumerateFiles(_basePath, "*.json", SearchOption.AllDirectories)
+            .Select(f => Path.GetRelativePath(_basePath, f))
+            .Select(rel => rel[..^".json".Length].Replace('\\', '/'))
             .ToList();
 
         return Task.FromResult<IReadOnlyList<string>>(sessionIds);
@@ -140,6 +142,9 @@ internal sealed class FileConversationMemory : IConversationMemory, IHostedServi
         {
             var turns = await _inner.GetTurnsAsync(sessionId, ct);
             var path = Path.Combine(_basePath, $"{sessionId}.json");
+            // Session IDs may contain '/' (e.g. "session/blazor-session") — ensure the
+            // subdirectory exists before writing so we don't hit DirectoryNotFoundException.
+            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
             var json = JsonSerializer.Serialize(turns, JsonOptions);
             await File.WriteAllTextAsync(path, json, ct);
         }
