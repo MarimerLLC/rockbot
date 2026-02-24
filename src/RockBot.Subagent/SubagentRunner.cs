@@ -36,15 +36,18 @@ internal sealed class SubagentRunner(
         logger.LogInformation(
             "Subagent {TaskId} starting (session {SessionId})", taskId, subagentSessionId);
 
+        var subagentNamespace = $"subagent/{taskId}";
         var systemPrompt =
             "You are a subagent executing a specific background task. Execute the task directly " +
             "using your tools — do not design frameworks, save skills, or plan methodology. " +
             "Start calling the required tools immediately. " +
             "Call ReportProgress after each significant step so the user stays informed. " +
-            "For large outputs (reports, document lists, structured data): use WriteSharedOutput " +
-            "to store them in shared memory (expires in 30 minutes) so the primary agent can " +
-            "retrieve them by key during the follow-up conversation. " +
-            "Your final message must summarise what was done and name each key you wrote to " +
+            $"For large outputs (reports, document lists, structured data): use save_to_working_memory " +
+            $"to store them (set ttl_minutes to 240 or more). Your outputs are stored under namespace " +
+            $"'{subagentNamespace}' and the primary agent can retrieve them using " +
+            $"list_working_memory(namespace: '{subagentNamespace}') or " +
+            $"get_from_working_memory('{subagentNamespace}/your-key'). " +
+            "Your final message must summarise what was done and list each key you saved " +
             "so the primary agent knows where to find the detailed data. " +
             "Do not return an empty or vague final response.";
 
@@ -64,8 +67,8 @@ internal sealed class SubagentRunner(
         // Skill tools (get_skill, list_skills, save_skill) — no usage tracking needed for subagents
         var skillTools = new SkillTools(skillStore, llmClient, logger, subagentSessionId);
 
-        // Working memory tools scoped to the subagent's session
-        var sessionWorkingMemoryTools = new WorkingMemoryTools(workingMemory, subagentSessionId, logger);
+        // Working memory tools scoped to this subagent's namespace
+        var sessionWorkingMemoryTools = new WorkingMemoryTools(workingMemory, subagentNamespace, logger);
 
         // Registry tools — include MCP data tools and web/script tools.
         // Excluded:
@@ -93,11 +96,6 @@ internal sealed class SubagentRunner(
         var reportProgressFunctions = new ReportProgressFunctions(
             taskId, primarySessionId, publisher, subagentId, logger);
 
-        // Shared output tools — write large results into the PRIMARY session's working memory
-        // so the primary agent can retrieve them by key after the task completes (30-min TTL).
-        var sharedOutputFunctions = new SubagentSharedOutputFunctions(
-            workingMemory, primarySessionId, taskId, logger);
-
         var chatOptions = new ChatOptions
         {
             Tools = [
@@ -106,8 +104,7 @@ internal sealed class SubagentRunner(
                 ..skillTools.Tools,
                 ..toolGuideTools.Tools,
                 ..registryTools,
-                ..reportProgressFunctions.Tools,
-                ..sharedOutputFunctions.Tools
+                ..reportProgressFunctions.Tools
             ]
         };
 

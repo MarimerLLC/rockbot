@@ -228,21 +228,21 @@ public class SubagentManagerTests
 
     private sealed class NoopWorkingMemory : IWorkingMemory
     {
-        public Task SetAsync(string sessionId, string key, string value,
+        public Task SetAsync(string key, string value,
             TimeSpan? ttl = null, string? category = null,
             IReadOnlyList<string>? tags = null) => Task.CompletedTask;
 
-        public Task<string?> GetAsync(string sessionId, string key) =>
+        public Task<string?> GetAsync(string key) =>
             Task.FromResult<string?>(null);
 
-        public Task<IReadOnlyList<WorkingMemoryEntry>> ListAsync(string sessionId) =>
+        public Task<IReadOnlyList<WorkingMemoryEntry>> ListAsync(string? prefix = null) =>
             Task.FromResult<IReadOnlyList<WorkingMemoryEntry>>([]);
 
-        public Task DeleteAsync(string sessionId, string key) => Task.CompletedTask;
+        public Task DeleteAsync(string key) => Task.CompletedTask;
 
-        public Task ClearAsync(string sessionId) => Task.CompletedTask;
+        public Task ClearAsync(string? prefix = null) => Task.CompletedTask;
 
-        public Task<IReadOnlyList<WorkingMemoryEntry>> SearchAsync(string sessionId, MemorySearchCriteria criteria) =>
+        public Task<IReadOnlyList<WorkingMemoryEntry>> SearchAsync(MemorySearchCriteria criteria, string? prefix = null) =>
             Task.FromResult<IReadOnlyList<WorkingMemoryEntry>>([]);
     }
 

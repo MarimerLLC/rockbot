@@ -106,8 +106,9 @@ internal sealed class UserMessageHandler(
                 }
             }
 
-            // Per-message working memory tools
-            var sessionWorkingMemoryTools = new WorkingMemoryTools(workingMemory, message.SessionId, logger);
+            // Per-message working memory tools — namespace scoped to this session
+            var sessionNamespace = $"session/{message.SessionId}";
+            var sessionWorkingMemoryTools = new WorkingMemoryTools(workingMemory, sessionNamespace, logger);
 
             // Per-session skill tools with usage tracking
             var sessionSkillTools = new SkillTools(skillStore, llmClient, logger, message.SessionId, skillUsageStore);
@@ -124,7 +125,7 @@ internal sealed class UserMessageHandler(
                 .Concat(toolGuideTools.Tools)
                 .Concat(registryTools)
                 .OfType<AIFunction>()
-                .WithChunking(workingMemory, message.SessionId, modelBehavior, logger);
+                .WithChunking(workingMemory, sessionNamespace, modelBehavior, logger);
 
             var chatOptions = new ChatOptions
             {

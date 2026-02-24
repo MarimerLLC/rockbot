@@ -8,7 +8,7 @@ across all three memory tiers.
 | Tier | Scope | Lifetime | Use for |
 |---|---|---|---|
 | **Conversation** | Current turn sequence | Ends when session closes | Chat history — managed by the framework, not by you |
-| **Working memory** | Current session | TTL-based, survives pod restarts | Situational awareness, intermediate results, transient context |
+| **Working memory** | Global, path-namespaced | TTL-based, survives pod restarts | Situational awareness, intermediate results, subagent/patrol outputs |
 | **Long-term memory** | Permanent | Until explicitly deleted or consolidated by dreaming | Durable facts, preferences, relationships, plans |
 
 ### Choosing the right tier
@@ -25,9 +25,17 @@ Ask: **"How long will this fact be useful?"**
 
 ## Working memory
 
-Working memory is session-scoped scratch space with TTL-based expiration. Use it
-for **situational awareness** — context that improves decision-making now but will
-be irrelevant or stale in a future session.
+Working memory is a global, path-namespaced scratch space with TTL-based expiration.
+Keys use path-style prefixes to provide namespace isolation: your entries are stored
+under your own namespace automatically, but you can read from other namespaces
+(subagents, patrol tasks) using cross-namespace access.
+
+**Your namespace**: `session/{your-session-id}` — all saves go here automatically.
+**Subagent outputs**: `subagent/{task-id}/` — browse with `list_working_memory(namespace: "subagent/task-id")`.
+**Patrol outputs**: `patrol/{task-name}/` — browse with `list_working_memory(namespace: "patrol")`.
+
+Use working memory for **situational awareness** — context that improves decision-making
+now but will be irrelevant or stale in a future session.
 
 ### What belongs in working memory
 

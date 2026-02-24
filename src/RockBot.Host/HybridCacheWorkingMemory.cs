@@ -7,8 +7,8 @@ namespace RockBot.Host;
 
 /// <summary>
 /// <see cref="IWorkingMemory"/> backed by <see cref="IMemoryCache"/> for TTL-based eviction,
-/// with a side index (<see cref="ConcurrentDictionary{TKey,TValue}"/>) for key enumeration
-/// (which <c>IMemoryCache</c> does not support natively).
+/// with a flat <see cref="ConcurrentDictionary{TKey,TValue}"/> side-index for key enumeration.
+/// Keys are full path strings (e.g. <c>session/abc123/emails</c>, <c>patrol/heartbeat/alert</c>).
 /// </summary>
 internal sealed class HybridCacheWorkingMemory : IWorkingMemory
 {
@@ -16,8 +16,8 @@ internal sealed class HybridCacheWorkingMemory : IWorkingMemory
     private readonly WorkingMemoryOptions _options;
     private readonly ILogger<HybridCacheWorkingMemory> _logger;
 
-    // sessionId -> { key -> EntryMeta }
-    private readonly ConcurrentDictionary<string, ConcurrentDictionary<string, EntryMeta>> _index = new();
+    // fullKey -> EntryMeta
+    private readonly ConcurrentDictionary<string, EntryMeta> _index = new(StringComparer.OrdinalIgnoreCase);
 
     private sealed record EntryMeta(
         DateTimeOffset StoredAt,
@@ -35,68 +35,80 @@ internal sealed class HybridCacheWorkingMemory : IWorkingMemory
         _logger = logger;
     }
 
-    private static string CacheKey(string sessionId, string key) => $"wm:{sessionId}:{key}";
+    private static string CacheKey(string key) => $"wm:{key}";
 
-    public Task SetAsync(string sessionId, string key, string value, TimeSpan? ttl = null,
+    /// <summary>
+    /// Returns the namespace for a key — the first two path segments
+    /// (e.g. <c>session/abc123</c> from <c>session/abc123/emails</c>).
+    /// Used for per-namespace entry limits.
+    /// </summary>
+    private static string GetNamespace(string key)
+    {
+        var slash1 = key.IndexOf('/');
+        if (slash1 < 0) return key;
+        var slash2 = key.IndexOf('/', slash1 + 1);
+        return slash2 < 0 ? key : key[..slash2];
+    }
+
+    public Task SetAsync(string key, string value, TimeSpan? ttl = null,
         string? category = null, IReadOnlyList<string>? tags = null)
     {
         var effectiveTtl = ttl ?? _options.DefaultTtl;
         var now = DateTimeOffset.UtcNow;
         var expiresAt = now + effectiveTtl;
 
-        var sessionIndex = _index.GetOrAdd(sessionId, _ => new());
+        var ns = GetNamespace(key);
+        var nsCount = _index.Count(kvp =>
+            GetNamespace(kvp.Key).Equals(ns, StringComparison.OrdinalIgnoreCase) &&
+            kvp.Value.ExpiresAt > now);
 
-        // Enforce MaxEntriesPerSession for new keys only
-        if (!sessionIndex.ContainsKey(key) && sessionIndex.Count >= _options.MaxEntriesPerSession)
+        if (!_index.ContainsKey(key) && nsCount >= _options.MaxEntriesPerNamespace)
         {
             _logger.LogWarning(
-                "Working memory limit reached for session {SessionId} ({Max} entries); ignoring key '{Key}'",
-                sessionId, _options.MaxEntriesPerSession, key);
+                "Working memory limit reached for namespace '{Namespace}' ({Max} entries); ignoring key '{Key}'",
+                ns, _options.MaxEntriesPerNamespace, key);
             return Task.CompletedTask;
         }
 
-        sessionIndex[key] = new EntryMeta(now, expiresAt, category, tags ?? []);
-        _cache.Set(CacheKey(sessionId, key), value, new MemoryCacheEntryOptions
+        _index[key] = new EntryMeta(now, expiresAt, category, tags ?? []);
+        _cache.Set(CacheKey(key), value, new MemoryCacheEntryOptions
         {
             AbsoluteExpiration = expiresAt
         });
 
-        _logger.LogDebug("Working memory set: session={SessionId} key={Key} ttl={Ttl}", sessionId, key, effectiveTtl);
+        _logger.LogDebug("Working memory set: key={Key} ttl={Ttl}", key, effectiveTtl);
         return Task.CompletedTask;
     }
 
-    public Task<string?> GetAsync(string sessionId, string key)
+    public Task<string?> GetAsync(string key)
     {
-        if (!_index.TryGetValue(sessionId, out var sessionIndex))
-            return Task.FromResult<string?>(null);
-
-        if (!sessionIndex.TryGetValue(key, out var meta) || meta.ExpiresAt <= DateTimeOffset.UtcNow)
+        if (!_index.TryGetValue(key, out var meta) || meta.ExpiresAt <= DateTimeOffset.UtcNow)
         {
-            sessionIndex.TryRemove(key, out _);
+            _index.TryRemove(key, out _);
             return Task.FromResult<string?>(null);
         }
 
-        _cache.TryGetValue<string>(CacheKey(sessionId, key), out var value);
+        _cache.TryGetValue<string>(CacheKey(key), out var value);
         return Task.FromResult(value);
     }
 
-    public Task<IReadOnlyList<WorkingMemoryEntry>> ListAsync(string sessionId)
+    public Task<IReadOnlyList<WorkingMemoryEntry>> ListAsync(string? prefix = null)
     {
-        if (!_index.TryGetValue(sessionId, out var sessionIndex))
-            return Task.FromResult<IReadOnlyList<WorkingMemoryEntry>>([]);
-
         var now = DateTimeOffset.UtcNow;
         var entries = new List<WorkingMemoryEntry>();
 
-        foreach (var kvp in sessionIndex.ToArray()) // snapshot for safe iteration
+        foreach (var kvp in _index.ToArray()) // snapshot for safe iteration
         {
+            if (!MatchesPrefix(kvp.Key, prefix))
+                continue;
+
             if (kvp.Value.ExpiresAt <= now)
             {
-                sessionIndex.TryRemove(kvp.Key, out _);
+                _index.TryRemove(kvp.Key, out _);
                 continue;
             }
 
-            if (_cache.TryGetValue<string>(CacheKey(sessionId, kvp.Key), out var value))
+            if (_cache.TryGetValue<string>(CacheKey(kvp.Key), out var value))
             {
                 var meta = kvp.Value;
                 entries.Add(new WorkingMemoryEntry(kvp.Key, value!, meta.StoredAt, meta.ExpiresAt, meta.Category, meta.Tags));
@@ -104,36 +116,37 @@ internal sealed class HybridCacheWorkingMemory : IWorkingMemory
             else
             {
                 // Evicted under memory pressure — prune from index
-                sessionIndex.TryRemove(kvp.Key, out _);
+                _index.TryRemove(kvp.Key, out _);
             }
         }
 
         return Task.FromResult<IReadOnlyList<WorkingMemoryEntry>>(entries);
     }
 
-    public Task DeleteAsync(string sessionId, string key)
+    public Task DeleteAsync(string key)
     {
-        if (_index.TryGetValue(sessionId, out var sessionIndex))
-            sessionIndex.TryRemove(key, out _);
-
-        _cache.Remove(CacheKey(sessionId, key));
+        _index.TryRemove(key, out _);
+        _cache.Remove(CacheKey(key));
         return Task.CompletedTask;
     }
 
-    public Task ClearAsync(string sessionId)
+    public Task ClearAsync(string? prefix = null)
     {
-        if (_index.TryRemove(sessionId, out var sessionIndex))
+        foreach (var kvp in _index.ToArray())
         {
-            foreach (var key in sessionIndex.Keys)
-                _cache.Remove(CacheKey(sessionId, key));
+            if (!MatchesPrefix(kvp.Key, prefix))
+                continue;
+
+            _index.TryRemove(kvp.Key, out _);
+            _cache.Remove(CacheKey(kvp.Key));
         }
 
         return Task.CompletedTask;
     }
 
-    public async Task<IReadOnlyList<WorkingMemoryEntry>> SearchAsync(string sessionId, MemorySearchCriteria criteria)
+    public async Task<IReadOnlyList<WorkingMemoryEntry>> SearchAsync(MemorySearchCriteria criteria, string? prefix = null)
     {
-        var allEntries = await ListAsync(sessionId);
+        var allEntries = await ListAsync(prefix);
         if (allEntries.Count == 0)
             return allEntries;
 
@@ -150,15 +163,17 @@ internal sealed class HybridCacheWorkingMemory : IWorkingMemory
             .ToList();
     }
 
-    // ── BM25 document text ────────────────────────────────────────────────────
+    // ── Helpers ───────────────────────────────────────────────────────────────
+
+    private static bool MatchesPrefix(string key, string? prefix) =>
+        string.IsNullOrEmpty(prefix) ||
+        key.StartsWith(prefix, StringComparison.OrdinalIgnoreCase);
 
     private static string GetDocumentText(WorkingMemoryEntry entry)
     {
-        // Include the key (with punctuation normalised) so searches like "calendar" find
-        // an entry stored under key "calendar_2026-03" even if the value doesn't mention it.
         var parts = new List<string>
         {
-            entry.Key.Replace('_', ' ').Replace('-', ' '),
+            entry.Key.Replace('_', ' ').Replace('-', ' ').Replace('/', ' '),
             entry.Value
         };
         if (entry.Tags is { Count: > 0 })
@@ -167,8 +182,6 @@ internal sealed class HybridCacheWorkingMemory : IWorkingMemory
             parts.Add(entry.Category.Replace('/', ' ').Replace('-', ' '));
         return string.Join(" ", parts);
     }
-
-    // ── Structural filters ────────────────────────────────────────────────────
 
     private static bool PassesStructuralFilters(WorkingMemoryEntry entry, MemorySearchCriteria criteria)
     {

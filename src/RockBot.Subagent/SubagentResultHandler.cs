@@ -40,18 +40,17 @@ internal sealed class SubagentResultHandler(
             logger.LogWarning("Subagent {TaskId} returned empty output — primary agent will have nothing to relay", message.TaskId);
 
         // The subagent's final text is the primary result. Large data (reports, lists, documents)
-        // may have been written to working memory using WriteSharedOutput — keys are prefixed
-        // "subagent:{taskId}:". Only tell the LLM to retrieve from working memory if entries
-        // actually exist — an unconditional hint causes the LLM to call get_from_working_memory
-        // and conclude the cache "expired" when nothing was ever written there.
-        var whiteboardPrefix = $"subagent:{message.TaskId}:";
-        var allEntries = await workingMemory.ListAsync(message.PrimarySessionId);
-        var whiteboardEntries = allEntries
-            .Where(e => e.Key.StartsWith(whiteboardPrefix, StringComparison.OrdinalIgnoreCase))
-            .ToList();
+        // may have been saved to the subagent's working memory namespace "subagent/{taskId}/".
+        // Only tell the LLM to retrieve from working memory if entries actually exist — an
+        // unconditional hint causes the LLM to call get_from_working_memory and conclude the
+        // cache "expired" when nothing was ever written there.
+        var subagentPrefix = $"subagent/{message.TaskId}/";
+        var whiteboardEntries = await workingMemory.ListAsync(subagentPrefix);
 
         var whiteboardHint = whiteboardEntries.Count > 0
-            ? $" Additional outputs were written to working memory. Keys: {string.Join(", ", whiteboardEntries.Select(e => $"'{e.Key}'"))}. Retrieve and present them to the user."
+            ? $" The subagent stored {whiteboardEntries.Count} output(s) in working memory under namespace '{subagentPrefix.TrimEnd('/')}'. " +
+              $"Keys: {string.Join(", ", whiteboardEntries.Select(e => $"'{e.Key}'"))}. " +
+              "Retrieve and present them to the user using get_from_working_memory with the full key."
             : string.Empty;
 
         // If the subagent ran out of iterations its final text may be an incomplete setup
@@ -99,7 +98,7 @@ internal sealed class SubagentResultHandler(
         var chatMessages = await agentContextBuilder.BuildAsync(
             message.PrimarySessionId, syntheticUserTurn, ct);
 
-        var sessionWorkingMemoryTools = new WorkingMemoryTools(workingMemory, message.PrimarySessionId, logger);
+        var sessionWorkingMemoryTools = new WorkingMemoryTools(workingMemory, $"session/{message.PrimarySessionId}", logger);
         var sessionSkillTools = new SkillTools(skillStore, llmClient, logger, message.PrimarySessionId);
         var registryTools = toolRegistry.GetTools()
             .Select(r => (AIFunction)new SubagentRegistryToolFunction(
@@ -136,9 +135,8 @@ internal sealed class SubagentResultHandler(
         {
             logger.LogError(ex, "Failed to handle subagent result for task {TaskId}", message.TaskId);
         }
-        // Note: whiteboard entries (subagent-whiteboards/{taskId}) are intentionally NOT deleted
-        // here. They persist in long-term memory so the primary agent can reference them across
-        // multiple conversation turns. The dream service will clean them up as part of normal
-        // stale-memory consolidation.
+        // Note: subagent working memory entries ("subagent/{taskId}/...") are intentionally NOT
+        // deleted here. They persist until their TTL expires so the primary agent can reference
+        // them across multiple follow-up turns.
     }
 }

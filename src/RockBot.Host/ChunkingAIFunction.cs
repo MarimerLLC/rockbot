@@ -15,7 +15,7 @@ namespace RockBot.Host;
 public sealed class ChunkingAIFunction(
     AIFunction inner,
     IWorkingMemory workingMemory,
-    string? sessionId,
+    string? @namespace,
     int chunkingThreshold,
     ILogger logger) : AIFunction
 {
@@ -51,12 +51,12 @@ public sealed class ChunkingAIFunction(
 
     private async Task<string> ChunkResultAsync(string toolName, string result, CancellationToken ct)
     {
-        if (sessionId is not null)
+        if (@namespace is not null)
         {
             var chunks = ContentChunker.Chunk(result, ToolResultChunkMaxLength);
             var sanitizedName = SanitizeKeySegment(toolName);
             var runId = Guid.NewGuid().ToString("N")[..8];
-            var keyBase = $"tool:{sanitizedName}:{runId}";
+            var keyBase = $"{@namespace}/tool-{sanitizedName}-{runId}";
 
             var index = new StringBuilder();
             index.AppendLine(
@@ -72,8 +72,8 @@ public sealed class ChunkingAIFunction(
             for (var i = 0; i < chunks.Count; i++)
             {
                 var (heading, content) = chunks[i];
-                var key = $"{keyBase}:chunk{i}";
-                await workingMemory.SetAsync(sessionId, key, content, ttl: ToolResultChunkTtl, category: "tool-result");
+                var key = $"{keyBase}-chunk{i}";
+                await workingMemory.SetAsync(key, content, ttl: ToolResultChunkTtl, category: "tool-result");
                 var label = string.IsNullOrWhiteSpace(heading) ? $"Part {i}" : heading;
                 index.AppendLine($"| {i} | {label} | `{key}` |");
             }
@@ -120,13 +120,13 @@ public static class ChunkingAIFunctionExtensions
     public static IList<AITool> WithChunking(
         this IEnumerable<AIFunction> tools,
         IWorkingMemory workingMemory,
-        string? sessionId,
+        string? @namespace,
         ModelBehavior modelBehavior,
         ILogger logger)
     {
         return tools
             .Select(t => (AITool)new ChunkingAIFunction(
-                t, workingMemory, sessionId, modelBehavior.ToolResultChunkingThreshold, logger))
+                t, workingMemory, @namespace, modelBehavior.ToolResultChunkingThreshold, logger))
             .ToList();
     }
 }

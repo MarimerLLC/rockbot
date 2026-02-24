@@ -36,7 +36,7 @@ internal sealed class ScheduledTaskHandler(
     public async Task HandleAsync(ScheduledTaskMessage message, MessageHandlerContext context)
     {
         var ct = context.CancellationToken;
-        var sessionId = $"patrol-{message.TaskName}";
+        var sessionId = $"patrol/{message.TaskName}";
         logger.LogInformation("Executing scheduled task '{TaskName}'", message.TaskName);
 
         // Build full agent context using an ephemeral session ID so no history accumulates
@@ -59,7 +59,7 @@ internal sealed class ScheduledTaskHandler(
         // the ephemeral session has no conversation history).
         chatMessages.Add(new ChatMessage(ChatRole.User, message.Description));
 
-        // Per-session tools — same set the user handler builds
+        // Per-session tools — same set the user handler builds (sessionId already is "patrol/name")
         var sessionWorkingMemoryTools = new WorkingMemoryTools(workingMemory, sessionId, logger);
         var sessionSkillTools = new SkillTools(skillStore, llmClient, logger, sessionId, skillUsageStore);
 
@@ -74,7 +74,7 @@ internal sealed class ScheduledTaskHandler(
             .Concat(toolGuideTools.Tools)
             .Concat(registryTools)
             .OfType<AIFunction>()
-            .WithChunking(workingMemory, sessionId, modelBehavior, logger);
+            .WithChunking(workingMemory, sessionId, modelBehavior, logger); // sessionId = "patrol/{name}"
 
         var chatOptions = new ChatOptions
         {

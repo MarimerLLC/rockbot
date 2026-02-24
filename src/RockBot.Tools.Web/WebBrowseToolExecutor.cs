@@ -92,14 +92,9 @@ internal sealed class WebBrowseToolExecutor(
         for (var i = 0; i < chunks.Count; i++)
         {
             var (heading, content) = chunks[i];
-            var key = $"web:{sanitizedUrl}:chunk{i}";
+            var key = $"session/{request.SessionId}/web-{sanitizedUrl}-chunk{i}";
 
-            await workingMemory!.SetAsync(
-                request.SessionId!,
-                key,
-                content,
-                ttl: ttl,
-                category: "web");
+            await workingMemory!.SetAsync(key, content, ttl, category: "web");
 
             var displayHeading = string.IsNullOrWhiteSpace(heading) ? $"Section {i}" : heading;
             index.AppendLine($"| {i} | {displayHeading} | `{key}` |");

@@ -56,15 +56,16 @@ internal sealed class A2ATaskResultHandler(
         // Old entries linger in working memory (60-min TTL) and the LLM will find them
         // in conversation history instructions — causing it to retrieve stale data instead
         // of the current result when both share the same key pattern.
-        var stalePrefix = $"a2a:{pending.TargetAgent}:";
-        var staleEntries = await workingMemory.ListAsync(pending.PrimarySessionId);
+        var sessionNamespace = $"session/{pending.PrimarySessionId}";
+        var staleAgentPattern = $"/a2a/{pending.TargetAgent}/";
+        var staleEntries = await workingMemory.ListAsync(sessionNamespace);
         foreach (var entry in staleEntries)
         {
-            if (entry.Key.StartsWith(stalePrefix, StringComparison.OrdinalIgnoreCase) &&
-                entry.Key.EndsWith(":result", StringComparison.OrdinalIgnoreCase))
+            if (entry.Key.Contains(staleAgentPattern, StringComparison.OrdinalIgnoreCase) &&
+                entry.Key.EndsWith("/result", StringComparison.OrdinalIgnoreCase))
             {
                 logger.LogDebug("Purging stale A2A result entry '{Key}' before storing new result", entry.Key);
-                await workingMemory.DeleteAsync(pending.PrimarySessionId, entry.Key);
+                await workingMemory.DeleteAsync(entry.Key);
             }
         }
 
@@ -73,9 +74,8 @@ internal sealed class A2ATaskResultHandler(
             // Result is large — store it in working memory rather than injecting it raw into
             // conversation history. Raw injection would pollute every subsequent LLM call with
             // the full text. Instead the LLM retrieves it on demand via get_from_working_memory.
-            var memoryKey = $"a2a:{pending.TargetAgent}:{result.TaskId}:result";
+            var memoryKey = $"{sessionNamespace}/a2a/{pending.TargetAgent}/{result.TaskId}/result";
             await workingMemory.SetAsync(
-                pending.PrimarySessionId,
                 memoryKey,
                 resultText,
                 ttl: TimeSpan.FromMinutes(60),
@@ -129,7 +129,7 @@ internal sealed class A2ATaskResultHandler(
         var chatMessages = await agentContextBuilder.BuildAsync(
             pending.PrimarySessionId, syntheticUserTurn, ct);
 
-        var sessionWorkingMemoryTools = new WorkingMemoryTools(workingMemory, pending.PrimarySessionId, logger);
+        var sessionWorkingMemoryTools = new WorkingMemoryTools(workingMemory, $"session/{pending.PrimarySessionId}", logger);
         var sessionSkillTools = new SkillTools(skillStore, llmClient, logger, pending.PrimarySessionId);
         var registryTools = toolRegistry.GetTools()
             .Select(r => (AIFunction)new RegistryToolFunction(

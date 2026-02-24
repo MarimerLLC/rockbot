@@ -152,8 +152,8 @@ public sealed class AgentContextBuilder(
             }
         }
 
-        // Working memory inventory
-        var workingEntries = await workingMemory.ListAsync(sessionId);
+        // Working memory inventory — own session namespace
+        var workingEntries = await workingMemory.ListAsync($"session/{sessionId}");
         if (workingEntries.Count > 0)
         {
             var now = DateTimeOffset.UtcNow;

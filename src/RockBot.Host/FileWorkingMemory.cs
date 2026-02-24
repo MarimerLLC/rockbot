@@ -8,9 +8,9 @@ namespace RockBot.Host;
 
 /// <summary>
 /// <see cref="IWorkingMemory"/> that wraps <see cref="HybridCacheWorkingMemory"/> and persists
-/// sessions to <c>{BasePath}/{sessionId}.json</c> so working memory survives pod restarts.
-/// TTL semantics are preserved: entries whose <c>ExpiresAt</c> has passed are discarded on load
-/// and never surfaced after they expire in memory.
+/// entries to disk so working memory survives pod restarts. Entries are grouped by their
+/// top-level key segment into files like <c>session.json</c>, <c>patrol.json</c>,
+/// <c>subagent.json</c>. Entries whose <c>ExpiresAt</c> has passed are discarded on load.
 /// </summary>
 internal sealed class FileWorkingMemory : IWorkingMemory, IHostedService
 {
@@ -18,7 +18,7 @@ internal sealed class FileWorkingMemory : IWorkingMemory, IHostedService
     private readonly string _basePath;
     private readonly ILogger<FileWorkingMemory> _logger;
 
-    /// <summary>Per-session semaphores prevent concurrent writes racing on the same file.</summary>
+    /// <summary>Per-group semaphores prevent concurrent writes racing on the same file.</summary>
     private readonly ConcurrentDictionary<string, SemaphoreSlim> _writeLocks = new();
 
     private Timer? _sweepTimer;
@@ -29,9 +29,6 @@ internal sealed class FileWorkingMemory : IWorkingMemory, IHostedService
         PropertyNameCaseInsensitive = true
     };
 
-    /// <summary>
-    /// Serialization DTO — captures all fields needed to reconstruct an entry after restart.
-    /// </summary>
     private sealed record PersistedEntry(
         string Key,
         string Value,
@@ -60,12 +57,11 @@ internal sealed class FileWorkingMemory : IWorkingMemory, IHostedService
         if (!Directory.Exists(_basePath)) return;
 
         var now = DateTimeOffset.UtcNow;
-        var sessionsRestored = 0;
+        var filesRestored = 0;
         var entriesRestored = 0;
 
         foreach (var file in Directory.EnumerateFiles(_basePath, "*.json"))
         {
-            var sessionId = Path.GetFileNameWithoutExtension(file);
             try
             {
                 var json = await File.ReadAllTextAsync(file, cancellationToken);
@@ -82,33 +78,29 @@ internal sealed class FileWorkingMemory : IWorkingMemory, IHostedService
                 foreach (var e in live)
                 {
                     var remainingTtl = e.ExpiresAt - now;
-                    await _inner.SetAsync(sessionId, e.Key, e.Value, remainingTtl, e.Category, e.Tags);
+                    await _inner.SetAsync(e.Key, e.Value, remainingTtl, e.Category, e.Tags);
                 }
 
-                sessionsRestored++;
+                filesRestored++;
                 entriesRestored += live.Count;
             }
             catch (Exception ex)
             {
-                _logger.LogWarning(ex, "Failed to restore working memory session from {File}", file);
+                _logger.LogWarning(ex, "Failed to restore working memory from {File}", file);
             }
         }
 
-        if (sessionsRestored > 0)
+        if (filesRestored > 0)
             _logger.LogInformation(
-                "Restored {Sessions} working memory session(s) with {Entries} live entry(ies) from disk",
-                sessionsRestored, entriesRestored);
+                "Restored working memory from {Files} file(s) with {Entries} live entry(ies)",
+                filesRestored, entriesRestored);
 
-        // Periodically sweep for session files whose entries have all expired.
-        _sweepTimer = new Timer(_ => _ = SweepExpiredSessionsAsync(), null,
+        // Periodically sweep for files whose entries have all expired.
+        _sweepTimer = new Timer(_ => _ = SweepExpiredFilesAsync(), null,
             TimeSpan.FromHours(1), TimeSpan.FromHours(1));
     }
 
-    /// <summary>
-    /// Deletes session files where every entry has passed its <c>ExpiresAt</c>.
-    /// Runs on a 1-hour timer to clean up sessions that went quiet without triggering a write.
-    /// </summary>
-    private async Task SweepExpiredSessionsAsync()
+    private async Task SweepExpiredFilesAsync()
     {
         if (!Directory.Exists(_basePath)) return;
 
@@ -124,8 +116,8 @@ internal sealed class FileWorkingMemory : IWorkingMemory, IHostedService
                 if (entries is null || entries.All(e => e.ExpiresAt <= now))
                 {
                     File.Delete(file);
-                    var sessionId = Path.GetFileNameWithoutExtension(file);
-                    _writeLocks.TryRemove(sessionId, out var sem);
+                    var group = Path.GetFileNameWithoutExtension(file);
+                    _writeLocks.TryRemove(group, out var sem);
                     sem?.Dispose();
                     deleted++;
                 }
@@ -137,7 +129,7 @@ internal sealed class FileWorkingMemory : IWorkingMemory, IHostedService
         }
 
         if (deleted > 0)
-            _logger.LogInformation("Working memory sweep removed {Count} expired session file(s)", deleted);
+            _logger.LogInformation("Working memory sweep removed {Count} expired file(s)", deleted);
     }
 
     public Task StopAsync(CancellationToken cancellationToken)
@@ -149,46 +141,79 @@ internal sealed class FileWorkingMemory : IWorkingMemory, IHostedService
 
     // ── IWorkingMemory ────────────────────────────────────────────────────────
 
-    public async Task SetAsync(string sessionId, string key, string value, TimeSpan? ttl = null,
+    public async Task SetAsync(string key, string value, TimeSpan? ttl = null,
         string? category = null, IReadOnlyList<string>? tags = null)
     {
-        await _inner.SetAsync(sessionId, key, value, ttl, category, tags);
-        await PersistSessionAsync(sessionId);
+        await _inner.SetAsync(key, value, ttl, category, tags);
+        await PersistGroupAsync(GetGroup(key));
     }
 
-    public Task<string?> GetAsync(string sessionId, string key)
-        => _inner.GetAsync(sessionId, key);
+    public Task<string?> GetAsync(string key)
+        => _inner.GetAsync(key);
 
-    public Task<IReadOnlyList<WorkingMemoryEntry>> ListAsync(string sessionId)
-        => _inner.ListAsync(sessionId);
+    public Task<IReadOnlyList<WorkingMemoryEntry>> ListAsync(string? prefix = null)
+        => _inner.ListAsync(prefix);
 
-    public async Task DeleteAsync(string sessionId, string key)
+    public async Task DeleteAsync(string key)
     {
-        await _inner.DeleteAsync(sessionId, key);
-        await PersistSessionAsync(sessionId);
+        await _inner.DeleteAsync(key);
+        await PersistGroupAsync(GetGroup(key));
     }
 
-    public async Task ClearAsync(string sessionId)
+    public async Task ClearAsync(string? prefix = null)
     {
-        await _inner.ClearAsync(sessionId);
-        DeleteSessionFile(sessionId);
+        await _inner.ClearAsync(prefix);
+
+        if (string.IsNullOrEmpty(prefix))
+        {
+            // Clear everything — delete all group files
+            foreach (var file in Directory.EnumerateFiles(_basePath, "*.json"))
+            {
+                try { File.Delete(file); }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Failed to delete working memory file {File}", file);
+                }
+            }
+            return;
+        }
+
+        // Re-persist the affected group (entries for that prefix are now gone)
+        await PersistGroupAsync(GetGroup(prefix));
     }
 
-    public Task<IReadOnlyList<WorkingMemoryEntry>> SearchAsync(string sessionId, MemorySearchCriteria criteria)
-        => _inner.SearchAsync(sessionId, criteria);
+    public Task<IReadOnlyList<WorkingMemoryEntry>> SearchAsync(MemorySearchCriteria criteria, string? prefix = null)
+        => _inner.SearchAsync(criteria, prefix);
 
     // ── Internals ─────────────────────────────────────────────────────────────
 
-    private async Task PersistSessionAsync(string sessionId)
+    /// <summary>Returns the top-level path segment used as the file name (e.g. "session", "patrol").</summary>
+    private static string GetGroup(string key)
     {
-        var sem = _writeLocks.GetOrAdd(sessionId, _ => new SemaphoreSlim(1, 1));
+        var slash = key.IndexOf('/');
+        return slash > 0 ? key[..slash] : "_other";
+    }
+
+    private async Task PersistGroupAsync(string group)
+    {
+        var sem = _writeLocks.GetOrAdd(group, _ => new SemaphoreSlim(1, 1));
         await sem.WaitAsync();
         try
         {
-            var entries = await _inner.ListAsync(sessionId);
+            // Collect all in-memory entries belonging to this group
+            var prefix = group == "_other" ? null : group + "/";
+            var entries = await _inner.ListAsync(prefix);
+
+            // If group is "_other", also include ungrouped keys (no slash)
+            if (group == "_other")
+                entries = entries.Where(e => !e.Key.Contains('/')).ToList();
+
+            var path = Path.Combine(_basePath, $"{group}.json");
+
             if (entries.Count == 0)
             {
-                DeleteSessionFile(sessionId);
+                try { File.Delete(path); }
+                catch { /* ignore */ }
                 return;
             }
 
@@ -196,7 +221,6 @@ internal sealed class FileWorkingMemory : IWorkingMemory, IHostedService
                 .Select(e => new PersistedEntry(e.Key, e.Value, e.StoredAt, e.ExpiresAt, e.Category, e.Tags))
                 .ToList();
 
-            var path = Path.Combine(_basePath, $"{sessionId}.json");
             var json = JsonSerializer.Serialize(persisted, JsonOptions);
             await File.WriteAllTextAsync(path, json);
         }
@@ -204,18 +228,6 @@ internal sealed class FileWorkingMemory : IWorkingMemory, IHostedService
         {
             sem.Release();
         }
-    }
-
-    private void DeleteSessionFile(string sessionId)
-    {
-        var path = Path.Combine(_basePath, $"{sessionId}.json");
-        try { File.Delete(path); }
-        catch (Exception ex)
-        {
-            _logger.LogWarning(ex, "Failed to delete working memory file for session {SessionId}", sessionId);
-        }
-        _writeLocks.TryRemove(sessionId, out var sem);
-        sem?.Dispose();
     }
 
     internal static string ResolvePath(string workingMemoryPath, string profileBasePath)

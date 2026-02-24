@@ -120,7 +120,7 @@ public class WebBrowseToolExecutorTests
         Assert.IsTrue(memory.Entries.Count > 0, "Expected chunks saved to working memory");
         StringAssert.Contains(response.Content, "chunk");
         StringAssert.Contains(response.Content, "GetFromWorkingMemory");
-        Assert.IsTrue(memory.Entries.All(e => e.Key.StartsWith("web:")), "Keys should start with 'web:'");
+        Assert.IsTrue(memory.Entries.All(e => e.Key.StartsWith("session/session-1/web-")), "Keys should be namespaced under 'session/session-1/web-'");
         Assert.IsTrue(memory.Entries.All(e => e.Category == "web"), "Category should be 'web'");
     }
 
@@ -166,22 +166,22 @@ public class WebBrowseToolExecutorTests
 
     private sealed class CapturingWorkingMemory : IWorkingMemory
     {
-        public record EntryRecord(string SessionId, string Key, string Value, TimeSpan? Ttl, string? Category);
+        public record EntryRecord(string Key, string Value, TimeSpan? Ttl, string? Category);
         public List<EntryRecord> Entries { get; } = [];
 
-        public Task SetAsync(string sessionId, string key, string value, TimeSpan? ttl = null,
+        public Task SetAsync(string key, string value, TimeSpan? ttl = null,
             string? category = null, IReadOnlyList<string>? tags = null)
         {
-            Entries.Add(new EntryRecord(sessionId, key, value, ttl, category));
+            Entries.Add(new EntryRecord(key, value, ttl, category));
             return Task.CompletedTask;
         }
 
-        public Task<string?> GetAsync(string sessionId, string key) => Task.FromResult<string?>(null);
-        public Task<IReadOnlyList<WorkingMemoryEntry>> ListAsync(string sessionId) =>
+        public Task<string?> GetAsync(string key) => Task.FromResult<string?>(null);
+        public Task<IReadOnlyList<WorkingMemoryEntry>> ListAsync(string? prefix = null) =>
             Task.FromResult<IReadOnlyList<WorkingMemoryEntry>>([]);
-        public Task DeleteAsync(string sessionId, string key) => Task.CompletedTask;
-        public Task ClearAsync(string sessionId) => Task.CompletedTask;
-        public Task<IReadOnlyList<WorkingMemoryEntry>> SearchAsync(string sessionId, MemorySearchCriteria criteria) =>
+        public Task DeleteAsync(string key) => Task.CompletedTask;
+        public Task ClearAsync(string? prefix = null) => Task.CompletedTask;
+        public Task<IReadOnlyList<WorkingMemoryEntry>> SearchAsync(MemorySearchCriteria criteria, string? prefix = null) =>
             Task.FromResult<IReadOnlyList<WorkingMemoryEntry>>([]);
     }
 }
