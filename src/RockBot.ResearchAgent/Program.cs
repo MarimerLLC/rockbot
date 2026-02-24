@@ -19,31 +19,45 @@ builder.Configuration.AddUserSecrets<Program>();
 
 builder.Services.AddRockBotRabbitMq(opts => builder.Configuration.GetSection("RabbitMq").Bind(opts));
 
-// Configure LLM chat client
-var llmConfig = builder.Configuration.GetSection("LLM");
-var endpoint = llmConfig["Endpoint"];
-var apiKey = llmConfig["ApiKey"];
-var modelId = llmConfig["ModelId"];
+// ── LLM configuration — three-tier (Low / Balanced / High) ──────────────────
+var llmSection = builder.Configuration.GetSection("LLM");
+
+var tierOptions = new LlmTierOptions();
+llmSection.Bind(tierOptions);
+
+// Backward compat: flat LLM__{Endpoint/ApiKey/ModelId} → Balanced
+if (!tierOptions.Balanced.IsConfigured)
+{
+    tierOptions.Balanced.Endpoint = llmSection["Endpoint"];
+    tierOptions.Balanced.ApiKey   = llmSection["ApiKey"];
+    tierOptions.Balanced.ModelId  = llmSection["ModelId"];
+}
 
 // ModelBehavior: raise iteration limit — research tasks routinely need more than the default 12
 // to search, browse, cache, and then synthesise without hitting the wall mid-loop.
-// Pre-registered before AddRockBotChatClient so the TryAdd in that method respects this override.
+// Pre-registered before AddRockBotTieredChatClients so the TryAdd in that method respects this override.
 builder.Services.AddSingleton(new ModelBehavior { MaxToolIterationsOverride = 50 });
 
-if (!string.IsNullOrEmpty(endpoint) && !string.IsNullOrEmpty(apiKey) && !string.IsNullOrEmpty(modelId))
+if (tierOptions.Balanced.IsConfigured)
 {
-    var openAiClient = new OpenAIClient(
-        new ApiKeyCredential(apiKey),
-        new OpenAIClientOptions { Endpoint = new Uri(endpoint) });
+    IChatClient BuildClient(LlmTierConfig config)
+    {
+        return new OpenAIClient(
+            new ApiKeyCredential(config.ApiKey!),
+            new OpenAIClientOptions { Endpoint = new Uri(config.Endpoint!) })
+            .GetChatClient(config.ModelId!).AsIChatClient();
+    }
 
-    builder.Services.AddRockBotChatClient(
-        openAiClient.GetChatClient(modelId).AsIChatClient());
+    builder.Services.AddRockBotTieredChatClients(
+        lowInnerClient:      BuildClient(tierOptions.Resolve(ModelTier.Low)),
+        balancedInnerClient: BuildClient(tierOptions.Balanced),
+        highInnerClient:     BuildClient(tierOptions.Resolve(ModelTier.High)));
 }
 else
 {
     builder.Services.AddRockBotChatClient(new EchoChatClient());
     Console.WriteLine("No LLM config found — using EchoChatClient.");
-    Console.WriteLine("Set LLM:Endpoint, LLM:ApiKey, and LLM:ModelId to configure.");
+    Console.WriteLine("Set LLM:Balanced:Endpoint (or legacy LLM:Endpoint), LLM:Balanced:ApiKey, and LLM:Balanced:ModelId to configure.");
 }
 
 // AgentLoopRunner requires IFeedbackStore — use no-op since we have no dreaming pipeline

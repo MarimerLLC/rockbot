@@ -207,6 +207,13 @@ public class SubagentManagerTests
             var msg = new ChatMessage(ChatRole.Assistant, "Task complete.");
             return Task.FromResult(new ChatResponse([msg]));
         }
+
+        public Task<ChatResponse> GetResponseAsync(
+            IEnumerable<ChatMessage> messages,
+            ModelTier tier,
+            ChatOptions? options = null,
+            CancellationToken cancellationToken = default) =>
+            GetResponseAsync(messages, options, cancellationToken);
     }
 
     /// <summary>LLM client that blocks until the TCS is completed or the token is cancelled.</summary>
@@ -224,6 +231,13 @@ public class SubagentManagerTests
             var msg = new ChatMessage(ChatRole.Assistant, "Done.");
             return new ChatResponse([msg]);
         }
+
+        public Task<ChatResponse> GetResponseAsync(
+            IEnumerable<ChatMessage> messages,
+            ModelTier tier,
+            ChatOptions? options = null,
+            CancellationToken cancellationToken = default) =>
+            GetResponseAsync(messages, options, cancellationToken);
     }
 
     private sealed class NoopWorkingMemory : IWorkingMemory

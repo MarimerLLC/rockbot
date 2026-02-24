@@ -134,11 +134,27 @@ secrets:
   existingSecretName: ""   # used only when create: false
 
   llm:
+    # Three-tier LLM configuration. Balanced is REQUIRED.
+    # Low and High are optional — both fall back to Balanced when not configured.
     # Any OpenAI-compatible endpoint works: OpenRouter, Azure OpenAI, local Ollama, etc.
-    # OpenRouter: endpoint = https://openrouter.ai/api/v1
-    endpoint: ""            # REQUIRED — base URL of the OpenAI-compatible API
-    apiKey: ""              # REQUIRED — API key
-    modelId: ""             # REQUIRED — model ID (e.g. anthropic/claude-haiku-4.5)
+    # Tier selection: user messages → keyword heuristic; patrol → Balanced; dream/research → High
+    balanced:
+      endpoint: ""          # REQUIRED — base URL of the OpenAI-compatible API
+      apiKey: ""            # REQUIRED — API key
+      modelId: ""           # REQUIRED — model ID (e.g. anthropic/claude-haiku-4.5)
+    low:                    # Optional — fast/cheap model for simple factual questions
+      endpoint: ""
+      apiKey: ""
+      modelId: ""           # leave empty to fall back to balanced
+    high:                   # Optional — powerful model for dream/research/complex tasks
+      endpoint: ""
+      apiKey: ""
+      modelId: ""           # leave empty to fall back to balanced
+
+    # Legacy flat keys — kept for backward compatibility; remove after all deployments migrated
+    endpoint: ""
+    apiKey: ""
+    modelId: ""
 
   webTools:
     apiKey: ""              # REQUIRED — Brave Search API key

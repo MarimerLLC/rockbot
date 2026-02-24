@@ -13,9 +13,26 @@ rabbitmq:
 secrets:
   create: true
   llm:
-    endpoint: "https://openrouter.ai/api/v1"
-    apiKey: "<your-openrouter-api-key>"
-    modelId: "anthropic/claude-haiku-4.5"   # any OpenRouter model ID works here
+    # Balanced tier — REQUIRED. Used for patrol and user messages of moderate complexity.
+    balanced:
+      endpoint: "https://openrouter.ai/api/v1"
+      apiKey: "<your-openrouter-api-key>"
+      modelId: "anthropic/claude-haiku-4.5"   # any OpenRouter model ID works here
+
+    # Low tier — OPTIONAL. Fast/cheap model for simple factual questions.
+    # Falls back to balanced when not configured.
+    # low:
+    #   endpoint: "https://openrouter.ai/api/v1"
+    #   apiKey: "<your-openrouter-api-key>"
+    #   modelId: "google/gemini-flash-1.5-8b"
+
+    # High tier — OPTIONAL. Powerful model for dream consolidation and research tasks.
+    # Falls back to balanced when not configured.
+    # high:
+    #   endpoint: "https://openrouter.ai/api/v1"
+    #   apiKey: "<your-openrouter-api-key>"
+    #   modelId: "anthropic/claude-opus-4-6"
+
   webTools:
     apiKey: "<your-brave-search-api-key>"
   rabbitmq:
@@ -23,7 +40,7 @@ secrets:
 
   # openRouter:
   #   apiKey: "<your-openrouter-management-api-key>"  # required when openrouterMcp.enabled=true
-  #                                                    # separate from llm.apiKey
+  #                                                    # separate from llm.balanced.apiKey
 
 blazor:
   tailscale:

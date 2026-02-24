@@ -232,5 +232,9 @@ public class SkillToolsTests
         public Task<ChatResponse> GetResponseAsync(IEnumerable<ChatMessage> messages,
             ChatOptions? options = null, CancellationToken cancellationToken = default) =>
             Task.FromResult(new ChatResponse([new ChatMessage(ChatRole.Assistant, "stub summary")]));
+
+        public Task<ChatResponse> GetResponseAsync(IEnumerable<ChatMessage> messages,
+            ModelTier tier, ChatOptions? options = null, CancellationToken cancellationToken = default) =>
+            GetResponseAsync(messages, options, cancellationToken);
     }
 }

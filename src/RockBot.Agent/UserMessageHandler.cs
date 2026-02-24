@@ -19,6 +19,7 @@ namespace RockBot.Agent;
 /// </summary>
 internal sealed class UserMessageHandler(
     ILlmClient llmClient,
+    ILlmTierSelector tierSelector,
     IMessagePublisher publisher,
     AgentIdentity agent,
     AgentProfile profile,
@@ -71,6 +72,9 @@ internal sealed class UserMessageHandler(
         var sessionCt = sessionTracker.BeginSession(message.SessionId, ct);
         logger.LogInformation("Received message from {UserId} in session {SessionId}: {Content}",
             message.UserId, message.SessionId, message.Content);
+
+        var tier = tierSelector.SelectTier(message.Content);
+        logger.LogInformation("Routing user message to tier={Tier}", tier);
 
         try
         {
@@ -150,7 +154,7 @@ internal sealed class UserMessageHandler(
             logger.LogInformation("Calling LLM — iteration 1 ({MessageCount} messages in context)",
                 chatMessages.Count);
             var sw = System.Diagnostics.Stopwatch.StartNew();
-            var firstResponse = await llmClient.GetResponseAsync(chatMessages, chatOptions, ct);
+            var firstResponse = await llmClient.GetResponseAsync(chatMessages, tier, chatOptions, ct);
             sw.Stop();
 
             logger.LogInformation(
@@ -211,7 +215,7 @@ internal sealed class UserMessageHandler(
                     await PublishReplyAsync(effectiveAck, replyTo, correlationId, message.SessionId, isFinal: false, ct);
 
                     _ = BackgroundToolLoopAsync(
-                        chatMessages, chatOptions, firstResponse,
+                        chatMessages, chatOptions, firstResponse, tier,
                         message.SessionId, replyTo, correlationId, sessionCt);
                 }
                 else
@@ -229,7 +233,7 @@ internal sealed class UserMessageHandler(
                             replyTo, correlationId, message.SessionId, isFinal: false, ct);
 
                         _ = BackgroundToolLoopAsync(
-                            chatMessages, chatOptions, firstResponse,
+                            chatMessages, chatOptions, firstResponse, tier,
                             message.SessionId, replyTo, correlationId, sessionCt);
                     }
                     else if (modelBehavior.NudgeOnHallucinatedToolCalls && HallucinatedActionRegex.IsMatch(text))
@@ -243,7 +247,7 @@ internal sealed class UserMessageHandler(
                             replyTo, correlationId, message.SessionId, isFinal: false, ct);
 
                         _ = BackgroundToolLoopAsync(
-                            chatMessages, chatOptions, firstResponse,
+                            chatMessages, chatOptions, firstResponse, tier,
                             message.SessionId, replyTo, correlationId, sessionCt);
                     }
                     else
@@ -294,6 +298,7 @@ internal sealed class UserMessageHandler(
         List<ChatMessage> chatMessages,
         ChatOptions chatOptions,
         ChatResponse firstResponse,
+        ModelTier tier,
         string sessionId,
         string replyTo,
         string? correlationId,
@@ -311,7 +316,7 @@ internal sealed class UserMessageHandler(
             var lastProgressAt = DateTimeOffset.UtcNow;
 
             var finalContent = await agentLoopRunner.RunAsync(
-                chatMessages, chatOptions, sessionId, firstResponse,
+                chatMessages, chatOptions, sessionId, firstResponse: firstResponse, tier: tier,
                 onPreToolCall: async (desc, ct2) =>
                 {
                     await PublishReplyAsync($"Working on it — checking {desc}…", replyTo, correlationId, sessionId, isFinal: false, ct2);

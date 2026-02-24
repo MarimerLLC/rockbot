@@ -225,7 +225,7 @@ internal sealed class DreamService : IHostedService, IDisposable
                 new(ChatRole.User, userMessage.ToString())
             };
 
-            var response = await _llmClient.GetResponseAsync(messages, new ChatOptions());
+            var response = await _llmClient.GetResponseAsync(messages, ModelTier.High, new ChatOptions());
             var raw = response.Text?.Trim() ?? string.Empty;
             var json = ExtractJsonObject(raw);
 
@@ -445,7 +445,7 @@ internal sealed class DreamService : IHostedService, IDisposable
             new(ChatRole.User, userMessage.ToString())
         };
 
-        var response = await _llmClient.GetResponseAsync(messages, new ChatOptions());
+        var response = await _llmClient.GetResponseAsync(messages, ModelTier.High, new ChatOptions());
         var raw = response.Text?.Trim() ?? string.Empty;
         var json = ExtractJsonObject(raw);
 
@@ -700,7 +700,7 @@ internal sealed class DreamService : IHostedService, IDisposable
             new(ChatRole.User, userMessage.ToString())
         };
 
-        var response = await _llmClient.GetResponseAsync(messages, new ChatOptions());
+        var response = await _llmClient.GetResponseAsync(messages, ModelTier.High, new ChatOptions());
         var raw = response.Text?.Trim() ?? string.Empty;
         var json = ExtractJsonObject(raw);
 
@@ -929,7 +929,7 @@ internal sealed class DreamService : IHostedService, IDisposable
             new(ChatRole.User, userMessage.ToString())
         };
 
-        var response = await _llmClient.GetResponseAsync(messages, new ChatOptions());
+        var response = await _llmClient.GetResponseAsync(messages, ModelTier.High, new ChatOptions());
         var raw = response.Text?.Trim() ?? string.Empty;
         var json = ExtractJsonObject(raw);
 
@@ -1026,7 +1026,7 @@ internal sealed class DreamService : IHostedService, IDisposable
                 new(ChatRole.User, userMessage.ToString())
             };
 
-            var response = await _llmClient.GetResponseAsync(messages, new ChatOptions());
+            var response = await _llmClient.GetResponseAsync(messages, ModelTier.High, new ChatOptions());
             var raw = response.Text?.Trim() ?? string.Empty;
             var json = ExtractJsonObject(raw);
 
