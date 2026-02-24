@@ -27,7 +27,7 @@ public class KeywordTierSelectorTests
     // ── Balanced tier (score 0.29 – 0.55) ────────────────────────────────────
 
     [TestMethod]
-    [DataRow("Analyze the pros and cons of using a monolithic versus microservices architecture for a small startup.")]
+    [DataRow("Analyze the pros and cons of using a monolithic versus microservices approach for a small startup.")]
     [DataRow("Compare and contrast REST and GraphQL trade-offs for a large-scale distributed API design.")]
     [DataRow("Evaluate the security implications of using JWT tokens in a distributed web application.")]
     public void SelectTier_ModerateComplexityQuestion_ReturnsBalanced(string prompt)

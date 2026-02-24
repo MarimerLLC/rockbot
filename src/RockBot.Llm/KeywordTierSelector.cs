@@ -10,14 +10,14 @@ namespace RockBot.Llm;
 /// </summary>
 public sealed class KeywordTierSelector : ILlmTierSelector
 {
-    private const double LowCeiling      = 0.28;
-    private const double BalancedCeiling = 0.55;
+    private const double LowCeiling      = 0.15;
+    private const double BalancedCeiling = 0.46;
 
     // ── Complexity signals → push toward High tier ───────────────────────────
     private static readonly string[] HighSignalKeywords =
     [
         "analyze", "analyse", "design", "architect", "evaluate", "critique",
-        "trade-off", "tradeoff", "trade off", "compare and contrast",
+        "trade-off", "tradeoff", "trade off", "compare and contrast", "compare",
         "prove", "derive", "demonstrate why", "reason through",
         "implement a system", "build a system", "step by step",
         "microservice", "distributed", "concurrent", "asynchronous",
@@ -25,6 +25,10 @@ public sealed class KeywordTierSelector : ILlmTierSelector
         "security implication", "threat model",
         "explain in depth", "comprehensive", "thorough analysis",
         "multiple approaches", "pros and cons", "disadvantage",
+        // Research / synthesis vocabulary — common in subagent task descriptions
+        "research", "synthesize", "synthesise", "enterprise",
+        "authentication", "authorization", "investigate",
+        "technical brief", "technical analysis", "technical review",
     ];
 
     // ── Simplicity signals → push toward Low tier ────────────────────────────
@@ -72,13 +76,18 @@ public sealed class KeywordTierSelector : ILlmTierSelector
         var complexSignals = HighSignalKeywords.Count(k => lower.Contains(k, StringComparison.Ordinal));
         var simplexSignals = LowSignalKeywords.Count(k => lower.Contains(k, StringComparison.Ordinal));
 
-        // Length component (0 – 0.40): longer prompts tend to be more complex
+        // Length component (0 – 0.40): longer prompts tend to be more complex.
+        // Fine-grained buckets in the 10-30 word range so concise-but-complex task
+        // descriptions (subagent tasks, short research briefs) are distinguished from
+        // genuinely simple short prompts.
         var lengthScore = wordCount switch
         {
             <= 10  => 0.05,
-            <= 25  => 0.12,
-            <= 50  => 0.20,
-            <= 100 => 0.30,
+            <= 15  => 0.10,
+            <= 20  => 0.15,
+            <= 30  => 0.20,
+            <= 50  => 0.28,
+            <= 100 => 0.35,
             <= 200 => 0.38,
             _      => 0.40
         };
