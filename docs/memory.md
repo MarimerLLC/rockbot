@@ -161,15 +161,26 @@ top-level key segment into files (`session.json`, `patrol.json`, `subagent.json`
 
 ### Injection
 
-At the start of every turn, the agent's own namespace inventory is injected as a compact list:
+At the start of every user session turn, `AgentContextBuilder` injects two working memory sections:
 
+**Own namespace** — the session's scratch entries:
 ```
 Working memory (scratch space — use search_working_memory or get_from_working_memory to retrieve):
 - session/abc123/emails_inbox: expires in 4m32s, category: email, tags: inbox, unread
 - session/abc123/draft_reply: expires in 2m01s
 ```
 
+**Patrol findings** — what patrol tasks have stored (user sessions only):
+```
+Patrol findings in working memory (use get_from_working_memory with the full key to read):
+- patrol/heartbeat/latest-briefing: expires in 4h12m, category: patrol-finding
+- patrol/heartbeat/alerts: expires in 4h08m, tags: urgent
+```
+
 The actual content is not included — the agent loads entries on demand to avoid token bloat.
+
+For patrol sessions (`workingMemoryNamespace = "patrol/{taskName}"`), the context builder
+injects the patrol's own entries under the patrol namespace and skips the patrol findings injection.
 
 ### Working memory tools
 
@@ -312,5 +323,10 @@ builder
 3. Delta filter: only entries not yet injected this session (InjectedMemoryTracker)
 4. Inject as system message: "Recalled from long-term memory..."
 5. Inject working memory inventory for own namespace: workingMemory.ListAsync("session/{sessionId}")
-6. Replay last 20 conversation turns
+6. [User sessions only] Inject patrol findings: workingMemory.ListAsync("patrol") — shows the
+   agent what patrol tasks have stored since the last run, without fetching content
+7. Replay last 20 conversation turns
 ```
+
+For patrol sessions (`workingMemoryNamespace = "patrol/{taskName}"`), step 6 is skipped and
+step 5 uses the patrol namespace instead of `session/{sessionId}`.

@@ -31,8 +31,8 @@ under your own namespace automatically, but you can read from other namespaces
 (subagents, patrol tasks) using cross-namespace access.
 
 **Your namespace**: `session/{your-session-id}` — all saves go here automatically.
-**Subagent outputs**: `subagent/{task-id}/` — browse with `list_working_memory(namespace: "subagent/task-id")`.
-**Patrol outputs**: `patrol/{task-name}/` — browse with `list_working_memory(namespace: "patrol")`.
+**Subagent outputs**: `subagent/{task-id}/` — surfaced as a hint in the synthetic user turn when the subagent completes.
+**Patrol findings**: `patrol/{task-name}/` — automatically injected into your context each turn (see "Patrol findings" section below). Use `get_from_working_memory` with the full key to read them.
 
 Use working memory for **situational awareness** — context that improves decision-making
 now but will be irrelevant or stale in a future session.
@@ -49,8 +49,10 @@ now but will be irrelevant or stale in a future session.
   or after a pod restart. Remove the entry when the task completes.
 - **Intermediate results**: Research findings being synthesized, partial
   computations, web content being analyzed across multiple tool calls
-- **Patrol context**: What was checked, what was found, what decisions were made
-  during a heartbeat patrol
+- **Patrol state and findings**: What was checked, what was found, what the patrol
+  decided — stored in the patrol's own namespace (`patrol/{task-name}/`) with a TTL
+  matching the patrol interval so findings are visible to the primary agent until
+  the next run overwrites them
 
 ### Active task tracking
 
@@ -94,6 +96,24 @@ silently — investigate or inform the user.
 | Active subagent or A2A task | Match expected task duration (30 min – several hours) |
 | Patrol state between heartbeat cycles | Match the patrol interval |
 
+### Patrol findings
+
+When patrol tasks run, they store their state and findings in working memory under
+`patrol/{task-name}/`. At the start of every user session turn, the framework
+automatically injects a summary of those entries into your context — you don't need
+to call `list_working_memory` yourself. The entries are listed under
+**"Patrol findings in working memory"** in your system context.
+
+To act on patrol findings:
+1. Read the injected summary to see what exists and how long until expiry
+2. Call `get_from_working_memory("patrol/{task-name}/your-key")` to load the detail
+3. Present or act on the findings as appropriate
+4. The entries expire automatically when their TTL lapses — typically at the next patrol run
+
+**Patrol tasks** store findings using `save_to_working_memory` with a TTL that spans at
+least one full patrol cycle (e.g. 5 hours for an hourly patrol), so entries are available
+to the primary agent between runs. Each run overwrites the previous entries.
+
 ### What does NOT belong in working memory
 
 - Anything that will still be true and useful next month → long-term memory
@@ -131,7 +151,6 @@ subdirectory structure on disk:
 | `user-preferences/attitudes` | Opinions, values, outlook on life |
 | `project-context/<n>` | Decisions, goals, and context for a specific project |
 | `active-plans/<n>` | In-progress multi-session task plans (see directives for lifecycle) |
-| `briefing-queue/<date>` | Patrol findings queued for the user's next interactive session |
 | `agent-knowledge` | Things learned about how to work well with this user |
 
 ### Content style
@@ -151,4 +170,4 @@ subdirectory structure on disk:
 - **Save**: stable facts, preferences, relationships, named entities, recurring patterns, decisions
 - **Do not save**: current physical position, what someone is momentarily doing, temporary real-time states, passing observations with no lasting significance — these belong in working memory instead
 - **Plans are temporary by design**: entries in `active-plans/` exist only while work is in progress. Delete them when the plan is complete or abandoned. Extract any durable facts (decisions made, preferences discovered) into their proper category before deleting the plan.
-- **Briefing queue is consumed and discarded**: entries in `briefing-queue/` are created by heartbeat patrols and deleted after being presented to the user. They are not durable knowledge — they are delivery vehicles.
+- **Patrol findings go in working memory, not here**: patrol results are stored in `patrol/{task-name}/` working memory entries with a long TTL. Only durable facts discovered during patrol (e.g. "user prefers email delivery before 9am") belong in long-term memory.

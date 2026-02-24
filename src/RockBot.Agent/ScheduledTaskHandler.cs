@@ -41,8 +41,10 @@ internal sealed class ScheduledTaskHandler(
 
         // Build full agent context using an ephemeral session ID so no history accumulates
         // across patrol runs. Pass the task description as the user content for BM25 recall.
+        // workingMemoryNamespace must be passed explicitly because sessionId is "patrol/{name}",
+        // not a raw session ID — without it the context builder would look in "session/patrol/{name}".
         var chatMessages = await agentContextBuilder.BuildAsync(
-            sessionId, message.Description, ct);
+            sessionId, message.Description, ct, workingMemoryNamespace: sessionId);
 
         // If a task-specific directive file exists (e.g. heartbeat-patrol.md), inject it
         // as a system message immediately after the main system prompt (index 1).
