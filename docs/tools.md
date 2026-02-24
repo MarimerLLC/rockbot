@@ -280,7 +280,7 @@ characters), the page is split into chunks using `ContentChunker` (from `RockBot
 1. Splits on H1/H2/H3 headings first (respects document structure)
 2. Falls back to blank-line splitting for oversized sections
 3. Hard-splits at `ChunkMaxLength` as a last resort
-4. Stores each chunk in working memory: `web:{sanitized-url}:chunk:{n}`
+4. Stores each chunk in working memory under the session namespace: `session/{sessionId}/web-{sanitized-url}-chunk{n}`
 5. Returns a chunk index table listing heading and key for each chunk
 
 The agent can then call `get_from_working_memory` for specific chunks rather than loading the
@@ -323,7 +323,7 @@ After each tool call (both native function calls and text-based calls), the resu
 checked against a per-model threshold. If the result exceeds that threshold:
 
 1. `ContentChunker` splits it into chunks (heading-aware, then blank-line, then hard-split)
-2. Each chunk is stored in working memory: `tool:{name}:{runId}:chunk{n}`, TTL 20 minutes
+2. Each chunk is stored in working memory under the session namespace: `{namespace}/tool-{name}-{runId}-chunk{n}`, TTL 20 minutes
 3. A compact index table is returned to the LLM instead of the raw content:
 
 ```
@@ -331,12 +331,15 @@ Tool result for 'list_models' is large (462 000 chars) and has been split into 2
 stored in working memory.
 Call get_from_working_memory(key) for each relevant chunk BEFORE drawing conclusions.
 
-| # | Heading | Key                           |
-|---|---------|-------------------------------|
-| 0 | Part 0  | `tool:list_models:a1b2c3:chunk0` |
-| 1 | Part 1  | `tool:list_models:a1b2c3:chunk1` |
+| # | Heading | Key                                              |
+|---|---------|--------------------------------------------------|
+| 0 | Part 0  | `session/abc123/tool-list_models-a1b2c3-chunk0`  |
+| 1 | Part 1  | `session/abc123/tool-list_models-a1b2c3-chunk1`  |
 ...
 ```
+
+Since chunk keys are full path strings (contain `/`), `get_from_working_memory` treats them as
+absolute — no namespace prefix is prepended.
 
 If working memory is unavailable (no session context), the result is truncated at the threshold
 with a `[result truncated — N chars omitted]` notice — same fallback as `web_browse`.

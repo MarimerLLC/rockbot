@@ -11,7 +11,7 @@ token bloat.
 | Tier | Class | Scope | Lifetime | Injection |
 |---|---|---|---|---|
 | **Long-term** | `FileMemoryStore` | Cross-session | Permanent | BM25 delta per turn |
-| **Working** | `HybridCacheWorkingMemory` | Session | TTL (default 5 min) | Full inventory per turn |
+| **Working** | `HybridCacheWorkingMemory` | Global, path-namespaced | TTL (default 5 min) | Own-namespace inventory per turn |
 | **Conversation** | `InMemoryConversationMemory` | Session | Process lifetime | Last N turns (default 20) |
 
 ---
@@ -110,55 +110,87 @@ original content is saved immediately; expansion never blocks the response.
 
 ### Purpose
 
-Short-lived, session-scoped scratch space for intermediate results. Typical uses:
+Global, path-namespaced scratch space with TTL-based expiration. Shared across all execution
+contexts — user sessions, patrol tasks, and subagents. Typical uses:
 
 - Large tool results that are too big to keep in conversation context (e.g. chunked web pages, oversized MCP responses)
 - Partial results being assembled across tool calls
-- Temporary state needed within a session but not worth persisting long-term
+- Data handoff between subagents/patrol tasks and the primary agent
+- Temporary state needed across multiple turns but not worth persisting long-term
+
+### Namespace design
+
+Keys are full path strings. The first two path segments form the **namespace** — which is
+automatically baked into `WorkingMemoryTools` at construction time:
+
+| Context | Namespace | Example key |
+|---|---|---|
+| User session | `session/{sessionId}` | `session/abc123/emails_inbox` |
+| Patrol task | `patrol/{taskName}` | `patrol/heartbeat/latest_alert` |
+| Subagent | `subagent/{taskId}` | `subagent/t1b2c3/research_results` |
+
+Writes always go to the caller's own namespace. Reads can cross namespaces — either by passing
+a full path key (e.g. `subagent/t1b2c3/research_results`) or by using the optional `namespace`
+parameter on `list_working_memory` and `search_working_memory`.
 
 ### Data model
 
 ```csharp
 public sealed record WorkingMemoryEntry(
-    string Key,           // Unique key within the session
-    string Data,          // Stored content (string)
-    string? Category,     // Optional grouping
-    IReadOnlyList<string>? Tags,
+    string Key,                      // Full path key (e.g. "session/abc123/emails_inbox")
+    string Value,
+    DateTimeOffset StoredAt,
     DateTimeOffset ExpiresAt,
-    DateTimeOffset StoredAt
+    string? Category,
+    IReadOnlyList<string>? Tags
 );
 ```
 
 ### Storage
 
-`HybridCacheWorkingMemory` uses `IMemoryCache` for TTL-based eviction plus a per-session
-`ConcurrentDictionary` side index for enumeration (since `IMemoryCache` is not enumerable).
+`HybridCacheWorkingMemory` uses `IMemoryCache` for TTL-based eviction plus a flat
+`ConcurrentDictionary<string, EntryMeta>` side index for enumeration.
 
 - **Default TTL:** 5 minutes (configurable per entry)
-- **Per-session limit:** 50 entries (configurable)
-- **Isolation:** All entries are keyed by `{sessionId}:{key}` internally
+- **Per-namespace limit:** 50 entries per namespace (first two key segments); configurable via `MaxEntriesPerNamespace`
+- **Prefix filtering:** `ListAsync(prefix)` and `SearchAsync(criteria, prefix)` filter by key prefix
+
+`FileWorkingMemory` wraps the in-memory store with disk persistence. Entries are grouped by
+top-level key segment into files (`session.json`, `patrol.json`, `subagent.json`) under
+`{BasePath}/working-memory/`. Expired entries are discarded on load and swept hourly.
 
 ### Injection
 
-The full working memory inventory is injected at the start of every turn as a compact list:
+At the start of every turn, the agent's own namespace inventory is injected as a compact list:
 
 ```
 Working memory (scratch space — use search_working_memory or get_from_working_memory to retrieve):
-- chunked-page-1: expires in 4m32s, category: web-content, tags: github, rockbot
-- draft-email: expires in 2m01s
+- session/abc123/emails_inbox: expires in 4m32s, category: email, tags: inbox, unread
+- session/abc123/draft_reply: expires in 2m01s
 ```
 
-This gives the agent a complete picture of what scratch data is available without including the
-actual content (which the agent loads on demand to avoid token bloat).
+The actual content is not included — the agent loads entries on demand to avoid token bloat.
 
 ### Working memory tools
 
 | Tool | Purpose |
 |---|---|
-| `save_to_working_memory(key, data, ttl_minutes?, category?, tags?)` | Store an entry |
-| `get_from_working_memory(key)` | Retrieve an entry by key |
-| `search_working_memory(query, category?, tags?)` | BM25 search across session entries |
-| `list_working_memory()` | List all keys with metadata (no data) |
+| `save_to_working_memory(key, data, ttl_minutes?, category?, tags?)` | Store an entry in own namespace |
+| `get_from_working_memory(key)` | Retrieve by plain key (own namespace) or full path (cross-namespace) |
+| `list_working_memory(namespace?)` | List keys in own namespace, or pass a prefix to browse another |
+| `search_working_memory(query?, category?, tags?, namespace?)` | BM25 search, optionally cross-namespace |
+
+**Cross-namespace access examples:**
+
+```
+# See what a completed subagent stored
+list_working_memory(namespace: "subagent/t1b2c3")
+get_from_working_memory("subagent/t1b2c3/research_results")
+
+# Browse all patrol outputs
+list_working_memory(namespace: "patrol")
+search_working_memory(query: "alert", namespace: "patrol/heartbeat")
+```
 
 ---
 
@@ -242,8 +274,9 @@ public sealed class MemoryOptions
 // Working memory
 public sealed class WorkingMemoryOptions
 {
-    public int DefaultTtlMinutes { get; set; } = 5;
-    public int MaxEntriesPerSession { get; set; } = 50;
+    public TimeSpan DefaultTtl { get; set; } = TimeSpan.FromMinutes(5);
+    public int MaxEntriesPerNamespace { get; set; } = 50;  // per first-two-segment namespace prefix
+    public string BasePath { get; set; } = "working-memory";
 }
 
 // Dream passes
@@ -278,6 +311,6 @@ builder
 2. Fallback (first turn only): SearchAsync(MaxResults: 5) if no BM25 results
 3. Delta filter: only entries not yet injected this session (InjectedMemoryTracker)
 4. Inject as system message: "Recalled from long-term memory..."
-5. Inject working memory inventory (all keys, no data)
+5. Inject working memory inventory for own namespace: workingMemory.ListAsync("session/{sessionId}")
 6. Replay last 20 conversation turns
 ```

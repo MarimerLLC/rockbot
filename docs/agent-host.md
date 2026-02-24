@@ -26,7 +26,7 @@ IMessageHandler<TMessage>.HandleAsync()
     ├── IConversationMemory — sliding window of turns
     ├── ILongTermMemory — BM25 recall of relevant memories
     ├── ISkillStore — BM25 recall of relevant skills
-    ├── IWorkingMemory — session-scoped scratch space
+    ├── IWorkingMemory — global path-namespaced scratch space (TTL-based)
     ├── ILlmClient — serialized LLM gateway (one in-flight at a time)
     └── IFeedbackStore — quality signal writes (fire-and-forget)
 ```
@@ -308,7 +308,7 @@ services.AddRockBotHost(agent =>
 | `WithRules()` | `IRulesStore`, rules tools |
 | `WithConversationMemory()` | `IConversationMemory` (file-backed + in-memory) |
 | `WithLongTermMemory()` | `ILongTermMemory` (FileMemoryStore) |
-| `WithWorkingMemory()` | `IWorkingMemory` (HybridCacheWorkingMemory) |
+| `WithWorkingMemory()` | `IWorkingMemory` (global, path-namespaced; `HybridCacheWorkingMemory` + `FileWorkingMemory`) |
 | `WithMemory()` | All three memory tiers above |
 | `WithConversationLog()` | `IConversationLog` (FileConversationLog) |
 | `WithFeedback()` | `IFeedbackStore` + `SessionSummaryService` |
@@ -351,6 +351,10 @@ configurable via `AgentProfileOptions.BasePath`):
 │   └── {sessionId}.jsonl
 ├── conversations/             # Persisted conversation sessions
 │   └── {sessionId}.json
+├── working-memory/            # Working memory persistence (path-namespaced, TTL-based)
+│   ├── session.json           # Entries for all user sessions (session/{id}/...)
+│   ├── patrol.json            # Entries for patrol tasks (patrol/{name}/...)
+│   └── subagent.json          # Entries for subagents (subagent/{taskId}/...)
 └── conversation-log/          # Aggregated turns for dream passes
     └── turns.jsonl
 ```

@@ -160,37 +160,48 @@ tool call.
 
 ---
 
-## Data handoff via long-term memory
+## Data handoff via working memory namespaces
 
-Both the primary agent and the subagent share the same long-term memory store. Use
-the category convention `subagent-whiteboards/{task_id}` as a per-subagent scratchpad.
+Subagents write large outputs to their own working memory namespace (`subagent/{taskId}/`).
+The primary agent reads from that namespace once the subagent completes. No extra tools or
+infrastructure — it's the same `save_to_working_memory` / `get_from_working_memory` the
+subagent uses for everything else.
 
-**Why long-term memory instead of a separate whiteboard:**
+**Namespace isolation:**
 
-- No new tools, no new infrastructure — `SaveMemory`/`SearchMemory`/`DeleteMemory`
-  are already in every context
-- File-backed and persistent across pod restarts
-- Per-subagent isolation via the `task_id` category namespace
-- `SubagentResultHandler` automatically deletes all `subagent-whiteboards/{taskId}`
-  entries after the primary agent has processed the result
+- **Subagent namespace:** `subagent/{taskId}/` — all `save_to_working_memory` calls from the
+  subagent are stored here automatically (the namespace is baked in at tool construction)
+- **Primary session namespace:** `session/{primarySessionId}/` — the primary agent's own scratch
+  space; not written to by the subagent
 
 **Usage pattern:**
 
 ```
 Primary agent (before spawning):
-  SaveMemory(content="[url1, url2, url3]", category="subagent-whiteboards/abc123")
-  spawn_subagent("Read urls from subagent-whiteboards/abc123 and scrape each one")
+  spawn_subagent("Scrape [url1, url2, url3] and summarize findings")
 
-Subagent:
-  SearchMemory(query="urls", category="subagent-whiteboards/abc123") → "[url1, url2, url3]"
-  [processes each URL]
-  SaveMemory(content="...", category="subagent-whiteboards/abc123", tags=["results"])
-  ReportProgress("Done scraping. Results saved to subagent-whiteboards/abc123.")
+Subagent (runs in namespace "subagent/abc123"):
+  [fetches urls]
+  save_to_working_memory("url1_content", "...", ttl_minutes=240, category="scrape-result")
+    → stored at "subagent/abc123/url1_content"
+  save_to_working_memory("summary", "...", ttl_minutes=240)
+    → stored at "subagent/abc123/summary"
+  ReportProgress("Done. Results saved: url1_content, summary")
 
 Primary agent (on result, via SubagentResultHandler):
-  SearchMemory(category="subagent-whiteboards/abc123") → results
-  [SubagentResultHandler then deletes the subagent-whiteboards/abc123 entries]
+  # SubagentResultHandler checks for entries in "subagent/abc123/" and includes a hint if found:
+  # "[Subagent task abc123 completed]: ... Additional outputs were written to working memory.
+  #  Keys: 'subagent/abc123/url1_content', 'subagent/abc123/summary'. Retrieve and present them."
+  list_working_memory(namespace: "subagent/abc123")
+  get_from_working_memory("subagent/abc123/summary")
 ```
+
+**Why working memory instead of long-term memory:**
+
+- Subagent outputs are temporary — they don't need to survive beyond the current conversation
+- TTL (default 4 hours for subagent outputs) handles cleanup automatically
+- No explicit cleanup required in `SubagentResultHandler` — entries expire naturally
+- Cross-namespace reads are first-class in the working memory API, no workarounds needed
 
 ---
 
@@ -267,7 +278,7 @@ Its `RunAsync` method:
 3. Adds the task `description` as the first user turn (no prior history)
 4. Constructs `ChatOptions.Tools`:
    - Long-term memory tools (`SaveMemory`, `SearchMemory`, `DeleteMemory`, `ListCategories`)
-   - Working memory tools scoped to `subagentSessionId`
+   - Working memory tools namespaced to `subagent/{taskId}` (writes go here automatically)
    - Skill tools (`GetSkill`, `ListSkills`, `SaveSkill`)
    - Registry tools (MCP, REST, scheduling, etc.) — subagent management tools excluded
    - `ReportProgress` (baked with `taskId` + `primarySessionId`)
@@ -296,8 +307,9 @@ Both handlers follow the same pattern:
 6. Record the assistant response in conversation memory
 7. Publish `AgentReply` (IsFinal=true) to `UserProxyTopics.UserResponse`
 
-`SubagentResultHandler` additionally cleans up all `subagent-whiteboards/{taskId}`
-long-term memory entries in a `finally` block after the LLM has responded.
+`SubagentResultHandler` checks for working memory entries under `subagent/{taskId}/` and
+includes a retrieval hint in the synthetic user turn if any exist. It does not delete them —
+they expire naturally via their TTL.
 
 **Synthetic user turns:**
 
