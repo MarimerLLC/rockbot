@@ -145,11 +145,11 @@ secrets:
     low:                    # Optional — fast/cheap model for simple factual questions
       endpoint: ""
       apiKey: ""
-      modelId: ""           # leave empty to fall back to balanced
+      modelId: "google/gemini-3.1-pro-preview"
     high:                   # Optional — powerful model for dream/research/complex tasks
       endpoint: ""
       apiKey: ""
-      modelId: ""           # leave empty to fall back to balanced
+      modelId: "google/gemini-3.1-pro-preview"           # leave empty to fall back to balanced
 
     # Legacy flat keys — kept for backward compatibility; remove after all deployments migrated
     endpoint: ""
