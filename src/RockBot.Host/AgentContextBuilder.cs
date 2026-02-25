@@ -51,8 +51,9 @@ public sealed class AgentContextBuilder(
         {
             new(ChatRole.System, systemPrompt),
             new(ChatRole.System,
-                $"The user's local date and time is: {clock.Now:dddd, MMMM d, yyyy} {clock.Now:HH:mm:ss zzz} ({clock.Zone.Id}). " +
-                "Always express dates and times to the user in this timezone. Never assume UTC or any other timezone.")
+                $"Current local date and time: {clock.Now:dddd, MMMM d, yyyy} {clock.Now:HH:mm:ss zzz} ({clock.Zone.Id}). " +
+                "All dates and times must use this timezone. " +
+                "When any tool returns a UTC timestamp, convert it to this local timezone before using or displaying it.")
         };
 
         // Active rules
