@@ -52,11 +52,20 @@ internal sealed class A2ATaskResultHandler(
         var resultText = result.Message?.Parts.FirstOrDefault(p => p.Kind == "text")?.Text ?? "(no text output)";
         string syntheticUserTurn;
 
+        // PrimarySessionId is the full WM session namespace (e.g. "session/blazor-session"),
+        // as populated by InvokeAgentExecutor from the RegistryToolFunction's sessionId parameter.
+        // Use it directly as the namespace; derive the raw session ID by stripping the prefix so
+        // AgentContextBuilder, conversation memory, and skill tools all use consistent keys.
+        var sessionNamespace = pending.PrimarySessionId;
+        const string SessionPrefix = "session/";
+        var rawSessionId = sessionNamespace.StartsWith(SessionPrefix, StringComparison.OrdinalIgnoreCase)
+            ? sessionNamespace[SessionPrefix.Length..]
+            : sessionNamespace;
+
         // Purge any previous result entries for this agent before storing the new one.
         // Old entries linger in working memory (60-min TTL) and the LLM will find them
         // in conversation history instructions — causing it to retrieve stale data instead
         // of the current result when both share the same key pattern.
-        var sessionNamespace = $"session/{pending.PrimarySessionId}";
         var staleAgentPattern = $"/a2a/{pending.TargetAgent}/";
         var staleEntries = await workingMemory.ListAsync(sessionNamespace);
         foreach (var entry in staleEntries)
@@ -69,37 +78,30 @@ internal sealed class A2ATaskResultHandler(
             }
         }
 
-        if (resultText.Length > modelBehavior.ToolResultChunkingThreshold)
-        {
-            // Result is large — store it in working memory rather than injecting it raw into
-            // conversation history. Raw injection would pollute every subsequent LLM call with
-            // the full text. Instead the LLM retrieves it on demand via get_from_working_memory.
-            var memoryKey = $"{sessionNamespace}/a2a/{pending.TargetAgent}/{result.TaskId}/result";
-            await workingMemory.SetAsync(
-                memoryKey,
-                resultText,
-                ttl: TimeSpan.FromMinutes(60),
-                category: "a2a-result",
-                tags: [pending.TargetAgent, result.TaskId]);
+        // Always store A2A results in working memory so the LLM can reliably retrieve them
+        // via get_from_working_memory regardless of result size. Storing inline in the
+        // synthetic user turn caused the LLM to search WM, find nothing, and conclude the
+        // result was unavailable — even though it was present in conversation history.
+        var memoryKey = $"{sessionNamespace}/a2a/{pending.TargetAgent}/{result.TaskId}/result";
+        await workingMemory.SetAsync(
+            memoryKey,
+            resultText,
+            ttl: TimeSpan.FromMinutes(60),
+            category: "a2a-result",
+            tags: [pending.TargetAgent, result.TaskId]);
 
-            logger.LogInformation(
-                "A2A result for task {TaskId} is large ({Len:N0} chars); stored in working memory at key '{Key}'",
-                result.TaskId, resultText.Length, memoryKey);
+        logger.LogInformation(
+            "A2A result for task {TaskId} ({Len:N0} chars) stored in working memory at key '{Key}'",
+            result.TaskId, resultText.Length, memoryKey);
 
-            syntheticUserTurn =
-                $"[Agent '{pending.TargetAgent}' completed task {result.TaskId} (state={result.State})]: " +
-                $"The result is large ({resultText.Length:N0} chars) and has been stored in working memory. " +
-                $"Call get_from_working_memory with key '{memoryKey}' to read it before responding.";
-        }
-        else
-        {
-            syntheticUserTurn = $"[Agent '{pending.TargetAgent}' completed task {result.TaskId} (state={result.State})]: {resultText}";
-        }
+        syntheticUserTurn =
+            $"[Agent '{pending.TargetAgent}' completed task {result.TaskId} (state={result.State})]: " +
+            $"The result ({resultText.Length:N0} chars) is in working memory. " +
+            $"Call get_from_working_memory with key '{memoryKey}' to read it before responding.";
 
         // Publish the agent's raw completion output as a non-final bubble so it is
         // visible in the Blazor UI under the agent's own name before the primary agent
-        // synthesises and presents the final reply. For large results stored in working
-        // memory, show a truncated preview so the bubble remains readable.
+        // synthesises and presents the final reply.
         try
         {
             const int PreviewMax = 500;
@@ -122,18 +124,18 @@ internal sealed class A2ATaskResultHandler(
         }
 
         await conversationMemory.AddTurnAsync(
-            pending.PrimarySessionId,
+            rawSessionId,
             new ConversationTurn("user", syntheticUserTurn, DateTimeOffset.UtcNow),
             ct);
 
         var chatMessages = await agentContextBuilder.BuildAsync(
-            pending.PrimarySessionId, syntheticUserTurn, ct);
+            rawSessionId, syntheticUserTurn, ct);
 
-        var sessionWorkingMemoryTools = new WorkingMemoryTools(workingMemory, $"session/{pending.PrimarySessionId}", logger);
-        var sessionSkillTools = new SkillTools(skillStore, llmClient, logger, pending.PrimarySessionId);
+        var sessionWorkingMemoryTools = new WorkingMemoryTools(workingMemory, sessionNamespace, logger);
+        var sessionSkillTools = new SkillTools(skillStore, llmClient, logger, rawSessionId);
         var registryTools = toolRegistry.GetTools()
             .Select(r => (AIFunction)new RegistryToolFunction(
-                r, toolRegistry.GetExecutor(r.Name)!, $"session/{pending.PrimarySessionId}"))
+                r, toolRegistry.GetExecutor(r.Name)!, sessionNamespace))
             .ToArray();
 
         var chatOptions = new ChatOptions
@@ -145,17 +147,17 @@ internal sealed class A2ATaskResultHandler(
         try
         {
             var finalContent = await agentLoopRunner.RunAsync(
-                chatMessages, chatOptions, pending.PrimarySessionId, cancellationToken: ct);
+                chatMessages, chatOptions, rawSessionId, cancellationToken: ct);
 
             await conversationMemory.AddTurnAsync(
-                pending.PrimarySessionId,
+                rawSessionId,
                 new ConversationTurn("assistant", finalContent, DateTimeOffset.UtcNow),
                 ct);
 
             var reply = new AgentReply
             {
                 Content = finalContent,
-                SessionId = pending.PrimarySessionId,
+                SessionId = rawSessionId,
                 AgentName = agent.Name,
                 IsFinal = true
             };
