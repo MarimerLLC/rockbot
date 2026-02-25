@@ -38,7 +38,9 @@ public sealed class A2ACallerSkillProvider : IToolSkillProvider
         ## Usage pattern
         1. Call list_known_agents to see what agents and skills are available
         2. Call invoke_agent with the desired agent_name, skill, and message
-        3. Continue the conversation; the agent's result will arrive automatically
-           as a follow-up message and be incorporated into the conversation
+        3. When the agent completes, a follow-up message will arrive in the
+           conversation containing a working memory key. Call
+           get_from_working_memory with that key to retrieve the full result,
+           then present it to the user.
         """;
 }

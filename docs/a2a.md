@@ -13,11 +13,20 @@ result folded back into the conversation.
 2. The request is published to `agent.task.{agentName}`.
 3. The target agent processes the task, sending `Working` status updates.
 4. On completion the target publishes a result to `agent.response.{callerName}`.
-5. The result is folded into the primary agent's conversation via `A2ATaskResultHandler`.
+5. `A2ATaskResultHandler` stores the result in working memory at
+   `session/{sessionId}/a2a/{agentName}/{taskId}/result` (60-minute TTL) and
+   injects a synthetic user turn into the conversation that contains the exact
+   key. The primary agent calls `get_from_working_memory` with that key to
+   retrieve and present the result.
 
 The external agent does **not** need to be running at the moment `invoke_agent`
 is called — the message sits on the queue until the agent starts (e.g. a KEDA
 ScaledJob spins up).
+
+> **Result retrieval**: The result is always stored in working memory regardless
+> of size. The synthetic turn that arrives in the conversation is a notification,
+> not the result itself — the agent must call `get_from_working_memory` with the
+> provided key to read the actual content before responding to the user.
 
 ---
 

@@ -30,6 +30,7 @@ public sealed class WorkingMemoryTools
         [
             AIFunctionFactory.Create(SaveToWorkingMemory),
             AIFunctionFactory.Create(GetFromWorkingMemory),
+            AIFunctionFactory.Create(DeleteFromWorkingMemory),
             AIFunctionFactory.Create(ListWorkingMemory),
             AIFunctionFactory.Create(SearchWorkingMemory)
         ];
@@ -71,6 +72,18 @@ public sealed class WorkingMemoryTools
         if (value is null)
             return $"Working memory entry '{fullKey}' not found or has expired.";
         return value;
+    }
+
+    [Description("Delete an entry from working memory by key. " +
+                 "Use this to dismiss resolved patrol findings, clear stale data, or remove entries that are no longer needed. " +
+                 "Use a plain key to delete from your own namespace, or a full path (e.g. 'patrol/heartbeat-patrol/...') to delete from another namespace.")]
+    public async Task<string> DeleteFromWorkingMemory(
+        [Description("Key to delete — plain key for own namespace, full path for cross-namespace (e.g. 'patrol/heartbeat-patrol/critical-actions-required')")] string key)
+    {
+        var fullKey = key.Contains('/') ? key : $"{_namespace}/{key}";
+        _logger.LogInformation("Tool call: DeleteFromWorkingMemory(key={Key})", fullKey);
+        await _workingMemory.DeleteAsync(fullKey);
+        return $"Working memory entry '{fullKey}' deleted.";
     }
 
     [Description("List all keys currently in working memory with their category, tags, and expiry times. " +
