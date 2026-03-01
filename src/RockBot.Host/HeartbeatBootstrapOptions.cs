@@ -15,5 +15,5 @@ public sealed class HeartbeatBootstrapOptions
     /// Cron expression controlling how often the patrol fires.
     /// Defaults to every 30 minutes.
     /// </summary>
-    public string CronExpression { get; set; } = "*/30 * * * *";
+    public string CronExpression { get; set; } = "0 */6 * * *";
 }
