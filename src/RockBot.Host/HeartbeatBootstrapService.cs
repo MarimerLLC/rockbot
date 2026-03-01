@@ -22,9 +22,11 @@ internal sealed class HeartbeatBootstrapService(
         }
 
         var existing = await scheduler.ListAsync(ct);
-        if (existing.Any(t => t.Name == "heartbeat-patrol"))
+        var patrol = existing.FirstOrDefault(t => t.Name == "heartbeat-patrol");
+
+        if (patrol is not null && patrol.CronExpression == options.Value.CronExpression)
         {
-            logger.LogInformation("Heartbeat patrol task already registered; skipping");
+            logger.LogInformation("Heartbeat patrol already registered with cron '{Cron}'; skipping", patrol.CronExpression);
             return;
         }
 
@@ -32,10 +34,11 @@ internal sealed class HeartbeatBootstrapService(
             Name: "heartbeat-patrol",
             CronExpression: options.Value.CronExpression,
             Description: "Run the heartbeat patrol: check calendar, email, active plans, and scheduled task health.",
-            CreatedAt: DateTimeOffset.UtcNow,
+            CreatedAt: patrol?.CreatedAt ?? DateTimeOffset.UtcNow,
             RunOnce: false), ct);
 
-        logger.LogInformation("Registered heartbeat patrol (cron: {Cron})", options.Value.CronExpression);
+        var action = patrol is null ? "Registered" : "Updated";
+        logger.LogInformation("{Action} heartbeat patrol (cron: {Cron})", action, options.Value.CronExpression);
     }
 
     public Task StopAsync(CancellationToken ct) => Task.CompletedTask;

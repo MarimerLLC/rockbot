@@ -26,6 +26,14 @@ var builder = Host.CreateApplicationBuilder(args);
 // Always load user secrets (CreateApplicationBuilder only loads them in Development)
 builder.Configuration.AddUserSecrets<Program>();
 
+// Load optional appsettings.json from the PVC so cluster-side config (e.g. HeartbeatPatrol:CronExpression)
+// can be changed without rebuilding the image. Layered after env vars so it takes precedence.
+{
+    var pvcBase = builder.Configuration["AgentProfile__BasePath"] ?? builder.Configuration["AgentProfile:BasePath"];
+    if (pvcBase is not null)
+        builder.Configuration.AddJsonFile(Path.Combine(pvcBase, "appsettings.json"), optional: true, reloadOnChange: false);
+}
+
 builder.Services.AddRockBotRabbitMq(opts => builder.Configuration.GetSection("RabbitMq").Bind(opts));
 
 // ── LLM configuration — three-tier (Low / Balanced / High) ──────────────────
