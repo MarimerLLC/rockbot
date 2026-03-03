@@ -1,5 +1,6 @@
 using System.Text;
 using System.Text.Json;
+using Cronos;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -27,10 +28,12 @@ internal sealed class DreamService : IHostedService, IDisposable
     private readonly TierRoutingLogger? _tierRoutingLogger;
     private readonly ILlmClient _llmClient;
     private readonly IUserActivityMonitor _userActivityMonitor;
+    private readonly AgentClock _clock;
     private readonly DreamOptions _options;
     private readonly AgentProfileOptions _profileOptions;
     private readonly ILogger<DreamService> _logger;
     private Timer? _timer;
+    private CronExpression? _cron;
     private string? _dreamDirective;
     private string? _skillDreamDirective;
     private string? _skillOptimizeDirective;
@@ -43,6 +46,7 @@ internal sealed class DreamService : IHostedService, IDisposable
         IEnumerable<ISkillStore> skillStores,
         ILlmClient llmClient,
         IUserActivityMonitor userActivityMonitor,
+        AgentClock clock,
         IOptions<DreamOptions> options,
         IOptions<AgentProfileOptions> profileOptions,
         ILogger<DreamService> logger,
@@ -59,6 +63,7 @@ internal sealed class DreamService : IHostedService, IDisposable
         _tierRoutingLogger = tierRoutingLogger;
         _llmClient = llmClient;
         _userActivityMonitor = userActivityMonitor;
+        _clock = clock;
         _options = options.Value;
         _profileOptions = profileOptions.Value;
         _logger = logger;
@@ -154,15 +159,30 @@ internal sealed class DreamService : IHostedService, IDisposable
                 _logger.LogInformation("DreamService: loaded tier routing directive from {Path}", tierRoutingDirectivePath);
         }
 
+        try
+        {
+            _cron = CronExpression.Parse(_options.CronSchedule,
+                _options.CronSchedule.Split(' ').Length == 6
+                    ? CronFormat.IncludeSeconds
+                    : CronFormat.Standard);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex,
+                "DreamService: invalid cron expression '{Cron}'; dreaming disabled",
+                _options.CronSchedule);
+            return Task.CompletedTask;
+        }
+
         _timer = new Timer(
-            state => { _ = DreamAsync(); },
+            state => { _ = OnTimerTickAsync(); },
             null,
             _options.InitialDelay,
-            _options.Interval);
+            Timeout.InfiniteTimeSpan);
 
         _logger.LogInformation(
-            "DreamService: scheduled — first cycle in {InitialDelay}, then every {Interval}",
-            _options.InitialDelay, _options.Interval);
+            "DreamService: scheduled — first cycle in {InitialDelay}, then on cron '{Cron}'",
+            _options.InitialDelay, _options.CronSchedule);
 
         return Task.CompletedTask;
     }
@@ -174,6 +194,31 @@ internal sealed class DreamService : IHostedService, IDisposable
     }
 
     public void Dispose() => _timer?.Dispose();
+
+    private async Task OnTimerTickAsync()
+    {
+        await DreamAsync();
+        ArmNextCronTimer();
+    }
+
+    private void ArmNextCronTimer()
+    {
+        if (_cron is null) return;
+
+        var next = _cron.GetNextOccurrence(_clock.Now, _clock.Zone);
+        if (next is null)
+        {
+            _logger.LogWarning("DreamService: cron '{Cron}' has no future occurrences; dreaming stopped",
+                _options.CronSchedule);
+            return;
+        }
+
+        var delay = next.Value - _clock.Now;
+        if (delay < TimeSpan.Zero) delay = TimeSpan.Zero;
+
+        _timer?.Change(delay, Timeout.InfiniteTimeSpan);
+        _logger.LogInformation("DreamService: next dream cycle at {Next} (in {Delay:g})", next.Value, delay);
+    }
 
     private async Task DreamAsync()
     {
