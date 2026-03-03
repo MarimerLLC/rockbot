@@ -122,11 +122,7 @@ builder.Services.AddRockBotHost(agent =>
     agent.WithConversationLog();
     agent.WithFeedback();
     agent.WithSkills();
-    agent.WithDreaming(opts =>
-    {
-        opts.Interval = TimeSpan.FromHours(4);
-        opts.InitialDelay = TimeSpan.FromMinutes(5);
-    });
+    agent.WithDreaming();
     agent.AddToolHandler();
     agent.AddMcpToolProxy();
     agent.AddWebTools(opts => builder.Configuration.GetSection("WebTools").Bind(opts));

@@ -11,8 +11,12 @@ public sealed class DreamOptions
     /// <summary>How long to wait after startup before the first dream cycle.</summary>
     public TimeSpan InitialDelay { get; set; } = TimeSpan.FromMinutes(5);
 
-    /// <summary>How often dream cycles run.</summary>
-    public TimeSpan Interval { get; set; } = TimeSpan.FromHours(4);
+    /// <summary>
+    /// Cron expression (5-field or 6-field with seconds) controlling how often dream cycles run.
+    /// Evaluated in the agent's configured timezone (see <c>Agent:Timezone</c>).
+    /// Default: every 12 hours at the top of the hour.
+    /// </summary>
+    public string CronSchedule { get; set; } = "0 */12 * * *";
 
     /// <summary>
     /// Path to the memory consolidation directive file, relative to <see cref="AgentProfileOptions.BasePath"/>.
