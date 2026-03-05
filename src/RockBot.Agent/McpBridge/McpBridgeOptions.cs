@@ -27,4 +27,22 @@ public sealed class McpBridgeOptions
     /// Falls back to a simple tool-list summary if the LLM is unavailable or the call fails.
     /// </summary>
     public bool GenerateLlmSummaries { get; set; } = true;
+
+    /// <summary>
+    /// Number of times to retry a failed <c>ConnectServerAsync</c> attempt before giving up.
+    /// Retries use exponential backoff starting at <see cref="ConnectRetryBaseDelayMs"/>.
+    /// </summary>
+    public int ConnectRetryCount { get; set; } = 2;
+
+    /// <summary>
+    /// Base delay in milliseconds for the first retry of a failed connection attempt.
+    /// Each subsequent retry doubles this value (2 s → 4 s by default).
+    /// </summary>
+    public int ConnectRetryBaseDelayMs { get; set; } = 2_000;
+
+    /// <summary>
+    /// How often the bridge sweeps for servers that are in config but not connected,
+    /// and attempts to reconnect them. Set to zero to disable the sweep.
+    /// </summary>
+    public int ReconnectSweepIntervalSeconds { get; set; } = 60;
 }

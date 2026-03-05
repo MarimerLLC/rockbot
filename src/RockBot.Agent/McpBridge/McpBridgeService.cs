@@ -33,6 +33,8 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
     private ISubscription? _refreshSubscription;
     private ISubscription? _manageSubscription;
     private FileSystemWatcher? _configWatcher;
+    private Task? _reconnectSweepTask;
+    private CancellationTokenSource? _sweepCts;
 
     /// <summary>
     /// Set after the initial MCP connections are established in <see cref="StartAsync"/>.
@@ -96,12 +98,27 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
 
         // Watch for config changes
         SetupConfigWatcher();
+
+        // Start periodic reconnect sweep for any servers that failed to connect
+        if (_options.ReconnectSweepIntervalSeconds > 0)
+        {
+            _sweepCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            _reconnectSweepTask = RunReconnectSweepAsync(_sweepCts.Token);
+        }
     }
 
     public async Task StopAsync(CancellationToken cancellationToken)
     {
         _configWatcher?.Dispose();
         _configWatcher = null;
+
+        if (_sweepCts is not null)
+        {
+            await _sweepCts.CancelAsync();
+            if (_reconnectSweepTask is not null)
+                await _reconnectSweepTask.ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
+            _sweepCts.Dispose();
+        }
 
         if (_invokeSubscription is not null)
             await _invokeSubscription.DisposeAsync();
@@ -150,53 +167,77 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
 
     private async Task ConnectServerAsync(string name, McpBridgeServerConfig config, CancellationToken ct)
     {
-        try
+        if (!config.IsSse)
         {
-            if (!config.IsSse)
-            {
-                _logger.LogWarning(
-                    "MCP server {Name} uses stdio transport which is not supported in embedded mode; skipping",
-                    name);
-                return;
-            }
-
-            if (string.IsNullOrEmpty(config.Url))
-            {
-                _logger.LogError("SSE server {Name} missing URL", name);
-                return;
-            }
-
-            var transport = new HttpClientTransport(new HttpClientTransportOptions
-            {
-                Endpoint = new Uri(config.Url)
-            });
-            var newClient = await McpClient.CreateAsync(transport, cancellationToken: ct);
-
-            // Discover tools before committing the swap so a failure leaves the old client intact
-            var tools = await newClient.ListToolsAsync(cancellationToken: ct);
-            var filteredTools = ApplyToolFilters(tools.ToList(), config);
-
-            // Connection succeeded — atomically replace the old client without publishing a removal
-            if (_clients.Remove(name, out var oldClient))
-            {
-                try { await oldClient.DisposeAsync(); }
-                catch { /* Best-effort cleanup */ }
-            }
-
-            _clients[name] = newClient;
-            _serverConfigs[name] = config;
-            _serverTools[name] = filteredTools;
-
-            _logger.LogInformation("Connected to MCP server {Name} with {Count} tools",
-                name, filteredTools.Count);
-
-            // Build and publish server summary
-            var summary = await GenerateSummaryAsync(name, filteredTools, ct);
-            await PublishServersIndexedAsync([summary], [], ct);
+            _logger.LogWarning(
+                "MCP server {Name} uses stdio transport which is not supported in embedded mode; skipping",
+                name);
+            return;
         }
-        catch (Exception ex)
+
+        if (string.IsNullOrEmpty(config.Url))
         {
-            _logger.LogError(ex, "Failed to connect to MCP server {Name}", name);
+            _logger.LogError("SSE server {Name} missing URL", name);
+            return;
+        }
+
+        var maxAttempts = 1 + Math.Max(0, _options.ConnectRetryCount);
+        var delayMs = _options.ConnectRetryBaseDelayMs;
+
+        for (var attempt = 1; attempt <= maxAttempts; attempt++)
+        {
+            try
+            {
+                var transport = new HttpClientTransport(new HttpClientTransportOptions
+                {
+                    Endpoint = new Uri(config.Url)
+                });
+                var newClient = await McpClient.CreateAsync(transport, cancellationToken: ct);
+
+                // Discover tools before committing the swap so a failure leaves the old client intact
+                var tools = await newClient.ListToolsAsync(cancellationToken: ct);
+                var filteredTools = ApplyToolFilters(tools.ToList(), config);
+
+                // Connection succeeded — atomically replace the old client without publishing a removal
+                if (_clients.Remove(name, out var oldClient))
+                {
+                    try { await oldClient.DisposeAsync(); }
+                    catch { /* Best-effort cleanup */ }
+                }
+
+                _clients[name] = newClient;
+                _serverConfigs[name] = config;
+                _serverTools[name] = filteredTools;
+
+                _logger.LogInformation("Connected to MCP server {Name} with {Count} tools",
+                    name, filteredTools.Count);
+
+                // Build and publish server summary
+                var summary = await GenerateSummaryAsync(name, filteredTools, ct);
+                await PublishServersIndexedAsync([summary], [], ct);
+                return;
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                if (attempt < maxAttempts)
+                {
+                    _logger.LogWarning(ex,
+                        "Failed to connect to MCP server {Name} (attempt {Attempt}/{Max}), retrying in {Delay}ms",
+                        name, attempt, maxAttempts, delayMs);
+                    await Task.Delay(delayMs, ct);
+                    delayMs *= 2;
+                }
+                else
+                {
+                    _logger.LogError(ex,
+                        "Failed to connect to MCP server {Name} after {Max} attempt(s)",
+                        name, maxAttempts);
+                }
+            }
         }
     }
 
@@ -745,6 +786,47 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
         return MessageResult.Ack;
     }
 
+    private async Task RunReconnectSweepAsync(CancellationToken ct)
+    {
+        var interval = TimeSpan.FromSeconds(_options.ReconnectSweepIntervalSeconds);
+        using var timer = new PeriodicTimer(interval);
+
+        try
+        {
+            while (await timer.WaitForNextTickAsync(ct))
+            {
+                var disconnected = _serverConfigs.Keys
+                    .Where(name => !_clients.ContainsKey(name))
+                    .ToList();
+
+                foreach (var name in disconnected)
+                {
+                    if (!_serverConfigs.TryGetValue(name, out var config)) continue;
+
+                    _logger.LogInformation(
+                        "Reconnect sweep: attempting to reconnect MCP server {Name}", name);
+                    try
+                    {
+                        await ConnectServerAsync(name, config, ct);
+                    }
+                    catch (OperationCanceledException) when (ct.IsCancellationRequested)
+                    {
+                        return;
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning(ex,
+                            "Reconnect sweep: failed to reconnect MCP server {Name}", name);
+                    }
+                }
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // Normal shutdown
+        }
+    }
+
     private void SetupConfigWatcher()
     {
         var directory = Path.GetDirectoryName(_configPath);
@@ -811,6 +893,15 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
     public async ValueTask DisposeAsync()
     {
         _configWatcher?.Dispose();
+
+        if (_sweepCts is not null)
+        {
+            await _sweepCts.CancelAsync();
+            if (_reconnectSweepTask is not null)
+                await _reconnectSweepTask.ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
+            _sweepCts.Dispose();
+        }
+
         await DisposeClientsAsync();
 
         if (_invokeSubscription is not null)
