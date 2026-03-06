@@ -157,53 +157,38 @@ internal sealed class UserMessageHandler(
                 }
             }
 
-            logger.LogInformation("Calling LLM — iteration 1 ({MessageCount} messages in context)",
-                chatMessages.Count);
-            var sw = System.Diagnostics.Stopwatch.StartNew();
-            var firstResponse = await llmClient.GetResponseAsync(chatMessages, tier, chatOptions, ct);
-            sw.Stop();
-
-            logger.LogInformation(
-                "LLM responded in {ElapsedMs}ms — {MsgCount} message(s), iteration 1",
-                sw.ElapsedMilliseconds, firstResponse.Messages.Count);
-
-            // Log response messages
-            for (var i = 0; i < firstResponse.Messages.Count; i++)
-            {
-                var msg = firstResponse.Messages[i];
-                var contentParts = string.Join(", ", msg.Contents.Select(c => c.GetType().Name));
-                logger.LogInformation(
-                    "  Message[{Index}] role={Role} text={TextLen} chars, contents=[{ContentParts}]",
-                    i, msg.Role, msg.Text?.Length ?? 0, contentParts);
-            }
-
             if (!modelBehavior.UseTextBasedToolCalling)
             {
-                // Native path: FunctionInvokingChatClient already executed all tool
-                // calls during the GetResponseAsync above. The response is complete —
-                // just extract the final assistant text and publish it.
-                var text = agentLoopRunner.ExtractAssistantText(firstResponse);
-
-                var toolCallCount = firstResponse.Messages
-                    .SelectMany(m => m.Contents.OfType<FunctionCallContent>())
-                    .Count();
-
-                logger.LogInformation(
-                    "Native path complete — {ToolCallCount} tool call(s) resolved, final text {TextLen} chars",
-                    toolCallCount, text.Length);
-
-                await conversationMemory.AddTurnAsync(
-                    message.SessionId,
-                    new ConversationTurn("assistant", text, DateTimeOffset.UtcNow),
-                    ct);
-
-                await PublishReplyAsync(text, replyTo, correlationId, message.SessionId, isFinal: true, ct);
-
-                logger.LogInformation("Published reply to {ReplyTo} for correlation {CorrelationId}",
-                    replyTo, correlationId);
+                // Native path: fire-and-forget the LLM call so HandleAsync returns promptly,
+                // allowing RabbitMQ to ack the UserMessage before tool calls run.
+                // This prevents subagent re-spawn on pod restart (issue #122).
+                logger.LogInformation("Native path: launching background LLM loop for session {SessionId}", message.SessionId);
+                await PublishReplyAsync("I'm working on that — I'll follow up shortly.",
+                    replyTo, correlationId, message.SessionId, isFinal: false, ct);
+                _ = NativeLlmLoopAsync(chatMessages, chatOptions, tier, message.SessionId, replyTo, correlationId, sessionCt);
             }
             else
             {
+                logger.LogInformation("Calling LLM — iteration 1 ({MessageCount} messages in context)",
+                    chatMessages.Count);
+                var sw = System.Diagnostics.Stopwatch.StartNew();
+                var firstResponse = await llmClient.GetResponseAsync(chatMessages, tier, chatOptions, ct);
+                sw.Stop();
+
+                logger.LogInformation(
+                    "LLM responded in {ElapsedMs}ms — {MsgCount} message(s), iteration 1",
+                    sw.ElapsedMilliseconds, firstResponse.Messages.Count);
+
+                // Log response messages
+                for (var i = 0; i < firstResponse.Messages.Count; i++)
+                {
+                    var msg = firstResponse.Messages[i];
+                    var contentParts = string.Join(", ", msg.Contents.Select(c => c.GetType().Name));
+                    logger.LogInformation(
+                        "  Message[{Index}] role={Role} text={TextLen} chars, contents=[{ContentParts}]",
+                        i, msg.Role, msg.Text?.Length ?? 0, contentParts);
+                }
+
                 // Text-based path: check whether the first response contains tool
                 // calls that still need to be executed by the manual loop.
                 var (hasToolCalls, ackText) = GetFirstIterationAck(firstResponse, chatOptions);
@@ -297,6 +282,59 @@ internal sealed class UserMessageHandler(
             }
 
             await PublishReplyAsync(errorText, replyTo, correlationId, message.SessionId, isFinal: true, ct);
+        }
+    }
+
+    private async Task NativeLlmLoopAsync(
+        List<ChatMessage> chatMessages,
+        ChatOptions chatOptions,
+        ModelTier tier,
+        string sessionId,
+        string replyTo,
+        string? correlationId,
+        CancellationToken ct)
+    {
+        try
+        {
+            await using var slot = await workSerializer.AcquireForUserAsync(ct);
+
+            logger.LogInformation("Native LLM loop started for session {SessionId}", sessionId);
+
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            var response = await llmClient.GetResponseAsync(chatMessages, tier, chatOptions, ct);
+            sw.Stop();
+
+            logger.LogInformation(
+                "LLM responded in {ElapsedMs}ms — {MsgCount} message(s)",
+                sw.ElapsedMilliseconds, response.Messages.Count);
+
+            var text = agentLoopRunner.ExtractAssistantText(response);
+
+            var toolCallCount = response.Messages
+                .SelectMany(m => m.Contents.OfType<FunctionCallContent>())
+                .Count();
+
+            logger.LogInformation(
+                "Native path complete — {ToolCallCount} tool call(s) resolved, final text {TextLen} chars",
+                toolCallCount, text.Length);
+
+            await conversationMemory.AddTurnAsync(
+                sessionId,
+                new ConversationTurn("assistant", text, DateTimeOffset.UtcNow),
+                ct);
+
+            await PublishReplyAsync(text, replyTo, correlationId, sessionId, isFinal: true, ct);
+
+            logger.LogInformation("Published reply to {ReplyTo} for correlation {CorrelationId}",
+                replyTo, correlationId);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            logger.LogError(ex, "Native LLM loop failed for session {SessionId}", sessionId);
+
+            await PublishReplyAsync(
+                $"Sorry, I ran into an error while working on your request: {ex.Message}",
+                replyTo, correlationId, sessionId, isFinal: true, ct);
         }
     }
 
