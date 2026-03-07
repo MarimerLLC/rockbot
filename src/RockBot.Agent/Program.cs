@@ -55,7 +55,12 @@ if (!tierOptions.Balanced.IsConfigured)
     tierOptions.Balanced.ModelId  = llmSection["ModelId"];
 }
 
-if (tierOptions.Balanced.IsConfigured)
+// If BalancedModels is used exclusively (no single Balanced key), seed Balanced from
+// the first entry so that Low/High tier fallback resolution continues to work.
+if (!tierOptions.Balanced.IsConfigured && tierOptions.BalancedModels.Count > 0)
+    tierOptions.Balanced = tierOptions.BalancedModels[0];
+
+if (tierOptions.Balanced.IsConfigured || tierOptions.BalancedModels.Count > 0)
 {
     IChatClient BuildClient(LlmTierConfig config)
     {
@@ -71,6 +76,30 @@ if (tierOptions.Balanced.IsConfigured)
             .GetChatClient(config.ModelId!).AsIChatClient();
     }
 
+    // Build the balanced inner client: use FallbackChatClient when multiple models are listed.
+    IChatClient balancedInner;
+    if (tierOptions.BalancedModels.Count > 1)
+    {
+        // Bootstrap logger factory (not disposed — lives for the application lifetime).
+        var fallbackLoggerFactory = LoggerFactory.Create(b =>
+            b.AddConsole().SetMinimumLevel(LogLevel.Warning));
+        var fallbackLogger = fallbackLoggerFactory.CreateLogger<FallbackChatClient>();
+
+        IReadOnlyList<(string ModelId, IChatClient Client)> entries = tierOptions.BalancedModels
+            .Select(cfg => (cfg.ModelId!, BuildClient(cfg)))
+            .ToList();
+
+        balancedInner = new FallbackChatClient(entries, fallbackLogger);
+    }
+    else if (tierOptions.BalancedModels.Count == 1)
+    {
+        balancedInner = BuildClient(tierOptions.BalancedModels[0]);
+    }
+    else
+    {
+        balancedInner = BuildClient(tierOptions.Balanced);
+    }
+
     // AddRockBotTieredChatClients must be called BEFORE AddModelBehaviors so that
     // its TryAddSingleton<ModelBehavior> (which uses the inner client closure directly)
     // wins over AddModelBehaviors' factory (which resolves IChatClient from DI and would
@@ -78,7 +107,7 @@ if (tierOptions.Balanced.IsConfigured)
     // → IChatClient → deadlock).
     builder.Services.AddRockBotTieredChatClients(
         lowInnerClient:      BuildClient(tierOptions.Resolve(ModelTier.Low)),
-        balancedInnerClient: BuildClient(tierOptions.Balanced),
+        balancedInnerClient: balancedInner,
         highInnerClient:     BuildClient(tierOptions.Resolve(ModelTier.High)));
 
     builder.Services.AddModelBehaviors(opts =>
