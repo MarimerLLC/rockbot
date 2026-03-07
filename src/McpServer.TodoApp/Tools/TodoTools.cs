@@ -22,7 +22,7 @@ public sealed class TodoTools(TodoRepository repository)
     public async Task<string> AddTaskAsync(
         [Description("Title of the task.")] string title,
         [Description("Due date in ISO format (YYYY-MM-DD).")] string due_date,
-        [Description("Recurrence type: none, daily, weekly, monthly, quarterly, yearly. Defaults to none.")] string recurrence = "none",
+        [Description("Recurrence type: none, daily, weekly, monthly, quarterly, biannual, yearly. Defaults to none.")] string recurrence = "none",
         [Description("Optional description of the task.")] string? description = null)
     {
         try
@@ -31,7 +31,7 @@ public sealed class TodoTools(TodoRepository repository)
                 return "error: invalid due_date format, expected YYYY-MM-DD";
 
             if (!Enum.TryParse<RecurrenceType>(recurrence, ignoreCase: true, out var recurrenceType))
-                return "error: invalid recurrence, expected none/daily/weekly/monthly/yearly";
+                return "error: invalid recurrence, expected none/daily/weekly/monthly/quarterly/biannual/yearly";
 
             var item = new TodoItem(
                 Id: Guid.NewGuid(),
@@ -124,6 +124,7 @@ public sealed class TodoTools(TodoRepository repository)
                     RecurrenceType.Weekly   => task.DueDate.AddDays(7),
                     RecurrenceType.Monthly  => task.DueDate.AddMonths(1),
                     RecurrenceType.Quarterly => task.DueDate.AddMonths(3),
+                    RecurrenceType.BiAnnual => task.DueDate.AddMonths(6),
                     RecurrenceType.Yearly   => task.DueDate.AddYears(1),
                     _ => task.DueDate
                 };
