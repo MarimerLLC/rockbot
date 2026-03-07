@@ -29,10 +29,13 @@ dotnet run
 
 ```bash
 # Build from repo root
-docker build -f src/McpServer.TodoApp/Dockerfile -t mcpserver-todoapp .
+docker build -f src/McpServer.TodoApp/Dockerfile -t rockylhotka/mcpserver-todoapp:latest .
+
+# Push to Docker Hub
+docker push rockylhotka/mcpserver-todoapp:latest
 
 # Run with persistent storage
-docker run -p 8080:8080 -v /tmp/tododata:/data mcpserver-todoapp
+docker run -p 8080:8080 -v /tmp/tododata:/data rockylhotka/mcpserver-todoapp:latest
 
 # Health check
 curl http://localhost:8080/health
@@ -42,6 +45,17 @@ curl http://localhost:8080/mcp
 ```
 
 ## Kubernetes Deployment
+
+- **Namespace:** `rockbot`
+- **Deployment:** `mcp-todo`
+- **Image:** `rockylhotka/mcpserver-todoapp:latest`
+
+To deploy a new image:
+
+```bash
+kubectl rollout restart deployment/mcp-todo -n rockbot
+kubectl rollout status deployment/mcp-todo -n rockbot
+```
 
 Mount a Longhorn PVC at `/data` to persist `active.json` and `completed.json` across pod restarts:
 
