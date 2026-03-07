@@ -35,15 +35,11 @@ internal sealed class SubagentRunner(
         string primarySessionId,
         CancellationToken ct)
     {
-        var tier = tierSelector.SelectTier(description);
+        var classification = tierSelector.Classify(description);
+        var tier = classification.Tier;
         logger.LogInformation(
-            "Subagent {TaskId} starting (session {SessionId}) tier={Tier}",
-            taskId, subagentSessionId, tier);
-
-        _ = tierRoutingLogger.AppendAsync(new TierRoutingEntry(
-            DateTimeOffset.UtcNow,
-            description.Length > 150 ? description[..150] : description,
-            tier, "subagent"));
+            "Subagent {TaskId} starting (session {SessionId}) tier={Tier} (score={Score:F3})",
+            taskId, subagentSessionId, tier, classification.ComplexityScore);
 
         var subagentNamespace = $"subagent/{taskId}";
         var systemPrompt =
@@ -117,9 +113,13 @@ internal sealed class SubagentRunner(
             ]
         };
 
+        // Estimate post-injection context size for telemetry
+        var postInjectionTokenEstimate = chatMessages.Sum(m => (m.Text?.Length ?? 0) / 4 + 1);
+
         string finalOutput;
         bool isSuccess;
         string? error = null;
+        var subagentSw = System.Diagnostics.Stopwatch.StartNew();
 
         try
         {
@@ -145,6 +145,21 @@ internal sealed class SubagentRunner(
             isSuccess = false;
             error = ex.Message;
         }
+
+        subagentSw.Stop();
+
+        _ = tierRoutingLogger.AppendAsync(new TierRoutingEntry
+        {
+            Timestamp = DateTimeOffset.UtcNow,
+            PromptPreview = description.Length > 150 ? description[..150] : description,
+            Tier = classification.Tier,
+            Context = "subagent",
+            ComplexityScore = classification.ComplexityScore,
+            MatchedHighKeywords = classification.MatchedHighKeywords,
+            MatchedLowKeywords = classification.MatchedLowKeywords,
+            PostInjectionTokenEstimate = postInjectionTokenEstimate,
+            LatencyMs = subagentSw.ElapsedMilliseconds,
+        });
 
         // Publish result
         var result = new SubagentResultMessage

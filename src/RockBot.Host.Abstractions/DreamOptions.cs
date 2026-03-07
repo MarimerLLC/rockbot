@@ -60,8 +60,8 @@ public sealed class DreamOptions
     public bool TierRoutingReviewEnabled { get; set; } = true;
 
     /// <summary>
-    /// Path to the tier routing review directive file, relative to <see cref="AgentProfileOptions.BasePath"/>.
+    /// Path to the routing dream directive file, relative to <see cref="AgentProfileOptions.BasePath"/>.
     /// When the file does not exist, a built-in fallback directive is used.
     /// </summary>
-    public string TierRoutingDirectivePath { get; set; } = "tier-routing-directive.md";
+    public string TierRoutingDirectivePath { get; set; } = "routing-dream.md";
 }

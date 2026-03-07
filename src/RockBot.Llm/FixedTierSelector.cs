@@ -9,4 +9,7 @@ namespace RockBot.Llm;
 public sealed class FixedTierSelector(ModelTier tier) : ILlmTierSelector
 {
     public ModelTier SelectTier(string promptText) => tier;
+
+    public TierClassification Classify(string promptText) =>
+        new(tier, 0.0, [], []);
 }

@@ -1188,9 +1188,33 @@ internal sealed class DreamService : IHostedService, IDisposable
 
         var userMessage = new StringBuilder();
         userMessage.AppendLine("Recent tier-routing decisions to review:");
+        userMessage.AppendLine();
         foreach (var e in entries)
-            userMessage.AppendLine(
-                $"[{e.Timestamp:O}] tier={e.Tier} context={e.Context} prompt=\"{e.PromptPreview}\"");
+        {
+            userMessage.Append(
+                $"[{e.Timestamp:O}] tier={e.Tier} score={e.ComplexityScore:F3} context={e.Context}");
+
+            if (e.MatchedHighKeywords.Count > 0)
+                userMessage.Append($" highKeywords=[{string.Join(",", e.MatchedHighKeywords)}]");
+            if (e.MatchedLowKeywords.Count > 0)
+                userMessage.Append($" lowKeywords=[{string.Join(",", e.MatchedLowKeywords)}]");
+            if (e.PostInjectionTokenEstimate.HasValue)
+                userMessage.Append($" postInjectionTokens={e.PostInjectionTokenEstimate}");
+            if (e.InputTokens.HasValue)
+                userMessage.Append($" inputTokens={e.InputTokens}");
+            if (e.OutputTokens.HasValue)
+                userMessage.Append($" outputTokens={e.OutputTokens}");
+            if (e.LatencyMs.HasValue)
+                userMessage.Append($" latencyMs={e.LatencyMs}");
+            if (e.ToolCallCount.HasValue)
+                userMessage.Append($" toolCalls={e.ToolCallCount}");
+            if (e.ToolsUsed is { Count: > 0 })
+                userMessage.Append($" tools=[{string.Join(",", e.ToolsUsed)}]");
+            if (e.IsFallbackTriggered)
+                userMessage.Append(" fallback=true");
+
+            userMessage.AppendLine($" prompt=\"{e.PromptPreview}\"");
+        }
 
         if (File.Exists(configPath))
         {
@@ -1221,9 +1245,40 @@ internal sealed class DreamService : IHostedService, IDisposable
         var result = TryDeserializeJson<TierRoutingReviewResultDto>(json, "tier routing review");
         if (result is null) return;
 
+        // Save anti-pattern entries regardless of whether the config changed
+        if (result.AntiPatterns is { Count: > 0 })
+        {
+            var savedAntiPatterns = 0;
+            foreach (var ap in result.AntiPatterns)
+            {
+                if (string.IsNullOrWhiteSpace(ap.Content)) continue;
+
+                var content = string.IsNullOrWhiteSpace(ap.Detail)
+                    ? ap.Content.Trim()
+                    : $"{ap.Content.Trim()}\n\nDetail: {ap.Detail.Trim()}";
+
+                var entry = new MemoryEntry(
+                    Id: Guid.NewGuid().ToString("N")[..12],
+                    Content: content,
+                    Category: "anti-patterns/routing",
+                    Tags: ["routing", "anti-pattern", "dream"],
+                    CreatedAt: DateTimeOffset.UtcNow,
+                    UpdatedAt: DateTimeOffset.UtcNow);
+
+                await _memory.SaveAsync(entry);
+                savedAntiPatterns++;
+                _logger.LogInformation(
+                    "DreamService: tier routing review saved anti-pattern entry: {Content}",
+                    ap.Content);
+            }
+            _logger.LogInformation(
+                "DreamService: tier routing review — {Count} anti-pattern entry(ies) saved",
+                savedAntiPatterns);
+        }
+
         if (result.NoChangeNeeded == true)
         {
-            _logger.LogInformation("DreamService: tier routing review — no change needed");
+            _logger.LogInformation("DreamService: tier routing review — no config change needed");
             return;
         }
 
@@ -1409,21 +1464,46 @@ internal sealed class DreamService : IHostedService, IDisposable
         """;
 
     private const string BuiltInTierRoutingDirective = """
-        You are a tier-routing self-correction assistant.
-        Review the routing decisions provided and assess whether the keyword/threshold config is producing correct results.
+        You are a tier-routing self-correction assistant for an LLM agent framework.
+        Review the routing decisions and telemetry provided. Each entry includes:
+        - tier: the selected model tier (Low / Balanced / High)
+        - score: the pre-injection complexity score [0,1] that drove the decision
+        - highKeywords / lowKeywords: signals matched in the raw user prompt (Option A classification)
+        - postInjectionTokens: estimated tokens after memory recall and tool guide injection
+        - inputTokens / outputTokens: actual LLM token usage
+        - toolCalls / tools: how many tool calls fired and which tools
+        - latencyMs: request latency
+        - fallback=true: model fallback was triggered by quota/API error — exclude from quality signals
+        - prompt: first 150 chars of the user prompt
 
-        Return ONLY a JSON object.
-        When routing looks correct: {"noChangeNeeded": true}
-        When you detect systematic mis-routing: {
-          "noChangeNeeded": false,
+        Detection patterns to look for:
+        1. PANIC ESCALATION: A Low-tier session triggered many tool calls (toolCalls ≥ 3) — the model
+           likely struggled. Prompts of that shape should be routed Balanced.
+        2. TOKEN SURPRISE: postInjectionTokens >> complexity score (e.g., score < 0.20 but
+           postInjectionTokens > 2000). The pre-injection classification systematically underestimated
+           the actual context cost. Adjust thresholds or add keywords for that prompt shape.
+        3. CAPABILITY FINGERPRINTS: Recurring prompt shapes consistently mis-routed. Identify
+           keywords in those prompts that should be added to highSignalKeywords or lowSignalKeywords.
+        4. COST-AWARE CORRECTION: If a class of prompts routed Low produces many tool calls and high
+           token usage, routing them to Balanced upfront is more efficient.
+
+        IMPORTANT: Exclude sessions with fallback=true from all quality-signal reasoning — those
+        represent infrastructure errors, not genuine routing quality failures.
+
+        Return ONLY a JSON object in this exact format:
+        {
+          "noChangeNeeded": <true | false>,
           "config": {
             "version": 1,
-            "notes": "YYYY-MM-DD: <what changed and why>",
+            "notes": "YYYY-MM-DD: <what changed and why — be specific>",
             "lowCeiling": <number>,
             "balancedCeiling": <number>,
-            "highSignalKeywords": ["complete", "list", "..."],
-            "lowSignalKeywords": ["complete", "list", "..."]
-          }
+            "highSignalKeywords": ["complete", "list"],
+            "lowSignalKeywords": ["complete", "list"]
+          },
+          "antiPatterns": [
+            { "content": "short description of systematic misroute pattern", "detail": "optional longer explanation" }
+          ]
         }
 
         Rules:
@@ -1432,11 +1512,17 @@ internal sealed class DreamService : IHostedService, IDisposable
         - Never return empty keyword lists; include all sensible defaults plus any additions/removals
         - notes must state today's date and describe what changed; do not leave it blank
         - Only change what is clearly mis-routed; err on the side of no change
+        - antiPatterns: include entries for any systematic misroute pattern detected, even when
+          noChangeNeeded is true. Each content must be ≤ 120 chars; use detail for full explanation.
+        - When routing looks correct and no anti-patterns found: {"noChangeNeeded": true, "antiPatterns": []}
         """;
 
     private sealed record TierRoutingReviewResultDto(
         bool? NoChangeNeeded,
-        TierSelectorConfig? Config);
+        TierSelectorConfig? Config,
+        List<TierRoutingAntiPatternDto>? AntiPatterns);
+
+    private sealed record TierRoutingAntiPatternDto(string Content, string? Detail);
 
     private sealed record DreamResultDto(
         List<string>? ToDelete,
