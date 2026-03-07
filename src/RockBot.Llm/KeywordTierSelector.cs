@@ -101,13 +101,27 @@ public sealed class KeywordTierSelector : ILlmTierSelector
     }
 
     /// <inheritdoc/>
-    public ModelTier SelectTier(string promptText)
+    public ModelTier SelectTier(string promptText) => Classify(promptText).Tier;
+
+    /// <inheritdoc/>
+    public TierClassification Classify(string promptText)
     {
         var config = GetEffectiveConfig();
-        var score = ComputeScore(promptText, config);
-        return score <= config.LowCeiling      ? ModelTier.Low
-             : score <= config.BalancedCeiling ? ModelTier.Balanced
-             :                                   ModelTier.High;
+        var lower = promptText.ToLowerInvariant();
+
+        var matchedHigh = config.HighSignalKeywords
+            .Where(k => lower.Contains(k, StringComparison.Ordinal))
+            .ToArray();
+        var matchedLow = config.LowSignalKeywords
+            .Where(k => lower.Contains(k, StringComparison.Ordinal))
+            .ToArray();
+
+        var score = ComputeScore(promptText, config, matchedHigh.Length, matchedLow.Length);
+        var tier = score <= config.LowCeiling      ? ModelTier.Low
+                 : score <= config.BalancedCeiling ? ModelTier.Balanced
+                 :                                   ModelTier.High;
+
+        return new TierClassification(tier, score, matchedHigh, matchedLow);
     }
 
     // ── Hot-reload cache ──────────────────────────────────────────────────────
@@ -173,17 +187,23 @@ public sealed class KeywordTierSelector : ILlmTierSelector
 
     // ── Scoring ───────────────────────────────────────────────────────────────
 
-    private static double ComputeScore(string prompt, EffectiveConfig config)
+    private static double ComputeScore(string prompt, EffectiveConfig config,
+        int? complexSignalCount = null, int? simplexSignalCount = null)
     {
-        var lower = prompt.ToLowerInvariant();
-
         var wordCount     = CountWords(prompt);
         var hasCode       = CodeBlockRegex.IsMatch(prompt);
         var hasMath       = MathRegex.IsMatch(prompt);
         var hasMultiStep  = MultiStepRegex.IsMatch(prompt);
 
-        var complexSignals = config.HighSignalKeywords.Count(k => lower.Contains(k, StringComparison.Ordinal));
-        var simplexSignals = config.LowSignalKeywords.Count(k => lower.Contains(k, StringComparison.Ordinal));
+        // Use pre-computed counts when available (avoids a second scan over the keyword lists)
+        var lower = complexSignalCount is null || simplexSignalCount is null
+            ? prompt.ToLowerInvariant()
+            : string.Empty;
+
+        var complexSignals = complexSignalCount
+            ?? config.HighSignalKeywords.Count(k => lower.Contains(k, StringComparison.Ordinal));
+        var simplexSignals = simplexSignalCount
+            ?? config.LowSignalKeywords.Count(k => lower.Contains(k, StringComparison.Ordinal));
 
         // Length component (0 – 0.40): longer prompts tend to be more complex.
         // Fine-grained buckets in the 10-30 word range so concise-but-complex task

@@ -134,6 +134,69 @@ public class KeywordTierSelectorTests
         }
     }
 
+    // ── Classify() tests ─────────────────────────────────────────────────────
+
+    [TestMethod]
+    public void Classify_SimpleQuestion_ReturnsTierAndZeroKeywords()
+    {
+        var result = _selector.Classify("What is the capital of France?");
+
+        Assert.AreEqual(ModelTier.Low, result.Tier);
+        Assert.IsTrue(result.ComplexityScore >= 0.0 && result.ComplexityScore <= 1.0,
+            "Score must be in [0,1]");
+        // "what is" is a low-signal keyword, so MatchedLowKeywords should be non-empty
+        Assert.IsTrue(result.MatchedLowKeywords.Count > 0,
+            "Simple question should match at least one low-signal keyword");
+        Assert.AreEqual(0, result.MatchedHighKeywords.Count,
+            "Simple factual question should not match high-signal keywords");
+    }
+
+    [TestMethod]
+    public void Classify_ComplexPrompt_MatchesHighKeywords()
+    {
+        const string prompt =
+            "Analyze the trade-offs between microservices and monolithic architectures " +
+            "and design a comprehensive migration strategy.";
+
+        var result = _selector.Classify(prompt);
+
+        Assert.IsTrue(result.MatchedHighKeywords.Count > 0,
+            "Complex prompt should match at least one high-signal keyword");
+        Assert.IsTrue(result.Tier >= ModelTier.Balanced,
+            "Complex prompt with high keywords should be Balanced or High");
+    }
+
+    [TestMethod]
+    public void Classify_TierConsistentWithSelectTier()
+    {
+        string[] prompts =
+        [
+            "What is the capital of France?",
+            "Define photosynthesis.",
+            "Analyze the pros and cons of using microservices for a startup.",
+            "Design a distributed caching system with comprehensive trade-off analysis.",
+        ];
+
+        foreach (var prompt in prompts)
+        {
+            var classification = _selector.Classify(prompt);
+            var tier = _selector.SelectTier(prompt);
+            Assert.AreEqual(tier, classification.Tier,
+                $"Classify().Tier must match SelectTier() for: \"{prompt}\"");
+        }
+    }
+
+    [TestMethod]
+    public void Classify_ComplexityScoreMatchesKeywordPresence()
+    {
+        // A prompt with no high-signal keywords should score lower than one with several
+        var simple = _selector.Classify("Tell me about dogs.");
+        var complex = _selector.Classify("Analyze and evaluate the distributed microservices architecture trade-offs.");
+
+        Assert.IsTrue(complex.ComplexityScore > simple.ComplexityScore,
+            "High-keyword prompt should have a higher complexity score");
+    }
+
     [TestMethod]
     public void SelectTier_WithMissingConfigFile_BehavesLikeCompiledDefaults()
     {

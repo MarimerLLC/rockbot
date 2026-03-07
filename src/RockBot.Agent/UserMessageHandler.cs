@@ -74,13 +74,9 @@ internal sealed class UserMessageHandler(
         logger.LogInformation("Received message from {UserId} in session {SessionId}: {Content}",
             message.UserId, message.SessionId, message.Content);
 
-        var tier = tierSelector.SelectTier(message.Content);
-        logger.LogInformation("Routing user message to tier={Tier}", tier);
-
-        _ = tierRoutingLogger.AppendAsync(new TierRoutingEntry(
-            DateTimeOffset.UtcNow,
-            message.Content.Length > 150 ? message.Content[..150] : message.Content,
-            tier, "user-message"));
+        var classification = tierSelector.Classify(message.Content);
+        var tier = classification.Tier;
+        logger.LogInformation("Routing user message to tier={Tier} (score={Score:F3})", tier, classification.ComplexityScore);
 
         try
         {
@@ -102,6 +98,7 @@ internal sealed class UserMessageHandler(
 
             // Build context using shared builder
             var chatMessages = await agentContextBuilder.BuildAsync(message.SessionId, message.Content, ct);
+            var postInjectionTokenEstimate = EstimateContextTokens(chatMessages);
 
             // Session-start briefing: on the first turn of a new session, inject the
             // session-start directive so the agent checks briefing queue, plans, etc.
@@ -165,19 +162,20 @@ internal sealed class UserMessageHandler(
                 logger.LogInformation("Native path: launching background LLM loop for session {SessionId}", message.SessionId);
                 await PublishReplyAsync("I'm working on that — I'll follow up shortly.",
                     replyTo, correlationId, message.SessionId, isFinal: false, ct);
-                _ = NativeLlmLoopAsync(chatMessages, chatOptions, tier, message.SessionId, replyTo, correlationId, sessionCt);
+                _ = NativeLlmLoopAsync(chatMessages, chatOptions, classification, postInjectionTokenEstimate,
+                    message.SessionId, replyTo, correlationId, sessionCt);
             }
             else
             {
                 logger.LogInformation("Calling LLM — iteration 1 ({MessageCount} messages in context)",
                     chatMessages.Count);
-                var sw = System.Diagnostics.Stopwatch.StartNew();
+                var routingSw = System.Diagnostics.Stopwatch.StartNew();
                 var firstResponse = await llmClient.GetResponseAsync(chatMessages, tier, chatOptions, ct);
-                sw.Stop();
+                routingSw.Stop();
 
                 logger.LogInformation(
                     "LLM responded in {ElapsedMs}ms — {MsgCount} message(s), iteration 1",
-                    sw.ElapsedMilliseconds, firstResponse.Messages.Count);
+                    routingSw.ElapsedMilliseconds, firstResponse.Messages.Count);
 
                 // Log response messages
                 for (var i = 0; i < firstResponse.Messages.Count; i++)
@@ -192,6 +190,22 @@ internal sealed class UserMessageHandler(
                 // Text-based path: check whether the first response contains tool
                 // calls that still need to be executed by the manual loop.
                 var (hasToolCalls, ackText) = GetFirstIterationAck(firstResponse, chatOptions);
+
+                // Routing telemetry written here for the text-based path (first iteration complete)
+                _ = tierRoutingLogger.AppendAsync(new TierRoutingEntry
+                {
+                    Timestamp = DateTimeOffset.UtcNow,
+                    PromptPreview = message.Content.Length > 150 ? message.Content[..150] : message.Content,
+                    Tier = tier,
+                    Context = "user-message",
+                    ComplexityScore = classification.ComplexityScore,
+                    MatchedHighKeywords = classification.MatchedHighKeywords,
+                    MatchedLowKeywords = classification.MatchedLowKeywords,
+                    PostInjectionTokenEstimate = postInjectionTokenEstimate,
+                    InputTokens = firstResponse.Usage?.InputTokenCount,
+                    OutputTokens = firstResponse.Usage?.OutputTokenCount,
+                    LatencyMs = routingSw.ElapsedMilliseconds,
+                });
 
                 if (hasToolCalls)
                 {
@@ -288,7 +302,8 @@ internal sealed class UserMessageHandler(
     private async Task NativeLlmLoopAsync(
         List<ChatMessage> chatMessages,
         ChatOptions chatOptions,
-        ModelTier tier,
+        TierClassification classification,
+        int? postInjectionTokenEstimate,
         string sessionId,
         string replyTo,
         string? correlationId,
@@ -301,7 +316,7 @@ internal sealed class UserMessageHandler(
             logger.LogInformation("Native LLM loop started for session {SessionId}", sessionId);
 
             var sw = System.Diagnostics.Stopwatch.StartNew();
-            var response = await llmClient.GetResponseAsync(chatMessages, tier, chatOptions, ct);
+            var response = await llmClient.GetResponseAsync(chatMessages, classification.Tier, chatOptions, ct);
             sw.Stop();
 
             logger.LogInformation(
@@ -310,13 +325,33 @@ internal sealed class UserMessageHandler(
 
             var text = agentLoopRunner.ExtractAssistantText(response);
 
-            var toolCallCount = response.Messages
+            var toolCalls = response.Messages
                 .SelectMany(m => m.Contents.OfType<FunctionCallContent>())
-                .Count();
+                .ToList();
+            var toolCallNames = toolCalls.Select(c => c.Name).Distinct().ToList();
 
             logger.LogInformation(
                 "Native path complete — {ToolCallCount} tool call(s) resolved, final text {TextLen} chars",
-                toolCallCount, text.Length);
+                toolCalls.Count, text.Length);
+
+            _ = tierRoutingLogger.AppendAsync(new TierRoutingEntry
+            {
+                Timestamp = DateTimeOffset.UtcNow,
+                PromptPreview = chatMessages.FirstOrDefault(m => m.Role == ChatRole.User)?.Text is { } p
+                    ? (p.Length > 150 ? p[..150] : p)
+                    : "",
+                Tier = classification.Tier,
+                Context = "user-message",
+                ComplexityScore = classification.ComplexityScore,
+                MatchedHighKeywords = classification.MatchedHighKeywords,
+                MatchedLowKeywords = classification.MatchedLowKeywords,
+                PostInjectionTokenEstimate = postInjectionTokenEstimate,
+                InputTokens = response.Usage?.InputTokenCount,
+                OutputTokens = response.Usage?.OutputTokenCount,
+                LatencyMs = sw.ElapsedMilliseconds,
+                ToolCallCount = toolCalls.Count,
+                ToolsUsed = toolCallNames.Count > 0 ? toolCallNames : null,
+            });
 
             await conversationMemory.AddTurnAsync(
                 sessionId,
@@ -416,6 +451,14 @@ internal sealed class UserMessageHandler(
         var envelope = reply.ToEnvelope<AgentReply>(source: agent.Name, correlationId: correlationId);
         await publisher.PublishAsync(replyTo, envelope, ct);
     }
+
+    /// <summary>
+    /// Estimates the total token count of a built context by summing character lengths and
+    /// dividing by 4 (the conventional rough approximation for English-language text).
+    /// Used to detect "token surprise" misroutes in the dream feedback loop.
+    /// </summary>
+    private static int EstimateContextTokens(IEnumerable<ChatMessage> messages) =>
+        messages.Sum(m => (m.Text?.Length ?? 0) / 4 + 1);
 
     private (bool hasToolCalls, string ackText) GetFirstIterationAck(
         ChatResponse response, ChatOptions chatOptions)
