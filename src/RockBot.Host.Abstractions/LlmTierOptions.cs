@@ -30,6 +30,11 @@ public sealed class LlmTierOptions
     public LlmTierConfig Balanced { get; set; } = new();
     public LlmTierConfig High     { get; set; } = new();
 
+    /// <summary>Ordered list of balanced-tier model configs for fallback chain.
+    /// When populated, takes precedence over the single <see cref="Balanced"/> entry.
+    /// First entry is preferred; subsequent entries are fallbacks in order.</summary>
+    public List<LlmTierConfig> BalancedModels { get; set; } = [];
+
     /// <summary>
     /// Returns the effective config for <paramref name="tier"/>, falling back
     /// to <see cref="Balanced"/> when the requested tier is not configured.
