@@ -101,6 +101,34 @@ spec:
           resources:
             {{- toYaml .Values.agent.resources | nindent 12 }}
 
+        {{- if .Values.routingStatsMcp.enabled }}
+        - name: routing-stats-mcp
+          image: {{ .Values.routingStatsMcp.image.repository }}:{{ .Values.routingStatsMcp.image.tag }}
+          imagePullPolicy: {{ .Values.imagePullPolicy }}
+          ports:
+            - name: http
+              containerPort: 8080
+          volumeMounts:
+            - name: agent-data
+              mountPath: /data/agent
+              readOnly: true
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 15
+            periodSeconds: 15
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          resources:
+            {{- toYaml .Values.routingStatsMcp.resources | nindent 12 }}
+        {{- end }}
+
       volumes:
         - name: agent-data
           persistentVolumeClaim:

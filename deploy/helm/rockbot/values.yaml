@@ -103,6 +103,24 @@ openrouterMcp:
       cpu: 200m
       memory: 256Mi
 
+# ── Routing Stats MCP server ──────────────────────────────────────────────────
+# Sidecar container in the agent pod that exposes two MCP tools:
+#   get_routing_stats — aggregate counts/percentages per tier, latency, and token stats
+#   get_routing_log   — recent raw routing decisions for spotting individual misroutes
+# Runs alongside the agent and reads tier-routing-log.jsonl from the shared agent PVC.
+routingStatsMcp:
+  enabled: true
+  image:
+    repository: rockylhotka/mcpserver-routingstats
+    tag: latest
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 200m
+      memory: 128Mi
+
 # ── TodoApp MCP server ────────────────────────────────────────────────────────
 # Standalone MCP server that exposes a persistent to-do list to the agent.
 # Data is stored in a Longhorn PVC mounted at /data inside the container.

@@ -3,6 +3,10 @@
     "aggregator": {
       "type": "sse",
       "url": "https://mcp-aggregator.<your-tailnet>.ts.net/"
+    },
+    "routing-stats": {
+      "type": "sse",
+      "url": "http://localhost:8080/"
     }
   }
 }
