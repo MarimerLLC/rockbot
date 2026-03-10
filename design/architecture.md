@@ -21,7 +21,7 @@ RockBot takes a different approach: **a swarm of isolated agents communicating v
 │              (RabbitMQ / Azure SB)                   │
 │                                                      │
 │  Topics: agent.task, agent.response, tool.invoke,   │
-│          tool.result, llm.request, llm.response     │
+│          tool.result                                 │
 └──────┬──────────┬──────────┬──────────┬─────────────┘
        │          │          │          │
   ┌────▼───┐ ┌───▼────┐ ┌───▼───┐ ┌───▼────────┐
