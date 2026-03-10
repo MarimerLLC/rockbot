@@ -1,0 +1,70 @@
+{{- if .Values.azureFoundryMcp.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "rockbot.fullname" . }}-azure-foundry-mcp
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "rockbot.labels" . | nindent 4 }}
+    app.kubernetes.io/component: azure-foundry-mcp
+spec:
+  replicas: {{ .Values.azureFoundryMcp.replicaCount }}
+  selector:
+    matchLabels:
+      app: rockbot-azure-foundry-mcp
+      {{- include "rockbot.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        app: rockbot-azure-foundry-mcp
+        {{- include "rockbot.labels" . | nindent 8 }}
+        {{- include "rockbot.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: azure-foundry-mcp
+    spec:
+      containers:
+        - name: azure-foundry-mcp
+          image: {{ .Values.azureFoundryMcp.image.repository }}:{{ .Values.azureFoundryMcp.image.tag }}
+          imagePullPolicy: {{ .Values.imagePullPolicy }}
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            # Service principal credentials — picked up automatically by DefaultAzureCredential.
+            - name: AZURE_TENANT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "rockbot.secretName" . }}
+                  key: AzureFoundry__TenantId
+            - name: AZURE_CLIENT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "rockbot.secretName" . }}
+                  key: AzureFoundry__ClientId
+            - name: AZURE_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "rockbot.secretName" . }}
+                  key: AzureFoundry__ClientSecret
+            # Non-secret resource identifiers — override appsettings.json defaults.
+            - name: AzureFoundry__SubscriptionId
+              value: {{ .Values.azureFoundryMcp.subscriptionId | quote }}
+            - name: AzureFoundry__ResourceGroup
+              value: {{ .Values.azureFoundryMcp.resourceGroup | quote }}
+            - name: AzureFoundry__AccountName
+              value: {{ .Values.azureFoundryMcp.accountName | quote }}
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 15
+            periodSeconds: 15
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          resources:
+            {{- toYaml .Values.azureFoundryMcp.resources | nindent 12 }}
+{{- end }}

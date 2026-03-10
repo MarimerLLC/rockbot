@@ -25,6 +25,7 @@ internal sealed class SubagentRunner(
     ToolGuideTools toolGuideTools,
     IMessagePublisher publisher,
     TierRoutingLogger tierRoutingLogger,
+    AgentProfile agentProfile,
     ILogger<SubagentRunner> logger)
 {
     public async Task RunAsync(
@@ -42,7 +43,9 @@ internal sealed class SubagentRunner(
             taskId, subagentSessionId, tier, classification.ComplexityScore);
 
         var subagentNamespace = $"subagent/{taskId}";
-        var systemPrompt =
+
+        // Dynamic preamble — includes runtime values (namespace, working memory keys).
+        var preamble =
             "You are a subagent executing a specific background task. Execute the task directly " +
             "using your tools — do not design frameworks, save skills, or plan methodology. " +
             "Start calling the required tools immediately. " +
@@ -55,6 +58,14 @@ internal sealed class SubagentRunner(
             "Your final message must summarise what was done and list each key you saved " +
             "so the primary agent knows where to find the detailed data. " +
             "Do not return an empty or vague final response.";
+
+        // Behavioral directives — loaded from subagent-directives.md on the PVC so they
+        // can be updated without a redeploy. The file is optional; if absent the preamble
+        // alone is used (subagent still functions, just without the extended guidance).
+        var directives = agentProfile.SubagentDirectives?.RawContent;
+        var systemPrompt = directives is not null
+            ? $"{preamble}\n\n{directives}"
+            : preamble;
 
         var chatMessages = new List<ChatMessage>
         {

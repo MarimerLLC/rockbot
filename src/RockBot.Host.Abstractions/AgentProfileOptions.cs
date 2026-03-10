@@ -36,4 +36,11 @@ public sealed class AgentProfileOptions
     /// Defaults to <c>"memory-rules.md"</c>.
     /// </summary>
     public string? MemoryRulesPath { get; set; } = "memory-rules.md";
+
+    /// <summary>
+    /// Path to the optional subagent directives document. When relative, resolved under <see cref="BasePath"/>.
+    /// Null means no subagent directives document is expected.
+    /// Defaults to <c>"subagent-directives.md"</c>.
+    /// </summary>
+    public string? SubagentDirectivesPath { get; set; } = "subagent-directives.md";
 }

@@ -1,4 +1,6 @@
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
+using RockBot.Messaging;
 
 namespace RockBot.Messaging.RabbitMQ;
 
@@ -22,6 +24,9 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<RabbitMqConnectionManager>();
         services.AddSingleton<IMessagePublisher, RabbitMqPublisher>();
         services.AddSingleton<IMessageSubscriber, RabbitMqSubscriber>();
+        services.AddSingleton<RabbitMqManagementClient>();
+        services.AddSingleton<IDlqSampler>(sp => sp.GetRequiredService<RabbitMqManagementClient>());
+        services.AddSingleton<IHostedService, DlqDepthReporter>();
 
         return services;
     }

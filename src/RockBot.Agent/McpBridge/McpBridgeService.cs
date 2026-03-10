@@ -423,7 +423,33 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
 
         // Parse and pre-process arguments outside the try block so they are accessible
         // in the catch for transparent reconnect-and-retry.
-        var arguments = McpToolExecutor.ParseArguments(request.Arguments);
+        Dictionary<string, object?> arguments;
+        try
+        {
+            arguments = McpToolExecutor.ParseArguments(request.Arguments);
+        }
+        catch (JsonException ex)
+        {
+            _logger.LogWarning(
+                "Invalid JSON arguments for {Server}/{Tool}: {Message} | Raw: {Args}",
+                serverName, request.ToolName, ex.Message, request.Arguments);
+
+            var parseError = new ToolError
+            {
+                ToolCallId = request.ToolCallId,
+                ToolName = request.ToolName,
+                Code = ToolError.Codes.InvalidArguments,
+                Message =
+                    $"Tool arguments must be a valid JSON object with double-quoted keys and string values. " +
+                    $"Received: {request.Arguments} — parse error: {ex.Message}. " +
+                    $"Retry with correct JSON, for example: " +
+                    $"{{\"timeZone\": \"America/Chicago\"}} not {{timeZone: 'America/Chicago'}}.",
+                IsRetryable = false
+            };
+
+            await PublishResponseAsync(parseError, replyTo, envelope.CorrelationId, ct);
+            return MessageResult.Ack;
+        }
 
         // Detect and unwrap self-referential double-wrapped invoke_tool calls.
         if (request.ToolName == "invoke_tool"
