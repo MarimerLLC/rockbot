@@ -88,6 +88,8 @@ Well-known agents:
 
 ## Implementing an A2A agent
 
+### Queue-based (RabbitMQ) agent
+
 Call `AddA2A()` in the agent's `Program.cs` and register an `IAgentTaskHandler`:
 
 ```csharp
@@ -110,6 +112,55 @@ messages (state `Working`) while processing, and must publish either an
 `AgentTaskResult` or `AgentTaskError` when done.
 
 See `RockBot.ResearchAgent` and `RockBot.SampleAgent` for working examples.
+
+---
+
+### HTTP-based agent
+
+For agents that communicate over HTTP rather than queued messaging, use
+`RockBot.SampleAgent.Http` as the reference implementation.
+
+An HTTP agent is a standard ASP.NET Core `WebApplication` that exposes two endpoints:
+
+| Endpoint | Description |
+|---|---|
+| `GET /.well-known/agent.json` | Returns the `AgentCard` describing the agent |
+| `POST /tasks/send` | Accepts an `AgentTaskRequest`, processes it, returns `AgentTaskResult` |
+
+Unlike queue-based agents, an HTTP agent returns the result **synchronously** in the
+HTTP response body. There is no reply-to queue; the caller waits for the response.
+
+HTTP agents stay in memory listening for inbound calls rather than the KEDA
+on-demand pattern. They are suitable for low-latency use cases or environments
+where a message broker is not available.
+
+#### Registration with the primary agent
+
+Because HTTP agents may not be connected to the RabbitMQ bus, they cannot
+auto-announce themselves via the discovery topic. Register them in
+`well-known-agents.json` on the agent PVC and include the agent's base URL:
+
+```json
+[
+  {
+    "agentName": "SampleAgent-Http",
+    "description": "Sample HTTP agent.",
+    "version": "1.0",
+    "url": "http://sampleagent-http:5100",
+    "skills": [
+      { "id": "echo", "name": "Echo", "description": "Echoes the input back." },
+      { "id": "general", "name": "General Task", "description": "General-purpose LLM task." }
+    ]
+  }
+]
+```
+
+When `invoke_agent` is called for an agent whose `AgentCard` has a non-empty `Url`,
+the primary agent dispatches the task over HTTP to `{Url}/tasks/send` instead of
+publishing to the message bus. The result is folded into the conversation by the
+same `A2ATaskResultHandler` used for queue-based results.
+
+See `RockBot.SampleAgent.Http` for a complete working example.
 
 ---
 

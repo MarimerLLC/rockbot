@@ -17,7 +17,8 @@ internal sealed class A2ACallerToolRegistrar(
     A2ATaskTracker tracker,
     A2AOptions options,
     AgentIdentity identity,
-    ILogger<A2ACallerToolRegistrar> logger) : IHostedService
+    IHttpClientFactory httpClientFactory,
+    ILoggerFactory loggerFactory) : IHostedService
 {
     private const string InvokeAgentSchema = """
         {
@@ -58,6 +59,7 @@ internal sealed class A2ACallerToolRegistrar(
 
     public Task StartAsync(CancellationToken cancellationToken)
     {
+        var invokeLogger = loggerFactory.CreateLogger<InvokeAgentExecutor>();
         registry.Register(new ToolRegistration
         {
             Name = "invoke_agent",
@@ -68,8 +70,10 @@ internal sealed class A2ACallerToolRegistrar(
                 """,
             ParametersSchema = InvokeAgentSchema,
             Source = "a2a"
-        }, new InvokeAgentExecutor(publisher, tracker, options, identity));
-        logger.LogInformation("Registered tool: invoke_agent");
+        }, new InvokeAgentExecutor(publisher, tracker, directory, options, identity, httpClientFactory, invokeLogger));
+
+        var registrarLogger = loggerFactory.CreateLogger<A2ACallerToolRegistrar>();
+        registrarLogger.LogInformation("Registered tool: invoke_agent");
 
         registry.Register(new ToolRegistration
         {
@@ -78,7 +82,7 @@ internal sealed class A2ACallerToolRegistrar(
             ParametersSchema = ListKnownAgentsSchema,
             Source = "a2a"
         }, new ListKnownAgentsExecutor(directory));
-        logger.LogInformation("Registered tool: list_known_agents");
+        registrarLogger.LogInformation("Registered tool: list_known_agents");
 
         return Task.CompletedTask;
     }
