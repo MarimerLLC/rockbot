@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Diagnostics.Metrics;
 
@@ -44,4 +45,20 @@ internal static class RabbitMqDiagnostics
             "rockbot.messaging.active_messages",
             unit: "{message}",
             description: "Number of messages currently being processed");
+
+    /// <summary>
+    /// Per-DLQ message depths, keyed by queue name.
+    /// Updated by <see cref="DlqDepthReporter"/> every 60 seconds (when Management API is configured).
+    /// </summary>
+    internal static readonly ConcurrentDictionary<string, long> DlqDepths = new(StringComparer.Ordinal);
+
+    public static readonly ObservableGauge<long> DlqDepth =
+        Meter.CreateObservableGauge(
+            "rockbot.messaging.dlq.depth",
+            unit: "{message}",
+            description: "Number of messages currently sitting in each dead-letter queue",
+            observeValues: () => DlqDepths.Select(
+                kvp => new Measurement<long>(
+                    kvp.Value,
+                    new KeyValuePair<string, object?>("queue", kvp.Key))));
 }

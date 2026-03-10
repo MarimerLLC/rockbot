@@ -49,4 +49,10 @@ public sealed class RabbitMqOptions
     /// Prefetch count for consumers. Default: 10.
     /// </summary>
     public ushort PrefetchCount { get; set; } = 10;
+
+    /// <summary>
+    /// Base URL for the RabbitMQ Management HTTP API (e.g., <c>http://localhost:15672</c>).
+    /// When null or empty, DLQ depth reporting and DLQ message sampling are disabled.
+    /// </summary>
+    public string? ManagementApiBaseUrl { get; set; }
 }

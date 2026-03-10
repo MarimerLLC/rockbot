@@ -5,6 +5,7 @@ using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using RockBot.Messaging;
 
 namespace RockBot.Host;
 
@@ -26,6 +27,7 @@ internal sealed class DreamService : IHostedService, IDisposable
     private readonly ISkillUsageStore? _skillUsageStore;
     private readonly IConversationLog? _conversationLog;
     private readonly TierRoutingLogger? _tierRoutingLogger;
+    private readonly IDlqSampler? _dlqSampler;
     private readonly ILlmClient _llmClient;
     private readonly IUserActivityMonitor _userActivityMonitor;
     private readonly AgentClock _clock;
@@ -40,6 +42,7 @@ internal sealed class DreamService : IHostedService, IDisposable
     private string? _prefDreamDirective;
     private string? _skillGapDirective;
     private string? _tierRoutingDirective;
+    private string? _dlqDirective;
 
     public DreamService(
         ILongTermMemory memory,
@@ -53,7 +56,8 @@ internal sealed class DreamService : IHostedService, IDisposable
         IFeedbackStore? feedbackStore = null,
         ISkillUsageStore? skillUsageStore = null,
         IConversationLog? conversationLog = null,
-        TierRoutingLogger? tierRoutingLogger = null)
+        TierRoutingLogger? tierRoutingLogger = null,
+        IDlqSampler? dlqSampler = null)
     {
         _memory = memory;
         _skillStore = skillStores.FirstOrDefault();
@@ -61,6 +65,7 @@ internal sealed class DreamService : IHostedService, IDisposable
         _skillUsageStore = skillUsageStore;
         _conversationLog = conversationLog;
         _tierRoutingLogger = tierRoutingLogger;
+        _dlqSampler = dlqSampler;
         _llmClient = llmClient;
         _userActivityMonitor = userActivityMonitor;
         _clock = clock;
@@ -157,6 +162,19 @@ internal sealed class DreamService : IHostedService, IDisposable
                 _logger.LogDebug("DreamService: tier routing directive not found at {Path}; using built-in", tierRoutingDirectivePath);
             else
                 _logger.LogInformation("DreamService: loaded tier routing directive from {Path}", tierRoutingDirectivePath);
+        }
+
+        if (_options.DlqReviewEnabled && _dlqSampler is not null)
+        {
+            var dlqDirectivePath = ResolvePath(_options.DlqDirectivePath, _profileOptions.BasePath);
+            _dlqDirective = File.Exists(dlqDirectivePath)
+                ? File.ReadAllText(dlqDirectivePath)
+                : null; // null → BuiltInDlqDirective used in RunDlqReviewPassAsync
+
+            if (!File.Exists(dlqDirectivePath))
+                _logger.LogDebug("DreamService: DLQ directive not found at {Path}; using built-in", dlqDirectivePath);
+            else
+                _logger.LogInformation("DreamService: loaded DLQ directive from {Path}", dlqDirectivePath);
         }
 
         try
@@ -287,7 +305,7 @@ internal sealed class DreamService : IHostedService, IDisposable
                 new(ChatRole.User, userMessage.ToString())
             };
 
-            var response = await _llmClient.GetResponseAsync(messages, ModelTier.High, new ChatOptions { ResponseFormat = ChatResponseFormat.Json });
+            var response = await _llmClient.GetResponseAsync(messages, ModelTier.Balanced, new ChatOptions { ResponseFormat = ChatResponseFormat.Json });
             var raw = response.Text?.Trim() ?? string.Empty;
             var json = ExtractJsonObject(raw);
 
@@ -368,6 +386,8 @@ internal sealed class DreamService : IHostedService, IDisposable
             await RunPreferenceInferencePassAsync();
 
             await RunTierRoutingReviewPassAsync();
+
+            await RunDlqReviewPassAsync();
 
             sw.Stop();
             _logger.LogInformation(
@@ -515,7 +535,7 @@ internal sealed class DreamService : IHostedService, IDisposable
             new(ChatRole.User, userMessage.ToString())
         };
 
-        var response = await _llmClient.GetResponseAsync(messages, ModelTier.High, new ChatOptions { ResponseFormat = ChatResponseFormat.Json });
+        var response = await _llmClient.GetResponseAsync(messages, ModelTier.Balanced, new ChatOptions { ResponseFormat = ChatResponseFormat.Json });
         var raw = response.Text?.Trim() ?? string.Empty;
         var json = ExtractJsonObject(raw);
 
@@ -774,7 +794,7 @@ internal sealed class DreamService : IHostedService, IDisposable
             new(ChatRole.User, userMessage.ToString())
         };
 
-        var response = await _llmClient.GetResponseAsync(messages, ModelTier.High, new ChatOptions { ResponseFormat = ChatResponseFormat.Json });
+        var response = await _llmClient.GetResponseAsync(messages, ModelTier.Balanced, new ChatOptions { ResponseFormat = ChatResponseFormat.Json });
         var raw = response.Text?.Trim() ?? string.Empty;
         var json = ExtractJsonObject(raw);
 
@@ -1003,7 +1023,7 @@ internal sealed class DreamService : IHostedService, IDisposable
             new(ChatRole.User, userMessage.ToString())
         };
 
-        var response = await _llmClient.GetResponseAsync(messages, ModelTier.High, new ChatOptions { ResponseFormat = ChatResponseFormat.Json });
+        var response = await _llmClient.GetResponseAsync(messages, ModelTier.Balanced, new ChatOptions { ResponseFormat = ChatResponseFormat.Json });
         var raw = response.Text?.Trim() ?? string.Empty;
         var json = ExtractJsonObject(raw);
 
@@ -1100,7 +1120,7 @@ internal sealed class DreamService : IHostedService, IDisposable
                 new(ChatRole.User, userMessage.ToString())
             };
 
-            var response = await _llmClient.GetResponseAsync(messages, ModelTier.High, new ChatOptions { ResponseFormat = ChatResponseFormat.Json });
+            var response = await _llmClient.GetResponseAsync(messages, ModelTier.Balanced, new ChatOptions { ResponseFormat = ChatResponseFormat.Json });
             var raw = response.Text?.Trim() ?? string.Empty;
             var json = ExtractJsonObject(raw);
 
@@ -1230,7 +1250,7 @@ internal sealed class DreamService : IHostedService, IDisposable
         };
 
         var response = await _llmClient.GetResponseAsync(
-            messages, ModelTier.High, new ChatOptions { ResponseFormat = ChatResponseFormat.Json });
+            messages, ModelTier.Balanced, new ChatOptions { ResponseFormat = ChatResponseFormat.Json });
         var raw = response.Text?.Trim() ?? string.Empty;
         var json = ExtractJsonObject(raw);
 
@@ -1298,6 +1318,155 @@ internal sealed class DreamService : IHostedService, IDisposable
         _logger.LogInformation(
             "DreamService: tier routing review updated tier-selector.json — notes: {Notes}",
             result.Config.Notes ?? "(none)");
+    }
+
+    /// <summary>
+    /// Inspects non-empty dead-letter queues, asks the LLM to classify failure patterns,
+    /// saves patterns as memory entries, and purges queues the LLM deems safe to clear.
+    /// Skipped when the DLQ sampler is unavailable or <see cref="DreamOptions.DlqReviewEnabled"/> is false.
+    /// </summary>
+    private async Task RunDlqReviewPassAsync()
+    {
+        if (_dlqSampler is null || !_options.DlqReviewEnabled) return;
+
+        try
+        {
+            var queues = await _dlqSampler.GetDlqQueuesAsync();
+            var nonEmpty = queues.Where(q => q.MessageCount > 0).ToList();
+
+            if (nonEmpty.Count == 0)
+            {
+                _logger.LogDebug("DreamService: DLQ review — all DLQs empty; skipping");
+                return;
+            }
+
+            _logger.LogInformation(
+                "DreamService: DLQ review pass — {Count} non-empty DLQ(s): {Names}",
+                nonEmpty.Count,
+                string.Join(", ", nonEmpty.Select(q => $"{q.Name}({q.MessageCount})")));
+
+            // Sample messages from each non-empty DLQ
+            var samples = new List<(DlqQueueInfo Queue, IReadOnlyList<DlqMessage> Messages)>();
+            foreach (var queue in nonEmpty)
+            {
+                var messages = await _dlqSampler.SampleMessagesAsync(queue.Name, maxCount: 10);
+                if (messages.Count > 0)
+                    samples.Add((queue, messages));
+            }
+
+            if (samples.Count == 0)
+            {
+                _logger.LogDebug("DreamService: DLQ review — no messages sampled; skipping");
+                return;
+            }
+
+            // Build user message
+            var userMessage = new StringBuilder();
+            userMessage.AppendLine($"Dead-letter queue snapshot ({DateTimeOffset.UtcNow:O}):");
+            userMessage.AppendLine();
+
+            foreach (var (queue, messages) in samples)
+            {
+                userMessage.AppendLine($"## Queue: {queue.Name} ({queue.MessageCount} total messages, {messages.Count} sampled)");
+                userMessage.AppendLine();
+
+                for (var i = 0; i < messages.Count; i++)
+                {
+                    var m = messages[i];
+                    userMessage.AppendLine($"### Message {i + 1}");
+                    if (m.MessageId is not null)
+                        userMessage.AppendLine($"  MessageId:   {m.MessageId}");
+                    userMessage.AppendLine($"  MessageType: {m.MessageType ?? "unknown"}");
+                    userMessage.AppendLine($"  Source:      {m.Source ?? "unknown"}");
+                    userMessage.AppendLine($"  Destination: {m.Destination ?? "unknown"}");
+                    userMessage.AppendLine($"  RoutingKey:  {m.RoutingKey ?? "unknown"}");
+                    userMessage.AppendLine($"  DeathReason: {m.DeathReason ?? "unknown"}");
+                    userMessage.AppendLine($"  DeathCount:  {m.DeathCount}");
+                    if (m.DeadLetteredAt.HasValue)
+                        userMessage.AppendLine($"  DeadLetteredAt: {m.DeadLetteredAt:O}");
+                    if (!string.IsNullOrWhiteSpace(m.BodyPreview))
+                        userMessage.AppendLine($"  Body: {m.BodyPreview}");
+                    userMessage.AppendLine();
+                }
+            }
+
+            var chatMessages = new List<ChatMessage>
+            {
+                new(ChatRole.System, _dlqDirective ?? BuiltInDlqDirective),
+                new(ChatRole.User, userMessage.ToString())
+            };
+
+            var response = await _llmClient.GetResponseAsync(
+                chatMessages, ModelTier.Balanced, new ChatOptions { ResponseFormat = ChatResponseFormat.Json });
+            var raw = response.Text?.Trim() ?? string.Empty;
+            var json = ExtractJsonObject(raw);
+
+            if (string.IsNullOrEmpty(json))
+            {
+                _logger.LogWarning("DreamService: DLQ review LLM returned no parseable JSON; skipping");
+                return;
+            }
+
+            _logger.LogDebug("DreamService: DLQ review JSON ({Length} chars): {Json}", json.Length, json);
+
+            var result = TryDeserializeJson<DlqReviewResultDto>(json, "DLQ review");
+            if (result is null) return;
+
+            if (result.NoDlqIssues == true)
+            {
+                _logger.LogInformation("DreamService: DLQ review — no actionable patterns found");
+                return;
+            }
+
+            var savedPatterns = 0;
+            foreach (var pattern in result.Patterns ?? [])
+            {
+                if (string.IsNullOrWhiteSpace(pattern.Content)) continue;
+
+                var content = string.IsNullOrWhiteSpace(pattern.Detail)
+                    ? pattern.Content.Trim()
+                    : $"{pattern.Content.Trim()}\n\nDetail: {pattern.Detail.Trim()}";
+
+                var entry = new MemoryEntry(
+                    Id: Guid.NewGuid().ToString("N")[..12],
+                    Content: content,
+                    Category: "anti-patterns/messaging",
+                    Tags: ["dlq", "anti-pattern", "dream"],
+                    CreatedAt: DateTimeOffset.UtcNow,
+                    UpdatedAt: DateTimeOffset.UtcNow);
+
+                await _memory.SaveAsync(entry);
+                savedPatterns++;
+                _logger.LogInformation(
+                    "DreamService: DLQ review saved pattern: {Content}", pattern.Content);
+            }
+
+            var purged = 0;
+            foreach (var queueName in result.Purge ?? [])
+            {
+                if (string.IsNullOrWhiteSpace(queueName)) continue;
+
+                // Safety check: only purge names that are actually in our sample set
+                if (samples.All(s => !string.Equals(s.Queue.Name, queueName, StringComparison.Ordinal)))
+                {
+                    _logger.LogWarning(
+                        "DreamService: DLQ review — LLM recommended purging {Queue} which was not in our sample; skipping",
+                        queueName);
+                    continue;
+                }
+
+                await _dlqSampler.PurgeQueueAsync(queueName);
+                purged++;
+            }
+
+            _logger.LogInformation(
+                "DreamService: DLQ review complete — {Patterns} pattern(s) saved, {Purged} queue(s) purged",
+                savedPatterns, purged);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "DreamService: DLQ review pass failed");
+        }
     }
 
     /// <summary>
@@ -1556,4 +1725,35 @@ internal sealed class DreamService : IHostedService, IDisposable
     private sealed record SkillGapResultDto(List<SkillGapEntryDto>? ToSave);
 
     private sealed record SkillGapEntryDto(string Name, string? Summary, string Content);
+
+    private sealed record DlqReviewResultDto(
+        bool? NoDlqIssues,
+        List<DlqPatternDto>? Patterns,
+        List<string>? Purge);
+
+    private sealed record DlqPatternDto(string Content, string? Detail, IReadOnlyList<string>? Queues);
+
+    private const string BuiltInDlqDirective = """
+        You are a dead-letter queue (DLQ) analysis assistant for an event-driven agent framework.
+        Review the sampled DLQ messages and identify failure patterns.
+
+        For each pattern, produce a memory entry describing what is failing and why.
+        Only recommend purging queues where messages are clearly stale or unrecoverable.
+
+        Return ONLY a JSON object:
+        {
+          "noDlqIssues": false,
+          "patterns": [
+            { "content": "Short description (≤ 200 chars)", "detail": "Optional longer explanation", "queues": ["queue.name.dlq"] }
+          ],
+          "purge": ["queue.name.dlq"]
+        }
+
+        Rules:
+        - noDlqIssues: true when all DLQs are empty or no meaningful patterns found
+        - patterns: each must be specific (name the MessageType, Source, or RoutingKey involved)
+        - purge: only include queues whose messages are clearly unrecoverable (DeathCount ≥ 5 and older than 7 days, or all messages are malformed/unknown)
+        - Be conservative on purge — when in doubt, omit the queue
+        - If no issues: {"noDlqIssues": true, "patterns": [], "purge": []}
+        """;
 }

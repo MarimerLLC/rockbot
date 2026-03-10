@@ -141,11 +141,11 @@ public sealed class RabbitMqSubscriber : IMessageSubscriber
                 catch (Exception ex)
                 {
                     sw.Stop();
-                    result = MessageResult.Retry;
+                    result = MessageResult.DeadLetter;
                     activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
                     activity?.SetTag("messaging.result", "error");
                     _logger.LogError(ex, "Error processing message {DeliveryTag}", ea.DeliveryTag);
-                    await channel.BasicNackAsync(ea.DeliveryTag, multiple: false, requeue: true);
+                    await channel.BasicNackAsync(ea.DeliveryTag, multiple: false, requeue: false);
                 }
                 finally
                 {

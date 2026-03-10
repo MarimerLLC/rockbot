@@ -11,7 +11,8 @@ public sealed record AgentProfile(
     AgentProfileDocument Soul,
     AgentProfileDocument Directives,
     AgentProfileDocument? Style = null,
-    AgentProfileDocument? MemoryRules = null)
+    AgentProfileDocument? MemoryRules = null,
+    AgentProfileDocument? SubagentDirectives = null)
 {
     /// <summary>
     /// All loaded documents in composition order: soul, directives, memory-rules (if present), style (if present).

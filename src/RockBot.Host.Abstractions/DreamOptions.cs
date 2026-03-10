@@ -64,4 +64,16 @@ public sealed class DreamOptions
     /// When the file does not exist, a built-in fallback directive is used.
     /// </summary>
     public string TierRoutingDirectivePath { get; set; } = "routing-dream.md";
+
+    /// <summary>
+    /// Whether the dead-letter queue review pass is enabled.
+    /// Requires <c>RabbitMq:ManagementApiBaseUrl</c> to be configured.
+    /// </summary>
+    public bool DlqReviewEnabled { get; set; } = true;
+
+    /// <summary>
+    /// Path to the DLQ review directive file, relative to <see cref="AgentProfileOptions.BasePath"/>.
+    /// When the file does not exist, a built-in fallback directive is used.
+    /// </summary>
+    public string DlqDirectivePath { get; set; } = "dlq-dream.md";
 }
