@@ -65,11 +65,16 @@ internal sealed class InvokeAgentExecutor(
 
         await publisher.PublishAsync($"{options.TaskTopic}.{agentName}", envelope, ct);
 
+        A2ADiagnostics.Requests.Add(1,
+            new KeyValuePair<string, object?>("rockbot.a2a.target_agent", agentName),
+            new KeyValuePair<string, object?>("rockbot.a2a.skill", skill));
+
         var cts = new CancellationTokenSource(TimeSpan.FromMinutes(timeoutMinutes));
         var pending = new PendingA2ATask
         {
             TaskId = taskId,
             TargetAgent = agentName,
+            Skill = skill,
             PrimarySessionId = primarySessionId,
             StartedAt = DateTimeOffset.UtcNow,
             Cts = cts

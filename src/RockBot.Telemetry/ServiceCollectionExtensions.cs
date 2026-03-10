@@ -19,7 +19,9 @@ public static class ServiceCollectionExtensions
         "RockBot.Messaging.RabbitMQ",
         "RockBot.Host",
         "RockBot.Llm",
-        "RockBot.Tools"
+        "RockBot.Tools",
+        "RockBot.A2A",
+        "RockBot.Subagent"
     ];
 
     /// <summary>

@@ -7,6 +7,7 @@ internal sealed record PendingA2ATask
 {
     public required string TaskId { get; init; }
     public required string TargetAgent { get; init; }
+    public required string Skill { get; init; }
     public required string PrimarySessionId { get; init; }
     public required DateTimeOffset StartedAt { get; init; }
     public required CancellationTokenSource Cts { get; init; }

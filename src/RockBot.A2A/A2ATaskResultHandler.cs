@@ -45,6 +45,11 @@ internal sealed class A2ATaskResultHandler(
         pending.Cts.Cancel();
         pending.Cts.Dispose();
 
+        var a2aDurationMs = (DateTimeOffset.UtcNow - pending.StartedAt).TotalMilliseconds;
+        A2ADiagnostics.Duration.Record(a2aDurationMs,
+            new KeyValuePair<string, object?>("rockbot.a2a.target_agent", pending.TargetAgent),
+            new KeyValuePair<string, object?>("rockbot.a2a.status", "ok"));
+
         logger.LogInformation(
             "A2A task result for task {TaskId} from agent '{TargetAgent}' in session {SessionId} (state={State})",
             result.TaskId, pending.TargetAgent, pending.PrimarySessionId, result.State);

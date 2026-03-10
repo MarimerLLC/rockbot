@@ -164,6 +164,11 @@ internal sealed class SubagentRunner(
 
         subagentSw.Stop();
 
+        SubagentDiagnostics.Duration.Record(subagentSw.Elapsed.TotalMilliseconds,
+            new KeyValuePair<string, object?>("rockbot.subagent.status", isSuccess ? "ok" : "error"));
+        if (!isSuccess)
+            SubagentDiagnostics.Failures.Add(1);
+
         _ = tierRoutingLogger.AppendAsync(new TierRoutingEntry
         {
             Timestamp = DateTimeOffset.UtcNow,

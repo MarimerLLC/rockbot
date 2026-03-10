@@ -88,6 +88,14 @@ public sealed class AgentLoopRunner(
         }
 
         var response = await llmClient.GetResponseAsync(chatMessages, tier, chatOptions, cancellationToken);
+
+        var tierTag = new KeyValuePair<string, object?>("rockbot.llm.tier", tier.ToString());
+        HostDiagnostics.TurnTokensInput.Record(response.Usage?.InputTokenCount ?? 0, tierTag);
+        HostDiagnostics.TurnTokensOutput.Record(response.Usage?.OutputTokenCount ?? 0, tierTag);
+        HostDiagnostics.TurnToolCalls.Record(
+            response.Messages.SelectMany(m => m.Contents.OfType<FunctionCallContent>()).Count(),
+            tierTag);
+
         return ExtractAssistantText(response);
     }
 
@@ -137,11 +145,19 @@ public sealed class AgentLoopRunner(
             "Tool execution path: TEXT-BASED (manual parsing loop) — {MessageCount} messages in context",
             chatMessages.Count);
 
+        // Accumulate per-turn token and tool-call counts across all loop iterations.
+        long totalInputTokens = firstResponse?.Usage?.InputTokenCount ?? 0;
+        long totalOutputTokens = firstResponse?.Usage?.OutputTokenCount ?? 0;
+        long totalToolCalls = 0;
+        var tierTag = new KeyValuePair<string, object?>("rockbot.llm.tier", tier.ToString());
+
         ChatResponse? pendingResponse = firstResponse;
         var anyToolCalled = false;
         var maxIterations = modelBehavior.MaxToolIterationsOverride ?? MaxToolIterations;
         var consecutiveTimeoutIterations = 0;
 
+        try
+        {
         for (var iteration = 0; iteration < maxIterations; iteration++)
         {
             ChatResponse response;
@@ -180,6 +196,9 @@ public sealed class AgentLoopRunner(
                 logger.LogInformation(
                     "LLM responded in {ElapsedMs}ms — {MsgCount} message(s), iteration {Iteration}",
                     sw.ElapsedMilliseconds, response.Messages.Count, iteration + 2);
+
+                totalInputTokens += response.Usage?.InputTokenCount ?? 0;
+                totalOutputTokens += response.Usage?.OutputTokenCount ?? 0;
             }
 
             LogResponseMessages(response, iterationLabel: (iteration + 2).ToString());
@@ -187,6 +206,7 @@ public sealed class AgentLoopRunner(
             var functionCalls = response.Messages
                 .SelectMany(m => m.Contents.OfType<FunctionCallContent>())
                 .ToList();
+            totalToolCalls += functionCalls.Count;
 
             logger.LogInformation("  FunctionCallContent count: {Count}", functionCalls.Count);
 
@@ -199,6 +219,7 @@ public sealed class AgentLoopRunner(
                     ?? [])
                     .ToHashSet(StringComparer.OrdinalIgnoreCase);
                 var textCalls = ParseTextToolCalls(text, knownTools);
+                totalToolCalls += textCalls.Count;
 
                 if (textCalls.Count == 0)
                 {
@@ -468,6 +489,13 @@ public sealed class AgentLoopRunner(
 
         logger.LogWarning("Forced final response empty and no usable assistant history found; returning empty string");
         return string.Empty;
+        } // end try
+        finally
+        {
+            HostDiagnostics.TurnTokensInput.Record(totalInputTokens, tierTag);
+            HostDiagnostics.TurnTokensOutput.Record(totalOutputTokens, tierTag);
+            HostDiagnostics.TurnToolCalls.Record(totalToolCalls, tierTag);
+        }
     }
 
     // ── Context overflow handling (text-based path only) ──────────────────────

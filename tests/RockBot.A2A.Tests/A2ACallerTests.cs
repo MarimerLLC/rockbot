@@ -214,6 +214,7 @@ public class A2ACallerTests
         {
             TaskId = "t1",
             TargetAgent = "AgentX",
+            Skill = "test-skill",
             PrimarySessionId = "sess",
             StartedAt = DateTimeOffset.UtcNow,
             Cts = cts
@@ -235,6 +236,7 @@ public class A2ACallerTests
         {
             TaskId = "t2",
             TargetAgent = "AgentY",
+            Skill = "test-skill",
             PrimarySessionId = "sess",
             StartedAt = DateTimeOffset.UtcNow,
             Cts = cts
@@ -256,6 +258,7 @@ public class A2ACallerTests
             {
                 TaskId = $"t{i}",
                 TargetAgent = "AgentZ",
+                Skill = "test-skill",
                 PrimarySessionId = "sess",
                 StartedAt = DateTimeOffset.UtcNow,
                 Cts = new CancellationTokenSource()

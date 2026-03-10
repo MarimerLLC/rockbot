@@ -7,7 +7,7 @@ namespace RockBot.Host;
 /// Centralized diagnostics instrumentation for the agent host pipeline.
 /// Uses BCL APIs (ActivitySource + Meter) that are zero-cost when no listener is attached.
 /// </summary>
-internal static class HostDiagnostics
+public static class HostDiagnostics
 {
     public const string ActivitySourceName = "RockBot.Host";
     public const string MeterName = "RockBot.Host";
@@ -45,4 +45,48 @@ internal static class HostDiagnostics
             "rockbot.llm.token.output",
             unit: "{token}",
             description: "Total number of output tokens produced");
+
+    // ── Agent turn metrics — recorded at architectural boundaries ─────────────
+
+    /// <summary>Duration from user message receipt to final reply published.</summary>
+    public static readonly Histogram<double> TurnDuration =
+        Meter.CreateHistogram<double>(
+            "rockbot.agent.turn.duration",
+            unit: "ms",
+            description: "Duration of agent turns from message receipt to final reply");
+
+    /// <summary>Total agent turns completed.</summary>
+    public static readonly Counter<long> Turns =
+        Meter.CreateCounter<long>(
+            "rockbot.agent.turns",
+            unit: "{turn}",
+            description: "Total agent turns completed");
+
+    /// <summary>Estimated token count of context injected at turn start.</summary>
+    public static readonly Histogram<long> TurnContextTokens =
+        Meter.CreateHistogram<long>(
+            "rockbot.agent.context.tokens",
+            unit: "{token}",
+            description: "Estimated token count of context injected before LLM call");
+
+    /// <summary>Total input tokens consumed per turn (aggregated across all LLM calls).</summary>
+    public static readonly Histogram<long> TurnTokensInput =
+        Meter.CreateHistogram<long>(
+            "rockbot.agent.turn.tokens.input",
+            unit: "{token}",
+            description: "Input tokens per turn, aggregated across all LLM calls in the loop");
+
+    /// <summary>Total output tokens produced per turn (aggregated across all LLM calls).</summary>
+    public static readonly Histogram<long> TurnTokensOutput =
+        Meter.CreateHistogram<long>(
+            "rockbot.agent.turn.tokens.output",
+            unit: "{token}",
+            description: "Output tokens per turn, aggregated across all LLM calls in the loop");
+
+    /// <summary>Number of tool calls executed per turn.</summary>
+    public static readonly Histogram<long> TurnToolCalls =
+        Meter.CreateHistogram<long>(
+            "rockbot.agent.turn.tools",
+            unit: "{call}",
+            description: "Tool calls executed per turn");
 }

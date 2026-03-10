@@ -61,6 +61,9 @@ public sealed class SubagentManager(
 
         _active[taskId] = newEntry;
 
+        SubagentDiagnostics.Spawns.Add(1);
+        SubagentDiagnostics.Active.Add(1);
+
         logger.LogInformation(
             "Spawned subagent {TaskId} (session {SessionId}) for primary session {PrimarySessionId}",
             taskId, subagentSessionId, primarySessionId);
@@ -137,6 +140,7 @@ public sealed class SubagentManager(
         }
         finally
         {
+            SubagentDiagnostics.Active.Add(-1);
             _active.TryRemove(taskId, out _);
         }
     }
