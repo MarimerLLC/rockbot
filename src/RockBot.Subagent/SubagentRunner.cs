@@ -59,13 +59,18 @@ internal sealed class SubagentRunner(
             "so the primary agent knows where to find the detailed data. " +
             "Do not return an empty or vague final response.";
 
-        // Behavioral directives — loaded from subagent-directives.md on the PVC so they
-        // can be updated without a redeploy. The file is optional; if absent the preamble
-        // alone is used (subagent still functions, just without the extended guidance).
-        var directives = agentProfile.SubagentDirectives?.RawContent;
-        var systemPrompt = directives is not null
-            ? $"{preamble}\n\n{directives}"
-            : preamble;
+        // Build system prompt from the same profile documents as the primary agent,
+        // but substitute subagent-directives.md for directives.md so subagents get the
+        // same soul/style/memory-rules context without primary-only instructions
+        // (multi-session plans, spawning subagents, etc.).
+        // Document order: soul → subagent-directives → memory-rules → style
+        var profileDocs = new[] {
+            agentProfile.Soul,
+            agentProfile.SubagentDirectives ?? agentProfile.Directives,
+            agentProfile.MemoryRules,
+            agentProfile.Style,
+        }.Where(d => d is not null).Select(d => d!.RawContent.TrimEnd());
+        var systemPrompt = preamble + "\n\n" + string.Join("\n\n", profileDocs);
 
         var chatMessages = new List<ChatMessage>
         {
