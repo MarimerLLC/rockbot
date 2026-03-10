@@ -80,9 +80,11 @@ storage:
 
 # ── Telemetry (OpenTelemetry) ─────────────────────────────────────────────────
 telemetry:
-  enabled: false
-  # OTLP gRPC endpoint — e.g. Grafana Alloy, otel-collector
-  otlpEndpoint: ""
+  enabled: true
+  # OTLP gRPC endpoint for Grafana Alloy (or otel-collector).
+  # Typical Alloy service: http://alloy.<namespace>.svc.cluster.local:4317
+  # Alloy routes: traces → Tempo, metrics → Mimir, logs → Loki
+  otlpEndpoint: "http://alloy.loki.svc.cluster.local:4317"
   serviceName: rockbot
 
 # ── OpenRouter MCP server ─────────────────────────────────────────────────────
@@ -120,6 +122,27 @@ routingStatsMcp:
     limits:
       cpu: 200m
       memory: 128Mi
+
+# ── Azure AI Foundry MCP server ───────────────────────────────────────────────
+# Standalone MCP server that exposes read-only Azure AI Foundry usage metrics
+# (prompt tokens, generated tokens, request counts) and deployment info to the agent.
+# Auth uses a service principal via DefaultAzureCredential (AZURE_TENANT_ID / CLIENT_ID / CLIENT_SECRET).
+azureFoundryMcp:
+  enabled: false
+  image:
+    repository: rockylhotka/mcpserver-azurefoundry
+    tag: latest
+  replicaCount: 1
+  subscriptionId: ""        # Azure subscription ID (non-secret)
+  resourceGroup: ""         # Resource group containing the AI Foundry account (non-secret)
+  accountName: ""           # Cognitive Services account name (non-secret)
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 200m
+      memory: 256Mi
 
 # ── TodoApp MCP server ────────────────────────────────────────────────────────
 # Standalone MCP server that exposes a persistent to-do list to the agent.
@@ -183,3 +206,8 @@ secrets:
   openRouter:
     apiKey: ""              # required when openrouterMcp.enabled=true — OpenRouter management API key
                             # (separate from llm.apiKey — this is the account management key)
+
+  azureFoundry:
+    tenantId: ""            # required when azureFoundryMcp.enabled=true — Azure AD tenant ID
+    clientId: ""            # required when azureFoundryMcp.enabled=true — service principal app ID
+    clientSecret: ""        # required when azureFoundryMcp.enabled=true — service principal secret

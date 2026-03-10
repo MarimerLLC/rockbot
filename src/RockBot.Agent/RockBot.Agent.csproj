@@ -33,6 +33,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\RockBot.Host.Abstractions\RockBot.Host.Abstractions.csproj" />
+    <ProjectReference Include="..\RockBot.Telemetry\RockBot.Telemetry.csproj" />
     <ProjectReference Include="..\RockBot.Llm\RockBot.Llm.csproj" />
     <ProjectReference Include="..\RockBot.Memory\RockBot.Memory.csproj" />
     <ProjectReference Include="..\RockBot.Skills\RockBot.Skills.csproj" />

@@ -19,6 +19,7 @@ using RockBot.A2A;
 using RockBot.Subagent;
 using RockBot.Tools.Scheduling;
 using RockBot.Tools.Web;
+using RockBot.Telemetry;
 using RockBot.UserProxy;
 
 var builder = Host.CreateApplicationBuilder(args);
@@ -35,6 +36,13 @@ builder.Configuration.AddUserSecrets<Program>();
 }
 
 builder.Services.AddRockBotRabbitMq(opts => builder.Configuration.GetSection("RabbitMq").Bind(opts));
+
+// OpenTelemetry — enabled via Telemetry:Enabled config key (set in k8s ConfigMap)
+if (builder.Configuration.GetValue<bool>("Telemetry:Enabled"))
+{
+    builder.Services.AddRockBotTelemetry(opts =>
+        builder.Configuration.GetSection("Telemetry").Bind(opts));
+}
 
 // ── LLM configuration — three-tier (Low / Balanced / High) ──────────────────
 // Reads from the "LLM" config section. Three-tier keys:
