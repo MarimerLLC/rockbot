@@ -76,3 +76,17 @@ internal sealed class StubAgentTaskHandler : IAgentTaskHandler
         });
     }
 }
+
+/// <summary>
+/// A no-op <see cref="IHttpClientFactory"/> for tests that do not exercise HTTP transport.
+/// Returns a disposable <see cref="HttpClient"/> instance; callers in tests should not
+/// actually make HTTP requests through it.
+/// </summary>
+internal sealed class NullHttpClientFactory : IHttpClientFactory
+{
+    public static readonly NullHttpClientFactory Instance = new();
+
+    // HttpClient is returned here for interface compliance; in unit tests that use
+    // InvokeAgentExecutor without a URL-registered agent, this client is never called.
+    public HttpClient CreateClient(string name) => new();
+}

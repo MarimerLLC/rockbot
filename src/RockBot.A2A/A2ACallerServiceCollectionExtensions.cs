@@ -48,6 +48,9 @@ public static class A2ACallerServiceCollectionExtensions
                 sp => sp.GetRequiredService<AgentDiscoveryService>());
         }
 
+        // HttpClient factory for HTTP-transport agent invocation
+        builder.Services.AddHttpClient();
+
         // Pending task tracker
         builder.Services.AddSingleton<A2ATaskTracker>();
 
