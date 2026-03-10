@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
 
@@ -21,7 +22,7 @@ internal sealed class LlmClient(TieredChatClientRegistry registry, ILogger<LlmCl
         => GetResponseAsync(messages, ModelTier.Balanced, options, cancellationToken);
 
     /// <summary>Calls the LLM using the specified tier.</summary>
-    public Task<ChatResponse> GetResponseAsync(
+    public async Task<ChatResponse> GetResponseAsync(
         IEnumerable<ChatMessage> messages,
         ModelTier tier,
         ChatOptions? options = null,
@@ -30,7 +31,44 @@ internal sealed class LlmClient(TieredChatClientRegistry registry, ILogger<LlmCl
         var client = registry.GetClient(tier);
         var modelId = registry.GetModelId(tier) ?? tier.ToString();
         logger.LogInformation("LLM call: tier={Tier} model={ModelId}", tier, modelId);
-        return InvokeWithNullArgRetryAsync(client, messages, options, cancellationToken);
+
+        var sw = Stopwatch.StartNew();
+        var status = "ok";
+        try
+        {
+            var response = await InvokeWithNullArgRetryAsync(client, messages, options, cancellationToken);
+
+            if (response.Usage is { } usage)
+            {
+                if (usage.InputTokenCount.HasValue)
+                    HostDiagnostics.LlmTokenInput.Add(usage.InputTokenCount.Value,
+                        new KeyValuePair<string, object?>("rockbot.llm.tier", tier.ToString()),
+                        new KeyValuePair<string, object?>("rockbot.llm.model", modelId));
+                if (usage.OutputTokenCount.HasValue)
+                    HostDiagnostics.LlmTokenOutput.Add(usage.OutputTokenCount.Value,
+                        new KeyValuePair<string, object?>("rockbot.llm.tier", tier.ToString()),
+                        new KeyValuePair<string, object?>("rockbot.llm.model", modelId));
+            }
+
+            return response;
+        }
+        catch (Exception)
+        {
+            status = "error";
+            throw;
+        }
+        finally
+        {
+            sw.Stop();
+            HostDiagnostics.LlmRequestDuration.Record(sw.Elapsed.TotalMilliseconds,
+                new KeyValuePair<string, object?>("rockbot.llm.status", status),
+                new KeyValuePair<string, object?>("rockbot.llm.tier", tier.ToString()),
+                new KeyValuePair<string, object?>("rockbot.llm.model", modelId));
+            HostDiagnostics.LlmRequests.Add(1,
+                new KeyValuePair<string, object?>("rockbot.llm.status", status),
+                new KeyValuePair<string, object?>("rockbot.llm.tier", tier.ToString()),
+                new KeyValuePair<string, object?>("rockbot.llm.model", modelId));
+        }
     }
 
     /// <summary>
