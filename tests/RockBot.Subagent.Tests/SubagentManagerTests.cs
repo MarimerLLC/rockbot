@@ -46,6 +46,10 @@ public class SubagentManagerTests
         services.AddTransient<AgentLoopRunner>();
         services.AddTransient<SubagentRunner>();
 
+        // AgentProfile is required by SubagentRunner; provide a minimal stub.
+        var stubDoc = new AgentProfileDocument("stub", null, [], "");
+        services.AddSingleton(new AgentProfile(stubDoc, stubDoc));
+
         // TierRoutingLogger requires a writable directory; point it at a temp folder
         var tmpDir = Path.Combine(Path.GetTempPath(), Path.GetRandomFileName());
         Directory.CreateDirectory(tmpDir);
