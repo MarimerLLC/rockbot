@@ -44,7 +44,7 @@ spec:
               echo "Initializing agent data volume..."
 
               # Profile documents — live at /app/agent/ in the image
-              for f in soul.md directives.md style.md memory-rules.md dream.md skill-dream.md; do
+              for f in soul.md directives.md subagent-directives.md style.md memory-rules.md dream.md skill-dream.md; do
                 src="/app/agent/$f"
                 dst="/data/agent/$f"
                 if [ -f "$src" ] && [ ! -s "$dst" ]; then
