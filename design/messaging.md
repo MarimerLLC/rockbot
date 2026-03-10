@@ -99,8 +99,6 @@ Topics follow a hierarchical dot-separated naming scheme:
 | `agent.task.*` | Task assignment to agents |
 | `agent.response.*` | Agent responses to tasks |
 | `agent.status.*` | Agent lifecycle events (started, stopped, heartbeat) |
-| `llm.request` | Requests to LLM providers |
-| `llm.response` | LLM completions and tool calls |
 | `tool.invoke.*` | Tool/MCP invocation requests |
 | `tool.invoke.mcp` | MCP-specific tool invocation requests (handled by bridge) |
 | `tool.result.*` | Tool execution results |
@@ -125,13 +123,11 @@ Wildcard subscriptions:
 ```
 rockbot (topic exchange)
 ├── rockbot.agent-host-a (queue) ← bound to: agent.task.*, agent.response.*
-├── rockbot.llm-handler (queue) ← bound to: llm.request
 ├── rockbot.tool-runner (queue) ← bound to: tool.invoke.*
 └── rockbot.monitor (queue) ← bound to: #  (all messages)
 
 rockbot.dlx (topic exchange)
 ├── rockbot.agent-host-a.dlq (queue)
-├── rockbot.llm-handler.dlq (queue)
 └── rockbot.tool-runner.dlq (queue)
 ```
 

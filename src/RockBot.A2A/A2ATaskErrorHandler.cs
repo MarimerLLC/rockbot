@@ -44,6 +44,13 @@ internal sealed class A2ATaskErrorHandler(
         pending.Cts.Cancel();
         pending.Cts.Dispose();
 
+        var a2aDurationMs = (DateTimeOffset.UtcNow - pending.StartedAt).TotalMilliseconds;
+        A2ADiagnostics.Failures.Add(1,
+            new KeyValuePair<string, object?>("rockbot.a2a.target_agent", pending.TargetAgent));
+        A2ADiagnostics.Duration.Record(a2aDurationMs,
+            new KeyValuePair<string, object?>("rockbot.a2a.target_agent", pending.TargetAgent),
+            new KeyValuePair<string, object?>("rockbot.a2a.status", "error"));
+
         logger.LogWarning(
             "A2A task error for task {TaskId} from agent '{TargetAgent}' in session {SessionId}: [{Code}] {Message}",
             error.TaskId, pending.TargetAgent, pending.PrimarySessionId, error.Code, error.Message);

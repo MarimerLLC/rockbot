@@ -12,24 +12,6 @@ namespace RockBot.Llm;
 public static class LlmServiceCollectionExtensions
 {
     /// <summary>
-    /// Registers the LLM request handler and subscribes to the "llm.request" topic.
-    /// Requires an <see cref="Microsoft.Extensions.AI.IChatClient"/> to be registered separately.
-    /// </summary>
-    public static AgentHostBuilder AddLlmHandler(
-        this AgentHostBuilder builder,
-        Action<LlmOptions>? configure = null)
-    {
-        var options = new LlmOptions();
-        configure?.Invoke(options);
-        builder.Services.AddSingleton(options);
-
-        builder.HandleMessage<LlmRequest, LlmRequestHandler>();
-        builder.SubscribeTo("llm.request");
-
-        return builder;
-    }
-
-    /// <summary>
     /// Registers <see cref="IModelBehaviorProvider"/> and resolves a <see cref="ModelBehavior"/>
     /// singleton for the currently configured <see cref="IChatClient"/> model.
     /// Consumers can inject <see cref="ModelBehavior"/> directly to get tweaks for the active model.
@@ -110,7 +92,7 @@ public static class LlmServiceCollectionExtensions
         });
 
         // Keep Balanced as the primary IChatClient singleton for consumers that
-        // inject IChatClient directly (e.g. LlmRequestHandler, ResearchAgentTaskHandler).
+        // inject IChatClient directly (e.g. ResearchAgentTaskHandler).
         services.AddSingleton<IChatClient>(sp =>
             sp.GetRequiredService<TieredChatClientRegistry>().GetClient(ModelTier.Balanced));
 

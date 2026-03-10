@@ -1,4 +1,5 @@
 using System.ClientModel;
+using System.Diagnostics;
 using System.Text.RegularExpressions;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
@@ -20,6 +21,7 @@ namespace RockBot.Agent;
 internal sealed class UserMessageHandler(
     ILlmClient llmClient,
     ILlmTierSelector tierSelector,
+    TieredChatClientRegistry registry,
     IMessagePublisher publisher,
     AgentIdentity agent,
     AgentProfile profile,
@@ -77,6 +79,23 @@ internal sealed class UserMessageHandler(
         var classification = tierSelector.Classify(message.Content);
         var tier = classification.Tier;
         logger.LogInformation("Routing user message to tier={Tier} (score={Score:F3})", tier, classification.ComplexityScore);
+        var turnSw = System.Diagnostics.Stopwatch.StartNew();
+        var tierTag = new KeyValuePair<string, object?>("rockbot.llm.tier", tier.ToString());
+
+        // Start the turn span. For background paths it outlives this method — we pass
+        // it to the background task which disposes it when the final reply is published.
+        var turnId = Guid.NewGuid().ToString("N")[..16];
+        var modelId = registry.GetModelId(tier) ?? tier.ToString();
+        var turnActivity = HostDiagnostics.Source.StartActivity("rockbot.turn");
+        turnActivity?.SetTag("rockbot.llm.tier", tier.ToString());
+        turnActivity?.SetTag("rockbot.llm.model", modelId);
+        turnActivity?.SetTag("rockbot.turn.id", turnId);
+        turnActivity?.SetTag("rockbot.user.id", message.UserId);
+        turnActivity?.SetTag("rockbot.session.id", message.SessionId);
+        turnActivity?.SetTag("rockbot.agent.name", agent.Name);
+        turnActivity?.SetTag("rockbot.message.preview",
+            message.Content.Length > 100 ? message.Content[..100] : message.Content);
+        var turnActivityHandedOff = false;
 
         try
         {
@@ -99,6 +118,7 @@ internal sealed class UserMessageHandler(
             // Build context using shared builder
             var chatMessages = await agentContextBuilder.BuildAsync(message.SessionId, message.Content, ct);
             var postInjectionTokenEstimate = EstimateContextTokens(chatMessages);
+            HostDiagnostics.TurnContextTokens.Record(postInjectionTokenEstimate, tierTag);
 
             // Session-start briefing: on the first turn of a new session, inject the
             // session-start directive so the agent checks briefing queue, plans, etc.
@@ -162,8 +182,9 @@ internal sealed class UserMessageHandler(
                 logger.LogInformation("Native path: launching background LLM loop for session {SessionId}", message.SessionId);
                 await PublishReplyAsync("I'm working on that — I'll follow up shortly.",
                     replyTo, correlationId, message.SessionId, isFinal: false, ct);
+                turnActivityHandedOff = true;
                 _ = NativeLlmLoopAsync(chatMessages, chatOptions, classification, postInjectionTokenEstimate,
-                    message.SessionId, replyTo, correlationId, sessionCt);
+                    message.SessionId, replyTo, correlationId, turnActivity, sessionCt);
             }
             else
             {
@@ -219,9 +240,10 @@ internal sealed class UserMessageHandler(
 
                     await PublishReplyAsync(effectiveAck, replyTo, correlationId, message.SessionId, isFinal: false, ct);
 
+                    turnActivityHandedOff = true;
                     _ = BackgroundToolLoopAsync(
                         chatMessages, chatOptions, firstResponse, tier,
-                        message.SessionId, replyTo, correlationId, sessionCt);
+                        message.SessionId, replyTo, correlationId, turnActivity, sessionCt);
                 }
                 else
                 {
@@ -237,9 +259,10 @@ internal sealed class UserMessageHandler(
                             "I'm working on that — I'll follow up shortly.",
                             replyTo, correlationId, message.SessionId, isFinal: false, ct);
 
+                        turnActivityHandedOff = true;
                         _ = BackgroundToolLoopAsync(
                             chatMessages, chatOptions, firstResponse, tier,
-                            message.SessionId, replyTo, correlationId, sessionCt);
+                            message.SessionId, replyTo, correlationId, turnActivity, sessionCt);
                     }
                     else if (modelBehavior.NudgeOnHallucinatedToolCalls && HallucinatedActionRegex.IsMatch(text))
                     {
@@ -251,9 +274,10 @@ internal sealed class UserMessageHandler(
                             "I'm working on that — I'll follow up shortly.",
                             replyTo, correlationId, message.SessionId, isFinal: false, ct);
 
+                        turnActivityHandedOff = true;
                         _ = BackgroundToolLoopAsync(
                             chatMessages, chatOptions, firstResponse, tier,
-                            message.SessionId, replyTo, correlationId, sessionCt);
+                            message.SessionId, replyTo, correlationId, turnActivity, sessionCt);
                     }
                     else
                     {
@@ -263,6 +287,13 @@ internal sealed class UserMessageHandler(
                             ct);
 
                         await PublishReplyAsync(text, replyTo, correlationId, message.SessionId, isFinal: true, ct);
+                        turnActivity?.SetTag("rockbot.turn.status", "ok");
+                        turnActivity?.SetStatus(ActivityStatusCode.Ok);
+                        turnSw.Stop();
+                        HostDiagnostics.TurnDuration.Record(turnSw.Elapsed.TotalMilliseconds, tierTag,
+                            new KeyValuePair<string, object?>("rockbot.turn.status", "ok"));
+                        HostDiagnostics.Turns.Add(1, tierTag,
+                            new KeyValuePair<string, object?>("rockbot.turn.status", "ok"));
 
                         logger.LogInformation("Published reply to {ReplyTo} for correlation {CorrelationId}",
                             replyTo, correlationId);
@@ -296,6 +327,20 @@ internal sealed class UserMessageHandler(
             }
 
             await PublishReplyAsync(errorText, replyTo, correlationId, message.SessionId, isFinal: true, ct);
+            turnActivity?.SetTag("rockbot.turn.status", "error");
+            turnActivity?.SetStatus(ActivityStatusCode.Error, ex.Message);
+            turnSw.Stop();
+            HostDiagnostics.TurnDuration.Record(turnSw.Elapsed.TotalMilliseconds, tierTag,
+                new KeyValuePair<string, object?>("rockbot.turn.status", "error"));
+            HostDiagnostics.Turns.Add(1, tierTag,
+                new KeyValuePair<string, object?>("rockbot.turn.status", "error"));
+        }
+        finally
+        {
+            // Dispose the turn span only when this method owns it (sync paths).
+            // Background paths pass it to the background task which disposes it.
+            if (!turnActivityHandedOff)
+                turnActivity?.Dispose();
         }
     }
 
@@ -307,8 +352,11 @@ internal sealed class UserMessageHandler(
         string sessionId,
         string replyTo,
         string? correlationId,
+        System.Diagnostics.Activity? turnActivity,
         CancellationToken ct)
     {
+        var loopSw = System.Diagnostics.Stopwatch.StartNew();
+        var nativeTierTag = new KeyValuePair<string, object?>("rockbot.llm.tier", classification.Tier.ToString());
         try
         {
             await using var slot = await workSerializer.AcquireForUserAsync(ct);
@@ -359,6 +407,13 @@ internal sealed class UserMessageHandler(
                 ct);
 
             await PublishReplyAsync(text, replyTo, correlationId, sessionId, isFinal: true, ct);
+            loopSw.Stop();
+            turnActivity?.SetTag("rockbot.turn.status", "ok");
+            turnActivity?.SetStatus(ActivityStatusCode.Ok);
+            HostDiagnostics.TurnDuration.Record(loopSw.Elapsed.TotalMilliseconds, nativeTierTag,
+                new KeyValuePair<string, object?>("rockbot.turn.status", "ok"));
+            HostDiagnostics.Turns.Add(1, nativeTierTag,
+                new KeyValuePair<string, object?>("rockbot.turn.status", "ok"));
 
             logger.LogInformation("Published reply to {ReplyTo} for correlation {CorrelationId}",
                 replyTo, correlationId);
@@ -370,6 +425,17 @@ internal sealed class UserMessageHandler(
             await PublishReplyAsync(
                 $"Sorry, I ran into an error while working on your request: {ex.Message}",
                 replyTo, correlationId, sessionId, isFinal: true, ct);
+            loopSw.Stop();
+            turnActivity?.SetTag("rockbot.turn.status", "error");
+            turnActivity?.SetStatus(ActivityStatusCode.Error, ex.Message);
+            HostDiagnostics.TurnDuration.Record(loopSw.Elapsed.TotalMilliseconds, nativeTierTag,
+                new KeyValuePair<string, object?>("rockbot.turn.status", "error"));
+            HostDiagnostics.Turns.Add(1, nativeTierTag,
+                new KeyValuePair<string, object?>("rockbot.turn.status", "error"));
+        }
+        finally
+        {
+            turnActivity?.Dispose();
         }
     }
 
@@ -381,8 +447,11 @@ internal sealed class UserMessageHandler(
         string sessionId,
         string replyTo,
         string? correlationId,
+        System.Diagnostics.Activity? turnActivity,
         CancellationToken ct)
     {
+        var loopSw = System.Diagnostics.Stopwatch.StartNew();
+        var bgTierTag = new KeyValuePair<string, object?>("rockbot.llm.tier", tier.ToString());
         try
         {
             // Acquire the single execution slot, preempting any running scheduled
@@ -423,6 +492,13 @@ internal sealed class UserMessageHandler(
                 ct);
 
             await PublishReplyAsync(finalContent, replyTo, correlationId, sessionId, isFinal: true, ct);
+            loopSw.Stop();
+            turnActivity?.SetTag("rockbot.turn.status", "ok");
+            turnActivity?.SetStatus(ActivityStatusCode.Ok);
+            HostDiagnostics.TurnDuration.Record(loopSw.Elapsed.TotalMilliseconds, bgTierTag,
+                new KeyValuePair<string, object?>("rockbot.turn.status", "ok"));
+            HostDiagnostics.Turns.Add(1, bgTierTag,
+                new KeyValuePair<string, object?>("rockbot.turn.status", "ok"));
 
             logger.LogInformation(
                 "Background tool loop published final reply for session {SessionId}", sessionId);
@@ -434,6 +510,17 @@ internal sealed class UserMessageHandler(
             await PublishReplyAsync(
                 $"Sorry, I ran into an error while working on your request: {ex.Message}",
                 replyTo, correlationId, sessionId, isFinal: true, ct);
+            loopSw.Stop();
+            turnActivity?.SetTag("rockbot.turn.status", "error");
+            turnActivity?.SetStatus(ActivityStatusCode.Error, ex.Message);
+            HostDiagnostics.TurnDuration.Record(loopSw.Elapsed.TotalMilliseconds, bgTierTag,
+                new KeyValuePair<string, object?>("rockbot.turn.status", "error"));
+            HostDiagnostics.Turns.Add(1, bgTierTag,
+                new KeyValuePair<string, object?>("rockbot.turn.status", "error"));
+        }
+        finally
+        {
+            turnActivity?.Dispose();
         }
     }
 

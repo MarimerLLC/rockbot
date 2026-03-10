@@ -11,6 +11,9 @@ data:
   RabbitMq__Port: {{ .Values.rabbitmq.port | quote }}
   RabbitMq__UserName: {{ required "rabbitmq.userName is required" .Values.rabbitmq.userName | quote }}
   RabbitMq__VirtualHost: {{ .Values.rabbitmq.virtualHost | quote }}
+  {{- if .Values.rabbitmq.managementApiBaseUrl }}
+  RabbitMq__ManagementApiBaseUrl: {{ .Values.rabbitmq.managementApiBaseUrl | quote }}
+  {{- end }}
 
   # ── Ephemeral script runner ────────────────────────────────────────────────
   Scripts__Container__Namespace: {{ .Values.scripts.namespace | quote }}

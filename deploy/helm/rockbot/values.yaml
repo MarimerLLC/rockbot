@@ -47,6 +47,8 @@ rabbitmq:
   port: 5672
   userName: ""      # REQUIRED
   virtualHost: /
+  managementApiBaseUrl: ""  # optional — e.g. http://rabbitmq-mgmt.default.svc.cluster.local:15672
+                            # required for DLQ depth metrics (rockbot.messaging.dlq.depth)
 
 # ── Script Manager pod ────────────────────────────────────────────────────────
 # Trusted sidecar that owns all pod RBAC in the scripts namespace.

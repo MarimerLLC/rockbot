@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
 using RockBot.Llm;
@@ -103,6 +104,8 @@ public sealed class AgentContextBuilder(
                 logger.LogInformation(
                     "Injected {Count} new long-term memory entries (BM25 delta) for session {SessionId}",
                     newEntries.Count, sessionId);
+                Activity.Current?.AddEvent(new ActivityEvent("memory_retrieval_complete",
+                    tags: new ActivityTagsCollection { { "count", newEntries.Count } }));
             }
         }
 
@@ -221,6 +224,13 @@ public sealed class AgentContextBuilder(
                 logger.LogInformation("Injected {Count} patrol working memory entries into context", patrolEntries.Count);
             }
         }
+
+        Activity.Current?.AddEvent(new ActivityEvent("context_built",
+            tags: new ActivityTagsCollection
+            {
+                { "message_count", chatMessages.Count },
+                { "estimated_tokens", chatMessages.Sum(m => (m.Text?.Length ?? 0) / 4 + 1) }
+            }));
 
         return chatMessages;
     }

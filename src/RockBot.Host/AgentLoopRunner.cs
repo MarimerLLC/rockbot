@@ -88,6 +88,14 @@ public sealed class AgentLoopRunner(
         }
 
         var response = await llmClient.GetResponseAsync(chatMessages, tier, chatOptions, cancellationToken);
+
+        var tierTag = new KeyValuePair<string, object?>("rockbot.llm.tier", tier.ToString());
+        HostDiagnostics.TurnTokensInput.Record(response.Usage?.InputTokenCount ?? 0, tierTag);
+        HostDiagnostics.TurnTokensOutput.Record(response.Usage?.OutputTokenCount ?? 0, tierTag);
+        HostDiagnostics.TurnToolCalls.Record(
+            response.Messages.SelectMany(m => m.Contents.OfType<FunctionCallContent>()).Count(),
+            tierTag);
+
         return ExtractAssistantText(response);
     }
 
@@ -137,11 +145,19 @@ public sealed class AgentLoopRunner(
             "Tool execution path: TEXT-BASED (manual parsing loop) — {MessageCount} messages in context",
             chatMessages.Count);
 
+        // Accumulate per-turn token and tool-call counts across all loop iterations.
+        long totalInputTokens = firstResponse?.Usage?.InputTokenCount ?? 0;
+        long totalOutputTokens = firstResponse?.Usage?.OutputTokenCount ?? 0;
+        long totalToolCalls = 0;
+        var tierTag = new KeyValuePair<string, object?>("rockbot.llm.tier", tier.ToString());
+
         ChatResponse? pendingResponse = firstResponse;
         var anyToolCalled = false;
         var maxIterations = modelBehavior.MaxToolIterationsOverride ?? MaxToolIterations;
         var consecutiveTimeoutIterations = 0;
 
+        try
+        {
         for (var iteration = 0; iteration < maxIterations; iteration++)
         {
             ChatResponse response;
@@ -180,6 +196,9 @@ public sealed class AgentLoopRunner(
                 logger.LogInformation(
                     "LLM responded in {ElapsedMs}ms — {MsgCount} message(s), iteration {Iteration}",
                     sw.ElapsedMilliseconds, response.Messages.Count, iteration + 2);
+
+                totalInputTokens += response.Usage?.InputTokenCount ?? 0;
+                totalOutputTokens += response.Usage?.OutputTokenCount ?? 0;
             }
 
             LogResponseMessages(response, iterationLabel: (iteration + 2).ToString());
@@ -187,6 +206,7 @@ public sealed class AgentLoopRunner(
             var functionCalls = response.Messages
                 .SelectMany(m => m.Contents.OfType<FunctionCallContent>())
                 .ToList();
+            totalToolCalls += functionCalls.Count;
 
             logger.LogInformation("  FunctionCallContent count: {Count}", functionCalls.Count);
 
@@ -199,6 +219,7 @@ public sealed class AgentLoopRunner(
                     ?? [])
                     .ToHashSet(StringComparer.OrdinalIgnoreCase);
                 var textCalls = ParseTextToolCalls(text, knownTools);
+                totalToolCalls += textCalls.Count;
 
                 if (textCalls.Count == 0)
                 {
@@ -270,18 +291,25 @@ public sealed class AgentLoopRunner(
                         continue;
                     }
 
+                    Activity.Current?.AddEvent(new ActivityEvent("tool_selection_made",
+                        tags: new ActivityTagsCollection { { "tool", toolName } }));
+                    using var textToolActivity = HostDiagnostics.Source.StartActivity("rockbot.tool.call");
+                    textToolActivity?.SetTag("rockbot.tool.name", toolName);
                     var toolSw = Stopwatch.StartNew();
                     object? result;
                     try
                     {
                         result = await tool.InvokeAsync(args, cancellationToken);
                         toolSw.Stop();
+                        textToolActivity?.SetTag("rockbot.tool.result_length", result?.ToString()?.Length ?? 0);
+                        textToolActivity?.SetStatus(ActivityStatusCode.Ok);
                         logger.LogInformation("Text-based tool {Name} returned in {ElapsedMs}ms: {Result}",
                             toolName, toolSw.ElapsedMilliseconds, result);
                     }
                     catch (Exception ex) when (ex is not OperationCanceledException)
                     {
                         toolSw.Stop();
+                        textToolActivity?.SetStatus(ActivityStatusCode.Error, ex.Message);
                         logger.LogWarning(ex, "Text-based tool {Name} threw after {ElapsedMs}ms",
                             toolName, toolSw.ElapsedMilliseconds);
                         result = $"Error: {ex.Message}";
@@ -348,18 +376,25 @@ public sealed class AgentLoopRunner(
                 var args = fc.Arguments is not null
                     ? new AIFunctionArguments(fc.Arguments!)
                     : new AIFunctionArguments();
+                Activity.Current?.AddEvent(new ActivityEvent("tool_selection_made",
+                    tags: new ActivityTagsCollection { { "tool", fc.Name } }));
+                using var toolActivity = HostDiagnostics.Source.StartActivity("rockbot.tool.call");
+                toolActivity?.SetTag("rockbot.tool.name", fc.Name);
                 var toolSw = Stopwatch.StartNew();
                 object? result;
                 try
                 {
                     result = await tool.InvokeAsync(args, cancellationToken);
                     toolSw.Stop();
+                    toolActivity?.SetTag("rockbot.tool.result_length", result?.ToString()?.Length ?? 0);
+                    toolActivity?.SetStatus(ActivityStatusCode.Ok);
                     logger.LogInformation("Tool {Name} returned in {ElapsedMs}ms: {Result}",
                         fc.Name, toolSw.ElapsedMilliseconds, result);
                 }
                 catch (Exception ex) when (ex is not OperationCanceledException)
                 {
                     toolSw.Stop();
+                    toolActivity?.SetStatus(ActivityStatusCode.Error, ex.Message);
                     logger.LogWarning(ex, "Tool {Name} threw after {ElapsedMs}ms",
                         fc.Name, toolSw.ElapsedMilliseconds);
                     result = $"Error: {ex.Message}";
@@ -468,6 +503,13 @@ public sealed class AgentLoopRunner(
 
         logger.LogWarning("Forced final response empty and no usable assistant history found; returning empty string");
         return string.Empty;
+        } // end try
+        finally
+        {
+            HostDiagnostics.TurnTokensInput.Record(totalInputTokens, tierTag);
+            HostDiagnostics.TurnTokensOutput.Record(totalOutputTokens, tierTag);
+            HostDiagnostics.TurnToolCalls.Record(totalToolCalls, tierTag);
+        }
     }
 
     // ── Context overflow handling (text-based path only) ──────────────────────

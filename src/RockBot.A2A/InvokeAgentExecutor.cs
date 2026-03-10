@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Net.Http.Json;
 using System.Text.Json;
 using Microsoft.Extensions.Logging;
@@ -75,6 +76,7 @@ internal sealed class InvokeAgentExecutor(
         {
             TaskId = taskId,
             TargetAgent = agentName,
+            Skill = skill,
             PrimarySessionId = primarySessionId,
             StartedAt = DateTimeOffset.UtcNow,
             Cts = cts
@@ -83,12 +85,20 @@ internal sealed class InvokeAgentExecutor(
 
         // Prefer HTTP transport when the agent has a URL registered.
         var agentCard = directory.GetAgent(agentName);
-        if (!string.IsNullOrEmpty(agentCard?.Url))
+        var protocol = !string.IsNullOrEmpty(agentCard?.Url) ? "http" : "queue";
+
+        using var a2aActivity = A2ADiagnostics.Source.StartActivity("rockbot.a2a.invoke");
+        a2aActivity?.SetTag("rockbot.a2a.target_agent", agentName);
+        a2aActivity?.SetTag("rockbot.a2a.skill", skill);
+        a2aActivity?.SetTag("rockbot.a2a.task_id", taskId);
+        a2aActivity?.SetTag("rockbot.a2a.protocol", protocol);
+
+        if (protocol == "http")
         {
             // DispatchHttpAsync catches all non-cancellation exceptions internally and
             // publishes an AgentTaskError to the result topic, so unobserved exceptions
             // will not be silently lost.
-            _ = Task.Run(() => DispatchHttpAsync(agentCard.Url, agentName, taskRequest, taskId, cts.Token),
+            _ = Task.Run(() => DispatchHttpAsync(agentCard!.Url, agentName, taskRequest, taskId, cts.Token),
                 CancellationToken.None);
         }
         else
@@ -101,6 +111,12 @@ internal sealed class InvokeAgentExecutor(
 
             await publisher.PublishAsync($"{options.TaskTopic}.{agentName}", envelope, ct);
         }
+
+        a2aActivity?.SetStatus(ActivityStatusCode.Ok);
+
+        A2ADiagnostics.Requests.Add(1,
+            new KeyValuePair<string, object?>("rockbot.a2a.target_agent", agentName),
+            new KeyValuePair<string, object?>("rockbot.a2a.skill", skill));
 
         return new ToolInvokeResponse
         {
@@ -129,10 +145,23 @@ internal sealed class InvokeAgentExecutor(
             logger.LogInformation("Dispatching task {TaskId} to HTTP agent '{AgentName}' at {Endpoint}",
                 taskId, agentName, endpoint);
 
+            using var httpActivity = A2ADiagnostics.Source.StartActivity("rockbot.a2a.http_dispatch");
+            httpActivity?.SetTag("rockbot.a2a.target_agent", agentName);
+            httpActivity?.SetTag("rockbot.a2a.task_id", taskId);
+            var httpSw = System.Diagnostics.Stopwatch.StartNew();
+
             var response = await httpClient.PostAsJsonAsync(endpoint, taskRequest, JsonOptions, ct);
             response.EnsureSuccessStatusCode();
 
             var result = await response.Content.ReadFromJsonAsync<AgentTaskResult>(JsonOptions, ct);
+
+            httpSw.Stop();
+            var latencyGrade = httpSw.Elapsed.TotalSeconds > 5 ? "slow" : "fast";
+            httpActivity?.SetTag("rockbot.a2a.latency_grade", latencyGrade);
+            httpActivity?.SetTag("rockbot.a2a.duration_ms", (long)httpSw.Elapsed.TotalMilliseconds);
+            A2ADiagnostics.Duration.Record(httpSw.Elapsed.TotalMilliseconds,
+                new KeyValuePair<string, object?>("rockbot.a2a.target_agent", agentName),
+                new KeyValuePair<string, object?>("rockbot.a2a.latency_grade", latencyGrade));
             if (result is null)
             {
                 logger.LogWarning("HTTP agent '{AgentName}' returned null result for task {TaskId}",
