@@ -145,10 +145,23 @@ internal sealed class InvokeAgentExecutor(
             logger.LogInformation("Dispatching task {TaskId} to HTTP agent '{AgentName}' at {Endpoint}",
                 taskId, agentName, endpoint);
 
+            using var httpActivity = A2ADiagnostics.Source.StartActivity("rockbot.a2a.http_dispatch");
+            httpActivity?.SetTag("rockbot.a2a.target_agent", agentName);
+            httpActivity?.SetTag("rockbot.a2a.task_id", taskId);
+            var httpSw = System.Diagnostics.Stopwatch.StartNew();
+
             var response = await httpClient.PostAsJsonAsync(endpoint, taskRequest, JsonOptions, ct);
             response.EnsureSuccessStatusCode();
 
             var result = await response.Content.ReadFromJsonAsync<AgentTaskResult>(JsonOptions, ct);
+
+            httpSw.Stop();
+            var latencyGrade = httpSw.Elapsed.TotalSeconds > 5 ? "slow" : "fast";
+            httpActivity?.SetTag("rockbot.a2a.latency_grade", latencyGrade);
+            httpActivity?.SetTag("rockbot.a2a.duration_ms", (long)httpSw.Elapsed.TotalMilliseconds);
+            A2ADiagnostics.Duration.Record(httpSw.Elapsed.TotalMilliseconds,
+                new KeyValuePair<string, object?>("rockbot.a2a.target_agent", agentName),
+                new KeyValuePair<string, object?>("rockbot.a2a.latency_grade", latencyGrade));
             if (result is null)
             {
                 logger.LogWarning("HTTP agent '{AgentName}' returned null result for task {TaskId}",

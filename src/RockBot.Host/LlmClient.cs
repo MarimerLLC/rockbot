@@ -57,7 +57,10 @@ internal sealed class LlmClient(TieredChatClientRegistry registry, ILogger<LlmCl
 
                 var costUsd = LlmCostEstimator.EstimateCost(modelId, inputTokens, outputTokens);
                 if (costUsd > 0)
+                {
                     HostDiagnostics.LlmCostUsd.Add(costUsd, tierTag, modelTag);
+                    HostDiagnostics.LlmCostPerRequest.Record(costUsd, tierTag, modelTag);
+                }
 
                 activity?.SetTag("rockbot.llm.tokens.input", inputTokens);
                 activity?.SetTag("rockbot.llm.tokens.output", outputTokens);

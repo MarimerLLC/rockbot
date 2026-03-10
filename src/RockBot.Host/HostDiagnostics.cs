@@ -98,4 +98,15 @@ public static class HostDiagnostics
             "rockbot.llm.cost.usd",
             unit: "USD",
             description: "Estimated USD cost of LLM calls based on published token pricing");
+
+    /// <summary>
+    /// Per-request USD cost as a histogram. Supports exemplars (trace_id linkage) and
+    /// distribution analysis. Use this to click a cost spike in Grafana and jump to the
+    /// trace that caused it.
+    /// </summary>
+    public static readonly Histogram<double> LlmCostPerRequest =
+        Meter.CreateHistogram<double>(
+            "rockbot.llm.cost.per_request",
+            unit: "USD",
+            description: "USD cost per individual LLM request — histogram enables exemplar trace linkage");
 }

@@ -21,6 +21,7 @@ namespace RockBot.Agent;
 internal sealed class UserMessageHandler(
     ILlmClient llmClient,
     ILlmTierSelector tierSelector,
+    TieredChatClientRegistry registry,
     IMessagePublisher publisher,
     AgentIdentity agent,
     AgentProfile profile,
@@ -83,8 +84,13 @@ internal sealed class UserMessageHandler(
 
         // Start the turn span. For background paths it outlives this method — we pass
         // it to the background task which disposes it when the final reply is published.
+        var turnId = Guid.NewGuid().ToString("N")[..16];
+        var modelId = registry.GetModelId(tier) ?? tier.ToString();
         var turnActivity = HostDiagnostics.Source.StartActivity("rockbot.turn");
         turnActivity?.SetTag("rockbot.llm.tier", tier.ToString());
+        turnActivity?.SetTag("rockbot.llm.model", modelId);
+        turnActivity?.SetTag("rockbot.turn.id", turnId);
+        turnActivity?.SetTag("rockbot.user.id", message.UserId);
         turnActivity?.SetTag("rockbot.session.id", message.SessionId);
         turnActivity?.SetTag("rockbot.agent.name", agent.Name);
         turnActivity?.SetTag("rockbot.message.preview",

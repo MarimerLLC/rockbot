@@ -1,4 +1,5 @@
 using System.ClientModel;
+using System.Diagnostics;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using Microsoft.Extensions.AI;
@@ -47,6 +48,9 @@ public class RockBotFunctionInvokingChatClient : FunctionInvokingChatClient
 
         _logger.LogInformation("Executing tool {Name}(callId={CallId}, args={Args})",
             callContent.Name, callContent.CallId, argsSummary ?? "(none)");
+
+        Activity.Current?.AddEvent(new ActivityEvent("tool_selection_made",
+            tags: new ActivityTagsCollection { { "tool", callContent.Name } }));
 
         if (_progressNotifier is not null)
         {

@@ -291,6 +291,8 @@ public sealed class AgentLoopRunner(
                         continue;
                     }
 
+                    Activity.Current?.AddEvent(new ActivityEvent("tool_selection_made",
+                        tags: new ActivityTagsCollection { { "tool", toolName } }));
                     using var textToolActivity = HostDiagnostics.Source.StartActivity("rockbot.tool.call");
                     textToolActivity?.SetTag("rockbot.tool.name", toolName);
                     var toolSw = Stopwatch.StartNew();
@@ -374,6 +376,8 @@ public sealed class AgentLoopRunner(
                 var args = fc.Arguments is not null
                     ? new AIFunctionArguments(fc.Arguments!)
                     : new AIFunctionArguments();
+                Activity.Current?.AddEvent(new ActivityEvent("tool_selection_made",
+                    tags: new ActivityTagsCollection { { "tool", fc.Name } }));
                 using var toolActivity = HostDiagnostics.Source.StartActivity("rockbot.tool.call");
                 toolActivity?.SetTag("rockbot.tool.name", fc.Name);
                 var toolSw = Stopwatch.StartNew();

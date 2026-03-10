@@ -60,6 +60,10 @@ public static class ServiceCollectionExtensions
                 foreach (var name in SourceNames)
                     metrics.AddMeter(name);
 
+                // Attach trace_id to histogram data points when a sampled trace is active.
+                // Enables "click cost spike → jump to trace" in Grafana via exemplars.
+                metrics.SetExemplarFilter(ExemplarFilterType.TraceBased);
+
                 metrics.AddOtlpExporter(otlp =>
                     otlp.Endpoint = new Uri(options.OtlpEndpoint));
             });
