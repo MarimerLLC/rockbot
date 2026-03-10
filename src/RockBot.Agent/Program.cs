@@ -208,6 +208,9 @@ builder.Services.AddRockBotHost(agent =>
 // (set in the k8s ConfigMap) overrides the default "agent" relative path → /data/agent (PVC).
 builder.Services.Configure<AgentProfileOptions>(builder.Configuration.GetSection("AgentProfile"));
 
+// Allow MaxToolIterations and other AgentHostOptions to be overridden via appsettings.json or env vars.
+builder.Services.Configure<AgentHostOptions>(builder.Configuration.GetSection("AgentHost"));
+
 // MCP bridge (replaces external RockBot.Tools.Mcp.Bridge process)
 builder.Services.Configure<McpBridgeOptions>(builder.Configuration.GetSection("McpBridge"));
 builder.Services.AddHostedService<McpBridgeService>();

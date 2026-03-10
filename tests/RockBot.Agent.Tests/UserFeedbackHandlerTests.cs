@@ -50,6 +50,7 @@ public class UserFeedbackHandlerTests
             modelBehavior,
             _feedbackStore,
             new AgentClock(config, profileOptions, NullLogger<AgentClock>.Instance),
+            Options.Create(new AgentHostOptions()),
             NullLogger<AgentLoopRunner>.Instance);
         var clock = new AgentClock(config, profileOptions, NullLogger<AgentClock>.Instance);
 

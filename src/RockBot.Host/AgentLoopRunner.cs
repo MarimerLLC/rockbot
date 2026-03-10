@@ -5,6 +5,7 @@ using System.Text.Json;
 using System.Text.RegularExpressions;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using RockBot.Llm;
 
 namespace RockBot.Host;
@@ -19,9 +20,9 @@ public sealed class AgentLoopRunner(
     ModelBehavior modelBehavior,
     IFeedbackStore feedbackStore,
     AgentClock clock,
+    IOptions<AgentHostOptions> hostOptions,
     ILogger<AgentLoopRunner> logger)
 {
-    private const int MaxToolIterations = 12;
     private const int MaxConsecutiveTimeoutIterations = 2;
 
     /// <summary>
@@ -139,7 +140,7 @@ public sealed class AgentLoopRunner(
 
         ChatResponse? pendingResponse = firstResponse;
         var anyToolCalled = false;
-        var maxIterations = modelBehavior.MaxToolIterationsOverride ?? MaxToolIterations;
+        var maxIterations = modelBehavior.MaxToolIterationsOverride ?? hostOptions.Value.MaxToolIterations;
         var consecutiveTimeoutIterations = 0;
 
         for (var iteration = 0; iteration < maxIterations; iteration++)

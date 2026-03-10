@@ -297,7 +297,7 @@ Additional properties are configurable in `appsettings.json` under `ModelBehavio
 | Property | Type | Default | Purpose |
 |---|---|---|---|
 | `NudgeOnHallucinatedToolCalls` | bool | false | Inject a nudge when the model describes tool actions without emitting calls |
-| `MaxToolIterationsOverride` | int? | null (uses 12) | Override the per-request tool-loop iteration cap |
+| `MaxToolIterationsOverride` | int? | null (uses `AgentHost:MaxToolIterations`) | Override the per-request tool-loop iteration cap |
 | `ToolResultChunkingThreshold` | int? | null (uses 16 000) | Char count above which tool results are chunked into working memory instead of appended inline |
 | `ScheduledTaskResultMode` | enum | `Summarize` | How scheduled task output is presented (`Summarize`, `VerbatimOutput`, `SummarizeWithOutput`) |
 
@@ -451,6 +451,9 @@ Key configuration sections (from `appsettings.json` or environment variables):
 {
   "AgentProfile": {
     "BasePath": "/data/agent"
+  },
+  "AgentHost": {
+    "MaxToolIterations": 50
   },
   "RabbitMq": {
     "HostName": "rabbitmq.cluster.local",
