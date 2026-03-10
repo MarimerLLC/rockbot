@@ -1,4 +1,5 @@
 using Microsoft.Extensions.DependencyInjection;
+using OpenTelemetry.Logs;
 using OpenTelemetry.Metrics;
 using OpenTelemetry.Resources;
 using OpenTelemetry.Trace;
@@ -60,6 +61,13 @@ public static class ServiceCollectionExtensions
                 metrics.AddOtlpExporter(otlp =>
                     otlp.Endpoint = new Uri(options.OtlpEndpoint));
             });
+        }
+
+        if (options.EnableLogging)
+        {
+            otel.WithLogging(logging =>
+                logging.AddOtlpExporter(otlp =>
+                    otlp.Endpoint = new Uri(options.OtlpEndpoint)));
         }
 
         return services;
