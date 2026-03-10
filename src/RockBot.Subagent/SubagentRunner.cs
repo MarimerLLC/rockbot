@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
 using RockBot.Host;
@@ -137,12 +138,20 @@ internal sealed class SubagentRunner(
         string? error = null;
         var subagentSw = System.Diagnostics.Stopwatch.StartNew();
 
+        using var subagentActivity = SubagentDiagnostics.Source.StartActivity("rockbot.subagent.task");
+        subagentActivity?.SetTag("rockbot.subagent.task_id", taskId);
+        subagentActivity?.SetTag("rockbot.subagent.primary_session", primarySessionId);
+        subagentActivity?.SetTag("rockbot.llm.tier", tier.ToString());
+        subagentActivity?.SetTag("rockbot.subagent.description",
+            description.Length > 120 ? description[..120] : description);
+
         try
         {
             finalOutput = await agentLoopRunner.RunAsync(
                 chatMessages, chatOptions, subagentSessionId,
                 tier: tier, cancellationToken: ct);
             isSuccess = true;
+            subagentActivity?.SetStatus(ActivityStatusCode.Ok);
         }
         catch (OperationCanceledException oce)
         {
@@ -153,6 +162,7 @@ internal sealed class SubagentRunner(
             finalOutput = $"Subagent task was {reason} before completing.";
             isSuccess = false;
             error = oce.Message;
+            subagentActivity?.SetStatus(ActivityStatusCode.Error, reason);
         }
         catch (Exception ex)
         {
@@ -160,6 +170,7 @@ internal sealed class SubagentRunner(
             finalOutput = $"Task failed: {ex.Message}";
             isSuccess = false;
             error = ex.Message;
+            subagentActivity?.SetStatus(ActivityStatusCode.Error, ex.Message);
         }
 
         subagentSw.Stop();

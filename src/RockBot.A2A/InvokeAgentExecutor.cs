@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Text.Json;
 using RockBot.Host;
 using RockBot.Messaging;
@@ -46,6 +47,12 @@ internal sealed class InvokeAgentExecutor(
         var taskId = Guid.NewGuid().ToString("N");
         var primarySessionId = request.SessionId ?? "unknown";
 
+        using var a2aActivity = A2ADiagnostics.Source.StartActivity("rockbot.a2a.invoke");
+        a2aActivity?.SetTag("rockbot.a2a.target_agent", agentName);
+        a2aActivity?.SetTag("rockbot.a2a.skill", skill);
+        a2aActivity?.SetTag("rockbot.a2a.task_id", taskId);
+        a2aActivity?.SetTag("rockbot.a2a.protocol", "queue");
+
         var taskRequest = new AgentTaskRequest
         {
             TaskId = taskId,
@@ -64,6 +71,7 @@ internal sealed class InvokeAgentExecutor(
             replyTo: replyTo);
 
         await publisher.PublishAsync($"{options.TaskTopic}.{agentName}", envelope, ct);
+        a2aActivity?.SetStatus(ActivityStatusCode.Ok);
 
         A2ADiagnostics.Requests.Add(1,
             new KeyValuePair<string, object?>("rockbot.a2a.target_agent", agentName),

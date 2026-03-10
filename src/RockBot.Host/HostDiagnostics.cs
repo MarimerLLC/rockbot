@@ -89,4 +89,13 @@ public static class HostDiagnostics
             "rockbot.agent.turn.tools",
             unit: "{call}",
             description: "Tool calls executed per turn");
+
+    // ── FinOps ────────────────────────────────────────────────────────────────
+
+    /// <summary>Estimated USD cost per LLM call, labelled by model and tier.</summary>
+    public static readonly Counter<double> LlmCostUsd =
+        Meter.CreateCounter<double>(
+            "rockbot.llm.cost.usd",
+            unit: "USD",
+            description: "Estimated USD cost of LLM calls based on published token pricing");
 }

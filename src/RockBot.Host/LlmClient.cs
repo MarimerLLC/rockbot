@@ -32,6 +32,10 @@ internal sealed class LlmClient(TieredChatClientRegistry registry, ILogger<LlmCl
         var modelId = registry.GetModelId(tier) ?? tier.ToString();
         logger.LogInformation("LLM call: tier={Tier} model={ModelId}", tier, modelId);
 
+        using var activity = HostDiagnostics.Source.StartActivity("rockbot.llm.call");
+        activity?.SetTag("rockbot.llm.tier", tier.ToString());
+        activity?.SetTag("rockbot.llm.model", modelId);
+
         var sw = Stopwatch.StartNew();
         var status = "ok";
         try
@@ -40,26 +44,39 @@ internal sealed class LlmClient(TieredChatClientRegistry registry, ILogger<LlmCl
 
             if (response.Usage is { } usage)
             {
+                var inputTokens = usage.InputTokenCount ?? 0;
+                var outputTokens = usage.OutputTokenCount ?? 0;
+
+                var tierTag = new KeyValuePair<string, object?>("rockbot.llm.tier", tier.ToString());
+                var modelTag = new KeyValuePair<string, object?>("rockbot.llm.model", modelId);
+
                 if (usage.InputTokenCount.HasValue)
-                    HostDiagnostics.LlmTokenInput.Add(usage.InputTokenCount.Value,
-                        new KeyValuePair<string, object?>("rockbot.llm.tier", tier.ToString()),
-                        new KeyValuePair<string, object?>("rockbot.llm.model", modelId));
+                    HostDiagnostics.LlmTokenInput.Add(inputTokens, tierTag, modelTag);
                 if (usage.OutputTokenCount.HasValue)
-                    HostDiagnostics.LlmTokenOutput.Add(usage.OutputTokenCount.Value,
-                        new KeyValuePair<string, object?>("rockbot.llm.tier", tier.ToString()),
-                        new KeyValuePair<string, object?>("rockbot.llm.model", modelId));
+                    HostDiagnostics.LlmTokenOutput.Add(outputTokens, tierTag, modelTag);
+
+                var costUsd = LlmCostEstimator.EstimateCost(modelId, inputTokens, outputTokens);
+                if (costUsd > 0)
+                    HostDiagnostics.LlmCostUsd.Add(costUsd, tierTag, modelTag);
+
+                activity?.SetTag("rockbot.llm.tokens.input", inputTokens);
+                activity?.SetTag("rockbot.llm.tokens.output", outputTokens);
+                activity?.SetTag("rockbot.llm.cost.usd", costUsd);
             }
 
+            activity?.SetStatus(ActivityStatusCode.Ok);
             return response;
         }
         catch (Exception)
         {
             status = "error";
+            activity?.SetStatus(ActivityStatusCode.Error);
             throw;
         }
         finally
         {
             sw.Stop();
+            activity?.SetTag("rockbot.llm.status", status);
             HostDiagnostics.LlmRequestDuration.Record(sw.Elapsed.TotalMilliseconds,
                 new KeyValuePair<string, object?>("rockbot.llm.status", status),
                 new KeyValuePair<string, object?>("rockbot.llm.tier", tier.ToString()),

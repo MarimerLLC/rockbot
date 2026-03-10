@@ -291,18 +291,23 @@ public sealed class AgentLoopRunner(
                         continue;
                     }
 
+                    using var textToolActivity = HostDiagnostics.Source.StartActivity("rockbot.tool.call");
+                    textToolActivity?.SetTag("rockbot.tool.name", toolName);
                     var toolSw = Stopwatch.StartNew();
                     object? result;
                     try
                     {
                         result = await tool.InvokeAsync(args, cancellationToken);
                         toolSw.Stop();
+                        textToolActivity?.SetTag("rockbot.tool.result_length", result?.ToString()?.Length ?? 0);
+                        textToolActivity?.SetStatus(ActivityStatusCode.Ok);
                         logger.LogInformation("Text-based tool {Name} returned in {ElapsedMs}ms: {Result}",
                             toolName, toolSw.ElapsedMilliseconds, result);
                     }
                     catch (Exception ex) when (ex is not OperationCanceledException)
                     {
                         toolSw.Stop();
+                        textToolActivity?.SetStatus(ActivityStatusCode.Error, ex.Message);
                         logger.LogWarning(ex, "Text-based tool {Name} threw after {ElapsedMs}ms",
                             toolName, toolSw.ElapsedMilliseconds);
                         result = $"Error: {ex.Message}";
@@ -369,18 +374,23 @@ public sealed class AgentLoopRunner(
                 var args = fc.Arguments is not null
                     ? new AIFunctionArguments(fc.Arguments!)
                     : new AIFunctionArguments();
+                using var toolActivity = HostDiagnostics.Source.StartActivity("rockbot.tool.call");
+                toolActivity?.SetTag("rockbot.tool.name", fc.Name);
                 var toolSw = Stopwatch.StartNew();
                 object? result;
                 try
                 {
                     result = await tool.InvokeAsync(args, cancellationToken);
                     toolSw.Stop();
+                    toolActivity?.SetTag("rockbot.tool.result_length", result?.ToString()?.Length ?? 0);
+                    toolActivity?.SetStatus(ActivityStatusCode.Ok);
                     logger.LogInformation("Tool {Name} returned in {ElapsedMs}ms: {Result}",
                         fc.Name, toolSw.ElapsedMilliseconds, result);
                 }
                 catch (Exception ex) when (ex is not OperationCanceledException)
                 {
                     toolSw.Stop();
+                    toolActivity?.SetStatus(ActivityStatusCode.Error, ex.Message);
                     logger.LogWarning(ex, "Tool {Name} threw after {ElapsedMs}ms",
                         fc.Name, toolSw.ElapsedMilliseconds);
                     result = $"Error: {ex.Message}";
