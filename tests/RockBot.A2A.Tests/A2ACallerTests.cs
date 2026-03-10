@@ -14,6 +14,10 @@ public class A2ACallerTests
 
     private static A2AOptions DefaultOptions => new();
 
+    private static AgentDirectory EmptyDirectory =>
+        new(new A2AOptions { DirectoryPersistencePath = string.Empty },
+            NullLogger<AgentDirectory>.Instance);
+
     private static ToolInvokeRequest BuildToolRequest(string args, string? sessionId = "sess-1") =>
         new()
         {
@@ -23,6 +27,16 @@ public class A2ACallerTests
             SessionId = sessionId
         };
 
+    private static InvokeAgentExecutor BuildExecutor(
+        IMessagePublisher publisher,
+        A2ATaskTracker tracker,
+        A2AOptions? options = null,
+        IAgentDirectory? directory = null) =>
+        new(publisher, tracker, directory ?? EmptyDirectory,
+            options ?? DefaultOptions, TestIdentity,
+            NullHttpClientFactory.Instance,
+            NullLogger<InvokeAgentExecutor>.Instance);
+
     // ─── InvokeAgentExecutor ────────────────────────────────────────────────────
 
     [TestMethod]
@@ -30,7 +44,7 @@ public class A2ACallerTests
     {
         var publisher = new TrackingPublisher();
         var tracker = new A2ATaskTracker();
-        var executor = new InvokeAgentExecutor(publisher, tracker, DefaultOptions, TestIdentity);
+        var executor = BuildExecutor(publisher, tracker);
 
         var request = BuildToolRequest("""
             { "agent_name": "TargetAgent", "skill": "summarize", "message": "Summarize this." }
@@ -52,7 +66,7 @@ public class A2ACallerTests
     {
         var publisher = new TrackingPublisher();
         var tracker = new A2ATaskTracker();
-        var executor = new InvokeAgentExecutor(publisher, tracker, DefaultOptions, TestIdentity);
+        var executor = BuildExecutor(publisher, tracker);
 
         var request = BuildToolRequest("""
             { "agent_name": "TargetAgent", "skill": "chat", "message": "Hello." }
@@ -75,7 +89,7 @@ public class A2ACallerTests
         var publisher = new TrackingPublisher();
         var tracker = new A2ATaskTracker();
         var options = new A2AOptions { CallerResultTopic = "agent.response" };
-        var executor = new InvokeAgentExecutor(publisher, tracker, options, TestIdentity);
+        var executor = BuildExecutor(publisher, tracker, options);
 
         var request = BuildToolRequest("""
             { "agent_name": "TargetAgent", "skill": "chat", "message": "Hi." }
@@ -91,7 +105,7 @@ public class A2ACallerTests
     {
         var publisher = new TrackingPublisher();
         var tracker = new A2ATaskTracker();
-        var executor = new InvokeAgentExecutor(publisher, tracker, DefaultOptions, TestIdentity);
+        var executor = BuildExecutor(publisher, tracker);
 
         var request = BuildToolRequest("""{ "skill": "chat", "message": "Hi." }""");
 
@@ -106,7 +120,7 @@ public class A2ACallerTests
     {
         var publisher = new TrackingPublisher();
         var tracker = new A2ATaskTracker();
-        var executor = new InvokeAgentExecutor(publisher, tracker, DefaultOptions, TestIdentity);
+        var executor = BuildExecutor(publisher, tracker);
 
         var request = BuildToolRequest("""{ "agent_name": "TargetAgent", "message": "Hi." }""");
 
@@ -120,7 +134,7 @@ public class A2ACallerTests
     {
         var publisher = new TrackingPublisher();
         var tracker = new A2ATaskTracker();
-        var executor = new InvokeAgentExecutor(publisher, tracker, DefaultOptions, TestIdentity);
+        var executor = BuildExecutor(publisher, tracker);
 
         var request = BuildToolRequest("""{ "agent_name": "TargetAgent", "skill": "chat" }""");
 
