@@ -40,6 +40,23 @@ public sealed class AgentLoopRunner(
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
     /// <summary>
+    /// Detects when a model claims it lacks a connected service or tool, prompting a
+    /// check via mcp_list_services before giving up. Public so NativeLlmLoopAsync and
+    /// the first-response routing in UserMessageHandler can apply the same check.
+    /// </summary>
+    public static readonly Regex CapabilityDenialRegex = new(
+        @"\bI\s+(?:don['\u2019]?t|do\s+not)\s+(?:currently\s+)?have\s+(?:(?:direct\s+)?access\s+to\s+(?:a\s+|an\s+|any\s+)?|a\s+|any\s+(?:connected\s+)?)(?:calendar|email|mail|scheduling|service|tool|integration|plugin)\b" +
+        @"|\bI(?:['\u2019]m|\s+am)\s+(?:not\s+able|unable)\s+to\s+(?:access|use)\s+(?:\w+\s+)?(?:calendar|email|mail|scheduling|service|tool|integration)\b" +
+        @"|\bno\s+(?:calendar|email|mail|scheduling|external)\s+(?:service|tool|integration)\b" +
+        @"|\bI\s+(?:don['\u2019]?t|do\s+not)\s+(?:currently\s+)?have\s+(?:the\s+)?(?:tools?|ability|capability|a\s+way)\s+to\s+(?:access|check|view|schedule|manage|connect\s+to)\b" +
+        @"|\bI\s+lack\s+(?:access\s+to|a)\s+(?:calendar|email|mail|service|tool)\b",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+    public const string CapabilityDenialNudge =
+        "Before concluding you lack access, check what services are available using " +
+        "mcp_list_services or search_known_services, then use mcp_invoke_tool to call them.";
+
+    /// <summary>
     /// Context window limit in tokens, learned from the first overflow error (text-based path only).
     /// </summary>
     private int? _knownContextLimit;
@@ -246,6 +263,17 @@ public sealed class AgentLoopRunner(
                         chatMessages.Add(new ChatMessage(ChatRole.Assistant, text));
                         chatMessages.Add(new ChatMessage(ChatRole.User,
                             "You described taking actions but no tool calls were detected. Please call the required tools now."));
+                        continue;
+                    }
+
+                    if (modelBehavior.NudgeOnHallucinatedToolCalls
+                        && CapabilityDenialRegex.IsMatch(text))
+                    {
+                        logger.LogWarning(
+                            "Capability denial detected ({Length} chars); nudging LLM to check available services",
+                            text.Length);
+                        chatMessages.Add(new ChatMessage(ChatRole.Assistant, text));
+                        chatMessages.Add(new ChatMessage(ChatRole.User, CapabilityDenialNudge));
                         continue;
                     }
 

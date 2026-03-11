@@ -264,10 +264,11 @@ internal sealed class UserMessageHandler(
                             chatMessages, chatOptions, firstResponse, tier,
                             message.SessionId, replyTo, correlationId, turnActivity, sessionCt);
                     }
-                    else if (modelBehavior.NudgeOnHallucinatedToolCalls && HallucinatedActionRegex.IsMatch(text))
+                    else if (modelBehavior.NudgeOnHallucinatedToolCalls
+                        && (HallucinatedActionRegex.IsMatch(text) || AgentLoopRunner.CapabilityDenialRegex.IsMatch(text)))
                     {
                         logger.LogWarning(
-                            "Hallucinated tool actions detected on first response ({Length} chars); routing to background loop for nudge",
+                            "Hallucinated action or capability denial on first response ({Length} chars); routing to background loop for nudge",
                             text.Length);
 
                         await PublishReplyAsync(
@@ -377,6 +378,30 @@ internal sealed class UserMessageHandler(
                 .SelectMany(m => m.Contents.OfType<FunctionCallContent>())
                 .ToList();
             var toolCallNames = toolCalls.Select(c => c.Name).Distinct().ToList();
+
+            // If the model made no tool calls and claimed it lacks a service, nudge once.
+            if (toolCalls.Count == 0
+                && modelBehavior.NudgeOnHallucinatedToolCalls
+                && AgentLoopRunner.CapabilityDenialRegex.IsMatch(text))
+            {
+                logger.LogWarning(
+                    "Capability denial in native path ({Length} chars); nudging to check available services",
+                    text.Length);
+                chatMessages.AddRange(response.Messages);
+                chatMessages.Add(new ChatMessage(ChatRole.User, AgentLoopRunner.CapabilityDenialNudge));
+                var retryResponse = await llmClient.GetResponseAsync(chatMessages, classification.Tier, chatOptions, ct);
+                text = agentLoopRunner.ExtractAssistantText(retryResponse);
+                var retryToolCalls = retryResponse.Messages
+                    .SelectMany(m => m.Contents.OfType<FunctionCallContent>())
+                    .Count();
+                logger.LogInformation(
+                    "Capability denial nudge complete — {ToolCallCount} tool call(s) on retry, {TextLen} chars",
+                    retryToolCalls, text.Length);
+                toolCalls = retryResponse.Messages
+                    .SelectMany(m => m.Contents.OfType<FunctionCallContent>())
+                    .ToList();
+                toolCallNames = toolCalls.Select(c => c.Name).Distinct().ToList();
+            }
 
             logger.LogInformation(
                 "Native path complete — {ToolCallCount} tool call(s) resolved, final text {TextLen} chars",
