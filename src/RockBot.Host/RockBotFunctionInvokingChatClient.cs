@@ -184,8 +184,48 @@ public class RockBotFunctionInvokingChatClient : FunctionInvokingChatClient
                     "The task loop has ended. Write a concise summary of what was accomplished. " +
                     "Report only what was completed — do not describe intentions or future actions."));
 
-                var summaryResponse = await InnerClient.GetResponseAsync(
-                    summaryMessages, new ChatOptions(), cancellationToken);
+                var summaryModelId = InnerClient.GetService<ChatClientMetadata>()?.DefaultModelId ?? string.Empty;
+                var summarySw = Stopwatch.StartNew();
+                var summaryStatus = "ok";
+                ChatResponse summaryResponse = null!;
+                try
+                {
+                    summaryResponse = await InnerClient.GetResponseAsync(
+                        summaryMessages, new ChatOptions(), cancellationToken);
+                }
+                catch (Exception)
+                {
+                    summaryStatus = "error";
+                    throw;
+                }
+                finally
+                {
+                    summarySw.Stop();
+                    var modelTag = new KeyValuePair<string, object?>("rockbot.llm.model", summaryModelId);
+                    HostDiagnostics.LlmRequestDuration.Record(summarySw.Elapsed.TotalMilliseconds,
+                        new KeyValuePair<string, object?>("rockbot.llm.status", summaryStatus),
+                        modelTag);
+                    HostDiagnostics.LlmRequests.Add(1,
+                        new KeyValuePair<string, object?>("rockbot.llm.status", summaryStatus),
+                        modelTag);
+                }
+
+                if (summaryResponse.Usage is { } summaryUsage)
+                {
+                    var inputTokens = summaryUsage.InputTokenCount ?? 0;
+                    var outputTokens = summaryUsage.OutputTokenCount ?? 0;
+                    var modelTag = new KeyValuePair<string, object?>("rockbot.llm.model", summaryModelId);
+                    if (summaryUsage.InputTokenCount.HasValue)
+                        HostDiagnostics.LlmTokenInput.Add(inputTokens, modelTag);
+                    if (summaryUsage.OutputTokenCount.HasValue)
+                        HostDiagnostics.LlmTokenOutput.Add(outputTokens, modelTag);
+                    var costUsd = LlmCostEstimator.EstimateCost(summaryModelId, inputTokens, outputTokens);
+                    if (costUsd > 0)
+                    {
+                        HostDiagnostics.LlmCostUsd.Add(costUsd, modelTag);
+                        HostDiagnostics.LlmCostPerRequest.Record(costUsd, modelTag);
+                    }
+                }
 
                 var summaryText = ExtractAssistantText(summaryResponse);
                 if (!string.IsNullOrWhiteSpace(summaryText))
