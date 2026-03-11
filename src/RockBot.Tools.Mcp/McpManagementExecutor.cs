@@ -7,7 +7,7 @@ using RockBot.Messaging;
 namespace RockBot.Tools.Mcp;
 
 /// <summary>
-/// <see cref="IToolExecutor"/> for the 5 MCP management tools registered by
+/// <see cref="IToolExecutor"/> for the 6 MCP management tools registered by
 /// <see cref="McpServersIndexedHandler"/>:
 /// <list type="bullet">
 ///   <item><c>mcp_list_services</c> — returns cached server index</item>
@@ -15,6 +15,7 @@ namespace RockBot.Tools.Mcp;
 ///   <item><c>mcp_invoke_tool</c> — delegates to <see cref="McpToolProxy"/></item>
 ///   <item><c>mcp_register_server</c> — asks bridge to connect a new server</item>
 ///   <item><c>mcp_unregister_server</c> — asks bridge to remove a server</item>
+///   <item><c>mcp_get_prompt</c> — invokes a prompt template on an MCP server</item>
 /// </list>
 /// </summary>
 public sealed class McpManagementExecutor : IToolExecutor, IAsyncDisposable
@@ -63,11 +64,12 @@ public sealed class McpManagementExecutor : IToolExecutor, IAsyncDisposable
     public Task<ToolInvokeResponse> ExecuteAsync(ToolInvokeRequest request, CancellationToken ct) =>
         request.ToolName switch
         {
-            "mcp_list_services"     => Task.FromResult(ListServices(request)),
+            "mcp_list_services"       => Task.FromResult(ListServices(request)),
             "mcp_get_service_details" => GetServiceDetailsAsync(request, ct),
-            "mcp_invoke_tool"       => InvokeToolAsync(request, ct),
-            "mcp_register_server"   => RegisterServerAsync(request, ct),
-            "mcp_unregister_server" => UnregisterServerAsync(request, ct),
+            "mcp_invoke_tool"         => InvokeToolAsync(request, ct),
+            "mcp_register_server"     => RegisterServerAsync(request, ct),
+            "mcp_unregister_server"   => UnregisterServerAsync(request, ct),
+            "mcp_get_prompt"          => GetPromptAsync(request, ct),
             _ => Task.FromResult(Error(request, $"Unknown management tool: {request.ToolName}"))
         };
 
@@ -222,6 +224,61 @@ public sealed class McpManagementExecutor : IToolExecutor, IAsyncDisposable
             ToolName = request.ToolName,
             Content = content,
             IsError = !response.Success
+        };
+    }
+
+    // ── mcp_get_prompt ───────────────────────────────────────────────────────
+
+    private async Task<ToolInvokeResponse> GetPromptAsync(ToolInvokeRequest request, CancellationToken ct)
+    {
+        var args = ParseArguments(request.Arguments);
+        if (!TryGetServerName(args, out var serverName))
+            return Error(request, "Missing required parameter: server_name");
+        if (!TryGetString(args, "prompt_name", out var promptName))
+            return Error(request, "Missing required parameter: prompt_name");
+
+        var promptArgs = new Dictionary<string, string>();
+        if (args.TryGetValue("arguments", out var argsObj) && argsObj is not null)
+        {
+            var argsJson = argsObj is JsonElement je ? je.GetRawText() : JsonSerializer.Serialize(argsObj, JsonOptions);
+            try
+            {
+                var parsed = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(argsJson, JsonOptions);
+                if (parsed is not null)
+                {
+                    foreach (var (k, v) in parsed)
+                    {
+                        promptArgs[k] = v.ValueKind == JsonValueKind.String
+                            ? v.GetString() ?? string.Empty
+                            : v.GetRawText();
+                    }
+                }
+            }
+            catch { /* ignore malformed arguments */ }
+        }
+
+        var mgmtRequest = new McpGetPromptRequest
+        {
+            ServerName = serverName,
+            PromptName = promptName,
+            Arguments = promptArgs
+        };
+
+        var responseEnvelope = await SendRequestAsync(mgmtRequest, ct);
+        if (responseEnvelope is null)
+            return Error(request, $"Timed out waiting for prompt '{promptName}' from server '{serverName}'");
+
+        var response = responseEnvelope.GetPayload<McpGetPromptResponse>();
+        if (response is null)
+            return Error(request, "Failed to deserialize prompt response");
+        if (response.Error is not null)
+            return Error(request, response.Error);
+
+        return new ToolInvokeResponse
+        {
+            ToolCallId = request.ToolCallId,
+            ToolName = request.ToolName,
+            Content = JsonSerializer.Serialize(response.Messages, JsonOptions)
         };
     }
 

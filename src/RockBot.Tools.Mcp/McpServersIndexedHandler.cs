@@ -5,7 +5,7 @@ namespace RockBot.Tools.Mcp;
 
 /// <summary>
 /// Handles <see cref="McpServersIndexed"/> messages from the MCP Bridge.
-/// On the first message, registers the 5 MCP management tools in <see cref="IToolRegistry"/>.
+/// On the first message, registers the 6 MCP management tools in <see cref="IToolRegistry"/>.
 /// All subsequent messages only update the <see cref="McpServerIndex"/> cache.
 /// </summary>
 public sealed class McpServersIndexedHandler(
@@ -73,6 +73,14 @@ public sealed class McpServersIndexedHandler(
             Source = "mcp:management"
         }, executor);
 
-        logger.LogInformation("Registered 5 MCP management tools");
+        registry.Register(new ToolRegistration
+        {
+            Name = "mcp_get_prompt",
+            Description = "Invoke a prompt template on an MCP server. Returns filled-in messages (user/assistant) ready to use as context or instructions. Use mcp_get_service_details to see available prompt templates and their argument schemas first.",
+            ParametersSchema = """{"type":"object","properties":{"server_name":{"type":"string","description":"Name of the MCP server"},"prompt_name":{"type":"string","description":"Name of the prompt template to invoke"},"arguments":{"type":"object","description":"Key-value arguments to fill in the prompt template (all values as strings)"}},"required":["server_name","prompt_name"]}""",
+            Source = "mcp:management"
+        }, executor);
+
+        logger.LogInformation("Registered 6 MCP management tools");
     }
 }

@@ -12,12 +12,13 @@ public sealed record McpGetServiceDetailsRequest
 }
 
 /// <summary>
-/// Bridge response carrying all tool definitions for the requested server.
+/// Bridge response carrying all tool and prompt definitions for the requested server.
 /// </summary>
 public sealed record McpGetServiceDetailsResponse
 {
     public required string ServerName { get; init; }
     public List<McpToolDefinition> Tools { get; init; } = [];
+    public List<McpPromptDefinition> Prompts { get; init; } = [];
     public string? Error { get; init; }
 }
 
@@ -63,4 +64,35 @@ public sealed record McpUnregisterServerResponse
     public required string ServerName { get; init; }
     public bool Success { get; init; }
     public string? Error { get; init; }
+}
+
+// ── GetPrompt ────────────────────────────────────────────────────────────────
+
+/// <summary>
+/// Requests a filled-in prompt template from an MCP server.
+/// Published to <c>mcp.manage</c>.
+/// </summary>
+public sealed record McpGetPromptRequest
+{
+    public required string ServerName { get; init; }
+    public required string PromptName { get; init; }
+    public Dictionary<string, string> Arguments { get; init; } = [];
+}
+
+/// <summary>Bridge response carrying the filled-in prompt messages.</summary>
+public sealed record McpGetPromptResponse
+{
+    public required string ServerName { get; init; }
+    public required string PromptName { get; init; }
+    public string? Description { get; init; }
+    public List<McpPromptMessage> Messages { get; init; } = [];
+    public string? Error { get; init; }
+}
+
+/// <summary>A single message from a filled-in MCP prompt template.</summary>
+public sealed record McpPromptMessage
+{
+    public required string Role { get; init; }       // "user" or "assistant"
+    public required string Content { get; init; }    // text content (most common case)
+    public string ContentType { get; init; } = "text";
 }

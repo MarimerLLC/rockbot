@@ -17,4 +17,6 @@ public sealed record McpServerSummary
 
     public int ToolCount { get; init; }
     public List<string> ToolNames { get; init; } = [];
+    public int PromptCount { get; init; }
+    public List<string> PromptNames { get; init; } = [];
 }
