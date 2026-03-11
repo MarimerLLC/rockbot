@@ -48,6 +48,13 @@ public sealed class McpBridgeServerConfig
     public string TransportMode { get; set; } = "auto";
 
     /// <summary>
+    /// HTTP headers to include on every request to this server.
+    /// Values may use <c>${ENV_VAR_NAME}</c> syntax for environment variable substitution.
+    /// Example: <c>"X-RockBot-Token": "${Staging__Token}"</c>
+    /// </summary>
+    public Dictionary<string, string> Headers { get; set; } = [];
+
+    /// <summary>
     /// Whether this config uses HTTP-based transport (SSE or streamable HTTP).
     /// </summary>
     public bool IsSse => Type?.ToLowerInvariant() is "sse" or "http" or "streamable-http";

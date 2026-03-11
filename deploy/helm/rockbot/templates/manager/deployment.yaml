@@ -78,6 +78,11 @@ spec:
                 configMapKeyRef:
                   name: {{ include "rockbot.configmapName" . }}
                   key: Scripts__Container__StagingUrl
+            - name: Scripts__Container__StagingToken
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "rockbot.secretName" . }}
+                  key: Staging__Token
             {{- end }}
             - name: DOTNET_ENVIRONMENT
               value: "Production"

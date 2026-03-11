@@ -35,4 +35,10 @@ public sealed class ContainerScriptOptions
     /// a ROCKBOT_STAGING_URL environment variable so scripts can upload files via REST.
     /// </summary>
     public string StagingUrl { get; set; } = "";
+
+    /// <summary>
+    /// Auth token for the staging blob service. When non-empty, ephemeral pods receive
+    /// a ROCKBOT_STAGING_TOKEN environment variable for use in the X-RockBot-Token header.
+    /// </summary>
+    public string StagingToken { get; set; } = "";
 }

@@ -176,6 +176,9 @@ internal sealed class ContainerScriptHandler(
         if (!string.IsNullOrEmpty(options.StagingUrl))
             pod.Spec.Containers[0].Env.Add(new V1EnvVar { Name = "ROCKBOT_STAGING_URL", Value = options.StagingUrl });
 
+        if (!string.IsNullOrEmpty(options.StagingToken))
+            pod.Spec.Containers[0].Env.Add(new V1EnvVar { Name = "ROCKBOT_STAGING_TOKEN", Value = options.StagingToken });
+
         return pod;
     }
 

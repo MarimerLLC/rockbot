@@ -33,6 +33,11 @@ spec:
               value: /rockbot/staging
             - name: Staging__ServiceUrl
               value: {{ include "rockbot.stagingServiceUrl" . | quote }}
+            - name: Staging__Token
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "rockbot.secretName" . }}
+                  key: Staging__Token
             - name: ASPNETCORE_URLS
               value: http://+:8080
           volumeMounts:
