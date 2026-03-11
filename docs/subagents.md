@@ -280,7 +280,7 @@ Its `RunAsync` method:
    - Long-term memory tools (`SaveMemory`, `SearchMemory`, `DeleteMemory`, `ListCategories`)
    - Working memory tools namespaced to `subagent/{taskId}` (writes go here automatically)
    - Skill tools (`GetSkill`, `ListSkills`, `SaveSkill`)
-   - Registry tools (MCP, REST, scheduling, etc.) — subagent management tools excluded
+   - Registry tools (MCP, scheduling, etc.) — subagent management tools excluded
    - `ReportProgress` (baked with `taskId` + `primarySessionId`)
 5. Calls `AgentLoopRunner.RunAsync` — the same loop used by `UserMessageHandler`
 6. On `OperationCanceledException`: re-throws (propagates to `SubagentManager`)

@@ -32,11 +32,10 @@ RockBot takes a different approach: **a swarm of isolated agents communicating v
 
 ### Communication Protocols
 
-RockBot supports three communication patterns, used in combination:
+RockBot supports two communication patterns, used in combination:
 
 - **A2A (Agent-to-Agent)**: Task delegation between agents, preferably running over a queued transport like RabbitMQ rather than direct HTTP. This gives durability, back-pressure, and decoupling.
 - **MCP (Model Context Protocol)**: Tool discovery and invocation. RockBot agents can be MCP clients (calling tools) or can bridge to existing MCP servers.
-- **REST**: Direct HTTP calls for external APIs and services. Agents can generate and execute HTTP requests against arbitrary endpoints.
 
 ### Key Principle: No Game Loop
 
@@ -179,7 +178,6 @@ rockbot/
 
 ### Phase 4: Tool Execution
 - [ ] MCP client bridge (leverage existing MCP Aggregator)
-- [ ] REST endpoint invocation handler
 - [ ] Script execution with container-based isolation
 
 ### Phase 5: A2A Protocol
