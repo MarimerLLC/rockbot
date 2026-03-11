@@ -79,7 +79,7 @@ public class McpServersIndexedHandlerTests
         await handler.HandleAsync(message, CreateContext(message));
 
         var tools = _registry.GetTools();
-        Assert.AreEqual(5, tools.Count);
+        Assert.AreEqual(6, tools.Count);
 
         var names = tools.Select(t => t.Name).ToHashSet();
         Assert.IsTrue(names.Contains("mcp_list_services"));
@@ -87,6 +87,7 @@ public class McpServersIndexedHandlerTests
         Assert.IsTrue(names.Contains("mcp_invoke_tool"));
         Assert.IsTrue(names.Contains("mcp_register_server"));
         Assert.IsTrue(names.Contains("mcp_unregister_server"));
+        Assert.IsTrue(names.Contains("mcp_get_prompt"));
     }
 
     [TestMethod]
@@ -101,8 +102,8 @@ public class McpServersIndexedHandlerTests
         await handler.HandleAsync(message, CreateContext(message));
         await handler.HandleAsync(message, CreateContext(message));
 
-        // Tools should be registered exactly once — still 5, not 10
-        Assert.AreEqual(5, _registry.GetTools().Count);
+        // Tools should be registered exactly once — still 6, not 12
+        Assert.AreEqual(6, _registry.GetTools().Count);
     }
 
     [TestMethod]

@@ -29,6 +29,7 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
     private readonly Dictionary<string, McpClient> _clients = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, McpBridgeServerConfig> _serverConfigs = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, List<McpClientTool>> _serverTools = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, List<McpClientPrompt>> _serverPrompts = new(StringComparer.OrdinalIgnoreCase);
     private ISubscription? _invokeSubscription;
     private ISubscription? _refreshSubscription;
     private ISubscription? _manageSubscription;
@@ -224,6 +225,17 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
                 var tools = await newClient.ListToolsAsync(cancellationToken: ct);
                 var filteredTools = ApplyToolFilters(tools.ToList(), config);
 
+                List<McpClientPrompt> prompts = [];
+                try
+                {
+                    var rawPrompts = await newClient.ListPromptsAsync(cancellationToken: ct);
+                    prompts = [.. rawPrompts];
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogDebug(ex, "MCP server {Name} does not support prompts or listing failed", name);
+                }
+
                 // Connection succeeded — atomically replace the old client without publishing a removal
                 if (_clients.Remove(name, out var oldClient))
                 {
@@ -234,12 +246,13 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
                 _clients[name] = newClient;
                 _serverConfigs[name] = config;
                 _serverTools[name] = filteredTools;
+                _serverPrompts[name] = prompts;
 
-                _logger.LogInformation("Connected to MCP server {Name} with {Count} tools",
-                    name, filteredTools.Count);
+                _logger.LogInformation("Connected to MCP server {Name} with {ToolCount} tools and {PromptCount} prompts",
+                    name, filteredTools.Count, prompts.Count);
 
                 // Build and publish server summary
-                var summary = await GenerateSummaryAsync(name, filteredTools, ct);
+                var summary = await GenerateSummaryAsync(name, filteredTools, prompts, ct);
                 await PublishServersIndexedAsync([summary], [], ct);
                 return;
             }
@@ -276,6 +289,7 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
         }
 
         _serverTools.Remove(name);
+        _serverPrompts.Remove(name);
         _serverConfigs.Remove(name);
 
         await PublishServersIndexedAsync([], [name], CancellationToken.None);
@@ -303,9 +317,11 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
     private async Task<McpServerSummary> GenerateSummaryAsync(
         string serverName,
         List<McpClientTool> tools,
+        List<McpClientPrompt> prompts,
         CancellationToken ct)
     {
         var toolNames = tools.Select(t => t.Name).ToList();
+        var promptNames = prompts.Select(p => p.Name).ToList();
 
         string? summaryText = null;
 
@@ -316,12 +332,17 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
                 var toolList = string.Join("\n", tools.Take(20).Select(t =>
                     $"- {t.Name}: {t.Description}"));
 
+                var promptSection = prompts.Count > 0
+                    ? "\nPrompts:\n" + string.Join("\n", prompts.Take(10).Select(p =>
+                        $"- {p.Name}: {p.Description}"))
+                    : string.Empty;
+
                 var prompt = $"""
                     You are summarizing an MCP server's capabilities for an AI agent that must decide which server's tools to use for a given task.
                     Write a single sentence (15-25 words) that captures what the '{serverName}' MCP server specializes in and what kinds of tasks its tools handle.
                     Focus on what makes it distinct and when to choose it over other servers.
                     Based on these tools:
-                    {toolList}
+                    {toolList}{promptSection}
                     Respond with only the sentence, no preamble or explanation.
                     """;
 
@@ -335,17 +356,27 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
             }
         }
 
-        summaryText ??= tools.Count > 0
-            ? $"Provides {tools.Count} tool(s): {string.Join(", ", toolNames.Take(10))}" +
-              (toolNames.Count > 10 ? $" and {toolNames.Count - 10} more." : ".")
-            : "No tools available.";
+        if (summaryText is null)
+        {
+            var toolsPart = tools.Count > 0
+                ? $"Provides {tools.Count} tool(s): {string.Join(", ", toolNames.Take(10))}" +
+                  (toolNames.Count > 10 ? $" and {toolNames.Count - 10} more." : ".")
+                : "No tools available.";
+            var promptsPart = prompts.Count > 0
+                ? $" {prompts.Count} prompt template(s): {string.Join(", ", promptNames.Take(10))}" +
+                  (promptNames.Count > 10 ? $" and {promptNames.Count - 10} more." : ".")
+                : string.Empty;
+            summaryText = toolsPart + promptsPart;
+        }
 
         return new McpServerSummary
         {
             ServerName = serverName,
             Summary = summaryText,
             ToolCount = tools.Count,
-            ToolNames = toolNames
+            ToolNames = toolNames,
+            PromptCount = prompts.Count,
+            PromptNames = promptNames
         };
     }
 
@@ -658,6 +689,7 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
             if (req is null) return MessageResult.DeadLetter;
 
             var tools = _serverTools.GetValueOrDefault(req.ServerName) ?? [];
+            var serverPrompts = _serverPrompts.GetValueOrDefault(req.ServerName) ?? [];
             var response = new McpGetServiceDetailsResponse
             {
                 ServerName = req.ServerName,
@@ -668,6 +700,18 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
                     ParametersSchema = t.JsonSchema.ValueKind != JsonValueKind.Undefined
                         ? t.JsonSchema.GetRawText()
                         : null
+                }).ToList(),
+                Prompts = serverPrompts.Select(p => new McpPromptDefinition
+                {
+                    Name = p.Name,
+                    Description = p.Description,
+                    Arguments = (p.ProtocolPrompt.Arguments ?? [])
+                        .Select(a => new McpPromptArgument
+                        {
+                            Name = a.Name,
+                            Description = a.Description,
+                            Required = a.Required ?? false
+                        }).ToList()
                 }).ToList(),
                 Error = _clients.ContainsKey(req.ServerName) ? null
                     : $"Server '{req.ServerName}' is not connected"
@@ -747,6 +791,132 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
                     Error = ex.Message
                 };
                 await PublishResponseAsync(response, replyTo, envelope.CorrelationId, ct);
+            }
+        }
+        else if (envelope.MessageType == typeof(McpGetPromptRequest).FullName)
+        {
+            var req = envelope.GetPayload<McpGetPromptRequest>();
+            if (req is null) return MessageResult.DeadLetter;
+
+            var client = _clients.GetValueOrDefault(req.ServerName);
+            if (client is null)
+            {
+                var notFound = new McpGetPromptResponse
+                {
+                    ServerName = req.ServerName,
+                    PromptName = req.PromptName,
+                    Error = $"Server '{req.ServerName}' is not connected"
+                };
+                await PublishResponseAsync(notFound, replyTo, envelope.CorrelationId, ct);
+                return MessageResult.Ack;
+            }
+
+            try
+            {
+                IReadOnlyDictionary<string, object?> promptArgs = req.Arguments.Count > 0
+                    ? req.Arguments.ToDictionary(kvp => kvp.Key, kvp => (object?)kvp.Value)
+                    : new Dictionary<string, object?>();
+
+                var result = await client.GetPromptAsync(req.PromptName, promptArgs, cancellationToken: ct);
+
+                var messages = (result.Messages ?? []).Select(m =>
+                {
+                    string content;
+                    string contentType;
+                    if (m.Content is ModelContextProtocol.Protocol.TextContentBlock textBlock)
+                    {
+                        content = textBlock.Text;
+                        contentType = "text";
+                    }
+                    else
+                    {
+                        content = JsonSerializer.Serialize(m.Content, JsonOptions);
+                        contentType = m.Content?.Type ?? "unknown";
+                    }
+                    return new McpPromptMessage
+                    {
+                        Role = m.Role.ToString().ToLowerInvariant(),
+                        Content = content,
+                        ContentType = contentType
+                    };
+                }).ToList();
+
+                var response = new McpGetPromptResponse
+                {
+                    ServerName = req.ServerName,
+                    PromptName = req.PromptName,
+                    Description = result.Description,
+                    Messages = messages
+                };
+                await PublishResponseAsync(response, replyTo, envelope.CorrelationId, ct);
+            }
+            catch (Exception ex)
+            {
+                // Attempt reconnect and retry once (same pattern as HandleToolInvokeAsync)
+                if (_serverConfigs.TryGetValue(req.ServerName, out var staleConfig))
+                {
+                    _logger.LogWarning(ex,
+                        "GetPrompt {Server}/{Prompt} FAILED — reconnecting and retrying transparently",
+                        req.ServerName, req.PromptName);
+                    try
+                    {
+                        await ConnectServerAsync(req.ServerName, staleConfig, ct);
+                        var freshClient = _clients.GetValueOrDefault(req.ServerName);
+                        if (freshClient is not null)
+                        {
+                            IReadOnlyDictionary<string, object?> retryArgs = req.Arguments.Count > 0
+                                ? req.Arguments.ToDictionary(kvp => kvp.Key, kvp => (object?)kvp.Value)
+                                : new Dictionary<string, object?>();
+
+                            var retryResult = await freshClient.GetPromptAsync(req.PromptName, retryArgs, cancellationToken: ct);
+                            var retryMessages = (retryResult.Messages ?? []).Select(m =>
+                            {
+                                string content;
+                                string contentType;
+                                if (m.Content is ModelContextProtocol.Protocol.TextContentBlock textBlock)
+                                {
+                                    content = textBlock.Text;
+                                    contentType = "text";
+                                }
+                                else
+                                {
+                                    content = JsonSerializer.Serialize(m.Content, JsonOptions);
+                                    contentType = m.Content?.Type ?? "unknown";
+                                }
+                                return new McpPromptMessage
+                                {
+                                    Role = m.Role.ToString().ToLowerInvariant(),
+                                    Content = content,
+                                    ContentType = contentType
+                                };
+                            }).ToList();
+
+                            var retryResponse = new McpGetPromptResponse
+                            {
+                                ServerName = req.ServerName,
+                                PromptName = req.PromptName,
+                                Description = retryResult.Description,
+                                Messages = retryMessages
+                            };
+                            await PublishResponseAsync(retryResponse, replyTo, envelope.CorrelationId, ct);
+                            return MessageResult.Ack;
+                        }
+                    }
+                    catch (Exception retryEx)
+                    {
+                        _logger.LogError(retryEx,
+                            "Reconnect/retry for GetPrompt {Server}/{Prompt} also failed",
+                            req.ServerName, req.PromptName);
+                    }
+                }
+
+                var errorResponse = new McpGetPromptResponse
+                {
+                    ServerName = req.ServerName,
+                    PromptName = req.PromptName,
+                    Error = ex.Message
+                };
+                await PublishResponseAsync(errorResponse, replyTo, envelope.CorrelationId, ct);
             }
         }
         else
@@ -935,6 +1105,7 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
         }
         _clients.Clear();
         _serverTools.Clear();
+        _serverPrompts.Clear();
         _serverConfigs.Clear();
     }
 
