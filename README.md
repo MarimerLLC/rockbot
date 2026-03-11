@@ -26,7 +26,6 @@ Each agent is an isolated process that reacts to messages, invokes tools, calls 
 | `RockBot.Tools` | Tool registry, invocation dispatch, and tool-guide discovery |
 | `RockBot.Tools.Mcp` | MCP (Model Context Protocol) server proxy — discovery, inspection, and invocation |
 | `RockBot.Tools.Web` | Web search (Brave API) and web browsing with GitHub API routing and auto-chunking |
-| `RockBot.Tools.Rest` | Direct HTTP endpoint invocation as tools |
 | `RockBot.Tools.Scheduling` | Scheduled task execution with configurable result presentation |
 | `RockBot.Scripts.Remote` | Agent-side script delegation over the message bus |
 | `RockBot.Scripts.Manager` | Trusted sidecar that creates ephemeral Kubernetes pods for script execution |

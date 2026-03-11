@@ -22,7 +22,7 @@ IToolRegistry.GetExecutor(name)
     ▼
 IToolExecutor.ExecuteAsync(ToolInvokeRequest)
     │
-    ├── Local executor (web, REST, scheduling, in-process MCP)
+    ├── Local executor (web, scheduling, in-process MCP)
     │       Returns ToolInvokeResponse directly
     │
     └── Remote executor (MCP proxy, script runner)
@@ -466,45 +466,6 @@ Setting it very high effectively disables proactive chunking while still relying
 
 ---
 
-## REST tools (`RockBot.Tools.Rest`)
-
-Exposes arbitrary HTTP endpoints as agent tools. Useful for internal APIs that don't have an
-MCP server.
-
-### Configuration
-
-```json
-{
-  "RestTools": {
-    "Endpoints": [
-      {
-        "Name": "get_weather",
-        "Description": "Get current weather for a city",
-        "UrlTemplate": "https://api.weather.com/v1/current?city={city}",
-        "Method": "GET",
-        "ParametersSchema": "{ \"type\": \"object\", \"properties\": { \"city\": { \"type\": \"string\" } } }",
-        "AuthType": "api_key",
-        "AuthEnvVar": "WEATHER_API_KEY",
-        "ApiKeyHeader": "X-Api-Key"
-      }
-    ]
-  }
-}
-```
-
-`RestToolExecutor` performs URL template expansion (substituting `{param}` placeholders from
-the JSON arguments), applies auth (`bearer` or `api_key` via header), and for POST/PUT/PATCH
-can send remaining arguments as a JSON body.
-
-### DI registration
-
-```csharp
-agent.AddRestTools(opts =>
-    builder.Configuration.GetSection("RestTools").Bind(opts));
-```
-
----
-
 ## Scheduling tools (`RockBot.Tools.Scheduling`)
 
 Three tools for managing recurring and one-time scheduled tasks.
@@ -683,7 +644,6 @@ services.AddRockBotHost(agent =>
     agent.AddMcpTools(opts => ...);     // MCP bridge in-process (no message-bus hop)
 
     agent.AddWebTools(opts => ...);     // web_search + web_browse
-    agent.AddRestTools(opts => ...);    // REST endpoint tools
     agent.AddSchedulingTools();         // schedule_task + list/cancel
     agent.AddSubagents();               // spawn_subagent + cancel/list + whiteboard
     agent.AddRemoteScriptRunner();      // execute_python_script (Kubernetes)

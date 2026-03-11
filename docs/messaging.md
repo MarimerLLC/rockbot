@@ -131,7 +131,7 @@ Both methods accept an optional `JsonSerializerOptions` to override the default 
 | Header key | Constant | Purpose |
 |---|---|---|
 | `rb-content-trust` | `ContentTrust` | Trust level of the content |
-| `rb-tool-provider` | `ToolProvider` | Backend type (`mcp`, `rest`, etc.) |
+| `rb-tool-provider` | `ToolProvider` | Backend type (`mcp`, etc.) |
 | `rb-timeout-ms` | `TimeoutMs` | Invocation timeout override |
 
 `ContentTrustValues` defines standard values for the `rb-content-trust` header:
