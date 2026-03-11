@@ -5,7 +5,7 @@ namespace RockBot.Host;
 /// <summary>
 /// Shared Okapi BM25 ranking implementation used by both long-term and working memory stores.
 /// </summary>
-internal static partial class Bm25Ranker
+public static partial class Bm25Ranker
 {
     /// <summary>
     /// Returns <paramref name="candidates"/> ordered by BM25 relevance against <paramref name="query"/>.
@@ -17,7 +17,21 @@ internal static partial class Bm25Ranker
     /// Consecutive two-word query phrases receive 2× weight to reward adjacent term matches.
     /// Document frequencies are precomputed to avoid O(N²) inner loops.
     /// </remarks>
-    internal static IReadOnlyList<T> Rank<T>(
+    public static IReadOnlyList<T> Rank<T>(
+        IReadOnlyList<T> candidates,
+        Func<T, string> getDocumentText,
+        string query,
+        double k1 = 1.5, double b = 0.75) =>
+        RankWithScores(candidates, getDocumentText, query, k1, b)
+            .Select(static r => r.Item)
+            .ToList();
+
+    /// <summary>
+    /// Returns <paramref name="candidates"/> ordered by BM25 relevance with their raw scores.
+    /// Entries with no matching terms (score = 0) are excluded.
+    /// Scores are not normalized — divide by the first result's score to get a [0, 1] range.
+    /// </summary>
+    public static IReadOnlyList<(T Item, double Score)> RankWithScores<T>(
         IReadOnlyList<T> candidates,
         Func<T, string> getDocumentText,
         string query,
@@ -94,16 +108,15 @@ internal static partial class Bm25Ranker
                     score += 2.0 * idf * tf;
                 }
 
-                return (doc.Entry, Score: score);
+                return (Item: doc.Entry, Score: score);
             })
             .Where(r => r.Score > 0)
             .OrderByDescending(r => r.Score)
-            .Select(r => r.Entry)
             .ToList();
     }
 
     /// <summary>Splits <paramref name="text"/> into lowercase tokens of 3+ characters.</summary>
-    internal static string[] Tokenize(string text) =>
+    public static string[] Tokenize(string text) =>
         TokenizerPattern().Split(text.ToLowerInvariant())
             .Where(t => t.Length >= 3)
             .ToArray();

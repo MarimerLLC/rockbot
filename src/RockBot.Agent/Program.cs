@@ -16,6 +16,7 @@ using RockBot.Skills;
 using RockBot.Tools;
 using RockBot.Tools.Mcp;
 using RockBot.A2A;
+using RockBot.ServiceSearch;
 using RockBot.Subagent;
 using RockBot.Tools.Scheduling;
 using RockBot.Tools.Web;
@@ -195,6 +196,7 @@ builder.Services.AddRockBotHost(agent =>
             }
         }
     });
+    agent.AddServiceSearch();
     agent.HandleMessage<ScheduledTaskMessage, ScheduledTaskHandler>();
     agent.HandleMessage<UserMessage, UserMessageHandler>();
     agent.HandleMessage<UserFeedback, UserFeedbackHandler>();
