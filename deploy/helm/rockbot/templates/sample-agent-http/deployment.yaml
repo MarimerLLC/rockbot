@@ -1,0 +1,66 @@
+{{- if .Values.sampleAgentHttp.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "rockbot.fullname" . }}-sample-agent-http
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "rockbot.labels" . | nindent 4 }}
+    app.kubernetes.io/component: sample-agent-http
+spec:
+  replicas: {{ .Values.sampleAgentHttp.replicaCount }}
+  selector:
+    matchLabels:
+      app: rockbot-sample-agent-http
+      {{- include "rockbot.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        app: rockbot-sample-agent-http
+        {{- include "rockbot.labels" . | nindent 8 }}
+        {{- include "rockbot.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: sample-agent-http
+    spec:
+      containers:
+        - name: sample-agent-http
+          image: {{ .Values.sampleAgentHttp.image.repository }}:{{ .Values.sampleAgentHttp.image.tag }}
+          imagePullPolicy: {{ .Values.imagePullPolicy }}
+          ports:
+            - name: http
+              containerPort: 5100
+          env:
+            # Override the default localhost binding so the container accepts connections
+            - name: Urls
+              value: "http://+:5100"
+            # Reuse the Balanced LLM credentials from the shared secret
+            - name: LLM__Endpoint
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "rockbot.secretName" . }}
+                  key: LLM__Balanced__Endpoint
+            - name: LLM__ApiKey
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "rockbot.secretName" . }}
+                  key: LLM__Balanced__ApiKey
+            - name: LLM__ModelId
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "rockbot.secretName" . }}
+                  key: LLM__Balanced__ModelId
+          livenessProbe:
+            httpGet:
+              path: /.well-known/agent.json
+              port: 5100
+            initialDelaySeconds: 15
+            periodSeconds: 15
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /.well-known/agent.json
+              port: 5100
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          resources:
+            {{- toYaml .Values.sampleAgentHttp.resources | nindent 12 }}
+{{- end }}

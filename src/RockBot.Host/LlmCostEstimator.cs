@@ -20,6 +20,7 @@ internal static class LlmCostEstimator
         ("claude-3-haiku",        0.25,  1.25),
 
         // OpenAI models
+        ("gpt-5.3",               1.75, 14.00),
         ("gpt-4o-mini",           0.15,  0.60),
         ("gpt-4o",                2.50, 10.00),
         ("gpt-4-turbo",          10.00, 30.00),
@@ -28,6 +29,8 @@ internal static class LlmCostEstimator
         ("o3-mini",               1.10,  4.40),
 
         // Google models
+        ("gemini-3.1-pro",        2.00, 12.00),
+        ("gemini-3-flash",        0.50,  3.00),
         ("gemini-2.0-flash",      0.10,  0.40),
         ("gemini-2.5-flash",      0.15,  0.60),
         ("gemini-1.5-flash",      0.075, 0.30),
