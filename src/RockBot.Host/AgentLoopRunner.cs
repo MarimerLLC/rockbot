@@ -7,6 +7,7 @@ using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using RockBot.Llm;
+using RockBot.Tools;
 
 namespace RockBot.Host;
 
@@ -297,6 +298,7 @@ public sealed class AgentLoopRunner(
                     using var textToolActivity = HostDiagnostics.Source.StartActivity("rockbot.tool.call");
                     textToolActivity?.SetTag("rockbot.tool.name", toolName);
                     var toolSw = Stopwatch.StartNew();
+                    var textToolStatus = "ok";
                     object? result;
                     try
                     {
@@ -310,6 +312,7 @@ public sealed class AgentLoopRunner(
                     catch (Exception ex) when (ex is not OperationCanceledException)
                     {
                         toolSw.Stop();
+                        textToolStatus = ToolError.Codes.ExecutionFailed;
                         textToolActivity?.SetStatus(ActivityStatusCode.Error, ex.Message);
                         logger.LogWarning(ex, "Text-based tool {Name} threw after {ElapsedMs}ms",
                             toolName, toolSw.ElapsedMilliseconds);
@@ -324,9 +327,18 @@ public sealed class AgentLoopRunner(
                             Timestamp: DateTimeOffset.UtcNow));
                     }
 
+                    var textResultStr = result?.ToString() ?? string.Empty;
+                    if (IsTimeoutResult(textResultStr)) textToolStatus = ToolError.Codes.Timeout;
+                    ToolDiagnostics.InvokeDuration.Record(toolSw.Elapsed.TotalMilliseconds,
+                        new KeyValuePair<string, object?>("rockbot.tool.name", toolName),
+                        new KeyValuePair<string, object?>("rockbot.tool.status", textToolStatus));
+                    ToolDiagnostics.Invocations.Add(1,
+                        new KeyValuePair<string, object?>("rockbot.tool.name", toolName),
+                        new KeyValuePair<string, object?>("rockbot.tool.status", textToolStatus));
+
                     // Chunking is handled by ChunkingAIFunction wrapper on the tool itself.
                     chatMessages.Add(new ChatMessage(ChatRole.User,
-                        $"[Tool result for {toolName}]: {result?.ToString() ?? string.Empty}"));
+                        $"[Tool result for {toolName}]: {textResultStr}"));
                 }
 
                 if (onProgress is not null)
@@ -382,6 +394,7 @@ public sealed class AgentLoopRunner(
                 using var toolActivity = HostDiagnostics.Source.StartActivity("rockbot.tool.call");
                 toolActivity?.SetTag("rockbot.tool.name", fc.Name);
                 var toolSw = Stopwatch.StartNew();
+                var toolStatus = "ok";
                 object? result;
                 try
                 {
@@ -395,6 +408,7 @@ public sealed class AgentLoopRunner(
                 catch (Exception ex) when (ex is not OperationCanceledException)
                 {
                     toolSw.Stop();
+                    toolStatus = ToolError.Codes.ExecutionFailed;
                     toolActivity?.SetStatus(ActivityStatusCode.Error, ex.Message);
                     logger.LogWarning(ex, "Tool {Name} threw after {ElapsedMs}ms",
                         fc.Name, toolSw.ElapsedMilliseconds);
@@ -411,6 +425,13 @@ public sealed class AgentLoopRunner(
 
                 // Chunking is handled by ChunkingAIFunction wrapper on the tool itself.
                 var nativeResultStr = result?.ToString() ?? string.Empty;
+                if (IsTimeoutResult(nativeResultStr)) toolStatus = ToolError.Codes.Timeout;
+                ToolDiagnostics.InvokeDuration.Record(toolSw.Elapsed.TotalMilliseconds,
+                    new KeyValuePair<string, object?>("rockbot.tool.name", fc.Name),
+                    new KeyValuePair<string, object?>("rockbot.tool.status", toolStatus));
+                ToolDiagnostics.Invocations.Add(1,
+                    new KeyValuePair<string, object?>("rockbot.tool.name", fc.Name),
+                    new KeyValuePair<string, object?>("rockbot.tool.status", toolStatus));
                 chatMessages.Add(new ChatMessage(ChatRole.Tool,
                     [new FunctionResultContent(fc.CallId, nativeResultStr)]));
 

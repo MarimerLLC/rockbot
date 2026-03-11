@@ -96,7 +96,7 @@ public static class HostDiagnostics
     public static readonly Counter<double> LlmCostUsd =
         Meter.CreateCounter<double>(
             "rockbot.llm.cost.usd",
-            unit: "USD",
+            unit: "{USD}",
             description: "Estimated USD cost of LLM calls based on published token pricing");
 
     /// <summary>
@@ -107,6 +107,6 @@ public static class HostDiagnostics
     public static readonly Histogram<double> LlmCostPerRequest =
         Meter.CreateHistogram<double>(
             "rockbot.llm.cost.per_request",
-            unit: "USD",
+            unit: "{USD}",
             description: "USD cost per individual LLM request — histogram enables exemplar trace linkage");
 }

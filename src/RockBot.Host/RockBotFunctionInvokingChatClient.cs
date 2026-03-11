@@ -6,6 +6,7 @@ using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using RockBot.Llm;
+using RockBot.Tools;
 
 namespace RockBot.Host;
 
@@ -51,6 +52,11 @@ public class RockBotFunctionInvokingChatClient : FunctionInvokingChatClient
         _logger.LogInformation("Executing tool {Name}(callId={CallId}, args={Args})",
             callContent.Name, callContent.CallId, argsSummary ?? "(none)");
 
+        using var activity = ToolDiagnostics.Source.StartActivity(
+            $"tool.invoke {callContent.Name}", ActivityKind.Internal);
+        activity?.SetTag("rockbot.tool.name", callContent.Name);
+        activity?.SetTag("rockbot.tool.call_id", callContent.CallId);
+
         Activity.Current?.AddEvent(new ActivityEvent("tool_selection_made",
             tags: new ActivityTagsCollection { { "tool", callContent.Name } }));
 
@@ -61,7 +67,35 @@ public class RockBotFunctionInvokingChatClient : FunctionInvokingChatClient
         }
 
         var sw = System.Diagnostics.Stopwatch.StartNew();
-        var result = await base.InvokeFunctionAsync(context, cancellationToken);
+        var status = "ok";
+        object? result;
+        try
+        {
+            result = await base.InvokeFunctionAsync(context, cancellationToken);
+        }
+        catch (OperationCanceledException)
+        {
+            throw; // host shutting down — don't record metrics
+        }
+        catch (Exception ex)
+        {
+            sw.Stop();
+            status = ex switch
+            {
+                TimeoutException => ToolError.Codes.Timeout,
+                ArgumentException => ToolError.Codes.InvalidArguments,
+                _ => ToolError.Codes.ExecutionFailed
+            };
+            activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
+            activity?.SetTag("rockbot.tool.error_code", status);
+            ToolDiagnostics.InvokeDuration.Record(sw.Elapsed.TotalMilliseconds,
+                new KeyValuePair<string, object?>("rockbot.tool.name", callContent.Name),
+                new KeyValuePair<string, object?>("rockbot.tool.status", status));
+            ToolDiagnostics.Invocations.Add(1,
+                new KeyValuePair<string, object?>("rockbot.tool.name", callContent.Name),
+                new KeyValuePair<string, object?>("rockbot.tool.status", status));
+            throw;
+        }
         sw.Stop();
 
         var resultStr = result?.ToString();
@@ -72,6 +106,7 @@ public class RockBotFunctionInvokingChatClient : FunctionInvokingChatClient
         // Track consecutive timeouts
         if (resultStr is not null && IsTimeoutResult(resultStr))
         {
+            status = ToolError.Codes.Timeout;
             _consecutiveTimeoutIterations++;
             if (_consecutiveTimeoutIterations >= MaxConsecutiveTimeoutIterations)
             {
@@ -84,6 +119,13 @@ public class RockBotFunctionInvokingChatClient : FunctionInvokingChatClient
         {
             _consecutiveTimeoutIterations = 0;
         }
+
+        ToolDiagnostics.InvokeDuration.Record(sw.Elapsed.TotalMilliseconds,
+            new KeyValuePair<string, object?>("rockbot.tool.name", callContent.Name),
+            new KeyValuePair<string, object?>("rockbot.tool.status", status));
+        ToolDiagnostics.Invocations.Add(1,
+            new KeyValuePair<string, object?>("rockbot.tool.name", callContent.Name),
+            new KeyValuePair<string, object?>("rockbot.tool.status", status));
 
         if (_progressNotifier is not null)
         {
@@ -142,8 +184,48 @@ public class RockBotFunctionInvokingChatClient : FunctionInvokingChatClient
                     "The task loop has ended. Write a concise summary of what was accomplished. " +
                     "Report only what was completed — do not describe intentions or future actions."));
 
-                var summaryResponse = await InnerClient.GetResponseAsync(
-                    summaryMessages, new ChatOptions(), cancellationToken);
+                var summaryModelId = InnerClient.GetService<ChatClientMetadata>()?.DefaultModelId ?? string.Empty;
+                var summarySw = Stopwatch.StartNew();
+                var summaryStatus = "ok";
+                ChatResponse summaryResponse = null!;
+                try
+                {
+                    summaryResponse = await InnerClient.GetResponseAsync(
+                        summaryMessages, new ChatOptions(), cancellationToken);
+                }
+                catch (Exception)
+                {
+                    summaryStatus = "error";
+                    throw;
+                }
+                finally
+                {
+                    summarySw.Stop();
+                    var modelTag = new KeyValuePair<string, object?>("rockbot.llm.model", summaryModelId);
+                    HostDiagnostics.LlmRequestDuration.Record(summarySw.Elapsed.TotalMilliseconds,
+                        new KeyValuePair<string, object?>("rockbot.llm.status", summaryStatus),
+                        modelTag);
+                    HostDiagnostics.LlmRequests.Add(1,
+                        new KeyValuePair<string, object?>("rockbot.llm.status", summaryStatus),
+                        modelTag);
+                }
+
+                if (summaryResponse.Usage is { } summaryUsage)
+                {
+                    var inputTokens = summaryUsage.InputTokenCount ?? 0;
+                    var outputTokens = summaryUsage.OutputTokenCount ?? 0;
+                    var modelTag = new KeyValuePair<string, object?>("rockbot.llm.model", summaryModelId);
+                    if (summaryUsage.InputTokenCount.HasValue)
+                        HostDiagnostics.LlmTokenInput.Add(inputTokens, modelTag);
+                    if (summaryUsage.OutputTokenCount.HasValue)
+                        HostDiagnostics.LlmTokenOutput.Add(outputTokens, modelTag);
+                    var costUsd = LlmCostEstimator.EstimateCost(summaryModelId, inputTokens, outputTokens);
+                    if (costUsd > 0)
+                    {
+                        HostDiagnostics.LlmCostUsd.Add(costUsd, modelTag);
+                        HostDiagnostics.LlmCostPerRequest.Record(costUsd, modelTag);
+                    }
+                }
 
                 var summaryText = ExtractAssistantText(summaryResponse);
                 if (!string.IsNullOrWhiteSpace(summaryText))
