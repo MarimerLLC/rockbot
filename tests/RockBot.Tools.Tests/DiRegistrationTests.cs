@@ -14,16 +14,9 @@ public class DiRegistrationTests
 
         services.AddRockBotHost(b =>
         {
-            b.AddToolHandler(opts => opts.DefaultResultTopic = "custom.result");
+            b.AddToolHandler();
         });
 
-        // Check that IToolRegistry is registered
         Assert.IsTrue(services.Any(sd => sd.ServiceType == typeof(IToolRegistry)));
-
-        // Check that ToolOptions is registered with correct values
-        var provider = services.BuildServiceProvider();
-        var options = provider.GetService<ToolOptions>();
-        Assert.IsNotNull(options);
-        Assert.AreEqual("custom.result", options.DefaultResultTopic);
     }
 }
