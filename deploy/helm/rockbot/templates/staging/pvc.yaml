@@ -11,7 +11,7 @@ metadata:
     app.kubernetes.io/component: staging
 spec:
   accessModes:
-    - ReadWriteOnce
+    - ReadWriteMany
   storageClassName: {{ .Values.storage.storageClass }}
   resources:
     requests:
