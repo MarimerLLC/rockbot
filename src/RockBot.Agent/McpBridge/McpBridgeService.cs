@@ -195,11 +195,29 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
                     _ => ModelContextProtocol.Client.HttpTransportMode.AutoDetect
                 };
 
-                var transport = new HttpClientTransport(new HttpClientTransportOptions
+                var transportOptions = new HttpClientTransportOptions
                 {
                     Endpoint = new Uri(config.Url),
                     TransportMode = httpTransportMode
-                });
+                };
+
+                HttpClientTransport transport;
+                if (config.Headers.Count > 0)
+                {
+                    var httpClient = new HttpClient();
+                    foreach (var (key, rawValue) in config.Headers)
+                    {
+                        var expanded = ExpandEnvVars(rawValue);
+                        if (!string.IsNullOrEmpty(expanded))
+                            httpClient.DefaultRequestHeaders.TryAddWithoutValidation(key, expanded);
+                    }
+                    transport = new HttpClientTransport(transportOptions, httpClient, loggerFactory: null, ownsHttpClient: true);
+                }
+                else
+                {
+                    transport = new HttpClientTransport(transportOptions);
+                }
+
                 var newClient = await McpClient.CreateAsync(transport, cancellationToken: ct);
 
                 // Discover tools before committing the swap so a failure leaves the old client intact
@@ -919,6 +937,16 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
         _serverTools.Clear();
         _serverConfigs.Clear();
     }
+
+    /// <summary>
+    /// Expands <c>${VAR_NAME}</c> placeholders in <paramref name="value"/> using
+    /// <see cref="Environment.GetEnvironmentVariable"/>. Unset variables expand to an empty string.
+    /// </summary>
+    private static string ExpandEnvVars(string value) =>
+        System.Text.RegularExpressions.Regex.Replace(
+            value,
+            @"\$\{([^}]+)\}",
+            m => Environment.GetEnvironmentVariable(m.Groups[1].Value) ?? string.Empty);
 
     /// <summary>
     /// Extracts a string value from a parsed argument dictionary, handling

@@ -93,6 +93,9 @@ public sealed class StagingTools(StagingRepository repository, IConfiguration co
         }
     }
 
+    // Single source of truth for the staging REST API contract (URL, auth, subdirs).
+    // ScriptToolSkillProvider deliberately defers to this tool rather than duplicating
+    // the contract — update here only, not in both places.
     [McpServerTool(Name = "staging_script_info")]
     [Description("""
         Returns the REST API base URL and HTTP contract for the staging service.
@@ -102,8 +105,9 @@ public sealed class StagingTools(StagingRepository repository, IConfiguration co
           - Download: GET  {url}/api/staging/{path}
           - Delete:   DELETE {url}/api/staging/{path}
           - List:     GET  {url}/api/staging
-        The staging URL is also available inside every script pod as the environment
-        variable ROCKBOT_STAGING_URL, so scripts can discover it without hardcoding.
+        ALL requests (except /health) require the header: X-RockBot-Token: <token>
+        Inside every script pod the token is available as the environment variable
+        ROCKBOT_STAGING_TOKEN, and the URL as ROCKBOT_STAGING_URL.
         Use subpaths like 'tmp/', 'drafts/', or 'exports/' to organise files by TTL.
         """)]
     public string GetScriptInfo()
@@ -112,7 +116,8 @@ public sealed class StagingTools(StagingRepository repository, IConfiguration co
         var info = new
         {
             url,
-            envVar = "ROCKBOT_STAGING_URL",
+            urlEnvVar = "ROCKBOT_STAGING_URL",
+            auth = new { header = "X-RockBot-Token", tokenEnvVar = "ROCKBOT_STAGING_TOKEN" },
             subdirs = new { tmp = "1d", drafts = "14d", exports = "14d" }
         };
         return JsonSerializer.Serialize(info, _jsonOptions);

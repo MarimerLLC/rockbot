@@ -12,14 +12,21 @@ public class StagingApiTests
     private HttpClient _client = null!;
     private string _tempDir = null!;
 
+    private const string TestToken = "test-staging-token";
+
     [TestInitialize]
     public void Initialize()
     {
         _tempDir = Path.Combine(Path.GetTempPath(), Path.GetRandomFileName());
         Directory.CreateDirectory(_tempDir);
         _factory = new WebApplicationFactory<Program>()
-            .WithWebHostBuilder(b => b.UseSetting("Staging__BasePath", _tempDir));
+            .WithWebHostBuilder(b =>
+            {
+                b.UseSetting("Staging__BasePath", _tempDir);
+                b.UseSetting("Staging:Token", TestToken);
+            });
         _client = _factory.CreateClient();
+        _client.DefaultRequestHeaders.Add("X-RockBot-Token", TestToken);
     }
 
     [TestCleanup]
@@ -86,5 +93,30 @@ public class StagingApiTests
         var path = repo.GetAbsolutePath("drafts/report.xlsx");
         Assert.IsTrue(Path.IsPathRooted(path));
         Assert.IsTrue(path.Replace('\\', '/').Contains("drafts/report.xlsx"));
+    }
+
+    [TestMethod]
+    public async Task Request_Without_Token_Returns_401()
+    {
+        var noAuth = _factory.CreateClient();
+        var response = await noAuth.GetAsync("/api/staging/test.txt");
+        Assert.AreEqual(HttpStatusCode.Unauthorized, response.StatusCode);
+    }
+
+    [TestMethod]
+    public async Task Request_With_Wrong_Token_Returns_401()
+    {
+        var wrongAuth = _factory.CreateClient();
+        wrongAuth.DefaultRequestHeaders.Add("X-RockBot-Token", "wrong-token");
+        var response = await wrongAuth.GetAsync("/api/staging/test.txt");
+        Assert.AreEqual(HttpStatusCode.Unauthorized, response.StatusCode);
+    }
+
+    [TestMethod]
+    public async Task Health_Endpoint_Accessible_Without_Token()
+    {
+        var noAuth = _factory.CreateClient();
+        var response = await noAuth.GetAsync("/health");
+        Assert.AreEqual(HttpStatusCode.OK, response.StatusCode);
     }
 }

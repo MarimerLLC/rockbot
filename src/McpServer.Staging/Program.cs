@@ -9,6 +9,36 @@ builder.Services.AddMcpServer().WithHttpTransport().WithTools<StagingTools>();
 
 var app = builder.Build();
 
+// Token auth — all paths except /health require X-RockBot-Token.
+// Fail secure: if no token is configured the server rejects every non-health request.
+app.Use(async (context, next) =>
+{
+    if (context.Request.Path.StartsWithSegments("/health"))
+    {
+        await next(context);
+        return;
+    }
+
+    var expectedToken = context.RequestServices
+        .GetRequiredService<IConfiguration>()["Staging:Token"];
+
+    if (string.IsNullOrEmpty(expectedToken))
+    {
+        context.Response.StatusCode = StatusCodes.Status503ServiceUnavailable;
+        await context.Response.WriteAsync("Staging server misconfigured: token not set");
+        return;
+    }
+
+    if (!context.Request.Headers.TryGetValue("X-RockBot-Token", out var provided)
+        || provided != expectedToken)
+    {
+        context.Response.StatusCode = StatusCodes.Status401Unauthorized;
+        return;
+    }
+
+    await next(context);
+});
+
 app.MapHealthChecks("/health");
 app.MapMcp();
 
