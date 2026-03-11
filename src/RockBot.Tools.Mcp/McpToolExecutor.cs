@@ -21,13 +21,14 @@ internal sealed class McpToolExecutor(CallToolDelegate callTool) : IToolExecutor
 
         var result = await callTool(arguments, ct);
 
-        var content = FormatResult(result);
+        var blocks = MapContentBlocks(result);
 
         return new ToolInvokeResponse
         {
             ToolCallId = request.ToolCallId,
             ToolName = request.ToolName,
-            Content = content,
+            ContentBlocks = blocks,
+            Content = blocks is not null ? TextFromBlocks(blocks) : null,
             IsError = result.IsError == true
         };
     }
@@ -62,16 +63,38 @@ internal sealed class McpToolExecutor(CallToolDelegate callTool) : IToolExecutor
         };
     }
 
-    internal static string? FormatResult(CallToolResult result)
+    /// <summary>
+    /// Maps all MCP content blocks to transport-agnostic <see cref="ToolContentBlock"/> records,
+    /// preserving non-text content (images, audio, etc.) rather than silently discarding it.
+    /// </summary>
+    internal static IReadOnlyList<ToolContentBlock>? MapContentBlocks(CallToolResult result)
     {
         if (result.Content is null || result.Content.Count == 0)
             return null;
 
-        var textParts = result.Content
-            .OfType<TextContentBlock>()
-            .Select(c => c.Text);
+        var blocks = new List<ToolContentBlock>(result.Content.Count);
+        foreach (var block in result.Content)
+        {
+            blocks.Add(block switch
+            {
+                TextContentBlock text => new ToolContentBlock { Type = "text", Text = text.Text },
+                ImageContentBlock img => new ToolContentBlock { Type = "image", Data = img.Data, MimeType = img.MimeType },
+                AudioContentBlock audio => new ToolContentBlock { Type = "audio", Data = audio.Data, MimeType = audio.MimeType },
+                _ => new ToolContentBlock { Type = block.Type ?? "unknown", Text = $"[{block.Type ?? "unknown"} content block]" }
+            });
+        }
+        return blocks;
+    }
 
-        var joined = string.Join("\n", textParts);
+    /// <summary>
+    /// Extracts and joins text from a list of content blocks. Returns null if there is no text.
+    /// </summary>
+    internal static string? TextFromBlocks(IReadOnlyList<ToolContentBlock> blocks)
+    {
+        var joined = string.Join("\n", blocks
+            .Where(b => b.Type == "text")
+            .Select(b => b.Text ?? "")
+            .Where(t => t.Length > 0));
         return string.IsNullOrEmpty(joined) ? null : joined;
     }
 }

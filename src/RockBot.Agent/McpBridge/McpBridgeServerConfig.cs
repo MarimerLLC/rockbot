@@ -41,7 +41,14 @@ public sealed class McpBridgeServerConfig
     public List<string> DeniedTools { get; set; } = [];
 
     /// <summary>
-    /// Whether this config uses SSE transport.
+    /// HTTP transport mode: "auto" (default, negotiates with server), "sse" (legacy session-based
+    /// SSE), or "streamable-http" (stateless per-request HTTP, preferred for modern servers).
+    /// Only applies when <see cref="Type"/> is an HTTP-based transport.
     /// </summary>
-    public bool IsSse => string.Equals(Type, "sse", StringComparison.OrdinalIgnoreCase);
+    public string TransportMode { get; set; } = "auto";
+
+    /// <summary>
+    /// Whether this config uses HTTP-based transport (SSE or streamable HTTP).
+    /// </summary>
+    public bool IsSse => Type?.ToLowerInvariant() is "sse" or "http" or "streamable-http";
 }

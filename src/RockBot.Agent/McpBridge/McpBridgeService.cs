@@ -188,9 +188,17 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
         {
             try
             {
+                var httpTransportMode = config.TransportMode?.ToLowerInvariant() switch
+                {
+                    "sse" => ModelContextProtocol.Client.HttpTransportMode.Sse,
+                    "streamable-http" or "streamable" or "http" => ModelContextProtocol.Client.HttpTransportMode.StreamableHttp,
+                    _ => ModelContextProtocol.Client.HttpTransportMode.AutoDetect
+                };
+
                 var transport = new HttpClientTransport(new HttpClientTransportOptions
                 {
-                    Endpoint = new Uri(config.Url)
+                    Endpoint = new Uri(config.Url),
+                    TransportMode = httpTransportMode
                 });
                 var newClient = await McpClient.CreateAsync(transport, cancellationToken: ct);
 
@@ -477,7 +485,8 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
                 request.ToolName, arguments, cancellationToken: timeoutCts.Token);
 
             sw.Stop();
-            var content = McpToolExecutor.FormatResult(result);
+            var blocks = McpToolExecutor.MapContentBlocks(result);
+            var content = blocks is not null ? McpToolExecutor.TextFromBlocks(blocks) : null;
 
             if (result.IsError == true)
             {
@@ -499,13 +508,21 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
                 }
             }
             else
-                _logger.LogInformation("← MCP {Server}/{Tool} OK in {ElapsedMs}ms ({ContentLen} chars)",
-                    serverName, request.ToolName, sw.ElapsedMilliseconds, content?.Length ?? 0);
+            {
+                var nonTextCount = blocks?.Count(b => b.Type != "text") ?? 0;
+                if (nonTextCount > 0)
+                    _logger.LogInformation("← MCP {Server}/{Tool} OK in {ElapsedMs}ms ({ContentLen} chars, {NonTextCount} non-text block(s))",
+                        serverName, request.ToolName, sw.ElapsedMilliseconds, content?.Length ?? 0, nonTextCount);
+                else
+                    _logger.LogInformation("← MCP {Server}/{Tool} OK in {ElapsedMs}ms ({ContentLen} chars)",
+                        serverName, request.ToolName, sw.ElapsedMilliseconds, content?.Length ?? 0);
+            }
 
             var response = new ToolInvokeResponse
             {
                 ToolCallId = request.ToolCallId,
                 ToolName = request.ToolName,
+                ContentBlocks = blocks,
                 Content = content,
                 IsError = result.IsError == true
             };
@@ -558,7 +575,8 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
                             request.ToolName, arguments, cancellationToken: retryCts.Token);
 
                         sw.Stop();
-                        var retryContent = McpToolExecutor.FormatResult(retryResult);
+                        var retryBlocks = McpToolExecutor.MapContentBlocks(retryResult);
+                        var retryContent = retryBlocks is not null ? McpToolExecutor.TextFromBlocks(retryBlocks) : null;
 
                         _logger.LogInformation(
                             "← MCP {Server}/{Tool} OK after transparent reconnect ({ContentLen} chars)",
@@ -568,6 +586,7 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
                         {
                             ToolCallId = request.ToolCallId,
                             ToolName = request.ToolName,
+                            ContentBlocks = retryBlocks,
                             Content = retryContent,
                             IsError = retryResult.IsError == true
                         };
