@@ -61,7 +61,8 @@ public sealed class StagingRepository
     {
         if (!Directory.Exists(_basePath))
             return [];
-        return Directory.EnumerateFiles(_basePath, "*", SearchOption.AllDirectories)
+        var opts = new EnumerationOptions { IgnoreInaccessible = true, RecurseSubdirectories = true };
+        return Directory.EnumerateFiles(_basePath, "*", opts)
             .Select(f => Path.GetRelativePath(_basePath, f).Replace('\\', '/'))
             .Where(f => prefix is null || f.StartsWith(prefix, StringComparison.Ordinal))
             .OrderBy(f => f);
