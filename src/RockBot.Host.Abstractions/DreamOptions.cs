@@ -56,6 +56,15 @@ public sealed class DreamOptions
     /// </summary>
     public string SkillGapDirectivePath { get; set; } = "skill-gap.md";
 
+    /// <summary>Whether the memory mining pass (requires <see cref="IConversationLog"/>) is enabled.</summary>
+    public bool MemoryMiningEnabled { get; set; } = true;
+
+    /// <summary>
+    /// Path to the memory mining directive file, relative to <see cref="AgentProfileOptions.BasePath"/>.
+    /// When the file does not exist, a built-in fallback directive is used.
+    /// </summary>
+    public string MemoryMiningDirectivePath { get; set; } = "memory-mining.md";
+
     /// <summary>Whether the tier routing self-correction review pass is enabled.</summary>
     public bool TierRoutingReviewEnabled { get; set; } = true;
 
