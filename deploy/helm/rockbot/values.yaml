@@ -49,6 +49,15 @@ rabbitmq:
   virtualHost: /
   managementApiBaseUrl: ""  # optional — e.g. http://rabbitmq-mgmt.default.svc.cluster.local:15672
                             # required for DLQ depth metrics (rockbot.messaging.dlq.depth)
+                            # required for dlqRetention policy application (below)
+
+  # DLQ retention policy — applied via RabbitMQ Management API on every helm install/upgrade.
+  # Matches all *.dlq queues and enforces TTL + max-length so messages cannot accumulate forever.
+  # Only active when managementApiBaseUrl is also set.
+  dlqRetention:
+    enabled: true
+    messageTtlMs: 259200000  # 72 hours — messages older than this are expired by the broker
+    maxLength: 10000          # drop oldest messages (drop-head) when queue exceeds this count
 
 # ── Script Manager pod ────────────────────────────────────────────────────────
 # Trusted sidecar that owns all pod RBAC in the scripts namespace.
@@ -247,6 +256,10 @@ secrets:
   openRouter:
     apiKey: ""              # required when openrouterMcp.enabled=true — OpenRouter management API key
                             # (separate from llm.apiKey — this is the account management key)
+
+  staging:
+    token: ""               # required when staging.enabled=true — shared secret for X-RockBot-Token auth
+                            # generate with: openssl rand -hex 32
 
   azureFoundry:
     tenantId: ""            # required when azureFoundryMcp.enabled=true — Azure AD tenant ID
