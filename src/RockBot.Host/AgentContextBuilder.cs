@@ -25,9 +25,11 @@ public sealed class AgentContextBuilder(
     SkillIndexTracker skillIndexTracker,
     SkillRecallTracker skillRecallTracker,
     AgentClock clock,
+    IEnumerable<IServiceSearchIndex> serviceSearchIndexProviders,
     ILogger<AgentContextBuilder> logger)
 {
     private const int MaxLlmContextTurns = 20;
+    private readonly IServiceSearchIndex? _serviceSearchIndex = serviceSearchIndexProviders.FirstOrDefault();
 
     /// <summary>
     /// Builds the full chat message list for one LLM call: system prompt, rules, history,
@@ -163,6 +165,29 @@ public sealed class AgentContextBuilder(
                         "Injected {Count} see-also skill(s) for session {SessionId}: {Skills}",
                         seeAlsoNames.Count, sessionId, string.Join(", ", seeAlsoNames));
                 }
+            }
+        }
+
+        // Per-turn service search hints (A2A agents + MCP servers)
+        if (_serviceSearchIndex is not null && !string.IsNullOrWhiteSpace(currentUserContent))
+        {
+            var candidates = _serviceSearchIndex.Search(currentUserContent, maxResults: 2);
+            if (candidates.Count > 0)
+            {
+                var lines = candidates.Select(c =>
+                {
+                    var itemsLabel = c.Type == "a2a" ? "top skills" : "top tools";
+                    var items = c.TopItems.Count > 0
+                        ? $", {itemsLabel}: {string.Join(", ", c.TopItems)}"
+                        : string.Empty;
+                    return $"- {c.Id} ({c.Type}): {c.Summary}{items}";
+                });
+                chatMessages.Add(new ChatMessage(ChatRole.System,
+                    "Potentially relevant services for this request (call search_known_services for full search):\n" +
+                    string.Join("\n", lines)));
+                logger.LogInformation(
+                    "Injected {Count} service hint(s) for session {SessionId}",
+                    candidates.Count, sessionId);
             }
         }
 

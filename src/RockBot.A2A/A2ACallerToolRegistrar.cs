@@ -7,8 +7,8 @@ using RockBot.Tools;
 namespace RockBot.A2A;
 
 /// <summary>
-/// Hosted service that registers <c>invoke_agent</c> and <c>list_known_agents</c> tools
-/// with the tool registry.
+/// Hosted service that registers <c>invoke_agent</c>, <c>list_known_agents</c>, and
+/// <c>get_agent_details</c> tools with the tool registry.
 /// </summary>
 internal sealed class A2ACallerToolRegistrar(
     IToolRegistry registry,
@@ -57,6 +57,19 @@ internal sealed class A2ACallerToolRegistrar(
         }
         """;
 
+    private const string GetAgentDetailsSchema = """
+        {
+          "type": "object",
+          "properties": {
+            "agent_name": {
+              "type": "string",
+              "description": "The name of the agent to retrieve full details for."
+            }
+          },
+          "required": ["agent_name"]
+        }
+        """;
+
     public Task StartAsync(CancellationToken cancellationToken)
     {
         var invokeLogger = loggerFactory.CreateLogger<InvokeAgentExecutor>();
@@ -83,6 +96,15 @@ internal sealed class A2ACallerToolRegistrar(
             Source = "a2a"
         }, new ListKnownAgentsExecutor(directory));
         registrarLogger.LogInformation("Registered tool: list_known_agents");
+
+        registry.Register(new ToolRegistration
+        {
+            Name = "get_agent_details",
+            Description = "Get the full agent card for a named agent, including all skill fields (name, description, tags, examples), version, URL, and last-seen time.",
+            ParametersSchema = GetAgentDetailsSchema,
+            Source = "a2a"
+        }, new GetAgentDetailsExecutor(directory));
+        registrarLogger.LogInformation("Registered tool: get_agent_details");
 
         return Task.CompletedTask;
     }

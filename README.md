@@ -34,6 +34,7 @@ Each agent is an isolated process that reacts to messages, invokes tools, calls 
 | `RockBot.Scripts.Local` | Local Python script runner for development (no Kubernetes needed) |
 | `RockBot.Subagent` | In-process subagent spawning — isolated LLM loops, progress reporting, and long-term memory data handoff |
 | `RockBot.A2A` | Agent-to-agent task delegation over the message bus |
+| `RockBot.ServiceSearch` | Unified BM25 keyword search across A2A agents and MCP servers (`search_known_services`) |
 | `RockBot.UserProxy.Blazor` | Blazor Server chat UI with markdown rendering, conversation replay, and feedback signals |
 | `RockBot.UserProxy.Cli` | Console chat interface using Spectre.Console |
 | `McpServer.OpenRouter` | Standalone MCP server exposing OpenRouter account and usage information |
@@ -97,7 +98,16 @@ Skills are reusable knowledge documents the agent learns through experience and 
 
 ### Tool guides
 
-Each tool subsystem (MCP, web, scripts, scheduling, memory, skills) registers a `IToolSkillProvider` that exposes a usage guide. The agent can call `list_tool_guides` and `get_tool_guide` to learn how to use a capability it hasn't encountered before, then save a skill so future sessions skip the learning step.
+Each tool subsystem (MCP, web, scripts, scheduling, memory, skills, service search) registers a `IToolSkillProvider` that exposes a usage guide. The agent can call `list_tool_guides` and `get_tool_guide` to learn how to use a capability it hasn't encountered before, then save a skill so future sessions skip the learning step.
+
+### Service search
+
+`search_known_services` provides a single BM25 keyword search across **all** known services — both A2A agents and MCP servers — so the agent can identify the right backend for a task without making separate `list_known_agents` and `mcp_list_services` calls.
+
+- **Unified index** — reads live from the in-memory `AgentDirectory` and `McpServerIndex` singletons; no separate cache or sync needed.
+- **Typed results** — each result includes `type: "a2a" | "mcp"`, which determines the next tool to use (`invoke_agent` vs. `mcp_invoke_tool`), plus an LLM-generated summary and top skill/tool names as a scouting report.
+- **Normalized relevance scores** — Okapi BM25 scores normalized to [0, 1] so the agent can distinguish a slam-dunk match from a weak one.
+- **Auto-injected hints** — the top 2 BM25 matches are injected into the system prompt each turn so the agent often already knows which service to use before calling the tool explicitly.
 
 ### MCP bridge
 
@@ -443,7 +453,7 @@ Deep-dive documentation for individual subsystems lives in [`docs/`](docs/):
 | [`docs/blazor-ui.md`](docs/blazor-ui.md) | Blazor chat UI architecture, UserProxyService, feedback, history replay, deployment |
 | [`docs/messaging.md`](docs/messaging.md) | MessageEnvelope, publisher/subscriber interfaces, RabbitMQ provider, topics, trust levels, trace propagation |
 | [`docs/agent-host.md`](docs/agent-host.md) | AgentHostBuilder, pipeline, identity, profile, conversation memory, session evaluation, LLM client, data volume layout |
-| [`docs/tools.md`](docs/tools.md) | Tool execution model, IToolRegistry, MCP bridge, web search/browse, REST, scheduling, script execution, OpenRouter MCP |
+| [`docs/tools.md`](docs/tools.md) | Tool execution model, IToolRegistry, MCP bridge, service search, web search/browse, REST, scheduling, script execution, OpenRouter MCP |
 | [`docs/subagents.md`](docs/subagents.md) | Background subagent spawning, data handoff via memory convention, progress/result flow, configuration |
 
 ---

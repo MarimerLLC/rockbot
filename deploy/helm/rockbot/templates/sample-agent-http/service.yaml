@@ -1,0 +1,19 @@
+{{- if .Values.sampleAgentHttp.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "rockbot.fullname" . }}-sample-agent-http
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "rockbot.labels" . | nindent 4 }}
+    app.kubernetes.io/component: sample-agent-http
+spec:
+  type: ClusterIP
+  selector:
+    app: rockbot-sample-agent-http
+    {{- include "rockbot.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: http
+      port: 80
+      targetPort: 5100
+{{- end }}

@@ -38,6 +38,9 @@ public static class A2ACallerServiceCollectionExtensions
                 sp => sp.GetRequiredService<AgentDirectory>());
         }
 
+        // Summarizer — uses ILlmClient if available, otherwise falls back gracefully
+        builder.Services.TryAddSingleton<AgentCardSummarizer>();
+
         // Discovery hosted service — shared with AddA2A if both are called.
         // Guard on the concrete type: IHostedService has many registrations, so
         // TryAddSingleton<IHostedService> would always be skipped.

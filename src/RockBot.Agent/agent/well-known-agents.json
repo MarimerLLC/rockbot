@@ -1,0 +1,20 @@
+[
+  {
+    "agentName": "SampleAgent-Http",
+    "description": "A sample agent demonstrating the A2A protocol pattern over HTTP.",
+    "version": "1.0",
+    "url": "http://rockbot-sample-agent-http.rockbot.svc.cluster.local",
+    "skills": [
+      {
+        "id": "general",
+        "name": "General Task",
+        "description": "General-purpose task execution using an LLM."
+      },
+      {
+        "id": "echo",
+        "name": "Echo",
+        "description": "Echoes the input message back as confirmation."
+      }
+    ]
+  }
+]

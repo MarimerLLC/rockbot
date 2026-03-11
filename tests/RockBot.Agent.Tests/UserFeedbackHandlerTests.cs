@@ -72,6 +72,7 @@ public class UserFeedbackHandlerTests
             new SkillIndexTracker(),
             new SkillRecallTracker(),
             clock,
+            [],
             NullLogger<AgentContextBuilder>.Instance);
 
         var rulesTools = new RulesTools(

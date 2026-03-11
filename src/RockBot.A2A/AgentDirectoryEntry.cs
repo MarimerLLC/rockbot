@@ -14,4 +14,11 @@ public sealed record AgentDirectoryEntry
     /// the agent is always callable even when it is not currently running.
     /// </summary>
     public bool IsWellKnown { get; init; }
+
+    /// <summary>
+    /// LLM-generated one-sentence summary of the agent's capabilities.
+    /// Generated asynchronously when the agent card is first seen or updated.
+    /// Null until the summary has been generated.
+    /// </summary>
+    public string? LlmSummary { get; init; }
 }

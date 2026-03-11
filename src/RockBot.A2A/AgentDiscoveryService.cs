@@ -13,6 +13,7 @@ internal sealed class AgentDiscoveryService(
     IMessagePublisher publisher,
     IMessageSubscriber subscriber,
     AgentDirectory directory,
+    AgentCardSummarizer summarizer,
     A2AOptions options,
     Host.AgentIdentity agent,
     ILogger<AgentDiscoveryService> logger) : IHostedService
@@ -33,6 +34,17 @@ internal sealed class AgentDiscoveryService(
             cancellationToken);
 
         logger.LogInformation("Subscribed to discovery topic {Topic}", options.DiscoveryTopic);
+
+        // Kick off summaries for any entries already in the directory (well-known agents
+        // and entries restored from persistence) that don't yet have a generated summary.
+        _ = Task.Run(async () =>
+        {
+            foreach (var entry in directory.GetAllEntries().Where(e => e.LlmSummary is null))
+            {
+                var summary = await summarizer.SummarizeAsync(entry.Card, CancellationToken.None);
+                directory.SetSummary(entry.Card.AgentName, summary);
+            }
+        }, CancellationToken.None);
 
         // Announce our own card if configured
         if (options.Card is not null)
@@ -110,8 +122,20 @@ internal sealed class AgentDiscoveryService(
         }
         else
         {
+            var isNew = directory.GetAgent(card.AgentName) is null;
             directory.AddOrUpdate(card);
             logger.LogDebug("Discovered agent {AgentName}", card.AgentName);
+
+            // Generate a summary for new agents (fire-and-forget — cosmetic, should not block).
+            // Re-announcements from known agents keep their existing summary.
+            if (isNew)
+            {
+                _ = Task.Run(async () =>
+                {
+                    var summary = await summarizer.SummarizeAsync(card, CancellationToken.None);
+                    directory.SetSummary(card.AgentName, summary);
+                }, CancellationToken.None);
+            }
         }
 
         return Task.FromResult(MessageResult.Ack);

@@ -249,6 +249,102 @@ bus hop.
 
 ---
 
+## Service search (`RockBot.ServiceSearch`)
+
+`search_known_services` is a unified BM25 keyword search over all known A2A agents **and**
+MCP servers in a single tool call. It removes the need to call `list_known_agents` and
+`mcp_list_services` separately when routing a task to the right backend.
+
+### How it works
+
+`ServiceSearchIndex` reads live from two in-memory singletons on every search:
+
+- **`IAgentDirectory`** — all known A2A agents (from live announcements + `well-known-agents.json`), including their LLM-generated summaries, skills, tags, and examples.
+- **`McpServerIndex`** — all connected MCP servers (from the bridge index), including their LLM-generated summaries and tool names.
+
+Each source document is flattened into a single text string and ranked with `Bm25Ranker.RankWithScores<T>`. No separate cache or background sync is needed — both sources are already singletons that stay current as agents announce and MCP servers connect.
+
+### Tool
+
+```
+search_known_services(query)
+```
+
+| Parameter | Required | Description |
+|---|---|---|
+| `query` | yes | Keywords describing the task (e.g. `"reschedule meeting"`, `"aws spend audit"`) |
+
+Returns up to 5 ranked results:
+
+```json
+{
+  "results": [
+    {
+      "id": "SalesOpsAgent",
+      "type": "a2a",
+      "summary": "Autonomous agent for complex sales workflows and multi-step reporting.",
+      "relevance_score": 1.0,
+      "top_skills": ["generate-qbr-report", "audit-pipeline"]
+    },
+    {
+      "id": "salesforce-mcp",
+      "type": "mcp",
+      "summary": "Direct access to Salesforce objects (Accounts, Leads, Opportunities).",
+      "relevance_score": 0.72,
+      "top_tools": ["search_leads", "update_opportunity"]
+    }
+  ]
+}
+```
+
+| Field | Description |
+|---|---|
+| `id` | Pass to `get_agent_details(agent_name)` or `mcp_get_service_details(server_name)` for full details |
+| `type` | `"a2a"` → use `invoke_agent`; `"mcp"` → use `mcp_invoke_tool` |
+| `summary` | LLM-generated description — the primary signal for choosing between candidates |
+| `relevance_score` | BM25 score normalized to [0, 1]; below ~0.3 consider browsing manually |
+| `top_skills` | (A2A only) Top 3 skill IDs — immediate scouting report without a details call |
+| `top_tools` | (MCP only) Top 3 tool names — immediate scouting report without a details call |
+
+### Context hints
+
+`AgentContextBuilder` runs `search_known_services` automatically each turn and injects the top
+2 matches into the system prompt before the LLM sees the user message:
+
+```
+Potentially relevant services for this request (call search_known_services for full search):
+- SalesOpsAgent (a2a): Autonomous agent for complex sales workflows, top skills: generate-qbr-report
+- salesforce-mcp (mcp): Direct Salesforce CRM access, top tools: search_leads, update_opportunity
+```
+
+When the hint already identifies the right service with a high score, the agent can skip the
+explicit tool call and proceed directly to `invoke_agent` or `mcp_invoke_tool`.
+
+### `Bm25Ranker`
+
+`Bm25Ranker` (in `RockBot.Host`) is now a `public static` class exposable to other projects.
+It provides two overloads:
+
+| Method | Returns |
+|---|---|
+| `Rank<T>(candidates, getDocumentText, query)` | `IReadOnlyList<T>` sorted by relevance (zero-score entries excluded) |
+| `RankWithScores<T>(candidates, getDocumentText, query)` | `IReadOnlyList<(T Item, double Score)>` — same ordering but with raw BM25 scores for normalization |
+
+Both use Okapi BM25 (k1=1.5, b=0.75) with a 2× phrase bonus for adjacent two-word query terms.
+
+### DI registration
+
+```csharp
+agent.AddServiceSearch();   // registers search_known_services tool + IServiceSearchIndex
+                             // + ServiceSearchSkillProvider (tool guide)
+                             // + per-turn context hints in AgentContextBuilder
+```
+
+`AddServiceSearch()` must be called after `AddA2ACaller()` and `AddMcpToolProxy()` so
+`IAgentDirectory` and `McpServerIndex` are already registered.
+
+---
+
 ## Web tools (`RockBot.Tools.Web`)
 
 Two tools — `web_search` and `web_browse` — give the agent access to the internet.
@@ -593,5 +689,8 @@ services.AddRockBotHost(agent =>
     agent.AddRemoteScriptRunner();      // execute_python_script (Kubernetes)
     // OR:
     agent.AddLocalScriptRunner();       // execute_python_script (local dev)
+
+    agent.AddA2ACaller(opts => ...);    // invoke_agent + list_known_agents + get_agent_details
+    agent.AddServiceSearch();           // search_known_services (after AddA2ACaller + AddMcpToolProxy)
 });
 ```
