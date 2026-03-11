@@ -54,7 +54,8 @@ public sealed class AgentContextBuilder(
         {
             new(ChatRole.System, systemPrompt),
             new(ChatRole.System,
-                $"Current local date and time: {clock.Now:dddd, MMMM d, yyyy} {clock.Now:HH:mm:ss zzz} ({clock.Zone.Id}). " +
+                $"Current local date and time: {clock.Now:dddd, MMMM d, yyyy} {clock.Now:HH:mm:ss zzz} ({clock.Zone.Id})\n" +
+                $"UTC equivalent: {clock.Now.UtcDateTime:yyyy-MM-dd HH:mm:ss}\n" +
                 "All dates and times must use this timezone. " +
                 "When any tool returns a UTC timestamp, convert it to this local timezone before using or displaying it.")
         };
