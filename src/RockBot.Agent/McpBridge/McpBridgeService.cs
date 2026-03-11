@@ -299,7 +299,9 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
                     $"- {t.Name}: {t.Description}"));
 
                 var prompt = $"""
-                    Write a single brief sentence (15-25 words) describing what the '{serverName}' MCP server provides.
+                    You are summarizing an MCP server's capabilities for an AI agent that must decide which server's tools to use for a given task.
+                    Write a single sentence (15-25 words) that captures what the '{serverName}' MCP server specializes in and what kinds of tasks its tools handle.
+                    Focus on what makes it distinct and when to choose it over other servers.
                     Based on these tools:
                     {toolList}
                     Respond with only the sentence, no preamble or explanation.

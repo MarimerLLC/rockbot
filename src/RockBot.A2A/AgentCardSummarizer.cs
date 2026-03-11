@@ -40,7 +40,9 @@ internal sealed class AgentCardSummarizer(
                 : string.Empty;
 
             var prompt = $"""
-                Write a single brief sentence (15-25 words) describing what the '{card.AgentName}' agent provides.{descLine}
+                You are summarizing an AI agent's capabilities for another AI agent that must decide which agent to delegate tasks to.
+                Write a single sentence (15-25 words) that captures what the '{card.AgentName}' agent specializes in and what kinds of requests it should handle.
+                Focus on what makes it distinct and when to choose it over other agents.{descLine}
                 Skills:
                 {skillBlock}
                 Respond with only the sentence, no preamble or explanation.
