@@ -65,3 +65,17 @@ Name of the agent PVC.
 {{- define "rockbot.agentPvcName" -}}
 {{- include "rockbot.fullname" . }}-agent-data
 {{- end }}
+
+{{/*
+Name of the staging PVC.
+*/}}
+{{- define "rockbot.stagingPvcName" -}}
+{{- include "rockbot.fullname" . }}-staging
+{{- end }}
+
+{{/*
+Cluster-internal URL for the staging service.
+*/}}
+{{- define "rockbot.stagingServiceUrl" -}}
+http://{{- include "rockbot.fullname" . }}-staging.{{ .Values.namespace }}.svc.cluster.local
+{{- end }}

@@ -123,7 +123,7 @@ internal sealed class ContainerScriptHandler(
 
         command.Add(scriptCommand);
 
-        return new V1Pod
+        var pod = new V1Pod
         {
             Metadata = new V1ObjectMeta
             {
@@ -172,6 +172,11 @@ internal sealed class ContainerScriptHandler(
                 ]
             }
         };
+
+        if (!string.IsNullOrEmpty(options.StagingUrl))
+            pod.Spec.Containers[0].Env.Add(new V1EnvVar { Name = "ROCKBOT_STAGING_URL", Value = options.StagingUrl });
+
+        return pod;
     }
 
     private async Task<bool> WaitForPodCompletion(string podName, int timeoutSeconds, CancellationToken ct)

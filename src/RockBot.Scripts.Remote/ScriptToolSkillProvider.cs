@@ -145,6 +145,69 @@ internal sealed class ScriptToolSkillProvider : IToolSkillProvider
           to stdout; be deliberate about what the script does
 
 
+        ## Producing Output Files (staging)
+
+        Scripts run in ephemeral containers — files written to the local filesystem are
+        discarded when the container exits. To produce a file that persists and can be used
+        by other tools (e.g. uploading to OneDrive), upload it to the **staging service**
+        via HTTP before the script exits.
+
+        The staging service URL is available inside every script pod as:
+
+        ```
+        ROCKBOT_STAGING_URL   e.g. http://rockbot-staging.rockbot.svc.cluster.local
+        ```
+
+        **HTTP contract:**
+        - Upload:   `PUT  {ROCKBOT_STAGING_URL}/api/staging/{path}`  — body is the raw file bytes
+        - Download: `GET  {ROCKBOT_STAGING_URL}/api/staging/{path}`
+        - Delete:   `DELETE {ROCKBOT_STAGING_URL}/api/staging/{path}`
+        - List:     `GET  {ROCKBOT_STAGING_URL}/api/staging`
+
+        Use subpaths to organise by intended TTL:
+        - `tmp/`     — cleaned up after 1 day
+        - `drafts/`  — kept for 14 days
+        - `exports/` — kept for 14 days
+
+        **Typical workflow:**
+
+        1. Call `staging_script_info` to confirm the URL and contract (optional — the env var
+           is always present, but the tool returns the same info as a reminder).
+        2. Have the script upload the file, then print the staging path to stdout.
+        3. After the script completes, use `staging_get_path` to get the absolute local path
+           on the staging volume (needed by tools such as an OneDrive upload tool that accept
+           a local file path rather than an HTTP URL).
+
+        **Example — generate an Excel file and upload to staging:**
+        ```
+        execute_python_script(
+          script: \"\"\"
+        import os, requests
+        import openpyxl
+
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.append(["Name", "Score"])
+        ws.append(["Alice", 95])
+        ws.append(["Bob", 87])
+        wb.save("/tmp/report.xlsx")
+
+        staging_url = os.environ["ROCKBOT_STAGING_URL"]
+        with open("/tmp/report.xlsx", "rb") as f:
+            r = requests.put(f"{staging_url}/api/staging/exports/report.xlsx", data=f)
+            r.raise_for_status()
+
+        print("exports/report.xlsx")
+        \"\"\",
+          pip_packages: ["openpyxl", "requests"],
+          timeout_seconds: 60
+        )
+        ```
+
+        After this succeeds, call `staging_get_path("exports/report.xlsx")` to get the
+        absolute filesystem path for use with file-path-based tools.
+
+
         ## Common Pitfalls
 
         - Forgetting that only stdout is returned — tracebacks go to stderr and won't appear
@@ -154,7 +217,7 @@ internal sealed class ScriptToolSkillProvider : IToolSkillProvider
           `timeout_seconds` when installing large dependencies like `torch` or `scipy`
         - Printing debug statements that pollute the output — use stderr for debug output:
           `import sys; print("debug", file=sys.stderr)`
-        - Writing scripts that assume a filesystem persists between runs — each execution
-          is a fresh ephemeral container with no shared state
+        - Writing scripts that assume local files persist between runs — each execution is a
+          fresh ephemeral container; use the staging service to persist output files
         """;
 }
