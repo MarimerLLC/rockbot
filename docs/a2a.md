@@ -32,6 +32,14 @@ ScaledJob spins up).
 
 ## Agent discovery
 
+Three tools provide different entry points into the agent directory:
+
+| Tool | Use when |
+|---|---|
+| `search_known_services(query)` | You have a task and need to find which service (agent **or** MCP server) can handle it — single BM25 call covers both namespaces |
+| `list_known_agents(skill?)` | You want to browse all known agents, optionally filtered by skill ID |
+| `get_agent_details(agent_name)` | You need the full agent card (all skill fields, tags, examples, URL) for a specific agent |
+
 `list_known_agents` returns agents currently in the local directory. The
 directory is populated two ways:
 
