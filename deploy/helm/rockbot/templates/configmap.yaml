@@ -20,6 +20,9 @@ data:
   Scripts__Container__Image: {{ .Values.scripts.image | quote }}
   Scripts__Container__CpuLimit: {{ .Values.scripts.cpuLimit | quote }}
   Scripts__Container__MemoryLimit: {{ .Values.scripts.memoryLimit | quote }}
+  {{- if .Values.staging.enabled }}
+  Scripts__Container__StagingUrl: {{ include "rockbot.stagingServiceUrl" . | quote }}
+  {{- end }}
 
   # ── Agent data paths (all under the PVC mount at /data/agent) ─────────────
   AgentProfile__BasePath: "/data/agent"

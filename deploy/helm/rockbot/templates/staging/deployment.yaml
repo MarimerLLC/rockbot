@@ -1,0 +1,58 @@
+{{- if .Values.staging.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "rockbot.fullname" . }}-staging
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "rockbot.labels" . | nindent 4 }}
+    app.kubernetes.io/component: staging
+spec:
+  replicas: {{ .Values.staging.replicaCount }}
+  selector:
+    matchLabels:
+      app: rockbot-staging
+  template:
+    metadata:
+      labels:
+        app: rockbot-staging
+        {{- include "rockbot.labels" . | nindent 8 }}
+        app.kubernetes.io/component: staging
+    spec:
+      containers:
+        - name: staging
+          image: {{ .Values.staging.image.repository }}:{{ .Values.staging.image.tag }}
+          imagePullPolicy: {{ .Values.imagePullPolicy }}
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: Staging__BasePath
+              value: /rockbot/staging
+            - name: Staging__ServiceUrl
+              value: {{ include "rockbot.stagingServiceUrl" . | quote }}
+            - name: ASPNETCORE_URLS
+              value: http://+:8080
+          volumeMounts:
+            - name: staging-data
+              mountPath: /rockbot/staging
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 15
+            periodSeconds: 15
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          resources:
+            {{- toYaml .Values.staging.resources | nindent 12 }}
+      volumes:
+        - name: staging-data
+          persistentVolumeClaim:
+            claimName: {{ include "rockbot.stagingPvcName" . }}
+{{- end }}

@@ -72,6 +72,13 @@ spec:
                 configMapKeyRef:
                   name: {{ include "rockbot.configmapName" . }}
                   key: Scripts__Container__MemoryLimit
+            {{- if .Values.staging.enabled }}
+            - name: Scripts__Container__StagingUrl
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ include "rockbot.configmapName" . }}
+                  key: Scripts__Container__StagingUrl
+            {{- end }}
             - name: DOTNET_ENVIRONMENT
               value: "Production"
           resources:

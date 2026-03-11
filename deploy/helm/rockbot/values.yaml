@@ -164,6 +164,27 @@ sampleAgentHttp:
       cpu: 500m
       memory: 256Mi
 
+# ── Staging blob service ──────────────────────────────────────────────────────
+# Shared PVC-backed blob store exposing a REST API (for ephemeral script pods) and
+# MCP tools (for the agent). Script pods receive ROCKBOT_STAGING_URL automatically.
+staging:
+  enabled: true
+  image:
+    repository: rockylhotka/mcpserver-staging
+    tag: latest
+  replicaCount: 1
+  size: 5Gi
+  tmpTtlDays: 1
+  draftsTtlDays: 14
+  exportsTtlDays: 14
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 200m
+      memory: 256Mi
+
 # ── TodoApp MCP server ────────────────────────────────────────────────────────
 # Standalone MCP server that exposes a persistent to-do list to the agent.
 # Data is stored in a Longhorn PVC mounted at /data inside the container.

@@ -29,4 +29,10 @@ public sealed class ContainerScriptOptions
     /// Default topic for publishing script results when no ReplyTo is set.
     /// </summary>
     public string DefaultResultTopic { get; set; } = "script.result";
+
+    /// <summary>
+    /// Base URL of the staging blob service. When non-empty, ephemeral pods receive
+    /// a ROCKBOT_STAGING_URL environment variable so scripts can upload files via REST.
+    /// </summary>
+    public string StagingUrl { get; set; } = "";
 }

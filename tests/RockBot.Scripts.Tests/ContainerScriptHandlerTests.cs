@@ -182,6 +182,44 @@ public class ContainerScriptHandlerTests
         Assert.AreEqual("python:3.11-alpine", pod.Spec.Containers[0].Image);
     }
 
+    [TestMethod]
+    public void BuildPodSpec_SetsStagingUrlEnvVar_WhenStagingUrlConfigured()
+    {
+        _options.StagingUrl = "http://rockbot-staging.rockbot.svc.cluster.local";
+        var handler = CreateHandler();
+
+        var request = new ScriptInvokeRequest
+        {
+            ToolCallId = "call_1",
+            Script = "print('hello')"
+        };
+
+        var pod = handler.BuildPodSpec("test-pod", request);
+        var env = pod.Spec.Containers[0].Env;
+
+        var stagingVar = env.FirstOrDefault(e => e.Name == "ROCKBOT_STAGING_URL");
+        Assert.IsNotNull(stagingVar);
+        Assert.AreEqual("http://rockbot-staging.rockbot.svc.cluster.local", stagingVar.Value);
+    }
+
+    [TestMethod]
+    public void BuildPodSpec_NoStagingUrlEnvVar_WhenStagingUrlEmpty()
+    {
+        _options.StagingUrl = "";
+        var handler = CreateHandler();
+
+        var request = new ScriptInvokeRequest
+        {
+            ToolCallId = "call_1",
+            Script = "print('hello')"
+        };
+
+        var pod = handler.BuildPodSpec("test-pod", request);
+        var env = pod.Spec.Containers[0].Env;
+
+        Assert.IsFalse(env.Any(e => e.Name == "ROCKBOT_STAGING_URL"));
+    }
+
     // BuildPodSpec doesn't use the IKubernetes client, so we pass null.
     // Integration tests that exercise actual K8s API calls are gated by ROCKBOT_K8S_CONTEXT env var.
     private ContainerScriptHandler CreateHandler()
