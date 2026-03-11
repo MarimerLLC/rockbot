@@ -2,6 +2,7 @@ using Microsoft.Extensions.AI;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using RockBot.Host;
 
 namespace RockBot.Llm;
@@ -85,7 +86,8 @@ public static class LlmServiceCollectionExtensions
             IChatClient Wrap(IChatClient raw) =>
                 behavior.UseTextBasedToolCalling
                     ? raw
-                    : new RockBotFunctionInvokingChatClient(raw, progressNotifier, behavior, logger);
+                    : new RockBotFunctionInvokingChatClient(raw, progressNotifier, behavior,
+                        sp.GetRequiredService<IOptions<AgentHostOptions>>(), logger);
 
             return new TieredChatClientRegistry(
                 Wrap(lowInnerClient), Wrap(balancedInnerClient), Wrap(highInnerClient));

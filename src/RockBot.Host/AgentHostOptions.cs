@@ -9,4 +9,11 @@ public sealed class AgentHostOptions
     /// Topics the agent subscribes to.
     /// </summary>
     public List<string> Topics { get; } = [];
+
+    /// <summary>
+    /// Default maximum number of tool-calling round-trips per request.
+    /// Individual models may override this via <c>ModelBehavior.MaxToolIterationsOverride</c>.
+    /// Defaults to 50.
+    /// </summary>
+    public int MaxToolIterations { get; set; } = 50;
 }

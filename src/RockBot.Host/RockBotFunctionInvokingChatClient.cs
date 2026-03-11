@@ -4,6 +4,7 @@ using System.Text.Json;
 using System.Text.RegularExpressions;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using RockBot.Llm;
 
 namespace RockBot.Host;
@@ -28,13 +29,14 @@ public class RockBotFunctionInvokingChatClient : FunctionInvokingChatClient
         IChatClient innerClient,
         IToolProgressNotifier? progressNotifier,
         ModelBehavior modelBehavior,
+        IOptions<AgentHostOptions> hostOptions,
         ILogger logger) : base(innerClient)
     {
         _progressNotifier = progressNotifier;
         _modelBehavior = modelBehavior;
         _logger = logger;
 
-        MaximumIterationsPerRequest = modelBehavior.MaxToolIterationsOverride ?? 12;
+        MaximumIterationsPerRequest = modelBehavior.MaxToolIterationsOverride ?? hostOptions.Value.MaxToolIterations;
     }
 
     protected override async ValueTask<object?> InvokeFunctionAsync(

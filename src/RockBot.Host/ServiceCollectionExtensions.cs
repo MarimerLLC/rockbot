@@ -3,6 +3,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using RockBot.Host.Middleware;
 using RockBot.Llm;
 
@@ -82,6 +83,7 @@ public static class ServiceCollectionExtensions
                 innerClient,
                 sp.GetService<IToolProgressNotifier>(),
                 behavior,
+                sp.GetRequiredService<IOptions<AgentHostOptions>>(),
                 sp.GetRequiredService<ILogger<RockBotFunctionInvokingChatClient>>());
         });
 
