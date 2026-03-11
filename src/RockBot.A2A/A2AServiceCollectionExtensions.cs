@@ -32,6 +32,9 @@ public static class A2AServiceCollectionExtensions
                 sp => sp.GetRequiredService<AgentDirectory>());
         }
 
+        // Summarizer — uses ILlmClient if available, otherwise falls back gracefully
+        builder.Services.TryAddSingleton<AgentCardSummarizer>();
+
         // Discovery hosted service
         builder.Services.AddSingleton<AgentDiscoveryService>();
         builder.Services.AddSingleton<Microsoft.Extensions.Hosting.IHostedService>(

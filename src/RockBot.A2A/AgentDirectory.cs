@@ -63,7 +63,8 @@ internal sealed class AgentDirectory(
                 _agents[e.Card.AgentName] = new AgentDirectoryEntry
                 {
                     Card = e.Card,
-                    LastSeenAt = e.LastSeenAt
+                    LastSeenAt = e.LastSeenAt,
+                    LlmSummary = e.LlmSummary
                 };
                 loaded++;
             }
@@ -125,15 +126,25 @@ internal sealed class AgentDirectory(
 
     internal void AddOrUpdate(AgentCard card)
     {
-        // Preserve the IsWellKnown flag if already set — live announcements update
-        // the card and last-seen time but don't demote a well-known agent.
+        // Preserve the IsWellKnown flag and existing LlmSummary if already set —
+        // live announcements update the card and last-seen time but don't demote a
+        // well-known agent or discard a previously-generated summary.
         var isWellKnown = _agents.TryGetValue(card.AgentName, out var existing) && existing.IsWellKnown;
+        var existingSummary = existing?.LlmSummary;
         _agents[card.AgentName] = new AgentDirectoryEntry
         {
             Card = card,
             LastSeenAt = DateTimeOffset.UtcNow,
-            IsWellKnown = isWellKnown
+            IsWellKnown = isWellKnown,
+            LlmSummary = existingSummary
         };
+        ScheduleWrite();
+    }
+
+    internal void SetSummary(string agentName, string summary)
+    {
+        if (!_agents.TryGetValue(agentName, out var existing)) return;
+        _agents[agentName] = existing with { LlmSummary = summary };
         ScheduleWrite();
     }
 
@@ -177,7 +188,7 @@ internal sealed class AgentDirectory(
         if (string.IsNullOrEmpty(path)) return;
 
         var entries = _agents.Values
-            .Select(e => new PersistedEntry { Card = e.Card, LastSeenAt = e.LastSeenAt })
+            .Select(e => new PersistedEntry { Card = e.Card, LastSeenAt = e.LastSeenAt, LlmSummary = e.LlmSummary })
             .ToList();
 
         var json = JsonSerializer.Serialize(entries, JsonOptions);
@@ -203,5 +214,6 @@ internal sealed class AgentDirectory(
     {
         public AgentCard? Card { get; set; }
         public DateTimeOffset LastSeenAt { get; set; }
+        public string? LlmSummary { get; set; }
     }
 }

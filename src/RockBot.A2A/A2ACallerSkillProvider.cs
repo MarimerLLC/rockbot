@@ -8,20 +8,34 @@ namespace RockBot.A2A;
 public sealed class A2ACallerSkillProvider : IToolSkillProvider
 {
     public string Name => "a2a";
-    public string Summary => "Invoke external A2A agents by name and skill (invoke_agent, list_known_agents).";
+    public string Summary => "Invoke external A2A agents by name and skill (list_known_agents, get_agent_details, invoke_agent).";
 
     public string GetDocument() =>
         """
         # A2A Caller Tools Guide
 
         ## list_known_agents
-        Returns all external agents that have announced themselves via the discovery bus.
-        Optionally filter by skill ID.
+        Returns a compact list of all known external agents: name, one-sentence summary,
+        last-seen time, and skill IDs. The summary is LLM-generated from the agent's card
+        when the agent is first discovered.
+        Use this to identify which agent and skill to call.
 
         Parameters:
         - skill (optional): Filter to only agents that support this skill ID
 
-        Returns: JSON array of { agentName, description, skills[] }
+        Returns: JSON array of { agentName, summary, lastSeen, skills[{ id }] }
+
+        ## get_agent_details
+        Returns the full agent card for a named agent: complete skill metadata (name,
+        description, tags, examples), version, URL (for HTTP-transport agents),
+        well-known status, and last-seen time.
+        Use this when you need more context about an agent's skills before invoking.
+
+        Parameters:
+        - agent_name (required): The name of the agent (from list_known_agents)
+
+        Returns: { agentName, description, version, url, isWellKnown, lastSeen,
+          skills[{ id, name, description, tags, examples }] }
 
         ## invoke_agent
         Dispatch a task to an external agent by name. The task is sent asynchronously;
@@ -37,8 +51,9 @@ public sealed class A2ACallerSkillProvider : IToolSkillProvider
 
         ## Usage pattern
         1. Call list_known_agents to see what agents and skills are available
-        2. Call invoke_agent with the desired agent_name, skill, and message
-        3. When the agent completes, a follow-up message will arrive in the
+        2. If the summary is insufficient, call get_agent_details for full skill metadata
+        3. Call invoke_agent with the desired agent_name, skill, and message
+        4. When the agent completes, a follow-up message will arrive in the
            conversation containing a working memory key. Call
            get_from_working_memory with that key to retrieve the full result,
            then present it to the user.

@@ -52,6 +52,7 @@ internal sealed class ListKnownAgentsExecutor(IAgentDirectory directory) : ITool
         var items = agents.Select(a =>
         {
             var lastSeen = "unknown";
+            string? summary = null;
             if (entryMap.TryGetValue(a.AgentName, out var entry))
             {
                 if (entry.IsWellKnown && entry.LastSeenAt == DateTimeOffset.MinValue)
@@ -60,13 +61,14 @@ internal sealed class ListKnownAgentsExecutor(IAgentDirectory directory) : ITool
                     lastSeen = $"{FormatAge(now - entry.LastSeenAt)} (well-known)";
                 else
                     lastSeen = FormatAge(now - entry.LastSeenAt);
+                summary = entry.LlmSummary ?? entry.Card.Description;
             }
             return new
             {
                 agentName = a.AgentName,
-                description = a.Description,
+                summary,
                 lastSeen,
-                skills = a.Skills?.Select(s => new { id = s.Id, description = s.Description }).ToArray()
+                skills = a.Skills?.Select(s => new { id = s.Id }).ToArray()
             };
         });
 
