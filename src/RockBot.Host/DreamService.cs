@@ -41,6 +41,7 @@ internal sealed class DreamService : IHostedService, IDisposable
     private string? _skillOptimizeDirective;
     private string? _prefDreamDirective;
     private string? _skillGapDirective;
+    private string? _memoryMiningDirective;
     private string? _tierRoutingDirective;
     private string? _dlqDirective;
 
@@ -136,6 +137,19 @@ internal sealed class DreamService : IHostedService, IDisposable
                 _logger.LogWarning("DreamService: pref directive not found at {Path}; using built-in fallback", prefDirectivePath);
             else
                 _logger.LogInformation("DreamService: loaded pref directive from {Path}", prefDirectivePath);
+        }
+
+        if (_conversationLog is not null)
+        {
+            var memoryMiningDirectivePath = ResolvePath(_options.MemoryMiningDirectivePath, _profileOptions.BasePath);
+            _memoryMiningDirective = File.Exists(memoryMiningDirectivePath)
+                ? File.ReadAllText(memoryMiningDirectivePath)
+                : null; // null → BuiltInMemoryMiningDirective used in RunMemoryMiningPassAsync
+
+            if (!File.Exists(memoryMiningDirectivePath))
+                _logger.LogDebug("DreamService: memory mining directive not found at {Path}; using built-in", memoryMiningDirectivePath);
+            else
+                _logger.LogInformation("DreamService: loaded memory mining directive from {Path}", memoryMiningDirectivePath);
         }
 
         if (_skillStore is not null && _conversationLog is not null)
@@ -382,6 +396,8 @@ internal sealed class DreamService : IHostedService, IDisposable
 
             if (_skillStore is not null)
                 await ConsolidateSkillsAsync();
+
+            await RunMemoryMiningPassAsync();
 
             await RunPreferenceInferencePassAsync();
 
@@ -1060,6 +1076,97 @@ internal sealed class DreamService : IHostedService, IDisposable
     }
 
     /// <summary>
+    /// Scans the conversation log for factual observations, project context, and domain
+    /// knowledge worth preserving in long-term memory. Complements preference inference
+    /// (which targets behavioral patterns) and skill gap detection (which targets procedures).
+    /// Does NOT clear the log — that is deferred to <see cref="RunPreferenceInferencePassAsync"/>.
+    /// </summary>
+    private async Task RunMemoryMiningPassAsync()
+    {
+        if (_conversationLog is null || !_options.MemoryMiningEnabled)
+            return;
+
+        var entries = await _conversationLog.ReadAllAsync();
+        if (entries.Count == 0)
+        {
+            _logger.LogDebug("DreamService: memory mining — no log entries; skipping");
+            return;
+        }
+
+        _logger.LogInformation("DreamService: memory mining pass — {Count} log entries to analyze", entries.Count);
+
+        try
+        {
+            var userMessage = new StringBuilder();
+            userMessage.AppendLine("Review the following conversation log for facts worth storing in long-term memory:");
+            userMessage.AppendLine();
+
+            var bySession = entries
+                .GroupBy(e => e.SessionId)
+                .ToDictionary(g => g.Key, g => g.ToList());
+
+            foreach (var (sessionId, sessionEntries) in bySession)
+            {
+                userMessage.AppendLine($"## Session: {sessionId}");
+                foreach (var e in sessionEntries)
+                    userMessage.AppendLine($"[{e.Role}] {e.Content}");
+                userMessage.AppendLine();
+            }
+
+            var messages = new List<ChatMessage>
+            {
+                new(ChatRole.System, _memoryMiningDirective ?? BuiltInMemoryMiningDirective),
+                new(ChatRole.User, userMessage.ToString())
+            };
+
+            var response = await _llmClient.GetResponseAsync(messages, ModelTier.Balanced,
+                new ChatOptions { ResponseFormat = ChatResponseFormat.Json });
+            var raw = response.Text?.Trim() ?? string.Empty;
+            var json = ExtractJsonObject(raw);
+
+            if (string.IsNullOrEmpty(json))
+            {
+                _logger.LogWarning("DreamService: memory mining LLM returned no parseable JSON; skipping");
+                return;
+            }
+
+            _logger.LogDebug("DreamService: memory mining JSON ({Length} chars): {Json}", json.Length, json);
+
+            var result = TryDeserializeJson<MemoryMiningResultDto>(json, "memory mining");
+            var saved = 0;
+
+            foreach (var dto in result?.ToSave ?? [])
+            {
+                if (string.IsNullOrWhiteSpace(dto.Content))
+                    continue;
+
+                var tags = new List<string>(dto.Tags ?? []);
+                if (!tags.Contains("mined", StringComparer.OrdinalIgnoreCase))
+                    tags.Insert(0, "mined");
+
+                var entry = new MemoryEntry(
+                    Id: Guid.NewGuid().ToString("N")[..12],
+                    Content: dto.Content.Trim(),
+                    Category: string.IsNullOrWhiteSpace(dto.Category) ? "general" : dto.Category.Trim(),
+                    Tags: tags,
+                    CreatedAt: DateTimeOffset.UtcNow,
+                    UpdatedAt: DateTimeOffset.UtcNow);
+
+                await _memory.SaveAsync(entry);
+                saved++;
+                _logger.LogDebug("DreamService: memory mining saved {Id} ({Category}): {Content}",
+                    entry.Id, entry.Category, entry.Content);
+            }
+
+            _logger.LogInformation("DreamService: memory mining pass complete — {Saved} entry(ies) saved", saved);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "DreamService: memory mining pass failed");
+        }
+    }
+
+    /// <summary>
     /// Analyzes the accumulated conversation log for durable user preference patterns
     /// and saves inferred preferences as tagged memory entries.
     /// Always clears the log after the pass to prevent unbounded growth.
@@ -1732,6 +1839,50 @@ internal sealed class DreamService : IHostedService, IDisposable
         List<string>? Purge);
 
     private sealed record DlqPatternDto(string Content, string? Detail, IReadOnlyList<string>? Queues);
+
+    private sealed record MemoryMiningResultDto(List<MemoryMiningEntryDto>? ToSave);
+
+    private sealed record MemoryMiningEntryDto(
+        string Content,
+        string? Category,
+        IReadOnlyList<string>? Tags);
+
+    private const string BuiltInMemoryMiningDirective = """
+        You are a memory mining assistant. Review the conversation log and extract facts worth
+        preserving in the agent's long-term memory.
+
+        Mine for:
+        - Facts about the user's projects, repositories, systems, or workflows mentioned in passing
+        - Important decisions or conclusions reached during the conversation
+        - Knowledge the agent gained about external tools, APIs, or services
+        - Context about the user's environment, team, or setup that may recur in future sessions
+        - Corrections the user made about how the world works (not style corrections — those go to preferences)
+        - Personal context: family members, friends, pets, and their names or relevant details
+        - Work context: colleagues, manager, direct reports, their roles or relevant details
+        - Travel: upcoming or recent trips, preferred destinations, frequent routes or airports
+        - Recurring life details: hobbies, health context, significant upcoming events
+
+        Do NOT mine for:
+        - Transient task state or one-off values (file contents, specific search results)
+        - User stylistic or behavioral preferences (those are handled separately)
+        - Procedural how-to knowledge that belongs in a skill
+        - Anything speculative or that the user did not explicitly state or confirm
+
+        Each entry must be a self-contained, durable fact stated in third-person:
+        e.g. "The user's Kubernetes cluster context is 'lhotkalake'."
+             "The user's spouse is named Sarah."
+             "The user's manager is Alex Chen, a director of engineering."
+             "The user is traveling to Seattle in April for a conference."
+             "The project uses MSTest and Rocks (not Moq) for unit testing."
+
+        Return ONLY a JSON object:
+        { "toSave": [ { "content": "...", "category": "...", "tags": ["mined"] } ] }
+
+        Category should reflect the domain (e.g. "project/infrastructure", "project/conventions",
+        "tools/kubernetes", "personal/family", "personal/travel", "work/colleagues"). Default to "general" when unsure.
+
+        If no durable facts are evident, return: { "toSave": [] }
+        """;
 
     private const string BuiltInDlqDirective = """
         You are a dead-letter queue (DLQ) analysis assistant for an event-driven agent framework.
