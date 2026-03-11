@@ -16,9 +16,18 @@ public sealed record ToolInvokeResponse
     public required string ToolName { get; init; }
 
     /// <summary>
-    /// Tool output content (JSON or text), or null if the tool produced no output.
+    /// Tool output content (text), or null if the tool produced no output.
+    /// For rich results (images, audio, etc.) see <see cref="ContentBlocks"/>.
     /// </summary>
     public string? Content { get; init; }
+
+    /// <summary>
+    /// Structured content blocks from the tool result. When present, preserves
+    /// non-text blocks (images, audio, etc.) that cannot be represented in
+    /// <see cref="Content"/>. Consumers that can handle rich content should
+    /// prefer this over <see cref="Content"/>.
+    /// </summary>
+    public IReadOnlyList<ToolContentBlock>? ContentBlocks { get; init; }
 
     /// <summary>
     /// Whether the tool execution resulted in an error.

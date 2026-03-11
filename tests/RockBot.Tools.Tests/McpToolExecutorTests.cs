@@ -216,19 +216,46 @@ public class McpToolExecutorTests
     }
 
     [TestMethod]
-    public void FormatResult_ReturnsNull_ForEmptyContent()
+    public void MapContentBlocks_ReturnsNull_ForEmptyContent()
     {
         var result = new CallToolResult { Content = [] };
-        Assert.IsNull(McpToolExecutor.FormatResult(result));
+        Assert.IsNull(McpToolExecutor.MapContentBlocks(result));
     }
 
     [TestMethod]
-    public void FormatResult_ExtractsTextContent()
+    public void MapContentBlocks_ExtractsTextContent()
     {
         var result = new CallToolResult
         {
             Content = [new TextContentBlock { Text = "hello" }]
         };
-        Assert.AreEqual("hello", McpToolExecutor.FormatResult(result));
+        var blocks = McpToolExecutor.MapContentBlocks(result);
+        Assert.IsNotNull(blocks);
+        Assert.AreEqual(1, blocks.Count);
+        Assert.AreEqual("text", blocks[0].Type);
+        Assert.AreEqual("hello", blocks[0].Text);
+        Assert.AreEqual("hello", McpToolExecutor.TextFromBlocks(blocks));
+    }
+
+    [TestMethod]
+    public void MapContentBlocks_PreservesImageContent()
+    {
+        var result = new CallToolResult
+        {
+            Content =
+            [
+                new TextContentBlock { Text = "Here is an image:" },
+                new ImageContentBlock { Data = "abc123", MimeType = "image/png" }
+            ]
+        };
+        var blocks = McpToolExecutor.MapContentBlocks(result);
+        Assert.IsNotNull(blocks);
+        Assert.AreEqual(2, blocks.Count);
+        Assert.AreEqual("text", blocks[0].Type);
+        Assert.AreEqual("image", blocks[1].Type);
+        Assert.AreEqual("abc123", blocks[1].Data);
+        Assert.AreEqual("image/png", blocks[1].MimeType);
+        // TextFromBlocks only returns text parts
+        Assert.AreEqual("Here is an image:", McpToolExecutor.TextFromBlocks(blocks));
     }
 }

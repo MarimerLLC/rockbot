@@ -57,6 +57,36 @@ public sealed class RegistryToolFunction(
         };
 
         var response = await executor.ExecuteAsync(request, cancellationToken);
-        return response.IsError ? $"Error: {response.Content}" : response.Content;
+
+        // For errors, always return plain text so the LLM receives a clear error message.
+        if (response.IsError)
+            return $"Error: {response.Content}";
+
+        // When the result contains non-text blocks (images, audio, etc.), return a list of
+        // AIContent items so the LLM provider can serialize them as multimodal content blocks
+        // rather than losing the data.
+        if (response.ContentBlocks is { Count: > 0 }
+            && response.ContentBlocks.Any(b => b.Type != "text"))
+        {
+            var aiContents = response.ContentBlocks
+                .Select(ToAIContent)
+                .OfType<AIContent>()
+                .ToList();
+
+            if (aiContents.Count > 0)
+                return aiContents;
+        }
+
+        return response.Content;
     }
+
+    private static AIContent? ToAIContent(ToolContentBlock block) => block.Type switch
+    {
+        "text" => new TextContent(block.Text ?? string.Empty),
+        "image" when block.Data is not null && block.MimeType is not null
+            => new DataContent($"data:{block.MimeType};base64,{block.Data}", block.MimeType),
+        "audio" when block.Data is not null && block.MimeType is not null
+            => new DataContent($"data:{block.MimeType};base64,{block.Data}", block.MimeType),
+        _ => block.Text is not null ? new TextContent(block.Text) : null
+    };
 }
