@@ -12,7 +12,7 @@ namespace RockBot.Host;
 /// for a given session and user turn. Shared by UserMessageHandler and subagent update handlers.
 /// </summary>
 public sealed class AgentContextBuilder(
-    AgentProfile profile,
+    ProfileHolder profileHolder,
     AgentIdentity agent,
     ISystemPromptBuilder promptBuilder,
     IRulesStore rulesStore,
@@ -49,6 +49,7 @@ public sealed class AgentContextBuilder(
         CancellationToken ct,
         string? workingMemoryNamespace = null)
     {
+        var profile = profileHolder.Profile;
         var systemPrompt = promptBuilder.Build(profile, agent);
         var chatMessages = new List<ChatMessage>
         {
