@@ -38,10 +38,16 @@ internal sealed class FileAgentProfileProvider(
             subagentDirectives = await LoadDocumentAsync("subagent-directives", opts.SubagentDirectivesPath, opts.BasePath, required: false, cancellationToken);
         }
 
-        var profile = new AgentProfile(soul!, directives!, style, memoryRules, subagentDirectives);
+        AgentProfileDocument? commonDirectives = null;
+        if (opts.CommonDirectivesPath is not null)
+        {
+            commonDirectives = await LoadDocumentAsync("common-directives", opts.CommonDirectivesPath, opts.BasePath, required: false, cancellationToken);
+        }
+
+        var profile = new AgentProfile(soul!, directives!, style, memoryRules, subagentDirectives, commonDirectives);
         logger.LogInformation(
-            "Loaded agent profile: soul={SoulSections} sections, directives={DirectivesSections} sections, style={HasStyle}, subagentDirectives={HasSubagentDirectives}",
-            soul!.Sections.Count, directives!.Sections.Count, style is not null, subagentDirectives is not null);
+            "Loaded agent profile: soul={SoulSections} sections, directives={DirectivesSections} sections, style={HasStyle}, commonDirectives={HasCommonDirectives}, subagentDirectives={HasSubagentDirectives}",
+            soul!.Sections.Count, directives!.Sections.Count, style is not null, commonDirectives is not null, subagentDirectives is not null);
 
         return profile;
     }

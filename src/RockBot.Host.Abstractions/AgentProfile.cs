@@ -7,18 +7,22 @@ namespace RockBot.Host;
 /// <param name="Directives">HOW the agent operates — deployment-specific instructions.</param>
 /// <param name="Style">Optional voice/tone document for user-facing agents.</param>
 /// <param name="MemoryRules">Optional shared memory rules document included in every system prompt.</param>
+/// <param name="SubagentDirectives">Optional subagent-specific directives (replaces <paramref name="Directives"/> for subagent prompts).</param>
+/// <param name="CommonDirectives">Optional shared directives included in both primary and subagent prompts.</param>
 public sealed record AgentProfile(
     AgentProfileDocument Soul,
     AgentProfileDocument Directives,
     AgentProfileDocument? Style = null,
     AgentProfileDocument? MemoryRules = null,
-    AgentProfileDocument? SubagentDirectives = null)
+    AgentProfileDocument? SubagentDirectives = null,
+    AgentProfileDocument? CommonDirectives = null)
 {
     /// <summary>
-    /// All loaded documents in composition order: soul, directives, memory-rules (if present), style (if present).
+    /// All loaded documents in composition order for the primary agent:
+    /// soul, common-directives (if present), directives, memory-rules (if present), style (if present).
     /// </summary>
     public IReadOnlyList<AgentProfileDocument> Documents { get; } =
-        new[] { Soul, Directives, MemoryRules, Style }
+        new[] { Soul, CommonDirectives, Directives, MemoryRules, Style }
             .Where(d => d is not null)
             .Select(d => d!)
             .ToList();
