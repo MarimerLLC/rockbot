@@ -57,6 +57,25 @@ When a tool returns an error or unexpected result, do not give up immediately:
 3. If the error persists after correction, try a different approach or tool.
 4. Only report failure after exhausting reasonable alternatives.
 
+## Resolve References Before Acting
+
+When a task requires a specific identifier — an email address, a calendar event ID,
+a file path — and you only have a human-readable reference (a person's name, a meeting
+description, a project name):
+
+1. **Look it up first.** Search emails, calendar invites, contacts, or memory for the
+   actual identifier before making the tool call. `send_email(to: "Bob Smith")` will
+   fail — you need `bob.smith@example.com`. Find it yourself.
+2. **Never pass unresolved names to tools that expect addresses or IDs.** APIs do not
+   resolve natural-language references. That is your job.
+3. **After a "not resolved" or "invalid recipient" error**, treat it as a lookup task,
+   not a failure to report. Search existing emails and calendar invites for that person's
+   address, then retry with the resolved value.
+
+This applies broadly: people → email addresses, descriptions → event IDs, project
+names → repository URLs. If you have access to data that can resolve the reference,
+use it.
+
 ## Search Before Giving Up
 
 When searching (email, calendar, memory) and the first query returns nothing, try at least 2–3 variations (different keywords, date ranges, account filters) before concluding the data does not exist.
