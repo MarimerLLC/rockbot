@@ -222,16 +222,4 @@ builder.Services.AddRemoteScriptRunner("RockBot");
 
 var app = builder.Build();
 
-var startupLogger = app.Services.GetRequiredService<ILoggerFactory>().CreateLogger("Startup");
-var chatClient = app.Services.GetRequiredService<IChatClient>();
-var llmId = chatClient.GetService<ChatClientMetadata>()?.DefaultModelId ?? chatClient.GetType().Name;
-startupLogger.LogInformation("LLM (Balanced): {ModelId}", llmId);
-var resolvedBehavior = app.Services.GetRequiredService<ModelBehavior>();
-startupLogger.LogInformation(
-    "ModelBehavior: NudgeOnHallucinatedToolCalls={Nudge}, AdditionalSystemPrompt={HasPrompt}, ScheduledTaskResultMode={ResultMode}",
-    resolvedBehavior.NudgeOnHallucinatedToolCalls,
-    resolvedBehavior.AdditionalSystemPrompt is not null ? "yes" : "no",
-    resolvedBehavior.ScheduledTaskResultMode);
-startupLogger.LogInformation("Listening for user messages on '{Topic}'", UserProxyTopics.UserMessage);
-
 await app.RunAsync();

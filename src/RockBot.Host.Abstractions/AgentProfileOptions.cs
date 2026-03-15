@@ -43,4 +43,11 @@ public sealed class AgentProfileOptions
     /// Defaults to <c>"subagent-directives.md"</c>.
     /// </summary>
     public string? SubagentDirectivesPath { get; set; } = "subagent-directives.md";
+
+    /// <summary>
+    /// Path to the optional common directives document shared by both primary and subagent prompts.
+    /// When relative, resolved under <see cref="BasePath"/>. Null means no common directives document is expected.
+    /// Defaults to <c>"common-directives.md"</c>.
+    /// </summary>
+    public string? CommonDirectivesPath { get; set; } = "common-directives.md";
 }

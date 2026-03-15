@@ -73,7 +73,14 @@ public sealed class AgentContextBuilder(
 
         // Model-specific guardrails
         if (!string.IsNullOrEmpty(modelBehavior.AdditionalSystemPrompt))
+        {
             chatMessages.Add(new ChatMessage(ChatRole.System, modelBehavior.AdditionalSystemPrompt));
+            logger.LogInformation("Injected AdditionalSystemPrompt ({Chars} chars)", modelBehavior.AdditionalSystemPrompt.Length);
+        }
+        else
+        {
+            logger.LogInformation("No AdditionalSystemPrompt configured for this model");
+        }
 
         // Recent conversation history
         var history = await conversationMemory.GetTurnsAsync(sessionId, ct);

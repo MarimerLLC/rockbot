@@ -27,6 +27,7 @@ internal sealed class SubagentRunner(
     IMessagePublisher publisher,
     TierRoutingLogger tierRoutingLogger,
     AgentProfile agentProfile,
+    ModelBehavior modelBehavior,
     ILogger<SubagentRunner> logger)
 {
     public async Task RunAsync(
@@ -60,13 +61,15 @@ internal sealed class SubagentRunner(
             "so the primary agent knows where to find the detailed data. " +
             "Do not return an empty or vague final response.";
 
-        // Build system prompt from the same profile documents as the primary agent,
-        // but substitute subagent-directives.md for directives.md so subagents get the
-        // same soul/style/memory-rules context without primary-only instructions
-        // (multi-session plans, spawning subagents, etc.).
-        // Document order: soul → subagent-directives → memory-rules → style
+        // Build system prompt from profile documents. Subagents get:
+        //   soul → common-directives → subagent-directives → memory-rules → style
+        // Common directives carry shared behavioral rules (search, resolve references,
+        // execute don't narrate, etc.). Subagent directives add subagent-specific rules
+        // (JSON strictness, timezone injection format). Falls back to primary directives
+        // if no subagent-specific file exists.
         var profileDocs = new[] {
             agentProfile.Soul,
+            agentProfile.CommonDirectives,
             agentProfile.SubagentDirectives ?? agentProfile.Directives,
             agentProfile.MemoryRules,
             agentProfile.Style,
@@ -77,6 +80,10 @@ internal sealed class SubagentRunner(
         {
             new(ChatRole.System, systemPrompt)
         };
+
+        // Model-specific guardrails (same as primary agent)
+        if (!string.IsNullOrEmpty(modelBehavior.AdditionalSystemPrompt))
+            chatMessages.Add(new ChatMessage(ChatRole.System, modelBehavior.AdditionalSystemPrompt));
 
         if (!string.IsNullOrEmpty(context))
             chatMessages.Add(new ChatMessage(ChatRole.System, $"Context: {context}"));
@@ -150,6 +157,7 @@ internal sealed class SubagentRunner(
             finalOutput = await agentLoopRunner.RunAsync(
                 chatMessages, chatOptions, subagentSessionId,
                 tier: tier, cancellationToken: ct);
+            finalOutput = ResponseSanitizer.StripTrailingOffers(finalOutput);
             isSuccess = true;
             subagentActivity?.SetStatus(ActivityStatusCode.Ok);
         }
