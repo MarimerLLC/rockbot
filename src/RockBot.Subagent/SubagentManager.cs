@@ -43,7 +43,11 @@ public sealed class SubagentManager(
         var taskId = Guid.NewGuid().ToString("N")[..12];
         var subagentSessionId = $"subagent-{taskId}";
         var timeout = timeoutMinutes ?? opts.DefaultTimeoutMinutes;
-        var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        // Do NOT link to the caller's ct — that token is the session token which gets
+        // canceled when the next user message arrives. Subagents are independent background
+        // work that must survive new user messages. They cancel only on their own timeout
+        // or via explicit CancelAsync.
+        var cts = new CancellationTokenSource();
         cts.CancelAfter(TimeSpan.FromMinutes(timeout));
 
         var task = RunSubagentAsync(taskId, subagentSessionId, description, context, primarySessionId, cts.Token);

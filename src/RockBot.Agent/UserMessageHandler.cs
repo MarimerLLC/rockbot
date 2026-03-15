@@ -426,6 +426,8 @@ internal sealed class UserMessageHandler(
                 ToolsUsed = toolCallNames.Count > 0 ? toolCallNames : null,
             });
 
+            text = ResponseSanitizer.StripTrailingOffers(text);
+
             await conversationMemory.AddTurnAsync(
                 sessionId,
                 new ConversationTurn("assistant", text, DateTimeOffset.UtcNow),

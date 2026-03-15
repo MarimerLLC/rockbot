@@ -1,3 +1,5 @@
+using Microsoft.Extensions.Logging;
+
 namespace RockBot.Llm;
 
 /// <summary>
@@ -12,7 +14,9 @@ namespace RockBot.Llm;
 ///
 /// Boolean and numeric properties are always read from config; they have no file equivalent.
 /// </summary>
-internal sealed class DefaultModelBehaviorProvider(ModelBehaviorOptions options) : IModelBehaviorProvider
+internal sealed class DefaultModelBehaviorProvider(
+    ModelBehaviorOptions options,
+    ILogger<DefaultModelBehaviorProvider> logger) : IModelBehaviorProvider
 {
     // Maps ModelBehavior string property names to their on-disk filenames.
     private const string AdditionalSystemPromptFile = "additional-system-prompt.md";
@@ -25,6 +29,28 @@ internal sealed class DefaultModelBehaviorProvider(ModelBehaviorOptions options)
 
         var entry = FindEntry(modelId);
         var modelDir = FindModelDirectory(modelId);
+
+        logger.LogInformation(
+            "ModelBehavior resolution for model '{ModelId}': configEntry={ConfigMatch}, fileDir={FileDir}",
+            modelId,
+            entry is not null ? "matched" : "none",
+            modelDir ?? "none");
+
+        var additionalPrompt = ReadFile(modelDir, AdditionalSystemPromptFile);
+        var preToolPrompt = ReadFile(modelDir, PreToolLoopPromptFile);
+
+        if (additionalPrompt is not null)
+            logger.LogInformation(
+                "Loaded {File} from {Dir} ({Chars} chars)",
+                AdditionalSystemPromptFile, modelDir, additionalPrompt.Length);
+        else if (entry?.AdditionalSystemPrompt is not null)
+            logger.LogInformation("Using inline AdditionalSystemPrompt from config ({Chars} chars)",
+                entry.AdditionalSystemPrompt.Length);
+
+        if (preToolPrompt is not null)
+            logger.LogInformation(
+                "Loaded {File} from {Dir} ({Chars} chars)",
+                PreToolLoopPromptFile, modelDir, preToolPrompt.Length);
 
         return new ModelBehavior
         {
@@ -40,10 +66,8 @@ internal sealed class DefaultModelBehaviorProvider(ModelBehaviorOptions options)
             UseTextBasedToolCalling = entry?.UseTextBasedToolCalling ?? false,
 
             // String properties: file takes priority over config value
-            AdditionalSystemPrompt =
-                ReadFile(modelDir, AdditionalSystemPromptFile) ?? entry?.AdditionalSystemPrompt,
-            PreToolLoopPrompt =
-                ReadFile(modelDir, PreToolLoopPromptFile) ?? entry?.PreToolLoopPrompt,
+            AdditionalSystemPrompt = additionalPrompt ?? entry?.AdditionalSystemPrompt,
+            PreToolLoopPrompt = preToolPrompt ?? entry?.PreToolLoopPrompt,
         };
     }
 
@@ -76,12 +100,19 @@ internal sealed class DefaultModelBehaviorProvider(ModelBehaviorOptions options)
             basePath = Path.Combine(AppContext.BaseDirectory, basePath);
 
         if (!Directory.Exists(basePath))
+        {
+            logger.LogWarning("Model behaviors base path does not exist: {BasePath}", basePath);
             return null;
+        }
 
         try
         {
+            var dirs = Directory.GetDirectories(basePath);
+            logger.LogDebug("Model behaviors base path {BasePath} contains directories: {Dirs}",
+                basePath, string.Join(", ", dirs.Select(Path.GetFileName)));
+
             // Find the subdirectory whose name is the longest prefix of modelId
-            return Directory.GetDirectories(basePath)
+            return dirs
                 .Where(d => modelId.StartsWith(
                     Path.GetFileName(d), StringComparison.OrdinalIgnoreCase))
                 .OrderByDescending(d => Path.GetFileName(d).Length)

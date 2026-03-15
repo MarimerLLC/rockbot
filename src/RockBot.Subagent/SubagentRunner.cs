@@ -27,6 +27,7 @@ internal sealed class SubagentRunner(
     IMessagePublisher publisher,
     TierRoutingLogger tierRoutingLogger,
     AgentProfile agentProfile,
+    ModelBehavior modelBehavior,
     ILogger<SubagentRunner> logger)
 {
     public async Task RunAsync(
@@ -77,6 +78,10 @@ internal sealed class SubagentRunner(
         {
             new(ChatRole.System, systemPrompt)
         };
+
+        // Model-specific guardrails (same as primary agent)
+        if (!string.IsNullOrEmpty(modelBehavior.AdditionalSystemPrompt))
+            chatMessages.Add(new ChatMessage(ChatRole.System, modelBehavior.AdditionalSystemPrompt));
 
         if (!string.IsNullOrEmpty(context))
             chatMessages.Add(new ChatMessage(ChatRole.System, $"Context: {context}"));
@@ -150,6 +155,7 @@ internal sealed class SubagentRunner(
             finalOutput = await agentLoopRunner.RunAsync(
                 chatMessages, chatOptions, subagentSessionId,
                 tier: tier, cancellationToken: ct);
+            finalOutput = ResponseSanitizer.StripTrailingOffers(finalOutput);
             isSuccess = true;
             subagentActivity?.SetStatus(ActivityStatusCode.Ok);
         }
