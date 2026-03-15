@@ -57,9 +57,11 @@ public class UserFeedbackHandlerTests
         var profile = new AgentProfile(
             Soul: new AgentProfileDocument("soul", "Test agent", [], "Test agent"),
             Directives: new AgentProfileDocument("directives", "Be helpful", [], "Be helpful"));
+        var profileHolder = new ProfileHolder();
+        profileHolder.Update(profile);
 
         var agentContextBuilder = new AgentContextBuilder(
-            profile,
+            profileHolder,
             agent,
             new StubSystemPromptBuilder(),
             new StubRulesStore(),
