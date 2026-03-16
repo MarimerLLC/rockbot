@@ -133,23 +133,60 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
 
     private async Task LoadConfigAndConnectAsync(CancellationToken ct)
     {
+        McpBridgeConfig config;
+
         if (!File.Exists(_configPath))
         {
-            _logger.LogWarning("MCP config file not found at {Path}", _configPath);
-            return;
+            _logger.LogInformation("MCP config file not found at {Path}; starting with empty config", _configPath);
+            config = new McpBridgeConfig();
+        }
+        else
+        {
+            try
+            {
+                var json = await File.ReadAllTextAsync(_configPath, ct);
+                config = JsonSerializer.Deserialize<McpBridgeConfig>(json, JsonOptions)
+                    ?? new McpBridgeConfig();
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Failed to read MCP config from {Path}", _configPath);
+                return;
+            }
         }
 
-        McpBridgeConfig config;
-        try
+        // Seed default servers from infrastructure config (Helm values)
+        var seeded = false;
+        foreach (var (name, url) in _options.DefaultServers)
         {
-            var json = await File.ReadAllTextAsync(_configPath, ct);
-            config = JsonSerializer.Deserialize<McpBridgeConfig>(json, JsonOptions)
-                ?? new McpBridgeConfig();
+            if (!config.McpServers.ContainsKey(name))
+            {
+                _logger.LogInformation("Seeding default MCP server {Name} at {Url}", name, url);
+                config.McpServers[name] = new McpBridgeServerConfig
+                {
+                    Type = "sse",
+                    Url = url
+                };
+                seeded = true;
+            }
         }
-        catch (Exception ex)
+
+        if (seeded)
         {
-            _logger.LogError(ex, "Failed to read MCP config from {Path}", _configPath);
-            return;
+            try
+            {
+                var updatedJson = JsonSerializer.Serialize(config, new JsonSerializerOptions
+                {
+                    PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+                    WriteIndented = true
+                });
+                await File.WriteAllTextAsync(_configPath, updatedJson, ct);
+                _logger.LogInformation("Persisted seeded MCP servers to {Path}", _configPath);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Failed to persist seeded MCP servers to {Path}", _configPath);
+            }
         }
 
         // Disconnect servers that are no longer in config
