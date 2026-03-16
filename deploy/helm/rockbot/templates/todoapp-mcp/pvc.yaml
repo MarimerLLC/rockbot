@@ -1,9 +1,13 @@
-{{- if .Values.todoappMcp.enabled }}
+{{- if and .Values.todoappMcp.enabled (not (lookup "v1" "PersistentVolumeClaim" .Values.namespace "mcp-todo-data")) }}
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
   name: mcp-todo-data
   namespace: {{ .Values.namespace }}
+  annotations:
+    # Helm will not delete this PVC on uninstall — todo data must
+    # survive chart upgrades and releases.
+    helm.sh/resource-policy: keep
   labels:
     {{- include "rockbot.labels" . | nindent 4 }}
     app.kubernetes.io/component: mcp-todo
