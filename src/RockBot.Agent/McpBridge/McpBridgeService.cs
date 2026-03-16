@@ -30,6 +30,7 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
     private readonly Dictionary<string, McpBridgeServerConfig> _serverConfigs = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, List<McpClientTool>> _serverTools = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, List<McpClientPrompt>> _serverPrompts = new(StringComparer.OrdinalIgnoreCase);
+    private readonly SemaphoreSlim _configPersistLock = new(1, 1);
     private ISubscription? _invokeSubscription;
     private ISubscription? _refreshSubscription;
     private ISubscription? _manageSubscription;
@@ -147,11 +148,30 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
                 var json = await File.ReadAllTextAsync(_configPath, ct);
                 config = JsonSerializer.Deserialize<McpBridgeConfig>(json, JsonOptions)
                     ?? new McpBridgeConfig();
+
+                // If the primary file deserialized to empty but had content, try the backup
+                if (config.McpServers.Count == 0 && json.Trim().Length > 0)
+                {
+                    _logger.LogWarning(
+                        "MCP config at {Path} deserialized to empty McpServers but file was non-empty ({Length} chars) — attempting backup",
+                        _configPath, json.Length);
+                    config = await TryLoadFromBackupAsync(ct) ?? config;
+                }
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Failed to read MCP config from {Path}", _configPath);
-                return;
+
+                // Attempt to recover from backup
+                var backupConfig = await TryLoadFromBackupAsync(ct);
+                if (backupConfig is not null)
+                {
+                    config = backupConfig;
+                }
+                else
+                {
+                    return;
+                }
             }
         }
 
@@ -200,6 +220,42 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
         foreach (var (name, serverConfig) in config.McpServers)
         {
             await ConnectServerAsync(name, serverConfig, ct);
+        }
+    }
+
+    /// <summary>
+    /// Attempts to load MCP config from the backup file. Returns null if no backup exists
+    /// or if the backup also fails to deserialize.
+    /// </summary>
+    private async Task<McpBridgeConfig?> TryLoadFromBackupAsync(CancellationToken ct)
+    {
+        var backupPath = _configPath + ".bak";
+        if (!File.Exists(backupPath))
+        {
+            _logger.LogWarning("No backup config file found at {BackupPath}", backupPath);
+            return null;
+        }
+
+        try
+        {
+            var backupJson = await File.ReadAllTextAsync(backupPath, ct);
+            var backupConfig = JsonSerializer.Deserialize<McpBridgeConfig>(backupJson, JsonOptions);
+
+            if (backupConfig?.McpServers.Count > 0)
+            {
+                _logger.LogInformation(
+                    "Recovered MCP config from backup {BackupPath} with servers: [{Servers}]",
+                    backupPath, string.Join(", ", backupConfig.McpServers.Keys));
+                return backupConfig;
+            }
+
+            _logger.LogWarning("Backup config at {BackupPath} also has empty McpServers", backupPath);
+            return null;
+        }
+        catch (Exception backupEx)
+        {
+            _logger.LogError(backupEx, "Failed to read backup MCP config from {BackupPath}", backupPath);
+            return null;
         }
     }
 
@@ -966,35 +1022,90 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
 
     private async Task PersistServerConfigAsync(string name, McpBridgeServerConfig? config, bool remove)
     {
+        _logger.LogInformation(
+            "PersistServerConfigAsync called: server={ServerName}, remove={Remove}",
+            name, remove);
+
+        await _configPersistLock.WaitAsync();
         try
         {
             McpBridgeConfig current;
+            string? existingJson = null;
+
             if (File.Exists(_configPath))
             {
-                var json = await File.ReadAllTextAsync(_configPath);
-                current = JsonSerializer.Deserialize<McpBridgeConfig>(json, JsonOptions)
+                existingJson = await File.ReadAllTextAsync(_configPath);
+                current = JsonSerializer.Deserialize<McpBridgeConfig>(existingJson, JsonOptions)
                     ?? new McpBridgeConfig();
+
+                // If deserialization returned null or empty McpServers but the file was non-empty,
+                // the file may be corrupt — try the backup before proceeding.
+                if (current.McpServers.Count == 0 && existingJson.Trim().Length > 0)
+                {
+                    _logger.LogWarning(
+                        "Config file at {Path} deserialized to empty McpServers but file was non-empty ({Length} chars) — attempting backup recovery",
+                        _configPath, existingJson.Length);
+
+                    var backupConfig = await TryLoadFromBackupAsync(CancellationToken.None);
+                    if (backupConfig is not null)
+                    {
+                        current = backupConfig;
+                    }
+                    else
+                    {
+                        _logger.LogError(
+                            "Both config and backup failed to provide valid McpServers — aborting persist for {ServerName} to avoid data loss",
+                            name);
+                        return;
+                    }
+                }
             }
             else
             {
+                _logger.LogWarning(
+                    "Config file does not exist at {Path} during persist — creating new config",
+                    _configPath);
                 current = new McpBridgeConfig();
             }
+
+            _logger.LogInformation(
+                "PersistServerConfigAsync BEFORE modification: servers=[{Servers}]",
+                string.Join(", ", current.McpServers.Keys));
 
             if (remove)
                 current.McpServers.Remove(name);
             else if (config is not null)
                 current.McpServers[name] = config;
 
+            _logger.LogInformation(
+                "PersistServerConfigAsync AFTER modification: servers=[{Servers}]",
+                string.Join(", ", current.McpServers.Keys));
+
             var updated = JsonSerializer.Serialize(current, new JsonSerializerOptions
             {
                 PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
                 WriteIndented = true
             });
-            await File.WriteAllTextAsync(_configPath, updated);
+
+            // Create backup of the current file before writing (only if it exists and had content)
+            if (existingJson is not null)
+            {
+                var backupPath = _configPath + ".bak";
+                await File.WriteAllTextAsync(backupPath, existingJson);
+            }
+
+            // Write to temp file first, then atomically replace to prevent corruption on crash
+            var tempPath = _configPath + ".tmp";
+            await File.WriteAllTextAsync(tempPath, updated);
+            File.Move(tempPath, _configPath, overwrite: true);
         }
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "Failed to persist server config change for {ServerName}", name);
+        }
+        finally
+        {
+            _configPersistLock.Release();
         }
     }
 
@@ -1193,5 +1304,7 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
             await _refreshSubscription.DisposeAsync();
         if (_manageSubscription is not null)
             await _manageSubscription.DisposeAsync();
+
+        _configPersistLock.Dispose();
     }
 }
