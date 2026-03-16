@@ -198,7 +198,7 @@ staging:
 # Standalone MCP server that exposes a persistent to-do list to the agent.
 # Data is stored in a Longhorn PVC mounted at /data inside the container.
 todoappMcp:
-  enabled: false
+  enabled: true
   image:
     repository: rockylhotka/mcpserver-todoapp
     tag: latest
