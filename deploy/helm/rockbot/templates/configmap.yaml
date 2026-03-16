@@ -29,6 +29,23 @@ data:
   Memory__BasePath: "/data/agent/memory"
   Skill__BasePath: "/data/agent/skills"
   McpBridge__ConfigPath: "/data/agent/mcp.json"
+
+  # ── Default MCP servers (auto-seeded into mcp.json on startup) ────────────
+  {{- if .Values.routingStatsMcp.enabled }}
+  McpBridge__DefaultServers__routing-stats: "http://localhost:8080/"
+  {{- end }}
+  {{- if .Values.openrouterMcp.enabled }}
+  McpBridge__DefaultServers__openrouter: "http://{{ include "rockbot.fullname" . }}-openrouter-mcp.{{ .Values.namespace }}.svc.cluster.local/"
+  {{- end }}
+  {{- if .Values.azureFoundryMcp.enabled }}
+  McpBridge__DefaultServers__azure-foundry: "http://{{ include "rockbot.fullname" . }}-azure-foundry-mcp.{{ .Values.namespace }}.svc.cluster.local/"
+  {{- end }}
+  {{- if .Values.staging.enabled }}
+  McpBridge__DefaultServers__staging: "http://{{ include "rockbot.fullname" . }}-staging.{{ .Values.namespace }}.svc.cluster.local/"
+  {{- end }}
+  {{- if .Values.todoappMcp.enabled }}
+  McpBridge__DefaultServers__todo: "http://mcp-todo.{{ .Values.namespace }}.svc.cluster.local/"
+  {{- end }}
   ModelBehaviors__BasePath: "/data/agent/model-behaviors"
 
   # ── Runtime ───────────────────────────────────────────────────────────────

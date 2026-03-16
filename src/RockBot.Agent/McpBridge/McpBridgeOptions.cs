@@ -45,4 +45,12 @@ public sealed class McpBridgeOptions
     /// and attempts to reconnect them. Set to zero to disable the sweep.
     /// </summary>
     public int ReconnectSweepIntervalSeconds { get; set; } = 60;
+
+    /// <summary>
+    /// Default MCP servers seeded from infrastructure config (e.g. Helm chart).
+    /// On startup, any server listed here that is NOT already in the config file
+    /// is added automatically. Existing entries are never overwritten.
+    /// Key = server name, Value = SSE URL.
+    /// </summary>
+    public Dictionary<string, string> DefaultServers { get; set; } = [];
 }

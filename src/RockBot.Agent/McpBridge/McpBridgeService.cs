@@ -134,41 +134,78 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
 
     private async Task LoadConfigAndConnectAsync(CancellationToken ct)
     {
+        McpBridgeConfig config;
+
         if (!File.Exists(_configPath))
         {
-            _logger.LogWarning("MCP config file not found at {Path}", _configPath);
-            return;
+            _logger.LogInformation("MCP config file not found at {Path}; starting with empty config", _configPath);
+            config = new McpBridgeConfig();
         }
-
-        McpBridgeConfig config;
-        try
+        else
         {
-            var json = await File.ReadAllTextAsync(_configPath, ct);
-            config = JsonSerializer.Deserialize<McpBridgeConfig>(json, JsonOptions)
-                ?? new McpBridgeConfig();
-
-            // If the primary file deserialized to empty but had content, try the backup
-            if (config.McpServers.Count == 0 && json.Trim().Length > 0)
+            try
             {
-                _logger.LogWarning(
-                    "MCP config at {Path} deserialized to empty McpServers but file was non-empty ({Length} chars) — attempting backup",
-                    _configPath, json.Length);
-                config = await TryLoadFromBackupAsync(ct) ?? config;
+                var json = await File.ReadAllTextAsync(_configPath, ct);
+                config = JsonSerializer.Deserialize<McpBridgeConfig>(json, JsonOptions)
+                    ?? new McpBridgeConfig();
+
+                // If the primary file deserialized to empty but had content, try the backup
+                if (config.McpServers.Count == 0 && json.Trim().Length > 0)
+                {
+                    _logger.LogWarning(
+                        "MCP config at {Path} deserialized to empty McpServers but file was non-empty ({Length} chars) — attempting backup",
+                        _configPath, json.Length);
+                    config = await TryLoadFromBackupAsync(ct) ?? config;
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Failed to read MCP config from {Path}", _configPath);
+
+                // Attempt to recover from backup
+                var backupConfig = await TryLoadFromBackupAsync(ct);
+                if (backupConfig is not null)
+                {
+                    config = backupConfig;
+                }
+                else
+                {
+                    return;
+                }
             }
         }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Failed to read MCP config from {Path}", _configPath);
 
-            // Attempt to recover from backup
-            var backupConfig = await TryLoadFromBackupAsync(ct);
-            if (backupConfig is not null)
+        // Seed default servers from infrastructure config (Helm values)
+        var seeded = false;
+        foreach (var (name, url) in _options.DefaultServers)
+        {
+            if (!config.McpServers.ContainsKey(name))
             {
-                config = backupConfig;
+                _logger.LogInformation("Seeding default MCP server {Name} at {Url}", name, url);
+                config.McpServers[name] = new McpBridgeServerConfig
+                {
+                    Type = "sse",
+                    Url = url
+                };
+                seeded = true;
             }
-            else
+        }
+
+        if (seeded)
+        {
+            try
             {
-                return;
+                var updatedJson = JsonSerializer.Serialize(config, new JsonSerializerOptions
+                {
+                    PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+                    WriteIndented = true
+                });
+                await File.WriteAllTextAsync(_configPath, updatedJson, ct);
+                _logger.LogInformation("Persisted seeded MCP servers to {Path}", _configPath);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Failed to persist seeded MCP servers to {Path}", _configPath);
             }
         }
 
