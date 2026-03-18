@@ -19,6 +19,19 @@ public sealed record AgentCard
     public string? Url { get; init; }
 
     /// <summary>
+    /// Optional HTTP header name for authentication (e.g. "Authorization", "X-Api-Key").
+    /// Used together with <see cref="AuthHeaderValueBase64"/> when dispatching HTTP requests.
+    /// </summary>
+    public string? AuthHeaderName { get; init; }
+
+    /// <summary>
+    /// Base64-encoded value for the <see cref="AuthHeaderName"/> header.
+    /// Stored encoded to avoid accidental exposure in logs and tool output.
+    /// Decoded at dispatch time by <c>InvokeAgentExecutor</c>.
+    /// </summary>
+    public string? AuthHeaderValueBase64 { get; init; }
+
+    /// <summary>
     /// When true, the agent is shutting down and should be removed from the directory.
     /// Published by <c>AgentDiscoveryService.StopAsync</c> on graceful shutdown.
     /// </summary>

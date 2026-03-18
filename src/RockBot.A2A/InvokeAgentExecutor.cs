@@ -98,7 +98,7 @@ internal sealed class InvokeAgentExecutor(
             // DispatchHttpAsync catches all non-cancellation exceptions internally and
             // publishes an AgentTaskError to the result topic, so unobserved exceptions
             // will not be silently lost.
-            _ = Task.Run(() => DispatchHttpAsync(agentCard!.Url, agentName, taskRequest, taskId, cts.Token),
+            _ = Task.Run(() => DispatchHttpAsync(agentCard!, agentName, taskRequest, taskId, cts.Token),
                 CancellationToken.None);
         }
         else
@@ -129,7 +129,7 @@ internal sealed class InvokeAgentExecutor(
     }
 
     private async Task DispatchHttpAsync(
-        string agentUrl,
+        AgentCard agentCard,
         string agentName,
         AgentTaskRequest taskRequest,
         string taskId,
@@ -140,7 +140,17 @@ internal sealed class InvokeAgentExecutor(
         try
         {
             var httpClient = httpClientFactory.CreateClient();
-            var endpoint = agentUrl.TrimEnd('/') + "/tasks/send";
+            var endpoint = agentCard.Url!.TrimEnd('/') + "/tasks/send";
+
+            // Attach auth header if configured on the agent card
+            if (!string.IsNullOrEmpty(agentCard.AuthHeaderName) &&
+                !string.IsNullOrEmpty(agentCard.AuthHeaderValueBase64))
+            {
+                var headerValue = System.Text.Encoding.UTF8.GetString(
+                    Convert.FromBase64String(agentCard.AuthHeaderValueBase64));
+                httpClient.DefaultRequestHeaders.TryAddWithoutValidation(
+                    agentCard.AuthHeaderName, headerValue);
+            }
 
             logger.LogInformation("Dispatching task {TaskId} to HTTP agent '{AgentName}' at {Endpoint}",
                 taskId, agentName, endpoint);

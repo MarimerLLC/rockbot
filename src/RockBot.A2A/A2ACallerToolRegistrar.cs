@@ -70,6 +70,61 @@ internal sealed class A2ACallerToolRegistrar(
         }
         """;
 
+    private const string RegisterAgentSchema = """
+        {
+          "type": "object",
+          "properties": {
+            "agent_name": {
+              "type": "string",
+              "description": "A unique name for the agent."
+            },
+            "url": {
+              "type": "string",
+              "description": "Base URL for the agent's HTTP endpoint (e.g. 'https://api.example.com')."
+            },
+            "description": {
+              "type": "string",
+              "description": "Human-readable description of the agent's capabilities."
+            },
+            "skills": {
+              "type": "array",
+              "description": "List of skills the agent supports.",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "id": { "type": "string" },
+                  "name": { "type": "string" },
+                  "description": { "type": "string" }
+                },
+                "required": ["id", "name"]
+              }
+            },
+            "auth_header_name": {
+              "type": "string",
+              "description": "HTTP header name for authentication (e.g. 'Authorization', 'X-Api-Key'). Must be provided with auth_header_value_base64."
+            },
+            "auth_header_value_base64": {
+              "type": "string",
+              "description": "Base64-encoded value for the auth header (e.g. base64 of 'Bearer sk-...'). Must be provided with auth_header_name."
+            }
+          },
+          "required": ["agent_name", "url"]
+        }
+        """;
+
+    private const string UnregisterAgentSchema = """
+        {
+          "type": "object",
+          "properties": {
+            "agent_name": {
+              "type": "string",
+              "description": "The name of the agent to remove from the directory."
+            }
+          },
+          "required": ["agent_name"]
+        }
+        """;
+
     public Task StartAsync(CancellationToken cancellationToken)
     {
         var invokeLogger = loggerFactory.CreateLogger<InvokeAgentExecutor>();
@@ -105,6 +160,26 @@ internal sealed class A2ACallerToolRegistrar(
             Source = "a2a"
         }, new GetAgentDetailsExecutor(directory));
         registrarLogger.LogInformation("Registered tool: get_agent_details");
+
+        registry.Register(new ToolRegistration
+        {
+            Name = "register_agent",
+            Description = "Register or update an HTTP-based A2A agent in the directory. " +
+                          "Supports optional auth header for agents requiring API keys. " +
+                          "The agent is persisted and available for invoke_agent immediately.",
+            ParametersSchema = RegisterAgentSchema,
+            Source = "a2a"
+        }, new RegisterAgentExecutor(directory, loggerFactory.CreateLogger<RegisterAgentExecutor>()));
+        registrarLogger.LogInformation("Registered tool: register_agent");
+
+        registry.Register(new ToolRegistration
+        {
+            Name = "unregister_agent",
+            Description = "Remove an agent from the directory. Well-known agents (statically configured) cannot be removed.",
+            ParametersSchema = UnregisterAgentSchema,
+            Source = "a2a"
+        }, new UnregisterAgentExecutor(directory, loggerFactory.CreateLogger<UnregisterAgentExecutor>()));
+        registrarLogger.LogInformation("Registered tool: unregister_agent");
 
         return Task.CompletedTask;
     }
