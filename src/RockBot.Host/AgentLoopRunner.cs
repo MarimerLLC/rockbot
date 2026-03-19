@@ -80,7 +80,12 @@ public sealed class AgentLoopRunner(
           completion (specific data, confirmation of actions taken), that is COMPLETE.
         - If the original request was a simple question and the agent answered it, that
           is COMPLETE.
-        - If the agent encountered an error but explained it clearly, that is COMPLETE.
+        - If the agent encountered a SPECIFIC tool error (timeout, auth failure, API error)
+          and explained it clearly, that is COMPLETE.
+        - IMPORTANT: If the agent claimed it lacks access to a service, cannot connect,
+          or does not have the right tools — WITHOUT actually trying to call any tools
+          first — that is INCOMPLETE. The agent should attempt to use its tools before
+          concluding it cannot do something.
 
         Return ONLY a valid JSON object — no markdown, no code fences.
         {"complete": true, "reason": "brief explanation"}
@@ -161,7 +166,8 @@ public sealed class AgentLoopRunner(
 
             chatMessages.Add(new ChatMessage(ChatRole.Assistant, result.Response));
             chatMessages.Add(new ChatMessage(ChatRole.User,
-                $"Not complete because: {reason}. Continue working on the original request."));
+                $"Not complete because: {reason}. Continue working on the original request. " +
+                "Use your available tools — do not claim you lack access without trying them first."));
         }
 
         // Should not be reachable, but satisfy the compiler.

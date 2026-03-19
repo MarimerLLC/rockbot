@@ -49,6 +49,19 @@ Topics use hierarchical dot-separated naming: `agent.task.*`, `llm.request`, `to
 - AMQP header mapping uses `rb-` prefix for custom headers (Source, Destination, user headers)
 - DI registration via `services.AddRockBotRabbitMq(options => ...)` — registers connection manager, publisher, and subscriber as singletons
 
+### AgentLoopRunner — the single LLM entry point
+
+**All LLM tool-calling interactions MUST go through `AgentLoopRunner.RunAsync`.** Do not call `ILlmClient.GetResponseAsync` directly from message handlers — that bypasses critical cross-cutting concerns:
+
+- Reasoning scaffolding injection (iteration budget, step-by-step planning)
+- DateTime context injection
+- Completion evaluation (post-loop re-prompting when tasks are incomplete)
+- Hallucination and capability-denial nudging
+- Context overflow trimming
+- Token and tool-call metrics recording
+
+`RunAsync` handles both native (FunctionInvokingChatClient) and text-based tool-calling paths. Every handler — `UserMessageHandler`, `ScheduledTaskHandler`, `SubagentRunner`, A2A handlers — routes through it.
+
 ### Key Conventions
 
 - **Nullable reference types** enabled — respect null-safety throughout
