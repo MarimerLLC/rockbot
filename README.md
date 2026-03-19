@@ -182,6 +182,10 @@ The agent's personality and behavior are defined by markdown documents on the da
 
 ## Deployment
 
+### Quick start with Docker Desktop
+
+Want to try RockBot without setting up Kubernetes? The [Docker Desktop getting started guide](docs/getting-started-docker-desktop.md) gets you chatting with the agent in minutes using just Docker Compose, an LLM API key, and a Brave Search key.
+
 ### Prerequisites
 
 - [.NET 10 SDK](https://dotnet.microsoft.com/download) — for local development and building
@@ -446,6 +450,7 @@ Deep-dive documentation for individual subsystems lives in [`docs/`](docs/):
 
 | Document | Contents |
 |---|---|
+| [`docs/getting-started-docker-desktop.md`](docs/getting-started-docker-desktop.md) | Quick start with Docker Compose — run the agent locally without Kubernetes |
 | [`docs/skills.md`](docs/skills.md) | Skills data model, BM25 recall, see-also, dream consolidation, prefix clusters, optimization, gap detection |
 | [`docs/memory.md`](docs/memory.md) | Three-tier memory architecture, long-term storage, anti-patterns, working memory, dream passes |
 | [`docs/dream-service.md`](docs/dream-service.md) | Dream cycle passes, scheduling, directive files, LLM response contracts, configuration |
