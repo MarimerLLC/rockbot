@@ -24,4 +24,14 @@ public sealed class AgentHostOptions
     /// Defaults to 2.
     /// </summary>
     public int MaxCompletionReprompts { get; set; } = 2;
+
+    /// <summary>
+    /// Maximum number of proactive follow-up passes the agent can take after completing
+    /// the user's request. A follow-up pass lets the agent take additional helpful actions
+    /// within the context of the conversation (e.g. looking up a contact, cross-referencing
+    /// calendar events) without being explicitly asked. Set to 0 to disable.
+    /// Individual models may override this via <c>ModelBehavior.MaxFollowUpPassesOverride</c>.
+    /// Defaults to 1.
+    /// </summary>
+    public int MaxFollowUpPasses { get; set; } = 1;
 }

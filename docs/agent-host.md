@@ -306,6 +306,12 @@ agent process. Every message handler (`UserMessageHandler`, `ScheduledTaskHandle
    incomplete, a continuation nudge is appended and the tool loop re-enters (up to
    `MaxCompletionReprompts` times, default 2). Evaluation is skipped on force-termination
    (consecutive timeouts) and fails open on any evaluator error.
+5. **Proactive follow-up** — after the completion evaluator says COMPLETE, a second
+   `ModelTier.Low` call assesses whether there are high-value proactive actions the agent
+   could take within the current context (e.g. looking up a contact mentioned in conversation,
+   cross-referencing calendar events, connecting related information). If found, context is
+   enriched with relevant skills/services and the tool loop runs one more pass. The follow-up
+   response is appended to the original. Skipped for simple exchanges. Fails open on error.
 
 ### Completion evaluator configuration
 
@@ -313,6 +319,8 @@ agent process. Every message handler (`UserMessageHandler`, `ScheduledTaskHandle
 |---|---|---|---|
 | `AgentHost:MaxCompletionReprompts` | `AgentHostOptions` | 2 | Max re-prompts (0 = disabled) |
 | `MaxCompletionRepromptsOverride` | `ModelBehavior` | null (use host default) | Per-model override |
+| `AgentHost:MaxFollowUpPasses` | `AgentHostOptions` | 1 | Max proactive follow-up passes (0 = disabled) |
+| `MaxFollowUpPassesOverride` | `ModelBehavior` | null (use host default) | Per-model override |
 
 ### Diagnostics counters
 
@@ -321,6 +329,9 @@ agent process. Every message handler (`UserMessageHandler`, `ScheduledTaskHandle
 | `rockbot.agent.completion_check.complete` | Evaluator says task is done |
 | `rockbot.agent.completion_check.incomplete` | Evaluator triggers a re-prompt |
 | `rockbot.agent.completion_check.skipped` | Evaluation skipped (force termination) |
+| `rockbot.agent.follow_up.triggered` | Follow-up evaluator found an opportunity |
+| `rockbot.agent.follow_up.none` | Follow-up evaluator found nothing worth doing |
+| `rockbot.agent.follow_up.skipped` | Follow-up evaluation skipped (disabled, force term) |
 
 ---
 
@@ -343,6 +354,7 @@ Additional properties are configurable in `appsettings.json` under `ModelBehavio
 | `ToolResultChunkingThreshold` | int? | null (uses 16 000) | Char count above which tool results are chunked into working memory instead of appended inline |
 | `ScheduledTaskResultMode` | enum | `Summarize` | How scheduled task output is presented (`Summarize`, `VerbatimOutput`, `SummarizeWithOutput`) |
 | `MaxCompletionRepromptsOverride` | int? | null (uses `AgentHost:MaxCompletionReprompts`) | Override the per-request completion-evaluator re-prompt cap |
+| `MaxFollowUpPassesOverride` | int? | null (uses `AgentHost:MaxFollowUpPasses`) | Override the per-request proactive follow-up pass cap |
 
 Example — raising the chunking threshold for a large-context model:
 
@@ -497,7 +509,8 @@ Key configuration sections (from `appsettings.json` or environment variables):
   },
   "AgentHost": {
     "MaxToolIterations": 50,
-    "MaxCompletionReprompts": 2
+    "MaxCompletionReprompts": 2,
+    "MaxFollowUpPasses": 1
   },
   "RabbitMq": {
     "HostName": "rabbitmq.cluster.local",

@@ -80,4 +80,10 @@ public sealed class ModelBehavior
     /// Null means use the host's built-in default (<see cref="Host.AgentHostOptions.MaxCompletionReprompts"/>).
     /// </summary>
     public int? MaxCompletionRepromptsOverride { get; init; }
+
+    /// <summary>
+    /// Overrides the default maximum number of proactive follow-up passes per request.
+    /// Null means use the host's built-in default (<see cref="Host.AgentHostOptions.MaxFollowUpPasses"/>).
+    /// </summary>
+    public int? MaxFollowUpPassesOverride { get; init; }
 }

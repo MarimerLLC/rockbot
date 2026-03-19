@@ -113,6 +113,29 @@ public static class HostDiagnostics
             unit: "{check}",
             description: "Completion evaluation skipped due to force termination");
 
+    // ── Follow-up passes ──────────────────────────────────────────────────
+
+    /// <summary>Follow-up evaluator found proactive opportunities — triggered a follow-up pass.</summary>
+    public static readonly Counter<long> FollowUpTriggered =
+        Meter.CreateCounter<long>(
+            "rockbot.agent.follow_up.triggered",
+            unit: "{pass}",
+            description: "Follow-up evaluator triggered a proactive follow-up pass");
+
+    /// <summary>Follow-up evaluator found no opportunities — no follow-up needed.</summary>
+    public static readonly Counter<long> FollowUpNone =
+        Meter.CreateCounter<long>(
+            "rockbot.agent.follow_up.none",
+            unit: "{check}",
+            description: "Follow-up evaluator found no proactive opportunities");
+
+    /// <summary>Follow-up evaluation was skipped (disabled, force termination, or re-prompt path).</summary>
+    public static readonly Counter<long> FollowUpSkipped =
+        Meter.CreateCounter<long>(
+            "rockbot.agent.follow_up.skipped",
+            unit: "{check}",
+            description: "Follow-up evaluation skipped");
+
     // ── FinOps ────────────────────────────────────────────────────────────────
 
     /// <summary>Estimated USD cost per LLM call, labelled by model and tier.</summary>
