@@ -74,4 +74,10 @@ public sealed class ModelBehavior
     /// <see cref="ScheduledTaskResultMode.SummarizeWithOutput"/> for both.
     /// </summary>
     public ScheduledTaskResultMode ScheduledTaskResultMode { get; init; } = ScheduledTaskResultMode.Summarize;
+
+    /// <summary>
+    /// Overrides the default maximum number of completion-evaluator re-prompts per request.
+    /// Null means use the host's built-in default (<see cref="Host.AgentHostOptions.MaxCompletionReprompts"/>).
+    /// </summary>
+    public int? MaxCompletionRepromptsOverride { get; init; }
 }

@@ -282,6 +282,48 @@ so routing decisions are visible in the pod logs.
 
 ---
 
+## AgentLoopRunner
+
+`AgentLoopRunner` is the **single entry point for all LLM tool-calling interactions** in the
+agent process. Every message handler (`UserMessageHandler`, `ScheduledTaskHandler`,
+`SubagentRunner`, A2A handlers, etc.) calls `AgentLoopRunner.RunAsync` rather than
+`ILlmClient.GetResponseAsync` directly.
+
+> **Invariant:** Never call `ILlmClient.GetResponseAsync` from a message handler to drive
+> a tool-calling loop. Always go through `AgentLoopRunner.RunAsync`. Direct calls bypass
+> reasoning scaffolding, completion evaluation, hallucination nudging, context overflow
+> trimming, and metrics recording.
+
+### What RunAsync does
+
+1. **DateTime context injection** — ensures the model knows the user's current date/time
+2. **Reasoning scaffolding** — injects a system message with the iteration budget and
+   step-by-step planning encouragement
+3. **Inner tool loop** — dispatches to either the native path (`FunctionInvokingChatClient`)
+   or the text-based parsing loop depending on `ModelBehavior.UseTextBasedToolCalling`
+4. **Completion evaluation** — after the inner loop returns, a cheap `ModelTier.Low` LLM
+   call evaluates whether the response actually completes the original user request. If
+   incomplete, a continuation nudge is appended and the tool loop re-enters (up to
+   `MaxCompletionReprompts` times, default 2). Evaluation is skipped on force-termination
+   (consecutive timeouts) and fails open on any evaluator error.
+
+### Completion evaluator configuration
+
+| Setting | Location | Default | Purpose |
+|---|---|---|---|
+| `AgentHost:MaxCompletionReprompts` | `AgentHostOptions` | 2 | Max re-prompts (0 = disabled) |
+| `MaxCompletionRepromptsOverride` | `ModelBehavior` | null (use host default) | Per-model override |
+
+### Diagnostics counters
+
+| Counter | Fires when |
+|---|---|
+| `rockbot.agent.completion_check.complete` | Evaluator says task is done |
+| `rockbot.agent.completion_check.incomplete` | Evaluator triggers a re-prompt |
+| `rockbot.agent.completion_check.skipped` | Evaluation skipped (force termination) |
+
+---
+
 ## Per-model behaviors
 
 Model-specific behavioral overrides are loaded from `model-behaviors/{model-prefix}/` on the
@@ -300,6 +342,7 @@ Additional properties are configurable in `appsettings.json` under `ModelBehavio
 | `MaxToolIterationsOverride` | int? | null (uses `AgentHost:MaxToolIterations`) | Override the per-request tool-loop iteration cap |
 | `ToolResultChunkingThreshold` | int? | null (uses 16 000) | Char count above which tool results are chunked into working memory instead of appended inline |
 | `ScheduledTaskResultMode` | enum | `Summarize` | How scheduled task output is presented (`Summarize`, `VerbatimOutput`, `SummarizeWithOutput`) |
+| `MaxCompletionRepromptsOverride` | int? | null (uses `AgentHost:MaxCompletionReprompts`) | Override the per-request completion-evaluator re-prompt cap |
 
 Example — raising the chunking threshold for a large-context model:
 
@@ -453,7 +496,8 @@ Key configuration sections (from `appsettings.json` or environment variables):
     "BasePath": "/data/agent"
   },
   "AgentHost": {
-    "MaxToolIterations": 50
+    "MaxToolIterations": 50,
+    "MaxCompletionReprompts": 2
   },
   "RabbitMq": {
     "HostName": "rabbitmq.cluster.local",

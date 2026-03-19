@@ -16,4 +16,12 @@ public sealed class AgentHostOptions
     /// Defaults to 50.
     /// </summary>
     public int MaxToolIterations { get; set; } = 50;
+
+    /// <summary>
+    /// Maximum number of times the completion evaluator can re-prompt the agent when it
+    /// determines the task is incomplete. Set to 0 to disable completion evaluation entirely.
+    /// Individual models may override this via <c>ModelBehavior.MaxCompletionRepromptsOverride</c>.
+    /// Defaults to 2.
+    /// </summary>
+    public int MaxCompletionReprompts { get; set; } = 2;
 }

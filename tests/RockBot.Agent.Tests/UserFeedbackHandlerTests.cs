@@ -51,6 +51,8 @@ public class UserFeedbackHandlerTests
             _feedbackStore,
             new AgentClock(config, profileOptions, NullLogger<AgentClock>.Instance),
             Options.Create(new AgentHostOptions()),
+            new StubSkillStore(),
+            Enumerable.Empty<IServiceSearchIndex>(),
             NullLogger<AgentLoopRunner>.Instance);
         var clock = new AgentClock(config, profileOptions, NullLogger<AgentClock>.Instance);
 

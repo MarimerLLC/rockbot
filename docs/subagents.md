@@ -288,8 +288,9 @@ Its `RunAsync` method:
 8. Publishes `SubagentResultMessage` to `subagent.result`
 
 The subagent uses `AgentLoopRunner` directly — the same code path as the primary
-agent — so it gets text-based tool call parsing, hallucination nudging, context
-overflow trimming, and large tool result chunking for free.
+agent — so it gets text-based tool call parsing, hallucination nudging, completion
+evaluation with re-prompting, context overflow trimming, and large tool result
+chunking for free.
 
 ---
 

@@ -364,48 +364,33 @@ internal sealed class UserMessageHandler(
 
             logger.LogInformation("Native LLM loop started for session {SessionId}", sessionId);
 
-            var sw = System.Diagnostics.Stopwatch.StartNew();
-            var response = await llmClient.GetResponseAsync(chatMessages, classification.Tier, chatOptions, ct);
-            sw.Stop();
+            var lastProgressAt = DateTimeOffset.UtcNow;
+
+            var text = await agentLoopRunner.RunAsync(
+                chatMessages, chatOptions, sessionId, tier: classification.Tier,
+                onPreToolCall: async (desc, ct2) =>
+                {
+                    await PublishReplyAsync($"Working on it — checking {desc}…", replyTo, correlationId, sessionId, isFinal: false, ct2);
+                    lastProgressAt = DateTimeOffset.UtcNow;
+                },
+                onProgress: async (msg, ct2) =>
+                {
+                    if (DateTimeOffset.UtcNow - lastProgressAt < ProgressMessageThreshold)
+                        return;
+                    await PublishReplyAsync(msg, replyTo, correlationId, sessionId, isFinal: false, ct2);
+                    lastProgressAt = DateTimeOffset.UtcNow;
+                },
+                onToolTimeout: async (desc, ct2) =>
+                {
+                    await PublishReplyAsync(
+                        $"The {desc} service is taking too long to respond — trying a different approach…",
+                        replyTo, correlationId, sessionId, isFinal: false, ct2);
+                    lastProgressAt = DateTimeOffset.UtcNow;
+                },
+                cancellationToken: ct);
 
             logger.LogInformation(
-                "LLM responded in {ElapsedMs}ms — {MsgCount} message(s)",
-                sw.ElapsedMilliseconds, response.Messages.Count);
-
-            var text = agentLoopRunner.ExtractAssistantText(response);
-
-            var toolCalls = response.Messages
-                .SelectMany(m => m.Contents.OfType<FunctionCallContent>())
-                .ToList();
-            var toolCallNames = toolCalls.Select(c => c.Name).Distinct().ToList();
-
-            // If the model made no tool calls and claimed it lacks a service, nudge once.
-            if (toolCalls.Count == 0
-                && modelBehavior.NudgeOnHallucinatedToolCalls
-                && AgentLoopRunner.CapabilityDenialRegex.IsMatch(text))
-            {
-                logger.LogWarning(
-                    "Capability denial in native path ({Length} chars); nudging to check available services",
-                    text.Length);
-                chatMessages.AddRange(response.Messages);
-                chatMessages.Add(new ChatMessage(ChatRole.User, AgentLoopRunner.CapabilityDenialNudge));
-                var retryResponse = await llmClient.GetResponseAsync(chatMessages, classification.Tier, chatOptions, ct);
-                text = agentLoopRunner.ExtractAssistantText(retryResponse);
-                var retryToolCalls = retryResponse.Messages
-                    .SelectMany(m => m.Contents.OfType<FunctionCallContent>())
-                    .Count();
-                logger.LogInformation(
-                    "Capability denial nudge complete — {ToolCallCount} tool call(s) on retry, {TextLen} chars",
-                    retryToolCalls, text.Length);
-                toolCalls = retryResponse.Messages
-                    .SelectMany(m => m.Contents.OfType<FunctionCallContent>())
-                    .ToList();
-                toolCallNames = toolCalls.Select(c => c.Name).Distinct().ToList();
-            }
-
-            logger.LogInformation(
-                "Native path complete — {ToolCallCount} tool call(s) resolved, final text {TextLen} chars",
-                toolCalls.Count, text.Length);
+                "Native path complete — final text {TextLen} chars", text.Length);
 
             _ = tierRoutingLogger.AppendAsync(new TierRoutingEntry
             {
@@ -419,11 +404,6 @@ internal sealed class UserMessageHandler(
                 MatchedHighKeywords = classification.MatchedHighKeywords,
                 MatchedLowKeywords = classification.MatchedLowKeywords,
                 PostInjectionTokenEstimate = postInjectionTokenEstimate,
-                InputTokens = response.Usage?.InputTokenCount,
-                OutputTokens = response.Usage?.OutputTokenCount,
-                LatencyMs = sw.ElapsedMilliseconds,
-                ToolCallCount = toolCalls.Count,
-                ToolsUsed = toolCallNames.Count > 0 ? toolCallNames : null,
             });
 
             text = ResponseSanitizer.StripTrailingOffers(text);
