@@ -90,6 +90,29 @@ public static class HostDiagnostics
             unit: "{call}",
             description: "Tool calls executed per turn");
 
+    // ── Completion evaluator ────────────────────────────────────────────────
+
+    /// <summary>Evaluator determined the task was complete.</summary>
+    public static readonly Counter<long> CompletionCheckComplete =
+        Meter.CreateCounter<long>(
+            "rockbot.agent.completion_check.complete",
+            unit: "{check}",
+            description: "Completion evaluator determined task was done");
+
+    /// <summary>Evaluator determined the task was incomplete — triggered a re-prompt.</summary>
+    public static readonly Counter<long> CompletionCheckIncomplete =
+        Meter.CreateCounter<long>(
+            "rockbot.agent.completion_check.incomplete",
+            unit: "{check}",
+            description: "Completion evaluator triggered a re-prompt");
+
+    /// <summary>Completion evaluation was skipped (force termination).</summary>
+    public static readonly Counter<long> CompletionCheckSkipped =
+        Meter.CreateCounter<long>(
+            "rockbot.agent.completion_check.skipped",
+            unit: "{check}",
+            description: "Completion evaluation skipped due to force termination");
+
     // ── FinOps ────────────────────────────────────────────────────────────────
 
     /// <summary>Estimated USD cost per LLM call, labelled by model and tier.</summary>

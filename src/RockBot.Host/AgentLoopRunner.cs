@@ -61,12 +61,39 @@ public sealed class AgentLoopRunner(
     /// </summary>
     private int? _knownContextLimit;
 
+    // ── Completion evaluator types ─────────────────────────────────────────
+
+    private enum LoopExitReason { ModelStopped, MaxIterationsReached, ConsecutiveTimeouts }
+    private readonly record struct LoopResult(string Response, LoopExitReason ExitReason);
+    private sealed record CompletionEvalDto(bool Complete, string? Reason);
+
+    private const string CompletionEvaluatorPrompt =
+        """
+        You are a task-completion evaluator. Given an original user request and an
+        agent's response, determine whether the agent fully completed the requested task.
+
+        Rules:
+        - "Complete" means the agent performed the actions requested and reported results.
+        - If the agent only described what it would do, narrated a plan, or gave a partial
+          answer without taking action, that is INCOMPLETE.
+        - If the agent said it completed the task and the response contains evidence of
+          completion (specific data, confirmation of actions taken), that is COMPLETE.
+        - If the original request was a simple question and the agent answered it, that
+          is COMPLETE.
+        - If the agent encountered an error but explained it clearly, that is COMPLETE.
+
+        Return ONLY a valid JSON object — no markdown, no code fences.
+        {"complete": true, "reason": "brief explanation"}
+        """;
+
     /// <summary>
     /// Runs the LLM tool-calling loop.
     /// For native models (UseTextBasedToolCalling = false), delegates to
     /// <see cref="RockBotFunctionInvokingChatClient"/> which handles the full tool loop.
     /// For text-based models (UseTextBasedToolCalling = true), uses the manual loop
     /// that parses tool calls from free text.
+    /// After the inner loop returns, a lightweight completion evaluator checks whether
+    /// the agent's response actually completes the original request and re-prompts if not.
     /// </summary>
     public async Task<string> RunAsync(
         List<ChatMessage> chatMessages,
@@ -79,25 +106,78 @@ public sealed class AgentLoopRunner(
         Func<string, CancellationToken, Task>? onToolTimeout = null,
         CancellationToken cancellationToken = default)
     {
-        // Ensure a current datetime context is always present. For callers that went
-        // through AgentContextBuilder this refreshes the message (useful for long-running
-        // loops). For callers that build their own context this provides the injection
-        // automatically, so individual agents don't need to manage it.
+        // Ensure a current datetime context is always present.
         EnsureDateTimeContext(chatMessages);
 
-        // Inject reasoning scaffolding so the model knows its iteration budget and is
-        // encouraged to plan before acting rather than stopping after a single tool call.
+        // Inject reasoning scaffolding so the model knows its iteration budget.
         InjectReasoningScaffolding(chatMessages);
 
-        if (modelBehavior.UseTextBasedToolCalling)
+        var originalUserRequest = ExtractOriginalUserRequest(chatMessages);
+        var maxReprompts = modelBehavior.MaxCompletionRepromptsOverride
+            ?? hostOptions.Value.MaxCompletionReprompts;
+
+        for (var reprompt = 0; reprompt <= maxReprompts; reprompt++)
         {
-            return await RunTextBasedLoopAsync(
-                chatMessages, chatOptions, sessionId, firstResponse, tier,
-                onPreToolCall, onProgress, onToolTimeout, cancellationToken);
+            var result = modelBehavior.UseTextBasedToolCalling
+                ? await RunTextBasedLoopAsync(
+                    chatMessages, chatOptions, sessionId, firstResponse, tier,
+                    onPreToolCall, onProgress, onToolTimeout, cancellationToken)
+                : await RunNativeLoopAsync(
+                    chatMessages, chatOptions, firstResponse, tier, cancellationToken);
+
+            // Clear first response after the first iteration — it's already been consumed.
+            firstResponse = null;
+
+            // Skip evaluation when force-terminated due to consecutive timeouts.
+            if (result.ExitReason == LoopExitReason.ConsecutiveTimeouts)
+            {
+                HostDiagnostics.CompletionCheckSkipped.Add(1);
+                logger.LogInformation("Completion evaluator: SKIPPED (consecutive timeouts)");
+                return result.Response;
+            }
+
+            // Skip evaluation when disabled or on the final re-prompt.
+            if (maxReprompts == 0 || reprompt == maxReprompts)
+                return result.Response;
+
+            // Evaluate whether the response actually completes the original request.
+            var (complete, reason) = await EvaluateCompletionAsync(
+                originalUserRequest, result.Response, cancellationToken);
+
+            if (complete)
+            {
+                HostDiagnostics.CompletionCheckComplete.Add(1);
+                logger.LogInformation(
+                    "Completion evaluator: COMPLETE (reprompt {Reprompt}/{Max}) — {Reason}",
+                    reprompt, maxReprompts, reason);
+                return result.Response;
+            }
+
+            // Not complete — inject continuation and re-enter the loop.
+            HostDiagnostics.CompletionCheckIncomplete.Add(1);
+            logger.LogInformation(
+                "Completion evaluator: INCOMPLETE (reprompt {Reprompt}/{Max}) — {Reason}",
+                reprompt, maxReprompts, reason);
+
+            chatMessages.Add(new ChatMessage(ChatRole.Assistant, result.Response));
+            chatMessages.Add(new ChatMessage(ChatRole.User,
+                $"Not complete because: {reason}. Continue working on the original request."));
         }
 
-        // Native path: FunctionInvokingChatClient handles the tool loop.
-        // A single GetResponseAsync call executes all tool roundtrips via the middleware.
+        // Should not be reachable, but satisfy the compiler.
+        return string.Empty;
+    }
+
+    /// <summary>
+    /// Native tool-calling path: FunctionInvokingChatClient handles the full tool loop.
+    /// </summary>
+    private async Task<LoopResult> RunNativeLoopAsync(
+        List<ChatMessage> chatMessages,
+        ChatOptions chatOptions,
+        ChatResponse? firstResponse,
+        ModelTier tier,
+        CancellationToken cancellationToken)
+    {
         logger.LogInformation(
             "Tool execution path: NATIVE (M.E.AI FunctionInvokingChatClient) — {MessageCount} messages in context",
             chatMessages.Count);
@@ -112,6 +192,9 @@ public sealed class AgentLoopRunner(
 
         var response = await llmClient.GetResponseAsync(chatMessages, tier, chatOptions, cancellationToken);
 
+        // Append response messages to chatMessages so re-prompts have full tool-call history.
+        chatMessages.AddRange(response.Messages);
+
         var tierTag = new KeyValuePair<string, object?>("rockbot.llm.tier", tier.ToString());
         HostDiagnostics.TurnTokensInput.Record(response.Usage?.InputTokenCount ?? 0, tierTag);
         HostDiagnostics.TurnTokensOutput.Record(response.Usage?.OutputTokenCount ?? 0, tierTag);
@@ -119,7 +202,7 @@ public sealed class AgentLoopRunner(
             response.Messages.SelectMany(m => m.Contents.OfType<FunctionCallContent>()).Count(),
             tierTag);
 
-        return ExtractAssistantText(response);
+        return new LoopResult(ExtractAssistantText(response), LoopExitReason.ModelStopped);
     }
 
     /// <summary>
@@ -196,7 +279,7 @@ public sealed class AgentLoopRunner(
     /// tool calling (e.g. DeepSeek). Parses tool calls from free text and manually
     /// invokes tools.
     /// </summary>
-    private async Task<string> RunTextBasedLoopAsync(
+    private async Task<LoopResult> RunTextBasedLoopAsync(
         List<ChatMessage> chatMessages,
         ChatOptions chatOptions,
         string? sessionId,
@@ -326,7 +409,7 @@ public sealed class AgentLoopRunner(
 
                     logger.LogInformation("Final response text ({Length} chars): {Preview}",
                         text.Length, text.Length > 200 ? text[..200] + "..." : text);
-                    return text;
+                    return new LoopResult(text, LoopExitReason.ModelStopped);
                 }
 
                 logger.LogInformation(
@@ -527,8 +610,10 @@ public sealed class AgentLoopRunner(
                     logger.LogWarning(
                         "Aborting tool loop: {N} consecutive iterations with tool timeouts",
                         consecutiveTimeoutIterations);
-                    return "I wasn't able to complete this task — the services I need aren't responding right now. " +
-                           "Please try again in a few minutes.";
+                    return new LoopResult(
+                        "I wasn't able to complete this task — the services I need aren't responding right now. " +
+                        "Please try again in a few minutes.",
+                        LoopExitReason.ConsecutiveTimeouts);
                 }
             }
             else
@@ -577,7 +662,7 @@ public sealed class AgentLoopRunner(
         }
 
         if (!string.IsNullOrWhiteSpace(forcedText))
-            return forcedText;
+            return new LoopResult(forcedText, LoopExitReason.MaxIterationsReached);
 
         // The forced final response had no usable text (model returned only tool calls or
         // an empty message). Fall back to the last non-empty assistant turn in history so
@@ -593,13 +678,13 @@ public sealed class AgentLoopRunner(
                     logger.LogWarning(
                         "Forced final response was empty; using last assistant turn from history ({Len} chars)",
                         fallback.Length);
-                    return fallback;
+                    return new LoopResult(fallback, LoopExitReason.MaxIterationsReached);
                 }
             }
         }
 
         logger.LogWarning("Forced final response empty and no usable assistant history found; returning empty string");
-        return string.Empty;
+        return new LoopResult(string.Empty, LoopExitReason.MaxIterationsReached);
         } // end try
         finally
         {
@@ -898,4 +983,92 @@ public sealed class AgentLoopRunner(
         JsonValueKind.Number => element.TryGetInt64(out var l) ? (object)l : element.GetDouble(),
         _ => (object)element
     };
+
+    // ── Completion evaluation ───────────────────────────────────────────────
+
+    /// <summary>
+    /// Extracts the original user request from chat history by scanning backward
+    /// for the last <see cref="ChatRole.User"/> message.
+    /// </summary>
+    private static string ExtractOriginalUserRequest(List<ChatMessage> chatMessages)
+    {
+        for (var i = chatMessages.Count - 1; i >= 0; i--)
+        {
+            if (chatMessages[i].Role == ChatRole.User && !string.IsNullOrWhiteSpace(chatMessages[i].Text))
+                return chatMessages[i].Text!;
+        }
+
+        return string.Empty;
+    }
+
+    /// <summary>
+    /// Uses a cheap <see cref="ModelTier.Low"/> LLM call to evaluate whether the agent's
+    /// response actually completes the original user request. Fails open (returns complete)
+    /// on any error so it never blocks the response pipeline.
+    /// </summary>
+    private async Task<(bool Complete, string? Reason)> EvaluateCompletionAsync(
+        string originalUserRequest, string agentResponse, CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(originalUserRequest) || string.IsNullOrWhiteSpace(agentResponse))
+            return (true, "empty request or response");
+
+        try
+        {
+            var messages = new List<ChatMessage>
+            {
+                new(ChatRole.System, CompletionEvaluatorPrompt),
+                new(ChatRole.User,
+                    $"## Original user request\n{originalUserRequest}\n\n## Agent response\n{agentResponse}")
+            };
+
+            var response = await llmClient.GetResponseAsync(
+                messages, ModelTier.Low, new ChatOptions(), cancellationToken);
+            var raw = response.Text?.Trim() ?? string.Empty;
+            var json = ExtractJsonObject(raw);
+
+            if (string.IsNullOrEmpty(json))
+            {
+                logger.LogWarning("Completion evaluator: no parseable JSON in response; defaulting to complete");
+                return (true, "evaluator returned no JSON");
+            }
+
+            var dto = JsonSerializer.Deserialize<CompletionEvalDto>(json, s_evalJsonOptions);
+            if (dto is null)
+            {
+                logger.LogWarning("Completion evaluator: failed to deserialize JSON; defaulting to complete");
+                return (true, "evaluator JSON deserialization failed");
+            }
+
+            return (dto.Complete, dto.Reason);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            logger.LogWarning(ex, "Completion evaluator failed; defaulting to complete");
+            return (true, "evaluator error");
+        }
+    }
+
+    private static readonly JsonSerializerOptions s_evalJsonOptions = new()
+    {
+        PropertyNameCaseInsensitive = true
+    };
+
+    /// <summary>
+    /// Strips &lt;think&gt; blocks and extracts the first JSON object from raw LLM output.
+    /// </summary>
+    private static string ExtractJsonObject(string text)
+    {
+        // Strip <think>...</think> blocks first (DeepSeek reasoning preamble)
+        var thinkStart = text.IndexOf("<think>", StringComparison.OrdinalIgnoreCase);
+        var thinkEnd = text.IndexOf("</think>", StringComparison.OrdinalIgnoreCase);
+        if (thinkStart >= 0 && thinkEnd > thinkStart)
+            text = text[(thinkEnd + "</think>".Length)..].TrimStart();
+
+        var objStart = text.IndexOf('{');
+        var objEnd = text.LastIndexOf('}');
+        if (objStart >= 0 && objEnd > objStart)
+            return text[objStart..(objEnd + 1)];
+
+        return string.Empty;
+    }
 }
