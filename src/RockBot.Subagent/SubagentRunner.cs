@@ -17,6 +17,7 @@ namespace RockBot.Subagent;
 /// </summary>
 internal sealed class SubagentRunner(
     AgentLoopRunner agentLoopRunner,
+    AgentContextBuilder agentContextBuilder,
     ILlmClient llmClient,
     ILlmTierSelector tierSelector,
     IWorkingMemory workingMemory,
@@ -27,7 +28,6 @@ internal sealed class SubagentRunner(
     IMessagePublisher publisher,
     TierRoutingLogger tierRoutingLogger,
     AgentProfile agentProfile,
-    ModelBehavior modelBehavior,
     ILogger<SubagentRunner> logger)
 {
     public async Task RunAsync(
@@ -61,8 +61,8 @@ internal sealed class SubagentRunner(
             "so the primary agent knows where to find the detailed data. " +
             "Do not return an empty or vague final response.";
 
-        // Build system prompt from profile documents. Subagents get:
-        //   soul → common-directives → subagent-directives → memory-rules → style
+        // Build subagent system prompt from profile documents:
+        //   preamble → soul → common-directives → subagent-directives → memory-rules → style
         // Common directives carry shared behavioral rules (search, resolve references,
         // execute don't narrate, etc.). Subagent directives add subagent-specific rules
         // (JSON strictness, timezone injection format). Falls back to primary directives
@@ -76,14 +76,13 @@ internal sealed class SubagentRunner(
         }.Where(d => d is not null).Select(d => d!.RawContent.TrimEnd());
         var systemPrompt = preamble + "\n\n" + string.Join("\n\n", profileDocs);
 
-        var chatMessages = new List<ChatMessage>
-        {
-            new(ChatRole.System, systemPrompt)
-        };
-
-        // Model-specific guardrails (same as primary agent)
-        if (!string.IsNullOrEmpty(modelBehavior.AdditionalSystemPrompt))
-            chatMessages.Add(new ChatMessage(ChatRole.System, modelBehavior.AdditionalSystemPrompt));
+        // Use AgentContextBuilder for the full context: system prompt, datetime, rules,
+        // model guardrails, long-term memory recall, skill/service hints, working memory.
+        // The subagent session has no conversation history, so that section is a no-op.
+        var chatMessages = await agentContextBuilder.BuildAsync(
+            subagentSessionId, description, ct,
+            workingMemoryNamespace: subagentNamespace,
+            systemPromptOverride: systemPrompt);
 
         if (!string.IsNullOrEmpty(context))
             chatMessages.Add(new ChatMessage(ChatRole.System, $"Context: {context}"));
