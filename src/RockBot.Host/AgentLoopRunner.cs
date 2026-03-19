@@ -165,9 +165,17 @@ public sealed class AgentLoopRunner(
                 reprompt, maxReprompts, reason);
 
             chatMessages.Add(new ChatMessage(ChatRole.Assistant, result.Response));
-            chatMessages.Add(new ChatMessage(ChatRole.User,
-                $"Not complete because: {reason}. Continue working on the original request. " +
-                "Use your available tools — do not claim you lack access without trying them first."));
+
+            // Build a targeted continuation nudge — if the agent claimed it lacked access,
+            // direct it to the MCP service discovery tools specifically.
+            var nudge = CapabilityDenialRegex.IsMatch(result.Response)
+                ? $"Not complete because: {reason}. You DO have access to external services. " +
+                  "Call search_known_services or mcp_list_services to discover available integrations, " +
+                  "then use mcp_invoke_tool to call the appropriate service. Do not give up without trying."
+                : $"Not complete because: {reason}. Continue working on the original request. " +
+                  "Use your available tools — do not claim you lack access without trying them first.";
+
+            chatMessages.Add(new ChatMessage(ChatRole.User, nudge));
         }
 
         // Should not be reachable, but satisfy the compiler.
