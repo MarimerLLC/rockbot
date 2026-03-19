@@ -22,8 +22,11 @@ public sealed class AgentLoopRunner(
     IFeedbackStore feedbackStore,
     AgentClock clock,
     IOptions<AgentHostOptions> hostOptions,
+    ISkillStore skillStore,
+    IEnumerable<IServiceSearchIndex> serviceSearchIndexProviders,
     ILogger<AgentLoopRunner> logger)
 {
+    private readonly IServiceSearchIndex? _serviceSearchIndex = serviceSearchIndexProviders.FirstOrDefault();
     private const int MaxConsecutiveTimeoutIterations = 2;
 
     /// <summary>
@@ -166,8 +169,14 @@ public sealed class AgentLoopRunner(
 
             chatMessages.Add(new ChatMessage(ChatRole.Assistant, result.Response));
 
-            // Build a targeted continuation nudge — if the agent claimed it lacked access,
-            // direct it to the MCP service discovery tools specifically.
+            // Enrich context: the original user prompt may not have contained keywords
+            // that match relevant skills or services (e.g. "what time do I speak tomorrow?"
+            // has no overlap with "calendar"). Search using the evaluator reason + original
+            // request combined, which WILL contain domain terms like "calendar", "email", etc.
+            await EnrichContextForRepromptAsync(
+                chatMessages, originalUserRequest, reason ?? string.Empty, cancellationToken);
+
+            // Build a targeted continuation nudge.
             var nudge = CapabilityDenialRegex.IsMatch(result.Response)
                 ? $"Not complete because: {reason}. You DO have access to external services. " +
                   "Call search_known_services or mcp_list_services to discover available integrations, " +
@@ -1066,6 +1075,84 @@ public sealed class AgentLoopRunner(
     {
         PropertyNameCaseInsensitive = true
     };
+
+    /// <summary>
+    /// On re-prompt, searches for skills and services using the evaluator reason combined
+    /// with the original request. This catches cases where the original user prompt had no
+    /// keyword overlap with relevant skills/services (e.g. "what time do I speak tomorrow?"
+    /// doesn't match "calendar"), but the evaluator reason DOES contain domain terms.
+    /// </summary>
+    private async Task EnrichContextForRepromptAsync(
+        List<ChatMessage> chatMessages,
+        string originalUserRequest,
+        string evaluatorReason,
+        CancellationToken ct)
+    {
+        // Combine original request + evaluator reason for broader BM25 matching.
+        var enrichedQuery = $"{originalUserRequest} {evaluatorReason}";
+        var injectedAny = false;
+
+        // Search for relevant skills
+        try
+        {
+            var skills = await skillStore.SearchAsync(enrichedQuery, maxResults: 3, ct);
+            if (skills.Count > 0)
+            {
+                var sb = new StringBuilder("Relevant skills for this task:\n");
+                foreach (var skill in skills)
+                {
+                    sb.AppendLine($"\n## Skill: {skill.Name}");
+                    sb.AppendLine(skill.Content);
+                }
+                chatMessages.Add(new ChatMessage(ChatRole.System, sb.ToString()));
+                logger.LogInformation(
+                    "Completion re-prompt: injected {Count} skill(s) via enriched search: {Skills}",
+                    skills.Count, string.Join(", ", skills.Select(s => s.Name)));
+                injectedAny = true;
+            }
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            logger.LogWarning(ex, "Completion re-prompt: skill search failed (non-fatal)");
+        }
+
+        // Search for relevant services (MCP servers + A2A agents)
+        if (_serviceSearchIndex is not null)
+        {
+            try
+            {
+                var candidates = _serviceSearchIndex.Search(enrichedQuery, maxResults: 3);
+                if (candidates.Count > 0)
+                {
+                    var lines = candidates.Select(c =>
+                    {
+                        var itemsLabel = c.Type == "a2a" ? "top skills" : "top tools";
+                        var items = c.TopItems.Count > 0
+                            ? $", {itemsLabel}: {string.Join(", ", c.TopItems)}"
+                            : string.Empty;
+                        return $"- {c.Id} ({c.Type}): {c.Summary}{items}";
+                    });
+                    chatMessages.Add(new ChatMessage(ChatRole.System,
+                        "Available services relevant to this task (use mcp_invoke_tool to call them):\n" +
+                        string.Join("\n", lines)));
+                    logger.LogInformation(
+                        "Completion re-prompt: injected {Count} service hint(s) via enriched search: {Services}",
+                        candidates.Count, string.Join(", ", candidates.Select(c => c.Id)));
+                    injectedAny = true;
+                }
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                logger.LogWarning(ex, "Completion re-prompt: service search failed (non-fatal)");
+            }
+        }
+
+        if (!injectedAny)
+        {
+            logger.LogInformation(
+                "Completion re-prompt: no additional skills or services found for enriched query");
+        }
+    }
 
     /// <summary>
     /// Strips &lt;think&gt; blocks and extracts the first JSON object from raw LLM output.
