@@ -72,14 +72,18 @@ internal sealed class RegisterAgentExecutor(
             }
         }
 
+        // When updating an existing agent, preserve fields that weren't provided in this call
+        // (e.g. auth config, description, skills) so a simple URL update doesn't wipe them.
+        var existing = directory.GetAgent(agentName);
+
         var card = new AgentCard
         {
             AgentName = agentName,
             Url = url,
-            Description = string.IsNullOrEmpty(description) ? null : description,
-            Skills = skills,
-            AuthHeaderName = string.IsNullOrEmpty(authHeaderName) ? null : authHeaderName,
-            AuthHeaderValueBase64 = string.IsNullOrEmpty(authHeaderValueBase64) ? null : authHeaderValueBase64
+            Description = string.IsNullOrEmpty(description) ? existing?.Description : description,
+            Skills = skills ?? existing?.Skills,
+            AuthHeaderName = string.IsNullOrEmpty(authHeaderName) ? existing?.AuthHeaderName : authHeaderName,
+            AuthHeaderValueBase64 = string.IsNullOrEmpty(authHeaderValueBase64) ? existing?.AuthHeaderValueBase64 : authHeaderValueBase64
         };
 
         directory.AddOrUpdate(card);
