@@ -1,7 +1,7 @@
 namespace RockBot.A2A;
 
 /// <summary>
-/// Read-only directory of known agents, populated by discovery broadcasts.
+/// Directory of known agents, populated by discovery broadcasts and manual registration.
 /// </summary>
 public interface IAgentDirectory
 {
@@ -14,4 +14,14 @@ public interface IAgentDirectory
     /// Used by the persistence layer and for display purposes.
     /// </summary>
     IReadOnlyList<AgentDirectoryEntry> GetAllEntries();
+
+    /// <summary>
+    /// Adds or updates an agent in the directory and schedules persistence.
+    /// </summary>
+    void AddOrUpdate(AgentCard card);
+
+    /// <summary>
+    /// Removes an agent from the directory. Well-known agents are not removed.
+    /// </summary>
+    void Remove(string agentName);
 }

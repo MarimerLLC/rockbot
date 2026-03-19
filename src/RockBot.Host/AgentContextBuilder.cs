@@ -9,7 +9,7 @@ namespace RockBot.Host;
 
 /// <summary>
 /// Builds the LLM chat message context (system prompt, history, memories, skills, working memory)
-/// for a given session and user turn. Shared by UserMessageHandler and subagent update handlers.
+/// for a given session and user turn. Shared by UserMessageHandler, ScheduledTaskHandler, and SubagentRunner.
 /// </summary>
 public sealed class AgentContextBuilder(
     ProfileHolder profileHolder,
@@ -41,16 +41,22 @@ public sealed class AgentContextBuilder(
     /// <param name="workingMemoryNamespace">
     /// The working memory namespace to inject as the own-session inventory.
     /// Defaults to <c>session/{sessionId}</c> when <c>null</c>.
-    /// Pass <c>patrol/{taskName}</c> for scheduled tasks.
+    /// Pass <c>patrol/{taskName}</c> for scheduled tasks or <c>subagent/{taskId}</c> for subagents.
+    /// </param>
+    /// <param name="systemPromptOverride">
+    /// When provided, used as the system prompt instead of building one from the agent profile.
+    /// Subagents use this to compose their own system prompt (preamble + subagent-specific profile
+    /// documents) while still getting rules, memory recall, skills, and service hints from this builder.
     /// </param>
     public async Task<List<ChatMessage>> BuildAsync(
         string sessionId,
         string currentUserContent,
         CancellationToken ct,
-        string? workingMemoryNamespace = null)
+        string? workingMemoryNamespace = null,
+        string? systemPromptOverride = null)
     {
         var profile = profileHolder.Profile;
-        var systemPrompt = promptBuilder.Build(profile, agent);
+        var systemPrompt = systemPromptOverride ?? promptBuilder.Build(profile, agent);
         var chatMessages = new List<ChatMessage>
         {
             new(ChatRole.System, systemPrompt),

@@ -124,7 +124,7 @@ internal sealed class AgentDirectory(
     // -------------------------------------------------------------------------
     // Write methods (called by AgentDiscoveryService)
 
-    internal void AddOrUpdate(AgentCard card)
+    public void AddOrUpdate(AgentCard card)
     {
         // Preserve the IsWellKnown flag and existing LlmSummary if already set —
         // live announcements update the card and last-seen time but don't demote a
@@ -141,14 +141,14 @@ internal sealed class AgentDirectory(
         ScheduleWrite();
     }
 
-    internal void SetSummary(string agentName, string summary)
+    public void SetSummary(string agentName, string summary)
     {
         if (!_agents.TryGetValue(agentName, out var existing)) return;
         _agents[agentName] = existing with { LlmSummary = summary };
         ScheduleWrite();
     }
 
-    internal void Remove(string agentName)
+    public void Remove(string agentName)
     {
         // Well-known agents are always callable — don't remove them from the directory
         // just because they sent a deregistration announcement (e.g. KEDA pod shutting down).

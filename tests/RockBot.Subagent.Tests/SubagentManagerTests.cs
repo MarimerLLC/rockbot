@@ -7,6 +7,7 @@ using RockBot.Host;
 using RockBot.Llm;
 using RockBot.Memory;
 using RockBot.Messaging;
+using RockBot.Skills;
 using RockBot.Tools;
 
 namespace RockBot.Subagent.Tests;
@@ -49,7 +50,20 @@ public class SubagentManagerTests
 
         // AgentProfile is required by SubagentRunner; provide a minimal stub.
         var stubDoc = new AgentProfileDocument("stub", null, [], "");
-        services.AddSingleton(new AgentProfile(stubDoc, stubDoc));
+        var stubProfile = new AgentProfile(stubDoc, stubDoc);
+        services.AddSingleton(stubProfile);
+
+        // ProfileHolder + AgentContextBuilder dependencies
+        var profileHolder = new ProfileHolder();
+        profileHolder.Update(stubProfile);
+        services.AddSingleton(profileHolder);
+        services.AddSingleton<ISystemPromptBuilder>(new DefaultSystemPromptBuilder(profileHolder));
+        services.AddSingleton<IRulesStore>(new NoopRulesStore());
+        services.AddSingleton<IConversationMemory>(new NoopConversationMemory());
+        services.AddSingleton<InjectedMemoryTracker>();
+        services.AddSingleton<SkillIndexTracker>();
+        services.AddSingleton<SkillRecallTracker>();
+        services.AddTransient<AgentContextBuilder>();
 
         // TierRoutingLogger requires a writable directory; point it at a temp folder
         var tmpDir = Path.Combine(Path.GetTempPath(), Path.GetRandomFileName());
@@ -339,5 +353,30 @@ public class SubagentManagerTests
             CancellationToken cancellationToken = default) => Task.CompletedTask;
 
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+    }
+
+    private sealed class NoopRulesStore : IRulesStore
+    {
+        public IReadOnlyList<string> Rules => [];
+        public Task<IReadOnlyList<string>> ListAsync() => Task.FromResult<IReadOnlyList<string>>([]);
+        public Task AddAsync(string rule) => Task.CompletedTask;
+        public Task RemoveAsync(string rule) => Task.CompletedTask;
+    }
+
+    private sealed class NoopConversationMemory : IConversationMemory
+    {
+        public Task AddTurnAsync(string sessionId, ConversationTurn turn,
+            CancellationToken cancellationToken = default) => Task.CompletedTask;
+
+        public Task<IReadOnlyList<ConversationTurn>> GetTurnsAsync(string sessionId,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult<IReadOnlyList<ConversationTurn>>([]);
+
+        public Task ClearAsync(string sessionId,
+            CancellationToken cancellationToken = default) => Task.CompletedTask;
+
+        public Task<IReadOnlyList<string>> ListSessionsAsync(
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult<IReadOnlyList<string>>([]);
     }
 }

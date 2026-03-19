@@ -3,12 +3,12 @@ using RockBot.Tools;
 namespace RockBot.A2A;
 
 /// <summary>
-/// Provides a skill guide for the A2A caller tools (invoke_agent, list_known_agents).
+/// Provides a skill guide for the A2A caller tools.
 /// </summary>
 public sealed class A2ACallerSkillProvider : IToolSkillProvider
 {
     public string Name => "a2a";
-    public string Summary => "Invoke external A2A agents by name and skill (list_known_agents, get_agent_details, invoke_agent).";
+    public string Summary => "Register, invoke, and manage external A2A agents (register_agent, unregister_agent, invoke_agent, list_known_agents, get_agent_details).";
 
     public string GetDocument() =>
         """
@@ -49,11 +49,33 @@ public sealed class A2ACallerSkillProvider : IToolSkillProvider
 
         Returns: task_id for tracking
 
+        ## register_agent
+        Register or update an HTTP-based A2A agent in the directory. The agent
+        becomes available for invoke_agent immediately and is persisted across restarts.
+        When updating an existing agent, only the provided fields are changed —
+        omitted fields (auth, description, skills) are preserved from the existing entry.
+
+        Parameters:
+        - agent_name (required): A unique name for the agent
+        - url (required): Base URL for the agent's A2A endpoint
+        - description (optional): Human-readable description
+        - skills (optional): Array of { id, name, description }
+        - auth_header_name (optional): HTTP header name for auth (e.g. "Authorization", "X-Api-Key")
+        - auth_header_value_base64 (optional): Base64-encoded header value (must pair with auth_header_name)
+
+        ## unregister_agent
+        Remove an agent from the directory. Well-known agents (statically configured)
+        cannot be removed.
+
+        Parameters:
+        - agent_name (required): The name of the agent to remove
+
         ## Usage pattern
-        1. Call list_known_agents to see what agents and skills are available
-        2. If the summary is insufficient, call get_agent_details for full skill metadata
-        3. Call invoke_agent with the desired agent_name, skill, and message
-        4. When the agent completes, a follow-up message will arrive in the
+        1. Register external agents with register_agent (URL + optional auth + skills)
+        2. Call list_known_agents to see what agents and skills are available
+        3. If the summary is insufficient, call get_agent_details for full skill metadata
+        4. Call invoke_agent with the desired agent_name, skill, and message
+        5. When the agent completes, a follow-up message will arrive in the
            conversation containing a working memory key. Call
            get_from_working_memory with that key to retrieve the full result,
            then present it to the user.

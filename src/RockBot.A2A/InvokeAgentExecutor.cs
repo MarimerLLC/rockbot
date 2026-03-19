@@ -1,10 +1,10 @@
 using System.Diagnostics;
-using System.Net.Http.Json;
 using System.Text.Json;
 using Microsoft.Extensions.Logging;
 using RockBot.Host;
 using RockBot.Messaging;
 using RockBot.Tools;
+using A2AProtocol = A2A.V0_3;
 
 namespace RockBot.A2A;
 
@@ -98,7 +98,7 @@ internal sealed class InvokeAgentExecutor(
             // DispatchHttpAsync catches all non-cancellation exceptions internally and
             // publishes an AgentTaskError to the result topic, so unobserved exceptions
             // will not be silently lost.
-            _ = Task.Run(() => DispatchHttpAsync(agentCard!.Url, agentName, taskRequest, taskId, cts.Token),
+            _ = Task.Run(() => DispatchHttpAsync(agentCard!, agentName, taskRequest, taskId, cts.Token),
                 CancellationToken.None);
         }
         else
@@ -129,7 +129,7 @@ internal sealed class InvokeAgentExecutor(
     }
 
     private async Task DispatchHttpAsync(
-        string agentUrl,
+        AgentCard agentCard,
         string agentName,
         AgentTaskRequest taskRequest,
         string taskId,
@@ -140,9 +140,19 @@ internal sealed class InvokeAgentExecutor(
         try
         {
             var httpClient = httpClientFactory.CreateClient();
-            var endpoint = agentUrl.TrimEnd('/') + "/tasks/send";
 
-            logger.LogInformation("Dispatching task {TaskId} to HTTP agent '{AgentName}' at {Endpoint}",
+            // Attach auth header if configured on the agent card
+            if (!string.IsNullOrEmpty(agentCard.AuthHeaderName) &&
+                !string.IsNullOrEmpty(agentCard.AuthHeaderValueBase64))
+            {
+                var headerValue = System.Text.Encoding.UTF8.GetString(
+                    Convert.FromBase64String(agentCard.AuthHeaderValueBase64));
+                httpClient.DefaultRequestHeaders.TryAddWithoutValidation(
+                    agentCard.AuthHeaderName, headerValue);
+            }
+
+            var endpoint = new Uri(agentCard.Url!.TrimEnd('/'));
+            logger.LogInformation("Dispatching task {TaskId} to A2A agent '{AgentName}' at {Endpoint}",
                 taskId, agentName, endpoint);
 
             using var httpActivity = A2ADiagnostics.Source.StartActivity("rockbot.a2a.http_dispatch");
@@ -150,10 +160,25 @@ internal sealed class InvokeAgentExecutor(
             httpActivity?.SetTag("rockbot.a2a.task_id", taskId);
             var httpSw = System.Diagnostics.Stopwatch.StartNew();
 
-            var response = await httpClient.PostAsJsonAsync(endpoint, taskRequest, JsonOptions, ct);
-            response.EnsureSuccessStatusCode();
+            // Use the standard A2A protocol SDK (JSON-RPC 2.0 / v0.3) for HTTP dispatch
+            var a2aClient = new A2AProtocol.A2AClient(endpoint, httpClient);
+            var messageText = taskRequest.Message.Parts.FirstOrDefault(p => p.Kind == "text")?.Text
+                ?? string.Empty;
+            var sendParams = new A2AProtocol.MessageSendParams
+            {
+                Message = new A2AProtocol.AgentMessage
+                {
+                    Role = A2AProtocol.MessageRole.User,
+                    MessageId = taskId,
+                    Parts = [new A2AProtocol.TextPart { Text = messageText }]
+                },
+                Metadata = new Dictionary<string, JsonElement>
+                {
+                    ["skill"] = JsonSerializer.SerializeToElement(taskRequest.Skill)
+                }
+            };
 
-            var result = await response.Content.ReadFromJsonAsync<AgentTaskResult>(JsonOptions, ct);
+            var a2aResponse = await a2aClient.SendMessageAsync(sendParams, ct);
 
             httpSw.Stop();
             var latencyGrade = httpSw.Elapsed.TotalSeconds > 5 ? "slow" : "fast";
@@ -162,9 +187,12 @@ internal sealed class InvokeAgentExecutor(
             A2ADiagnostics.Duration.Record(httpSw.Elapsed.TotalMilliseconds,
                 new KeyValuePair<string, object?>("rockbot.a2a.target_agent", agentName),
                 new KeyValuePair<string, object?>("rockbot.a2a.latency_grade", latencyGrade));
+
+            // Map the A2A protocol response back to RockBot's internal types
+            var result = MapA2AResponse(a2aResponse, taskId);
             if (result is null)
             {
-                logger.LogWarning("HTTP agent '{AgentName}' returned null result for task {TaskId}",
+                logger.LogWarning("A2A agent '{AgentName}' returned no usable result for task {TaskId}",
                     agentName, taskId);
 
                 var errorResult = new AgentTaskError
@@ -185,22 +213,39 @@ internal sealed class InvokeAgentExecutor(
                 correlationId: taskId);
             await publisher.PublishAsync(replyTo, resultEnvelope, CancellationToken.None);
 
-            logger.LogInformation("HTTP task {TaskId} completed (state={State})", taskId, result.State);
+            logger.LogInformation("A2A task {TaskId} completed (state={State})", taskId, result.State);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
-            logger.LogInformation("HTTP task {TaskId} to agent '{AgentName}' was cancelled", taskId, agentName);
+            logger.LogInformation("A2A task {TaskId} to agent '{AgentName}' was cancelled", taskId, agentName);
+        }
+        catch (A2AProtocol.A2AException a2aEx)
+        {
+            logger.LogError(a2aEx, "A2A protocol error for task {TaskId} to agent '{AgentName}' (code={ErrorCode})",
+                taskId, agentName, a2aEx.ErrorCode);
+
+            var error = new AgentTaskError
+            {
+                TaskId = taskId,
+                Code = AgentTaskError.Codes.ExecutionFailed,
+                Message = $"A2A protocol error ({a2aEx.ErrorCode}): {a2aEx.Message}",
+                IsRetryable = false
+            };
+            var errorEnvelope = error.ToEnvelope<AgentTaskError>(
+                source: agentName,
+                correlationId: taskId);
+            await publisher.PublishAsync(replyTo, errorEnvelope, CancellationToken.None);
         }
         catch (Exception ex)
         {
-            logger.LogError(ex, "HTTP dispatch failed for task {TaskId} to agent '{AgentName}'",
+            logger.LogError(ex, "A2A dispatch failed for task {TaskId} to agent '{AgentName}'",
                 taskId, agentName);
 
             var error = new AgentTaskError
             {
                 TaskId = taskId,
                 Code = AgentTaskError.Codes.ExecutionFailed,
-                Message = $"HTTP dispatch failed: {ex.Message}",
+                Message = $"A2A dispatch failed: {ex.Message}",
                 IsRetryable = false
             };
             var errorEnvelope = error.ToEnvelope<AgentTaskError>(
@@ -209,6 +254,59 @@ internal sealed class InvokeAgentExecutor(
             await publisher.PublishAsync(replyTo, errorEnvelope, CancellationToken.None);
         }
     }
+
+    /// <summary>
+    /// Maps an A2A protocol SDK response to RockBot's internal <see cref="AgentTaskResult"/>.
+    /// The V0.3 response is polymorphic: either an <see cref="A2AProtocol.AgentMessage"/>
+    /// (immediate reply) or an <see cref="A2AProtocol.AgentTask"/> (task with status).
+    /// </summary>
+    private static AgentTaskResult? MapA2AResponse(A2AProtocol.A2AResponse response, string taskId)
+    {
+        if (response is A2AProtocol.AgentMessage msg)
+        {
+            return new AgentTaskResult
+            {
+                TaskId = taskId,
+                State = AgentTaskState.Completed,
+                Message = MapMessage(msg)
+            };
+        }
+
+        if (response is A2AProtocol.AgentTask task)
+        {
+            var state = task.Status.State switch
+            {
+                A2AProtocol.TaskState.Completed => AgentTaskState.Completed,
+                A2AProtocol.TaskState.Failed => AgentTaskState.Failed,
+                A2AProtocol.TaskState.Canceled => AgentTaskState.Canceled,
+                A2AProtocol.TaskState.Working => AgentTaskState.Working,
+                A2AProtocol.TaskState.InputRequired => AgentTaskState.InputRequired,
+                A2AProtocol.TaskState.Submitted => AgentTaskState.Submitted,
+                _ => AgentTaskState.Completed
+            };
+
+            return new AgentTaskResult
+            {
+                TaskId = taskId,
+                ContextId = task.ContextId,
+                State = state,
+                Message = task.Status.Message is { } statusMsg ? MapMessage(statusMsg) : null
+            };
+        }
+
+        return null;
+    }
+
+    private static AgentMessage MapMessage(A2AProtocol.AgentMessage msg) => new()
+    {
+        Role = msg.Role == A2AProtocol.MessageRole.Agent ? "assistant" : "user",
+        Parts = msg.Parts.Select(p => new AgentMessagePart
+        {
+            Kind = p is A2AProtocol.TextPart ? "text" : "data",
+            Text = p is A2AProtocol.TextPart tp ? tp.Text : null,
+            Data = p is A2AProtocol.DataPart dp ? JsonSerializer.Serialize(dp.Data) : null
+        }).ToList()
+    };
 
     private static ToolInvokeResponse Error(ToolInvokeRequest req, string msg) =>
         new() { ToolCallId = req.ToolCallId, ToolName = req.ToolName, Content = msg, IsError = true };

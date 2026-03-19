@@ -61,6 +61,7 @@ internal sealed class GetAgentDetailsExecutor(IAgentDirectory directory) : ITool
             description = entry.Card.Description,
             version = entry.Card.Version,
             url = entry.Card.Url,
+            hasAuth = !string.IsNullOrEmpty(entry.Card.AuthHeaderName),
             isWellKnown = entry.IsWellKnown,
             lastSeen,
             skills = entry.Card.Skills?.Select(s => new
