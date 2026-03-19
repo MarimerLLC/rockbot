@@ -85,6 +85,10 @@ public sealed class AgentLoopRunner(
         // automatically, so individual agents don't need to manage it.
         EnsureDateTimeContext(chatMessages);
 
+        // Inject reasoning scaffolding so the model knows its iteration budget and is
+        // encouraged to plan before acting rather than stopping after a single tool call.
+        InjectReasoningScaffolding(chatMessages);
+
         if (modelBehavior.UseTextBasedToolCalling)
         {
             return await RunTextBasedLoopAsync(
@@ -141,6 +145,49 @@ public sealed class AgentLoopRunner(
 
         // Not already present — insert after the first system message (or at 0 if none)
         var insertAt = chatMessages.Count > 0 && chatMessages[0].Role == ChatRole.System ? 1 : 0;
+        chatMessages.Insert(insertAt, new ChatMessage(ChatRole.System, text));
+    }
+
+    private const string ReasoningScaffoldingMarker = "You have up to ";
+
+    /// <summary>
+    /// Injects a system message that tells the model its iteration budget and encourages
+    /// step-by-step reasoning before acting. Placed just before the final user message
+    /// for maximum visibility in the model's context window. Idempotent — skips if already
+    /// present (e.g. when RunAsync is called with a pre-built message list that already
+    /// went through this path).
+    /// </summary>
+    private void InjectReasoningScaffolding(List<ChatMessage> chatMessages)
+    {
+        // Don't inject twice.
+        for (var i = 0; i < chatMessages.Count; i++)
+        {
+            if (chatMessages[i].Role == ChatRole.System &&
+                chatMessages[i].Text?.StartsWith(ReasoningScaffoldingMarker) == true)
+                return;
+        }
+
+        var maxIterations = modelBehavior.MaxToolIterationsOverride ?? hostOptions.Value.MaxToolIterations;
+
+        var text =
+            $"You have up to {maxIterations} tool-calling iterations available for this request. " +
+            "Do not stop after one tool call if more work remains — after each result, assess whether " +
+            "the task is fully complete, and if not, continue to the next step.\n\n" +
+            "Before acting, think through what steps are needed to fully complete the request, then " +
+            "execute them one by one without narrating your plan.";
+
+        // Insert just before the final user message for recency in the context window.
+        // Falls back to end-of-list if no user message is found.
+        var insertAt = chatMessages.Count;
+        for (var i = chatMessages.Count - 1; i >= 0; i--)
+        {
+            if (chatMessages[i].Role == ChatRole.User)
+            {
+                insertAt = i;
+                break;
+            }
+        }
+
         chatMessages.Insert(insertAt, new ChatMessage(ChatRole.System, text));
     }
 
