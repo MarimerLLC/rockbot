@@ -106,6 +106,10 @@ internal sealed class A2ACallerToolRegistrar(
             "auth_header_value_base64": {
               "type": "string",
               "description": "Base64-encoded value for the auth header (e.g. base64 of 'Bearer sk-...'). Must be provided with auth_header_name."
+            },
+            "protocol_version": {
+              "type": "string",
+              "description": "A2A protocol version (e.g. '0.3', '1.0'). If omitted, auto-detected from the agent's well-known card endpoint."
             }
           },
           "required": ["agent_name", "url"]
@@ -169,7 +173,7 @@ internal sealed class A2ACallerToolRegistrar(
                           "The agent is persisted and available for invoke_agent immediately.",
             ParametersSchema = RegisterAgentSchema,
             Source = "a2a"
-        }, new RegisterAgentExecutor(directory, loggerFactory.CreateLogger<RegisterAgentExecutor>()));
+        }, new RegisterAgentExecutor(directory, httpClientFactory, loggerFactory.CreateLogger<RegisterAgentExecutor>()));
         registrarLogger.LogInformation("Registered tool: register_agent");
 
         registry.Register(new ToolRegistration

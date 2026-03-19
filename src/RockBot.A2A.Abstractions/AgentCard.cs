@@ -32,6 +32,14 @@ public sealed record AgentCard
     public string? AuthHeaderValueBase64 { get; init; }
 
     /// <summary>
+    /// A2A protocol version advertised by the agent (e.g. "0.3", "1.0").
+    /// Null defaults to "0.3" for backward compatibility.
+    /// Set automatically by <c>RegisterAgentExecutor</c> when fetching
+    /// a remote agent card, or explicitly when registering.
+    /// </summary>
+    public string? ProtocolVersion { get; init; }
+
+    /// <summary>
     /// When true, the agent is shutting down and should be removed from the directory.
     /// Published by <c>AgentDiscoveryService.StopAsync</c> on graceful shutdown.
     /// </summary>

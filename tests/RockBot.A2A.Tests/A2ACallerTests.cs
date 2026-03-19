@@ -2,6 +2,8 @@ using Microsoft.Extensions.Logging.Abstractions;
 using RockBot.Host;
 using RockBot.Messaging;
 using RockBot.Tools;
+using A2AV1 = A2A;
+using A2AV03 = A2A.V0_3;
 
 namespace RockBot.A2A.Tests;
 
@@ -280,6 +282,218 @@ public class A2ACallerTests
         }
 
         Assert.AreEqual(3, tracker.ListActive().Count);
+    }
+
+    // ─── Protocol version detection ────────────────────────────────────────────
+
+    [TestMethod]
+    public void IsV1_ReturnsTrue_WhenProtocolVersionIs1()
+    {
+        var card = new AgentCard { AgentName = "a", ProtocolVersion = "1.0" };
+        Assert.IsTrue(InvokeAgentExecutor.IsV1(card));
+    }
+
+    [TestMethod]
+    public void IsV1_ReturnsTrue_WhenProtocolVersionIs1_NoMinor()
+    {
+        var card = new AgentCard { AgentName = "a", ProtocolVersion = "1" };
+        Assert.IsTrue(InvokeAgentExecutor.IsV1(card));
+    }
+
+    [TestMethod]
+    public void IsV1_ReturnsTrue_WhenProtocolVersionIs1_1()
+    {
+        var card = new AgentCard { AgentName = "a", ProtocolVersion = "1.1" };
+        Assert.IsTrue(InvokeAgentExecutor.IsV1(card));
+    }
+
+    [TestMethod]
+    public void IsV1_ReturnsFalse_WhenProtocolVersionIs03()
+    {
+        var card = new AgentCard { AgentName = "a", ProtocolVersion = "0.3" };
+        Assert.IsFalse(InvokeAgentExecutor.IsV1(card));
+    }
+
+    [TestMethod]
+    public void IsV1_ReturnsFalse_WhenProtocolVersionIsNull()
+    {
+        var card = new AgentCard { AgentName = "a" };
+        Assert.IsFalse(InvokeAgentExecutor.IsV1(card));
+    }
+
+    [TestMethod]
+    public void IsV1_ReturnsFalse_WhenCardIsNull()
+    {
+        Assert.IsFalse(InvokeAgentExecutor.IsV1(null));
+    }
+
+    [TestMethod]
+    public void InvokeAgentExecutor_UsesQueueTransport_WhenUrlIsNullRegardlessOfVersion()
+    {
+        // Even if ProtocolVersion is 1.0, queue transport should be used when no URL is set
+        var directory = new AgentDirectory(
+            new A2AOptions { DirectoryPersistencePath = string.Empty },
+            NullLogger<AgentDirectory>.Instance);
+        directory.AddOrUpdate(new AgentCard
+        {
+            AgentName = "QueueAgent",
+            ProtocolVersion = "1.0"
+        });
+
+        var publisher = new TrackingPublisher();
+        var tracker = new A2ATaskTracker();
+        var executor = BuildExecutor(publisher, tracker, directory: directory);
+
+        var request = BuildToolRequest("""
+            { "agent_name": "QueueAgent", "skill": "chat", "message": "Hello." }
+            """);
+
+        var response = executor.ExecuteAsync(request, CancellationToken.None).Result;
+
+        Assert.IsFalse(response.IsError);
+        // Should publish to queue, not HTTP
+        Assert.AreEqual(1, publisher.Published.Count);
+        Assert.AreEqual("agent.task.QueueAgent", publisher.Published[0].Topic);
+    }
+
+    // ─── V1 response mapping ────────────────────────────────────────────────────
+
+    [TestMethod]
+    public void MapV1Response_MapsMessageResponse_ToCompleted()
+    {
+        var response = new A2AV1.SendMessageResponse
+        {
+            Message = new A2AV1.Message
+            {
+                Role = A2AV1.Role.Agent,
+                Parts = [new A2AV1.Part { Text = "Hello from v1" }]
+            }
+        };
+
+        var result = InvokeAgentExecutor.MapV1Response(response, "task-1");
+
+        Assert.IsNotNull(result);
+        Assert.AreEqual("task-1", result.TaskId);
+        Assert.AreEqual(AgentTaskState.Completed, result.State);
+        Assert.IsNotNull(result.Message);
+        Assert.AreEqual("assistant", result.Message.Role);
+        Assert.AreEqual("Hello from v1", result.Message.Parts[0].Text);
+    }
+
+    [TestMethod]
+    public void MapV1Response_MapsTaskResponse_ToCorrectState()
+    {
+        var response = new A2AV1.SendMessageResponse
+        {
+            Task = new A2AV1.AgentTask
+            {
+                Id = "task-2",
+                ContextId = "ctx-1",
+                Status = new A2AV1.TaskStatus
+                {
+                    State = A2AV1.TaskState.Working,
+                    Message = new A2AV1.Message
+                    {
+                        Role = A2AV1.Role.Agent,
+                        Parts = [new A2AV1.Part { Text = "Still processing" }]
+                    }
+                }
+            }
+        };
+
+        var result = InvokeAgentExecutor.MapV1Response(response, "task-2");
+
+        Assert.IsNotNull(result);
+        Assert.AreEqual("task-2", result.TaskId);
+        Assert.AreEqual("ctx-1", result.ContextId);
+        Assert.AreEqual(AgentTaskState.Working, result.State);
+        Assert.AreEqual("Still processing", result.Message?.Parts[0].Text);
+    }
+
+    [TestMethod]
+    public void MapV1Response_MapsRejected_ToFailed()
+    {
+        var response = new A2AV1.SendMessageResponse
+        {
+            Task = new A2AV1.AgentTask
+            {
+                Id = "task-3",
+                Status = new A2AV1.TaskStatus { State = A2AV1.TaskState.Rejected }
+            }
+        };
+
+        var result = InvokeAgentExecutor.MapV1Response(response, "task-3");
+
+        Assert.IsNotNull(result);
+        Assert.AreEqual(AgentTaskState.Failed, result.State);
+    }
+
+    [TestMethod]
+    public void MapV1Response_MapsAuthRequired_ToInputRequired()
+    {
+        var response = new A2AV1.SendMessageResponse
+        {
+            Task = new A2AV1.AgentTask
+            {
+                Id = "task-4",
+                Status = new A2AV1.TaskStatus { State = A2AV1.TaskState.AuthRequired }
+            }
+        };
+
+        var result = InvokeAgentExecutor.MapV1Response(response, "task-4");
+
+        Assert.IsNotNull(result);
+        Assert.AreEqual(AgentTaskState.InputRequired, result.State);
+    }
+
+    [TestMethod]
+    public void MapV1Response_ReturnsNull_WhenPayloadCaseIsNone()
+    {
+        var response = new A2AV1.SendMessageResponse();
+
+        var result = InvokeAgentExecutor.MapV1Response(response, "task-5");
+
+        Assert.IsNull(result);
+    }
+
+    // ─── V0.3 response mapping ──────────────────────────────────────────────────
+
+    [TestMethod]
+    public void MapV03Response_MapsAgentMessage_ToCompleted()
+    {
+        var response = (A2AV03.A2AResponse)new A2AV03.AgentMessage
+        {
+            Role = A2AV03.MessageRole.Agent,
+            Parts = [new A2AV03.TextPart { Text = "Done v0.3" }]
+        };
+
+        var result = InvokeAgentExecutor.MapV03Response(response, "task-6");
+
+        Assert.IsNotNull(result);
+        Assert.AreEqual(AgentTaskState.Completed, result.State);
+        Assert.AreEqual("assistant", result.Message?.Role);
+        Assert.AreEqual("Done v0.3", result.Message?.Parts[0].Text);
+    }
+
+    // ─── AgentCard ProtocolVersion persistence ──────────────────────────────────
+
+    [TestMethod]
+    public void AgentCard_ProtocolVersion_IsPreservedInDirectory()
+    {
+        var directory = new AgentDirectory(
+            new A2AOptions { DirectoryPersistencePath = string.Empty },
+            NullLogger<AgentDirectory>.Instance);
+
+        directory.AddOrUpdate(new AgentCard
+        {
+            AgentName = "V1Agent",
+            Url = "http://localhost:5000",
+            ProtocolVersion = "1.0"
+        });
+
+        var card = directory.GetAgent("V1Agent");
+        Assert.IsNotNull(card);
+        Assert.AreEqual("1.0", card.ProtocolVersion);
     }
 
     // ─── A2ATaskStatusHandler ────────────────────────────────────────────────────
