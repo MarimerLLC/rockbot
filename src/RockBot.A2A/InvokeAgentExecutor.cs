@@ -4,7 +4,8 @@ using Microsoft.Extensions.Logging;
 using RockBot.Host;
 using RockBot.Messaging;
 using RockBot.Tools;
-using A2AProtocol = A2A.V0_3;
+using A2AV03 = A2A.V0_3;
+using A2AV1 = A2A;
 
 namespace RockBot.A2A;
 
@@ -13,6 +14,8 @@ namespace RockBot.A2A;
 /// pending task in <see cref="A2ATaskTracker"/>. Returns the task ID immediately.
 /// Supports both queue-based (RabbitMQ) and HTTP-based transport. HTTP transport is
 /// used when the target agent's <see cref="AgentCard"/> has a non-empty <c>Url</c>.
+/// Protocol version is detected from <see cref="AgentCard.ProtocolVersion"/>:
+/// "1.0" uses the A2A v1 SDK, anything else (including null) uses v0.3.
 /// </summary>
 internal sealed class InvokeAgentExecutor(
     IMessagePublisher publisher,
@@ -28,6 +31,13 @@ internal sealed class InvokeAgentExecutor(
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
         PropertyNameCaseInsensitive = true
     };
+
+    /// <summary>
+    /// Returns true when the agent card indicates A2A protocol v1.
+    /// </summary>
+    internal static bool IsV1(AgentCard? card) =>
+        card?.ProtocolVersion is { } v &&
+        (v.StartsWith("1.", StringComparison.Ordinal) || v == "1");
 
     public async Task<ToolInvokeResponse> ExecuteAsync(ToolInvokeRequest request, CancellationToken ct)
     {
@@ -86,12 +96,14 @@ internal sealed class InvokeAgentExecutor(
         // Prefer HTTP transport when the agent has a URL registered.
         var agentCard = directory.GetAgent(agentName);
         var protocol = !string.IsNullOrEmpty(agentCard?.Url) ? "http" : "queue";
+        var a2aVersion = IsV1(agentCard) ? "1.0" : "0.3";
 
         using var a2aActivity = A2ADiagnostics.Source.StartActivity("rockbot.a2a.invoke");
         a2aActivity?.SetTag("rockbot.a2a.target_agent", agentName);
         a2aActivity?.SetTag("rockbot.a2a.skill", skill);
         a2aActivity?.SetTag("rockbot.a2a.task_id", taskId);
         a2aActivity?.SetTag("rockbot.a2a.protocol", protocol);
+        a2aActivity?.SetTag("rockbot.a2a.a2a_version", a2aVersion);
 
         if (protocol == "http")
         {
@@ -152,33 +164,25 @@ internal sealed class InvokeAgentExecutor(
             }
 
             var endpoint = new Uri(agentCard.Url!.TrimEnd('/'));
-            logger.LogInformation("Dispatching task {TaskId} to A2A agent '{AgentName}' at {Endpoint}",
-                taskId, agentName, endpoint);
+            var useV1 = IsV1(agentCard);
+            logger.LogInformation(
+                "Dispatching task {TaskId} to A2A agent '{AgentName}' at {Endpoint} (protocol={Version})",
+                taskId, agentName, endpoint, useV1 ? "v1" : "v0.3");
 
             using var httpActivity = A2ADiagnostics.Source.StartActivity("rockbot.a2a.http_dispatch");
             httpActivity?.SetTag("rockbot.a2a.target_agent", agentName);
             httpActivity?.SetTag("rockbot.a2a.task_id", taskId);
+            httpActivity?.SetTag("rockbot.a2a.a2a_version", useV1 ? "1.0" : "0.3");
             var httpSw = System.Diagnostics.Stopwatch.StartNew();
 
-            // Use the standard A2A protocol SDK (JSON-RPC 2.0 / v0.3) for HTTP dispatch
-            var a2aClient = new A2AProtocol.A2AClient(endpoint, httpClient);
             var messageText = taskRequest.Message.Parts.FirstOrDefault(p => p.Kind == "text")?.Text
                 ?? string.Empty;
-            var sendParams = new A2AProtocol.MessageSendParams
-            {
-                Message = new A2AProtocol.AgentMessage
-                {
-                    Role = A2AProtocol.MessageRole.User,
-                    MessageId = taskId,
-                    Parts = [new A2AProtocol.TextPart { Text = messageText }]
-                },
-                Metadata = new Dictionary<string, JsonElement>
-                {
-                    ["skill"] = JsonSerializer.SerializeToElement(taskRequest.Skill)
-                }
-            };
 
-            var a2aResponse = await a2aClient.SendMessageAsync(sendParams, ct);
+            AgentTaskResult? result;
+            if (useV1)
+                result = await DispatchV1Async(httpClient, endpoint, taskRequest, taskId, messageText, ct);
+            else
+                result = await DispatchV03Async(httpClient, endpoint, taskRequest, taskId, messageText, ct);
 
             httpSw.Stop();
             var latencyGrade = httpSw.Elapsed.TotalSeconds > 5 ? "slow" : "fast";
@@ -188,8 +192,6 @@ internal sealed class InvokeAgentExecutor(
                 new KeyValuePair<string, object?>("rockbot.a2a.target_agent", agentName),
                 new KeyValuePair<string, object?>("rockbot.a2a.latency_grade", latencyGrade));
 
-            // Map the A2A protocol response back to RockBot's internal types
-            var result = MapA2AResponse(a2aResponse, taskId);
             if (result is null)
             {
                 logger.LogWarning("A2A agent '{AgentName}' returned no usable result for task {TaskId}",
@@ -219,9 +221,26 @@ internal sealed class InvokeAgentExecutor(
         {
             logger.LogInformation("A2A task {TaskId} to agent '{AgentName}' was cancelled", taskId, agentName);
         }
-        catch (A2AProtocol.A2AException a2aEx)
+        catch (A2AV03.A2AException a2aEx)
         {
-            logger.LogError(a2aEx, "A2A protocol error for task {TaskId} to agent '{AgentName}' (code={ErrorCode})",
+            logger.LogError(a2aEx, "A2A v0.3 protocol error for task {TaskId} to agent '{AgentName}' (code={ErrorCode})",
+                taskId, agentName, a2aEx.ErrorCode);
+
+            var error = new AgentTaskError
+            {
+                TaskId = taskId,
+                Code = AgentTaskError.Codes.ExecutionFailed,
+                Message = $"A2A protocol error ({a2aEx.ErrorCode}): {a2aEx.Message}",
+                IsRetryable = false
+            };
+            var errorEnvelope = error.ToEnvelope<AgentTaskError>(
+                source: agentName,
+                correlationId: taskId);
+            await publisher.PublishAsync(replyTo, errorEnvelope, CancellationToken.None);
+        }
+        catch (A2AV1.A2AException a2aEx)
+        {
+            logger.LogError(a2aEx, "A2A v1 protocol error for task {TaskId} to agent '{AgentName}' (code={ErrorCode})",
                 taskId, agentName, a2aEx.ErrorCode);
 
             var error = new AgentTaskError
@@ -255,33 +274,62 @@ internal sealed class InvokeAgentExecutor(
         }
     }
 
-    /// <summary>
-    /// Maps an A2A protocol SDK response to RockBot's internal <see cref="AgentTaskResult"/>.
-    /// The V0.3 response is polymorphic: either an <see cref="A2AProtocol.AgentMessage"/>
-    /// (immediate reply) or an <see cref="A2AProtocol.AgentTask"/> (task with status).
-    /// </summary>
-    private static AgentTaskResult? MapA2AResponse(A2AProtocol.A2AResponse response, string taskId)
+    // ── V0.3 dispatch ────────────────────────────────────────────────────────────
+
+    private static async Task<AgentTaskResult?> DispatchV03Async(
+        HttpClient httpClient,
+        Uri endpoint,
+        AgentTaskRequest taskRequest,
+        string taskId,
+        string messageText,
+        CancellationToken ct)
     {
-        if (response is A2AProtocol.AgentMessage msg)
+        var a2aClient = new A2AV03.A2AClient(endpoint, httpClient);
+        var sendParams = new A2AV03.MessageSendParams
+        {
+            Message = new A2AV03.AgentMessage
+            {
+                Role = A2AV03.MessageRole.User,
+                MessageId = taskId,
+                Parts = [new A2AV03.TextPart { Text = messageText }]
+            },
+            Metadata = new Dictionary<string, JsonElement>
+            {
+                ["skill"] = JsonSerializer.SerializeToElement(taskRequest.Skill)
+            }
+        };
+
+        var a2aResponse = await a2aClient.SendMessageAsync(sendParams, ct);
+        return MapV03Response(a2aResponse, taskId);
+    }
+
+    /// <summary>
+    /// Maps an A2A v0.3 protocol SDK response to RockBot's internal <see cref="AgentTaskResult"/>.
+    /// The V0.3 response is polymorphic: either an <see cref="A2AV03.AgentMessage"/>
+    /// (immediate reply) or an <see cref="A2AV03.AgentTask"/> (task with status).
+    /// </summary>
+    internal static AgentTaskResult? MapV03Response(A2AV03.A2AResponse response, string taskId)
+    {
+        if (response is A2AV03.AgentMessage msg)
         {
             return new AgentTaskResult
             {
                 TaskId = taskId,
                 State = AgentTaskState.Completed,
-                Message = MapMessage(msg)
+                Message = MapV03Message(msg)
             };
         }
 
-        if (response is A2AProtocol.AgentTask task)
+        if (response is A2AV03.AgentTask task)
         {
             var state = task.Status.State switch
             {
-                A2AProtocol.TaskState.Completed => AgentTaskState.Completed,
-                A2AProtocol.TaskState.Failed => AgentTaskState.Failed,
-                A2AProtocol.TaskState.Canceled => AgentTaskState.Canceled,
-                A2AProtocol.TaskState.Working => AgentTaskState.Working,
-                A2AProtocol.TaskState.InputRequired => AgentTaskState.InputRequired,
-                A2AProtocol.TaskState.Submitted => AgentTaskState.Submitted,
+                A2AV03.TaskState.Completed => AgentTaskState.Completed,
+                A2AV03.TaskState.Failed => AgentTaskState.Failed,
+                A2AV03.TaskState.Canceled => AgentTaskState.Canceled,
+                A2AV03.TaskState.Working => AgentTaskState.Working,
+                A2AV03.TaskState.InputRequired => AgentTaskState.InputRequired,
+                A2AV03.TaskState.Submitted => AgentTaskState.Submitted,
                 _ => AgentTaskState.Completed
             };
 
@@ -290,21 +338,105 @@ internal sealed class InvokeAgentExecutor(
                 TaskId = taskId,
                 ContextId = task.ContextId,
                 State = state,
-                Message = task.Status.Message is { } statusMsg ? MapMessage(statusMsg) : null
+                Message = task.Status.Message is { } statusMsg ? MapV03Message(statusMsg) : null
             };
         }
 
         return null;
     }
 
-    private static AgentMessage MapMessage(A2AProtocol.AgentMessage msg) => new()
+    private static AgentMessage MapV03Message(A2AV03.AgentMessage msg) => new()
     {
-        Role = msg.Role == A2AProtocol.MessageRole.Agent ? "assistant" : "user",
+        Role = msg.Role == A2AV03.MessageRole.Agent ? "assistant" : "user",
         Parts = msg.Parts.Select(p => new AgentMessagePart
         {
-            Kind = p is A2AProtocol.TextPart ? "text" : "data",
-            Text = p is A2AProtocol.TextPart tp ? tp.Text : null,
-            Data = p is A2AProtocol.DataPart dp ? JsonSerializer.Serialize(dp.Data) : null
+            Kind = p is A2AV03.TextPart ? "text" : "data",
+            Text = p is A2AV03.TextPart tp ? tp.Text : null,
+            Data = p is A2AV03.DataPart dp ? JsonSerializer.Serialize(dp.Data) : null
+        }).ToList()
+    };
+
+    // ── V1 dispatch ──────────────────────────────────────────────────────────────
+
+    private static async Task<AgentTaskResult?> DispatchV1Async(
+        HttpClient httpClient,
+        Uri endpoint,
+        AgentTaskRequest taskRequest,
+        string taskId,
+        string messageText,
+        CancellationToken ct)
+    {
+        var a2aClient = new A2AV1.A2AClient(endpoint, httpClient);
+        var sendRequest = new A2AV1.SendMessageRequest
+        {
+            Message = new A2AV1.Message
+            {
+                Role = A2AV1.Role.User,
+                MessageId = taskId,
+                Parts = [new A2AV1.Part { Text = messageText }]
+            },
+            Metadata = new Dictionary<string, JsonElement>
+            {
+                ["skill"] = JsonSerializer.SerializeToElement(taskRequest.Skill)
+            }
+        };
+
+        var a2aResponse = await a2aClient.SendMessageAsync(sendRequest, ct);
+        return MapV1Response(a2aResponse, taskId);
+    }
+
+    /// <summary>
+    /// Maps an A2A v1 protocol SDK response to RockBot's internal <see cref="AgentTaskResult"/>.
+    /// The V1 response uses <see cref="A2AV1.SendMessageResponseCase"/> to discriminate
+    /// between a <see cref="A2AV1.Message"/> and an <see cref="A2AV1.AgentTask"/>.
+    /// </summary>
+    internal static AgentTaskResult? MapV1Response(A2AV1.SendMessageResponse response, string taskId)
+    {
+        switch (response.PayloadCase)
+        {
+            case A2AV1.SendMessageResponseCase.Message when response.Message is { } msg:
+                return new AgentTaskResult
+                {
+                    TaskId = taskId,
+                    State = AgentTaskState.Completed,
+                    Message = MapV1Message(msg)
+                };
+
+            case A2AV1.SendMessageResponseCase.Task when response.Task is { } task:
+                var state = task.Status.State switch
+                {
+                    A2AV1.TaskState.Completed => AgentTaskState.Completed,
+                    A2AV1.TaskState.Failed => AgentTaskState.Failed,
+                    A2AV1.TaskState.Canceled => AgentTaskState.Canceled,
+                    A2AV1.TaskState.Working => AgentTaskState.Working,
+                    A2AV1.TaskState.InputRequired => AgentTaskState.InputRequired,
+                    A2AV1.TaskState.Submitted => AgentTaskState.Submitted,
+                    A2AV1.TaskState.Rejected => AgentTaskState.Failed,
+                    A2AV1.TaskState.AuthRequired => AgentTaskState.InputRequired,
+                    _ => AgentTaskState.Completed
+                };
+
+                return new AgentTaskResult
+                {
+                    TaskId = taskId,
+                    ContextId = task.ContextId,
+                    State = state,
+                    Message = task.Status.Message is { } statusMsg ? MapV1Message(statusMsg) : null
+                };
+
+            default:
+                return null;
+        }
+    }
+
+    private static AgentMessage MapV1Message(A2AV1.Message msg) => new()
+    {
+        Role = msg.Role == A2AV1.Role.Agent ? "assistant" : "user",
+        Parts = msg.Parts.Select(p => new AgentMessagePart
+        {
+            Kind = p.ContentCase == A2AV1.PartContentCase.Text ? "text" : "data",
+            Text = p.ContentCase == A2AV1.PartContentCase.Text ? p.Text : null,
+            Data = p.ContentCase == A2AV1.PartContentCase.Data ? JsonSerializer.Serialize(p.Data) : null
         }).ToList()
     };
 

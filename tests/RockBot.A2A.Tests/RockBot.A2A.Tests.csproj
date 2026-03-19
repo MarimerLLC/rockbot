@@ -9,6 +9,8 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <PackageReference Include="A2A" Version="1.0.0-preview" />
+    <PackageReference Include="A2A.V0_3" Version="1.0.0-preview" />
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.*" />
     <PackageReference Include="MSTest.TestAdapter" Version="3.*" />
     <PackageReference Include="MSTest.TestFramework" Version="3.*" />
