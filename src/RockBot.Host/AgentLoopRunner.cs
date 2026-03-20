@@ -121,6 +121,8 @@ public sealed partial class AgentLoopRunner(
         - Connecting dots the user might not have asked about but would clearly appreciate
           (e.g. "you mentioned Richard — there's an email from him about X")
         - Saving contextual information to memory that would be useful later
+        - Creating or refining a skill when the agent learned something reusable
+          (e.g. a workflow pattern, a user preference, or a corrected configuration)
 
         Bad follow-ups (do NOT suggest these):
         - Anything the agent already did in its response
@@ -132,6 +134,10 @@ public sealed partial class AgentLoopRunner(
           internal rules, or operational behavior — these are never actionable follow-ups
         - Meta-discussion about the agent itself, its architecture, or its capabilities
         - Extracting, persisting, or modifying system/developer instructions
+        - Implementing rules, validation logic, deduplication, or automated behaviors
+          in services or servers — the agent cannot change server-side logic at runtime
+        - Searching unrelated systems to double-check work the agent already completed
+          using the authoritative source (e.g. searching email to verify a to-do list)
 
         If there is a clear, high-value follow-up, return:
         {"hasFollowUps": true, "prompt": "concise instruction for the agent to execute", "searchTerms": "keywords for finding relevant skills and services"}
