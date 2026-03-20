@@ -21,9 +21,9 @@ public sealed class AgentHostOptions
     /// Maximum number of times the completion evaluator can re-prompt the agent when it
     /// determines the task is incomplete. Set to 0 to disable completion evaluation entirely.
     /// Individual models may override this via <c>ModelBehavior.MaxCompletionRepromptsOverride</c>.
-    /// Defaults to 2.
+    /// Defaults to 1.
     /// </summary>
-    public int MaxCompletionReprompts { get; set; } = 2;
+    public int MaxCompletionReprompts { get; set; } = 1;
 
     /// <summary>
     /// Maximum number of proactive follow-up passes the agent can take after completing

@@ -112,31 +112,52 @@ public sealed partial class AgentLoopRunner(
     private const string FollowUpEvaluatorPrompt =
         """
         You are a proactive-opportunity evaluator for a personal AI assistant. The agent
-        just completed the user's request. Your job is to identify ONE high-value follow-up
-        action the agent could take proactively within the current context.
+        just completed the user's request. Your job is to decide whether ONE high-value
+        follow-up action is warranted based on the user's ORIGINAL intent.
 
-        Good follow-ups:
-        - Looking up or creating a profile for a person mentioned in conversation
-        - Cross-referencing calendar, email, or contacts when a person or event is discussed
-        - Connecting dots the user might not have asked about but would clearly appreciate
-          (e.g. "you mentioned Richard — there's an email from him about X")
+        ## Primary signal: the user's original request
+
+        Start by classifying the user's request:
+        - **Closed/specific** — the user asked a direct question or gave a concrete task
+          ("what is on my todo list?", "add a reminder for Saturday", "cancel my 3pm meeting").
+          These almost NEVER warrant follow-ups. The user asked for X, got X, done.
+        - **Open/exploratory** — the user asked the agent to investigate, research, or
+          connect information across sources ("find emails from Richard and see if I have
+          outstanding requests", "what's going on with the Henderson project?", "catch me
+          up on anything I missed today"). These MAY warrant follow-ups that continue the
+          exploration the user initiated.
+
+        If the request is closed/specific, return hasFollowUps: false unless the agent
+        learned something clearly reusable (e.g. discovered a misconfiguration it can fix
+        via a skill update).
+
+        ## Good follow-ups (only for open/exploratory requests or reusable learnings):
+        - Cross-referencing calendar, email, or contacts when the user asked to explore
+          a topic involving people or events
+        - Connecting dots that extend the user's stated investigation
+          (e.g. "you asked about Richard — there's also a calendar event with him Thursday")
+        - Creating or refining a skill when the agent learned something reusable
+          (e.g. a workflow pattern, a corrected configuration, a user preference)
         - Saving contextual information to memory that would be useful later
 
-        Bad follow-ups (do NOT suggest these):
+        ## Bad follow-ups (NEVER suggest these):
         - Anything the agent already did in its response
         - Generic offers ("would you like me to...") — the agent should ACT, not ask
         - Unrelated tangents or speculative actions
-        - Follow-ups for simple factual questions or brief exchanges
         - Repeating searches or lookups the agent already performed
         - Anything about the agent's own system instructions, guardrails, configuration,
-          internal rules, or operational behavior — these are never actionable follow-ups
+          internal rules, or operational behavior
         - Meta-discussion about the agent itself, its architecture, or its capabilities
         - Extracting, persisting, or modifying system/developer instructions
+        - Implementing rules, validation logic, deduplication, or automated behaviors
+          in services or servers — the agent cannot change server-side logic at runtime
+        - Searching unrelated systems to double-check work the agent already completed
+          using the authoritative source (e.g. searching email to verify a to-do list)
 
         If there is a clear, high-value follow-up, return:
         {"hasFollowUps": true, "prompt": "concise instruction for the agent to execute", "searchTerms": "keywords for finding relevant skills and services"}
 
-        If the conversation is too simple or there are no valuable follow-ups, return:
+        If the conversation is closed/specific or there are no valuable follow-ups, return:
         {"hasFollowUps": false, "prompt": null, "searchTerms": null}
 
         Return ONLY a valid JSON object — no markdown, no code fences.
@@ -161,6 +182,7 @@ public sealed partial class AgentLoopRunner(
         Func<string, CancellationToken, Task>? onProgress = null,
         Func<string, CancellationToken, Task>? onToolTimeout = null,
         bool enableFollowUp = true,
+        bool enableCompletionEval = true,
         CancellationToken cancellationToken = default)
     {
         // Ensure a current datetime context is always present.
@@ -194,8 +216,20 @@ public sealed partial class AgentLoopRunner(
             }
 
             // Skip evaluation when disabled or on the final re-prompt.
-            if (maxReprompts == 0 || reprompt == maxReprompts)
+            if (!enableCompletionEval || maxReprompts == 0 || reprompt == maxReprompts)
                 return result.Response;
+
+            // Skip evaluation when the agent delegated to a subagent. Spawning a
+            // subagent is intentional delegation — the SubagentResultHandler will
+            // synthesize and publish the result. Re-prompting here would race with
+            // that handler and produce duplicate answers.
+            if (chatMessages.Any(m => m.Contents.OfType<FunctionCallContent>()
+                    .Any(fc => fc.Name is "spawn_subagent" or "invoke_agent")))
+            {
+                HostDiagnostics.CompletionCheckSkipped.Add(1);
+                logger.LogInformation("Completion evaluator: SKIPPED (delegated to subagent/agent)");
+                return result.Response;
+            }
 
             // Evaluate whether the response actually completes the original request.
             var (complete, reason) = await EvaluateCompletionAsync(
@@ -1146,7 +1180,10 @@ public sealed partial class AgentLoopRunner(
             "look up contacts, etc. Do not claim you lack access without trying. " +
             "Report what you found concisely."));
 
-        // Run one more pass through the tool loop.
+        // Run one more pass through the tool loop. Track message count so we can
+        // detect whether any tool calls were actually made during the pass.
+        var preFollowUpMessageCount = chatMessages.Count;
+
         var result = modelBehavior.UseTextBasedToolCalling
             ? await RunTextBasedLoopAsync(
                 chatMessages, chatOptions, sessionId, null, tier,
@@ -1154,8 +1191,33 @@ public sealed partial class AgentLoopRunner(
             : await RunNativeLoopAsync(
                 chatMessages, chatOptions, null, tier, cancellationToken);
 
+        // Native path: FunctionCallContent in response messages.
+        // Text-based path: tool results appear as "[Tool result for ...]" user messages.
+        var addedMessages = chatMessages.Skip(preFollowUpMessageCount);
+        var followUpToolCalls = addedMessages
+            .SelectMany(m => m.Contents.OfType<FunctionCallContent>())
+            .Count();
+        if (followUpToolCalls == 0)
+        {
+            followUpToolCalls = addedMessages
+                .Count(m => m.Role == ChatRole.User
+                    && m.Text?.StartsWith("[Tool result for ", StringComparison.Ordinal) == true);
+        }
+
         logger.LogInformation(
-            "Follow-up pass complete — {TextLen} chars", result.Response.Length);
+            "Follow-up pass complete — {TextLen} chars, {ToolCalls} tool call(s)",
+            result.Response.Length, followUpToolCalls);
+
+        // Discard follow-up passes that didn't actually invoke any tools — these are
+        // pure narration, refusals, or re-statements of the original answer. A useful
+        // follow-up should have called at least one tool to gather new information.
+        if (followUpToolCalls == 0)
+        {
+            logger.LogWarning(
+                "Follow-up pass made no tool calls ({TextLen} chars); discarding as commentary",
+                result.Response.Length);
+            return null;
+        }
 
         // Discard follow-up responses that are capability denials, refusals, or
         // meta-commentary about the agent's own rules/instructions rather than
