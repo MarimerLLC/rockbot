@@ -100,7 +100,8 @@ internal sealed class ScheduledTaskHandler(
             await using (slot)
             {
                 finalText = await agentLoopRunner.RunAsync(
-                    chatMessages, chatOptions, sessionId: sessionId, cancellationToken: slot.Token);
+                    chatMessages, chatOptions, sessionId: sessionId,
+                    enableFollowUp: false, cancellationToken: slot.Token);
             }
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)

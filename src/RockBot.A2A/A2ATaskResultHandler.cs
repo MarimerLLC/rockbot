@@ -152,7 +152,8 @@ internal sealed class A2ATaskResultHandler(
         try
         {
             var finalContent = await agentLoopRunner.RunAsync(
-                chatMessages, chatOptions, rawSessionId, cancellationToken: ct);
+                chatMessages, chatOptions, rawSessionId,
+                enableFollowUp: false, cancellationToken: ct);
 
             await conversationMemory.AddTurnAsync(
                 rawSessionId,

@@ -101,7 +101,8 @@ internal sealed class A2ATaskStatusHandler(
         try
         {
             var finalContent = await agentLoopRunner.RunAsync(
-                chatMessages, chatOptions, pending.PrimarySessionId, cancellationToken: ct);
+                chatMessages, chatOptions, pending.PrimarySessionId,
+                enableFollowUp: false, cancellationToken: ct);
 
             await conversationMemory.AddTurnAsync(
                 pending.PrimarySessionId,
