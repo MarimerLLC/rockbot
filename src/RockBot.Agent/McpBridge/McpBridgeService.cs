@@ -275,6 +275,10 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
             return;
         }
 
+        // Store config before attempting connection so the reconnect sweep can
+        // retry servers that never connected successfully at startup.
+        _serverConfigs[name] = config;
+
         var maxAttempts = 1 + Math.Max(0, _options.ConnectRetryCount);
         var delayMs = _options.ConnectRetryBaseDelayMs;
 
@@ -337,7 +341,6 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
                 }
 
                 _clients[name] = newClient;
-                _serverConfigs[name] = config;
                 _serverTools[name] = filteredTools;
                 _serverPrompts[name] = prompts;
 
