@@ -15,7 +15,7 @@ namespace RockBot.Host;
 /// Reusable LLM tool-calling loop shared by UserMessageHandler, ScheduledTaskHandler,
 /// SubagentRunner, and subagent update handlers.
 /// </summary>
-public sealed class AgentLoopRunner(
+public sealed partial class AgentLoopRunner(
     ILlmClient llmClient,
     IWorkingMemory workingMemory,
     ModelBehavior modelBehavior,
@@ -979,10 +979,21 @@ public sealed class AgentLoopRunner(
 
     private static string StripModelToolTokens(string text)
     {
+        // DeepSeek tool-call boundary tokens
         const string begin = "<｜tool▁calls▁begin｜>";
         var idx = text.IndexOf(begin, StringComparison.Ordinal);
-        return idx >= 0 ? text[..idx] : text;
+        if (idx >= 0) text = text[..idx];
+
+        // GPT-5.x reasoning tokens (startthought:意> ... endthought:意>)
+        text = StripReasoningTokensRegex().Replace(text, "");
+
+        return text;
     }
+
+    [System.Text.RegularExpressions.GeneratedRegex(
+        @"(?:start|end)thought:[^\s>]*>",
+        System.Text.RegularExpressions.RegexOptions.Compiled)]
+    private static partial System.Text.RegularExpressions.Regex StripReasoningTokensRegex();
 
     // ── Tool call description ────────────────────────────────────────────────
 
