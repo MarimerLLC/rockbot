@@ -133,7 +133,7 @@ internal sealed class ScheduledTaskHandler(
         var reply = new AgentReply
         {
             Content = finalText,
-            SessionId = "scheduled",
+            SessionId = message.IsSystemTask ? "scheduled-system" : "scheduled",
             AgentName = agent.Name,
             IsFinal = true
         };

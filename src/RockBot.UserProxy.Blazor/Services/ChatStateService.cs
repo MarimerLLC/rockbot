@@ -1,5 +1,19 @@
 namespace RockBot.UserProxy.Blazor.Services;
 
+public enum MessageCategory
+{
+    UserInput,
+    PrimaryFinal,
+    PrimaryProgress,
+    SubagentActivity,
+    A2AActivity,
+    ScheduledSystem,
+    ScheduledUser,
+    Error,
+}
+
+public sealed record ActivityLogEntry(string Content, DateTime Timestamp);
+
 /// <summary>
 /// Manages chat state and provides real-time updates to Blazor components.
 /// </summary>
@@ -9,6 +23,7 @@ public sealed class ChatStateService
     private readonly object _lock = new();
     private string? _currentThinkingMessage;
     private bool _isProcessing;
+    private string? _activeActivityLogId;
 
     public event Action? OnStateChanged;
 
@@ -37,7 +52,8 @@ public sealed class ChatStateService
                     Content = turn.Content,
                     IsFromUser = turn.Role == "user",
                     Timestamp = turn.Timestamp.UtcDateTime,
-                    SessionId = sessionId
+                    SessionId = sessionId,
+                    Category = turn.Role == "user" ? MessageCategory.UserInput : MessageCategory.PrimaryFinal
                 });
             }
         }
@@ -53,14 +69,20 @@ public sealed class ChatStateService
                 IsFromUser = true,
                 Timestamp = DateTime.UtcNow,
                 UserId = userId,
-                SessionId = sessionId
+                SessionId = sessionId,
+                Category = MessageCategory.UserInput
             });
         NotifyStateChanged();
     }
 
-    public void AddAgentReply(AgentReply reply)
+    public void AddAgentReply(AgentReply reply, MessageCategory category = MessageCategory.PrimaryFinal)
     {
         lock (_lock)
+        {
+            // When a PrimaryFinal message arrives, close any active activity log
+            if (category == MessageCategory.PrimaryFinal)
+                _activeActivityLogId = null;
+
             _messages.Add(new ChatMessage
             {
                 Content = reply.Content,
@@ -69,8 +91,61 @@ public sealed class ChatStateService
                 AgentName = reply.AgentName,
                 SessionId = reply.SessionId,
                 ContentType = reply.ContentType,
-                IsInterim = !reply.IsFinal
+                IsInterim = !reply.IsFinal,
+                Category = category,
+                IsExpanded = category is MessageCategory.PrimaryFinal
+                    or MessageCategory.ScheduledUser
+                    or MessageCategory.UserInput
+                    or MessageCategory.Error
             });
+        }
+        NotifyStateChanged();
+    }
+
+    /// <summary>
+    /// Appends an entry to the active WIP activity log bubble. Creates the bubble
+    /// if one doesn't exist yet for the current processing cycle.
+    /// </summary>
+    public void AppendActivityLogEntry(string content)
+    {
+        lock (_lock)
+        {
+            ChatMessage? logBubble = null;
+            if (_activeActivityLogId is not null)
+                logBubble = _messages.FirstOrDefault(m => m.MessageId == _activeActivityLogId);
+
+            if (logBubble is null)
+            {
+                logBubble = new ChatMessage
+                {
+                    Content = content,
+                    IsFromUser = false,
+                    Timestamp = DateTime.UtcNow,
+                    Category = MessageCategory.PrimaryProgress,
+                    IsActivityLog = true,
+                    IsExpanded = false
+                };
+                _messages.Add(logBubble);
+                _activeActivityLogId = logBubble.MessageId;
+            }
+
+            logBubble.ActivityLogEntries.Add(new ActivityLogEntry(content, DateTime.UtcNow));
+            logBubble.Content = content; // summary line = latest entry
+        }
+        NotifyStateChanged();
+    }
+
+    /// <summary>
+    /// Toggles the expanded/collapsed state of a message by its ID.
+    /// </summary>
+    public void ToggleExpanded(string messageId)
+    {
+        lock (_lock)
+        {
+            var msg = _messages.FirstOrDefault(m => m.MessageId == messageId);
+            if (msg is not null)
+                msg.IsExpanded = !msg.IsExpanded;
+        }
         NotifyStateChanged();
     }
 
@@ -101,12 +176,9 @@ public sealed class ChatStateService
         _isProcessing = isProcessing;
         if (isProcessing)
         {
-            // Clear thinking message when a new user request starts so it shows
-            // "Thinking..." rather than the previous background status
             _currentThinkingMessage = null;
+            _activeActivityLogId = null;
         }
-        // Not cleared on false — background agents may still be running and will
-        // update the indicator via SetThinkingMessage as their status arrives
         NotifyStateChanged();
     }
 
@@ -118,7 +190,9 @@ public sealed class ChatStateService
                 Content = message,
                 IsFromUser = false,
                 IsError = true,
-                Timestamp = DateTime.UtcNow
+                Timestamp = DateTime.UtcNow,
+                Category = MessageCategory.Error,
+                IsExpanded = true
             });
         NotifyStateChanged();
     }
@@ -131,7 +205,7 @@ public enum FeedbackState { None, ThumbsUp, ThumbsDown }
 public sealed class ChatMessage
 {
     public string MessageId { get; init; } = Guid.NewGuid().ToString("N");
-    public required string Content { get; init; }
+    public required string Content { get; set; }
     public required bool IsFromUser { get; init; }
     public required DateTime Timestamp { get; init; }
     public string? AgentName { get; init; }
@@ -146,6 +220,18 @@ public sealed class ChatMessage
     /// Rendered with a muted style to distinguish from final primary-agent replies.
     /// </summary>
     public bool IsInterim { get; init; }
+
+    /// <summary>Visibility category used by the UI to determine default collapse state and styling.</summary>
+    public MessageCategory Category { get; init; } = MessageCategory.PrimaryFinal;
+
+    /// <summary>True for the grouped WIP activity log bubble that accumulates progress entries.</summary>
+    public bool IsActivityLog { get; init; }
+
+    /// <summary>Accumulated progress entries for activity-log bubbles. Thread-safe: mutated under _lock.</summary>
+    public List<ActivityLogEntry> ActivityLogEntries { get; } = new();
+
+    /// <summary>Mutable expanded/collapsed state for the UI toggle.</summary>
+    public bool IsExpanded { get; set; } = true;
 
     /// <summary>Mutable so <see cref="ChatStateService.RecordFeedback"/> can update it in place.</summary>
     public FeedbackState Feedback { get; set; } = FeedbackState.None;

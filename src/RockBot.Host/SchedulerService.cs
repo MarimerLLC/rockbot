@@ -196,7 +196,7 @@ internal sealed class SchedulerService : IHostedService, ISchedulerService
 
         try
         {
-            var message = new ScheduledTaskMessage(task.Name, task.Description);
+            var message = new ScheduledTaskMessage(task.Name, task.Description, task.IsSystemTask);
             var envelope = message.ToEnvelope(source: _identity.Name);
             await _pipeline.DispatchAsync(envelope, _cts.Token);
         }

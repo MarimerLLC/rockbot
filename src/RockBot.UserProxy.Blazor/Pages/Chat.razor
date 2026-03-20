@@ -24,40 +24,106 @@
     <div class="chat-messages flex-grow-1 overflow-auto p-3" @ref="messagesContainer">
         @foreach (var message in ChatState.Messages)
         {
-            <div class="message-wrapper mb-3 @(message.IsFromUser ? "user-message" : "agent-message")">
-                <div class="message-bubble p-3 rounded @(message.IsError ? "bg-danger text-white" : (message.IsFromUser ? "bg-primary text-white" : "")) @(message.IsInterim ? "interim-message" : "")">
-                    @if (!message.IsFromUser && !message.IsError && !string.IsNullOrEmpty(message.AgentName))
-                    {
-                        <div class="@(message.IsInterim ? "fst-italic" : "fw-bold") small mb-2">@message.AgentName</div>
-                    }
-                    <div class="message-content">
-                        @((MarkupString)ConvertMarkdownToHtml(message.Content))
-                    </div>
-                    <div class="message-time">
-                        @TimeZoneInfo.ConvertTimeFromUtc(message.Timestamp, _displayZone).ToString("HH:mm:ss")
-                    </div>
-                    @if (!message.IsFromUser && !message.IsError)
-                    {
-                        <div class="feedback-bar">
-                            <button class="btn-feedback @(message.Feedback == FeedbackState.ThumbsUp ? "active" : "")"
-                                    title="This was helpful"
-                                    disabled="@(message.Feedback != FeedbackState.None)"
-                                    @onclick="() => SendFeedback(message, isPositive: true)">
-                                👍
-                            </button>
-                            <button class="btn-feedback @(message.Feedback == FeedbackState.ThumbsDown ? "active" : "")"
-                                    title="This wasn't helpful — please try again"
-                                    disabled="@(message.Feedback != FeedbackState.None)"
-                                    @onclick="() => SendFeedback(message, isPositive: false)">
-                                👎
-                            </button>
+            @if (message.IsActivityLog)
+            {
+                <!-- Activity log bubble: collapsed one-liner with spinner, expandable to full log -->
+                <div class="message-wrapper mb-3 agent-message">
+                    <div class="message-bubble activity-log-bubble p-2 rounded @(message.IsExpanded ? "expanded" : "collapsed")"
+                         @onclick="() => ChatState.ToggleExpanded(message.MessageId)">
+                        <div class="activity-log-header">
+                            <span class="chevron-indicator @(message.IsExpanded ? "open" : "")">&#9654;</span>
+                            @if (ChatState.IsProcessing)
+                            {
+                                <span class="spinner-border spinner-border-sm me-1" role="status" aria-hidden="true"></span>
+                            }
+                            <span class="activity-log-summary">@TruncateText(message.Content, 100)</span>
                         </div>
-                    }
+                        @if (message.IsExpanded)
+                        {
+                            var entries = message.ActivityLogEntries.ToList();
+                            <div class="activity-log-entries">
+                                @foreach (var entry in entries)
+                                {
+                                    <div class="activity-log-entry">
+                                        <span class="entry-time">@TimeZoneInfo.ConvertTimeFromUtc(entry.Timestamp, _displayZone).ToString("HH:mm:ss")</span>
+                                        <span class="entry-content">@entry.Content</span>
+                                    </div>
+                                }
+                            </div>
+                        }
+                    </div>
                 </div>
-            </div>
+            }
+            else if (IsCollapsibleCategory(message.Category))
+            {
+                <!-- Collapsible bubble: compact header when collapsed, full content when expanded -->
+                <div class="message-wrapper mb-3 agent-message">
+                    <div class="message-bubble collapsible-bubble p-3 rounded category-@message.Category.ToString().ToLowerInvariant() @(message.IsExpanded ? "expanded" : "collapsed")">
+                        <div class="collapsible-header" @onclick="() => ChatState.ToggleExpanded(message.MessageId)" @onclick:stopPropagation="true">
+                            <span class="chevron-indicator @(message.IsExpanded ? "open" : "")">&#9654;</span>
+                            <span class="category-badge">@GetCategoryLabel(message.Category)</span>
+                            @if (!string.IsNullOrEmpty(message.AgentName))
+                            {
+                                <span class="collapsible-agent-name">@message.AgentName</span>
+                            }
+                            @if (!message.IsExpanded)
+                            {
+                                <span class="collapsible-preview">@TruncateText(message.Content, 80)</span>
+                            }
+                        </div>
+                        @if (message.IsExpanded)
+                        {
+                            <div class="message-content mt-2">
+                                @((MarkupString)ConvertMarkdownToHtml(message.Content))
+                            </div>
+                            <div class="message-time">
+                                @TimeZoneInfo.ConvertTimeFromUtc(message.Timestamp, _displayZone).ToString("HH:mm:ss")
+                            </div>
+                        }
+                    </div>
+                </div>
+            }
+            else
+            {
+                <!-- Standard expanded bubble: user input, primary final, scheduled user, error -->
+                <div class="message-wrapper mb-3 @(message.IsFromUser ? "user-message" : "agent-message")">
+                    <div class="message-bubble p-3 rounded @(message.IsError ? "bg-danger text-white" : (message.IsFromUser ? "bg-primary text-white" : "")) @(message.IsInterim ? "interim-message" : "")">
+                        @if (!message.IsFromUser && !message.IsError && !string.IsNullOrEmpty(message.AgentName))
+                        {
+                            <div class="@(message.IsInterim ? "fst-italic" : "fw-bold") small mb-2">@message.AgentName</div>
+                        }
+                        <div class="message-content">
+                            @((MarkupString)ConvertMarkdownToHtml(message.Content))
+                        </div>
+                        <div class="message-time">
+                            @TimeZoneInfo.ConvertTimeFromUtc(message.Timestamp, _displayZone).ToString("HH:mm:ss")
+                        </div>
+                        @if (!message.IsFromUser && !message.IsError)
+                        {
+                            <div class="feedback-bar">
+                                <button class="btn-feedback @(message.Feedback == FeedbackState.ThumbsUp ? "active" : "")"
+                                        title="This was helpful"
+                                        disabled="@(message.Feedback != FeedbackState.None)"
+                                        @onclick="() => SendFeedback(message, isPositive: true)">
+                                    👍
+                                </button>
+                                <button class="btn-feedback @(message.Feedback == FeedbackState.ThumbsDown ? "active" : "")"
+                                        title="This wasn't helpful — please try again"
+                                        disabled="@(message.Feedback != FeedbackState.None)"
+                                        @onclick="() => SendFeedback(message, isPositive: false)">
+                                    👎
+                                </button>
+                            </div>
+                        }
+                    </div>
+                </div>
+            }
         }
 
-        @if (ChatState.IsProcessing || !string.IsNullOrEmpty(ChatState.CurrentThinkingMessage))
+        @{
+            var hasActiveActivityLog = ChatState.Messages.Any(m => m.IsActivityLog && !m.IsExpanded);
+        }
+        @if ((ChatState.IsProcessing && !hasActiveActivityLog) || (!ChatState.IsProcessing && !string.IsNullOrEmpty(ChatState.CurrentThinkingMessage)))
         {
             <div class="message-wrapper mb-3 agent-message">
                 <div class="message-bubble p-3 rounded">
@@ -89,8 +155,8 @@
                 disabled="@ChatState.IsProcessing"
                 rows="1"
                 aria-label="Message input"></textarea>
-            <button 
-                type="submit" 
+            <button
+                type="submit"
                 class="btn btn-primary"
                 disabled="@(string.IsNullOrWhiteSpace(currentMessage) || ChatState.IsProcessing || !ProxyService.IsConnected)"
                 aria-label="Send message">
@@ -191,7 +257,7 @@
 
         var progressTracker = new Progress<AgentReply>(reply =>
         {
-            ChatState.SetThinkingMessage(reply.Content);
+            ChatState.AppendActivityLogEntry(reply.Content);
         });
 
         try
@@ -249,6 +315,27 @@
             await SendMessage();
     }
 
+    private static bool IsCollapsibleCategory(MessageCategory category)
+        => category is MessageCategory.SubagentActivity
+            or MessageCategory.A2AActivity
+            or MessageCategory.ScheduledSystem;
+
+    private static string GetCategoryLabel(MessageCategory category) => category switch
+    {
+        MessageCategory.SubagentActivity => "Subagent",
+        MessageCategory.A2AActivity => "A2A",
+        MessageCategory.ScheduledSystem => "Background Task",
+        _ => "Agent"
+    };
+
+    private static string TruncateText(string text, int maxLength)
+    {
+        if (string.IsNullOrEmpty(text)) return string.Empty;
+        // Take first line, truncate if needed
+        var firstLine = text.Split('\n', 2)[0];
+        return firstLine.Length <= maxLength ? firstLine : firstLine[..(maxLength - 1)] + "\u2026";
+    }
+
     private string ConvertMarkdownToHtml(string markdown)
     {
         if (string.IsNullOrEmpty(markdown))
@@ -273,9 +360,9 @@
 
     private async Task ApplyDarkMode()
     {
-        await JSRuntime.InvokeVoidAsync("eval", 
-            IsDarkMode 
-                ? "document.body.classList.add('dark-mode')" 
+        await JSRuntime.InvokeVoidAsync("eval",
+            IsDarkMode
+                ? "document.body.classList.add('dark-mode')"
                 : "document.body.classList.remove('dark-mode')");
         StateHasChanged();
     }

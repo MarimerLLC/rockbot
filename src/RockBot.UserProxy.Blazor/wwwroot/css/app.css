@@ -312,3 +312,250 @@ body.dark-mode .btn-feedback:hover:not(:disabled) {
 .spinner-border {
     animation: spin 1s linear infinite;
 }
+
+/* ── Activity log bubble ──────────────────────────────────────────────── */
+
+.activity-log-bubble {
+    max-width: 70%;
+    background-color: #f0f1f3;
+    border: 1px solid #d1d5db;
+    cursor: pointer;
+    transition: background-color 0.15s;
+}
+
+.activity-log-bubble:hover {
+    background-color: #e5e7eb;
+}
+
+.activity-log-header {
+    display: flex;
+    align-items: center;
+    gap: 0.35rem;
+    font-size: 0.85rem;
+    color: #6b7280;
+}
+
+.activity-log-summary {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    flex: 1;
+}
+
+.activity-log-entries {
+    margin-top: 0.5rem;
+    padding-top: 0.5rem;
+    border-top: 1px solid #d1d5db;
+    max-height: 300px;
+    overflow-y: auto;
+    font-family: 'Courier New', monospace;
+    font-size: 0.8rem;
+}
+
+.activity-log-entry {
+    display: flex;
+    gap: 0.5rem;
+    padding: 0.15rem 0;
+    color: #4b5563;
+}
+
+.entry-time {
+    flex-shrink: 0;
+    color: #9ca3af;
+    font-size: 0.75rem;
+}
+
+.entry-content {
+    word-break: break-word;
+}
+
+/* ── Collapsible bubbles (subagent, A2A, scheduled-system) ──────────── */
+
+.collapsible-bubble {
+    max-width: 70%;
+    border: 1px dashed #ced4da;
+    box-shadow: none;
+    transition: opacity 0.15s, background-color 0.15s;
+}
+
+.collapsible-bubble.collapsed {
+    opacity: 0.75;
+    padding-top: 0.6rem !important;
+    padding-bottom: 0.6rem !important;
+}
+
+.collapsible-header {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    cursor: pointer;
+    font-size: 0.85rem;
+    color: #6b7280;
+}
+
+.collapsible-header:hover {
+    color: #374151;
+}
+
+.category-badge {
+    display: inline-block;
+    padding: 0.1rem 0.45rem;
+    border-radius: 0.25rem;
+    font-size: 0.7rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.02em;
+}
+
+.collapsible-agent-name {
+    font-weight: 500;
+    color: #4b5563;
+}
+
+.collapsible-preview {
+    flex: 1;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    color: #9ca3af;
+    font-style: italic;
+}
+
+/* Category-specific tints */
+.category-subagentactivity .category-badge {
+    background-color: #e5e7eb;
+    color: #4b5563;
+}
+
+.category-a2aactivity .category-badge {
+    background-color: #dbeafe;
+    color: #1d4ed8;
+}
+
+.category-scheduledsystem .category-badge {
+    background-color: #fef3c7;
+    color: #92400e;
+}
+
+.category-subagentactivity {
+    background-color: #fafafa;
+}
+
+.category-a2aactivity {
+    background-color: #f8faff;
+}
+
+.category-scheduledsystem {
+    background-color: #fffdf5;
+}
+
+/* ── Shared chevron indicator ─────────────────────────────────────────── */
+
+.chevron-indicator {
+    display: inline-block;
+    font-size: 0.6rem;
+    transition: transform 0.2s ease;
+    flex-shrink: 0;
+    color: #9ca3af;
+}
+
+.chevron-indicator.open {
+    transform: rotate(90deg);
+}
+
+/* ── Dark mode: activity log ──────────────────────────────────────────── */
+
+body.dark-mode .activity-log-bubble {
+    background-color: #1e1e1e;
+    border-color: #4b5563;
+    color: #d1d5db;
+}
+
+body.dark-mode .activity-log-bubble:hover {
+    background-color: #262626;
+}
+
+body.dark-mode .activity-log-header {
+    color: #9ca3af;
+}
+
+body.dark-mode .activity-log-entries {
+    border-top-color: #4b5563;
+}
+
+body.dark-mode .activity-log-entry {
+    color: #9ca3af;
+}
+
+body.dark-mode .entry-time {
+    color: #6b7280;
+}
+
+/* ── Dark mode: collapsible bubbles ──────────────────────────────────── */
+
+body.dark-mode .collapsible-bubble {
+    border-color: #4b5563;
+}
+
+body.dark-mode .collapsible-header {
+    color: #9ca3af;
+}
+
+body.dark-mode .collapsible-header:hover {
+    color: #d1d5db;
+}
+
+body.dark-mode .collapsible-agent-name {
+    color: #9ca3af;
+}
+
+body.dark-mode .collapsible-preview {
+    color: #6b7280;
+}
+
+body.dark-mode .category-subagentactivity {
+    background-color: #1a1a1a;
+}
+
+body.dark-mode .category-subagentactivity .category-badge {
+    background-color: #374151;
+    color: #d1d5db;
+}
+
+body.dark-mode .category-a2aactivity {
+    background-color: #1a1d2e;
+}
+
+body.dark-mode .category-a2aactivity .category-badge {
+    background-color: #1e3a5f;
+    color: #93c5fd;
+}
+
+body.dark-mode .category-scheduledsystem {
+    background-color: #1f1d14;
+}
+
+body.dark-mode .category-scheduledsystem .category-badge {
+    background-color: #44380d;
+    color: #fcd34d;
+}
+
+body.dark-mode .chevron-indicator {
+    color: #6b7280;
+}
+
+/* ── Responsive: collapsible bubbles ──────────────────────────────────── */
+
+@media (max-width: 768px) {
+    .activity-log-bubble,
+    .collapsible-bubble {
+        max-width: 85%;
+    }
+}
+
+@media (max-width: 576px) {
+    .activity-log-bubble,
+    .collapsible-bubble {
+        max-width: 90%;
+    }
+}
