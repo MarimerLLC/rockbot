@@ -90,7 +90,7 @@ public sealed class ServiceSearchIndex(
                 Type = "mcp",
                 Summary = server.Summary ?? server.DisplayName ?? server.ServerName,
                 IndexText = text.ToString(),
-                TopItems = server.ToolNames.Take(3).ToList()
+                TopItems = server.ToolNames.ToList()
             });
         }
 

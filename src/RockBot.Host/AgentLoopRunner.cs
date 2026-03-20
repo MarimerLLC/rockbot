@@ -1306,17 +1306,23 @@ public sealed class AgentLoopRunner(
                 var candidates = _serviceSearchIndex.Search(enrichedQuery, maxResults: 3);
                 if (candidates.Count > 0)
                 {
-                    var lines = candidates.Select(c =>
+                    var sb = new StringBuilder(
+                        "Available services relevant to this task — call them via mcp_invoke_tool:\n");
+                    foreach (var c in candidates)
                     {
-                        var itemsLabel = c.Type == "a2a" ? "top skills" : "top tools";
-                        var items = c.TopItems.Count > 0
-                            ? $", {itemsLabel}: {string.Join(", ", c.TopItems)}"
-                            : string.Empty;
-                        return $"- {c.Id} ({c.Type}): {c.Summary}{items}";
-                    });
-                    chatMessages.Add(new ChatMessage(ChatRole.System,
-                        "Available services relevant to this task (use mcp_invoke_tool to call them):\n" +
-                        string.Join("\n", lines)));
+                        sb.AppendLine($"\n### {c.Id} ({c.Type}): {c.Summary}");
+                        if (c.Type == "mcp" && c.TopItems.Count > 0)
+                        {
+                            sb.AppendLine($"Available tools (use with mcp_invoke_tool server_name=\"{c.Id}\"):");
+                            foreach (var tool in c.TopItems)
+                                sb.AppendLine($"  - {tool}");
+                        }
+                        else if (c.TopItems.Count > 0)
+                        {
+                            sb.AppendLine($"Top skills: {string.Join(", ", c.TopItems)}");
+                        }
+                    }
+                    chatMessages.Add(new ChatMessage(ChatRole.System, sb.ToString()));
                     logger.LogInformation(
                         "Completion re-prompt: injected {Count} service hint(s) via enriched search: {Services}",
                         candidates.Count, string.Join(", ", candidates.Select(c => c.Id)));
