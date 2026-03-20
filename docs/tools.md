@@ -442,27 +442,27 @@ with a `[result truncated — N chars omitted]` notice — same fallback as `web
 
 **Per-model threshold configuration:**
 
-The default threshold is **16 000 characters** (~4 000 tokens), suitable for most 32K–128K
-context models. Tune it per model in `appsettings.json`:
+The default threshold is **64 000 characters** (~16 000 tokens), appropriate for models with
+120K+ token context windows. When chunking occurs, each chunk is sized up to the threshold
+(minimum 20 000 chars) to minimise the number of working-memory retrievals.
+
+Tune it per model in `appsettings.json`:
 
 ```json
 {
   "ModelBehaviors": {
     "Models": {
-      "openrouter/google/gemini-2.0-flash": {
-        "ToolResultChunkingThreshold": 64000
-      },
       "openrouter/deepseek": {
-        "ToolResultChunkingThreshold": 8000
+        "ToolResultChunkingThreshold": 32000
       }
     }
   }
 }
 ```
 
-Raise the threshold for large-context models (1M tokens) or lower it for small-context models.
-Setting it very high effectively disables proactive chunking while still relying on the reactive
-`TrimLargeToolResults` overflow recovery as a safety net.
+Lower the threshold for small-context models. Setting it very high effectively disables
+proactive chunking while still relying on the reactive `TrimLargeToolResults` overflow
+recovery as a safety net.
 
 ---
 

@@ -351,19 +351,19 @@ Additional properties are configurable in `appsettings.json` under `ModelBehavio
 |---|---|---|---|
 | `NudgeOnHallucinatedToolCalls` | bool | false | Inject a nudge when the model describes tool actions without emitting calls |
 | `MaxToolIterationsOverride` | int? | null (uses `AgentHost:MaxToolIterations`) | Override the per-request tool-loop iteration cap |
-| `ToolResultChunkingThreshold` | int? | null (uses 16 000) | Char count above which tool results are chunked into working memory instead of appended inline |
+| `ToolResultChunkingThreshold` | int? | null (uses 64 000) | Char count above which tool results are chunked into working memory instead of appended inline |
 | `ScheduledTaskResultMode` | enum | `Summarize` | How scheduled task output is presented (`Summarize`, `VerbatimOutput`, `SummarizeWithOutput`) |
 | `MaxCompletionRepromptsOverride` | int? | null (uses `AgentHost:MaxCompletionReprompts`) | Override the per-request completion-evaluator re-prompt cap |
 | `MaxFollowUpPassesOverride` | int? | null (uses `AgentHost:MaxFollowUpPasses`) | Override the per-request proactive follow-up pass cap |
 
-Example — raising the chunking threshold for a large-context model:
+Example — lowering the chunking threshold for a small-context model:
 
 ```json
 {
   "ModelBehaviors": {
     "Models": {
-      "openrouter/google/gemini-2.0-flash": {
-        "ToolResultChunkingThreshold": 64000
+      "openrouter/deepseek": {
+        "ToolResultChunkingThreshold": 32000
       }
     }
   }
