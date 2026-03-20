@@ -161,6 +161,7 @@ public sealed partial class AgentLoopRunner(
         Func<string, CancellationToken, Task>? onProgress = null,
         Func<string, CancellationToken, Task>? onToolTimeout = null,
         bool enableFollowUp = true,
+        bool enableCompletionEval = true,
         CancellationToken cancellationToken = default)
     {
         // Ensure a current datetime context is always present.
@@ -194,7 +195,7 @@ public sealed partial class AgentLoopRunner(
             }
 
             // Skip evaluation when disabled or on the final re-prompt.
-            if (maxReprompts == 0 || reprompt == maxReprompts)
+            if (!enableCompletionEval || maxReprompts == 0 || reprompt == maxReprompts)
                 return result.Response;
 
             // Evaluate whether the response actually completes the original request.
