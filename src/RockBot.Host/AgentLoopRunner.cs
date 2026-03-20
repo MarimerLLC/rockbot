@@ -1109,8 +1109,9 @@ public sealed class AgentLoopRunner(
         chatMessages.Add(new ChatMessage(ChatRole.User,
             $"Good — you completed my request. Now, while you're in this context, " +
             $"also do this: {followUp.Prompt}\n\n" +
-            "Be concise. Briefly share what you found or did. " +
-            "If you find nothing useful, just say so in one sentence."));
+            "Use your tools to actually look this up — search emails, check calendar, " +
+            "look up contacts, etc. Do not claim you lack access without trying. " +
+            "Report what you found concisely."));
 
         // Run one more pass through the tool loop.
         var result = modelBehavior.UseTextBasedToolCalling
