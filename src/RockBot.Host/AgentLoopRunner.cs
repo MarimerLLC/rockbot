@@ -1135,6 +1135,16 @@ public sealed partial class AgentLoopRunner(
         logger.LogInformation(
             "Follow-up pass complete — {TextLen} chars", result.Response.Length);
 
+        // If the follow-up response is a capability denial (model claimed it can't access
+        // services without even trying), discard it rather than appending misinformation.
+        if (CapabilityDenialRegex.IsMatch(result.Response))
+        {
+            logger.LogWarning(
+                "Follow-up pass produced a capability denial ({TextLen} chars); discarding",
+                result.Response.Length);
+            return null;
+        }
+
         // Combine the original response with the follow-up.
         return $"{completedResponse}\n\n{result.Response}";
     }
