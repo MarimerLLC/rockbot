@@ -19,7 +19,12 @@ public sealed class ChunkingAIFunction(
     int chunkingThreshold,
     ILogger logger) : AIFunction
 {
-    private const int ToolResultChunkMaxLength = 20_000;
+    /// <summary>
+    /// Each chunk can be up to the chunking threshold in size — since we've declared
+    /// that amount "fits inline", each working-memory retrieval should be at most that
+    /// large. Floor of 20k prevents degenerate tiny chunks if threshold is very low.
+    /// </summary>
+    private readonly int _chunkMaxLength = Math.Max(chunkingThreshold, 20_000);
     private static readonly TimeSpan ToolResultChunkTtl = TimeSpan.FromMinutes(20);
 
     private static readonly HashSet<string> ChunkingExemptTools = new(StringComparer.OrdinalIgnoreCase)
@@ -53,7 +58,7 @@ public sealed class ChunkingAIFunction(
     {
         if (@namespace is not null)
         {
-            var chunks = ContentChunker.Chunk(result, ToolResultChunkMaxLength);
+            var chunks = ContentChunker.Chunk(result, _chunkMaxLength);
             var sanitizedName = SanitizeKeySegment(toolName);
             var runId = Guid.NewGuid().ToString("N")[..8];
             var keyBase = $"{@namespace}/tool-{sanitizedName}-{runId}";

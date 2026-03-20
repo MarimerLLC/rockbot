@@ -11,9 +11,10 @@ public sealed class ModelBehavior
     /// Character count above which a tool result is chunked into working memory
     /// rather than appended inline to the chat history. Operators can raise this
     /// for models with large context windows or lower it for small-context models.
-    /// Defaults to 16 000 characters (~4 000 tokens).
+    /// Defaults to 64 000 characters (~16 000 tokens), appropriate for models with
+    /// 120k+ token context windows.
     /// </summary>
-    public int ToolResultChunkingThreshold { get; init; } = 16_000;
+    public int ToolResultChunkingThreshold { get; init; } = 64_000;
 
     /// <summary>Behavior profile that applies no tweaks — used when no overrides are configured.</summary>
     public static readonly ModelBehavior Default = new() { NudgeOnHallucinatedToolCalls = true };
