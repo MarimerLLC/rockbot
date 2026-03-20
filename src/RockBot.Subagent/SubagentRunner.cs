@@ -155,7 +155,7 @@ internal sealed class SubagentRunner(
         {
             finalOutput = await agentLoopRunner.RunAsync(
                 chatMessages, chatOptions, subagentSessionId,
-                tier: tier, cancellationToken: ct);
+                tier: tier, enableFollowUp: false, cancellationToken: ct);
             finalOutput = ResponseSanitizer.StripTrailingOffers(finalOutput);
             isSuccess = true;
             subagentActivity?.SetStatus(ActivityStatusCode.Ok);

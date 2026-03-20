@@ -144,7 +144,7 @@ internal sealed class UserFeedbackHandler(
 
                 freshResponse = await agentLoopRunner.RunAsync(
                     chatMessages, chatOptions, message.SessionId,
-                    cancellationToken: slot.Token);
+                    enableFollowUp: false, cancellationToken: slot.Token);
             }
         }
         catch (OperationCanceledException)

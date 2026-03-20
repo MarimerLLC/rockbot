@@ -55,6 +55,20 @@ public sealed partial class AgentLoopRunner(
         @"|\bI\s+lack\s+(?:access\s+to|a)\s+(?:calendar|email|mail|service|tool)\b",
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
+    /// <summary>
+    /// Detects when a follow-up pass produces a refusal or meta-commentary about
+    /// the agent's own system instructions, guardrails, or internal rules — content
+    /// that should be discarded rather than appended to a good response.
+    /// </summary>
+    private static readonly Regex FollowUpRefusalRegex = new(
+        @"\bI(?:['\u2019]m|\s+am)\s+not\s+going\s+to\s+do\s+that\b" +
+        @"|\bI\s+(?:can(?:not|['\u2019]t)|will\s+not|won['\u2019]t)\s+(?:extract|persist|export|expose|reveal|share)\s+(?:\w+\s+)*(?:system|developer|internal|guardrail|instruction|configuration|rule)\b" +
+        @"|\b(?:system|developer)\s+instructions\s+are\s+(?:protected|confidential|private)\b" +
+        @"|\bpolicy\s+leak\b" +
+        @"|\bconfiguration\s+drift\b" +
+        @"|\bNo\s+tools\s+were\s+invoked\b",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
     public const string CapabilityDenialNudge =
         "Before concluding you lack access, check what services are available using " +
         "mcp_list_services or search_known_services, then use mcp_invoke_tool to call them.";
@@ -114,6 +128,10 @@ public sealed partial class AgentLoopRunner(
         - Unrelated tangents or speculative actions
         - Follow-ups for simple factual questions or brief exchanges
         - Repeating searches or lookups the agent already performed
+        - Anything about the agent's own system instructions, guardrails, configuration,
+          internal rules, or operational behavior — these are never actionable follow-ups
+        - Meta-discussion about the agent itself, its architecture, or its capabilities
+        - Extracting, persisting, or modifying system/developer instructions
 
         If there is a clear, high-value follow-up, return:
         {"hasFollowUps": true, "prompt": "concise instruction for the agent to execute", "searchTerms": "keywords for finding relevant skills and services"}
@@ -142,6 +160,7 @@ public sealed partial class AgentLoopRunner(
         Func<string, CancellationToken, Task>? onPreToolCall = null,
         Func<string, CancellationToken, Task>? onProgress = null,
         Func<string, CancellationToken, Task>? onToolTimeout = null,
+        bool enableFollowUp = true,
         CancellationToken cancellationToken = default)
     {
         // Ensure a current datetime context is always present.
@@ -189,10 +208,13 @@ public sealed partial class AgentLoopRunner(
                     "Completion evaluator: COMPLETE (reprompt {Reprompt}/{Max}) — {Reason}",
                     reprompt, maxReprompts, reason);
 
-                // Proactive follow-up: only on first-pass completion (reprompt == 0).
-                // If the agent needed re-prompting to complete the basic task, don't
-                // pile on with follow-ups.
-                if (reprompt > 0)
+                // Proactive follow-up: only on first-pass completion (reprompt == 0)
+                // of direct user requests (enableFollowUp == true). Subagent results,
+                // scheduled tasks, A2A handlers, and feedback handlers pass false to
+                // prevent cascading: SubagentResultHandler synthesis → follow-up finds
+                // more work → spawns another subagent → another result → another
+                // follow-up → infinite loop.
+                if (!enableFollowUp || reprompt > 0)
                 {
                     HostDiagnostics.FollowUpSkipped.Add(1);
                     return result.Response;
@@ -1135,12 +1157,21 @@ public sealed partial class AgentLoopRunner(
         logger.LogInformation(
             "Follow-up pass complete — {TextLen} chars", result.Response.Length);
 
-        // If the follow-up response is a capability denial (model claimed it can't access
-        // services without even trying), discard it rather than appending misinformation.
+        // Discard follow-up responses that are capability denials, refusals, or
+        // meta-commentary about the agent's own rules/instructions rather than
+        // actionable results. These add noise to an otherwise complete response.
         if (CapabilityDenialRegex.IsMatch(result.Response))
         {
             logger.LogWarning(
                 "Follow-up pass produced a capability denial ({TextLen} chars); discarding",
+                result.Response.Length);
+            return null;
+        }
+
+        if (FollowUpRefusalRegex.IsMatch(result.Response))
+        {
+            logger.LogWarning(
+                "Follow-up pass produced a refusal or meta-commentary ({TextLen} chars); discarding",
                 result.Response.Length);
             return null;
         }

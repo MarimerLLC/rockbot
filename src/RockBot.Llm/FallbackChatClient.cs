@@ -17,7 +17,9 @@ public sealed class FallbackChatClient : IChatClient
     private readonly IReadOnlyList<(string ModelId, IChatClient Client)> _entries;
     private readonly ILogger _logger;
     private readonly bool[] _degraded;
+    private readonly DateTimeOffset[] _degradedAt;
     private readonly TimeSpan _retryDelay;
+    private readonly TimeSpan _cooldownPeriod;
     private readonly int _maxRetries;
     private volatile int _activeIndex;
 
@@ -25,14 +27,17 @@ public sealed class FallbackChatClient : IChatClient
         IReadOnlyList<(string ModelId, IChatClient Client)> entries,
         ILogger logger,
         TimeSpan? retryDelay = null,
-        int maxRetries = 1)
+        int maxRetries = 1,
+        TimeSpan? cooldownPeriod = null)
     {
         if (entries.Count == 0)
             throw new ArgumentException("At least one entry is required.", nameof(entries));
         _entries = entries;
         _logger = logger;
         _degraded = new bool[entries.Count];
+        _degradedAt = new DateTimeOffset[entries.Count];
         _retryDelay = retryDelay ?? TimeSpan.FromSeconds(1);
+        _cooldownPeriod = cooldownPeriod ?? TimeSpan.FromMinutes(5);
         _maxRetries = maxRetries;
     }
 
@@ -43,6 +48,10 @@ public sealed class FallbackChatClient : IChatClient
     {
         // Materialize once to avoid re-enumeration across retries/fallbacks.
         var messages = chatMessages as IReadOnlyList<ChatMessage> ?? chatMessages.ToList();
+
+        // Cooldown recovery: if a degraded model's cooldown has elapsed, restore it
+        // so the next iteration can retry the primary before falling back.
+        RecoverCooledDownModels();
 
         for (int i = _activeIndex; i < _entries.Count; i++)
         {
@@ -77,9 +86,10 @@ public sealed class FallbackChatClient : IChatClient
                     if (category is FallbackErrorCategory.QuotaExhausted or FallbackErrorCategory.HardError)
                     {
                         _degraded[i] = true;
+                        _degradedAt[i] = DateTimeOffset.UtcNow;
                         _logger.LogWarning(
-                            "FallbackChatClient: model {ModelId} marked degraded ({Category}); switching to next",
-                            modelId, category);
+                            "FallbackChatClient: model {ModelId} marked degraded ({Category}); will retry after {Cooldown}",
+                            modelId, category, _cooldownPeriod);
 
                         // Advance _activeIndex past this permanently-degraded slot
                         if (i == _activeIndex)
@@ -139,6 +149,32 @@ public sealed class FallbackChatClient : IChatClient
     {
         foreach (var (_, client) in _entries)
             client.Dispose();
+    }
+
+    private void RecoverCooledDownModels()
+    {
+        var now = DateTimeOffset.UtcNow;
+        for (int i = 0; i < _entries.Count; i++)
+        {
+            if (!_degraded[i]) continue;
+            if (now - _degradedAt[i] < _cooldownPeriod) continue;
+
+            _degraded[i] = false;
+            _logger.LogInformation(
+                "FallbackChatClient: model {ModelId} cooldown elapsed; restored to active",
+                _entries[i].ModelId);
+        }
+
+        // Reset _activeIndex to the earliest non-degraded model so the primary
+        // is retried when it recovers, rather than staying pinned to the fallback.
+        for (int i = 0; i < _entries.Count; i++)
+        {
+            if (!_degraded[i])
+            {
+                _activeIndex = i;
+                return;
+            }
+        }
     }
 
     private static FallbackErrorCategory ClassifyException(Exception ex)

@@ -114,7 +114,8 @@ internal sealed class SubagentResultHandler(
         try
         {
             var finalContent = await agentLoopRunner.RunAsync(
-                chatMessages, chatOptions, message.PrimarySessionId, cancellationToken: ct);
+                chatMessages, chatOptions, message.PrimarySessionId,
+                enableFollowUp: false, cancellationToken: ct);
 
             await conversationMemory.AddTurnAsync(
                 message.PrimarySessionId,
