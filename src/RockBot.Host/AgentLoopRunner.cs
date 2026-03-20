@@ -1147,7 +1147,10 @@ public sealed partial class AgentLoopRunner(
             "look up contacts, etc. Do not claim you lack access without trying. " +
             "Report what you found concisely."));
 
-        // Run one more pass through the tool loop.
+        // Run one more pass through the tool loop. Track message count so we can
+        // detect whether any tool calls were actually made during the pass.
+        var preFollowUpMessageCount = chatMessages.Count;
+
         var result = modelBehavior.UseTextBasedToolCalling
             ? await RunTextBasedLoopAsync(
                 chatMessages, chatOptions, sessionId, null, tier,
@@ -1155,8 +1158,33 @@ public sealed partial class AgentLoopRunner(
             : await RunNativeLoopAsync(
                 chatMessages, chatOptions, null, tier, cancellationToken);
 
+        // Native path: FunctionCallContent in response messages.
+        // Text-based path: tool results appear as "[Tool result for ...]" user messages.
+        var addedMessages = chatMessages.Skip(preFollowUpMessageCount);
+        var followUpToolCalls = addedMessages
+            .SelectMany(m => m.Contents.OfType<FunctionCallContent>())
+            .Count();
+        if (followUpToolCalls == 0)
+        {
+            followUpToolCalls = addedMessages
+                .Count(m => m.Role == ChatRole.User
+                    && m.Text?.StartsWith("[Tool result for ", StringComparison.Ordinal) == true);
+        }
+
         logger.LogInformation(
-            "Follow-up pass complete — {TextLen} chars", result.Response.Length);
+            "Follow-up pass complete — {TextLen} chars, {ToolCalls} tool call(s)",
+            result.Response.Length, followUpToolCalls);
+
+        // Discard follow-up passes that didn't actually invoke any tools — these are
+        // pure narration, refusals, or re-statements of the original answer. A useful
+        // follow-up should have called at least one tool to gather new information.
+        if (followUpToolCalls == 0)
+        {
+            logger.LogWarning(
+                "Follow-up pass made no tool calls ({TextLen} chars); discarding as commentary",
+                result.Response.Length);
+            return null;
+        }
 
         // Discard follow-up responses that are capability denials, refusals, or
         // meta-commentary about the agent's own rules/instructions rather than
