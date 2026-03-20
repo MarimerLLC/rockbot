@@ -1307,19 +1307,19 @@ public sealed class AgentLoopRunner(
                 if (candidates.Count > 0)
                 {
                     var sb = new StringBuilder(
-                        "Available services relevant to this task — call them via mcp_invoke_tool:\n");
+                        "Available services relevant to this task:\n");
                     foreach (var c in candidates)
                     {
                         sb.AppendLine($"\n### {c.Id} ({c.Type}): {c.Summary}");
-                        if (c.Type == "mcp" && c.TopItems.Count > 0)
+                        if (c.Type == "mcp")
                         {
-                            sb.AppendLine($"Available tools (use with mcp_invoke_tool server_name=\"{c.Id}\"):");
-                            foreach (var tool in c.TopItems)
-                                sb.AppendLine($"  - {tool}");
+                            sb.AppendLine($"  Sample tools: {string.Join(", ", c.TopItems)}");
+                            sb.AppendLine($"  IMPORTANT: Call mcp_get_service_details(server_name=\"{c.Id}\") " +
+                                "to see ALL available tools before invoking. Do NOT guess tool names.");
                         }
                         else if (c.TopItems.Count > 0)
                         {
-                            sb.AppendLine($"Top skills: {string.Join(", ", c.TopItems)}");
+                            sb.AppendLine($"  Top skills: {string.Join(", ", c.TopItems)}");
                         }
                     }
                     chatMessages.Add(new ChatMessage(ChatRole.System, sb.ToString()));
