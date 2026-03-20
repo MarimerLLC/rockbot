@@ -364,6 +364,14 @@ internal sealed class UserMessageHandler(
 
             logger.LogInformation("Native LLM loop started for session {SessionId}", sessionId);
 
+            using var progressCtx = ToolProgressNotifier.SetContext(new ToolProgressContext
+            {
+                SessionId = sessionId,
+                AgentName = agent.Name,
+                CorrelationId = correlationId,
+                ReplyTo = replyTo
+            });
+
             var lastProgressAt = DateTimeOffset.UtcNow;
 
             var text = await agentLoopRunner.RunAsync(
@@ -467,6 +475,14 @@ internal sealed class UserMessageHandler(
             await using var slot = await workSerializer.AcquireForUserAsync(ct);
 
             logger.LogInformation("Background tool loop started for session {SessionId}", sessionId);
+
+            using var progressCtx = ToolProgressNotifier.SetContext(new ToolProgressContext
+            {
+                SessionId = sessionId,
+                AgentName = agent.Name,
+                CorrelationId = correlationId,
+                ReplyTo = replyTo
+            });
 
             var lastProgressAt = DateTimeOffset.UtcNow;
 

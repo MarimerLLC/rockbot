@@ -12,10 +12,15 @@ namespace RockBot.Host;
 /// When true the task is automatically cancelled after it fires once.
 /// Use this for one-time reminders and deferred actions.
 /// </param>
+/// <param name="IsSystemTask">
+/// When true the task is a system-internal background task (e.g. heartbeat patrol)
+/// whose results are collapsed in the UI. User-created tasks default to false.
+/// </param>
 public sealed record ScheduledTask(
     string Name,
     string CronExpression,
     string Description,
     DateTimeOffset CreatedAt,
     DateTimeOffset? LastFiredAt = null,
-    bool RunOnce = false);
+    bool RunOnce = false,
+    bool IsSystemTask = false);

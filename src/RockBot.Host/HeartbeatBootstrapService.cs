@@ -35,7 +35,8 @@ internal sealed class HeartbeatBootstrapService(
             CronExpression: options.Value.CronExpression,
             Description: "Run the heartbeat patrol: check calendar, email, active plans, and scheduled task health.",
             CreatedAt: patrol?.CreatedAt ?? DateTimeOffset.UtcNow,
-            RunOnce: false), ct);
+            RunOnce: false,
+            IsSystemTask: true), ct);
 
         var action = patrol is null ? "Registered" : "Updated";
         logger.LogInformation("{Action} heartbeat patrol (cron: {Cron})", action, options.Value.CronExpression);
