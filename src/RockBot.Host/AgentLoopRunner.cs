@@ -219,6 +219,18 @@ public sealed partial class AgentLoopRunner(
             if (!enableCompletionEval || maxReprompts == 0 || reprompt == maxReprompts)
                 return result.Response;
 
+            // Skip evaluation when the agent delegated to a subagent. Spawning a
+            // subagent is intentional delegation — the SubagentResultHandler will
+            // synthesize and publish the result. Re-prompting here would race with
+            // that handler and produce duplicate answers.
+            if (chatMessages.Any(m => m.Contents.OfType<FunctionCallContent>()
+                    .Any(fc => fc.Name is "spawn_subagent" or "invoke_agent")))
+            {
+                HostDiagnostics.CompletionCheckSkipped.Add(1);
+                logger.LogInformation("Completion evaluator: SKIPPED (delegated to subagent/agent)");
+                return result.Response;
+            }
+
             // Evaluate whether the response actually completes the original request.
             var (complete, reason) = await EvaluateCompletionAsync(
                 originalUserRequest, result.Response, cancellationToken);

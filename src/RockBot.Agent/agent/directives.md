@@ -108,10 +108,15 @@ at a locked input box.
 - Exploratory, research-oriented, or multi-source data tasks.
 - Anything the user asks to do "in the background" or "while we talk."
 
-#### Handle directly (no subagent) only when
+#### Handle directly (no subagent) when
 
 - The response requires **zero tool calls** — purely conversational, drawn from
   context already in your window.
+- The task is a **simple, closed question** that needs one or two tool calls to
+  answer — e.g. "when does my class end?", "what's on my calendar today?",
+  "do I have any unread emails from Bob?" For these, the subagent overhead
+  (spawning, context building, synthesis) takes longer than just calling the
+  tool directly. Answer the question, done.
 - The task requires exactly **one fast local tool call** (a single memory lookup,
   a single working memory read) where the round-trip is under a second.
 - You are synthesizing results that subagents have already returned — reading
