@@ -11,8 +11,10 @@ public class FallbackChatClientTests
     // Zero delay + zero max-retries for the retry test (1 retry = attempt 0 then attempt 1)
     private static FallbackChatClient Build(
         IReadOnlyList<(string ModelId, IChatClient Client)> entries,
-        int maxRetries = 1) =>
-        new(entries, NullLogger.Instance, retryDelay: TimeSpan.Zero, maxRetries: maxRetries);
+        int maxRetries = 1,
+        TimeSpan? cooldownPeriod = null) =>
+        new(entries, NullLogger.Instance, retryDelay: TimeSpan.Zero, maxRetries: maxRetries,
+            cooldownPeriod: cooldownPeriod);
 
     private static ChatResponse OkResponse(string text = "ok") =>
         new(new ChatMessage(ChatRole.Assistant, text));
@@ -171,6 +173,63 @@ public class FallbackChatClientTests
 
         await Assert.ThrowsExactlyAsync<InvalidOperationException>(
             () => client.GetResponseAsync([]));
+    }
+
+    [TestMethod]
+    public async Task CooldownRecovery_RestoresDegradedModelAfterElapsed()
+    {
+        var first  = new SequentialStub();
+        first.Enqueue(HttpEx(HttpStatusCode.PaymentRequired)); // call 1: degrade
+        first.Enqueue(OkResponse("recovered"));                 // call 3: after cooldown
+
+        var second = new FixedStub(response: OkResponse("from-second"));
+
+        // Use a tiny cooldown so the test doesn't block
+        var client = Build([("m1", first), ("m2", second)], maxRetries: 0,
+            cooldownPeriod: TimeSpan.FromMilliseconds(50));
+
+        // Call 1: first fails → falls back to second
+        var r1 = await client.GetResponseAsync([]);
+        Assert.AreEqual("from-second", r1.Messages[^1].Text);
+
+        // Call 2: first is still degraded (cooldown not elapsed) → second
+        var r2 = await client.GetResponseAsync([]);
+        Assert.AreEqual("from-second", r2.Messages[^1].Text);
+
+        // Wait for cooldown to elapse
+        await Task.Delay(TimeSpan.FromMilliseconds(100));
+
+        // Call 3: first should be recovered and retried
+        var r3 = await client.GetResponseAsync([]);
+        Assert.AreEqual("recovered", r3.Messages[^1].Text);
+        Assert.AreEqual(2, first.CallCount);  // degraded call + recovered call
+    }
+
+    [TestMethod]
+    public async Task CooldownRecovery_RepeatsAfterRedegradation()
+    {
+        var first  = new SequentialStub();
+        first.Enqueue(HttpEx(HttpStatusCode.PaymentRequired)); // call 1: degrade
+        first.Enqueue(HttpEx(HttpStatusCode.PaymentRequired)); // call 3: still down after first cooldown
+        first.Enqueue(OkResponse("finally"));                   // call 5: recovered after second cooldown
+
+        var second = new FixedStub(response: OkResponse("fallback"));
+
+        var client = Build([("m1", first), ("m2", second)], maxRetries: 0,
+            cooldownPeriod: TimeSpan.FromMilliseconds(50));
+
+        // Call 1: first fails → fallback
+        await client.GetResponseAsync([]);
+        await Task.Delay(TimeSpan.FromMilliseconds(100));
+
+        // Call 2: cooldown elapsed, retry primary → still down → re-degraded → fallback
+        var r2 = await client.GetResponseAsync([]);
+        Assert.AreEqual("fallback", r2.Messages[^1].Text);
+        await Task.Delay(TimeSpan.FromMilliseconds(100));
+
+        // Call 3: second cooldown elapsed, retry primary → now up
+        var r3 = await client.GetResponseAsync([]);
+        Assert.AreEqual("finally", r3.Messages[^1].Text);
     }
 
     [TestMethod]
