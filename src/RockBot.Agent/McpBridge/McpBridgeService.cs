@@ -431,12 +431,22 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
                     : string.Empty;
 
                 var prompt = $"""
-                    You are summarizing an MCP server's capabilities for an AI agent that must decide which server's tools to use for a given task.
-                    Write a single sentence (15-25 words) that captures what the '{serverName}' MCP server specializes in and what kinds of tasks its tools handle.
-                    Focus on what makes it distinct and when to choose it over other servers.
+                    You are summarizing an MCP server's capabilities for an AI agent that must decide
+                    which server to query for a given task. The agent sees ONLY this summary when
+                    deciding — it does not see individual tool names until it calls mcp_get_service_details.
+
+                    Write 2-4 sentences (40-80 words) for the '{serverName}' MCP server that:
+                    1. State what domain it covers (e.g. email, calendar, file storage, etc.)
+                    2. List the CATEGORIES of operations available (e.g. "search, read, send, and
+                       organize emails; create, update, and delete calendar events; look up contacts")
+                    3. Mention any notable specifics (e.g. multi-account support, specific platforms)
+
+                    The summary must give enough detail that an agent can confidently decide "this is the
+                    server I need for email/calendar/contact tasks" without seeing tool names.
+
                     Based on these tools:
                     {toolList}{promptSection}
-                    Respond with only the sentence, no preamble or explanation.
+                    Respond with only the summary, no preamble or explanation.
                     """;
 
                 var messages = new[] { new ChatMessage(ChatRole.User, prompt) };

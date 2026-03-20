@@ -15,7 +15,7 @@ namespace RockBot.Host;
 /// Reusable LLM tool-calling loop shared by UserMessageHandler, ScheduledTaskHandler,
 /// SubagentRunner, and subagent update handlers.
 /// </summary>
-public sealed class AgentLoopRunner(
+public sealed partial class AgentLoopRunner(
     ILlmClient llmClient,
     IWorkingMemory workingMemory,
     ModelBehavior modelBehavior,
@@ -69,6 +69,7 @@ public sealed class AgentLoopRunner(
     private enum LoopExitReason { ModelStopped, MaxIterationsReached, ConsecutiveTimeouts }
     private readonly record struct LoopResult(string Response, LoopExitReason ExitReason);
     private sealed record CompletionEvalDto(bool Complete, string? Reason);
+    private sealed record FollowUpEvalDto(bool HasFollowUps, string? Prompt, string? SearchTerms);
 
     private const string CompletionEvaluatorPrompt =
         """
@@ -92,6 +93,35 @@ public sealed class AgentLoopRunner(
 
         Return ONLY a valid JSON object — no markdown, no code fences.
         {"complete": true, "reason": "brief explanation"}
+        """;
+
+    private const string FollowUpEvaluatorPrompt =
+        """
+        You are a proactive-opportunity evaluator for a personal AI assistant. The agent
+        just completed the user's request. Your job is to identify ONE high-value follow-up
+        action the agent could take proactively within the current context.
+
+        Good follow-ups:
+        - Looking up or creating a profile for a person mentioned in conversation
+        - Cross-referencing calendar, email, or contacts when a person or event is discussed
+        - Connecting dots the user might not have asked about but would clearly appreciate
+          (e.g. "you mentioned Richard — there's an email from him about X")
+        - Saving contextual information to memory that would be useful later
+
+        Bad follow-ups (do NOT suggest these):
+        - Anything the agent already did in its response
+        - Generic offers ("would you like me to...") — the agent should ACT, not ask
+        - Unrelated tangents or speculative actions
+        - Follow-ups for simple factual questions or brief exchanges
+        - Repeating searches or lookups the agent already performed
+
+        If there is a clear, high-value follow-up, return:
+        {"hasFollowUps": true, "prompt": "concise instruction for the agent to execute", "searchTerms": "keywords for finding relevant skills and services"}
+
+        If the conversation is too simple or there are no valuable follow-ups, return:
+        {"hasFollowUps": false, "prompt": null, "searchTerms": null}
+
+        Return ONLY a valid JSON object — no markdown, no code fences.
         """;
 
     /// <summary>
@@ -158,7 +188,22 @@ public sealed class AgentLoopRunner(
                 logger.LogInformation(
                     "Completion evaluator: COMPLETE (reprompt {Reprompt}/{Max}) — {Reason}",
                     reprompt, maxReprompts, reason);
-                return result.Response;
+
+                // Proactive follow-up: only on first-pass completion (reprompt == 0).
+                // If the agent needed re-prompting to complete the basic task, don't
+                // pile on with follow-ups.
+                if (reprompt > 0)
+                {
+                    HostDiagnostics.FollowUpSkipped.Add(1);
+                    return result.Response;
+                }
+
+                var followUpResult = await RunFollowUpPassAsync(
+                    chatMessages, chatOptions, sessionId, result.Response,
+                    originalUserRequest, tier,
+                    onPreToolCall, onProgress, onToolTimeout, cancellationToken);
+
+                return followUpResult ?? result.Response;
             }
 
             // Not complete — inject continuation and re-enter the loop.
@@ -934,10 +979,21 @@ public sealed class AgentLoopRunner(
 
     private static string StripModelToolTokens(string text)
     {
+        // DeepSeek tool-call boundary tokens
         const string begin = "<｜tool▁calls▁begin｜>";
         var idx = text.IndexOf(begin, StringComparison.Ordinal);
-        return idx >= 0 ? text[..idx] : text;
+        if (idx >= 0) text = text[..idx];
+
+        // GPT-5.x reasoning tokens (startthought:意> ... endthought:意>)
+        text = StripReasoningTokensRegex().Replace(text, "");
+
+        return text;
     }
+
+    [System.Text.RegularExpressions.GeneratedRegex(
+        @"(?:start|end)thought:[^\s>]*>",
+        System.Text.RegularExpressions.RegexOptions.Compiled)]
+    private static partial System.Text.RegularExpressions.Regex StripReasoningTokensRegex();
 
     // ── Tool call description ────────────────────────────────────────────────
 
@@ -1006,6 +1062,144 @@ public sealed class AgentLoopRunner(
         JsonValueKind.Number => element.TryGetInt64(out var l) ? (object)l : element.GetDouble(),
         _ => (object)element
     };
+
+    // ── Follow-up passes ──────────────────────────────────────────────────
+
+    /// <summary>
+    /// After the agent completes the user's request, evaluates whether there are
+    /// proactive follow-up actions worth taking. If so, enriches context with relevant
+    /// skills/services and runs the tool loop once more. Returns the combined response
+    /// (original + follow-up) or null if no follow-up was taken.
+    /// </summary>
+    private async Task<string?> RunFollowUpPassAsync(
+        List<ChatMessage> chatMessages,
+        ChatOptions chatOptions,
+        string? sessionId,
+        string completedResponse,
+        string originalUserRequest,
+        ModelTier tier,
+        Func<string, CancellationToken, Task>? onPreToolCall,
+        Func<string, CancellationToken, Task>? onProgress,
+        Func<string, CancellationToken, Task>? onToolTimeout,
+        CancellationToken cancellationToken)
+    {
+        var maxFollowUps = modelBehavior.MaxFollowUpPassesOverride
+            ?? hostOptions.Value.MaxFollowUpPasses;
+
+        if (maxFollowUps <= 0)
+        {
+            HostDiagnostics.FollowUpSkipped.Add(1);
+            return null;
+        }
+
+        // Build a summary of the conversation for the evaluator — include the last few
+        // turns for context, not just the final response.
+        var recentContext = BuildRecentConversationSummary(chatMessages);
+
+        var followUp = await EvaluateFollowUpAsync(
+            originalUserRequest, completedResponse, recentContext, cancellationToken);
+
+        if (followUp is null || !followUp.HasFollowUps || string.IsNullOrWhiteSpace(followUp.Prompt))
+        {
+            HostDiagnostics.FollowUpNone.Add(1);
+            logger.LogInformation("Follow-up evaluator: no proactive opportunities found");
+            return null;
+        }
+
+        HostDiagnostics.FollowUpTriggered.Add(1);
+        logger.LogInformation(
+            "Follow-up evaluator: found opportunity — {Prompt}", followUp.Prompt);
+
+        // Enrich context with skills/services relevant to the follow-up.
+        var searchTerms = followUp.SearchTerms ?? followUp.Prompt;
+        await EnrichContextForRepromptAsync(
+            chatMessages, originalUserRequest, searchTerms, cancellationToken);
+
+        // Inject the completed response and the follow-up instruction.
+        chatMessages.Add(new ChatMessage(ChatRole.Assistant, completedResponse));
+        chatMessages.Add(new ChatMessage(ChatRole.User,
+            $"Good — you completed my request. Now, while you're in this context, " +
+            $"also do this: {followUp.Prompt}\n\n" +
+            "Use your tools to actually look this up — search emails, check calendar, " +
+            "look up contacts, etc. Do not claim you lack access without trying. " +
+            "Report what you found concisely."));
+
+        // Run one more pass through the tool loop.
+        var result = modelBehavior.UseTextBasedToolCalling
+            ? await RunTextBasedLoopAsync(
+                chatMessages, chatOptions, sessionId, null, tier,
+                onPreToolCall, onProgress, onToolTimeout, cancellationToken)
+            : await RunNativeLoopAsync(
+                chatMessages, chatOptions, null, tier, cancellationToken);
+
+        logger.LogInformation(
+            "Follow-up pass complete — {TextLen} chars", result.Response.Length);
+
+        // Combine the original response with the follow-up.
+        return $"{completedResponse}\n\n{result.Response}";
+    }
+
+    /// <summary>
+    /// Uses a <see cref="ModelTier.Low"/> LLM call to assess whether there are proactive
+    /// follow-up opportunities in the current conversation context. Fails open (returns null)
+    /// on any error.
+    /// </summary>
+    private async Task<FollowUpEvalDto?> EvaluateFollowUpAsync(
+        string originalUserRequest, string agentResponse, string recentContext,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var messages = new List<ChatMessage>
+            {
+                new(ChatRole.System, FollowUpEvaluatorPrompt),
+                new(ChatRole.User,
+                    $"## Original user request\n{originalUserRequest}\n\n" +
+                    $"## Recent conversation context\n{recentContext}\n\n" +
+                    $"## Agent's completed response\n{agentResponse}")
+            };
+
+            var response = await llmClient.GetResponseAsync(
+                messages, ModelTier.Low, new ChatOptions(), cancellationToken);
+            var raw = response.Text?.Trim() ?? string.Empty;
+            var json = ExtractJsonObject(raw);
+
+            if (string.IsNullOrEmpty(json))
+            {
+                logger.LogWarning("Follow-up evaluator: no parseable JSON; skipping");
+                return null;
+            }
+
+            return JsonSerializer.Deserialize<FollowUpEvalDto>(json, s_evalJsonOptions);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            logger.LogWarning(ex, "Follow-up evaluator failed; skipping");
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Builds a brief summary of recent conversation turns for the follow-up evaluator,
+    /// so it has context beyond just the final response.
+    /// </summary>
+    private static string BuildRecentConversationSummary(List<ChatMessage> chatMessages)
+    {
+        var sb = new StringBuilder();
+        // Take the last 6 user/assistant messages for context.
+        var relevant = chatMessages
+            .Where(m => m.Role == ChatRole.User || m.Role == ChatRole.Assistant)
+            .TakeLast(6);
+        foreach (var msg in relevant)
+        {
+            var role = msg.Role == ChatRole.User ? "User" : "Agent";
+            var text = msg.Text ?? string.Empty;
+            if (text.Length > 300)
+                text = text[..300] + "...";
+            sb.AppendLine($"[{role}]: {text}");
+        }
+        return sb.ToString();
+    }
 
     // ── Completion evaluation ───────────────────────────────────────────────
 
@@ -1124,17 +1318,23 @@ public sealed class AgentLoopRunner(
                 var candidates = _serviceSearchIndex.Search(enrichedQuery, maxResults: 3);
                 if (candidates.Count > 0)
                 {
-                    var lines = candidates.Select(c =>
+                    var sb = new StringBuilder(
+                        "Available services relevant to this task:\n");
+                    foreach (var c in candidates)
                     {
-                        var itemsLabel = c.Type == "a2a" ? "top skills" : "top tools";
-                        var items = c.TopItems.Count > 0
-                            ? $", {itemsLabel}: {string.Join(", ", c.TopItems)}"
-                            : string.Empty;
-                        return $"- {c.Id} ({c.Type}): {c.Summary}{items}";
-                    });
-                    chatMessages.Add(new ChatMessage(ChatRole.System,
-                        "Available services relevant to this task (use mcp_invoke_tool to call them):\n" +
-                        string.Join("\n", lines)));
+                        sb.AppendLine($"\n### {c.Id} ({c.Type}): {c.Summary}");
+                        if (c.Type == "mcp")
+                        {
+                            sb.AppendLine($"  Sample tools: {string.Join(", ", c.TopItems)}");
+                            sb.AppendLine($"  IMPORTANT: Call mcp_get_service_details(server_name=\"{c.Id}\") " +
+                                "to see ALL available tools before invoking. Do NOT guess tool names.");
+                        }
+                        else if (c.TopItems.Count > 0)
+                        {
+                            sb.AppendLine($"  Top skills: {string.Join(", ", c.TopItems)}");
+                        }
+                    }
+                    chatMessages.Add(new ChatMessage(ChatRole.System, sb.ToString()));
                     logger.LogInformation(
                         "Completion re-prompt: injected {Count} service hint(s) via enriched search: {Services}",
                         candidates.Count, string.Join(", ", candidates.Select(c => c.Id)));
