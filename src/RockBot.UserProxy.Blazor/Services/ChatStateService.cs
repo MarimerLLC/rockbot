@@ -23,7 +23,12 @@ public sealed class ChatStateService
     private readonly object _lock = new();
     private string? _currentThinkingMessage;
     private bool _isProcessing;
-    private string? _activeActivityLogId;
+
+    /// <summary>
+    /// Active activity log bubbles keyed by source key (category + agentName).
+    /// Multiple sources can accumulate concurrently (e.g. primary + subagent).
+    /// </summary>
+    private readonly Dictionary<string, string> _activeActivityLogs = new();
 
     public event Action? OnStateChanged;
 
@@ -79,9 +84,9 @@ public sealed class ChatStateService
     {
         lock (_lock)
         {
-            // When a PrimaryFinal message arrives, close any active activity log
+            // When a PrimaryFinal message arrives, close the primary activity log
             if (category == MessageCategory.PrimaryFinal)
-                _activeActivityLogId = null;
+                _activeActivityLogs.Remove(ActivityLogKey(MessageCategory.PrimaryProgress, null));
 
             _messages.Add(new ChatMessage
             {
@@ -103,16 +108,22 @@ public sealed class ChatStateService
     }
 
     /// <summary>
-    /// Appends an entry to the active WIP activity log bubble. Creates the bubble
-    /// if one doesn't exist yet for the current processing cycle.
+    /// Appends an entry to an activity log bubble for the given source.
+    /// Creates the bubble if one doesn't exist yet. Multiple concurrent sources
+    /// (primary, subagent-X, scheduled-system) each get their own activity log.
     /// </summary>
-    public void AppendActivityLogEntry(string content)
+    public void AppendActivityLogEntry(
+        string content,
+        MessageCategory category = MessageCategory.PrimaryProgress,
+        string? agentName = null)
     {
         lock (_lock)
         {
+            var key = ActivityLogKey(category, agentName);
+
             ChatMessage? logBubble = null;
-            if (_activeActivityLogId is not null)
-                logBubble = _messages.FirstOrDefault(m => m.MessageId == _activeActivityLogId);
+            if (_activeActivityLogs.TryGetValue(key, out var logId))
+                logBubble = _messages.FirstOrDefault(m => m.MessageId == logId);
 
             if (logBubble is null)
             {
@@ -121,12 +132,13 @@ public sealed class ChatStateService
                     Content = content,
                     IsFromUser = false,
                     Timestamp = DateTime.UtcNow,
-                    Category = MessageCategory.PrimaryProgress,
+                    AgentName = agentName,
+                    Category = category,
                     IsActivityLog = true,
                     IsExpanded = false
                 };
                 _messages.Add(logBubble);
-                _activeActivityLogId = logBubble.MessageId;
+                _activeActivityLogs[key] = logBubble.MessageId;
             }
 
             logBubble.ActivityLogEntries.Add(new ActivityLogEntry(content, DateTime.UtcNow));
@@ -177,7 +189,7 @@ public sealed class ChatStateService
         if (isProcessing)
         {
             _currentThinkingMessage = null;
-            _activeActivityLogId = null;
+            _activeActivityLogs.Clear();
         }
         NotifyStateChanged();
     }
@@ -196,6 +208,9 @@ public sealed class ChatStateService
             });
         NotifyStateChanged();
     }
+
+    private static string ActivityLogKey(MessageCategory category, string? agentName)
+        => $"{category}:{agentName ?? ""}";
 
     private void NotifyStateChanged() => OnStateChanged?.Invoke();
 }

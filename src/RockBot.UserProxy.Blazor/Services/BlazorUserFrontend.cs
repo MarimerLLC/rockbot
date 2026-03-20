@@ -17,10 +17,9 @@ public sealed class BlazorUserFrontend(ChatStateService chatState) : IUserFronte
         }
         else
         {
-            // Intermediate progress — update thinking indicator AND add a bubble so
-            // all agent traffic is visible for debugging.
-            chatState.SetThinkingMessage(reply.Content);
-            chatState.AddAgentReply(reply, category);
+            // Non-final progress — append to the source's activity log bubble
+            // instead of creating a separate bubble per message
+            chatState.AppendActivityLogEntry(reply.Content, category, reply.AgentName);
         }
         return Task.CompletedTask;
     }
@@ -40,7 +39,7 @@ public sealed class BlazorUserFrontend(ChatStateService chatState) : IUserFronte
             return MessageCategory.ScheduledUser;
 
         if (reply.AgentName?.StartsWith("subagent-", StringComparison.OrdinalIgnoreCase) == true)
-            return reply.IsFinal ? MessageCategory.SubagentActivity : MessageCategory.SubagentActivity;
+            return MessageCategory.SubagentActivity;
 
         if (reply.IsFinal)
             return MessageCategory.PrimaryFinal;

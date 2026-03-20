@@ -28,7 +28,7 @@
             {
                 <!-- Activity log bubble: collapsed one-liner with spinner, expandable to full log -->
                 <div class="message-wrapper mb-3 agent-message">
-                    <div class="message-bubble activity-log-bubble p-2 rounded @(message.IsExpanded ? "expanded" : "collapsed")"
+                    <div class="message-bubble activity-log-bubble p-2 rounded category-@message.Category.ToString().ToLowerInvariant() @(message.IsExpanded ? "expanded" : "collapsed")"
                          @onclick="() => ChatState.ToggleExpanded(message.MessageId)">
                         <div class="activity-log-header">
                             <span class="chevron-indicator @(message.IsExpanded ? "open" : "")">&#9654;</span>
@@ -36,7 +36,16 @@
                             {
                                 <span class="spinner-border spinner-border-sm me-1" role="status" aria-hidden="true"></span>
                             }
-                            <span class="activity-log-summary">@TruncateText(message.Content, 100)</span>
+                            @if (message.Category != MessageCategory.PrimaryProgress)
+                            {
+                                <span class="category-badge">@GetCategoryLabel(message.Category)</span>
+                            }
+                            @if (!string.IsNullOrEmpty(message.AgentName))
+                            {
+                                <span class="collapsible-agent-name">@message.AgentName</span>
+                            }
+                            <span class="activity-log-summary">@TruncateText(message.Content, 80)</span>
+                            <span class="activity-log-count">(@(message.ActivityLogEntries.Count))</span>
                         </div>
                         @if (message.IsExpanded)
                         {

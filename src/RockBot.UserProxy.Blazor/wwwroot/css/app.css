@@ -342,6 +342,12 @@ body.dark-mode .btn-feedback:hover:not(:disabled) {
     flex: 1;
 }
 
+.activity-log-count {
+    flex-shrink: 0;
+    font-size: 0.75rem;
+    color: #9ca3af;
+}
+
 .activity-log-entries {
     margin-top: 0.5rem;
     padding-top: 0.5rem;
@@ -488,6 +494,10 @@ body.dark-mode .activity-log-entry {
 }
 
 body.dark-mode .entry-time {
+    color: #6b7280;
+}
+
+body.dark-mode .activity-log-count {
     color: #6b7280;
 }
 
