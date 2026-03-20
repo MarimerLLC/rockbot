@@ -113,6 +113,13 @@ internal sealed class SubagentResultHandler(
 
         try
         {
+            using var progressCtx = ToolProgressNotifier.SetContext(new ToolProgressContext
+            {
+                SessionId = message.PrimarySessionId,
+                AgentName = agent.Name,
+                ReplyTo = UserProxyTopics.UserResponse
+            });
+
             var finalContent = await agentLoopRunner.RunAsync(
                 chatMessages, chatOptions, message.PrimarySessionId,
                 enableFollowUp: false, cancellationToken: ct);

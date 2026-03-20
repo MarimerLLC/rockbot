@@ -151,6 +151,13 @@ internal sealed class A2ATaskResultHandler(
 
         try
         {
+            using var progressCtx = ToolProgressNotifier.SetContext(new ToolProgressContext
+            {
+                SessionId = rawSessionId,
+                AgentName = agent.Name,
+                ReplyTo = UserProxyTopics.UserResponse
+            });
+
             var finalContent = await agentLoopRunner.RunAsync(
                 chatMessages, chatOptions, rawSessionId,
                 enableFollowUp: false, cancellationToken: ct);

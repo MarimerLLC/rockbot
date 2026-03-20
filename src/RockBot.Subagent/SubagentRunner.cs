@@ -7,6 +7,7 @@ using RockBot.Memory;
 using RockBot.Messaging;
 using RockBot.Skills;
 using RockBot.Tools;
+using RockBot.UserProxy;
 
 namespace RockBot.Subagent;
 
@@ -153,6 +154,13 @@ internal sealed class SubagentRunner(
 
         try
         {
+            using var progressCtx = ToolProgressNotifier.SetContext(new ToolProgressContext
+            {
+                SessionId = primarySessionId,
+                AgentName = $"subagent-{taskId}",
+                ReplyTo = UserProxy.UserProxyTopics.UserResponse
+            });
+
             finalOutput = await agentLoopRunner.RunAsync(
                 chatMessages, chatOptions, subagentSessionId,
                 tier: tier, enableFollowUp: false, enableCompletionEval: false,

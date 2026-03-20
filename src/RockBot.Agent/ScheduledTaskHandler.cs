@@ -93,12 +93,21 @@ internal sealed class ScheduledTaskHandler(
             return;
         }
 
+        var replySessionId = message.IsSystemTask ? "scheduled-system" : "scheduled";
+
         string finalText;
         try
         {
             // Use slot.Token so a new user message can preempt this task cleanly.
             await using (slot)
             {
+                using var progressCtx = ToolProgressNotifier.SetContext(new ToolProgressContext
+                {
+                    SessionId = replySessionId,
+                    AgentName = agent.Name,
+                    ReplyTo = UserProxyTopics.UserResponse
+                });
+
                 finalText = await agentLoopRunner.RunAsync(
                     chatMessages, chatOptions, sessionId: sessionId,
                     enableFollowUp: false, cancellationToken: slot.Token);
@@ -133,7 +142,7 @@ internal sealed class ScheduledTaskHandler(
         var reply = new AgentReply
         {
             Content = finalText,
-            SessionId = message.IsSystemTask ? "scheduled-system" : "scheduled",
+            SessionId = replySessionId,
             AgentName = agent.Name,
             IsFinal = true
         };

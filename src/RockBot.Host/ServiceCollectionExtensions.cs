@@ -30,6 +30,7 @@ public static class ServiceCollectionExtensions
         builder.Build();
 
         services.AddTransient<ILlmClient, LlmClient>();
+        services.AddSingleton<IToolProgressNotifier, ToolProgressNotifier>();
         services.AddTransient<AgentLoopRunner>();
         services.AddScoped<AgentContextBuilder>();
         services.AddSingleton<SessionStartTracker>();
