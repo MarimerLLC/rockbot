@@ -6,7 +6,7 @@ using RockBot.Host;
 namespace RockBot.A2A;
 
 /// <summary>
-/// Generates a one-sentence LLM summary of an <see cref="AgentCard"/>'s capabilities,
+/// Generates a 2-4 sentence LLM summary of an <see cref="AgentCard"/>'s capabilities,
 /// following the same pattern used for MCP server summaries.
 /// Falls back to the card's description or a skill-list sentence if the LLM is unavailable.
 /// </summary>
@@ -40,12 +40,21 @@ internal sealed class AgentCardSummarizer(
                 : string.Empty;
 
             var prompt = $"""
-                You are summarizing an AI agent's capabilities for another AI agent that must decide which agent to delegate tasks to.
-                Write a single sentence (15-25 words) that captures what the '{card.AgentName}' agent specializes in and what kinds of requests it should handle.
-                Focus on what makes it distinct and when to choose it over other agents.{descLine}
+                You are summarizing an AI agent's capabilities for another AI agent that must decide
+                which agent to delegate tasks to. The agent sees ONLY this summary when deciding —
+                it does not see skill details until it calls get_agent_details.
+
+                Write 2-4 sentences (40-80 words) for the '{card.AgentName}' agent that:
+                1. State what domain or problem space it covers
+                2. List the CATEGORIES of tasks it can handle (e.g. "research and summarize topics,
+                   draft documents, analyze data")
+                3. Mention any notable specifics (e.g. specialized knowledge, integrations, platforms)
+
+                The summary must give enough detail that another agent can confidently decide "this is
+                the agent I need for X" without seeing individual skill details.{descLine}
                 Skills:
                 {skillBlock}
-                Respond with only the sentence, no preamble or explanation.
+                Respond with only the summary, no preamble or explanation.
                 """;
 
             var messages = new[] { new ChatMessage(ChatRole.User, prompt) };
