@@ -197,6 +197,86 @@ public class KeywordTierSelectorTests
             "High-keyword prompt should have a higher complexity score");
     }
 
+    // ── Word-boundary matching tests ─────────────────────────────────────────
+
+    [TestMethod]
+    [DataRow("to", "tomorrow", false, DisplayName = "\"to\" must not match inside \"tomorrow\"")]
+    [DataRow("to", "go to bed", true, DisplayName = "\"to\" matches as standalone word")]
+    [DataRow("try", "country", false, DisplayName = "\"try\" must not match inside \"country\"")]
+    [DataRow("try", "please try this", true, DisplayName = "\"try\" matches as standalone word")]
+    [DataRow("rest", "restoration", false, DisplayName = "\"rest\" must not match inside \"restoration\"")]
+    [DataRow("rest", "use rest api", true, DisplayName = "\"rest\" matches as standalone word")]
+    [DataRow("add", "address", false, DisplayName = "\"add\" must not match inside \"address\"")]
+    [DataRow("add", "add a feature", true, DisplayName = "\"add\" matches as standalone word")]
+    [DataRow("is", "history", false, DisplayName = "\"is\" must not match inside \"history\"")]
+    [DataRow("is", "is it ready", true, DisplayName = "\"is\" matches at start of text")]
+    [DataRow("compare", "compare the options", true, DisplayName = "\"compare\" matches at word boundary")]
+    [DataRow("trade off", "consider the trade off here", true, DisplayName = "multi-word phrase matches")]
+    [DataRow("async", "use async tasks", true, DisplayName = "\"async\" matches as standalone word")]
+    [DataRow("define", "define photosynthesis", true, DisplayName = "\"define\" matches without trailing space")]
+    [DataRow("define", "predefined", false, DisplayName = "\"define\" must not match inside \"predefined\"")]
+    public void ContainsWholePhrase_EnforcesWordBoundaries(
+        string keyword, string text, bool expected)
+    {
+        var actual = KeywordTierSelector.ContainsWholePhrase(text, keyword);
+        Assert.AreEqual(expected, actual,
+            $"ContainsWholePhrase(\"{text}\", \"{keyword}\") should be {expected}");
+    }
+
+    [TestMethod]
+    public void SelectTier_SubstringKeywordDoesNotInflateScore()
+    {
+        // "when is my flight tomorrow?" should not be inflated by substring matches
+        // against short keywords like "to", "is", etc. Even if such keywords were
+        // present in a runtime config, word-boundary matching prevents false hits.
+        var result = _selector.Classify("when is my flight tomorrow?");
+
+        // No high-signal keywords should match in this simple travel question
+        Assert.AreEqual(0, result.MatchedHighKeywords.Count,
+            "Simple travel question should not match any high-signal keywords");
+    }
+
+    // ── Config-file tests ─────────────────────────────────────────────────────
+
+    [TestMethod]
+    public void SelectTier_WithConfigFile_ShortKeywordsFiltered()
+    {
+        var tempDir = Path.Combine(Path.GetTempPath(), Path.GetRandomFileName());
+        Directory.CreateDirectory(tempDir);
+        try
+        {
+            // Config with short keywords that should be filtered out
+            var configJson = """
+                {
+                    "version": 1,
+                    "highSignalKeywords": ["to", "is", "analyze", "ok", "design", "hi"],
+                    "lowSignalKeywords": ["what is", "a", "define"]
+                }
+                """;
+            File.WriteAllText(Path.Combine(tempDir, "tier-selector.json"), configJson);
+
+            var options = Options.Create(new AgentProfileOptions { BasePath = tempDir });
+            var selector = new KeywordTierSelector(options, NullLogger<KeywordTierSelector>.Instance);
+
+            // "analyze" and "design" should survive filtering; "to", "is", "ok", "hi" should not
+            var result = selector.Classify(
+                "Analyze the design of this system.");
+
+            Assert.IsTrue(result.MatchedHighKeywords.Contains("analyze"),
+                "\"analyze\" (≥3 chars) should survive keyword filtering");
+            Assert.IsTrue(result.MatchedHighKeywords.Contains("design"),
+                "\"design\" (≥3 chars) should survive keyword filtering");
+            Assert.IsFalse(result.MatchedHighKeywords.Contains("to"),
+                "\"to\" (<3 chars) should be filtered out");
+            Assert.IsFalse(result.MatchedHighKeywords.Contains("is"),
+                "\"is\" (<3 chars) should be filtered out");
+        }
+        finally
+        {
+            Directory.Delete(tempDir, recursive: true);
+        }
+    }
+
     [TestMethod]
     public void SelectTier_WithMissingConfigFile_BehavesLikeCompiledDefaults()
     {
