@@ -314,7 +314,17 @@ public sealed partial class AgentLoopRunner(
             logger.LogInformation("Added pre-fetched first response to context for native path");
         }
 
-        var response = await llmClient.GetResponseAsync(chatMessages, tier, chatOptions, cancellationToken);
+        ChatResponse response;
+        try
+        {
+            response = await llmClient.GetResponseAsync(chatMessages, tier, chatOptions, cancellationToken);
+        }
+        catch (ClientResultException ex)
+            when (ex.Status == 400 && ex.Message.Contains("content_filter", StringComparison.OrdinalIgnoreCase))
+        {
+            LogContentFilterDiagnostics(chatMessages, ex);
+            throw;
+        }
 
         // Append response messages to chatMessages so re-prompts have full tool-call history.
         chatMessages.AddRange(response.Messages);
@@ -463,6 +473,12 @@ public sealed partial class AgentLoopRunner(
                         used, max);
                     TrimLargeToolResults(chatMessages, max);
                     response = await llmClient.GetResponseAsync(chatMessages, tier, chatOptions, cancellationToken);
+                }
+                catch (ClientResultException ex)
+                    when (ex.Status == 400 && ex.Message.Contains("content_filter", StringComparison.OrdinalIgnoreCase))
+                {
+                    LogContentFilterDiagnostics(chatMessages, ex);
+                    throw;
                 }
 
                 sw.Stop();
@@ -887,6 +903,44 @@ public sealed partial class AgentLoopRunner(
     }
 
     // ── Logging ──────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Dumps the full chat message context when Azure's content filter rejects the prompt,
+    /// so we can identify the offending text after the fact.
+    /// </summary>
+    private void LogContentFilterDiagnostics(List<ChatMessage> chatMessages, ClientResultException ex)
+    {
+        var roleCounts = chatMessages
+            .GroupBy(m => m.Role.Value)
+            .Select(g => $"{g.Key}={g.Count()}")
+            .ToArray();
+
+        logger.LogWarning(ex,
+            "Content filter triggered on prompt. Message breakdown: {Roles} ({Total} total)",
+            string.Join(", ", roleCounts), chatMessages.Count);
+
+        const int maxTextLen = 600;
+
+        for (var i = 0; i < chatMessages.Count; i++)
+        {
+            var msg = chatMessages[i];
+            var text = msg.Text ?? string.Empty;
+
+            // For tool results, also surface the function name from FunctionResultContent.
+            var functionInfo = string.Empty;
+            var frc = msg.Contents.OfType<FunctionResultContent>().FirstOrDefault();
+            if (frc is not null)
+                functionInfo = $" fn={frc.CallId}";
+
+            var truncated = text.Length > maxTextLen
+                ? $"{text[..maxTextLen]}... [{text.Length} chars total]"
+                : text;
+
+            logger.LogWarning(
+                "  ContentFilter[{Index}] role={Role}{FunctionInfo} ({Length} chars): {Text}",
+                i, msg.Role, functionInfo, text.Length, truncated);
+        }
+    }
 
     private void LogResponseMessages(ChatResponse response, string iterationLabel)
     {
