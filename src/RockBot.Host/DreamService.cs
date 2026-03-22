@@ -1791,6 +1791,19 @@ internal sealed class DreamService : IHostedService, IDisposable
         - antiPatterns: include entries for any systematic misroute pattern detected, even when
           noChangeNeeded is true. Each content must be ≤ 120 chars; use detail for full explanation.
         - When routing looks correct and no anti-patterns found: {"noChangeNeeded": true, "antiPatterns": []}
+
+        Keyword quality rules (CRITICAL — keywords that violate these will be silently dropped):
+        - Every keyword MUST be at least 4 characters long. Keywords under 3 characters are
+          automatically filtered out by the loader. Short words like "to", "is", "add", "try",
+          "ok", "hi", "get" cause massive substring collision problems and must NEVER be used.
+        - Keywords are matched using WORD BOUNDARY rules — they match only when surrounded by
+          non-word characters (spaces, punctuation, start/end of text). A keyword like "rest"
+          will NOT match inside "restoration". Design keywords accordingly.
+        - Use complete English words or multi-word phrases, not partial word prefixes.
+        - NEVER use personal names, proper nouns, or user-specific content as keywords.
+          Keywords must be domain-generic routing signals, not derived from specific user data.
+        - Prefer multi-word phrases (e.g., "security implication") over single common words
+          (e.g., "security") to reduce false-positive matches.
         """;
 
     private sealed record TierRoutingReviewResultDto(

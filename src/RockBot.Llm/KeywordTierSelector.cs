@@ -31,7 +31,7 @@ public sealed class KeywordTierSelector : ILlmTierSelector
         "prove", "derive", "demonstrate why", "reason through",
         "implement a system", "build a system", "step by step",
         "microservice", "distributed", "concurrent", "asynchronous", "async",
-        "optimize", "performance bottleneck", "scalab",
+        "optimize", "performance bottleneck", "scalable", "scalability",
         "security implication", "threat model",
         "explain in depth", "comprehensive", "thorough analysis",
         "multiple approaches", "pros and cons", "disadvantage",
@@ -45,9 +45,9 @@ public sealed class KeywordTierSelector : ILlmTierSelector
     private static readonly string[] DefaultLowSignalKeywords =
     [
         "what is", "what's", "who is", "who was", "when was", "where is",
-        "define ", "definition of", "spell ", "translate ",
+        "define", "definition of", "spell", "translate",
         "capital of", "how many", "list the", "give me a list",
-        "yes or no", "true or false", "convert ", "format ",
+        "yes or no", "true or false", "convert", "format",
     ];
 
     private static readonly EffectiveConfig Defaults = new(
@@ -110,10 +110,10 @@ public sealed class KeywordTierSelector : ILlmTierSelector
         var lower = promptText.ToLowerInvariant();
 
         var matchedHigh = config.HighSignalKeywords
-            .Where(k => lower.Contains(k, StringComparison.Ordinal))
+            .Where(k => ContainsWholePhrase(lower, k))
             .ToArray();
         var matchedLow = config.LowSignalKeywords
-            .Where(k => lower.Contains(k, StringComparison.Ordinal))
+            .Where(k => ContainsWholePhrase(lower, k))
             .ToArray();
 
         var score = ComputeScore(promptText, config, matchedHigh.Length, matchedLow.Length);
@@ -161,11 +161,14 @@ public sealed class KeywordTierSelector : ILlmTierSelector
             if (dto is null)
                 return Defaults;
 
+            var highKeywords = SanitizeKeywords(dto.HighSignalKeywords, "highSignalKeywords");
+            var lowKeywords  = SanitizeKeywords(dto.LowSignalKeywords, "lowSignalKeywords");
+
             var result = new EffectiveConfig(
                 LowCeiling:          dto.LowCeiling      ?? DefaultLowCeiling,
                 BalancedCeiling:     dto.BalancedCeiling  ?? DefaultBalancedCeiling,
-                HighSignalKeywords:  dto.HighSignalKeywords?.ToArray() ?? DefaultHighSignalKeywords,
-                LowSignalKeywords:   dto.LowSignalKeywords?.ToArray()  ?? DefaultLowSignalKeywords);
+                HighSignalKeywords:  highKeywords ?? DefaultHighSignalKeywords,
+                LowSignalKeywords:   lowKeywords  ?? DefaultLowSignalKeywords);
 
             _logger?.LogInformation(
                 "KeywordTierSelector: reloaded config from {Path} " +
@@ -201,9 +204,9 @@ public sealed class KeywordTierSelector : ILlmTierSelector
             : string.Empty;
 
         var complexSignals = complexSignalCount
-            ?? config.HighSignalKeywords.Count(k => lower.Contains(k, StringComparison.Ordinal));
+            ?? config.HighSignalKeywords.Count(k => ContainsWholePhrase(lower, k));
         var simplexSignals = simplexSignalCount
-            ?? config.LowSignalKeywords.Count(k => lower.Contains(k, StringComparison.Ordinal));
+            ?? config.LowSignalKeywords.Count(k => ContainsWholePhrase(lower, k));
 
         // Length component (0 – 0.40): longer prompts tend to be more complex.
         // Fine-grained buckets in the 10-30 word range so concise-but-complex task
@@ -236,6 +239,72 @@ public sealed class KeywordTierSelector : ILlmTierSelector
 
     private static int CountWords(string text) =>
         text.Split([' ', '\t', '\n', '\r'], StringSplitOptions.RemoveEmptyEntries).Length;
+
+    // ── Keyword validation ────────────────────────────────────────────────────
+
+    private const int MinKeywordLength = 3;
+
+    /// <summary>
+    /// Filters out keywords that are too short to be useful routing signals.
+    /// Returns null when the input list is null (caller falls back to defaults).
+    /// </summary>
+    private string[]? SanitizeKeywords(List<string>? keywords, string listName)
+    {
+        if (keywords is null) return null;
+
+        var filtered = keywords
+            .Where(k => !string.IsNullOrWhiteSpace(k) && k.Trim().Length >= MinKeywordLength)
+            .Select(k => k.Trim().ToLowerInvariant())
+            .Distinct()
+            .ToArray();
+
+        var removed = keywords.Count - filtered.Length;
+        if (removed > 0)
+        {
+            var rejected = keywords.Where(k => string.IsNullOrWhiteSpace(k) || k.Trim().Length < MinKeywordLength);
+            _logger?.LogWarning(
+                "KeywordTierSelector: dropped {Count} keyword(s) from {List} (too short or blank): [{Keywords}]",
+                removed, listName, string.Join(", ", rejected.Select(k => $"\"{k}\"")));
+        }
+
+        return filtered.Length > 0 ? filtered : null;
+    }
+
+    // ── Word-boundary matching ─────────────────────────────────────────────────
+
+    /// <summary>
+    /// Returns true when <paramref name="keyword"/> appears in <paramref name="text"/>
+    /// with word boundaries on each side where the keyword itself starts/ends with a
+    /// word character. This prevents "to" matching inside "tomorrow" or "try" inside
+    /// "country", while still allowing multi-word phrases like "trade off" and
+    /// intentional trailing-space keywords to work naturally.
+    /// </summary>
+    internal static bool ContainsWholePhrase(string text, string keyword)
+    {
+        if (keyword.Length == 0) return false;
+
+        var checkStart = char.IsLetterOrDigit(keyword[0]);
+        var checkEnd   = char.IsLetterOrDigit(keyword[^1]);
+        var index = 0;
+
+        while ((index = text.IndexOf(keyword, index, StringComparison.Ordinal)) >= 0)
+        {
+            var startOk = !checkStart
+                          || index == 0
+                          || !char.IsLetterOrDigit(text[index - 1]);
+            var end = index + keyword.Length;
+            var endOk = !checkEnd
+                        || end >= text.Length
+                        || !char.IsLetterOrDigit(text[end]);
+
+            if (startOk && endOk)
+                return true;
+
+            index++;
+        }
+
+        return false;
+    }
 
     // ── Private types ─────────────────────────────────────────────────────────
 
