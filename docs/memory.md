@@ -325,8 +325,12 @@ builder
 5. Inject working memory inventory for own namespace: workingMemory.ListAsync("session/{sessionId}")
 6. [User sessions only] Inject patrol findings: workingMemory.ListAsync("patrol") — shows the
    agent what patrol tasks have stored since the last run, without fetching content
-7. Replay last 20 conversation turns
+7. [User sessions only] Inject subagent research outlines: workingMemory.ListAsync("subagent") —
+   filters to `-index` keys only, showing the agent what prior subagent research is available
+   in working memory without listing every content chunk. The agent can retrieve an index to
+   see the document outline and navigate to specific chunks.
+8. Replay last 20 conversation turns
 ```
 
-For patrol sessions (`workingMemoryNamespace = "patrol/{taskName}"`), step 6 is skipped and
-step 5 uses the patrol namespace instead of `session/{sessionId}`.
+For patrol sessions (`workingMemoryNamespace = "patrol/{taskName}"`), steps 6–7 are skipped
+and step 5 uses the patrol namespace instead of `session/{sessionId}`.

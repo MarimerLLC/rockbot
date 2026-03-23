@@ -265,6 +265,45 @@ public sealed class AgentContextBuilder(
             }
         }
 
+        // For user sessions: surface subagent working memory entries so the primary agent
+        // can access prior research results even after the subagent completion turn has scrolled
+        // out of the conversation window. Only index chunks (-index keys) are listed to keep
+        // context compact — the agent can retrieve the outline to navigate to specific chunks.
+        if (isUserSession)
+        {
+            var subagentEntries = await workingMemory.ListAsync("subagent");
+            if (subagentEntries.Count > 0)
+            {
+                var now = DateTimeOffset.UtcNow;
+                var indexEntries = subagentEntries.Where(e => e.Key.EndsWith("-index")).ToList();
+                var nonIndexCount = subagentEntries.Count - indexEntries.Count;
+
+                if (indexEntries.Count > 0)
+                {
+                    var lines = indexEntries.Select(e =>
+                    {
+                        var remaining = e.ExpiresAt - now;
+                        var remainingStr = remaining.TotalMinutes >= 1
+                            ? $"{(int)remaining.TotalMinutes}m{remaining.Seconds:D2}s"
+                            : $"{Math.Max(0, remaining.Seconds)}s";
+                        var meta = new System.Text.StringBuilder($"- {e.Key}: expires in {remainingStr}");
+                        if (e.Category is not null) meta.Append($", category: {e.Category}");
+                        if (e.Tags is { Count: > 0 }) meta.Append($", tags: {string.Join(", ", e.Tags)}");
+                        return meta.ToString();
+                    });
+                    var subagentContext =
+                        $"Subagent research in working memory ({nonIndexCount} content chunk(s) available):\n" +
+                        "The following document outlines are from prior subagent research. " +
+                        "Retrieve an outline with get_from_working_memory to see section headings and chunk keys, " +
+                        "then load specific chunks as needed. Check these BEFORE doing a new web search for the same topic.\n" +
+                        string.Join("\n", lines);
+                    chatMessages.Add(new ChatMessage(ChatRole.System, subagentContext));
+                    logger.LogInformation("Injected {Count} subagent index entries into context ({ContentCount} content chunks available)",
+                        indexEntries.Count, nonIndexCount);
+                }
+            }
+        }
+
         Activity.Current?.AddEvent(new ActivityEvent("context_built",
             tags: new ActivityTagsCollection
             {
