@@ -79,11 +79,27 @@ internal sealed class WebBrowseToolExecutor(
         var chunks = ContentChunker.Chunk(fullContent, options.ChunkMaxLength);
         var ttl = TimeSpan.FromMinutes(options.ChunkTtlMinutes);
         var sanitizedUrl = SanitizeUrlForKey(url);
-        var index = new StringBuilder();
+        var keyBase = $"{request.SessionId}/web-{sanitizedUrl}";
 
+        var chunkKeys = new List<string>(chunks.Count);
+        for (var i = 0; i < chunks.Count; i++)
+        {
+            // SessionId is the full working memory namespace (e.g. "session/abc123", "patrol/heartbeat")
+            var key = $"{keyBase}-chunk{i}";
+            chunkKeys.Add(key);
+            await workingMemory!.SetAsync(key, chunks[i].Content, ttl, category: "web");
+        }
+
+        // Store hierarchical outline as index chunk
+        var indexKey = $"{keyBase}-index";
+        var outline = ContentChunker.BuildOutline(chunks, chunkKeys);
+        await workingMemory!.SetAsync(indexKey, outline, ttl, category: "web");
+
+        var index = new StringBuilder();
         index.AppendLine($"Page \"{page.Title}\" has been split into {chunks.Count} chunk(s) stored in working memory.");
-        index.AppendLine("Read the Heading column below to identify which sections contain the information you need,");
-        index.AppendLine("then call GetFromWorkingMemory(key) for each relevant chunk BEFORE drawing any conclusions.");
+        index.AppendLine($"A document outline is stored at key `{indexKey}` — retrieve it with " +
+            "GetFromWorkingMemory to navigate the content by section heading.");
+        index.AppendLine("Call GetFromWorkingMemory(key) for each relevant chunk BEFORE drawing any conclusions.");
         index.AppendLine("Do not summarise or answer based on this index alone — retrieve the chunks first.");
         index.AppendLine();
         index.AppendLine("| # | Heading | Key |");
@@ -91,14 +107,8 @@ internal sealed class WebBrowseToolExecutor(
 
         for (var i = 0; i < chunks.Count; i++)
         {
-            var (heading, content) = chunks[i];
-            // SessionId is the full working memory namespace (e.g. "session/abc123", "patrol/heartbeat")
-            var key = $"{request.SessionId}/web-{sanitizedUrl}-chunk{i}";
-
-            await workingMemory!.SetAsync(key, content, ttl, category: "web");
-
-            var displayHeading = string.IsNullOrWhiteSpace(heading) ? $"Section {i}" : heading;
-            index.AppendLine($"| {i} | {displayHeading} | `{key}` |");
+            var displayHeading = string.IsNullOrWhiteSpace(chunks[i].Heading) ? $"Section {i}" : chunks[i].Heading;
+            index.AppendLine($"| {i} | {displayHeading} | `{chunkKeys[i]}` |");
         }
 
         return new ToolInvokeResponse

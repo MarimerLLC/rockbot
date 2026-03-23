@@ -63,10 +63,26 @@ public sealed class ChunkingAIFunction(
             var runId = Guid.NewGuid().ToString("N")[..8];
             var keyBase = $"{@namespace}/tool-{sanitizedName}-{runId}";
 
+            var chunkKeys = new List<string>(chunks.Count);
+            for (var i = 0; i < chunks.Count; i++)
+            {
+                var key = $"{keyBase}-chunk{i}";
+                chunkKeys.Add(key);
+                await workingMemory.SetAsync(key, chunks[i].Content, ttl: ToolResultChunkTtl, category: "tool-result");
+            }
+
+            // Store hierarchical outline as index chunk
+            var indexKey = $"{keyBase}-index";
+            var outline = ContentChunker.BuildOutline(chunks, chunkKeys);
+            await workingMemory.SetAsync(indexKey, outline, ttl: ToolResultChunkTtl, category: "tool-result");
+
             var index = new StringBuilder();
             index.AppendLine(
                 $"Tool result for '{toolName}' is large ({result.Length:N0} chars) and has been " +
                 $"split into {chunks.Count} chunk(s) stored in working memory.");
+            index.AppendLine(
+                "A document outline is stored at key `" + indexKey + "` — retrieve it with " +
+                "get_from_working_memory to navigate the content by section heading.");
             index.AppendLine(
                 "Call get_from_working_memory(key) for each relevant chunk BEFORE drawing conclusions. " +
                 "Do not summarise based on this index alone.");
@@ -76,11 +92,8 @@ public sealed class ChunkingAIFunction(
 
             for (var i = 0; i < chunks.Count; i++)
             {
-                var (heading, content) = chunks[i];
-                var key = $"{keyBase}-chunk{i}";
-                await workingMemory.SetAsync(key, content, ttl: ToolResultChunkTtl, category: "tool-result");
-                var label = string.IsNullOrWhiteSpace(heading) ? $"Part {i}" : heading;
-                index.AppendLine($"| {i} | {label} | `{key}` |");
+                var label = string.IsNullOrWhiteSpace(chunks[i].Heading) ? $"Part {i}" : chunks[i].Heading;
+                index.AppendLine($"| {i} | {label} | `{chunkKeys[i]}` |");
             }
 
             logger.LogInformation(

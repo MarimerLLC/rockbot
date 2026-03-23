@@ -127,4 +127,134 @@ public class ContentChunkerTests
         Assert.AreEqual(1, chunks.Count);
         Assert.AreEqual(string.Empty, chunks[0].Content);
     }
+
+    [TestMethod]
+    public void Chunk_TracksHeadingLevel_H1()
+    {
+        var markdown = """
+            # Top Level
+            Content here.
+            """;
+
+        var chunks = ContentChunker.Chunk(markdown, maxLength: 10_000);
+
+        Assert.AreEqual(1, chunks.Count);
+        Assert.AreEqual(1, chunks[0].HeadingLevel);
+    }
+
+    [TestMethod]
+    public void Chunk_TracksHeadingLevel_H2()
+    {
+        var markdown = """
+            ## Sub Level
+            Content here.
+            """;
+
+        var chunks = ContentChunker.Chunk(markdown, maxLength: 10_000);
+
+        Assert.AreEqual(1, chunks.Count);
+        Assert.AreEqual(2, chunks[0].HeadingLevel);
+    }
+
+    [TestMethod]
+    public void Chunk_TracksHeadingLevel_H3()
+    {
+        var markdown = """
+            ### Detail Level
+            Content here.
+            """;
+
+        var chunks = ContentChunker.Chunk(markdown, maxLength: 10_000);
+
+        Assert.AreEqual(1, chunks.Count);
+        Assert.AreEqual(3, chunks[0].HeadingLevel);
+    }
+
+    [TestMethod]
+    public void Chunk_NoHeading_HeadingLevelIsZero()
+    {
+        var chunks = ContentChunker.Chunk("Just plain text", maxLength: 10_000);
+
+        Assert.AreEqual(1, chunks.Count);
+        Assert.AreEqual(0, chunks[0].HeadingLevel);
+    }
+
+    [TestMethod]
+    public void Chunk_MixedHeadingLevels_PreservesEachLevel()
+    {
+        var markdown = """
+            # Top
+            Top content.
+
+            ## Middle
+            Middle content.
+
+            ### Bottom
+            Bottom content.
+            """;
+
+        var chunks = ContentChunker.Chunk(markdown, maxLength: 10_000);
+
+        Assert.AreEqual(3, chunks.Count);
+        Assert.AreEqual(1, chunks[0].HeadingLevel);
+        Assert.AreEqual(2, chunks[1].HeadingLevel);
+        Assert.AreEqual(3, chunks[2].HeadingLevel);
+    }
+
+    [TestMethod]
+    public void BuildOutline_ProducesHierarchicalMarkdown()
+    {
+        var chunks = new List<ChunkInfo>
+        {
+            new("Getting Started", "...", 1),
+            new("Installation", "...", 2),
+            new("Configuration", "...", 2),
+            new("Environment Variables", "...", 3),
+            new("API Reference", "...", 1),
+        };
+        var keys = new List<string>
+        {
+            "session/s1/web-example-chunk0",
+            "session/s1/web-example-chunk1",
+            "session/s1/web-example-chunk2",
+            "session/s1/web-example-chunk3",
+            "session/s1/web-example-chunk4",
+        };
+
+        var outline = ContentChunker.BuildOutline(chunks, keys);
+
+        StringAssert.Contains(outline, "## Document Outline");
+        // H1 items should not be indented
+        StringAssert.Contains(outline, "- **Getting Started** → `session/s1/web-example-chunk0`");
+        StringAssert.Contains(outline, "- **API Reference** → `session/s1/web-example-chunk4`");
+        // H2 items should be indented 2 spaces
+        StringAssert.Contains(outline, "  - **Installation** → `session/s1/web-example-chunk1`");
+        StringAssert.Contains(outline, "  - **Configuration** → `session/s1/web-example-chunk2`");
+        // H3 items should be indented 4 spaces
+        StringAssert.Contains(outline, "    - **Environment Variables** → `session/s1/web-example-chunk3`");
+    }
+
+    [TestMethod]
+    public void BuildOutline_EmptyChunks_ReturnsEmpty()
+    {
+        var outline = ContentChunker.BuildOutline([], []);
+
+        Assert.AreEqual(string.Empty, outline);
+    }
+
+    [TestMethod]
+    public void BuildOutline_NoHeadings_UsesFallbackLabels()
+    {
+        var chunks = new List<ChunkInfo>
+        {
+            new("", "content a", 0),
+            new("", "content b", 0),
+        };
+        var keys = new List<string> { "key0", "key1" };
+
+        var outline = ContentChunker.BuildOutline(chunks, keys);
+
+        StringAssert.Contains(outline, "- **Part 0** → `key0`");
+        StringAssert.Contains(outline, "- **Part 1** → `key1`");
+    }
 }

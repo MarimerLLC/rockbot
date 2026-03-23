@@ -377,7 +377,8 @@ characters), the page is split into chunks using `ContentChunker` (from `RockBot
 2. Falls back to blank-line splitting for oversized sections
 3. Hard-splits at `ChunkMaxLength` as a last resort
 4. Stores each chunk in working memory under the session namespace: `session/{sessionId}/web-{sanitized-url}-chunk{n}`
-5. Returns a chunk index table listing heading and key for each chunk
+5. Stores a hierarchical document outline as an index chunk at `session/{sessionId}/web-{sanitized-url}-index`
+6. Returns a chunk index table listing heading and key for each chunk, plus the index chunk key
 
 The agent can then call `get_from_working_memory` for specific chunks rather than loading the
 full page into context at once.
@@ -420,11 +421,14 @@ checked against a per-model threshold. If the result exceeds that threshold:
 
 1. `ContentChunker` splits it into chunks (heading-aware, then blank-line, then hard-split)
 2. Each chunk is stored in working memory under the session namespace: `{namespace}/tool-{name}-{runId}-chunk{n}`, TTL 20 minutes
-3. A compact index table is returned to the LLM instead of the raw content:
+3. A **hierarchical index chunk** is stored at `{namespace}/tool-{name}-{runId}-index` containing a document outline that maps section headings (with H1/H2/H3 nesting preserved) to chunk keys
+4. A compact index table is returned to the LLM instead of the raw content, including the index chunk key:
 
 ```
 Tool result for 'list_models' is large (462 000 chars) and has been split into 23 chunk(s)
 stored in working memory.
+A document outline is stored at key `session/abc123/tool-list_models-a1b2c3-index` — retrieve
+it with get_from_working_memory to navigate the content by section heading.
 Call get_from_working_memory(key) for each relevant chunk BEFORE drawing conclusions.
 
 | # | Heading | Key                                              |
@@ -433,6 +437,20 @@ Call get_from_working_memory(key) for each relevant chunk BEFORE drawing conclus
 | 1 | Part 1  | `session/abc123/tool-list_models-a1b2c3-chunk1`  |
 ...
 ```
+
+The index chunk contains a hierarchical outline like:
+
+```
+## Document Outline
+
+- **Models Overview** → `session/abc123/tool-list_models-a1b2c3-chunk0`
+  - **Pricing** → `session/abc123/tool-list_models-a1b2c3-chunk1`
+  - **Context Windows** → `session/abc123/tool-list_models-a1b2c3-chunk2`
+    - **Token Limits** → `session/abc123/tool-list_models-a1b2c3-chunk3`
+```
+
+If the inline index is lost due to context trimming, the agent can retrieve the index chunk
+from working memory to rediscover the document structure and navigate to specific sections.
 
 Since chunk keys are full path strings (contain `/`), `get_from_working_memory` treats them as
 absolute — no namespace prefix is prepended.

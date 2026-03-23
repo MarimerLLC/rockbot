@@ -1,3 +1,5 @@
+using System.Text;
+
 namespace RockBot.Host;
 
 /// <summary>
@@ -15,27 +17,27 @@ public static class ContentChunker
     /// </summary>
     /// <param name="content">The content to chunk.</param>
     /// <param name="maxLength">Maximum character length of each chunk.</param>
-    /// <returns>A list of (Heading, Content) pairs.</returns>
-    public static IReadOnlyList<(string Heading, string Content)> Chunk(string content, int maxLength)
+    /// <returns>A list of <see cref="ChunkInfo"/> entries.</returns>
+    public static IReadOnlyList<ChunkInfo> Chunk(string content, int maxLength)
     {
         var sections = SplitAtHeadings(content);
-        var result = new List<(string Heading, string Content)>();
+        var result = new List<ChunkInfo>();
 
-        foreach (var (heading, body) in sections)
+        foreach (var section in sections)
         {
-            if (body.Length <= maxLength)
+            if (section.Content.Length <= maxLength)
             {
-                result.Add((heading, body));
+                result.Add(section);
                 continue;
             }
 
             // Section is too large — split at blank lines first
-            var subChunks = SplitAtBlankLines(body, maxLength);
+            var subChunks = SplitAtBlankLines(section.Content, maxLength);
             var chunkIndex = 0;
             foreach (var chunk in subChunks)
             {
-                var subHeading = chunkIndex == 0 ? heading : $"{heading} (continued {chunkIndex})";
-                result.Add((subHeading, chunk));
+                var subHeading = chunkIndex == 0 ? section.Heading : $"{section.Heading} (continued {chunkIndex})";
+                result.Add(new ChunkInfo(subHeading, chunk, section.HeadingLevel));
                 chunkIndex++;
             }
         }
@@ -43,24 +45,64 @@ public static class ContentChunker
         return result;
     }
 
-    /// <summary>Splits content at H1/H2/H3 heading lines into (heading, content) pairs.</summary>
-    private static List<(string Heading, string Content)> SplitAtHeadings(string content)
+    /// <summary>
+    /// Builds a hierarchical markdown outline from chunked content, mapping each
+    /// section heading to its working-memory key. Suitable for storing as an index
+    /// chunk so the agent can navigate large documents without loading every chunk.
+    /// </summary>
+    /// <param name="chunks">The chunks returned by <see cref="Chunk"/>.</param>
+    /// <param name="chunkKeys">Parallel list of working-memory keys, one per chunk.</param>
+    /// <returns>A markdown outline string with indented headings and chunk keys.</returns>
+    public static string BuildOutline(IReadOnlyList<ChunkInfo> chunks, IReadOnlyList<string> chunkKeys)
     {
-        var result = new List<(string Heading, string Content)>();
+        if (chunks.Count == 0)
+            return string.Empty;
+
+        var sb = new StringBuilder();
+        sb.AppendLine("## Document Outline");
+        sb.AppendLine();
+
+        for (var i = 0; i < chunks.Count; i++)
+        {
+            var chunk = chunks[i];
+            var key = chunkKeys[i];
+            var label = string.IsNullOrWhiteSpace(chunk.Heading) ? $"Part {i}" : chunk.Heading;
+
+            // Indent based on heading level: H1 = no indent, H2 = 2 spaces, H3 = 4 spaces, none = no indent
+            var indent = chunk.HeadingLevel switch
+            {
+                2 => "  ",
+                3 => "    ",
+                _ => ""
+            };
+
+            sb.AppendLine($"{indent}- **{label}** → `{key}`");
+        }
+
+        return sb.ToString().TrimEnd();
+    }
+
+    /// <summary>Splits content at H1/H2/H3 heading lines into <see cref="ChunkInfo"/> entries.</summary>
+    private static List<ChunkInfo> SplitAtHeadings(string content)
+    {
+        var result = new List<ChunkInfo>();
         var lines = content.Split('\n');
         var currentHeading = string.Empty;
-        var currentContent = new System.Text.StringBuilder();
+        var currentLevel = 0;
+        var currentContent = new StringBuilder();
 
         foreach (var line in lines)
         {
-            if (IsHeading(line))
+            var level = GetHeadingLevel(line);
+            if (level > 0)
             {
                 var accumulated = currentContent.ToString().Trim();
                 // Only emit the current section if it has content (skip empty pre-heading preamble)
                 if (accumulated.Length > 0)
-                    result.Add((currentHeading, accumulated));
+                    result.Add(new ChunkInfo(currentHeading, accumulated, currentLevel));
 
                 currentHeading = line.TrimStart('#').Trim();
+                currentLevel = level;
                 currentContent.Clear();
             }
             else
@@ -72,17 +114,18 @@ public static class ContentChunker
 
         // Always emit the final section; if nothing was added yet (empty doc or heading-only), emit one entry
         var lastContent = currentContent.ToString().Trim();
-        result.Add((currentHeading, lastContent));
+        result.Add(new ChunkInfo(currentHeading, lastContent, currentLevel));
 
         return result;
     }
 
-    private static bool IsHeading(string line)
+    /// <summary>Returns the heading level (1, 2, or 3) or 0 if not a heading.</summary>
+    private static int GetHeadingLevel(string line)
     {
-        if (line.StartsWith("### ", StringComparison.Ordinal)) return true;
-        if (line.StartsWith("## ", StringComparison.Ordinal)) return true;
-        if (line.StartsWith("# ", StringComparison.Ordinal)) return true;
-        return false;
+        if (line.StartsWith("### ", StringComparison.Ordinal)) return 3;
+        if (line.StartsWith("## ", StringComparison.Ordinal)) return 2;
+        if (line.StartsWith("# ", StringComparison.Ordinal)) return 1;
+        return 0;
     }
 
     /// <summary>
@@ -93,7 +136,7 @@ public static class ContentChunker
     {
         var result = new List<string>();
         var paragraphs = text.Split("\n\n");
-        var current = new System.Text.StringBuilder();
+        var current = new StringBuilder();
 
         foreach (var paragraph in paragraphs)
         {
@@ -133,3 +176,11 @@ public static class ContentChunker
             yield return text.Substring(i, Math.Min(maxLength, text.Length - i));
     }
 }
+
+/// <summary>
+/// Represents a single chunk of content with its heading text and heading level.
+/// </summary>
+/// <param name="Heading">The heading text (without # prefix), or empty for untitled sections.</param>
+/// <param name="Content">The chunk content.</param>
+/// <param name="HeadingLevel">The markdown heading level (1 for H1, 2 for H2, 3 for H3, 0 for no heading).</param>
+public sealed record ChunkInfo(string Heading, string Content, int HeadingLevel);
