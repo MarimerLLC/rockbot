@@ -140,9 +140,13 @@ internal sealed class UserMessageHandler(
             // Per-session skill tools with usage tracking
             var sessionSkillTools = new SkillTools(skillStore, llmClient, logger, message.SessionId, skillUsageStore);
 
+            // Batch ID for subagent result consolidation — all spawn_subagent calls
+            // within this agent loop share the same batchId so results are grouped.
+            var batchId = Guid.NewGuid().ToString("N")[..12];
+
             // Registry tools (MCP, REST, etc.)
             var registryTools = toolRegistry.GetTools()
-                .Select(r => (AIFunction)new RegistryToolFunction(r, toolRegistry.GetExecutor(r.Name)!, sessionNamespace))
+                .Select(r => (AIFunction)new RegistryToolFunction(r, toolRegistry.GetExecutor(r.Name)!, sessionNamespace, batchId))
                 .ToArray();
 
             var allTools = memoryTools.Tools

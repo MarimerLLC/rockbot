@@ -12,4 +12,6 @@ public sealed record SubagentResultMessage
     public required bool IsSuccess { get; init; }
     public string? Error { get; init; }
     public required DateTimeOffset Timestamp { get; init; }
+    public string? BatchId { get; init; }
+    public bool Consolidate { get; init; } = true;
 }

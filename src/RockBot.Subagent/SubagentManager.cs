@@ -23,7 +23,9 @@ public sealed class SubagentManager(
         string? context,
         int? timeoutMinutes,
         string primarySessionId,
-        CancellationToken ct)
+        CancellationToken ct,
+        string? batchId = null,
+        bool consolidate = true)
     {
         // Clean up completed tasks first
         foreach (var key in _active.Keys.ToList())
@@ -50,7 +52,7 @@ public sealed class SubagentManager(
         var cts = new CancellationTokenSource();
         cts.CancelAfter(TimeSpan.FromMinutes(timeout));
 
-        var task = RunSubagentAsync(taskId, subagentSessionId, description, context, primarySessionId, cts.Token);
+        var task = RunSubagentAsync(taskId, subagentSessionId, description, context, primarySessionId, batchId, consolidate, cts.Token);
 
         var newEntry = new SubagentEntry
         {
@@ -60,7 +62,9 @@ public sealed class SubagentManager(
             Description = description,
             StartedAt = DateTimeOffset.UtcNow,
             CancellationTokenSource = cts,
-            Task = task
+            Task = task,
+            BatchId = batchId,
+            Consolidate = consolidate
         };
 
         _active[taskId] = newEntry;
@@ -104,6 +108,8 @@ public sealed class SubagentManager(
         string description,
         string? context,
         string primarySessionId,
+        string? batchId,
+        bool consolidate,
         CancellationToken ct)
     {
         // SubagentRunner.RunAsync handles all its own exit paths (success, failure,
@@ -114,7 +120,7 @@ public sealed class SubagentManager(
         {
             await using var scope = scopeFactory.CreateAsyncScope();
             var runner = scope.ServiceProvider.GetRequiredService<SubagentRunner>();
-            await runner.RunAsync(taskId, subagentSessionId, description, context, primarySessionId, ct);
+            await runner.RunAsync(taskId, subagentSessionId, description, context, primarySessionId, batchId, consolidate, ct);
         }
         catch (Exception ex)
         {
@@ -132,7 +138,9 @@ public sealed class SubagentManager(
                     Output = $"Subagent failed to start: {ex.Message}",
                     IsSuccess = false,
                     Error = ex.Message,
-                    Timestamp = DateTimeOffset.UtcNow
+                    Timestamp = DateTimeOffset.UtcNow,
+                    BatchId = batchId,
+                    Consolidate = consolidate
                 };
                 var envelope = result.ToEnvelope<SubagentResultMessage>(source: $"subagent-{taskId}");
                 await publisher.PublishAsync(SubagentTopics.Result, envelope, CancellationToken.None);

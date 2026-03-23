@@ -25,4 +25,10 @@ public sealed record ToolInvokeRequest
     /// Null when invoked outside a session context (e.g. tests, CLI tools).
     /// </summary>
     public string? SessionId { get; init; }
+
+    /// <summary>
+    /// Optional batch ID for grouping subagent results spawned from the same agent loop.
+    /// Null when batching is not active.
+    /// </summary>
+    public string? BatchId { get; init; }
 }

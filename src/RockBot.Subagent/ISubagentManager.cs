@@ -10,7 +10,8 @@ public interface ISubagentManager
     /// Returns an error message string if the concurrency limit is reached.
     /// </summary>
     Task<string> SpawnAsync(string description, string? context, int? timeoutMinutes,
-        string primarySessionId, CancellationToken ct);
+        string primarySessionId, CancellationToken ct,
+        string? batchId = null, bool consolidate = true);
 
     /// <summary>
     /// Cancels a running subagent by task ID. Returns true if found and cancelled.

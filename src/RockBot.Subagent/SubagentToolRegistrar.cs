@@ -27,6 +27,10 @@ internal sealed class SubagentToolRegistrar(
             "timeout_minutes": {
               "type": "integer",
               "description": "Optional timeout in minutes (default: 10)."
+            },
+            "consolidate": {
+              "type": "boolean",
+              "description": "When true (default), this subagent's result will be batched with sibling subagent results into a single consolidated response. Set to false to deliver this subagent's result immediately as its own response."
             }
           },
           "required": ["description"]
