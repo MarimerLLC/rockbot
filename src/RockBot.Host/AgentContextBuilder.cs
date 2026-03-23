@@ -265,22 +265,53 @@ public sealed class AgentContextBuilder(
             }
         }
 
-        // For user sessions: surface subagent working memory entries so the primary agent
+        // For user sessions: surface subagent research index chunks so the primary agent
         // can access prior research results even after the subagent completion turn has scrolled
-        // out of the conversation window. Only index chunks (-index keys) are listed to keep
-        // context compact — the agent can retrieve the outline to navigate to specific chunks.
+        // out of the conversation window. To avoid noise, we inject at most two:
+        //   1. The most recent index (always — likely what the user is following up on)
+        //   2. One BM25-matched index (if a different one is more relevant to the current question)
         if (isUserSession)
         {
             var subagentEntries = await workingMemory.ListAsync("subagent");
             if (subagentEntries.Count > 0)
             {
-                var now = DateTimeOffset.UtcNow;
                 var indexEntries = subagentEntries.Where(e => e.Key.EndsWith("-index")).ToList();
                 var nonIndexCount = subagentEntries.Count - indexEntries.Count;
 
                 if (indexEntries.Count > 0)
                 {
-                    var lines = indexEntries.Select(e =>
+                    // Always include the most recent index
+                    var mostRecent = indexEntries.OrderByDescending(e => e.StoredAt).First();
+                    var selected = new List<WorkingMemoryEntry> { mostRecent };
+
+                    // BM25-rank the rest against the current user message to find one more relevant match
+                    if (indexEntries.Count > 1 && !string.IsNullOrWhiteSpace(currentUserContent))
+                    {
+                        var candidates = indexEntries.Where(e => e.Key != mostRecent.Key).ToList();
+
+                        // Load content for BM25 ranking
+                        var contentMap = new Dictionary<string, string>();
+                        foreach (var entry in candidates)
+                        {
+                            var content = await workingMemory.GetAsync(entry.Key);
+                            if (!string.IsNullOrWhiteSpace(content))
+                                contentMap[entry.Key] = content;
+                        }
+
+                        if (contentMap.Count > 0)
+                        {
+                            var ranked = Bm25Ranker.RankWithScores(
+                                candidates.Where(e => contentMap.ContainsKey(e.Key)).ToList(),
+                                e => contentMap[e.Key],
+                                currentUserContent);
+
+                            if (ranked.Count > 0)
+                                selected.Add(ranked[0].Item);
+                        }
+                    }
+
+                    var now = DateTimeOffset.UtcNow;
+                    var lines = selected.Distinct().Select(e =>
                     {
                         var remaining = e.ExpiresAt - now;
                         var remainingStr = remaining.TotalMinutes >= 1
@@ -291,15 +322,19 @@ public sealed class AgentContextBuilder(
                         if (e.Tags is { Count: > 0 }) meta.Append($", tags: {string.Join(", ", e.Tags)}");
                         return meta.ToString();
                     });
+                    var otherCount = indexEntries.Count - selected.Distinct().Count();
+                    var otherNote = otherCount > 0
+                        ? $"\n({otherCount} other subagent index(es) available — use search_working_memory to find them)"
+                        : string.Empty;
                     var subagentContext =
                         $"Subagent research in working memory ({nonIndexCount} content chunk(s) available):\n" +
                         "The following document outlines are from prior subagent research. " +
                         "Retrieve an outline with get_from_working_memory to see section headings and chunk keys, " +
                         "then load specific chunks as needed. Check these BEFORE doing a new web search for the same topic.\n" +
-                        string.Join("\n", lines);
+                        string.Join("\n", lines) + otherNote;
                     chatMessages.Add(new ChatMessage(ChatRole.System, subagentContext));
-                    logger.LogInformation("Injected {Count} subagent index entries into context ({ContentCount} content chunks available)",
-                        indexEntries.Count, nonIndexCount);
+                    logger.LogInformation("Injected {Count} subagent index entries into context (of {Total} total, {ContentCount} content chunks available)",
+                        selected.Distinct().Count(), indexEntries.Count, nonIndexCount);
                 }
             }
         }
