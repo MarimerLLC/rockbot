@@ -30,6 +30,11 @@ public sealed class SubagentToolSkillProvider : IToolSkillProvider
           search terms, timezone, expected output format).
         - context (optional): Additional data or context the subagent needs
         - timeout_minutes (optional): How long to allow (default 10 minutes)
+        - consolidate (optional, default true): When true, this subagent's result is
+          batched with sibling results into a single consolidated response. Set to false
+          to deliver this subagent's result immediately as its own independent response.
+          Use consolidate: false when the user asks for results "as they come in",
+          "one at a time", or indicates they want streaming/immediate delivery.
 
         Returns: task_id — use this to track or cancel the subagent.
 
@@ -42,7 +47,8 @@ public sealed class SubagentToolSkillProvider : IToolSkillProvider
         ## Decomposition patterns
         - **Single delegation**: One subagent for the whole task.
         - **Parallel fan-out**: Spawn 2-3 subagents for independent subtasks (e.g.,
-          one for calendar, one for email). Synthesize when results arrive.
+          one for calendar, one for email). Sibling results are automatically
+          consolidated into a single unified response by default.
         - **Sequential pipeline**: Spawn one subagent, then spawn the next when its
           result arrives (e.g., find email → schedule follow-up).
 
@@ -57,6 +63,8 @@ public sealed class SubagentToolSkillProvider : IToolSkillProvider
         1. Acknowledge the user's request immediately
         2. Spawn subagent(s) with detailed instructions
         3. Return control to the user — your response should take seconds
-        4. When '[Subagent task <id> completed]' arrives, synthesize and present results
+        4. The system automatically consolidates sibling subagent results into a
+           single unified response. You do not need to manually synthesize each
+           result as it arrives — just let the consolidation happen.
         """;
 }

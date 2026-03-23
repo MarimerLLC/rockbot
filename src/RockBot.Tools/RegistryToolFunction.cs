@@ -11,7 +11,8 @@ namespace RockBot.Tools;
 public sealed class RegistryToolFunction(
     ToolRegistration registration,
     IToolExecutor executor,
-    string? sessionId) : AIFunction
+    string? sessionId,
+    string? batchId = null) : AIFunction
 {
     private static readonly JsonSerializerOptions SerializerOptions = new();
 
@@ -53,7 +54,8 @@ public sealed class RegistryToolFunction(
             ToolCallId = Guid.NewGuid().ToString("N"),
             ToolName = registration.Name,
             Arguments = argsJson,
-            SessionId = sessionId
+            SessionId = sessionId,
+            BatchId = batchId
         };
 
         var response = await executor.ExecuteAsync(request, cancellationToken);

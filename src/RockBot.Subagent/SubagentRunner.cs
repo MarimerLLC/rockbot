@@ -37,6 +37,8 @@ internal sealed class SubagentRunner(
         string description,
         string? context,
         string primarySessionId,
+        string? batchId,
+        bool consolidate,
         CancellationToken ct)
     {
         var classification = tierSelector.Classify(description);
@@ -218,7 +220,9 @@ internal sealed class SubagentRunner(
             Output = finalOutput,
             IsSuccess = isSuccess,
             Error = error,
-            Timestamp = DateTimeOffset.UtcNow
+            Timestamp = DateTimeOffset.UtcNow,
+            BatchId = batchId,
+            Consolidate = consolidate
         };
 
         var envelope = result.ToEnvelope<SubagentResultMessage>(source: subagentId);

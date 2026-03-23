@@ -7,4 +7,5 @@ public sealed class SubagentOptions
 {
     public int MaxConcurrentSubagents { get; set; } = 3;
     public int DefaultTimeoutMinutes { get; set; } = 10;
+    public int ConsolidationTimeoutSeconds { get; set; } = 10;
 }

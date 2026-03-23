@@ -197,7 +197,8 @@ public class SubagentToolExecutorTests
         public bool CancelResult { get; set; }
 
         public Task<string> SpawnAsync(string description, string? context, int? timeoutMinutes,
-            string primarySessionId, CancellationToken ct) =>
+            string primarySessionId, CancellationToken ct,
+            string? batchId = null, bool consolidate = true) =>
             Task.FromResult(SpawnResult);
 
         public Task<bool> CancelAsync(string taskId) =>

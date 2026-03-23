@@ -12,4 +12,6 @@ public sealed class SubagentEntry
     public required DateTimeOffset StartedAt { get; init; }
     public required CancellationTokenSource CancellationTokenSource { get; init; }
     public required Task Task { get; init; }
+    public string? BatchId { get; init; }
+    public bool Consolidate { get; init; } = true;
 }

@@ -1,5 +1,6 @@
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using RockBot.Host;
 using RockBot.Llm;
 using RockBot.Memory;
@@ -12,6 +13,8 @@ namespace RockBot.Subagent;
 
 /// <summary>
 /// Handles subagent result messages on the primary agent side.
+/// Uses a two-phase approach: Phase 1 records the result immediately,
+/// Phase 2 runs consolidated synthesis only when all sibling results are in.
 /// </summary>
 internal sealed class SubagentResultHandler(
     AgentLoopRunner agentLoopRunner,
@@ -26,6 +29,9 @@ internal sealed class SubagentResultHandler(
     RulesTools rulesTools,
     ToolGuideTools toolGuideTools,
     IConversationMemory conversationMemory,
+    SubagentResultGate gate,
+    ISubagentManager subagentManager,
+    IOptions<SubagentOptions> options,
     ILogger<SubagentResultHandler> logger) : IMessageHandler<SubagentResultMessage>
 {
     public async Task HandleAsync(SubagentResultMessage message, MessageHandlerContext context)
@@ -33,38 +39,21 @@ internal sealed class SubagentResultHandler(
         var ct = context.CancellationToken;
 
         logger.LogInformation(
-            "Subagent result for task {TaskId} in primary session {SessionId}: success={Success}, output={OutputLen} chars",
-            message.TaskId, message.PrimarySessionId, message.IsSuccess, message.Output.Length);
+            "Subagent result for task {TaskId} in primary session {SessionId}: success={Success}, output={OutputLen} chars, batchId={BatchId}, consolidate={Consolidate}",
+            message.TaskId, message.PrimarySessionId, message.IsSuccess, message.Output.Length,
+            message.BatchId, message.Consolidate);
 
         if (string.IsNullOrWhiteSpace(message.Output))
             logger.LogWarning("Subagent {TaskId} returned empty output — primary agent will have nothing to relay", message.TaskId);
 
-        // The subagent's final text is the primary result. Large data (reports, lists, documents)
-        // may have been saved to the subagent's working memory namespace "subagent/{taskId}/".
-        // Only tell the LLM to retrieve from working memory if entries actually exist — an
-        // unconditional hint causes the LLM to call get_from_working_memory and conclude the
-        // cache "expired" when nothing was ever written there.
-        var subagentPrefix = $"subagent/{message.TaskId}/";
-        var whiteboardEntries = await workingMemory.ListAsync(subagentPrefix);
+        // ── Phase 1: immediate per-result work (every result) ──────────────────
 
-        var whiteboardHint = whiteboardEntries.Count > 0
-            ? $" The subagent stored {whiteboardEntries.Count} output(s) in working memory under namespace '{subagentPrefix.TrimEnd('/')}'. " +
-              $"Keys: {string.Join(", ", whiteboardEntries.Select(e => $"'{e.Key}'"))}. " +
-              "Retrieve and present them to the user using get_from_working_memory with the full key."
-            : string.Empty;
-
-        // If the subagent ran out of iterations its final text may be an incomplete setup
-        // phrase ("Now let me save the findings to shared memory:"). Annotate it so the
-        // primary LLM knows no data was actually written — prevents hallucinated
-        // "working memory expired" responses.
         var safeOutput = message.IsSuccess && AgentLoopRunner.IsIncompleteSetupPhrase(message.Output)
             ? message.Output.TrimEnd(':').TrimEnd() +
               " — but the task ran out of steps before completing this action. No data was saved to shared memory."
             : message.Output;
 
-        // Publish the subagent's raw completion output as a non-final bubble so it is
-        // visible in the Blazor UI under the subagent's own name before the primary agent
-        // synthesises and presents the final reply.
+        // Publish completion bubble to UI (non-final)
         try
         {
             var completionContent = message.IsSuccess
@@ -86,6 +75,17 @@ internal sealed class SubagentResultHandler(
             logger.LogWarning(ex, "Failed to publish completion bubble for subagent {TaskId}", message.TaskId);
         }
 
+        // Build whiteboard hint for this result
+        var subagentPrefix = $"subagent/{message.TaskId}/";
+        var whiteboardEntries = await workingMemory.ListAsync(subagentPrefix);
+
+        var whiteboardHint = whiteboardEntries.Count > 0
+            ? $" The subagent stored {whiteboardEntries.Count} output(s) in working memory under namespace '{subagentPrefix.TrimEnd('/')}'. " +
+              $"Keys: {string.Join(", ", whiteboardEntries.Select(e => $"'{e.Key}'"))}. " +
+              "Retrieve and present them to the user using get_from_working_memory with the full key."
+            : string.Empty;
+
+        // Add synthetic user turn to conversation memory
         var syntheticUserTurn = message.IsSuccess
             ? $"[Subagent task {message.TaskId} completed]: {safeOutput}{whiteboardHint}"
             : $"[Subagent task {message.TaskId} completed with error: {message.Error}]: {message.Output}";
@@ -95,8 +95,62 @@ internal sealed class SubagentResultHandler(
             new ConversationTurn("user", syntheticUserTurn, DateTimeOffset.UtcNow),
             ct);
 
+        // ── Gate: accumulate and decide who synthesizes ─────────────────────────
+
+        var batchedResults = await gate.AccumulateAsync(
+            message, subagentManager, options.Value.ConsolidationTimeoutSeconds, ct);
+
+        if (batchedResults is null)
+        {
+            // Another handler invocation will perform consolidated synthesis
+            logger.LogInformation(
+                "Subagent result {TaskId} deferred to batch consolidation winner", message.TaskId);
+            return;
+        }
+
+        // ── Phase 2: consolidated synthesis (winner only) ───────────────────────
+
+        logger.LogInformation(
+            "Running consolidated synthesis for {Count} result(s) in session {SessionId}",
+            batchedResults.Count, message.PrimarySessionId);
+
+        // For multi-result batches, collect whiteboard hints for ALL results
+        // and add a final synthetic turn requesting consolidation
+        if (batchedResults.Count > 1)
+        {
+            var allHints = new List<string>();
+            foreach (var r in batchedResults.Where(r => r.TaskId != message.TaskId))
+            {
+                var prefix = $"subagent/{r.TaskId}/";
+                var entries = await workingMemory.ListAsync(prefix);
+                if (entries.Count > 0)
+                {
+                    allHints.Add(
+                        $"Subagent {r.TaskId} stored {entries.Count} output(s) under '{prefix.TrimEnd('/')}': " +
+                        string.Join(", ", entries.Select(e => $"'{e.Key}'")));
+                }
+            }
+
+            var consolidationNote = allHints.Count > 0
+                ? " " + string.Join(" ", allHints)
+                : string.Empty;
+
+            var consolidationTurn =
+                $"[All {batchedResults.Count} subagent tasks completed. " +
+                $"Synthesize the results above into a single unified response.]{consolidationNote}";
+
+            await conversationMemory.AddTurnAsync(
+                message.PrimarySessionId,
+                new ConversationTurn("user", consolidationTurn, DateTimeOffset.UtcNow),
+                ct);
+        }
+
         var chatMessages = await agentContextBuilder.BuildAsync(
-            message.PrimarySessionId, syntheticUserTurn, ct);
+            message.PrimarySessionId,
+            batchedResults.Count > 1
+                ? $"[Consolidating {batchedResults.Count} subagent results]"
+                : syntheticUserTurn,
+            ct);
 
         var sessionWorkingMemoryTools = new WorkingMemoryTools(workingMemory, $"session/{message.PrimarySessionId}", logger);
         var sessionSkillTools = new SkillTools(skillStore, llmClient, logger, message.PrimarySessionId);
@@ -141,7 +195,8 @@ internal sealed class SubagentResultHandler(
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            logger.LogError(ex, "Failed to handle subagent result for task {TaskId}", message.TaskId);
+            logger.LogError(ex, "Failed to handle subagent result consolidation for session {SessionId}",
+                message.PrimarySessionId);
         }
         // Note: subagent working memory entries ("subagent/{taskId}/...") are intentionally NOT
         // deleted here. They persist until their TTL expires so the primary agent can reference
