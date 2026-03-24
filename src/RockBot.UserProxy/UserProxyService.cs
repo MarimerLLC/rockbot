@@ -19,10 +19,14 @@ public sealed class UserProxyService(
 {
     private readonly ConcurrentDictionary<string, (TaskCompletionSource<AgentReply> Tcs, IProgress<AgentReply>? Progress)> _pending = new();
     private readonly ConcurrentDictionary<string, TaskCompletionSource<ConversationHistoryResponse>> _pendingHistory = new();
+    private readonly ConcurrentDictionary<string, TaskCompletionSource<AgentInfoResponse>> _pendingAgentInfo = new();
     private ISubscription? _subscription;
     private ISubscription? _historySubscription;
+    private ISubscription? _agentInfoSubscription;
     private bool _historyInitialized;
+    private bool _agentInfoInitialized;
     private readonly SemaphoreSlim _historyInitLock = new(1, 1);
+    private readonly SemaphoreSlim _agentInfoInitLock = new(1, 1);
     private CancellationTokenSource? _cts;
 
     public bool IsConnected { get; private set; }
@@ -72,13 +76,23 @@ public sealed class UserProxyService(
                 tcs.TrySetCanceled();
         }
 
+        foreach (var kvp in _pendingAgentInfo)
+        {
+            if (_pendingAgentInfo.TryRemove(kvp.Key, out var tcs))
+                tcs.TrySetCanceled();
+        }
+
         if (_subscription is not null)
             await _subscription.DisposeAsync();
 
         if (_historySubscription is not null)
             await _historySubscription.DisposeAsync();
 
+        if (_agentInfoSubscription is not null)
+            await _agentInfoSubscription.DisposeAsync();
+
         _historyInitLock.Dispose();
+        _agentInfoInitLock.Dispose();
         _cts?.Dispose();
     }
 
@@ -307,6 +321,116 @@ public sealed class UserProxyService(
         {
             _historyInitLock.Release();
         }
+    }
+
+    /// <summary>
+    /// Requests agent identity metadata (name, version) from the agent.
+    /// Returns null if the request times out or the agent is unavailable.
+    /// </summary>
+    public async Task<AgentInfoResponse?> GetAgentInfoAsync(
+        TimeSpan? timeout = null,
+        CancellationToken cancellationToken = default)
+    {
+        var effectiveTimeout = timeout ?? options.DefaultReplyTimeout;
+        var correlationId = Guid.NewGuid().ToString("N");
+        var tcs = new TaskCompletionSource<AgentInfoResponse>(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        _pendingAgentInfo[correlationId] = tcs;
+
+        try
+        {
+            await EnsureAgentInfoSubscribedAsync(cancellationToken);
+
+            var request = new AgentInfoRequest();
+            var envelope = request.ToEnvelope<AgentInfoRequest>(
+                source: options.ProxyId,
+                correlationId: correlationId,
+                replyTo: AgentInfoResponseTopic);
+
+            await publisher.PublishAsync(UserProxyTopics.AgentInfoRequest, envelope, cancellationToken);
+
+            logger.LogDebug("Published AgentInfoRequest {CorrelationId}", correlationId);
+
+            using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            timeoutCts.CancelAfter(effectiveTimeout);
+
+            try
+            {
+                return await tcs.Task.WaitAsync(timeoutCts.Token);
+            }
+            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+            {
+                logger.LogWarning("Agent info request timeout for correlation {CorrelationId} after {Timeout}",
+                    correlationId, effectiveTimeout);
+                return null;
+            }
+        }
+        finally
+        {
+            _pendingAgentInfo.TryRemove(correlationId, out _);
+        }
+    }
+
+    private string AgentInfoResponseTopic => $"{UserProxyTopics.AgentInfoResponse}.{options.ProxyId}";
+
+    private async Task EnsureAgentInfoSubscribedAsync(CancellationToken ct)
+    {
+        if (_agentInfoInitialized) return;
+
+        await _agentInfoInitLock.WaitAsync(ct);
+        try
+        {
+            if (_agentInfoInitialized) return;
+
+            _agentInfoSubscription = await subscriber.SubscribeAsync(
+                AgentInfoResponseTopic,
+                $"user-proxy.{options.ProxyId}.agent-info",
+                HandleAgentInfoResponseAsync,
+                ct);
+
+            _agentInfoInitialized = true;
+        }
+        finally
+        {
+            _agentInfoInitLock.Release();
+        }
+    }
+
+    internal Task<MessageResult> HandleAgentInfoResponseAsync(MessageEnvelope envelope, CancellationToken ct)
+    {
+        if (envelope.CorrelationId is null ||
+            !_pendingAgentInfo.TryGetValue(envelope.CorrelationId, out var tcs))
+        {
+            logger.LogWarning("Received agent info response with unknown correlation ID: {CorrelationId}",
+                envelope.CorrelationId);
+            return Task.FromResult(MessageResult.Ack);
+        }
+
+        AgentInfoResponse? response;
+        try
+        {
+            response = envelope.GetPayload<AgentInfoResponse>();
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "Failed to deserialize AgentInfoResponse");
+            tcs.TrySetException(ex);
+            return Task.FromResult(MessageResult.DeadLetter);
+        }
+
+        if (response is null)
+        {
+            logger.LogWarning("Received null AgentInfoResponse");
+            return Task.FromResult(MessageResult.DeadLetter);
+        }
+
+        _pendingAgentInfo.TryRemove(envelope.CorrelationId, out _);
+        tcs.TrySetResult(response);
+
+        logger.LogDebug("Agent info response correlated for {CorrelationId}: {Name} v{Version}",
+            envelope.CorrelationId, response.AgentName, response.AgentVersion);
+
+        return Task.FromResult(MessageResult.Ack);
     }
 
     internal Task<MessageResult> HandleHistoryResponseAsync(MessageEnvelope envelope, CancellationToken ct)

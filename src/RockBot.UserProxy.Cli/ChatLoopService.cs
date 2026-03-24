@@ -21,7 +21,21 @@ internal sealed class ChatLoopService(
         // Yield to let the host finish starting
         await Task.Yield();
 
-        AnsiConsole.MarkupLine("[bold blue]RockBot User Proxy[/]");
+        AnsiConsole.MarkupLine($"[bold blue]RockBot User Proxy[/] [dim]v{Markup.Escape(AssemblyVersion.Current)}[/]");
+
+        try
+        {
+            var info = await proxy.GetAgentInfoAsync(timeout: TimeSpan.FromSeconds(5), cancellationToken: stoppingToken);
+            if (info is not null)
+                AnsiConsole.MarkupLine($"[dim]Connected to {Markup.Escape(info.AgentName)} v{Markup.Escape(info.AgentVersion)}[/]");
+            else
+                AnsiConsole.MarkupLine("[dim yellow]Agent not available[/]");
+        }
+        catch
+        {
+            AnsiConsole.MarkupLine("[dim yellow]Agent not available[/]");
+        }
+
         AnsiConsole.MarkupLine("Type a message to send to agents. Type [bold]exit[/] to quit.\n");
 
         while (!stoppingToken.IsCancellationRequested)

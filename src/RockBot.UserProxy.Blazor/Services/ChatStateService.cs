@@ -30,6 +30,9 @@ public sealed class ChatStateService
     /// </summary>
     private readonly Dictionary<string, string> _activeActivityLogs = new();
 
+    public string? AgentName { get; private set; }
+    public string? AgentVersion { get; private set; }
+
     public event Action? OnStateChanged;
 
     /// <summary>
@@ -77,6 +80,13 @@ public sealed class ChatStateService
                 SessionId = sessionId,
                 Category = MessageCategory.UserInput
             });
+        NotifyStateChanged();
+    }
+
+    public void SetAgentInfo(string name, string version)
+    {
+        AgentName = name;
+        AgentVersion = version;
         NotifyStateChanged();
     }
 
