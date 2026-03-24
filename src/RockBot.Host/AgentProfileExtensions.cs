@@ -41,6 +41,9 @@ public static class AgentProfileExtensions
         // need to see hot-reloaded changes should take ProfileHolder directly.
         builder.Services.AddTransient(sp => sp.GetRequiredService<ProfileHolder>().Profile);
 
+        var nameHolder = new AgentNameHolder();
+        builder.Services.AddSingleton(nameHolder);
+
         builder.Services.AddSingleton<IAgentProfileProvider, FileAgentProfileProvider>();
         builder.Services.AddSingleton<ISystemPromptBuilder, DefaultSystemPromptBuilder>();
 

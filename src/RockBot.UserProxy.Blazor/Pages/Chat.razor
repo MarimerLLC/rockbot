@@ -7,7 +7,7 @@
 @inject IJSRuntime JSRuntime
 @implements IDisposable
 
-<PageTitle>RockBot Chat</PageTitle>
+<PageTitle>@(ChatState.AgentName ?? "RockBot") Chat</PageTitle>
 
 <div class="chat-container d-flex flex-column vh-100">
     <div class="chat-header bg-primary text-white p-3 d-flex justify-content-between align-items-center">
