@@ -14,7 +14,7 @@ RUN printf '<configuration><fallbackPackageFolders><clear /></fallbackPackageFol
     > /src/NuGet.config
 
 # Copy solution and project files for layer-cached restore
-COPY RockBot.slnx .
+COPY RockBot.slnx Directory.Build.props ./
 COPY src/RockBot.UserProxy.Blazor/RockBot.UserProxy.Blazor.csproj src/RockBot.UserProxy.Blazor/
 COPY src/RockBot.UserProxy/RockBot.UserProxy.csproj src/RockBot.UserProxy/
 COPY src/RockBot.UserProxy.Abstractions/RockBot.UserProxy.Abstractions.csproj src/RockBot.UserProxy.Abstractions/

@@ -13,7 +13,8 @@ WORKDIR /src
 RUN printf '<configuration><fallbackPackageFolders><clear /></fallbackPackageFolders></configuration>' \
     > /src/NuGet.config
 
-# Copy project file for layer-cached restore
+# Copy project file and build props for layer-cached restore
+COPY Directory.Build.props .
 COPY src/McpServer.Staging/McpServer.Staging.csproj src/McpServer.Staging/
 
 RUN dotnet restore src/McpServer.Staging/McpServer.Staging.csproj

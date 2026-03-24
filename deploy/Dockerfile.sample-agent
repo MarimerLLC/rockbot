@@ -7,7 +7,7 @@ WORKDIR /src
 RUN printf '<configuration><fallbackPackageFolders><clear /></fallbackPackageFolders></configuration>' \
     > /src/NuGet.config
 
-COPY RockBot.slnx .
+COPY RockBot.slnx Directory.Build.props ./
 COPY src/ src/
 
 # BuildKit cache mount avoids re-downloading packages on every build
