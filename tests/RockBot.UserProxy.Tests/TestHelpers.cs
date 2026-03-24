@@ -86,6 +86,38 @@ internal sealed class StubUserFrontend : IUserFrontend
 }
 
 /// <summary>
+/// Subscriber stub that throws on the first N calls to <see cref="SubscribeAsync"/>,
+/// then succeeds. Used to verify retry logic.
+/// </summary>
+internal sealed class FailingThenSucceedingSubscriber(int failCount) : IMessageSubscriber
+{
+    private int _callCount;
+
+    public int CallCount => _callCount;
+
+    public Func<MessageEnvelope, CancellationToken, Task<MessageResult>>? CapturedHandler { get; private set; }
+    public string? CapturedTopic { get; private set; }
+
+    public Task<ISubscription> SubscribeAsync(
+        string topic,
+        string subscriptionName,
+        Func<MessageEnvelope, CancellationToken, Task<MessageResult>> handler,
+        CancellationToken cancellationToken = default)
+    {
+        var call = Interlocked.Increment(ref _callCount);
+
+        if (call <= failCount)
+            throw new InvalidOperationException($"Simulated connection failure #{call}");
+
+        CapturedHandler = handler;
+        CapturedTopic = topic;
+        return Task.FromResult<ISubscription>(new StubSubscription(topic, subscriptionName));
+    }
+
+    public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+}
+
+/// <summary>
 /// Shared test helpers for creating envelopes.
 /// </summary>
 internal static class TestEnvelopeHelper

@@ -227,6 +227,118 @@ public sealed class UserProxyServiceTests
             UserId = "user-1"
         };
 
+    // ── Retry tests ──────────────────────────────────────────────────────────
+
+    [TestMethod]
+    public async Task StartAsync_RetriesAndConnects_WhenInitialSubscribeFails()
+    {
+        var failingSubscriber = new FailingThenSucceedingSubscriber(failCount: 2);
+        var retryOptions = new UserProxyOptions
+        {
+            ProxyId = "retry-proxy",
+            MaxSubscribeRetries = 5,
+            SubscribeRetryBaseDelay = TimeSpan.FromMilliseconds(10),
+            MaxSubscribeRetryDelay = TimeSpan.FromMilliseconds(50)
+        };
+
+        var svc = new UserProxyService(
+            new TrackingPublisher(),
+            failingSubscriber,
+            new StubUserFrontend(),
+            retryOptions,
+            NullLogger<UserProxyService>.Instance);
+
+        var connected = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        svc.OnConnectionChanged += () =>
+        {
+            if (svc.IsConnected) connected.TrySetResult();
+        };
+
+        await svc.StartAsync(CancellationToken.None);
+
+        // Initial attempt fails — not connected yet
+        Assert.IsFalse(svc.IsConnected);
+
+        // Wait for background retry to succeed
+        await connected.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.IsTrue(svc.IsConnected);
+        Assert.AreEqual(UserProxyTopics.UserResponse, failingSubscriber.CapturedTopic);
+        // 1 initial failure + 1 retry failure + 1 retry success = 3 total calls
+        Assert.AreEqual(3, failingSubscriber.CallCount);
+
+        await svc.StopAsync(CancellationToken.None);
+    }
+
+    [TestMethod]
+    public async Task StartAsync_RetryStops_WhenServiceIsStopped()
+    {
+        // Subscriber that always fails
+        var alwaysFailSubscriber = new FailingThenSucceedingSubscriber(failCount: int.MaxValue);
+        var retryOptions = new UserProxyOptions
+        {
+            ProxyId = "stop-proxy",
+            MaxSubscribeRetries = int.MaxValue,
+            SubscribeRetryBaseDelay = TimeSpan.FromMilliseconds(10),
+            MaxSubscribeRetryDelay = TimeSpan.FromMilliseconds(10)
+        };
+
+        var svc = new UserProxyService(
+            new TrackingPublisher(),
+            alwaysFailSubscriber,
+            new StubUserFrontend(),
+            retryOptions,
+            NullLogger<UserProxyService>.Instance);
+
+        await svc.StartAsync(CancellationToken.None);
+        Assert.IsFalse(svc.IsConnected);
+
+        // Let a few retries happen
+        await Task.Delay(100);
+
+        // Stop the service — should cancel the retry loop
+        await svc.StopAsync(CancellationToken.None);
+
+        var countAtStop = alwaysFailSubscriber.CallCount;
+
+        // Wait a bit more to verify no more retries are happening
+        await Task.Delay(100);
+        Assert.AreEqual(countAtStop, alwaysFailSubscriber.CallCount,
+            "Retry loop should stop after StopAsync");
+        Assert.IsFalse(svc.IsConnected);
+    }
+
+    [TestMethod]
+    public async Task StartAsync_NoRetry_WhenMaxSubscribeRetriesIsZero()
+    {
+        var failingSubscriber = new FailingThenSucceedingSubscriber(failCount: 1);
+        var retryOptions = new UserProxyOptions
+        {
+            ProxyId = "no-retry-proxy",
+            MaxSubscribeRetries = 0,
+            SubscribeRetryBaseDelay = TimeSpan.FromMilliseconds(10)
+        };
+
+        var svc = new UserProxyService(
+            new TrackingPublisher(),
+            failingSubscriber,
+            new StubUserFrontend(),
+            retryOptions,
+            NullLogger<UserProxyService>.Instance);
+
+        await svc.StartAsync(CancellationToken.None);
+        Assert.IsFalse(svc.IsConnected);
+
+        // Wait to ensure no background retry is happening
+        await Task.Delay(50);
+
+        Assert.AreEqual(1, failingSubscriber.CallCount,
+            "Should only have the initial attempt, no retries");
+        Assert.IsFalse(svc.IsConnected);
+
+        await svc.StopAsync(CancellationToken.None);
+    }
+
     // ── GetHistoryAsync tests ────────────────────────────────────────────────
 
     [TestMethod]
