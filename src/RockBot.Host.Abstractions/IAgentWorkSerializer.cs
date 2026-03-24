@@ -19,7 +19,7 @@ public interface IAgentWorkSerializer
     /// </summary>
     /// <param name="ct">
     /// Cancellation token for the calling session (linked to host lifetime and
-    /// to <see cref="SessionBackgroundTaskTracker"/> so a subsequent user
+    /// to <see cref="ISessionTracker"/> so a subsequent user
     /// message cancels the waiting loop before it even starts).
     /// </param>
     /// <returns>

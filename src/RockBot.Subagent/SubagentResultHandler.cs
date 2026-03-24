@@ -31,6 +31,7 @@ internal sealed class SubagentResultHandler(
     IConversationMemory conversationMemory,
     SubagentResultGate gate,
     ISubagentManager subagentManager,
+    ISessionTracker sessionTracker,
     IOptions<SubagentOptions> options,
     ILogger<SubagentResultHandler> logger) : IMessageHandler<SubagentResultMessage>
 {
@@ -151,6 +152,26 @@ internal sealed class SubagentResultHandler(
                 ? $"[Consolidating {batchedResults.Count} subagent results]"
                 : syntheticUserTurn,
             ct);
+
+        // Detect whether the user has already sent a new message and moved on.
+        // PrimarySessionId is "session/<base>" — strip the prefix to match the
+        // key used by SessionBackgroundTaskTracker.
+        var baseSessionId = message.PrimarySessionId.StartsWith("session/", StringComparison.Ordinal)
+            ? message.PrimarySessionId["session/".Length..]
+            : message.PrimarySessionId;
+
+        if (sessionTracker.HasActiveUserLoop(baseSessionId))
+        {
+            logger.LogInformation(
+                "User has an active message loop for session {BaseSessionId} — adding background-work framing to synthesis",
+                baseSessionId);
+
+            chatMessages.Add(new ChatMessage(ChatRole.System,
+                "IMPORTANT: The user has sent a new message and moved on to a different topic while this " +
+                "background task was running. Frame your response as a brief follow-up delivering results " +
+                "from earlier background work — e.g. 'Circling back on the earlier [topic] research…' " +
+                "Keep it concise and do not address or repeat anything related to the user's current question."));
+        }
 
         var sessionWorkingMemoryTools = new WorkingMemoryTools(workingMemory, $"session/{message.PrimarySessionId}", logger);
         var sessionSkillTools = new SkillTools(skillStore, llmClient, logger, message.PrimarySessionId);
