@@ -92,22 +92,37 @@ internal sealed class WebToolSkillProvider : IToolSkillProvider
 
         When a page is large, `web_browse` automatically splits it into chunks and saves
         them to working memory. Instead of returning all the content at once, it returns
-        a **chunk index** — a table listing each chunk's heading and key:
+        a **chunk index** — a table listing each chunk's heading and key.
+
+        An **index chunk** is also stored in working memory (key ending in `-index`)
+        containing a hierarchical document outline that maps section headings to chunk
+        keys. If you lose the inline index (e.g. after context trimming), retrieve the
+        index chunk to rediscover the document structure:
 
         ```
-        | # | Heading          | Key                              |
-        |---|------------------|----------------------------------|
-        | 0 | Introduction     | `web:learn.microsoft.com_...:chunk0` |
-        | 1 | Getting Started  | `web:learn.microsoft.com_...:chunk1` |
-        | 2 | API Reference    | `web:learn.microsoft.com_...:chunk2` |
+        GetFromWorkingMemory(key: "session/.../web-learn.microsoft.com_...-index")
         ```
 
-        To read a chunk, call:
+        The outline preserves heading hierarchy (H1/H2/H3 nesting) so you can
+        quickly identify the right section without scanning every chunk:
+
         ```
-        GetFromWorkingMemory(key: "web:learn.microsoft.com_...:chunk1")
+        ## Document Outline
+
+        - **Introduction** → `session/.../web-...-chunk0`
+          - **Installation** → `session/.../web-...-chunk1`
+          - **Configuration** → `session/.../web-...-chunk2`
+            - **Environment Variables** → `session/.../web-...-chunk3`
+        - **API Reference** → `session/.../web-...-chunk4`
         ```
 
-        - Only load the chunks you actually need — read headings to pick the relevant ones
+        To read a specific chunk, call:
+        ```
+        GetFromWorkingMemory(key: "session/.../web-...-chunk1")
+        ```
+
+        - Start with the index chunk to find relevant sections by heading
+        - Only load the chunks you actually need — don't retrieve all of them
         - Use `ListWorkingMemory()` to see all cached chunks and their expiry times
         - Chunks expire after 20 minutes; re-browse the page if they are gone
 
@@ -156,8 +171,9 @@ internal sealed class WebToolSkillProvider : IToolSkillProvider
           speculatively
         - **Prefer primary sources** — official docs, release pages, and canonical
           references over aggregators and summaries
-        - **Large pages are chunked** — if `web_browse` returns a chunk index, use
-          `GetFromWorkingMemory` to load only the sections you need
+        - **Large pages are chunked** — if `web_browse` returns a chunk index, retrieve
+          the `-index` key first for the document outline, then load only the sections you need
+          with `GetFromWorkingMemory`
         - **Don't over-search** — two to three targeted searches are usually better than
           ten vague ones
 

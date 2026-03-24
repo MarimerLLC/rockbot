@@ -123,6 +123,12 @@ public class WebBrowseToolExecutorTests
         StringAssert.Contains(response.Content, "GetFromWorkingMemory");
         Assert.IsTrue(memory.Entries.All(e => e.Key.StartsWith("session/session-1/web-")), "Keys should be namespaced under 'session/session-1/web-'");
         Assert.IsTrue(memory.Entries.All(e => e.Category == "web"), "Category should be 'web'");
+
+        // Verify index chunk is stored
+        var indexEntry = memory.Entries.SingleOrDefault(e => e.Key.EndsWith("-index"));
+        Assert.IsNotNull(indexEntry, "Expected an index chunk to be stored in working memory");
+        StringAssert.Contains(indexEntry.Value, "Document Outline");
+        StringAssert.Contains(response.Content, "-index");
     }
 
     [TestMethod]

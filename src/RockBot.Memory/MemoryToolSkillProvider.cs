@@ -182,6 +182,12 @@ public sealed class MemoryToolSkillProvider : IToolSkillProvider
         get_from_working_memory(key: "inbox_emails_2026-02-19")
         ```
 
+        **Index chunks for large results:** When tool results or web pages are chunked,
+        an index chunk (key ending in `-index`) is stored alongside the content chunks.
+        It contains a hierarchical document outline mapping section headings to chunk keys.
+        If you need to navigate chunked content but the inline index has scrolled out of
+        context, retrieve the `-index` key first to rediscover the document structure.
+
 
         ### list_working_memory
 

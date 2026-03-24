@@ -29,7 +29,8 @@ internal sealed class ResearchAgentTaskHandler(
         Guidelines:
         - Use web_search to find relevant sources, then web_browse to read them.
         - Retrieve and read at least 2–3 sources before synthesising your answer.
-        - If a page is large and chunked into working memory, call get_from_working_memory for each chunk.
+        - If a page is large and chunked into working memory, retrieve the index chunk (key ending
+          in -index) first for a hierarchical outline of sections, then load only the relevant chunks.
         - Write a well-structured, factual answer. Cite sources where helpful.
         - Be concise but complete. Do not ask clarifying questions — answer with the best information available.
         """;
