@@ -10,6 +10,8 @@ An event-driven autonomous agent framework.
 
 RockBot is a framework for building **multi-agent AI systems** where agents communicate exclusively through a message bus. There is no shared memory, no direct method calls between agents, and no LLM-generated code running in-process with the host.
 
+Agents built using the RockBot framework SDK are designed with the principle of least priviledge: an agent should not have access to any secrets other than LLM keys. All other secrets should be in MCP servers or other isolated services.
+
 Each agent is an isolated process that reacts to messages, invokes tools, calls LLMs, delegates work to other agents, and emits responses — all via a topic-based pub/sub message bus backed by RabbitMQ (or an in-process bus for local development).
 
 ### Core components
