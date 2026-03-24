@@ -72,7 +72,8 @@ internal sealed class UserMessageHandler(
         // Cancel any background loop still running for this session from a prior message.
         // This prevents stale tool calls (e.g. sending an email from a previous topic)
         // from executing after the user has already moved on.
-        var sessionCt = sessionTracker.BeginSession(message.SessionId, ct);
+        var sessionHandle = sessionTracker.BeginSession(message.SessionId, ct);
+        var sessionCt = sessionHandle.Token;
         logger.LogInformation("Received message from {UserId} in session {SessionId}: {Content}",
             message.UserId, message.SessionId, message.Content);
 
@@ -188,7 +189,7 @@ internal sealed class UserMessageHandler(
                     replyTo, correlationId, message.SessionId, isFinal: false, ct);
                 turnActivityHandedOff = true;
                 _ = NativeLlmLoopAsync(chatMessages, chatOptions, classification, postInjectionTokenEstimate,
-                    message.SessionId, replyTo, correlationId, turnActivity, sessionCt);
+                    message.SessionId, replyTo, correlationId, sessionHandle.Generation, turnActivity, sessionCt);
             }
             else
             {
@@ -247,7 +248,7 @@ internal sealed class UserMessageHandler(
                     turnActivityHandedOff = true;
                     _ = BackgroundToolLoopAsync(
                         chatMessages, chatOptions, firstResponse, tier,
-                        message.SessionId, replyTo, correlationId, turnActivity, sessionCt);
+                        message.SessionId, replyTo, correlationId, sessionHandle.Generation, turnActivity, sessionCt);
                 }
                 else
                 {
@@ -266,7 +267,7 @@ internal sealed class UserMessageHandler(
                         turnActivityHandedOff = true;
                         _ = BackgroundToolLoopAsync(
                             chatMessages, chatOptions, firstResponse, tier,
-                            message.SessionId, replyTo, correlationId, turnActivity, sessionCt);
+                            message.SessionId, replyTo, correlationId, sessionHandle.Generation, turnActivity, sessionCt);
                     }
                     else if (modelBehavior.NudgeOnHallucinatedToolCalls
                         && (HallucinatedActionRegex.IsMatch(text) || AgentLoopRunner.CapabilityDenialRegex.IsMatch(text)))
@@ -282,7 +283,7 @@ internal sealed class UserMessageHandler(
                         turnActivityHandedOff = true;
                         _ = BackgroundToolLoopAsync(
                             chatMessages, chatOptions, firstResponse, tier,
-                            message.SessionId, replyTo, correlationId, turnActivity, sessionCt);
+                            message.SessionId, replyTo, correlationId, sessionHandle.Generation, turnActivity, sessionCt);
                     }
                     else
                     {
@@ -292,6 +293,7 @@ internal sealed class UserMessageHandler(
                             ct);
 
                         await PublishReplyAsync(text, replyTo, correlationId, message.SessionId, isFinal: true, ct);
+                        sessionTracker.EndSession(message.SessionId, sessionHandle.Generation);
                         turnActivity?.SetTag("rockbot.turn.status", "ok");
                         turnActivity?.SetStatus(ActivityStatusCode.Ok);
                         turnSw.Stop();
@@ -332,6 +334,7 @@ internal sealed class UserMessageHandler(
             }
 
             await PublishReplyAsync(errorText, replyTo, correlationId, message.SessionId, isFinal: true, ct);
+            sessionTracker.EndSession(message.SessionId, sessionHandle.Generation);
             turnActivity?.SetTag("rockbot.turn.status", "error");
             turnActivity?.SetStatus(ActivityStatusCode.Error, ex.Message);
             turnSw.Stop();
@@ -357,6 +360,7 @@ internal sealed class UserMessageHandler(
         string sessionId,
         string replyTo,
         string? correlationId,
+        long sessionGeneration,
         System.Diagnostics.Activity? turnActivity,
         CancellationToken ct)
     {
@@ -454,6 +458,7 @@ internal sealed class UserMessageHandler(
         }
         finally
         {
+            sessionTracker.EndSession(sessionId, sessionGeneration);
             turnActivity?.Dispose();
         }
     }
@@ -466,6 +471,7 @@ internal sealed class UserMessageHandler(
         string sessionId,
         string replyTo,
         string? correlationId,
+        long sessionGeneration,
         System.Diagnostics.Activity? turnActivity,
         CancellationToken ct)
     {
@@ -547,6 +553,7 @@ internal sealed class UserMessageHandler(
         }
         finally
         {
+            sessionTracker.EndSession(sessionId, sessionGeneration);
             turnActivity?.Dispose();
         }
     }
