@@ -198,9 +198,11 @@ builder.Services.AddRockBotHost(agent =>
     agent.HandleMessage<UserMessage, UserMessageHandler>();
     agent.HandleMessage<UserFeedback, UserFeedbackHandler>();
     agent.HandleMessage<ConversationHistoryRequest, ConversationHistoryRequestHandler>();
+    agent.HandleMessage<AgentInfoRequest, AgentInfoRequestHandler>();
     agent.SubscribeTo(UserProxyTopics.UserMessage);
     agent.SubscribeTo(UserProxyTopics.UserFeedback);
     agent.SubscribeTo(UserProxyTopics.ConversationHistoryRequest);
+    agent.SubscribeTo(UserProxyTopics.AgentInfoRequest);
 });
 
 // Bind AgentProfileOptions from the AgentProfile config section so AgentProfile__BasePath

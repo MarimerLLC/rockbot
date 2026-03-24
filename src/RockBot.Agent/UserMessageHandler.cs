@@ -560,8 +560,7 @@ internal sealed class UserMessageHandler(
             Content = content,
             SessionId = sessionId,
             AgentName = agent.Name,
-            IsFinal = isFinal,
-            AgentVersion = AgentReply.CurrentVersion
+            IsFinal = isFinal
         };
         var envelope = reply.ToEnvelope<AgentReply>(source: agent.Name, correlationId: correlationId);
         await publisher.PublishAsync(replyTo, envelope, ct);

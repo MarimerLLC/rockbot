@@ -1,5 +1,4 @@
 @page "/"
-@using System.Reflection
 @using Markdig
 @using RockBot.UserProxy.Blazor.Services
 @using Microsoft.JSInterop
@@ -13,7 +12,7 @@
 <div class="chat-container d-flex flex-column vh-100">
     <div class="chat-header bg-primary text-white p-3 d-flex justify-content-between align-items-center">
         <div class="d-flex align-items-baseline gap-2">
-            <h1 class="h4 mb-0">RockBot Chat</h1>
+            <h1 class="h4 mb-0">@(ChatState.AgentName ?? "RockBot") Chat</h1>
             <span class="small opacity-75">v@(UiVersion)</span>
             @if (ChatState.AgentVersion is not null)
             {
@@ -187,11 +186,7 @@
     private const string SessionId = "blazor-session";
     private const string UserId = "blazor-user";
 
-    private static readonly string UiVersion =
-        Assembly.GetEntryAssembly()
-            ?.GetCustomAttribute<AssemblyInformationalVersionAttribute>()
-            ?.InformationalVersion
-        ?? "0.0.0";
+    private static readonly string UiVersion = AssemblyVersion.Current;
 
     private string currentMessage = string.Empty;
     private ElementReference messagesContainer;
@@ -235,6 +230,14 @@
             // This runs only on first render (never during static prerendering),
             // which avoids a 10-second blank-page wait and prevents duplicate
             // messages when the singleton ChatStateService outlives the component.
+            try
+            {
+                var info = await ProxyService.GetAgentInfoAsync(timeout: TimeSpan.FromSeconds(5));
+                if (info is not null)
+                    ChatState.SetAgentInfo(info.AgentName, info.AgentVersion);
+            }
+            catch { /* non-fatal — header falls back to defaults */ }
+
             try
             {
                 var history = await ProxyService.GetHistoryAsync(SessionId, timeout: TimeSpan.FromSeconds(10));

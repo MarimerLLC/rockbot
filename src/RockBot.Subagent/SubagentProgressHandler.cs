@@ -46,8 +46,7 @@ internal sealed class SubagentProgressHandler(
                 Content = message.Message,
                 SessionId = message.PrimarySessionId,
                 AgentName = $"subagent-{message.TaskId}",
-                IsFinal = false,
-                AgentVersion = AgentReply.CurrentVersion
+                IsFinal = false
             };
             var envelope = progressReply.ToEnvelope<AgentReply>(source: agent.Name);
             await publisher.PublishAsync(UserProxyTopics.UserResponse, envelope, ct);

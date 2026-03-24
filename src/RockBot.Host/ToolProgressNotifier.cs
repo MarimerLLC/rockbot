@@ -70,8 +70,7 @@ public sealed class ToolProgressNotifier(
             Content = content,
             SessionId = ctx.SessionId,
             AgentName = ctx.AgentName,
-            IsFinal = false,
-            AgentVersion = AgentReply.CurrentVersion
+            IsFinal = false
         };
 
         var envelope = reply.ToEnvelope<AgentReply>(

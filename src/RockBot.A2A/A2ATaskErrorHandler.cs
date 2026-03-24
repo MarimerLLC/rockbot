@@ -102,8 +102,7 @@ internal sealed class A2ATaskErrorHandler(
                 Content = finalContent,
                 SessionId = pending.PrimarySessionId,
                 AgentName = agent.Name,
-                IsFinal = true,
-                AgentVersion = AgentReply.CurrentVersion
+                IsFinal = true
             };
             var envelope = reply.ToEnvelope<AgentReply>(source: agent.Name);
             await publisher.PublishAsync(UserProxyTopics.UserResponse, envelope, ct);

@@ -1,5 +1,4 @@
 using System.Diagnostics;
-using System.Reflection;
 using Microsoft.Extensions.Hosting;
 using Spectre.Console;
 
@@ -16,20 +15,27 @@ internal sealed class ChatLoopService(
 {
     private const string SessionId = "cli-session";
     private const string UserId = "cli-user";
-    private bool _agentVersionShown;
-
-    private static readonly string CliVersion =
-        Assembly.GetEntryAssembly()
-            ?.GetCustomAttribute<AssemblyInformationalVersionAttribute>()
-            ?.InformationalVersion
-        ?? "0.0.0";
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         // Yield to let the host finish starting
         await Task.Yield();
 
-        AnsiConsole.MarkupLine($"[bold blue]RockBot User Proxy[/] [dim]v{Markup.Escape(CliVersion)}[/]");
+        AnsiConsole.MarkupLine($"[bold blue]RockBot User Proxy[/] [dim]v{Markup.Escape(AssemblyVersion.Current)}[/]");
+
+        try
+        {
+            var info = await proxy.GetAgentInfoAsync(timeout: TimeSpan.FromSeconds(5), cancellationToken: stoppingToken);
+            if (info is not null)
+                AnsiConsole.MarkupLine($"[dim]Connected to {Markup.Escape(info.AgentName)} v{Markup.Escape(info.AgentVersion)}[/]");
+            else
+                AnsiConsole.MarkupLine("[dim yellow]Agent not available[/]");
+        }
+        catch
+        {
+            AnsiConsole.MarkupLine("[dim yellow]Agent not available[/]");
+        }
+
         AnsiConsole.MarkupLine("Type a message to send to agents. Type [bold]exit[/] to quit.\n");
 
         while (!stoppingToken.IsCancellationRequested)
@@ -91,11 +97,6 @@ internal sealed class ChatLoopService(
 
             if (reply is not null)
             {
-                if (reply.AgentVersion is not null && !_agentVersionShown)
-                {
-                    _agentVersionShown = true;
-                    AnsiConsole.MarkupLine($"[dim]Agent version: {Markup.Escape(reply.AgentVersion)}[/]");
-                }
                 await frontend.DisplayReplyAsync(reply, stoppingToken);
             }
             else

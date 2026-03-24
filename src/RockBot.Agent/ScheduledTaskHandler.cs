@@ -144,8 +144,7 @@ internal sealed class ScheduledTaskHandler(
             Content = finalText,
             SessionId = replySessionId,
             AgentName = agent.Name,
-            IsFinal = true,
-            AgentVersion = AgentReply.CurrentVersion
+            IsFinal = true
         };
 
         var envelope = reply.ToEnvelope<AgentReply>(source: agent.Name);
