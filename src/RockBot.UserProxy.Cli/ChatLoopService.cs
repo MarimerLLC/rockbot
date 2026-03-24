@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Reflection;
 using Microsoft.Extensions.Hosting;
 using Spectre.Console;
 
@@ -15,13 +16,20 @@ internal sealed class ChatLoopService(
 {
     private const string SessionId = "cli-session";
     private const string UserId = "cli-user";
+    private bool _agentVersionShown;
+
+    private static readonly string CliVersion =
+        Assembly.GetEntryAssembly()
+            ?.GetCustomAttribute<AssemblyInformationalVersionAttribute>()
+            ?.InformationalVersion
+        ?? "0.0.0";
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         // Yield to let the host finish starting
         await Task.Yield();
 
-        AnsiConsole.MarkupLine("[bold blue]RockBot User Proxy[/]");
+        AnsiConsole.MarkupLine($"[bold blue]RockBot User Proxy[/] [dim]v{Markup.Escape(CliVersion)}[/]");
         AnsiConsole.MarkupLine("Type a message to send to agents. Type [bold]exit[/] to quit.\n");
 
         while (!stoppingToken.IsCancellationRequested)
@@ -83,6 +91,11 @@ internal sealed class ChatLoopService(
 
             if (reply is not null)
             {
+                if (reply.AgentVersion is not null && !_agentVersionShown)
+                {
+                    _agentVersionShown = true;
+                    AnsiConsole.MarkupLine($"[dim]Agent version: {Markup.Escape(reply.AgentVersion)}[/]");
+                }
                 await frontend.DisplayReplyAsync(reply, stoppingToken);
             }
             else

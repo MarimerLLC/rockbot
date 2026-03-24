@@ -1,0 +1,14 @@
+<Project>
+  <PropertyGroup>
+    <!-- Read the build number from a local file (not checked into git).
+         Falls back to 0 when the file does not exist. -->
+    <BuildNumberFile>$([System.IO.Path]::Combine($(MSBuildThisFileDirectory), 'build.number'))</BuildNumberFile>
+    <BuildNumber Condition="Exists('$(BuildNumberFile)')">$([System.IO.File]::ReadAllText('$(BuildNumberFile)').Trim())</BuildNumber>
+    <BuildNumber Condition="'$(BuildNumber)' == ''">0</BuildNumber>
+
+    <Version>0.3.$(BuildNumber)</Version>
+    <AssemblyVersion>0.3.$(BuildNumber)</AssemblyVersion>
+    <FileVersion>0.3.$(BuildNumber)</FileVersion>
+    <InformationalVersion>0.3.$(BuildNumber)</InformationalVersion>
+  </PropertyGroup>
+</Project>

@@ -65,7 +65,8 @@ internal sealed class SubagentResultHandler(
                 Content = completionContent,
                 SessionId = message.PrimarySessionId,
                 AgentName = $"subagent-{message.TaskId}",
-                IsFinal = false
+                IsFinal = false,
+                AgentVersion = AgentReply.CurrentVersion
             };
             var completionEnvelope = completionReply.ToEnvelope<AgentReply>(
                 source: $"subagent-{message.TaskId}");
@@ -209,7 +210,8 @@ internal sealed class SubagentResultHandler(
                 Content = finalContent,
                 SessionId = message.PrimarySessionId,
                 AgentName = agent.Name,
-                IsFinal = true
+                IsFinal = true,
+                AgentVersion = AgentReply.CurrentVersion
             };
             var envelope = reply.ToEnvelope<AgentReply>(source: agent.Name);
             await publisher.PublishAsync(UserProxyTopics.UserResponse, envelope, ct);

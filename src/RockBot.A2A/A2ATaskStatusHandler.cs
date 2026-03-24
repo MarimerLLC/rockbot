@@ -62,7 +62,8 @@ internal sealed class A2ATaskStatusHandler(
                     Content = statusText,
                     SessionId = pending.PrimarySessionId,
                     AgentName = pending.TargetAgent,
-                    IsFinal = false
+                    IsFinal = false,
+                    AgentVersion = AgentReply.CurrentVersion
                 };
                 var progressEnvelope = progressReply.ToEnvelope<AgentReply>(source: agent.Name);
                 await publisher.PublishAsync(UserProxyTopics.UserResponse, progressEnvelope, ct);
@@ -121,7 +122,8 @@ internal sealed class A2ATaskStatusHandler(
                 Content = finalContent,
                 SessionId = pending.PrimarySessionId,
                 AgentName = agent.Name,
-                IsFinal = false
+                IsFinal = false,
+                AgentVersion = AgentReply.CurrentVersion
             };
             var envelope = reply.ToEnvelope<AgentReply>(source: agent.Name);
             await publisher.PublishAsync(UserProxyTopics.UserResponse, envelope, ct);

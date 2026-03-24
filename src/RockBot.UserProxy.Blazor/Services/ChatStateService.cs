@@ -30,6 +30,8 @@ public sealed class ChatStateService
     /// </summary>
     private readonly Dictionary<string, string> _activeActivityLogs = new();
 
+    public string? AgentVersion { get; private set; }
+
     public event Action? OnStateChanged;
 
     /// <summary>
@@ -82,6 +84,9 @@ public sealed class ChatStateService
 
     public void AddAgentReply(AgentReply reply, MessageCategory category = MessageCategory.PrimaryFinal)
     {
+        if (AgentVersion is null && reply.AgentVersion is not null)
+            AgentVersion = reply.AgentVersion;
+
         lock (_lock)
         {
             // When a PrimaryFinal message arrives, close the primary activity log

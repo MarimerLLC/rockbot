@@ -181,7 +181,8 @@ internal sealed class UserFeedbackHandler(
             Content = freshResponse,
             SessionId = message.SessionId,
             AgentName = agent.Name,
-            IsFinal = true
+            IsFinal = true,
+            AgentVersion = AgentReply.CurrentVersion
         };
 
         var envelope = reply.ToEnvelope<AgentReply>(source: agent.Name);
