@@ -45,7 +45,7 @@ internal sealed class UserMessageHandler(
     IAgentWorkSerializer workSerializer,
     AgentLoopRunner agentLoopRunner,
     AgentContextBuilder agentContextBuilder,
-    SessionBackgroundTaskTracker sessionTracker,
+    ISessionTracker sessionTracker,
     SessionStartTracker sessionStartTracker,
     IOptions<AgentProfileOptions> profileOptions,
     ILogger<UserMessageHandler> logger,

@@ -135,9 +135,6 @@ else
 // Tier routing logger — appends routing decisions to tier-routing-log.jsonl for dream self-correction
 builder.Services.AddSingleton<TierRoutingLogger>();
 
-// Tracks in-flight background tool loops so they can be cancelled when a new message arrives
-builder.Services.AddSingleton<SessionBackgroundTaskTracker>();
-
 // Register memory tools as singleton — AIFunction instances are built once at construction
 builder.Services.AddSingleton<MemoryTools>();
 // Rules tools — requires WithRules() in the agent builder below
