@@ -10,10 +10,10 @@ public sealed class UserProxyOptions
 
     /// <summary>
     /// Maximum number of retry attempts for the initial <c>user.response</c> subscription
-    /// when the message bus is unavailable at startup. Use <c>0</c> for no retries or
-    /// <see cref="int.MaxValue"/> for unlimited retries.
+    /// when the message bus is unavailable at startup. Use <c>0</c> to disable retries.
+    /// With the default base delay of 2 s and 30 s cap, 15 attempts covers roughly 5 minutes.
     /// </summary>
-    public int MaxSubscribeRetries { get; set; } = int.MaxValue;
+    public int MaxSubscribeRetries { get; set; } = 15;
 
     /// <summary>
     /// Base delay between subscription retry attempts. Each subsequent retry doubles
