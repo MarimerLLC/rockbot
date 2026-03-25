@@ -7,11 +7,13 @@ namespace RockBot.Host;
 /// <summary>
 /// Hosted service that loads the <see cref="AgentProfile"/> during startup
 /// and watches profile files for changes, reloading automatically.
+/// Also loads and watches the agent display name from <c>agent-name.md</c>.
 /// </summary>
 internal sealed class AgentProfileLoader : IHostedService, IDisposable
 {
     private readonly IAgentProfileProvider _provider;
     private readonly ProfileHolder _holder;
+    private readonly AgentNameHolder _nameHolder;
     private readonly AgentProfileOptions _options;
     private readonly ILogger<AgentProfileLoader> _logger;
     private FileSystemWatcher? _watcher;
@@ -21,11 +23,13 @@ internal sealed class AgentProfileLoader : IHostedService, IDisposable
     public AgentProfileLoader(
         IAgentProfileProvider provider,
         ProfileHolder holder,
+        AgentNameHolder nameHolder,
         IOptions<AgentProfileOptions> options,
         ILogger<AgentProfileLoader> logger)
     {
         _provider = provider;
         _holder = holder;
+        _nameHolder = nameHolder;
         _options = options.Value;
         _logger = logger;
     }
@@ -37,6 +41,7 @@ internal sealed class AgentProfileLoader : IHostedService, IDisposable
         _holder.Update(profile);
         _logger.LogInformation("Agent profile loaded successfully");
 
+        LoadAgentName();
         StartWatching();
     }
 
@@ -109,6 +114,7 @@ internal sealed class AgentProfileLoader : IHostedService, IDisposable
             _logger.LogInformation("Profile file change detected, reloading...");
             var profile = await _provider.LoadAsync(CancellationToken.None);
             _holder.Update(profile);
+            LoadAgentName();
             _logger.LogInformation("Agent profile reloaded successfully (version {Version})", _holder.Version);
         }
         catch (Exception ex)
@@ -119,6 +125,46 @@ internal sealed class AgentProfileLoader : IHostedService, IDisposable
         {
             Interlocked.Exchange(ref _reloadPending, 0);
         }
+    }
+
+    private void LoadAgentName()
+    {
+        try
+        {
+            var path = ResolveAgentNamePath();
+            if (File.Exists(path))
+            {
+                var content = File.ReadAllText(path);
+                var name = content
+                    .Split('\n', StringSplitOptions.RemoveEmptyEntries)
+                    .Select(l => l.Trim())
+                    .FirstOrDefault(l => !string.IsNullOrWhiteSpace(l));
+                _nameHolder.Update(name);
+                _logger.LogInformation("Agent display name loaded: {Name}", name ?? "(cleared)");
+            }
+            else
+            {
+                _nameHolder.Update(null);
+                _logger.LogDebug("Agent name file not found at {Path}, using identity name", path);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to load agent name, keeping previous value");
+        }
+    }
+
+    private string ResolveAgentNamePath()
+    {
+        var namePath = _options.AgentNamePath;
+        if (Path.IsPathRooted(namePath))
+            return namePath;
+
+        var baseDir = Path.IsPathRooted(_options.BasePath)
+            ? _options.BasePath
+            : Path.Combine(AppContext.BaseDirectory, _options.BasePath);
+
+        return Path.Combine(baseDir, namePath);
     }
 
     public void Dispose()

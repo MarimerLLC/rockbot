@@ -50,4 +50,12 @@ public sealed class AgentProfileOptions
     /// Defaults to <c>"common-directives.md"</c>.
     /// </summary>
     public string? CommonDirectivesPath { get; set; } = "common-directives.md";
+
+    /// <summary>
+    /// Path to the optional agent name file. When relative, resolved under <see cref="BasePath"/>.
+    /// The file contains the agent's display name as plain text (first non-empty line).
+    /// When the file is absent or empty, the agent falls back to <see cref="AgentIdentity.Name"/>.
+    /// Defaults to <c>"agent-name.md"</c>.
+    /// </summary>
+    public string AgentNamePath { get; set; } = "agent-name.md";
 }

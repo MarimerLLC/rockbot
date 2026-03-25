@@ -5,26 +5,34 @@ namespace RockBot.Host;
 /// <summary>
 /// Builds a system prompt by prepending the agent's name and appending
 /// each profile document's raw content in order. Caches the result and
-/// rebuilds automatically when the profile version changes.
+/// rebuilds automatically when the profile version or agent name changes.
 /// </summary>
-public sealed class DefaultSystemPromptBuilder(ProfileHolder profileHolder) : ISystemPromptBuilder
+public sealed class DefaultSystemPromptBuilder(
+    ProfileHolder profileHolder,
+    AgentNameHolder agentNameHolder) : ISystemPromptBuilder
 {
     private string? _cached;
-    private long _cachedVersion = -1;
+    private long _cachedProfileVersion = -1;
+    private long _cachedNameVersion = -1;
 
     /// <inheritdoc />
     public string Build(AgentProfile profile, AgentIdentity identity)
     {
-        var currentVersion = profileHolder.Version;
-        if (_cached is not null && _cachedVersion == currentVersion)
+        var currentProfileVersion = profileHolder.Version;
+        var currentNameVersion = agentNameHolder.Version;
+        if (_cached is not null
+            && _cachedProfileVersion == currentProfileVersion
+            && _cachedNameVersion == currentNameVersion)
             return _cached;
 
         ArgumentNullException.ThrowIfNull(profile);
         ArgumentNullException.ThrowIfNull(identity);
 
+        var displayName = agentNameHolder.DisplayName ?? identity.Name;
+
         var sb = new StringBuilder();
         sb.Append("You are ");
-        sb.Append(identity.Name);
+        sb.Append(displayName);
         sb.AppendLine(".");
         sb.AppendLine();
 
@@ -35,7 +43,8 @@ public sealed class DefaultSystemPromptBuilder(ProfileHolder profileHolder) : IS
         }
 
         _cached = sb.ToString().TrimEnd();
-        _cachedVersion = currentVersion;
+        _cachedProfileVersion = currentProfileVersion;
+        _cachedNameVersion = currentNameVersion;
         return _cached;
     }
 }

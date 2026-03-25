@@ -11,6 +11,7 @@ namespace RockBot.Agent;
 /// </summary>
 internal sealed class AgentInfoRequestHandler(
     IMessagePublisher publisher,
+    AgentNameHolder agentNameHolder,
     ILogger<AgentInfoRequestHandler> logger) : IMessageHandler<AgentInfoRequest>
 {
     public async Task HandleAsync(AgentInfoRequest message, MessageHandlerContext context)
@@ -27,7 +28,7 @@ internal sealed class AgentInfoRequestHandler(
 
         var response = new AgentInfoResponse
         {
-            AgentName = context.Agent.Name,
+            AgentName = agentNameHolder.DisplayName ?? context.Agent.Name,
             AgentVersion = AssemblyVersion.Current
         };
 
