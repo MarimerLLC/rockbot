@@ -55,13 +55,81 @@ public sealed class UserProxyService(
             OnConnectionChanged?.Invoke();
             logger.LogError(ex, "User proxy {ProxyId} failed to subscribe to {Topic}",
                 options.ProxyId, UserProxyTopics.UserResponse);
+
+            if (options.MaxSubscribeRetries > 0)
+            {
+                // Fire-and-forget: retry in the background using the linked CTS
+                _ = RetrySubscribeAsync(_cts.Token);
+            }
         }
+    }
+
+    /// <summary>
+    /// Retries the <c>user.response</c> subscription with exponential backoff until it
+    /// succeeds or the service is stopped.
+    /// </summary>
+    private async Task RetrySubscribeAsync(CancellationToken ct)
+    {
+        var delay = options.SubscribeRetryBaseDelay;
+
+        for (var attempt = 1; attempt <= options.MaxSubscribeRetries; attempt++)
+        {
+            try
+            {
+                await Task.Delay(delay, ct);
+            }
+            catch (OperationCanceledException)
+            {
+                // Service is stopping — exit silently
+                return;
+            }
+
+            try
+            {
+                _subscription = await subscriber.SubscribeAsync(
+                    UserProxyTopics.UserResponse,
+                    $"user-proxy.{options.ProxyId}",
+                    HandleResponseAsync,
+                    ct);
+
+                IsConnected = true;
+                OnConnectionChanged?.Invoke();
+                logger.LogInformation(
+                    "User proxy {ProxyId} subscribed to {Topic} on retry attempt {Attempt}",
+                    options.ProxyId, UserProxyTopics.UserResponse, attempt);
+                return;
+            }
+            catch (OperationCanceledException)
+            {
+                return;
+            }
+            catch (Exception ex)
+            {
+                logger.LogWarning(ex,
+                    "User proxy {ProxyId} retry attempt {Attempt} failed for {Topic}",
+                    options.ProxyId, attempt, UserProxyTopics.UserResponse);
+
+                // Exponential backoff capped at MaxSubscribeRetryDelay
+                delay = TimeSpan.FromTicks(Math.Min(
+                    delay.Ticks * 2,
+                    options.MaxSubscribeRetryDelay.Ticks));
+            }
+        }
+
+        logger.LogError(
+            "User proxy {ProxyId} exhausted all {MaxRetries} retry attempts for {Topic}",
+            options.ProxyId, options.MaxSubscribeRetries, UserProxyTopics.UserResponse);
     }
 
     public async Task StopAsync(CancellationToken cancellationToken)
     {
         IsConnected = false;
         OnConnectionChanged?.Invoke();
+
+        // Signal the retry loop (and any other linked work) to stop.
+        // ObjectDisposedException can occur when StopAsync is called more than once
+        // (e.g. test cleanup after an explicit stop) — safe to ignore during shutdown.
+        try { _cts?.Cancel(); } catch (ObjectDisposedException) { }
 
         // Cancel all pending requests
         foreach (var kvp in _pending)
