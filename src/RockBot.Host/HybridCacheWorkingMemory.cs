@@ -17,6 +17,7 @@ internal sealed class HybridCacheWorkingMemory : IWorkingMemory
     private readonly WorkingMemoryOptions _options;
     private readonly ILogger<HybridCacheWorkingMemory> _logger;
     private readonly IEmbeddingGenerator<string, Embedding<float>>? _embeddingGenerator;
+    private readonly int _maxEmbeddingInputChars;
 
     // fullKey -> EntryMeta
     private readonly ConcurrentDictionary<string, EntryMeta> _index = new(StringComparer.OrdinalIgnoreCase);
@@ -33,6 +34,7 @@ internal sealed class HybridCacheWorkingMemory : IWorkingMemory
     public HybridCacheWorkingMemory(
         IMemoryCache cache,
         IOptions<WorkingMemoryOptions> options,
+        IOptions<EmbeddingOptions> embeddingOptions,
         ILogger<HybridCacheWorkingMemory> logger,
         IEmbeddingGenerator<string, Embedding<float>>? embeddingGenerator = null)
     {
@@ -40,6 +42,7 @@ internal sealed class HybridCacheWorkingMemory : IWorkingMemory
         _options = options.Value;
         _logger = logger;
         _embeddingGenerator = embeddingGenerator;
+        _maxEmbeddingInputChars = embeddingOptions.Value.MaxInputChars;
     }
 
     private static string CacheKey(string key) => $"wm:{key}";
@@ -99,6 +102,8 @@ internal sealed class HybridCacheWorkingMemory : IWorkingMemory
         try
         {
             var docText = BuildDocumentText(key, value, category, tags);
+            if (docText.Length > _maxEmbeddingInputChars)
+                docText = docText[.._maxEmbeddingInputChars];
             var result = await _embeddingGenerator!.GenerateAsync(docText);
 
             // Only store if the entry still exists — prevents orphaned embeddings
@@ -213,7 +218,10 @@ internal sealed class HybridCacheWorkingMemory : IWorkingMemory
         {
             try
             {
-                var queryResult = await _embeddingGenerator.GenerateAsync(criteria.Query);
+                var queryText = criteria.Query.Length > _maxEmbeddingInputChars
+                    ? criteria.Query[.._maxEmbeddingInputChars]
+                    : criteria.Query;
+                var queryResult = await _embeddingGenerator.GenerateAsync(queryText);
                 var queryEmbedding = queryResult.Vector.ToArray();
 
                 return HybridRanker.Rank(

@@ -16,6 +16,7 @@ internal sealed class EmbeddingCache
     private readonly IEmbeddingGenerator<string, Embedding<float>> _generator;
     private readonly string _embeddingsPath;
     private readonly ILogger _logger;
+    private readonly int _maxInputChars;
     private readonly SemaphoreSlim _semaphore = new(1, 1);
 
     /// <summary>
@@ -27,11 +28,13 @@ internal sealed class EmbeddingCache
     public EmbeddingCache(
         IEmbeddingGenerator<string, Embedding<float>> generator,
         string storePath,
-        ILogger logger)
+        ILogger logger,
+        int maxInputChars = 30_000)
     {
         _generator = generator;
         _embeddingsPath = Path.Combine(storePath, ".embeddings");
         _logger = logger;
+        _maxInputChars = maxInputChars;
 
         Directory.CreateDirectory(_embeddingsPath);
     }
@@ -149,6 +152,15 @@ internal sealed class EmbeddingCache
         try
         {
             HostDiagnostics.EmbeddingCalls.Add(1);
+
+            // Truncate to avoid exceeding the embedding model's context window.
+            if (text.Length > _maxInputChars)
+            {
+                _logger.LogInformation("Truncating embedding input from {Original} to {Max} chars",
+                    text.Length, _maxInputChars);
+                text = text[.._maxInputChars];
+            }
+
             var result = await _generator.GenerateAsync(text, cancellationToken: ct);
             sw.Stop();
             HostDiagnostics.EmbeddingDuration.Record(sw.Elapsed.TotalMilliseconds);

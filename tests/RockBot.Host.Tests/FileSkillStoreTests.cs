@@ -356,6 +356,7 @@ public class FileSkillStoreTests
     private FileSkillStore CreateStore() =>
         new(Options.Create(new SkillOptions { BasePath = _tempDir }),
             Options.Create(new AgentProfileOptions()),
+            Options.Create(new EmbeddingOptions()),
             NullLogger<FileSkillStore>.Instance);
 
     private static Skill MakeSkill(string name, string summary, string content) =>

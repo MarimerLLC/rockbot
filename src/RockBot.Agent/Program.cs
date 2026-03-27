@@ -137,6 +137,7 @@ builder.Services.AddSingleton<TierRoutingLogger>();
 
 // Optional text-embedding model for hybrid BM25 + vector search.
 // When Embedding:Endpoint is set, stores use cosine similarity alongside BM25.
+builder.Services.Configure<EmbeddingOptions>(builder.Configuration.GetSection("Embedding"));
 var embeddingOptions = new EmbeddingOptions();
 builder.Configuration.GetSection("Embedding").Bind(embeddingOptions);
 if (embeddingOptions.IsConfigured)

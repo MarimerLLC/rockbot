@@ -23,6 +23,13 @@ public sealed class EmbeddingOptions
     public string? ApiKey { get; set; }
 
     /// <summary>
+    /// Maximum character length of text sent to the embedding model. Text exceeding this
+    /// limit is truncated before embedding. Default 30000 (~7500 tokens) leaves headroom
+    /// below the 8192-token context window of models like <c>nomic-embed-text</c>.
+    /// </summary>
+    public int MaxInputChars { get; set; } = 30_000;
+
+    /// <summary>
     /// Returns true when a usable embedding endpoint has been configured.
     /// </summary>
     public bool IsConfigured => !string.IsNullOrWhiteSpace(Endpoint) && !string.IsNullOrWhiteSpace(Model);
