@@ -6,10 +6,10 @@
     <BuildNumber Condition="Exists('$(BuildNumberFile)')">$([System.IO.File]::ReadAllText('$(BuildNumberFile)').Trim())</BuildNumber>
     <BuildNumber Condition="'$(BuildNumber)' == ''">0</BuildNumber>
 
+    <!-- Version can be overridden from the command line: -p:Version=0.3.1
+         AssemblyVersion and FileVersion are derived automatically by the SDK
+         (prerelease suffixes like -beta001 are stripped for assembly versions). -->
     <Version>0.3.$(BuildNumber)</Version>
-    <AssemblyVersion>0.3.$(BuildNumber)</AssemblyVersion>
-    <FileVersion>0.3.$(BuildNumber)</FileVersion>
-    <InformationalVersion>0.3.$(BuildNumber)</InformationalVersion>
   </PropertyGroup>
 
   <!-- NuGet package metadata (shared across all packable projects) -->

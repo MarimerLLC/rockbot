@@ -1,0 +1,56 @@
+name: Release NuGet Packages
+
+on:
+  push:
+    branches:
+      - 'release/v*'
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Extract version from branch name
+        id: version
+        run: |
+          BRANCH="${GITHUB_REF#refs/heads/release/v}"
+          echo "version=$BRANCH" >> "$GITHUB_OUTPUT"
+          echo "tag=v$BRANCH" >> "$GITHUB_OUTPUT"
+          echo "Version: $BRANCH"
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.x'
+
+      - name: Build
+        run: dotnet build RockBot.slnx --configuration Release -p:Version=${{ steps.version.outputs.version }}
+
+      - name: Test
+        run: dotnet test RockBot.slnx --configuration Release --no-build
+
+      - name: Pack
+        run: dotnet pack RockBot.slnx --configuration Release --no-build --output ./nupkgs -p:Version=${{ steps.version.outputs.version }}
+
+      - name: Push to NuGet
+        run: |
+          for pkg in ./nupkgs/*.nupkg; do
+            dotnet nuget push "$pkg" \
+              --api-key ${{ secrets.NUGET_API_KEY }} \
+              --source https://api.nuget.org/v3/index.json \
+              --skip-duplicate
+          done
+
+      - name: Create GitHub Release
+        run: |
+          gh release create ${{ steps.version.outputs.tag }} \
+            ./nupkgs/*.nupkg \
+            --title "RockBot ${{ steps.version.outputs.tag }}" \
+            --generate-notes \
+            --target ${{ github.sha }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
