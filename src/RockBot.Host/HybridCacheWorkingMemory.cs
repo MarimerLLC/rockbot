@@ -100,7 +100,11 @@ internal sealed class HybridCacheWorkingMemory : IWorkingMemory
         {
             var docText = BuildDocumentText(key, value, category, tags);
             var result = await _embeddingGenerator!.GenerateAsync(docText);
-            _embeddings[key] = result.Vector.ToArray();
+
+            // Only store if the entry still exists — prevents orphaned embeddings
+            // when the entry was deleted while generation was in flight.
+            if (_index.ContainsKey(key))
+                _embeddings[key] = result.Vector.ToArray();
         }
         catch (Exception ex)
         {

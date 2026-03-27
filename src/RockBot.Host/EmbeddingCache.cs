@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Numerics.Tensors;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
@@ -15,6 +16,12 @@ internal sealed class EmbeddingCache
     private readonly string _embeddingsPath;
     private readonly ILogger _logger;
     private readonly SemaphoreSlim _semaphore = new(1, 1);
+
+    /// <summary>
+    /// Tombstone set: IDs that have been deleted while a background <see cref="UpdateAsync"/>
+    /// may still be in flight. Prevents orphaned .bin files from the save-then-delete race.
+    /// </summary>
+    private readonly ConcurrentDictionary<string, byte> _deleted = new(StringComparer.OrdinalIgnoreCase);
 
     public EmbeddingCache(
         IEmbeddingGenerator<string, Embedding<float>> generator,
@@ -64,13 +71,24 @@ internal sealed class EmbeddingCache
 
     /// <summary>
     /// Generates and caches an embedding for a document, replacing any existing cached value.
-    /// Called on save/update to keep the cache warm.
+    /// Called on save/update to keep the cache warm. Skips the write if the ID was deleted
+    /// while generation was in flight (prevents orphaned .bin files).
     /// </summary>
     public async Task UpdateAsync(string id, string text, CancellationToken ct = default)
     {
+        // Clear any previous tombstone — this is a new save for this ID.
+        _deleted.TryRemove(id, out _);
+
         var embedding = await GenerateAsync(text, ct);
         if (embedding is null)
             return;
+
+        // Check tombstone: if Remove was called while we were generating, skip the write.
+        if (_deleted.TryRemove(id, out _))
+        {
+            _logger.LogDebug("Skipping embedding write for '{Id}' — deleted during generation", id);
+            return;
+        }
 
         await _semaphore.WaitAsync(ct);
         try
@@ -84,10 +102,13 @@ internal sealed class EmbeddingCache
     }
 
     /// <summary>
-    /// Removes the cached embedding for the given ID.
+    /// Removes the cached embedding for the given ID and sets a tombstone
+    /// so any in-flight <see cref="UpdateAsync"/> will not re-create it.
     /// </summary>
     public void Remove(string id)
     {
+        _deleted[id] = 0;
+
         var filePath = GetFilePath(id);
         if (File.Exists(filePath))
             File.Delete(filePath);
