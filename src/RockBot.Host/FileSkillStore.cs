@@ -146,10 +146,15 @@ internal sealed partial class FileSkillStore : ISkillStore
                 var queryEmbedding = await _embeddingCache.GenerateQueryEmbeddingAsync(query, cancellationToken);
                 if (queryEmbedding is not null)
                 {
+                    // Pre-load all candidate embeddings asynchronously (avoids sync-over-async per candidate)
+                    var embeddingMap = new Dictionary<string, float[]?>(StringComparer.OrdinalIgnoreCase);
+                    foreach (var s in candidates)
+                        embeddingMap[s.Name] = await _embeddingCache.GetOrCreateAsync(s.Name, GetDocumentText(s), cancellationToken);
+
                     var results = HybridRanker.Rank(
                             candidates, GetDocumentText,
                             static s => s.Name,
-                            s => _embeddingCache.GetOrCreateAsync(s.Name, GetDocumentText(s), cancellationToken).GetAwaiter().GetResult(),
+                            s => embeddingMap.GetValueOrDefault(s.Name),
                             queryEmbedding, query)
                         .Take(maxResults)
                         .ToList();

@@ -113,10 +113,15 @@ internal sealed partial class FileMemoryStore : ILongTermMemory
                 var queryEmbedding = await _embeddingCache.GenerateQueryEmbeddingAsync(criteria.Query, cancellationToken);
                 if (queryEmbedding is not null)
                 {
+                    // Pre-load all candidate embeddings asynchronously (avoids sync-over-async per candidate)
+                    var embeddingMap = new Dictionary<string, float[]?>(StringComparer.OrdinalIgnoreCase);
+                    foreach (var c in candidates)
+                        embeddingMap[c.Id] = await _embeddingCache.GetOrCreateAsync(c.Id, GetDocumentText(c), cancellationToken);
+
                     var results = HybridRanker.Rank(
                             candidates, GetDocumentText,
                             static e => e.Id,
-                            e => _embeddingCache.GetOrCreateAsync(e.Id, GetDocumentText(e), cancellationToken).GetAwaiter().GetResult(),
+                            e => embeddingMap.GetValueOrDefault(e.Id),
                             queryEmbedding, criteria.Query)
                         .Take(criteria.MaxResults)
                         .ToList();
