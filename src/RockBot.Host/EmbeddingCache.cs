@@ -175,6 +175,7 @@ internal sealed class EmbeddingCache
 
     private static async Task WriteAsync(string filePath, float[] embedding)
     {
+        Directory.CreateDirectory(Path.GetDirectoryName(filePath)!);
         var bytes = new byte[embedding.Length * sizeof(float)];
         Buffer.BlockCopy(embedding, 0, bytes, 0, bytes.Length);
         await File.WriteAllBytesAsync(filePath, bytes);
