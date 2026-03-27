@@ -130,7 +130,8 @@ internal sealed class A2ATaskResultHandler(
 
         await conversationMemory.AddTurnAsync(
             rawSessionId,
-            new ConversationTurn("user", syntheticUserTurn, DateTimeOffset.UtcNow),
+            new ConversationTurn("user", syntheticUserTurn, DateTimeOffset.UtcNow)
+            { AgentName = pending.TargetAgent },
             ct);
 
         var chatMessages = await agentContextBuilder.BuildAsync(
@@ -164,7 +165,8 @@ internal sealed class A2ATaskResultHandler(
 
             await conversationMemory.AddTurnAsync(
                 rawSessionId,
-                new ConversationTurn("assistant", finalContent, DateTimeOffset.UtcNow),
+                new ConversationTurn("assistant", finalContent, DateTimeOffset.UtcNow)
+                { AgentName = agent.Name },
                 ct);
 
             var reply = new AgentReply

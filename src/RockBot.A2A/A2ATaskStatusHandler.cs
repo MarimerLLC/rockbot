@@ -72,21 +72,29 @@ internal sealed class A2ATaskStatusHandler(
 
         // Non-Working status (unexpected state transitions etc.) — fold into conversation
         // so the primary agent can reason about them.
+        // PrimarySessionId is the full WM session namespace (e.g. "session/blazor-session").
+        // Strip the prefix for conversation memory and context builder consistency.
+        var sessionNamespace = pending.PrimarySessionId;
+        const string SessionPrefix = "session/";
+        var rawSessionId = sessionNamespace.StartsWith(SessionPrefix, StringComparison.OrdinalIgnoreCase)
+            ? sessionNamespace[SessionPrefix.Length..]
+            : sessionNamespace;
+
         var syntheticUserTurn = statusText is not null
             ? $"[Agent '{pending.TargetAgent}' task {update.TaskId} status={update.State}]: {statusText}"
             : $"[Agent '{pending.TargetAgent}' task {update.TaskId} status={update.State}]";
 
         await conversationMemory.AddTurnAsync(
-            pending.PrimarySessionId,
-            new ConversationTurn("user", syntheticUserTurn, DateTimeOffset.UtcNow),
+            rawSessionId,
+            new ConversationTurn("user", syntheticUserTurn, DateTimeOffset.UtcNow)
+            { AgentName = pending.TargetAgent },
             ct);
 
         var chatMessages = await agentContextBuilder.BuildAsync(
-            pending.PrimarySessionId, syntheticUserTurn, ct);
+            rawSessionId, syntheticUserTurn, ct);
 
-        var sessionNamespace = $"session/{pending.PrimarySessionId}";
         var sessionWorkingMemoryTools = new WorkingMemoryTools(workingMemory, sessionNamespace, logger);
-        var sessionSkillTools = new SkillTools(skillStore, llmClient, logger, pending.PrimarySessionId);
+        var sessionSkillTools = new SkillTools(skillStore, llmClient, logger, rawSessionId);
         var registryTools = toolRegistry.GetTools()
             .Select(r => (AIFunction)new RegistryToolFunction(
                 r, toolRegistry.GetExecutor(r.Name)!, sessionNamespace))
@@ -102,24 +110,25 @@ internal sealed class A2ATaskStatusHandler(
         {
             using var progressCtx = ToolProgressNotifier.SetContext(new ToolProgressContext
             {
-                SessionId = pending.PrimarySessionId,
+                SessionId = rawSessionId,
                 AgentName = agent.Name,
                 ReplyTo = UserProxyTopics.UserResponse
             });
 
             var finalContent = await agentLoopRunner.RunAsync(
-                chatMessages, chatOptions, pending.PrimarySessionId,
+                chatMessages, chatOptions, rawSessionId,
                 enableFollowUp: false, cancellationToken: ct);
 
             await conversationMemory.AddTurnAsync(
-                pending.PrimarySessionId,
-                new ConversationTurn("assistant", finalContent, DateTimeOffset.UtcNow),
+                rawSessionId,
+                new ConversationTurn("assistant", finalContent, DateTimeOffset.UtcNow)
+                { AgentName = agent.Name },
                 ct);
 
             var reply = new AgentReply
             {
                 Content = finalContent,
-                SessionId = pending.PrimarySessionId,
+                SessionId = rawSessionId,
                 AgentName = agent.Name,
                 IsFinal = false
             };
