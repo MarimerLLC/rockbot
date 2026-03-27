@@ -5,6 +5,8 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <RootNamespace>RockBot.Scripts.Remote</RootNamespace>
+    <IsPackable>true</IsPackable>
+    <Description>Agent-side script delegation for RockBot agents.</Description>
   </PropertyGroup>
 
   <ItemGroup>

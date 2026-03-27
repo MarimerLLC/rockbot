@@ -5,6 +5,8 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <RootNamespace>RockBot.Llm</RootNamespace>
+    <IsPackable>true</IsPackable>
+    <Description>LLM integration for RockBot via Microsoft.Extensions.AI with three-tier model routing.</Description>
   </PropertyGroup>
 
   <ItemGroup>

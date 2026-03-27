@@ -5,6 +5,8 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <RootNamespace>RockBot.A2A</RootNamespace>
+    <IsPackable>true</IsPackable>
+    <Description>Agent-to-agent communication abstractions for the RockBot agent framework.</Description>
   </PropertyGroup>
 
   <ItemGroup>

@@ -5,6 +5,8 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <RootNamespace>RockBot.Tools.Web</RootNamespace>
+    <IsPackable>true</IsPackable>
+    <Description>Web search and browsing tools for RockBot agents.</Description>
   </PropertyGroup>
 
   <ItemGroup>

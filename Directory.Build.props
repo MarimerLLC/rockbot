@@ -11,4 +11,23 @@
     <FileVersion>0.3.$(BuildNumber)</FileVersion>
     <InformationalVersion>0.3.$(BuildNumber)</InformationalVersion>
   </PropertyGroup>
+
+  <!-- NuGet package metadata (shared across all packable projects) -->
+  <PropertyGroup>
+    <IsPackable>false</IsPackable>
+    <Authors>Marimer LLC</Authors>
+    <Company>Marimer LLC</Company>
+    <Copyright>Copyright © Marimer LLC. All rights reserved.</Copyright>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageProjectUrl>https://github.com/MarimerLLC/rockbot</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/MarimerLLC/rockbot</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageTags>rockbot;agent;ai;llm;messaging;framework</PackageTags>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+  </PropertyGroup>
+
+  <!-- Include the repo README in all packable projects -->
+  <ItemGroup Condition="'$(IsPackable)' == 'true'">
+    <None Include="$(MSBuildThisFileDirectory)README.md" Pack="true" PackagePath="\" />
+  </ItemGroup>
 </Project>

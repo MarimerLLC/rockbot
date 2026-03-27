@@ -5,6 +5,8 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <RootNamespace>RockBot.Telemetry</RootNamespace>
+    <IsPackable>true</IsPackable>
+    <Description>OpenTelemetry integration for RockBot with OTLP gRPC export.</Description>
   </PropertyGroup>
 
   <ItemGroup>

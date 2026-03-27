@@ -5,6 +5,8 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <RootNamespace>RockBot.Host</RootNamespace>
+    <IsPackable>true</IsPackable>
+    <Description>Agent host runtime for RockBot including handler pipeline, profile loading, and system prompt composition.</Description>
   </PropertyGroup>
 
   <ItemGroup>

@@ -5,6 +5,8 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <RootNamespace>RockBot.Subagent</RootNamespace>
+    <IsPackable>true</IsPackable>
+    <Description>In-process subagent spawning for RockBot agents.</Description>
   </PropertyGroup>
 
   <ItemGroup>

@@ -5,6 +5,8 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <RootNamespace>RockBot.Tools</RootNamespace>
+    <IsPackable>true</IsPackable>
+    <Description>Tool registry, invocation dispatch, and tool-guide discovery for RockBot agents.</Description>
   </PropertyGroup>
 
   <ItemGroup>

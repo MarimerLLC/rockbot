@@ -5,6 +5,8 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <RootNamespace>RockBot.Llm</RootNamespace>
+    <IsPackable>true</IsPackable>
+    <Description>LLM abstractions for the RockBot agent framework including client contracts and message types.</Description>
   </PropertyGroup>
 
   <ItemGroup>

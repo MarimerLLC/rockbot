@@ -5,6 +5,8 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <RootNamespace>RockBot.UserProxy</RootNamespace>
+    <IsPackable>true</IsPackable>
+    <Description>User proxy abstractions for the RockBot agent framework including user interaction contracts.</Description>
   </PropertyGroup>
 
 </Project>

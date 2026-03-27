@@ -5,6 +5,8 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <RootNamespace>RockBot.Tools.Mcp</RootNamespace>
+    <IsPackable>true</IsPackable>
+    <Description>Model Context Protocol (MCP) server proxy and discovery for RockBot agents.</Description>
   </PropertyGroup>
 
   <ItemGroup>

@@ -5,6 +5,8 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <RootNamespace>RockBot.Scripts.Container</RootNamespace>
+    <IsPackable>true</IsPackable>
+    <Description>Kubernetes container-based script runner for RockBot agents.</Description>
   </PropertyGroup>
 
   <ItemGroup>
