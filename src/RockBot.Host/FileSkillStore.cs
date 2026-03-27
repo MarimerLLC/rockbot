@@ -70,8 +70,9 @@ internal sealed partial class FileSkillStore : ISkillStore
             _semaphore.Release();
         }
 
+        // Generate embedding in the background — agent flow should not block on vectorization.
         if (_embeddingCache is not null)
-            await _embeddingCache.UpdateAsync(skill.Name, GetDocumentText(skill));
+            _ = _embeddingCache.UpdateAsync(skill.Name, GetDocumentText(skill));
     }
 
     public async Task<Skill?> GetAsync(string name)

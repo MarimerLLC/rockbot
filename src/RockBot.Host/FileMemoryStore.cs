@@ -77,9 +77,9 @@ internal sealed partial class FileMemoryStore : ILongTermMemory
             _semaphore.Release();
         }
 
-        // Generate embedding outside the semaphore (I/O-bound, independent of index)
+        // Generate embedding in the background — agent flow should not block on vectorization.
         if (_embeddingCache is not null)
-            await _embeddingCache.UpdateAsync(entry.Id, GetDocumentText(entry), cancellationToken);
+            _ = _embeddingCache.UpdateAsync(entry.Id, GetDocumentText(entry), cancellationToken);
     }
 
     public async Task<IReadOnlyList<MemoryEntry>> SearchAsync(MemorySearchCriteria criteria, CancellationToken cancellationToken = default)
