@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -15,9 +16,13 @@ internal sealed class HybridCacheWorkingMemory : IWorkingMemory
     private readonly IMemoryCache _cache;
     private readonly WorkingMemoryOptions _options;
     private readonly ILogger<HybridCacheWorkingMemory> _logger;
+    private readonly IEmbeddingGenerator<string, Embedding<float>>? _embeddingGenerator;
 
     // fullKey -> EntryMeta
     private readonly ConcurrentDictionary<string, EntryMeta> _index = new(StringComparer.OrdinalIgnoreCase);
+
+    // fullKey -> float[] (in-memory only, evicted with the entry)
+    private readonly ConcurrentDictionary<string, float[]> _embeddings = new(StringComparer.OrdinalIgnoreCase);
 
     private sealed record EntryMeta(
         DateTimeOffset StoredAt,
@@ -28,11 +33,13 @@ internal sealed class HybridCacheWorkingMemory : IWorkingMemory
     public HybridCacheWorkingMemory(
         IMemoryCache cache,
         IOptions<WorkingMemoryOptions> options,
-        ILogger<HybridCacheWorkingMemory> logger)
+        ILogger<HybridCacheWorkingMemory> logger,
+        IEmbeddingGenerator<string, Embedding<float>>? embeddingGenerator = null)
     {
         _cache = cache;
         _options = options.Value;
         _logger = logger;
+        _embeddingGenerator = embeddingGenerator;
     }
 
     private static string CacheKey(string key) => $"wm:{key}";
@@ -77,7 +84,42 @@ internal sealed class HybridCacheWorkingMemory : IWorkingMemory
         });
 
         _logger.LogDebug("Working memory set: key={Key} ttl={Ttl}", key, effectiveTtl);
+
+        // Generate embedding in the background (best-effort, non-blocking)
+        if (_embeddingGenerator is not null)
+        {
+            _ = GenerateEmbeddingAsync(key, value, category, tags);
+        }
+
         return Task.CompletedTask;
+    }
+
+    private async Task GenerateEmbeddingAsync(string key, string value, string? category, IReadOnlyList<string>? tags)
+    {
+        try
+        {
+            var docText = BuildDocumentText(key, value, category, tags);
+            var result = await _embeddingGenerator!.GenerateAsync(docText);
+            _embeddings[key] = result.Vector.ToArray();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to generate working memory embedding for key {Key}", key);
+        }
+    }
+
+    private static string BuildDocumentText(string key, string value, string? category, IReadOnlyList<string>? tags)
+    {
+        var parts = new List<string>
+        {
+            key.Replace('_', ' ').Replace('-', ' ').Replace('/', ' '),
+            value
+        };
+        if (tags is { Count: > 0 })
+            parts.Add(string.Join(" ", tags));
+        if (category is not null)
+            parts.Add(category.Replace('/', ' ').Replace('-', ' '));
+        return string.Join(" ", parts);
     }
 
     public Task<string?> GetAsync(string key)
@@ -85,6 +127,7 @@ internal sealed class HybridCacheWorkingMemory : IWorkingMemory
         if (!_index.TryGetValue(key, out var meta) || meta.ExpiresAt <= DateTimeOffset.UtcNow)
         {
             _index.TryRemove(key, out _);
+            _embeddings.TryRemove(key, out _);
             return Task.FromResult<string?>(null);
         }
 
@@ -105,6 +148,7 @@ internal sealed class HybridCacheWorkingMemory : IWorkingMemory
             if (kvp.Value.ExpiresAt <= now)
             {
                 _index.TryRemove(kvp.Key, out _);
+                _embeddings.TryRemove(kvp.Key, out _);
                 continue;
             }
 
@@ -117,6 +161,7 @@ internal sealed class HybridCacheWorkingMemory : IWorkingMemory
             {
                 // Evicted under memory pressure — prune from index
                 _index.TryRemove(kvp.Key, out _);
+                _embeddings.TryRemove(kvp.Key, out _);
             }
         }
 
@@ -126,6 +171,7 @@ internal sealed class HybridCacheWorkingMemory : IWorkingMemory
     public Task DeleteAsync(string key)
     {
         _index.TryRemove(key, out _);
+        _embeddings.TryRemove(key, out _);
         _cache.Remove(CacheKey(key));
         return Task.CompletedTask;
     }
@@ -138,6 +184,7 @@ internal sealed class HybridCacheWorkingMemory : IWorkingMemory
                 continue;
 
             _index.TryRemove(kvp.Key, out _);
+            _embeddings.TryRemove(kvp.Key, out _);
             _cache.Remove(CacheKey(kvp.Key));
         }
 
@@ -157,7 +204,28 @@ internal sealed class HybridCacheWorkingMemory : IWorkingMemory
         if (criteria.Query is null)
             return candidates.OrderByDescending(e => e.StoredAt).Take(criteria.MaxResults).ToList();
 
-        // With query: BM25 ranking
+        // With query: use hybrid ranking if embeddings available, else BM25-only.
+        if (_embeddingGenerator is not null)
+        {
+            try
+            {
+                var queryResult = await _embeddingGenerator.GenerateAsync(criteria.Query);
+                var queryEmbedding = queryResult.Vector.ToArray();
+
+                return HybridRanker.Rank(
+                        candidates, GetDocumentText,
+                        static e => e.Key,
+                        e => _embeddings.GetValueOrDefault(e.Key),
+                        queryEmbedding, criteria.Query)
+                    .Take(criteria.MaxResults)
+                    .ToList();
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Hybrid search failed for working memory — falling back to BM25");
+            }
+        }
+
         return Bm25Ranker.Rank(candidates, GetDocumentText, criteria.Query)
             .Take(criteria.MaxResults)
             .ToList();
