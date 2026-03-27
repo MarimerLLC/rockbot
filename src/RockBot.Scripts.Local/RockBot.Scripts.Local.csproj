@@ -5,6 +5,8 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <RootNamespace>RockBot.Scripts.Local</RootNamespace>
+    <IsPackable>true</IsPackable>
+    <Description>Local Python script runner for RockBot agent development.</Description>
   </PropertyGroup>
 
   <ItemGroup>

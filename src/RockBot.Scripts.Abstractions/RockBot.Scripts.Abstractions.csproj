@@ -5,6 +5,8 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <RootNamespace>RockBot.Scripts</RootNamespace>
+    <IsPackable>true</IsPackable>
+    <Description>Script execution abstractions for the RockBot agent framework.</Description>
   </PropertyGroup>
 
 </Project>

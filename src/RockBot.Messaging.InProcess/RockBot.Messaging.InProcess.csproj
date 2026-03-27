@@ -5,6 +5,8 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <RootNamespace>RockBot.Messaging.InProcess</RootNamespace>
+    <IsPackable>true</IsPackable>
+    <Description>In-memory messaging provider for RockBot, useful for local development and testing.</Description>
   </PropertyGroup>
 
   <ItemGroup>

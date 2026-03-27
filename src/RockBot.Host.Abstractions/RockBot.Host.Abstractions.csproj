@@ -5,6 +5,8 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <RootNamespace>RockBot.Host</RootNamespace>
+    <IsPackable>true</IsPackable>
+    <Description>Host abstractions for the RockBot agent framework including agent profiles and configuration contracts.</Description>
   </PropertyGroup>
 
   <ItemGroup>

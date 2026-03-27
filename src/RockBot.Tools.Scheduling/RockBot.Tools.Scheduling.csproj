@@ -5,6 +5,8 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <RootNamespace>RockBot.Tools.Scheduling</RootNamespace>
+    <IsPackable>true</IsPackable>
+    <Description>Scheduled task execution tools for RockBot agents.</Description>
   </PropertyGroup>
 
   <ItemGroup>

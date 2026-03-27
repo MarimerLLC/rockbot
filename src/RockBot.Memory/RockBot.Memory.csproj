@@ -5,6 +5,8 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <RootNamespace>RockBot.Memory</RootNamespace>
+    <IsPackable>true</IsPackable>
+    <Description>Three-tier memory system for RockBot agents: conversation, long-term, and working memory.</Description>
   </PropertyGroup>
 
   <ItemGroup>

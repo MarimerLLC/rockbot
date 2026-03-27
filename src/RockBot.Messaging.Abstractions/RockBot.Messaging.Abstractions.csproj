@@ -5,6 +5,8 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <RootNamespace>RockBot.Messaging</RootNamespace>
+    <IsPackable>true</IsPackable>
+    <Description>Transport-agnostic messaging contracts for RockBot: IMessagePublisher, IMessageSubscriber, MessageEnvelope, and MessageResult.</Description>
   </PropertyGroup>
 
   <ItemGroup>

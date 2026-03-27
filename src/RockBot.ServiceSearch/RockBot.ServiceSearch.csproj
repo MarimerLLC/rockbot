@@ -5,6 +5,8 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <RootNamespace>RockBot.ServiceSearch</RootNamespace>
+    <IsPackable>true</IsPackable>
+    <Description>Unified BM25 keyword search across A2A and MCP services for RockBot agents.</Description>
   </PropertyGroup>
 
   <ItemGroup>

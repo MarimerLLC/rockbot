@@ -5,6 +5,8 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <RootNamespace>RockBot.Messaging.RabbitMQ</RootNamespace>
+    <IsPackable>true</IsPackable>
+    <Description>RabbitMQ messaging provider for RockBot with topic exchange, dead-letter queues, and per-consumer channels.</Description>
   </PropertyGroup>
 
   <ItemGroup>

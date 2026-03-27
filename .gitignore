@@ -8,6 +8,9 @@ obj/
 # Local build number (issue #65) — maintained locally, not in source control
 build.number
 
+# NuGet package output
+nupkgs/
+
 # Helm personal values files contain secrets — never commit these
 deploy/values.personal.yaml
 deploy/values.*.personal.yaml

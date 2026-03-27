@@ -5,6 +5,8 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <RootNamespace>RockBot.A2A</RootNamespace>
+    <IsPackable>true</IsPackable>
+    <Description>Agent-to-agent task delegation for RockBot with Google A2A protocol support.</Description>
   </PropertyGroup>
 
   <ItemGroup>
