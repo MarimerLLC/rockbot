@@ -18,6 +18,7 @@ internal sealed class HybridCacheWorkingMemory : IWorkingMemory
     private readonly ILogger<HybridCacheWorkingMemory> _logger;
     private readonly IEmbeddingGenerator<string, Embedding<float>>? _embeddingGenerator;
     private readonly int _maxEmbeddingInputChars;
+    private readonly float _minSimilarity;
 
     // fullKey -> EntryMeta
     private readonly ConcurrentDictionary<string, EntryMeta> _index = new(StringComparer.OrdinalIgnoreCase);
@@ -43,6 +44,7 @@ internal sealed class HybridCacheWorkingMemory : IWorkingMemory
         _logger = logger;
         _embeddingGenerator = embeddingGenerator;
         _maxEmbeddingInputChars = embeddingOptions.Value.MaxInputChars;
+        _minSimilarity = embeddingOptions.Value.MinSimilarityThreshold;
     }
 
     private static string CacheKey(string key) => $"wm:{key}";
@@ -228,7 +230,8 @@ internal sealed class HybridCacheWorkingMemory : IWorkingMemory
                         candidates, GetDocumentText,
                         static e => e.Key,
                         e => _embeddings.GetValueOrDefault(e.Key),
-                        queryEmbedding, criteria.Query)
+                        queryEmbedding, criteria.Query,
+                        _minSimilarity)
                     .Take(criteria.MaxResults)
                     .ToList();
             }

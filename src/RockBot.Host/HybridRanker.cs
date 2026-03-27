@@ -18,15 +18,18 @@ internal static class HybridRanker
     /// <param name="getEmbedding">Returns the cached embedding for a candidate, or null if unavailable.</param>
     /// <param name="queryEmbedding">The embedding of the search query.</param>
     /// <param name="query">The search query string for BM25.</param>
+    /// <param name="minSimilarity">Minimum cosine similarity for vector results. Below this, the candidate
+    /// is excluded from vector ranking (preventing loosely related content from diluting BM25 results).</param>
     public static IReadOnlyList<T> Rank<T>(
         IReadOnlyList<T> candidates,
         Func<T, string> getDocumentText,
         Func<T, string> getId,
         Func<T, float[]?> getEmbedding,
         float[] queryEmbedding,
-        string query)
+        string query,
+        float minSimilarity = 0.5f)
     {
-        return RankWithScores(candidates, getDocumentText, getId, getEmbedding, queryEmbedding, query)
+        return RankWithScores(candidates, getDocumentText, getId, getEmbedding, queryEmbedding, query, minSimilarity)
             .Select(r => r.Item)
             .ToList();
     }
@@ -40,7 +43,8 @@ internal static class HybridRanker
         Func<T, string> getId,
         Func<T, float[]?> getEmbedding,
         float[] queryEmbedding,
-        string query)
+        string query,
+        float minSimilarity = 0.5f)
     {
         if (candidates.Count == 0) return [];
 
@@ -48,8 +52,8 @@ internal static class HybridRanker
         var bm25Scores = NormalizeBm25(
             Bm25Ranker.RankWithScores(candidates, getDocumentText, query), getId);
 
-        // 2. Vector scores (cosine similarity, already [0, 1])
-        var vectorScores = ComputeVectorScores(candidates, getId, getEmbedding, queryEmbedding);
+        // 2. Vector scores (cosine similarity, already [0, 1]), filtered by threshold
+        var vectorScores = ComputeVectorScores(candidates, getId, getEmbedding, queryEmbedding, minSimilarity);
 
         // 3. Consolidate
         return Consolidate(candidates, getId, bm25Scores, vectorScores);
@@ -81,7 +85,8 @@ internal static class HybridRanker
         IReadOnlyList<T> candidates,
         Func<T, string> getId,
         Func<T, float[]?> getEmbedding,
-        float[] queryEmbedding)
+        float[] queryEmbedding,
+        float minSimilarity)
     {
         var result = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);
 
@@ -91,7 +96,7 @@ internal static class HybridRanker
             if (embedding is null) continue;
 
             var similarity = EmbeddingCache.CosineSimilarity(queryEmbedding, embedding);
-            if (similarity > 0)
+            if (similarity >= minSimilarity)
                 result[getId(candidate)] = similarity;
         }
 

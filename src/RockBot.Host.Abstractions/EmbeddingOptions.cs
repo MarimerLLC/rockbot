@@ -30,6 +30,13 @@ public sealed class EmbeddingOptions
     public int MaxInputChars { get; set; } = 30_000;
 
     /// <summary>
+    /// Minimum cosine similarity threshold for vector search results. Candidates below
+    /// this threshold are excluded from hybrid ranking, preventing loosely related content
+    /// from diluting keyword-matched results. Default 0.5.
+    /// </summary>
+    public float MinSimilarityThreshold { get; set; } = 0.5f;
+
+    /// <summary>
     /// Returns true when a usable embedding endpoint has been configured.
     /// </summary>
     public bool IsConfigured => !string.IsNullOrWhiteSpace(Endpoint) && !string.IsNullOrWhiteSpace(Model);

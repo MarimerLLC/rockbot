@@ -24,6 +24,7 @@ internal sealed partial class FileMemoryStore : ILongTermMemory
     private readonly ILogger<FileMemoryStore> _logger;
     private readonly SemaphoreSlim _semaphore = new(1, 1);
     private readonly EmbeddingCache? _embeddingCache;
+    private readonly float _minSimilarity;
 
     // Lazy-loaded in-memory index: id -> MemoryEntry
     private Dictionary<string, MemoryEntry>? _index;
@@ -40,6 +41,7 @@ internal sealed partial class FileMemoryStore : ILongTermMemory
         _embeddingCache = embeddingGenerator is not null
             ? new EmbeddingCache(embeddingGenerator, _basePath, logger, embeddingOptions.Value.MaxInputChars)
             : null;
+        _minSimilarity = embeddingOptions.Value.MinSimilarityThreshold;
 
         Directory.CreateDirectory(_basePath);
 
@@ -123,7 +125,8 @@ internal sealed partial class FileMemoryStore : ILongTermMemory
                             candidates, GetDocumentText,
                             static e => e.Id,
                             e => embeddingMap.GetValueOrDefault(e.Id),
-                            queryEmbedding, criteria.Query)
+                            queryEmbedding, criteria.Query,
+                            _minSimilarity)
                         .Take(criteria.MaxResults)
                         .ToList();
 

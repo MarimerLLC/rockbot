@@ -26,6 +26,7 @@ internal sealed partial class FileSkillStore : ISkillStore
     private readonly ILogger<FileSkillStore> _logger;
     private readonly SemaphoreSlim _semaphore = new(1, 1);
     private readonly EmbeddingCache? _embeddingCache;
+    private readonly float _minSimilarity;
 
     // Lazy-loaded in-memory index: name -> Skill
     private Dictionary<string, Skill>? _index;
@@ -42,6 +43,7 @@ internal sealed partial class FileSkillStore : ISkillStore
         _embeddingCache = embeddingGenerator is not null
             ? new EmbeddingCache(embeddingGenerator, _basePath, logger, embeddingOptions.Value.MaxInputChars)
             : null;
+        _minSimilarity = embeddingOptions.Value.MinSimilarityThreshold;
 
         Directory.CreateDirectory(_basePath);
         logger.LogInformation("Skill store path: {Path} (hybrid search: {Hybrid})",
@@ -156,7 +158,8 @@ internal sealed partial class FileSkillStore : ISkillStore
                             candidates, GetDocumentText,
                             static s => s.Name,
                             s => embeddingMap.GetValueOrDefault(s.Name),
-                            queryEmbedding, query)
+                            queryEmbedding, query,
+                            _minSimilarity)
                         .Take(maxResults)
                         .ToList();
 
