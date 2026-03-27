@@ -47,6 +47,16 @@ internal sealed class SubagentResultHandler(
         if (string.IsNullOrWhiteSpace(message.Output))
             logger.LogWarning("Subagent {TaskId} returned empty output — primary agent will have nothing to relay", message.TaskId);
 
+        // PrimarySessionId is the full WM session namespace (e.g. "session/blazor-session"),
+        // as populated by SpawnSubagentExecutor from the RegistryToolFunction's sessionId parameter.
+        // Derive the raw session ID by stripping the prefix so conversation memory, context builder,
+        // and skill tools all use the same key as UserMessageHandler.
+        var sessionNamespace = message.PrimarySessionId;
+        const string SessionPrefix = "session/";
+        var rawSessionId = sessionNamespace.StartsWith(SessionPrefix, StringComparison.OrdinalIgnoreCase)
+            ? sessionNamespace[SessionPrefix.Length..]
+            : sessionNamespace;
+
         // ── Phase 1: immediate per-result work (every result) ──────────────────
 
         var safeOutput = message.IsSuccess && AgentLoopRunner.IsIncompleteSetupPhrase(message.Output)
@@ -63,7 +73,7 @@ internal sealed class SubagentResultHandler(
             var completionReply = new AgentReply
             {
                 Content = completionContent,
-                SessionId = message.PrimarySessionId,
+                SessionId = rawSessionId,
                 AgentName = $"subagent-{message.TaskId}",
                 IsFinal = false
             };
@@ -92,7 +102,7 @@ internal sealed class SubagentResultHandler(
             : $"[Subagent task {message.TaskId} completed with error: {message.Error}]: {message.Output}";
 
         await conversationMemory.AddTurnAsync(
-            message.PrimarySessionId,
+            rawSessionId,
             new ConversationTurn("user", syntheticUserTurn, DateTimeOffset.UtcNow)
             { AgentName = $"subagent-{message.TaskId}" },
             ct);
@@ -114,7 +124,7 @@ internal sealed class SubagentResultHandler(
 
         logger.LogInformation(
             "Running consolidated synthesis for {Count} result(s) in session {SessionId}",
-            batchedResults.Count, message.PrimarySessionId);
+            batchedResults.Count, rawSessionId);
 
         // For multi-result batches, collect whiteboard hints for ALL results
         // and add a final synthetic turn requesting consolidation
@@ -142,30 +152,24 @@ internal sealed class SubagentResultHandler(
                 $"Synthesize the results above into a single unified response.]{consolidationNote}";
 
             await conversationMemory.AddTurnAsync(
-                message.PrimarySessionId,
+                rawSessionId,
                 new ConversationTurn("system", consolidationTurn, DateTimeOffset.UtcNow),
                 ct);
         }
 
         var chatMessages = await agentContextBuilder.BuildAsync(
-            message.PrimarySessionId,
+            rawSessionId,
             batchedResults.Count > 1
                 ? $"[Consolidating {batchedResults.Count} subagent results]"
                 : syntheticUserTurn,
             ct);
 
         // Detect whether the user has already sent a new message and moved on.
-        // PrimarySessionId is "session/<base>" — strip the prefix to match the
-        // key used by SessionBackgroundTaskTracker.
-        var baseSessionId = message.PrimarySessionId.StartsWith("session/", StringComparison.Ordinal)
-            ? message.PrimarySessionId["session/".Length..]
-            : message.PrimarySessionId;
-
-        if (sessionTracker.HasActiveUserLoop(baseSessionId))
+        if (sessionTracker.HasActiveUserLoop(rawSessionId))
         {
             logger.LogInformation(
                 "User has an active message loop for session {BaseSessionId} — adding background-work framing to synthesis",
-                baseSessionId);
+                rawSessionId);
 
             chatMessages.Add(new ChatMessage(ChatRole.System,
                 "IMPORTANT: The user has sent a new message and moved on to a different topic while this " +
@@ -174,11 +178,11 @@ internal sealed class SubagentResultHandler(
                 "Keep it concise and do not address or repeat anything related to the user's current question."));
         }
 
-        var sessionWorkingMemoryTools = new WorkingMemoryTools(workingMemory, $"session/{message.PrimarySessionId}", logger);
-        var sessionSkillTools = new SkillTools(skillStore, llmClient, logger, message.PrimarySessionId);
+        var sessionWorkingMemoryTools = new WorkingMemoryTools(workingMemory, sessionNamespace, logger);
+        var sessionSkillTools = new SkillTools(skillStore, llmClient, logger, rawSessionId);
         var registryTools = toolRegistry.GetTools()
             .Select(r => (AIFunction)new SubagentRegistryToolFunction(
-                r, toolRegistry.GetExecutor(r.Name)!, $"session/{message.PrimarySessionId}"))
+                r, toolRegistry.GetExecutor(r.Name)!, sessionNamespace))
             .ToArray();
 
         var chatOptions = new ChatOptions
@@ -191,17 +195,17 @@ internal sealed class SubagentResultHandler(
         {
             using var progressCtx = ToolProgressNotifier.SetContext(new ToolProgressContext
             {
-                SessionId = message.PrimarySessionId,
+                SessionId = rawSessionId,
                 AgentName = agent.Name,
                 ReplyTo = UserProxyTopics.UserResponse
             });
 
             var finalContent = await agentLoopRunner.RunAsync(
-                chatMessages, chatOptions, message.PrimarySessionId,
+                chatMessages, chatOptions, rawSessionId,
                 enableFollowUp: false, cancellationToken: ct);
 
             await conversationMemory.AddTurnAsync(
-                message.PrimarySessionId,
+                rawSessionId,
                 new ConversationTurn("assistant", finalContent, DateTimeOffset.UtcNow)
                 { AgentName = agent.Name },
                 ct);
@@ -209,7 +213,7 @@ internal sealed class SubagentResultHandler(
             var reply = new AgentReply
             {
                 Content = finalContent,
-                SessionId = message.PrimarySessionId,
+                SessionId = rawSessionId,
                 AgentName = agent.Name,
                 IsFinal = true
             };
@@ -219,7 +223,7 @@ internal sealed class SubagentResultHandler(
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             logger.LogError(ex, "Failed to handle subagent result consolidation for session {SessionId}",
-                message.PrimarySessionId);
+                rawSessionId);
         }
         // Note: subagent working memory entries ("subagent/{taskId}/...") are intentionally NOT
         // deleted here. They persist until their TTL expires so the primary agent can reference

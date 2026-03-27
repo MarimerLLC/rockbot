@@ -55,20 +55,27 @@ internal sealed class A2ATaskErrorHandler(
             "A2A task error for task {TaskId} from agent '{TargetAgent}' in session {SessionId}: [{Code}] {Message}",
             error.TaskId, pending.TargetAgent, pending.PrimarySessionId, error.Code, error.Message);
 
+        // PrimarySessionId is the full WM session namespace (e.g. "session/blazor-session").
+        // Strip the prefix for conversation memory and context builder consistency.
+        var sessionNamespace = pending.PrimarySessionId;
+        const string SessionPrefix = "session/";
+        var rawSessionId = sessionNamespace.StartsWith(SessionPrefix, StringComparison.OrdinalIgnoreCase)
+            ? sessionNamespace[SessionPrefix.Length..]
+            : sessionNamespace;
+
         var syntheticUserTurn = $"[Agent '{pending.TargetAgent}' failed task {error.TaskId} (code={error.Code})]: {error.Message}";
 
         await conversationMemory.AddTurnAsync(
-            pending.PrimarySessionId,
+            rawSessionId,
             new ConversationTurn("user", syntheticUserTurn, DateTimeOffset.UtcNow)
             { AgentName = pending.TargetAgent },
             ct);
 
         var chatMessages = await agentContextBuilder.BuildAsync(
-            pending.PrimarySessionId, syntheticUserTurn, ct);
+            rawSessionId, syntheticUserTurn, ct);
 
-        var sessionNamespace = $"session/{pending.PrimarySessionId}";
         var sessionWorkingMemoryTools = new WorkingMemoryTools(workingMemory, sessionNamespace, logger);
-        var sessionSkillTools = new SkillTools(skillStore, llmClient, logger, pending.PrimarySessionId);
+        var sessionSkillTools = new SkillTools(skillStore, llmClient, logger, rawSessionId);
         var registryTools = toolRegistry.GetTools()
             .Select(r => (AIFunction)new RegistryToolFunction(
                 r, toolRegistry.GetExecutor(r.Name)!, sessionNamespace))
@@ -84,17 +91,17 @@ internal sealed class A2ATaskErrorHandler(
         {
             using var progressCtx = ToolProgressNotifier.SetContext(new ToolProgressContext
             {
-                SessionId = pending.PrimarySessionId,
+                SessionId = rawSessionId,
                 AgentName = agent.Name,
                 ReplyTo = UserProxyTopics.UserResponse
             });
 
             var finalContent = await agentLoopRunner.RunAsync(
-                chatMessages, chatOptions, pending.PrimarySessionId,
+                chatMessages, chatOptions, rawSessionId,
                 enableFollowUp: false, cancellationToken: ct);
 
             await conversationMemory.AddTurnAsync(
-                pending.PrimarySessionId,
+                rawSessionId,
                 new ConversationTurn("assistant", finalContent, DateTimeOffset.UtcNow)
                 { AgentName = agent.Name },
                 ct);
@@ -102,7 +109,7 @@ internal sealed class A2ATaskErrorHandler(
             var reply = new AgentReply
             {
                 Content = finalContent,
-                SessionId = pending.PrimarySessionId,
+                SessionId = rawSessionId,
                 AgentName = agent.Name,
                 IsFinal = true
             };
