@@ -220,7 +220,7 @@
                         <div class="saved-item d-flex justify-content-between align-items-center p-2 mb-1 rounded">
                             <div class="saved-item-info" @onclick="() => LoadSavedItem(item.Id)" style="cursor:pointer;">
                                 <strong>@item.Label</strong>
-                                <small class="text-muted d-block">@item.AgentName — @item.SavedAt.ToString("MMM d, yyyy HH:mm")</small>
+                                <small class="saved-item-meta d-block">@item.AgentName — @TimeZoneInfo.ConvertTime(item.SavedAt, _displayZone).ToString("MMM d, yyyy h:mm tt")</small>
                             </div>
                             <button class="btn btn-sm btn-outline-danger" @onclick="() => DeleteSavedItem(item.Id)">🗑️</button>
                         </div>

@@ -633,6 +633,10 @@ body.dark-mode .chevron-indicator {
     min-width: 0;
 }
 
+.saved-item-meta {
+    color: #6b7280;
+}
+
 /* ── Dark mode: saved reference ─────────────────────────────────────── */
 
 body.dark-mode .saved-reference-bubble {
@@ -656,6 +660,10 @@ body.dark-mode .saved-item {
 
 body.dark-mode .saved-item:hover {
     background-color: #374151;
+}
+
+body.dark-mode .saved-item-meta {
+    color: #9ca3af;
 }
 
 body.dark-mode .save-label-input {
