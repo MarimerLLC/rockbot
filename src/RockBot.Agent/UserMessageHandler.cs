@@ -289,7 +289,8 @@ internal sealed class UserMessageHandler(
                     {
                         await conversationMemory.AddTurnAsync(
                             message.SessionId,
-                            new ConversationTurn("assistant", text, DateTimeOffset.UtcNow),
+                            new ConversationTurn("assistant", text, DateTimeOffset.UtcNow)
+                            { AgentName = agent.Name },
                             ct);
 
                         await PublishReplyAsync(text, replyTo, correlationId, message.SessionId, isFinal: true, ct);
@@ -324,7 +325,8 @@ internal sealed class UserMessageHandler(
             {
                 await conversationMemory.AddTurnAsync(
                     message.SessionId,
-                    new ConversationTurn("assistant", errorText, DateTimeOffset.UtcNow),
+                    new ConversationTurn("assistant", errorText, DateTimeOffset.UtcNow)
+                    { AgentName = agent.Name },
                     CancellationToken.None);
             }
             catch (Exception memEx)
@@ -426,7 +428,8 @@ internal sealed class UserMessageHandler(
 
             await conversationMemory.AddTurnAsync(
                 sessionId,
-                new ConversationTurn("assistant", text, DateTimeOffset.UtcNow),
+                new ConversationTurn("assistant", text, DateTimeOffset.UtcNow)
+                { AgentName = agent.Name },
                 ct);
 
             await PublishReplyAsync(text, replyTo, correlationId, sessionId, isFinal: true, ct);
@@ -521,7 +524,8 @@ internal sealed class UserMessageHandler(
 
             await conversationMemory.AddTurnAsync(
                 sessionId,
-                new ConversationTurn("assistant", finalContent, DateTimeOffset.UtcNow),
+                new ConversationTurn("assistant", finalContent, DateTimeOffset.UtcNow)
+                { AgentName = agent.Name },
                 ct);
 
             await PublishReplyAsync(finalContent, replyTo, correlationId, sessionId, isFinal: true, ct);

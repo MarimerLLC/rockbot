@@ -93,7 +93,8 @@ internal sealed class SubagentResultHandler(
 
         await conversationMemory.AddTurnAsync(
             message.PrimarySessionId,
-            new ConversationTurn("user", syntheticUserTurn, DateTimeOffset.UtcNow),
+            new ConversationTurn("user", syntheticUserTurn, DateTimeOffset.UtcNow)
+            { AgentName = $"subagent-{message.TaskId}" },
             ct);
 
         // ── Gate: accumulate and decide who synthesizes ─────────────────────────
@@ -142,7 +143,7 @@ internal sealed class SubagentResultHandler(
 
             await conversationMemory.AddTurnAsync(
                 message.PrimarySessionId,
-                new ConversationTurn("user", consolidationTurn, DateTimeOffset.UtcNow),
+                new ConversationTurn("system", consolidationTurn, DateTimeOffset.UtcNow),
                 ct);
         }
 
@@ -201,7 +202,8 @@ internal sealed class SubagentResultHandler(
 
             await conversationMemory.AddTurnAsync(
                 message.PrimarySessionId,
-                new ConversationTurn("assistant", finalContent, DateTimeOffset.UtcNow),
+                new ConversationTurn("assistant", finalContent, DateTimeOffset.UtcNow)
+                { AgentName = agent.Name },
                 ct);
 
             var reply = new AgentReply

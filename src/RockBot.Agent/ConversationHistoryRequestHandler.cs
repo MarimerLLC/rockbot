@@ -38,7 +38,8 @@ internal sealed class ConversationHistoryRequestHandler(
                 {
                     Role = t.Role,
                     Content = t.Content,
-                    Timestamp = t.Timestamp
+                    Timestamp = t.Timestamp,
+                    AgentName = t.AgentName
                 })
                 .ToList()
         };

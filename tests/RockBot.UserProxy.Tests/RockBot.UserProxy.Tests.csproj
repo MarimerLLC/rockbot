@@ -20,6 +20,7 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\RockBot.UserProxy.Abstractions\RockBot.UserProxy.Abstractions.csproj" />
     <ProjectReference Include="..\..\src\RockBot.UserProxy\RockBot.UserProxy.csproj" />
+    <ProjectReference Include="..\..\src\RockBot.UserProxy.Blazor\RockBot.UserProxy.Blazor.csproj" />
     <ProjectReference Include="..\..\src\RockBot.Messaging.Abstractions\RockBot.Messaging.Abstractions.csproj" />
   </ItemGroup>
 

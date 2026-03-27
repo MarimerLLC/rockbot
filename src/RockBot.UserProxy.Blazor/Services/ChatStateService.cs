@@ -53,19 +53,56 @@ public sealed class ChatStateService
         lock (_lock)
         {
             _messages.Clear();
+
             foreach (var turn in turns)
             {
+                // Skip system/consolidation turns — they are internal prompts not meant for the user
+                if (turn.Role == "system")
+                    continue;
+
+                var (category, isFromUser) = CategorizeHistoryTurn(turn, AgentName);
+
                 _messages.Add(new ChatMessage
                 {
                     Content = turn.Content,
-                    IsFromUser = turn.Role == "user",
+                    IsFromUser = isFromUser,
                     Timestamp = turn.Timestamp.UtcDateTime,
                     SessionId = sessionId,
-                    Category = turn.Role == "user" ? MessageCategory.UserInput : MessageCategory.PrimaryFinal
+                    AgentName = turn.AgentName,
+                    Category = category,
+                    IsExpanded = category is MessageCategory.PrimaryFinal
+                        or MessageCategory.ScheduledUser
+                        or MessageCategory.UserInput
+                        or MessageCategory.Error
                 });
             }
         }
         NotifyStateChanged();
+    }
+
+    /// <summary>
+    /// Determines the display category for a restored history turn based on its AgentName
+    /// and content patterns.
+    /// </summary>
+    private static (MessageCategory Category, bool IsFromUser) CategorizeHistoryTurn(
+        ConversationHistoryTurn turn, string? primaryAgentName)
+    {
+        if (turn.Role == "user")
+        {
+            // Subagent synthetic turns are stored as "user" role with a subagent AgentName
+            if (turn.AgentName?.StartsWith("subagent-", StringComparison.OrdinalIgnoreCase) == true)
+                return (MessageCategory.SubagentActivity, false);
+
+            // A2A synthetic turns have a non-null AgentName that differs from the primary agent
+            if (!string.IsNullOrEmpty(turn.AgentName) &&
+                !string.Equals(turn.AgentName, primaryAgentName, StringComparison.OrdinalIgnoreCase))
+                return (MessageCategory.A2AActivity, false);
+
+            return (MessageCategory.UserInput, true);
+        }
+
+        // Assistant turns
+        return (MessageCategory.PrimaryFinal, false);
     }
 
     public void AddUserMessage(string content, string userId, string sessionId)

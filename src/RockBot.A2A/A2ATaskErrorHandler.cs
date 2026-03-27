@@ -59,7 +59,8 @@ internal sealed class A2ATaskErrorHandler(
 
         await conversationMemory.AddTurnAsync(
             pending.PrimarySessionId,
-            new ConversationTurn("user", syntheticUserTurn, DateTimeOffset.UtcNow),
+            new ConversationTurn("user", syntheticUserTurn, DateTimeOffset.UtcNow)
+            { AgentName = pending.TargetAgent },
             ct);
 
         var chatMessages = await agentContextBuilder.BuildAsync(
@@ -94,7 +95,8 @@ internal sealed class A2ATaskErrorHandler(
 
             await conversationMemory.AddTurnAsync(
                 pending.PrimarySessionId,
-                new ConversationTurn("assistant", finalContent, DateTimeOffset.UtcNow),
+                new ConversationTurn("assistant", finalContent, DateTimeOffset.UtcNow)
+                { AgentName = agent.Name },
                 ct);
 
             var reply = new AgentReply
