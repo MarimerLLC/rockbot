@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.RegularExpressions;
+using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
@@ -21,6 +22,7 @@ internal sealed partial class FileMemoryStore : ILongTermMemory
     private readonly string _basePath;
     private readonly ILogger<FileMemoryStore> _logger;
     private readonly SemaphoreSlim _semaphore = new(1, 1);
+    private readonly EmbeddingCache? _embeddingCache;
 
     // Lazy-loaded in-memory index: id -> MemoryEntry
     private Dictionary<string, MemoryEntry>? _index;
@@ -28,14 +30,19 @@ internal sealed partial class FileMemoryStore : ILongTermMemory
     public FileMemoryStore(
         IOptions<MemoryOptions> memoryOptions,
         IOptions<AgentProfileOptions> profileOptions,
-        ILogger<FileMemoryStore> logger)
+        ILogger<FileMemoryStore> logger,
+        IEmbeddingGenerator<string, Embedding<float>>? embeddingGenerator = null)
     {
         _basePath = ResolvePath(memoryOptions.Value.BasePath, profileOptions.Value.BasePath);
         _logger = logger;
+        _embeddingCache = embeddingGenerator is not null
+            ? new EmbeddingCache(embeddingGenerator, _basePath, logger)
+            : null;
 
         Directory.CreateDirectory(_basePath);
 
-        logger.LogInformation("Long-term memory path: {Path}", _basePath);
+        logger.LogInformation("Long-term memory path: {Path} (hybrid search: {Hybrid})",
+            _basePath, _embeddingCache is not null);
     }
 
     public async Task SaveAsync(MemoryEntry entry, CancellationToken cancellationToken = default)
@@ -69,6 +76,10 @@ internal sealed partial class FileMemoryStore : ILongTermMemory
         {
             _semaphore.Release();
         }
+
+        // Generate embedding outside the semaphore (I/O-bound, independent of index)
+        if (_embeddingCache is not null)
+            await _embeddingCache.UpdateAsync(entry.Id, GetDocumentText(entry), cancellationToken);
     }
 
     public async Task<IReadOnlyList<MemoryEntry>> SearchAsync(MemorySearchCriteria criteria, CancellationToken cancellationToken = default)
@@ -92,8 +103,23 @@ internal sealed partial class FileMemoryStore : ILongTermMemory
                     .ToList();
             }
 
-            // With query: BM25 ranking — entries are scored, zero-score entries excluded,
-            // results returned in descending relevance order.
+            // With query: use hybrid ranking if embeddings available, else BM25-only.
+            if (_embeddingCache is not null)
+            {
+                var queryEmbedding = await _embeddingCache.GenerateQueryEmbeddingAsync(criteria.Query, cancellationToken);
+                if (queryEmbedding is not null)
+                {
+                    return HybridRanker.Rank(
+                            candidates, GetDocumentText,
+                            static e => e.Id,
+                            e => _embeddingCache.GetOrCreateAsync(e.Id, GetDocumentText(e), cancellationToken).GetAwaiter().GetResult(),
+                            queryEmbedding, criteria.Query)
+                        .Take(criteria.MaxResults)
+                        .ToList();
+                }
+            }
+
+            // Fallback: BM25-only ranking.
             return Bm25Ranker.Rank(candidates, GetDocumentText, criteria.Query)
                 .Take(criteria.MaxResults)
                 .ToList();
@@ -133,6 +159,7 @@ internal sealed partial class FileMemoryStore : ILongTermMemory
                 File.Delete(filePath);
 
             index.Remove(id);
+            _embeddingCache?.Remove(id);
 
             _logger.LogDebug("Deleted memory entry {Id}", id);
         }

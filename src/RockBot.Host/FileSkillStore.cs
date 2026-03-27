@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.RegularExpressions;
+using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
@@ -23,6 +24,7 @@ internal sealed partial class FileSkillStore : ISkillStore
     private readonly string _basePath;
     private readonly ILogger<FileSkillStore> _logger;
     private readonly SemaphoreSlim _semaphore = new(1, 1);
+    private readonly EmbeddingCache? _embeddingCache;
 
     // Lazy-loaded in-memory index: name -> Skill
     private Dictionary<string, Skill>? _index;
@@ -30,13 +32,18 @@ internal sealed partial class FileSkillStore : ISkillStore
     public FileSkillStore(
         IOptions<SkillOptions> skillOptions,
         IOptions<AgentProfileOptions> profileOptions,
-        ILogger<FileSkillStore> logger)
+        ILogger<FileSkillStore> logger,
+        IEmbeddingGenerator<string, Embedding<float>>? embeddingGenerator = null)
     {
         _basePath = ResolvePath(skillOptions.Value.BasePath, profileOptions.Value.BasePath);
         _logger = logger;
+        _embeddingCache = embeddingGenerator is not null
+            ? new EmbeddingCache(embeddingGenerator, _basePath, logger)
+            : null;
 
         Directory.CreateDirectory(_basePath);
-        logger.LogInformation("Skill store path: {Path}", _basePath);
+        logger.LogInformation("Skill store path: {Path} (hybrid search: {Hybrid})",
+            _basePath, _embeddingCache is not null);
     }
 
     public async Task SaveAsync(Skill skill)
@@ -62,6 +69,9 @@ internal sealed partial class FileSkillStore : ISkillStore
         {
             _semaphore.Release();
         }
+
+        if (_embeddingCache is not null)
+            await _embeddingCache.UpdateAsync(skill.Name, GetDocumentText(skill));
     }
 
     public async Task<Skill?> GetAsync(string name)
@@ -108,6 +118,8 @@ internal sealed partial class FileSkillStore : ISkillStore
             if (File.Exists(filePath))
                 File.Delete(filePath);
 
+            _embeddingCache?.Remove(name);
+
             _logger.LogDebug("Deleted skill '{Name}'", skill.Name);
         }
         finally
@@ -123,6 +135,22 @@ internal sealed partial class FileSkillStore : ISkillStore
         {
             var index = await EnsureIndexAsync();
             var candidates = index.Values.ToList();
+
+            if (_embeddingCache is not null)
+            {
+                var queryEmbedding = await _embeddingCache.GenerateQueryEmbeddingAsync(query, cancellationToken);
+                if (queryEmbedding is not null)
+                {
+                    return HybridRanker.Rank(
+                            candidates, GetDocumentText,
+                            static s => s.Name,
+                            s => _embeddingCache.GetOrCreateAsync(s.Name, GetDocumentText(s), cancellationToken).GetAwaiter().GetResult(),
+                            queryEmbedding, query)
+                        .Take(maxResults)
+                        .ToList();
+                }
+            }
+
             return Bm25Ranker.Rank(candidates, GetDocumentText, query)
                 .Take(maxResults)
                 .ToList();

@@ -135,6 +135,27 @@ else
 // Tier routing logger — appends routing decisions to tier-routing-log.jsonl for dream self-correction
 builder.Services.AddSingleton<TierRoutingLogger>();
 
+// Optional text-embedding model for hybrid BM25 + vector search.
+// When Embedding:Endpoint is set, stores use cosine similarity alongside BM25.
+var embeddingOptions = new EmbeddingOptions();
+builder.Configuration.GetSection("Embedding").Bind(embeddingOptions);
+if (embeddingOptions.IsConfigured)
+{
+    var embeddingClient = new OpenAIClient(
+            new ApiKeyCredential(embeddingOptions.ApiKey ?? "unused"),
+            new OpenAIClientOptions { Endpoint = new Uri(embeddingOptions.Endpoint!) })
+        .GetEmbeddingClient(embeddingOptions.Model!)
+        .AsIEmbeddingGenerator();
+
+    builder.Services.AddSingleton<IEmbeddingGenerator<string, Embedding<float>>>(embeddingClient);
+    Console.WriteLine($"Embedding model configured: {embeddingOptions.Model} @ {embeddingOptions.Endpoint}");
+}
+else
+{
+    Console.WriteLine("No embedding config found — using BM25-only search.");
+    Console.WriteLine("Set Embedding:Endpoint and Embedding:Model to enable hybrid vector search.");
+}
+
 // Register memory tools as singleton — AIFunction instances are built once at construction
 builder.Services.AddSingleton<MemoryTools>();
 // Rules tools — requires WithRules() in the agent builder below
