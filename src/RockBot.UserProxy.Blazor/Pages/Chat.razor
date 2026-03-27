@@ -22,6 +22,9 @@
         <div class="d-flex align-items-center gap-2">
             <span class="connection-dot @(ProxyService.IsConnected ? "connected" : "disconnected")"
                   title="@(ProxyService.IsConnected ? "Connected to message bus" : "Disconnected from message bus")"></span>
+            <button class="btn btn-sm btn-outline-light" @onclick="ToggleSavedModal" title="Saved responses">
+                📋
+            </button>
             <button class="btn btn-sm btn-outline-light" @onclick="ToggleDarkMode" title="Toggle dark/light mode">
                 @(IsDarkMode ? "☀️" : "🌙")
             </button>
@@ -99,6 +102,26 @@
                     </div>
                 </div>
             }
+            else if (message.Category == MessageCategory.SavedReference)
+            {
+                <!-- Saved reference bubble: distinct accent styling with dismiss button -->
+                <div class="message-wrapper mb-3 agent-message">
+                    <div class="message-bubble saved-reference-bubble p-3 rounded">
+                        <div class="saved-badge-header">
+                            <span class="category-badge saved-badge">Saved</span>
+                            <span class="saved-label">@message.SavedResponseLabel</span>
+                            <button class="btn-feedback" title="Dismiss" @onclick="() => DismissSavedReference(message)">✕</button>
+                        </div>
+                        @if (!string.IsNullOrEmpty(message.AgentName))
+                        {
+                            <div class="fw-bold small mb-2">@message.AgentName</div>
+                        }
+                        <div class="message-content mt-2">
+                            @((MarkupString)ConvertMarkdownToHtml(message.Content))
+                        </div>
+                    </div>
+                </div>
+            }
             else
             {
                 <!-- Standard expanded bubble: user input, primary final, scheduled user, error -->
@@ -129,7 +152,25 @@
                                         @onclick="() => SendFeedback(message, isPositive: false)">
                                     👎
                                 </button>
+                                @if (message.Category == MessageCategory.PrimaryFinal)
+                                {
+                                    <button class="btn-feedback" title="Save this response"
+                                            @onclick="() => StartSaveFlow(message)">
+                                        💾
+                                    </button>
+                                }
                             </div>
+                            @if (_savingMessageId == message.MessageId)
+                            {
+                                <div class="save-label-input d-flex gap-1 mt-1">
+                                    <input type="text" class="form-control form-control-sm" placeholder="Label this response..."
+                                           @bind="_saveLabel" @bind:event="oninput"
+                                           @onkeydown="HandleSaveLabelKeyDown" />
+                                    <button class="btn btn-sm btn-success" @onclick="() => ConfirmSave(message)"
+                                            disabled="@string.IsNullOrWhiteSpace(_saveLabel)">Save</button>
+                                    <button class="btn btn-sm btn-outline-secondary" @onclick="CancelSave">Cancel</button>
+                                </div>
+                            }
                         }
                     </div>
                 </div>
@@ -158,6 +199,37 @@
             </div>
         }
     </div>
+
+    @if (_showSavedModal)
+    {
+        <div class="modal-overlay" @onclick="ToggleSavedModal">
+            <div class="saved-modal" @onclick:stopPropagation="true">
+                <h5>Saved Responses</h5>
+                @if (_savedItems is null)
+                {
+                    <p>Loading...</p>
+                }
+                else if (_savedItems.Count == 0)
+                {
+                    <p class="text-muted">No saved responses yet.</p>
+                }
+                else
+                {
+                    @foreach (var item in _savedItems)
+                    {
+                        <div class="saved-item d-flex justify-content-between align-items-center p-2 mb-1 rounded">
+                            <div class="saved-item-info" @onclick="() => LoadSavedItem(item.Id)" style="cursor:pointer;">
+                                <strong>@item.Label</strong>
+                                <small class="saved-item-meta d-block">@item.AgentName — @TimeZoneInfo.ConvertTime(item.SavedAt, _displayZone).ToString("MMM d, yyyy h:mm tt")</small>
+                            </div>
+                            <button class="btn btn-sm btn-outline-danger" @onclick="() => DeleteSavedItem(item.Id)">🗑️</button>
+                        </div>
+                    }
+                }
+                <button class="btn btn-sm btn-secondary mt-2" @onclick="ToggleSavedModal">Close</button>
+            </div>
+        </div>
+    }
 
     <div class="chat-input bg-light p-3 border-top">
         <form @onsubmit="SendMessage" @onsubmit:preventDefault="true" class="d-flex gap-2">
@@ -196,6 +268,13 @@
     private Action? _stateChangedHandler;
     private Action? _connectionChangedHandler;
     private int _renderedMessageCount = 0;
+
+    // Save flow state
+    private string? _savingMessageId;
+    private string _saveLabel = string.Empty;
+    private bool _showSavedModal;
+    private IReadOnlyList<SavedResponseSummary>? _savedItems;
+
     private static readonly MarkdownPipeline MarkdownPipeline = new MarkdownPipelineBuilder()
         .UseAdvancedExtensions()
         .Build();
@@ -274,9 +353,24 @@
         ChatState.AddUserMessage(messageContent, UserId, SessionId);
         ChatState.SetProcessing(true);
 
+        // If a saved reference is active, prepend it as context for the agent
+        var savedRef = ChatState.GetActiveSavedReference();
+        string effectiveContent;
+        if (savedRef is not null)
+        {
+            effectiveContent =
+                $"[The user is referencing a previously saved agent response labeled \"{savedRef.SavedResponseLabel}\":]\n\n" +
+                $"---\n{savedRef.Content}\n---\n\n" +
+                messageContent;
+        }
+        else
+        {
+            effectiveContent = messageContent;
+        }
+
         var message = new UserMessage
         {
-            Content = messageContent,
+            Content = effectiveContent,
             SessionId = SessionId,
             UserId = UserId
         };
@@ -391,6 +485,103 @@
                 ? "document.body.classList.add('dark-mode')"
                 : "document.body.classList.remove('dark-mode')");
         StateHasChanged();
+    }
+
+    // ── Save flow ──────────────────────────────────────────────────────────
+
+    private void StartSaveFlow(ChatMessage message)
+    {
+        _savingMessageId = message.MessageId;
+        _saveLabel = string.Empty;
+    }
+
+    private void CancelSave()
+    {
+        _savingMessageId = null;
+        _saveLabel = string.Empty;
+    }
+
+    private async Task ConfirmSave(ChatMessage message)
+    {
+        if (string.IsNullOrWhiteSpace(_saveLabel)) return;
+
+        var request = new SaveResponseRequest
+        {
+            Label = _saveLabel.Trim(),
+            Content = message.Content,
+            AgentName = message.AgentName ?? "unknown",
+            SessionId = message.SessionId ?? SessionId
+        };
+
+        try
+        {
+            await ProxyService.SaveResponseAsync(request);
+        }
+        catch (Exception ex)
+        {
+            ChatState.AddError($"Could not save response: {ex.Message}");
+        }
+
+        _savingMessageId = null;
+        _saveLabel = string.Empty;
+    }
+
+    private void HandleSaveLabelKeyDown(KeyboardEventArgs e)
+    {
+        if (e.Key == "Escape") CancelSave();
+    }
+
+    private async Task ToggleSavedModal()
+    {
+        _showSavedModal = !_showSavedModal;
+        if (_showSavedModal)
+        {
+            _savedItems = null;
+            StateHasChanged();
+            try
+            {
+                var response = await ProxyService.ListSavedResponsesAsync();
+                _savedItems = response?.Items ?? (IReadOnlyList<SavedResponseSummary>)[];
+            }
+            catch
+            {
+                _savedItems = [];
+            }
+        }
+    }
+
+    private async Task LoadSavedItem(string id)
+    {
+        _showSavedModal = false;
+        try
+        {
+            var response = await ProxyService.GetSavedResponseAsync(id);
+            if (response is not null && response.Found)
+                ChatState.AddSavedReference(response.Id, response.Label, response.Content, response.AgentName);
+        }
+        catch (Exception ex)
+        {
+            ChatState.AddError($"Could not load saved response: {ex.Message}");
+        }
+    }
+
+    private async Task DeleteSavedItem(string id)
+    {
+        try
+        {
+            await ProxyService.DeleteSavedResponseAsync(id);
+            _savedItems = _savedItems?.Where(i => i.Id != id).ToList();
+        }
+        catch (Exception ex)
+        {
+            ChatState.AddError($"Could not delete saved response: {ex.Message}");
+        }
+    }
+
+    private void DismissSavedReference(ChatMessage message)
+    {
+        if (message.SavedResponseId is not null)
+            ChatState.RemoveSavedReference(message.SavedResponseId);
     }
 
     public void Dispose()

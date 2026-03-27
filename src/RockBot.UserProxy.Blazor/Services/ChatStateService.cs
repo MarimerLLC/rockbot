@@ -10,6 +10,7 @@ public enum MessageCategory
     ScheduledSystem,
     ScheduledUser,
     Error,
+    SavedReference,
 }
 
 public sealed record ActivityLogEntry(string Content, DateTime Timestamp);
@@ -256,6 +257,42 @@ public sealed class ChatStateService
         NotifyStateChanged();
     }
 
+    // ── Saved references ────────────────────────────────────────────────────
+
+    public void AddSavedReference(string id, string label, string content, string agentName)
+    {
+        lock (_lock)
+            _messages.Add(new ChatMessage
+            {
+                Content = content,
+                IsFromUser = false,
+                Timestamp = DateTime.UtcNow,
+                AgentName = agentName,
+                Category = MessageCategory.SavedReference,
+                SavedResponseId = id,
+                SavedResponseLabel = label,
+                IsExpanded = true
+            });
+        NotifyStateChanged();
+    }
+
+    public void RemoveSavedReference(string savedResponseId)
+    {
+        lock (_lock)
+            _messages.RemoveAll(m => m.Category == MessageCategory.SavedReference && m.SavedResponseId == savedResponseId);
+        NotifyStateChanged();
+    }
+
+    /// <summary>
+    /// Returns the most recent saved reference in the message list, or null if none is active.
+    /// Used by SendMessage to inject context into the user's message.
+    /// </summary>
+    public ChatMessage? GetActiveSavedReference()
+    {
+        lock (_lock)
+            return _messages.LastOrDefault(m => m.Category == MessageCategory.SavedReference);
+    }
+
     private static string ActivityLogKey(MessageCategory category, string? agentName)
         => $"{category}:{agentName ?? ""}";
 
@@ -297,4 +334,10 @@ public sealed class ChatMessage
 
     /// <summary>Mutable so <see cref="ChatStateService.RecordFeedback"/> can update it in place.</summary>
     public FeedbackState Feedback { get; set; } = FeedbackState.None;
+
+    /// <summary>ID of the saved response this message represents, if Category == SavedReference.</summary>
+    public string? SavedResponseId { get; init; }
+
+    /// <summary>Label of the saved response, shown as a badge.</summary>
+    public string? SavedResponseLabel { get; init; }
 }

@@ -199,10 +199,19 @@ builder.Services.AddRockBotHost(agent =>
     agent.HandleMessage<UserFeedback, UserFeedbackHandler>();
     agent.HandleMessage<ConversationHistoryRequest, ConversationHistoryRequestHandler>();
     agent.HandleMessage<AgentInfoRequest, AgentInfoRequestHandler>();
+    agent.WithSavedResponses();
+    agent.HandleMessage<SaveResponseRequest, SaveResponseRequestHandler>();
+    agent.HandleMessage<ListSavedResponsesRequest, ListSavedResponsesRequestHandler>();
+    agent.HandleMessage<GetSavedResponseRequest, GetSavedResponseRequestHandler>();
+    agent.HandleMessage<DeleteSavedResponseRequest, DeleteSavedResponseRequestHandler>();
     agent.SubscribeTo(UserProxyTopics.UserMessage);
     agent.SubscribeTo(UserProxyTopics.UserFeedback);
     agent.SubscribeTo(UserProxyTopics.ConversationHistoryRequest);
     agent.SubscribeTo(UserProxyTopics.AgentInfoRequest);
+    agent.SubscribeTo(UserProxyTopics.SaveResponseRequest);
+    agent.SubscribeTo(UserProxyTopics.ListSavedResponsesRequest);
+    agent.SubscribeTo(UserProxyTopics.GetSavedResponseRequest);
+    agent.SubscribeTo(UserProxyTopics.DeleteSavedResponseRequest);
 });
 
 // Bind AgentProfileOptions from the AgentProfile config section so AgentProfile__BasePath

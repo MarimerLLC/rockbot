@@ -20,13 +20,29 @@ public sealed class UserProxyService(
     private readonly ConcurrentDictionary<string, (TaskCompletionSource<AgentReply> Tcs, IProgress<AgentReply>? Progress)> _pending = new();
     private readonly ConcurrentDictionary<string, TaskCompletionSource<ConversationHistoryResponse>> _pendingHistory = new();
     private readonly ConcurrentDictionary<string, TaskCompletionSource<AgentInfoResponse>> _pendingAgentInfo = new();
+    private readonly ConcurrentDictionary<string, TaskCompletionSource<SaveResponseAck>> _pendingSaveResponse = new();
+    private readonly ConcurrentDictionary<string, TaskCompletionSource<ListSavedResponsesResponse>> _pendingListSaved = new();
+    private readonly ConcurrentDictionary<string, TaskCompletionSource<GetSavedResponseResponse>> _pendingGetSaved = new();
+    private readonly ConcurrentDictionary<string, TaskCompletionSource<DeleteSavedResponseAck>> _pendingDeleteSaved = new();
     private ISubscription? _subscription;
     private ISubscription? _historySubscription;
     private ISubscription? _agentInfoSubscription;
+    private ISubscription? _saveResponseSubscription;
+    private ISubscription? _listSavedSubscription;
+    private ISubscription? _getSavedSubscription;
+    private ISubscription? _deleteSavedSubscription;
     private bool _historyInitialized;
     private bool _agentInfoInitialized;
+    private bool _saveResponseInitialized;
+    private bool _listSavedInitialized;
+    private bool _getSavedInitialized;
+    private bool _deleteSavedInitialized;
     private readonly SemaphoreSlim _historyInitLock = new(1, 1);
     private readonly SemaphoreSlim _agentInfoInitLock = new(1, 1);
+    private readonly SemaphoreSlim _saveResponseInitLock = new(1, 1);
+    private readonly SemaphoreSlim _listSavedInitLock = new(1, 1);
+    private readonly SemaphoreSlim _getSavedInitLock = new(1, 1);
+    private readonly SemaphoreSlim _deleteSavedInitLock = new(1, 1);
     private CancellationTokenSource? _cts;
 
     public bool IsConnected { get; private set; }
@@ -150,6 +166,30 @@ public sealed class UserProxyService(
                 tcs.TrySetCanceled();
         }
 
+        foreach (var kvp in _pendingSaveResponse)
+        {
+            if (_pendingSaveResponse.TryRemove(kvp.Key, out var tcs))
+                tcs.TrySetCanceled();
+        }
+
+        foreach (var kvp in _pendingListSaved)
+        {
+            if (_pendingListSaved.TryRemove(kvp.Key, out var tcs))
+                tcs.TrySetCanceled();
+        }
+
+        foreach (var kvp in _pendingGetSaved)
+        {
+            if (_pendingGetSaved.TryRemove(kvp.Key, out var tcs))
+                tcs.TrySetCanceled();
+        }
+
+        foreach (var kvp in _pendingDeleteSaved)
+        {
+            if (_pendingDeleteSaved.TryRemove(kvp.Key, out var tcs))
+                tcs.TrySetCanceled();
+        }
+
         if (_subscription is not null)
             await _subscription.DisposeAsync();
 
@@ -159,8 +199,24 @@ public sealed class UserProxyService(
         if (_agentInfoSubscription is not null)
             await _agentInfoSubscription.DisposeAsync();
 
+        if (_saveResponseSubscription is not null)
+            await _saveResponseSubscription.DisposeAsync();
+
+        if (_listSavedSubscription is not null)
+            await _listSavedSubscription.DisposeAsync();
+
+        if (_getSavedSubscription is not null)
+            await _getSavedSubscription.DisposeAsync();
+
+        if (_deleteSavedSubscription is not null)
+            await _deleteSavedSubscription.DisposeAsync();
+
         _historyInitLock.Dispose();
         _agentInfoInitLock.Dispose();
+        _saveResponseInitLock.Dispose();
+        _listSavedInitLock.Dispose();
+        _getSavedInitLock.Dispose();
+        _deleteSavedInitLock.Dispose();
         _cts?.Dispose();
     }
 
@@ -500,6 +556,449 @@ public sealed class UserProxyService(
 
         return Task.FromResult(MessageResult.Ack);
     }
+
+    // ── Saved responses ───────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Saves an agent response on the agent server. Returns the ack with the assigned ID.
+    /// </summary>
+    public async Task<SaveResponseAck?> SaveResponseAsync(
+        SaveResponseRequest request,
+        TimeSpan? timeout = null,
+        CancellationToken cancellationToken = default)
+    {
+        var effectiveTimeout = timeout ?? options.DefaultReplyTimeout;
+        var correlationId = Guid.NewGuid().ToString("N");
+        var tcs = new TaskCompletionSource<SaveResponseAck>(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        _pendingSaveResponse[correlationId] = tcs;
+
+        try
+        {
+            await EnsureSaveResponseSubscribedAsync(cancellationToken);
+
+            var envelope = request.ToEnvelope<SaveResponseRequest>(
+                source: options.ProxyId,
+                correlationId: correlationId,
+                replyTo: SaveResponseAckTopic);
+
+            await publisher.PublishAsync(UserProxyTopics.SaveResponseRequest, envelope, cancellationToken);
+
+            logger.LogDebug("Published SaveResponseRequest {CorrelationId}", correlationId);
+
+            using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            timeoutCts.CancelAfter(effectiveTimeout);
+
+            try
+            {
+                return await tcs.Task.WaitAsync(timeoutCts.Token);
+            }
+            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+            {
+                logger.LogWarning("Save response request timeout for correlation {CorrelationId} after {Timeout}",
+                    correlationId, effectiveTimeout);
+                return null;
+            }
+        }
+        finally
+        {
+            _pendingSaveResponse.TryRemove(correlationId, out _);
+        }
+    }
+
+    /// <summary>
+    /// Lists all saved responses from the agent server.
+    /// </summary>
+    public async Task<ListSavedResponsesResponse?> ListSavedResponsesAsync(
+        TimeSpan? timeout = null,
+        CancellationToken cancellationToken = default)
+    {
+        var effectiveTimeout = timeout ?? options.DefaultReplyTimeout;
+        var correlationId = Guid.NewGuid().ToString("N");
+        var tcs = new TaskCompletionSource<ListSavedResponsesResponse>(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        _pendingListSaved[correlationId] = tcs;
+
+        try
+        {
+            await EnsureListSavedSubscribedAsync(cancellationToken);
+
+            var request = new ListSavedResponsesRequest();
+            var envelope = request.ToEnvelope<ListSavedResponsesRequest>(
+                source: options.ProxyId,
+                correlationId: correlationId,
+                replyTo: ListSavedResponsesTopic);
+
+            await publisher.PublishAsync(UserProxyTopics.ListSavedResponsesRequest, envelope, cancellationToken);
+
+            logger.LogDebug("Published ListSavedResponsesRequest {CorrelationId}", correlationId);
+
+            using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            timeoutCts.CancelAfter(effectiveTimeout);
+
+            try
+            {
+                return await tcs.Task.WaitAsync(timeoutCts.Token);
+            }
+            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+            {
+                logger.LogWarning("List saved responses request timeout for correlation {CorrelationId} after {Timeout}",
+                    correlationId, effectiveTimeout);
+                return null;
+            }
+        }
+        finally
+        {
+            _pendingListSaved.TryRemove(correlationId, out _);
+        }
+    }
+
+    /// <summary>
+    /// Retrieves a single saved response by ID from the agent server.
+    /// </summary>
+    public async Task<GetSavedResponseResponse?> GetSavedResponseAsync(
+        string id,
+        TimeSpan? timeout = null,
+        CancellationToken cancellationToken = default)
+    {
+        var effectiveTimeout = timeout ?? options.DefaultReplyTimeout;
+        var correlationId = Guid.NewGuid().ToString("N");
+        var tcs = new TaskCompletionSource<GetSavedResponseResponse>(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        _pendingGetSaved[correlationId] = tcs;
+
+        try
+        {
+            await EnsureGetSavedSubscribedAsync(cancellationToken);
+
+            var request = new GetSavedResponseRequest { Id = id };
+            var envelope = request.ToEnvelope<GetSavedResponseRequest>(
+                source: options.ProxyId,
+                correlationId: correlationId,
+                replyTo: GetSavedResponseTopic);
+
+            await publisher.PublishAsync(UserProxyTopics.GetSavedResponseRequest, envelope, cancellationToken);
+
+            logger.LogDebug("Published GetSavedResponseRequest {CorrelationId} for {Id}", correlationId, id);
+
+            using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            timeoutCts.CancelAfter(effectiveTimeout);
+
+            try
+            {
+                return await tcs.Task.WaitAsync(timeoutCts.Token);
+            }
+            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+            {
+                logger.LogWarning("Get saved response request timeout for correlation {CorrelationId} after {Timeout}",
+                    correlationId, effectiveTimeout);
+                return null;
+            }
+        }
+        finally
+        {
+            _pendingGetSaved.TryRemove(correlationId, out _);
+        }
+    }
+
+    /// <summary>
+    /// Deletes a saved response by ID from the agent server.
+    /// </summary>
+    public async Task<DeleteSavedResponseAck?> DeleteSavedResponseAsync(
+        string id,
+        TimeSpan? timeout = null,
+        CancellationToken cancellationToken = default)
+    {
+        var effectiveTimeout = timeout ?? options.DefaultReplyTimeout;
+        var correlationId = Guid.NewGuid().ToString("N");
+        var tcs = new TaskCompletionSource<DeleteSavedResponseAck>(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        _pendingDeleteSaved[correlationId] = tcs;
+
+        try
+        {
+            await EnsureDeleteSavedSubscribedAsync(cancellationToken);
+
+            var request = new DeleteSavedResponseRequest { Id = id };
+            var envelope = request.ToEnvelope<DeleteSavedResponseRequest>(
+                source: options.ProxyId,
+                correlationId: correlationId,
+                replyTo: DeleteSavedAckTopic);
+
+            await publisher.PublishAsync(UserProxyTopics.DeleteSavedResponseRequest, envelope, cancellationToken);
+
+            logger.LogDebug("Published DeleteSavedResponseRequest {CorrelationId} for {Id}", correlationId, id);
+
+            using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            timeoutCts.CancelAfter(effectiveTimeout);
+
+            try
+            {
+                return await tcs.Task.WaitAsync(timeoutCts.Token);
+            }
+            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+            {
+                logger.LogWarning("Delete saved response request timeout for correlation {CorrelationId} after {Timeout}",
+                    correlationId, effectiveTimeout);
+                return null;
+            }
+        }
+        finally
+        {
+            _pendingDeleteSaved.TryRemove(correlationId, out _);
+        }
+    }
+
+    // ── Saved response topics ────────────────────────────────────────────────
+
+    private string SaveResponseAckTopic => $"{UserProxyTopics.SaveResponseAck}.{options.ProxyId}";
+    private string ListSavedResponsesTopic => $"{UserProxyTopics.ListSavedResponsesResponse}.{options.ProxyId}";
+    private string GetSavedResponseTopic => $"{UserProxyTopics.GetSavedResponseResponse}.{options.ProxyId}";
+    private string DeleteSavedAckTopic => $"{UserProxyTopics.DeleteSavedResponseAck}.{options.ProxyId}";
+
+    // ── Saved response subscription setup ────────────────────────────────────
+
+    private async Task EnsureSaveResponseSubscribedAsync(CancellationToken ct)
+    {
+        if (_saveResponseInitialized) return;
+
+        await _saveResponseInitLock.WaitAsync(ct);
+        try
+        {
+            if (_saveResponseInitialized) return;
+
+            _saveResponseSubscription = await subscriber.SubscribeAsync(
+                SaveResponseAckTopic,
+                $"user-proxy.{options.ProxyId}.save-response",
+                HandleSaveResponseAckAsync,
+                ct);
+
+            _saveResponseInitialized = true;
+        }
+        finally
+        {
+            _saveResponseInitLock.Release();
+        }
+    }
+
+    private async Task EnsureListSavedSubscribedAsync(CancellationToken ct)
+    {
+        if (_listSavedInitialized) return;
+
+        await _listSavedInitLock.WaitAsync(ct);
+        try
+        {
+            if (_listSavedInitialized) return;
+
+            _listSavedSubscription = await subscriber.SubscribeAsync(
+                ListSavedResponsesTopic,
+                $"user-proxy.{options.ProxyId}.list-saved",
+                HandleListSavedResponseAsync,
+                ct);
+
+            _listSavedInitialized = true;
+        }
+        finally
+        {
+            _listSavedInitLock.Release();
+        }
+    }
+
+    private async Task EnsureGetSavedSubscribedAsync(CancellationToken ct)
+    {
+        if (_getSavedInitialized) return;
+
+        await _getSavedInitLock.WaitAsync(ct);
+        try
+        {
+            if (_getSavedInitialized) return;
+
+            _getSavedSubscription = await subscriber.SubscribeAsync(
+                GetSavedResponseTopic,
+                $"user-proxy.{options.ProxyId}.get-saved",
+                HandleGetSavedResponseAsync,
+                ct);
+
+            _getSavedInitialized = true;
+        }
+        finally
+        {
+            _getSavedInitLock.Release();
+        }
+    }
+
+    private async Task EnsureDeleteSavedSubscribedAsync(CancellationToken ct)
+    {
+        if (_deleteSavedInitialized) return;
+
+        await _deleteSavedInitLock.WaitAsync(ct);
+        try
+        {
+            if (_deleteSavedInitialized) return;
+
+            _deleteSavedSubscription = await subscriber.SubscribeAsync(
+                DeleteSavedAckTopic,
+                $"user-proxy.{options.ProxyId}.delete-saved",
+                HandleDeleteSavedAckAsync,
+                ct);
+
+            _deleteSavedInitialized = true;
+        }
+        finally
+        {
+            _deleteSavedInitLock.Release();
+        }
+    }
+
+    // ── Saved response handlers ──────────────────────────────────────────────
+
+    internal Task<MessageResult> HandleSaveResponseAckAsync(MessageEnvelope envelope, CancellationToken ct)
+    {
+        if (envelope.CorrelationId is null ||
+            !_pendingSaveResponse.TryGetValue(envelope.CorrelationId, out var tcs))
+        {
+            logger.LogWarning("Received save response ack with unknown correlation ID: {CorrelationId}",
+                envelope.CorrelationId);
+            return Task.FromResult(MessageResult.Ack);
+        }
+
+        SaveResponseAck? response;
+        try
+        {
+            response = envelope.GetPayload<SaveResponseAck>();
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "Failed to deserialize SaveResponseAck");
+            tcs.TrySetException(ex);
+            return Task.FromResult(MessageResult.DeadLetter);
+        }
+
+        if (response is null)
+        {
+            logger.LogWarning("Received null SaveResponseAck");
+            return Task.FromResult(MessageResult.DeadLetter);
+        }
+
+        _pendingSaveResponse.TryRemove(envelope.CorrelationId, out _);
+        tcs.TrySetResult(response);
+
+        logger.LogDebug("Save response ack correlated for {CorrelationId}: Id={Id}", envelope.CorrelationId, response.Id);
+
+        return Task.FromResult(MessageResult.Ack);
+    }
+
+    internal Task<MessageResult> HandleListSavedResponseAsync(MessageEnvelope envelope, CancellationToken ct)
+    {
+        if (envelope.CorrelationId is null ||
+            !_pendingListSaved.TryGetValue(envelope.CorrelationId, out var tcs))
+        {
+            logger.LogWarning("Received list saved responses with unknown correlation ID: {CorrelationId}",
+                envelope.CorrelationId);
+            return Task.FromResult(MessageResult.Ack);
+        }
+
+        ListSavedResponsesResponse? response;
+        try
+        {
+            response = envelope.GetPayload<ListSavedResponsesResponse>();
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "Failed to deserialize ListSavedResponsesResponse");
+            tcs.TrySetException(ex);
+            return Task.FromResult(MessageResult.DeadLetter);
+        }
+
+        if (response is null)
+        {
+            logger.LogWarning("Received null ListSavedResponsesResponse");
+            return Task.FromResult(MessageResult.DeadLetter);
+        }
+
+        _pendingListSaved.TryRemove(envelope.CorrelationId, out _);
+        tcs.TrySetResult(response);
+
+        logger.LogDebug("List saved responses correlated for {CorrelationId} with {Count} items",
+            envelope.CorrelationId, response.Items.Count);
+
+        return Task.FromResult(MessageResult.Ack);
+    }
+
+    internal Task<MessageResult> HandleGetSavedResponseAsync(MessageEnvelope envelope, CancellationToken ct)
+    {
+        if (envelope.CorrelationId is null ||
+            !_pendingGetSaved.TryGetValue(envelope.CorrelationId, out var tcs))
+        {
+            logger.LogWarning("Received get saved response with unknown correlation ID: {CorrelationId}",
+                envelope.CorrelationId);
+            return Task.FromResult(MessageResult.Ack);
+        }
+
+        GetSavedResponseResponse? response;
+        try
+        {
+            response = envelope.GetPayload<GetSavedResponseResponse>();
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "Failed to deserialize GetSavedResponseResponse");
+            tcs.TrySetException(ex);
+            return Task.FromResult(MessageResult.DeadLetter);
+        }
+
+        if (response is null)
+        {
+            logger.LogWarning("Received null GetSavedResponseResponse");
+            return Task.FromResult(MessageResult.DeadLetter);
+        }
+
+        _pendingGetSaved.TryRemove(envelope.CorrelationId, out _);
+        tcs.TrySetResult(response);
+
+        logger.LogDebug("Get saved response correlated for {CorrelationId}: Id={Id} Found={Found}",
+            envelope.CorrelationId, response.Id, response.Found);
+
+        return Task.FromResult(MessageResult.Ack);
+    }
+
+    internal Task<MessageResult> HandleDeleteSavedAckAsync(MessageEnvelope envelope, CancellationToken ct)
+    {
+        if (envelope.CorrelationId is null ||
+            !_pendingDeleteSaved.TryGetValue(envelope.CorrelationId, out var tcs))
+        {
+            logger.LogWarning("Received delete saved response ack with unknown correlation ID: {CorrelationId}",
+                envelope.CorrelationId);
+            return Task.FromResult(MessageResult.Ack);
+        }
+
+        DeleteSavedResponseAck? response;
+        try
+        {
+            response = envelope.GetPayload<DeleteSavedResponseAck>();
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "Failed to deserialize DeleteSavedResponseAck");
+            tcs.TrySetException(ex);
+            return Task.FromResult(MessageResult.DeadLetter);
+        }
+
+        if (response is null)
+        {
+            logger.LogWarning("Received null DeleteSavedResponseAck");
+            return Task.FromResult(MessageResult.DeadLetter);
+        }
+
+        _pendingDeleteSaved.TryRemove(envelope.CorrelationId, out _);
+        tcs.TrySetResult(response);
+
+        logger.LogDebug("Delete saved response ack correlated for {CorrelationId}", envelope.CorrelationId);
+
+        return Task.FromResult(MessageResult.Ack);
+    }
+
+    // ── History / Agent info ─────────────────────────────────────────────────
 
     internal Task<MessageResult> HandleHistoryResponseAsync(MessageEnvelope envelope, CancellationToken ct)
     {

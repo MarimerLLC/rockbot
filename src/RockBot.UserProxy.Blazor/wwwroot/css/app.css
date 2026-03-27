@@ -554,6 +554,122 @@ body.dark-mode .chevron-indicator {
     color: #6b7280;
 }
 
+/* ── Saved reference bubble ─────────────────────────────────────────── */
+
+.saved-reference-bubble {
+    max-width: 70%;
+    border: 2px solid #6366f1;
+    background-color: #f5f3ff;
+    box-shadow: 0 1px 3px rgba(99, 102, 241, 0.15);
+}
+
+.saved-badge-header {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin-bottom: 0.25rem;
+}
+
+.saved-badge {
+    background-color: #6366f1;
+    color: white;
+}
+
+.saved-label {
+    font-weight: 500;
+    font-size: 0.85rem;
+    color: #4b5563;
+    flex: 1;
+}
+
+/* ── Save label input ───────────────────────────────────────────────── */
+
+.save-label-input {
+    padding-top: 0.4rem;
+    border-top: 1px solid rgba(0, 0, 0, 0.08);
+}
+
+.save-label-input input {
+    max-width: 200px;
+}
+
+/* ── Saved items modal ──────────────────────────────────────────────── */
+
+.modal-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background-color: rgba(0, 0, 0, 0.5);
+    z-index: 1000;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.saved-modal {
+    background: white;
+    border-radius: 0.5rem;
+    padding: 1.5rem;
+    max-width: 500px;
+    width: 90%;
+    max-height: 70vh;
+    overflow-y: auto;
+    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.2);
+}
+
+.saved-item {
+    transition: background-color 0.15s;
+    border: 1px solid #e5e7eb;
+}
+
+.saved-item:hover {
+    background-color: #f3f4f6;
+}
+
+.saved-item-info {
+    flex: 1;
+    min-width: 0;
+}
+
+.saved-item-meta {
+    color: #6b7280;
+}
+
+/* ── Dark mode: saved reference ─────────────────────────────────────── */
+
+body.dark-mode .saved-reference-bubble {
+    background-color: #1e1b3a;
+    border-color: #818cf8;
+    color: #e5e7eb;
+}
+
+body.dark-mode .saved-label {
+    color: #c4b5fd;
+}
+
+body.dark-mode .saved-modal {
+    background: #2d2d2d;
+    color: #e5e7eb;
+}
+
+body.dark-mode .saved-item {
+    border-color: #4b5563;
+}
+
+body.dark-mode .saved-item:hover {
+    background-color: #374151;
+}
+
+body.dark-mode .saved-item-meta {
+    color: #9ca3af;
+}
+
+body.dark-mode .save-label-input {
+    border-top-color: rgba(255, 255, 255, 0.1);
+}
+
 /* ── Responsive: collapsible bubbles ──────────────────────────────────── */
 
 @media (max-width: 768px) {
@@ -561,11 +677,19 @@ body.dark-mode .chevron-indicator {
     .collapsible-bubble {
         max-width: 85%;
     }
+
+    .saved-reference-bubble {
+        max-width: 85%;
+    }
 }
 
 @media (max-width: 576px) {
     .activity-log-bubble,
     .collapsible-bubble {
+        max-width: 90%;
+    }
+
+    .saved-reference-bubble {
         max-width: 90%;
     }
 }
