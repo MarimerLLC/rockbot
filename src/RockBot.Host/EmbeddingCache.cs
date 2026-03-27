@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.Numerics.Tensors;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
@@ -143,14 +144,25 @@ internal sealed class EmbeddingCache
 
     private async Task<float[]?> GenerateAsync(string text, CancellationToken ct)
     {
+        using var activity = HostDiagnostics.Source.StartActivity("rockbot.embedding.generate");
+        var sw = Stopwatch.StartNew();
         try
         {
+            HostDiagnostics.EmbeddingCalls.Add(1);
             var result = await _generator.GenerateAsync(text, cancellationToken: ct);
+            sw.Stop();
+            HostDiagnostics.EmbeddingDuration.Record(sw.Elapsed.TotalMilliseconds);
+            _logger.LogDebug("Embedding generated in {Duration:F0}ms ({Dimensions} dimensions)",
+                sw.Elapsed.TotalMilliseconds, result.Vector.Length);
             return result.Vector.ToArray();
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Failed to generate embedding — falling back to BM25-only");
+            sw.Stop();
+            HostDiagnostics.EmbeddingFailures.Add(1);
+            HostDiagnostics.EmbeddingDuration.Record(sw.Elapsed.TotalMilliseconds);
+            _logger.LogWarning(ex, "Failed to generate embedding in {Duration:F0}ms — falling back to BM25-only",
+                sw.Elapsed.TotalMilliseconds);
             return null;
         }
     }

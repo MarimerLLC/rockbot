@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using Microsoft.Extensions.AI;
@@ -139,16 +140,25 @@ internal sealed partial class FileSkillStore : ISkillStore
 
             if (_embeddingCache is not null)
             {
+                using var hybridActivity = HostDiagnostics.Source.StartActivity("rockbot.search.hybrid.skills");
+                var sw = Stopwatch.StartNew();
+
                 var queryEmbedding = await _embeddingCache.GenerateQueryEmbeddingAsync(query, cancellationToken);
                 if (queryEmbedding is not null)
                 {
-                    return HybridRanker.Rank(
+                    var results = HybridRanker.Rank(
                             candidates, GetDocumentText,
                             static s => s.Name,
                             s => _embeddingCache.GetOrCreateAsync(s.Name, GetDocumentText(s), cancellationToken).GetAwaiter().GetResult(),
                             queryEmbedding, query)
                         .Take(maxResults)
                         .ToList();
+
+                    sw.Stop();
+                    HostDiagnostics.HybridSearchDuration.Record(sw.Elapsed.TotalMilliseconds);
+                    _logger.LogDebug("Hybrid skill search completed in {Duration:F0}ms ({Candidates} candidates, {Results} results)",
+                        sw.Elapsed.TotalMilliseconds, candidates.Count, results.Count);
+                    return results;
                 }
             }
 

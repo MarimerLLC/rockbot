@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using Microsoft.Extensions.AI;
@@ -106,16 +107,25 @@ internal sealed partial class FileMemoryStore : ILongTermMemory
             // With query: use hybrid ranking if embeddings available, else BM25-only.
             if (_embeddingCache is not null)
             {
+                using var hybridActivity = HostDiagnostics.Source.StartActivity("rockbot.search.hybrid.memory");
+                var sw = Stopwatch.StartNew();
+
                 var queryEmbedding = await _embeddingCache.GenerateQueryEmbeddingAsync(criteria.Query, cancellationToken);
                 if (queryEmbedding is not null)
                 {
-                    return HybridRanker.Rank(
+                    var results = HybridRanker.Rank(
                             candidates, GetDocumentText,
                             static e => e.Id,
                             e => _embeddingCache.GetOrCreateAsync(e.Id, GetDocumentText(e), cancellationToken).GetAwaiter().GetResult(),
                             queryEmbedding, criteria.Query)
                         .Take(criteria.MaxResults)
                         .ToList();
+
+                    sw.Stop();
+                    HostDiagnostics.HybridSearchDuration.Record(sw.Elapsed.TotalMilliseconds);
+                    _logger.LogDebug("Hybrid memory search completed in {Duration:F0}ms ({Candidates} candidates, {Results} results)",
+                        sw.Elapsed.TotalMilliseconds, candidates.Count, results.Count);
+                    return results;
                 }
             }
 

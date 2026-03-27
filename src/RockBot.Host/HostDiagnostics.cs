@@ -136,6 +136,36 @@ public static class HostDiagnostics
             unit: "{check}",
             description: "Follow-up evaluation skipped");
 
+    // ── Embedding / hybrid search ─────────────────────────────────────────────
+
+    /// <summary>Duration of embedding generation calls (query or document).</summary>
+    public static readonly Histogram<double> EmbeddingDuration =
+        Meter.CreateHistogram<double>(
+            "rockbot.embedding.duration",
+            unit: "ms",
+            description: "Duration of text-embedding generation calls");
+
+    /// <summary>Total embedding generation calls.</summary>
+    public static readonly Counter<long> EmbeddingCalls =
+        Meter.CreateCounter<long>(
+            "rockbot.embedding.calls",
+            unit: "{call}",
+            description: "Total text-embedding generation calls");
+
+    /// <summary>Embedding generation failures (timeout, network, model error).</summary>
+    public static readonly Counter<long> EmbeddingFailures =
+        Meter.CreateCounter<long>(
+            "rockbot.embedding.failures",
+            unit: "{failure}",
+            description: "Text-embedding generation failures");
+
+    /// <summary>Duration of hybrid search (BM25 + vector ranking combined).</summary>
+    public static readonly Histogram<double> HybridSearchDuration =
+        Meter.CreateHistogram<double>(
+            "rockbot.search.hybrid.duration",
+            unit: "ms",
+            description: "Duration of hybrid BM25+vector search operations");
+
     // ── FinOps ────────────────────────────────────────────────────────────────
 
     /// <summary>Estimated USD cost per LLM call, labelled by model and tier.</summary>
