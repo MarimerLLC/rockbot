@@ -152,7 +152,7 @@ internal sealed class EmbeddingCache
             var result = await _generator.GenerateAsync(text, cancellationToken: ct);
             sw.Stop();
             HostDiagnostics.EmbeddingDuration.Record(sw.Elapsed.TotalMilliseconds);
-            _logger.LogDebug("Embedding generated in {Duration:F0}ms ({Dimensions} dimensions)",
+            _logger.LogInformation("Embedding generated in {Duration:F0}ms ({Dimensions} dimensions)",
                 sw.Elapsed.TotalMilliseconds, result.Vector.Length);
             return result.Vector.ToArray();
         }

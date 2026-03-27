@@ -161,7 +161,7 @@ internal sealed partial class FileSkillStore : ISkillStore
 
                     sw.Stop();
                     HostDiagnostics.HybridSearchDuration.Record(sw.Elapsed.TotalMilliseconds);
-                    _logger.LogDebug("Hybrid skill search completed in {Duration:F0}ms ({Candidates} candidates, {Results} results)",
+                    _logger.LogInformation("Hybrid skill search completed in {Duration:F0}ms ({Candidates} candidates, {Results} results)",
                         sw.Elapsed.TotalMilliseconds, candidates.Count, results.Count);
                     return results;
                 }
