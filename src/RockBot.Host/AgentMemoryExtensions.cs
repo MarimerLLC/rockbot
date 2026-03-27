@@ -138,6 +138,23 @@ public static class AgentMemoryExtensions
     }
 
     /// <summary>
+    /// Registers the file-based saved-response store with optional configuration.
+    /// </summary>
+    public static AgentHostBuilder WithSavedResponses(
+        this AgentHostBuilder builder,
+        Action<SavedResponseOptions>? configure = null)
+    {
+        if (configure is not null)
+            builder.Services.Configure(configure);
+        else
+            builder.Services.Configure<SavedResponseOptions>(_ => { });
+
+        builder.Services.AddSingleton<ISavedResponseStore, FileSavedResponseStore>();
+
+        return builder;
+    }
+
+    /// <summary>
     /// Registers the feedback capture system: <see cref="IFeedbackStore"/> (file-backed) and
     /// the <see cref="SessionSummaryService"/> background evaluator.
     /// Requires <see cref="IConversationMemory"/> and an LLM client to be registered.
