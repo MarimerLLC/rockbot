@@ -187,6 +187,7 @@ rockbot/
 
 ### Phase 6: Hardening
 - [x] Observability (OpenTelemetry traces and metrics)
+- [x] [WIP tracking](wip-tracking.md) for crash recovery of in-flight messages
 - [ ] Rate limiting and back-pressure
 - [ ] Azure Service Bus provider
 - [ ] Admin UI / dashboard
