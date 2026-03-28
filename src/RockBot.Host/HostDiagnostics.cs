@@ -185,4 +185,34 @@ public static class HostDiagnostics
             "rockbot.llm.cost.per_request",
             unit: "{USD}",
             description: "USD cost per individual LLM request — histogram enables exemplar trace linkage");
+
+    // ── WIP tracking ─────────────────────────────────────────────────────────
+
+    /// <summary>WIP entries created (message received, persisted to disk).</summary>
+    public static readonly Counter<long> WipBegun =
+        Meter.CreateCounter<long>(
+            "rockbot.wip.begun",
+            unit: "{entry}",
+            description: "WIP entries created");
+
+    /// <summary>WIP entries completed (processing finished normally).</summary>
+    public static readonly Counter<long> WipCompleted =
+        Meter.CreateCounter<long>(
+            "rockbot.wip.completed",
+            unit: "{entry}",
+            description: "WIP entries completed");
+
+    /// <summary>WIP entries recovered on startup (replayed after crash).</summary>
+    public static readonly Counter<long> WipRecovered =
+        Meter.CreateCounter<long>(
+            "rockbot.wip.recovered",
+            unit: "{entry}",
+            description: "WIP entries recovered on startup");
+
+    /// <summary>WIP entries abandoned as stale (too old to recover).</summary>
+    public static readonly Counter<long> WipAbandoned =
+        Meter.CreateCounter<long>(
+            "rockbot.wip.abandoned",
+            unit: "{entry}",
+            description: "WIP entries abandoned as stale");
 }

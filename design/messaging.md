@@ -39,6 +39,8 @@ The `MessageResult` enum (Ack, Retry, DeadLetter) gives handlers explicit contro
 
 This is critical for reliability. Auto-ack means messages are lost on handler failure. With manual ack, messages survive crashes and get redelivered.
 
+Note: For messages that are acked early and processed in a background loop (e.g. `UserMessageHandler`), RabbitMQ's ack semantics alone cannot protect against mid-processing crashes. The [WIP tracking system](wip-tracking.md) addresses this by persisting the envelope to disk before dispatch and replaying incomplete entries on startup.
+
 ### Why Separate Publisher and Subscriber Interfaces?
 
 Rather than a single `IMessageBus` interface, we split into `IMessagePublisher` and `IMessageSubscriber` because:

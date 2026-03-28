@@ -25,6 +25,9 @@ public static class ServiceCollectionExtensions
 
         // Register TracingMiddleware first so it's the outermost wrapper
         builder.UseMiddleware<TracingMiddleware>();
+        // WIP tracking sits just inside tracing — persists the envelope to disk
+        // before the handler runs and auto-completes when it returns.
+        builder.UseMiddleware<WipMiddleware>();
 
         configure(builder);
         builder.Build();
@@ -38,6 +41,8 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<ISessionTracker, SessionBackgroundTaskTracker>();
         services.AddSingleton<IAgentWorkSerializer, AgentWorkSerializer>();
         services.AddSingleton<IMessagePipeline, MessagePipeline>();
+        services.Configure<WipOptions>(_ => { });
+        services.AddSingleton<IWipTracker, FileWipTracker>();
         services.AddSingleton<IHostedService, AgentHost>();
 
         return services;
