@@ -99,6 +99,6 @@ builder.Services.AddRockBotHost(agent =>
 
 ## Future Considerations
 
-- Swap `FileMemoryStore` for vector/embedding store (interface is async and query-based)
+- ~~Swap `FileMemoryStore` for vector/embedding store~~ — **Implemented.** `EmbeddingCache` + `HybridRanker` add optional cosine-similarity search alongside BM25. Configure via `EmbeddingOptions` (Endpoint, Model, ApiKey). Falls back to BM25-only when not configured.
 - Add memory compaction/summarization for entries exceeding size thresholds
 - Add memory import/export for agent migration

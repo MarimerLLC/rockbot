@@ -82,8 +82,8 @@ The result is a swarm of agents that coordinate through messages, where the fail
 ### Memory (three tiers)
 
 - **Conversation memory** — sliding window of recent turns per session (default 50), auto-cleaned after idle timeout. Ephemeral and in-process.
-- **Long-term memory** — persistent file-based store organized by category. The framework automatically surfaces relevant entries each turn via BM25 keyword search against the user's message (delta injection — only unseen entries are added).
-- **Working memory** — fast session-scoped cache for intermediate results. Tools can save and retrieve data during a conversation without polluting long-term storage.
+- **Long-term memory** — persistent file-based store organized by category. The framework automatically surfaces relevant entries each turn via BM25 keyword search against the user's message (delta injection — only unseen entries are added). Optionally enhanced with **hybrid vector search** (BM25 + cosine similarity) when a text embedding model is configured — see [Embedding configuration](#embedding-optional--hybrid-vector-search) below.
+- **Working memory** — fast session-scoped cache for intermediate results. Tools can save and retrieve data during a conversation without polluting long-term storage. Also supports hybrid vector search when embedding is configured.
 
 ### Skills
 
@@ -286,6 +286,13 @@ secrets:
     #   apiKey: "<your-openrouter-api-key>"
     #   modelId: "anthropic/claude-opus-4-6"
 
+  # Embedding — OPTIONAL. Enables hybrid BM25 + vector search for memory, skills,
+  # and working memory. Falls back to BM25-only when not configured.
+  # embedding:
+  #   endpoint: "http://ollama.default.svc.cluster.local:11434"
+  #   model: "nomic-embed-text"
+  #   apiKey: ""   # optional for Ollama; required for cloud providers
+
   webTools:
     apiKey: "<your-brave-search-api-key>"
   rabbitmq:
@@ -428,6 +435,45 @@ kubectl cp src/RockBot.Agent/mcp.json <pod-name>:/data/agent/mcp.json -n rockbot
 ### MCP tool configuration
 
 Edit `/data/agent/mcp.json` on the PVC (or copy it in as shown above) to configure MCP server connections. The embedded MCP bridge discovers and registers available tools automatically on startup. Servers can also be registered and unregistered at runtime through the agent's `mcp_register_server` and `mcp_unregister_server` tools.
+
+---
+
+### Embedding (optional — hybrid vector search)
+
+By default the agent uses BM25 keyword search for memory, skills, and working memory recall. You can optionally configure a text embedding model to enable **hybrid search** (BM25 + cosine similarity), which improves recall for semantically similar but lexically different content.
+
+Any OpenAI-compatible embedding endpoint works — OpenAI, Ollama, Azure OpenAI, etc. When not configured, the agent falls back to BM25-only search with no loss of functionality.
+
+**Helm (`values.personal.yaml`):**
+
+```yaml
+secrets:
+  embedding:
+    endpoint: "http://ollama.default.svc.cluster.local:11434"
+    model: "nomic-embed-text"
+    apiKey: ""   # optional for Ollama; required for cloud providers
+```
+
+**Docker Compose / environment variables:**
+
+```env
+Embedding__Endpoint=http://ollama:11434
+Embedding__Model=nomic-embed-text
+Embedding__ApiKey=              # optional for Ollama
+```
+
+The agent logs confirm the configuration on startup:
+
+```
+Embedding model configured: nomic-embed-text @ http://ollama:11434
+```
+
+Or when not configured:
+
+```
+No embedding config found — using BM25-only search.
+Set Embedding:Endpoint and Embedding:Model to enable hybrid vector search.
+```
 
 ---
 
