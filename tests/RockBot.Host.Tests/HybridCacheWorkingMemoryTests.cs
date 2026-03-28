@@ -579,6 +579,7 @@ public class HybridCacheWorkingMemoryTests
         return new HybridCacheWorkingMemory(
             _cache,
             Options.Create(opts),
+            Options.Create(new EmbeddingOptions()),
             NullLogger<HybridCacheWorkingMemory>.Instance);
     }
 }

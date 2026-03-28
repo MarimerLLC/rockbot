@@ -527,6 +527,7 @@ public class FileMemoryStoreTests
         return new FileMemoryStore(
             Options.Create(new MemoryOptions { BasePath = _tempDir }),
             Options.Create(new AgentProfileOptions()),
+            Options.Create(new EmbeddingOptions()),
             NullLogger<FileMemoryStore>.Instance);
     }
 

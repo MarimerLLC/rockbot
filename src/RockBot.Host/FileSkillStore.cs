@@ -1,5 +1,7 @@
+using System.Diagnostics;
 using System.Text.Json;
 using System.Text.RegularExpressions;
+using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
@@ -23,6 +25,8 @@ internal sealed partial class FileSkillStore : ISkillStore
     private readonly string _basePath;
     private readonly ILogger<FileSkillStore> _logger;
     private readonly SemaphoreSlim _semaphore = new(1, 1);
+    private readonly EmbeddingCache? _embeddingCache;
+    private readonly float _minSimilarity;
 
     // Lazy-loaded in-memory index: name -> Skill
     private Dictionary<string, Skill>? _index;
@@ -30,13 +34,20 @@ internal sealed partial class FileSkillStore : ISkillStore
     public FileSkillStore(
         IOptions<SkillOptions> skillOptions,
         IOptions<AgentProfileOptions> profileOptions,
-        ILogger<FileSkillStore> logger)
+        IOptions<EmbeddingOptions> embeddingOptions,
+        ILogger<FileSkillStore> logger,
+        IEmbeddingGenerator<string, Embedding<float>>? embeddingGenerator = null)
     {
         _basePath = ResolvePath(skillOptions.Value.BasePath, profileOptions.Value.BasePath);
         _logger = logger;
+        _embeddingCache = embeddingGenerator is not null
+            ? new EmbeddingCache(embeddingGenerator, _basePath, logger, embeddingOptions.Value.MaxInputChars)
+            : null;
+        _minSimilarity = embeddingOptions.Value.MinSimilarityThreshold;
 
         Directory.CreateDirectory(_basePath);
-        logger.LogInformation("Skill store path: {Path}", _basePath);
+        logger.LogInformation("Skill store path: {Path} (hybrid search: {Hybrid})",
+            _basePath, _embeddingCache is not null);
     }
 
     public async Task SaveAsync(Skill skill)
@@ -62,6 +73,10 @@ internal sealed partial class FileSkillStore : ISkillStore
         {
             _semaphore.Release();
         }
+
+        // Generate embedding in the background — agent flow should not block on vectorization.
+        if (_embeddingCache is not null)
+            _ = _embeddingCache.UpdateAsync(skill.Name, GetDocumentText(skill));
     }
 
     public async Task<Skill?> GetAsync(string name)
@@ -108,6 +123,8 @@ internal sealed partial class FileSkillStore : ISkillStore
             if (File.Exists(filePath))
                 File.Delete(filePath);
 
+            _embeddingCache?.Remove(name);
+
             _logger.LogDebug("Deleted skill '{Name}'", skill.Name);
         }
         finally
@@ -123,6 +140,37 @@ internal sealed partial class FileSkillStore : ISkillStore
         {
             var index = await EnsureIndexAsync();
             var candidates = index.Values.ToList();
+
+            if (_embeddingCache is not null)
+            {
+                using var hybridActivity = HostDiagnostics.Source.StartActivity("rockbot.search.hybrid.skills");
+                var sw = Stopwatch.StartNew();
+
+                var queryEmbedding = await _embeddingCache.GenerateQueryEmbeddingAsync(query, cancellationToken);
+                if (queryEmbedding is not null)
+                {
+                    // Pre-load all candidate embeddings asynchronously (avoids sync-over-async per candidate)
+                    var embeddingMap = new Dictionary<string, float[]?>(StringComparer.OrdinalIgnoreCase);
+                    foreach (var s in candidates)
+                        embeddingMap[s.Name] = await _embeddingCache.GetOrCreateAsync(s.Name, GetDocumentText(s), cancellationToken);
+
+                    var results = HybridRanker.Rank(
+                            candidates, GetDocumentText,
+                            static s => s.Name,
+                            s => embeddingMap.GetValueOrDefault(s.Name),
+                            queryEmbedding, query,
+                            _minSimilarity)
+                        .Take(maxResults)
+                        .ToList();
+
+                    sw.Stop();
+                    HostDiagnostics.HybridSearchDuration.Record(sw.Elapsed.TotalMilliseconds);
+                    _logger.LogInformation("Hybrid skill search completed in {Duration:F0}ms ({Candidates} candidates, {Results} results)",
+                        sw.Elapsed.TotalMilliseconds, candidates.Count, results.Count);
+                    return results;
+                }
+            }
+
             return Bm25Ranker.Rank(candidates, GetDocumentText, query)
                 .Take(maxResults)
                 .ToList();

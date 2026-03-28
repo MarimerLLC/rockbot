@@ -1,5 +1,7 @@
+using System.Diagnostics;
 using System.Text.Json;
 using System.Text.RegularExpressions;
+using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
@@ -21,6 +23,8 @@ internal sealed partial class FileMemoryStore : ILongTermMemory
     private readonly string _basePath;
     private readonly ILogger<FileMemoryStore> _logger;
     private readonly SemaphoreSlim _semaphore = new(1, 1);
+    private readonly EmbeddingCache? _embeddingCache;
+    private readonly float _minSimilarity;
 
     // Lazy-loaded in-memory index: id -> MemoryEntry
     private Dictionary<string, MemoryEntry>? _index;
@@ -28,14 +32,21 @@ internal sealed partial class FileMemoryStore : ILongTermMemory
     public FileMemoryStore(
         IOptions<MemoryOptions> memoryOptions,
         IOptions<AgentProfileOptions> profileOptions,
-        ILogger<FileMemoryStore> logger)
+        IOptions<EmbeddingOptions> embeddingOptions,
+        ILogger<FileMemoryStore> logger,
+        IEmbeddingGenerator<string, Embedding<float>>? embeddingGenerator = null)
     {
         _basePath = ResolvePath(memoryOptions.Value.BasePath, profileOptions.Value.BasePath);
         _logger = logger;
+        _embeddingCache = embeddingGenerator is not null
+            ? new EmbeddingCache(embeddingGenerator, _basePath, logger, embeddingOptions.Value.MaxInputChars)
+            : null;
+        _minSimilarity = embeddingOptions.Value.MinSimilarityThreshold;
 
         Directory.CreateDirectory(_basePath);
 
-        logger.LogInformation("Long-term memory path: {Path}", _basePath);
+        logger.LogInformation("Long-term memory path: {Path} (hybrid search: {Hybrid})",
+            _basePath, _embeddingCache is not null);
     }
 
     public async Task SaveAsync(MemoryEntry entry, CancellationToken cancellationToken = default)
@@ -69,6 +80,10 @@ internal sealed partial class FileMemoryStore : ILongTermMemory
         {
             _semaphore.Release();
         }
+
+        // Generate embedding in the background — agent flow should not block on vectorization.
+        if (_embeddingCache is not null)
+            _ = _embeddingCache.UpdateAsync(entry.Id, GetDocumentText(entry), cancellationToken);
     }
 
     public async Task<IReadOnlyList<MemoryEntry>> SearchAsync(MemorySearchCriteria criteria, CancellationToken cancellationToken = default)
@@ -92,8 +107,38 @@ internal sealed partial class FileMemoryStore : ILongTermMemory
                     .ToList();
             }
 
-            // With query: BM25 ranking — entries are scored, zero-score entries excluded,
-            // results returned in descending relevance order.
+            // With query: use hybrid ranking if embeddings available, else BM25-only.
+            if (_embeddingCache is not null)
+            {
+                using var hybridActivity = HostDiagnostics.Source.StartActivity("rockbot.search.hybrid.memory");
+                var sw = Stopwatch.StartNew();
+
+                var queryEmbedding = await _embeddingCache.GenerateQueryEmbeddingAsync(criteria.Query, cancellationToken);
+                if (queryEmbedding is not null)
+                {
+                    // Pre-load all candidate embeddings asynchronously (avoids sync-over-async per candidate)
+                    var embeddingMap = new Dictionary<string, float[]?>(StringComparer.OrdinalIgnoreCase);
+                    foreach (var c in candidates)
+                        embeddingMap[c.Id] = await _embeddingCache.GetOrCreateAsync(c.Id, GetDocumentText(c), cancellationToken);
+
+                    var results = HybridRanker.Rank(
+                            candidates, GetDocumentText,
+                            static e => e.Id,
+                            e => embeddingMap.GetValueOrDefault(e.Id),
+                            queryEmbedding, criteria.Query,
+                            _minSimilarity)
+                        .Take(criteria.MaxResults)
+                        .ToList();
+
+                    sw.Stop();
+                    HostDiagnostics.HybridSearchDuration.Record(sw.Elapsed.TotalMilliseconds);
+                    _logger.LogInformation("Hybrid memory search completed in {Duration:F0}ms ({Candidates} candidates, {Results} results)",
+                        sw.Elapsed.TotalMilliseconds, candidates.Count, results.Count);
+                    return results;
+                }
+            }
+
+            // Fallback: BM25-only ranking.
             return Bm25Ranker.Rank(candidates, GetDocumentText, criteria.Query)
                 .Take(criteria.MaxResults)
                 .ToList();
@@ -133,6 +178,7 @@ internal sealed partial class FileMemoryStore : ILongTermMemory
                 File.Delete(filePath);
 
             index.Remove(id);
+            _embeddingCache?.Remove(id);
 
             _logger.LogDebug("Deleted memory entry {Id}", id);
         }
