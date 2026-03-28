@@ -48,6 +48,7 @@ internal sealed class UserMessageHandler(
     ISessionTracker sessionTracker,
     SessionStartTracker sessionStartTracker,
     IOptions<AgentProfileOptions> profileOptions,
+    IWipTracker wipTracker,
     ILogger<UserMessageHandler> logger,
     TierRoutingLogger tierRoutingLogger,
     ISkillUsageStore? skillUsageStore = null) : IMessageHandler<UserMessage>
@@ -66,6 +67,8 @@ internal sealed class UserMessageHandler(
         var replyTo = context.Envelope.ReplyTo ?? UserProxyTopics.UserResponse;
         var correlationId = context.Envelope.CorrelationId;
         var ct = context.CancellationToken;
+        var wipMessageId = context.Items.TryGetValue(WipConstants.MessageIdKey, out var id)
+            ? (string)id : null;
 
         userActivityMonitor.RecordActivity();
 
@@ -188,8 +191,9 @@ internal sealed class UserMessageHandler(
                 await PublishReplyAsync("I'm working on that — I'll follow up shortly.",
                     replyTo, correlationId, message.SessionId, isFinal: false, ct);
                 turnActivityHandedOff = true;
+                context.Items[WipConstants.DeferredKey] = true;
                 _ = NativeLlmLoopAsync(chatMessages, chatOptions, classification, postInjectionTokenEstimate,
-                    message.SessionId, replyTo, correlationId, sessionHandle.Generation, turnActivity, sessionCt);
+                    message.SessionId, replyTo, correlationId, sessionHandle.Generation, wipMessageId, turnActivity, sessionCt);
             }
             else
             {
@@ -246,9 +250,10 @@ internal sealed class UserMessageHandler(
                     await PublishReplyAsync(effectiveAck, replyTo, correlationId, message.SessionId, isFinal: false, ct);
 
                     turnActivityHandedOff = true;
+                    context.Items[WipConstants.DeferredKey] = true;
                     _ = BackgroundToolLoopAsync(
                         chatMessages, chatOptions, firstResponse, tier,
-                        message.SessionId, replyTo, correlationId, sessionHandle.Generation, turnActivity, sessionCt);
+                        message.SessionId, replyTo, correlationId, sessionHandle.Generation, wipMessageId, turnActivity, sessionCt);
                 }
                 else
                 {
@@ -265,9 +270,10 @@ internal sealed class UserMessageHandler(
                             replyTo, correlationId, message.SessionId, isFinal: false, ct);
 
                         turnActivityHandedOff = true;
+                        context.Items[WipConstants.DeferredKey] = true;
                         _ = BackgroundToolLoopAsync(
                             chatMessages, chatOptions, firstResponse, tier,
-                            message.SessionId, replyTo, correlationId, sessionHandle.Generation, turnActivity, sessionCt);
+                            message.SessionId, replyTo, correlationId, sessionHandle.Generation, wipMessageId, turnActivity, sessionCt);
                     }
                     else if (modelBehavior.NudgeOnHallucinatedToolCalls
                         && (HallucinatedActionRegex.IsMatch(text) || AgentLoopRunner.CapabilityDenialRegex.IsMatch(text)))
@@ -281,9 +287,10 @@ internal sealed class UserMessageHandler(
                             replyTo, correlationId, message.SessionId, isFinal: false, ct);
 
                         turnActivityHandedOff = true;
+                        context.Items[WipConstants.DeferredKey] = true;
                         _ = BackgroundToolLoopAsync(
                             chatMessages, chatOptions, firstResponse, tier,
-                            message.SessionId, replyTo, correlationId, sessionHandle.Generation, turnActivity, sessionCt);
+                            message.SessionId, replyTo, correlationId, sessionHandle.Generation, wipMessageId, turnActivity, sessionCt);
                     }
                     else
                     {
@@ -363,6 +370,7 @@ internal sealed class UserMessageHandler(
         string replyTo,
         string? correlationId,
         long sessionGeneration,
+        string? wipMessageId,
         System.Diagnostics.Activity? turnActivity,
         CancellationToken ct)
     {
@@ -462,6 +470,8 @@ internal sealed class UserMessageHandler(
         finally
         {
             sessionTracker.EndSession(sessionId, sessionGeneration);
+            if (wipMessageId is not null)
+                await wipTracker.CompleteAsync(wipMessageId, CancellationToken.None);
             turnActivity?.Dispose();
         }
     }
@@ -475,6 +485,7 @@ internal sealed class UserMessageHandler(
         string replyTo,
         string? correlationId,
         long sessionGeneration,
+        string? wipMessageId,
         System.Diagnostics.Activity? turnActivity,
         CancellationToken ct)
     {
@@ -558,6 +569,8 @@ internal sealed class UserMessageHandler(
         finally
         {
             sessionTracker.EndSession(sessionId, sessionGeneration);
+            if (wipMessageId is not null)
+                await wipTracker.CompleteAsync(wipMessageId, CancellationToken.None);
             turnActivity?.Dispose();
         }
     }
