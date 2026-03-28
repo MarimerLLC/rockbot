@@ -10,7 +10,7 @@ token bloat.
 
 | Tier | Class | Scope | Lifetime | Injection |
 |---|---|---|---|---|
-| **Long-term** | `FileMemoryStore` | Cross-session | Permanent | BM25 delta per turn |
+| **Long-term** | `FileMemoryStore` | Cross-session | Permanent | BM25 (+ vector) delta per turn |
 | **Working** | `HybridCacheWorkingMemory` | Global, path-namespaced | TTL (default 5 min) | Own-namespace inventory per turn |
 | **Conversation** | `InMemoryConversationMemory` | Session | Process lifetime | Last N turns (default 20) |
 
@@ -42,7 +42,9 @@ public sealed record MemoryEntry(
 
 The store maintains a lazy-loaded in-memory index protected by a `SemaphoreSlim`.
 
-### BM25 recall and delta injection
+### Search and recall
+
+#### BM25 keyword search
 
 Every user message triggers a BM25 search against all memory entries. Only entries not yet
 injected this session are added to context (delta injection via `InjectedMemoryTracker`):
@@ -58,6 +60,46 @@ replaced by spaces).
 
 **Fallback on first turn:** If BM25 returns no results on the opening turn, up to 5 entries are
 injected without a query — ensuring the agent always has some memory context at session start.
+
+#### Hybrid vector search (optional)
+
+When a text embedding model is configured (`EmbeddingOptions`), all three stores — long-term
+memory, skills, and working memory — use **hybrid ranking** that combines BM25 keyword scores
+with cosine similarity from vector embeddings. This improves recall for semantically similar
+content that may not share the same keywords.
+
+**How it works:**
+
+1. `EmbeddingCache` generates embeddings on demand via any OpenAI-compatible endpoint and
+   caches them as binary float arrays in `{basePath}/.embeddings/{id}.bin`.
+2. `HybridRanker` normalizes both BM25 and cosine similarity scores to [0, 1] and averages
+   them for a consolidated ranking.
+3. Vector results below `MinSimilarityThreshold` (default 0.5) are excluded to prevent loosely
+   related content from diluting keyword matches.
+
+**Configuration:**
+
+```csharp
+public sealed class EmbeddingOptions
+{
+    public string? Endpoint { get; set; }               // e.g. "http://ollama:11434"
+    public string? Model { get; set; }                  // e.g. "nomic-embed-text"
+    public string? ApiKey { get; set; }                 // optional for Ollama
+    public int MaxInputChars { get; set; } = 30_000;    // truncation limit (~7500 tokens)
+    public float MinSimilarityThreshold { get; set; } = 0.5f;
+}
+```
+
+Set via environment variables or `appsettings.json`:
+
+```
+Embedding__Endpoint=http://ollama:11434
+Embedding__Model=nomic-embed-text
+Embedding__ApiKey=              # optional for Ollama
+```
+
+When not configured, all stores fall back to BM25-only search with no loss of functionality.
+Embeddings are generated asynchronously in the background and never block the agent's response.
 
 ### Categories
 

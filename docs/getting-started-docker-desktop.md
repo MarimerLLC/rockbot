@@ -103,6 +103,12 @@ services:
       LLM__Balanced__ModelId: ${LLM_MODEL_ID:-anthropic/claude-haiku-4.5}
       # ── Web search ──
       WebTools__ApiKey: ${BRAVE_API_KEY:?Set BRAVE_API_KEY in your .env file}
+      # ── Embedding (optional — enables hybrid vector search) ──
+      # When set, memory/skills/working memory use cosine similarity alongside BM25.
+      # Falls back to BM25-only when not configured — no functionality is lost.
+      # Embedding__Endpoint: ${EMBEDDING_ENDPOINT:-}
+      # Embedding__Model: ${EMBEDDING_MODEL:-}
+      # Embedding__ApiKey: ${EMBEDDING_API_KEY:-}
       # ── Agent data paths ──
       AgentProfile__BasePath: /data/agent
       Memory__BasePath: /data/agent/memory
@@ -150,6 +156,14 @@ BRAVE_API_KEY=BSA-your-brave-key-here
 
 # OPTIONAL — your IANA timezone (defaults to America/Chicago)
 # AGENT_TIMEZONE=America/New_York
+
+# OPTIONAL — text embedding model for hybrid vector search (BM25 + cosine similarity).
+# When configured, memory, skills, and working memory recall improves via vector search.
+# Falls back to BM25-only keyword search when not set — no functionality is lost.
+# Any OpenAI-compatible embedding endpoint works (OpenAI, Ollama, Azure, etc.)
+# EMBEDDING_ENDPOINT=http://host.docker.internal:11434   # Ollama running on the host
+# EMBEDDING_MODEL=nomic-embed-text
+# EMBEDDING_API_KEY=                                      # not needed for Ollama
 ```
 
 > **Do not commit the `.env` file to version control.** It contains your API keys.
@@ -235,6 +249,25 @@ LLM_ENDPOINT=http://host.docker.internal:11434/v1
 LLM_API_KEY=ollama
 LLM_MODEL_ID=llama3.1
 ```
+
+## Enabling hybrid vector search (optional)
+
+By default the agent uses BM25 keyword search for memory, skills, and working memory recall. You can optionally add a text embedding model to enable **hybrid search** (BM25 + cosine similarity), which improves recall for semantically similar but lexically different content.
+
+Any OpenAI-compatible embedding endpoint works. The easiest local option is [Ollama](https://ollama.com/):
+
+1. Install and start Ollama on your host machine
+2. Pull an embedding model: `ollama pull nomic-embed-text`
+3. Uncomment the embedding lines in your `docker-compose.yml` agent environment and in your `.env`:
+
+```env
+EMBEDDING_ENDPOINT=http://host.docker.internal:11434
+EMBEDDING_MODEL=nomic-embed-text
+```
+
+4. Restart the agent: `docker compose restart agent`
+
+The agent logs will confirm: `Embedding model configured: nomic-embed-text @ http://host.docker.internal:11434`. If the embedding config is missing or the endpoint is unreachable, the agent falls back to BM25-only search with no loss of functionality.
 
 ## Connecting MCP servers and A2A agents
 

@@ -247,6 +247,16 @@ secrets:
     apiKey: ""
     modelId: ""
 
+  # ── Embedding (optional) — hybrid BM25 + vector search ──────────────────────
+  # When configured, memory, skills, and working memory use cosine similarity
+  # alongside BM25 keyword search for improved recall. Falls back to BM25-only
+  # when not configured — no functionality is lost.
+  # Any OpenAI-compatible embedding endpoint works (OpenAI, Ollama, Azure, etc.)
+  embedding:
+    endpoint: ""            # e.g. "http://ollama:11434" or "https://api.openai.com/v1"
+    apiKey: ""              # optional for Ollama; required for cloud providers
+    model: ""               # e.g. "nomic-embed-text", "text-embedding-3-small"
+
   webTools:
     apiKey: ""              # REQUIRED — Brave Search API key
 

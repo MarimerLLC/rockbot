@@ -33,6 +33,14 @@ secrets:
     #   apiKey: "<your-openrouter-api-key>"
     #   modelId: "anthropic/claude-opus-4-6"
 
+  # Embedding — OPTIONAL. Enables hybrid BM25 + vector search for memory, skills,
+  # and working memory. Falls back to BM25-only when not configured.
+  # Any OpenAI-compatible embedding endpoint works (OpenAI, Ollama, Azure, etc.)
+  # embedding:
+  #   endpoint: "http://ollama.default.svc.cluster.local:11434"  # or "https://api.openai.com/v1"
+  #   model: "nomic-embed-text"                                   # or "text-embedding-3-small"
+  #   apiKey: ""                                                   # optional for Ollama
+
   webTools:
     apiKey: "<your-brave-search-api-key>"
   rabbitmq:
