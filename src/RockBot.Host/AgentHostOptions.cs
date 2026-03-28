@@ -34,4 +34,13 @@ public sealed class AgentHostOptions
     /// Defaults to 1.
     /// </summary>
     public int MaxFollowUpPasses { get; set; } = 1;
+
+    /// <summary>
+    /// Maximum time to wait for a single LLM API call before aborting and treating
+    /// it as a failure. Applies to all tiers. The evaluators (completion, follow-up)
+    /// will fail-open on timeout; tool loops will propagate the error.
+    /// Set to <see cref="TimeSpan.Zero"/> to disable (rely on HTTP-level NetworkTimeout only).
+    /// Defaults to 90 seconds.
+    /// </summary>
+    public TimeSpan LlmCallTimeout { get; set; } = TimeSpan.FromSeconds(90);
 }
