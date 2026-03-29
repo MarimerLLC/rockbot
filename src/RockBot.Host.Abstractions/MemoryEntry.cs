@@ -10,6 +10,7 @@ namespace RockBot.Host;
 /// <param name="CreatedAt">When the entry was created.</param>
 /// <param name="UpdatedAt">When the entry was last updated, if ever.</param>
 /// <param name="Metadata">Arbitrary key-value metadata.</param>
+/// <param name="ImportanceScore">Salience score from 0.0 (trivial) to 1.0 (critical). Defaults to 0.5.</param>
 public sealed record MemoryEntry(
     string Id,
     string Content,
@@ -17,4 +18,5 @@ public sealed record MemoryEntry(
     IReadOnlyList<string> Tags,
     DateTimeOffset CreatedAt,
     DateTimeOffset? UpdatedAt = null,
-    IReadOnlyDictionary<string, string>? Metadata = null);
+    IReadOnlyDictionary<string, string>? Metadata = null,
+    float ImportanceScore = 0.5f);

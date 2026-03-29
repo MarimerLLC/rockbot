@@ -121,12 +121,15 @@ internal sealed partial class FileMemoryStore : ILongTermMemory
                     foreach (var c in candidates)
                         embeddingMap[c.Id] = await _embeddingCache.GetOrCreateAsync(c.Id, GetDocumentText(c), cancellationToken);
 
-                    var results = HybridRanker.Rank(
+                    var results = HybridRanker.RankWithScores(
                             candidates, GetDocumentText,
                             static e => e.Id,
                             e => embeddingMap.GetValueOrDefault(e.Id),
                             queryEmbedding, criteria.Query,
                             _minSimilarity)
+                        .Select(r => (r.Item, Score: r.Score * ImportanceBoost(r.Item.ImportanceScore)))
+                        .OrderByDescending(r => r.Score)
+                        .Select(r => r.Item)
                         .Take(criteria.MaxResults)
                         .ToList();
 
@@ -138,8 +141,11 @@ internal sealed partial class FileMemoryStore : ILongTermMemory
                 }
             }
 
-            // Fallback: BM25-only ranking.
-            return Bm25Ranker.Rank(candidates, GetDocumentText, criteria.Query)
+            // Fallback: BM25-only ranking with importance boost.
+            return Bm25Ranker.RankWithScores(candidates, GetDocumentText, criteria.Query)
+                .Select(r => (r.Item, Score: r.Score * ImportanceBoost(r.Item.ImportanceScore)))
+                .OrderByDescending(r => r.Score)
+                .Select(r => r.Item)
                 .Take(criteria.MaxResults)
                 .ToList();
         }
@@ -224,6 +230,16 @@ internal sealed partial class FileMemoryStore : ILongTermMemory
             _semaphore.Release();
         }
     }
+
+    // ── Importance boost ───────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Converts an importance score (0.0–1.0) into a ranking multiplier (0.5–1.0).
+    /// This prevents low-importance entries from being completely hidden while still
+    /// meaningfully prioritizing high-importance ones.
+    /// </summary>
+    internal static double ImportanceBoost(float importanceScore) =>
+        0.5 + 0.5 * Math.Clamp(importanceScore, 0f, 1f);
 
     // ── BM25 document text ────────────────────────────────────────────────────
 

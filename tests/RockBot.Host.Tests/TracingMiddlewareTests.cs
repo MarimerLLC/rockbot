@@ -110,7 +110,7 @@ public class TracingMiddlewareTests
         ActivitySource.AddActivityListener(listener);
 
         var context = CreateContext();
-        await Assert.ThrowsExceptionAsync<InvalidOperationException>(() =>
+        await Assert.ThrowsExactlyAsync<InvalidOperationException>(() =>
             _middleware.InvokeAsync(context, _ => throw new InvalidOperationException("boom")));
 
         Assert.IsNotNull(captured);

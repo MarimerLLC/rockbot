@@ -14,6 +14,7 @@ namespace RockBot.A2A;
 /// Handles <see cref="AgentTaskResult"/> messages from external agents.
 /// Folds the result into the primary agent's LLM conversation.
 /// </summary>
+#pragma warning disable CS9113 // Primary constructor parameters reserved for future handler expansion
 internal sealed class A2ATaskResultHandler(
     AgentLoopRunner agentLoopRunner,
     AgentContextBuilder agentContextBuilder,

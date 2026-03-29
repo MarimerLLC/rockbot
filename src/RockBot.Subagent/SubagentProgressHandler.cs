@@ -13,6 +13,7 @@ namespace RockBot.Subagent;
 /// Handles subagent progress messages on the primary agent side. Builds full primary agent
 /// context and runs the LLM to incorporate the progress update into the conversation.
 /// </summary>
+#pragma warning disable CS9113 // Primary constructor parameters reserved for future handler expansion
 internal sealed class SubagentProgressHandler(
     AgentLoopRunner agentLoopRunner,
     AgentContextBuilder agentContextBuilder,

@@ -153,8 +153,10 @@ public class EpisodeExtractionTests
             Category: "episodic/decision",
             Tags: ["episodic", "architecture"],
             CreatedAt: DateTimeOffset.UtcNow,
-            Metadata: metadata);
+            Metadata: metadata,
+            ImportanceScore: 0.75f);
 
+        Assert.AreEqual(0.75f, entry.ImportanceScore);
         Assert.AreEqual("0.75", entry.Metadata!["importance"]);
         Assert.AreEqual("user", entry.Metadata["actor"]);
         Assert.AreEqual("decision", entry.Metadata["event_type"]);

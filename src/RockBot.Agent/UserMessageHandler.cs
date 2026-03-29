@@ -18,6 +18,7 @@ namespace RockBot.Agent;
 /// Handles incoming <see cref="UserMessage"/> by calling the LLM and publishing
 /// an <see cref="AgentReply"/> back to the user.
 /// </summary>
+#pragma warning disable CS9113 // Primary constructor parameters reserved for future handler expansion
 internal sealed class UserMessageHandler(
     ILlmClient llmClient,
     ILlmTierSelector tierSelector,

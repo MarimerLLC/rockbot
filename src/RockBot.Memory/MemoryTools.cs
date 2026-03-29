@@ -35,11 +35,20 @@ public sealed class MemoryTools
         - Caller-supplied category and tags are hints — use them as a starting point
           but improve or override them as needed.
 
+        For each entry, assign an importance score (0.0 to 1.0) reflecting how critical
+        the information is for the agent's long-term effectiveness:
+          0.2–0.3: Minor detail, mentioned in passing
+          0.4–0.5: Routine fact, useful but not critical
+          0.6–0.7: Significant decision, preference, or recurring topic
+          0.8–0.9: Core project decision or deeply important context
+          0.95:    Maximum — foundational to the user's identity or primary work
+
         Return ONLY a valid JSON array of objects. No markdown, no explanation, no
         code fences — just the raw JSON array. Each object must have exactly these fields:
-          "content"  : string
-          "category" : string or null
-          "tags"     : array of strings
+          "content"    : string
+          "category"   : string or null
+          "tags"       : array of strings
+          "importance" : number (0.0 to 1.0)
 
         If the content contains nothing worth saving as a durable memory, return: []
         """;
@@ -73,7 +82,8 @@ public sealed class MemoryTools
             AIFunctionFactory.Create(SaveMemory),
             AIFunctionFactory.Create(SearchMemory),
             AIFunctionFactory.Create(DeleteMemory),
-            AIFunctionFactory.Create(ListCategories)
+            AIFunctionFactory.Create(ListCategories),
+            AIFunctionFactory.Create(UpdateMemoryImportance)
         ];
     }
 
@@ -135,7 +145,7 @@ public sealed class MemoryTools
         {
             var daysOld = (int)(DateTimeOffset.UtcNow - entry.CreatedAt).TotalDays;
             var age = daysOld == 0 ? "today" : daysOld == 1 ? "1 day ago" : $"{daysOld} days ago";
-            sb.AppendLine($"- [{entry.Id}] ({entry.Category ?? "uncategorized"}, remembered {age}): {entry.Content}");
+            sb.AppendLine($"- [{entry.Id}] ({entry.Category ?? "uncategorized"}, importance={entry.ImportanceScore:F2}, remembered {age}): {entry.Content}");
             if (entry.Tags.Count > 0)
                 sb.AppendLine($"  Tags: {string.Join(", ", entry.Tags)}");
         }
@@ -164,6 +174,37 @@ public sealed class MemoryTools
             id, existing.Category ?? "(none)", existing.Content);
 
         return $"Deleted memory entry '{id}': \"{existing.Content}\"";
+    }
+
+    [Description("Adjust the importance score of an existing memory entry. Use this when user feedback " +
+                 "or new context reveals a memory is more or less important than originally scored. " +
+                 "Find the ID first by calling SearchMemory — IDs appear in brackets, e.g. [abc123].")]
+    public async Task<string> UpdateMemoryImportance(
+        [Description("The ID of the memory entry to update (from SearchMemory results)")] string id,
+        [Description("New importance score from 0.0 (trivial) to 1.0 (critical)")] float importance)
+    {
+        _logger.LogInformation("Tool call: UpdateMemoryImportance(id={Id}, importance={Importance})", id, importance);
+
+        var existing = await _memory.GetAsync(id);
+        if (existing is null)
+        {
+            _logger.LogWarning("UpdateMemoryImportance: entry {Id} not found", id);
+            return $"No memory entry found with id '{id}'. Use SearchMemory to find the correct ID.";
+        }
+
+        var clamped = Math.Clamp(importance, 0f, 1f);
+        var updated = existing with
+        {
+            ImportanceScore = clamped,
+            UpdatedAt = DateTimeOffset.UtcNow
+        };
+
+        await _memory.SaveAsync(updated);
+
+        _logger.LogInformation("Updated importance for {Id} from {Old:F2} to {New:F2}: {Content}",
+            id, existing.ImportanceScore, clamped, existing.Content);
+
+        return $"Updated importance for '{id}' from {existing.ImportanceScore:F2} to {clamped:F2}: \"{existing.Content}\"";
     }
 
     [Description("List all memory categories to see how knowledge is organized. " +
@@ -254,7 +295,8 @@ public sealed class MemoryTools
                         Content: d.Content.Trim(),
                         Category: string.IsNullOrWhiteSpace(d.Category) ? null : d.Category.Trim(),
                         Tags: d.Tags ?? [],
-                        CreatedAt: DateTimeOffset.UtcNow))
+                        CreatedAt: DateTimeOffset.UtcNow,
+                        ImportanceScore: Math.Clamp(d.Importance ?? 0.5f, 0f, 1f)))
                     .ToList();
             }
 
@@ -316,5 +358,6 @@ public sealed class MemoryTools
     private sealed record MemoryEntryDto(
         string Content,
         string? Category,
-        IReadOnlyList<string>? Tags);
+        IReadOnlyList<string>? Tags,
+        float? Importance = null);
 }
