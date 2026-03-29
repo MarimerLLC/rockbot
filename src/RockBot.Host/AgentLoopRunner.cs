@@ -255,12 +255,21 @@ public sealed partial class AgentLoopRunner(
                     return result.Response;
                 }
 
-                var followUpResult = await RunFollowUpPassAsync(
-                    chatMessages, chatOptions, sessionId, result.Response,
-                    originalUserRequest, tier,
-                    onPreToolCall, onProgress, onToolTimeout, cancellationToken);
+                try
+                {
+                    var followUpResult = await RunFollowUpPassAsync(
+                        chatMessages, chatOptions, sessionId, result.Response,
+                        originalUserRequest, tier,
+                        onPreToolCall, onProgress, onToolTimeout, cancellationToken);
 
-                return followUpResult ?? result.Response;
+                    return followUpResult ?? result.Response;
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    logger.LogWarning(ex,
+                        "Follow-up pass failed; returning completed response instead of propagating error");
+                    return result.Response;
+                }
             }
 
             // Not complete — inject continuation and re-enter the loop.
