@@ -233,6 +233,54 @@ public class FallbackChatClientTests
     }
 
     [TestMethod]
+    public async Task ContentFilter_FallsBackWithoutDegrading()
+    {
+        var first  = new FixedStub(ex: new Exception("HTTP 400 (: content_filter)"));
+        var second = new FixedStub(response: OkResponse("from-second"));
+
+        var client = Build([("azure-model", first), ("openrouter-model", second)], maxRetries: 0);
+
+        var response = await client.GetResponseAsync([]);
+
+        Assert.AreEqual("from-second", response.Messages[^1].Text);
+        Assert.AreEqual(1, first.CallCount);
+        Assert.AreEqual(1, second.CallCount);
+    }
+
+    [TestMethod]
+    public async Task ContentFilter_DoesNotDegradeModel_SubsequentCallsRetryPrimary()
+    {
+        var first = new SequentialStub();
+        first.Enqueue(new Exception("HTTP 400 (: content_filter)")); // call 1: filtered
+        first.Enqueue(OkResponse("azure-ok"));                       // call 2: normal request works
+
+        var second = new FixedStub(response: OkResponse("fallback"));
+
+        var client = Build([("azure-model", first), ("openrouter-model", second)], maxRetries: 0);
+
+        // Call 1: content filter → falls back to second
+        var r1 = await client.GetResponseAsync([]);
+        Assert.AreEqual("fallback", r1.Messages[^1].Text);
+
+        // Call 2: first model should be tried again (not degraded)
+        var r2 = await client.GetResponseAsync([]);
+        Assert.AreEqual("azure-ok", r2.Messages[^1].Text);
+        Assert.AreEqual(2, first.CallCount);
+    }
+
+    [TestMethod]
+    public async Task ContentFilter_AllModelsFiltered_Throws()
+    {
+        var first  = new FixedStub(ex: new Exception("HTTP 400 (: content_filter)"));
+        var second = new FixedStub(ex: new Exception("HTTP 400 (: content_filter)"));
+
+        var client = Build([("m1", first), ("m2", second)], maxRetries: 0);
+
+        await Assert.ThrowsExactlyAsync<InvalidOperationException>(
+            () => client.GetResponseAsync([]));
+    }
+
+    [TestMethod]
     public void GetService_DelegatesToActiveClient()
     {
         var metadata = new ChatClientMetadata("test-provider", null, "model-x");
