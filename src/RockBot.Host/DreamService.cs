@@ -42,6 +42,7 @@ internal sealed class DreamService : IHostedService, IDisposable
     private string? _prefDreamDirective;
     private string? _skillGapDirective;
     private string? _memoryMiningDirective;
+    private string? _episodeDirective;
     private string? _tierRoutingDirective;
     private string? _dlqDirective;
 
@@ -150,6 +151,16 @@ internal sealed class DreamService : IHostedService, IDisposable
                 _logger.LogDebug("DreamService: memory mining directive not found at {Path}; using built-in", memoryMiningDirectivePath);
             else
                 _logger.LogInformation("DreamService: loaded memory mining directive from {Path}", memoryMiningDirectivePath);
+
+            var episodeDirectivePath = ResolvePath(_options.EpisodeDirectivePath, _profileOptions.BasePath);
+            _episodeDirective = File.Exists(episodeDirectivePath)
+                ? File.ReadAllText(episodeDirectivePath)
+                : null; // null → BuiltInEpisodeDirective used in RunEpisodeExtractionPassAsync
+
+            if (!File.Exists(episodeDirectivePath))
+                _logger.LogDebug("DreamService: episode directive not found at {Path}; using built-in", episodeDirectivePath);
+            else
+                _logger.LogInformation("DreamService: loaded episode directive from {Path}", episodeDirectivePath);
         }
 
         if (_skillStore is not null && _conversationLog is not null)
@@ -396,6 +407,8 @@ internal sealed class DreamService : IHostedService, IDisposable
 
             if (_skillStore is not null)
                 await ConsolidateSkillsAsync();
+
+            await RunEpisodeExtractionPassAsync();
 
             await RunMemoryMiningPassAsync();
 
@@ -1073,6 +1086,173 @@ internal sealed class DreamService : IHostedService, IDisposable
         }
 
         _logger.LogInformation("DreamService: skill gap detection complete — {Saved} new skill(s) created", saved);
+    }
+
+    /// <summary>
+    /// Extracts episodic memories from the conversation log — discrete experiences, events,
+    /// and interactions worth remembering as "what happened" rather than just distilled facts.
+    /// Also reinforces existing episodes: if a concept reappears across sessions, its
+    /// importance score increases and its summary is enriched with new context.
+    /// Runs before memory mining so episodes exist before facts are distilled.
+    /// Does NOT clear the log — that is deferred to <see cref="RunPreferenceInferencePassAsync"/>.
+    /// </summary>
+    private async Task RunEpisodeExtractionPassAsync()
+    {
+        if (_conversationLog is null || !_options.EpisodeExtractionEnabled)
+            return;
+
+        var entries = await _conversationLog.ReadAllAsync();
+        if (entries.Count == 0)
+        {
+            _logger.LogDebug("DreamService: episode extraction — no log entries; skipping");
+            return;
+        }
+
+        _logger.LogInformation("DreamService: episode extraction pass — {Count} log entries to analyze", entries.Count);
+
+        try
+        {
+            // Fetch existing episodic memories so the LLM can reinforce them
+            var existingEpisodes = await _memory.SearchAsync(
+                new MemorySearchCriteria(Category: "episodic", MaxResults: 100));
+
+            var userMessage = new StringBuilder();
+            userMessage.AppendLine("Review the following conversation log and extract episodic memories.");
+            userMessage.AppendLine();
+
+            if (existingEpisodes.Count > 0)
+            {
+                userMessage.AppendLine("## Existing episodic memories (reinforce if referenced in new conversations)");
+                foreach (var ep in existingEpisodes)
+                {
+                    var importance = ep.Metadata?.GetValueOrDefault("importance") ?? "0.5";
+                    var sessions = ep.Metadata?.GetValueOrDefault("source_sessions") ?? "";
+                    userMessage.AppendLine($"- [{ep.Id}] (importance={importance}, sessions={sessions}, category={ep.Category}): {ep.Content}");
+                }
+                userMessage.AppendLine();
+            }
+
+            userMessage.AppendLine("## Conversation log");
+            var bySession = entries
+                .GroupBy(e => e.SessionId)
+                .ToDictionary(g => g.Key, g => g.ToList());
+
+            foreach (var (sessionId, sessionEntries) in bySession)
+            {
+                userMessage.AppendLine($"### Session: {sessionId}");
+                foreach (var e in sessionEntries)
+                    userMessage.AppendLine($"[{e.Role}] {e.Content}");
+                userMessage.AppendLine();
+            }
+
+            var messages = new List<ChatMessage>
+            {
+                new(ChatRole.System, _episodeDirective ?? BuiltInEpisodeDirective),
+                new(ChatRole.User, userMessage.ToString())
+            };
+
+            var response = await _llmClient.GetResponseAsync(messages, ModelTier.Balanced,
+                new ChatOptions { ResponseFormat = ChatResponseFormat.Json });
+            var raw = response.Text?.Trim() ?? string.Empty;
+            var json = ExtractJsonObject(raw);
+
+            if (string.IsNullOrEmpty(json))
+            {
+                _logger.LogWarning("DreamService: episode extraction LLM returned no parseable JSON; skipping");
+                return;
+            }
+
+            _logger.LogDebug("DreamService: episode extraction JSON ({Length} chars): {Json}", json.Length, json);
+
+            var result = TryDeserializeJson<EpisodeExtractionResultDto>(json, "episode extraction");
+            var created = 0;
+            var reinforced = 0;
+
+            // Process reinforcements of existing episodes
+            foreach (var dto in result?.ToUpdate ?? [])
+            {
+                if (string.IsNullOrWhiteSpace(dto.Id) || string.IsNullOrWhiteSpace(dto.Content))
+                    continue;
+
+                var existing = await _memory.GetAsync(dto.Id);
+                if (existing is null)
+                {
+                    _logger.LogDebug("DreamService: episode reinforcement target {Id} not found; skipping", dto.Id);
+                    continue;
+                }
+
+                var metadata = new Dictionary<string, string>(existing.Metadata ?? new Dictionary<string, string>());
+                if (dto.Importance is not null)
+                    metadata["importance"] = dto.Importance.Value.ToString("F2");
+                if (dto.SourceSessions is not null)
+                {
+                    var existingSessions = metadata.GetValueOrDefault("source_sessions", "");
+                    var allSessions = string.Join(",",
+                        (existingSessions.Split(',', StringSplitOptions.RemoveEmptyEntries))
+                        .Concat(dto.SourceSessions)
+                        .Distinct());
+                    metadata["source_sessions"] = allSessions;
+                }
+
+                var updated = existing with
+                {
+                    Content = dto.Content.Trim(),
+                    UpdatedAt = DateTimeOffset.UtcNow,
+                    Metadata = metadata
+                };
+
+                await _memory.SaveAsync(updated);
+                reinforced++;
+                _logger.LogDebug("DreamService: reinforced episode {Id} (importance={Importance}): {Content}",
+                    dto.Id, metadata.GetValueOrDefault("importance", "?"), dto.Content);
+            }
+
+            // Process new episodes
+            foreach (var dto in result?.ToSave ?? [])
+            {
+                if (string.IsNullOrWhiteSpace(dto.Content))
+                    continue;
+
+                var tags = new List<string>(dto.Tags ?? []);
+                if (!tags.Contains("episodic", StringComparer.OrdinalIgnoreCase))
+                    tags.Insert(0, "episodic");
+
+                var metadata = new Dictionary<string, string>
+                {
+                    ["importance"] = (dto.Importance ?? 0.5f).ToString("F2"),
+                    ["actor"] = dto.Actor?.Trim() ?? "system",
+                    ["event_type"] = dto.EventType?.Trim() ?? "conversation"
+                };
+                if (dto.SourceSessions is { Count: > 0 })
+                    metadata["source_sessions"] = string.Join(",", dto.SourceSessions);
+
+                var category = string.IsNullOrWhiteSpace(dto.Category)
+                    ? $"episodic/{metadata["event_type"]}"
+                    : dto.Category.Trim();
+
+                var entry = new MemoryEntry(
+                    Id: Guid.NewGuid().ToString("N")[..12],
+                    Content: dto.Content.Trim(),
+                    Category: category,
+                    Tags: tags,
+                    CreatedAt: DateTimeOffset.UtcNow,
+                    UpdatedAt: DateTimeOffset.UtcNow,
+                    Metadata: metadata);
+
+                await _memory.SaveAsync(entry);
+                created++;
+                _logger.LogDebug("DreamService: created episode {Id} ({Category}, importance={Importance}): {Content}",
+                    entry.Id, entry.Category, metadata["importance"], entry.Content);
+            }
+
+            _logger.LogInformation(
+                "DreamService: episode extraction pass complete — {Created} created, {Reinforced} reinforced",
+                created, reinforced);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "DreamService: episode extraction pass failed");
+        }
     }
 
     /// <summary>
@@ -1860,6 +2040,25 @@ internal sealed class DreamService : IHostedService, IDisposable
         string? Category,
         IReadOnlyList<string>? Tags);
 
+    private sealed record EpisodeExtractionResultDto(
+        List<EpisodeEntryDto>? ToSave,
+        List<EpisodeUpdateDto>? ToUpdate);
+
+    private sealed record EpisodeEntryDto(
+        string Content,
+        string? Category,
+        string? Actor,
+        string? EventType,
+        float? Importance,
+        IReadOnlyList<string>? Tags,
+        IReadOnlyList<string>? SourceSessions);
+
+    private sealed record EpisodeUpdateDto(
+        string Id,
+        string Content,
+        float? Importance,
+        IReadOnlyList<string>? SourceSessions);
+
     private const string BuiltInMemoryMiningDirective = """
         You are a memory mining assistant. Review the conversation log and extract facts worth
         preserving in the agent's long-term memory.
@@ -1895,6 +2094,91 @@ internal sealed class DreamService : IHostedService, IDisposable
         "tools/kubernetes", "personal/family", "personal/travel", "work/colleagues"). Default to "general" when unsure.
 
         If no durable facts are evident, return: { "toSave": [] }
+        """;
+
+    private const string BuiltInEpisodeDirective = """
+        You are an episodic memory extraction assistant. Your job is to identify discrete
+        experiences, events, and interactions from conversation logs — the "what happened"
+        narrative, not just extracted facts.
+
+        Episodic memories capture EXPERIENCES: discussions, explorations, decisions, tasks
+        attempted, problems encountered, collaborative moments. They preserve temporal and
+        contextual richness that static facts lose.
+
+        ## Extracting NEW episodes
+
+        Look for:
+        - Meaningful conversations or discussions (topic, participants, key points, outcome)
+        - Tasks the user requested and their outcome (success, failure, partial)
+        - Decisions made during the conversation (what was decided and why)
+        - Problems encountered and how they were resolved
+        - Explorations of new topics, tools, or ideas
+        - Emotional or contextual moments (user frustration, excitement, discovery)
+
+        Do NOT create episodes for:
+        - Trivial exchanges ("hi", "thanks", routine greetings)
+        - Pure factual lookups with no discussion (those are mined as facts separately)
+        - Repeated instances of the same type of interaction already captured
+
+        Each episode should be a rich, narrative summary in third-person:
+        e.g. "The user and agent investigated Azure content filter rejections that were
+              blocking innocent prompts. Discovered that a previous LLM response had generated
+              injection-like text from a casual 'solarpunk' remark, poisoning the conversation
+              history. Implemented a three-layer fix: history stripping with retry, a directive
+              to prevent persona adoption, and provider fallback."
+
+        ## Reinforcing EXISTING episodes
+
+        You will be shown existing episodic memories with their IDs and importance scores.
+        When new conversations reference, extend, or revisit an existing episode's topic:
+        - Include it in toUpdate with its ID
+        - Increase the importance score (max 0.95) — repeated engagement means it matters more
+        - Enrich the content with new context from the latest conversation
+        - Add the new session ID(s) to sourceSessions
+
+        Importance scoring guide:
+        - 0.2–0.3: Minor interaction, mentioned once in passing
+        - 0.4–0.5: Meaningful discussion, single session
+        - 0.6–0.7: Topic spanning multiple sessions, active interest
+        - 0.8–0.9: Core ongoing project or deeply important topic
+        - 0.95: Maximum — foundational to the user's identity or primary work
+
+        ## Event types
+        - "conversation" — discussion or exploration of a topic
+        - "task" — a specific task requested and its outcome
+        - "decision" — a choice or conclusion reached
+        - "discovery" — learning something new or encountering something unexpected
+        - "problem" — an issue encountered (and optionally how it was resolved)
+
+        ## Response format
+
+        Return ONLY a JSON object:
+        {
+          "toSave": [
+            {
+              "content": "Rich narrative summary of the episode",
+              "category": "episodic/conversation",
+              "actor": "user",
+              "eventType": "conversation",
+              "importance": 0.5,
+              "tags": ["episodic", "topic-tag"],
+              "sourceSessions": ["session-id"]
+            }
+          ],
+          "toUpdate": [
+            {
+              "id": "existing-memory-id",
+              "content": "Enriched summary incorporating new context",
+              "importance": 0.7,
+              "sourceSessions": ["new-session-id"]
+            }
+          ]
+        }
+
+        Category should be "episodic/{eventType}" (e.g. "episodic/conversation", "episodic/task",
+        "episodic/decision"). Tags should include "episodic" plus topic-relevant keywords.
+
+        If nothing episodic is worth extracting: { "toSave": [], "toUpdate": [] }
         """;
 
     private const string BuiltInDlqDirective = """

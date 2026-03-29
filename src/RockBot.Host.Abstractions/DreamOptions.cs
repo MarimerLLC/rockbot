@@ -56,6 +56,15 @@ public sealed class DreamOptions
     /// </summary>
     public string SkillGapDirectivePath { get; set; } = "skill-gap.md";
 
+    /// <summary>Whether the episode extraction pass (requires <see cref="IConversationLog"/>) is enabled.</summary>
+    public bool EpisodeExtractionEnabled { get; set; } = true;
+
+    /// <summary>
+    /// Path to the episode extraction directive file, relative to <see cref="AgentProfileOptions.BasePath"/>.
+    /// When the file does not exist, a built-in fallback directive is used.
+    /// </summary>
+    public string EpisodeDirectivePath { get; set; } = "episode-dream.md";
+
     /// <summary>Whether the memory mining pass (requires <see cref="IConversationLog"/>) is enabled.</summary>
     public bool MemoryMiningEnabled { get; set; } = true;
 

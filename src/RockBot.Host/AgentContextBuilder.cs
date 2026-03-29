@@ -126,6 +126,32 @@ public sealed class AgentContextBuilder(
             }
         }
 
+        // Episodic memory recall — "what happened" context from past experiences
+        {
+            var episodes = await longTermMemory.SearchAsync(
+                new MemorySearchCriteria(Query: currentUserContent, Category: "episodic", MaxResults: 5));
+
+            var newEpisodes = episodes
+                .Where(e => injectedMemoryTracker.TryMarkAsInjected(sessionId, e.Id))
+                .ToList();
+
+            if (newEpisodes.Count > 0)
+            {
+                var lines = newEpisodes.Select(e =>
+                {
+                    var importance = e.Metadata?.GetValueOrDefault("importance") ?? "?";
+                    return $"- [{e.Id}] (importance={importance}): {e.Content}";
+                });
+                var episodicContext =
+                    "Relevant past experiences (episodic memory):\n" +
+                    string.Join("\n", lines);
+                chatMessages.Add(new ChatMessage(ChatRole.System, episodicContext));
+                logger.LogInformation(
+                    "Injected {Count} episodic memory entries for session {SessionId}",
+                    newEpisodes.Count, sessionId);
+            }
+        }
+
         // Skill index (once per session)
         if (skillIndexTracker.TryMarkAsInjected(sessionId))
         {
