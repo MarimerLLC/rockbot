@@ -24,6 +24,7 @@ public sealed partial class AgentLoopRunner(
     IOptions<AgentHostOptions> hostOptions,
     ISkillStore skillStore,
     IEnumerable<IServiceSearchIndex> serviceSearchIndexProviders,
+    IConversationMemory conversationMemory,
     ILogger<AgentLoopRunner> logger)
 {
     private readonly IServiceSearchIndex? _serviceSearchIndex = serviceSearchIndexProviders.FirstOrDefault();
@@ -202,7 +203,7 @@ public sealed partial class AgentLoopRunner(
                     chatMessages, chatOptions, sessionId, firstResponse, tier,
                     onPreToolCall, onProgress, onToolTimeout, cancellationToken)
                 : await RunNativeLoopAsync(
-                    chatMessages, chatOptions, firstResponse, tier, cancellationToken);
+                    chatMessages, chatOptions, firstResponse, tier, sessionId, cancellationToken);
 
             // Clear first response after the first iteration — it's already been consumed.
             firstResponse = null;
@@ -300,6 +301,7 @@ public sealed partial class AgentLoopRunner(
         ChatOptions chatOptions,
         ChatResponse? firstResponse,
         ModelTier tier,
+        string? sessionId,
         CancellationToken cancellationToken)
     {
         logger.LogInformation(
@@ -323,7 +325,8 @@ public sealed partial class AgentLoopRunner(
             when (ex.Status == 400 && ex.Message.Contains("content_filter", StringComparison.OrdinalIgnoreCase))
         {
             LogContentFilterDiagnostics(chatMessages, ex);
-            throw;
+            response = await RecoverFromContentFilterAsync(
+                chatMessages, tier, chatOptions, sessionId, ex, cancellationToken);
         }
 
         // Append response messages to chatMessages so re-prompts have full tool-call history.
@@ -478,7 +481,8 @@ public sealed partial class AgentLoopRunner(
                     when (ex.Status == 400 && ex.Message.Contains("content_filter", StringComparison.OrdinalIgnoreCase))
                 {
                     LogContentFilterDiagnostics(chatMessages, ex);
-                    throw;
+                    response = await RecoverFromContentFilterAsync(
+                        chatMessages, tier, chatOptions, sessionId, ex, cancellationToken);
                 }
 
                 sw.Stop();
@@ -902,6 +906,132 @@ public sealed partial class AgentLoopRunner(
         return true;
     }
 
+    // ── Content filter recovery ───────────────────────────────────────────────
+
+    /// <summary>
+    /// Attempts to recover from an Azure content filter rejection by stripping conversation
+    /// history (which may contain a poisonous message from a prior turn) and retrying with
+    /// only system messages and the current user request. On success, clears the session's
+    /// conversation memory so the offending turn doesn't re-poison future requests.
+    /// </summary>
+    private async Task<ChatResponse> RecoverFromContentFilterAsync(
+        List<ChatMessage> chatMessages,
+        ModelTier tier,
+        ChatOptions chatOptions,
+        string? sessionId,
+        ClientResultException originalException,
+        CancellationToken cancellationToken)
+    {
+        var stripped = StripConversationHistory(chatMessages);
+        if (stripped == 0)
+        {
+            // Nothing to strip — the current message itself is the problem.
+            logger.LogWarning("Content filter triggered with no conversation history to strip; cannot recover");
+            throw originalException;
+        }
+
+        logger.LogWarning(
+            "Content filter recovery: stripped {Removed} history message(s), retrying with {Remaining} messages",
+            stripped, chatMessages.Count);
+
+        try
+        {
+            var response = await llmClient.GetResponseAsync(chatMessages, tier, chatOptions, cancellationToken);
+
+            // Retry succeeded — the poison was in conversation history. Clean the session memory
+            // so the offending turn(s) don't re-poison the next request.
+            if (sessionId is not null)
+            {
+                await CleanSessionMemoryAfterContentFilterAsync(sessionId, cancellationToken);
+            }
+
+            logger.LogInformation("Content filter recovery succeeded after stripping history");
+            return response;
+        }
+        catch (ClientResultException retryEx)
+            when (retryEx.Status == 400 && retryEx.Message.Contains("content_filter", StringComparison.OrdinalIgnoreCase))
+        {
+            // Still filtered after stripping history — the current user message is the trigger.
+            logger.LogWarning("Content filter triggered again after stripping history; current message is the cause");
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// Removes conversation history (user and assistant messages that aren't the current request)
+    /// from the chat message list. Keeps system messages, tool messages, and the last user message.
+    /// Returns the number of messages removed.
+    /// </summary>
+    internal static int StripConversationHistory(List<ChatMessage> chatMessages)
+    {
+        // Find the last user message — this is the current request.
+        var lastUserIdx = -1;
+        for (var i = chatMessages.Count - 1; i >= 0; i--)
+        {
+            if (chatMessages[i].Role == ChatRole.User)
+            {
+                lastUserIdx = i;
+                break;
+            }
+        }
+
+        if (lastUserIdx < 0) return 0;
+
+        var removed = 0;
+        for (var i = chatMessages.Count - 1; i >= 0; i--)
+        {
+            if (i == lastUserIdx) continue;
+
+            var role = chatMessages[i].Role;
+            if (role == ChatRole.User || role == ChatRole.Assistant)
+            {
+                chatMessages.RemoveAt(i);
+                removed++;
+                if (i < lastUserIdx) lastUserIdx--;
+            }
+        }
+
+        return removed;
+    }
+
+    /// <summary>
+    /// Clears conversation memory for a session after a successful content filter recovery,
+    /// keeping only the most recent user turn so the poisoned history doesn't come back.
+    /// </summary>
+    private async Task CleanSessionMemoryAfterContentFilterAsync(string sessionId, CancellationToken ct)
+    {
+        try
+        {
+            var turns = await conversationMemory.GetTurnsAsync(sessionId, ct);
+            ConversationTurn? lastUserTurn = null;
+            for (var i = turns.Count - 1; i >= 0; i--)
+            {
+                if (turns[i].Role == "user")
+                {
+                    lastUserTurn = turns[i];
+                    break;
+                }
+            }
+
+            await conversationMemory.ClearAsync(sessionId, ct);
+
+            if (lastUserTurn is not null)
+            {
+                await conversationMemory.AddTurnAsync(sessionId, lastUserTurn, ct);
+            }
+
+            logger.LogWarning(
+                "Cleared conversation memory for session {SessionId} after content filter recovery " +
+                "(kept last user turn only)", sessionId);
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex,
+                "Failed to clean conversation memory for session {SessionId} after content filter recovery",
+                sessionId);
+        }
+    }
+
     // ── Logging ──────────────────────────────────────────────────────────────
 
     /// <summary>
@@ -1243,7 +1373,7 @@ public sealed partial class AgentLoopRunner(
                 chatMessages, chatOptions, sessionId, null, tier,
                 onPreToolCall, onProgress, onToolTimeout, cancellationToken)
             : await RunNativeLoopAsync(
-                chatMessages, chatOptions, null, tier, cancellationToken);
+                chatMessages, chatOptions, null, tier, sessionId, cancellationToken);
 
         // Native path: FunctionCallContent in response messages.
         // Text-based path: tool results appear as "[Tool result for ...]" user messages.
