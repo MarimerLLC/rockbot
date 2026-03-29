@@ -5,7 +5,7 @@ using Microsoft.Extensions.Logging;
 
 namespace RockBot.Llm;
 
-internal enum FallbackErrorCategory { Transient, QuotaExhausted, HardError, Unknown }
+internal enum FallbackErrorCategory { Transient, QuotaExhausted, ContentFilter, HardError, Unknown }
 
 /// <summary>
 /// IChatClient decorator that holds an ordered list of model clients and falls back to
@@ -81,6 +81,16 @@ public sealed class FallbackChatClient : IChatClient
 
                     if (category == FallbackErrorCategory.Transient && attempt < _maxRetries)
                         continue; // One more retry on the same client
+
+                    // Content filter: fall back to next model for this request only.
+                    // Don't degrade — the model is fine, Azure's filter blocked the content.
+                    if (category == FallbackErrorCategory.ContentFilter)
+                    {
+                        _logger.LogWarning(
+                            "FallbackChatClient: content filter triggered on {ModelId}; trying next model without degrading",
+                            modelId);
+                        break;
+                    }
 
                     // Transient retries exhausted, or permanent degradation
                     if (category is FallbackErrorCategory.QuotaExhausted or FallbackErrorCategory.HardError)
@@ -196,6 +206,8 @@ public sealed class FallbackChatClient : IChatClient
         }
 
         var msg = ex.Message;
+        if (ContainsAny(msg, "content_filter"))
+            return FallbackErrorCategory.ContentFilter;
         if (ContainsAny(msg, "credit", "quota", "billing", "insufficient_quota", "exceeded"))
             return FallbackErrorCategory.QuotaExhausted;
 
