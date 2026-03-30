@@ -203,9 +203,6 @@ public sealed partial class AgentLoopRunner(
 
         for (var reprompt = 0; reprompt <= maxReprompts; reprompt++)
         {
-            if (onStageProgress is not null)
-                await onStageProgress("Thinking…", cancellationToken);
-
             var result = modelBehavior.UseTextBasedToolCalling
                 ? await RunTextBasedLoopAsync(
                     chatMessages, chatOptions, sessionId, firstResponse, tier,
