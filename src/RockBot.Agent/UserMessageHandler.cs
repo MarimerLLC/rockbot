@@ -415,6 +415,11 @@ internal sealed class UserMessageHandler(
                         replyTo, correlationId, sessionId, isFinal: false, ct2);
                     lastProgressAt = DateTimeOffset.UtcNow;
                 },
+                onStageProgress: async (stage, ct2) =>
+                {
+                    await PublishReplyAsync(stage, replyTo, correlationId, sessionId, isFinal: false, ct2);
+                    lastProgressAt = DateTimeOffset.UtcNow;
+                },
                 cancellationToken: ct);
 
             logger.LogInformation(
@@ -533,6 +538,11 @@ internal sealed class UserMessageHandler(
                     await PublishReplyAsync(
                         $"The {desc} service is taking too long to respond — trying a different approach…",
                         replyTo, correlationId, sessionId, isFinal: false, ct2);
+                    lastProgressAt = DateTimeOffset.UtcNow;
+                },
+                onStageProgress: async (stage, ct2) =>
+                {
+                    await PublishReplyAsync(stage, replyTo, correlationId, sessionId, isFinal: false, ct2);
                     lastProgressAt = DateTimeOffset.UtcNow;
                 },
                 cancellationToken: ct);
