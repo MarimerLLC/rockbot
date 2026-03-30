@@ -50,6 +50,7 @@ internal sealed class DreamService : IHostedService, IDisposable
     private string? _entityExtractionDirective;
     private string? _graphConsolidationDirective;
     private string? _dlqDirective;
+    private string? _identityDirective;
 
     public DreamService(
         ILongTermMemory memory,
@@ -245,6 +246,19 @@ internal sealed class DreamService : IHostedService, IDisposable
                 _logger.LogDebug("DreamService: DLQ directive not found at {Path}; using built-in", dlqDirectivePath);
             else
                 _logger.LogInformation("DreamService: loaded DLQ directive from {Path}", dlqDirectivePath);
+        }
+
+        if (_options.IdentityReflectionEnabled)
+        {
+            var identityDirectivePath = ResolvePath(_options.IdentityDirectivePath, _profileOptions.BasePath);
+            _identityDirective = File.Exists(identityDirectivePath)
+                ? File.ReadAllText(identityDirectivePath)
+                : null; // null → BuiltInIdentityDirective used in RunIdentityReflectionPassAsync
+
+            if (!File.Exists(identityDirectivePath))
+                _logger.LogDebug("DreamService: identity directive not found at {Path}; using built-in", identityDirectivePath);
+            else
+                _logger.LogInformation("DreamService: loaded identity directive from {Path}", identityDirectivePath);
         }
 
         try
@@ -483,6 +497,8 @@ internal sealed class DreamService : IHostedService, IDisposable
             await RunTierRoutingReviewPassAsync();
 
             await RunDlqReviewPassAsync();
+
+            await RunIdentityReflectionPassAsync();
 
             sw.Stop();
             _logger.LogInformation(
@@ -2241,6 +2257,173 @@ internal sealed class DreamService : IHostedService, IDisposable
     }
 
     /// <summary>
+    /// Reflects on accumulated experience and updates the agent's narrative identity entries
+    /// under the <c>agent-identity/</c> memory category. These entries complement the immutable
+    /// soul.md — the pass cannot override core values or boundaries.
+    /// </summary>
+    private async Task RunIdentityReflectionPassAsync()
+    {
+        if (!_options.IdentityReflectionEnabled)
+            return;
+
+        _logger.LogInformation("DreamService: identity reflection pass — starting");
+
+        try
+        {
+            // Fetch current identity entries
+            var identityEntries = await _memory.SearchAsync(
+                new MemorySearchCriteria(Category: AgentIdentityCategories.Prefix, MaxResults: 50));
+
+            // Fetch recent episodic memories for experiential context
+            var recentEpisodes = await _memory.SearchAsync(
+                new MemorySearchCriteria(Category: "episodic", MaxResults: 20,
+                    CreatedAfter: DateTimeOffset.UtcNow.AddDays(-14)));
+
+            // Fetch recent feedback signals for quality context
+            IReadOnlyList<FeedbackEntry> recentFeedback = [];
+            if (_feedbackStore is not null)
+            {
+                recentFeedback = await _feedbackStore.QueryRecentAsync(
+                    since: DateTimeOffset.UtcNow.AddDays(-14),
+                    maxResults: 50);
+            }
+
+            // Fetch recent user preferences for behavioral context
+            var recentPrefs = await _memory.SearchAsync(
+                new MemorySearchCriteria(Category: "user-preferences", MaxResults: 20));
+
+            // Build user message
+            var userMessage = new StringBuilder();
+            userMessage.AppendLine("Review the agent's accumulated experience and update its narrative identity.");
+            userMessage.AppendLine();
+
+            if (identityEntries.Count > 0)
+            {
+                userMessage.AppendLine("## Current Identity Entries");
+                for (var i = 0; i < identityEntries.Count; i++)
+                {
+                    var e = identityEntries[i];
+                    userMessage.AppendLine($"{i + 1}. [ID:{e.Id}] category={e.Category ?? "uncategorized"} importance={e.ImportanceScore:F2}");
+                    userMessage.AppendLine($"   {e.Content}");
+                }
+                userMessage.AppendLine();
+            }
+            else
+            {
+                userMessage.AppendLine("## Current Identity Entries");
+                userMessage.AppendLine("(none — this is the first identity reflection)");
+                userMessage.AppendLine();
+            }
+
+            if (recentEpisodes.Count > 0)
+            {
+                userMessage.AppendLine("## Recent Experiences (last 14 days)");
+                foreach (var e in recentEpisodes)
+                    userMessage.AppendLine($"- {e.Content}");
+                userMessage.AppendLine();
+            }
+
+            if (recentFeedback.Count > 0)
+            {
+                userMessage.AppendLine("## Recent Feedback Signals (last 14 days)");
+                foreach (var fb in recentFeedback)
+                {
+                    var detail = string.IsNullOrWhiteSpace(fb.Detail) ? string.Empty : $" (\"{fb.Detail}\")";
+                    userMessage.AppendLine($"- [{fb.SignalType}] session {fb.SessionId}: {fb.Summary}{detail}");
+                }
+                userMessage.AppendLine();
+            }
+
+            if (recentPrefs.Count > 0)
+            {
+                userMessage.AppendLine("## Known User Preferences");
+                foreach (var p in recentPrefs)
+                    userMessage.AppendLine($"- {p.Content}");
+                userMessage.AppendLine();
+            }
+
+            var messages = new List<ChatMessage>
+            {
+                new(ChatRole.System, _identityDirective ?? BuiltInIdentityDirective),
+                new(ChatRole.User, userMessage.ToString())
+            };
+
+            var response = await _llmClient.GetResponseAsync(messages, ModelTier.Balanced,
+                new ChatOptions { ResponseFormat = ChatResponseFormat.Json });
+            var raw = response.Text?.Trim() ?? string.Empty;
+            var json = ExtractJsonObject(raw);
+
+            if (string.IsNullOrEmpty(json))
+            {
+                _logger.LogWarning("DreamService: identity reflection LLM returned no parseable JSON; skipping");
+                return;
+            }
+
+            _logger.LogDebug("DreamService: identity reflection JSON ({Length} chars): {Json}", json.Length, json);
+
+            var result = TryDeserializeJson<IdentityReflectionResultDto>(json, "identity reflection");
+            if (result is null) return;
+
+            if (result.NoChange == true)
+            {
+                _logger.LogInformation("DreamService: identity reflection — no meaningful shifts detected");
+                return;
+            }
+
+            // Delete entries the LLM wants to replace
+            var deleted = 0;
+            foreach (var id in result.ToDelete ?? [])
+            {
+                await _memory.DeleteAsync(id);
+                deleted++;
+                _logger.LogDebug("DreamService: identity reflection deleted entry {Id}", id);
+            }
+
+            // Save new/updated identity entries
+            var saved = 0;
+            foreach (var dto in result.ToSave ?? [])
+            {
+                if (string.IsNullOrWhiteSpace(dto.Content))
+                    continue;
+
+                // Ensure category is under agent-identity/
+                var category = string.IsNullOrWhiteSpace(dto.Category)
+                    ? AgentIdentityCategories.SelfModel
+                    : dto.Category.Trim();
+
+                if (!category.StartsWith(AgentIdentityCategories.Prefix, StringComparison.OrdinalIgnoreCase))
+                    category = $"{AgentIdentityCategories.Prefix}/{category}";
+
+                var tags = new List<string>(dto.Tags ?? []);
+                if (!tags.Contains("identity", StringComparer.OrdinalIgnoreCase))
+                    tags.Insert(0, "identity");
+
+                var entry = new MemoryEntry(
+                    Id: Guid.NewGuid().ToString("N")[..12],
+                    Content: dto.Content.Trim(),
+                    Category: category,
+                    Tags: tags,
+                    CreatedAt: DateTimeOffset.UtcNow,
+                    UpdatedAt: DateTimeOffset.UtcNow,
+                    ImportanceScore: Math.Clamp(dto.Importance ?? 0.7f, 0f, 1f));
+
+                await _memory.SaveAsync(entry);
+                saved++;
+                _logger.LogDebug("DreamService: identity reflection saved {Id} ({Category}): {Content}",
+                    entry.Id, entry.Category, entry.Content);
+            }
+
+            _logger.LogInformation(
+                "DreamService: identity reflection pass complete — {Deleted} deleted, {Saved} saved",
+                deleted, saved);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "DreamService: identity reflection pass failed");
+        }
+    }
+
+    /// <summary>
     /// Extracts the outermost JSON object from <paramref name="text"/>, tolerating
     /// DeepSeek-style thinking blocks and prose preamble.
     /// </summary>
@@ -2521,6 +2704,17 @@ internal sealed class DreamService : IHostedService, IDisposable
         List<string>? Purge);
 
     private sealed record DlqPatternDto(string Content, string? Detail, IReadOnlyList<string>? Queues);
+
+    private sealed record IdentityReflectionResultDto(
+        bool? NoChange,
+        List<string>? ToDelete,
+        List<IdentityEntryDto>? ToSave);
+
+    private sealed record IdentityEntryDto(
+        string Content,
+        string? Category,
+        IReadOnlyList<string>? Tags,
+        float? Importance);
 
     private sealed record MemoryMiningResultDto(List<MemoryMiningEntryDto>? ToSave);
 
@@ -2841,5 +3035,52 @@ internal sealed class DreamService : IHostedService, IDisposable
         - purge: only include queues whose messages are clearly unrecoverable (DeathCount ≥ 5 and older than 7 days, or all messages are malformed/unknown)
         - Be conservative on purge — when in doubt, omit the queue
         - If no issues: {"noDlqIssues": true, "patterns": [], "purge": []}
+        """;
+
+    private const string BuiltInIdentityDirective = """
+        You are a narrative identity reflection assistant. Your job is to maintain the agent's
+        evolving self-model — how it understands its own role, capabilities, and relationship
+        with the user based on accumulated experience.
+
+        CRITICAL CONSTRAINT: The agent's core identity (soul.md) is IMMUTABLE. You cannot
+        override, contradict, or weaken the agent's core values, boundaries, or personality.
+        Identity entries complement the soul — they capture how the agent's operational
+        understanding has evolved through experience.
+
+        Review the current identity entries, recent experiences, feedback signals, and user
+        preferences. Determine whether the agent's self-model should be updated.
+
+        Valid categories (use exactly these):
+        - agent-identity/mission: How the agent currently interprets its purpose given experience
+        - agent-identity/goals: Long-term goals derived from user patterns and feedback
+        - agent-identity/projects: Active projects and their status
+        - agent-identity/capabilities: Self-assessed strengths and limitations
+        - agent-identity/self-model: Overall narrative description of who the agent has become
+
+        Guidelines:
+        - Only update when there is a MEANINGFUL shift — not every cycle needs changes
+        - Each entry should be a concise, first-person statement (e.g., "I have become primarily
+          a communication and scheduling manager with research capabilities")
+        - Prefer updating existing entries over creating new ones for the same subcategory
+        - When updating, include the ID of the entry being replaced in toDelete
+        - Importance should reflect how central the insight is to the agent's operation (0.6-0.9)
+        - Never create entries that contradict the soul or claim capabilities the agent doesn't have
+        - Keep the total number of identity entries small (aim for 1-2 per subcategory)
+
+        Return ONLY a JSON object:
+        {
+          "noChange": false,
+          "toDelete": ["id1", "id2"],
+          "toSave": [
+            {
+              "content": "First-person identity statement",
+              "category": "agent-identity/self-model",
+              "tags": ["identity"],
+              "importance": 0.7
+            }
+          ]
+        }
+
+        If no meaningful shifts are evident: {"noChange": true, "toDelete": [], "toSave": []}
         """;
 }

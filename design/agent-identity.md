@@ -155,6 +155,45 @@ builder.Services.AddRockBotHost(agent =>
 });
 ```
 
+## Narrative Identity (Dynamic Self-Model)
+
+While `soul.md` and `directives.md` are static and deployment-controlled, the agent also maintains a **mutable narrative identity** — a set of long-term memory entries under `agent-identity/` that evolve as the agent accumulates experience.
+
+### Categories
+
+| Category | Purpose |
+|----------|---------|
+| `agent-identity/mission` | How the agent interprets its purpose given experience |
+| `agent-identity/goals` | Long-term goals derived from user patterns and feedback |
+| `agent-identity/projects` | Active projects and their status |
+| `agent-identity/capabilities` | Self-assessed strengths and limitations |
+| `agent-identity/self-model` | Overall narrative description of who the agent has become |
+
+### How It Works
+
+1. **Dream service** runs an identity reflection pass during each dream cycle. It reviews recent episodic memories, feedback signals, and user preferences, then updates identity entries when a meaningful shift has occurred.
+2. **AgentContextBuilder** injects identity entries into every LLM context. Primary agents see first-person framing ("Your evolving identity..."); subagents and patrol tasks see third-person framing ("Primary agent identity context...") that reinforces their subordinate role.
+3. **Users can review and edit** identity entries via the standard `search_memory` / `save_memory` tools using the `agent-identity` category.
+
+### Design Constraints
+
+- **soul.md is immutable** — identity entries complement the soul but can never override core values, boundaries, or personality.
+- **Conservative evolution** — the dream directive instructs the LLM to update only when there is a meaningful shift, not every cycle. Target is 1-2 entries per subcategory.
+- **Role-aware injection** — subagents see the primary agent's identity as context about the agent they serve, preventing them from assuming the primary's role.
+- **Constants** — `AgentIdentityCategories` in `RockBot.Host.Abstractions` defines the well-known category names.
+
+### Example
+
+After weeks of primarily managing email and calendar:
+
+```
+Category: agent-identity/self-model
+Content: "I have become primarily a communication and scheduling manager
+          with research capabilities. Most user interactions involve email
+          triage, calendar management, and meeting preparation."
+Importance: 0.8
+```
+
 ## Error Handling
 
 | Scenario | Behavior |

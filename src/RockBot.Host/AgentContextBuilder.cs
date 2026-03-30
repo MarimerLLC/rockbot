@@ -154,6 +154,43 @@ public sealed class AgentContextBuilder(
             }
         }
 
+        // Narrative identity injection — agent-identity/ entries that complement the static soul.
+        // Primary agent gets first-person framing; subagents/tasks get third-person framing
+        // that reinforces they support the primary agent but do not assume its role.
+        {
+            var identityEntries = await longTermMemory.SearchAsync(
+                new MemorySearchCriteria(Category: AgentIdentityCategories.Prefix, MaxResults: 20));
+
+            if (identityEntries.Count > 0)
+            {
+                var isPrimary = systemPromptOverride is null;
+                var lines = identityEntries.Select(e =>
+                    $"- ({e.Category ?? AgentIdentityCategories.SelfModel}): {e.Content}");
+
+                string identityContext;
+                if (isPrimary)
+                {
+                    identityContext =
+                        "Your evolving identity (complements your core soul — these reflect how your understanding " +
+                        "of your role has developed through experience):\n" +
+                        string.Join("\n", lines);
+                }
+                else
+                {
+                    identityContext =
+                        "Primary agent identity context (you are a subordinate agent supporting the primary agent — " +
+                        "do not assume its role, speak to users on its behalf, or act as the primary orchestrator. " +
+                        "This context helps you understand the agent you serve):\n" +
+                        string.Join("\n", lines);
+                }
+
+                chatMessages.Add(new ChatMessage(ChatRole.System, identityContext));
+                logger.LogInformation(
+                    "Injected {Count} identity entries for session {SessionId} (primary={IsPrimary})",
+                    identityEntries.Count, sessionId, isPrimary);
+            }
+        }
+
         // Knowledge graph expansion — detect entities in the query, traverse relationships
         if (_knowledgeGraph is not null)
         {
