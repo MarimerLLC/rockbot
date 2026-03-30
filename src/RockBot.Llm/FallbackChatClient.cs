@@ -24,6 +24,13 @@ public sealed class FallbackChatClient : IChatClient
     private readonly int _maxRetries;
     private volatile int _activeIndex;
 
+    /// <summary>
+    /// Raised when the client falls back from one model to another. Arguments are
+    /// (fromModelId, toModelId, reason). Subscribers can use this to publish progress
+    /// messages to the user so they know why things are taking longer.
+    /// </summary>
+    public event Action<string, string, string>? OnFallback;
+
     public FallbackChatClient(
         IReadOnlyList<(string ModelId, IChatClient Client)> entries,
         ILogger logger,
@@ -98,6 +105,7 @@ public sealed class FallbackChatClient : IChatClient
                     if (attempt < _maxRetries)
                         continue; // Retry same model
 
+                    NotifyFallback(i, modelId, "timeout");
                     break; // Fall through to next model
                 }
                 catch (Exception ex)
@@ -117,6 +125,7 @@ public sealed class FallbackChatClient : IChatClient
                         _logger.LogWarning(
                             "FallbackChatClient: content filter triggered on {ModelId}; trying next model without degrading",
                             modelId);
+                        NotifyFallback(i, modelId, "content filter");
                         break;
                     }
 
@@ -134,6 +143,7 @@ public sealed class FallbackChatClient : IChatClient
                             _activeIndex = i + 1;
                     }
 
+                    NotifyFallback(i, modelId, category.ToString());
                     break; // Fall through to next model
                 }
                 finally
@@ -183,6 +193,7 @@ public sealed class FallbackChatClient : IChatClient
 
     public object? GetService(Type serviceType, object? serviceKey = null)
     {
+        if (serviceType == typeof(FallbackChatClient)) return this;
         int idx = _activeIndex;
         return idx < _entries.Count ? _entries[idx].Client.GetService(serviceType, serviceKey) : null;
     }
@@ -214,6 +225,18 @@ public sealed class FallbackChatClient : IChatClient
             if (!_degraded[i])
             {
                 _activeIndex = i;
+                return;
+            }
+        }
+    }
+
+    private void NotifyFallback(int currentIndex, string fromModelId, string reason)
+    {
+        for (int j = currentIndex + 1; j < _entries.Count; j++)
+        {
+            if (!_degraded[j])
+            {
+                OnFallback?.Invoke(fromModelId, _entries[j].ModelId, reason);
                 return;
             }
         }
