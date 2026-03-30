@@ -2951,6 +2951,13 @@ internal sealed class DreamService : IHostedService, IDisposable
         - Trivial exchanges ("hi", "thanks", routine greetings)
         - Pure factual lookups with no discussion (those are mined as facts separately)
         - Repeated instances of the same type of interaction already captured
+        - **Tool or capability availability conclusions** — never record "tool X doesn't
+          work", "MCP server Y is unavailable", or "capability Z is not supported" as
+          episodic memories. Tool availability is transient and changes across restarts,
+          deployments, and reconnections. Recording these as episodes creates false beliefs
+          that prevent the agent from trying tools that may now be working. If a tool
+          failed, the relevant lesson is the *workaround* or *diagnostic approach*, not
+          the conclusion that the tool is broken.
 
         Each episode should be a rich, narrative summary in third-person:
         e.g. "The user and agent investigated Azure content filter rejections that were
