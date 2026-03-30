@@ -196,6 +196,17 @@ public sealed class ChatStateService
     }
 
     /// <summary>
+    /// Returns true if the given message ID is a currently active (still receiving entries) activity log.
+    /// </summary>
+    public bool IsActiveActivityLog(string messageId)
+    {
+        lock (_lock)
+        {
+            return _activeActivityLogs.ContainsValue(messageId);
+        }
+    }
+
+    /// <summary>
     /// Toggles the expanded/collapsed state of a message by its ID.
     /// </summary>
     public void ToggleExpanded(string messageId)

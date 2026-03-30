@@ -322,6 +322,17 @@ public sealed class UserProxyService(
         logger.LogDebug("Published fire-and-forget user message {CorrelationId}", correlationId);
     }
 
+    /// <summary>
+    /// Publishes a cancel request to stop all in-flight work for the given session.
+    /// </summary>
+    public async Task CancelSessionAsync(string sessionId, CancellationToken cancellationToken = default)
+    {
+        var request = new CancelSessionRequest { SessionId = sessionId };
+        var envelope = request.ToEnvelope<CancelSessionRequest>(source: options.ProxyId);
+        await publisher.PublishAsync(UserProxyTopics.CancelSession, envelope, cancellationToken);
+        logger.LogInformation("Published cancel request for session {SessionId}", sessionId);
+    }
+
     internal Task<MessageResult> HandleResponseAsync(MessageEnvelope envelope, CancellationToken ct)
     {
         AgentReply? reply;
