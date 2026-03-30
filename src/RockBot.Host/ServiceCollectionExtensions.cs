@@ -42,6 +42,7 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<IAgentWorkSerializer, AgentWorkSerializer>();
         services.AddSingleton<IMessagePipeline, MessagePipeline>();
         services.Configure<WipOptions>(_ => { });
+        services.Configure<KnowledgeGraphOptions>(_ => { });
         services.AddSingleton<IWipTracker, FileWipTracker>();
         services.AddSingleton<IHostedService, AgentHost>();
 

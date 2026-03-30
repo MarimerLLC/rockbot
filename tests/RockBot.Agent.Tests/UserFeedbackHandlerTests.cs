@@ -78,6 +78,8 @@ public class UserFeedbackHandlerTests
             new SkillRecallTracker(),
             clock,
             [],
+            Enumerable.Empty<IKnowledgeGraph>(),
+            Options.Create(new KnowledgeGraphOptions()),
             NullLogger<AgentContextBuilder>.Instance);
 
         var rulesTools = new RulesTools(
