@@ -531,17 +531,93 @@ public class FileMemoryStoreTests
             NullLogger<FileMemoryStore>.Instance);
     }
 
+    // ── Importance boost ─────────────────────────────────────────────────────
+
+    [TestMethod]
+    public void ImportanceBoost_DefaultScore_Returns0_75()
+    {
+        var boost = FileMemoryStore.ImportanceBoost(0.5f);
+        Assert.AreEqual(0.75, boost, 0.001);
+    }
+
+    [TestMethod]
+    public void ImportanceBoost_MaxScore_Returns1_0()
+    {
+        var boost = FileMemoryStore.ImportanceBoost(1.0f);
+        Assert.AreEqual(1.0, boost, 0.001);
+    }
+
+    [TestMethod]
+    public void ImportanceBoost_ZeroScore_Returns0_5()
+    {
+        var boost = FileMemoryStore.ImportanceBoost(0.0f);
+        Assert.AreEqual(0.5, boost, 0.001);
+    }
+
+    [TestMethod]
+    public void ImportanceBoost_ClampsAbove1()
+    {
+        var boost = FileMemoryStore.ImportanceBoost(1.5f);
+        Assert.AreEqual(1.0, boost, 0.001);
+    }
+
+    [TestMethod]
+    public void ImportanceBoost_ClampsBelow0()
+    {
+        var boost = FileMemoryStore.ImportanceBoost(-0.5f);
+        Assert.AreEqual(0.5, boost, 0.001);
+    }
+
+    [TestMethod]
+    public async Task SearchAsync_BM25_HighImportance_RanksHigher()
+    {
+        var store = CreateStore();
+
+        // Two entries with the same content but different importance
+        await store.SaveAsync(CreateEntry("low", "kubernetes deployment pattern", importance: 0.2f));
+        await store.SaveAsync(CreateEntry("high", "kubernetes deployment pattern", importance: 0.9f));
+
+        var results = await store.SearchAsync(
+            new MemorySearchCriteria(Query: "kubernetes deployment", MaxResults: 10));
+
+        Assert.AreEqual(2, results.Count);
+        Assert.AreEqual("high", results[0].Id, "High-importance entry should rank first");
+        Assert.AreEqual("low", results[1].Id);
+    }
+
+    [TestMethod]
+    public async Task SaveAsync_And_GetAsync_RoundTrips_ImportanceScore()
+    {
+        var store = CreateStore();
+        var entry = CreateEntry("imp-1", "Critical decision", importance: 0.85f);
+
+        await store.SaveAsync(entry);
+        var result = await store.GetAsync("imp-1");
+
+        Assert.IsNotNull(result);
+        Assert.AreEqual(0.85f, result.ImportanceScore);
+    }
+
+    [TestMethod]
+    public void MemoryEntry_DefaultImportanceScore_Is0_5()
+    {
+        var entry = new MemoryEntry("id", "content", null, [], DateTimeOffset.UtcNow);
+        Assert.AreEqual(0.5f, entry.ImportanceScore);
+    }
+
     private static MemoryEntry CreateEntry(
         string id,
         string content,
         string? category = null,
-        string[]? tags = null)
+        string[]? tags = null,
+        float importance = 0.5f)
     {
         return new MemoryEntry(
             id,
             content,
             category,
             tags ?? [],
-            DateTimeOffset.UtcNow);
+            DateTimeOffset.UtcNow,
+            ImportanceScore: importance);
     }
 }

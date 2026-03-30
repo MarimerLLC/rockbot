@@ -87,7 +87,7 @@ internal sealed class AgentDiscoveryService(
     {
         var envelope = options.Card!.ToEnvelope<AgentCard>(source: agent.Name);
         await publisher.PublishAsync(options.DiscoveryTopic, envelope, ct);
-        logger.LogInformation("Published agent card for {AgentName}", options.Card.AgentName);
+        logger.LogInformation("Published agent card for {AgentName}", options.Card!.AgentName);
     }
 
     private async Task ReAnnounceLoopAsync(CancellationToken ct)

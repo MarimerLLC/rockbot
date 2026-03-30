@@ -290,6 +290,9 @@ internal sealed class DreamService : IHostedService, IDisposable
 
             _logger.LogDebug("DreamService: fetched {Count} memory entries for consolidation", all.Count);
 
+            // Apply importance decay to unreferenced entries before consolidation
+            await RunImportanceDecayPassAsync(all);
+
             // Build user message: numbered list with IDs, categories, tags, content
             var userMessage = new StringBuilder();
             userMessage.AppendLine($"The agent currently has {all.Count} memory entries. Consolidate them:");
@@ -320,7 +323,7 @@ internal sealed class DreamService : IHostedService, IDisposable
             {
                 var e = all[i];
                 var tags = e.Tags.Count > 0 ? string.Join(", ", e.Tags) : "(none)";
-                userMessage.AppendLine($"{i + 1}. [ID:{e.Id}] category={e.Category ?? "uncategorized"} tags=[{tags}]");
+                userMessage.AppendLine($"{i + 1}. [ID:{e.Id}] category={e.Category ?? "uncategorized"} importance={e.ImportanceScore:F2} tags=[{tags}]");
                 userMessage.AppendLine($"   {e.Content}");
             }
 
@@ -388,18 +391,30 @@ internal sealed class DreamService : IHostedService, IDisposable
                         .Min()
                     : DateTimeOffset.UtcNow;
 
+                // Use LLM-provided importance, or carry forward the max importance from source entries
+                var importance = dto.Importance;
+                if (importance is null && sourceIds.Count > 0)
+                {
+                    importance = sourceIds
+                        .Where(id => all.Any(e => e.Id.Equals(id, StringComparison.OrdinalIgnoreCase)))
+                        .Select(id => all.First(e => e.Id.Equals(id, StringComparison.OrdinalIgnoreCase)).ImportanceScore)
+                        .DefaultIfEmpty(0.5f)
+                        .Max();
+                }
+
                 var entry = new MemoryEntry(
                     Id: Guid.NewGuid().ToString("N")[..12],
                     Content: dto.Content.Trim(),
                     Category: string.IsNullOrWhiteSpace(dto.Category) ? null : dto.Category.Trim(),
                     Tags: dto.Tags ?? [],
                     CreatedAt: minCreatedAt,
-                    UpdatedAt: DateTimeOffset.UtcNow);
+                    UpdatedAt: DateTimeOffset.UtcNow,
+                    ImportanceScore: Math.Clamp(importance ?? 0.5f, 0f, 1f));
 
                 await _memory.SaveAsync(entry);
                 saved++;
-                _logger.LogDebug("DreamService: saved entry {Id} ({Category}): {Content}",
-                    entry.Id, entry.Category ?? "(none)", entry.Content);
+                _logger.LogDebug("DreamService: saved entry {Id} ({Category}, importance={Importance:F2}): {Content}",
+                    entry.Id, entry.Category ?? "(none)", entry.ImportanceScore, entry.Content);
             }
 
             if (_skillStore is not null)
@@ -1089,6 +1104,50 @@ internal sealed class DreamService : IHostedService, IDisposable
     }
 
     /// <summary>
+    /// Applies gradual importance decay to memory entries that haven't been updated recently.
+    /// Entries older than <see cref="DecayGracePeriodDays"/> days lose importance at a rate of
+    /// <see cref="DecayPerCycleFraction"/> per dream cycle, down to a floor of <see cref="DecayFloor"/>.
+    /// This ensures stale, unreferenced memories naturally fade in ranking priority
+    /// while keeping them discoverable.
+    /// </summary>
+    internal async Task RunImportanceDecayPassAsync(IReadOnlyList<MemoryEntry> entries)
+    {
+        const int DecayGracePeriodDays = 14;
+        const float DecayPerCycleFraction = 0.05f;
+        const float DecayFloor = 0.1f;
+
+        var now = DateTimeOffset.UtcNow;
+        var decayed = 0;
+
+        foreach (var entry in entries)
+        {
+            var lastTouched = entry.UpdatedAt ?? entry.CreatedAt;
+            var daysSinceUpdate = (now - lastTouched).TotalDays;
+
+            if (daysSinceUpdate < DecayGracePeriodDays)
+                continue;
+
+            if (entry.ImportanceScore <= DecayFloor)
+                continue;
+
+            var newImportance = Math.Max(DecayFloor, entry.ImportanceScore - DecayPerCycleFraction);
+            if (Math.Abs(newImportance - entry.ImportanceScore) < 0.001f)
+                continue;
+
+            var updated = entry with { ImportanceScore = newImportance };
+            await _memory.SaveAsync(updated);
+            decayed++;
+
+            _logger.LogDebug(
+                "DreamService: decayed importance for {Id} from {Old:F2} to {New:F2} (last updated {Days:F0} days ago)",
+                entry.Id, entry.ImportanceScore, newImportance, daysSinceUpdate);
+        }
+
+        if (decayed > 0)
+            _logger.LogInformation("DreamService: importance decay pass — {Count} entries decayed", decayed);
+    }
+
+    /// <summary>
     /// Extracts episodic memories from the conversation log — discrete experiences, events,
     /// and interactions worth remembering as "what happened" rather than just distilled facts.
     /// Also reinforces existing episodes: if a concept reappears across sessions, its
@@ -1198,7 +1257,8 @@ internal sealed class DreamService : IHostedService, IDisposable
                 {
                     Content = dto.Content.Trim(),
                     UpdatedAt = DateTimeOffset.UtcNow,
-                    Metadata = metadata
+                    Metadata = metadata,
+                    ImportanceScore = Math.Clamp(dto.Importance ?? existing.ImportanceScore, 0f, 1f)
                 };
 
                 await _memory.SaveAsync(updated);
@@ -1237,7 +1297,8 @@ internal sealed class DreamService : IHostedService, IDisposable
                     Tags: tags,
                     CreatedAt: DateTimeOffset.UtcNow,
                     UpdatedAt: DateTimeOffset.UtcNow,
-                    Metadata: metadata);
+                    Metadata: metadata,
+                    ImportanceScore: Math.Clamp(dto.Importance ?? 0.5f, 0f, 1f));
 
                 await _memory.SaveAsync(entry);
                 created++;
@@ -2001,7 +2062,8 @@ internal sealed class DreamService : IHostedService, IDisposable
         string Content,
         string? Category,
         IReadOnlyList<string>? Tags,
-        IReadOnlyList<string>? SourceIds);
+        IReadOnlyList<string>? SourceIds,
+        float? Importance = null);
 
     private sealed record SkillDreamResultDto(
         List<string>? ToDelete,

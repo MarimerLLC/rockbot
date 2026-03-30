@@ -7,7 +7,7 @@ public class ProfileHolderTests
     public void Profile_ThrowsBeforeFirstUpdate()
     {
         var holder = new ProfileHolder();
-        Assert.ThrowsException<InvalidOperationException>(() => _ = holder.Profile);
+        Assert.ThrowsExactly<InvalidOperationException>(() => _ = holder.Profile);
     }
 
     [TestMethod]
@@ -33,7 +33,7 @@ public class ProfileHolderTests
     public void Update_ThrowsOnNull()
     {
         var holder = new ProfileHolder();
-        Assert.ThrowsException<ArgumentNullException>(() => holder.Update(null!));
+        Assert.ThrowsExactly<ArgumentNullException>(() => holder.Update(null!));
     }
 
     private static AgentProfile MakeProfile(string soulContent) =>

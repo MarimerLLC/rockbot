@@ -113,7 +113,7 @@ public sealed class AgentContextBuilder(
             if (newEntries.Count > 0)
             {
                 var lines = newEntries.Select(e =>
-                    $"- [{e.Id}] ({e.Category ?? "general"}): {e.Content}");
+                    $"- [{e.Id}] ({e.Category ?? "general"}, importance={e.ImportanceScore:F2}): {e.Content}");
                 var recallContext =
                     "Recalled from long-term memory (relevant to this message):\n" +
                     string.Join("\n", lines);
@@ -138,10 +138,7 @@ public sealed class AgentContextBuilder(
             if (newEpisodes.Count > 0)
             {
                 var lines = newEpisodes.Select(e =>
-                {
-                    var importance = e.Metadata?.GetValueOrDefault("importance") ?? "?";
-                    return $"- [{e.Id}] (importance={importance}): {e.Content}";
-                });
+                    $"- [{e.Id}] (importance={e.ImportanceScore:F2}): {e.Content}");
                 var episodicContext =
                     "Relevant past experiences (episodic memory):\n" +
                     string.Join("\n", lines);

@@ -44,14 +44,14 @@ public class TraceContextPropagatorTests
     [TestMethod]
     public void Inject_NullHeaders_ThrowsArgumentNull()
     {
-        Assert.ThrowsException<ArgumentNullException>(() =>
+        Assert.ThrowsExactly<ArgumentNullException>(() =>
             TraceContextPropagator.Inject(null, null!));
     }
 
     [TestMethod]
     public void Extract_NullHeaders_ThrowsArgumentNull()
     {
-        Assert.ThrowsException<ArgumentNullException>(() =>
+        Assert.ThrowsExactly<ArgumentNullException>(() =>
             TraceContextPropagator.Extract(null!));
     }
 

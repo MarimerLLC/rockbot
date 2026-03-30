@@ -15,6 +15,7 @@ namespace RockBot.Host;
 /// Reusable LLM tool-calling loop shared by UserMessageHandler, ScheduledTaskHandler,
 /// SubagentRunner, and subagent update handlers.
 /// </summary>
+#pragma warning disable CS9113 // Primary constructor parameters reserved for future handler expansion
 public sealed partial class AgentLoopRunner(
     ILlmClient llmClient,
     IWorkingMemory workingMemory,

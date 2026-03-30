@@ -137,6 +137,92 @@ public class MemoryToolsTests
     }
 
     // -------------------------------------------------------------------------
+    // UpdateMemoryImportance
+    // -------------------------------------------------------------------------
+
+    [TestMethod]
+    public async Task UpdateMemoryImportance_KnownId_UpdatesScore()
+    {
+        var memory = new StubLongTermMemory();
+        memory.Add(Entry("id1", "Some fact", DateTimeOffset.UtcNow));
+        var tools = MakeTools(memory);
+
+        var result = await tools.UpdateMemoryImportance("id1", 0.9f);
+
+        StringAssert.Contains(result, "0.50");
+        StringAssert.Contains(result, "0.90");
+        var updated = await memory.GetAsync("id1");
+        Assert.AreEqual(0.9f, updated!.ImportanceScore);
+    }
+
+    [TestMethod]
+    public async Task UpdateMemoryImportance_UnknownId_ReturnsNotFound()
+    {
+        var tools = MakeTools(new StubLongTermMemory());
+
+        var result = await tools.UpdateMemoryImportance("nonexistent", 0.8f);
+
+        StringAssert.Contains(result, "No memory entry found");
+    }
+
+    [TestMethod]
+    public async Task UpdateMemoryImportance_ClampsAbove1()
+    {
+        var memory = new StubLongTermMemory();
+        memory.Add(Entry("id1", "Test", DateTimeOffset.UtcNow));
+        var tools = MakeTools(memory);
+
+        await tools.UpdateMemoryImportance("id1", 1.5f);
+
+        var updated = await memory.GetAsync("id1");
+        Assert.AreEqual(1.0f, updated!.ImportanceScore);
+    }
+
+    [TestMethod]
+    public async Task UpdateMemoryImportance_ClampsBelow0()
+    {
+        var memory = new StubLongTermMemory();
+        memory.Add(Entry("id1", "Test", DateTimeOffset.UtcNow));
+        var tools = MakeTools(memory);
+
+        await tools.UpdateMemoryImportance("id1", -0.5f);
+
+        var updated = await memory.GetAsync("id1");
+        Assert.AreEqual(0.0f, updated!.ImportanceScore);
+    }
+
+    [TestMethod]
+    public async Task UpdateMemoryImportance_SetsUpdatedAt()
+    {
+        var memory = new StubLongTermMemory();
+        var created = DateTimeOffset.UtcNow.AddDays(-30);
+        memory.Add(new MemoryEntry("id1", "Old fact", null, [], created));
+        var tools = MakeTools(memory);
+
+        await tools.UpdateMemoryImportance("id1", 0.8f);
+
+        var updated = await memory.GetAsync("id1");
+        Assert.IsNotNull(updated!.UpdatedAt);
+        Assert.IsTrue(updated.UpdatedAt!.Value > created);
+    }
+
+    // -------------------------------------------------------------------------
+    // SearchMemory — importance display
+    // -------------------------------------------------------------------------
+
+    [TestMethod]
+    public async Task SearchMemory_ShowsImportanceScore()
+    {
+        var memory = new StubLongTermMemory();
+        memory.Add(new MemoryEntry("id1", "Important fact", null, [], DateTimeOffset.UtcNow, ImportanceScore: 0.85f));
+        var tools = MakeTools(memory);
+
+        var result = await tools.SearchMemory();
+
+        StringAssert.Contains(result, "importance=0.85");
+    }
+
+    // -------------------------------------------------------------------------
     // Helpers
     // -------------------------------------------------------------------------
 
