@@ -253,7 +253,7 @@ internal sealed class UserMessageHandler(
                     turnActivityHandedOff = true;
                     context.Items[WipConstants.DeferredKey] = true;
                     _ = BackgroundToolLoopAsync(
-                        chatMessages, chatOptions, firstResponse, tier,
+                        chatMessages, chatOptions, firstResponse, tier, classification.ComplexityScore,
                         message.SessionId, replyTo, correlationId, sessionHandle.Generation, wipMessageId, turnActivity, sessionCt);
                 }
                 else
@@ -273,7 +273,7 @@ internal sealed class UserMessageHandler(
                         turnActivityHandedOff = true;
                         context.Items[WipConstants.DeferredKey] = true;
                         _ = BackgroundToolLoopAsync(
-                            chatMessages, chatOptions, firstResponse, tier,
+                            chatMessages, chatOptions, firstResponse, tier, classification.ComplexityScore,
                             message.SessionId, replyTo, correlationId, sessionHandle.Generation, wipMessageId, turnActivity, sessionCt);
                     }
                     else if (modelBehavior.NudgeOnHallucinatedToolCalls
@@ -290,7 +290,7 @@ internal sealed class UserMessageHandler(
                         turnActivityHandedOff = true;
                         context.Items[WipConstants.DeferredKey] = true;
                         _ = BackgroundToolLoopAsync(
-                            chatMessages, chatOptions, firstResponse, tier,
+                            chatMessages, chatOptions, firstResponse, tier, classification.ComplexityScore,
                             message.SessionId, replyTo, correlationId, sessionHandle.Generation, wipMessageId, turnActivity, sessionCt);
                     }
                     else
@@ -395,6 +395,7 @@ internal sealed class UserMessageHandler(
 
             var text = await agentLoopRunner.RunAsync(
                 chatMessages, chatOptions, sessionId, tier: classification.Tier,
+                complexityScore: classification.ComplexityScore,
                 onPreToolCall: async (desc, ct2) =>
                 {
                     await PublishReplyAsync($"Working on it — checking {desc}…", replyTo, correlationId, sessionId, isFinal: false, ct2);
@@ -482,6 +483,7 @@ internal sealed class UserMessageHandler(
         ChatOptions chatOptions,
         ChatResponse firstResponse,
         ModelTier tier,
+        double? complexityScore,
         string sessionId,
         string replyTo,
         string? correlationId,
@@ -513,6 +515,7 @@ internal sealed class UserMessageHandler(
 
             var finalContent = await agentLoopRunner.RunAsync(
                 chatMessages, chatOptions, sessionId, firstResponse: firstResponse, tier: tier,
+                complexityScore: complexityScore,
                 onPreToolCall: async (desc, ct2) =>
                 {
                     await PublishReplyAsync($"Working on it — checking {desc}…", replyTo, correlationId, sessionId, isFinal: false, ct2);
