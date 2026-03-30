@@ -281,6 +281,75 @@ public class FallbackChatClientTests
     }
 
     [TestMethod]
+    public async Task PerAttemptTimeout_FallsBackToNextModel()
+    {
+        // First model stalls forever; second responds immediately.
+        var first  = new SlowStub(delay: TimeSpan.FromSeconds(30));
+        var second = new FixedStub(response: OkResponse("from-fallback"));
+
+        var client = new FallbackChatClient(
+            [("slow-model", first), ("fast-model", second)],
+            NullLogger.Instance,
+            retryDelay: TimeSpan.Zero,
+            maxRetries: 0,
+            perAttemptTimeout: TimeSpan.FromMilliseconds(100));
+
+        var response = await client.GetResponseAsync([]);
+
+        Assert.AreEqual("from-fallback", response.Messages[^1].Text);
+        Assert.AreEqual(1, first.CallCount, "Slow model should have been called once");
+        Assert.AreEqual(1, second.CallCount, "Fast model should have been called as fallback");
+    }
+
+    [TestMethod]
+    public async Task PerAttemptTimeout_UserCancellation_PropagatesImmediately()
+    {
+        var slow = new SlowStub(delay: TimeSpan.FromSeconds(30));
+        var fallback = new FixedStub(response: OkResponse("should-not-reach"));
+
+        var client = new FallbackChatClient(
+            [("slow", slow), ("fallback", fallback)],
+            NullLogger.Instance,
+            retryDelay: TimeSpan.Zero,
+            maxRetries: 0,
+            perAttemptTimeout: TimeSpan.FromSeconds(5));
+
+        using var userCts = new CancellationTokenSource();
+        userCts.Cancel(); // User cancelled immediately
+
+        await Assert.ThrowsAsync<OperationCanceledException>(
+            () => client.GetResponseAsync([], cancellationToken: userCts.Token));
+
+        Assert.AreEqual(0, fallback.CallCount, "Should not fall back on user cancellation");
+    }
+
+    // ── additional stubs ────────────────────────────────────────────────────
+
+    /// <summary>Delays for a configurable period before responding (simulates a stalled model).</summary>
+    private sealed class SlowStub(TimeSpan delay) : IChatClient
+    {
+        public int CallCount { get; private set; }
+
+        public async Task<ChatResponse> GetResponseAsync(
+            IEnumerable<ChatMessage> chatMessages,
+            ChatOptions? options = null,
+            CancellationToken cancellationToken = default)
+        {
+            CallCount++;
+            await Task.Delay(delay, cancellationToken);
+            return new ChatResponse(new ChatMessage(ChatRole.Assistant, "slow-response"));
+        }
+
+        public IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(
+            IEnumerable<ChatMessage> chatMessages,
+            ChatOptions? options = null,
+            CancellationToken cancellationToken = default) => throw new NotImplementedException();
+
+        public object? GetService(Type serviceType, object? serviceKey = null) => null;
+        public void Dispose() { }
+    }
+
+    [TestMethod]
     public void GetService_DelegatesToActiveClient()
     {
         var metadata = new ChatClientMetadata("test-provider", null, "model-x");

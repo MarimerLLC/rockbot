@@ -98,7 +98,13 @@ if (tierOptions.Balanced.IsConfigured || tierOptions.BalancedModels.Count > 0)
             .Select(cfg => (cfg.ModelId!, BuildClient(cfg)))
             .ToList();
 
-        balancedInner = new FallbackChatClient(entries, fallbackLogger);
+        // Read the per-call timeout so FallbackChatClient can apply it per-attempt,
+        // giving each model in the chain its own timeout window for fallback to work.
+        var agentHostOpts = new AgentHostOptions();
+        builder.Configuration.GetSection("AgentHost").Bind(agentHostOpts);
+
+        balancedInner = new FallbackChatClient(entries, fallbackLogger,
+            perAttemptTimeout: agentHostOpts.LlmCallTimeout);
     }
     else if (tierOptions.BalancedModels.Count == 1)
     {
