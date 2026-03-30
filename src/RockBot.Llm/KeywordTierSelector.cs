@@ -245,12 +245,37 @@ public sealed class KeywordTierSelector : ILlmTierSelector
     private const int MinKeywordLength = 3;
 
     /// <summary>
+    /// Topic/domain words that must never appear as high-signal complexity keywords.
+    /// These indicate *what* a prompt is about, not *how hard* it is to reason about.
+    /// The dream routing review LLM is instructed to avoid these, but this serves as
+    /// a code-level guardrail in case the directive is ignored.
+    /// </summary>
+    private static readonly HashSet<string> TopicBlocklist = new(StringComparer.OrdinalIgnoreCase)
+    {
+        // Communication / PIM
+        "email", "emails", "inbox", "calendar", "calendar event", "calendar events",
+        "schedule", "scheduled", "todo", "todo list", "task list", "flight",
+        // Tools / infrastructure
+        "mcp server", "mcp servers", "mcp service", "mcp services", "server",
+        "working memory", "long term memory", "retrieve", "skill", "tool guide",
+        // Health / personal
+        "health report", "heart rhythm", "afib", "medical episode",
+        // Generic actions
+        "create", "remove", "mark complete", "mark as complete", "check",
+        "paid bill", "bill payment",
+    };
+
+    /// <summary>
     /// Filters out keywords that are too short to be useful routing signals.
+    /// For high-signal lists, also strips topic/domain words that indicate subject
+    /// matter rather than cognitive complexity.
     /// Returns null when the input list is null (caller falls back to defaults).
     /// </summary>
     private string[]? SanitizeKeywords(List<string>? keywords, string listName)
     {
         if (keywords is null) return null;
+
+        var isHighSignal = listName.Contains("high", StringComparison.OrdinalIgnoreCase);
 
         var filtered = keywords
             .Where(k => !string.IsNullOrWhiteSpace(k) && k.Trim().Length >= MinKeywordLength)
@@ -258,16 +283,39 @@ public sealed class KeywordTierSelector : ILlmTierSelector
             .Distinct()
             .ToArray();
 
-        var removed = keywords.Count - filtered.Length;
-        if (removed > 0)
+        // For high-signal keywords, strip topic/domain words
+        string[] afterBlocklist;
+        if (isHighSignal)
         {
-            var rejected = keywords.Where(k => string.IsNullOrWhiteSpace(k) || k.Trim().Length < MinKeywordLength);
-            _logger?.LogWarning(
-                "KeywordTierSelector: dropped {Count} keyword(s) from {List} (too short or blank): [{Keywords}]",
-                removed, listName, string.Join(", ", rejected.Select(k => $"\"{k}\"")));
+            afterBlocklist = filtered
+                .Where(k => !TopicBlocklist.Contains(k))
+                .ToArray();
+
+            var blocked = filtered.Length - afterBlocklist.Length;
+            if (blocked > 0)
+            {
+                var blockedWords = filtered.Where(k => TopicBlocklist.Contains(k));
+                _logger?.LogWarning(
+                    "KeywordTierSelector: stripped {Count} topic word(s) from {List} (domain indicators, not complexity signals): [{Keywords}]",
+                    blocked, listName, string.Join(", ", blockedWords.Select(k => $"\"{k}\"")));
+            }
+        }
+        else
+        {
+            afterBlocklist = filtered;
         }
 
-        return filtered.Length > 0 ? filtered : null;
+        var removed = keywords.Count - afterBlocklist.Length;
+        if (removed > 0)
+        {
+            var tooShort = keywords.Where(k => string.IsNullOrWhiteSpace(k) || k.Trim().Length < MinKeywordLength);
+            if (tooShort.Any())
+                _logger?.LogWarning(
+                    "KeywordTierSelector: dropped {Count} keyword(s) from {List} (too short or blank): [{Keywords}]",
+                    tooShort.Count(), listName, string.Join(", ", tooShort.Select(k => $"\"{k}\"")));
+        }
+
+        return afterBlocklist.Length > 0 ? afterBlocklist : null;
     }
 
     // ── Word-boundary matching ─────────────────────────────────────────────────

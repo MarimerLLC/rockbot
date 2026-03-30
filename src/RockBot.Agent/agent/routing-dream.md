@@ -31,6 +31,26 @@ Recurring prompt shapes consistently routed to the wrong tier. Identify keywords
 that should be added to `highSignalKeywords` or `lowSignalKeywords`. These learned associations
 replace static keyword guesses with evidence-backed routing rules.
 
+**CRITICAL — keyword quality rules:**
+Keywords must indicate *cognitive complexity*, NOT topic or domain. The tier selector asks
+"how hard is this to think about?", not "what is this about?".
+
+Good high-signal keywords describe **reasoning difficulty**: "analyze", "architect", "trade-off",
+"compare and contrast", "step by step", "threat model", "prove", "optimize".
+
+Bad high-signal keywords describe **topics or tools**: "calendar", "email", "todo", "mcp server",
+"working memory", "retrieve", "schedule", "flight", "health report", "skill". These words appear
+in both trivial and complex prompts — they tell you the *domain*, not the *difficulty*. A prompt
+like "check my calendar" is trivially simple despite containing "calendar".
+
+Before adding a keyword, apply this test: "Would a prompt containing ONLY this word and a simple
+verb be complex?" If "check my [keyword]" or "list the [keyword]" would be simple, the word is a
+topic indicator and MUST NOT be added to highSignalKeywords.
+
+When a topic-heavy prompt was misrouted, the correct fix is to adjust **thresholds**, not to add
+topic words as high-signal keywords. Topic keyword pollution is the #1 cause of over-routing to
+High tier.
+
 ### 4. Cost-Aware Correction
 If a class of prompts routed Low produces many tool calls and high token usage, routing them to
 Balanced upfront is more efficient. Calculate: (Low tier token cost × retries) vs. (Balanced tier
