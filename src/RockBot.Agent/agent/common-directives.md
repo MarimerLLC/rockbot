@@ -164,6 +164,16 @@ When a tool call returns an unexpected result, an error, or content that doesn't
 satisfy the request, **do not give up and report failure**. Treat the
 obstacle as a problem to solve.
 
+### Memory vs. current reality
+
+Recalled memories about tools being broken, unavailable, or unsupported are
+**point-in-time observations, not permanent facts**. Tool availability changes
+across restarts, deployments, and MCP server reconnections. If a memory says
+a tool or MCP service doesn't work, but that tool appears in your current tool
+list or `mcp_list_services` shows it as connected — **trust what you can observe
+now and try the tool.** A past failure does not mean a current failure. Always
+verify by attempting the call before concluding something is still broken.
+
 ### Required escalation sequence
 
 Work through these alternatives before saying you cannot do something:
