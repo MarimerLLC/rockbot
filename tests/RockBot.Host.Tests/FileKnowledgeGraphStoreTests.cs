@@ -107,16 +107,41 @@ public class FileKnowledgeGraphStoreTests
     // ── Entity name search ───────────────────────────────────────────────────
 
     [TestMethod]
-    public async Task FindEntitiesByNameAsync_MatchesByName()
+    public async Task FindEntitiesByNameAsync_MatchesWholeWordInQuery()
     {
         var store = CreateStore();
         await store.SaveEntityAsync(CreateEntity("e1", "Alice", KnowledgeEntityType.Person));
         await store.SaveEntityAsync(CreateEntity("e2", "Bob", KnowledgeEntityType.Person));
 
-        var results = await store.FindEntitiesByNameAsync("Ali");
+        var results = await store.FindEntitiesByNameAsync("I talked to Alice yesterday");
 
         Assert.AreEqual(1, results.Count);
         Assert.AreEqual("e1", results[0].Id);
+    }
+
+    [TestMethod]
+    public async Task FindEntitiesByNameAsync_DoesNotMatchSubstring()
+    {
+        var store = CreateStore();
+        await store.SaveEntityAsync(CreateEntity("e1", "Alice", KnowledgeEntityType.Person));
+
+        // "Alice" should NOT match inside "Malice"
+        var results = await store.FindEntitiesByNameAsync("Malice aforethought");
+
+        Assert.AreEqual(0, results.Count);
+    }
+
+    [TestMethod]
+    public async Task FindEntitiesByNameAsync_SkipsShortNames()
+    {
+        var store = CreateStore();
+        await store.SaveEntityAsync(CreateEntity("e1", "AI", KnowledgeEntityType.Topic));
+        await store.SaveEntityAsync(CreateEntity("e2", "PR", KnowledgeEntityType.Topic));
+
+        // Two-letter entity names are below MinEntityNameLength (3) — should not match
+        var results = await store.FindEntitiesByNameAsync("the AI created a PR for review");
+
+        Assert.AreEqual(0, results.Count);
     }
 
     [TestMethod]
@@ -124,13 +149,27 @@ public class FileKnowledgeGraphStoreTests
     {
         var store = CreateStore();
         var entity = new KnowledgeEntity("e1", "Alice Smith", KnowledgeEntityType.Person,
-            Aliases: ["Ali", "A. Smith"], Metadata: null, CreatedAt: DateTimeOffset.UtcNow);
+            Aliases: ["A. Smith"], Metadata: null, CreatedAt: DateTimeOffset.UtcNow);
         await store.SaveEntityAsync(entity);
 
-        var results = await store.FindEntitiesByNameAsync("A. Smith");
+        var results = await store.FindEntitiesByNameAsync("ask A. Smith about it");
 
         Assert.AreEqual(1, results.Count);
         Assert.AreEqual("e1", results[0].Id);
+    }
+
+    [TestMethod]
+    public async Task FindEntitiesByNameAsync_SkipsShortAliases()
+    {
+        var store = CreateStore();
+        var entity = new KnowledgeEntity("e1", "Alice Smith", KnowledgeEntityType.Person,
+            Aliases: ["AS"], Metadata: null, CreatedAt: DateTimeOffset.UtcNow);
+        await store.SaveEntityAsync(entity);
+
+        // Short alias "AS" should be ignored
+        var results = await store.FindEntitiesByNameAsync("AS mentioned earlier");
+
+        Assert.AreEqual(0, results.Count);
     }
 
     [TestMethod]
@@ -139,7 +178,18 @@ public class FileKnowledgeGraphStoreTests
         var store = CreateStore();
         await store.SaveEntityAsync(CreateEntity("e1", "RockBot", KnowledgeEntityType.Project));
 
-        var results = await store.FindEntitiesByNameAsync("rockbot");
+        var results = await store.FindEntitiesByNameAsync("tell me about rockbot");
+
+        Assert.AreEqual(1, results.Count);
+    }
+
+    [TestMethod]
+    public async Task FindEntitiesByNameAsync_MultiWordEntityName()
+    {
+        var store = CreateStore();
+        await store.SaveEntityAsync(CreateEntity("e1", "Azure DevOps", KnowledgeEntityType.Tool));
+
+        var results = await store.FindEntitiesByNameAsync("deploy via Azure DevOps pipeline");
 
         Assert.AreEqual(1, results.Count);
     }
@@ -277,6 +327,73 @@ public class FileKnowledgeGraphStoreTests
         };
         var result = FileKnowledgeGraphStore.TraverseCore(triples, ["A"], 0);
         Assert.AreEqual(0, result.Count);
+    }
+
+    // ── ContainsWholePhrase unit tests ─────────────────────────────────────
+
+    [TestMethod]
+    public void ContainsWholePhrase_MatchesExactWord()
+    {
+        Assert.IsTrue(FileKnowledgeGraphStore.ContainsWholePhrase("ask alice about it", "alice"));
+    }
+
+    [TestMethod]
+    public void ContainsWholePhrase_DoesNotMatchSubstring()
+    {
+        Assert.IsFalse(FileKnowledgeGraphStore.ContainsWholePhrase("malice aforethought", "alice"));
+    }
+
+    [TestMethod]
+    public void ContainsWholePhrase_MatchesAtStart()
+    {
+        Assert.IsTrue(FileKnowledgeGraphStore.ContainsWholePhrase("alice is here", "alice"));
+    }
+
+    [TestMethod]
+    public void ContainsWholePhrase_MatchesAtEnd()
+    {
+        Assert.IsTrue(FileKnowledgeGraphStore.ContainsWholePhrase("talk to alice", "alice"));
+    }
+
+    [TestMethod]
+    public void ContainsWholePhrase_MatchesMultiWordPhrase()
+    {
+        Assert.IsTrue(FileKnowledgeGraphStore.ContainsWholePhrase("deploy via azure devops pipeline", "azure devops"));
+    }
+
+    [TestMethod]
+    public void ContainsWholePhrase_EmptyKeyword_ReturnsFalse()
+    {
+        Assert.IsFalse(FileKnowledgeGraphStore.ContainsWholePhrase("some text", ""));
+    }
+
+    // ── MatchesName unit tests ──────────────────────────────────────────────
+
+    [TestMethod]
+    public void MatchesName_SkipsBelowMinLength()
+    {
+        var entity = new KnowledgeEntity("e1", "AI", KnowledgeEntityType.Topic,
+            Aliases: [], Metadata: null, CreatedAt: DateTimeOffset.UtcNow);
+        Assert.IsFalse(FileKnowledgeGraphStore.MatchesName(entity, "the AI is great"));
+    }
+
+    [TestMethod]
+    public void MatchesName_MatchesAtMinLength()
+    {
+        var entity = new KnowledgeEntity("e1", "Bob", KnowledgeEntityType.Person,
+            Aliases: [], Metadata: null, CreatedAt: DateTimeOffset.UtcNow);
+        Assert.IsTrue(FileKnowledgeGraphStore.MatchesName(entity, "ask Bob about it"));
+    }
+
+    [TestMethod]
+    public void MatchesName_RequiresWordBoundary()
+    {
+        var entity = new KnowledgeEntity("e1", "calendar", KnowledgeEntityType.Tool,
+            Aliases: [], Metadata: null, CreatedAt: DateTimeOffset.UtcNow);
+        // "calendar" should match as a standalone word
+        Assert.IsTrue(FileKnowledgeGraphStore.MatchesName(entity, "check the calendar for events"));
+        // but not inside another word
+        Assert.IsFalse(FileKnowledgeGraphStore.MatchesName(entity, "calendarWidget is broken"));
     }
 
     // ── Persistence ──────────────────────────────────────────────────────────

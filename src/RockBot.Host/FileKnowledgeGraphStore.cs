@@ -289,12 +289,63 @@ internal sealed class FileKnowledgeGraphStore : IKnowledgeGraph
 
     // ── Entity name matching ─────────────────────────────────────────────────
 
-    private static bool MatchesName(KnowledgeEntity entity, string query)
+    /// <summary>
+    /// Minimum character length for an entity name or alias to be matched against a query.
+    /// Prevents short/generic names ("AI", "PR", "it") from matching on nearly every message.
+    /// Mirrors <c>KeywordTierSelector.MinKeywordLength</c>.
+    /// </summary>
+    internal const int MinEntityNameLength = 3;
+
+    /// <summary>
+    /// Returns true when any of the entity's names (primary or aliases) appear in
+    /// <paramref name="query"/> as a whole word/phrase. Names shorter than
+    /// <see cref="MinEntityNameLength"/> characters are skipped to avoid noise.
+    /// </summary>
+    internal static bool MatchesName(KnowledgeEntity entity, string query)
     {
-        if (entity.Name.Contains(query, StringComparison.OrdinalIgnoreCase))
+        var lowerQuery = query.ToLowerInvariant();
+
+        if (entity.Name.Length >= MinEntityNameLength &&
+            ContainsWholePhrase(lowerQuery, entity.Name.ToLowerInvariant()))
             return true;
 
-        return entity.Aliases.Any(a => a.Contains(query, StringComparison.OrdinalIgnoreCase));
+        return entity.Aliases.Any(a =>
+            a.Length >= MinEntityNameLength &&
+            ContainsWholePhrase(lowerQuery, a.ToLowerInvariant()));
+    }
+
+    /// <summary>
+    /// Returns true when <paramref name="keyword"/> appears in <paramref name="text"/>
+    /// with word boundaries on each side where the keyword itself starts/ends with a
+    /// word character. Prevents "to" matching inside "tomorrow" or entity names matching
+    /// as substrings of unrelated words.
+    /// Mirrors <c>KeywordTierSelector.ContainsWholePhrase</c>.
+    /// </summary>
+    internal static bool ContainsWholePhrase(string text, string keyword)
+    {
+        if (keyword.Length == 0) return false;
+
+        var checkStart = char.IsLetterOrDigit(keyword[0]);
+        var checkEnd = char.IsLetterOrDigit(keyword[^1]);
+        var index = 0;
+
+        while ((index = text.IndexOf(keyword, index, StringComparison.Ordinal)) >= 0)
+        {
+            var startOk = !checkStart
+                          || index == 0
+                          || !char.IsLetterOrDigit(text[index - 1]);
+            var end = index + keyword.Length;
+            var endOk = !checkEnd
+                        || end >= text.Length
+                        || !char.IsLetterOrDigit(text[end]);
+
+            if (startOk && endOk)
+                return true;
+
+            index++;
+        }
+
+        return false;
     }
 
     // ── File paths ───────────────────────────────────────────────────────────
