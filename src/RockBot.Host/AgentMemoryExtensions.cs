@@ -93,6 +93,8 @@ public static class AgentMemoryExtensions
 
         builder.Services.AddSingleton<ISkillStore, FileSkillStore>();
         builder.Services.AddSingleton<ISkillUsageStore, FileSkillUsageStore>();
+        builder.Services.Configure<ToolCallLogOptions>(_ => { });
+        builder.Services.AddSingleton<IToolCallLog, FileToolCallLog>();
         builder.Services.AddSingleton<IHostedService, StarterSkillService>();
 
         return builder;

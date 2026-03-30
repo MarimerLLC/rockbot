@@ -187,6 +187,8 @@ public sealed partial class AgentLoopRunner(
         bool enableCompletionEval = true,
         CancellationToken cancellationToken = default)
     {
+        using var _ = ToolCallSessionContext.Set(sessionId);
+
         // Ensure a current datetime context is always present.
         EnsureDateTimeContext(chatMessages);
 

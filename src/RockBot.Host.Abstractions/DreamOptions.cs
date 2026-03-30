@@ -83,6 +83,15 @@ public sealed class DreamOptions
     /// </summary>
     public string TierRoutingDirectivePath { get; set; } = "routing-dream.md";
 
+    /// <summary>Whether the tool-call sequence skill detection pass is enabled.</summary>
+    public bool SequenceSkillDetectionEnabled { get; set; } = true;
+
+    /// <summary>
+    /// Path to the sequence skill detection directive file, relative to <see cref="AgentProfileOptions.BasePath"/>.
+    /// When the file does not exist, a built-in fallback directive is used.
+    /// </summary>
+    public string SequenceSkillDirectivePath { get; set; } = "sequence-skill.md";
+
     /// <summary>
     /// Whether the dead-letter queue review pass is enabled.
     /// Requires <c>RabbitMq:ManagementApiBaseUrl</c> to be configured.

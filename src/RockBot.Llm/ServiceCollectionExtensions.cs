@@ -82,11 +82,12 @@ public static class LlmServiceCollectionExtensions
             var behavior = sp.GetRequiredService<ModelBehavior>();
             var logger = sp.GetRequiredService<ILogger<RockBotFunctionInvokingChatClient>>();
             var progressNotifier = sp.GetService<IToolProgressNotifier>();
+            var toolCallLog = sp.GetService<IToolCallLog>();
 
             IChatClient Wrap(IChatClient raw) =>
                 behavior.UseTextBasedToolCalling
                     ? raw
-                    : new RockBotFunctionInvokingChatClient(raw, progressNotifier, behavior,
+                    : new RockBotFunctionInvokingChatClient(raw, progressNotifier, toolCallLog, behavior,
                         sp.GetRequiredService<IOptions<AgentHostOptions>>(), logger);
 
             return new TieredChatClientRegistry(

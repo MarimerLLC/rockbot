@@ -89,6 +89,7 @@ public static class ServiceCollectionExtensions
             return new RockBotFunctionInvokingChatClient(
                 innerClient,
                 sp.GetService<IToolProgressNotifier>(),
+                sp.GetService<IToolCallLog>(),
                 behavior,
                 sp.GetRequiredService<IOptions<AgentHostOptions>>(),
                 sp.GetRequiredService<ILogger<RockBotFunctionInvokingChatClient>>());

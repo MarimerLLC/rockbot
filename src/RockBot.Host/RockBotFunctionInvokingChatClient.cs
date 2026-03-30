@@ -20,6 +20,7 @@ public class RockBotFunctionInvokingChatClient : FunctionInvokingChatClient
     private const int MaxConsecutiveTimeoutIterations = 2;
 
     private readonly IToolProgressNotifier? _progressNotifier;
+    private readonly IToolCallLog? _toolCallLog;
     private readonly ModelBehavior _modelBehavior;
     private readonly ILogger _logger;
 
@@ -29,11 +30,13 @@ public class RockBotFunctionInvokingChatClient : FunctionInvokingChatClient
     public RockBotFunctionInvokingChatClient(
         IChatClient innerClient,
         IToolProgressNotifier? progressNotifier,
+        IToolCallLog? toolCallLog,
         ModelBehavior modelBehavior,
         IOptions<AgentHostOptions> hostOptions,
         ILogger logger) : base(innerClient)
     {
         _progressNotifier = progressNotifier;
+        _toolCallLog = toolCallLog;
         _modelBehavior = modelBehavior;
         _logger = logger;
 
@@ -126,6 +129,18 @@ public class RockBotFunctionInvokingChatClient : FunctionInvokingChatClient
         ToolDiagnostics.Invocations.Add(1,
             new KeyValuePair<string, object?>("rockbot.tool.name", callContent.Name),
             new KeyValuePair<string, object?>("rockbot.tool.status", status));
+
+        // Log tool-call event for sequence analysis (fire-and-forget)
+        if (_toolCallLog is not null && ToolCallSessionContext.SessionId is { } sid)
+        {
+            _ = _toolCallLog.AppendAsync(new ToolCallEvent(
+                SessionId: sid,
+                ToolName: callContent.Name,
+                ArgumentsSummary: argsSummary,
+                Succeeded: status == "ok",
+                DurationMs: (int)sw.ElapsedMilliseconds,
+                Timestamp: DateTimeOffset.UtcNow));
+        }
 
         if (_progressNotifier is not null)
         {
