@@ -308,4 +308,74 @@ public class KeywordTierSelectorTests
             Directory.Delete(tempDir, recursive: true);
         }
     }
+
+    // ── Topic blocklist ────────────────────────────────────────────────────────
+
+    [TestMethod]
+    public void TopicWords_InHighSignalKeywords_AreStripped()
+    {
+        var tempDir = Path.Combine(Path.GetTempPath(), "kts-blocklist-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempDir);
+        try
+        {
+            // Config with topic words mixed in with real complexity signals
+            var config = """
+            {
+                "highSignalKeywords": ["analyze", "calendar", "email", "architect", "todo", "mcp server", "design"],
+                "lowSignalKeywords": ["hello", "thanks"]
+            }
+            """;
+            File.WriteAllText(Path.Combine(tempDir, "tier-selector.json"), config);
+
+            var options = Options.Create(new AgentProfileOptions { BasePath = tempDir });
+            var selector = new KeywordTierSelector(options, NullLogger<KeywordTierSelector>.Instance);
+
+            // "check my calendar" should NOT route High — "calendar" should be stripped
+            var result = selector.Classify("check my calendar");
+            Assert.AreNotEqual(ModelTier.High, result.Tier,
+                "Topic word 'calendar' should be stripped from high-signal keywords");
+            Assert.IsFalse(result.MatchedHighKeywords.Contains("calendar"),
+                "Blocked topic word should not appear in matched keywords");
+
+            // Real complexity keywords should survive and still affect scoring
+            var complexResult = selector.Classify("analyze the architecture and design trade-offs");
+            Assert.IsTrue(complexResult.MatchedHighKeywords.Contains("analyze"),
+                "Complexity keyword 'analyze' should survive blocklist filtering");
+            Assert.IsTrue(complexResult.MatchedHighKeywords.Contains("design"),
+                "Complexity keyword 'design' should survive blocklist filtering");
+        }
+        finally
+        {
+            Directory.Delete(tempDir, recursive: true);
+        }
+    }
+
+    [TestMethod]
+    public void TopicWords_InLowSignalKeywords_AreNotStripped()
+    {
+        var tempDir = Path.Combine(Path.GetTempPath(), "kts-blocklist-low-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempDir);
+        try
+        {
+            // Topic words in lowSignalKeywords should NOT be stripped — blocklist only applies to high
+            var config = """
+            {
+                "lowSignalKeywords": ["hello", "email", "calendar", "thanks"]
+            }
+            """;
+            File.WriteAllText(Path.Combine(tempDir, "tier-selector.json"), config);
+
+            var options = Options.Create(new AgentProfileOptions { BasePath = tempDir });
+            var selector = new KeywordTierSelector(options, NullLogger<KeywordTierSelector>.Instance);
+
+            // "email" in low-signal should still match and push score down
+            var result = selector.Classify("email");
+            Assert.IsTrue(result.MatchedLowKeywords.Contains("email"),
+                "Topic words in low-signal list should not be blocked");
+        }
+        finally
+        {
+            Directory.Delete(tempDir, recursive: true);
+        }
+    }
 }
