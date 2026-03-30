@@ -110,6 +110,15 @@ public sealed class DreamOptions
     /// </summary>
     public string GraphConsolidationDirectivePath { get; set; } = "graph-consolidation-dream.md";
 
+    /// <summary>Whether the narrative identity reflection pass is enabled.</summary>
+    public bool IdentityReflectionEnabled { get; set; } = true;
+
+    /// <summary>
+    /// Path to the identity reflection directive file, relative to <see cref="AgentProfileOptions.BasePath"/>.
+    /// When the file does not exist, a built-in fallback directive is used.
+    /// </summary>
+    public string IdentityDirectivePath { get; set; } = "identity-dream.md";
+
     /// <summary>
     /// Whether the dead-letter queue review pass is enabled.
     /// Requires <c>RabbitMq:ManagementApiBaseUrl</c> to be configured.
