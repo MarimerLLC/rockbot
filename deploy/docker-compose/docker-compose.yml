@@ -1,0 +1,118 @@
+services:
+  rabbitmq:
+    image: rabbitmq:4-management
+    hostname: rabbitmq
+    ports:
+      - "15672:15672"   # Management UI (optional, handy for debugging)
+    environment:
+      RABBITMQ_DEFAULT_USER: rockbot
+      RABBITMQ_DEFAULT_PASS: rockbot
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "check_port_connectivity"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  agent-init:
+    image: rockylhotka/rockbot-agent:latest
+    user: root
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        echo "Seeding agent data volume..."
+        for f in soul.md directives.md subagent-directives.md style.md memory-rules.md \
+                 dream.md skill-dream.md common-directives.md session-evaluator.md \
+                 session-start.md heartbeat-patrol.md skill-optimize.md \
+                 dlq-dream.md routing-dream.md; do
+          src="/app/agent/$$f"
+          dst="/data/agent/$$f"
+          if [ -f "$$src" ] && [ ! -s "$$dst" ]; then
+            echo "  Copying $$f"
+            cp "$$src" "$$dst"
+          fi
+        done
+        if [ -f /app/agent/well-known-agents.json ] && [ ! -s /data/agent/well-known-agents.json ]; then
+          cp /app/agent/well-known-agents.json /data/agent/well-known-agents.json
+        fi
+        # Seed an empty mcp.json so the agent doesn't load the image default
+        # (which references cluster-internal URLs that don't exist locally)
+        if [ ! -f /data/agent/mcp.json ]; then
+          echo '{"mcpServers":{}}' > /data/agent/mcp.json
+        fi
+        # Per-model behavior files
+        for model_dir in /app/model-behaviors/*/; do
+          [ -d "$$model_dir" ] || continue
+          model_name=$$(basename "$$model_dir")
+          mkdir -p "/data/agent/model-behaviors/$$model_name"
+          for src in "$$model_dir"*; do
+            [ -f "$$src" ] || continue
+            dst="/data/agent/model-behaviors/$$model_name/$$(basename $$src)"
+            if [ ! -s "$$dst" ]; then
+              cp "$$src" "$$dst"
+            fi
+          done
+        done
+        mkdir -p /data/agent/memory /data/agent/skills /data/agent/conversations /data/agent/feedback
+        # Docker volumes are owned by root, so the non-root agent user needs access
+        chmod -R 777 /data/agent
+        echo "Agent data volume ready."
+    volumes:
+      - agent-data:/data/agent
+
+  agent:
+    image: rockylhotka/rockbot-agent:latest
+    depends_on:
+      agent-init:
+        condition: service_completed_successfully
+      rabbitmq:
+        condition: service_healthy
+    environment:
+      # -- RabbitMQ --
+      RabbitMq__HostName: rabbitmq
+      RabbitMq__Port: "5672"
+      RabbitMq__UserName: rockbot
+      RabbitMq__Password: rockbot
+      RabbitMq__VirtualHost: /
+      # -- LLM (Balanced tier — required) --
+      LLM__Balanced__Endpoint: ${LLM_ENDPOINT:-https://openrouter.ai/api/v1}
+      LLM__Balanced__ApiKey: ${LLM_API_KEY:?Set LLM_API_KEY in your .env file}
+      LLM__Balanced__ModelId: ${LLM_MODEL_ID:-anthropic/claude-haiku-4.5}
+      # -- Web search --
+      WebTools__ApiKey: ${BRAVE_API_KEY:?Set BRAVE_API_KEY in your .env file}
+      # -- Embedding (optional — enables hybrid vector search) --
+      # When set, memory/skills/working memory use cosine similarity alongside BM25.
+      # Falls back to BM25-only when not configured — no functionality is lost.
+      # Embedding__Endpoint: ${EMBEDDING_ENDPOINT:-}
+      # Embedding__Model: ${EMBEDDING_MODEL:-}
+      # Embedding__ApiKey: ${EMBEDDING_API_KEY:-}
+      # -- Agent data paths --
+      AgentProfile__BasePath: /data/agent
+      Memory__BasePath: /data/agent/memory
+      Skill__BasePath: /data/agent/skills
+      McpBridge__ConfigPath: /data/agent/mcp.json
+      ModelBehaviors__BasePath: /data/agent/model-behaviors
+      # -- Timezone (set to your IANA timezone) --
+      Agent__Timezone: ${AGENT_TIMEZONE:-America/Chicago}
+    volumes:
+      - agent-data:/data/agent
+
+  blazor:
+    image: rockylhotka/rockbot-blazor:latest
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    ports:
+      - "8080:8080"
+    environment:
+      RabbitMq__HostName: rabbitmq
+      RabbitMq__Port: "5672"
+      RabbitMq__UserName: rockbot
+      RabbitMq__Password: rockbot
+      RabbitMq__VirtualHost: /
+
+volumes:
+  rabbitmq-data:
+  agent-data:

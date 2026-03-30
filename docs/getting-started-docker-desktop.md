@@ -14,134 +14,23 @@ This minimal setup runs three containers: **RabbitMQ** (message bus), the **Rock
 - An **OpenAI-compatible LLM API key** — [OpenRouter](https://openrouter.ai/) is the easiest option
 - A **Brave Search API key** (free tier available) — [https://api.search.brave.com/](https://api.search.brave.com/)
 
-## 1. Create the Docker Compose file
+## 1. Set up the Docker Compose files
 
-Create a `docker-compose.yml` in any directory:
+The compose template and example `.env` file live in the repo at [`deploy/docker-compose/`](../deploy/docker-compose/):
 
-```yaml
-services:
-  rabbitmq:
-    image: rabbitmq:4-management
-    hostname: rabbitmq
-    ports:
-      - "15672:15672"   # Management UI (optional, handy for debugging)
-    environment:
-      RABBITMQ_DEFAULT_USER: rockbot
-      RABBITMQ_DEFAULT_PASS: rockbot
-    volumes:
-      - rabbitmq-data:/var/lib/rabbitmq
-    healthcheck:
-      test: ["CMD", "rabbitmq-diagnostics", "check_port_connectivity"]
-      interval: 10s
-      timeout: 5s
-      retries: 10
-
-  agent-init:
-    image: rockylhotka/rockbot-agent:latest
-    user: root
-    entrypoint: ["/bin/sh", "-c"]
-    command:
-      - |
-        set -e
-        echo "Seeding agent data volume..."
-        for f in soul.md directives.md subagent-directives.md style.md memory-rules.md \
-                 dream.md skill-dream.md common-directives.md session-evaluator.md \
-                 session-start.md heartbeat-patrol.md skill-optimize.md \
-                 dlq-dream.md routing-dream.md; do
-          src="/app/agent/$$f"
-          dst="/data/agent/$$f"
-          if [ -f "$$src" ] && [ ! -s "$$dst" ]; then
-            echo "  Copying $$f"
-            cp "$$src" "$$dst"
-          fi
-        done
-        if [ -f /app/agent/well-known-agents.json ] && [ ! -s /data/agent/well-known-agents.json ]; then
-          cp /app/agent/well-known-agents.json /data/agent/well-known-agents.json
-        fi
-        # Seed an empty mcp.json so the agent doesn't load the image default
-        # (which references cluster-internal URLs that don't exist locally)
-        if [ ! -f /data/agent/mcp.json ]; then
-          echo '{"mcpServers":{}}' > /data/agent/mcp.json
-        fi
-        # Per-model behavior files
-        for model_dir in /app/model-behaviors/*/; do
-          [ -d "$$model_dir" ] || continue
-          model_name=$$(basename "$$model_dir")
-          mkdir -p "/data/agent/model-behaviors/$$model_name"
-          for src in "$$model_dir"*; do
-            [ -f "$$src" ] || continue
-            dst="/data/agent/model-behaviors/$$model_name/$$(basename $$src)"
-            if [ ! -s "$$dst" ]; then
-              cp "$$src" "$$dst"
-            fi
-          done
-        done
-        mkdir -p /data/agent/memory /data/agent/skills /data/agent/conversations /data/agent/feedback
-        # Docker volumes are owned by root, so the non-root agent user needs access
-        chmod -R 777 /data/agent
-        echo "Agent data volume ready."
-    volumes:
-      - agent-data:/data/agent
-
-  agent:
-    image: rockylhotka/rockbot-agent:latest
-    depends_on:
-      agent-init:
-        condition: service_completed_successfully
-      rabbitmq:
-        condition: service_healthy
-    environment:
-      # ── RabbitMQ ──
-      RabbitMq__HostName: rabbitmq
-      RabbitMq__Port: "5672"
-      RabbitMq__UserName: rockbot
-      RabbitMq__Password: rockbot
-      RabbitMq__VirtualHost: /
-      # ── LLM (Balanced tier — required) ──
-      LLM__Balanced__Endpoint: ${LLM_ENDPOINT:-https://openrouter.ai/api/v1}
-      LLM__Balanced__ApiKey: ${LLM_API_KEY:?Set LLM_API_KEY in your .env file}
-      LLM__Balanced__ModelId: ${LLM_MODEL_ID:-anthropic/claude-haiku-4.5}
-      # ── Web search ──
-      WebTools__ApiKey: ${BRAVE_API_KEY:?Set BRAVE_API_KEY in your .env file}
-      # ── Embedding (optional — enables hybrid vector search) ──
-      # When set, memory/skills/working memory use cosine similarity alongside BM25.
-      # Falls back to BM25-only when not configured — no functionality is lost.
-      # Embedding__Endpoint: ${EMBEDDING_ENDPOINT:-}
-      # Embedding__Model: ${EMBEDDING_MODEL:-}
-      # Embedding__ApiKey: ${EMBEDDING_API_KEY:-}
-      # ── Agent data paths ──
-      AgentProfile__BasePath: /data/agent
-      Memory__BasePath: /data/agent/memory
-      Skill__BasePath: /data/agent/skills
-      McpBridge__ConfigPath: /data/agent/mcp.json
-      ModelBehaviors__BasePath: /data/agent/model-behaviors
-      # ── Timezone (set to your IANA timezone) ──
-      Agent__Timezone: ${AGENT_TIMEZONE:-America/Chicago}
-    volumes:
-      - agent-data:/data/agent
-
-  blazor:
-    image: rockylhotka/rockbot-blazor:latest
-    depends_on:
-      rabbitmq:
-        condition: service_healthy
-    ports:
-      - "8080:8080"
-    environment:
-      RabbitMq__HostName: rabbitmq
-      RabbitMq__Port: "5672"
-      RabbitMq__UserName: rockbot
-      RabbitMq__Password: rockbot
-      RabbitMq__VirtualHost: /
-
-volumes:
-  rabbitmq-data:
-  agent-data:
+```
+deploy/docker-compose/
+  docker-compose.yml   # RabbitMQ + Agent + Blazor UI
+  .env.example         # Template for your API keys
 ```
 
-## 2. Create the `.env` file
+Copy them to a working directory (or run directly from the repo):
 
-Create a `.env` file in the same directory as your `docker-compose.yml`:
+```bash
+cp deploy/docker-compose/.env.example deploy/docker-compose/.env
+```
+
+Edit the `.env` file and fill in your API keys:
 
 ```env
 # REQUIRED — your OpenAI-compatible API key
@@ -149,28 +38,14 @@ LLM_API_KEY=sk-or-v1-your-openrouter-key-here
 
 # REQUIRED — Brave Search API key
 BRAVE_API_KEY=BSA-your-brave-key-here
-
-# OPTIONAL — override the LLM endpoint and model
-# LLM_ENDPOINT=https://openrouter.ai/api/v1
-# LLM_MODEL_ID=anthropic/claude-haiku-4.5
-
-# OPTIONAL — your IANA timezone (defaults to America/Chicago)
-# AGENT_TIMEZONE=America/New_York
-
-# OPTIONAL — text embedding model for hybrid vector search (BM25 + cosine similarity).
-# When configured, memory, skills, and working memory recall improves via vector search.
-# Falls back to BM25-only keyword search when not set — no functionality is lost.
-# Any OpenAI-compatible embedding endpoint works (OpenAI, Ollama, Azure, etc.)
-# EMBEDDING_ENDPOINT=http://host.docker.internal:11434   # Ollama running on the host
-# EMBEDDING_MODEL=nomic-embed-text
-# EMBEDDING_API_KEY=                                      # not needed for Ollama
 ```
 
 > **Do not commit the `.env` file to version control.** It contains your API keys.
 
-## 3. Start everything
+## 2. Start everything
 
 ```bash
+cd deploy/docker-compose
 docker compose up -d
 ```
 
@@ -182,7 +57,7 @@ docker compose logs -f agent
 
 Look for log output indicating the agent has connected to RabbitMQ and is listening for messages.
 
-## 4. Chat with the agent
+## 3. Chat with the agent
 
 Open your browser to **[http://localhost:8080](http://localhost:8080)** to access the Blazor chat UI.
 
@@ -193,7 +68,7 @@ Start a conversation — the agent will respond using your configured LLM. Try t
 - Ask it to recall something ("what do you know about me?")
 - Ask it about its skills or capabilities
 
-## 5. Monitor and debug
+## 4. Monitor and debug
 
 **RabbitMQ Management UI**: [http://localhost:15672](http://localhost:15672) (login: `rockbot` / `rockbot`)
 
