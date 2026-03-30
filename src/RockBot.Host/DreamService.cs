@@ -28,6 +28,7 @@ internal sealed class DreamService : IHostedService, IDisposable
     private readonly IConversationLog? _conversationLog;
     private readonly TierRoutingLogger? _tierRoutingLogger;
     private readonly IDlqSampler? _dlqSampler;
+    private readonly IToolCallLog? _toolCallLog;
     private readonly ILlmClient _llmClient;
     private readonly IUserActivityMonitor _userActivityMonitor;
     private readonly AgentClock _clock;
@@ -44,6 +45,7 @@ internal sealed class DreamService : IHostedService, IDisposable
     private string? _memoryMiningDirective;
     private string? _episodeDirective;
     private string? _tierRoutingDirective;
+    private string? _sequenceSkillDirective;
     private string? _dlqDirective;
 
     public DreamService(
@@ -59,7 +61,8 @@ internal sealed class DreamService : IHostedService, IDisposable
         ISkillUsageStore? skillUsageStore = null,
         IConversationLog? conversationLog = null,
         TierRoutingLogger? tierRoutingLogger = null,
-        IDlqSampler? dlqSampler = null)
+        IDlqSampler? dlqSampler = null,
+        IToolCallLog? toolCallLog = null)
     {
         _memory = memory;
         _skillStore = skillStores.FirstOrDefault();
@@ -68,6 +71,7 @@ internal sealed class DreamService : IHostedService, IDisposable
         _conversationLog = conversationLog;
         _tierRoutingLogger = tierRoutingLogger;
         _dlqSampler = dlqSampler;
+        _toolCallLog = toolCallLog;
         _llmClient = llmClient;
         _userActivityMonitor = userActivityMonitor;
         _clock = clock;
@@ -187,6 +191,19 @@ internal sealed class DreamService : IHostedService, IDisposable
                 _logger.LogDebug("DreamService: tier routing directive not found at {Path}; using built-in", tierRoutingDirectivePath);
             else
                 _logger.LogInformation("DreamService: loaded tier routing directive from {Path}", tierRoutingDirectivePath);
+        }
+
+        if (_options.SequenceSkillDetectionEnabled && _toolCallLog is not null && _skillStore is not null)
+        {
+            var sequenceSkillDirectivePath = ResolvePath(_options.SequenceSkillDirectivePath, _profileOptions.BasePath);
+            _sequenceSkillDirective = File.Exists(sequenceSkillDirectivePath)
+                ? File.ReadAllText(sequenceSkillDirectivePath)
+                : null;
+
+            if (!File.Exists(sequenceSkillDirectivePath))
+                _logger.LogDebug("DreamService: sequence skill directive not found at {Path}; using built-in", sequenceSkillDirectivePath);
+            else
+                _logger.LogInformation("DreamService: loaded sequence skill directive from {Path}", sequenceSkillDirectivePath);
         }
 
         if (_options.DlqReviewEnabled && _dlqSampler is not null)
@@ -428,6 +445,8 @@ internal sealed class DreamService : IHostedService, IDisposable
             await RunMemoryMiningPassAsync();
 
             await RunPreferenceInferencePassAsync();
+
+            await RunSequenceSkillDetectionPassAsync();
 
             await RunTierRoutingReviewPassAsync();
 
@@ -1668,6 +1687,140 @@ internal sealed class DreamService : IHostedService, IDisposable
             result.Config.Notes ?? "(none)");
     }
 
+    // ── Built-in sequence skill directive ────────────────────────────────────
+    private const string BuiltInSequenceSkillDirective = """
+        You are a procedural skill synthesis assistant. Analyze the tool-call sequences
+        provided and identify repeated multi-step workflows (2+ tools, 3+ sessions).
+        Return a JSON object with a "toSave" array of skill objects, each with
+        "name", "summary", and "content" fields. If no patterns found: { "toSave": [] }
+        """;
+
+    /// <summary>
+    /// Analyzes tool-call sequences across recent sessions to detect repeated action patterns
+    /// and synthesize them into reusable skills. Requires <see cref="IToolCallLog"/> and
+    /// <see cref="ISkillStore"/> to be available.
+    /// </summary>
+    private async Task RunSequenceSkillDetectionPassAsync()
+    {
+        if (_toolCallLog is null || _skillStore is null || !_options.SequenceSkillDetectionEnabled)
+            return;
+
+        try
+        {
+            var events = await _toolCallLog.QueryRecentAsync(
+                DateTimeOffset.UtcNow.AddDays(-14), maxResults: 10_000);
+
+            if (events.Count < 10)
+            {
+                _logger.LogDebug(
+                    "DreamService: sequence skill detection — only {Count} tool-call events; skipping",
+                    events.Count);
+                return;
+            }
+
+            _logger.LogInformation(
+                "DreamService: sequence skill detection pass — {Count} tool-call events",
+                events.Count);
+
+            // Group by session and build per-session tool sequences
+            var sessions = events
+                .GroupBy(e => e.SessionId)
+                .Where(g => g.Count() >= 2) // Only sessions with 2+ tool calls
+                .ToDictionary(g => g.Key, g => g.OrderBy(e => e.Timestamp).ToList());
+
+            if (sessions.Count < 3)
+            {
+                _logger.LogDebug("DreamService: sequence skill detection — fewer than 3 multi-tool sessions; skipping");
+                return;
+            }
+
+            // Get existing skill names to avoid duplicates
+            var existingSkills = await _skillStore.ListAsync();
+            var existingNames = existingSkills.Select(s => s.Name).ToList();
+
+            // Build prompt with session sequences
+            var userMessage = new StringBuilder();
+            userMessage.AppendLine($"Tool-call sequences from {sessions.Count} recent sessions:");
+            userMessage.AppendLine();
+
+            foreach (var (sessionId, calls) in sessions.Take(50)) // Cap at 50 sessions
+            {
+                userMessage.AppendLine($"Session {sessionId} ({calls.Count} calls):");
+                foreach (var call in calls)
+                {
+                    var status = call.Succeeded ? "ok" : "failed";
+                    var args = string.IsNullOrEmpty(call.ArgumentsSummary) ? "" : $" args=[{call.ArgumentsSummary}]";
+                    userMessage.AppendLine($"  {call.ToolName}{args} → {status} ({call.DurationMs}ms)");
+                }
+                userMessage.AppendLine();
+            }
+
+            if (existingNames.Count > 0)
+            {
+                userMessage.AppendLine("Existing skills (do not duplicate):");
+                foreach (var name in existingNames)
+                    userMessage.AppendLine($"  - {name}");
+            }
+
+            var messages = new List<ChatMessage>
+            {
+                new(ChatRole.System, _sequenceSkillDirective ?? BuiltInSequenceSkillDirective),
+                new(ChatRole.User, userMessage.ToString())
+            };
+
+            var response = await _llmClient.GetResponseAsync(
+                messages, ModelTier.Balanced, new ChatOptions { ResponseFormat = ChatResponseFormat.Json });
+            var raw = response.Text?.Trim() ?? string.Empty;
+            var json = ExtractJsonObject(raw);
+
+            if (string.IsNullOrEmpty(json))
+            {
+                _logger.LogWarning("DreamService: sequence skill detection LLM returned no parseable JSON; skipping");
+                return;
+            }
+
+            _logger.LogDebug("DreamService: sequence skill detection JSON ({Length} chars): {Json}", json.Length, json);
+
+            var result = TryDeserializeJson<SequenceSkillResultDto>(json, "sequence skill detection");
+            var created = 0;
+
+            foreach (var dto in result?.ToSave ?? [])
+            {
+                if (string.IsNullOrWhiteSpace(dto.Name) || string.IsNullOrWhiteSpace(dto.Content))
+                    continue;
+
+                // Skip if skill already exists
+                var existing = await _skillStore.GetAsync(dto.Name);
+                if (existing is not null)
+                {
+                    _logger.LogDebug("DreamService: sequence skill '{Name}' already exists; skipping", dto.Name);
+                    continue;
+                }
+
+                var skill = new Skill(
+                    Name: dto.Name.Trim(),
+                    Summary: dto.Summary?.Trim() ?? dto.Name,
+                    Content: dto.Content.Trim(),
+                    CreatedAt: DateTimeOffset.UtcNow,
+                    UpdatedAt: DateTimeOffset.UtcNow);
+
+                await _skillStore.SaveAsync(skill);
+                created++;
+                _logger.LogInformation(
+                    "DreamService: sequence skill detection created skill '{Name}': {Summary}",
+                    skill.Name, skill.Summary);
+            }
+
+            _logger.LogInformation(
+                "DreamService: sequence skill detection pass complete — {Created} skills created from {SessionCount} sessions",
+                created, sessions.Count);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "DreamService: sequence skill detection pass failed");
+        }
+    }
+
     /// <summary>
     /// Inspects non-empty dead-letter queues, asks the LLM to classify failure patterns,
     /// saves patterns as memory entries, and purges queues the LLM deems safe to clear.
@@ -2087,6 +2240,10 @@ internal sealed class DreamService : IHostedService, IDisposable
     private sealed record SkillGapResultDto(List<SkillGapEntryDto>? ToSave);
 
     private sealed record SkillGapEntryDto(string Name, string? Summary, string Content);
+
+    private sealed record SequenceSkillResultDto(List<SequenceSkillEntryDto>? ToSave);
+
+    private sealed record SequenceSkillEntryDto(string Name, string? Summary, string Content);
 
     private sealed record DlqReviewResultDto(
         bool? NoDlqIssues,
