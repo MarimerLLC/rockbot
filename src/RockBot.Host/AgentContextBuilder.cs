@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using RockBot.Llm;
 using RockBot.Memory;
 using RockBot.Skills;
@@ -26,10 +27,14 @@ public sealed class AgentContextBuilder(
     SkillRecallTracker skillRecallTracker,
     AgentClock clock,
     IEnumerable<IServiceSearchIndex> serviceSearchIndexProviders,
+    IEnumerable<IKnowledgeGraph> knowledgeGraphProviders,
+    IOptions<KnowledgeGraphOptions> knowledgeGraphOptions,
     ILogger<AgentContextBuilder> logger)
 {
     private const int MaxLlmContextTurns = 20;
     private readonly IServiceSearchIndex? _serviceSearchIndex = serviceSearchIndexProviders.FirstOrDefault();
+    private readonly IKnowledgeGraph? _knowledgeGraph = knowledgeGraphProviders.FirstOrDefault();
+    private readonly KnowledgeGraphOptions _graphOptions = knowledgeGraphOptions.Value;
 
     /// <summary>
     /// Builds the full chat message list for one LLM call: system prompt, rules, history,
@@ -146,6 +151,38 @@ public sealed class AgentContextBuilder(
                 logger.LogInformation(
                     "Injected {Count} episodic memory entries for session {SessionId}",
                     newEpisodes.Count, sessionId);
+            }
+        }
+
+        // Knowledge graph expansion — detect entities in the query, traverse relationships
+        if (_knowledgeGraph is not null)
+        {
+            var matchedEntities = await _knowledgeGraph.FindEntitiesByNameAsync(currentUserContent);
+            if (matchedEntities.Count > 0)
+            {
+                var seedIds = matchedEntities.Select(e => e.Id).ToList();
+
+                // Track that these entities were actively referenced
+                _ = _knowledgeGraph.TouchEntitiesAsync(seedIds);
+
+                var triples = await _knowledgeGraph.TraverseAsync(seedIds, _graphOptions.MaxHops);
+
+                var newTriples = triples
+                    .Take(_graphOptions.MaxExpandedTriples)
+                    .ToList();
+
+                if (newTriples.Count > 0)
+                {
+                    var lines = newTriples.Select(t =>
+                        $"- {t.Subject} --{t.Predicate}--> {t.Object} (confidence={t.Confidence:F2})");
+                    var graphContext =
+                        "Related knowledge graph connections:\n" +
+                        string.Join("\n", lines);
+                    chatMessages.Add(new ChatMessage(ChatRole.System, graphContext));
+                    logger.LogInformation(
+                        "Injected {Count} knowledge graph triples for {EntityCount} matched entities in session {SessionId}",
+                        newTriples.Count, matchedEntities.Count, sessionId);
+                }
             }
         }
 

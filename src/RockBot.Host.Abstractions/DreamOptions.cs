@@ -92,6 +92,24 @@ public sealed class DreamOptions
     /// </summary>
     public string SequenceSkillDirectivePath { get; set; } = "sequence-skill.md";
 
+    /// <summary>Whether the entity extraction pass (requires <see cref="IKnowledgeGraph"/>) is enabled.</summary>
+    public bool EntityExtractionEnabled { get; set; } = true;
+
+    /// <summary>
+    /// Path to the entity extraction directive file, relative to <see cref="AgentProfileOptions.BasePath"/>.
+    /// When the file does not exist, a built-in fallback directive is used.
+    /// </summary>
+    public string EntityExtractionDirectivePath { get; set; } = "entity-dream.md";
+
+    /// <summary>Whether the graph consolidation pass (requires <see cref="IKnowledgeGraph"/>) is enabled.</summary>
+    public bool GraphConsolidationEnabled { get; set; } = true;
+
+    /// <summary>
+    /// Path to the graph consolidation directive file, relative to <see cref="AgentProfileOptions.BasePath"/>.
+    /// When the file does not exist, a built-in fallback directive is used.
+    /// </summary>
+    public string GraphConsolidationDirectivePath { get; set; } = "graph-consolidation-dream.md";
+
     /// <summary>
     /// Whether the dead-letter queue review pass is enabled.
     /// Requires <c>RabbitMq:ManagementApiBaseUrl</c> to be configured.

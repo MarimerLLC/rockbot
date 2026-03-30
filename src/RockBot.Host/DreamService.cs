@@ -29,6 +29,7 @@ internal sealed class DreamService : IHostedService, IDisposable
     private readonly TierRoutingLogger? _tierRoutingLogger;
     private readonly IDlqSampler? _dlqSampler;
     private readonly IToolCallLog? _toolCallLog;
+    private readonly IKnowledgeGraph? _knowledgeGraph;
     private readonly ILlmClient _llmClient;
     private readonly IUserActivityMonitor _userActivityMonitor;
     private readonly AgentClock _clock;
@@ -46,6 +47,8 @@ internal sealed class DreamService : IHostedService, IDisposable
     private string? _episodeDirective;
     private string? _tierRoutingDirective;
     private string? _sequenceSkillDirective;
+    private string? _entityExtractionDirective;
+    private string? _graphConsolidationDirective;
     private string? _dlqDirective;
 
     public DreamService(
@@ -62,7 +65,8 @@ internal sealed class DreamService : IHostedService, IDisposable
         IConversationLog? conversationLog = null,
         TierRoutingLogger? tierRoutingLogger = null,
         IDlqSampler? dlqSampler = null,
-        IToolCallLog? toolCallLog = null)
+        IToolCallLog? toolCallLog = null,
+        IKnowledgeGraph? knowledgeGraph = null)
     {
         _memory = memory;
         _skillStore = skillStores.FirstOrDefault();
@@ -72,6 +76,7 @@ internal sealed class DreamService : IHostedService, IDisposable
         _tierRoutingLogger = tierRoutingLogger;
         _dlqSampler = dlqSampler;
         _toolCallLog = toolCallLog;
+        _knowledgeGraph = knowledgeGraph;
         _llmClient = llmClient;
         _userActivityMonitor = userActivityMonitor;
         _clock = clock;
@@ -165,6 +170,29 @@ internal sealed class DreamService : IHostedService, IDisposable
                 _logger.LogDebug("DreamService: episode directive not found at {Path}; using built-in", episodeDirectivePath);
             else
                 _logger.LogInformation("DreamService: loaded episode directive from {Path}", episodeDirectivePath);
+        }
+
+        if (_knowledgeGraph is not null)
+        {
+            var entityDirectivePath = ResolvePath(_options.EntityExtractionDirectivePath, _profileOptions.BasePath);
+            _entityExtractionDirective = File.Exists(entityDirectivePath)
+                ? File.ReadAllText(entityDirectivePath)
+                : null; // null → BuiltInEntityExtractionDirective used in RunEntityExtractionPassAsync
+
+            if (!File.Exists(entityDirectivePath))
+                _logger.LogDebug("DreamService: entity extraction directive not found at {Path}; using built-in", entityDirectivePath);
+            else
+                _logger.LogInformation("DreamService: loaded entity extraction directive from {Path}", entityDirectivePath);
+
+            var graphConsolidationPath = ResolvePath(_options.GraphConsolidationDirectivePath, _profileOptions.BasePath);
+            _graphConsolidationDirective = File.Exists(graphConsolidationPath)
+                ? File.ReadAllText(graphConsolidationPath)
+                : null; // null → BuiltInGraphConsolidationDirective used in RunGraphConsolidationPassAsync
+
+            if (!File.Exists(graphConsolidationPath))
+                _logger.LogDebug("DreamService: graph consolidation directive not found at {Path}; using built-in", graphConsolidationPath);
+            else
+                _logger.LogInformation("DreamService: loaded graph consolidation directive from {Path}", graphConsolidationPath);
         }
 
         if (_skillStore is not null && _conversationLog is not null)
@@ -441,6 +469,10 @@ internal sealed class DreamService : IHostedService, IDisposable
                 await ConsolidateSkillsAsync();
 
             await RunEpisodeExtractionPassAsync();
+
+            await RunEntityExtractionPassAsync();
+
+            await RunGraphConsolidationPassAsync();
 
             await RunMemoryMiningPassAsync();
 
@@ -1332,6 +1364,244 @@ internal sealed class DreamService : IHostedService, IDisposable
         catch (Exception ex)
         {
             _logger.LogError(ex, "DreamService: episode extraction pass failed");
+        }
+    }
+
+    /// <summary>
+    /// Extracts entities and relationships from episodic memories and conversation logs,
+    /// populating the knowledge graph triple store for relational reasoning.
+    /// </summary>
+    private async Task RunEntityExtractionPassAsync()
+    {
+        if (_knowledgeGraph is null || !_options.EntityExtractionEnabled)
+            return;
+
+        if (_conversationLog is null)
+        {
+            _logger.LogDebug("DreamService: entity extraction — no conversation log; skipping");
+            return;
+        }
+
+        var entries = await _conversationLog.ReadAllAsync();
+        if (entries.Count == 0)
+        {
+            _logger.LogDebug("DreamService: entity extraction — no log entries; skipping");
+            return;
+        }
+
+        _logger.LogInformation("DreamService: entity extraction pass — {Count} log entries to analyze", entries.Count);
+
+        try
+        {
+            // Provide existing entities so the LLM can reference/update them
+            var existingEntities = await _knowledgeGraph.ListEntitiesAsync();
+
+            var userMessage = new StringBuilder();
+            userMessage.AppendLine("Review the following conversation log and extract entities and relationships.");
+            userMessage.AppendLine();
+
+            if (existingEntities.Count > 0)
+            {
+                userMessage.AppendLine("## Existing entities (reference these IDs when creating relationships)");
+                foreach (var ent in existingEntities)
+                {
+                    var aliases = ent.Aliases.Count > 0 ? $" (aliases: {string.Join(", ", ent.Aliases)})" : "";
+                    userMessage.AppendLine($"- [{ent.Id}] {ent.EntityType}: {ent.Name}{aliases}");
+                }
+                userMessage.AppendLine();
+            }
+
+            userMessage.AppendLine("## Conversation log");
+            var bySession = entries
+                .GroupBy(e => e.SessionId)
+                .ToDictionary(g => g.Key, g => g.ToList());
+
+            foreach (var (sessionId, sessionEntries) in bySession)
+            {
+                userMessage.AppendLine($"### Session: {sessionId}");
+                foreach (var e in sessionEntries)
+                    userMessage.AppendLine($"[{e.Role}] {e.Content}");
+                userMessage.AppendLine();
+            }
+
+            var messages = new List<ChatMessage>
+            {
+                new(ChatRole.System, _entityExtractionDirective ?? BuiltInEntityExtractionDirective),
+                new(ChatRole.User, userMessage.ToString())
+            };
+
+            var response = await _llmClient.GetResponseAsync(messages, ModelTier.Balanced,
+                new ChatOptions { ResponseFormat = ChatResponseFormat.Json });
+            var raw = response.Text?.Trim() ?? string.Empty;
+            var json = ExtractJsonObject(raw);
+
+            if (string.IsNullOrEmpty(json))
+            {
+                _logger.LogWarning("DreamService: entity extraction LLM returned no parseable JSON; skipping");
+                return;
+            }
+
+            _logger.LogDebug("DreamService: entity extraction JSON ({Length} chars): {Json}", json.Length, json);
+
+            var result = TryDeserializeJson<EntityExtractionResultDto>(json, "entity extraction");
+            var entitiesCreated = 0;
+            var triplesCreated = 0;
+
+            foreach (var dto in result?.Entities ?? [])
+            {
+                if (string.IsNullOrWhiteSpace(dto.Name))
+                    continue;
+
+                var entityType = Enum.TryParse<KnowledgeEntityType>(dto.EntityType, ignoreCase: true, out var parsed)
+                    ? parsed
+                    : KnowledgeEntityType.Topic;
+
+                var entity = new KnowledgeEntity(
+                    Id: dto.Id ?? Guid.NewGuid().ToString("N")[..12],
+                    Name: dto.Name.Trim(),
+                    EntityType: entityType,
+                    Aliases: dto.Aliases ?? [],
+                    Metadata: dto.Metadata,
+                    CreatedAt: DateTimeOffset.UtcNow);
+
+                await _knowledgeGraph.SaveEntityAsync(entity);
+                entitiesCreated++;
+                _logger.LogDebug("DreamService: created entity {Id} ({Type}: {Name})",
+                    entity.Id, entity.EntityType, entity.Name);
+            }
+
+            foreach (var dto in result?.Triples ?? [])
+            {
+                if (string.IsNullOrWhiteSpace(dto.Subject) ||
+                    string.IsNullOrWhiteSpace(dto.Predicate) ||
+                    string.IsNullOrWhiteSpace(dto.Object))
+                    continue;
+
+                var triple = new KnowledgeTriple(
+                    Id: Guid.NewGuid().ToString("N")[..12],
+                    Subject: dto.Subject.Trim(),
+                    Predicate: dto.Predicate.Trim(),
+                    Object: dto.Object.Trim(),
+                    Confidence: Math.Clamp(dto.Confidence ?? 0.5f, 0f, 1f),
+                    SourceEpisodeId: dto.SourceEpisodeId,
+                    CreatedAt: DateTimeOffset.UtcNow);
+
+                await _knowledgeGraph.SaveTripleAsync(triple);
+                triplesCreated++;
+                _logger.LogDebug("DreamService: created triple {Id}: {Subject} --{Predicate}--> {Object}",
+                    triple.Id, triple.Subject, triple.Predicate, triple.Object);
+            }
+
+            _logger.LogInformation(
+                "DreamService: entity extraction pass complete — {Entities} entities, {Triples} triples created",
+                entitiesCreated, triplesCreated);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "DreamService: entity extraction pass failed");
+        }
+    }
+
+    /// <summary>
+    /// Reviews the knowledge graph for stale, redundant, or low-quality entries and asks the
+    /// LLM to decide what to delete or merge. Runs after entity extraction so newly created
+    /// entities are included in the review.
+    /// </summary>
+    private async Task RunGraphConsolidationPassAsync()
+    {
+        if (_knowledgeGraph is null || !_options.GraphConsolidationEnabled)
+            return;
+
+        var entities = await _knowledgeGraph.ListEntitiesAsync();
+        var triples = await _knowledgeGraph.ListTriplesAsync();
+
+        if (entities.Count == 0 && triples.Count == 0)
+        {
+            _logger.LogDebug("DreamService: graph consolidation — empty graph; skipping");
+            return;
+        }
+
+        _logger.LogInformation(
+            "DreamService: graph consolidation pass — {Entities} entities, {Triples} triples to review",
+            entities.Count, triples.Count);
+
+        try
+        {
+            var now = _clock.Now;
+            var userMessage = new StringBuilder();
+            userMessage.AppendLine("Review the following knowledge graph and identify entries to delete or merge.");
+            userMessage.AppendLine($"Current date/time: {now:yyyy-MM-dd HH:mm:ss zzz}");
+            userMessage.AppendLine();
+
+            userMessage.AppendLine("## Entities");
+            foreach (var e in entities)
+            {
+                var aliases = e.Aliases.Count > 0 ? $" (aliases: {string.Join(", ", e.Aliases)})" : "";
+                var lastRef = e.LastReferencedAt.HasValue
+                    ? $", lastReferenced={e.LastReferencedAt.Value:yyyy-MM-dd}"
+                    : ", lastReferenced=never";
+                var meta = e.Metadata is { Count: > 0 }
+                    ? $", metadata={{{string.Join(", ", e.Metadata.Select(kv => $"{kv.Key}={kv.Value}"))}}}"
+                    : "";
+                userMessage.AppendLine(
+                    $"- [{e.Id}] {e.EntityType}: {e.Name}{aliases} (created={e.CreatedAt:yyyy-MM-dd}{lastRef}{meta})");
+            }
+            userMessage.AppendLine();
+
+            userMessage.AppendLine("## Triples");
+            foreach (var t in triples)
+            {
+                var source = t.SourceEpisodeId is not null ? $", source={t.SourceEpisodeId}" : "";
+                userMessage.AppendLine(
+                    $"- [{t.Id}] {t.Subject} --{t.Predicate}--> {t.Object} (confidence={t.Confidence:F2}, created={t.CreatedAt:yyyy-MM-dd}{source})");
+            }
+
+            var messages = new List<ChatMessage>
+            {
+                new(ChatRole.System, _graphConsolidationDirective ?? BuiltInGraphConsolidationDirective),
+                new(ChatRole.User, userMessage.ToString())
+            };
+
+            var response = await _llmClient.GetResponseAsync(messages, ModelTier.Balanced,
+                new ChatOptions { ResponseFormat = ChatResponseFormat.Json });
+            var raw = response.Text?.Trim() ?? string.Empty;
+            var json = ExtractJsonObject(raw);
+
+            if (string.IsNullOrEmpty(json))
+            {
+                _logger.LogWarning("DreamService: graph consolidation LLM returned no parseable JSON; skipping");
+                return;
+            }
+
+            _logger.LogDebug("DreamService: graph consolidation JSON ({Length} chars): {Json}", json.Length, json);
+
+            var result = TryDeserializeJson<GraphConsolidationResultDto>(json, "graph consolidation");
+            var entitiesDeleted = 0;
+            var triplesDeleted = 0;
+
+            foreach (var id in result?.DeleteEntities ?? [])
+            {
+                if (string.IsNullOrWhiteSpace(id)) continue;
+                await _knowledgeGraph.DeleteEntityAsync(id);
+                entitiesDeleted++;
+                _logger.LogDebug("DreamService: graph consolidation deleted entity {Id}", id);
+            }
+
+            foreach (var id in result?.DeleteTriples ?? [])
+            {
+                if (string.IsNullOrWhiteSpace(id)) continue;
+                await _knowledgeGraph.DeleteTripleAsync(id);
+                triplesDeleted++;
+                _logger.LogDebug("DreamService: graph consolidation deleted triple {Id}", id);
+            }
+
+            _logger.LogInformation(
+                "DreamService: graph consolidation pass complete — {EntitiesDeleted} entities deleted, {TriplesDeleted} triples deleted",
+                entitiesDeleted, triplesDeleted);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "DreamService: graph consolidation pass failed");
         }
     }
 
@@ -2277,6 +2547,155 @@ internal sealed class DreamService : IHostedService, IDisposable
         string Content,
         float? Importance,
         IReadOnlyList<string>? SourceSessions);
+
+    private sealed record EntityExtractionResultDto(
+        List<EntityDto>? Entities,
+        List<TripleDto>? Triples);
+
+    private sealed record EntityDto(
+        string? Id,
+        string Name,
+        string EntityType,
+        IReadOnlyList<string>? Aliases,
+        IReadOnlyDictionary<string, string>? Metadata);
+
+    private sealed record TripleDto(
+        string Subject,
+        string Predicate,
+        string Object,
+        float? Confidence,
+        string? SourceEpisodeId);
+
+    private sealed record GraphConsolidationResultDto(
+        List<string>? DeleteEntities,
+        List<string>? DeleteTriples);
+
+    private const string BuiltInEntityExtractionDirective = """
+        You are an entity and relationship extraction assistant. Your job is to identify
+        discrete entities (people, projects, topics, tools, events, documents) and the
+        relationships between them from conversation logs.
+
+        ## Entity types
+        - "Person" — contacts, collaborators, stakeholders
+        - "Project" — ongoing work, codebases, initiatives
+        - "Topic" — areas of interest, expertise, discussion themes
+        - "Tool" — MCP services, integrations, platforms, software tools
+        - "Event" — meetings, deadlines, milestones
+        - "Document" — files, emails, artifacts
+
+        ## Extraction guidelines
+
+        For entities:
+        - Use an existing entity ID when referencing a known entity (check the existing entities list)
+        - Only create new entities for genuinely new people, projects, tools, etc.
+        - Include aliases (nicknames, abbreviations, alternate spellings)
+        - Do NOT create entities for generic concepts — only specific, named things
+
+        ## Entity naming rules (IMPORTANT)
+
+        Entity names must be SHORT, stable identifiers — like a database key you would
+        recognize months later. They are matched against user messages using whole-word
+        search, so verbose names cause false matches and wasted context.
+
+        - People: first and last name only. "Rocky Lhotka", NOT "Rocky's doctor appointment"
+        - Projects: project name only. "RockBot", NOT "RockBot messaging refactor"
+        - Tools: tool name only. "Microsoft Teams", NOT "Microsoft Teams Meeting"
+        - Events: short descriptive label. "Cracker Barrel sync", NOT "INT - Cracker Barrel Update meeting with Ross"
+        - Topics: 1–3 word label. "maple syrup", NOT "Maple sap collection from trees at Rabbit Lake"
+        - Documents: file or doc name. "CLAUDE.md", NOT "the CLAUDE.md file in the rockbot repo"
+
+        Strip prefixes like "INT - ", "RE: ", meeting platform noise, dates, and locations
+        from entity names. Put those details in metadata instead.
+
+        Do NOT create an entity for every calendar event. Only create Event entities for
+        recurring or significant events the user would ask about later. A one-off dentist
+        appointment is not a useful graph entity.
+
+        ## Relationship rules
+
+        For relationships (triples):
+        - ALWAYS use entity IDs (not names) as subject and object when the entity already
+          exists in the "Existing entities" list. Only use a name when creating a brand-new
+          entity in the same response.
+        - Use clear, lowercase predicate verbs: "works_on", "created", "knows", "uses",
+          "maintains", "reports_to", "depends_on", "interested_in", "attended", "wrote"
+        - Set confidence based on how explicit the evidence is:
+          - 0.9–1.0: Explicitly stated ("I work on RockBot")
+          - 0.6–0.8: Strongly implied ("Let me check the RockBot tests" → uses/works_on)
+          - 0.3–0.5: Weakly implied or inferred from context
+
+        ## Response format
+
+        Return ONLY a JSON object:
+        {
+          "entities": [
+            {
+              "id": "existing-id-or-null",
+              "name": "Entity Name",
+              "entityType": "Person",
+              "aliases": ["nickname"],
+              "metadata": {"role": "developer"}
+            }
+          ],
+          "triples": [
+            {
+              "subject": "entity-id-or-name",
+              "predicate": "works_on",
+              "object": "entity-id-or-name",
+              "confidence": 0.8,
+              "sourceEpisodeId": "episode-id-if-applicable"
+            }
+          ]
+        }
+
+        If nothing worth extracting: { "entities": [], "triples": [] }
+        """;
+
+    private const string BuiltInGraphConsolidationDirective = """
+        You are a knowledge graph consolidation assistant. Review the entities and triples
+        and decide which ones should be deleted to keep the graph clean and useful.
+
+        ## Delete criteria
+
+        Delete entities that are:
+        - **Stale one-off events**: Events with dates in the past that are not recurring and
+          have never been referenced (lastReferenced=never). A dentist appointment from last
+          week is not useful graph knowledge.
+        - **Orphaned**: Entities with no triples connecting them to anything (check both the
+          entity list and triple list — if an entity ID never appears as a triple subject or object,
+          it is orphaned).
+        - **Duplicates**: Two entities representing the same real-world thing. Keep the one with
+          more triples or more recent activity; delete the other. (Do NOT merge — just delete
+          the worse copy. The extraction pass will consolidate naturally over time.)
+        - **Too generic**: Entity names that are common words rather than specific proper nouns
+          (e.g., "meeting", "update", "sync" by themselves are not useful entities).
+
+        Delete triples that are:
+        - **Dangling**: Reference an entity (by name or ID) that no longer exists in the entity
+          list, or that you are deleting in this pass.
+        - **Low confidence and stale**: Confidence below 0.4 AND created more than 14 days ago
+          AND never reinforced by a subsequent extraction pass.
+        - **Redundant**: Exact duplicate of another triple (same subject, predicate, object).
+
+        ## Preservation rules
+
+        Do NOT delete:
+        - People entities — they are almost always worth keeping even if not recently referenced
+        - Project or Tool entities that the user actively works with
+        - Entities that have been referenced (lastReferenced is not "never"), even if old —
+          the user actively queried about them
+        - High-confidence triples (≥ 0.7) unless the entity itself is being deleted
+
+        ## Response format
+
+        Return ONLY a JSON object:
+        {
+          "deleteEntities": ["entity-id-1", "entity-id-2"],
+          "deleteTriples": ["triple-id-1", "triple-id-2"]
+        }
+
+        If nothing should be deleted: { "deleteEntities": [], "deleteTriples": [] }
+        """;
 
     private const string BuiltInMemoryMiningDirective = """
         You are a memory mining assistant. Review the conversation log and extract facts worth

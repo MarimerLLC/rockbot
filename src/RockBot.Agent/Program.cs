@@ -179,6 +179,7 @@ builder.Services.AddRockBotHost(agent =>
     agent.WithConversationLog();
     agent.WithFeedback();
     agent.WithSkills();
+    agent.WithKnowledgeGraph();
     agent.WithDreaming();
     agent.AddToolHandler();
     agent.AddMcpToolProxy();

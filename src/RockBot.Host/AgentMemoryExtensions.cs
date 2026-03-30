@@ -176,4 +176,21 @@ public static class AgentMemoryExtensions
 
         return builder;
     }
+
+    /// <summary>
+    /// Registers the file-backed knowledge graph store for entity-relationship reasoning.
+    /// </summary>
+    public static AgentHostBuilder WithKnowledgeGraph(
+        this AgentHostBuilder builder,
+        Action<KnowledgeGraphOptions>? configure = null)
+    {
+        if (configure is not null)
+            builder.Services.Configure(configure);
+        else
+            builder.Services.Configure<KnowledgeGraphOptions>(_ => { });
+
+        builder.Services.AddSingleton<IKnowledgeGraph, FileKnowledgeGraphStore>();
+
+        return builder;
+    }
 }
