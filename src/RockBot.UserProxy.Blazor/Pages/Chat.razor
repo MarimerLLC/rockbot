@@ -42,7 +42,7 @@
                          @onclick="() => ChatState.ToggleExpanded(message.MessageId)">
                         <div class="activity-log-header">
                             <span class="chevron-indicator @(message.IsExpanded ? "open" : "")">&#9654;</span>
-                            @if (ChatState.IsProcessing)
+                            @if (ChatState.IsActiveActivityLog(message.MessageId))
                             {
                                 <span class="spinner-border spinner-border-sm me-1" role="status" aria-hidden="true"></span>
                             }
@@ -250,6 +250,16 @@
                 aria-label="Send message">
                 Send
             </button>
+            @if (ChatState.IsProcessing)
+            {
+                <button
+                    type="button"
+                    class="btn btn-outline-danger btn-sm"
+                    @onclick="CancelSession"
+                    aria-label="Cancel current work">
+                    Cancel
+                </button>
+            }
         </form>
     </div>
 </div>
@@ -338,6 +348,18 @@
             _renderedMessageCount = currentCount;
             await JSRuntime.InvokeVoidAsync("eval",
                 "var msgs = document.querySelectorAll('.message-wrapper'); if (msgs.length) msgs[msgs.length - 1].scrollIntoView({ behavior: 'smooth', block: 'start' });");
+        }
+    }
+
+    private async Task CancelSession()
+    {
+        try
+        {
+            await ProxyService.CancelSessionAsync(SessionId);
+        }
+        catch (Exception ex)
+        {
+            ChatState.AddError($"Could not cancel: {ex.Message}");
         }
     }
 

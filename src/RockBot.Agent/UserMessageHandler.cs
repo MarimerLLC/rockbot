@@ -253,7 +253,7 @@ internal sealed class UserMessageHandler(
                     turnActivityHandedOff = true;
                     context.Items[WipConstants.DeferredKey] = true;
                     _ = BackgroundToolLoopAsync(
-                        chatMessages, chatOptions, firstResponse, tier,
+                        chatMessages, chatOptions, firstResponse, tier, classification.ComplexityScore,
                         message.SessionId, replyTo, correlationId, sessionHandle.Generation, wipMessageId, turnActivity, sessionCt);
                 }
                 else
@@ -273,7 +273,7 @@ internal sealed class UserMessageHandler(
                         turnActivityHandedOff = true;
                         context.Items[WipConstants.DeferredKey] = true;
                         _ = BackgroundToolLoopAsync(
-                            chatMessages, chatOptions, firstResponse, tier,
+                            chatMessages, chatOptions, firstResponse, tier, classification.ComplexityScore,
                             message.SessionId, replyTo, correlationId, sessionHandle.Generation, wipMessageId, turnActivity, sessionCt);
                     }
                     else if (modelBehavior.NudgeOnHallucinatedToolCalls
@@ -290,7 +290,7 @@ internal sealed class UserMessageHandler(
                         turnActivityHandedOff = true;
                         context.Items[WipConstants.DeferredKey] = true;
                         _ = BackgroundToolLoopAsync(
-                            chatMessages, chatOptions, firstResponse, tier,
+                            chatMessages, chatOptions, firstResponse, tier, classification.ComplexityScore,
                             message.SessionId, replyTo, correlationId, sessionHandle.Generation, wipMessageId, turnActivity, sessionCt);
                     }
                     else
@@ -377,6 +377,16 @@ internal sealed class UserMessageHandler(
     {
         var loopSw = System.Diagnostics.Stopwatch.StartNew();
         var nativeTierTag = new KeyValuePair<string, object?>("rockbot.llm.tier", classification.Tier.ToString());
+
+        // Subscribe to fallback events so the user sees model switches in the UI.
+        var fallbackClient = registry.GetClient(classification.Tier)
+            .GetService<FallbackChatClient>();
+        void OnFallback(string from, string to, string reason) =>
+            _ = PublishReplyAsync(
+                $"Switching models ({reason}) — retrying with {to}…",
+                replyTo, correlationId, sessionId, isFinal: false, ct);
+        if (fallbackClient is not null) fallbackClient.OnFallback += OnFallback;
+
         try
         {
             await using var slot = await workSerializer.AcquireForUserAsync(ct);
@@ -395,6 +405,7 @@ internal sealed class UserMessageHandler(
 
             var text = await agentLoopRunner.RunAsync(
                 chatMessages, chatOptions, sessionId, tier: classification.Tier,
+                complexityScore: classification.ComplexityScore,
                 onPreToolCall: async (desc, ct2) =>
                 {
                     await PublishReplyAsync($"Working on it — checking {desc}…", replyTo, correlationId, sessionId, isFinal: false, ct2);
@@ -412,6 +423,11 @@ internal sealed class UserMessageHandler(
                     await PublishReplyAsync(
                         $"The {desc} service is taking too long to respond — trying a different approach…",
                         replyTo, correlationId, sessionId, isFinal: false, ct2);
+                    lastProgressAt = DateTimeOffset.UtcNow;
+                },
+                onStageProgress: async (stage, ct2) =>
+                {
+                    await PublishReplyAsync(stage, replyTo, correlationId, sessionId, isFinal: false, ct2);
                     lastProgressAt = DateTimeOffset.UtcNow;
                 },
                 cancellationToken: ct);
@@ -470,6 +486,7 @@ internal sealed class UserMessageHandler(
         }
         finally
         {
+            if (fallbackClient is not null) fallbackClient.OnFallback -= OnFallback;
             sessionTracker.EndSession(sessionId, sessionGeneration);
             if (wipMessageId is not null)
                 await wipTracker.CompleteAsync(wipMessageId, CancellationToken.None);
@@ -482,6 +499,7 @@ internal sealed class UserMessageHandler(
         ChatOptions chatOptions,
         ChatResponse firstResponse,
         ModelTier tier,
+        double? complexityScore,
         string sessionId,
         string replyTo,
         string? correlationId,
@@ -492,6 +510,16 @@ internal sealed class UserMessageHandler(
     {
         var loopSw = System.Diagnostics.Stopwatch.StartNew();
         var bgTierTag = new KeyValuePair<string, object?>("rockbot.llm.tier", tier.ToString());
+
+        // Subscribe to fallback events so the user sees model switches in the UI.
+        var fallbackClient = registry.GetClient(tier)
+            .GetService<FallbackChatClient>();
+        void OnFallback(string from, string to, string reason) =>
+            _ = PublishReplyAsync(
+                $"Switching models ({reason}) — retrying with {to}…",
+                replyTo, correlationId, sessionId, isFinal: false, ct);
+        if (fallbackClient is not null) fallbackClient.OnFallback += OnFallback;
+
         try
         {
             // Acquire the single execution slot, preempting any running scheduled
@@ -513,6 +541,7 @@ internal sealed class UserMessageHandler(
 
             var finalContent = await agentLoopRunner.RunAsync(
                 chatMessages, chatOptions, sessionId, firstResponse: firstResponse, tier: tier,
+                complexityScore: complexityScore,
                 onPreToolCall: async (desc, ct2) =>
                 {
                     await PublishReplyAsync($"Working on it — checking {desc}…", replyTo, correlationId, sessionId, isFinal: false, ct2);
@@ -530,6 +559,11 @@ internal sealed class UserMessageHandler(
                     await PublishReplyAsync(
                         $"The {desc} service is taking too long to respond — trying a different approach…",
                         replyTo, correlationId, sessionId, isFinal: false, ct2);
+                    lastProgressAt = DateTimeOffset.UtcNow;
+                },
+                onStageProgress: async (stage, ct2) =>
+                {
+                    await PublishReplyAsync(stage, replyTo, correlationId, sessionId, isFinal: false, ct2);
                     lastProgressAt = DateTimeOffset.UtcNow;
                 },
                 cancellationToken: ct);
@@ -569,6 +603,7 @@ internal sealed class UserMessageHandler(
         }
         finally
         {
+            if (fallbackClient is not null) fallbackClient.OnFallback -= OnFallback;
             sessionTracker.EndSession(sessionId, sessionGeneration);
             if (wipMessageId is not null)
                 await wipTracker.CompleteAsync(wipMessageId, CancellationToken.None);

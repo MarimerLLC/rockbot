@@ -93,8 +93,73 @@ public sealed class AgentContextBuilder(
             logger.LogInformation("No AdditionalSystemPrompt configured for this model");
         }
 
+        // ── Wave 1: fire all independent lookups concurrently ─────────────────
+        // Each store is a separate singleton with its own locking, so cross-store
+        // parallelism reduces wall-clock time from sum(all) to max(slowest store).
+
+        var wmNamespace = workingMemoryNamespace ?? $"session/{sessionId}";
+        var isUserSession = wmNamespace.StartsWith("session/", StringComparison.OrdinalIgnoreCase);
+
+        // Evaluate skill index gate synchronously (has side effects — marks session).
+        var shouldInjectSkillIndex = skillIndexTracker.TryMarkAsInjected(sessionId);
+
+        var historyTask = conversationMemory.GetTurnsAsync(sessionId, ct);
+        var ltmTask = longTermMemory.SearchAsync(
+            new MemorySearchCriteria(Query: currentUserContent, MaxResults: 8));
+        var episodicTask = longTermMemory.SearchAsync(
+            new MemorySearchCriteria(Query: currentUserContent, Category: "episodic", MaxResults: 5));
+        var identityTask = longTermMemory.SearchAsync(
+            new MemorySearchCriteria(Category: AgentIdentityCategories.Prefix, MaxResults: 20));
+        var skillListTask = shouldInjectSkillIndex
+            ? skillStore.ListAsync()
+            : Task.FromResult<IReadOnlyList<Skill>>([]);
+        var skillSearchTask = skillStore.SearchAsync(currentUserContent, maxResults: 5, ct);
+        var wmTask = workingMemory.ListAsync(wmNamespace);
+        var graphTask = _knowledgeGraph?.FindEntitiesByNameAsync(currentUserContent);
+        var patrolTask = isUserSession
+            ? workingMemory.ListAsync("patrol")
+            : Task.FromResult<IReadOnlyList<WorkingMemoryEntry>>([]);
+        var subagentTask = isUserSession
+            ? workingMemory.ListAsync("subagent")
+            : Task.FromResult<IReadOnlyList<WorkingMemoryEntry>>([]);
+
+        // Await all wave-1 tasks. graphTask may be null when no knowledge graph is configured.
+        if (graphTask is not null)
+            await Task.WhenAll(historyTask, ltmTask, episodicTask, identityTask,
+                skillListTask, skillSearchTask, wmTask, graphTask, patrolTask, subagentTask);
+        else
+            await Task.WhenAll(historyTask, ltmTask, episodicTask, identityTask,
+                skillListTask, skillSearchTask, wmTask, patrolTask, subagentTask);
+
+        var history = historyTask.Result;
+        var recalled = ltmTask.Result;
+        var episodes = episodicTask.Result;
+        var identityEntries = identityTask.Result;
+        var skillList = skillListTask.Result;
+        var recalledSkills = skillSearchTask.Result;
+        var workingEntries = wmTask.Result;
+        var matchedEntities = graphTask?.Result;
+        var patrolEntries = patrolTask.Result;
+        var subagentEntries = subagentTask.Result;
+
+        // ── Wave 2: conditional lookups that depend on wave 1 results ─────────
+
+        // Long-term memory fallback when first search returned nothing on first turn.
+        if (recalled.Count == 0 && history.Count == 1)
+            recalled = await longTermMemory.SearchAsync(new MemorySearchCriteria(MaxResults: 5));
+
+        // Knowledge graph traverse needs matched entities from wave 1.
+        IReadOnlyList<KnowledgeTriple>? graphTriples = null;
+        if (matchedEntities is { Count: > 0 })
+        {
+            var seedIds = matchedEntities.Select(e => e.Id).ToList();
+            _ = _knowledgeGraph!.TouchEntitiesAsync(seedIds);
+            graphTriples = await _knowledgeGraph.TraverseAsync(seedIds, _graphOptions.MaxHops);
+        }
+
+        // ── Assemble chatMessages in deterministic order ──────────────────────
+
         // Recent conversation history
-        var history = await conversationMemory.GetTurnsAsync(sessionId, ct);
         var startIndex = Math.Max(0, history.Count - MaxLlmContextTurns);
         for (var i = startIndex; i < history.Count; i++)
         {
@@ -105,12 +170,6 @@ public sealed class AgentContextBuilder(
 
         // Long-term memory BM25 recall
         {
-            var recalled = await longTermMemory.SearchAsync(
-                new MemorySearchCriteria(Query: currentUserContent, MaxResults: 8));
-
-            if (recalled.Count == 0 && history.Count == 1)
-                recalled = await longTermMemory.SearchAsync(new MemorySearchCriteria(MaxResults: 5));
-
             var newEntries = recalled
                 .Where(e => injectedMemoryTracker.TryMarkAsInjected(sessionId, e.Id))
                 .ToList();
@@ -131,11 +190,8 @@ public sealed class AgentContextBuilder(
             }
         }
 
-        // Episodic memory recall — "what happened" context from past experiences
+        // Episodic memory recall
         {
-            var episodes = await longTermMemory.SearchAsync(
-                new MemorySearchCriteria(Query: currentUserContent, Category: "episodic", MaxResults: 5));
-
             var newEpisodes = episodes
                 .Where(e => injectedMemoryTracker.TryMarkAsInjected(sessionId, e.Id))
                 .ToList();
@@ -154,13 +210,8 @@ public sealed class AgentContextBuilder(
             }
         }
 
-        // Narrative identity injection — agent-identity/ entries that complement the static soul.
-        // Primary agent gets first-person framing; subagents/tasks get third-person framing
-        // that reinforces they support the primary agent but do not assume its role.
+        // Narrative identity injection
         {
-            var identityEntries = await longTermMemory.SearchAsync(
-                new MemorySearchCriteria(Category: AgentIdentityCategories.Prefix, MaxResults: 20));
-
             if (identityEntries.Count > 0)
             {
                 var isPrimary = systemPromptOverride is null;
@@ -191,62 +242,46 @@ public sealed class AgentContextBuilder(
             }
         }
 
-        // Knowledge graph expansion — detect entities in the query, traverse relationships
-        if (_knowledgeGraph is not null)
+        // Knowledge graph expansion
+        if (graphTriples is { Count: > 0 })
         {
-            var matchedEntities = await _knowledgeGraph.FindEntitiesByNameAsync(currentUserContent);
-            if (matchedEntities.Count > 0)
+            var newTriples = graphTriples
+                .Take(_graphOptions.MaxExpandedTriples)
+                .ToList();
+
+            if (newTriples.Count > 0)
             {
-                var seedIds = matchedEntities.Select(e => e.Id).ToList();
-
-                // Track that these entities were actively referenced
-                _ = _knowledgeGraph.TouchEntitiesAsync(seedIds);
-
-                var triples = await _knowledgeGraph.TraverseAsync(seedIds, _graphOptions.MaxHops);
-
-                var newTriples = triples
-                    .Take(_graphOptions.MaxExpandedTriples)
-                    .ToList();
-
-                if (newTriples.Count > 0)
-                {
-                    var lines = newTriples.Select(t =>
-                        $"- {t.Subject} --{t.Predicate}--> {t.Object} (confidence={t.Confidence:F2})");
-                    var graphContext =
-                        "Related knowledge graph connections:\n" +
-                        string.Join("\n", lines);
-                    chatMessages.Add(new ChatMessage(ChatRole.System, graphContext));
-                    logger.LogInformation(
-                        "Injected {Count} knowledge graph triples for {EntityCount} matched entities in session {SessionId}",
-                        newTriples.Count, matchedEntities.Count, sessionId);
-                }
+                var lines = newTriples.Select(t =>
+                    $"- {t.Subject} --{t.Predicate}--> {t.Object} (confidence={t.Confidence:F2})");
+                var graphContext =
+                    "Related knowledge graph connections:\n" +
+                    string.Join("\n", lines);
+                chatMessages.Add(new ChatMessage(ChatRole.System, graphContext));
+                logger.LogInformation(
+                    "Injected {Count} knowledge graph triples for {EntityCount} matched entities in session {SessionId}",
+                    newTriples.Count, matchedEntities!.Count, sessionId);
             }
         }
 
         // Skill index (once per session)
-        if (skillIndexTracker.TryMarkAsInjected(sessionId))
+        if (shouldInjectSkillIndex && skillList.Count > 0)
         {
-            var skills = await skillStore.ListAsync();
-            if (skills.Count > 0)
-            {
-                var indexText =
-                    "Available skills (use get_skill to load full instructions):\n" +
-                    string.Join("\n", skills.Select(s =>
-                    {
-                        var summary = string.IsNullOrWhiteSpace(s.Summary)
-                            ? "(summary pending)"
-                            : s.Summary;
-                        return $"- {s.Name}: {summary}";
-                    }));
-                chatMessages.Add(new ChatMessage(ChatRole.System, indexText));
-                logger.LogInformation("Injected skill index ({Count} skills) for session {SessionId}",
-                    skills.Count, sessionId);
-            }
+            var indexText =
+                "Available skills (use get_skill to load full instructions):\n" +
+                string.Join("\n", skillList.Select(s =>
+                {
+                    var summary = string.IsNullOrWhiteSpace(s.Summary)
+                        ? "(summary pending)"
+                        : s.Summary;
+                    return $"- {s.Name}: {summary}";
+                }));
+            chatMessages.Add(new ChatMessage(ChatRole.System, indexText));
+            logger.LogInformation("Injected skill index ({Count} skills) for session {SessionId}",
+                skillList.Count, sessionId);
         }
 
         // Per-turn skill BM25 recall
         {
-            var recalledSkills = await skillStore.SearchAsync(currentUserContent, maxResults: 5, ct);
             var newSkills = recalledSkills
                 .Where(s => skillRecallTracker.TryMarkAsRecalled(sessionId, s.Name))
                 .ToList();
@@ -303,12 +338,7 @@ public sealed class AgentContextBuilder(
             }
         }
 
-        // Resolve the working memory namespace for this context
-        var wmNamespace = workingMemoryNamespace ?? $"session/{sessionId}";
-        var isUserSession = wmNamespace.StartsWith("session/", StringComparison.OrdinalIgnoreCase);
-
         // Working memory inventory — own namespace
-        var workingEntries = await workingMemory.ListAsync(wmNamespace);
         if (workingEntries.Count > 0)
         {
             var now = DateTimeOffset.UtcNow;
@@ -330,15 +360,73 @@ public sealed class AgentContextBuilder(
             logger.LogInformation("Injected {Count} working memory entries into context", workingEntries.Count);
         }
 
-        // For user sessions: also surface any patrol findings so the primary agent is
-        // automatically aware of what patrol tasks have stored since the last session.
-        if (isUserSession)
+        // Patrol findings
+        if (isUserSession && patrolEntries.Count > 0)
         {
-            var patrolEntries = await workingMemory.ListAsync("patrol");
-            if (patrolEntries.Count > 0)
+            var now = DateTimeOffset.UtcNow;
+            var lines = patrolEntries.Select(e =>
             {
+                var remaining = e.ExpiresAt - now;
+                var remainingStr = remaining.TotalMinutes >= 1
+                    ? $"{(int)remaining.TotalMinutes}m{remaining.Seconds:D2}s"
+                    : $"{Math.Max(0, remaining.Seconds)}s";
+                var meta = new System.Text.StringBuilder($"- {e.Key}: expires in {remainingStr}");
+                if (e.Category is not null) meta.Append($", category: {e.Category}");
+                if (e.Tags is { Count: > 0 }) meta.Append($", tags: {string.Join(", ", e.Tags)}");
+                return meta.ToString();
+            });
+            var patrolContext =
+                "Patrol findings in working memory (keys listed below):\n" +
+                string.Join("\n", lines) + "\n\n" +
+                "- To read a finding: call get_from_working_memory with the full key.\n" +
+                "- To dismiss a resolved finding: call delete_from_working_memory with the full key. " +
+                "Do this when the user confirms something is resolved or not a real issue — dismissed entries stop being re-surfaced.\n" +
+                "- To change what the patrol checks and reports: edit the 'patrol/proactive-actions' skill via save_skill. " +
+                "The patrol runs on a schedule and loads that skill as its directive each run.";
+            chatMessages.Add(new ChatMessage(ChatRole.System, patrolContext));
+            logger.LogInformation("Injected {Count} patrol working memory entries into context", patrolEntries.Count);
+        }
+
+        // Subagent research index chunks
+        if (isUserSession && subagentEntries.Count > 0)
+        {
+            var indexEntries = subagentEntries.Where(e => e.Key.EndsWith("-index")).ToList();
+            var nonIndexCount = subagentEntries.Count - indexEntries.Count;
+
+            if (indexEntries.Count > 0)
+            {
+                // Always include the most recent index
+                var mostRecent = indexEntries.OrderByDescending(e => e.StoredAt).First();
+                var selected = new List<WorkingMemoryEntry> { mostRecent };
+
+                // BM25-rank the rest against the current user message to find one more relevant match
+                if (indexEntries.Count > 1 && !string.IsNullOrWhiteSpace(currentUserContent))
+                {
+                    var candidates = indexEntries.Where(e => e.Key != mostRecent.Key).ToList();
+
+                    // Load content for BM25 ranking
+                    var contentMap = new Dictionary<string, string>();
+                    foreach (var entry in candidates)
+                    {
+                        var content = await workingMemory.GetAsync(entry.Key);
+                        if (!string.IsNullOrWhiteSpace(content))
+                            contentMap[entry.Key] = content;
+                    }
+
+                    if (contentMap.Count > 0)
+                    {
+                        var ranked = Bm25Ranker.RankWithScores(
+                            candidates.Where(e => contentMap.ContainsKey(e.Key)).ToList(),
+                            e => contentMap[e.Key],
+                            currentUserContent);
+
+                        if (ranked.Count > 0)
+                            selected.Add(ranked[0].Item);
+                    }
+                }
+
                 var now = DateTimeOffset.UtcNow;
-                var lines = patrolEntries.Select(e =>
+                var lines = selected.Distinct().Select(e =>
                 {
                     var remaining = e.ExpiresAt - now;
                     var remainingStr = remaining.TotalMinutes >= 1
@@ -349,90 +437,19 @@ public sealed class AgentContextBuilder(
                     if (e.Tags is { Count: > 0 }) meta.Append($", tags: {string.Join(", ", e.Tags)}");
                     return meta.ToString();
                 });
-                var patrolContext =
-                    "Patrol findings in working memory (keys listed below):\n" +
-                    string.Join("\n", lines) + "\n\n" +
-                    "- To read a finding: call get_from_working_memory with the full key.\n" +
-                    "- To dismiss a resolved finding: call delete_from_working_memory with the full key. " +
-                    "Do this when the user confirms something is resolved or not a real issue — dismissed entries stop being re-surfaced.\n" +
-                    "- To change what the patrol checks and reports: edit the 'patrol/proactive-actions' skill via save_skill. " +
-                    "The patrol runs on a schedule and loads that skill as its directive each run.";
-                chatMessages.Add(new ChatMessage(ChatRole.System, patrolContext));
-                logger.LogInformation("Injected {Count} patrol working memory entries into context", patrolEntries.Count);
-            }
-        }
-
-        // For user sessions: surface subagent research index chunks so the primary agent
-        // can access prior research results even after the subagent completion turn has scrolled
-        // out of the conversation window. To avoid noise, we inject at most two:
-        //   1. The most recent index (always — likely what the user is following up on)
-        //   2. One BM25-matched index (if a different one is more relevant to the current question)
-        if (isUserSession)
-        {
-            var subagentEntries = await workingMemory.ListAsync("subagent");
-            if (subagentEntries.Count > 0)
-            {
-                var indexEntries = subagentEntries.Where(e => e.Key.EndsWith("-index")).ToList();
-                var nonIndexCount = subagentEntries.Count - indexEntries.Count;
-
-                if (indexEntries.Count > 0)
-                {
-                    // Always include the most recent index
-                    var mostRecent = indexEntries.OrderByDescending(e => e.StoredAt).First();
-                    var selected = new List<WorkingMemoryEntry> { mostRecent };
-
-                    // BM25-rank the rest against the current user message to find one more relevant match
-                    if (indexEntries.Count > 1 && !string.IsNullOrWhiteSpace(currentUserContent))
-                    {
-                        var candidates = indexEntries.Where(e => e.Key != mostRecent.Key).ToList();
-
-                        // Load content for BM25 ranking
-                        var contentMap = new Dictionary<string, string>();
-                        foreach (var entry in candidates)
-                        {
-                            var content = await workingMemory.GetAsync(entry.Key);
-                            if (!string.IsNullOrWhiteSpace(content))
-                                contentMap[entry.Key] = content;
-                        }
-
-                        if (contentMap.Count > 0)
-                        {
-                            var ranked = Bm25Ranker.RankWithScores(
-                                candidates.Where(e => contentMap.ContainsKey(e.Key)).ToList(),
-                                e => contentMap[e.Key],
-                                currentUserContent);
-
-                            if (ranked.Count > 0)
-                                selected.Add(ranked[0].Item);
-                        }
-                    }
-
-                    var now = DateTimeOffset.UtcNow;
-                    var lines = selected.Distinct().Select(e =>
-                    {
-                        var remaining = e.ExpiresAt - now;
-                        var remainingStr = remaining.TotalMinutes >= 1
-                            ? $"{(int)remaining.TotalMinutes}m{remaining.Seconds:D2}s"
-                            : $"{Math.Max(0, remaining.Seconds)}s";
-                        var meta = new System.Text.StringBuilder($"- {e.Key}: expires in {remainingStr}");
-                        if (e.Category is not null) meta.Append($", category: {e.Category}");
-                        if (e.Tags is { Count: > 0 }) meta.Append($", tags: {string.Join(", ", e.Tags)}");
-                        return meta.ToString();
-                    });
-                    var otherCount = indexEntries.Count - selected.Distinct().Count();
-                    var otherNote = otherCount > 0
-                        ? $"\n({otherCount} other subagent index(es) available — use search_working_memory to find them)"
-                        : string.Empty;
-                    var subagentContext =
-                        $"Subagent research in working memory ({nonIndexCount} content chunk(s) available):\n" +
-                        "The following document outlines are from prior subagent research. " +
-                        "Retrieve an outline with get_from_working_memory to see section headings and chunk keys, " +
-                        "then load specific chunks as needed. Check these BEFORE doing a new web search for the same topic.\n" +
-                        string.Join("\n", lines) + otherNote;
-                    chatMessages.Add(new ChatMessage(ChatRole.System, subagentContext));
-                    logger.LogInformation("Injected {Count} subagent index entries into context (of {Total} total, {ContentCount} content chunks available)",
-                        selected.Distinct().Count(), indexEntries.Count, nonIndexCount);
-                }
+                var otherCount = indexEntries.Count - selected.Distinct().Count();
+                var otherNote = otherCount > 0
+                    ? $"\n({otherCount} other subagent index(es) available — use search_working_memory to find them)"
+                    : string.Empty;
+                var subagentContext =
+                    $"Subagent research in working memory ({nonIndexCount} content chunk(s) available):\n" +
+                    "The following document outlines are from prior subagent research. " +
+                    "Retrieve an outline with get_from_working_memory to see section headings and chunk keys, " +
+                    "then load specific chunks as needed. Check these BEFORE doing a new web search for the same topic.\n" +
+                    string.Join("\n", lines) + otherNote;
+                chatMessages.Add(new ChatMessage(ChatRole.System, subagentContext));
+                logger.LogInformation("Injected {Count} subagent index entries into context (of {Total} total, {ContentCount} content chunks available)",
+                    selected.Distinct().Count(), indexEntries.Count, nonIndexCount);
             }
         }
 

@@ -183,8 +183,10 @@ public sealed partial class AgentLoopRunner(
         Func<string, CancellationToken, Task>? onPreToolCall = null,
         Func<string, CancellationToken, Task>? onProgress = null,
         Func<string, CancellationToken, Task>? onToolTimeout = null,
+        Func<string, CancellationToken, Task>? onStageProgress = null,
         bool enableFollowUp = true,
         bool enableCompletionEval = true,
+        double? complexityScore = null,
         CancellationToken cancellationToken = default)
     {
         using var _ = ToolCallSessionContext.Set(sessionId);
@@ -235,7 +237,48 @@ public sealed partial class AgentLoopRunner(
                 return result.Response;
             }
 
-            // Evaluate whether the response actually completes the original request.
+            // Heuristic short-circuit: if the model stopped naturally and the response
+            // passes basic quality checks, skip the evaluator LLM call. The hallucination
+            // and capability denial patterns are the primary triggers for INCOMPLETE verdicts;
+            // when neither fires, the evaluator almost always returns complete.
+            if (result.ExitReason == LoopExitReason.ModelStopped
+                && result.Response.Length >= 20
+                && !HallucinatedActionRegex.IsMatch(result.Response)
+                && !CapabilityDenialRegex.IsMatch(result.Response))
+            {
+                HostDiagnostics.CompletionCheckSkipped.Add(1);
+                logger.LogInformation(
+                    "Completion evaluator: SKIPPED (model stopped, {ResponseLen} chars, no hallucination/denial patterns)",
+                    result.Response.Length);
+
+                if (!enableFollowUp || reprompt > 0)
+                {
+                    HostDiagnostics.FollowUpSkipped.Add(1);
+                    return result.Response;
+                }
+
+                try
+                {
+                    var followUpResult = await RunFollowUpPassAsync(
+                        chatMessages, chatOptions, sessionId, result.Response,
+                        originalUserRequest, tier, complexityScore,
+                        onPreToolCall, onProgress, onToolTimeout, onStageProgress,
+                        cancellationToken);
+
+                    return followUpResult ?? result.Response;
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    logger.LogWarning(ex,
+                        "Follow-up pass failed; returning completed response instead of propagating error");
+                    return result.Response;
+                }
+            }
+
+            // Full evaluator path: response may be incomplete (short, hallucinated, or denial).
+            if (onStageProgress is not null)
+                await onStageProgress("Reviewing response…", cancellationToken);
+
             var (complete, reason) = await EvaluateCompletionAsync(
                 originalUserRequest, result.Response, cancellationToken);
 
@@ -262,8 +305,9 @@ public sealed partial class AgentLoopRunner(
                 {
                     var followUpResult = await RunFollowUpPassAsync(
                         chatMessages, chatOptions, sessionId, result.Response,
-                        originalUserRequest, tier,
-                        onPreToolCall, onProgress, onToolTimeout, cancellationToken);
+                        originalUserRequest, tier, complexityScore,
+                        onPreToolCall, onProgress, onToolTimeout, onStageProgress,
+                        cancellationToken);
 
                     return followUpResult ?? result.Response;
                 }
@@ -280,6 +324,9 @@ public sealed partial class AgentLoopRunner(
             logger.LogInformation(
                 "Completion evaluator: INCOMPLETE (reprompt {Reprompt}/{Max}) — {Reason}",
                 reprompt, maxReprompts, reason);
+
+            if (onStageProgress is not null)
+                await onStageProgress("Still working — refining response…", cancellationToken);
 
             chatMessages.Add(new ChatMessage(ChatRole.Assistant, result.Response));
 
@@ -1330,9 +1377,11 @@ public sealed partial class AgentLoopRunner(
         string completedResponse,
         string originalUserRequest,
         ModelTier tier,
+        double? complexityScore,
         Func<string, CancellationToken, Task>? onPreToolCall,
         Func<string, CancellationToken, Task>? onProgress,
         Func<string, CancellationToken, Task>? onToolTimeout,
+        Func<string, CancellationToken, Task>? onStageProgress,
         CancellationToken cancellationToken)
     {
         var maxFollowUps = modelBehavior.MaxFollowUpPassesOverride
@@ -1343,6 +1392,20 @@ public sealed partial class AgentLoopRunner(
             HostDiagnostics.FollowUpSkipped.Add(1);
             return null;
         }
+
+        // Short-circuit: low-complexity (closed/specific) requests almost never
+        // warrant follow-ups. Skip the evaluator LLM call entirely.
+        if (complexityScore.HasValue && complexityScore.Value <= 0.15)
+        {
+            HostDiagnostics.FollowUpSkipped.Add(1);
+            logger.LogInformation(
+                "Follow-up evaluator: SKIPPED (low complexity score {Score:F3})",
+                complexityScore.Value);
+            return null;
+        }
+
+        if (onStageProgress is not null)
+            await onStageProgress("Checking for follow-up actions…", cancellationToken);
 
         // Build a summary of the conversation for the evaluator — include the last few
         // turns for context, not just the final response.
