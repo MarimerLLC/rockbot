@@ -20,6 +20,7 @@ public sealed class FallbackChatClient : IChatClient
     private readonly DateTimeOffset[] _degradedAt;
     private readonly TimeSpan _retryDelay;
     private readonly TimeSpan _cooldownPeriod;
+    private readonly TimeSpan _perAttemptTimeout;
     private readonly int _maxRetries;
     private volatile int _activeIndex;
 
@@ -28,7 +29,8 @@ public sealed class FallbackChatClient : IChatClient
         ILogger logger,
         TimeSpan? retryDelay = null,
         int maxRetries = 1,
-        TimeSpan? cooldownPeriod = null)
+        TimeSpan? cooldownPeriod = null,
+        TimeSpan? perAttemptTimeout = null)
     {
         if (entries.Count == 0)
             throw new ArgumentException("At least one entry is required.", nameof(entries));
@@ -38,6 +40,7 @@ public sealed class FallbackChatClient : IChatClient
         _degradedAt = new DateTimeOffset[entries.Count];
         _retryDelay = retryDelay ?? TimeSpan.FromSeconds(1);
         _cooldownPeriod = cooldownPeriod ?? TimeSpan.FromMinutes(5);
+        _perAttemptTimeout = perAttemptTimeout ?? TimeSpan.Zero;
         _maxRetries = maxRetries;
     }
 
@@ -64,13 +67,38 @@ public sealed class FallbackChatClient : IChatClient
                 if (attempt > 0 && _retryDelay > TimeSpan.Zero)
                     await Task.Delay(_retryDelay, cancellationToken);
 
+                // Per-attempt timeout: each model attempt gets its own timeout window
+                // so a stalled model doesn't consume the budget for fallback models.
+                // The per-attempt CTS is linked to the caller's token so user
+                // cancellation still propagates immediately.
+                CancellationTokenSource? attemptCts = null;
+                CancellationToken attemptCt = cancellationToken;
+                if (_perAttemptTimeout > TimeSpan.Zero)
+                {
+                    attemptCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                    attemptCts.CancelAfter(_perAttemptTimeout);
+                    attemptCt = attemptCts.Token;
+                }
+
                 try
                 {
-                    return await client.GetResponseAsync(messages, options, cancellationToken);
+                    return await client.GetResponseAsync(messages, options, attemptCt);
                 }
                 catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
                 {
                     throw; // User cancellation — do not retry or switch
+                }
+                catch (OperationCanceledException) when (attemptCts is not null && attemptCts.IsCancellationRequested)
+                {
+                    // Per-attempt timeout fired (not user cancellation) — treat as transient
+                    _logger.LogWarning(
+                        "FallbackChatClient: model {ModelId} timed out after {Timeout} (attempt {Attempt}/{MaxRetries})",
+                        modelId, _perAttemptTimeout, attempt + 1, _maxRetries + 1);
+
+                    if (attempt < _maxRetries)
+                        continue; // Retry same model
+
+                    break; // Fall through to next model
                 }
                 catch (Exception ex)
                 {
@@ -107,6 +135,10 @@ public sealed class FallbackChatClient : IChatClient
                     }
 
                     break; // Fall through to next model
+                }
+                finally
+                {
+                    attemptCts?.Dispose();
                 }
             }
 

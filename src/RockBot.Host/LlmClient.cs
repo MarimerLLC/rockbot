@@ -1,7 +1,6 @@
 using System.Diagnostics;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
-using Microsoft.Extensions.Options;
 
 namespace RockBot.Host;
 
@@ -15,10 +14,8 @@ namespace RockBot.Host;
 /// </summary>
 internal sealed class LlmClient(
     TieredChatClientRegistry registry,
-    IOptions<AgentHostOptions> hostOptions,
     ILogger<LlmClient> logger) : ILlmClient
 {
-    private readonly TimeSpan _callTimeout = hostOptions.Value.LlmCallTimeout;
     /// <summary>Calls the LLM using the Balanced tier.</summary>
     public Task<ChatResponse> GetResponseAsync(
         IEnumerable<ChatMessage> messages,
@@ -63,67 +60,41 @@ internal sealed class LlmClient(
         var status = "ok";
         try
         {
-            // Apply per-call timeout: if the LLM provider stalls, abort before the
-            // 5-minute HTTP NetworkTimeout and surface as TimeoutException so evaluators
-            // can fail-open instead of hanging.
-            CancellationToken effectiveCt;
-            CancellationTokenSource? timeoutCts = null;
-            if (_callTimeout > TimeSpan.Zero)
-            {
-                timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-                timeoutCts.CancelAfter(_callTimeout);
-                effectiveCt = timeoutCts.Token;
-            }
-            else
-            {
-                effectiveCt = cancellationToken;
-            }
+            // Per-call timeout is handled inside FallbackChatClient as a per-attempt
+            // timeout — each model in the fallback chain gets its own timeout window.
+            // This ensures a stalled primary model doesn't prevent fallback to the
+            // next model. The original cancellation token is passed through so
+            // FallbackChatClient can correctly distinguish user cancellation from
+            // provider timeouts.
+            var response = await InvokeWithNullArgRetryAsync(client, messages, options, cancellationToken);
 
-            try
+            if (response.Usage is { } usage)
             {
-                var response = await InvokeWithNullArgRetryAsync(client, messages, options, effectiveCt);
+                var inputTokens = usage.InputTokenCount ?? 0;
+                var outputTokens = usage.OutputTokenCount ?? 0;
 
-                if (response.Usage is { } usage)
+                var tierTag = new KeyValuePair<string, object?>("rockbot.llm.tier", tier.ToString());
+                var modelTag = new KeyValuePair<string, object?>("rockbot.llm.model", modelId);
+
+                if (usage.InputTokenCount.HasValue)
+                    HostDiagnostics.LlmTokenInput.Add(inputTokens, tierTag, modelTag);
+                if (usage.OutputTokenCount.HasValue)
+                    HostDiagnostics.LlmTokenOutput.Add(outputTokens, tierTag, modelTag);
+
+                var costUsd = LlmCostEstimator.EstimateCost(modelId, inputTokens, outputTokens);
+                if (costUsd > 0)
                 {
-                    var inputTokens = usage.InputTokenCount ?? 0;
-                    var outputTokens = usage.OutputTokenCount ?? 0;
-
-                    var tierTag = new KeyValuePair<string, object?>("rockbot.llm.tier", tier.ToString());
-                    var modelTag = new KeyValuePair<string, object?>("rockbot.llm.model", modelId);
-
-                    if (usage.InputTokenCount.HasValue)
-                        HostDiagnostics.LlmTokenInput.Add(inputTokens, tierTag, modelTag);
-                    if (usage.OutputTokenCount.HasValue)
-                        HostDiagnostics.LlmTokenOutput.Add(outputTokens, tierTag, modelTag);
-
-                    var costUsd = LlmCostEstimator.EstimateCost(modelId, inputTokens, outputTokens);
-                    if (costUsd > 0)
-                    {
-                        HostDiagnostics.LlmCostUsd.Add(costUsd, tierTag, modelTag);
-                        HostDiagnostics.LlmCostPerRequest.Record(costUsd, tierTag, modelTag);
-                    }
-
-                    activity?.SetTag("rockbot.llm.tokens.input", inputTokens);
-                    activity?.SetTag("rockbot.llm.tokens.output", outputTokens);
-                    activity?.SetTag("rockbot.llm.cost.usd", costUsd);
+                    HostDiagnostics.LlmCostUsd.Add(costUsd, tierTag, modelTag);
+                    HostDiagnostics.LlmCostPerRequest.Record(costUsd, tierTag, modelTag);
                 }
 
-                activity?.SetStatus(ActivityStatusCode.Ok);
-                return response;
+                activity?.SetTag("rockbot.llm.tokens.input", inputTokens);
+                activity?.SetTag("rockbot.llm.tokens.output", outputTokens);
+                activity?.SetTag("rockbot.llm.cost.usd", costUsd);
             }
-            catch (OperationCanceledException) when (timeoutCts is not null && timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
-            {
-                // Per-call timeout fired (not the caller's token) — convert to TimeoutException
-                // so evaluators' catch-all (ex is not OperationCanceledException) can fail-open.
-                logger.LogWarning("LLM call timed out after {Timeout} on {Tier} tier ({Model})",
-                    _callTimeout, tier, modelId);
-                throw new TimeoutException(
-                    $"LLM call to {modelId} ({tier}) timed out after {_callTimeout.TotalSeconds:F0}s");
-            }
-            finally
-            {
-                timeoutCts?.Dispose();
-            }
+
+            activity?.SetStatus(ActivityStatusCode.Ok);
+            return response;
         }
         catch (Exception) when (status == "ok")
         {
