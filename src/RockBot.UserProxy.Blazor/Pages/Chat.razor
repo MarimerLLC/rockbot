@@ -9,7 +9,7 @@
 
 <PageTitle>@(ChatState.AgentName ?? "RockBot") Chat</PageTitle>
 
-<div class="chat-container d-flex flex-column vh-100">
+<div class="chat-container d-flex flex-column">
     <div class="chat-header bg-primary text-white p-3 d-flex justify-content-between align-items-center">
         <div class="d-flex align-items-baseline gap-2">
             <h1 class="h4 mb-0">@(ChatState.AgentName ?? "RockBot") Chat</h1>
@@ -22,6 +22,33 @@
         <div class="d-flex align-items-center gap-2">
             <span class="connection-dot @(ProxyService.IsConnected ? "connected" : "disconnected")"
                   title="@(ProxyService.IsConnected ? "Connected to message bus" : "Disconnected from message bus")"></span>
+            @if (ChatState.IsProcessing)
+            {
+                <span class="status-indicator agent-busy"
+                      title="@(ChatState.CurrentThinkingMessage ?? "Agent is processing...")">
+                    <span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>
+                </span>
+            }
+            @{
+                var statusIndicators = ChatState.GetActiveStatusIndicators();
+            }
+            @foreach (var sub in statusIndicators.Where(i => i.Category == MessageCategory.SubagentActivity))
+            {
+                var name = sub.AgentName?.StartsWith("subagent-") == true
+                    ? sub.AgentName["subagent-".Length..]
+                    : sub.AgentName ?? "subagent";
+                <span class="status-indicator subagent-indicator"
+                      title="@($"{name}: {sub.LatestContent}")">
+                    🤖
+                </span>
+            }
+            @foreach (var task in statusIndicators.Where(i => i.Category == MessageCategory.ScheduledSystem))
+            {
+                <span class="status-indicator task-indicator"
+                      title="@($"Background task: {task.LatestContent}")">
+                    ⏱️
+                </span>
+            }
             <button class="btn btn-sm btn-outline-light" @onclick="ToggleSavedModal" title="Saved responses">
                 📋
             </button>

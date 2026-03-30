@@ -14,6 +14,7 @@ public enum MessageCategory
 }
 
 public sealed record ActivityLogEntry(string Content, DateTime Timestamp);
+public sealed record ActiveStatusIndicator(MessageCategory Category, string? AgentName, string LatestContent);
 
 /// <summary>
 /// Manages chat state and provides real-time updates to Blazor components.
@@ -302,6 +303,26 @@ public sealed class ChatStateService
     {
         lock (_lock)
             return _messages.LastOrDefault(m => m.Category == MessageCategory.SavedReference);
+    }
+
+    /// <summary>
+    /// Returns active subagent and background-task indicators for header display.
+    /// Agent-busy state is tracked separately via <see cref="IsProcessing"/>.
+    /// </summary>
+    public IReadOnlyList<ActiveStatusIndicator> GetActiveStatusIndicators()
+    {
+        lock (_lock)
+        {
+            var indicators = new List<ActiveStatusIndicator>();
+            foreach (var (_, messageId) in _activeActivityLogs)
+            {
+                var msg = _messages.FirstOrDefault(m => m.MessageId == messageId);
+                if (msg is null) continue;
+                if (msg.Category is MessageCategory.SubagentActivity or MessageCategory.ScheduledSystem)
+                    indicators.Add(new ActiveStatusIndicator(msg.Category, msg.AgentName, msg.Content));
+            }
+            return indicators;
+        }
     }
 
     private static string ActivityLogKey(MessageCategory category, string? agentName)
