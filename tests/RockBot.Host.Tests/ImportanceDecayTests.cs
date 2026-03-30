@@ -91,6 +91,7 @@ public class ImportanceDecayTests
         new(memory,
             [],
             new StubLlmClient(),
+            new AgentWorkSerializer(),
             new StubActivityMonitor(),
             new AgentClock(
                 new ConfigurationBuilder().Build(),

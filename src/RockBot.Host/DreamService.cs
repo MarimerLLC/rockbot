@@ -31,6 +31,7 @@ internal sealed class DreamService : IHostedService, IDisposable
     private readonly IToolCallLog? _toolCallLog;
     private readonly IKnowledgeGraph? _knowledgeGraph;
     private readonly ILlmClient _llmClient;
+    private readonly IAgentWorkSerializer _workSerializer;
     private readonly IUserActivityMonitor _userActivityMonitor;
     private readonly AgentClock _clock;
     private readonly DreamOptions _options;
@@ -56,6 +57,7 @@ internal sealed class DreamService : IHostedService, IDisposable
         ILongTermMemory memory,
         IEnumerable<ISkillStore> skillStores,
         ILlmClient llmClient,
+        IAgentWorkSerializer workSerializer,
         IUserActivityMonitor userActivityMonitor,
         AgentClock clock,
         IOptions<DreamOptions> options,
@@ -79,6 +81,7 @@ internal sealed class DreamService : IHostedService, IDisposable
         _toolCallLog = toolCallLog;
         _knowledgeGraph = knowledgeGraph;
         _llmClient = llmClient;
+        _workSerializer = workSerializer;
         _userActivityMonitor = userActivityMonitor;
         _clock = clock;
         _options = options.Value;
@@ -325,17 +328,21 @@ internal sealed class DreamService : IHostedService, IDisposable
     private async Task DreamAsync()
     {
         var sw = System.Diagnostics.Stopwatch.StartNew();
+
+        // Acquire the work serializer slot so user messages can preempt the dream.
+        // TryAcquireForScheduledAsync is non-blocking: if a user loop holds the slot, skip.
+        var slot = await _workSerializer.TryAcquireForScheduledAsync(CancellationToken.None);
+        if (slot is null)
+        {
+            _logger.LogInformation("DreamService: user loop active, skipping dream cycle");
+            return;
+        }
+
         _logger.LogInformation("DreamService: dream cycle starting");
 
         try
         {
-            // Dream is low-priority. If another LLM call is in flight, back off and
-            // retry rather than queueing immediately behind an active user request.
-            while (_userActivityMonitor.IsUserActive(TimeSpan.FromSeconds(30)))
-            {
-                _logger.LogDebug("DreamService: user recently active, delaying dream cycle by 5s");
-                await Task.Delay(TimeSpan.FromSeconds(5));
-            }
+            var ct = slot.Token;
 
             var all = await _memory.SearchAsync(new MemorySearchCriteria(MaxResults: 1000));
 
@@ -392,7 +399,8 @@ internal sealed class DreamService : IHostedService, IDisposable
                 new(ChatRole.User, userMessage.ToString())
             };
 
-            var response = await _llmClient.GetResponseAsync(messages, ModelTier.Balanced, new ChatOptions { ResponseFormat = ChatResponseFormat.Json });
+            ct.ThrowIfCancellationRequested();
+            var response = await _llmClient.GetResponseAsync(messages, ModelTier.Balanced, new ChatOptions { ResponseFormat = ChatResponseFormat.Json }, ct);
             var raw = response.Text?.Trim() ?? string.Empty;
             var json = ExtractJsonObject(raw);
 
@@ -477,37 +485,45 @@ internal sealed class DreamService : IHostedService, IDisposable
             }
 
             if (_skillStore is not null)
-                await RunSkillGapDetectionPassAsync();
+            { ct.ThrowIfCancellationRequested(); await RunSkillGapDetectionPassAsync(); }
 
             if (_skillStore is not null)
-                await ConsolidateSkillsAsync();
+            { ct.ThrowIfCancellationRequested(); await ConsolidateSkillsAsync(); }
 
-            await RunEpisodeExtractionPassAsync();
+            ct.ThrowIfCancellationRequested(); await RunEpisodeExtractionPassAsync();
 
-            await RunEntityExtractionPassAsync();
+            ct.ThrowIfCancellationRequested(); await RunEntityExtractionPassAsync();
 
-            await RunGraphConsolidationPassAsync();
+            ct.ThrowIfCancellationRequested(); await RunGraphConsolidationPassAsync();
 
-            await RunMemoryMiningPassAsync();
+            ct.ThrowIfCancellationRequested(); await RunMemoryMiningPassAsync();
 
-            await RunPreferenceInferencePassAsync();
+            ct.ThrowIfCancellationRequested(); await RunPreferenceInferencePassAsync();
 
-            await RunSequenceSkillDetectionPassAsync();
+            ct.ThrowIfCancellationRequested(); await RunSequenceSkillDetectionPassAsync();
 
-            await RunTierRoutingReviewPassAsync();
+            ct.ThrowIfCancellationRequested(); await RunTierRoutingReviewPassAsync();
 
-            await RunDlqReviewPassAsync();
+            ct.ThrowIfCancellationRequested(); await RunDlqReviewPassAsync();
 
-            await RunIdentityReflectionPassAsync();
+            ct.ThrowIfCancellationRequested(); await RunIdentityReflectionPassAsync();
 
             sw.Stop();
             _logger.LogInformation(
                 "DreamService: dream cycle complete — {Deleted} deleted, {Saved} saved, elapsed {Elapsed}",
                 deleted, saved, sw.Elapsed);
         }
+        catch (OperationCanceledException)
+        {
+            _logger.LogInformation("DreamService: dream cycle preempted by user request");
+        }
         catch (Exception ex)
         {
             _logger.LogError(ex, "DreamService: dream cycle failed");
+        }
+        finally
+        {
+            await slot.DisposeAsync();
         }
     }
 
