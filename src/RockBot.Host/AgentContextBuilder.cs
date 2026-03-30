@@ -161,6 +161,10 @@ public sealed class AgentContextBuilder(
             if (matchedEntities.Count > 0)
             {
                 var seedIds = matchedEntities.Select(e => e.Id).ToList();
+
+                // Track that these entities were actively referenced
+                _ = _knowledgeGraph.TouchEntitiesAsync(seedIds);
+
                 var triples = await _knowledgeGraph.TraverseAsync(seedIds, _graphOptions.MaxHops);
 
                 var newTriples = triples

@@ -396,6 +396,64 @@ public class FileKnowledgeGraphStoreTests
         Assert.IsFalse(FileKnowledgeGraphStore.MatchesName(entity, "calendarWidget is broken"));
     }
 
+    // ── TouchEntitiesAsync ─────────────────────────────────────────────────
+
+    [TestMethod]
+    public async Task TouchEntitiesAsync_UpdatesLastReferencedAt()
+    {
+        var store = CreateStore();
+        var entity = CreateEntity("e1", "Alice", KnowledgeEntityType.Person);
+        Assert.IsNull(entity.LastReferencedAt);
+
+        await store.SaveEntityAsync(entity);
+        await store.TouchEntitiesAsync(["e1"]);
+
+        var result = await store.GetEntityAsync("e1");
+        Assert.IsNotNull(result);
+        Assert.IsNotNull(result.LastReferencedAt);
+    }
+
+    [TestMethod]
+    public async Task TouchEntitiesAsync_PersistsAcrossInstances()
+    {
+        var store1 = CreateStore();
+        await store1.SaveEntityAsync(CreateEntity("e1", "Alice", KnowledgeEntityType.Person));
+        await store1.TouchEntitiesAsync(["e1"]);
+
+        var store2 = CreateStore();
+        var result = await store2.GetEntityAsync("e1");
+        Assert.IsNotNull(result);
+        Assert.IsNotNull(result.LastReferencedAt);
+    }
+
+    [TestMethod]
+    public async Task TouchEntitiesAsync_IgnoresUnknownIds()
+    {
+        var store = CreateStore();
+        // Should not throw for nonexistent IDs
+        await store.TouchEntitiesAsync(["nonexistent"]);
+    }
+
+    [TestMethod]
+    public async Task TouchEntitiesAsync_EmptyList_NoOp()
+    {
+        var store = CreateStore();
+        await store.TouchEntitiesAsync([]);
+    }
+
+    // ── ListTriplesAsync ─────────────────────────────────────────────────────
+
+    [TestMethod]
+    public async Task ListTriplesAsync_ReturnsAll()
+    {
+        var store = CreateStore();
+        await store.SaveTripleAsync(CreateTriple("t1", "Alice", "works_on", "RockBot"));
+        await store.SaveTripleAsync(CreateTriple("t2", "Bob", "uses", "Teams"));
+
+        var all = await store.ListTriplesAsync();
+        Assert.AreEqual(2, all.Count);
+    }
+
     // ── Persistence ──────────────────────────────────────────────────────────
 
     [TestMethod]

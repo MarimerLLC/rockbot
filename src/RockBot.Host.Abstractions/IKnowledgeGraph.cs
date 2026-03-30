@@ -59,4 +59,16 @@ public interface IKnowledgeGraph
     /// Deletes a triple by ID. No-op if not found.
     /// </summary>
     Task DeleteTripleAsync(string id, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Updates <see cref="KnowledgeEntity.LastReferencedAt"/> to the current time for the given entity IDs.
+    /// No-op for IDs that do not exist. Used by the context builder to track which entities
+    /// are actively useful so the consolidation pass can identify stale ones.
+    /// </summary>
+    Task TouchEntitiesAsync(IReadOnlyList<string> entityIds, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Returns all triples in the graph.
+    /// </summary>
+    Task<IReadOnlyList<KnowledgeTriple>> ListTriplesAsync(CancellationToken cancellationToken = default);
 }

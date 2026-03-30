@@ -239,6 +239,51 @@ internal sealed class FileKnowledgeGraphStore : IKnowledgeGraph
         }
     }
 
+    public async Task TouchEntitiesAsync(IReadOnlyList<string> entityIds, CancellationToken cancellationToken = default)
+    {
+        if (entityIds.Count == 0) return;
+
+        await _semaphore.WaitAsync(cancellationToken);
+        try
+        {
+            var (entities, _) = await EnsureIndexAsync(cancellationToken);
+            var now = DateTimeOffset.UtcNow;
+
+            foreach (var id in entityIds)
+            {
+                if (!entities.TryGetValue(id, out var entity))
+                    continue;
+
+                var updated = entity with { LastReferencedAt = now };
+                entities[id] = updated;
+
+                var filePath = GetEntityFilePath(id);
+                var json = JsonSerializer.Serialize(updated, JsonOptions);
+                await File.WriteAllTextAsync(filePath, json, cancellationToken);
+            }
+
+            _logger.LogDebug("Touched {Count} entities", entityIds.Count);
+        }
+        finally
+        {
+            _semaphore.Release();
+        }
+    }
+
+    public async Task<IReadOnlyList<KnowledgeTriple>> ListTriplesAsync(CancellationToken cancellationToken = default)
+    {
+        await _semaphore.WaitAsync(cancellationToken);
+        try
+        {
+            var (_, triples) = await EnsureIndexAsync(cancellationToken);
+            return triples.Values.ToList();
+        }
+        finally
+        {
+            _semaphore.Release();
+        }
+    }
+
     // ── Graph traversal ──────────────────────────────────────────────────────
 
     /// <summary>
