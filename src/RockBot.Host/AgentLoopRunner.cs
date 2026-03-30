@@ -1435,8 +1435,8 @@ public sealed partial class AgentLoopRunner(
         chatMessages.Add(new ChatMessage(ChatRole.User,
             $"Good — you completed my request. Now, while you're in this context, " +
             $"also do this: {followUp.Prompt}\n\n" +
-            "Use your tools to actually look this up — search emails, check calendar, " +
-            "look up contacts, etc. Do not claim you lack access without trying. " +
+            "Use whatever tools are appropriate to accomplish this. " +
+            "Do not claim you lack access without trying. " +
             "Report what you found concisely."));
 
         // Run one more pass through the tool loop. Track message count so we can

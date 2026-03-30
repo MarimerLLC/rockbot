@@ -18,6 +18,9 @@ body {
     max-width: 100%;
     margin: 0 auto;
     background-color: white;
+    height: 100vh;
+    height: 100dvh;
+    overflow: hidden;
 }
 
 .chat-header {
@@ -169,6 +172,34 @@ body {
 .connection-dot.disconnected {
     background-color: #f87171;
     box-shadow: 0 0 4px #f87171;
+}
+
+/* ── Header status indicators ────────────────────────────────────────── */
+
+.status-indicator {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 0.85rem;
+    line-height: 1;
+    cursor: default;
+}
+
+.status-indicator.agent-busy .spinner-border {
+    width: 14px;
+    height: 14px;
+    border-width: 2px;
+    color: #fbbf24;
+}
+
+.status-indicator.subagent-indicator,
+.status-indicator.task-indicator {
+    animation: status-pulse 2s ease-in-out infinite;
+}
+
+@keyframes status-pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.5; }
 }
 
 /* Dark mode support */
