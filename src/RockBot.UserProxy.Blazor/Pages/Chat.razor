@@ -231,29 +231,49 @@
     {
         <div class="modal-overlay" @onclick="ToggleSavedModal">
             <div class="saved-modal" @onclick:stopPropagation="true">
-                <h5>Saved Responses</h5>
-                @if (_savedItems is null)
+                @if (_viewingItem is not null)
                 {
-                    <p>Loading...</p>
-                }
-                else if (_savedItems.Count == 0)
-                {
-                    <p class="text-muted">No saved responses yet.</p>
+                    <div class="saved-view-header">
+                        <h5>@_viewingItem.Label</h5>
+                        <small class="saved-item-meta">@_viewingItem.AgentName — @TimeZoneInfo.ConvertTime(_viewingItem.SavedAt, _displayZone).ToString("MMM d, yyyy h:mm tt")</small>
+                    </div>
+                    <div class="saved-view-content">
+                        @((MarkupString)Markdig.Markdown.ToHtml(_viewingItem.Content, MarkdownPipeline))
+                    </div>
+                    <div class="d-flex gap-2 mt-2">
+                        <button class="btn btn-sm btn-secondary" @onclick="BackToSavedList">Back</button>
+                        <button class="btn btn-sm btn-primary" @onclick="() => InsertViewedItem()">Insert into chat</button>
+                    </div>
                 }
                 else
                 {
-                    @foreach (var item in _savedItems)
+                    <h5>Saved Responses</h5>
+                    @if (_savedItems is null)
                     {
-                        <div class="saved-item d-flex justify-content-between align-items-center p-2 mb-1 rounded">
-                            <div class="saved-item-info" @onclick="() => LoadSavedItem(item.Id)" style="cursor:pointer;">
-                                <strong>@item.Label</strong>
-                                <small class="saved-item-meta d-block">@item.AgentName — @TimeZoneInfo.ConvertTime(item.SavedAt, _displayZone).ToString("MMM d, yyyy h:mm tt")</small>
-                            </div>
-                            <button class="btn btn-sm btn-outline-danger" @onclick="() => DeleteSavedItem(item.Id)">🗑️</button>
-                        </div>
+                        <p>Loading...</p>
                     }
+                    else if (_savedItems.Count == 0)
+                    {
+                        <p class="text-muted">No saved responses yet.</p>
+                    }
+                    else
+                    {
+                        @foreach (var item in _savedItems)
+                        {
+                            <div class="saved-item d-flex justify-content-between align-items-center p-2 mb-1 rounded">
+                                <div class="saved-item-info" @onclick="() => LoadSavedItem(item.Id)" style="cursor:pointer;" title="Insert into chat">
+                                    <strong>@item.Label</strong>
+                                    <small class="saved-item-meta d-block">@item.AgentName — @TimeZoneInfo.ConvertTime(item.SavedAt, _displayZone).ToString("MMM d, yyyy h:mm tt")</small>
+                                </div>
+                                <div class="d-flex gap-1">
+                                    <button class="btn btn-sm btn-outline-secondary" @onclick="() => ViewSavedItem(item.Id)" title="View">👁️</button>
+                                    <button class="btn btn-sm btn-outline-danger" @onclick="() => DeleteSavedItem(item.Id)" title="Delete">🗑️</button>
+                                </div>
+                            </div>
+                        }
+                    }
+                    <button class="btn btn-sm btn-secondary mt-2" @onclick="ToggleSavedModal">Close</button>
                 }
-                <button class="btn btn-sm btn-secondary mt-2" @onclick="ToggleSavedModal">Close</button>
             </div>
         </div>
     }
@@ -311,6 +331,7 @@
     private string _saveLabel = string.Empty;
     private bool _showSavedModal;
     private IReadOnlyList<SavedResponseSummary>? _savedItems;
+    private GetSavedResponseResponse? _viewingItem;
 
     private static readonly MarkdownPipeline MarkdownPipeline = new MarkdownPipelineBuilder()
         .UseAdvancedExtensions()
@@ -583,6 +604,7 @@
     private async Task ToggleSavedModal()
     {
         _showSavedModal = !_showSavedModal;
+        _viewingItem = null;
         if (_showSavedModal)
         {
             _savedItems = null;
@@ -602,6 +624,7 @@
     private async Task LoadSavedItem(string id)
     {
         _showSavedModal = false;
+        _viewingItem = null;
         try
         {
             var response = await ProxyService.GetSavedResponseAsync(id);
@@ -612,6 +635,33 @@
         {
             ChatState.AddError($"Could not load saved response: {ex.Message}");
         }
+    }
+
+    private async Task ViewSavedItem(string id)
+    {
+        try
+        {
+            var response = await ProxyService.GetSavedResponseAsync(id);
+            if (response is not null && response.Found)
+                _viewingItem = response;
+        }
+        catch (Exception ex)
+        {
+            ChatState.AddError($"Could not load saved response: {ex.Message}");
+        }
+    }
+
+    private void BackToSavedList()
+    {
+        _viewingItem = null;
+    }
+
+    private void InsertViewedItem()
+    {
+        if (_viewingItem is null) return;
+        ChatState.AddSavedReference(_viewingItem.Id, _viewingItem.Label, _viewingItem.Content, _viewingItem.AgentName);
+        _viewingItem = null;
+        _showSavedModal = false;
     }
 
     private async Task DeleteSavedItem(string id)
