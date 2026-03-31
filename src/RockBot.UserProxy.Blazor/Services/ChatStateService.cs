@@ -133,9 +133,13 @@ public sealed class ChatStateService
     {
         lock (_lock)
         {
-            // When a PrimaryFinal message arrives, close the primary activity log
+            // Close the activity log for the source that just finished.
+            // PrimaryFinal closes the PrimaryProgress log (different category names);
+            // subagent / A2A / scheduled final replies close their own category's log.
             if (category == MessageCategory.PrimaryFinal)
                 _activeActivityLogs.Remove(ActivityLogKey(MessageCategory.PrimaryProgress, null));
+            else
+                _activeActivityLogs.Remove(ActivityLogKey(category, reply.AgentName));
 
             _messages.Add(new ChatMessage
             {

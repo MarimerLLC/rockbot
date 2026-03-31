@@ -20,8 +20,6 @@
             }
         </div>
         <div class="d-flex align-items-center gap-2">
-            <span class="connection-dot @(ProxyService.IsConnected ? "connected" : "disconnected")"
-                  title="@(ProxyService.IsConnected ? "Connected to message bus" : "Disconnected from message bus")"></span>
             @if (ChatState.IsProcessing)
             {
                 <span class="status-indicator agent-busy"
@@ -55,6 +53,8 @@
             <button class="btn btn-sm btn-outline-light" @onclick="ToggleDarkMode" title="Toggle dark/light mode">
                 @(IsDarkMode ? "☀️" : "🌙")
             </button>
+            <span class="connection-dot @(ProxyService.IsConnected ? "connected" : "disconnected")"
+                  title="@(ProxyService.IsConnected ? "Connected to message bus" : "Disconnected from message bus")"></span>
         </div>
     </div>
 
