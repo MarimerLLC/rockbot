@@ -231,7 +231,7 @@ public sealed class KeywordTierSelector : ILlmTierSelector
         };
 
         // Keyword component (0 – 0.35)
-        var keywordScore = Math.Clamp(complexSignals * 0.10 - simplexSignals * 0.08, 0.0, 0.35);
+        var keywordScore = Math.Clamp(complexSignals * 0.10 - simplexSignals * 0.08, -0.15, 0.35);
 
         // Structural indicators (0 – 0.25)
         var structureScore = 0.0;
