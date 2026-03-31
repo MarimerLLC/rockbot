@@ -20,8 +20,8 @@ namespace RockBot.Llm;
 public sealed class KeywordTierSelector : ILlmTierSelector
 {
     // ── Compiled defaults ─────────────────────────────────────────────────────
-    private const double DefaultLowCeiling      = 0.15;
-    private const double DefaultBalancedCeiling = 0.46;
+    private const double DefaultLowCeiling      = 0.25;
+    private const double DefaultBalancedCeiling = 0.55;
 
     // ── Complexity signals → push toward High tier ───────────────────────────
     private static readonly string[] DefaultHighSignalKeywords =
@@ -44,10 +44,16 @@ public sealed class KeywordTierSelector : ILlmTierSelector
     // ── Simplicity signals → push toward Low tier ────────────────────────────
     private static readonly string[] DefaultLowSignalKeywords =
     [
-        "what is", "what's", "who is", "who was", "when was", "where is",
+        "what is", "what's", "who is", "who was", "when was", "when is",
+        "where is", "what time", "what day",
         "define", "definition of", "spell", "translate",
         "capital of", "how many", "list the", "give me a list",
         "yes or no", "true or false", "convert", "format",
+        // Conversational / greeting patterns
+        "hello", "hey", "thanks", "thank you", "good morning", "good afternoon",
+        // Simple operational / tool-use patterns
+        "check my", "send a", "send an", "remind me",
+        "tell me about", "show me", "look up",
     ];
 
     private static readonly EffectiveConfig Defaults = new(
@@ -225,7 +231,7 @@ public sealed class KeywordTierSelector : ILlmTierSelector
         };
 
         // Keyword component (0 – 0.35)
-        var keywordScore = Math.Clamp(complexSignals * 0.10 - simplexSignals * 0.08, 0.0, 0.35);
+        var keywordScore = Math.Clamp(complexSignals * 0.10 - simplexSignals * 0.08, -0.15, 0.35);
 
         // Structural indicators (0 – 0.25)
         var structureScore = 0.0;
