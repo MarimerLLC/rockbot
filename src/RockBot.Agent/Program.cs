@@ -227,6 +227,7 @@ builder.Services.AddRockBotHost(agent =>
     agent.HandleMessage<UserMessage, UserMessageHandler>();
     agent.HandleMessage<UserFeedback, UserFeedbackHandler>();
     agent.HandleMessage<CancelSessionRequest, CancelSessionHandler>();
+    agent.HandleMessage<ClearContextRequest, ClearContextHandler>();
     agent.HandleMessage<ConversationHistoryRequest, ConversationHistoryRequestHandler>();
     agent.HandleMessage<AgentInfoRequest, AgentInfoRequestHandler>();
     agent.WithSavedResponses();
@@ -237,6 +238,7 @@ builder.Services.AddRockBotHost(agent =>
     agent.SubscribeTo(UserProxyTopics.UserMessage);
     agent.SubscribeTo(UserProxyTopics.UserFeedback);
     agent.SubscribeTo(UserProxyTopics.CancelSession);
+    agent.SubscribeTo(UserProxyTopics.ClearContext);
     agent.SubscribeTo(UserProxyTopics.ConversationHistoryRequest);
     agent.SubscribeTo(UserProxyTopics.AgentInfoRequest);
     agent.SubscribeTo(UserProxyTopics.SaveResponseRequest);

@@ -333,6 +333,18 @@ public sealed class UserProxyService(
         logger.LogInformation("Published cancel request for session {SessionId}", sessionId);
     }
 
+    /// <summary>
+    /// Publishes a clear context request to reset conversation memory for the given session.
+    /// Long-term memory and conversation logs are preserved.
+    /// </summary>
+    public async Task ClearContextAsync(string sessionId, CancellationToken cancellationToken = default)
+    {
+        var request = new ClearContextRequest { SessionId = sessionId };
+        var envelope = request.ToEnvelope<ClearContextRequest>(source: options.ProxyId);
+        await publisher.PublishAsync(UserProxyTopics.ClearContext, envelope, cancellationToken);
+        logger.LogInformation("Published clear context request for session {SessionId}", sessionId);
+    }
+
     internal Task<MessageResult> HandleResponseAsync(MessageEnvelope envelope, CancellationToken ct)
     {
         AgentReply? reply;
