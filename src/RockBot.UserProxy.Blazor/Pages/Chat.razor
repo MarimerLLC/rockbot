@@ -420,6 +420,21 @@
         currentMessage = string.Empty;
         await JSRuntime.InvokeVoidAsync("chatHelpers.addToHistory", messageInput, messageContent);
 
+        // Handle /clear command — pure plumbing, no LLM involved
+        if (messageContent.Equals("/clear", StringComparison.OrdinalIgnoreCase))
+        {
+            ChatState.ClearMessages();
+            try
+            {
+                await ProxyService.ClearContextAsync(SessionId);
+            }
+            catch (Exception ex)
+            {
+                ChatState.AddError($"Could not clear agent context: {ex.Message}");
+            }
+            return;
+        }
+
         ChatState.AddUserMessage(messageContent, UserId, SessionId);
         ChatState.SetProcessing(true);
 

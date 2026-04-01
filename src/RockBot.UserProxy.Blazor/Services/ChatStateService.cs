@@ -273,6 +273,20 @@ public sealed class ChatStateService
         NotifyStateChanged();
     }
 
+    // ── Clear context ───────────────────────────────────────────────────────
+
+    public void ClearMessages()
+    {
+        lock (_lock)
+        {
+            _messages.Clear();
+            _activeActivityLogs.Clear();
+        }
+        _currentThinkingMessage = null;
+        _isProcessing = false;
+        NotifyStateChanged();
+    }
+
     // ── Saved references ────────────────────────────────────────────────────
 
     public void AddSavedReference(string id, string label, string content, string agentName)
