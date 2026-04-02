@@ -385,6 +385,18 @@
             {
                 ChatState.AddError($"Could not load conversation history: {ex.Message}");
             }
+
+            // Reconcile active status indicators against the agent's ground truth.
+            // This clears stale subagent spinners/header badges that persist in the
+            // singleton ChatStateService across page reloads, and seeds indicators
+            // for subagents that started before this UI connected.
+            try
+            {
+                var status = await ProxyService.GetActiveStatusAsync(timeout: TimeSpan.FromSeconds(5));
+                if (status is not null)
+                    ChatState.ReconcileActiveStatus(status);
+            }
+            catch { /* non-fatal — stale indicators clear on next user message */ }
         }
 
         // Only scroll when a new message has been added — not on every re-render
