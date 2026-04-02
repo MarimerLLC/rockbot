@@ -1,3 +1,5 @@
+name: rockbot
+
 services:
   rabbitmq:
     image: rabbitmq:4-management
@@ -99,10 +101,18 @@ services:
     volumes:
       - ${AGENT_DATA_PATH:-agent-data}:/data/agent
 
+  scripts-init:
+    image: docker:cli
+    entrypoint: ["docker", "image", "pull", "python:3.12-slim"]
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+
   scripts-manager:
     image: rockylhotka/rockbot-scripts-manager:latest
     user: root   # Required for Docker socket access
     depends_on:
+      scripts-init:
+        condition: service_completed_successfully
       rabbitmq:
         condition: service_healthy
     environment:
