@@ -230,6 +230,7 @@ builder.Services.AddRockBotHost(agent =>
     agent.HandleMessage<ClearContextRequest, ClearContextHandler>();
     agent.HandleMessage<ConversationHistoryRequest, ConversationHistoryRequestHandler>();
     agent.HandleMessage<AgentInfoRequest, AgentInfoRequestHandler>();
+    agent.HandleMessage<ActiveStatusRequest, ActiveStatusRequestHandler>();
     agent.WithSavedResponses();
     agent.HandleMessage<SaveResponseRequest, SaveResponseRequestHandler>();
     agent.HandleMessage<ListSavedResponsesRequest, ListSavedResponsesRequestHandler>();
@@ -241,6 +242,7 @@ builder.Services.AddRockBotHost(agent =>
     agent.SubscribeTo(UserProxyTopics.ClearContext);
     agent.SubscribeTo(UserProxyTopics.ConversationHistoryRequest);
     agent.SubscribeTo(UserProxyTopics.AgentInfoRequest);
+    agent.SubscribeTo(UserProxyTopics.ActiveStatusRequest);
     agent.SubscribeTo(UserProxyTopics.SaveResponseRequest);
     agent.SubscribeTo(UserProxyTopics.ListSavedResponsesRequest);
     agent.SubscribeTo(UserProxyTopics.GetSavedResponseRequest);

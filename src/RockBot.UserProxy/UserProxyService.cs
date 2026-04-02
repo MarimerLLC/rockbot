@@ -24,9 +24,11 @@ public sealed class UserProxyService(
     private readonly ConcurrentDictionary<string, TaskCompletionSource<ListSavedResponsesResponse>> _pendingListSaved = new();
     private readonly ConcurrentDictionary<string, TaskCompletionSource<GetSavedResponseResponse>> _pendingGetSaved = new();
     private readonly ConcurrentDictionary<string, TaskCompletionSource<DeleteSavedResponseAck>> _pendingDeleteSaved = new();
+    private readonly ConcurrentDictionary<string, TaskCompletionSource<ActiveStatusResponse>> _pendingActiveStatus = new();
     private ISubscription? _subscription;
     private ISubscription? _historySubscription;
     private ISubscription? _agentInfoSubscription;
+    private ISubscription? _activeStatusSubscription;
     private ISubscription? _saveResponseSubscription;
     private ISubscription? _listSavedSubscription;
     private ISubscription? _getSavedSubscription;
@@ -37,8 +39,10 @@ public sealed class UserProxyService(
     private bool _listSavedInitialized;
     private bool _getSavedInitialized;
     private bool _deleteSavedInitialized;
+    private bool _activeStatusInitialized;
     private readonly SemaphoreSlim _historyInitLock = new(1, 1);
     private readonly SemaphoreSlim _agentInfoInitLock = new(1, 1);
+    private readonly SemaphoreSlim _activeStatusInitLock = new(1, 1);
     private readonly SemaphoreSlim _saveResponseInitLock = new(1, 1);
     private readonly SemaphoreSlim _listSavedInitLock = new(1, 1);
     private readonly SemaphoreSlim _getSavedInitLock = new(1, 1);
@@ -166,6 +170,12 @@ public sealed class UserProxyService(
                 tcs.TrySetCanceled();
         }
 
+        foreach (var kvp in _pendingActiveStatus)
+        {
+            if (_pendingActiveStatus.TryRemove(kvp.Key, out var tcs))
+                tcs.TrySetCanceled();
+        }
+
         foreach (var kvp in _pendingSaveResponse)
         {
             if (_pendingSaveResponse.TryRemove(kvp.Key, out var tcs))
@@ -198,6 +208,9 @@ public sealed class UserProxyService(
 
         if (_agentInfoSubscription is not null)
             await _agentInfoSubscription.DisposeAsync();
+
+        if (_activeStatusSubscription is not null)
+            await _activeStatusSubscription.DisposeAsync();
 
         if (_saveResponseSubscription is not null)
             await _saveResponseSubscription.DisposeAsync();
@@ -576,6 +589,118 @@ public sealed class UserProxyService(
 
         logger.LogDebug("Agent info response correlated for {CorrelationId}: {Name} v{Version}",
             envelope.CorrelationId, response.AgentName, response.AgentVersion);
+
+        return Task.FromResult(MessageResult.Ack);
+    }
+
+    // ── Active status ──────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Requests a snapshot of currently active background work (subagents, processing state)
+    /// from the agent. Returns null if the request times out or the agent is unavailable.
+    /// </summary>
+    public async Task<ActiveStatusResponse?> GetActiveStatusAsync(
+        TimeSpan? timeout = null,
+        CancellationToken cancellationToken = default)
+    {
+        var effectiveTimeout = timeout ?? options.DefaultReplyTimeout;
+        var correlationId = Guid.NewGuid().ToString("N");
+        var tcs = new TaskCompletionSource<ActiveStatusResponse>(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        _pendingActiveStatus[correlationId] = tcs;
+
+        try
+        {
+            await EnsureActiveStatusSubscribedAsync(cancellationToken);
+
+            var request = new ActiveStatusRequest();
+            var envelope = request.ToEnvelope<ActiveStatusRequest>(
+                source: options.ProxyId,
+                correlationId: correlationId,
+                replyTo: ActiveStatusResponseTopic);
+
+            await publisher.PublishAsync(UserProxyTopics.ActiveStatusRequest, envelope, cancellationToken);
+
+            logger.LogDebug("Published ActiveStatusRequest {CorrelationId}", correlationId);
+
+            using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            timeoutCts.CancelAfter(effectiveTimeout);
+
+            try
+            {
+                return await tcs.Task.WaitAsync(timeoutCts.Token);
+            }
+            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+            {
+                logger.LogWarning("Active status request timeout for correlation {CorrelationId} after {Timeout}",
+                    correlationId, effectiveTimeout);
+                return null;
+            }
+        }
+        finally
+        {
+            _pendingActiveStatus.TryRemove(correlationId, out _);
+        }
+    }
+
+    private string ActiveStatusResponseTopic => $"{UserProxyTopics.ActiveStatusResponse}.{options.ProxyId}";
+
+    private async Task EnsureActiveStatusSubscribedAsync(CancellationToken ct)
+    {
+        if (_activeStatusInitialized) return;
+
+        await _activeStatusInitLock.WaitAsync(ct);
+        try
+        {
+            if (_activeStatusInitialized) return;
+
+            _activeStatusSubscription = await subscriber.SubscribeAsync(
+                ActiveStatusResponseTopic,
+                $"user-proxy.{options.ProxyId}.active-status",
+                HandleActiveStatusResponseAsync,
+                ct);
+
+            _activeStatusInitialized = true;
+        }
+        finally
+        {
+            _activeStatusInitLock.Release();
+        }
+    }
+
+    internal Task<MessageResult> HandleActiveStatusResponseAsync(MessageEnvelope envelope, CancellationToken ct)
+    {
+        if (envelope.CorrelationId is null ||
+            !_pendingActiveStatus.TryGetValue(envelope.CorrelationId, out var tcs))
+        {
+            logger.LogWarning("Received active status response with unknown correlation ID: {CorrelationId}",
+                envelope.CorrelationId);
+            return Task.FromResult(MessageResult.Ack);
+        }
+
+        ActiveStatusResponse? response;
+        try
+        {
+            response = envelope.GetPayload<ActiveStatusResponse>();
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "Failed to deserialize ActiveStatusResponse");
+            tcs.TrySetException(ex);
+            return Task.FromResult(MessageResult.DeadLetter);
+        }
+
+        if (response is null)
+        {
+            logger.LogWarning("Received null ActiveStatusResponse");
+            return Task.FromResult(MessageResult.DeadLetter);
+        }
+
+        _pendingActiveStatus.TryRemove(envelope.CorrelationId, out _);
+        tcs.TrySetResult(response);
+
+        logger.LogDebug("Active status response correlated for {CorrelationId}: {SubagentCount} subagents, isProcessing={IsProcessing}",
+            envelope.CorrelationId, response.Subagents.Count, response.IsProcessing);
 
         return Task.FromResult(MessageResult.Ack);
     }

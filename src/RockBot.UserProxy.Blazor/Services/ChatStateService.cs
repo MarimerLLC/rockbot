@@ -1,3 +1,5 @@
+using RockBot.UserProxy;
+
 namespace RockBot.UserProxy.Blazor.Services;
 
 public enum MessageCategory
@@ -168,7 +170,8 @@ public sealed class ChatStateService
     public void AppendActivityLogEntry(
         string content,
         MessageCategory category = MessageCategory.PrimaryProgress,
-        string? agentName = null)
+        string? agentName = null,
+        bool close = false)
     {
         lock (_lock)
         {
@@ -196,6 +199,9 @@ public sealed class ChatStateService
 
             logBubble.ActivityLogEntries.Add(new ActivityLogEntry(content, DateTime.UtcNow));
             logBubble.Content = content; // summary line = latest entry
+
+            if (close)
+                _activeActivityLogs.Remove(key);
         }
         NotifyStateChanged();
     }
@@ -341,6 +347,58 @@ public sealed class ChatStateService
             }
             return indicators;
         }
+    }
+
+    /// <summary>
+    /// Reconciles local activity-log state against the authoritative snapshot from
+    /// the agent. Removes stale entries for subagents that are no longer running and
+    /// seeds entries for subagents that are active but unknown to the UI (e.g. after
+    /// a page reload while subagents were in flight).
+    /// </summary>
+    public void ReconcileActiveStatus(ActiveStatusResponse status)
+    {
+        lock (_lock)
+        {
+            var activeAgentNames = status.Subagents
+                .Select(s => $"subagent-{s.TaskId}")
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+            // Remove stale subagent activity logs for subagents that are no longer running
+            var subagentPrefix = $"{MessageCategory.SubagentActivity}:";
+            var keysToRemove = _activeActivityLogs.Keys
+                .Where(k => k.StartsWith(subagentPrefix, StringComparison.Ordinal) &&
+                            !activeAgentNames.Contains(k[subagentPrefix.Length..]))
+                .ToList();
+
+            foreach (var key in keysToRemove)
+                _activeActivityLogs.Remove(key);
+
+            // Seed activity log entries for subagents that are running but have no UI state
+            foreach (var sub in status.Subagents)
+            {
+                var agentName = $"subagent-{sub.TaskId}";
+                var key = ActivityLogKey(MessageCategory.SubagentActivity, agentName);
+
+                if (!_activeActivityLogs.ContainsKey(key))
+                {
+                    var bubble = new ChatMessage
+                    {
+                        Content = $"Running: {sub.Description}",
+                        IsFromUser = false,
+                        Timestamp = sub.StartedAt.UtcDateTime,
+                        AgentName = agentName,
+                        Category = MessageCategory.SubagentActivity,
+                        IsActivityLog = true,
+                        IsExpanded = false
+                    };
+                    bubble.ActivityLogEntries.Add(new ActivityLogEntry(
+                        $"Running: {sub.Description}", sub.StartedAt.UtcDateTime));
+                    _messages.Add(bubble);
+                    _activeActivityLogs[key] = bubble.MessageId;
+                }
+            }
+        }
+        NotifyStateChanged();
     }
 
     private static string ActivityLogKey(MessageCategory category, string? agentName)

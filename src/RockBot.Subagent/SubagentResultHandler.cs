@@ -75,7 +75,8 @@ internal sealed class SubagentResultHandler(
                 Content = completionContent,
                 SessionId = rawSessionId,
                 AgentName = $"subagent-{message.TaskId}",
-                IsFinal = false
+                IsFinal = false,
+                IsCompletion = true
             };
             var completionEnvelope = completionReply.ToEnvelope<AgentReply>(
                 source: $"subagent-{message.TaskId}");

@@ -29,8 +29,11 @@ public sealed class BlazorUserFrontend(ChatStateService chatState) : IUserFronte
         else
         {
             // Non-final progress — append to the source's activity log bubble
-            // instead of creating a separate bubble per message
-            chatState.AppendActivityLogEntry(reply.Content, category, reply.AgentName);
+            // instead of creating a separate bubble per message.
+            // IsCompletion signals the source has finished (e.g. subagent result Phase 1) —
+            // close the activity log so the spinner and header indicator disappear.
+            chatState.AppendActivityLogEntry(reply.Content, category, reply.AgentName,
+                close: reply.IsCompletion);
         }
         return Task.CompletedTask;
     }

@@ -14,6 +14,8 @@ public static class UserProxyTopics
     public const string UserFeedback = "user.feedback";
     public const string AgentInfoRequest = "agent.info.request";
     public const string AgentInfoResponse = "agent.info.response";
+    public const string ActiveStatusRequest = "agent.status.request";
+    public const string ActiveStatusResponse = "agent.status.response";
 
     // Saved responses
     public const string SaveResponseRequest = "user.saved.save.request";
