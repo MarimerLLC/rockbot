@@ -21,6 +21,7 @@
     <Project Path="src/RockBot.Tools.Mcp/RockBot.Tools.Mcp.csproj" />
     <Project Path="src/RockBot.Scripts.Abstractions/RockBot.Scripts.Abstractions.csproj" />
     <Project Path="src/RockBot.Scripts.Container/RockBot.Scripts.Container.csproj" />
+    <Project Path="src/RockBot.Scripts.Docker/RockBot.Scripts.Docker.csproj" />
     <Project Path="src/RockBot.Scripts.Local/RockBot.Scripts.Local.csproj" />
     <Project Path="src/RockBot.Scripts.Remote/RockBot.Scripts.Remote.csproj" />
     <Project Path="src/RockBot.Scripts.Manager/RockBot.Scripts.Manager.csproj" />

@@ -1,4 +1,8 @@
 window.chatHelpers = {
+    setPageTitle: function (title) {
+        document.title = title;
+    },
+
     getBrowserTimezone: function () {
         try {
             return Intl.DateTimeFormat().resolvedOptions().timeZone;

@@ -14,6 +14,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\RockBot.Scripts.Container\RockBot.Scripts.Container.csproj" />
+    <ProjectReference Include="..\RockBot.Scripts.Docker\RockBot.Scripts.Docker.csproj" />
     <ProjectReference Include="..\RockBot.Messaging.RabbitMQ\RockBot.Messaging.RabbitMQ.csproj" />
     <ProjectReference Include="..\RockBot.Host\RockBot.Host.csproj" />
   </ItemGroup>

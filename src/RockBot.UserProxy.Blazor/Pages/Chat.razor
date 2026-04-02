@@ -337,6 +337,8 @@
         .UseAdvancedExtensions()
         .Build();
 
+    private string? _lastRenderedAgentName;
+
     protected override void OnInitialized()
     {
         _stateChangedHandler = () => InvokeAsync(StateHasChanged);
@@ -348,6 +350,14 @@
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
+        // PageTitle doesn't reliably re-render on state changes, so sync via JS
+        var currentName = ChatState.AgentName ?? "RockBot";
+        if (_lastRenderedAgentName != currentName)
+        {
+            _lastRenderedAgentName = currentName;
+            await JSRuntime.InvokeVoidAsync("chatHelpers.setPageTitle", $"{currentName} Chat");
+        }
+
         if (firstRender)
         {
             await JSRuntime.InvokeVoidAsync("chatHelpers.preventEnterNewline", messageInput);

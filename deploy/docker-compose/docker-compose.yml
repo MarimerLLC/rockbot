@@ -1,3 +1,5 @@
+name: rockbot
+
 services:
   rabbitmq:
     image: rabbitmq:4-management
@@ -37,10 +39,12 @@ services:
         if [ -f /app/agent/well-known-agents.json ] && [ ! -s /data/agent/well-known-agents.json ]; then
           cp /app/agent/well-known-agents.json /data/agent/well-known-agents.json
         fi
-        # Seed an empty mcp.json so the agent doesn't load the image default
-        # (which references cluster-internal URLs that don't exist locally)
+        # Seed mcp.json with compose-local MCP server URLs
+        # (overrides the image default which references cluster-internal URLs)
         if [ ! -f /data/agent/mcp.json ]; then
-          echo '{"mcpServers":{}}' > /data/agent/mcp.json
+          cat > /data/agent/mcp.json <<'MCPEOF'
+        {"mcpServers":{"introspection":{"type":"sse","url":"http://introspection-mcp:8080/"}}}
+        MCPEOF
         fi
         # Per-model behavior files
         for model_dir in /app/model-behaviors/*/; do
@@ -60,7 +64,7 @@ services:
         chmod -R 777 /data/agent
         echo "Agent data volume ready."
     volumes:
-      - agent-data:/data/agent
+      - ${AGENT_DATA_PATH:-agent-data}:/data/agent
 
   agent:
     image: rockylhotka/rockbot-agent:latest
@@ -69,6 +73,8 @@ services:
         condition: service_completed_successfully
       rabbitmq:
         condition: service_healthy
+      introspection-mcp:
+        condition: service_started
     environment:
       # -- RabbitMQ --
       RabbitMq__HostName: rabbitmq
@@ -97,8 +103,45 @@ services:
       # -- Timezone (set to your IANA timezone) --
       Agent__Timezone: ${AGENT_TIMEZONE:-America/Chicago}
     volumes:
-      - agent-data:/data/agent
+      - ${AGENT_DATA_PATH:-agent-data}:/data/agent
 
+  scripts-init:
+    image: docker:cli
+    entrypoint: ["docker", "image", "pull", "python:3.12-slim"]
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+
+  scripts-manager:
+    image: rockylhotka/rockbot-scripts-manager:latest
+    user: root   # Required for Docker socket access
+    depends_on:
+      scripts-init:
+        condition: service_completed_successfully
+      rabbitmq:
+        condition: service_healthy
+    environment:
+      RabbitMq__HostName: rabbitmq
+      RabbitMq__Port: "5672"
+      RabbitMq__UserName: rockbot
+      RabbitMq__Password: rockbot
+      RabbitMq__VirtualHost: /
+      Scripts__Provider: Docker
+      Scripts__Docker__Image: python:3.12-slim
+      Scripts__Docker__CpuLimit: "500m"
+      Scripts__Docker__MemoryLimit: 256Mi
+      Scripts__Docker__NetworkMode: bridge
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+
+  introspection-mcp:
+    image: rockylhotka/rockbot-introspection-mcp:latest
+    depends_on:
+      agent-init:
+        condition: service_completed_successfully
+    environment:
+      AgentName__Path: /data/agent/agent-name.md
+    volumes:
+      - ${AGENT_DATA_PATH:-agent-data}:/data/agent
   blazor:
     image: rockylhotka/rockbot-blazor:latest
     depends_on:

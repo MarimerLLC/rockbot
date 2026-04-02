@@ -66,13 +66,19 @@ public sealed class ChatStateService
 
                 var (category, isFromUser) = CategorizeHistoryTurn(turn, AgentName);
 
+                // Use the current display name for primary agent turns so
+                // history reflects a name change (e.g. "RockBot" → "DockerBot").
+                var effectiveName = category is MessageCategory.PrimaryFinal or MessageCategory.PrimaryProgress
+                    ? AgentName ?? turn.AgentName
+                    : turn.AgentName;
+
                 _messages.Add(new ChatMessage
                 {
                     Content = turn.Content,
                     IsFromUser = isFromUser,
                     Timestamp = turn.Timestamp.UtcDateTime,
                     SessionId = sessionId,
-                    AgentName = turn.AgentName,
+                    AgentName = effectiveName,
                     Category = category,
                     IsExpanded = category is MessageCategory.PrimaryFinal
                         or MessageCategory.ScheduledUser
