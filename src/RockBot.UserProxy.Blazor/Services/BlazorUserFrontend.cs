@@ -55,6 +55,10 @@ public sealed class BlazorUserFrontend(ChatStateService chatState) : IUserFronte
         if (reply.AgentName?.StartsWith("subagent-", StringComparison.OrdinalIgnoreCase) == true)
             return MessageCategory.SubagentActivity;
 
+        // Inbound A2A notifications use a dedicated session ID regardless of IsFinal
+        if (reply.SessionId?.StartsWith("a2a-inbound", StringComparison.OrdinalIgnoreCase) == true)
+            return MessageCategory.A2AActivity;
+
         if (reply.IsFinal)
             return MessageCategory.PrimaryFinal;
 

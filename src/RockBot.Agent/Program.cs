@@ -194,17 +194,33 @@ builder.Services.AddRockBotHost(agent =>
     agent.AddHeartbeatBootstrap(opts =>
         builder.Configuration.GetSection("HeartbeatPatrol").Bind(opts));
     agent.AddSubagents();
-    agent.AddA2ACaller(opts =>
+    var a2aBasePath = builder.Configuration["AgentProfile:BasePath"]
+        ?? builder.Configuration["AgentProfile__BasePath"]
+        ?? AppContext.BaseDirectory;
+    agent.AddA2A(opts =>
     {
-        var basePath = builder.Configuration["AgentProfile:BasePath"]
-            ?? builder.Configuration["AgentProfile__BasePath"]
-            ?? AppContext.BaseDirectory;
-        opts.DirectoryPersistencePath = Path.Combine(basePath, "known-agents.json");
+        opts.Card = new AgentCard
+        {
+            AgentName = "RockBot",
+            Description = "Personal AI agent — accepts notifications and availability queries",
+            Version = "1.0",
+            Skills =
+            [
+                new AgentSkill { Id = "notify-user", Name = "Notify User",
+                    Description = "Send a notification to the user" },
+                new AgentSkill { Id = "query-availability", Name = "Query Availability",
+                    Description = "Check if the user is available (free/busy)" }
+            ]
+        };
+        opts.TrustStorePath = Path.Combine(a2aBasePath, "agent-trust.json");
+
+        // Shared options — AddA2A registers A2AOptions first (AddSingleton);
+        // AddA2ACaller uses TryAddSingleton so it reuses this instance.
+        opts.DirectoryPersistencePath = Path.Combine(a2aBasePath, "known-agents.json");
 
         // Well-known agents loaded from a JSON file on the PVC so the list can be
-        // updated without rebuilding the image. File path mirrors the other agent
-        // data files (soul.md, directives.md, etc.) under the agent base path.
-        var wellKnownPath = Path.Combine(basePath, "well-known-agents.json");
+        // updated without rebuilding the image.
+        var wellKnownPath = Path.Combine(a2aBasePath, "well-known-agents.json");
         if (File.Exists(wellKnownPath))
         {
             try
@@ -217,11 +233,12 @@ builder.Services.AddRockBotHost(agent =>
             }
             catch (Exception ex)
             {
-                // Non-fatal — log at startup but don't prevent the agent from starting
                 Console.Error.WriteLine($"[warn] Could not load well-known agents from {wellKnownPath}: {ex.Message}");
             }
         }
     });
+    agent.Services.AddScoped<IAgentTaskHandler, RockBot.Agent.A2A.RockBotTaskHandler>();
+    agent.AddA2ACaller();
     agent.AddServiceSearch();
     agent.HandleMessage<ScheduledTaskMessage, ScheduledTaskHandler>();
     agent.HandleMessage<UserMessage, UserMessageHandler>();

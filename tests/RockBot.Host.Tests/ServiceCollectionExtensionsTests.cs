@@ -27,6 +27,7 @@ public class ServiceCollectionExtensionsTests
         var services = new ServiceCollection();
         services.AddLogging();
         services.AddSingleton<IMessageSubscriber>(new StubSubscriber());
+        services.AddSingleton<IMessagePublisher>(new StubPublisher());
         services.AddRockBotHost(agent => agent.WithIdentity("test"));
 
         var provider = services.BuildServiceProvider();
@@ -60,6 +61,13 @@ public class ServiceCollectionExtensionsTests
         var resolver = provider.GetService<IMessageTypeResolver>();
 
         Assert.IsNotNull(resolver);
+    }
+
+    private sealed class StubPublisher : IMessagePublisher
+    {
+        public Task PublishAsync(string topic, MessageEnvelope envelope, CancellationToken ct = default)
+            => Task.CompletedTask;
+        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
     }
 
     private sealed class StubSubscriber : IMessageSubscriber

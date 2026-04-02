@@ -32,6 +32,16 @@ public static class A2AServiceCollectionExtensions
                 sp => sp.GetRequiredService<AgentDirectory>());
         }
 
+        // Identity verification — default to name-based; users can override via DI
+        builder.Services.TryAddSingleton<IAgentIdentityVerifier, NameBasedAgentIdentityVerifier>();
+
+        // Trust store — default to file-backed; users can override via DI
+        builder.Services.TryAddSingleton<IAgentTrustStore>(sp =>
+            new FileAgentTrustStore(options.TrustStorePath));
+
+        // Identity verification middleware — verifies A2A inbound messages
+        builder.UseMiddleware<IdentityVerificationMiddleware>();
+
         // Summarizer — uses ILlmClient if available, otherwise falls back gracefully
         builder.Services.TryAddSingleton<AgentCardSummarizer>();
 

@@ -49,6 +49,7 @@ public class AgentProfileExtensionsTests
         var services = new ServiceCollection();
         services.AddLogging();
         services.AddSingleton<IMessageSubscriber>(new StubSubscriber());
+        services.AddSingleton<IMessagePublisher>(new StubPublisher());
         services.AddRockBotHost(agent =>
         {
             agent.WithIdentity("test-agent");
@@ -78,6 +79,13 @@ public class AgentProfileExtensionsTests
         var options = provider.GetRequiredService<Microsoft.Extensions.Options.IOptions<AgentProfileOptions>>();
 
         Assert.AreEqual("custom-path", options.Value.BasePath);
+    }
+
+    private sealed class StubPublisher : IMessagePublisher
+    {
+        public Task PublishAsync(string topic, MessageEnvelope envelope, CancellationToken ct = default)
+            => Task.CompletedTask;
+        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
     }
 
     private sealed class StubSubscriber : IMessageSubscriber
