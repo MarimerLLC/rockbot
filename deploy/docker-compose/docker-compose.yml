@@ -39,10 +39,12 @@ services:
         if [ -f /app/agent/well-known-agents.json ] && [ ! -s /data/agent/well-known-agents.json ]; then
           cp /app/agent/well-known-agents.json /data/agent/well-known-agents.json
         fi
-        # Seed an empty mcp.json so the agent doesn't load the image default
-        # (which references cluster-internal URLs that don't exist locally)
+        # Seed mcp.json with compose-local MCP server URLs
+        # (overrides the image default which references cluster-internal URLs)
         if [ ! -f /data/agent/mcp.json ]; then
-          echo '{"mcpServers":{}}' > /data/agent/mcp.json
+          cat > /data/agent/mcp.json <<'MCPEOF'
+        {"mcpServers":{"introspection":{"type":"sse","url":"http://introspection-mcp:8080/"}}}
+        MCPEOF
         fi
         # Per-model behavior files
         for model_dir in /app/model-behaviors/*/; do
@@ -71,6 +73,8 @@ services:
         condition: service_completed_successfully
       rabbitmq:
         condition: service_healthy
+      introspection-mcp:
+        condition: service_started
     environment:
       # -- RabbitMQ --
       RabbitMq__HostName: rabbitmq
@@ -129,6 +133,15 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
 
+  introspection-mcp:
+    image: rockylhotka/rockbot-introspection-mcp:latest
+    depends_on:
+      agent-init:
+        condition: service_completed_successfully
+    environment:
+      AgentName__Path: /data/agent/agent-name.md
+    volumes:
+      - ${AGENT_DATA_PATH:-agent-data}:/data/agent
   blazor:
     image: rockylhotka/rockbot-blazor:latest
     depends_on:
