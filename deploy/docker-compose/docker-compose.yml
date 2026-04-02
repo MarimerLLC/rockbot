@@ -60,7 +60,7 @@ services:
         chmod -R 777 /data/agent
         echo "Agent data volume ready."
     volumes:
-      - agent-data:/data/agent
+      - ${AGENT_DATA_PATH:-agent-data}:/data/agent
 
   agent:
     image: rockylhotka/rockbot-agent:latest
@@ -97,7 +97,7 @@ services:
       # -- Timezone (set to your IANA timezone) --
       Agent__Timezone: ${AGENT_TIMEZONE:-America/Chicago}
     volumes:
-      - agent-data:/data/agent
+      - ${AGENT_DATA_PATH:-agent-data}:/data/agent
 
   blazor:
     image: rockylhotka/rockbot-blazor:latest
