@@ -99,6 +99,26 @@ services:
     volumes:
       - ${AGENT_DATA_PATH:-agent-data}:/data/agent
 
+  scripts-manager:
+    image: rockylhotka/rockbot-scripts-manager:latest
+    user: root   # Required for Docker socket access
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    environment:
+      RabbitMq__HostName: rabbitmq
+      RabbitMq__Port: "5672"
+      RabbitMq__UserName: rockbot
+      RabbitMq__Password: rockbot
+      RabbitMq__VirtualHost: /
+      Scripts__Provider: Docker
+      Scripts__Docker__Image: python:3.12-slim
+      Scripts__Docker__CpuLimit: "500m"
+      Scripts__Docker__MemoryLimit: 256Mi
+      Scripts__Docker__NetworkMode: bridge
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+
   blazor:
     image: rockylhotka/rockbot-blazor:latest
     depends_on:
