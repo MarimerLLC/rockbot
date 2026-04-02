@@ -360,6 +360,25 @@ public sealed class UserProxyService(
 
     internal Task<MessageResult> HandleResponseAsync(MessageEnvelope envelope, CancellationToken ct)
     {
+        // Handle agent name change notifications
+        if (envelope.MessageType == typeof(AgentNameChanged).FullName)
+        {
+            try
+            {
+                var nameChanged = envelope.GetPayload<AgentNameChanged>();
+                if (nameChanged is not null && !string.IsNullOrEmpty(nameChanged.AgentName))
+                {
+                    logger.LogDebug("Agent name changed to {Name}", nameChanged.AgentName);
+                    _ = frontend.OnAgentNameChangedAsync(nameChanged.AgentName, ct);
+                }
+            }
+            catch (Exception ex)
+            {
+                logger.LogWarning(ex, "Failed to handle AgentNameChanged notification");
+            }
+            return Task.FromResult(MessageResult.Ack);
+        }
+
         AgentReply? reply;
         try
         {

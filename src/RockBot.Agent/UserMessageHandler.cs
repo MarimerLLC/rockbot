@@ -50,6 +50,7 @@ internal sealed class UserMessageHandler(
     SessionStartTracker sessionStartTracker,
     IOptions<AgentProfileOptions> profileOptions,
     IWipTracker wipTracker,
+    AgentNameHolder agentNameHolder,
     ILogger<UserMessageHandler> logger,
     TierRoutingLogger tierRoutingLogger,
     ISkillUsageStore? skillUsageStore = null) : IMessageHandler<UserMessage>
@@ -619,7 +620,7 @@ internal sealed class UserMessageHandler(
         {
             Content = content,
             SessionId = sessionId,
-            AgentName = agent.Name,
+            AgentName = agentNameHolder.DisplayName ?? agent.Name,
             IsFinal = isFinal
         };
         var envelope = reply.ToEnvelope<AgentReply>(source: agent.Name, correlationId: correlationId);
