@@ -41,7 +41,7 @@ internal sealed class SubagentRunner(
         bool consolidate,
         CancellationToken ct)
     {
-        var classification = tierSelector.Classify(description);
+        var classification = tierSelector.Classify(description, new TierRoutingContext(Origin: "subagent"));
         var tier = classification.Tier;
         logger.LogInformation(
             "Subagent {TaskId} starting (session {SessionId}) tier={Tier} (score={Score:F3})",

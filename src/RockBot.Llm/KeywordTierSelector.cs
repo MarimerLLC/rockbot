@@ -20,8 +20,10 @@ namespace RockBot.Llm;
 public sealed class KeywordTierSelector : ILlmTierSelector
 {
     // ── Compiled defaults ─────────────────────────────────────────────────────
-    private const double DefaultLowCeiling      = 0.25;
-    private const double DefaultBalancedCeiling = 0.55;
+    private const double DefaultLowCeiling           = 0.25;
+    private const double DefaultBalancedCeiling      = 0.55;
+    private const double DefaultTrivialGuardCeiling  = 0.15;
+    private const double DefaultUserOriginBias       = 0.10;
 
     // ── Complexity signals → push toward High tier ───────────────────────────
     private static readonly string[] DefaultHighSignalKeywords =
@@ -51,6 +53,10 @@ public sealed class KeywordTierSelector : ILlmTierSelector
         "yes or no", "true or false", "convert", "format",
         // Conversational / greeting patterns
         "hello", "hey", "thanks", "thank you", "good morning", "good afternoon",
+        "good night", "good evening", "how are you", "how's it going",
+        // Casual conversational patterns — these dominate Balanced drift cases
+        "i think", "i plan to", "what do you think", "i was thinking",
+        "sounds good", "that's great", "got it", "okay",
         // Simple operational / tool-use patterns
         "check my", "send a", "send an", "remind me",
         "tell me about", "show me", "look up",
@@ -58,6 +64,7 @@ public sealed class KeywordTierSelector : ILlmTierSelector
 
     private static readonly EffectiveConfig Defaults = new(
         DefaultLowCeiling, DefaultBalancedCeiling,
+        DefaultTrivialGuardCeiling, DefaultUserOriginBias,
         DefaultHighSignalKeywords, DefaultLowSignalKeywords);
 
     // ── Code / math / multi-step markers ────────────────────────────────────
@@ -110,7 +117,14 @@ public sealed class KeywordTierSelector : ILlmTierSelector
     public ModelTier SelectTier(string promptText) => Classify(promptText).Tier;
 
     /// <inheritdoc/>
-    public TierClassification Classify(string promptText)
+    public TierClassification Classify(string promptText) =>
+        ClassifyCore(promptText, context: null);
+
+    /// <inheritdoc/>
+    public TierClassification Classify(string promptText, TierRoutingContext context) =>
+        ClassifyCore(promptText, context);
+
+    private TierClassification ClassifyCore(string promptText, TierRoutingContext? context)
     {
         var config = GetEffectiveConfig();
         var lower = promptText.ToLowerInvariant();
@@ -123,9 +137,28 @@ public sealed class KeywordTierSelector : ILlmTierSelector
             .ToArray();
 
         var score = ComputeScore(promptText, config, matchedHigh.Length, matchedLow.Length);
+
+        // Origin bias: user messages get a slight push toward lower tiers.
+        // Subagent operational tasks stay neutral since they carry genuine complexity signals.
+        // No lower clamp — stacks with negative keyword scores for stronger Low routing signal.
+        if (context?.Origin == "user-message" && config.UserOriginBias > 0)
+            score -= config.UserOriginBias;
+
         var tier = score <= config.LowCeiling      ? ModelTier.Low
                  : score <= config.BalancedCeiling ? ModelTier.Balanced
                  :                                   ModelTier.High;
+
+        // Trivial guard: force Low for objectively simple prompts regardless of
+        // dream-tuned thresholds. This prevents threshold drift from absorbing
+        // trivial user traffic into Balanced.
+        var wordCount = CountWords(promptText);
+        if (tier != ModelTier.Low
+            && score < config.TrivialGuardCeiling
+            && wordCount <= 20
+            && matchedHigh.Length == 0)
+        {
+            tier = ModelTier.Low;
+        }
 
         return new TierClassification(tier, score, matchedHigh, matchedLow);
     }
@@ -171,16 +204,20 @@ public sealed class KeywordTierSelector : ILlmTierSelector
             var lowKeywords  = SanitizeKeywords(dto.LowSignalKeywords, "lowSignalKeywords");
 
             var result = new EffectiveConfig(
-                LowCeiling:          dto.LowCeiling      ?? DefaultLowCeiling,
-                BalancedCeiling:     dto.BalancedCeiling  ?? DefaultBalancedCeiling,
+                LowCeiling:          dto.LowCeiling          ?? DefaultLowCeiling,
+                BalancedCeiling:     dto.BalancedCeiling      ?? DefaultBalancedCeiling,
+                TrivialGuardCeiling: dto.TrivialGuardCeiling  ?? DefaultTrivialGuardCeiling,
+                UserOriginBias:      dto.UserOriginBias       ?? DefaultUserOriginBias,
                 HighSignalKeywords:  highKeywords ?? DefaultHighSignalKeywords,
                 LowSignalKeywords:   lowKeywords  ?? DefaultLowSignalKeywords);
 
             _logger?.LogInformation(
                 "KeywordTierSelector: reloaded config from {Path} " +
                 "(lowCeiling={Low}, balancedCeiling={Balanced}, " +
+                "trivialGuard={TrivialGuard}, userOriginBias={OriginBias}, " +
                 "highSignals={HighCount}, lowSignals={LowCount})",
                 _configPath, result.LowCeiling, result.BalancedCeiling,
+                result.TrivialGuardCeiling, result.UserOriginBias,
                 result.HighSignalKeywords.Length, result.LowSignalKeywords.Length);
 
             return result;
@@ -240,7 +277,9 @@ public sealed class KeywordTierSelector : ILlmTierSelector
         if (hasMultiStep) structureScore += 0.08;
         structureScore = Math.Min(0.25, structureScore);
 
-        return Math.Clamp(lengthScore + keywordScore + structureScore, 0.0, 1.0);
+        // No lower clamp: low-signal keywords collected by the dream should be able
+        // to push the score negative, actively biasing prompts toward the Low tier.
+        return Math.Min(lengthScore + keywordScore + structureScore, 1.0);
     }
 
     private static int CountWords(string text) =>
@@ -365,6 +404,8 @@ public sealed class KeywordTierSelector : ILlmTierSelector
     private sealed record EffectiveConfig(
         double LowCeiling,
         double BalancedCeiling,
+        double TrivialGuardCeiling,
+        double UserOriginBias,
         string[] HighSignalKeywords,
         string[] LowSignalKeywords);
 

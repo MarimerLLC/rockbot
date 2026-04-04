@@ -82,7 +82,7 @@ internal sealed class UserMessageHandler(
         logger.LogInformation("Received message from {UserId} in session {SessionId}: {Content}",
             message.UserId, message.SessionId, message.Content);
 
-        var classification = tierSelector.Classify(message.Content);
+        var classification = tierSelector.Classify(message.Content, new TierRoutingContext(Origin: "user-message"));
         var tier = classification.Tier;
         logger.LogInformation("Routing user message to tier={Tier} (score={Score:F3})", tier, classification.ComplexityScore);
         var turnSw = System.Diagnostics.Stopwatch.StartNew();

@@ -6,7 +6,7 @@ namespace RockBot.Host;
 /// dream feedback loop can detect mis-routing patterns over time.
 /// </summary>
 /// <param name="Tier">The selected model tier.</param>
-/// <param name="ComplexityScore">Composite score in [0, 1] that drove the decision.</param>
+/// <param name="ComplexityScore">Composite score (typically in [-0.15, 1]) that drove the decision. Negative values indicate strong low-signal keyword matches.</param>
 /// <param name="MatchedHighKeywords">High-complexity keywords found in the prompt.</param>
 /// <param name="MatchedLowKeywords">Simplicity keywords found in the prompt.</param>
 public sealed record TierClassification(
@@ -14,6 +14,16 @@ public sealed record TierClassification(
     double ComplexityScore,
     IReadOnlyList<string> MatchedHighKeywords,
     IReadOnlyList<string> MatchedLowKeywords);
+
+/// <summary>
+/// Optional context passed to the tier selector to influence routing beyond prompt text.
+/// </summary>
+/// <param name="Origin">
+/// Origin of the request: <c>"user-message"</c> or <c>"subagent"</c>.
+/// User-originated messages receive a bias toward lower tiers since their prompts
+/// are semantically simpler even when post-injection context is large.
+/// </param>
+public sealed record TierRoutingContext(string? Origin = null);
 
 /// <summary>
 /// Selects the appropriate <see cref="ModelTier"/> for a given prompt.
@@ -32,4 +42,10 @@ public interface ILlmTierSelector
     /// pipeline so the dream feedback loop can detect mis-routing patterns.
     /// </summary>
     TierClassification Classify(string promptText);
+
+    /// <summary>
+    /// Classifies <paramref name="promptText"/> with additional routing context (origin, etc.)
+    /// and returns both the routing decision and the classification signals that drove it.
+    /// </summary>
+    TierClassification Classify(string promptText, TierRoutingContext context);
 }
