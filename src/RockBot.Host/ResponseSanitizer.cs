@@ -10,7 +10,7 @@ namespace RockBot.Host;
 public static partial class ResponseSanitizer
 {
     // Matches a trailing paragraph that starts with an offer/teaser pattern.
-    // The paragraph must be at the end of the text (after a blank line or at string end)
+    // The offer must be at the end of the text (after one or more newlines)
     // and begin with a recognisable offer phrase.
     //
     // Covers patterns like:
@@ -23,8 +23,11 @@ public static partial class ResponseSanitizer
     //   "I could also..."
     //   "Next logical step is... I can do that now."
     //   Bullet lists that start with "I can also" / "If you want"
+    //
+    // Uses {1,} (not {2,}) so offers after a single newline are caught too —
+    // LLMs don't always insert a blank line before the trailing teaser.
     [GeneratedRegex(
-        @"(\r?\n){2,}" +                               // blank line separator
+        @"(\r?\n){1,}" +                               // one or more newlines
         @"(?:" +
             @"(?:If you (?:want|'d like|would like),?\s*I\s)" +  // "If you want, I ..."
             @"|(?:Would you like me to\s)" +                      // "Would you like me to ..."
