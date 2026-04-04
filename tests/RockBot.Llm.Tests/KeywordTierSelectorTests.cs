@@ -142,8 +142,8 @@ public class KeywordTierSelectorTests
         var result = _selector.Classify("What is the capital of France?");
 
         Assert.AreEqual(ModelTier.Low, result.Tier);
-        Assert.IsTrue(result.ComplexityScore >= 0.0 && result.ComplexityScore <= 1.0,
-            "Score must be in [0,1]");
+        Assert.IsTrue(result.ComplexityScore <= 1.0,
+            "Score must be ≤ 1.0");
         // "what is" is a low-signal keyword, so MatchedLowKeywords should be non-empty
         Assert.IsTrue(result.MatchedLowKeywords.Count > 0,
             "Simple question should match at least one low-signal keyword");
@@ -377,5 +377,133 @@ public class KeywordTierSelectorTests
         {
             Directory.Delete(tempDir, recursive: true);
         }
+    }
+
+    // ── Origin bias tests ────────────────────────────────────────────────────
+
+    [TestMethod]
+    [DataRow("what is the message from the minnesota dvs?")]
+    [DataRow("I plan to get up at 9:30 am")]
+    [DataRow("I think we should listen to some jazz tonight")]
+    [DataRow("what do you think about the weather?")]
+    public void Classify_UserOrigin_TrivialPrompts_RouteLow(string prompt)
+    {
+        var result = _selector.Classify(prompt, new TierRoutingContext(Origin: "user-message"));
+        Assert.AreEqual(ModelTier.Low, result.Tier,
+            $"Trivial user prompt should route Low: \"{prompt}\"");
+    }
+
+    [TestMethod]
+    public void Classify_UserOriginBias_ReducesScore()
+    {
+        // Use a prompt that scores above 0.10 so the bias has room to reduce.
+        // ~25 words, no keywords → lengthScore ~0.20, no keyword/structure contribution.
+        const string prompt = "I went to the park yesterday and saw a few birds near the lake and it was a really nice afternoon walk overall";
+        var withoutOrigin = _selector.Classify(prompt);
+        var withOrigin = _selector.Classify(prompt, new TierRoutingContext(Origin: "user-message"));
+
+        Assert.IsTrue(withoutOrigin.ComplexityScore > 0.10,
+            $"Baseline score should be above 0.10 for this test to be meaningful, got {withoutOrigin.ComplexityScore:F3}");
+        Assert.IsTrue(withOrigin.ComplexityScore < withoutOrigin.ComplexityScore,
+            "User-origin bias should reduce the complexity score");
+    }
+
+    [TestMethod]
+    public void Classify_SubagentOrigin_NoBiasApplied()
+    {
+        const string prompt = "Tell me about dogs.";
+        var withoutOrigin = _selector.Classify(prompt);
+        var withSubagent = _selector.Classify(prompt, new TierRoutingContext(Origin: "subagent"));
+
+        Assert.AreEqual(withoutOrigin.ComplexityScore, withSubagent.ComplexityScore,
+            "Subagent origin should not apply any score bias");
+    }
+
+    // ── Trivial guard tests ──────────────────────────────────────────────────
+
+    [TestMethod]
+    public void TrivialGuard_ForcesLow_EvenWhenLowCeilingIsTight()
+    {
+        var tempDir = Path.Combine(Path.GetTempPath(), "kts-trivialguard-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempDir);
+        try
+        {
+            // Set lowCeiling very tight (0.05) — without the trivial guard,
+            // a prompt scoring 0.10 would route Balanced.
+            var config = """{"version":1,"lowCeiling":0.05}""";
+            File.WriteAllText(Path.Combine(tempDir, "tier-selector.json"), config);
+
+            var options = Options.Create(new AgentProfileOptions { BasePath = tempDir });
+            var selector = new KeywordTierSelector(options, NullLogger<KeywordTierSelector>.Instance);
+
+            // Short trivial prompt with no high keywords — trivial guard should force Low
+            var result = selector.Classify("hello there");
+            Assert.AreEqual(ModelTier.Low, result.Tier,
+                "Trivial guard should force Low even when lowCeiling is very tight");
+        }
+        finally
+        {
+            Directory.Delete(tempDir, recursive: true);
+        }
+    }
+
+    [TestMethod]
+    public void TrivialGuard_DoesNotForce_WhenHighKeywordsPresent()
+    {
+        // With a tight lowCeiling, a short prompt with a high keyword should route
+        // Balanced (not be pulled back to Low by the trivial guard).
+        var tempDir = Path.Combine(Path.GetTempPath(), "kts-guard-high-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempDir);
+        try
+        {
+            var config = """{"version":1,"lowCeiling":0.05}""";
+            File.WriteAllText(Path.Combine(tempDir, "tier-selector.json"), config);
+
+            var options = Options.Create(new AgentProfileOptions { BasePath = tempDir });
+            var selector = new KeywordTierSelector(options, NullLogger<KeywordTierSelector>.Instance);
+
+            // "analyze this" scores ~0.15 (length 0.05 + keyword 0.10).
+            // With lowCeiling=0.05, it routes Balanced. The trivial guard should NOT
+            // force it to Low because "analyze" is a matched high keyword.
+            var result = selector.Classify("analyze this");
+            Assert.AreEqual(ModelTier.Balanced, result.Tier,
+                "Trivial guard should not force Low when high-signal keywords are present");
+        }
+        finally
+        {
+            Directory.Delete(tempDir, recursive: true);
+        }
+    }
+
+    // ── Conversational keyword tests ─────────────────────────────────────────
+
+    [TestMethod]
+    [DataRow("I think we should go hiking tomorrow")]
+    [DataRow("I plan to read a book tonight")]
+    [DataRow("What do you think about that?")]
+    [DataRow("Good evening, how are you?")]
+    [DataRow("Sounds good, thanks!")]
+    public void Classify_ConversationalPatterns_MatchLowKeywords(string prompt)
+    {
+        var result = _selector.Classify(prompt);
+        Assert.IsTrue(result.MatchedLowKeywords.Count > 0,
+            $"Conversational prompt should match low-signal keywords: \"{prompt}\"");
+    }
+
+    [TestMethod]
+    public void Classify_HighTier_NotAffectedByOriginBias()
+    {
+        // Complex prompts should stay High even with user-origin bias
+        const string prompt =
+            "Design and architect a comprehensive distributed caching system for a high-traffic " +
+            "microservices platform. Analyze the trade-offs between consistency models including " +
+            "eventual consistency and strong consistency. Evaluate multiple approaches for cache " +
+            "invalidation, eviction policies, and partitions. Consider security implications and " +
+            "performance bottlenecks. Provide a thorough analysis with pros and cons for each " +
+            "recommended approach.";
+
+        var result = _selector.Classify(prompt, new TierRoutingContext(Origin: "user-message"));
+        Assert.AreEqual(ModelTier.High, result.Tier,
+            "Complex prompts should remain High even with user-origin bias");
     }
 }

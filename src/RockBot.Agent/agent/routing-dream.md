@@ -20,11 +20,27 @@ A Low-tier session that triggered many tool calls (toolCalls ≥ 3) indicates th
 struggled to close the task. Prompts of that shape should be routed Balanced. Look for recurring
 prompt shapes that consistently produce high tool call counts at the Low tier.
 
-### 2. Token Surprise
+### 2. Token Surprise (informational only — DO NOT adjust thresholds)
 When `postInjectionTokens` is much larger than the complexity score suggests (e.g., score < 0.20
-but postInjectionTokens > 2000), the pre-injection classification (Option A — raw user prompt only)
-systematically underestimated the actual context cost due to memory recall or tool guide injection.
-Adjust thresholds or add keywords that identify this prompt shape as Balanced-worthy.
+but postInjectionTokens > 15000), the pre-injection classification measured the user's intent correctly
+but post-assembly context (memory recall, skill injection, tool guides) inflated the prompt.
+
+**This is expected and NOT a misroute.** Post-injection token count reflects the orchestration
+layer's context assembly, not user intent complexity. A trivial prompt like "what time is it?"
+legitimately expands to 15k+ tokens after injection — that does not make it a Balanced-tier task.
+
+Use `postInjectionTokens` ONLY as a safety cap: if the final prompt exceeds the selected tier's
+model context window, upgrade the tier. Never use post-injection size to adjust `lowCeiling`,
+`balancedCeiling`, or keyword lists. The routing decision is about cognitive complexity of the
+user's request, not the assembled context size.
+
+**Built-in guards handle trivial prompt protection:**
+- A trivial guard forces Low tier when score < `trivialGuardCeiling` (default 0.15), word count ≤ 20,
+  and no high-signal keywords match — regardless of threshold tuning.
+- A user-origin bias reduces the score by `userOriginBias` (default 0.10) for user-originated
+  messages, since user prompts are semantically simpler than subagent task descriptions.
+
+These guards are NOT tuneable via this config — they are code-level protections against threshold drift.
 
 ### 3. Capability Fingerprints
 Recurring prompt shapes consistently routed to the wrong tier. Identify keywords in those prompts
@@ -100,3 +116,7 @@ When routing looks correct and no anti-patterns found:
 - Be **conservative**: only change what is clearly mis-routed; err on the side of no change
 - Small, incremental threshold adjustments (±0.05) are preferred over large rewrites
 - Always include `antiPatterns` — use an empty array when nothing systematic is detected
+- **DO NOT** adjust thresholds to compensate for post-injection token size — that is the
+  orchestration layer's concern, not a routing quality signal
+- The `trivialGuardCeiling` and `userOriginBias` fields are available in the config but should
+  only be adjusted when there is clear evidence of false Low-tier routing, not to widen Balanced

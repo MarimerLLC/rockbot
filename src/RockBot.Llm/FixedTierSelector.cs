@@ -12,4 +12,7 @@ public sealed class FixedTierSelector(ModelTier tier) : ILlmTierSelector
 
     public TierClassification Classify(string promptText) =>
         new(tier, 0.0, [], []);
+
+    public TierClassification Classify(string promptText, TierRoutingContext context) =>
+        new(tier, 0.0, [], []);
 }
