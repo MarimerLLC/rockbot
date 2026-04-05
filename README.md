@@ -14,6 +14,12 @@ Agents built using the RockBot framework SDK are designed with the principle of 
 
 Each agent is an isolated process that reacts to messages, invokes tools, calls LLMs, delegates work to other agents, and emits responses — all via a topic-based pub/sub message bus backed by RabbitMQ (or an in-process bus for local development).
 
+## Community
+
+* [Discord server](https://discord.gg/eQjxWG6KYN)
+
+## RockBot Implementation
+
 ### Core components
 
 | Project | Purpose |
