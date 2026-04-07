@@ -51,7 +51,8 @@ public sealed class WorkingMemoryTools
         [Description("Optional category for grouping related entries (e.g. 'email', 'calendar', 'research/pricing')")] string? category = null,
         [Description("Optional comma-separated tags for filtering (e.g. 'inbox,unread,urgent')")] string? tags = null)
     {
-        var fullKey = $"{_namespace}/{key}";
+        // If the key contains '/', treat as an absolute path; otherwise prepend namespace.
+        var fullKey = key.Contains('/') ? key : $"{_namespace}/{key}";
         _logger.LogInformation("Tool call: SaveToWorkingMemory(key={Key}, ttl={Ttl}min, category={Category})", fullKey, ttl_minutes, category);
         var ttl = ttl_minutes.HasValue ? TimeSpan.FromMinutes(ttl_minutes.Value) : (TimeSpan?)null;
         var tagList = ParseTags(tags);
