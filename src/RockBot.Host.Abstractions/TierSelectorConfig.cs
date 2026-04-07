@@ -18,10 +18,16 @@ public sealed class TierSelectorConfig
     /// <summary>Score at or below which a prompt is routed to the Balanced tier.</summary>
     public double? BalancedCeiling { get; set; }
 
-    /// <summary>Complete list of keywords that push the score toward the High tier.</summary>
+    /// <summary>
+    /// Additional keywords that push the score toward the High tier.
+    /// Merged with compiled defaults (additions only — compiled defaults cannot be removed via config).
+    /// </summary>
     public List<string>? HighSignalKeywords { get; set; }
 
-    /// <summary>Complete list of keywords that push the score toward the Low tier.</summary>
+    /// <summary>
+    /// Additional keywords that push the score toward the Low tier.
+    /// Merged with compiled defaults (additions only — compiled defaults cannot be removed via config).
+    /// </summary>
     public List<string>? LowSignalKeywords { get; set; }
 
     /// <summary>

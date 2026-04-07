@@ -25,6 +25,16 @@ public sealed class KeywordTierSelector : ILlmTierSelector
     private const double DefaultTrivialGuardCeiling  = 0.15;
     private const double DefaultUserOriginBias       = 0.10;
 
+    // ── Guardrails: dream-tuned values are clamped to these ranges ────────────
+    private const double MinLowCeiling           = 0.15;
+    private const double MaxLowCeiling           = 0.40;
+    private const double MinBalancedCeiling      = 0.40;
+    private const double MaxBalancedCeiling      = 0.80;
+    private const double MinTrivialGuardCeiling  = 0.10;
+    private const double MaxTrivialGuardCeiling  = 0.25;
+    private const double MinUserOriginBias       = 0.0;
+    private const double MaxUserOriginBias       = 0.20;
+
     // ── Complexity signals → push toward High tier ───────────────────────────
     private static readonly string[] DefaultHighSignalKeywords =
     [
@@ -200,16 +210,23 @@ public sealed class KeywordTierSelector : ILlmTierSelector
             if (dto is null)
                 return Defaults;
 
-            var highKeywords = SanitizeKeywords(dto.HighSignalKeywords, "highSignalKeywords");
-            var lowKeywords  = SanitizeKeywords(dto.LowSignalKeywords, "lowSignalKeywords");
+            // Merge dream keywords with compiled defaults (dream adds, never replaces).
+            var highKeywords = MergeKeywords(DefaultHighSignalKeywords, dto.HighSignalKeywords, "highSignalKeywords");
+            var lowKeywords  = MergeKeywords(DefaultLowSignalKeywords, dto.LowSignalKeywords, "lowSignalKeywords");
+
+            // Clamp dream-tuned thresholds to guardrail ranges.
+            var lowCeiling = ClampThreshold(dto.LowCeiling, DefaultLowCeiling, MinLowCeiling, MaxLowCeiling, "lowCeiling");
+            var balancedCeiling = ClampThreshold(dto.BalancedCeiling, DefaultBalancedCeiling, MinBalancedCeiling, MaxBalancedCeiling, "balancedCeiling");
+            var trivialGuard = ClampThreshold(dto.TrivialGuardCeiling, DefaultTrivialGuardCeiling, MinTrivialGuardCeiling, MaxTrivialGuardCeiling, "trivialGuardCeiling");
+            var originBias = ClampThreshold(dto.UserOriginBias, DefaultUserOriginBias, MinUserOriginBias, MaxUserOriginBias, "userOriginBias");
 
             var result = new EffectiveConfig(
-                LowCeiling:          dto.LowCeiling          ?? DefaultLowCeiling,
-                BalancedCeiling:     dto.BalancedCeiling      ?? DefaultBalancedCeiling,
-                TrivialGuardCeiling: dto.TrivialGuardCeiling  ?? DefaultTrivialGuardCeiling,
-                UserOriginBias:      dto.UserOriginBias       ?? DefaultUserOriginBias,
-                HighSignalKeywords:  highKeywords ?? DefaultHighSignalKeywords,
-                LowSignalKeywords:   lowKeywords  ?? DefaultLowSignalKeywords);
+                LowCeiling:          lowCeiling,
+                BalancedCeiling:     balancedCeiling,
+                TrivialGuardCeiling: trivialGuard,
+                UserOriginBias:      originBias,
+                HighSignalKeywords:  highKeywords,
+                LowSignalKeywords:   lowKeywords);
 
             _logger?.LogInformation(
                 "KeywordTierSelector: reloaded config from {Path} " +
@@ -312,14 +329,11 @@ public sealed class KeywordTierSelector : ILlmTierSelector
 
     /// <summary>
     /// Filters out keywords that are too short to be useful routing signals.
-    /// For high-signal lists, also strips topic/domain words that indicate subject
-    /// matter rather than cognitive complexity.
-    /// Returns null when the input list is null (caller falls back to defaults).
+    /// For high-signal lists, also strips keywords that contain topic/domain words
+    /// (matched at word boundaries) that indicate subject matter rather than cognitive complexity.
     /// </summary>
-    private string[]? SanitizeKeywords(List<string>? keywords, string listName)
+    private string[] SanitizeKeywords(string[] keywords, string listName)
     {
-        if (keywords is null) return null;
-
         var isHighSignal = listName.Contains("high", StringComparison.OrdinalIgnoreCase);
 
         var filtered = keywords
@@ -328,20 +342,22 @@ public sealed class KeywordTierSelector : ILlmTierSelector
             .Distinct()
             .ToArray();
 
-        // For high-signal keywords, strip topic/domain words
+        // For high-signal keywords, strip any keyword that contains a topic/domain word
+        // at a word boundary. This catches compound phrases like "reply to email",
+        // "schedule meeting", "todo items" where the root topic word is blocked.
         string[] afterBlocklist;
         if (isHighSignal)
         {
             afterBlocklist = filtered
-                .Where(k => !TopicBlocklist.Contains(k))
+                .Where(k => !ContainsBlockedTopic(k))
                 .ToArray();
 
             var blocked = filtered.Length - afterBlocklist.Length;
             if (blocked > 0)
             {
-                var blockedWords = filtered.Where(k => TopicBlocklist.Contains(k));
+                var blockedWords = filtered.Where(ContainsBlockedTopic);
                 _logger?.LogWarning(
-                    "KeywordTierSelector: stripped {Count} topic word(s) from {List} (domain indicators, not complexity signals): [{Keywords}]",
+                    "KeywordTierSelector: stripped {Count} topic-containing keyword(s) from {List}: [{Keywords}]",
                     blocked, listName, string.Join(", ", blockedWords.Select(k => $"\"{k}\"")));
             }
         }
@@ -350,17 +366,74 @@ public sealed class KeywordTierSelector : ILlmTierSelector
             afterBlocklist = filtered;
         }
 
-        var removed = keywords.Count - afterBlocklist.Length;
-        if (removed > 0)
-        {
-            var tooShort = keywords.Where(k => string.IsNullOrWhiteSpace(k) || k.Trim().Length < MinKeywordLength);
-            if (tooShort.Any())
-                _logger?.LogWarning(
-                    "KeywordTierSelector: dropped {Count} keyword(s) from {List} (too short or blank): [{Keywords}]",
-                    tooShort.Count(), listName, string.Join(", ", tooShort.Select(k => $"\"{k}\"")));
-        }
+        var tooShort = keywords.Where(k => string.IsNullOrWhiteSpace(k) || k.Trim().Length < MinKeywordLength).ToArray();
+        if (tooShort.Length > 0)
+            _logger?.LogWarning(
+                "KeywordTierSelector: dropped {Count} keyword(s) from {List} (too short or blank): [{Keywords}]",
+                tooShort.Length, listName, string.Join(", ", tooShort.Select(k => $"\"{k}\"")));
 
-        return afterBlocklist.Length > 0 ? afterBlocklist : null;
+        return afterBlocklist;
+    }
+
+    /// <summary>
+    /// Merges dream-provided keywords with compiled defaults (union, not replace),
+    /// then sanitizes the result. Compiled defaults are always preserved.
+    /// </summary>
+    private string[] MergeKeywords(string[] compiledDefaults, List<string>? dreamKeywords, string listName)
+    {
+        if (dreamKeywords is null || dreamKeywords.Count == 0)
+            return SanitizeKeywords(compiledDefaults, listName);
+
+        // Normalize dream keywords for dedup
+        var normalized = dreamKeywords
+            .Where(k => !string.IsNullOrWhiteSpace(k))
+            .Select(k => k.Trim().ToLowerInvariant())
+            .ToHashSet();
+
+        // Union: compiled defaults first, then dream additions that aren't already present
+        var defaultSet = compiledDefaults.Select(k => k.ToLowerInvariant()).ToHashSet();
+        var additions = normalized.Except(defaultSet).ToArray();
+
+        if (additions.Length > 0)
+            _logger?.LogInformation(
+                "KeywordTierSelector: dream added {Count} keyword(s) to {List}: [{Keywords}]",
+                additions.Length, listName, string.Join(", ", additions.Select(k => $"\"{k}\"")));
+
+        var merged = compiledDefaults.Concat(additions).ToArray();
+        return SanitizeKeywords(merged, listName);
+    }
+
+    /// <summary>
+    /// Returns true if the keyword contains any <see cref="TopicBlocklist"/> entry
+    /// at a word boundary. This catches both exact matches ("email") and compound
+    /// phrases ("reply to email", "schedule meeting").
+    /// </summary>
+    private static bool ContainsBlockedTopic(string keyword)
+    {
+        foreach (var topic in TopicBlocklist)
+        {
+            if (ContainsWholePhrase(keyword, topic))
+                return true;
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// Clamps a dream-tuned threshold to a guardrail range, logging if clamped.
+    /// Returns the compiled default when the value is null.
+    /// </summary>
+    private double ClampThreshold(double? value, double compiledDefault, double min, double max, string name)
+    {
+        if (value is null)
+            return compiledDefault;
+
+        var clamped = Math.Clamp(value.Value, min, max);
+        if (Math.Abs(clamped - value.Value) > 0.001)
+            _logger?.LogWarning(
+                "KeywordTierSelector: clamped {Name} from {Original:F3} to {Clamped:F3} (allowed range [{Min:F2}, {Max:F2}])",
+                name, value.Value, clamped, min, max);
+
+        return clamped;
     }
 
     // ── Word-boundary matching ─────────────────────────────────────────────────
