@@ -19,8 +19,8 @@ RUN --mount=type=cache,target=/root/.nuget/packages \
 FROM mcr.microsoft.com/dotnet/runtime:10.0@sha256:3de49150e48790fa845547e14bff5add0e4194a8901e727cf88f83423bcbe2b0 AS runtime
 WORKDIR /app
 
-# Non-root user
-RUN groupadd -r rockbot && useradd -r -g rockbot rockbot
+# Non-root user (--create-home needed for Copilot CLI which extracts bundled packages into $HOME)
+RUN groupadd -r rockbot && useradd -r -g rockbot --create-home rockbot
 
 # Published app
 COPY --from=build /app/publish .

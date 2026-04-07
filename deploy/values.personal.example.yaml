@@ -13,6 +13,13 @@ rabbitmq:
 secrets:
   create: true
   llm:
+    # ── LLM Provider ──────────────────────────────────────────────────────────
+    # Two options: "Copilot" (GitHub Copilot SDK, per-request billing) or
+    # "" (OpenAI-compatible, per-token billing). Each tier can override.
+    # provider: "Copilot"
+    # gitHubToken: "<github-token-with-copilot-scope>"
+
+    # ── Option A: All tiers via OpenAI-compatible (default) ───────────────────
     # Balanced tier — REQUIRED. Used for patrol and user messages of moderate complexity.
     balanced:
       endpoint: "https://openrouter.ai/api/v1"
@@ -29,6 +36,23 @@ secrets:
     # High tier — OPTIONAL. Powerful model for dream consolidation and research tasks.
     # Falls back to balanced when not configured.
     # high:
+    #   endpoint: "https://openrouter.ai/api/v1"
+    #   apiKey: "<your-openrouter-api-key>"
+    #   modelId: "anthropic/claude-opus-4-6"
+
+    # ── Option B: All tiers via Copilot ───────────────────────────────────────
+    # provider: "Copilot"
+    # gitHubToken: "<github-token-with-copilot-scope>"
+    # balanced:
+    #   modelId: "gpt-4.1"
+
+    # ── Option C: Mixed providers per tier ────────────────────────────────────
+    # provider: "Copilot"                          # global default
+    # gitHubToken: "<github-token-with-copilot-scope>"
+    # balanced:
+    #   modelId: "gpt-4.1"                         # inherits Copilot
+    # high:
+    #   provider: ""                                # override to OpenAI-compatible
     #   endpoint: "https://openrouter.ai/api/v1"
     #   apiKey: "<your-openrouter-api-key>"
     #   modelId: "anthropic/claude-opus-4-6"
