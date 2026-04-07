@@ -11,7 +11,9 @@ This minimal setup runs three containers: **RabbitMQ** (message bus), the **Rock
 ## Prerequisites
 
 - [Docker Desktop](https://www.docker.com/products/docker-desktop/) installed and running
-- An **OpenAI-compatible LLM API key** — [OpenRouter](https://openrouter.ai/) is the easiest option
+- An LLM provider — either:
+  - An **OpenAI-compatible LLM API key** — [OpenRouter](https://openrouter.ai/) is the easiest option, or
+  - A **GitHub Copilot license** — uses per-request billing via the Copilot SDK (requires a GitHub token with `copilot` scope)
 - A **Brave Search API key** (free tier available) — [https://api.search.brave.com/](https://api.search.brave.com/)
 
 ## 1. Set up the Docker Compose files
@@ -30,13 +32,23 @@ Copy them to a working directory (or run directly from the repo):
 cp deploy/docker-compose/.env.example deploy/docker-compose/.env
 ```
 
-Edit the `.env` file and fill in your API keys:
+Edit the `.env` file. Choose one of two LLM provider options:
+
+**Option A — OpenAI-compatible (per-token billing):**
 
 ```env
-# REQUIRED — your OpenAI-compatible API key
 LLM_API_KEY=sk-or-v1-your-openrouter-key-here
+LLM_ENDPOINT=https://openrouter.ai/api/v1
+LLM_MODEL_ID=anthropic/claude-haiku-4.5
+BRAVE_API_KEY=BSA-your-brave-key-here
+```
 
-# REQUIRED — Brave Search API key
+**Option B — GitHub Copilot SDK (per-request billing):**
+
+```env
+LLM_PROVIDER=Copilot
+LLM_MODEL_ID=gpt-4.1
+GITHUB_TOKEN=ghp_your-token-with-copilot-scope
 BRAVE_API_KEY=BSA-your-brave-key-here
 ```
 
@@ -109,6 +121,8 @@ The agent hot-reloads these files via `FileSystemWatcher` — changes take effec
 
 ## Choosing an LLM
 
+### OpenAI-compatible providers (per-token billing)
+
 Any OpenAI-compatible endpoint works. Some options:
 
 | Provider | Endpoint | Notes |
@@ -124,6 +138,22 @@ LLM_ENDPOINT=http://host.docker.internal:11434/v1
 LLM_API_KEY=ollama
 LLM_MODEL_ID=llama3.1
 ```
+
+### GitHub Copilot SDK (per-request billing)
+
+If you have a GitHub Copilot license, you can use it as the LLM provider. The Copilot SDK bundles its own CLI binary — no separate installation needed. Models available include GPT-4.1, Claude Sonnet 4, and others depending on your Copilot subscription tier.
+
+```env
+LLM_PROVIDER=Copilot
+LLM_MODEL_ID=gpt-4.1
+GITHUB_TOKEN=ghp_your-token-with-copilot-scope
+```
+
+Create a token at [github.com/settings/tokens](https://github.com/settings/tokens) with the `copilot` scope.
+
+### Mixing providers across tiers
+
+Each tier (Low/Balanced/High) can use a different provider. Set a per-tier `Provider` override in your Helm values or environment variables. For example, Copilot for Low, OpenRouter for Balanced and High. See `deploy/values.personal.example.yaml` for examples.
 
 ## Enabling hybrid vector search (optional)
 

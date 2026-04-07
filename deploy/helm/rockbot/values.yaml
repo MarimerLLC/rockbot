@@ -227,17 +227,29 @@ secrets:
   llm:
     # Three-tier LLM configuration. Balanced is REQUIRED.
     # Low and High are optional — both fall back to Balanced when not configured.
-    # Any OpenAI-compatible endpoint works: OpenRouter, Azure OpenAI, local Ollama, etc.
     # Tier selection: user messages → keyword heuristic; patrol → Balanced; dream/research → High
+    #
+    # Two provider types are supported, and each tier can use a different provider:
+    #   - (default) OpenAI-compatible: any endpoint with endpoint + apiKey + modelId
+    #   - "Copilot": GitHub Copilot SDK (per-request billing via Copilot license)
+    #
+    # Global provider default (applies to all tiers unless overridden per-tier):
+    provider: ""            # "" = OpenAI-compatible (default), "Copilot" = GitHub Copilot SDK
+    # GitHub token for Copilot provider (needs copilot scope):
+    gitHubToken: ""
+
     balanced:
-      endpoint: ""          # REQUIRED — base URL of the OpenAI-compatible API
-      apiKey: ""            # REQUIRED — API key
-      modelId: ""           # REQUIRED — model ID (e.g. anthropic/claude-haiku-4.5)
+      provider: ""          # Per-tier override: "" inherits global, "Copilot" or "OpenAI"
+      endpoint: ""          # REQUIRED for OpenAI-compatible — base URL of the API
+      apiKey: ""            # REQUIRED for OpenAI-compatible — API key
+      modelId: ""           # REQUIRED — model ID (e.g. anthropic/claude-haiku-4.5 or gpt-4.1)
     low:                    # Optional — fast/cheap model for simple factual questions
+      provider: ""
       endpoint: ""
       apiKey: ""
       modelId: "google/gemini-3.1-pro-preview"
     high:                   # Optional — powerful model for dream/research/complex tasks
+      provider: ""
       endpoint: ""
       apiKey: ""
       modelId: "google/gemini-3.1-pro-preview"           # leave empty to fall back to balanced
