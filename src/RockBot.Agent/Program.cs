@@ -18,6 +18,7 @@ using RockBot.Tools.Mcp;
 using RockBot.A2A;
 using RockBot.ServiceSearch;
 using RockBot.Subagent;
+using RockBot.Llm.Copilot;
 using RockBot.Tools.Scheduling;
 using RockBot.Tools.Web;
 using RockBot.Telemetry;
@@ -69,7 +70,52 @@ if (!tierOptions.Balanced.IsConfigured)
 if (!tierOptions.Balanced.IsConfigured && tierOptions.BalancedModels.Count > 0)
     tierOptions.Balanced = tierOptions.BalancedModels[0];
 
-if (tierOptions.Balanced.IsConfigured || tierOptions.BalancedModels.Count > 0)
+var llmProvider = llmSection["Provider"];
+
+if (string.Equals(llmProvider, "Copilot", StringComparison.OrdinalIgnoreCase))
+{
+    // ── Copilot provider — uses GitHub Copilot SDK (per-request billing) ──────────
+    var copilotBaseOptions = new CopilotChatClientOptions();
+    llmSection.Bind(copilotBaseOptions);
+
+    var copilotClient = await CopilotClientFactory.CreateAndStartAsync(copilotBaseOptions);
+    var copilotLoggerFactory = LoggerFactory.Create(b =>
+        b.AddConsole().SetMinimumLevel(LogLevel.Information));
+
+    IChatClient BuildCopilotClient(string? modelId)
+    {
+        var opts = new CopilotChatClientOptions
+        {
+            ModelId = modelId ?? copilotBaseOptions.ModelId,
+            UseLoggedInUser = copilotBaseOptions.UseLoggedInUser,
+            GitHubToken = copilotBaseOptions.GitHubToken,
+            RequestTimeout = copilotBaseOptions.RequestTimeout,
+            MaxRetries = copilotBaseOptions.MaxRetries,
+            RetryBaseDelay = copilotBaseOptions.RetryBaseDelay
+        };
+        return new CopilotChatClient(
+            copilotClient, opts,
+            copilotLoggerFactory.CreateLogger<CopilotChatClient>());
+    }
+
+    // Per-tier model IDs (optional — fall back to Balanced)
+    var balancedModelId = tierOptions.Balanced.ModelId ?? copilotBaseOptions.ModelId;
+    var lowModelId = tierOptions.Low.ModelId ?? balancedModelId;
+    var highModelId = tierOptions.High.ModelId ?? balancedModelId;
+
+    builder.Services.AddRockBotTieredChatClients(
+        lowInnerClient:      BuildCopilotClient(lowModelId),
+        balancedInnerClient: BuildCopilotClient(balancedModelId),
+        highInnerClient:     BuildCopilotClient(highModelId));
+
+    builder.Services.AddModelBehaviors(opts =>
+        builder.Configuration.GetSection("ModelBehaviors").Bind(opts));
+
+    builder.Services.AddSingleton<ILlmTierSelector, KeywordTierSelector>();
+
+    Console.WriteLine($"Copilot provider configured: Balanced={balancedModelId}, Low={lowModelId}, High={highModelId}");
+}
+else if (tierOptions.Balanced.IsConfigured || tierOptions.BalancedModels.Count > 0)
 {
     IChatClient BuildClient(LlmTierConfig config)
     {
