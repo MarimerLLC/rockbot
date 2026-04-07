@@ -18,6 +18,9 @@ services:
       retries: 10
 
   agent-init:
+    build:
+      context: ../..
+      dockerfile: deploy/Dockerfile.agent
     image: rockylhotka/rockbot-agent:latest
     user: root
     entrypoint: ["/bin/sh", "-c"]
@@ -67,6 +70,9 @@ services:
       - ${AGENT_DATA_PATH:-agent-data}:/data/agent
 
   agent:
+    build:
+      context: ../..
+      dockerfile: deploy/Dockerfile.agent
     image: rockylhotka/rockbot-agent:latest
     depends_on:
       agent-init:
@@ -82,12 +88,18 @@ services:
       RabbitMq__UserName: rockbot
       RabbitMq__Password: rockbot
       RabbitMq__VirtualHost: /
-      # -- LLM (Balanced tier — required) --
-      LLM__Balanced__Endpoint: ${LLM_ENDPOINT:-https://openrouter.ai/api/v1}
-      LLM__Balanced__ApiKey: ${LLM_API_KEY:?Set LLM_API_KEY in your .env file}
+      # -- LLM provider --
+      # Set LLM_PROVIDER=Copilot and GITHUB_TOKEN in .env for Copilot SDK,
+      # or leave LLM_PROVIDER unset and configure LLM_ENDPOINT/LLM_API_KEY for OpenAI-compatible.
+      LLM__Provider: ${LLM_PROVIDER:-}
+      # Copilot path — GITHUB_TOKEN is read by the Copilot CLI subprocess
+      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
       LLM__Balanced__ModelId: ${LLM_MODEL_ID:-anthropic/claude-haiku-4.5}
+      # OpenAI-compatible path (ignored when Provider=Copilot)
+      LLM__Balanced__Endpoint: ${LLM_ENDPOINT:-}
+      LLM__Balanced__ApiKey: ${LLM_API_KEY:-}
       # -- Web search --
-      WebTools__ApiKey: ${BRAVE_API_KEY:?Set BRAVE_API_KEY in your .env file}
+      WebTools__ApiKey: ${BRAVE_API_KEY:-}
       # -- Embedding (optional — enables hybrid vector search) --
       # When set, memory/skills/working memory use cosine similarity alongside BM25.
       # Falls back to BM25-only when not configured — no functionality is lost.
