@@ -1,7 +1,6 @@
 using System.Diagnostics;
 using System.Net;
 using System.Runtime.CompilerServices;
-using System.Text.Json;
 using System.Threading.Channels;
 using GitHub.Copilot.SDK;
 using Microsoft.Extensions.AI;
@@ -11,8 +10,10 @@ namespace RockBot.Llm.Copilot;
 
 /// <summary>
 /// <see cref="IChatClient"/> adapter for the GitHub Copilot SDK.
-/// Each call creates a new session, serializes the full message history into the prompt,
-/// collects the response, and disposes the session.
+/// Each call creates a single session with real tool handlers, sends the prompt,
+/// and lets the Copilot CLI orchestrate the full tool-calling loop. The session
+/// invokes RockBot's actual <see cref="AIFunction"/> implementations, feeds results
+/// back to the model, and loops until idle — all within one session round-trip.
 /// </summary>
 public sealed class CopilotChatClient : IChatClient
 {
@@ -62,7 +63,6 @@ public sealed class CopilotChatClient : IChatClient
             }
             catch (Exception ex) when (IsRateLimitError(ex))
             {
-                // Exhausted retries — wrap as 429 for FallbackChatClient.ClassifyException.
                 throw new HttpRequestException(
                     "Copilot rate limit exceeded after retries",
                     ex,
@@ -151,94 +151,20 @@ public sealed class CopilotChatClient : IChatClient
         await using var session = await CreateSessionAsync(systemPrompt, options, cancellationToken)
             .ConfigureAwait(false);
 
-        // Use event-driven approach: listen for the assistant message, then check for
-        // tool requests. We use SendAsync + manual event handling (not SendAndWaitAsync)
-        // so we can intercept tool requests before the CLI tries to execute them.
-        var tcs = new TaskCompletionSource<AssistantMessageEvent?>(
-            TaskCreationOptions.RunContinuationsAsynchronously);
+        // SendAndWaitAsync lets the Copilot CLI orchestrate the full tool-calling loop:
+        // model requests tool → CLI invokes the real AIFunction handler → result fed to
+        // model → repeat until the model responds with text and the session goes idle.
+        // All tool execution happens within this single session round-trip.
+        var response = await session.SendAndWaitAsync(
+            new MessageOptions { Prompt = userPrompt },
+            _options.RequestTimeout,
+            cancellationToken).ConfigureAwait(false);
 
-        using var sub = session.On(evt =>
-        {
-            switch (evt)
-            {
-                case AssistantMessageEvent ame:
-                    // Capture the first complete assistant message with tool requests.
-                    // If it has tool requests, complete immediately — don't wait for idle.
-                    if (ame.Data?.ToolRequests is { Length: > 0 })
-                        tcs.TrySetResult(ame);
-                    else
-                        tcs.TrySetResult(ame);
-                    break;
-                case SessionIdleEvent:
-                    // If idle without an assistant message, complete with null.
-                    tcs.TrySetResult(null);
-                    break;
-                case SessionErrorEvent error:
-                    tcs.TrySetException(new InvalidOperationException(
-                        error.Data?.Message ?? "Copilot session error"));
-                    break;
-            }
-        });
+        var content = response?.Data?.Content ?? string.Empty;
 
-        await session.SendAsync(new MessageOptions { Prompt = userPrompt }, cancellationToken)
-            .ConfigureAwait(false);
+        _logger.LogDebug("Copilot session complete — {Length} chars response", content.Length);
 
-        // Wait for the assistant message with timeout.
-        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        timeoutCts.CancelAfter(_options.RequestTimeout);
-        var registration = timeoutCts.Token.Register(() =>
-            tcs.TrySetCanceled(timeoutCts.Token));
-
-        AssistantMessageEvent? ameResult;
-        try
-        {
-            ameResult = await tcs.Task.ConfigureAwait(false);
-        }
-        finally
-        {
-            await registration.DisposeAsync().ConfigureAwait(false);
-        }
-
-        // Build the ChatResponse.
-        var contents = new List<AIContent>();
-        var textContent = ameResult?.Data?.Content;
-        if (!string.IsNullOrEmpty(textContent))
-            contents.Add(new TextContent(textContent));
-
-        // Convert ToolRequests to FunctionCallContent for RockBot's native tool-calling pipeline.
-        if (ameResult?.Data?.ToolRequests is { Length: > 0 } toolRequests)
-        {
-            _logger.LogDebug("Copilot returned {Count} tool request(s)", toolRequests.Length);
-            foreach (var tr in toolRequests)
-            {
-                Dictionary<string, object?>? args = null;
-                if (tr.Arguments is not null)
-                {
-                    try
-                    {
-                        // Arguments may be a JsonElement or a pre-deserialized object.
-                        var json = tr.Arguments is JsonElement je
-                            ? je.GetRawText()
-                            : JsonSerializer.Serialize(tr.Arguments);
-                        args = JsonSerializer.Deserialize<Dictionary<string, object?>>(json);
-                    }
-                    catch (JsonException ex)
-                    {
-                        _logger.LogWarning(ex, "Failed to deserialize tool arguments for {Tool}", tr.Name);
-                    }
-                }
-
-                contents.Add(new FunctionCallContent(
-                    tr.ToolCallId ?? Guid.NewGuid().ToString(),
-                    tr.Name ?? "unknown",
-                    args));
-            }
-        }
-
-        if (contents.Count == 0)
-            contents.Add(new TextContent(string.Empty));
-
-        return new ChatResponse(new ChatMessage(ChatRole.Assistant, contents))
+        return new ChatResponse(new ChatMessage(ChatRole.Assistant, content))
         {
             ModelId = _options.ModelId
         };
@@ -249,27 +175,26 @@ public sealed class CopilotChatClient : IChatClient
         ChatOptions? options,
         CancellationToken cancellationToken)
     {
-        // Create stub AIFunctions with the same schema but no-op handlers.
-        // The model sees tool definitions and can request calls; the Copilot CLI
-        // will invoke the stub (returning a sentinel), but we intercept the
-        // ToolRequests in the event handler and return FunctionCallContent to RockBot.
-        var stubTools = (options?.Tools?
+        // Pass real AIFunction handlers to the session. The Copilot CLI invokes
+        // RockBot's actual tool implementations (web_search, memory, MCP, etc.),
+        // feeds results back to the model, and loops until idle — all within a
+        // single session. No stubs, no interception, no multiple round-trips.
+        var tools = (options?.Tools?
             .OfType<AIFunction>()
-            .Select(CreateStubFunction)
             .ToList()) ?? [];
 
         var config = new SessionConfig
         {
             Model = _options.ModelId,
             OnPermissionRequest = PermissionHandler.ApproveAll,
-            Tools = stubTools,
+            Tools = tools,
         };
 
         if (!string.IsNullOrEmpty(systemPrompt))
         {
-            config.SystemMessage = new GitHub.Copilot.SDK.SystemMessageConfig
+            config.SystemMessage = new SystemMessageConfig
             {
-                Mode = GitHub.Copilot.SDK.SystemMessageMode.Replace,
+                Mode = SystemMessageMode.Replace,
                 Content = systemPrompt
             };
         }
@@ -280,18 +205,16 @@ public sealed class CopilotChatClient : IChatClient
 
         CopilotDiagnostics.SessionsCreated.Add(1);
         _logger.LogDebug("Created Copilot session {SessionId} with model {Model}, {ToolCount} tools",
-            session.SessionId, _options.ModelId, stubTools.Count);
+            session.SessionId, _options.ModelId, tools.Count);
 
         return session;
     }
 
     private static bool IsRateLimitError(Exception ex)
     {
-        // Check for HTTP 429 in nested HttpRequestException.
         if (ex is HttpRequestException { StatusCode: HttpStatusCode.TooManyRequests })
             return true;
 
-        // Check message heuristic for SDK-wrapped rate limit errors.
         return ex.Message.Contains("rate limit", StringComparison.OrdinalIgnoreCase)
             || ex.Message.Contains("rate_limit", StringComparison.OrdinalIgnoreCase)
             || ex.Message.Contains("429", StringComparison.Ordinal);
@@ -301,41 +224,7 @@ public sealed class CopilotChatClient : IChatClient
     {
         var baseMs = _options.RetryBaseDelay.TotalMilliseconds;
         var delay = baseMs * Math.Pow(2, attempt);
-        // Add jitter: +-25% of the delay.
         var jitter = delay * 0.25 * (Random.Shared.NextDouble() * 2 - 1);
         return TimeSpan.FromMilliseconds(delay + jitter);
-    }
-
-    /// <summary>
-    /// Creates a stub AIFunction with the same metadata (name, description, schema)
-    /// as the original but with a no-op handler. Registered on the Copilot session so the
-    /// model sees tool definitions. If the CLI attempts to invoke the stub, it returns
-    /// immediately — RockBot intercepts the ToolRequests from the event and handles
-    /// execution itself.
-    /// </summary>
-    private static AIFunction CreateStubFunction(AIFunction original)
-    {
-        return new StubAIFunction(original);
-    }
-
-    private sealed class StubAIFunction : AIFunction
-    {
-        private readonly AIFunction _original;
-
-        public StubAIFunction(AIFunction original) => _original = original;
-
-        public override string Name => _original.Name;
-        public override string Description => _original.Description;
-        public override JsonElement JsonSchema => _original.JsonSchema;
-
-        protected override ValueTask<object?> InvokeCoreAsync(
-            AIFunctionArguments arguments,
-            CancellationToken cancellationToken)
-        {
-            // The CLI may invoke this stub if the model requests a tool call.
-            // Return immediately so the session doesn't hang. Our event handler
-            // captures the ToolRequests and returns them as FunctionCallContent.
-            return new ValueTask<object?>("[tool_intercepted_by_rockbot]");
-        }
     }
 }
