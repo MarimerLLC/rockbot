@@ -64,6 +64,22 @@ internal sealed class UserMessageHandler(
         @"\b(no[,\s]|that'?s?\s+(wrong|incorrect|not right)|you were wrong|actually[,\s]|that didn'?t work|try again)\b",
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
+    /// <summary>
+    /// Tools that the Low tier is not allowed to invoke. These are state-mutating
+    /// operations that a cheaper/weaker model should not perform unsupervised.
+    /// </summary>
+    private static readonly HashSet<string> LowTierDeniedTools = new(StringComparer.OrdinalIgnoreCase)
+    {
+        // Long-term memory
+        "SaveMemory", "DeleteMemory", "UpdateMemoryImportance",
+        // Working memory
+        "SaveToWorkingMemory", "DeleteFromWorkingMemory",
+        // Skills
+        "SaveSkill", "DeleteSkill",
+        // Rules
+        "AddRule", "RemoveRule", "SetTimezone"
+    };
+
     public async Task HandleAsync(UserMessage message, MessageHandlerContext context)
     {
         var replyTo = context.Envelope.ReplyTo ?? UserProxyTopics.UserResponse;
@@ -163,6 +179,13 @@ internal sealed class UserMessageHandler(
                 .Concat(registryTools)
                 .OfType<AIFunction>()
                 .WithChunking(workingMemory, sessionNamespace, modelBehavior, logger);
+
+            // Low tier: strip destructive tools to prevent weaker models from mutating
+            // long-term state (memories, skills, rules). Read-only tools are kept.
+            if (tier == ModelTier.Low)
+                allTools = allTools
+                    .Where(t => !LowTierDeniedTools.Contains(t.Name))
+                    .ToList();
 
             var chatOptions = new ChatOptions
             {
