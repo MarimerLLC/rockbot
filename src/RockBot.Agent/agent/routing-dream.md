@@ -109,9 +109,12 @@ When routing looks correct and no anti-patterns found:
 
 ## Rules
 
-- `lowCeiling` must be in [0.05, 0.30]; `balancedCeiling` must be in [lowCeiling+0.10, 0.70]
-- Return **COMPLETE** keyword lists — these replace the defaults entirely (no merging)
-- Never return empty keyword lists; include all sensible defaults plus any additions/removals
+- `lowCeiling` must be in [0.15, 0.40]; `balancedCeiling` must be in [0.40, 0.80]
+  (values outside these ranges are clamped by the code — staying within them avoids surprises)
+- Keyword lists are **merged** with compiled defaults — return ONLY your additions/removals,
+  not the full default list. Compiled defaults cannot be removed via config; they are always present.
+  To suppress a compiled default keyword, open a code change instead.
+- Never return empty keyword lists; only include keywords you are adding beyond the defaults
 - `notes` must state today's date and describe what changed; do not leave it blank
 - Be **conservative**: only change what is clearly mis-routed; err on the side of no change
 - Small, incremental threshold adjustments (±0.05) are preferred over large rewrites

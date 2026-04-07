@@ -107,26 +107,22 @@ public class KeywordTierSelectorTests
         Directory.CreateDirectory(tempDir);
         try
         {
-            // balancedCeiling = 0.99 means only a theoretically perfect-score prompt
-            // can reach High; everything that previously scored High now scores Balanced.
-            var configJson = """{"version":1,"balancedCeiling":0.99}""";
+            // balancedCeiling = 0.80 (max allowed by guardrails) pushes most High prompts to Balanced
+            var configJson = """{"version":1,"balancedCeiling":0.80}""";
             File.WriteAllText(Path.Combine(tempDir, "tier-selector.json"), configJson);
 
             var options = Options.Create(new AgentProfileOptions { BasePath = tempDir });
             var selector = new KeywordTierSelector(options, NullLogger<KeywordTierSelector>.Instance);
 
-            // This prompt scores High with compiled defaults (verified by existing tests)
+            // A moderately complex prompt that scores High with defaults (~0.60-0.70)
+            // should be Balanced when balancedCeiling is raised to 0.80
             const string prompt =
-                "Design and architect a comprehensive distributed caching system for a high-traffic " +
-                "microservices platform. Analyze the trade-offs between consistency models including " +
-                "eventual consistency and strong consistency. Evaluate multiple approaches for cache " +
-                "invalidation, eviction policies, and partitions. Consider security implications and " +
-                "performance bottlenecks. Provide a thorough analysis with pros and cons for each " +
-                "recommended approach.";
+                "Analyze the trade-offs between microservices and monolithic architectures " +
+                "and design a comprehensive migration strategy with pros and cons.";
 
             var tier = selector.SelectTier(prompt);
             Assert.AreEqual(ModelTier.Balanced, tier,
-                "balancedCeiling=0.99 should prevent any realistic prompt from reaching High");
+                "balancedCeiling=0.80 should push moderately complex prompts into Balanced");
         }
         finally
         {
@@ -245,12 +241,12 @@ public class KeywordTierSelectorTests
         Directory.CreateDirectory(tempDir);
         try
         {
-            // Config with short keywords that should be filtered out
+            // Dream adds short keywords — they should be filtered; valid ones merged with defaults
             var configJson = """
                 {
                     "version": 1,
-                    "highSignalKeywords": ["to", "is", "analyze", "ok", "design", "hi"],
-                    "lowSignalKeywords": ["what is", "a", "define"]
+                    "highSignalKeywords": ["to", "is", "ok", "hi", "novel complexity signal"],
+                    "lowSignalKeywords": ["a", "novel simplicity signal"]
                 }
                 """;
             File.WriteAllText(Path.Combine(tempDir, "tier-selector.json"), configJson);
@@ -258,14 +254,14 @@ public class KeywordTierSelectorTests
             var options = Options.Create(new AgentProfileOptions { BasePath = tempDir });
             var selector = new KeywordTierSelector(options, NullLogger<KeywordTierSelector>.Instance);
 
-            // "analyze" and "design" should survive filtering; "to", "is", "ok", "hi" should not
+            // Compiled defaults like "analyze" and "design" should always be present
             var result = selector.Classify(
                 "Analyze the design of this system.");
 
             Assert.IsTrue(result.MatchedHighKeywords.Contains("analyze"),
-                "\"analyze\" (≥3 chars) should survive keyword filtering");
+                "Compiled default \"analyze\" should always be present after merge");
             Assert.IsTrue(result.MatchedHighKeywords.Contains("design"),
-                "\"design\" (≥3 chars) should survive keyword filtering");
+                "Compiled default \"design\" should always be present after merge");
             Assert.IsFalse(result.MatchedHighKeywords.Contains("to"),
                 "\"to\" (<3 chars) should be filtered out");
             Assert.IsFalse(result.MatchedHighKeywords.Contains("is"),
@@ -318,11 +314,10 @@ public class KeywordTierSelectorTests
         Directory.CreateDirectory(tempDir);
         try
         {
-            // Config with topic words mixed in with real complexity signals
+            // Dream adds topic words as high-signal — they should be stripped during merge
             var config = """
             {
-                "highSignalKeywords": ["analyze", "calendar", "email", "architect", "todo", "mcp server", "design"],
-                "lowSignalKeywords": ["hello", "thanks"]
+                "highSignalKeywords": ["calendar", "email", "todo", "mcp server"]
             }
             """;
             File.WriteAllText(Path.Combine(tempDir, "tier-selector.json"), config);
@@ -337,12 +332,45 @@ public class KeywordTierSelectorTests
             Assert.IsFalse(result.MatchedHighKeywords.Contains("calendar"),
                 "Blocked topic word should not appear in matched keywords");
 
-            // Real complexity keywords should survive and still affect scoring
+            // Compiled-default complexity keywords should still be present
             var complexResult = selector.Classify("analyze the architecture and design trade-offs");
             Assert.IsTrue(complexResult.MatchedHighKeywords.Contains("analyze"),
-                "Complexity keyword 'analyze' should survive blocklist filtering");
+                "Compiled default 'analyze' should survive merge + blocklist filtering");
             Assert.IsTrue(complexResult.MatchedHighKeywords.Contains("design"),
-                "Complexity keyword 'design' should survive blocklist filtering");
+                "Compiled default 'design' should survive merge + blocklist filtering");
+        }
+        finally
+        {
+            Directory.Delete(tempDir, recursive: true);
+        }
+    }
+
+    [TestMethod]
+    public void TopicWords_CompoundPhrases_AreStrippedFromHighSignal()
+    {
+        var tempDir = Path.Combine(Path.GetTempPath(), "kts-compound-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempDir);
+        try
+        {
+            // Compound phrases containing blocked topic words should also be stripped
+            var config = """
+            {
+                "highSignalKeywords": ["reply to email", "schedule meeting", "todo items", "calendar briefing", "create event"]
+            }
+            """;
+            File.WriteAllText(Path.Combine(tempDir, "tier-selector.json"), config);
+
+            var options = Options.Create(new AgentProfileOptions { BasePath = tempDir });
+            var selector = new KeywordTierSelector(options, NullLogger<KeywordTierSelector>.Instance);
+
+            // None of these compound phrases should survive — they all contain blocked topic words
+            var result = selector.Classify("reply to email about the schedule meeting and todo items");
+            Assert.IsFalse(result.MatchedHighKeywords.Contains("reply to email"),
+                "'reply to email' contains blocked topic 'email'");
+            Assert.IsFalse(result.MatchedHighKeywords.Contains("schedule meeting"),
+                "'schedule meeting' contains blocked topic 'schedule'");
+            Assert.IsFalse(result.MatchedHighKeywords.Contains("todo items"),
+                "'todo items' contains blocked topic 'todo'");
         }
         finally
         {
@@ -360,7 +388,7 @@ public class KeywordTierSelectorTests
             // Topic words in lowSignalKeywords should NOT be stripped — blocklist only applies to high
             var config = """
             {
-                "lowSignalKeywords": ["hello", "email", "calendar", "thanks"]
+                "lowSignalKeywords": ["email", "calendar"]
             }
             """;
             File.WriteAllText(Path.Combine(tempDir, "tier-selector.json"), config);
@@ -428,9 +456,9 @@ public class KeywordTierSelectorTests
         Directory.CreateDirectory(tempDir);
         try
         {
-            // Set lowCeiling very tight (0.05) — without the trivial guard,
-            // a prompt scoring 0.10 would route Balanced.
-            var config = """{"version":1,"lowCeiling":0.05}""";
+            // Set lowCeiling to minimum guardrail (0.15) — trivial guard still catches
+            // short prompts that score just above the ceiling.
+            var config = """{"version":1,"lowCeiling":0.15}""";
             File.WriteAllText(Path.Combine(tempDir, "tier-selector.json"), config);
 
             var options = Options.Create(new AgentProfileOptions { BasePath = tempDir });
@@ -439,7 +467,7 @@ public class KeywordTierSelectorTests
             // Short trivial prompt with no high keywords — trivial guard should force Low
             var result = selector.Classify("hello there");
             Assert.AreEqual(ModelTier.Low, result.Tier,
-                "Trivial guard should force Low even when lowCeiling is very tight");
+                "Trivial guard should force Low even when lowCeiling is at minimum");
         }
         finally
         {
@@ -456,14 +484,14 @@ public class KeywordTierSelectorTests
         Directory.CreateDirectory(tempDir);
         try
         {
-            var config = """{"version":1,"lowCeiling":0.05}""";
+            var config = """{"version":1,"lowCeiling":0.15}""";
             File.WriteAllText(Path.Combine(tempDir, "tier-selector.json"), config);
 
             var options = Options.Create(new AgentProfileOptions { BasePath = tempDir });
             var selector = new KeywordTierSelector(options, NullLogger<KeywordTierSelector>.Instance);
 
             // "analyze this" scores ~0.15 (length 0.05 + keyword 0.10).
-            // With lowCeiling=0.05, it routes Balanced. The trivial guard should NOT
+            // With lowCeiling=0.15, it routes Balanced. The trivial guard should NOT
             // force it to Low because "analyze" is a matched high keyword.
             var result = selector.Classify("analyze this");
             Assert.AreEqual(ModelTier.Balanced, result.Tier,
@@ -505,5 +533,159 @@ public class KeywordTierSelectorTests
         var result = _selector.Classify(prompt, new TierRoutingContext(Origin: "user-message"));
         Assert.AreEqual(ModelTier.High, result.Tier,
             "Complex prompts should remain High even with user-origin bias");
+    }
+
+    // ── Threshold guardrail tests ────────────────────────────────────────────
+
+    [TestMethod]
+    public void ThresholdGuardrails_ClampLowCeiling_ToMinimum()
+    {
+        var tempDir = Path.Combine(Path.GetTempPath(), "kts-clamp-low-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempDir);
+        try
+        {
+            // Dream tries to set lowCeiling=0.05 — should be clamped to 0.15
+            var config = """{"version":1,"lowCeiling":0.05}""";
+            File.WriteAllText(Path.Combine(tempDir, "tier-selector.json"), config);
+
+            var options = Options.Create(new AgentProfileOptions { BasePath = tempDir });
+            var selector = new KeywordTierSelector(options, NullLogger<KeywordTierSelector>.Instance);
+
+            // "hello there" scores ~0.05 (length). With lowCeiling clamped to 0.15,
+            // it should route Low (0.05 ≤ 0.15).
+            var result = selector.Classify("hello there");
+            Assert.AreEqual(ModelTier.Low, result.Tier,
+                "lowCeiling should be clamped to 0.15 minimum, routing trivial prompts to Low");
+        }
+        finally
+        {
+            Directory.Delete(tempDir, recursive: true);
+        }
+    }
+
+    [TestMethod]
+    public void ThresholdGuardrails_ClampLowCeiling_ToMaximum()
+    {
+        var tempDir = Path.Combine(Path.GetTempPath(), "kts-clamp-high-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempDir);
+        try
+        {
+            // Dream tries to set lowCeiling=0.60 — should be clamped to 0.40.
+            // Verify by checking that a prompt scoring ~0.45 routes Balanced, not Low.
+            var config = """{"version":1,"lowCeiling":0.60}""";
+            File.WriteAllText(Path.Combine(tempDir, "tier-selector.json"), config);
+
+            var options = Options.Create(new AgentProfileOptions { BasePath = tempDir });
+            var selector = new KeywordTierSelector(options, NullLogger<KeywordTierSelector>.Instance);
+
+            // Long prompt with high-signal keywords — scores well above 0.40 but below 0.55
+            // Without clamping, lowCeiling=0.60 would route this to Low
+            const string prompt =
+                "Design and architect a comprehensive distributed caching system for a high-traffic " +
+                "microservices platform. Analyze the trade-offs between consistency models including " +
+                "eventual consistency and strong consistency.";
+
+            var result = selector.Classify(prompt);
+            Assert.AreNotEqual(ModelTier.Low, result.Tier,
+                $"lowCeiling should be clamped to 0.40 max — prompt scoring {result.ComplexityScore:F3} should not route Low");
+        }
+        finally
+        {
+            Directory.Delete(tempDir, recursive: true);
+        }
+    }
+
+    // ── Keyword merge tests ─────────────────────────────────────────────────
+
+    [TestMethod]
+    public void KeywordMerge_CompiledDefaults_AlwaysPresent()
+    {
+        var tempDir = Path.Combine(Path.GetTempPath(), "kts-merge-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempDir);
+        try
+        {
+            // Dream provides only new keywords — compiled defaults must survive
+            var config = """
+            {
+                "lowSignalKeywords": ["novel phrase one", "novel phrase two"]
+            }
+            """;
+            File.WriteAllText(Path.Combine(tempDir, "tier-selector.json"), config);
+
+            var options = Options.Create(new AgentProfileOptions { BasePath = tempDir });
+            var selector = new KeywordTierSelector(options, NullLogger<KeywordTierSelector>.Instance);
+
+            // "what is" is a compiled default low-signal keyword — must still be present
+            var result = selector.Classify("What is the capital of France?");
+            Assert.IsTrue(result.MatchedLowKeywords.Contains("what is"),
+                "Compiled default 'what is' must survive merge with dream keywords");
+        }
+        finally
+        {
+            Directory.Delete(tempDir, recursive: true);
+        }
+    }
+
+    [TestMethod]
+    public void KeywordMerge_DreamAdditions_AreIncluded()
+    {
+        var tempDir = Path.Combine(Path.GetTempPath(), "kts-merge-add-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempDir);
+        try
+        {
+            // Dream adds a novel low-signal keyword
+            var config = """
+            {
+                "lowSignalKeywords": ["watching movie"]
+            }
+            """;
+            File.WriteAllText(Path.Combine(tempDir, "tier-selector.json"), config);
+
+            var options = Options.Create(new AgentProfileOptions { BasePath = tempDir });
+            var selector = new KeywordTierSelector(options, NullLogger<KeywordTierSelector>.Instance);
+
+            var result = selector.Classify("I'm watching movie tonight");
+            Assert.IsTrue(result.MatchedLowKeywords.Contains("watching movie"),
+                "Dream-added keyword 'watching movie' should be present in merged list");
+            // Compiled default should also work
+            Assert.IsTrue(result.MatchedLowKeywords.Count > 0,
+                "Merged list should contain both compiled defaults and dream additions");
+        }
+        finally
+        {
+            Directory.Delete(tempDir, recursive: true);
+        }
+    }
+
+    [TestMethod]
+    public void KeywordMerge_EmptyDreamList_UsesCompiledDefaults()
+    {
+        var tempDir = Path.Combine(Path.GetTempPath(), "kts-merge-empty-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempDir);
+        try
+        {
+            // Dream provides empty keyword lists
+            var config = """
+            {
+                "highSignalKeywords": [],
+                "lowSignalKeywords": []
+            }
+            """;
+            File.WriteAllText(Path.Combine(tempDir, "tier-selector.json"), config);
+
+            var options = Options.Create(new AgentProfileOptions { BasePath = tempDir });
+            var selector = new KeywordTierSelector(options, NullLogger<KeywordTierSelector>.Instance);
+
+            // Should behave identically to compiled defaults
+            var result = selector.Classify("What is the capital of France?");
+            Assert.AreEqual(ModelTier.Low, result.Tier,
+                "Empty dream lists should fall back to compiled defaults");
+            Assert.IsTrue(result.MatchedLowKeywords.Contains("what is"),
+                "Compiled default keywords must be present when dream list is empty");
+        }
+        finally
+        {
+            Directory.Delete(tempDir, recursive: true);
+        }
     }
 }
