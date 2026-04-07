@@ -5,16 +5,35 @@ namespace RockBot.Host;
 /// </summary>
 public sealed class LlmTierConfig
 {
+    /// <summary>
+    /// LLM provider for this tier (e.g. "Copilot"). When null/empty, inherits the
+    /// global <c>LLM:Provider</c> value. Allows mixing providers across tiers.
+    /// </summary>
+    public string? Provider { get; set; }
+
     public string? Endpoint { get; set; }
     public string? ApiKey   { get; set; }
     public string? ModelId  { get; set; }
 
     /// <summary>
-    /// Returns true when all three fields are non-empty.
+    /// Returns true when Endpoint, ApiKey, and ModelId are all non-empty.
     /// </summary>
     public bool IsConfigured => !string.IsNullOrEmpty(Endpoint)
                              && !string.IsNullOrEmpty(ApiKey)
                              && !string.IsNullOrEmpty(ModelId);
+
+    /// <summary>
+    /// Returns the effective provider for this tier: the per-tier <see cref="Provider"/>
+    /// if set, otherwise the <paramref name="globalProvider"/> fallback.
+    /// </summary>
+    public string? EffectiveProvider(string? globalProvider) =>
+        !string.IsNullOrEmpty(Provider) ? Provider : globalProvider;
+
+    /// <summary>
+    /// Returns true when this tier is configured for the Copilot provider.
+    /// </summary>
+    public bool IsCopilot(string? globalProvider) =>
+        string.Equals(EffectiveProvider(globalProvider), "Copilot", StringComparison.OrdinalIgnoreCase);
 }
 
 /// <summary>
