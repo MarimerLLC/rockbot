@@ -21,16 +21,22 @@ public sealed class CopilotChatClient : IChatClient
     private readonly CopilotChatClientOptions _options;
     private readonly ILogger<CopilotChatClient> _logger;
     private readonly ChatClientMetadata _metadata;
+    private readonly CopilotUsageTracker? _usageTracker;
+    private readonly ICopilotSessionEvents? _sessionEvents;
 
     public CopilotChatClient(
         CopilotClient copilotClient,
         CopilotChatClientOptions options,
-        ILogger<CopilotChatClient> logger)
+        ILogger<CopilotChatClient> logger,
+        CopilotUsageTracker? usageTracker = null,
+        ICopilotSessionEvents? sessionEvents = null)
     {
         _copilotClient = copilotClient ?? throw new ArgumentNullException(nameof(copilotClient));
         _options = options ?? throw new ArgumentNullException(nameof(options));
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
         _metadata = new ChatClientMetadata("github-copilot", defaultModelId: options.ModelId);
+        _usageTracker = usageTracker;
+        _sessionEvents = sessionEvents;
     }
 
     public async Task<ChatResponse> GetResponseAsync(
@@ -151,6 +157,62 @@ public sealed class CopilotChatClient : IChatClient
         await using var session = await CreateSessionAsync(systemPrompt, options, cancellationToken)
             .ConfigureAwait(false);
 
+        // Subscribe to session events for usage tracking and tool-call progress.
+        using var eventSub = session.On(evt =>
+        {
+            switch (evt)
+            {
+                case AssistantUsageEvent { Data: { } usage }:
+                    CopilotDiagnostics.PremiumRequests.Add(1);
+                    if (usage.InputTokens is > 0)
+                        CopilotDiagnostics.TokenInput.Add((long)usage.InputTokens.Value);
+                    if (usage.OutputTokens is > 0)
+                        CopilotDiagnostics.TokenOutput.Add((long)usage.OutputTokens.Value);
+                    if (usage.Cost is > 0)
+                        CopilotDiagnostics.CostMultiplier.Add(usage.Cost.Value);
+                    if (usage.Duration is > 0)
+                        CopilotDiagnostics.LlmCallDuration.Record(usage.Duration.Value);
+                    _usageTracker?.RecordLlmCall(
+                        usage.Model, usage.InputTokens, usage.OutputTokens,
+                        usage.Cost, usage.Duration);
+                    _logger.LogInformation(
+                        "Copilot LLM call: model={Model} in={In} out={Out} cost={Cost} duration={Duration}ms",
+                        usage.Model, usage.InputTokens, usage.OutputTokens,
+                        usage.Cost, usage.Duration);
+                    break;
+
+                // Tool-call progress: when the model requests tools, notify the UI before
+                // the CLI invokes the handlers. AssistantMessageEvent fires reliably for
+                // all tool calls; ToolExecutionCompleteEvent fires after execution.
+                case AssistantMessageEvent { Data.ToolRequests.Length: > 0 } toolMsg:
+                    foreach (var tr in toolMsg.Data!.ToolRequests!)
+                    {
+                        _logger.LogInformation("Copilot tool requested: {Tool}({Args})",
+                            tr.Name, tr.Arguments);
+                        _ = _sessionEvents?.OnToolStartAsync(
+                            tr.Name ?? "unknown",
+                            tr.Arguments?.ToString(),
+                            cancellationToken);
+                    }
+                    break;
+
+                case ToolExecutionStartEvent { Data: { } start }:
+                    _logger.LogInformation("Copilot tool start: {Tool}({Args})",
+                        start.ToolName, start.Arguments);
+                    break;
+
+                case ToolExecutionCompleteEvent { Data: { } complete }:
+                    _logger.LogInformation("Copilot tool complete: {ToolCallId} success={Success}",
+                        complete.ToolCallId, complete.Success);
+                    _ = _sessionEvents?.OnToolCompleteAsync(
+                        complete.ToolCallId ?? "unknown",
+                        complete.Success == true,
+                        complete.Result?.ToString()?[..Math.Min(complete.Result.ToString()!.Length, 120)],
+                        cancellationToken);
+                    break;
+            }
+        });
+
         // SendAndWaitAsync lets the Copilot CLI orchestrate the full tool-calling loop:
         // model requests tool → CLI invokes the real AIFunction handler → result fed to
         // model → repeat until the model responds with text and the session goes idle.
@@ -163,6 +225,7 @@ public sealed class CopilotChatClient : IChatClient
         var content = response?.Data?.Content ?? string.Empty;
 
         _logger.LogDebug("Copilot session complete — {Length} chars response", content.Length);
+        _usageTracker?.Flush();
 
         return new ChatResponse(new ChatMessage(ChatRole.Assistant, content))
         {
@@ -204,6 +267,7 @@ public sealed class CopilotChatClient : IChatClient
             .ConfigureAwait(false);
 
         CopilotDiagnostics.SessionsCreated.Add(1);
+        _usageTracker?.RecordSession();
         _logger.LogDebug("Created Copilot session {SessionId} with model {Model}, {ToolCount} tools",
             session.SessionId, _options.ModelId, tools.Count);
 

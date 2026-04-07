@@ -59,11 +59,15 @@ var tierOptions = new LlmTierOptions();
 llmSection.Bind(tierOptions);
 
 // Backward compat: flat LLM__{Endpoint/ApiKey/ModelId} → Balanced
+// Only apply if the flat key is set AND the structured key isn't already populated.
 if (!tierOptions.Balanced.IsConfigured)
 {
-    tierOptions.Balanced.Endpoint = llmSection["Endpoint"];
-    tierOptions.Balanced.ApiKey   = llmSection["ApiKey"];
-    tierOptions.Balanced.ModelId  = llmSection["ModelId"];
+    if (!string.IsNullOrEmpty(llmSection["Endpoint"]))
+        tierOptions.Balanced.Endpoint = llmSection["Endpoint"];
+    if (!string.IsNullOrEmpty(llmSection["ApiKey"]))
+        tierOptions.Balanced.ApiKey   = llmSection["ApiKey"];
+    if (!string.IsNullOrEmpty(llmSection["ModelId"]))
+        tierOptions.Balanced.ModelId  = llmSection["ModelId"];
 }
 
 // If BalancedModels is used exclusively (no single Balanced key), seed Balanced from
@@ -80,6 +84,8 @@ var globalProvider = llmSection["Provider"];
 CopilotClient? copilotClient = null;
 CopilotChatClientOptions? copilotBaseOptions = null;
 ILoggerFactory? copilotLoggerFactory = null;
+CopilotUsageTracker? copilotUsageTracker = null;
+ICopilotSessionEvents? copilotSessionEvents = null;
 
 async Task<CopilotClient> GetOrCreateCopilotClientAsync()
 {
@@ -90,6 +96,13 @@ async Task<CopilotClient> GetOrCreateCopilotClientAsync()
     llmSection.Bind(copilotBaseOptions);
     copilotLoggerFactory = LoggerFactory.Create(b =>
         b.AddConsole().SetMinimumLevel(LogLevel.Information));
+
+    // Usage tracker writes metrics to the shared data volume for introspection MCP.
+    var basePath = builder.Configuration["AgentProfile:BasePath"] ?? "/data/agent";
+    copilotUsageTracker = new CopilotUsageTracker(Path.Combine(basePath, "copilot-usage.json"));
+
+    // Session events bridge — deferred resolution of IToolProgressNotifier from DI.
+    copilotSessionEvents = new CopilotSessionEventsBridge();
 
     copilotClient = await CopilotClientFactory.CreateAndStartAsync(copilotBaseOptions);
     return copilotClient;
@@ -127,7 +140,9 @@ async Task<IChatClient> BuildClientForTierAsync(LlmTierConfig config, string tie
         Console.WriteLine($"  {tierName}: Copilot ({modelId})");
         return new CopilotChatClient(
             client, opts,
-            copilotLoggerFactory!.CreateLogger<CopilotChatClient>());
+            copilotLoggerFactory!.CreateLogger<CopilotChatClient>(),
+            copilotUsageTracker,
+            copilotSessionEvents);
     }
 
     Console.WriteLine($"  {tierName}: OpenAI-compatible ({config.ModelId} @ {config.Endpoint})");
@@ -324,5 +339,8 @@ builder.Services.AddHostedService<McpBridgeService>();
 builder.Services.AddRemoteScriptRunner("RockBot");
 
 var app = builder.Build();
+
+// Wire the deferred service provider for Copilot session event bridge.
+(copilotSessionEvents as CopilotSessionEventsBridge)?.SetServiceProvider(app.Services);
 
 await app.RunAsync();

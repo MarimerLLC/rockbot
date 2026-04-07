@@ -94,7 +94,10 @@ services:
       LLM__Provider: ${LLM_PROVIDER:-}
       # Copilot path — GITHUB_TOKEN is read by the Copilot CLI subprocess
       GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+      # Per-tier model IDs (LLM_MODEL_ID sets Balanced; Low/High fall back to Balanced)
       LLM__Balanced__ModelId: ${LLM_MODEL_ID:-anthropic/claude-haiku-4.5}
+      LLM__Low__ModelId: ${LLM_LOW_MODEL_ID:-}
+      LLM__High__ModelId: ${LLM_HIGH_MODEL_ID:-}
       # OpenAI-compatible path (ignored when Provider=Copilot)
       LLM__Balanced__Endpoint: ${LLM_ENDPOINT:-}
       LLM__Balanced__ApiKey: ${LLM_API_KEY:-}
@@ -146,6 +149,9 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
 
   introspection-mcp:
+    build:
+      context: ../..
+      dockerfile: src/McpServer.Introspection/Dockerfile
     image: rockylhotka/rockbot-introspection-mcp:latest
     depends_on:
       agent-init:

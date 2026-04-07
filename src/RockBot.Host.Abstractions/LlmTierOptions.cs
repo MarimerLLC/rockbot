@@ -16,11 +16,18 @@ public sealed class LlmTierConfig
     public string? ModelId  { get; set; }
 
     /// <summary>
-    /// Returns true when Endpoint, ApiKey, and ModelId are all non-empty.
+    /// Returns true when Endpoint, ApiKey, and ModelId are all non-empty
+    /// (OpenAI-compatible provider fully configured).
     /// </summary>
     public bool IsConfigured => !string.IsNullOrEmpty(Endpoint)
                              && !string.IsNullOrEmpty(ApiKey)
                              && !string.IsNullOrEmpty(ModelId);
+
+    /// <summary>
+    /// Returns true when this tier has enough configuration to be used independently
+    /// (either a full OpenAI-compatible config or just a ModelId for Copilot).
+    /// </summary>
+    public bool HasModelId => !string.IsNullOrEmpty(ModelId);
 
     /// <summary>
     /// Returns the effective provider for this tier: the per-tier <see cref="Provider"/>
@@ -58,10 +65,16 @@ public sealed class LlmTierOptions
     /// Returns the effective config for <paramref name="tier"/>, falling back
     /// to <see cref="Balanced"/> when the requested tier is not configured.
     /// </summary>
+    /// <summary>
+    /// Returns the effective config for <paramref name="tier"/>, falling back
+    /// to <see cref="Balanced"/> when the requested tier is not configured.
+    /// A tier is considered configured when it has a full OpenAI-compatible setup
+    /// (IsConfigured) or at least a ModelId (sufficient for Copilot provider).
+    /// </summary>
     public LlmTierConfig Resolve(ModelTier tier) => tier switch
     {
-        ModelTier.Low  => Low.IsConfigured  ? Low  : Balanced,
-        ModelTier.High => High.IsConfigured ? High : Balanced,
+        ModelTier.Low  => (Low.IsConfigured || Low.HasModelId)   ? Low  : Balanced,
+        ModelTier.High => (High.IsConfigured || High.HasModelId) ? High : Balanced,
         _              => Balanced
     };
 }
