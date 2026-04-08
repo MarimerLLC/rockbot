@@ -77,12 +77,7 @@ internal sealed class UserMessageHandler(
         // Skills
         "SaveSkill", "DeleteSkill",
         // Rules
-        "AddRule", "RemoveRule", "SetTimezone",
-        // Orchestration — prevent workarounds via scheduling, subagents, or A2A
-        "schedule_task", "spawn_subagent",
-        "register_agent", "unregister_agent", "invoke_agent",
-        // MCP — prevent calling external services (email, calendar, etc.)
-        "mcp_invoke_tool", "mcp_register_server", "mcp_unregister_server"
+        "AddRule", "RemoveRule", "SetTimezone"
     };
 
     public async Task HandleAsync(UserMessage message, MessageHandlerContext context)
