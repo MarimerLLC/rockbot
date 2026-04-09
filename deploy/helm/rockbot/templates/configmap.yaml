@@ -40,9 +40,9 @@ data:
   {{- if .Values.azureFoundryMcp.enabled }}
   McpBridge__DefaultServers__azure-foundry: "http://{{ include "rockbot.fullname" . }}-azure-foundry-mcp.{{ .Values.namespace }}.svc.cluster.local/"
   {{- end }}
-  {{- if .Values.staging.enabled }}
-  McpBridge__DefaultServers__staging: "http://{{ include "rockbot.fullname" . }}-staging.{{ .Values.namespace }}.svc.cluster.local/"
-  {{- end }}
+  {{- /* NOTE: staging MCP is NOT auto-seeded here because it requires an auth header
+     (X-RockBot-Token) that cannot be expressed via McpBridge__DefaultServers__ config.
+     The staging-mcp entry with auth is configured manually in mcp.json instead. */ -}}
   {{- if .Values.todoappMcp.enabled }}
   McpBridge__DefaultServers__todo: "http://mcp-todo.{{ .Values.namespace }}.svc.cluster.local/"
   {{- end }}
