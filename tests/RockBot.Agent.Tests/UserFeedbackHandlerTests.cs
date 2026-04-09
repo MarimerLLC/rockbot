@@ -80,6 +80,7 @@ public class UserFeedbackHandlerTests
             [],
             Enumerable.Empty<IKnowledgeGraph>(),
             Options.Create(new KnowledgeGraphOptions()),
+            Enumerable.Empty<IEmbeddingGenerator<string, Embedding<float>>>(),
             NullLogger<AgentContextBuilder>.Instance);
 
         var rulesTools = new RulesTools(
@@ -393,6 +394,6 @@ internal sealed class StubSkillStore : ISkillStore
     public Task<Skill?> GetAsync(string name) => Task.FromResult<Skill?>(null);
     public Task<IReadOnlyList<Skill>> ListAsync() => Task.FromResult<IReadOnlyList<Skill>>([]);
     public Task DeleteAsync(string name) => Task.CompletedTask;
-    public Task<IReadOnlyList<Skill>> SearchAsync(string query, int maxResults = 5, CancellationToken ct = default) =>
+    public Task<IReadOnlyList<Skill>> SearchAsync(string query, int maxResults = 5, CancellationToken ct = default, float[]? queryEmbedding = null) =>
         Task.FromResult<IReadOnlyList<Skill>>([]);
 }

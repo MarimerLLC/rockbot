@@ -88,71 +88,75 @@ internal sealed partial class FileMemoryStore : ILongTermMemory
 
     public async Task<IReadOnlyList<MemoryEntry>> SearchAsync(MemorySearchCriteria criteria, CancellationToken cancellationToken = default)
     {
+        // Only hold the semaphore long enough to snapshot the index — search and embedding
+        // generation happen outside the lock so concurrent searches don't serialize.
+        List<MemoryEntry> candidates;
         await _semaphore.WaitAsync(cancellationToken);
         try
         {
             var index = await EnsureIndexAsync(cancellationToken);
-
-            // Apply hard filters: category prefix, tags, date range
-            var candidates = index.Values
+            candidates = index.Values
                 .Where(e => PassesStructuralFilters(e, criteria))
-                .ToList();
-
-            // No query: return most-recently updated entries up to MaxResults
-            if (criteria.Query is null)
-            {
-                return candidates
-                    .OrderByDescending(e => e.UpdatedAt ?? e.CreatedAt)
-                    .Take(criteria.MaxResults)
-                    .ToList();
-            }
-
-            // With query: use hybrid ranking if embeddings available, else BM25-only.
-            if (_embeddingCache is not null)
-            {
-                using var hybridActivity = HostDiagnostics.Source.StartActivity("rockbot.search.hybrid.memory");
-                var sw = Stopwatch.StartNew();
-
-                var queryEmbedding = await _embeddingCache.GenerateQueryEmbeddingAsync(criteria.Query, cancellationToken);
-                if (queryEmbedding is not null)
-                {
-                    // Pre-load all candidate embeddings asynchronously (avoids sync-over-async per candidate)
-                    var embeddingMap = new Dictionary<string, float[]?>(StringComparer.OrdinalIgnoreCase);
-                    foreach (var c in candidates)
-                        embeddingMap[c.Id] = await _embeddingCache.GetOrCreateAsync(c.Id, GetDocumentText(c), cancellationToken);
-
-                    var results = HybridRanker.RankWithScores(
-                            candidates, GetDocumentText,
-                            static e => e.Id,
-                            e => embeddingMap.GetValueOrDefault(e.Id),
-                            queryEmbedding, criteria.Query,
-                            _minSimilarity)
-                        .Select(r => (r.Item, Score: r.Score * ImportanceBoost(r.Item.ImportanceScore)))
-                        .OrderByDescending(r => r.Score)
-                        .Select(r => r.Item)
-                        .Take(criteria.MaxResults)
-                        .ToList();
-
-                    sw.Stop();
-                    HostDiagnostics.HybridSearchDuration.Record(sw.Elapsed.TotalMilliseconds);
-                    _logger.LogInformation("Hybrid memory search completed in {Duration:F0}ms ({Candidates} candidates, {Results} results)",
-                        sw.Elapsed.TotalMilliseconds, candidates.Count, results.Count);
-                    return results;
-                }
-            }
-
-            // Fallback: BM25-only ranking with importance boost.
-            return Bm25Ranker.RankWithScores(candidates, GetDocumentText, criteria.Query)
-                .Select(r => (r.Item, Score: r.Score * ImportanceBoost(r.Item.ImportanceScore)))
-                .OrderByDescending(r => r.Score)
-                .Select(r => r.Item)
-                .Take(criteria.MaxResults)
                 .ToList();
         }
         finally
         {
             _semaphore.Release();
         }
+
+        // No query: return most-recently updated entries up to MaxResults
+        if (criteria.Query is null)
+        {
+            return candidates
+                .OrderByDescending(e => e.UpdatedAt ?? e.CreatedAt)
+                .Take(criteria.MaxResults)
+                .ToList();
+        }
+
+        // With query: use hybrid ranking if embeddings available, else BM25-only.
+        if (_embeddingCache is not null)
+        {
+            using var hybridActivity = HostDiagnostics.Source.StartActivity("rockbot.search.hybrid.memory");
+            var sw = Stopwatch.StartNew();
+
+            // Use pre-computed query embedding if provided, otherwise generate one
+            var queryEmbedding = criteria.QueryEmbedding
+                ?? await _embeddingCache.GenerateQueryEmbeddingAsync(criteria.Query, cancellationToken);
+            if (queryEmbedding is not null)
+            {
+                // Batch-load all candidate embeddings (single endpoint call for cache misses)
+                var batchItems = candidates
+                    .Select(c => (c.Id, Text: GetDocumentText(c)))
+                    .ToList();
+                var embeddingMap = await _embeddingCache.GetOrCreateBatchAsync(batchItems, cancellationToken);
+
+                var results = HybridRanker.RankWithScores(
+                        candidates, GetDocumentText,
+                        static e => e.Id,
+                        e => embeddingMap.GetValueOrDefault(e.Id),
+                        queryEmbedding, criteria.Query,
+                        _minSimilarity)
+                    .Select(r => (r.Item, Score: r.Score * ImportanceBoost(r.Item.ImportanceScore)))
+                    .OrderByDescending(r => r.Score)
+                    .Select(r => r.Item)
+                    .Take(criteria.MaxResults)
+                    .ToList();
+
+                sw.Stop();
+                HostDiagnostics.HybridSearchDuration.Record(sw.Elapsed.TotalMilliseconds);
+                _logger.LogInformation("Hybrid memory search completed in {Duration:F0}ms ({Candidates} candidates, {Results} results)",
+                    sw.Elapsed.TotalMilliseconds, candidates.Count, results.Count);
+                return results;
+            }
+        }
+
+        // Fallback: BM25-only ranking with importance boost.
+        return Bm25Ranker.RankWithScores(candidates, GetDocumentText, criteria.Query)
+            .Select(r => (r.Item, Score: r.Score * ImportanceBoost(r.Item.ImportanceScore)))
+            .OrderByDescending(r => r.Score)
+            .Select(r => r.Item)
+            .Take(criteria.MaxResults)
+            .ToList();
     }
 
     public async Task<MemoryEntry?> GetAsync(string id, CancellationToken cancellationToken = default)
