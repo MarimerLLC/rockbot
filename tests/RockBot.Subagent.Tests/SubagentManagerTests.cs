@@ -345,7 +345,7 @@ public class SubagentManagerTests
         public Task<IReadOnlyList<Skill>> ListAsync() => Task.FromResult<IReadOnlyList<Skill>>([]);
         public Task DeleteAsync(string name) => Task.CompletedTask;
         public Task<IReadOnlyList<Skill>> SearchAsync(string query, int maxResults,
-            CancellationToken cancellationToken = default) =>
+            CancellationToken cancellationToken = default, float[]? queryEmbedding = null) =>
             Task.FromResult<IReadOnlyList<Skill>>([]);
     }
 

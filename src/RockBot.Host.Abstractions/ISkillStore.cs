@@ -23,5 +23,12 @@ public interface ISkillStore
     /// Skills with no matching terms are excluded.
     /// Returns at most <paramref name="maxResults"/> entries.
     /// </summary>
-    Task<IReadOnlyList<Skill>> SearchAsync(string query, int maxResults, CancellationToken cancellationToken = default);
+    /// <param name="query">The search query text.</param>
+    /// <param name="maxResults">Maximum number of results to return.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <param name="queryEmbedding">
+    /// Pre-computed query embedding vector. When provided, the store skips generating
+    /// its own query embedding — avoiding redundant embedding endpoint calls.
+    /// </param>
+    Task<IReadOnlyList<Skill>> SearchAsync(string query, int maxResults, CancellationToken cancellationToken = default, float[]? queryEmbedding = null);
 }

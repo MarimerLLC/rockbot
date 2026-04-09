@@ -221,6 +221,7 @@ public class AgentIdentityTests
             serviceSearchIndexProviders: [],
             knowledgeGraphProviders: [],
             knowledgeGraphOptions: Options.Create(new KnowledgeGraphOptions()),
+            embeddingGenerators: [],
             logger: NullLogger<AgentContextBuilder>.Instance);
     }
 
@@ -302,7 +303,7 @@ public class AgentIdentityTests
         public Task<Skill?> GetAsync(string name) => Task.FromResult<Skill?>(null);
         public Task<IReadOnlyList<Skill>> ListAsync() => Task.FromResult<IReadOnlyList<Skill>>([]);
         public Task DeleteAsync(string name) => Task.CompletedTask;
-        public Task<IReadOnlyList<Skill>> SearchAsync(string query, int maxResults, CancellationToken cancellationToken = default)
+        public Task<IReadOnlyList<Skill>> SearchAsync(string query, int maxResults, CancellationToken cancellationToken = default, float[]? queryEmbedding = null)
             => Task.FromResult<IReadOnlyList<Skill>>([]);
     }
 

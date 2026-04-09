@@ -10,10 +10,16 @@ namespace RockBot.Host;
 /// <param name="CreatedAfter">Only include entries created after this time.</param>
 /// <param name="CreatedBefore">Only include entries created before this time.</param>
 /// <param name="MaxResults">Maximum number of results to return. Defaults to 20.</param>
+/// <param name="QueryEmbedding">
+/// Pre-computed query embedding vector. When provided, stores skip generating their own
+/// query embedding — avoiding redundant calls to the embedding endpoint when multiple
+/// searches share the same query text (e.g. during context building).
+/// </param>
 public sealed record MemorySearchCriteria(
     string? Query = null,
     string? Category = null,
     IReadOnlyList<string>? Tags = null,
     DateTimeOffset? CreatedAfter = null,
     DateTimeOffset? CreatedBefore = null,
-    int MaxResults = 20);
+    int MaxResults = 20,
+    float[]? QueryEmbedding = null);
