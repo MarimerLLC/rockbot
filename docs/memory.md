@@ -376,3 +376,10 @@ builder
 
 For patrol sessions (`workingMemoryNamespace = "patrol/{taskName}"`), steps 6–7 are skipped
 and step 5 uses the patrol namespace instead of `session/{sessionId}`.
+
+---
+
+## See also
+
+- [knowledge-graph.md](knowledge-graph.md) — Entity-relationship graph for structured
+  relational reasoning (entities, triples, BFS traversal, dream extraction/consolidation)
