@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Text;
 using System.Text.Json;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
@@ -17,9 +18,13 @@ internal sealed class WispExecutor(
     IToolRegistry toolRegistry,
     IWorkingMemory workingMemory,
     AgentLoopRunner agentLoopRunner,
+    ISharedVolumeAccessor? sharedVolume,
     ILogger<WispExecutor> logger)
 {
     private const int DefaultLlmStepMaxIterations = 10;
+    private const int InputChunkingThreshold = 8_000;
+    private const int ChunkMaxLength = 20_000;
+    private static readonly TimeSpan WispChunkTtl = TimeSpan.FromMinutes(30);
 
     internal static readonly string WispDirectives =
         """
@@ -166,6 +171,13 @@ internal sealed class WispExecutor(
         overallSw.Stop();
         var isSuccess = stepResults.All(s => s.IsSuccess || s.WasSkipped || s.FailureHandled);
 
+        // Clean up wisp working memory on success; keep on failure for debugging
+        if (isSuccess)
+        {
+            await workingMemory.ClearAsync(wispNamespace);
+            logger.LogDebug("Wisp {WispId} cleaned up working memory namespace {Namespace}", wispId, wispNamespace);
+        }
+
         logger.LogInformation("Wisp {WispId} finished: success={Success}, duration={Duration:F1}ms",
             wispId, isSuccess, overallSw.Elapsed.TotalMilliseconds);
 
@@ -258,11 +270,20 @@ internal sealed class WispExecutor(
             };
         }
 
-        // Write output to working memory if output_to is specified
+        // Write output to shared volume and working memory if output_to is specified
         if (!string.IsNullOrEmpty(step.OutputTo))
         {
+            var content = response.Content ?? "";
+            // Write to shared volume file
+            if (sharedVolume is not null)
+            {
+                await sharedVolume.WriteAsync(step.OutputTo, content, ct);
+                logger.LogDebug("Wisp {WispId} step {StepId} wrote output to shared volume: {Path}",
+                    wispId, step.Id, step.OutputTo);
+            }
+            // Also keep in working memory for inter-step access
             var outputKey = $"{wispNamespace}/{step.Id}/output";
-            await workingMemory.SetAsync(outputKey, response.Content ?? "",
+            await workingMemory.SetAsync(outputKey, content,
                 ttl: TimeSpan.FromMinutes(60), category: "wisp-output");
         }
 
@@ -309,14 +330,25 @@ internal sealed class WispExecutor(
             new(ChatRole.System, WispDirectives)
         };
 
-        // Handle input_from: inject prior step data into the prompt
+        // Handle input_from: inject prior step data or shared volume content into the prompt
         var userPrompt = step.Prompt;
         if (!string.IsNullOrEmpty(step.InputFrom))
         {
-            var inputContent = ResolveInputFrom(step.InputFrom, wispNamespace, priorResults);
+            var inputContent = await ResolveInputFromAsync(step.InputFrom, wispNamespace, priorResults, definition, ct);
             if (inputContent is not null)
             {
-                userPrompt += $"\n\n## Input Data\n\n{inputContent}";
+                if (inputContent.Length <= InputChunkingThreshold)
+                {
+                    // Small content: inject directly into the prompt
+                    userPrompt += $"\n\n## Input Data\n\n{inputContent}";
+                }
+                else
+                {
+                    // Large content: chunk into working memory, give LLM the index
+                    var chunkIndex = await ChunkIntoWorkingMemoryAsync(
+                        inputContent, wispNamespace, step.Id, ct);
+                    userPrompt += $"\n\n## Input Data\n\n{chunkIndex}";
+                }
             }
         }
 
@@ -360,9 +392,17 @@ internal sealed class WispExecutor(
 
         stepSw.Stop();
 
-        // Write LLM output to working memory if output_to is specified
+        // Write LLM output to shared volume and working memory if output_to is specified
         if (!string.IsNullOrEmpty(step.OutputTo))
         {
+            // Write to shared volume file
+            if (sharedVolume is not null)
+            {
+                await sharedVolume.WriteAsync(step.OutputTo, llmOutput, ct);
+                logger.LogDebug("Wisp {WispId} step {StepId} wrote LLM output to shared volume: {Path}",
+                    wispId, step.Id, step.OutputTo);
+            }
+            // Also keep in working memory
             var outputKey = $"{wispNamespace}/{step.Id}/output";
             await workingMemory.SetAsync(outputKey, llmOutput,
                 ttl: TimeSpan.FromMinutes(60), category: "wisp-output");
@@ -425,31 +465,92 @@ internal sealed class WispExecutor(
     }
 
     /// <summary>
-    /// Resolves an input_from reference to actual content. Handles:
-    /// - Template references like {{steps.id.result}}
-    /// - Working memory keys from prior step output_to
+    /// Resolves an input_from reference to actual content. Resolution order:
+    /// 1. Template references like {{steps.id.result}}
+    /// 2. Prior step's working memory output (if a step wrote to this output_to path)
+    /// 3. Shared volume file read (if path is a file on the shared volume)
     /// </summary>
-    private static string? ResolveInputFrom(string inputFrom, string wispNamespace, IReadOnlyDictionary<string, WispStepResult> priorResults)
+    private async Task<string?> ResolveInputFromAsync(
+        string inputFrom,
+        string wispNamespace,
+        IReadOnlyDictionary<string, WispStepResult> priorResults,
+        WispDefinition definition,
+        CancellationToken ct)
     {
-        // Check if it's a template reference
-        var resolved = GatewayRouter.ResolveTemplateString(inputFrom, priorResults);
+        // 1. Check if it's a template reference like {{steps.id.result}}
+        var resolved = GatewayRouter.ResolveTemplateString(inputFrom, priorResults, definition);
         if (resolved != inputFrom)
             return resolved;
 
-        // Check if it matches a prior step's content by step ID pattern
-        // e.g., if inputFrom is a file path like /shared/wisp-abc/parsed.json,
-        // the actual data is in working memory from the prior step's output_to
-        foreach (var (stepId, result) in priorResults)
+        // 2. Check if a prior step wrote to this exact output_to path — use in-memory content
+        foreach (var step in definition.Steps)
         {
-            if (result.Content is not null && !string.IsNullOrEmpty(result.Content))
+            if (string.Equals(step.OutputTo, inputFrom, StringComparison.OrdinalIgnoreCase)
+                && priorResults.TryGetValue(step.Id, out var priorResult)
+                && priorResult.Content is not null)
             {
-                // If any prior step wrote to this path (matching output_to), use its content
-                // This is a simplified resolution — full shared volume I/O comes in Phase 2
-                return result.Content;
+                return priorResult.Content;
+            }
+        }
+
+        // 3. Read from shared volume as a file path
+        if (sharedVolume is not null)
+        {
+            var content = await sharedVolume.ReadAsync(inputFrom, ct);
+            if (content is not null)
+            {
+                logger.LogDebug("Wisp read input_from shared volume: {Path} ({Length} chars)",
+                    inputFrom, content.Length);
+                return content;
             }
         }
 
         return null;
+    }
+
+    /// <summary>
+    /// Chunks large content into working memory and returns an index table
+    /// that the LLM can use with GetFromWorkingMemory to access individual chunks.
+    /// </summary>
+    private async Task<string> ChunkIntoWorkingMemoryAsync(
+        string content, string wispNamespace, string stepId, CancellationToken ct)
+    {
+        var chunks = ContentChunker.Chunk(content, ChunkMaxLength);
+        var runId = Guid.NewGuid().ToString("N")[..8];
+        var keyBase = $"{wispNamespace}/input-{stepId}-{runId}";
+
+        var chunkKeys = new List<string>(chunks.Count);
+        for (var i = 0; i < chunks.Count; i++)
+        {
+            var key = $"{keyBase}-chunk{i}";
+            chunkKeys.Add(key);
+            await workingMemory.SetAsync(key, chunks[i].Content, ttl: WispChunkTtl, category: "wisp-input");
+        }
+
+        // Store outline index
+        var indexKey = $"{keyBase}-index";
+        var outline = ContentChunker.BuildOutline(chunks, chunkKeys);
+        await workingMemory.SetAsync(indexKey, outline, ttl: WispChunkTtl, category: "wisp-input");
+
+        // Build LLM-friendly index table
+        var sb = new StringBuilder();
+        sb.AppendLine($"Input data is large ({content.Length:N0} chars) and has been split into {chunks.Count} chunk(s).");
+        sb.AppendLine($"A document outline is stored at key `{indexKey}` — retrieve it with get_from_working_memory.");
+        sb.AppendLine("Call get_from_working_memory(key) for each relevant chunk BEFORE drawing conclusions.");
+        sb.AppendLine();
+        sb.AppendLine("| # | Heading | Key |");
+        sb.AppendLine("|---|---------|-----|");
+
+        for (var i = 0; i < chunks.Count; i++)
+        {
+            var label = string.IsNullOrWhiteSpace(chunks[i].Heading) ? $"Part {i}" : chunks[i].Heading;
+            sb.AppendLine($"| {i} | {label} | `{chunkKeys[i]}` |");
+        }
+
+        logger.LogInformation("Wisp chunked input for step {StepId}: {Length:N0} chars → {Count} chunk(s)",
+            stepId, content.Length, chunks.Count);
+
+        return sb.ToString().Trim();
     }
 
     /// <summary>

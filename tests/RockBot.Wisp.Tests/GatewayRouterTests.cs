@@ -396,4 +396,102 @@ public class GatewayRouterTests
         var step = new WispStep { Id = "s", Mode = StepMode.Direct, Gateway = GatewayType.Web, Tool = "web_browse" };
         Assert.AreEqual("web_browse", GatewayRouter.GetToolName(step));
     }
+
+    // ── {{steps.id.output_to}} template ──────────────────────────────────────
+
+    [TestMethod]
+    public void ResolveTemplateString_OutputTo_ReplacesFromDefinition()
+    {
+        var definition = new WispDefinition
+        {
+            Description = "test",
+            Steps =
+            [
+                new WispStep
+                {
+                    Id = "download",
+                    Mode = StepMode.Direct,
+                    Gateway = GatewayType.Mcp,
+                    Server = "test",
+                    Tool = "test",
+                    OutputTo = "wisp-data/file.json"
+                }
+            ]
+        };
+
+        var priorResults = new Dictionary<string, WispStepResult>
+        {
+            ["download"] = new()
+            {
+                StepId = "download",
+                StepIndex = 0,
+                IsSuccess = true,
+                Content = "data",
+                Duration = TimeSpan.Zero
+            }
+        };
+
+        var resolved = GatewayRouter.ResolveTemplateString(
+            "Read from {{steps.download.output_to}}", priorResults, definition);
+
+        Assert.AreEqual("Read from wisp-data/file.json", resolved);
+    }
+
+    [TestMethod]
+    public void ResolveTemplateString_OutputTo_NoDefinition_LeavesUnresolved()
+    {
+        var priorResults = new Dictionary<string, WispStepResult>
+        {
+            ["s1"] = new()
+            {
+                StepId = "s1",
+                StepIndex = 0,
+                IsSuccess = true,
+                Duration = TimeSpan.Zero
+            }
+        };
+
+        var resolved = GatewayRouter.ResolveTemplateString(
+            "{{steps.s1.output_to}}", priorResults, definition: null);
+
+        Assert.AreEqual("{{steps.s1.output_to}}", resolved);
+    }
+
+    [TestMethod]
+    public void ResolveTemplateString_BothResultAndOutputTo_ResolvesBoth()
+    {
+        var definition = new WispDefinition
+        {
+            Description = "test",
+            Steps =
+            [
+                new WispStep
+                {
+                    Id = "step1",
+                    Mode = StepMode.Direct,
+                    Gateway = GatewayType.Web,
+                    Tool = "web_search",
+                    OutputTo = "output/results.json"
+                }
+            ]
+        };
+
+        var priorResults = new Dictionary<string, WispStepResult>
+        {
+            ["step1"] = new()
+            {
+                StepId = "step1",
+                StepIndex = 0,
+                IsSuccess = true,
+                Content = "search results",
+                Duration = TimeSpan.Zero
+            }
+        };
+
+        var resolved = GatewayRouter.ResolveTemplateString(
+            "File at {{steps.step1.output_to}} contains {{steps.step1.result}}",
+            priorResults, definition);
+
+        Assert.AreEqual("File at output/results.json contains search results", resolved);
+    }
 }

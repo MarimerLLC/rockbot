@@ -137,10 +137,23 @@ internal static class GatewayRouter
         return JsonSerializer.Deserialize<JsonElement>(resolved);
     }
 
+    /// <summary>
+    /// Resolves template references in the input string. Supports:
+    /// <c>{{steps.id.result}}</c> — replaced with step's output content.
+    /// </summary>
     internal static string ResolveTemplateString(string input, IReadOnlyDictionary<string, WispStepResult> priorResults)
+        => ResolveTemplateString(input, priorResults, definition: null);
+
+    /// <summary>
+    /// Resolves template references in the input string. Supports:
+    /// <c>{{steps.id.result}}</c> — replaced with step's output content.
+    /// <c>{{steps.id.output_to}}</c> — replaced with step's output_to file path (from definition).
+    /// </summary>
+    internal static string ResolveTemplateString(
+        string input,
+        IReadOnlyDictionary<string, WispStepResult> priorResults,
+        WispDefinition? definition)
     {
-        // Replace {{steps.<id>.result}} with the step's content
-        // Replace {{steps.<id>.output_to}} with the step's output_to path (looked up from definition, not results)
         var result = input;
 
         foreach (var (stepId, stepResult) in priorResults)
@@ -150,6 +163,20 @@ internal static class GatewayRouter
             {
                 var escaped = JsonEscapeForEmbedding(stepResult.Content ?? "");
                 result = result.Replace(resultPlaceholder, escaped);
+            }
+        }
+
+        // Resolve {{steps.id.output_to}} from the definition's step declarations
+        if (definition is not null)
+        {
+            foreach (var step in definition.Steps)
+            {
+                var outputToPlaceholder = $"{{{{steps.{step.Id}.output_to}}}}";
+                if (result.Contains(outputToPlaceholder) && !string.IsNullOrEmpty(step.OutputTo))
+                {
+                    var escaped = JsonEscapeForEmbedding(step.OutputTo);
+                    result = result.Replace(outputToPlaceholder, escaped);
+                }
             }
         }
 
