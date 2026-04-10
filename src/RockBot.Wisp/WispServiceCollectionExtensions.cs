@@ -1,5 +1,6 @@
 using Microsoft.Extensions.DependencyInjection;
 using RockBot.Host;
+using RockBot.Tools;
 
 namespace RockBot.Wisp;
 
@@ -22,6 +23,7 @@ public static class WispServiceCollectionExtensions
         builder.Services.AddSingleton<WispExecutor>();
         builder.Services.AddSingleton<IWispExecutionLog, FileWispExecutionLog>();
         builder.Services.AddHostedService<WispToolRegistrar>();
+        builder.Services.AddSingleton<IToolSkillProvider, WispToolSkillProvider>();
 
         return builder;
     }
