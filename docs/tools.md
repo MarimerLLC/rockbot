@@ -664,6 +664,7 @@ services.AddRockBotHost(agent =>
     agent.AddWebTools(opts => ...);     // web_search + web_browse
     agent.AddSchedulingTools();         // schedule_task + list/cancel
     agent.AddSubagents();               // spawn_subagent + cancel/list + whiteboard
+    agent.AddWisps(opts => ...);        // spawn_wisp (lightweight procedural pipelines)
     agent.AddRemoteScriptRunner();      // execute_python_script (Kubernetes)
     // OR:
     agent.AddLocalScriptRunner();       // execute_python_script (local dev)

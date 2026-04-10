@@ -23,6 +23,11 @@ Subagents solve both problems:
 - **Background** — the user can continue talking while the subagent works
 - **Conversational** — progress and results arrive as messages in the active session
 
+> **See also: [Wisps](wisps.md)** — for procedural multi-step tasks with known
+> parameters, wisps provide a lighter-weight alternative that costs 80-95% fewer
+> tokens. Use subagents when the task requires discovery or multi-turn reasoning;
+> use wisps when you can write out the exact steps in advance.
+
 ---
 
 ## Architecture

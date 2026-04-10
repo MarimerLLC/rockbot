@@ -160,6 +160,24 @@ failure, to prevent unbounded growth.
 **Directive file:** `pref-dream.md`. Built-in fallback if not present. Requires
 `IConversationLog`. Enabled/disabled by `DreamOptions.PreferenceInferenceEnabled`.
 
+### Wisp failure analysis
+
+**Input:** last 14 days of wisp execution records from `IWispExecutionLog`, grouped by
+description to surface recurring patterns.
+
+**What the LLM does:**
+- Identifies recurring failure patterns (frequency ≥ 3) with classification and affected steps
+- Proposes skill annotations — appends negative examples or corrected patterns to existing
+  skills that generated broken wisp definitions
+- Flags consistent success patterns (frequency ≥ 5, >80% success rate) as promotion candidates
+  for stored wisp skills
+
+**Directive file:** `wisp-failure-dream.md`. Built-in fallback if not present. Requires
+`IWispExecutionLog` and `ISkillStore`. Enabled/disabled by
+`DreamOptions.WispFailureAnalysisEnabled`.
+
+See [Wisps — Dream-time learning](wisps.md#dream-time-learning-phase-5) for details.
+
 ---
 
 ## Directive files
