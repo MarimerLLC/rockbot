@@ -52,9 +52,13 @@ public sealed class WispToolSkillProvider : IToolSkillProvider
 
         - **`Direct`** — The harness calls the tool with exact parameters you provide.
           **Zero LLM tokens.** Use for all deterministic operations.
-        - **`Llm`** — A lightweight LLM interprets your prompt and makes tool calls
-          with minimal context. Use only when judgment is needed (selection, filtering,
-          summarization).
+        - **`Llm`** — A lightweight LLM interprets your prompt and makes tool calls.
+          **The wisp LLM has NO agent context** — no soul, no memory, no conversation
+          history, no skill index, no directives. It receives only the wisp step prompt
+          and any data injected via `input_from`. Your prompt must be completely
+          self-contained: include all relevant context (names, dates, timezone, format
+          requirements) directly in the prompt text. Use only when judgment is needed
+          (selection, filtering, summarization).
 
         ### Gateways (for Direct steps)
 
@@ -113,8 +117,10 @@ public sealed class WispToolSkillProvider : IToolSkillProvider
 
         ### LLM steps
 
-        LLM steps omit the gateway. They receive a prompt and can use tools from
-        the pipeline's scope:
+        LLM steps omit the gateway. The wisp LLM is a blank slate — it has no
+        knowledge of the user, the agent's personality, prior conversations, or
+        any context beyond what you put in the prompt and `input_from` data.
+        Write prompts as if briefing a stranger who knows nothing about the situation:
         ```json
         {
           "id": "summarize",
