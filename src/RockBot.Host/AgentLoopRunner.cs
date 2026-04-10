@@ -684,9 +684,11 @@ public sealed partial class AgentLoopRunner(
 
                     if (tool is null)
                     {
-                        logger.LogWarning("Text tool call references unknown tool: {Name}", toolName);
+                        var (textErrorMsg, textSuggestion) = BuildUnknownToolError(toolName, chatOptions);
+                        logger.LogWarning("Text tool call references unknown tool: {Name} (suggestion: {Suggestion})",
+                            toolName, textSuggestion ?? "none");
                         chatMessages.Add(new ChatMessage(ChatRole.User,
-                            $"[Tool result for {toolName}]: Error: unknown tool '{toolName}'"));
+                            $"[Tool result for {toolName}]: {textErrorMsg}"));
                         continue;
                     }
 
@@ -806,9 +808,11 @@ public sealed partial class AgentLoopRunner(
 
                 if (tool is null)
                 {
-                    logger.LogWarning("LLM requested unknown tool: {Name}", fc.Name);
+                    var (errorMsg, suggestion) = BuildUnknownToolError(fc.Name, chatOptions);
+                    logger.LogWarning("LLM requested unknown tool: {Name} (suggestion: {Suggestion})",
+                        fc.Name, suggestion ?? "none");
                     chatMessages.Add(new ChatMessage(ChatRole.Tool,
-                        [new FunctionResultContent(fc.CallId, $"Error: unknown tool '{fc.Name}'")]));
+                        [new FunctionResultContent(fc.CallId, errorMsg)]));
                     continue;
                 }
 
@@ -1383,6 +1387,24 @@ public sealed partial class AgentLoopRunner(
             ? JsonSerializer.Serialize(fc.Arguments.ToDictionary(k => k.Key, k => k.Value))
             : null;
         return DescribeToolCall(fc.Name, argJson);
+    }
+
+    /// <summary>
+    /// Builds an error message for an unknown tool, optionally suggesting the closest
+    /// registered tool name via fuzzy matching.
+    /// </summary>
+    private static (string ErrorMessage, string? Suggestion) BuildUnknownToolError(
+        string requestedName,
+        ChatOptions? chatOptions)
+    {
+        var toolNames = chatOptions?.Tools?
+            .OfType<AIFunction>()
+            .Select(t => t.Name) ?? [];
+        var suggestion = ToolCallFailureClassifier.FindClosestToolName(requestedName, toolNames);
+        var errorMsg = suggestion is not null
+            ? $"Error: unknown tool '{requestedName}'. Did you mean '{suggestion}'?"
+            : $"Error: unknown tool '{requestedName}'";
+        return (errorMsg, suggestion);
     }
 
     /// <summary>

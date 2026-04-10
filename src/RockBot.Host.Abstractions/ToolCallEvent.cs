@@ -17,4 +17,17 @@ public sealed record ToolCallEvent(
     string? ArgumentsSummary,
     bool Succeeded,
     int DurationMs,
-    DateTimeOffset Timestamp);
+    DateTimeOffset Timestamp)
+{
+    /// <summary>
+    /// Failure classification when <see cref="Succeeded"/> is <c>false</c>.
+    /// Null for successful calls. Used by the dream system to identify recurring
+    /// failure patterns across sessions.
+    /// </summary>
+    public ToolCallFailureCategory? FailureCategory { get; init; }
+
+    /// <summary>
+    /// Error message when the tool call failed. Null for successful calls.
+    /// </summary>
+    public string? ErrorMessage { get; init; }
+}

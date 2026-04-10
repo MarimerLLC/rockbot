@@ -145,6 +145,40 @@ public class FileToolCallLogTests
         Assert.AreEqual(3, results.Count);
     }
 
+    [TestMethod]
+    public async Task AppendAsync_PreservesFailureCategoryAndErrorMessage()
+    {
+        var log = CreateLog();
+        var evt = new ToolCallEvent("s1", "search_files{}", null, false, 50, DateTimeOffset.UtcNow)
+        {
+            FailureCategory = ToolCallFailureCategory.Structural,
+            ErrorMessage = "Error: unknown tool 'search_files{}'. Did you mean 'search_files'?"
+        };
+
+        await log.AppendAsync(evt);
+        var results = await log.GetBySessionAsync("s1");
+
+        Assert.AreEqual(1, results.Count);
+        Assert.IsFalse(results[0].Succeeded);
+        Assert.AreEqual(ToolCallFailureCategory.Structural, results[0].FailureCategory);
+        Assert.AreEqual("Error: unknown tool 'search_files{}'. Did you mean 'search_files'?", results[0].ErrorMessage);
+    }
+
+    [TestMethod]
+    public async Task AppendAsync_SuccessfulCall_FailureCategoryIsNull()
+    {
+        var log = CreateLog();
+        var evt = new ToolCallEvent("s1", "file_list", "prefix=docs/", true, 120, DateTimeOffset.UtcNow);
+
+        await log.AppendAsync(evt);
+        var results = await log.GetBySessionAsync("s1");
+
+        Assert.AreEqual(1, results.Count);
+        Assert.IsTrue(results[0].Succeeded);
+        Assert.IsNull(results[0].FailureCategory);
+        Assert.IsNull(results[0].ErrorMessage);
+    }
+
     // ── Helpers ──────────────────────────────────────────────────────────────
 
     private FileToolCallLog CreateLog() =>
