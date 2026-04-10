@@ -42,7 +42,7 @@ internal sealed class FileWriteToolExecutor(FileSystemOptions options) : IToolEx
     internal static string? SafeResolvePath(string basePath, string relativePath)
     {
         var fullBase = Path.GetFullPath(basePath);
-        var fullPath = Path.GetFullPath(Path.Combine(fullBase, relativePath));
+        var fullPath = Path.GetFullPath(Path.Combine(fullBase, relativePath.TrimEnd('/', '\\')));
         return fullPath.StartsWith(fullBase, StringComparison.OrdinalIgnoreCase) ? fullPath : null;
     }
 
