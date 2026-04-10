@@ -718,11 +718,12 @@ public class WispExecutorTests
     {
         var registry = new FakeToolRegistry();
         memory ??= new FakeWorkingMemory();
+        var options = new WispOptions { SharedVolumePath = sharedVolumePath };
         var logger = NullLogger<WispExecutor>.Instance;
 
         // WispExecutor needs AgentLoopRunner for LLM steps, but direct-mode tests
         // don't exercise that path. Pass null and rely on the test not calling LLM steps.
-        var executor = new WispExecutor(registry, memory, agentLoopRunner: null!, sharedVolumePath, logger);
+        var executor = new WispExecutor(registry, memory, agentLoopRunner: null!, options, logger);
         return (executor, registry);
     }
 

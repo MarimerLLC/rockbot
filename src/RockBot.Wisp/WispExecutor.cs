@@ -18,7 +18,7 @@ internal sealed class WispExecutor(
     IToolRegistry toolRegistry,
     IWorkingMemory workingMemory,
     AgentLoopRunner agentLoopRunner,
-    string? sharedVolumePath,
+    WispOptions options,
     ILogger<WispExecutor> logger)
 {
     private const int DefaultLlmStepMaxIterations = 10;
@@ -548,10 +548,10 @@ internal sealed class WispExecutor(
 
     private async Task WriteToSharedVolumeAsync(string relativePath, string content, CancellationToken ct)
     {
-        if (sharedVolumePath is null)
+        if (options.SharedVolumePath is null)
             return;
 
-        var fullPath = SafeResolvePath(sharedVolumePath, relativePath);
+        var fullPath = SafeResolvePath(options.SharedVolumePath, relativePath);
         if (fullPath is null)
         {
             logger.LogWarning("Wisp output_to path escapes shared volume, skipping write: {Path}", relativePath);
@@ -564,10 +564,10 @@ internal sealed class WispExecutor(
 
     private async Task<string?> ReadFromSharedVolumeAsync(string relativePath, CancellationToken ct)
     {
-        if (sharedVolumePath is null)
+        if (options.SharedVolumePath is null)
             return null;
 
-        var fullPath = SafeResolvePath(sharedVolumePath, relativePath);
+        var fullPath = SafeResolvePath(options.SharedVolumePath, relativePath);
         if (fullPath is null)
             return null;
 
