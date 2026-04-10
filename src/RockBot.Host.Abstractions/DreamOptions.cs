@@ -130,4 +130,13 @@ public sealed class DreamOptions
     /// When the file does not exist, a built-in fallback directive is used.
     /// </summary>
     public string DlqDirectivePath { get; set; } = "dlq-dream.md";
+
+    /// <summary>Whether the wisp failure analysis pass (requires <see cref="IWispExecutionLog"/>) is enabled.</summary>
+    public bool WispFailureAnalysisEnabled { get; set; } = true;
+
+    /// <summary>
+    /// Path to the wisp failure analysis directive file, relative to <see cref="AgentProfileOptions.BasePath"/>.
+    /// When the file does not exist, a built-in fallback directive is used.
+    /// </summary>
+    public string WispFailureDirectivePath { get; set; } = "wisp-failure-dream.md";
 }

@@ -45,6 +45,7 @@
     <ProjectReference Include="..\RockBot.A2A\RockBot.A2A.csproj" />
     <ProjectReference Include="..\RockBot.ServiceSearch\RockBot.ServiceSearch.csproj" />
     <ProjectReference Include="..\RockBot.Subagent\RockBot.Subagent.csproj" />
+    <ProjectReference Include="..\RockBot.Wisp\RockBot.Wisp.csproj" />
     <ProjectReference Include="..\RockBot.Host\RockBot.Host.csproj" />
     <ProjectReference Include="..\RockBot.Llm.Copilot\RockBot.Llm.Copilot.csproj" />
     <ProjectReference Include="..\RockBot.Messaging.Abstractions\RockBot.Messaging.Abstractions.csproj" />
