@@ -10,7 +10,7 @@ namespace RockBot.Wisp;
 public static class WispServiceCollectionExtensions
 {
     /// <summary>
-    /// Adds wisp executor support and the <c>spawn_wisp</c> tool.
+    /// Adds wisp executor support and the <c>spawn_wisps</c> tool.
     /// </summary>
     public static AgentHostBuilder AddWisps(
         this AgentHostBuilder builder,

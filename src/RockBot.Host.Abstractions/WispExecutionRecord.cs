@@ -54,4 +54,10 @@ public sealed record WispExecutionRecord
     /// WispId of a prior failed execution that this run corrects, if detected as a retry.
     /// </summary>
     public string? RetryOf { get; init; }
+
+    /// <summary>
+    /// Batch identifier for correlating wisps executed together in a single spawn_wisps call.
+    /// Null for single-wisp executions or legacy records.
+    /// </summary>
+    public string? BatchId { get; init; }
 }

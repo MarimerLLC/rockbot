@@ -32,12 +32,13 @@ use a wisp. If the task requires exploration or adaptation, use a subagent.
 Calling agent (primary or subagent)
 ┌─────────────────────────────────────────────────────────┐
 │                                                         │
-│  LLM calls spawn_wisp(definition: { ... })              │
+│  LLM calls spawn_wisps(definitions: [{ ... }])          │
 │     │                                                   │
 │     ▼                                                   │
-│  SpawnWispExecutor.ExecuteAsync()                       │
-│     │  Parses WispDefinition from JSON                  │
-│     │  Generates wisp ID                                │
+│  SpawnWispsExecutor.ExecuteAsync()                      │
+│     │  Parses WispDefinition[] from JSON                │
+│     │  Generates batch ID + per-wisp IDs                │
+│     │  Runs wisps concurrently (semaphore-gated)        │
 │     │                                                   │
 │     ▼                                                   │
 │  WispExecutor.ExecuteAsync()                            │
@@ -206,7 +207,7 @@ written to `IWispExecutionLog` (JSONL-backed via `FileWispExecutionLog`). Record
 ### Correction pair capture
 
 When a wisp succeeds and a prior failure with the same definition hash exists in the
-same session, `SpawnWispExecutor` links them as a correction pair and emits a
+same session, `SpawnWispsExecutor` links them as a correction pair and emits a
 `WispCorrection` feedback signal via `IFeedbackStore`. The signal includes the prior
 failure's category, error message, and failed step — giving the dream system structured
 evidence of what went wrong and how it was fixed.
@@ -243,10 +244,10 @@ agent.AddWisps(opts =>
 This registers:
 - `WispExecutor` — core pipeline execution engine
 - `FileWispExecutionLog` as `IWispExecutionLog` — persistent execution records
-- `WispToolRegistrar` — registers `spawn_wisp` in the tool registry
+- `WispToolRegistrar` — registers `spawn_wisps` in the tool registry
 - `WispToolSkillProvider` — provides `get_tool_guide("wisp")` documentation
 
-The `spawn_wisp` tool is available to both the primary agent and subagents (source
+The `spawn_wisps` tool is available to both the primary agent and subagents (source
 `"wisp"` passes the subagent tool filter).
 
 ---
@@ -267,10 +268,11 @@ src/RockBot.Wisp/
 ├── WispStepError.cs           # Error with classification
 ├── GatewayRouter.cs           # Maps steps to tool invocations + template resolution
 ├── WispRegistryToolFunction.cs # AIFunction wrapper for scoped LLM step tools
-├── SpawnWispExecutor.cs       # IToolExecutor for spawn_wisp tool
+├── SpawnWispsExecutor.cs      # IToolExecutor for spawn_wisps tool
+├── WispBatchResult.cs         # Batch result with per-wisp outcomes
 ├── WispToolRegistrar.cs       # IHostedService tool registration
 ├── WispToolSkillProvider.cs   # IToolSkillProvider usage guide
-├── WispOptions.cs             # Configuration (SharedVolumePath)
+├── WispOptions.cs             # Configuration (SharedVolumePath, MaxConcurrentWisps)
 ├── WispServiceCollectionExtensions.cs # AddWisps() DI extension
 ├── FileWispExecutionLog.cs    # JSONL-backed execution log
 │

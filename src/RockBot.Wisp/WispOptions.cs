@@ -11,4 +11,11 @@ public sealed class WispOptions
     /// passes only through working memory.
     /// </summary>
     public string? SharedVolumePath { get; set; }
+
+    /// <summary>
+    /// Maximum number of wisps to execute concurrently within a single batch.
+    /// The caller can submit any number of definitions; the system gates execution
+    /// to this limit using a semaphore.
+    /// </summary>
+    public int MaxConcurrentWisps { get; set; } = 10;
 }

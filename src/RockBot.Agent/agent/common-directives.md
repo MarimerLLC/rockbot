@@ -90,11 +90,12 @@ These rules eliminate hesitation. Follow them strictly:
 
 Both wisps and subagents delegate work, but they serve different needs:
 
-- **Wisps** (`spawn_wisp`) — Use for **procedural, known-in-advance** workflows where
+- **Wisps** (`spawn_wisps`) — Use for **procedural, known-in-advance** workflows where
   steps and parameters are deterministic. Direct steps cost zero LLM tokens. Use wisps
   for data pipelines (fetch → parse → summarize), multi-tool sequences with known
-  parameters, and any workflow where you can write out the exact steps. Call
-  `get_tool_guide("wisp")` for the full definition format and examples.
+  parameters, and any workflow where you can write out the exact steps. Multiple wisps
+  in a single call run concurrently. Call `get_tool_guide("wisp")` for the full
+  definition format and examples.
 
 - **Subagents** (`spawn_subagent`) — Use for **open-ended** tasks that require
   discovery, judgment across many tool calls, or multi-turn reasoning. Subagents get
