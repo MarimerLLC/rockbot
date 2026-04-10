@@ -84,6 +84,58 @@ public sealed partial class AgentLoopRunner(
 
     private enum LoopExitReason { ModelStopped, MaxIterationsReached, ConsecutiveTimeouts }
     private readonly record struct LoopResult(string Response, LoopExitReason ExitReason);
+
+    /// <summary>
+    /// Tracks consecutive identical (tool name, arguments, result) triples across loop
+    /// iterations. When the same call keeps producing the same result <see cref="Threshold"/>
+    /// times in a row the detector signals that the agent should try a different approach.
+    /// Internal and sealed so it can be unit-tested directly.
+    /// </summary>
+    internal sealed class RepetitiveToolCallDetector
+    {
+        public const int Threshold = 3;
+
+        private string? _lastKey;
+        private int _count;
+
+        /// <summary>
+        /// Records the outcome of a single tool call and returns <c>true</c> when the
+        /// threshold of consecutive identical call-results has been reached (and resets
+        /// the internal state so the next call starts a fresh run).
+        /// </summary>
+        public bool Track(string toolName, string argsKey, string result)
+        {
+            // Truncate large results so the key stays manageable.
+            var resultTrunc = result is { Length: > 500 } ? result[..500] : result;
+            var key = $"{toolName}|{argsKey}|{resultTrunc}";
+
+            if (key == _lastKey)
+            {
+                _count++;
+            }
+            else
+            {
+                _lastKey = key;
+                _count = 1;
+            }
+
+            if (_count >= Threshold)
+            {
+                Reset();
+                return true;
+            }
+
+            return false;
+        }
+
+        /// <summary>Resets tracking state (e.g. on a successful call).</summary>
+        public void Reset()
+        {
+            _lastKey = null;
+            _count = 0;
+        }
+    }
+
     private sealed record CompletionEvalDto(bool Complete, string? Reason);
     private sealed record FollowUpEvalDto(bool HasFollowUps, string? Prompt, string? SearchTerms);
 
@@ -500,6 +552,7 @@ public sealed partial class AgentLoopRunner(
         var anyToolCalled = false;
         var maxIterations = modelBehavior.MaxToolIterationsOverride ?? hostOptions.Value.MaxToolIterations;
         var consecutiveTimeoutIterations = 0;
+        var repetitiveCallDetector = new RepetitiveToolCallDetector();
 
         try
         {
@@ -700,6 +753,18 @@ public sealed partial class AgentLoopRunner(
                     // Chunking is handled by ChunkingAIFunction wrapper on the tool itself.
                     chatMessages.Add(new ChatMessage(ChatRole.User,
                         $"[Tool result for {toolName}]: {textResultStr}"));
+
+                    if (repetitiveCallDetector.Track(toolName, argsJson, textResultStr))
+                    {
+                        logger.LogWarning(
+                            "Detected {Threshold} consecutive identical tool call results for {Tool}; " +
+                            "nudging LLM to try a different approach",
+                            RepetitiveToolCallDetector.Threshold, toolName);
+                        chatMessages.Add(new ChatMessage(ChatRole.User,
+                            $"You have called {toolName} with the same arguments " +
+                            $"{RepetitiveToolCallDetector.Threshold} times and received the same result " +
+                            "each time. Please try a different approach."));
+                    }
                 }
 
                 if (onProgress is not null)
@@ -795,6 +860,18 @@ public sealed partial class AgentLoopRunner(
                     new KeyValuePair<string, object?>("rockbot.tool.status", toolStatus));
                 chatMessages.Add(new ChatMessage(ChatRole.Tool,
                     [new FunctionResultContent(fc.CallId, nativeResultStr)]));
+
+                if (repetitiveCallDetector.Track(fc.Name, argsSummary, nativeResultStr))
+                {
+                    logger.LogWarning(
+                        "Detected {Threshold} consecutive identical tool call results for {Tool}; " +
+                        "nudging LLM to try a different approach",
+                        RepetitiveToolCallDetector.Threshold, fc.Name);
+                    chatMessages.Add(new ChatMessage(ChatRole.User,
+                        $"You have called {fc.Name} with the same arguments " +
+                        $"{RepetitiveToolCallDetector.Threshold} times and received the same result " +
+                        "each time. Please try a different approach."));
+                }
 
                 if (IsTimeoutResult(nativeResultStr))
                 {
