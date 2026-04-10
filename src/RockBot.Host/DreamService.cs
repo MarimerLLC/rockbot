@@ -29,6 +29,7 @@ internal sealed class DreamService : IHostedService, IDisposable
     private readonly TierRoutingLogger? _tierRoutingLogger;
     private readonly IDlqSampler? _dlqSampler;
     private readonly IToolCallLog? _toolCallLog;
+    private readonly IWispExecutionLog? _wispExecutionLog;
     private readonly IKnowledgeGraph? _knowledgeGraph;
     private readonly ILlmClient _llmClient;
     private readonly IAgentWorkSerializer _workSerializer;
@@ -52,6 +53,7 @@ internal sealed class DreamService : IHostedService, IDisposable
     private string? _graphConsolidationDirective;
     private string? _dlqDirective;
     private string? _identityDirective;
+    private string? _wispFailureDirective;
 
     public DreamService(
         ILongTermMemory memory,
@@ -69,7 +71,8 @@ internal sealed class DreamService : IHostedService, IDisposable
         TierRoutingLogger? tierRoutingLogger = null,
         IDlqSampler? dlqSampler = null,
         IToolCallLog? toolCallLog = null,
-        IKnowledgeGraph? knowledgeGraph = null)
+        IKnowledgeGraph? knowledgeGraph = null,
+        IWispExecutionLog? wispExecutionLog = null)
     {
         _memory = memory;
         _skillStore = skillStores.FirstOrDefault();
@@ -80,6 +83,7 @@ internal sealed class DreamService : IHostedService, IDisposable
         _dlqSampler = dlqSampler;
         _toolCallLog = toolCallLog;
         _knowledgeGraph = knowledgeGraph;
+        _wispExecutionLog = wispExecutionLog;
         _llmClient = llmClient;
         _workSerializer = workSerializer;
         _userActivityMonitor = userActivityMonitor;
@@ -262,6 +266,19 @@ internal sealed class DreamService : IHostedService, IDisposable
                 _logger.LogDebug("DreamService: identity directive not found at {Path}; using built-in", identityDirectivePath);
             else
                 _logger.LogInformation("DreamService: loaded identity directive from {Path}", identityDirectivePath);
+        }
+
+        if (_options.WispFailureAnalysisEnabled && _wispExecutionLog is not null && _skillStore is not null)
+        {
+            var wispDirectivePath = ResolvePath(_options.WispFailureDirectivePath, _profileOptions.BasePath);
+            _wispFailureDirective = File.Exists(wispDirectivePath)
+                ? File.ReadAllText(wispDirectivePath)
+                : null;
+
+            if (!File.Exists(wispDirectivePath))
+                _logger.LogDebug("DreamService: wisp failure directive not found at {Path}; using built-in", wispDirectivePath);
+            else
+                _logger.LogInformation("DreamService: loaded wisp failure directive from {Path}", wispDirectivePath);
         }
 
         try
@@ -501,6 +518,8 @@ internal sealed class DreamService : IHostedService, IDisposable
             ct.ThrowIfCancellationRequested(); await RunPreferenceInferencePassAsync();
 
             ct.ThrowIfCancellationRequested(); await RunSequenceSkillDetectionPassAsync();
+
+            ct.ThrowIfCancellationRequested(); await RunWispFailureAnalysisPassAsync();
 
             ct.ThrowIfCancellationRequested(); await RunTierRoutingReviewPassAsync();
 
@@ -2121,6 +2140,211 @@ internal sealed class DreamService : IHostedService, IDisposable
         {
             _logger.LogError(ex, "DreamService: sequence skill detection pass failed");
         }
+    }
+
+    // ── Wisp failure analysis ─────────────────────────────────────────────
+
+    private const string BuiltInWispFailureDirective = """
+        You are analyzing wisp pipeline execution records to identify recurring failure patterns.
+        Wisps are lightweight multi-step pipelines with tool invocations. Each record shows whether
+        the wisp succeeded or failed, which step failed, and the failure classification.
+
+        Analyze the provided records and respond with a JSON object containing:
+        {
+          "patterns": [
+            {
+              "description": "Human-readable description of the recurring pattern",
+              "failureCategory": "Structural|External|Data|Judgment",
+              "frequency": 3,
+              "affectedSteps": ["step_id_1"],
+              "recommendation": "What to change in the generating skill or tool usage"
+            }
+          ],
+          "skillUpdates": [
+            {
+              "name": "skill-name-to-update",
+              "annotation": "Negative example or correction to append to the skill content"
+            }
+          ],
+          "promotionCandidates": [
+            {
+              "description": "Description pattern that succeeded consistently",
+              "frequency": 5,
+              "recommendation": "Consider promoting to a stored wisp skill"
+            }
+          ]
+        }
+
+        Only include patterns with frequency >= 3. Only include skill updates when you are confident
+        the correction is valid. Only include promotion candidates with frequency >= 5 and >80% success rate.
+        Return empty arrays if no patterns are found.
+        """;
+
+    /// <summary>
+    /// Analyzes wisp execution records to detect recurring failure patterns and propose
+    /// skill corrections. Requires <see cref="IWispExecutionLog"/> and <see cref="ISkillStore"/>.
+    /// </summary>
+    private async Task RunWispFailureAnalysisPassAsync()
+    {
+        if (_wispExecutionLog is null || _skillStore is null || !_options.WispFailureAnalysisEnabled)
+            return;
+
+        try
+        {
+            var records = await _wispExecutionLog.QueryRecentAsync(
+                DateTimeOffset.UtcNow.AddDays(-14), maxResults: 500);
+
+            if (records.Count < 5)
+            {
+                _logger.LogDebug(
+                    "DreamService: wisp failure analysis — only {Count} records; skipping",
+                    records.Count);
+                return;
+            }
+
+            _logger.LogInformation(
+                "DreamService: wisp failure analysis pass — {Count} records ({Failures} failures)",
+                records.Count, records.Count(r => !r.Succeeded));
+
+            // Build prompt with execution records summary
+            var userMessage = new StringBuilder();
+            userMessage.AppendLine($"Wisp execution records from the last 14 days ({records.Count} total):");
+            userMessage.AppendLine();
+
+            // Group by description for pattern detection
+            var byDescription = records
+                .GroupBy(r => r.Description)
+                .OrderByDescending(g => g.Count(r => !r.Succeeded))
+                .Take(30);
+
+            foreach (var group in byDescription)
+            {
+                var total = group.Count();
+                var failures = group.Count(r => !r.Succeeded);
+                var corrections = group.Count(r => r.RetryOf is not null);
+                userMessage.AppendLine($"### \"{group.Key}\" ({total} runs, {failures} failures, {corrections} corrections)");
+
+                foreach (var record in group.OrderByDescending(r => r.Timestamp).Take(5))
+                {
+                    var status = record.Succeeded ? "ok" : $"FAILED ({record.FailureCategory})";
+                    var step = record.FailedStepId is not null ? $" at step '{record.FailedStepId}'" : "";
+                    var error = record.ErrorMessage is not null ? $" — {record.ErrorMessage}" : "";
+                    var retry = record.RetryOf is not null ? " [retry]" : "";
+                    userMessage.AppendLine($"  - {status}{step}{error}{retry} ({record.DurationMs}ms)");
+                }
+                userMessage.AppendLine();
+            }
+
+            // Include existing skill names for cross-reference
+            var existingSkills = await _skillStore.ListAsync();
+            if (existingSkills.Count > 0)
+            {
+                userMessage.AppendLine("Existing skills:");
+                foreach (var skill in existingSkills.Take(30))
+                    userMessage.AppendLine($"  - {skill.Name}: {skill.Summary}");
+            }
+
+            var messages = new List<ChatMessage>
+            {
+                new(ChatRole.System, _wispFailureDirective ?? BuiltInWispFailureDirective),
+                new(ChatRole.User, userMessage.ToString())
+            };
+
+            var response = await _llmClient.GetResponseAsync(
+                messages, ModelTier.Balanced, new ChatOptions { ResponseFormat = ChatResponseFormat.Json });
+            var raw = response.Text?.Trim() ?? string.Empty;
+            var json = ExtractJsonObject(raw);
+
+            if (string.IsNullOrEmpty(json))
+            {
+                _logger.LogWarning("DreamService: wisp failure analysis LLM returned no parseable JSON; skipping");
+                return;
+            }
+
+            _logger.LogDebug("DreamService: wisp failure analysis JSON ({Length} chars): {Json}", json.Length, json);
+
+            var result = TryDeserializeJson<WispFailureAnalysisResultDto>(json, "wisp failure analysis");
+            var updated = 0;
+
+            // Apply skill updates
+            foreach (var update in result?.SkillUpdates ?? [])
+            {
+                if (string.IsNullOrWhiteSpace(update.Name) || string.IsNullOrWhiteSpace(update.Annotation))
+                    continue;
+
+                var existing = await _skillStore.GetAsync(update.Name);
+                if (existing is null)
+                {
+                    _logger.LogDebug("DreamService: wisp failure analysis — skill '{Name}' not found; skipping update", update.Name);
+                    continue;
+                }
+
+                var annotatedContent = existing.Content + $"\n\n## Wisp Failure Pattern\n\n{update.Annotation}";
+                var updatedSkill = existing with
+                {
+                    Content = annotatedContent,
+                    UpdatedAt = DateTimeOffset.UtcNow
+                };
+
+                await _skillStore.SaveAsync(updatedSkill);
+                updated++;
+                _logger.LogInformation(
+                    "DreamService: wisp failure analysis annotated skill '{Name}' with failure pattern",
+                    update.Name);
+            }
+
+            // Log patterns and promotion candidates
+            foreach (var pattern in result?.Patterns ?? [])
+            {
+                _logger.LogInformation(
+                    "DreamService: wisp failure pattern — {Description} (category={Category}, freq={Frequency}): {Recommendation}",
+                    pattern.Description, pattern.FailureCategory, pattern.Frequency, pattern.Recommendation);
+            }
+
+            foreach (var candidate in result?.PromotionCandidates ?? [])
+            {
+                _logger.LogInformation(
+                    "DreamService: wisp promotion candidate — {Description} (freq={Frequency}): {Recommendation}",
+                    candidate.Description, candidate.Frequency, candidate.Recommendation);
+            }
+
+            _logger.LogInformation(
+                "DreamService: wisp failure analysis pass complete — {Patterns} patterns, {Updates} skill updates, {Candidates} promotion candidates",
+                result?.Patterns?.Count ?? 0, updated, result?.PromotionCandidates?.Count ?? 0);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "DreamService: wisp failure analysis pass failed");
+        }
+    }
+
+    private sealed record WispFailureAnalysisResultDto
+    {
+        public List<WispPatternDto>? Patterns { get; init; }
+        public List<WispSkillUpdateDto>? SkillUpdates { get; init; }
+        public List<WispPromotionCandidateDto>? PromotionCandidates { get; init; }
+    }
+
+    private sealed record WispPatternDto
+    {
+        public string? Description { get; init; }
+        public string? FailureCategory { get; init; }
+        public int Frequency { get; init; }
+        public List<string>? AffectedSteps { get; init; }
+        public string? Recommendation { get; init; }
+    }
+
+    private sealed record WispSkillUpdateDto
+    {
+        public string? Name { get; init; }
+        public string? Annotation { get; init; }
+    }
+
+    private sealed record WispPromotionCandidateDto
+    {
+        public string? Description { get; init; }
+        public int Frequency { get; init; }
+        public string? Recommendation { get; init; }
     }
 
     /// <summary>

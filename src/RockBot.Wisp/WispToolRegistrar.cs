@@ -1,5 +1,6 @@
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using RockBot.Host;
 using RockBot.Tools;
 
 namespace RockBot.Wisp;
@@ -10,7 +11,10 @@ namespace RockBot.Wisp;
 internal sealed class WispToolRegistrar(
     IToolRegistry registry,
     WispExecutor wispExecutor,
-    ILogger<WispToolRegistrar> logger) : IHostedService
+    ILoggerFactory loggerFactory,
+    ILogger<WispToolRegistrar> logger,
+    IWispExecutionLog? executionLog = null,
+    IFeedbackStore? feedbackStore = null) : IHostedService
 {
     private const string SpawnWispSchema = """
         {
@@ -39,7 +43,8 @@ internal sealed class WispToolRegistrar(
                 """,
             ParametersSchema = SpawnWispSchema,
             Source = "wisp"
-        }, new SpawnWispExecutor(wispExecutor));
+        }, new SpawnWispExecutor(wispExecutor, executionLog, feedbackStore,
+            loggerFactory.CreateLogger<SpawnWispExecutor>()));
         logger.LogInformation("Registered tool: spawn_wisp");
 
         return Task.CompletedTask;

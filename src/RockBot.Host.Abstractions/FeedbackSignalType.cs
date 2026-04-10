@@ -18,5 +18,8 @@ public enum FeedbackSignalType
     UserThumbsUp,
 
     /// <summary>The user explicitly marked an agent reply as unhelpful (thumbs down).</summary>
-    UserThumbsDown
+    UserThumbsDown,
+
+    /// <summary>A wisp was retried after failure and the retry succeeded — a correction pair.</summary>
+    WispCorrection
 }

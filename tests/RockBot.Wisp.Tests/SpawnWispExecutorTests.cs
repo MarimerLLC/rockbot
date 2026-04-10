@@ -4,6 +4,8 @@ using RockBot.Host;
 using RockBot.Tools;
 using RockBot.Wisp;
 
+// Phase 4 tests use null for execution log and feedback store in basic scenarios.
+
 namespace RockBot.Wisp.Tests;
 
 [TestClass]
@@ -298,8 +300,9 @@ public class SpawnWispExecutorTests
         registry = new FakeToolRegistry();
         var memory = new FakeWorkingMemory();
         var options = new WispOptions();
-        var logger = NullLogger<WispExecutor>.Instance;
-        var wispExecutor = new WispExecutor(registry, memory, agentLoopRunner: null!, options, logger);
-        return new SpawnWispExecutor(wispExecutor);
+        var wispLogger = NullLogger<WispExecutor>.Instance;
+        var spawnLogger = NullLogger<SpawnWispExecutor>.Instance;
+        var wispExecutor = new WispExecutor(registry, memory, agentLoopRunner: null!, options, wispLogger);
+        return new SpawnWispExecutor(wispExecutor, executionLog: null, feedbackStore: null, spawnLogger);
     }
 }

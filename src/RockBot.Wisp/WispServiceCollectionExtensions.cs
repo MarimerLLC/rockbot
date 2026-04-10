@@ -20,6 +20,7 @@ public static class WispServiceCollectionExtensions
         builder.Services.AddSingleton(options);
 
         builder.Services.AddSingleton<WispExecutor>();
+        builder.Services.AddSingleton<IWispExecutionLog, FileWispExecutionLog>();
         builder.Services.AddHostedService<WispToolRegistrar>();
 
         return builder;
