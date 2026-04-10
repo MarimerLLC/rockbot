@@ -1,0 +1,34 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ include "rockbot.fullname" . }}-shared-cleanup
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "rockbot.labels" . | nindent 4 }}
+    app.kubernetes.io/component: shared-cleanup
+spec:
+  schedule: "0 2 * * *"
+  concurrencyPolicy: Forbid
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          restartPolicy: OnFailure
+          containers:
+            - name: cleanup
+              image: busybox:stable
+              command:
+                - sh
+                - -c
+                - |
+                  mkdir -p /rockbot/shared/tmp /rockbot/shared/drafts /rockbot/shared/exports
+                  find /rockbot/shared/tmp     -mindepth 1 -mtime +{{ .Values.shared.tmpTtlDays }}     -delete
+                  find /rockbot/shared/drafts  -mindepth 1 -mtime +{{ .Values.shared.draftsTtlDays }}  -delete
+                  find /rockbot/shared/exports -mindepth 1 -mtime +{{ .Values.shared.exportsTtlDays }} -delete
+              volumeMounts:
+                - name: shared-data
+                  mountPath: /rockbot/shared
+          volumes:
+            - name: shared-data
+              persistentVolumeClaim:
+                claimName: {{ include "rockbot.sharedPvcName" . }}

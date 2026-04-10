@@ -78,7 +78,6 @@ manager:
 
 # ── Ephemeral script runner ───────────────────────────────────────────────────
 scripts:
-  namespace: rockbot-scripts   # isolated from the main rockbot namespace
   image: python:3.12-slim
   cpuLimit: 500m
   memoryLimit: 256Mi
@@ -173,26 +172,14 @@ sampleAgentHttp:
       cpu: 500m
       memory: 256Mi
 
-# ── Staging blob service ──────────────────────────────────────────────────────
-# Shared PVC-backed blob store exposing a REST API (for ephemeral script pods) and
-# MCP tools (for the agent). Script pods receive ROCKBOT_STAGING_URL automatically.
-staging:
-  enabled: true
-  image:
-    repository: rockylhotka/mcpserver-staging
-    tag: latest
-  replicaCount: 1
+# ── Shared volume ────────────────────────────────────────────────────────────
+# ReadWriteMany PVC mounted directly into the agent, script pods, and other
+# services that need shared file access. No HTTP facade — pure filesystem.
+shared:
   size: 5Gi
   tmpTtlDays: 1
   draftsTtlDays: 14
   exportsTtlDays: 14
-  resources:
-    requests:
-      cpu: 50m
-      memory: 64Mi
-    limits:
-      cpu: 200m
-      memory: 256Mi
 
 # ── TodoApp MCP server ────────────────────────────────────────────────────────
 # Standalone MCP server that exposes a persistent to-do list to the agent.
@@ -282,10 +269,6 @@ secrets:
   openRouter:
     apiKey: ""              # required when openrouterMcp.enabled=true — OpenRouter management API key
                             # (separate from llm.apiKey — this is the account management key)
-
-  staging:
-    token: ""               # required when staging.enabled=true — shared secret for X-RockBot-Token auth
-                            # generate with: openssl rand -hex 32
 
   azureFoundry:
     tenantId: ""            # required when azureFoundryMcp.enabled=true — Azure AD tenant ID

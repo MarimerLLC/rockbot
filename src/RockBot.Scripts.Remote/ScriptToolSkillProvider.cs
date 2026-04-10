@@ -145,25 +145,25 @@ internal sealed class ScriptToolSkillProvider : IToolSkillProvider
           to stdout; be deliberate about what the script does
 
 
-        ## Producing Output Files (staging)
+        ## Producing Output Files (shared volume)
 
-        Scripts run in ephemeral containers — files written to the local filesystem are
-        discarded when the container exits. To produce a file that persists and can be used
-        by other tools (e.g. uploading to OneDrive), upload it to the **staging service**
-        via HTTP before the script exits.
-
-        **Always call `staging_script_info` before writing a script that uses staging.**
-        It returns the authoritative URL, auth header name, token env var, and subdir TTLs.
-        Do not hardcode any of those details — they come from `staging_script_info`.
+        Script containers have the shared volume mounted at the path in the
+        `ROCKBOT_SHARED_PATH` environment variable. Files written there persist after the
+        container exits and are accessible to the agent and other services.
 
         **Typical workflow:**
 
-        1. Call `staging_script_info` — read the returned `auth` and `urlEnvVar` fields.
-        2. Write the script using exactly the header name and env var names from that response.
-        3. Have the script print the staging path to stdout on success.
-        4. After the script completes, call `staging_get_path` to get the absolute local path
-           on the staging volume (needed by tools that accept a local file path rather than
-           an HTTP URL).
+        1. Write a script that saves output to `os.environ['ROCKBOT_SHARED_PATH']`:
+           ```python
+           import os
+           shared = os.environ['ROCKBOT_SHARED_PATH']
+           path = os.path.join(shared, 'exports', 'report.xlsx')
+           os.makedirs(os.path.dirname(path), exist_ok=True)
+           # ... write the file ...
+           print(f"exports/report.xlsx")
+           ```
+        2. Have the script print the relative path to stdout on success.
+        3. After the script completes, use `file_read` or `file_get_path` to access the output.
 
 
         ## Common Pitfalls
@@ -175,8 +175,7 @@ internal sealed class ScriptToolSkillProvider : IToolSkillProvider
           `timeout_seconds` when installing large dependencies like `torch` or `scipy`
         - Printing debug statements that pollute the output — use stderr for debug output:
           `import sys; print("debug", file=sys.stderr)`
-        - Writing scripts that assume local files persist between runs — each execution is a
-          fresh ephemeral container; use the staging service to persist output files
-        - Hardcoding staging URL or auth details instead of reading them from `staging_script_info`
+        - Writing files outside `ROCKBOT_SHARED_PATH` — only files on the shared volume
+          persist after the container exits
         """;
 }

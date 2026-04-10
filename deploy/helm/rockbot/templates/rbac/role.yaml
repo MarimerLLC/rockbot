@@ -1,10 +1,9 @@
-# Role lives in the scripts namespace — grants only the minimum permissions
-# needed to create and manage ephemeral Python execution pods.
+# Role grants permissions to create and manage ephemeral Python execution pods.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
   name: rockbot-script-runner
-  namespace: {{ .Values.scripts.namespace }}
+  namespace: {{ .Values.namespace }}
   labels:
     {{- include "rockbot.labels" . | nindent 4 }}
 rules:

@@ -131,10 +131,12 @@ internal sealed class DockerScriptHandler(
             $"ROCKBOT_INPUT={request.InputData}"
         };
 
-        if (!string.IsNullOrEmpty(options.StagingUrl))
-            env.Add($"ROCKBOT_STAGING_URL={options.StagingUrl}");
-        if (!string.IsNullOrEmpty(options.StagingToken))
-            env.Add($"ROCKBOT_STAGING_TOKEN={options.StagingToken}");
+        var binds = new List<string>();
+        if (!string.IsNullOrEmpty(options.SharedVolumeName))
+        {
+            env.Add($"ROCKBOT_SHARED_PATH={options.SharedVolumePath}");
+            binds.Add($"{options.SharedVolumeName}:{options.SharedVolumePath}");
+        }
 
         return new CreateContainerParameters
         {
@@ -152,6 +154,7 @@ internal sealed class DockerScriptHandler(
                 NetworkMode = options.NetworkMode,
                 ReadonlyRootfs = true,
                 Tmpfs = new Dictionary<string, string> { ["/tmp"] = "" },
+                Binds = binds.Count > 0 ? binds : null,
                 NanoCPUs = options.GetNanoCpus(),
                 Memory = options.GetMemoryBytes(),
                 SecurityOpt = ["no-new-privileges"],

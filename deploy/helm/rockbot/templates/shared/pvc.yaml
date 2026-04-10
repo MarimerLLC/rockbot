@@ -1,19 +1,17 @@
-{{- if .Values.staging.enabled }}
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
-  name: {{ include "rockbot.stagingPvcName" . }}
+  name: {{ include "rockbot.sharedPvcName" . }}
   namespace: {{ .Values.namespace }}
   annotations:
     helm.sh/resource-policy: keep
   labels:
     {{- include "rockbot.labels" . | nindent 4 }}
-    app.kubernetes.io/component: staging
+    app.kubernetes.io/component: shared
 spec:
   accessModes:
     - ReadWriteMany
   storageClassName: {{ .Values.storage.storageClass }}
   resources:
     requests:
-      storage: {{ .Values.staging.size }}
-{{- end }}
+      storage: {{ .Values.shared.size }}

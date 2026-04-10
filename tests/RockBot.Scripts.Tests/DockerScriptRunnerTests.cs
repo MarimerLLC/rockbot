@@ -192,27 +192,30 @@ public class DockerScriptRunnerTests
     }
 
     [TestMethod]
-    public void BuildCreateParameters_IncludesStagingUrl_WhenConfigured()
+    public void BuildCreateParameters_MountsSharedVolume_WhenConfigured()
     {
-        _options.StagingUrl = "http://staging:8080";
+        _options.SharedVolumeName = "rockbot-shared";
         var runner = CreateRunner();
         var request = MakeRequest();
 
         var p = runner.BuildCreateParameters(request);
 
-        Assert.IsTrue(p.Env.Contains("ROCKBOT_STAGING_URL=http://staging:8080"));
+        Assert.IsTrue(p.Env.Contains("ROCKBOT_SHARED_PATH=/rockbot/shared"));
+        Assert.IsNotNull(p.HostConfig.Binds);
+        Assert.IsTrue(p.HostConfig.Binds.Contains("rockbot-shared:/rockbot/shared"));
     }
 
     [TestMethod]
-    public void BuildCreateParameters_ExcludesStagingUrl_WhenEmpty()
+    public void BuildCreateParameters_NoSharedVolume_WhenEmpty()
     {
-        _options.StagingUrl = "";
+        _options.SharedVolumeName = "";
         var runner = CreateRunner();
         var request = MakeRequest();
 
         var p = runner.BuildCreateParameters(request);
 
-        Assert.IsFalse(p.Env.Any(e => e.StartsWith("ROCKBOT_STAGING_URL=")));
+        Assert.IsFalse(p.Env.Any(e => e.StartsWith("ROCKBOT_SHARED_PATH=")));
+        Assert.IsNull(p.HostConfig.Binds);
     }
 
     // BuildCreateParameters doesn't use the IDockerClient, so we pass null.
