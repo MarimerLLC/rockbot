@@ -12,7 +12,7 @@ public class RepetitiveToolCallDetectorTests
 
         for (var i = 0; i < AgentLoopRunner.RepetitiveToolCallDetector.Threshold - 1; i++)
         {
-            var triggered = detector.Track("file_delete", "path=teams/data.txt/", "Error: File not found");
+            var triggered = detector.Track("file_delete", "path=teams/data.txt", "Error: File not found");
             Assert.IsFalse(triggered, $"Should not trigger on call {i + 1}");
         }
     }
@@ -25,7 +25,7 @@ public class RepetitiveToolCallDetectorTests
         bool triggered = false;
         for (var i = 0; i < AgentLoopRunner.RepetitiveToolCallDetector.Threshold; i++)
         {
-            triggered = detector.Track("file_delete", "path=teams/data.txt/", "Error: File not found");
+            triggered = detector.Track("file_delete", "path=teams/data.txt", "Error: File not found");
         }
 
         Assert.IsTrue(triggered, "Should trigger exactly at threshold");
