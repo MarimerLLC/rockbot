@@ -18,7 +18,7 @@ internal sealed class WispExecutor(
     IToolRegistry toolRegistry,
     IWorkingMemory workingMemory,
     AgentLoopRunner agentLoopRunner,
-    ISharedVolumeAccessor? sharedVolume,
+    string? sharedVolumePath,
     ILogger<WispExecutor> logger)
 {
     private const int DefaultLlmStepMaxIterations = 10;
@@ -275,12 +275,9 @@ internal sealed class WispExecutor(
         {
             var content = response.Content ?? "";
             // Write to shared volume file
-            if (sharedVolume is not null)
-            {
-                await sharedVolume.WriteAsync(step.OutputTo, content, ct);
-                logger.LogDebug("Wisp {WispId} step {StepId} wrote output to shared volume: {Path}",
-                    wispId, step.Id, step.OutputTo);
-            }
+            await WriteToSharedVolumeAsync(step.OutputTo, content, ct);
+            logger.LogDebug("Wisp {WispId} step {StepId} wrote output to shared volume: {Path}",
+                wispId, step.Id, step.OutputTo);
             // Also keep in working memory for inter-step access
             var outputKey = $"{wispNamespace}/{step.Id}/output";
             await workingMemory.SetAsync(outputKey, content,
@@ -396,12 +393,9 @@ internal sealed class WispExecutor(
         if (!string.IsNullOrEmpty(step.OutputTo))
         {
             // Write to shared volume file
-            if (sharedVolume is not null)
-            {
-                await sharedVolume.WriteAsync(step.OutputTo, llmOutput, ct);
-                logger.LogDebug("Wisp {WispId} step {StepId} wrote LLM output to shared volume: {Path}",
-                    wispId, step.Id, step.OutputTo);
-            }
+            await WriteToSharedVolumeAsync(step.OutputTo, llmOutput, ct);
+            logger.LogDebug("Wisp {WispId} step {StepId} wrote LLM output to shared volume: {Path}",
+                wispId, step.Id, step.OutputTo);
             // Also keep in working memory
             var outputKey = $"{wispNamespace}/{step.Id}/output";
             await workingMemory.SetAsync(outputKey, llmOutput,
@@ -494,15 +488,12 @@ internal sealed class WispExecutor(
         }
 
         // 3. Read from shared volume as a file path
-        if (sharedVolume is not null)
+        var fileContent = await ReadFromSharedVolumeAsync(inputFrom, ct);
+        if (fileContent is not null)
         {
-            var content = await sharedVolume.ReadAsync(inputFrom, ct);
-            if (content is not null)
-            {
-                logger.LogDebug("Wisp read input_from shared volume: {Path} ({Length} chars)",
-                    inputFrom, content.Length);
-                return content;
-            }
+            logger.LogDebug("Wisp read input_from shared volume: {Path} ({Length} chars)",
+                inputFrom, fileContent.Length);
+            return fileContent;
         }
 
         return null;
@@ -551,6 +542,46 @@ internal sealed class WispExecutor(
             stepId, content.Length, chunks.Count);
 
         return sb.ToString().Trim();
+    }
+
+    // ── Shared volume file I/O ─────────────────────────────────────────────
+
+    private async Task WriteToSharedVolumeAsync(string relativePath, string content, CancellationToken ct)
+    {
+        if (sharedVolumePath is null)
+            return;
+
+        var fullPath = SafeResolvePath(sharedVolumePath, relativePath);
+        if (fullPath is null)
+        {
+            logger.LogWarning("Wisp output_to path escapes shared volume, skipping write: {Path}", relativePath);
+            return;
+        }
+
+        Directory.CreateDirectory(Path.GetDirectoryName(fullPath)!);
+        await File.WriteAllTextAsync(fullPath, content, ct);
+    }
+
+    private async Task<string?> ReadFromSharedVolumeAsync(string relativePath, CancellationToken ct)
+    {
+        if (sharedVolumePath is null)
+            return null;
+
+        var fullPath = SafeResolvePath(sharedVolumePath, relativePath);
+        if (fullPath is null)
+            return null;
+
+        if (!File.Exists(fullPath))
+            return null;
+
+        return await File.ReadAllTextAsync(fullPath, ct);
+    }
+
+    internal static string? SafeResolvePath(string basePath, string relativePath)
+    {
+        var fullBase = Path.GetFullPath(basePath);
+        var fullPath = Path.GetFullPath(Path.Combine(fullBase, relativePath.TrimEnd('/', '\\')));
+        return fullPath.StartsWith(fullBase, StringComparison.OrdinalIgnoreCase) ? fullPath : null;
     }
 
     /// <summary>

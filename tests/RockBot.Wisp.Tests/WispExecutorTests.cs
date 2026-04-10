@@ -4,6 +4,9 @@ using RockBot.Host;
 using RockBot.Tools;
 using RockBot.Wisp;
 
+// Tests that exercise shared volume file I/O use a real temp directory,
+// matching the framework pattern of direct File.* access everywhere.
+
 namespace RockBot.Wisp.Tests;
 
 [TestClass]
@@ -379,39 +382,47 @@ public class WispExecutorTests
     [TestMethod]
     public async Task ExecuteAsync_OutputTo_WritesToSharedVolume()
     {
-        var memory = new FakeWorkingMemory();
-        var sharedVolume = new FakeSharedVolumeAccessor();
-        var (executor, registry) = CreateExecutor(memory, sharedVolume);
-
-        registry.Register(
-            new ToolRegistration { Name = "web_search", Description = "Search", Source = "web" },
-            new FakeToolExecutor("important data"));
-
-        var definition = new WispDefinition
+        var tempDir = CreateTempSharedVolume();
+        try
         {
-            Description = "With output_to",
-            Steps =
-            [
-                new WispStep
-                {
-                    Id = "search",
-                    Mode = StepMode.Direct,
-                    Gateway = GatewayType.Web,
-                    Tool = "web_search",
-                    Params = JsonDocument.Parse("""{"query": "test"}""").RootElement,
-                    OutputTo = "wisp-test/results.json"
-                }
-            ]
-        };
+            var memory = new FakeWorkingMemory();
+            var (executor, registry) = CreateExecutor(memory, tempDir);
 
-        var result = await executor.ExecuteAsync(definition, "wisp-out-1", CancellationToken.None);
+            registry.Register(
+                new ToolRegistration { Name = "web_search", Description = "Search", Source = "web" },
+                new FakeToolExecutor("important data"));
 
-        Assert.IsTrue(result.IsSuccess);
-        // Verify shared volume received the write
-        Assert.IsTrue(sharedVolume.Files.ContainsKey("wisp-test/results.json"));
-        Assert.AreEqual("important data", sharedVolume.Files["wisp-test/results.json"]);
-        // Working memory was cleaned up on success
-        Assert.AreEqual(0, memory.Store.Count);
+            var definition = new WispDefinition
+            {
+                Description = "With output_to",
+                Steps =
+                [
+                    new WispStep
+                    {
+                        Id = "search",
+                        Mode = StepMode.Direct,
+                        Gateway = GatewayType.Web,
+                        Tool = "web_search",
+                        Params = JsonDocument.Parse("""{"query": "test"}""").RootElement,
+                        OutputTo = "wisp-test/results.json"
+                    }
+                ]
+            };
+
+            var result = await executor.ExecuteAsync(definition, "wisp-out-1", CancellationToken.None);
+
+            Assert.IsTrue(result.IsSuccess);
+            // Verify file written to disk
+            var filePath = Path.Combine(tempDir, "wisp-test", "results.json");
+            Assert.IsTrue(File.Exists(filePath));
+            Assert.AreEqual("important data", await File.ReadAllTextAsync(filePath));
+            // Working memory was cleaned up on success
+            Assert.AreEqual(0, memory.Store.Count);
+        }
+        finally
+        {
+            CleanupTempDir(tempDir);
+        }
     }
 
     // ── Execution result metadata ────────────────────────────────────────────
@@ -483,10 +494,10 @@ public class WispExecutorTests
     // ── Phase 2: Shared volume data flow ────────────────────────────────────
 
     [TestMethod]
-    public async Task ExecuteAsync_OutputTo_NoSharedVolume_StillSucceeds()
+    public async Task ExecuteAsync_OutputTo_NoSharedVolumePath_StillSucceeds()
     {
         var memory = new FakeWorkingMemory();
-        var (executor, registry) = CreateExecutor(memory, sharedVolume: null);
+        var (executor, registry) = CreateExecutor(memory, sharedVolumePath: null);
 
         registry.Register(
             new ToolRegistration { Name = "web_search", Description = "Search", Source = "web" },
@@ -518,86 +529,104 @@ public class WispExecutorTests
     [TestMethod]
     public async Task ExecuteAsync_InputFrom_ReadsFromSharedVolume()
     {
-        var memory = new FakeWorkingMemory();
-        var sharedVolume = new FakeSharedVolumeAccessor();
-        sharedVolume.Files["data/input.json"] = """{"revenue": 1000}""";
-
-        var (executor, registry) = CreateExecutor(memory, sharedVolume);
-
-        registry.Register(
-            new ToolRegistration { Name = "execute_python_script", Description = "Script", Source = "script" },
-            new FakeToolExecutor("processed"));
-
-        var definition = new WispDefinition
+        var tempDir = CreateTempSharedVolume();
+        try
         {
-            Description = "Input from shared volume",
-            Steps =
-            [
-                new WispStep
-                {
-                    Id = "process",
-                    Mode = StepMode.Direct,
-                    Gateway = GatewayType.Script,
-                    Params = JsonDocument.Parse("""{"script": "print('hello')"}""").RootElement,
-                    InputFrom = "data/input.json"
-                }
-            ]
-        };
+            // Pre-populate a file on the shared volume
+            var inputDir = Path.Combine(tempDir, "data");
+            Directory.CreateDirectory(inputDir);
+            await File.WriteAllTextAsync(Path.Combine(inputDir, "input.json"), """{"revenue": 1000}""");
 
-        var result = await executor.ExecuteAsync(definition, "wisp-input-1", CancellationToken.None);
+            var memory = new FakeWorkingMemory();
+            var (executor, registry) = CreateExecutor(memory, tempDir);
 
-        // Direct steps with input_from just resolve templates — file reading
-        // is primarily for llm steps. Direct step should still execute successfully.
-        Assert.IsTrue(result.IsSuccess);
+            registry.Register(
+                new ToolRegistration { Name = "execute_python_script", Description = "Script", Source = "script" },
+                new FakeToolExecutor("processed"));
+
+            var definition = new WispDefinition
+            {
+                Description = "Input from shared volume",
+                Steps =
+                [
+                    new WispStep
+                    {
+                        Id = "process",
+                        Mode = StepMode.Direct,
+                        Gateway = GatewayType.Script,
+                        Params = JsonDocument.Parse("""{"script": "print('hello')"}""").RootElement,
+                        InputFrom = "data/input.json"
+                    }
+                ]
+            };
+
+            var result = await executor.ExecuteAsync(definition, "wisp-input-1", CancellationToken.None);
+
+            // Direct steps with input_from just resolve templates — file reading
+            // is primarily for llm steps. Direct step should still execute successfully.
+            Assert.IsTrue(result.IsSuccess);
+        }
+        finally
+        {
+            CleanupTempDir(tempDir);
+        }
     }
 
     [TestMethod]
     public async Task ExecuteAsync_InputFrom_PriorStepOutputTo_UsesInMemoryContent()
     {
-        var memory = new FakeWorkingMemory();
-        var sharedVolume = new FakeSharedVolumeAccessor();
-        var (executor, registry) = CreateExecutor(memory, sharedVolume);
-
-        registry.Register(
-            new ToolRegistration { Name = "web_search", Description = "Search", Source = "web" },
-            new FakeToolExecutor("search results data"));
-
-        registry.Register(
-            new ToolRegistration { Name = "execute_python_script", Description = "Script", Source = "script" },
-            new FakeToolExecutor("processed"));
-
-        var definition = new WispDefinition
+        var tempDir = CreateTempSharedVolume();
+        try
         {
-            Description = "Cross-step data flow via output_to/input_from",
-            Steps =
-            [
-                new WispStep
-                {
-                    Id = "search",
-                    Mode = StepMode.Direct,
-                    Gateway = GatewayType.Web,
-                    Tool = "web_search",
-                    Params = JsonDocument.Parse("""{"query": "test"}""").RootElement,
-                    OutputTo = "wisp-data/search.json"
-                },
-                new WispStep
-                {
-                    Id = "process",
-                    Mode = StepMode.Direct,
-                    Gateway = GatewayType.Script,
-                    Params = JsonDocument.Parse("""{"script": "print('hello')"}""").RootElement,
-                    InputFrom = "wisp-data/search.json"
-                }
-            ]
-        };
+            var memory = new FakeWorkingMemory();
+            var (executor, registry) = CreateExecutor(memory, tempDir);
 
-        var result = await executor.ExecuteAsync(definition, "wisp-flow-1", CancellationToken.None);
+            registry.Register(
+                new ToolRegistration { Name = "web_search", Description = "Search", Source = "web" },
+                new FakeToolExecutor("search results data"));
 
-        Assert.IsTrue(result.IsSuccess);
-        Assert.AreEqual(2, result.StepResults.Count);
-        // Shared volume received the write from step 1
-        Assert.IsTrue(sharedVolume.Files.ContainsKey("wisp-data/search.json"));
-        Assert.AreEqual("search results data", sharedVolume.Files["wisp-data/search.json"]);
+            registry.Register(
+                new ToolRegistration { Name = "execute_python_script", Description = "Script", Source = "script" },
+                new FakeToolExecutor("processed"));
+
+            var definition = new WispDefinition
+            {
+                Description = "Cross-step data flow via output_to/input_from",
+                Steps =
+                [
+                    new WispStep
+                    {
+                        Id = "search",
+                        Mode = StepMode.Direct,
+                        Gateway = GatewayType.Web,
+                        Tool = "web_search",
+                        Params = JsonDocument.Parse("""{"query": "test"}""").RootElement,
+                        OutputTo = "wisp-data/search.json"
+                    },
+                    new WispStep
+                    {
+                        Id = "process",
+                        Mode = StepMode.Direct,
+                        Gateway = GatewayType.Script,
+                        Params = JsonDocument.Parse("""{"script": "print('hello')"}""").RootElement,
+                        InputFrom = "wisp-data/search.json"
+                    }
+                ]
+            };
+
+            var result = await executor.ExecuteAsync(definition, "wisp-flow-1", CancellationToken.None);
+
+            Assert.IsTrue(result.IsSuccess);
+            Assert.AreEqual(2, result.StepResults.Count);
+            // Shared volume received the write from step 1
+            var filePath = Path.Combine(tempDir, "wisp-data", "search.json");
+            Assert.IsTrue(File.Exists(filePath));
+            Assert.AreEqual("search results data", await File.ReadAllTextAsync(filePath));
+        }
+        finally
+        {
+            CleanupTempDir(tempDir);
+        }
     }
 
     [TestMethod]
@@ -639,8 +668,7 @@ public class WispExecutorTests
     public async Task ExecuteAsync_WorkingMemory_KeptOnFailure()
     {
         var memory = new FakeWorkingMemory();
-        var sharedVolume = new FakeSharedVolumeAccessor();
-        var (executor, registry) = CreateExecutor(memory, sharedVolume);
+        var (executor, registry) = CreateExecutor(memory);
 
         registry.Register(
             new ToolRegistration { Name = "web_search", Description = "Search", Source = "web" },
@@ -686,7 +714,7 @@ public class WispExecutorTests
 
     private static (WispExecutor Executor, FakeToolRegistry Registry) CreateExecutor(
         FakeWorkingMemory? memory = null,
-        ISharedVolumeAccessor? sharedVolume = null)
+        string? sharedVolumePath = null)
     {
         var registry = new FakeToolRegistry();
         memory ??= new FakeWorkingMemory();
@@ -694,8 +722,20 @@ public class WispExecutorTests
 
         // WispExecutor needs AgentLoopRunner for LLM steps, but direct-mode tests
         // don't exercise that path. Pass null and rely on the test not calling LLM steps.
-        var executor = new WispExecutor(registry, memory, agentLoopRunner: null!, sharedVolume, logger);
+        var executor = new WispExecutor(registry, memory, agentLoopRunner: null!, sharedVolumePath, logger);
         return (executor, registry);
+    }
+
+    private static string CreateTempSharedVolume()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"rockbot-wisp-test-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(path);
+        return path;
+    }
+
+    private static void CleanupTempDir(string path)
+    {
+        try { Directory.Delete(path, recursive: true); } catch { /* best-effort */ }
     }
 }
 
@@ -814,19 +854,3 @@ internal sealed class FakeWorkingMemory : IWorkingMemory
         Task.FromResult<IReadOnlyList<WorkingMemoryEntry>>([]);
 }
 
-internal sealed class FakeSharedVolumeAccessor : ISharedVolumeAccessor
-{
-    public Dictionary<string, string> Files { get; } = new();
-
-    public Task WriteAsync(string relativePath, string content, CancellationToken ct)
-    {
-        Files[relativePath] = content;
-        return Task.CompletedTask;
-    }
-
-    public Task<string?> ReadAsync(string relativePath, CancellationToken ct) =>
-        Task.FromResult(Files.TryGetValue(relativePath, out var v) ? v : null);
-
-    public Task<bool> ExistsAsync(string relativePath, CancellationToken ct) =>
-        Task.FromResult(Files.ContainsKey(relativePath));
-}
