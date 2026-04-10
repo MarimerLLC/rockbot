@@ -684,9 +684,17 @@ public sealed partial class AgentLoopRunner(
 
                     if (tool is null)
                     {
-                        logger.LogWarning("Text tool call references unknown tool: {Name}", toolName);
+                        var textToolNames = chatOptions.Tools?
+                            .OfType<AIFunction>()
+                            .Select(t => t.Name) ?? [];
+                        var textSuggestion = ToolCallFailureClassifier.FindClosestToolName(toolName, textToolNames);
+                        var textErrorMsg = textSuggestion is not null
+                            ? $"Error: unknown tool '{toolName}'. Did you mean '{textSuggestion}'?"
+                            : $"Error: unknown tool '{toolName}'";
+                        logger.LogWarning("Text tool call references unknown tool: {Name} (suggestion: {Suggestion})",
+                            toolName, textSuggestion ?? "none");
                         chatMessages.Add(new ChatMessage(ChatRole.User,
-                            $"[Tool result for {toolName}]: Error: unknown tool '{toolName}'"));
+                            $"[Tool result for {toolName}]: {textErrorMsg}"));
                         continue;
                     }
 
@@ -806,9 +814,17 @@ public sealed partial class AgentLoopRunner(
 
                 if (tool is null)
                 {
-                    logger.LogWarning("LLM requested unknown tool: {Name}", fc.Name);
+                    var toolNames = chatOptions.Tools?
+                        .OfType<AIFunction>()
+                        .Select(t => t.Name) ?? [];
+                    var suggestion = ToolCallFailureClassifier.FindClosestToolName(fc.Name, toolNames);
+                    var errorMsg = suggestion is not null
+                        ? $"Error: unknown tool '{fc.Name}'. Did you mean '{suggestion}'?"
+                        : $"Error: unknown tool '{fc.Name}'";
+                    logger.LogWarning("LLM requested unknown tool: {Name} (suggestion: {Suggestion})",
+                        fc.Name, suggestion ?? "none");
                     chatMessages.Add(new ChatMessage(ChatRole.Tool,
-                        [new FunctionResultContent(fc.CallId, $"Error: unknown tool '{fc.Name}'")]));
+                        [new FunctionResultContent(fc.CallId, errorMsg)]));
                     continue;
                 }
 
