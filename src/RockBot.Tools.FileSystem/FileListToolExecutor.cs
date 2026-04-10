@@ -35,10 +35,20 @@ internal sealed class FileListToolExecutor(FileSystemOptions options) : IToolExe
                 });
             }
 
-            var files = Directory.EnumerateFiles(searchPath, "*", SearchOption.AllDirectories)
-                .Select(f => Path.GetRelativePath(basePath, f).Replace('\\', '/'))
-                .Order()
-                .ToList();
+            var files = new List<string>();
+            try
+            {
+                foreach (var f in Directory.EnumerateFiles(searchPath, "*", new EnumerationOptions
+                {
+                    RecurseSubdirectories = true,
+                    IgnoreInaccessible = true
+                }))
+                {
+                    files.Add(Path.GetRelativePath(basePath, f).Replace('\\', '/'));
+                }
+            }
+            catch (UnauthorizedAccessException) { }
+            files.Sort();
 
             var json = JsonSerializer.Serialize(files);
 
