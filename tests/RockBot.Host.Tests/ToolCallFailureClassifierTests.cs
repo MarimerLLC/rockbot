@@ -120,7 +120,7 @@ public class ToolCallFailureClassifierTests
     // ── Defaults ─────────────────────────────────────────────────────────────
 
     [TestMethod]
-    public void Classify_UnrecognisedError_DefaultsToStructural()
+    public void Classify_UnrecognizedError_DefaultsToStructural()
     {
         var result = ToolCallFailureClassifier.Classify("something went wrong");
         Assert.AreEqual(ToolCallFailureCategory.Structural, result);

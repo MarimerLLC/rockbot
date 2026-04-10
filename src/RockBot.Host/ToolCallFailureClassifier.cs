@@ -110,7 +110,7 @@ internal static partial class ToolCallFailureClassifier
         if (ResourceNotFoundPattern().IsMatch(errorMessage))
             return ToolCallFailureCategory.Data;
 
-        // Default to structural for unrecognised error patterns.
+        // Default to structural for unrecognized error patterns.
         return ToolCallFailureCategory.Structural;
     }
 
