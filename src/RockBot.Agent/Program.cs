@@ -20,6 +20,7 @@ using RockBot.ServiceSearch;
 using RockBot.Subagent;
 using RockBot.Llm.Copilot;
 using GitHub.Copilot.SDK;
+using RockBot.Tools.FileSystem;
 using RockBot.Tools.Scheduling;
 using RockBot.Tools.Web;
 using RockBot.Telemetry;
@@ -264,6 +265,7 @@ builder.Services.AddRockBotHost(agent =>
     agent.WithDreaming();
     agent.AddToolHandler();
     agent.AddMcpToolProxy();
+    agent.AddFileSystemTools(opts => builder.Configuration.GetSection("FileSystem").Bind(opts));
     agent.AddWebTools(opts => builder.Configuration.GetSection("WebTools").Bind(opts));
     agent.AddSchedulingTools();
     agent.AddHeartbeatBootstrap(opts =>

@@ -39,6 +39,7 @@
     <ProjectReference Include="..\RockBot.Skills\RockBot.Skills.csproj" />
     <ProjectReference Include="..\RockBot.Tools\RockBot.Tools.csproj" />
     <ProjectReference Include="..\RockBot.Tools.Mcp\RockBot.Tools.Mcp.csproj" />
+    <ProjectReference Include="..\RockBot.Tools.FileSystem\RockBot.Tools.FileSystem.csproj" />
     <ProjectReference Include="..\RockBot.Tools.Web\RockBot.Tools.Web.csproj" />
     <ProjectReference Include="..\RockBot.Tools.Scheduling\RockBot.Tools.Scheduling.csproj" />
     <ProjectReference Include="..\RockBot.A2A\RockBot.A2A.csproj" />

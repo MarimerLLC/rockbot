@@ -183,9 +183,9 @@ public class ContainerScriptHandlerTests
     }
 
     [TestMethod]
-    public void BuildPodSpec_SetsStagingUrlEnvVar_WhenStagingUrlConfigured()
+    public void BuildPodSpec_MountsSharedVolume_WhenSharedVolumeClaimConfigured()
     {
-        _options.StagingUrl = "http://rockbot-staging.rockbot.svc.cluster.local";
+        _options.SharedVolumeClaim = "rockbot-shared";
         var handler = CreateHandler();
 
         var request = new ScriptInvokeRequest
@@ -195,17 +195,21 @@ public class ContainerScriptHandlerTests
         };
 
         var pod = handler.BuildPodSpec("test-pod", request);
-        var env = pod.Spec.Containers[0].Env;
 
-        var stagingVar = env.FirstOrDefault(e => e.Name == "ROCKBOT_STAGING_URL");
-        Assert.IsNotNull(stagingVar);
-        Assert.AreEqual("http://rockbot-staging.rockbot.svc.cluster.local", stagingVar.Value);
+        Assert.IsNotNull(pod.Spec.Volumes);
+        Assert.AreEqual("rockbot-shared", pod.Spec.Volumes[0].PersistentVolumeClaim.ClaimName);
+        Assert.AreEqual("/rockbot/shared", pod.Spec.Containers[0].VolumeMounts[0].MountPath);
+
+        var env = pod.Spec.Containers[0].Env;
+        var sharedPathVar = env.FirstOrDefault(e => e.Name == "ROCKBOT_SHARED_PATH");
+        Assert.IsNotNull(sharedPathVar);
+        Assert.AreEqual("/rockbot/shared", sharedPathVar.Value);
     }
 
     [TestMethod]
-    public void BuildPodSpec_NoStagingUrlEnvVar_WhenStagingUrlEmpty()
+    public void BuildPodSpec_NoSharedVolume_WhenSharedVolumeClaimEmpty()
     {
-        _options.StagingUrl = "";
+        _options.SharedVolumeClaim = "";
         var handler = CreateHandler();
 
         var request = new ScriptInvokeRequest
@@ -215,9 +219,10 @@ public class ContainerScriptHandlerTests
         };
 
         var pod = handler.BuildPodSpec("test-pod", request);
-        var env = pod.Spec.Containers[0].Env;
 
-        Assert.IsFalse(env.Any(e => e.Name == "ROCKBOT_STAGING_URL"));
+        Assert.IsNull(pod.Spec.Volumes);
+        Assert.IsNull(pod.Spec.Containers[0].VolumeMounts);
+        Assert.IsFalse(pod.Spec.Containers[0].Env.Any(e => e.Name == "ROCKBOT_SHARED_PATH"));
     }
 
     // BuildPodSpec doesn't use the IKubernetes client, so we pass null.

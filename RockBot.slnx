@@ -8,8 +8,7 @@
     <Project Path="src/McpServer.Introspection/McpServer.Introspection.csproj" />
     <Project Path="src/McpServer.OpenRouter/McpServer.OpenRouter.csproj" />
     <Project Path="src/McpServer.RoutingStats/McpServer.RoutingStats.csproj" />
-    <Project Path="src/McpServer.Staging/McpServer.Staging.csproj" />
-    <Project Path="src/McpServer.TodoApp/McpServer.TodoApp.csproj" />
+<Project Path="src/McpServer.TodoApp/McpServer.TodoApp.csproj" />
   </Folder>
   <Folder Name="/src/">
     <Project Path="src/RockBot.Host.Abstractions/RockBot.Host.Abstractions.csproj" />
@@ -36,6 +35,7 @@
     <Project Path="src/RockBot.Memory/RockBot.Memory.csproj" />
     <Project Path="src/RockBot.Skills/RockBot.Skills.csproj" />
     <Project Path="src/RockBot.Agent/RockBot.Agent.csproj" />
+    <Project Path="src/RockBot.Tools.FileSystem/RockBot.Tools.FileSystem.csproj" />
     <Project Path="src/RockBot.Tools.Web/RockBot.Tools.Web.csproj" />
     <Project Path="src/RockBot.Tools.Scheduling/RockBot.Tools.Scheduling.csproj" />
     <Project Path="src/RockBot.Subagent/RockBot.Subagent.csproj" />
@@ -45,8 +45,7 @@
     <Project Path="src/RockBot.ResearchAgent/RockBot.ResearchAgent.csproj" />
   </Folder>
   <Folder Name="/tests/">
-    <Project Path="tests/McpServer.Staging.Tests/McpServer.Staging.Tests.csproj" />
-    <Project Path="tests/RockBot.Host.Tests/RockBot.Host.Tests.csproj" />
+<Project Path="tests/RockBot.Host.Tests/RockBot.Host.Tests.csproj" />
     <Project Path="tests/RockBot.Llm.Tests/RockBot.Llm.Tests.csproj" />
     <Project Path="tests/RockBot.Tools.Tests/RockBot.Tools.Tests.csproj" />
     <Project Path="tests/RockBot.Scripts.Tests/RockBot.Scripts.Tests.csproj" />

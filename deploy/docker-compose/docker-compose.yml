@@ -119,6 +119,7 @@ services:
       Agent__Timezone: ${AGENT_TIMEZONE:-America/Chicago}
     volumes:
       - ${AGENT_DATA_PATH:-agent-data}:/data/agent
+      - shared:/rockbot/shared
 
   scripts-init:
     image: docker:cli
@@ -145,6 +146,8 @@ services:
       Scripts__Docker__CpuLimit: "500m"
       Scripts__Docker__MemoryLimit: 256Mi
       Scripts__Docker__NetworkMode: bridge
+      Scripts__Docker__SharedVolumeName: rockbot_shared
+      Scripts__Docker__SharedVolumePath: /rockbot/shared
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
 
@@ -177,3 +180,4 @@ services:
 volumes:
   rabbitmq-data:
   agent-data:
+  shared:
