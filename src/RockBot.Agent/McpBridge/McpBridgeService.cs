@@ -531,16 +531,31 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
 
             if (client is null)
             {
-                var error = new ToolError
+                // Server is configured but not yet connected (e.g. tool call arrived during
+                // startup before the background connection completed). Attempt an on-demand
+                // connection so the call succeeds transparently rather than returning an error.
+                if (_serverConfigs.TryGetValue(headerServer, out var pendingConfig))
                 {
-                    ToolCallId = request.ToolCallId,
-                    ToolName = request.ToolName,
-                    Code = ToolError.Codes.ToolNotFound,
-                    Message = $"MCP server '{headerServer}' is not connected",
-                    IsRetryable = false
-                };
-                await PublishResponseAsync(error, replyTo, envelope.CorrelationId, ct);
-                return MessageResult.Ack;
+                    _logger.LogInformation(
+                        "MCP server '{Server}' is configured but not connected; connecting on demand before tool invoke",
+                        headerServer);
+                    await ConnectServerAsync(headerServer, pendingConfig, ct);
+                    client = _clients.GetValueOrDefault(headerServer);
+                }
+
+                if (client is null)
+                {
+                    var error = new ToolError
+                    {
+                        ToolCallId = request.ToolCallId,
+                        ToolName = request.ToolName,
+                        Code = ToolError.Codes.ToolNotFound,
+                        Message = $"MCP server '{headerServer}' is not connected",
+                        IsRetryable = false
+                    };
+                    await PublishResponseAsync(error, replyTo, envelope.CorrelationId, ct);
+                    return MessageResult.Ack;
+                }
             }
         }
         else
