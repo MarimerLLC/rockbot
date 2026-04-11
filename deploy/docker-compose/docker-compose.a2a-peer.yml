@@ -8,18 +8,23 @@
 # Cross-agent communication goes through the HTTP A2A gateways.
 # Both agents trust each other at Act level with approved skills.
 #
+# Prerequisites:
+#   1. Copy and configure .env with LLM credentials (REQUIRED for agents to use tools):
+#        cp deploy/docker-compose/a2a-peer/.env.example deploy/docker-compose/.env
+#      Without LLM config, agents fall back to EchoChatClient and cannot reason about
+#      tools — they'll just echo your input back instead of calling invoke_agent.
+#
 # Usage:
-#   docker compose -f deploy/docker-compose/docker-compose.a2a-peer.yml up --build
+#   docker compose -f deploy/docker-compose/docker-compose.a2a-peer.yml --env-file deploy/docker-compose/.env up --build
 #
 # Then connect to either Blazor UI:
 #   Alice: http://localhost:8081
 #   Bob:   http://localhost:8082
 #
-# Ask Alice: "Send a notification to Bob saying 'let's meet at 3pm'"
-# Ask Alice: "Check if Bob's user is available"
-#
-# LLM configuration: set in .env or environment (same keys as docker-compose.yml).
-# Without LLM config, agents fall back to EchoChatClient (deterministic, no API needed).
+# Test prompts (from Alice's UI):
+#   "Check if Bob's user is available"
+#   "Send a notification to Bob saying 'let's meet at 3pm'"
+#   "Ask Bob what time works for a meeting tomorrow"
 
 name: rockbot-a2a-peer
 
