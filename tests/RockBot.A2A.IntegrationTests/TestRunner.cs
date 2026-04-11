@@ -11,6 +11,7 @@ internal sealed class TestConfig
     public required string RabbitMqPassword { get; init; }
     public required string GatewayUrl { get; init; }
     public required string TrustStorePath { get; init; }
+    public string? GatewayApiKey { get; init; }
 }
 
 internal sealed record TestResult(string Name, bool Passed, TimeSpan Elapsed, string? Error = null);
@@ -27,8 +28,13 @@ internal sealed class TestRunner(IServiceProvider services, TestConfig config)
             timeout: TimeSpan.FromSeconds(30)));
 
         results.Add(await RunAsync("A2A: Send Task via v1 SDK",
-            ct => Scenarios.HttpA2AScenarios.SendTaskViaA2ASdkAsync(config.GatewayUrl, services, ct),
+            ct => Scenarios.HttpA2AScenarios.SendTaskViaA2ASdkAsync(config.GatewayUrl, config.GatewayApiKey, services, ct),
             timeout: TimeSpan.FromSeconds(90)));
+
+        // Gateway auth — unauthenticated requests should be rejected
+        results.Add(await RunAsync("A2A: Unauthenticated Request Rejected",
+            ct => Scenarios.HttpA2AScenarios.UnauthenticatedRequestRejectedAsync(config.GatewayUrl, services, ct),
+            timeout: TimeSpan.FromSeconds(15)));
 
         // RabbitMQ discovery — RockBot may take a while to start
         results.Add(await RunAsync("Discovery: RockBot AgentCard",

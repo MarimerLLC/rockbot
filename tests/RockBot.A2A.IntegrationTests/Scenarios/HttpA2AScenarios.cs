@@ -55,10 +55,12 @@ internal static class HttpA2AScenarios
     /// Scenario 2: Send a task to RockBot via the A2A v1 SDK through the gateway.
     /// This exercises the full A2A protocol: SDK client → HTTP JSON-RPC → gateway → RabbitMQ → RockBot → response.
     /// </summary>
-    public static async Task SendTaskViaA2ASdkAsync(string gatewayUrl, IServiceProvider services, CancellationToken ct)
+    public static async Task SendTaskViaA2ASdkAsync(string gatewayUrl, string? apiKey, IServiceProvider services, CancellationToken ct)
     {
         var httpClientFactory = services.GetRequiredService<IHttpClientFactory>();
         var httpClient = httpClientFactory.CreateClient();
+        if (apiKey is not null)
+            httpClient.DefaultRequestHeaders.Add("X-Api-Key", apiKey);
 
         // Ensure gateway is ready
         for (var attempt = 0; attempt < 15; attempt++)
@@ -105,6 +107,39 @@ internal static class HttpA2AScenarios
         };
 
         Assert(hasContent, $"Expected text content in A2A response, got PayloadCase={response.PayloadCase}");
+    }
+
+    /// <summary>
+    /// Scenario 3: POST to the gateway without an API key should be rejected with a JSON-RPC error.
+    /// </summary>
+    public static async Task UnauthenticatedRequestRejectedAsync(string gatewayUrl, IServiceProvider services, CancellationToken ct)
+    {
+        var httpClientFactory = services.GetRequiredService<IHttpClientFactory>();
+        var httpClient = httpClientFactory.CreateClient();
+        // Intentionally no X-Api-Key header
+
+        // Ensure gateway is ready
+        for (var attempt = 0; attempt < 15; attempt++)
+        {
+            try
+            {
+                var probe = await httpClient.GetAsync($"{gatewayUrl}/.well-known/agent-card.json", ct);
+                if (probe.IsSuccessStatusCode) break;
+            }
+            catch (HttpRequestException) when (!ct.IsCancellationRequested) { }
+            await Task.Delay(1000, ct);
+        }
+
+        var jsonRpc = """{"jsonrpc":"2.0","id":1,"method":"SendMessage","params":{"message":{"role":"user","parts":[{"text":"test"}]}}}""";
+        var content = new System.Net.Http.StringContent(jsonRpc, System.Text.Encoding.UTF8, "application/json");
+        var response = await httpClient.PostAsync(gatewayUrl, content, ct);
+
+        Assert(response.StatusCode == System.Net.HttpStatusCode.Unauthorized,
+            $"Expected 401 Unauthorized, got {(int)response.StatusCode} {response.StatusCode}");
+
+        var body = await response.Content.ReadAsStringAsync(ct);
+        Assert(body.Contains("jsonrpc"), $"Expected JSON-RPC error body, got: {body}");
+        Assert(body.Contains("Authentication required"), $"Expected auth error message, got: {body}");
     }
 
     private static void Assert(bool condition, string message)

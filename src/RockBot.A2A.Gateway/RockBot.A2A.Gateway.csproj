@@ -7,6 +7,7 @@
     <Nullable>enable</Nullable>
     <RootNamespace>RockBot.A2A.Gateway</RootNamespace>
     <IsPackable>false</IsPackable>
+    <UserSecretsId>rockbot-a2a-gateway</UserSecretsId>
   </PropertyGroup>
 
   <ItemGroup>
@@ -14,9 +15,9 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\..\src\RockBot.A2A.Abstractions\RockBot.A2A.Abstractions.csproj" />
-    <ProjectReference Include="..\..\src\RockBot.Messaging.Abstractions\RockBot.Messaging.Abstractions.csproj" />
-    <ProjectReference Include="..\..\src\RockBot.Messaging.RabbitMQ\RockBot.Messaging.RabbitMQ.csproj" />
+    <ProjectReference Include="..\RockBot.A2A.Abstractions\RockBot.A2A.Abstractions.csproj" />
+    <ProjectReference Include="..\RockBot.Messaging.Abstractions\RockBot.Messaging.Abstractions.csproj" />
+    <ProjectReference Include="..\RockBot.Messaging.RabbitMQ\RockBot.Messaging.RabbitMQ.csproj" />
   </ItemGroup>
 
 </Project>

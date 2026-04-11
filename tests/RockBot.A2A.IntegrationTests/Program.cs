@@ -17,6 +17,7 @@ var config = new TestConfig
     RabbitMqUser = Environment.GetEnvironmentVariable("RabbitMq__UserName") ?? "rockbot",
     RabbitMqPassword = Environment.GetEnvironmentVariable("RabbitMq__Password") ?? "rockbot",
     GatewayUrl = Environment.GetEnvironmentVariable("A2A_GATEWAY_URL") ?? "http://localhost:5200",
+    GatewayApiKey = Environment.GetEnvironmentVariable("A2A_GATEWAY_API_KEY"),
     TrustStorePath = Environment.GetEnvironmentVariable("TRUST_STORE_PATH") ?? "/data/agent/agent-trust.json"
 };
 
