@@ -36,50 +36,52 @@ internal sealed class AgentDirectory(
 
     public async Task StartAsync(CancellationToken cancellationToken)
     {
+        // Load persisted directory (if it exists)
         var path = ResolvePath(options.DirectoryPersistencePath);
-        if (string.IsNullOrEmpty(path) || !File.Exists(path))
-            return;
-
-        try
+        if (!string.IsNullOrEmpty(path) && File.Exists(path))
         {
-            var json = await File.ReadAllTextAsync(path, cancellationToken);
-            var entries = JsonSerializer.Deserialize<List<PersistedEntry>>(json, JsonOptions);
-            if (entries is null) return;
-
-            var cutoff = DateTimeOffset.UtcNow - options.DirectoryEntryTtl;
-            var loaded = 0;
-            var pruned = 0;
-
-            foreach (var e in entries)
+            try
             {
-                if (e.Card is null) continue;
-
-                if (e.LastSeenAt < cutoff)
+                var json = await File.ReadAllTextAsync(path, cancellationToken);
+                var entries = JsonSerializer.Deserialize<List<PersistedEntry>>(json, JsonOptions);
+                if (entries is not null)
                 {
-                    pruned++;
-                    continue;
+                    var cutoff = DateTimeOffset.UtcNow - options.DirectoryEntryTtl;
+                    var loaded = 0;
+                    var pruned = 0;
+
+                    foreach (var e in entries)
+                    {
+                        if (e.Card is null) continue;
+
+                        if (e.LastSeenAt < cutoff)
+                        {
+                            pruned++;
+                            continue;
+                        }
+
+                        _agents[e.Card.AgentName] = new AgentDirectoryEntry
+                        {
+                            Card = e.Card,
+                            LastSeenAt = e.LastSeenAt,
+                            LlmSummary = e.LlmSummary
+                        };
+                        loaded++;
+                    }
+
+                    logger.LogInformation(
+                        "Loaded {Loaded} agent(s) from directory ({Pruned} stale entries pruned, TTL={Ttl}h)",
+                        loaded, pruned, options.DirectoryEntryTtl.TotalHours);
                 }
-
-                _agents[e.Card.AgentName] = new AgentDirectoryEntry
-                {
-                    Card = e.Card,
-                    LastSeenAt = e.LastSeenAt,
-                    LlmSummary = e.LlmSummary
-                };
-                loaded++;
             }
-
-            logger.LogInformation(
-                "Loaded {Loaded} agent(s) from directory ({Pruned} stale entries pruned, TTL={Ttl}h)",
-                loaded, pruned, options.DirectoryEntryTtl.TotalHours);
-        }
-        catch (Exception ex)
-        {
-            logger.LogWarning(ex, "Could not load agent directory from {Path}", path);
+            catch (Exception ex)
+            {
+                logger.LogWarning(ex, "Could not load agent directory from {Path}", path);
+            }
         }
 
-        // Seed well-known agents. If the agent was already loaded from the persisted file,
-        // preserve its last-seen timestamp but mark it as well-known so it survives pruning.
+        // Seed well-known agents — always runs, even when the persisted file doesn't
+        // exist yet (first startup on a fresh volume).
         foreach (var card in options.WellKnownAgents)
         {
             if (_agents.TryGetValue(card.AgentName, out var existing))
