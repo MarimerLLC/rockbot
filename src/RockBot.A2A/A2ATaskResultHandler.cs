@@ -236,9 +236,10 @@ internal sealed class A2ATaskResultHandler(
             $"The result ({resultText.Length:N0} chars) is in working memory. " +
             $"Call get_from_working_memory with key '{memoryKey}' to read it before responding.";
 
-        // Publish the agent's raw completion output as a non-final bubble so it is
-        // visible in the Blazor UI under the agent's own name before the primary agent
-        // synthesises and presents the final reply.
+        // Publish the agent's raw completion output as a final bubble under the
+        // target agent's name. Marked IsFinal so the Blazor UI stops the spinner
+        // for this agent. The primary agent's synthesis follows as a separate reply
+        // under its own name.
         try
         {
             const int PreviewMax = 500;
@@ -250,7 +251,7 @@ internal sealed class A2ATaskResultHandler(
                 Content = previewText,
                 SessionId = pending.PrimarySessionId,
                 AgentName = pending.TargetAgent,
-                IsFinal = false
+                IsFinal = true
             };
             var completionEnvelope = completionReply.ToEnvelope<AgentReply>(source: pending.TargetAgent);
             await publisher.PublishAsync(UserProxyTopics.UserResponse, completionEnvelope, ct);
