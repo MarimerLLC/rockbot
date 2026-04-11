@@ -171,11 +171,18 @@ internal sealed class WispExecutor(
         overallSw.Stop();
         var isSuccess = stepResults.All(s => s.IsSuccess || s.WasSkipped || s.FailureHandled);
 
-        // Clean up wisp working memory on success; keep on failure for debugging
+        // On success, shorten TTL so results stay available briefly for the calling agent
+        // to inspect, then expire naturally. On failure, keep full TTL for debugging.
         if (isSuccess)
         {
-            await workingMemory.ClearAsync(wispNamespace);
-            logger.LogDebug("Wisp {WispId} cleaned up working memory namespace {Namespace}", wispId, wispNamespace);
+            var entries = await workingMemory.ListAsync(wispNamespace);
+            foreach (var entry in entries)
+            {
+                await workingMemory.SetAsync(entry.Key, entry.Value,
+                    ttl: TimeSpan.FromMinutes(5), category: entry.Category, tags: entry.Tags);
+            }
+            logger.LogDebug("Wisp {WispId} set 5-min TTL on {Count} working memory entries in {Namespace}",
+                wispId, entries.Count, wispNamespace);
         }
 
         logger.LogInformation("Wisp {WispId} finished: success={Success}, duration={Duration:F1}ms",
@@ -270,18 +277,18 @@ internal sealed class WispExecutor(
             };
         }
 
-        // Write output to shared volume and working memory if output_to is specified
+        // Always write step output to working memory for inter-step access by LLM steps
+        var stepContent = response.Content ?? "";
+        var outputKey = $"{wispNamespace}/{step.Id}/output";
+        await workingMemory.SetAsync(outputKey, stepContent,
+            ttl: TimeSpan.FromMinutes(60), category: "wisp-output");
+
+        // Additionally write to shared volume file if output_to is specified
         if (!string.IsNullOrEmpty(step.OutputTo))
         {
-            var content = response.Content ?? "";
-            // Write to shared volume file
-            await WriteToSharedVolumeAsync(step.OutputTo, content, ct);
+            await WriteToSharedVolumeAsync(step.OutputTo, stepContent, ct);
             logger.LogDebug("Wisp {WispId} step {StepId} wrote output to shared volume: {Path}",
                 wispId, step.Id, step.OutputTo);
-            // Also keep in working memory for inter-step access
-            var outputKey = $"{wispNamespace}/{step.Id}/output";
-            await workingMemory.SetAsync(outputKey, content,
-                ttl: TimeSpan.FromMinutes(60), category: "wisp-output");
         }
 
         return new WispStepResult
@@ -348,6 +355,31 @@ internal sealed class WispExecutor(
                 }
             }
         }
+        else if (priorResults.Count > 0)
+        {
+            // No explicit input_from — auto-inject prior step results so the LLM
+            // has context without needing to guess at working memory keys
+            var priorData = new StringBuilder();
+            priorData.AppendLine("## Prior Step Results");
+            priorData.AppendLine();
+            foreach (var (stepId, prior) in priorResults)
+            {
+                if (!prior.IsSuccess || prior.WasSkipped || prior.Content is null)
+                    continue;
+                priorData.AppendLine($"### Step: {stepId}");
+                priorData.AppendLine();
+                priorData.AppendLine(prior.Content.Length > 4_000
+                    ? prior.Content[..4_000] + $"\n\n... (truncated, {prior.Content.Length:N0} chars total — use get_from_working_memory if you need the full content)"
+                    : prior.Content);
+                priorData.AppendLine();
+            }
+
+            var injected = priorData.ToString().Trim();
+            if (injected.Length > "## Prior Step Results".Length + 5)
+            {
+                userPrompt += $"\n\n{injected}";
+            }
+        }
 
         chatMessages.Add(new ChatMessage(ChatRole.User, userPrompt));
 
@@ -389,17 +421,17 @@ internal sealed class WispExecutor(
 
         stepSw.Stop();
 
-        // Write LLM output to shared volume and working memory if output_to is specified
+        // Always write step output to working memory for inter-step access
+        var llmOutputKey = $"{wispNamespace}/{step.Id}/output";
+        await workingMemory.SetAsync(llmOutputKey, llmOutput,
+            ttl: TimeSpan.FromMinutes(60), category: "wisp-output");
+
+        // Additionally write to shared volume file if output_to is specified
         if (!string.IsNullOrEmpty(step.OutputTo))
         {
-            // Write to shared volume file
             await WriteToSharedVolumeAsync(step.OutputTo, llmOutput, ct);
             logger.LogDebug("Wisp {WispId} step {StepId} wrote LLM output to shared volume: {Path}",
                 wispId, step.Id, step.OutputTo);
-            // Also keep in working memory
-            var outputKey = $"{wispNamespace}/{step.Id}/output";
-            await workingMemory.SetAsync(outputKey, llmOutput,
-                ttl: TimeSpan.FromMinutes(60), category: "wisp-output");
         }
 
         return new WispStepResult

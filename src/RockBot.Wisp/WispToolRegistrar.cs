@@ -24,9 +24,53 @@ internal sealed class WispToolRegistrar(
           "properties": {
             "definitions": {
               "type": "array",
-              "description": "Array of wisp pipeline definitions to execute concurrently. Each definition contains 'description' (string), optional 'tools' (string array of additional tool names for LLM steps), and 'steps' (array of step objects). Each step has: 'id' (unique string), 'mode' ('Direct' or 'Llm'), 'gateway' ('Mcp'/'A2A'/'Script'/'Web' for direct steps), plus gateway-specific fields. MCP: 'server', 'tool', 'params'. A2A: 'agent', 'skill', 'message'. Script: 'params' with 'script' field, optional 'language'. Web: 'tool' (web_search/web_browse), 'params'. LLM: 'prompt'. Any step can have 'input_from' (file path or {{steps.id.result}}), 'output_to' (file path), 'on_failure' ({action:'skip_to',skip_to:'step_id'}).",
-              "items": { "type": "object" },
-              "minItems": 1
+              "description": "One or more wisp pipeline definitions to execute. Multiple definitions run concurrently.",
+              "minItems": 1,
+              "items": {
+                "type": "object",
+                "properties": {
+                  "description": {
+                    "type": "string",
+                    "description": "Human-readable description of what this pipeline does."
+                  },
+                  "tools": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "Optional additional tool names available to LLM steps (e.g. web_browse)."
+                  },
+                  "steps": {
+                    "type": "array",
+                    "description": "Ordered steps to execute. Each step runs sequentially within this wisp.",
+                    "minItems": 1,
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "id": { "type": "string", "description": "Unique step identifier." },
+                        "mode": { "type": "string", "enum": ["Direct", "Llm"], "description": "Direct = harness calls tool (zero LLM tokens). Llm = lightweight LLM interprets prompt." },
+                        "gateway": { "type": "string", "enum": ["Mcp", "A2A", "Script", "Web"], "description": "Tool backend for Direct steps." },
+                        "server": { "type": "string", "description": "MCP server name (gateway=Mcp)." },
+                        "tool": { "type": "string", "description": "Tool name (gateway=Mcp or Web)." },
+                        "params": { "type": "object", "description": "Tool parameters as key-value pairs." },
+                        "prompt": { "type": "string", "description": "Prompt for LLM steps (mode=Llm). Must be self-contained." },
+                        "agent": { "type": "string", "description": "A2A agent name (gateway=A2A)." },
+                        "skill": { "type": "string", "description": "A2A skill ID (gateway=A2A)." },
+                        "message": { "type": "string", "description": "A2A message content (gateway=A2A)." },
+                        "input_from": { "type": "string", "description": "File path or {{steps.id.result}} template for step input." },
+                        "output_to": { "type": "string", "description": "File path to write step output." },
+                        "on_failure": {
+                          "type": "object",
+                          "properties": {
+                            "action": { "type": "string", "enum": ["abort", "skip_to"] },
+                            "skip_to": { "type": "string", "description": "Step ID to jump to on failure." }
+                          }
+                        }
+                      },
+                      "required": ["id", "mode"]
+                    }
+                  }
+                },
+                "required": ["description", "steps"]
+              }
             }
           },
           "required": ["definitions"]

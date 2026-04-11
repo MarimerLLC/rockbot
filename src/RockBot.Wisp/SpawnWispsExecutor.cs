@@ -193,17 +193,27 @@ internal sealed class SpawnWispsExecutor(
                 succeeded = batch.SucceededCount,
                 failed = batch.FailedCount,
                 durationMs = (int)batch.TotalDuration.TotalMilliseconds,
-                wisps = batch.Results.Select(r => new
+                wisps = batch.Results.Select(r =>
                 {
-                    wispId = r.WispId,
-                    description = r.Definition.Description,
-                    succeeded = r.IsSuccess,
-                    durationMs = (int)r.Duration.TotalMilliseconds,
-                    stepsCompleted = r.StepResults.Count(s => s.IsSuccess || s.WasSkipped),
-                    stepCount = r.Definition.Steps.Count,
-                    error = r.FailedStep is { Error: not null }
-                        ? new { category = r.FailedStep.Error.Category.ToString(), message = r.FailedStep.Error.Message }
-                        : null
+                    // Include the last successful step's output (typically the summary/final result)
+                    var lastOutput = r.StepResults
+                        .LastOrDefault(s => s.IsSuccess && s.Content is not null)?.Content;
+
+                    return new
+                    {
+                        wispId = r.WispId,
+                        description = r.Definition.Description,
+                        succeeded = r.IsSuccess,
+                        durationMs = (int)r.Duration.TotalMilliseconds,
+                        stepsCompleted = r.StepResults.Count(s => s.IsSuccess || s.WasSkipped),
+                        stepCount = r.Definition.Steps.Count,
+                        output = lastOutput is not null
+                            ? (lastOutput.Length > 2_000 ? lastOutput[..2_000] + "..." : lastOutput)
+                            : null,
+                        error = r.FailedStep is { Error: not null }
+                            ? new { category = r.FailedStep.Error.Category.ToString(), message = r.FailedStep.Error.Message }
+                            : null
+                    };
                 }).ToList()
             };
 
@@ -315,12 +325,13 @@ internal sealed class SpawnWispsExecutor(
 
             if (result.IsSuccess)
             {
-                // Show last step output preview for successful wisps
+                // Show last step output for successful wisps — this is the primary
+                // way the calling agent consumes wisp results, so don't truncate too aggressively
                 var lastStep = result.StepResults.LastOrDefault(s => s.IsSuccess && s.Content is not null);
                 if (lastStep?.Content is not null)
                 {
-                    var preview = lastStep.Content.Length > 200
-                        ? lastStep.Content[..200] + "..."
+                    var preview = lastStep.Content.Length > 2_000
+                        ? lastStep.Content[..2_000] + $"... ({lastStep.Content.Length:N0} chars total)"
                         : lastStep.Content;
                     sb.AppendLine($"  Output: {preview}");
                 }
