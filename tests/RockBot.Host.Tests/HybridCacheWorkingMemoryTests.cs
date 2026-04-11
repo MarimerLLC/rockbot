@@ -1,3 +1,4 @@
+using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -569,7 +570,8 @@ public class HybridCacheWorkingMemoryTests
 
     // ── Helpers ────────────────────────────────────────────────────────────
 
-    private HybridCacheWorkingMemory CreateMemory(int maxEntries = 20, TimeSpan? defaultTtl = null)
+    private HybridCacheWorkingMemory CreateMemory(int maxEntries = 20, TimeSpan? defaultTtl = null,
+        IEmbeddingGenerator<string, Embedding<float>>? embeddingGenerator = null)
     {
         var opts = new WorkingMemoryOptions
         {
@@ -580,6 +582,68 @@ public class HybridCacheWorkingMemoryTests
             _cache,
             Options.Create(opts),
             Options.Create(new EmbeddingOptions()),
-            NullLogger<HybridCacheWorkingMemory>.Instance);
+            NullLogger<HybridCacheWorkingMemory>.Instance,
+            embeddingGenerator);
+    }
+
+    // ── Embedding skip for wisp keys ──────────────────────────────────────
+
+    [TestMethod]
+    public async Task SetAsync_WispKey_DoesNotGenerateEmbedding()
+    {
+        var generator = new CallTrackingEmbeddingGenerator();
+        var memory = CreateMemory(embeddingGenerator: generator);
+
+        await memory.SetAsync("wisp/wisp-abc123/step1/output", "some data",
+            category: "wisp-output");
+
+        // Allow background task to complete (if it were scheduled)
+        await Task.Delay(50);
+
+        Assert.AreEqual(0, generator.CallCount,
+            "Embedding should not be generated for wisp-scoped keys");
+    }
+
+    [TestMethod]
+    public async Task SetAsync_NonWispKey_GeneratesEmbedding()
+    {
+        var generator = new CallTrackingEmbeddingGenerator();
+        var memory = CreateMemory(embeddingGenerator: generator);
+
+        await memory.SetAsync("session/s1/research", "some data");
+
+        // Allow background task to complete
+        await Task.Delay(50);
+
+        Assert.AreEqual(1, generator.CallCount,
+            "Embedding should be generated for non-wisp keys");
+    }
+
+    /// <summary>
+    /// Minimal <see cref="IEmbeddingGenerator{TInput, TEmbedding}"/> that counts calls
+    /// and returns a fixed-length zero vector.
+    /// </summary>
+    private sealed class CallTrackingEmbeddingGenerator : IEmbeddingGenerator<string, Embedding<float>>
+    {
+        private int _callCount;
+        public int CallCount => _callCount;
+
+        public EmbeddingGeneratorMetadata Metadata { get; } =
+            new(nameof(CallTrackingEmbeddingGenerator));
+
+        public Task<GeneratedEmbeddings<Embedding<float>>> GenerateAsync(
+            IEnumerable<string> values,
+            EmbeddingGenerationOptions? options = null,
+            CancellationToken cancellationToken = default)
+        {
+            Interlocked.Increment(ref _callCount);
+            var embeddings = values.Select(_ =>
+                new Embedding<float>(new float[4])).ToList();
+            return Task.FromResult(new GeneratedEmbeddings<Embedding<float>>(embeddings));
+        }
+
+        public object? GetService(Type serviceType, object? serviceKey = null) => null;
+
+        public void Dispose() { }
     }
 }
