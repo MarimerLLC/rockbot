@@ -597,9 +597,7 @@ public class HybridCacheWorkingMemoryTests
         await memory.SetAsync("wisp/wisp-abc123/step1/output", "some data",
             category: "wisp-output");
 
-        // Allow background task to complete (if it were scheduled)
-        await Task.Delay(50);
-
+        // No background task is scheduled for wisp keys, so CallCount should be 0 immediately.
         Assert.AreEqual(0, generator.CallCount,
             "Embedding should not be generated for wisp-scoped keys");
     }
@@ -612,8 +610,9 @@ public class HybridCacheWorkingMemoryTests
 
         await memory.SetAsync("session/s1/research", "some data");
 
-        // Allow background task to complete
-        await Task.Delay(50);
+        // Poll for the fire-and-forget background task to complete.
+        for (var i = 0; i < 20 && generator.CallCount == 0; i++)
+            await Task.Delay(25);
 
         Assert.AreEqual(1, generator.CallCount,
             "Embedding should be generated for non-wisp keys");
