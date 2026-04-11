@@ -18,6 +18,7 @@ internal sealed class A2ACallerToolRegistrar(
     A2AOptions options,
     AgentIdentity identity,
     IHttpClientFactory httpClientFactory,
+    InputRequiredHandler inputRequiredHandler,
     ILoggerFactory loggerFactory) : IHostedService
 {
     private const string InvokeAgentSchema = """
@@ -142,7 +143,7 @@ internal sealed class A2ACallerToolRegistrar(
                 """,
             ParametersSchema = InvokeAgentSchema,
             Source = "a2a"
-        }, new InvokeAgentExecutor(publisher, tracker, directory, options, identity, httpClientFactory, invokeLogger));
+        }, new InvokeAgentExecutor(publisher, tracker, directory, options, identity, httpClientFactory, inputRequiredHandler, invokeLogger));
 
         var registrarLogger = loggerFactory.CreateLogger<A2ACallerToolRegistrar>();
         registrarLogger.LogInformation("Registered tool: invoke_agent");

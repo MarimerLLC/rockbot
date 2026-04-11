@@ -43,4 +43,24 @@ public sealed class A2AOptions
     /// may not be present in the directory at query time.
     /// </summary>
     public List<AgentCard> WellKnownAgents { get; set; } = [];
+
+    // ── Long-running task polling ───────────────────────────────────────────
+
+    /// <summary>Initial polling delay for long-running HTTP tasks (exponential backoff start).</summary>
+    public TimeSpan PollingInitialDelay { get; set; } = TimeSpan.FromSeconds(2);
+
+    /// <summary>Maximum polling delay (exponential backoff cap).</summary>
+    public TimeSpan PollingMaxDelay { get; set; } = TimeSpan.FromSeconds(30);
+
+    // ── InputRequired multi-turn ────────────────────────────────────────────
+
+    /// <summary>Maximum number of InputRequired round-trips before aborting the task.</summary>
+    public int MaxInputRequiredRounds { get; set; } = 20;
+
+    /// <summary>
+    /// Number of consecutive identical question/answer repetitions before
+    /// breaking the InputRequired loop. Modeled after the tool-call repetition
+    /// detector in <c>AgentLoopRunner</c>.
+    /// </summary>
+    public int InputRequiredRepetitionThreshold { get; set; } = 3;
 }

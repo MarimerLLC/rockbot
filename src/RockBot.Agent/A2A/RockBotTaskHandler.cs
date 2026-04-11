@@ -21,6 +21,7 @@ internal sealed class RockBotTaskHandler(
     IInboundNotificationQueue notificationQueue,
     IUserActivityMonitor userActivityMonitor,
     ISessionTracker sessionTracker,
+    IConversationMemory conversationMemory,
     ILogger<RockBotTaskHandler> logger) : IAgentTaskHandler
 {
     private const string ObserveSystemPrompt =
@@ -117,21 +118,53 @@ internal sealed class RockBotTaskHandler(
         }, ct);
 
         var question = ExtractText(request);
-        var sessionId = $"a2a-inbound/{request.TaskId}";
+
+        // Use contextId for session continuity if provided, otherwise use taskId.
+        // This allows multi-turn conversations to maintain LLM context across rounds.
+        var sessionId = !string.IsNullOrEmpty(request.ContextId)
+            ? $"a2a-inbound/{request.ContextId}"
+            : $"a2a-inbound/{request.TaskId}";
+
+        // Check if this is a continuation of an existing conversation
+        var existingTurns = await conversationMemory.GetTurnsAsync(sessionId, ct);
+        var isContinuation = existingTurns.Count > 0;
+
+        if (isContinuation)
+        {
+            logger.LogInformation(
+                "A2A inbound continuation for contextId={ContextId} (existing turns={Count})",
+                request.ContextId, existingTurns.Count);
+        }
 
         // Build restricted tool set
         var tools = InboundA2AToolSet.Build(workingMemory, memoryTools, request.TaskId, logger);
-
         var chatOptions = new ChatOptions { Tools = [.. tools] };
-        var chatMessages = new List<ChatMessage>
+
+        List<ChatMessage> chatMessages;
+        if (isContinuation)
         {
-            new(ChatRole.System, ObserveSystemPrompt),
-            new(ChatRole.User,
-                $"Inbound request from agent '{caller.DisplayName}' (ID: {caller.AgentId}, " +
-                $"self-asserted: {caller.IsSelfAsserted}).\n" +
-                $"Skill requested: {request.Skill}\n\n" +
-                $"Message:\n{question}")
-        };
+            // Rebuild from conversation history + new follow-up turn
+            chatMessages = [new(ChatRole.System, ObserveSystemPrompt)];
+            foreach (var turn in existingTurns)
+            {
+                var role = turn.Role == "assistant" ? ChatRole.Assistant : ChatRole.User;
+                chatMessages.Add(new ChatMessage(role, turn.Content));
+            }
+            chatMessages.Add(new(ChatRole.User,
+                $"Follow-up from agent '{caller.DisplayName}' (ID: {caller.AgentId}):\n{question}"));
+        }
+        else
+        {
+            chatMessages =
+            [
+                new(ChatRole.System, ObserveSystemPrompt),
+                new(ChatRole.User,
+                    $"Inbound request from agent '{caller.DisplayName}' (ID: {caller.AgentId}, " +
+                    $"self-asserted: {caller.IsSelfAsserted}).\n" +
+                    $"Skill requested: {request.Skill}\n\n" +
+                    $"Message:\n{question}")
+            ];
+        }
 
         // Run read-only LLM pass
         var summary = await agentLoopRunner.RunAsync(
@@ -140,6 +173,15 @@ internal sealed class RockBotTaskHandler(
             enableFollowUp: false,
             enableCompletionEval: false,
             cancellationToken: ct);
+
+        // Store turns for future continuation
+        await conversationMemory.AddTurnAsync(sessionId,
+            new ConversationTurn("user", question, DateTimeOffset.UtcNow)
+            { AgentName = caller.DisplayName },
+            ct);
+        await conversationMemory.AddTurnAsync(sessionId,
+            new ConversationTurn("assistant", summary, DateTimeOffset.UtcNow),
+            ct);
 
         // Ensure caller info is in working memory
         await workingMemory.SetAsync(
@@ -155,12 +197,12 @@ internal sealed class RockBotTaskHandler(
 
         await workingMemory.SetAsync(
             $"a2a-inbox/{request.TaskId}/status",
-            "pending-review",
+            isContinuation ? "follow-up-processed" : "pending-review",
             TimeSpan.FromHours(24), "a2a", ["inbound", "status"]);
 
         logger.LogInformation(
-            "A2A task {TaskId} from {CallerId} processed at Observe level, summary length={Len}",
-            request.TaskId, caller.AgentId, summary.Length);
+            "A2A task {TaskId} from {CallerId} processed at Observe level (continuation={IsContinuation}), summary length={Len}",
+            request.TaskId, caller.AgentId, isContinuation, summary.Length);
 
         // Queue notification for the user (batched delivery when idle)
         await notificationQueue.EnqueueAsync(new InboundNotification
