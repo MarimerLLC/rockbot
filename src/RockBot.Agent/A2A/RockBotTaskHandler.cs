@@ -201,6 +201,18 @@ internal sealed class RockBotTaskHandler(
             isContinuation ? "follow-up-processed" : "pending-review",
             TimeSpan.FromHours(24), "a2a", ["inbound", "status"]);
 
+        // Persist a searchable outcome so the agent can recall this interaction later.
+        // Uses a stable key pattern under a2a-outcomes/ with long TTL.
+        var outcomeKey = $"a2a-outcomes/{request.Skill}/{request.ContextId ?? request.TaskId}";
+        await workingMemory.SetAsync(
+            outcomeKey,
+            $"Inbound A2A task from {caller.DisplayName} (skill: {request.Skill}) on {DateTimeOffset.UtcNow:yyyy-MM-dd HH:mm UTC}.\n" +
+            $"Request: {question}\n" +
+            $"Summary: {summary}",
+            ttl: TimeSpan.FromHours(8),
+            category: "a2a-outcome",
+            tags: [caller.DisplayName, request.Skill]);
+
         logger.LogInformation(
             "A2A task {TaskId} from {CallerId} processed at Observe level (continuation={IsContinuation}), summary length={Len}",
             request.TaskId, caller.AgentId, isContinuation, summary.Length);
@@ -253,6 +265,14 @@ internal sealed class RockBotTaskHandler(
 
         logger.LogInformation("A2A notify-user from {CallerId}: {Preview}",
             caller.AgentId, message.Length > 100 ? message[..100] + "..." : message);
+
+        // Persist notification so the agent can recall it later
+        await workingMemory.SetAsync(
+            $"a2a-outcomes/notify-user/{request.TaskId}",
+            $"Notification from {caller.DisplayName} on {DateTimeOffset.UtcNow:yyyy-MM-dd HH:mm UTC}:\n{message}",
+            ttl: TimeSpan.FromHours(8),
+            category: "a2a-outcome",
+            tags: [caller.DisplayName, "notification"]);
 
         await notificationQueue.EnqueueAsync(new InboundNotification
         {
@@ -385,6 +405,27 @@ internal sealed class RockBotTaskHandler(
         await conversationMemory.AddTurnAsync(sessionId,
             new ConversationTurn("assistant", confirmationText, DateTimeOffset.UtcNow),
             ct);
+
+        // Persist the negotiation outcome so the agent remembers it later.
+        // Rebuild the full exchange from conversation memory for context.
+        var allTurns = await conversationMemory.GetTurnsAsync(sessionId, ct);
+        var exchangeSummary = string.Join("\n",
+            allTurns.Select(t => $"  [{t.Role}] {t.Content}"));
+        var outcomeText =
+            $"Meeting negotiated with {caller.DisplayName} on {DateTimeOffset.UtcNow:yyyy-MM-dd HH:mm UTC}.\n" +
+            $"Caller's final response: {message}\n\n" +
+            $"Full exchange:\n{exchangeSummary}";
+
+        await workingMemory.SetAsync(
+            $"a2a-outcomes/negotiate-meeting/{contextId}",
+            outcomeText,
+            ttl: TimeSpan.FromHours(8),
+            category: "a2a-outcome",
+            tags: [caller.DisplayName, "meeting", "negotiation"]);
+
+        logger.LogInformation(
+            "Stored negotiate-meeting outcome for {CallerId} in working memory (8h TTL)",
+            caller.AgentId);
 
         // Notify our user about the confirmed meeting
         await notificationQueue.EnqueueAsync(new InboundNotification
