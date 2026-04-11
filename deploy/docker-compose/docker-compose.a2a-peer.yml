@@ -1,0 +1,301 @@
+# Two isolated RockBot agent instances communicating via HTTP A2A protocol.
+#
+# Architecture:
+#   Alice: rabbitmq-alice → agent-alice → gateway-alice (port 5201)
+#   Bob:   rabbitmq-bob   → agent-bob   → gateway-bob   (port 5202)
+#
+# Each agent has its own RabbitMQ instance (full bus isolation).
+# Cross-agent communication goes through the HTTP A2A gateways.
+# Both agents trust each other at Act level with approved skills.
+#
+# Usage:
+#   docker compose -f deploy/docker-compose/docker-compose.a2a-peer.yml up --build
+#
+# Then connect to either Blazor UI:
+#   Alice: http://localhost:8081
+#   Bob:   http://localhost:8082
+#
+# Ask Alice: "Send a notification to Bob saying 'let's meet at 3pm'"
+# Ask Alice: "Check if Bob's user is available"
+#
+# LLM configuration: set in .env or environment (same keys as docker-compose.yml).
+# Without LLM config, agents fall back to EchoChatClient (deterministic, no API needed).
+
+name: rockbot-a2a-peer
+
+services:
+  # ── Alice's RabbitMQ ──────────────────────────────────────────────────
+  rabbitmq-alice:
+    image: rabbitmq:4-management
+    hostname: rabbitmq-alice
+    ports:
+      - "15681:15672"
+    environment:
+      RABBITMQ_DEFAULT_USER: rockbot
+      RABBITMQ_DEFAULT_PASS: rockbot
+    volumes:
+      - rabbitmq-alice-data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "check_port_connectivity"]
+      interval: 5s
+      timeout: 3s
+      retries: 15
+
+  # ── Bob's RabbitMQ ────────────────────────────────────────────────────
+  rabbitmq-bob:
+    image: rabbitmq:4-management
+    hostname: rabbitmq-bob
+    ports:
+      - "15682:15672"
+    environment:
+      RABBITMQ_DEFAULT_USER: rockbot
+      RABBITMQ_DEFAULT_PASS: rockbot
+    volumes:
+      - rabbitmq-bob-data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "check_port_connectivity"]
+      interval: 5s
+      timeout: 3s
+      retries: 15
+
+  # ── Alice: agent init ─────────────────────────────────────────────────
+  agent-init-alice:
+    build:
+      context: ../..
+      dockerfile: deploy/Dockerfile.agent
+    image: rockylhotka/rockbot-agent:latest
+    user: root
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        echo "Seeding Alice agent data..."
+        for f in soul.md directives.md subagent-directives.md style.md memory-rules.md \
+                 dream.md skill-dream.md common-directives.md session-evaluator.md \
+                 session-start.md heartbeat-patrol.md skill-optimize.md \
+                 dlq-dream.md routing-dream.md; do
+          src="/app/agent/$$f"; dst="/data/agent/$$f"
+          [ -f "$$src" ] && [ ! -s "$$dst" ] && cp "$$src" "$$dst"
+        done
+        # Alice-specific well-known-agents (points to Bob's gateway)
+        cp /seed/well-known-agents.json /data/agent/well-known-agents.json
+        # Pre-seed trust store (Alice trusts Bob at Act level)
+        [ ! -s /data/agent/agent-trust.json ] && cp /seed/agent-trust.json /data/agent/agent-trust.json
+        # Minimal mcp.json — no external MCP servers
+        [ ! -f /data/agent/mcp.json ] && echo '{"mcpServers":{}}' > /data/agent/mcp.json
+        # Per-model behavior files
+        for model_dir in /app/model-behaviors/*/; do
+          [ -d "$$model_dir" ] || continue
+          model_name=$$(basename "$$model_dir")
+          mkdir -p "/data/agent/model-behaviors/$$model_name"
+          for src in "$$model_dir"*; do
+            [ -f "$$src" ] || continue
+            dst="/data/agent/model-behaviors/$$model_name/$$(basename $$src)"
+            [ ! -s "$$dst" ] && cp "$$src" "$$dst"
+          done
+        done
+        mkdir -p /data/agent/memory /data/agent/skills /data/agent/conversations /data/agent/feedback
+        chmod -R 777 /data/agent
+        echo "Alice agent data ready."
+    volumes:
+      - alice-data:/data/agent
+      - ./a2a-peer/alice:/seed:ro
+
+  # ── Bob: agent init ───────────────────────────────────────────────────
+  agent-init-bob:
+    build:
+      context: ../..
+      dockerfile: deploy/Dockerfile.agent
+    image: rockylhotka/rockbot-agent:latest
+    user: root
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        echo "Seeding Bob agent data..."
+        for f in soul.md directives.md subagent-directives.md style.md memory-rules.md \
+                 dream.md skill-dream.md common-directives.md session-evaluator.md \
+                 session-start.md heartbeat-patrol.md skill-optimize.md \
+                 dlq-dream.md routing-dream.md; do
+          src="/app/agent/$$f"; dst="/data/agent/$$f"
+          [ -f "$$src" ] && [ ! -s "$$dst" ] && cp "$$src" "$$dst"
+        done
+        # Bob-specific well-known-agents (points to Alice's gateway)
+        cp /seed/well-known-agents.json /data/agent/well-known-agents.json
+        # Pre-seed trust store (Bob trusts Alice at Act level)
+        [ ! -s /data/agent/agent-trust.json ] && cp /seed/agent-trust.json /data/agent/agent-trust.json
+        # Minimal mcp.json
+        [ ! -f /data/agent/mcp.json ] && echo '{"mcpServers":{}}' > /data/agent/mcp.json
+        # Per-model behavior files
+        for model_dir in /app/model-behaviors/*/; do
+          [ -d "$$model_dir" ] || continue
+          model_name=$$(basename "$$model_dir")
+          mkdir -p "/data/agent/model-behaviors/$$model_name"
+          for src in "$$model_dir"*; do
+            [ -f "$$src" ] || continue
+            dst="/data/agent/model-behaviors/$$model_name/$$(basename $$src)"
+            [ ! -s "$$dst" ] && cp "$$src" "$$dst"
+          done
+        done
+        mkdir -p /data/agent/memory /data/agent/skills /data/agent/conversations /data/agent/feedback
+        chmod -R 777 /data/agent
+        echo "Bob agent data ready."
+    volumes:
+      - bob-data:/data/agent
+      - ./a2a-peer/bob:/seed:ro
+
+  # ── Alice: RockBot agent ──────────────────────────────────────────────
+  agent-alice:
+    build:
+      context: ../..
+      dockerfile: deploy/Dockerfile.agent
+    image: rockylhotka/rockbot-agent:latest
+    depends_on:
+      agent-init-alice:
+        condition: service_completed_successfully
+      rabbitmq-alice:
+        condition: service_healthy
+    environment:
+      RabbitMq__HostName: rabbitmq-alice
+      RabbitMq__Port: "5672"
+      RabbitMq__UserName: rockbot
+      RabbitMq__Password: rockbot
+      RabbitMq__VirtualHost: /
+      AgentProfile__BasePath: /data/agent
+      Memory__BasePath: /data/agent/memory
+      Skill__BasePath: /data/agent/skills
+      McpBridge__ConfigPath: /data/agent/mcp.json
+      ModelBehaviors__BasePath: /data/agent/model-behaviors
+      Agent__Timezone: ${AGENT_TIMEZONE:-America/Chicago}
+      # LLM — shared from .env (falls back to EchoChatClient if unset)
+      LLM__Provider: ${LLM_PROVIDER:-}
+      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+      LLM__Balanced__ModelId: ${LLM_MODEL_ID:-}
+      LLM__Balanced__Endpoint: ${LLM_ENDPOINT:-}
+      LLM__Balanced__ApiKey: ${LLM_API_KEY:-}
+    volumes:
+      - alice-data:/data/agent
+      - alice-shared:/rockbot/shared
+
+  # ── Bob: RockBot agent ────────────────────────────────────────────────
+  agent-bob:
+    build:
+      context: ../..
+      dockerfile: deploy/Dockerfile.agent
+    image: rockylhotka/rockbot-agent:latest
+    depends_on:
+      agent-init-bob:
+        condition: service_completed_successfully
+      rabbitmq-bob:
+        condition: service_healthy
+    environment:
+      RabbitMq__HostName: rabbitmq-bob
+      RabbitMq__Port: "5672"
+      RabbitMq__UserName: rockbot
+      RabbitMq__Password: rockbot
+      RabbitMq__VirtualHost: /
+      AgentProfile__BasePath: /data/agent
+      Memory__BasePath: /data/agent/memory
+      Skill__BasePath: /data/agent/skills
+      McpBridge__ConfigPath: /data/agent/mcp.json
+      ModelBehaviors__BasePath: /data/agent/model-behaviors
+      Agent__Timezone: ${AGENT_TIMEZONE:-America/Chicago}
+      # LLM — shared from .env
+      LLM__Provider: ${LLM_PROVIDER:-}
+      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+      LLM__Balanced__ModelId: ${LLM_MODEL_ID:-}
+      LLM__Balanced__Endpoint: ${LLM_ENDPOINT:-}
+      LLM__Balanced__ApiKey: ${LLM_API_KEY:-}
+    volumes:
+      - bob-data:/data/agent
+      - bob-shared:/rockbot/shared
+
+  # ── Alice: A2A HTTP gateway ───────────────────────────────────────────
+  gateway-alice:
+    build:
+      context: ../..
+      dockerfile: deploy/Dockerfile.a2a-gateway
+    depends_on:
+      agent-alice:
+        condition: service_started
+      rabbitmq-alice:
+        condition: service_healthy
+    ports:
+      - "5201:5200"
+    environment:
+      ASPNETCORE_URLS: http://0.0.0.0:5200
+      RabbitMq__HostName: rabbitmq-alice
+      RabbitMq__Port: "5672"
+      RabbitMq__UserName: rockbot
+      RabbitMq__Password: rockbot
+      Gateway__AgentName: Alice
+      Gateway__Description: "Alice's RockBot agent"
+      # Accept requests from Bob (API key: alice-calls-bob → decoded by gateway auth)
+      ApiKeys__alice-calls-bob__AgentId: Bob
+      ApiKeys__alice-calls-bob__DisplayName: Agent Bob
+    volumes:
+      - gateway-alice-data:/app/data
+
+  # ── Bob: A2A HTTP gateway ─────────────────────────────────────────────
+  gateway-bob:
+    build:
+      context: ../..
+      dockerfile: deploy/Dockerfile.a2a-gateway
+    depends_on:
+      agent-bob:
+        condition: service_started
+      rabbitmq-bob:
+        condition: service_healthy
+    ports:
+      - "5202:5200"
+    environment:
+      ASPNETCORE_URLS: http://0.0.0.0:5200
+      RabbitMq__HostName: rabbitmq-bob
+      RabbitMq__Port: "5672"
+      RabbitMq__UserName: rockbot
+      RabbitMq__Password: rockbot
+      Gateway__AgentName: Bob
+      Gateway__Description: "Bob's RockBot agent"
+      # Accept requests from Alice (API key: bob-calls-alice → decoded by gateway auth)
+      ApiKeys__bob-calls-alice__AgentId: Alice
+      ApiKeys__bob-calls-alice__DisplayName: Agent Alice
+    volumes:
+      - gateway-bob-data:/app/data
+
+  # ── Alice: Blazor UI ─────────────────────────────────────────────────
+  blazor-alice:
+    image: rockylhotka/rockbot-blazor:latest
+    depends_on:
+      rabbitmq-alice:
+        condition: service_healthy
+    ports:
+      - "8081:8080"
+    environment:
+      RabbitMq__HostName: rabbitmq-alice
+      RabbitMq__Port: "5672"
+      RabbitMq__UserName: rockbot
+      RabbitMq__Password: rockbot
+
+  # ── Bob: Blazor UI ───────────────────────────────────────────────────
+  blazor-bob:
+    image: rockylhotka/rockbot-blazor:latest
+    depends_on:
+      rabbitmq-bob:
+        condition: service_healthy
+    ports:
+      - "8082:8080"
+    environment:
+      RabbitMq__HostName: rabbitmq-bob
+      RabbitMq__Port: "5672"
+      RabbitMq__UserName: rockbot
+      RabbitMq__Password: rockbot
+
+volumes:
+  rabbitmq-alice-data:
+  rabbitmq-bob-data:
+  alice-data:
+  bob-data:
+  alice-shared:
+  bob-shared:
+  gateway-alice-data:
+  gateway-bob-data:
