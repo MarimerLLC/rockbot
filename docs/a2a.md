@@ -256,6 +256,103 @@ See `RockBot.SampleAgent.Http` for a complete working example.
 
 ---
 
+## Implementing inbound A2A skills
+
+RockBot dispatches inbound A2A requests through `RockBotTaskHandler` based on
+trust level and skill ID. To add a new Act-level skill, follow this pattern.
+
+### 1. Register the skill
+
+Add it in three places:
+
+1. **Agent card** in `Program.cs` — so other agents can discover it:
+   ```csharp
+   new AgentSkill { Id = "my-skill", Name = "My Skill",
+       Description = "What this skill does" }
+   ```
+
+2. **Gateway appsettings.json** — so HTTP callers see it in the agent card:
+   ```json
+   { "Id": "my-skill", "Name": "My Skill", "Description": "..." }
+   ```
+
+3. **Skill dispatch** in `RockBotTaskHandler.HandleTaskAsync` — route to your handler:
+   ```csharp
+   "my-skill" => await HandleMySkillAsync(request, identity, context, ct),
+   ```
+
+### 2. Persist outcomes in working memory
+
+Every skill that produces a meaningful result **must** store it in working memory
+so the agent can recall it later. Without this, the agent has no memory of the
+interaction after the request completes.
+
+```csharp
+await workingMemory.SetAsync(
+    $"a2a-outcomes/{request.Skill}/{contextId}",  // stable key pattern
+    outcomeText,                                    // human-readable summary
+    ttl: TimeSpan.FromHours(8),                     // long enough to be useful
+    category: "a2a-outcome",                        // standard category for all A2A outcomes
+    tags: [caller.DisplayName, "meeting"]);          // searchable tags
+```
+
+**Requirements:**
+- **Key pattern**: `a2a-outcomes/{skillId}/{contextId}` — consistent across all skills
+- **Category**: always `"a2a-outcome"` — enables `SearchWorkingMemory` by category
+- **TTL**: 8 hours minimum — shorter TTLs risk the agent forgetting before the
+  user asks about it
+- **Tags**: include the caller's display name and domain-relevant keywords
+- **Content**: include a timestamp, the caller identity, and enough context to
+  be useful standalone (the agent may retrieve this hours later without the
+  original conversation in context)
+
+### 3. Multi-turn skills (InputRequired)
+
+Skills that need follow-up information from the caller return
+`AgentTaskState.InputRequired` instead of `Completed`. The caller's
+`InputRequiredHandler` generates a response (trust-gated) and sends it back
+with the same `contextId`.
+
+**Required patterns for multi-turn skills:**
+
+- **Use `contextId`** for session continuity:
+  ```csharp
+  var contextId = request.ContextId ?? request.TaskId;
+  var sessionId = $"a2a-inbound/{contextId}";
+  ```
+
+- **Check conversation history** to distinguish first call from follow-up:
+  ```csharp
+  var existingTurns = await conversationMemory.GetTurnsAsync(sessionId, ct);
+  var isContinuation = existingTurns.Count > 0;
+  ```
+
+- **Store turns** in conversation memory for future continuation:
+  ```csharp
+  await conversationMemory.AddTurnAsync(sessionId,
+      new ConversationTurn("user", message, DateTimeOffset.UtcNow)
+      { AgentName = caller.DisplayName }, ct);
+  ```
+
+- **Persist the outcome** when the multi-turn exchange completes (not on
+  intermediate InputRequired rounds — only on the final Completed response).
+
+See `HandleNegotiateMeetingAsync` in `RockBotTaskHandler.cs` for the reference
+implementation.
+
+### 4. Trust and approval
+
+Callers must have Act-level trust (`AgentTrustLevel.Act`) **and** the skill ID
+in their `ApprovedSkills` list to reach the Act-level dispatch. Otherwise the
+request falls through to the Observe path (read-only LLM summary + user
+notification).
+
+Trust entries are managed in `agent-trust.json` on the data volume. For
+docker-compose deployments, pre-seed the trust store with the skills you want
+approved. For production, trust is granted incrementally by the user.
+
+---
+
 ## A2A HTTP Gateway (inbound)
 
 `RockBot.A2A.Gateway` is an ASP.NET Core HTTP gateway that accepts inbound A2A v1
