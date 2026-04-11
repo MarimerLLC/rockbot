@@ -11,7 +11,7 @@ COPY src/ src/
 COPY tests/ tests/
 
 RUN --mount=type=cache,target=/root/.nuget/packages \
-    dotnet publish tests/RockBot.A2A.Gateway/RockBot.A2A.Gateway.csproj \
+    dotnet publish src/RockBot.A2A.Gateway/RockBot.A2A.Gateway.csproj \
     -c Release -o /app/publish
 
 # Runtime stage — ASP.NET Core needed for web hosting

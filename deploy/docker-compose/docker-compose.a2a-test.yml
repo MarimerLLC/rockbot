@@ -102,6 +102,8 @@ services:
       RabbitMq__Port: "5672"
       RabbitMq__UserName: rockbot
       RabbitMq__Password: rockbot
+      ApiKeys__test-key-001__AgentId: a2a-test-harness
+      ApiKeys__test-key-001__DisplayName: A2A Test Harness
 
   a2a-test-harness:
     build:
@@ -120,6 +122,7 @@ services:
       RabbitMq__UserName: rockbot
       RabbitMq__Password: rockbot
       A2A_GATEWAY_URL: http://a2a-gateway:5200
+      A2A_GATEWAY_API_KEY: test-key-001
       TRUST_STORE_PATH: /data/agent/agent-trust.json
     volumes:
       - agent-data:/data/agent:ro
