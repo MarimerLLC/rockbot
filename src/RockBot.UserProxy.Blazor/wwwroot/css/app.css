@@ -193,7 +193,8 @@ body {
 }
 
 .status-indicator.subagent-indicator,
-.status-indicator.task-indicator {
+.status-indicator.task-indicator,
+.status-indicator.a2a-indicator {
     animation: status-pulse 2s ease-in-out infinite;
 }
 

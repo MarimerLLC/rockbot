@@ -44,6 +44,8 @@ public static class ServiceCollectionExtensions
         services.Configure<WipOptions>(_ => { });
         services.Configure<KnowledgeGraphOptions>(_ => { });
         services.AddSingleton<IWipTracker, FileWipTracker>();
+        services.AddSingleton<IInboundNotificationQueue, InboundNotificationQueue>();
+        services.AddSingleton<IHostedService, InboundNotificationService>();
         services.AddSingleton<IHostedService, AgentHost>();
 
         return services;

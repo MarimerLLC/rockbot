@@ -47,6 +47,13 @@
                     ⏱️
                 </span>
             }
+            @foreach (var a2a in statusIndicators.Where(i => i.Category == MessageCategory.A2AActivity))
+            {
+                <span class="status-indicator a2a-indicator"
+                      title="@($"Inbound A2A: {a2a.LatestContent}")">
+                    🔗
+                </span>
+            }
             <button class="btn btn-sm btn-outline-light" @onclick="ToggleSavedModal" title="Saved responses">
                 📋
             </button>
@@ -550,7 +557,7 @@
     private static string GetCategoryLabel(MessageCategory category) => category switch
     {
         MessageCategory.SubagentActivity => "Subagent",
-        MessageCategory.A2AActivity => "A2A",
+        MessageCategory.A2AActivity => "Inbound A2A",
         MessageCategory.ScheduledSystem => "Background Task",
         _ => "Agent"
     };

@@ -58,6 +58,9 @@
     <Project Path="tests/RockBot.Subagent.Tests/RockBot.Subagent.Tests.csproj" />
     <Project Path="tests/RockBot.Wisp.Tests/RockBot.Wisp.Tests.csproj" />
     <Project Path="tests/RockBot.Llm.Copilot.Tests/RockBot.Llm.Copilot.Tests.csproj" />
+    <Project Path="tests/RockBot.UserProxy.Blazor.Tests/RockBot.UserProxy.Blazor.Tests.csproj" />
+    <Project Path="tests/RockBot.A2A.IntegrationTests/RockBot.A2A.IntegrationTests.csproj" />
+    <Project Path="tests/RockBot.A2A.Gateway/RockBot.A2A.Gateway.csproj" />
   </Folder>
   <Project Path="src/RockBot.Messaging.Abstractions/RockBot.Messaging.Abstractions.csproj" />
   <Project Path="src/RockBot.Messaging.RabbitMQ/RockBot.Messaging.RabbitMQ.csproj" />

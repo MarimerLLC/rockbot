@@ -30,6 +30,13 @@ public sealed class A2AOptions
     public TimeSpan DirectoryEntryTtl { get; set; } = TimeSpan.FromHours(24);
 
     /// <summary>
+    /// Path to the file where per-caller trust entries are persisted.
+    /// Relative paths are resolved from <see cref="AppContext.BaseDirectory"/>.
+    /// Set to null or empty to disable persistence.
+    /// </summary>
+    public string? TrustStorePath { get; set; } = "agent-trust.json";
+
+    /// <summary>
     /// Statically-configured agents that are always included in <c>list_known_agents</c>
     /// regardless of whether they have announced themselves on the discovery bus.
     /// Useful for ephemeral/KEDA agents that only run when invoked and therefore
