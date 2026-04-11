@@ -8,7 +8,7 @@ namespace RockBot.Wisp;
 public sealed class WispToolSkillProvider : IToolSkillProvider
 {
     public string Name => "wisp";
-    public string Summary => "Lightweight pipelines for procedural multi-step tasks (spawn_wisp). Much cheaper than subagents for structured workflows.";
+    public string Summary => "Lightweight pipelines for procedural multi-step tasks (spawn_wisps). Run multiple wisps concurrently. Much cheaper than subagents for structured workflows.";
 
     public string GetDocument() =>
         """
@@ -28,25 +28,57 @@ public sealed class WispToolSkillProvider : IToolSkillProvider
         | Data pipeline: fetch → transform → output | Open-ended research or analysis |
         | 2-12K tokens total | 60-80K tokens acceptable |
 
-        ## spawn_wisp
+        ## spawn_wisps
 
-        Execute a wisp pipeline synchronously. Returns structured results with per-step
-        success/failure and error classification.
+        Execute one or more wisp pipelines. Multiple wisps run **concurrently** (up to the
+        configured limit). Returns a batch result with per-wisp success/failure and writes
+        a JSON summary to working memory for programmatic consumption.
 
         ### Definition format
 
         ```json
         {
-          "definition": {
-            "description": "Human-readable description of what this pipeline does",
-            "tools": ["web_browse"],
-            "steps": [
-              { "id": "step1", "mode": "Direct", "gateway": "...", ... },
-              { "id": "step2", "mode": "Llm", "prompt": "...", ... }
-            ]
-          }
+          "definitions": [
+            {
+              "description": "Human-readable description of what this pipeline does",
+              "tools": ["web_browse"],
+              "steps": [
+                { "id": "step1", "mode": "Direct", "gateway": "...", ... },
+                { "id": "step2", "mode": "Llm", "prompt": "...", ... }
+              ]
+            }
+          ]
         }
         ```
+
+        A single wisp works fine — just pass a one-element array.
+
+        ### Parallel execution
+
+        When multiple definitions are provided, wisps execute concurrently:
+        - Each wisp is fully independent — no cross-wisp template references
+        - Failures in one wisp do NOT abort others
+        - All wisps complete before results are returned
+        - Concurrency is gated by the system (callers don't need to worry about limits)
+
+        ### Batch result format
+
+        ```
+        3 wisp(s) completed (2 succeeded, 1 failed, 1.2s total):
+
+        - `wisp-abc123`: "Fetch calendar events" [ok] (800ms)
+          Output: ...
+        - `wisp-def456`: "Search recent emails" [ok] (1.2s)
+          Output: ...
+        - `wisp-ghi789`: "Check project status" [failed] (600ms)
+          Error (External): Service unavailable
+
+        Batch ID: `batch-abc123def456ab`
+        Batch summary: `wisp/batch-batch-abc123def456ab/summary`
+        ```
+
+        The batch summary is always written to working memory as JSON, enabling
+        downstream steps to programmatically inspect results.
 
         ### Step modes
 
@@ -84,7 +116,7 @@ public sealed class WispToolSkillProvider : IToolSkillProvider
           "mode": "Direct",
           "gateway": "Script",
           "params": {
-            "script": "import json\\nwith open('/rockbot/shared/wisp-data/emails.json') as f:\\n    data = json.load(f)\\nprint(json.dumps(data))",
+            "script": "import json\nwith open('/rockbot/shared/wisp-data/emails.json') as f:\n    data = json.load(f)\nprint(json.dumps(data))",
             "pip_packages": ["pandas"],
             "timeout_seconds": 60
           }
@@ -153,6 +185,10 @@ public sealed class WispToolSkillProvider : IToolSkillProvider
         { "message": "Process file at {{steps.fetch.output_to}}" }
         ```
 
+        **Important:** Template references (`{{steps.id.result}}`) work within a single
+        wisp's steps. Cross-wisp references are not supported — wisps in a batch are
+        fully independent.
+
         **Transition patterns:**
         - `Direct → Direct`: Data passes via files on the shared volume
         - `Direct → Llm`: Harness reads file, chunks into working memory if large
@@ -171,6 +207,9 @@ public sealed class WispToolSkillProvider : IToolSkillProvider
         ```
         Default is `"abort"` — the pipeline stops and returns the error.
 
+        In a batch, a failed wisp does NOT affect other wisps. All wisps run to
+        completion regardless of individual failures.
+
         ### Failure classification
 
         Every failure is automatically classified:
@@ -178,24 +217,6 @@ public sealed class WispToolSkillProvider : IToolSkillProvider
         - **External** — Timeout, service unavailable, rate limit (transient, retry may help)
         - **Data** — Unexpected format, empty results, schema mismatch (fix assumptions)
         - **Judgment** — LLM step picked wrong result or missed data (refine the prompt)
-
-        ### Result format
-
-        On success:
-        ```
-        Wisp `wisp-abc123` completed successfully (3 steps, 450ms).
-        - step1 [ok] (120ms) — Output: ...
-        - step2 [ok] (200ms) — Output: ...
-        - step3 [ok] (130ms) — Output: ...
-        Working memory namespace: `wisp/wisp-abc123`
-        ```
-
-        On failure:
-        ```
-        Wisp `wisp-abc123` failed at step `parse` (index 1).
-        Error category: Data
-        Error: Unexpected file format
-        ```
 
         ### Best practices
 
@@ -208,34 +229,59 @@ public sealed class WispToolSkillProvider : IToolSkillProvider
            `/rockbot/shared/wisp-data/file.json` in your Python scripts.
         5. **Keep descriptions specific.** The description is used for retry detection
            and failure pattern analysis across sessions.
+        6. **Batch independent work.** When you need multiple unrelated data fetches,
+           put them in a single `spawn_wisps` call to run concurrently.
 
-        ### Example: Email search and summary pipeline
+        ### Example: Parallel data gathering
 
         ```json
         {
-          "definition": {
-            "description": "Search recent emails from sales team and summarize action items",
-            "steps": [
-              {
-                "id": "search",
-                "mode": "Direct",
-                "gateway": "Mcp",
-                "server": "ms365",
-                "tool": "outlook_email_search",
-                "params": { "query": "from:sales newer:2d", "max_results": 10 },
-                "output_to": "wisp-data/sales-emails.json"
-              },
-              {
-                "id": "summarize",
-                "mode": "Llm",
-                "prompt": "Extract action items from these emails. List each with owner, deadline, and priority.",
-                "input_from": "wisp-data/sales-emails.json"
-              }
-            ]
-          }
+          "definitions": [
+            {
+              "description": "Fetch calendar events for today",
+              "steps": [
+                {
+                  "id": "get_events",
+                  "mode": "Direct",
+                  "gateway": "Mcp",
+                  "server": "google-calendar",
+                  "tool": "gcal_list_events",
+                  "params": { "time_min": "2024-01-15T00:00:00Z", "time_max": "2024-01-15T23:59:59Z" },
+                  "output_to": "wisp-data/calendar.json"
+                }
+              ]
+            },
+            {
+              "description": "Search recent emails from team",
+              "steps": [
+                {
+                  "id": "search",
+                  "mode": "Direct",
+                  "gateway": "Mcp",
+                  "server": "ms365",
+                  "tool": "outlook_email_search",
+                  "params": { "query": "from:team newer:1d", "max_results": 10 },
+                  "output_to": "wisp-data/emails.json"
+                }
+              ]
+            },
+            {
+              "description": "Check project build status",
+              "steps": [
+                {
+                  "id": "status",
+                  "mode": "Direct",
+                  "gateway": "Web",
+                  "tool": "web_browse",
+                  "params": { "url": "https://ci.example.com/api/status" }
+                }
+              ]
+            }
+          ]
         }
         ```
-        Step 1 costs zero LLM tokens. Step 2 uses a lightweight LLM with only the
-        email data in context — no soul, no memory recall, no skill index.
+
+        All three wisps execute concurrently. Total wall-clock time equals the
+        slowest wisp, not the sum. Each costs zero LLM tokens (all Direct steps).
         """;
 }

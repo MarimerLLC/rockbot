@@ -416,8 +416,8 @@ public class WispExecutorTests
             var filePath = Path.Combine(tempDir, "wisp-test", "results.json");
             Assert.IsTrue(File.Exists(filePath));
             Assert.AreEqual("important data", await File.ReadAllTextAsync(filePath));
-            // Working memory was cleaned up on success
-            Assert.AreEqual(0, memory.Store.Count);
+            // Working memory entries still present but with short TTL (not immediately deleted)
+            Assert.IsTrue(memory.Store.Count > 0, "Entries should persist with short TTL on success");
         }
         finally
         {
@@ -659,9 +659,9 @@ public class WispExecutorTests
         var result = await executor.ExecuteAsync(definition, "wisp-cleanup", CancellationToken.None);
 
         Assert.IsTrue(result.IsSuccess);
-        // Working memory should be cleared for the wisp namespace
+        // Working memory entries should still exist (with short TTL) so calling agent can inspect
         var wispKeys = memory.Store.Keys.Where(k => k.StartsWith("wisp/")).ToList();
-        Assert.AreEqual(0, wispKeys.Count, "Wisp working memory should be cleaned up on success");
+        Assert.IsTrue(wispKeys.Count > 0, "Wisp working memory should persist with short TTL on success");
     }
 
     [TestMethod]

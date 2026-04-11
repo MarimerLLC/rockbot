@@ -32,12 +32,13 @@ use a wisp. If the task requires exploration or adaptation, use a subagent.
 Calling agent (primary or subagent)
 ┌─────────────────────────────────────────────────────────┐
 │                                                         │
-│  LLM calls spawn_wisp(definition: { ... })              │
+│  LLM calls spawn_wisps(definitions: [{ ... }])          │
 │     │                                                   │
 │     ▼                                                   │
-│  SpawnWispExecutor.ExecuteAsync()                       │
-│     │  Parses WispDefinition from JSON                  │
-│     │  Generates wisp ID                                │
+│  SpawnWispsExecutor.ExecuteAsync()                      │
+│     │  Parses WispDefinition[] from JSON                │
+│     │  Generates batch ID + per-wisp IDs                │
+│     │  Runs wisps concurrently (semaphore-gated)        │
 │     │                                                   │
 │     ▼                                                   │
 │  WispExecutor.ExecuteAsync()                            │
@@ -81,6 +82,9 @@ only:
 - ~200-token wisp directives (execute steps, call only listed tools, stop on error)
 - The step prompt (provided by the calling agent)
 - Data from `input_from` (injected into the prompt or chunked into working memory)
+- **Auto-injected prior step results** — when `input_from` is not specified, all prior
+  successful step outputs are automatically appended under a `## Prior Step Results`
+  section (truncated to 4K chars per step, with full content available in working memory)
 - Current date/time and timezone (injected by `AgentLoopRunner`)
 - A scoped tool set (see Tool scoping below)
 
@@ -124,16 +128,19 @@ This prevents the LLM from calling tools the wisp definition didn't anticipate.
 
 ## Data flow
 
+### Step output storage
+
+Every step's output is **always** written to working memory at
+`wisp/{wispId}/{stepId}/output` (60-min TTL), regardless of whether `output_to` is set.
+This ensures LLM steps can access prior step results via working memory tools.
+
 ### `output_to`
 
-When present on any step (direct or LLM), the harness writes the step's result to a
-file on the shared volume after the step completes:
+When present on any step (direct or LLM), the harness **additionally** writes the
+step's result to a file on the shared volume:
 
 - **Direct steps:** Tool response content is written to the file path
 - **LLM steps:** LLM output text is written to the file path
-
-The result is also stored in working memory at `wisp/{wispId}/{stepId}/output` for
-fast inter-step access without re-reading from disk.
 
 ### `input_from`
 
@@ -144,6 +151,9 @@ When present on a step, the harness resolves input data before the step executes
   (≤8K chars) is injected directly into the prompt. Large content is chunked via
   `ContentChunker` into the wisp's working memory namespace, and the LLM receives
   an index table with chunk keys to retrieve via `GetFromWorkingMemory`.
+
+When `input_from` is **not** specified on an LLM step, prior step results are
+auto-injected (see LLM mode above).
 
 ### Template substitution
 
@@ -184,11 +194,58 @@ Every failure is automatically classified by the harness:
 | **Judgment** | LLM picked wrong result, missed key data | Partially — prompt quality |
 | **Data** | Unexpected format, empty results, schema mismatch | Yes — assumption bug |
 
-### Working memory cleanup
+### Working memory lifecycle
 
-On success, the wisp's working memory namespace (`wisp/{wispId}`) is cleared. On
-failure, it is preserved for debugging — the calling agent can read the namespace to
-inspect intermediate results.
+On success, the wisp's working memory entries are given a **5-minute TTL** so the
+calling agent can still inspect results briefly after completion. On failure, entries
+retain their original 60-minute TTL for debugging — the calling agent can read the
+namespace to inspect intermediate results.
+
+---
+
+## Parallel execution (batches)
+
+The `spawn_wisps` tool accepts an array of definitions. Multiple wisps execute
+**concurrently**, gated by `WispOptions.MaxConcurrentWisps` (default 10). Each wisp
+is fully independent — no cross-wisp template references.
+
+### Batch mechanics
+
+- All wisps in a batch share a `batchId` for log correlation
+- Each wisp gets its own ID and working memory namespace
+- Failures in one wisp do **not** abort others — all wisps run to completion
+- Total wall-clock time equals the slowest wisp, not the sum
+- A JSON batch summary is written to working memory at
+  `wisp/batch-{batchId}/summary` (60-min TTL) with per-wisp status and output
+
+### Batch result format
+
+The tool response includes per-wisp status with output previews (up to 2K chars):
+
+```
+5 wisp(s) completed (5 succeeded, 0 failed, 10.7s total):
+
+- `wisp-abc`: "Search marimer emails" [ok] (1180ms)
+  Output: ...
+- `wisp-def`: "Search xebia emails" [ok] (2733ms)
+  Output: ...
+...
+
+Batch ID: `batch-abc123def456ab`
+Batch summary: `wisp/batch-batch-abc123def456ab/summary`
+```
+
+### When to parallelize
+
+Split independent work into separate wisp definitions. For example, searching 5
+email accounts should be 5 wisps (one per account), not 5 sequential steps in one
+wisp. Each wisp can still have its own multi-step pipeline internally (e.g.,
+Direct fetch → LLM summarize).
+
+### Per-wisp logging
+
+Each wisp in a batch produces its own `WispExecutionRecord` with the shared `BatchId`
+field for correlation. Retry detection works per-wisp via definition hashes.
 
 ---
 
@@ -206,7 +263,7 @@ written to `IWispExecutionLog` (JSONL-backed via `FileWispExecutionLog`). Record
 ### Correction pair capture
 
 When a wisp succeeds and a prior failure with the same definition hash exists in the
-same session, `SpawnWispExecutor` links them as a correction pair and emits a
+same session, `SpawnWispsExecutor` links them as a correction pair and emits a
 `WispCorrection` feedback signal via `IFeedbackStore`. The signal includes the prior
 failure's category, error message, and failed step — giving the dream system structured
 evidence of what went wrong and how it was fixed.
@@ -243,10 +300,10 @@ agent.AddWisps(opts =>
 This registers:
 - `WispExecutor` — core pipeline execution engine
 - `FileWispExecutionLog` as `IWispExecutionLog` — persistent execution records
-- `WispToolRegistrar` — registers `spawn_wisp` in the tool registry
+- `WispToolRegistrar` — registers `spawn_wisps` in the tool registry
 - `WispToolSkillProvider` — provides `get_tool_guide("wisp")` documentation
 
-The `spawn_wisp` tool is available to both the primary agent and subagents (source
+The `spawn_wisps` tool is available to both the primary agent and subagents (source
 `"wisp"` passes the subagent tool filter).
 
 ---
@@ -267,10 +324,11 @@ src/RockBot.Wisp/
 ├── WispStepError.cs           # Error with classification
 ├── GatewayRouter.cs           # Maps steps to tool invocations + template resolution
 ├── WispRegistryToolFunction.cs # AIFunction wrapper for scoped LLM step tools
-├── SpawnWispExecutor.cs       # IToolExecutor for spawn_wisp tool
+├── SpawnWispsExecutor.cs      # IToolExecutor for spawn_wisps tool
+├── WispBatchResult.cs         # Batch result with per-wisp outcomes
 ├── WispToolRegistrar.cs       # IHostedService tool registration
 ├── WispToolSkillProvider.cs   # IToolSkillProvider usage guide
-├── WispOptions.cs             # Configuration (SharedVolumePath)
+├── WispOptions.cs             # Configuration (SharedVolumePath, MaxConcurrentWisps)
 ├── WispServiceCollectionExtensions.cs # AddWisps() DI extension
 ├── FileWispExecutionLog.cs    # JSONL-backed execution log
 │
@@ -278,7 +336,7 @@ src/RockBot.Host.Abstractions/
 ├── IWispExecutionLog.cs       # Execution log interface
 ├── WispExecutionRecord.cs     # Persistent execution record
 │
-tests/RockBot.Wisp.Tests/      # 68 unit tests
+tests/RockBot.Wisp.Tests/      # 71 unit tests
 ```
 
 ---
@@ -288,5 +346,6 @@ tests/RockBot.Wisp.Tests/      # 68 unit tests
 | Option | Default | Description |
 |--------|---------|-------------|
 | `WispOptions.SharedVolumePath` | `/rockbot/shared` | Root directory for shared volume file I/O |
+| `WispOptions.MaxConcurrentWisps` | `10` | Max wisps executing concurrently in a batch |
 | `DreamOptions.WispFailureAnalysisEnabled` | `true` | Enable wisp failure analysis dream pass |
 | `DreamOptions.WispFailureDirectivePath` | `wisp-failure-dream.md` | Custom directive for the dream pass |

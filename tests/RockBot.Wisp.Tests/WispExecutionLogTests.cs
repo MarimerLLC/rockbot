@@ -242,7 +242,7 @@ public class WispExecutionLogTests
     // ── Correction pair detection ────────────────────────────────────────────
 
     [TestMethod]
-    public async Task SpawnWispExecutor_SuccessfulRetry_LogsWithRetryOf()
+    public async Task SpawnWispsExecutor_SuccessfulRetry_LogsWithRetryOf()
     {
         var tempDir = CreateTempDir();
         try
@@ -254,8 +254,8 @@ public class WispExecutionLogTests
             var options = new WispOptions();
             var wispExecutor = new WispExecutor(registry, memory, agentLoopRunner: null!, options,
                 NullLogger<WispExecutor>.Instance);
-            var spawnExecutor = new SpawnWispExecutor(wispExecutor, executionLog, feedbackStore,
-                NullLogger<SpawnWispExecutor>.Instance);
+            var spawnExecutor = new SpawnWispsExecutor(wispExecutor, executionLog, feedbackStore,
+                memory, options, NullLogger<SpawnWispsExecutor>.Instance);
 
             // Register a tool that fails first, then succeeds
             var callCount = 0;
@@ -269,25 +269,29 @@ public class WispExecutionLogTests
 
             var defJson = """
             {
-              "definition": {
-                "description": "Search task",
-                "steps": [{"id":"search","mode":"Direct","gateway":"Web","tool":"web_search","params":{"query":"test"}}]
-              }
+              "definitions": [
+                {
+                  "description": "Search task",
+                  "steps": [{"id":"search","mode":"Direct","gateway":"Web","tool":"web_search","params":{"query":"test"}}]
+                }
+              ]
             }
             """;
 
-            // First call — should fail
-            var req1 = new ToolInvokeRequest { ToolCallId = "tc-1", ToolName = "spawn_wisp", Arguments = defJson, SessionId = "sess-1" };
+            // First call — should fail (batch still returns IsError=false, check content)
+            var req1 = new ToolInvokeRequest { ToolCallId = "tc-1", ToolName = "spawn_wisps", Arguments = defJson, SessionId = "sess-1" };
             var resp1 = await spawnExecutor.ExecuteAsync(req1, CancellationToken.None);
-            Assert.IsTrue(resp1.IsError);
+            Assert.IsFalse(resp1.IsError);
+            StringAssert.Contains(resp1.Content, "0 succeeded, 1 failed");
 
             // Wait for async logging
             await Task.Delay(100);
 
             // Second call — should succeed and detect as retry
-            var req2 = new ToolInvokeRequest { ToolCallId = "tc-2", ToolName = "spawn_wisp", Arguments = defJson, SessionId = "sess-1" };
+            var req2 = new ToolInvokeRequest { ToolCallId = "tc-2", ToolName = "spawn_wisps", Arguments = defJson, SessionId = "sess-1" };
             var resp2 = await spawnExecutor.ExecuteAsync(req2, CancellationToken.None);
             Assert.IsFalse(resp2.IsError);
+            StringAssert.Contains(resp2.Content, "1 succeeded, 0 failed");
 
             // Wait for async logging
             await Task.Delay(100);
@@ -316,8 +320,8 @@ public class WispExecutionLogTests
     public void ComputeDefinitionHash_SameInput_SameHash()
     {
         var json = """{"description":"test","steps":[]}""";
-        var hash1 = SpawnWispExecutor.ComputeDefinitionHash(json);
-        var hash2 = SpawnWispExecutor.ComputeDefinitionHash(json);
+        var hash1 = SpawnWispsExecutor.ComputeDefinitionHash(json);
+        var hash2 = SpawnWispsExecutor.ComputeDefinitionHash(json);
 
         Assert.AreEqual(hash1, hash2);
         Assert.AreEqual(16, hash1.Length);
@@ -326,8 +330,8 @@ public class WispExecutionLogTests
     [TestMethod]
     public void ComputeDefinitionHash_DifferentInput_DifferentHash()
     {
-        var hash1 = SpawnWispExecutor.ComputeDefinitionHash("""{"a":1}""");
-        var hash2 = SpawnWispExecutor.ComputeDefinitionHash("""{"a":2}""");
+        var hash1 = SpawnWispsExecutor.ComputeDefinitionHash("""{"a":1}""");
+        var hash2 = SpawnWispsExecutor.ComputeDefinitionHash("""{"a":2}""");
 
         Assert.AreNotEqual(hash1, hash2);
     }
