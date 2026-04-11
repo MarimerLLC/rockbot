@@ -90,8 +90,10 @@ internal sealed class HybridCacheWorkingMemory : IWorkingMemory
 
         _logger.LogDebug("Working memory set: key={Key} ttl={Ttl}", key, effectiveTtl);
 
-        // Generate embedding in the background (best-effort, non-blocking)
-        if (_embeddingGenerator is not null)
+        // Generate embedding in the background (best-effort, non-blocking).
+        // Skip wisp-scoped entries — they are ephemeral (30-60 min TTL), retrieved by exact
+        // key, and cleaned up on wisp completion. BM25 fallback is sufficient for search.
+        if (_embeddingGenerator is not null && !IsEphemeralKey(key))
         {
             _ = GenerateEmbeddingAsync(key, value, category, tags);
         }
@@ -265,6 +267,13 @@ internal sealed class HybridCacheWorkingMemory : IWorkingMemory
             parts.Add(entry.Category.Replace('/', ' ').Replace('-', ' '));
         return string.Join(" ", parts);
     }
+
+    /// <summary>
+    /// Keys that belong to short-lived, exact-key-lookup namespaces where embedding
+    /// generation is unnecessary (and often exceeds the model's token window).
+    /// </summary>
+    private static bool IsEphemeralKey(string key) =>
+        key.StartsWith("wisp/", StringComparison.OrdinalIgnoreCase);
 
     private static bool PassesStructuralFilters(WorkingMemoryEntry entry, MemorySearchCriteria criteria)
     {
