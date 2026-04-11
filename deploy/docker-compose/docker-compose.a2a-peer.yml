@@ -238,9 +238,9 @@ services:
       Gateway__AgentName: Alice
       Gateway__InternalAgentName: RockBot
       Gateway__Description: "Alice's RockBot agent"
-      # Accept requests from Bob (API key: alice-calls-bob → decoded by gateway auth)
-      ApiKeys__alice-calls-bob__AgentId: Bob
-      ApiKeys__alice-calls-bob__DisplayName: Agent Bob
+      # Accept requests from Bob (Bob sends X-Api-Key: bob-calls-alice)
+      ApiKeys__bob-calls-alice__AgentId: Bob
+      ApiKeys__bob-calls-alice__DisplayName: Agent Bob
     volumes:
       - gateway-alice-data:/app/data
 
@@ -265,9 +265,9 @@ services:
       Gateway__AgentName: Bob
       Gateway__InternalAgentName: RockBot
       Gateway__Description: "Bob's RockBot agent"
-      # Accept requests from Alice (API key: bob-calls-alice → decoded by gateway auth)
-      ApiKeys__bob-calls-alice__AgentId: Alice
-      ApiKeys__bob-calls-alice__DisplayName: Agent Alice
+      # Accept requests from Alice (Alice sends X-Api-Key: alice-calls-bob)
+      ApiKeys__alice-calls-bob__AgentId: Alice
+      ApiKeys__alice-calls-bob__DisplayName: Agent Alice
     volumes:
       - gateway-bob-data:/app/data
 
