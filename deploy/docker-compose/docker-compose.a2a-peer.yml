@@ -82,7 +82,8 @@ services:
           src="/app/agent/$$f"; dst="/data/agent/$$f"
           [ -f "$$src" ] && [ ! -s "$$dst" ] && cp "$$src" "$$dst"
         done
-        # Alice-specific well-known-agents (points to Bob's gateway)
+        # Alice-specific identity and config
+        cp /seed/agent-name.md /data/agent/agent-name.md
         cp /seed/well-known-agents.json /data/agent/well-known-agents.json
         # Pre-seed trust store (Alice trusts Bob at Act level)
         [ ! -s /data/agent/agent-trust.json ] && cp /seed/agent-trust.json /data/agent/agent-trust.json
@@ -125,7 +126,8 @@ services:
           src="/app/agent/$$f"; dst="/data/agent/$$f"
           [ -f "$$src" ] && [ ! -s "$$dst" ] && cp "$$src" "$$dst"
         done
-        # Bob-specific well-known-agents (points to Alice's gateway)
+        # Bob-specific identity and config
+        cp /seed/agent-name.md /data/agent/agent-name.md
         cp /seed/well-known-agents.json /data/agent/well-known-agents.json
         # Pre-seed trust store (Bob trusts Alice at Act level)
         [ ! -s /data/agent/agent-trust.json ] && cp /seed/agent-trust.json /data/agent/agent-trust.json
