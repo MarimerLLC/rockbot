@@ -1,0 +1,29 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <RootNamespace>RockBot.Scripts.Docker</RootNamespace>
+    <IsPackable>true</IsPackable>
+    <Description>Docker container-based script runner for RockBot agents.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="RockBot.Scripts.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Docker.DotNet" Version="3.*" />
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="10.0.*" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.*" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\RockBot.Scripts.Abstractions\RockBot.Scripts.Abstractions.csproj" />
+    <ProjectReference Include="..\RockBot.Host.Abstractions\RockBot.Host.Abstractions.csproj" />
+    <ProjectReference Include="..\RockBot.Host\RockBot.Host.csproj" />
+    <ProjectReference Include="..\RockBot.Messaging.Abstractions\RockBot.Messaging.Abstractions.csproj" />
+  </ItemGroup>
+
+</Project>

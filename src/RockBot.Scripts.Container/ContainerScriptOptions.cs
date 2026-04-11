@@ -31,14 +31,14 @@ public sealed class ContainerScriptOptions
     public string DefaultResultTopic { get; set; } = "script.result";
 
     /// <summary>
-    /// Base URL of the staging blob service. When non-empty, ephemeral pods receive
-    /// a ROCKBOT_STAGING_URL environment variable so scripts can upload files via REST.
+    /// Name of the Kubernetes PVC to mount as the shared volume.
+    /// When non-empty, ephemeral pods receive a volume mount at <see cref="SharedVolumePath"/>.
     /// </summary>
-    public string StagingUrl { get; set; } = "";
+    public string SharedVolumeClaim { get; set; } = "";
 
     /// <summary>
-    /// Auth token for the staging blob service. When non-empty, ephemeral pods receive
-    /// a ROCKBOT_STAGING_TOKEN environment variable for use in the X-RockBot-Token header.
+    /// Mount path for the shared volume inside script pods.
+    /// Exposed to scripts via the <c>ROCKBOT_SHARED_PATH</c> environment variable.
     /// </summary>
-    public string StagingToken { get; set; } = "";
+    public string SharedVolumePath { get; set; } = "/rockbot/shared";
 }

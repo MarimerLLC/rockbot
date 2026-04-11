@@ -83,7 +83,7 @@ public class AgentProfileExtensionsTests
 
     private sealed class StubPublisher : IMessagePublisher
     {
-        public Task PublishAsync(string topic, MessageEnvelope envelope, CancellationToken ct = default)
+        public Task PublishAsync(string topic, MessageEnvelope envelope, CancellationToken cancellationToken = default)
             => Task.CompletedTask;
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
     }

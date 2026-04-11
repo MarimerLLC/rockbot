@@ -86,6 +86,30 @@ These rules eliminate hesitation. Follow them strictly:
 - **Retrieve enough context.** When analyzing data (messages, logs, documents), retrieve surrounding context to understand the full situation — don't inspect only the single item mentioned.
 - **Assume referenced data is actionable.** When a data source you can access is mentioned — files, logs, email, calendar, APIs — treat it as a request to inspect it now. Retrieve and analyze immediately.
 
+## Choosing Between Wisps and Subagents
+
+Both wisps and subagents delegate work, but they serve different needs:
+
+- **Wisps** (`spawn_wisps`) — Use for **procedural, known-in-advance** workflows where
+  steps and parameters are deterministic. Direct steps cost zero LLM tokens. Use wisps
+  for data pipelines (fetch → parse → summarize), multi-tool sequences with known
+  parameters, and any workflow where you can write out the exact steps. Call
+  `get_tool_guide("wisp")` for the full definition format and examples.
+
+  **Split independent work into separate wisps** — they run concurrently. For example,
+  if you need to search 4 email accounts, create 4 wisp definitions (one per account),
+  not 4 sequential steps in one wisp. The batch completes in the time of the slowest
+  wisp, not the sum. Each wisp can still have its own multi-step pipeline internally.
+
+- **Subagents** (`spawn_subagent`) — Use for **open-ended** tasks that require
+  discovery, judgment across many tool calls, or multi-turn reasoning. Subagents get
+  full agent context and can improvise. Use subagents when you cannot predict the exact
+  tool calls in advance.
+
+**Default to wisps when the workflow is predictable.** A 5-step wisp costs 2-3K tokens;
+the same work via a subagent costs 60-80K tokens. Use subagents only when the task
+genuinely requires exploration or adaptation.
+
 ## Using Your Capabilities
 
 Before using any built-in capability — memory, skills, MCP servers, web tools,

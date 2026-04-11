@@ -78,7 +78,6 @@ manager:
 
 # ── Ephemeral script runner ───────────────────────────────────────────────────
 scripts:
-  namespace: rockbot-scripts   # isolated from the main rockbot namespace
   image: python:3.12-slim
   cpuLimit: 500m
   memoryLimit: 256Mi
@@ -173,26 +172,14 @@ sampleAgentHttp:
       cpu: 500m
       memory: 256Mi
 
-# ── Staging blob service ──────────────────────────────────────────────────────
-# Shared PVC-backed blob store exposing a REST API (for ephemeral script pods) and
-# MCP tools (for the agent). Script pods receive ROCKBOT_STAGING_URL automatically.
-staging:
-  enabled: true
-  image:
-    repository: rockylhotka/mcpserver-staging
-    tag: latest
-  replicaCount: 1
+# ── Shared volume ────────────────────────────────────────────────────────────
+# ReadWriteMany PVC mounted directly into the agent, script pods, and other
+# services that need shared file access. No HTTP facade — pure filesystem.
+shared:
   size: 5Gi
   tmpTtlDays: 1
   draftsTtlDays: 14
   exportsTtlDays: 14
-  resources:
-    requests:
-      cpu: 50m
-      memory: 64Mi
-    limits:
-      cpu: 200m
-      memory: 256Mi
 
 # ── TodoApp MCP server ────────────────────────────────────────────────────────
 # Standalone MCP server that exposes a persistent to-do list to the agent.
@@ -227,20 +214,36 @@ secrets:
   llm:
     # Three-tier LLM configuration. Balanced is REQUIRED.
     # Low and High are optional — both fall back to Balanced when not configured.
-    # Any OpenAI-compatible endpoint works: OpenRouter, Azure OpenAI, local Ollama, etc.
     # Tier selection: user messages → keyword heuristic; patrol → Balanced; dream/research → High
+    #
+    # Two provider types are supported, and each tier can use a different provider:
+    #   - (default) OpenAI-compatible: any endpoint with endpoint + apiKey + modelId
+    #   - "Copilot": GitHub Copilot SDK (per-request billing via Copilot license)
+    #
+    # Global provider default (applies to all tiers unless overridden per-tier):
+    provider: ""            # "" = OpenAI-compatible (default), "Copilot" = GitHub Copilot SDK
+    # GitHub token for Copilot provider (needs copilot scope):
+    gitHubToken: ""
+
     balanced:
-      endpoint: ""          # REQUIRED — base URL of the OpenAI-compatible API
-      apiKey: ""            # REQUIRED — API key
-      modelId: ""           # REQUIRED — model ID (e.g. anthropic/claude-haiku-4.5)
+      provider: ""          # Per-tier override: "" inherits global, "Copilot" or "OpenAI"
+      endpoint: ""          # REQUIRED for OpenAI-compatible — base URL of the API
+      apiKey: ""            # REQUIRED for OpenAI-compatible — API key
+      modelId: ""           # REQUIRED — model ID (e.g. anthropic/claude-haiku-4.5 or gpt-4.1)
+    # Ordered fallback chain for balanced tier. First entry is preferred; subsequent
+    # entries are tried in order on failure. Takes precedence over single 'balanced'
+    # when populated. Each entry has: provider, endpoint, apiKey, modelId.
+    balancedModels: []
     low:                    # Optional — fast/cheap model for simple factual questions
+      provider: ""
       endpoint: ""
       apiKey: ""
-      modelId: "google/gemini-3.1-pro-preview"
+      modelId: ""
     high:                   # Optional — powerful model for dream/research/complex tasks
+      provider: ""
       endpoint: ""
       apiKey: ""
-      modelId: "google/gemini-3.1-pro-preview"           # leave empty to fall back to balanced
+      modelId: ""           # leave empty to fall back to balanced
 
     # Legacy flat keys — kept for backward compatibility; remove after all deployments migrated
     endpoint: ""
@@ -266,10 +269,6 @@ secrets:
   openRouter:
     apiKey: ""              # required when openrouterMcp.enabled=true — OpenRouter management API key
                             # (separate from llm.apiKey — this is the account management key)
-
-  staging:
-    token: ""               # required when staging.enabled=true — shared secret for X-RockBot-Token auth
-                            # generate with: openssl rand -hex 32
 
   azureFoundry:
     tenantId: ""            # required when azureFoundryMcp.enabled=true — Azure AD tenant ID

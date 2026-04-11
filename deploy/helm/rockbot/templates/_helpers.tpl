@@ -67,15 +67,8 @@ Name of the agent PVC.
 {{- end }}
 
 {{/*
-Name of the staging PVC.
+Name of the shared volume PVC.
 */}}
-{{- define "rockbot.stagingPvcName" -}}
-{{- include "rockbot.fullname" . }}-staging
-{{- end }}
-
-{{/*
-Cluster-internal URL for the staging service.
-*/}}
-{{- define "rockbot.stagingServiceUrl" -}}
-http://{{- include "rockbot.fullname" . }}-staging.{{ .Values.namespace }}.svc.cluster.local
+{{- define "rockbot.sharedPvcName" -}}
+{{- include "rockbot.fullname" . }}-shared
 {{- end }}

@@ -74,6 +74,93 @@ internal sealed class EmbeddingCache
     }
 
     /// <summary>
+    /// Returns cached embeddings for the given IDs, generating and caching any that are missing
+    /// in a single batched call to the embedding endpoint. Much faster than sequential
+    /// <see cref="GetOrCreateAsync"/> calls when multiple candidates have cache misses.
+    /// </summary>
+    public async Task<Dictionary<string, float[]?>> GetOrCreateBatchAsync(
+        IReadOnlyList<(string Id, string Text)> items,
+        CancellationToken ct = default)
+    {
+        var result = new Dictionary<string, float[]?>(items.Count, StringComparer.OrdinalIgnoreCase);
+        var misses = new List<(string Id, string Text)>();
+
+        // Fast path: read all cached embeddings without locking
+        foreach (var (id, text) in items)
+        {
+            var cached = await TryReadAsync(GetFilePath(id));
+            if (cached is not null)
+                result[id] = cached;
+            else
+                misses.Add((id, text));
+        }
+
+        if (misses.Count == 0)
+            return result;
+
+        await _semaphore.WaitAsync(ct);
+        try
+        {
+            // Double-check after acquiring lock — another thread may have generated some
+            var stillMissing = new List<(string Id, string Text)>();
+            foreach (var (id, text) in misses)
+            {
+                var cached = await TryReadAsync(GetFilePath(id));
+                if (cached is not null)
+                    result[id] = cached;
+                else
+                    stillMissing.Add((id, text));
+            }
+
+            if (stillMissing.Count == 0)
+                return result;
+
+            // Batch-generate all missing embeddings in one call
+            var sw = Stopwatch.StartNew();
+            try
+            {
+                HostDiagnostics.EmbeddingCalls.Add(1);
+
+                var texts = stillMissing.Select(m =>
+                    m.Text.Length > _maxInputChars ? m.Text[.._maxInputChars] : m.Text).ToList();
+                var generated = await _generator.GenerateAsync(texts, cancellationToken: ct);
+
+                sw.Stop();
+                HostDiagnostics.EmbeddingDuration.Record(sw.Elapsed.TotalMilliseconds);
+                _logger.LogInformation(
+                    "Batch embedding generated {Count} vectors in {Duration:F0}ms ({Dimensions} dimensions)",
+                    stillMissing.Count, sw.Elapsed.TotalMilliseconds,
+                    generated.Count > 0 ? generated[0].Vector.Length : 0);
+
+                for (var i = 0; i < stillMissing.Count && i < generated.Count; i++)
+                {
+                    var embedding = generated[i].Vector.ToArray();
+                    result[stillMissing[i].Id] = embedding;
+                    await WriteAsync(GetFilePath(stillMissing[i].Id), embedding);
+                }
+            }
+            catch (Exception ex)
+            {
+                sw.Stop();
+                HostDiagnostics.EmbeddingFailures.Add(1);
+                HostDiagnostics.EmbeddingDuration.Record(sw.Elapsed.TotalMilliseconds);
+                _logger.LogWarning(ex,
+                    "Batch embedding generation failed for {Count} items in {Duration:F0}ms — returning nulls",
+                    stillMissing.Count, sw.Elapsed.TotalMilliseconds);
+
+                foreach (var (id, _) in stillMissing)
+                    result.TryAdd(id, null);
+            }
+        }
+        finally
+        {
+            _semaphore.Release();
+        }
+
+        return result;
+    }
+
+    /// <summary>
     /// Generates and caches an embedding for a document, replacing any existing cached value.
     /// Called on save/update to keep the cache warm. Skips the write if the ID was deleted
     /// while generation was in flight (prevents orphaned .bin files).

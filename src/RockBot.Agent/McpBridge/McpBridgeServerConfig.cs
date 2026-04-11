@@ -50,7 +50,7 @@ public sealed class McpBridgeServerConfig
     /// <summary>
     /// HTTP headers to include on every request to this server.
     /// Values may use <c>${ENV_VAR_NAME}</c> syntax for environment variable substitution.
-    /// Example: <c>"X-RockBot-Token": "${Staging__Token}"</c>
+    /// Example: <c>"X-Api-Key": "${MY_API_KEY}"</c>
     /// </summary>
     public Dictionary<string, string> Headers { get; set; } = [];
 

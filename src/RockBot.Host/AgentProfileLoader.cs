@@ -1,6 +1,8 @@
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using RockBot.Messaging;
+using RockBot.UserProxy;
 
 namespace RockBot.Host;
 
@@ -15,6 +17,8 @@ internal sealed class AgentProfileLoader : IHostedService, IDisposable
     private readonly ProfileHolder _holder;
     private readonly AgentNameHolder _nameHolder;
     private readonly AgentProfileOptions _options;
+    private readonly IMessagePublisher _publisher;
+    private readonly AgentIdentity _agent;
     private readonly ILogger<AgentProfileLoader> _logger;
     private FileSystemWatcher? _watcher;
     private Timer? _debounce;
@@ -25,12 +29,16 @@ internal sealed class AgentProfileLoader : IHostedService, IDisposable
         ProfileHolder holder,
         AgentNameHolder nameHolder,
         IOptions<AgentProfileOptions> options,
+        IMessagePublisher publisher,
+        AgentIdentity agent,
         ILogger<AgentProfileLoader> logger)
     {
         _provider = provider;
         _holder = holder;
         _nameHolder = nameHolder;
         _options = options.Value;
+        _publisher = publisher;
+        _agent = agent;
         _logger = logger;
     }
 
@@ -131,6 +139,8 @@ internal sealed class AgentProfileLoader : IHostedService, IDisposable
     {
         try
         {
+            var previousName = _nameHolder.DisplayName;
+
             var path = ResolveAgentNamePath();
             if (File.Exists(path))
             {
@@ -147,10 +157,29 @@ internal sealed class AgentProfileLoader : IHostedService, IDisposable
                 _nameHolder.Update(null);
                 _logger.LogDebug("Agent name file not found at {Path}, using identity name", path);
             }
+
+            var currentName = _nameHolder.DisplayName ?? _agent.Name;
+            if (!string.Equals(previousName, _nameHolder.DisplayName, StringComparison.Ordinal))
+                _ = PublishNameChangedAsync(currentName);
         }
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "Failed to load agent name, keeping previous value");
+        }
+    }
+
+    private async Task PublishNameChangedAsync(string agentName)
+    {
+        try
+        {
+            var notification = new AgentNameChanged { AgentName = agentName };
+            var envelope = notification.ToEnvelope<AgentNameChanged>(source: _agent.Name);
+            await _publisher.PublishAsync(UserProxyTopics.UserResponse, envelope);
+            _logger.LogInformation("Published agent name change notification: {Name}", agentName);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to publish agent name change notification");
         }
     }
 

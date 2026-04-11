@@ -16,13 +16,12 @@ data:
   {{- end }}
 
   # ── Ephemeral script runner ────────────────────────────────────────────────
-  Scripts__Container__Namespace: {{ .Values.scripts.namespace | quote }}
+  Scripts__Container__Namespace: {{ .Values.namespace | quote }}
   Scripts__Container__Image: {{ .Values.scripts.image | quote }}
   Scripts__Container__CpuLimit: {{ .Values.scripts.cpuLimit | quote }}
   Scripts__Container__MemoryLimit: {{ .Values.scripts.memoryLimit | quote }}
-  {{- if .Values.staging.enabled }}
-  Scripts__Container__StagingUrl: {{ include "rockbot.stagingServiceUrl" . | quote }}
-  {{- end }}
+  Scripts__Container__SharedVolumeClaim: {{ include "rockbot.sharedPvcName" . | quote }}
+  Scripts__Container__SharedVolumePath: "/rockbot/shared"
 
   # ── Agent data paths (all under the PVC mount at /data/agent) ─────────────
   AgentProfile__BasePath: "/data/agent"
@@ -39,9 +38,6 @@ data:
   {{- end }}
   {{- if .Values.azureFoundryMcp.enabled }}
   McpBridge__DefaultServers__azure-foundry: "http://{{ include "rockbot.fullname" . }}-azure-foundry-mcp.{{ .Values.namespace }}.svc.cluster.local/"
-  {{- end }}
-  {{- if .Values.staging.enabled }}
-  McpBridge__DefaultServers__staging: "http://{{ include "rockbot.fullname" . }}-staging.{{ .Values.namespace }}.svc.cluster.local/"
   {{- end }}
   {{- if .Values.todoappMcp.enabled }}
   McpBridge__DefaultServers__todo: "http://mcp-todo.{{ .Values.namespace }}.svc.cluster.local/"

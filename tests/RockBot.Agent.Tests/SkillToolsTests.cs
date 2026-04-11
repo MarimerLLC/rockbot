@@ -221,7 +221,7 @@ public class SkillToolsTests
         public Task<IReadOnlyList<Skill>> ListAsync() =>
             Task.FromResult<IReadOnlyList<Skill>>(_skills.Values.OrderBy(s => s.Name).ToList());
         public Task DeleteAsync(string name) { _skills.Remove(name); return Task.CompletedTask; }
-        public Task<IReadOnlyList<Skill>> SearchAsync(string query, int maxResults, CancellationToken cancellationToken = default) =>
+        public Task<IReadOnlyList<Skill>> SearchAsync(string query, int maxResults, CancellationToken cancellationToken = default, float[]? queryEmbedding = null) =>
             Task.FromResult<IReadOnlyList<Skill>>([]);
     }
 

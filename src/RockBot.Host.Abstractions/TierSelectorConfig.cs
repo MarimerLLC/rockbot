@@ -18,9 +18,28 @@ public sealed class TierSelectorConfig
     /// <summary>Score at or below which a prompt is routed to the Balanced tier.</summary>
     public double? BalancedCeiling { get; set; }
 
-    /// <summary>Complete list of keywords that push the score toward the High tier.</summary>
+    /// <summary>
+    /// Additional keywords that push the score toward the High tier.
+    /// Merged with compiled defaults (additions only — compiled defaults cannot be removed via config).
+    /// </summary>
     public List<string>? HighSignalKeywords { get; set; }
 
-    /// <summary>Complete list of keywords that push the score toward the Low tier.</summary>
+    /// <summary>
+    /// Additional keywords that push the score toward the Low tier.
+    /// Merged with compiled defaults (additions only — compiled defaults cannot be removed via config).
+    /// </summary>
     public List<string>? LowSignalKeywords { get; set; }
+
+    /// <summary>
+    /// Score threshold below which the trivial guard forces Low tier, regardless of
+    /// dream-tuned thresholds. Prevents simple prompts from drifting into Balanced
+    /// when the dream loop adjusts <see cref="LowCeiling"/>. Default: 0.15.
+    /// </summary>
+    public double? TrivialGuardCeiling { get; set; }
+
+    /// <summary>
+    /// Score reduction applied to user-originated messages (pushes toward lower tiers).
+    /// Subagent tasks are not biased. Default: 0.10.
+    /// </summary>
+    public double? UserOriginBias { get; set; }
 }

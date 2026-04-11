@@ -72,18 +72,16 @@ spec:
                 configMapKeyRef:
                   name: {{ include "rockbot.configmapName" . }}
                   key: Scripts__Container__MemoryLimit
-            {{- if .Values.staging.enabled }}
-            - name: Scripts__Container__StagingUrl
+            - name: Scripts__Container__SharedVolumeClaim
               valueFrom:
                 configMapKeyRef:
                   name: {{ include "rockbot.configmapName" . }}
-                  key: Scripts__Container__StagingUrl
-            - name: Scripts__Container__StagingToken
+                  key: Scripts__Container__SharedVolumeClaim
+            - name: Scripts__Container__SharedVolumePath
               valueFrom:
-                secretKeyRef:
-                  name: {{ include "rockbot.secretName" . }}
-                  key: Staging__Token
-            {{- end }}
+                configMapKeyRef:
+                  name: {{ include "rockbot.configmapName" . }}
+                  key: Scripts__Container__SharedVolumePath
             - name: DOTNET_ENVIRONMENT
               value: "Production"
           resources:

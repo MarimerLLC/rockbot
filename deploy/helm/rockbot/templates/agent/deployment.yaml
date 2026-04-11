@@ -98,6 +98,8 @@ spec:
           volumeMounts:
             - name: agent-data
               mountPath: /data/agent
+            - name: shared-data
+              mountPath: /rockbot/shared
           resources:
             {{- toYaml .Values.agent.resources | nindent 12 }}
 
@@ -133,3 +135,6 @@ spec:
         - name: agent-data
           persistentVolumeClaim:
             claimName: {{ include "rockbot.agentPvcName" . }}
+        - name: shared-data
+          persistentVolumeClaim:
+            claimName: {{ include "rockbot.sharedPvcName" . }}

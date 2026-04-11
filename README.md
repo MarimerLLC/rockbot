@@ -14,6 +14,12 @@ Agents built using the RockBot framework SDK are designed with the principle of 
 
 Each agent is an isolated process that reacts to messages, invokes tools, calls LLMs, delegates work to other agents, and emits responses — all via a topic-based pub/sub message bus backed by RabbitMQ (or an in-process bus for local development).
 
+## Community
+
+* [Discord server](https://discord.gg/eQjxWG6KYN)
+
+## RockBot Implementation
+
 ### Core components
 
 | Project | Purpose |
@@ -158,6 +164,13 @@ Prompts are routed to one of three model tiers based on estimated complexity, so
 - **Balanced** — moderate-complexity requests. The default fallback; used when Low or High aren't explicitly configured.
 - **High** — deep analysis, research synthesis, dream consolidation. Routed to the most capable model.
 
+Each tier can use a different LLM **provider** — mix and match within the same agent:
+
+- **OpenAI-compatible** (default) — any endpoint with API key: OpenRouter, Azure OpenAI, local Ollama, etc. Per-token billing.
+- **GitHub Copilot SDK** (`Provider=Copilot`) — uses a GitHub Copilot license via the CLI subprocess. Per-request billing. Set `GITHUB_TOKEN` with `copilot` scope.
+
+Set a global default provider (`LLM:Provider`) and override per tier (`LLM:Low:Provider`, `LLM:Balanced:Provider`, `LLM:High:Provider`). For example: Low on Copilot, Balanced on Azure Foundry, High on OpenRouter.
+
 Tier selection uses `KeywordTierSelector` — a lightweight keyword + prompt-length heuristic with no external calls. The thresholds and keyword lists are hot-reloadable from `tier-selector.json` on the PVC without a pod restart. A background dream pass (`TierRoutingReviewPass`) periodically reviews routing decisions logged in `tier-routing-log.jsonl` and rewrites `tier-selector.json` if it detects systematic mis-routing.
 
 ### Model-specific behaviors
@@ -266,6 +279,11 @@ rabbitmq:
 secrets:
   create: true
   llm:
+    # Global provider: "" = OpenAI-compatible (default), "Copilot" = GitHub Copilot SDK
+    # Each tier can override with its own provider field.
+    # provider: "Copilot"
+    # gitHubToken: "<github-token-with-copilot-scope>"
+
     # Balanced tier — REQUIRED. Used for moderate-complexity user messages and patrol tasks.
     balanced:
       endpoint: "https://openrouter.ai/api/v1"

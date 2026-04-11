@@ -18,6 +18,10 @@ using RockBot.Tools.Mcp;
 using RockBot.A2A;
 using RockBot.ServiceSearch;
 using RockBot.Subagent;
+using RockBot.Wisp;
+using RockBot.Llm.Copilot;
+using GitHub.Copilot.SDK;
+using RockBot.Tools.FileSystem;
 using RockBot.Tools.Scheduling;
 using RockBot.Tools.Web;
 using RockBot.Telemetry;
@@ -57,11 +61,15 @@ var tierOptions = new LlmTierOptions();
 llmSection.Bind(tierOptions);
 
 // Backward compat: flat LLM__{Endpoint/ApiKey/ModelId} → Balanced
+// Only apply if the flat key is set AND the structured key isn't already populated.
 if (!tierOptions.Balanced.IsConfigured)
 {
-    tierOptions.Balanced.Endpoint = llmSection["Endpoint"];
-    tierOptions.Balanced.ApiKey   = llmSection["ApiKey"];
-    tierOptions.Balanced.ModelId  = llmSection["ModelId"];
+    if (!string.IsNullOrEmpty(llmSection["Endpoint"]))
+        tierOptions.Balanced.Endpoint = llmSection["Endpoint"];
+    if (!string.IsNullOrEmpty(llmSection["ApiKey"]))
+        tierOptions.Balanced.ApiKey   = llmSection["ApiKey"];
+    if (!string.IsNullOrEmpty(llmSection["ModelId"]))
+        tierOptions.Balanced.ModelId  = llmSection["ModelId"];
 }
 
 // If BalancedModels is used exclusively (no single Balanced key), seed Balanced from
@@ -69,37 +77,103 @@ if (!tierOptions.Balanced.IsConfigured)
 if (!tierOptions.Balanced.IsConfigured && tierOptions.BalancedModels.Count > 0)
     tierOptions.Balanced = tierOptions.BalancedModels[0];
 
-if (tierOptions.Balanced.IsConfigured || tierOptions.BalancedModels.Count > 0)
+// ── Per-tier client builder — each tier can use a different provider ─────────
+// Global provider default: LLM__Provider (Copilot | empty = OpenAI-compatible)
+// Per-tier override: LLM__Low__Provider, LLM__Balanced__Provider, LLM__High__Provider
+var globalProvider = llmSection["Provider"];
+
+// Lazy-initialized Copilot singleton — created only if at least one tier uses Copilot.
+CopilotClient? copilotClient = null;
+CopilotChatClientOptions? copilotBaseOptions = null;
+ILoggerFactory? copilotLoggerFactory = null;
+CopilotUsageTracker? copilotUsageTracker = null;
+ICopilotSessionEvents? copilotSessionEvents = null;
+
+async Task<CopilotClient> GetOrCreateCopilotClientAsync()
 {
-    IChatClient BuildClient(LlmTierConfig config)
+    if (copilotClient is not null)
+        return copilotClient;
+
+    copilotBaseOptions = new CopilotChatClientOptions();
+    llmSection.Bind(copilotBaseOptions);
+    copilotLoggerFactory = LoggerFactory.Create(b =>
+        b.AddConsole().SetMinimumLevel(LogLevel.Information));
+
+    // Usage tracker writes metrics to the shared data volume for introspection MCP.
+    var basePath = builder.Configuration["AgentProfile:BasePath"] ?? "/data/agent";
+    copilotUsageTracker = new CopilotUsageTracker(Path.Combine(basePath, "copilot-usage.json"));
+
+    // Session events bridge — deferred resolution of IToolProgressNotifier from DI.
+    copilotSessionEvents = new CopilotSessionEventsBridge();
+
+    copilotClient = await CopilotClientFactory.CreateAndStartAsync(copilotBaseOptions);
+    return copilotClient;
+}
+
+IChatClient BuildOpenAIClient(LlmTierConfig config)
+{
+    return new OpenAIClient(
+        new ApiKeyCredential(config.ApiKey!),
+        new OpenAIClientOptions
+        {
+            Endpoint = new Uri(config.Endpoint!),
+            // Extend from the 100s default — subagents with large tool sets generate
+            // longer responses that can exceed the default before the body is fully read.
+            NetworkTimeout = TimeSpan.FromMinutes(5)
+        })
+        .GetChatClient(config.ModelId!).AsIChatClient();
+}
+
+async Task<IChatClient> BuildClientForTierAsync(LlmTierConfig config, string tierName)
+{
+    if (config.IsCopilot(globalProvider))
     {
-        return new OpenAIClient(
-            new ApiKeyCredential(config.ApiKey!),
-            new OpenAIClientOptions
-            {
-                Endpoint = new Uri(config.Endpoint!),
-                // Extend from the 100s default — subagents with large tool sets generate
-                // longer responses that can exceed the default before the body is fully read.
-                NetworkTimeout = TimeSpan.FromMinutes(5)
-            })
-            .GetChatClient(config.ModelId!).AsIChatClient();
+        var client = await GetOrCreateCopilotClientAsync();
+        var modelId = config.ModelId ?? copilotBaseOptions!.ModelId;
+        var opts = new CopilotChatClientOptions
+        {
+            ModelId = modelId,
+            UseLoggedInUser = copilotBaseOptions!.UseLoggedInUser,
+            GitHubToken = copilotBaseOptions.GitHubToken,
+            RequestTimeout = copilotBaseOptions.RequestTimeout,
+            MaxRetries = copilotBaseOptions.MaxRetries,
+            RetryBaseDelay = copilotBaseOptions.RetryBaseDelay
+        };
+        Console.WriteLine($"  {tierName}: Copilot ({modelId})");
+        return new CopilotChatClient(
+            client, opts,
+            copilotLoggerFactory!.CreateLogger<CopilotChatClient>(),
+            copilotUsageTracker,
+            copilotSessionEvents);
     }
+
+    Console.WriteLine($"  {tierName}: OpenAI-compatible ({config.ModelId} @ {config.Endpoint})");
+    return BuildOpenAIClient(config);
+}
+
+// Determine whether any tier is configured.
+var anyConfigured = tierOptions.Balanced.IsConfigured
+    || tierOptions.BalancedModels.Count > 0
+    || !string.IsNullOrEmpty(globalProvider)
+    || tierOptions.Low.IsCopilot(globalProvider)
+    || tierOptions.High.IsCopilot(globalProvider);
+
+if (anyConfigured)
+{
+    Console.WriteLine("LLM tier configuration:");
 
     // Build the balanced inner client: use FallbackChatClient when multiple models are listed.
     IChatClient balancedInner;
     if (tierOptions.BalancedModels.Count > 1)
     {
-        // Bootstrap logger factory (not disposed — lives for the application lifetime).
         var fallbackLoggerFactory = LoggerFactory.Create(b =>
             b.AddConsole().SetMinimumLevel(LogLevel.Warning));
         var fallbackLogger = fallbackLoggerFactory.CreateLogger<FallbackChatClient>();
 
-        IReadOnlyList<(string ModelId, IChatClient Client)> entries = tierOptions.BalancedModels
-            .Select(cfg => (cfg.ModelId!, BuildClient(cfg)))
-            .ToList();
+        var entries = new List<(string ModelId, IChatClient Client)>();
+        foreach (var cfg in tierOptions.BalancedModels)
+            entries.Add((cfg.ModelId!, await BuildClientForTierAsync(cfg, $"Balanced[{entries.Count}]")));
 
-        // Read the per-call timeout so FallbackChatClient can apply it per-attempt,
-        // giving each model in the chain its own timeout window for fallback to work.
         var agentHostOpts = new AgentHostOptions();
         builder.Configuration.GetSection("AgentHost").Bind(agentHostOpts);
 
@@ -108,12 +182,15 @@ if (tierOptions.Balanced.IsConfigured || tierOptions.BalancedModels.Count > 0)
     }
     else if (tierOptions.BalancedModels.Count == 1)
     {
-        balancedInner = BuildClient(tierOptions.BalancedModels[0]);
+        balancedInner = await BuildClientForTierAsync(tierOptions.BalancedModels[0], "Balanced");
     }
     else
     {
-        balancedInner = BuildClient(tierOptions.Balanced);
+        balancedInner = await BuildClientForTierAsync(tierOptions.Balanced, "Balanced");
     }
+
+    var lowConfig = tierOptions.Resolve(ModelTier.Low);
+    var highConfig = tierOptions.Resolve(ModelTier.High);
 
     // AddRockBotTieredChatClients must be called BEFORE AddModelBehaviors so that
     // its TryAddSingleton<ModelBehavior> (which uses the inner client closure directly)
@@ -121,9 +198,9 @@ if (tierOptions.Balanced.IsConfigured || tierOptions.BalancedModels.Count > 0)
     // create a circular dependency: IChatClient → TieredChatClientRegistry → ModelBehavior
     // → IChatClient → deadlock).
     builder.Services.AddRockBotTieredChatClients(
-        lowInnerClient:      BuildClient(tierOptions.Resolve(ModelTier.Low)),
+        lowInnerClient:      await BuildClientForTierAsync(lowConfig, "Low"),
         balancedInnerClient: balancedInner,
-        highInnerClient:     BuildClient(tierOptions.Resolve(ModelTier.High)));
+        highInnerClient:     await BuildClientForTierAsync(highConfig, "High"));
 
     builder.Services.AddModelBehaviors(opts =>
         builder.Configuration.GetSection("ModelBehaviors").Bind(opts));
@@ -189,11 +266,14 @@ builder.Services.AddRockBotHost(agent =>
     agent.WithDreaming();
     agent.AddToolHandler();
     agent.AddMcpToolProxy();
+    agent.AddFileSystemTools(opts => builder.Configuration.GetSection("FileSystem").Bind(opts));
     agent.AddWebTools(opts => builder.Configuration.GetSection("WebTools").Bind(opts));
     agent.AddSchedulingTools();
     agent.AddHeartbeatBootstrap(opts =>
         builder.Configuration.GetSection("HeartbeatPatrol").Bind(opts));
     agent.AddSubagents();
+    agent.AddWisps(opts =>
+        opts.SharedVolumePath = builder.Configuration["FileSystem:BasePath"] ?? "/rockbot/shared");
     var a2aBasePath = builder.Configuration["AgentProfile:BasePath"]
         ?? builder.Configuration["AgentProfile__BasePath"]
         ?? AppContext.BaseDirectory;
@@ -281,5 +361,8 @@ builder.Services.AddHostedService<McpBridgeService>();
 builder.Services.AddRemoteScriptRunner("RockBot");
 
 var app = builder.Build();
+
+// Wire the deferred service provider for Copilot session event bridge.
+(copilotSessionEvents as CopilotSessionEventsBridge)?.SetServiceProvider(app.Services);
 
 await app.RunAsync();

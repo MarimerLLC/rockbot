@@ -5,7 +5,8 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddHealthChecks();
 builder.Services.AddMcpServer()
     .WithHttpTransport()
-    .WithTools<AgentNameTools>();
+    .WithTools<AgentNameTools>()
+    .WithTools<CopilotUsageTools>();
 
 var app = builder.Build();
 

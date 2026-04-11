@@ -29,12 +29,14 @@ public sealed class AgentContextBuilder(
     IEnumerable<IServiceSearchIndex> serviceSearchIndexProviders,
     IEnumerable<IKnowledgeGraph> knowledgeGraphProviders,
     IOptions<KnowledgeGraphOptions> knowledgeGraphOptions,
+    IEnumerable<IEmbeddingGenerator<string, Embedding<float>>> embeddingGenerators,
     ILogger<AgentContextBuilder> logger)
 {
     private const int MaxLlmContextTurns = 20;
     private readonly IServiceSearchIndex? _serviceSearchIndex = serviceSearchIndexProviders.FirstOrDefault();
     private readonly IKnowledgeGraph? _knowledgeGraph = knowledgeGraphProviders.FirstOrDefault();
     private readonly KnowledgeGraphOptions _graphOptions = knowledgeGraphOptions.Value;
+    private readonly IEmbeddingGenerator<string, Embedding<float>>? _embeddingGenerator = embeddingGenerators.FirstOrDefault();
 
     /// <summary>
     /// Builds the full chat message list for one LLM call: system prompt, rules, history,
@@ -93,9 +95,30 @@ public sealed class AgentContextBuilder(
             logger.LogInformation("No AdditionalSystemPrompt configured for this model");
         }
 
+        // ── Wave 0: generate the query embedding once, shared across all searches ──
+        // Avoids redundant calls to the embedding endpoint — each store would otherwise
+        // generate its own query embedding for the same user message text.
+
+        float[]? sharedQueryEmbedding = null;
+        if (_embeddingGenerator is not null && !string.IsNullOrWhiteSpace(currentUserContent))
+        {
+            try
+            {
+                var result = await _embeddingGenerator.GenerateAsync(currentUserContent, cancellationToken: ct);
+                sharedQueryEmbedding = result.Vector.ToArray();
+                logger.LogInformation("Shared query embedding generated ({Dimensions} dimensions)", sharedQueryEmbedding.Length);
+            }
+            catch (Exception ex)
+            {
+                logger.LogWarning(ex, "Failed to generate shared query embedding — stores will fall back to BM25-only");
+            }
+        }
+
         // ── Wave 1: fire all independent lookups concurrently ─────────────────
         // Each store is a separate singleton with its own locking, so cross-store
         // parallelism reduces wall-clock time from sum(all) to max(slowest store).
+        // The pre-computed query embedding is passed to all searches so they skip
+        // generating their own.
 
         var wmNamespace = workingMemoryNamespace ?? $"session/{sessionId}";
         var isUserSession = wmNamespace.StartsWith("session/", StringComparison.OrdinalIgnoreCase);
@@ -105,15 +128,15 @@ public sealed class AgentContextBuilder(
 
         var historyTask = conversationMemory.GetTurnsAsync(sessionId, ct);
         var ltmTask = longTermMemory.SearchAsync(
-            new MemorySearchCriteria(Query: currentUserContent, MaxResults: 8));
+            new MemorySearchCriteria(Query: currentUserContent, MaxResults: 8, QueryEmbedding: sharedQueryEmbedding));
         var episodicTask = longTermMemory.SearchAsync(
-            new MemorySearchCriteria(Query: currentUserContent, Category: "episodic", MaxResults: 5));
+            new MemorySearchCriteria(Query: currentUserContent, Category: "episodic", MaxResults: 5, QueryEmbedding: sharedQueryEmbedding));
         var identityTask = longTermMemory.SearchAsync(
             new MemorySearchCriteria(Category: AgentIdentityCategories.Prefix, MaxResults: 20));
         var skillListTask = shouldInjectSkillIndex
             ? skillStore.ListAsync()
             : Task.FromResult<IReadOnlyList<Skill>>([]);
-        var skillSearchTask = skillStore.SearchAsync(currentUserContent, maxResults: 5, ct);
+        var skillSearchTask = skillStore.SearchAsync(currentUserContent, maxResults: 5, ct, queryEmbedding: sharedQueryEmbedding);
         var wmTask = workingMemory.ListAsync(wmNamespace);
         var graphTask = _knowledgeGraph?.FindEntitiesByNameAsync(currentUserContent);
         var patrolTask = isUserSession

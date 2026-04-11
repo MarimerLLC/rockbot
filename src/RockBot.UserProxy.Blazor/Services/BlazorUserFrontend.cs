@@ -44,6 +44,13 @@ public sealed class BlazorUserFrontend(ChatStateService chatState) : IUserFronte
         return Task.CompletedTask;
     }
 
+    public Task OnAgentNameChangedAsync(string agentName, CancellationToken cancellationToken = default)
+    {
+        _primaryAgentName = agentName;
+        chatState.SetAgentInfo(agentName, chatState.AgentVersion ?? "");
+        return Task.CompletedTask;
+    }
+
     private MessageCategory CategorizeReply(AgentReply reply)
     {
         if (reply.SessionId == "scheduled-system")

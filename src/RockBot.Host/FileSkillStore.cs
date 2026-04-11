@@ -133,52 +133,56 @@ internal sealed partial class FileSkillStore : ISkillStore
         }
     }
 
-    public async Task<IReadOnlyList<Skill>> SearchAsync(string query, int maxResults, CancellationToken cancellationToken = default)
+    public async Task<IReadOnlyList<Skill>> SearchAsync(string query, int maxResults, CancellationToken cancellationToken = default, float[]? queryEmbedding = null)
     {
+        // Only hold the semaphore long enough to snapshot the index
+        List<Skill> candidates;
         await _semaphore.WaitAsync(cancellationToken);
         try
         {
             var index = await EnsureIndexAsync();
-            var candidates = index.Values.ToList();
-
-            if (_embeddingCache is not null)
-            {
-                using var hybridActivity = HostDiagnostics.Source.StartActivity("rockbot.search.hybrid.skills");
-                var sw = Stopwatch.StartNew();
-
-                var queryEmbedding = await _embeddingCache.GenerateQueryEmbeddingAsync(query, cancellationToken);
-                if (queryEmbedding is not null)
-                {
-                    // Pre-load all candidate embeddings asynchronously (avoids sync-over-async per candidate)
-                    var embeddingMap = new Dictionary<string, float[]?>(StringComparer.OrdinalIgnoreCase);
-                    foreach (var s in candidates)
-                        embeddingMap[s.Name] = await _embeddingCache.GetOrCreateAsync(s.Name, GetDocumentText(s), cancellationToken);
-
-                    var results = HybridRanker.Rank(
-                            candidates, GetDocumentText,
-                            static s => s.Name,
-                            s => embeddingMap.GetValueOrDefault(s.Name),
-                            queryEmbedding, query,
-                            _minSimilarity)
-                        .Take(maxResults)
-                        .ToList();
-
-                    sw.Stop();
-                    HostDiagnostics.HybridSearchDuration.Record(sw.Elapsed.TotalMilliseconds);
-                    _logger.LogInformation("Hybrid skill search completed in {Duration:F0}ms ({Candidates} candidates, {Results} results)",
-                        sw.Elapsed.TotalMilliseconds, candidates.Count, results.Count);
-                    return results;
-                }
-            }
-
-            return Bm25Ranker.Rank(candidates, GetDocumentText, query)
-                .Take(maxResults)
-                .ToList();
+            candidates = index.Values.ToList();
         }
         finally
         {
             _semaphore.Release();
         }
+
+        if (_embeddingCache is not null)
+        {
+            using var hybridActivity = HostDiagnostics.Source.StartActivity("rockbot.search.hybrid.skills");
+            var sw = Stopwatch.StartNew();
+
+            // Use pre-computed query embedding if provided, otherwise generate one
+            queryEmbedding ??= await _embeddingCache.GenerateQueryEmbeddingAsync(query, cancellationToken);
+            if (queryEmbedding is not null)
+            {
+                // Batch-load all candidate embeddings (single endpoint call for cache misses)
+                var batchItems = candidates
+                    .Select(s => (s.Name, Text: GetDocumentText(s)))
+                    .ToList();
+                var embeddingMap = await _embeddingCache.GetOrCreateBatchAsync(batchItems, cancellationToken);
+
+                var results = HybridRanker.Rank(
+                        candidates, GetDocumentText,
+                        static s => s.Name,
+                        s => embeddingMap.GetValueOrDefault(s.Name),
+                        queryEmbedding, query,
+                        _minSimilarity)
+                    .Take(maxResults)
+                    .ToList();
+
+                sw.Stop();
+                HostDiagnostics.HybridSearchDuration.Record(sw.Elapsed.TotalMilliseconds);
+                _logger.LogInformation("Hybrid skill search completed in {Duration:F0}ms ({Candidates} candidates, {Results} results)",
+                    sw.Elapsed.TotalMilliseconds, candidates.Count, results.Count);
+                return results;
+            }
+        }
+
+        return Bm25Ranker.Rank(candidates, GetDocumentText, query)
+            .Take(maxResults)
+            .ToList();
     }
 
     /// <summary>

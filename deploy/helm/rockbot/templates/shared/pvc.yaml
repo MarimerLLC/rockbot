@@ -1,0 +1,17 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "rockbot.sharedPvcName" . }}
+  namespace: {{ .Values.namespace }}
+  annotations:
+    helm.sh/resource-policy: keep
+  labels:
+    {{- include "rockbot.labels" . | nindent 4 }}
+    app.kubernetes.io/component: shared
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: {{ .Values.storage.storageClass }}
+  resources:
+    requests:
+      storage: {{ .Values.shared.size }}

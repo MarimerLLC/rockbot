@@ -23,7 +23,7 @@ public sealed record TierRoutingEntry
 
     // ── Pre-injection classification (Option A: raw user prompt only) ─────────
 
-    /// <summary>Composite complexity score in [0, 1] that drove the routing decision.</summary>
+    /// <summary>Composite complexity score (typically [-0.15, 1]) that drove the routing decision. Negative values indicate strong low-signal keyword matches.</summary>
     public double ComplexityScore { get; init; }
 
     /// <summary>High-complexity signal keywords matched in the prompt (push toward High tier).</summary>

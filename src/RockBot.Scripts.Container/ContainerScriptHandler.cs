@@ -173,11 +173,29 @@ internal sealed class ContainerScriptHandler(
             }
         };
 
-        if (!string.IsNullOrEmpty(options.StagingUrl))
-            pod.Spec.Containers[0].Env.Add(new V1EnvVar { Name = "ROCKBOT_STAGING_URL", Value = options.StagingUrl });
-
-        if (!string.IsNullOrEmpty(options.StagingToken))
-            pod.Spec.Containers[0].Env.Add(new V1EnvVar { Name = "ROCKBOT_STAGING_TOKEN", Value = options.StagingToken });
+        if (!string.IsNullOrEmpty(options.SharedVolumeClaim))
+        {
+            pod.Spec.Volumes =
+            [
+                new V1Volume
+                {
+                    Name = "shared",
+                    PersistentVolumeClaim = new V1PersistentVolumeClaimVolumeSource
+                    {
+                        ClaimName = options.SharedVolumeClaim
+                    }
+                }
+            ];
+            pod.Spec.Containers[0].VolumeMounts =
+            [
+                new V1VolumeMount
+                {
+                    Name = "shared",
+                    MountPath = options.SharedVolumePath
+                }
+            ];
+            pod.Spec.Containers[0].Env.Add(new V1EnvVar { Name = "ROCKBOT_SHARED_PATH", Value = options.SharedVolumePath });
+        }
 
         return pod;
     }

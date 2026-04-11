@@ -26,6 +26,7 @@ public class RockBotFunctionInvokingChatClient : FunctionInvokingChatClient
 
     private int _consecutiveTimeoutIterations;
     private int? _knownContextLimit;
+    private readonly AgentLoopRunner.RepetitiveToolCallDetector _repetitiveCallDetector = new();
 
     public RockBotFunctionInvokingChatClient(
         IChatClient innerClient,
@@ -123,6 +124,20 @@ public class RockBotFunctionInvokingChatClient : FunctionInvokingChatClient
             _consecutiveTimeoutIterations = 0;
         }
 
+        // Track consecutive identical (tool, args, result) triples to detect stuck loops.
+        if (_repetitiveCallDetector.Track(callContent.Name, argsSummary ?? string.Empty, resultStr ?? string.Empty))
+        {
+            _logger.LogWarning(
+                "Detected {Threshold} consecutive identical tool call results for {Name}; " +
+                "appending loop-break nudge to result",
+                AgentLoopRunner.RepetitiveToolCallDetector.Threshold, callContent.Name);
+            var nudge =
+                $"\n\n[System note: You have called {callContent.Name} with the same arguments " +
+                $"{AgentLoopRunner.RepetitiveToolCallDetector.Threshold} times and received the same " +
+                "result each time. Please try a different approach.]";
+            result = (resultStr ?? string.Empty) + nudge;
+        }
+
         ToolDiagnostics.InvokeDuration.Record(sw.Elapsed.TotalMilliseconds,
             new KeyValuePair<string, object?>("rockbot.tool.name", callContent.Name),
             new KeyValuePair<string, object?>("rockbot.tool.status", status));
@@ -157,6 +172,7 @@ public class RockBotFunctionInvokingChatClient : FunctionInvokingChatClient
         CancellationToken cancellationToken = default)
     {
         _consecutiveTimeoutIterations = 0;
+        _repetitiveCallDetector.Reset();
         _logger.LogInformation(
             "RockBotFunctionInvokingChatClient handling request (maxIterations={MaxIter})",
             MaximumIterationsPerRequest);
