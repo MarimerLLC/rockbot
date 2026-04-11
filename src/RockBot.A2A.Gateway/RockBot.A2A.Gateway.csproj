@@ -11,6 +11,10 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <InternalsVisibleTo Include="RockBot.A2A.Gateway.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
     <PackageReference Include="A2A" Version="1.0.0-preview" />
   </ItemGroup>
 

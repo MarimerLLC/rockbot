@@ -41,6 +41,7 @@ Each agent is an isolated process that reacts to messages, invokes tools, calls 
 | `RockBot.Scripts.Local` | Local Python script runner for development (no Kubernetes needed) |
 | `RockBot.Subagent` | In-process subagent spawning — isolated LLM loops, progress reporting, and long-term memory data handoff |
 | `RockBot.A2A` | Agent-to-agent task delegation over the message bus |
+| `RockBot.A2A.Gateway` | A2A v1 HTTP gateway — bridges external JSON-RPC clients to the RabbitMQ agent bus with API key auth, SSE streaming, and push notifications |
 | `RockBot.ServiceSearch` | Unified BM25 keyword search across A2A agents and MCP servers (`search_known_services`) |
 | `RockBot.UserProxy.Blazor` | Blazor Server chat UI with markdown rendering, conversation replay, and feedback signals |
 | `RockBot.UserProxy.Cli` | Console chat interface using Spectre.Console |

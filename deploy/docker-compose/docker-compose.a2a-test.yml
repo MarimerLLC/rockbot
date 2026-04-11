@@ -104,6 +104,8 @@ services:
       RabbitMq__Password: rockbot
       ApiKeys__test-key-001__AgentId: a2a-test-harness
       ApiKeys__test-key-001__DisplayName: A2A Test Harness
+    volumes:
+      - gateway-data:/app/data
 
   a2a-test-harness:
     build:
@@ -130,3 +132,4 @@ services:
 volumes:
   agent-data:
   shared:
+  gateway-data:

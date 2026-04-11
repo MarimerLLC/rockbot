@@ -102,6 +102,44 @@ public class JsonRpcRouterTests
         Assert.IsTrue(body.Contains("-32600"), $"Expected invalid-request code, got: {body}");
     }
 
+    /// <summary>
+    /// Agent card should advertise capabilities (streaming, push notifications, extended card).
+    /// </summary>
+    [TestMethod]
+    public async Task GetAgentCard_IncludesCapabilities()
+    {
+        await using var factory = CreateFactory();
+        var client = factory.CreateClient();
+
+        var response = await client.GetAsync("/.well-known/agent-card.json");
+
+        Assert.AreEqual(HttpStatusCode.OK, response.StatusCode);
+        var body = await response.Content.ReadAsStringAsync();
+        Assert.IsTrue(body.Contains("\"streaming\""), $"Expected streaming capability, got: {body}");
+        Assert.IsTrue(body.Contains("\"pushNotifications\""), $"Expected pushNotifications capability, got: {body}");
+        Assert.IsTrue(body.Contains("\"extendedAgentCard\""), $"Expected extendedAgentCard capability, got: {body}");
+    }
+
+    /// <summary>
+    /// POST / with ListTasks method and valid API key should return a JSON-RPC result
+    /// (not method-not-found).
+    /// </summary>
+    [TestMethod]
+    public async Task Post_ListTasks_ReturnsValidResponse()
+    {
+        await using var factory = CreateFactory();
+        var client = factory.CreateClient();
+        client.DefaultRequestHeaders.Add("X-Api-Key", "test-key");
+
+        var payload = JsonRpcRequest("ListTasks", new { });
+        var response = await client.PostAsync("/", payload);
+
+        Assert.AreEqual(HttpStatusCode.OK, response.StatusCode);
+        var body = await response.Content.ReadAsStringAsync();
+        Assert.IsTrue(body.Contains("\"result\""), $"Expected result field, got: {body}");
+        Assert.IsFalse(body.Contains("-32601"), $"Got method-not-found error: {body}");
+    }
+
     private static WebApplicationFactory<Program> CreateFactory()
     {
         return new WebApplicationFactory<Program>()
@@ -109,11 +147,13 @@ public class JsonRpcRouterTests
             {
                 builder.ConfigureAppConfiguration((_, config) =>
                 {
-                    // Override with test API key and disable RabbitMQ connection
+                    // Override with test API key, use in-memory task store, disable RabbitMQ
                     config.AddInMemoryCollection(new Dictionary<string, string?>
                     {
                         ["ApiKeys:test-key:AgentId"] = "test-agent",
                         ["ApiKeys:test-key:DisplayName"] = "Test Agent",
+                        ["Gateway:TaskStorePath"] = null,
+                        ["Gateway:PushNotificationConfigStorePath"] = null,
                         ["RabbitMq:HostName"] = "localhost",
                         ["RabbitMq:Port"] = "5672",
                         ["RabbitMq:UserName"] = "guest",

@@ -10,6 +10,15 @@ public sealed class GatewayOptions
     public string? Description { get; set; }
     public string? Version { get; set; }
     public List<GatewaySkillConfig> Skills { get; set; } = [];
+
+    /// <summary>File path for durable task storage (relative to AppContext.BaseDirectory). Null disables persistence.</summary>
+    public string? TaskStorePath { get; set; } = "tasks.json";
+
+    /// <summary>File path for push notification config storage (relative to AppContext.BaseDirectory). Null disables persistence.</summary>
+    public string? PushNotificationConfigStorePath { get; set; } = "push-configs.json";
+
+    /// <summary>Maximum seconds to wait for the agent to respond to a task (streaming or non-streaming).</summary>
+    public int TaskTimeoutSeconds { get; set; } = 120;
 }
 
 public sealed class GatewaySkillConfig

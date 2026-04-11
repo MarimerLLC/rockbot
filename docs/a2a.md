@@ -172,6 +172,91 @@ See `RockBot.SampleAgent.Http` for a complete working example.
 
 ---
 
+## A2A HTTP Gateway (inbound)
+
+`RockBot.A2A.Gateway` is an ASP.NET Core HTTP gateway that accepts inbound A2A v1
+JSON-RPC requests from external clients and bridges them to the RockBot agent over
+RabbitMQ. This is the reverse of `invoke_agent` — instead of RockBot calling out,
+external agents call **in**.
+
+### Endpoints
+
+| Endpoint | Auth | Description |
+|---|---|---|
+| `GET /.well-known/agent-card.json` | None | A2A discovery — returns the agent card with capabilities and security schemes |
+| `POST /` | Required | JSON-RPC 2.0 dispatch for all A2A methods |
+
+### Supported JSON-RPC methods
+
+| Method | Response | Description |
+|---|---|---|
+| `SendMessage` / `message/send` | JSON | Send a message and wait for the agent's response |
+| `SendStreamingMessage` / `message/sendStream` | SSE | Send a message and stream status updates + final response as Server-Sent Events |
+| `GetTask` | JSON | Retrieve the current state of a task by ID |
+| `ListTasks` | JSON | List tasks with optional status filter and pagination |
+| `CancelTask` | JSON | Request cancellation of an in-flight task |
+| `SubscribeToTask` | SSE | Attach to an existing task and receive future events as SSE |
+| `CreateTaskPushNotificationConfig` | JSON | Register a webhook URL to receive task status changes |
+| `GetTaskPushNotificationConfig` | JSON | Get a push notification config by ID |
+| `ListTaskPushNotificationConfig` | JSON | List push configs for a task |
+| `DeleteTaskPushNotificationConfig` | JSON | Remove a push notification config |
+| `GetExtendedAgentCard` | JSON | Return the agent card with full capabilities (authenticated) |
+
+### Authentication
+
+The gateway currently supports **X-Api-Key** header authentication. Each API key maps
+to an agent identity (agent ID + display name) configured in the `ApiKeys` section of
+`appsettings.json`. JWT/Bearer authentication is planned (#264).
+
+### SSE streaming
+
+Streaming methods (`SendStreamingMessage`, `SubscribeToTask`) return
+`Content-Type: text/event-stream`. Each SSE event is a JSON-RPC 2.0 result wrapping a
+`StreamResponse` (which contains either a `TaskStatusUpdateEvent`, `TaskArtifactUpdateEvent`,
+or final `Message`):
+
+```
+data: {"jsonrpc":"2.0","id":1,"result":{"statusUpdate":{"taskId":"abc","status":{"state":"working"}}}}
+
+data: {"jsonrpc":"2.0","id":1,"result":{"message":{"role":"agent","parts":[{"text":"Done."}]}}}
+
+```
+
+Under the hood, the gateway subscribes to the RabbitMQ `agent.task.status` topic and
+the per-caller reply topic, forwarding events to the SSE stream as they arrive.
+
+### Task persistence
+
+Tasks are stored in a file-backed task store (`tasks.json` on the PVC) so they survive
+pod restarts. `ListTasks` supports filtering by status, context ID, timestamp, and
+cursor-based pagination. Tasks are scoped per authenticated caller.
+
+### Push notifications
+
+When a push notification config is registered for a task, the gateway sends an HTTP
+POST to the configured webhook URL on every task status change. The webhook body is
+the same `StreamResponse` JSON used in SSE streaming. Configs are persisted to
+`push-configs.json` on the PVC.
+
+### Example request
+
+```bash
+curl -X POST http://localhost:5200/ \
+  -H "Content-Type: application/json" \
+  -H "X-Api-Key: my-key" \
+  -d '{
+    "jsonrpc": "2.0",
+    "id": 1,
+    "method": "SendMessage",
+    "params": {
+      "message": { "role": "user", "parts": [{ "text": "What is the weather?" }] },
+      "metadata": { "skill": "notify-user" }
+    }
+  }'
+```
+
+---
+
 ## KEDA ephemeral pattern
 
 `ResearchAgent` uses the ephemeral one-shot pattern:

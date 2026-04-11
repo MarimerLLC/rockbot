@@ -36,6 +36,31 @@ internal sealed class TestRunner(IServiceProvider services, TestConfig config)
             ct => Scenarios.HttpA2AScenarios.UnauthenticatedRequestRejectedAsync(config.GatewayUrl, services, ct),
             timeout: TimeSpan.FromSeconds(15)));
 
+        // Agent card capabilities (streaming, push notifications, extended card)
+        results.Add(await RunAsync("A2A: Agent Card Capabilities",
+            ct => Scenarios.HttpA2AScenarios.AgentCardCapabilitiesAsync(config.GatewayUrl, services, ct),
+            timeout: TimeSpan.FromSeconds(30)));
+
+        // ListTasks — send a task, then verify it appears in the list
+        results.Add(await RunAsync("A2A: Send + ListTasks",
+            ct => Scenarios.HttpA2AScenarios.SendAndListTasksAsync(config.GatewayUrl, config.GatewayApiKey, services, ct),
+            timeout: TimeSpan.FromSeconds(90)));
+
+        // SSE streaming — send a streaming request and consume events
+        results.Add(await RunAsync("A2A: SendStreamingMessage",
+            ct => Scenarios.HttpA2AScenarios.SendStreamingMessageAsync(config.GatewayUrl, config.GatewayApiKey, services, ct),
+            timeout: TimeSpan.FromSeconds(90)));
+
+        // Push notification config CRUD
+        results.Add(await RunAsync("A2A: Push Notification Config CRUD",
+            ct => Scenarios.HttpA2AScenarios.PushNotificationConfigCrudAsync(config.GatewayUrl, config.GatewayApiKey, services, ct),
+            timeout: TimeSpan.FromSeconds(60)));
+
+        // Extended agent card
+        results.Add(await RunAsync("A2A: GetExtendedAgentCard",
+            ct => Scenarios.HttpA2AScenarios.GetExtendedAgentCardAsync(config.GatewayUrl, config.GatewayApiKey, services, ct),
+            timeout: TimeSpan.FromSeconds(30)));
+
         // RabbitMQ discovery — RockBot may take a while to start
         results.Add(await RunAsync("Discovery: RockBot AgentCard",
             ct => Scenarios.DiscoveryScenario.VerifyAnnouncementAsync(services, ct),
