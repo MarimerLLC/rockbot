@@ -26,6 +26,7 @@ internal sealed class RockBotBridgeHandler(
     IHttpContextAccessor httpContextAccessor,
     IOptions<GatewayOptions> gatewayOptions,
     ITaskStore taskStore,
+    PushNotificationSender pushSender,
     ILogger<RockBotBridgeHandler> logger) : IAgentHandler
 {
     private string GetCallerId() =>
@@ -90,7 +91,7 @@ internal sealed class RockBotBridgeHandler(
                                 .Select(p => p.Text)
                                 .FirstOrDefault();
 
-                            await eventQueue.EnqueueStatusUpdateAsync(new TaskStatusUpdateEvent
+                            var statusEvent = new TaskStatusUpdateEvent
                             {
                                 TaskId = taskId,
                                 ContextId = context.ContextId,
@@ -102,7 +103,10 @@ internal sealed class RockBotBridgeHandler(
                                         : null,
                                     Timestamp = DateTimeOffset.UtcNow
                                 }
-                            }, cancellationToken);
+                            };
+                            await eventQueue.EnqueueStatusUpdateAsync(statusEvent, cancellationToken);
+                            // Fire-and-forget push notification
+                            var __ = pushSender.TrySendStatusUpdateAsync(taskId, statusEvent, cancellationToken);
                         }
                     }
                     catch { /* ignore deserialization errors */ }
@@ -155,7 +159,7 @@ internal sealed class RockBotBridgeHandler(
             // Persist the completed task so ListTasks can return it.
             // The SDK's A2AServer manages task state in memory for synchronous
             // SendMessage flows without calling SaveTaskAsync, so we save directly.
-            await taskStore.SaveTaskAsync(taskId, new AgentTask
+            var completedTask = new AgentTask
             {
                 Id = taskId,
                 ContextId = context.ContextId,
@@ -173,7 +177,9 @@ internal sealed class RockBotBridgeHandler(
                     },
                     responseMessage
                 ]
-            }, cancellationToken);
+            };
+            await taskStore.SaveTaskAsync(taskId, completedTask, cancellationToken);
+            _ = pushSender.TrySendTaskCompletedAsync(taskId, completedTask, cancellationToken);
 
             await eventQueue.EnqueueMessageAsync(responseMessage, cancellationToken);
         }

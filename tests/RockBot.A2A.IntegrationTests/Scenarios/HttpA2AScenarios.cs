@@ -293,89 +293,69 @@ internal static class HttpA2AScenarios
 
         var configId = Guid.NewGuid().ToString("N");
 
-        try
-        {
-            // Create
-            var created = await a2aClient.CreateTaskPushNotificationConfigAsync(
-                new A2AV1.CreateTaskPushNotificationConfigRequest
+        // Create
+        var created = await a2aClient.CreateTaskPushNotificationConfigAsync(
+            new A2AV1.CreateTaskPushNotificationConfigRequest
+            {
+                TaskId = taskId!,
+                ConfigId = configId,
+                Config = new A2AV1.PushNotificationConfig
                 {
-                    TaskId = taskId!,
-                    ConfigId = configId,
-                    Config = new A2AV1.PushNotificationConfig
-                    {
-                        Url = "https://example.com/webhook",
-                        Token = "test-token-123"
-                    }
-                }, ct);
-            Assert(created is not null, "CreateTaskPushNotificationConfig returned null");
-            Assert(created!.Id == configId, $"Expected config ID '{configId}', got '{created.Id}'");
+                    Url = "https://example.com/webhook",
+                    Token = "test-token-123"
+                }
+            }, ct);
+        Assert(created is not null, "CreateTaskPushNotificationConfig returned null");
+        Assert(created!.Id == configId, $"Expected config ID '{configId}', got '{created.Id}'");
 
-            // Get
-            var fetched = await a2aClient.GetTaskPushNotificationConfigAsync(
-                new A2AV1.GetTaskPushNotificationConfigRequest
-                {
-                    TaskId = taskId!,
-                    Id = configId
-                }, ct);
-            Assert(fetched is not null, "GetTaskPushNotificationConfig returned null");
-            Assert(fetched!.PushNotificationConfig?.Url == "https://example.com/webhook",
-                $"Expected URL 'https://example.com/webhook', got '{fetched.PushNotificationConfig?.Url}'");
+        // Get
+        var fetched = await a2aClient.GetTaskPushNotificationConfigAsync(
+            new A2AV1.GetTaskPushNotificationConfigRequest
+            {
+                TaskId = taskId!,
+                Id = configId
+            }, ct);
+        Assert(fetched is not null, "GetTaskPushNotificationConfig returned null");
+        Assert(fetched!.PushNotificationConfig?.Url == "https://example.com/webhook",
+            $"Expected URL 'https://example.com/webhook', got '{fetched.PushNotificationConfig?.Url}'");
 
-            // List
-            var listed = await a2aClient.ListTaskPushNotificationConfigAsync(
-                new A2AV1.ListTaskPushNotificationConfigRequest { TaskId = taskId! }, ct);
-            Assert(listed is not null, "ListTaskPushNotificationConfig returned null");
-            Assert(listed!.Configs.Any(c => c.Id == configId),
-                "Created config not found in list");
+        // List
+        var listed = await a2aClient.ListTaskPushNotificationConfigAsync(
+            new A2AV1.ListTaskPushNotificationConfigRequest { TaskId = taskId! }, ct);
+        Assert(listed is not null, "ListTaskPushNotificationConfig returned null");
+        Assert(listed!.Configs.Any(c => c.Id == configId),
+            "Created config not found in list");
 
-            // Delete
-            await a2aClient.DeleteTaskPushNotificationConfigAsync(
-                new A2AV1.DeleteTaskPushNotificationConfigRequest
-                {
-                    TaskId = taskId!,
-                    Id = configId
-                }, ct);
+        // Delete
+        await a2aClient.DeleteTaskPushNotificationConfigAsync(
+            new A2AV1.DeleteTaskPushNotificationConfigRequest
+            {
+                TaskId = taskId!,
+                Id = configId
+            }, ct);
 
-            // Verify deletion
-            var afterDelete = await a2aClient.ListTaskPushNotificationConfigAsync(
-                new A2AV1.ListTaskPushNotificationConfigRequest { TaskId = taskId! }, ct);
-            Assert(!afterDelete!.Configs.Any(c => c.Id == configId),
-                "Config still present after deletion");
-        }
-        catch (A2AV1.A2AException ex) when (ex.ErrorCode == A2AV1.A2AErrorCode.PushNotificationNotSupported)
-        {
-            // Expected if the SDK's A2AServer doesn't have a push notification store.
-            // This is a known limitation — pass with a note rather than fail.
-            throw new Exception(
-                $"Push notifications not supported by SDK's A2AServer (code={ex.ErrorCode}). " +
-                "A custom push notification store needs to be wired up. Treating as known limitation.");
-        }
+        // Verify deletion
+        var afterDelete = await a2aClient.ListTaskPushNotificationConfigAsync(
+            new A2AV1.ListTaskPushNotificationConfigRequest { TaskId = taskId! }, ct);
+        Assert(!afterDelete!.Configs.Any(c => c.Id == configId),
+            "Config still present after deletion");
     }
 
     /// <summary>
-    /// Scenario 8: Fetch the extended agent card.
-    /// If the SDK returns ExtendedAgentCardNotConfigured, the test catches it and notes the limitation.
+    /// Scenario 8: Fetch the extended agent card with capabilities.
     /// </summary>
     public static async Task GetExtendedAgentCardAsync(string gatewayUrl, string? apiKey, IServiceProvider services, CancellationToken ct)
     {
         var a2aClient = CreateA2AClient(gatewayUrl, apiKey, services);
         await WaitForGateway(gatewayUrl, services, ct);
 
-        try
-        {
-            var card = await a2aClient.GetExtendedAgentCardAsync(
-                new A2AV1.GetExtendedAgentCardRequest(), ct);
-            Assert(card is not null, "Extended agent card is null");
-            Assert(card!.Name == "RockBot", $"Expected Name 'RockBot', got '{card.Name}'");
-        }
-        catch (A2AV1.A2AException ex) when (ex.ErrorCode == A2AV1.A2AErrorCode.ExtendedAgentCardNotConfigured)
-        {
-            // The SDK's A2AServer returns this when no extended card handler is configured.
-            // Our router delegates to A2AServer, which may not support it out of the box.
-            throw new Exception(
-                $"Extended agent card not configured in SDK's A2AServer (code={ex.ErrorCode}). " +
-                "Treating as known limitation.");
-        }
+        var card = await a2aClient.GetExtendedAgentCardAsync(
+            new A2AV1.GetExtendedAgentCardRequest(), ct);
+        Assert(card is not null, "Extended agent card is null");
+        Assert(card!.Name == "RockBot", $"Expected Name 'RockBot', got '{card.Name}'");
+        Assert(card.Capabilities is not null, "Extended card should include capabilities");
+        Assert(card.Capabilities!.Streaming == true, "Extended card should advertise streaming");
+        Assert(card.Skills is { Count: >= 2 }, $"Expected at least 2 skills, got {card.Skills?.Count ?? 0}");
     }
 
     // ── Helpers ─────────────────────────────────────────────────────────────

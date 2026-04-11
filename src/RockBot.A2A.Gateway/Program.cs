@@ -36,6 +36,15 @@ builder.Services.AddSingleton<ITaskStore>(sp =>
     return new FileTaskStore(sp.GetRequiredService<IHttpContextAccessor>(), path);
 });
 builder.Services.AddSingleton<ChannelEventNotifier>();
+builder.Services.AddSingleton(sp =>
+{
+    var path = gatewayConfig.PushNotificationConfigStorePath is not null
+        ? Path.Combine(AppContext.BaseDirectory, gatewayConfig.PushNotificationConfigStorePath)
+        : null;
+    return new FilePushNotificationConfigStore(path);
+});
+builder.Services.AddHttpClient();
+builder.Services.AddSingleton<PushNotificationSender>();
 builder.Services.AddSingleton<IAgentHandler, RockBotBridgeHandler>();
 builder.Services.AddSingleton(sp => new A2AServer(
     sp.GetRequiredService<IAgentHandler>(),
@@ -96,10 +105,12 @@ app.MapGet("/.well-known/agent-card.json", (IOptions<GatewayOptions> opts) =>
 
 // ── JSON-RPC endpoint (authenticated) ────────────────────────────────────────
 
-app.MapPost("/", async (HttpContext ctx, A2AServer server, ILoggerFactory loggerFactory) =>
+app.MapPost("/", async (HttpContext ctx, A2AServer server,
+    IOptions<GatewayOptions> opts, FilePushNotificationConfigStore pushConfigStore,
+    ILoggerFactory loggerFactory) =>
 {
     var result = await JsonRpcRouter.HandleAsync(
-        ctx.Request, ctx.Response, server, loggerFactory, ctx.RequestAborted);
+        ctx.Request, ctx.Response, server, opts, pushConfigStore, loggerFactory, ctx.RequestAborted);
     if (result is not null)
         await result.ExecuteAsync(ctx);
 }).RequireAuthorization();

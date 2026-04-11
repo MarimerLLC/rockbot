@@ -1,5 +1,9 @@
 using System.Text.Json;
 using A2A;
+using Microsoft.Extensions.Options;
+
+using A2AAgentCard = A2A.AgentCard;
+using A2AAgentSkill = A2A.AgentSkill;
 
 namespace RockBot.A2A.Gateway;
 
@@ -7,6 +11,8 @@ namespace RockBot.A2A.Gateway;
 /// Routes A2A v1 JSON-RPC requests to the appropriate <see cref="A2AServer"/> method.
 /// Streaming methods (<c>SendStreamingMessage</c>, <c>SubscribeToTask</c>) write SSE
 /// directly to the response and return <c>null</c>; non-streaming methods return <see cref="IResult"/>.
+/// Push notification CRUD and extended agent card are handled directly (the SDK's
+/// <see cref="A2AServer"/> does not support these out of the box).
 /// </summary>
 internal static class JsonRpcRouter
 {
@@ -26,6 +32,8 @@ internal static class JsonRpcRouter
         HttpRequest request,
         HttpResponse response,
         A2AServer server,
+        IOptions<GatewayOptions> gatewayOptions,
+        FilePushNotificationConfigStore pushConfigStore,
         ILoggerFactory loggerFactory,
         CancellationToken ct)
     {
@@ -85,20 +93,20 @@ internal static class JsonRpcRouter
 
                 // ── Push notification config CRUD ───────────────────────────
                 A2AMethods.CreateTaskPushNotificationConfig =>
-                    await HandleCreatePushNotificationConfigAsync(server, paramsJson, idRaw, ct),
+                    await HandleCreatePushNotificationConfigAsync(pushConfigStore, paramsJson, idRaw, ct),
 
                 A2AMethods.GetTaskPushNotificationConfig =>
-                    await HandleGetPushNotificationConfigAsync(server, paramsJson, idRaw, ct),
+                    await HandleGetPushNotificationConfigAsync(pushConfigStore, paramsJson, idRaw, ct),
 
                 A2AMethods.ListTaskPushNotificationConfig =>
-                    await HandleListPushNotificationConfigAsync(server, paramsJson, idRaw, ct),
+                    await HandleListPushNotificationConfigAsync(pushConfigStore, paramsJson, idRaw, ct),
 
                 A2AMethods.DeleteTaskPushNotificationConfig =>
-                    await HandleDeletePushNotificationConfigAsync(server, paramsJson, idRaw, ct),
+                    await HandleDeletePushNotificationConfigAsync(pushConfigStore, paramsJson, idRaw, ct),
 
                 // ── Agent card ──────────────────────────────────────────────
                 A2AMethods.GetExtendedAgentCard =>
-                    await HandleGetExtendedAgentCardAsync(server, paramsJson, idRaw, ct),
+                    HandleGetExtendedAgentCard(gatewayOptions.Value, idRaw),
 
                 _ => JsonRpcError(idRaw, -32601, $"Method not found: {method}")
             };
@@ -189,61 +197,84 @@ internal static class JsonRpcRouter
     }
 
     // ── Push notification config CRUD ───────────────────────────────────────
+    // Handled directly via FilePushNotificationConfigStore — the SDK's A2AServer
+    // does not have a push notification store wired up.
 
     private static async Task<IResult> HandleCreatePushNotificationConfigAsync(
-        A2AServer server, string paramsJson, string idRaw, CancellationToken ct)
+        FilePushNotificationConfigStore store, string paramsJson, string idRaw, CancellationToken ct)
     {
-        var createRequest = JsonSerializer.Deserialize<CreateTaskPushNotificationConfigRequest>(paramsJson, JsonOptions);
-        if (createRequest is null)
+        var req = JsonSerializer.Deserialize<CreateTaskPushNotificationConfigRequest>(paramsJson, JsonOptions);
+        if (req is null)
             return JsonRpcError(idRaw, -32600, "Invalid CreateTaskPushNotificationConfig params");
 
-        var config = await server.CreateTaskPushNotificationConfigAsync(createRequest, ct);
+        var configId = req.ConfigId ?? Guid.NewGuid().ToString("N");
+        var config = await store.CreateAsync(req.TaskId, configId, req.Tenant ?? string.Empty, req.Config, ct);
         return JsonRpcResult(idRaw, config);
     }
 
     private static async Task<IResult> HandleGetPushNotificationConfigAsync(
-        A2AServer server, string paramsJson, string idRaw, CancellationToken ct)
+        FilePushNotificationConfigStore store, string paramsJson, string idRaw, CancellationToken ct)
     {
-        var getRequest = JsonSerializer.Deserialize<GetTaskPushNotificationConfigRequest>(paramsJson, JsonOptions);
-        if (getRequest is null)
+        var req = JsonSerializer.Deserialize<GetTaskPushNotificationConfigRequest>(paramsJson, JsonOptions);
+        if (req is null)
             return JsonRpcError(idRaw, -32600, "Invalid GetTaskPushNotificationConfig params");
 
-        var config = await server.GetTaskPushNotificationConfigAsync(getRequest, ct);
+        var config = await store.GetAsync(req.Id, ct);
+        if (config is null)
+            return JsonRpcError(idRaw, -32001, $"Push notification config '{req.Id}' not found");
         return JsonRpcResult(idRaw, config);
     }
 
     private static async Task<IResult> HandleListPushNotificationConfigAsync(
-        A2AServer server, string paramsJson, string idRaw, CancellationToken ct)
+        FilePushNotificationConfigStore store, string paramsJson, string idRaw, CancellationToken ct)
     {
-        var listRequest = JsonSerializer.Deserialize<ListTaskPushNotificationConfigRequest>(paramsJson, JsonOptions);
-        if (listRequest is null)
+        var req = JsonSerializer.Deserialize<ListTaskPushNotificationConfigRequest>(paramsJson, JsonOptions);
+        if (req is null)
             return JsonRpcError(idRaw, -32600, "Invalid ListTaskPushNotificationConfig params");
 
-        var response = await server.ListTaskPushNotificationConfigAsync(listRequest, ct);
-        return JsonRpcResult(idRaw, response);
+        var (configs, nextPageToken) = await store.ListAsync(req.TaskId, req.PageSize, req.PageToken, ct);
+        return JsonRpcResult(idRaw, new ListTaskPushNotificationConfigResponse
+        {
+            Configs = configs,
+            NextPageToken = nextPageToken
+        });
     }
 
     private static async Task<IResult> HandleDeletePushNotificationConfigAsync(
-        A2AServer server, string paramsJson, string idRaw, CancellationToken ct)
+        FilePushNotificationConfigStore store, string paramsJson, string idRaw, CancellationToken ct)
     {
-        var deleteRequest = JsonSerializer.Deserialize<DeleteTaskPushNotificationConfigRequest>(paramsJson, JsonOptions);
-        if (deleteRequest is null)
+        var req = JsonSerializer.Deserialize<DeleteTaskPushNotificationConfigRequest>(paramsJson, JsonOptions);
+        if (req is null)
             return JsonRpcError(idRaw, -32600, "Invalid DeleteTaskPushNotificationConfig params");
 
-        await server.DeleteTaskPushNotificationConfigAsync(deleteRequest, ct);
-        return JsonRpcResult(idRaw, new { }); // Void operation — return empty result
+        await store.DeleteAsync(req.Id, ct);
+        return JsonRpcResult(idRaw, new { });
     }
 
     // ── Agent card ──────────────────────────────────────────────────────────
+    // Handled directly from GatewayOptions — the SDK's A2AServer does not
+    // support extended agent cards out of the box.
 
-    private static async Task<IResult> HandleGetExtendedAgentCardAsync(
-        A2AServer server, string paramsJson, string idRaw, CancellationToken ct)
+    private static IResult HandleGetExtendedAgentCard(GatewayOptions config, string idRaw)
     {
-        var cardRequest = JsonSerializer.Deserialize<GetExtendedAgentCardRequest>(paramsJson, JsonOptions);
-        if (cardRequest is null)
-            return JsonRpcError(idRaw, -32600, "Invalid GetExtendedAgentCard params");
-
-        var card = await server.GetExtendedAgentCardAsync(cardRequest, ct);
+        var card = new A2AAgentCard
+        {
+            Name = config.AgentName,
+            Description = config.Description ?? string.Empty,
+            Version = config.Version ?? "1.0",
+            Capabilities = new AgentCapabilities
+            {
+                Streaming = true,
+                PushNotifications = true,
+                ExtendedAgentCard = true
+            },
+            Skills = config.Skills.Select(s => new A2AAgentSkill
+            {
+                Id = s.Id,
+                Name = s.Name,
+                Description = s.Description ?? string.Empty
+            }).ToList()
+        };
         return JsonRpcResult(idRaw, card);
     }
 
