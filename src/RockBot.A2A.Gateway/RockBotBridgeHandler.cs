@@ -137,7 +137,7 @@ internal sealed class RockBotBridgeHandler(
                 correlationId: taskId,
                 replyTo: replyTopic);
 
-            await publisher.PublishAsync("agent.task.RockBot", envelope, cancellationToken);
+            await publisher.PublishAsync($"agent.task.{gatewayOptions.Value.RoutingName}", envelope, cancellationToken);
 
             // Wait for RockBot's response
             var result = await resultTcs.Task.WaitAsync(timeout, cancellationToken);
@@ -205,7 +205,7 @@ internal sealed class RockBotBridgeHandler(
             source: callerId,
             correlationId: taskId);
 
-        await publisher.PublishAsync("agent.task.cancel.RockBot", envelope, cancellationToken);
+        await publisher.PublishAsync($"agent.task.cancel.{gatewayOptions.Value.RoutingName}", envelope, cancellationToken);
     }
 
     private static TaskState MapTaskState(AgentTaskState state) => state switch

@@ -236,6 +236,7 @@ services:
       RabbitMq__UserName: rockbot
       RabbitMq__Password: rockbot
       Gateway__AgentName: Alice
+      Gateway__InternalAgentName: RockBot
       Gateway__Description: "Alice's RockBot agent"
       # Accept requests from Bob (API key: alice-calls-bob → decoded by gateway auth)
       ApiKeys__alice-calls-bob__AgentId: Bob
@@ -262,6 +263,7 @@ services:
       RabbitMq__UserName: rockbot
       RabbitMq__Password: rockbot
       Gateway__AgentName: Bob
+      Gateway__InternalAgentName: RockBot
       Gateway__Description: "Bob's RockBot agent"
       # Accept requests from Alice (API key: bob-calls-alice → decoded by gateway auth)
       ApiKeys__bob-calls-alice__AgentId: Alice
