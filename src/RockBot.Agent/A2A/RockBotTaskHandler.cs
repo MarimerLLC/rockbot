@@ -40,24 +40,33 @@ internal sealed class RockBotTaskHandler(
         You are strictly in observation mode.
         """;
 
-    /// <summary>Default session used to check idle state (matches Blazor UI hardcoded session).</summary>
-    private const string PrimarySessionId = "blazor-session";
+    /// <summary>Default session used to check idle state.</summary>
+    private static readonly string PrimarySessionId = WellKnownSessions.Primary;
 
     public async Task<AgentTaskResult> HandleTaskAsync(AgentTaskRequest request, AgentTaskContext context)
     {
         var ct = context.MessageContext.CancellationToken;
 
         // Extract verified identity (placed by IdentityVerificationMiddleware)
-        var identity = context.MessageContext.Items.TryGetValue(
-            VerifiedAgentIdentity.ContextKey, out var obj) && obj is VerifiedAgentIdentity vid
-            ? vid
-            : new VerifiedAgentIdentity
+        VerifiedAgentIdentity identity;
+        if (context.MessageContext.Items.TryGetValue(
+                VerifiedAgentIdentity.ContextKey, out var obj) && obj is VerifiedAgentIdentity vid)
+        {
+            identity = vid;
+        }
+        else
+        {
+            logger.LogWarning(
+                "No verified identity found for inbound A2A task {TaskId} — using fallback from Source '{Source}'",
+                request.TaskId, context.MessageContext.Envelope.Source);
+            identity = new VerifiedAgentIdentity
             {
                 AgentId = context.MessageContext.Envelope.Source ?? "unknown",
                 DisplayName = context.MessageContext.Envelope.Source ?? "unknown",
                 Issuer = "fallback",
                 IsSelfAsserted = true
             };
+        }
 
         logger.LogInformation(
             "Inbound A2A task {TaskId} from {CallerId} (skill={Skill}, self-asserted={SelfAsserted})",

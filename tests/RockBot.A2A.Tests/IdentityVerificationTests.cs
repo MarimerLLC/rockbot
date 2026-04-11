@@ -49,7 +49,7 @@ public class IdentityVerificationTests
             Timestamp = DateTimeOffset.UtcNow
         };
 
-        await Assert.ThrowsExceptionAsync<InvalidOperationException>(
+        await Assert.ThrowsExactlyAsync<InvalidOperationException>(
             () => verifier.VerifyAsync(emptySourceEnvelope, CancellationToken.None));
     }
 

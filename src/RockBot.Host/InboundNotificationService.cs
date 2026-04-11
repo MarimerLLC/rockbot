@@ -30,6 +30,7 @@ internal sealed class InboundNotificationService : IHostedService, IDisposable
     private readonly IMessagePublisher _publisher;
     private readonly AgentIdentity _agent;
     private readonly ILogger<InboundNotificationService> _logger;
+    private readonly CancellationTokenSource _cts = new();
     private Timer? _timer;
 
     public InboundNotificationService(
@@ -57,10 +58,15 @@ internal sealed class InboundNotificationService : IHostedService, IDisposable
     public Task StopAsync(CancellationToken cancellationToken)
     {
         _timer?.Change(Timeout.Infinite, 0);
+        _cts.Cancel();
         return Task.CompletedTask;
     }
 
-    public void Dispose() => _timer?.Dispose();
+    public void Dispose()
+    {
+        _timer?.Dispose();
+        _cts.Dispose();
+    }
 
     private async void CheckAndFlush(object? state)
     {
@@ -70,13 +76,14 @@ internal sealed class InboundNotificationService : IHostedService, IDisposable
                 return;
 
             // User is idle when: no active session loop AND no recent activity
-            var hasActiveLoop = _sessionTracker.HasActiveUserLoop("blazor-session");
+            var hasActiveLoop = _sessionTracker.HasActiveUserLoop(WellKnownSessions.Primary);
             var isRecentlyActive = _userActivityMonitor.IsUserActive(IdleThreshold);
 
             if (hasActiveLoop || isRecentlyActive)
                 return;
 
-            var notifications = await _queue.DrainAsync(CancellationToken.None);
+            var ct = _cts.Token;
+            var notifications = await _queue.DrainAsync(ct);
             if (notifications.Count == 0)
                 return;
 
@@ -95,7 +102,7 @@ internal sealed class InboundNotificationService : IHostedService, IDisposable
             };
 
             var envelope = reply.ToEnvelope<AgentReply>(source: _agent.Name);
-            await _publisher.PublishAsync(UserProxyTopics.UserResponse, envelope, CancellationToken.None);
+            await _publisher.PublishAsync(UserProxyTopics.UserResponse, envelope, ct);
         }
         catch (Exception ex)
         {

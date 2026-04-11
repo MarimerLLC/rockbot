@@ -43,9 +43,10 @@ internal sealed class FileAgentTrustStore : IAgentTrustStore
             LastInteraction = DateTimeOffset.UtcNow,
             InteractionCount = 0
         };
-        entry = _entries.GetOrAdd(agentId, entry);
-        await PersistAsync(ct);
-        return entry;
+        var actual = _entries.GetOrAdd(agentId, entry);
+        if (ReferenceEquals(actual, entry))
+            await PersistAsync(ct);
+        return actual;
     }
 
     public async Task UpdateAsync(AgentTrustEntry entry, CancellationToken ct)
