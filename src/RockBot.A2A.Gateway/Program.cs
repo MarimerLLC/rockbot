@@ -27,7 +27,14 @@ builder.Services.AddHttpContextAccessor();
 
 // ── A2A v1 server components ─────────────────────────────────────────────────
 
-builder.Services.AddSingleton<ITaskStore, InMemoryTaskStore>();
+var gatewayConfig = builder.Configuration.GetSection("Gateway").Get<GatewayOptions>() ?? new GatewayOptions();
+builder.Services.AddSingleton<ITaskStore>(sp =>
+{
+    var path = gatewayConfig.TaskStorePath is not null
+        ? Path.Combine(AppContext.BaseDirectory, gatewayConfig.TaskStorePath)
+        : null;
+    return new FileTaskStore(sp.GetRequiredService<IHttpContextAccessor>(), path);
+});
 builder.Services.AddSingleton<ChannelEventNotifier>();
 builder.Services.AddSingleton<IAgentHandler, RockBotBridgeHandler>();
 builder.Services.AddSingleton(sp => new A2AServer(
@@ -52,6 +59,12 @@ app.MapGet("/.well-known/agent-card.json", (IOptions<GatewayOptions> opts) =>
         Name = config.AgentName,
         Description = config.Description ?? string.Empty,
         Version = config.Version ?? "1.0",
+        Capabilities = new AgentCapabilities
+        {
+            Streaming = true,
+            PushNotifications = true,
+            ExtendedAgentCard = true
+        },
         Skills = config.Skills.Select(s => new AgentSkill
         {
             Id = s.Id,
@@ -83,9 +96,13 @@ app.MapGet("/.well-known/agent-card.json", (IOptions<GatewayOptions> opts) =>
 
 // ── JSON-RPC endpoint (authenticated) ────────────────────────────────────────
 
-app.MapPost("/", (HttpRequest request, A2AServer server, ILoggerFactory loggerFactory) =>
-    JsonRpcRouter.HandleAsync(request, server, loggerFactory, request.HttpContext.RequestAborted))
-    .RequireAuthorization();
+app.MapPost("/", async (HttpContext ctx, A2AServer server, ILoggerFactory loggerFactory) =>
+{
+    var result = await JsonRpcRouter.HandleAsync(
+        ctx.Request, ctx.Response, server, loggerFactory, ctx.RequestAborted);
+    if (result is not null)
+        await result.ExecuteAsync(ctx);
+}).RequireAuthorization();
 
 // ── Startup ──────────────────────────────────────────────────────────────────
 

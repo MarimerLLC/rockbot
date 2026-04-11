@@ -142,6 +142,272 @@ internal static class HttpA2AScenarios
         Assert(body.Contains("Authentication required"), $"Expected auth error message, got: {body}");
     }
 
+    /// <summary>
+    /// Scenario 4: Verify the agent card advertises streaming, push notification, and extended card capabilities.
+    /// </summary>
+    public static async Task AgentCardCapabilitiesAsync(string gatewayUrl, IServiceProvider services, CancellationToken ct)
+    {
+        var httpClientFactory = services.GetRequiredService<IHttpClientFactory>();
+        var httpClient = httpClientFactory.CreateClient();
+
+        HttpResponseMessage? response = null;
+        for (var attempt = 0; attempt < 30; attempt++)
+        {
+            try
+            {
+                response = await httpClient.GetAsync($"{gatewayUrl}/.well-known/agent-card.json", ct);
+                if (response.IsSuccessStatusCode) break;
+            }
+            catch (HttpRequestException) when (!ct.IsCancellationRequested) { }
+            await Task.Delay(1000, ct);
+        }
+        Assert(response is not null, "Could not connect to A2A gateway after retries");
+        response!.EnsureSuccessStatusCode();
+
+        var card = await response.Content.ReadFromJsonAsync<A2AV1.AgentCard>(JsonOptions, ct);
+        Assert(card is not null, "Agent card is null");
+        Assert(card!.Capabilities is not null, "Agent card Capabilities is null");
+        Assert(card.Capabilities!.Streaming == true, $"Expected Streaming=true, got {card.Capabilities.Streaming}");
+        Assert(card.Capabilities.PushNotifications == true, $"Expected PushNotifications=true, got {card.Capabilities.PushNotifications}");
+        Assert(card.Capabilities.ExtendedAgentCard == true, $"Expected ExtendedAgentCard=true, got {card.Capabilities.ExtendedAgentCard}");
+    }
+
+    /// <summary>
+    /// Scenario 5: Send a task, then verify it appears in ListTasks.
+    /// </summary>
+    public static async Task SendAndListTasksAsync(string gatewayUrl, string? apiKey, IServiceProvider services, CancellationToken ct)
+    {
+        var a2aClient = CreateA2AClient(gatewayUrl, apiKey, services);
+        await WaitForGateway(gatewayUrl, services, ct);
+
+        // Send a task first
+        var sendRequest = new A2AV1.SendMessageRequest
+        {
+            Message = new A2AV1.Message
+            {
+                Role = A2AV1.Role.User,
+                MessageId = Guid.NewGuid().ToString("N"),
+                Parts = [new A2AV1.Part { Text = "Integration test: ListTasks verification" }]
+            },
+            Metadata = new Dictionary<string, JsonElement>
+            {
+                ["skill"] = JsonSerializer.SerializeToElement("notify-user")
+            }
+        };
+        var sendResponse = await a2aClient.SendMessageAsync(sendRequest, ct);
+        Assert(sendResponse is not null, "SendMessage response is null");
+
+        // Now list tasks — should include the one we just sent
+        var listResponse = await a2aClient.ListTasksAsync(new A2AV1.ListTasksRequest(), ct);
+        Assert(listResponse is not null, "ListTasks response is null");
+        Assert(listResponse!.Tasks is not null, "ListTasks Tasks list is null");
+        Assert(listResponse.Tasks.Count >= 1, $"Expected at least 1 task, got {listResponse.Tasks.Count}");
+    }
+
+    /// <summary>
+    /// Scenario 6: Send a streaming message and consume SSE events.
+    /// The EchoChatClient agent will process the task and return a result;
+    /// we verify that at least one StreamResponse event arrives via SSE.
+    /// </summary>
+    public static async Task SendStreamingMessageAsync(string gatewayUrl, string? apiKey, IServiceProvider services, CancellationToken ct)
+    {
+        var a2aClient = CreateA2AClient(gatewayUrl, apiKey, services);
+        await WaitForGateway(gatewayUrl, services, ct);
+
+        var sendRequest = new A2AV1.SendMessageRequest
+        {
+            Message = new A2AV1.Message
+            {
+                Role = A2AV1.Role.User,
+                MessageId = Guid.NewGuid().ToString("N"),
+                Parts = [new A2AV1.Part { Text = "Integration test: streaming response" }]
+            },
+            Metadata = new Dictionary<string, JsonElement>
+            {
+                ["skill"] = JsonSerializer.SerializeToElement("notify-user")
+            }
+        };
+
+        var events = new List<A2AV1.StreamResponse>();
+        await foreach (var evt in a2aClient.SendStreamingMessageAsync(sendRequest, ct))
+        {
+            events.Add(evt);
+        }
+
+        Assert(events.Count >= 1, $"Expected at least 1 SSE event, got {events.Count}");
+
+        // The last event should contain either a message or a completed task
+        var last = events[^1];
+        var hasContent = last.PayloadCase switch
+        {
+            A2AV1.StreamResponseCase.Message when last.Message is { } msg =>
+                msg.Parts.Any(p => !string.IsNullOrEmpty(p.Text)),
+            A2AV1.StreamResponseCase.Task when last.Task is { } task =>
+                task.Status?.State is A2AV1.TaskState.Completed or A2AV1.TaskState.Working,
+            A2AV1.StreamResponseCase.StatusUpdate when last.StatusUpdate is { } su =>
+                su.Status is not null,
+            _ => false
+        };
+        Assert(hasContent, $"Expected content in final SSE event, got PayloadCase={last.PayloadCase}");
+    }
+
+    /// <summary>
+    /// Scenario 7: Exercise push notification config CRUD — create, get, list, delete.
+    /// If the SDK's A2AServer doesn't support push notifications (no store wired up),
+    /// the test catches the expected error and passes with a note.
+    /// </summary>
+    public static async Task PushNotificationConfigCrudAsync(string gatewayUrl, string? apiKey, IServiceProvider services, CancellationToken ct)
+    {
+        var a2aClient = CreateA2AClient(gatewayUrl, apiKey, services);
+        await WaitForGateway(gatewayUrl, services, ct);
+
+        // First, create a task so we have a valid task ID
+        var sendRequest = new A2AV1.SendMessageRequest
+        {
+            Message = new A2AV1.Message
+            {
+                Role = A2AV1.Role.User,
+                MessageId = Guid.NewGuid().ToString("N"),
+                Parts = [new A2AV1.Part { Text = "Integration test: push notification CRUD" }]
+            },
+            Metadata = new Dictionary<string, JsonElement>
+            {
+                ["skill"] = JsonSerializer.SerializeToElement("notify-user")
+            }
+        };
+        var sendResponse = await a2aClient.SendMessageAsync(sendRequest, ct);
+        Assert(sendResponse is not null, "SendMessage response is null");
+
+        // Extract task ID from the response
+        var taskId = sendResponse!.PayloadCase == A2AV1.SendMessageResponseCase.Task
+            ? sendResponse.Task?.Id
+            : null;
+
+        // If we got a Message (not a Task), get the task ID from ListTasks
+        if (taskId is null)
+        {
+            var list = await a2aClient.ListTasksAsync(new A2AV1.ListTasksRequest(), ct);
+            taskId = list?.Tasks?.FirstOrDefault()?.Id;
+        }
+        Assert(taskId is not null, "Could not obtain a task ID for push notification CRUD");
+
+        var configId = Guid.NewGuid().ToString("N");
+
+        try
+        {
+            // Create
+            var created = await a2aClient.CreateTaskPushNotificationConfigAsync(
+                new A2AV1.CreateTaskPushNotificationConfigRequest
+                {
+                    TaskId = taskId!,
+                    ConfigId = configId,
+                    Config = new A2AV1.PushNotificationConfig
+                    {
+                        Url = "https://example.com/webhook",
+                        Token = "test-token-123"
+                    }
+                }, ct);
+            Assert(created is not null, "CreateTaskPushNotificationConfig returned null");
+            Assert(created!.Id == configId, $"Expected config ID '{configId}', got '{created.Id}'");
+
+            // Get
+            var fetched = await a2aClient.GetTaskPushNotificationConfigAsync(
+                new A2AV1.GetTaskPushNotificationConfigRequest
+                {
+                    TaskId = taskId!,
+                    Id = configId
+                }, ct);
+            Assert(fetched is not null, "GetTaskPushNotificationConfig returned null");
+            Assert(fetched!.PushNotificationConfig?.Url == "https://example.com/webhook",
+                $"Expected URL 'https://example.com/webhook', got '{fetched.PushNotificationConfig?.Url}'");
+
+            // List
+            var listed = await a2aClient.ListTaskPushNotificationConfigAsync(
+                new A2AV1.ListTaskPushNotificationConfigRequest { TaskId = taskId! }, ct);
+            Assert(listed is not null, "ListTaskPushNotificationConfig returned null");
+            Assert(listed!.Configs.Any(c => c.Id == configId),
+                "Created config not found in list");
+
+            // Delete
+            await a2aClient.DeleteTaskPushNotificationConfigAsync(
+                new A2AV1.DeleteTaskPushNotificationConfigRequest
+                {
+                    TaskId = taskId!,
+                    Id = configId
+                }, ct);
+
+            // Verify deletion
+            var afterDelete = await a2aClient.ListTaskPushNotificationConfigAsync(
+                new A2AV1.ListTaskPushNotificationConfigRequest { TaskId = taskId! }, ct);
+            Assert(!afterDelete!.Configs.Any(c => c.Id == configId),
+                "Config still present after deletion");
+        }
+        catch (A2AV1.A2AException ex) when (ex.ErrorCode == A2AV1.A2AErrorCode.PushNotificationNotSupported)
+        {
+            // Expected if the SDK's A2AServer doesn't have a push notification store.
+            // This is a known limitation — pass with a note rather than fail.
+            throw new Exception(
+                $"Push notifications not supported by SDK's A2AServer (code={ex.ErrorCode}). " +
+                "A custom push notification store needs to be wired up. Treating as known limitation.");
+        }
+    }
+
+    /// <summary>
+    /// Scenario 8: Fetch the extended agent card.
+    /// If the SDK returns ExtendedAgentCardNotConfigured, the test catches it and notes the limitation.
+    /// </summary>
+    public static async Task GetExtendedAgentCardAsync(string gatewayUrl, string? apiKey, IServiceProvider services, CancellationToken ct)
+    {
+        var a2aClient = CreateA2AClient(gatewayUrl, apiKey, services);
+        await WaitForGateway(gatewayUrl, services, ct);
+
+        try
+        {
+            var card = await a2aClient.GetExtendedAgentCardAsync(
+                new A2AV1.GetExtendedAgentCardRequest(), ct);
+            Assert(card is not null, "Extended agent card is null");
+            Assert(card!.Name == "RockBot", $"Expected Name 'RockBot', got '{card.Name}'");
+        }
+        catch (A2AV1.A2AException ex) when (ex.ErrorCode == A2AV1.A2AErrorCode.ExtendedAgentCardNotConfigured)
+        {
+            // The SDK's A2AServer returns this when no extended card handler is configured.
+            // Our router delegates to A2AServer, which may not support it out of the box.
+            throw new Exception(
+                $"Extended agent card not configured in SDK's A2AServer (code={ex.ErrorCode}). " +
+                "Treating as known limitation.");
+        }
+    }
+
+    // ── Helpers ─────────────────────────────────────────────────────────────
+
+    private static A2AV1.A2AClient CreateA2AClient(string gatewayUrl, string? apiKey, IServiceProvider services)
+    {
+        var httpClientFactory = services.GetRequiredService<IHttpClientFactory>();
+        var httpClient = httpClientFactory.CreateClient();
+        if (apiKey is not null)
+            httpClient.DefaultRequestHeaders.Add("X-Api-Key", apiKey);
+
+        return new A2AV1.A2AClient(new Uri(gatewayUrl.TrimEnd('/')), httpClient);
+    }
+
+    private static async Task WaitForGateway(string gatewayUrl, IServiceProvider services, CancellationToken ct)
+    {
+        var httpClientFactory = services.GetRequiredService<IHttpClientFactory>();
+        var httpClient = httpClientFactory.CreateClient();
+
+        for (var attempt = 0; attempt < 15; attempt++)
+        {
+            try
+            {
+                var probe = await httpClient.GetAsync($"{gatewayUrl}/.well-known/agent-card.json", ct);
+                if (probe.IsSuccessStatusCode) return;
+            }
+            catch (HttpRequestException) when (!ct.IsCancellationRequested) { }
+            await Task.Delay(1000, ct);
+        }
+        throw new Exception("Gateway not ready after 15 retries");
+    }
+
     private static void Assert(bool condition, string message)
     {
         if (!condition) throw new Exception(message);

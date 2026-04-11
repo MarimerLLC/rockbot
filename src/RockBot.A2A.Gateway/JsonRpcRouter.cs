@@ -5,6 +5,8 @@ namespace RockBot.A2A.Gateway;
 
 /// <summary>
 /// Routes A2A v1 JSON-RPC requests to the appropriate <see cref="A2AServer"/> method.
+/// Streaming methods (<c>SendStreamingMessage</c>, <c>SubscribeToTask</c>) write SSE
+/// directly to the response and return <c>null</c>; non-streaming methods return <see cref="IResult"/>.
 /// </summary>
 internal static class JsonRpcRouter
 {
@@ -15,8 +17,14 @@ internal static class JsonRpcRouter
         DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull
     };
 
-    public static async Task<IResult> HandleAsync(
+    /// <summary>
+    /// Parses the JSON-RPC request, dispatches to the matching <see cref="A2AServer"/> method,
+    /// and returns an <see cref="IResult"/> for synchronous methods or <c>null</c> when the
+    /// response was already written as SSE.
+    /// </summary>
+    public static async Task<IResult?> HandleAsync(
         HttpRequest request,
+        HttpResponse response,
         A2AServer server,
         ILoggerFactory loggerFactory,
         CancellationToken ct)
@@ -55,14 +63,42 @@ internal static class JsonRpcRouter
         {
             return method switch
             {
+                // ── Core message methods ────────────────────────────────────
                 "message/send" or A2AMethods.SendMessage =>
                     await HandleSendMessageAsync(server, paramsJson, idRaw, ct),
 
+                "message/sendStream" or A2AMethods.SendStreamingMessage =>
+                    await HandleSendStreamingMessageAsync(response, server, paramsJson, idRaw, logger, ct),
+
+                // ── Task methods ────────────────────────────────────────────
                 A2AMethods.GetTask =>
                     await HandleGetTaskAsync(server, paramsJson, idRaw, ct),
 
+                A2AMethods.ListTasks =>
+                    await HandleListTasksAsync(server, paramsJson, idRaw, ct),
+
                 A2AMethods.CancelTask =>
                     await HandleCancelTaskAsync(server, paramsJson, idRaw, ct),
+
+                A2AMethods.SubscribeToTask =>
+                    await HandleSubscribeToTaskAsync(response, server, paramsJson, idRaw, logger, ct),
+
+                // ── Push notification config CRUD ───────────────────────────
+                A2AMethods.CreateTaskPushNotificationConfig =>
+                    await HandleCreatePushNotificationConfigAsync(server, paramsJson, idRaw, ct),
+
+                A2AMethods.GetTaskPushNotificationConfig =>
+                    await HandleGetPushNotificationConfigAsync(server, paramsJson, idRaw, ct),
+
+                A2AMethods.ListTaskPushNotificationConfig =>
+                    await HandleListPushNotificationConfigAsync(server, paramsJson, idRaw, ct),
+
+                A2AMethods.DeleteTaskPushNotificationConfig =>
+                    await HandleDeletePushNotificationConfigAsync(server, paramsJson, idRaw, ct),
+
+                // ── Agent card ──────────────────────────────────────────────
+                A2AMethods.GetExtendedAgentCard =>
+                    await HandleGetExtendedAgentCardAsync(server, paramsJson, idRaw, ct),
 
                 _ => JsonRpcError(idRaw, -32601, $"Method not found: {method}")
             };
@@ -78,6 +114,8 @@ internal static class JsonRpcRouter
         }
     }
 
+    // ── Core message handlers ───────────────────────────────────────────────
+
     private static async Task<IResult> HandleSendMessageAsync(
         A2AServer server, string paramsJson, string idRaw, CancellationToken ct)
     {
@@ -88,6 +126,21 @@ internal static class JsonRpcRouter
         var response = await server.SendMessageAsync(sendRequest, ct);
         return JsonRpcResult(idRaw, response);
     }
+
+    private static async Task<IResult?> HandleSendStreamingMessageAsync(
+        HttpResponse httpResponse, A2AServer server, string paramsJson, string idRaw,
+        ILogger logger, CancellationToken ct)
+    {
+        var sendRequest = JsonSerializer.Deserialize<SendMessageRequest>(paramsJson, JsonOptions);
+        if (sendRequest is null)
+            return JsonRpcError(idRaw, -32600, "Invalid SendStreamingMessage params");
+
+        var events = server.SendStreamingMessageAsync(sendRequest, ct);
+        await SseWriter.WriteStreamAsync(httpResponse, idRaw, events, logger, ct);
+        return null; // Response already written as SSE
+    }
+
+    // ── Task handlers ───────────────────────────────────────────────────────
 
     private static async Task<IResult> HandleGetTaskAsync(
         A2AServer server, string paramsJson, string idRaw, CancellationToken ct)
@@ -100,6 +153,17 @@ internal static class JsonRpcRouter
         return JsonRpcResult(idRaw, task);
     }
 
+    private static async Task<IResult> HandleListTasksAsync(
+        A2AServer server, string paramsJson, string idRaw, CancellationToken ct)
+    {
+        var listRequest = JsonSerializer.Deserialize<ListTasksRequest>(paramsJson, JsonOptions);
+        if (listRequest is null)
+            return JsonRpcError(idRaw, -32600, "Invalid ListTasks params");
+
+        var response = await server.ListTasksAsync(listRequest, ct);
+        return JsonRpcResult(idRaw, response);
+    }
+
     private static async Task<IResult> HandleCancelTaskAsync(
         A2AServer server, string paramsJson, string idRaw, CancellationToken ct)
     {
@@ -110,6 +174,80 @@ internal static class JsonRpcRouter
         var task = await server.CancelTaskAsync(cancelRequest, ct);
         return JsonRpcResult(idRaw, task);
     }
+
+    private static async Task<IResult?> HandleSubscribeToTaskAsync(
+        HttpResponse httpResponse, A2AServer server, string paramsJson, string idRaw,
+        ILogger logger, CancellationToken ct)
+    {
+        var subRequest = JsonSerializer.Deserialize<SubscribeToTaskRequest>(paramsJson, JsonOptions);
+        if (subRequest is null)
+            return JsonRpcError(idRaw, -32600, "Invalid SubscribeToTask params");
+
+        var events = server.SubscribeToTaskAsync(subRequest, ct);
+        await SseWriter.WriteStreamAsync(httpResponse, idRaw, events, logger, ct);
+        return null; // Response already written as SSE
+    }
+
+    // ── Push notification config CRUD ───────────────────────────────────────
+
+    private static async Task<IResult> HandleCreatePushNotificationConfigAsync(
+        A2AServer server, string paramsJson, string idRaw, CancellationToken ct)
+    {
+        var createRequest = JsonSerializer.Deserialize<CreateTaskPushNotificationConfigRequest>(paramsJson, JsonOptions);
+        if (createRequest is null)
+            return JsonRpcError(idRaw, -32600, "Invalid CreateTaskPushNotificationConfig params");
+
+        var config = await server.CreateTaskPushNotificationConfigAsync(createRequest, ct);
+        return JsonRpcResult(idRaw, config);
+    }
+
+    private static async Task<IResult> HandleGetPushNotificationConfigAsync(
+        A2AServer server, string paramsJson, string idRaw, CancellationToken ct)
+    {
+        var getRequest = JsonSerializer.Deserialize<GetTaskPushNotificationConfigRequest>(paramsJson, JsonOptions);
+        if (getRequest is null)
+            return JsonRpcError(idRaw, -32600, "Invalid GetTaskPushNotificationConfig params");
+
+        var config = await server.GetTaskPushNotificationConfigAsync(getRequest, ct);
+        return JsonRpcResult(idRaw, config);
+    }
+
+    private static async Task<IResult> HandleListPushNotificationConfigAsync(
+        A2AServer server, string paramsJson, string idRaw, CancellationToken ct)
+    {
+        var listRequest = JsonSerializer.Deserialize<ListTaskPushNotificationConfigRequest>(paramsJson, JsonOptions);
+        if (listRequest is null)
+            return JsonRpcError(idRaw, -32600, "Invalid ListTaskPushNotificationConfig params");
+
+        var response = await server.ListTaskPushNotificationConfigAsync(listRequest, ct);
+        return JsonRpcResult(idRaw, response);
+    }
+
+    private static async Task<IResult> HandleDeletePushNotificationConfigAsync(
+        A2AServer server, string paramsJson, string idRaw, CancellationToken ct)
+    {
+        var deleteRequest = JsonSerializer.Deserialize<DeleteTaskPushNotificationConfigRequest>(paramsJson, JsonOptions);
+        if (deleteRequest is null)
+            return JsonRpcError(idRaw, -32600, "Invalid DeleteTaskPushNotificationConfig params");
+
+        await server.DeleteTaskPushNotificationConfigAsync(deleteRequest, ct);
+        return JsonRpcResult(idRaw, new { }); // Void operation — return empty result
+    }
+
+    // ── Agent card ──────────────────────────────────────────────────────────
+
+    private static async Task<IResult> HandleGetExtendedAgentCardAsync(
+        A2AServer server, string paramsJson, string idRaw, CancellationToken ct)
+    {
+        var cardRequest = JsonSerializer.Deserialize<GetExtendedAgentCardRequest>(paramsJson, JsonOptions);
+        if (cardRequest is null)
+            return JsonRpcError(idRaw, -32600, "Invalid GetExtendedAgentCard params");
+
+        var card = await server.GetExtendedAgentCardAsync(cardRequest, ct);
+        return JsonRpcResult(idRaw, card);
+    }
+
+    // ── JSON-RPC response helpers ───────────────────────────────────────────
 
     private static IResult JsonRpcResult(string idRaw, object result)
     {
