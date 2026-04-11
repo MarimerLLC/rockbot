@@ -90,6 +90,7 @@ internal sealed class RockBotTaskHandler(
             {
                 "notify-user" => await HandleNotifyUserAsync(request, identity, ct),
                 "query-availability" => HandleQueryAvailability(request),
+                "negotiate-meeting" => await HandleNegotiateMeetingAsync(request, identity, context, ct),
                 _ => await HandleObserveAsync(request, identity, context, ct)
             };
         }
@@ -299,6 +300,111 @@ internal sealed class RockBotTaskHandler(
             {
                 Role = "agent",
                 Parts = [new AgentMessagePart { Kind = "text", Text = status }]
+            }
+        };
+    }
+
+    /// <summary>
+    /// Multi-turn meeting negotiation skill. On the first call, returns
+    /// <see cref="AgentTaskState.InputRequired"/> asking for preferred times.
+    /// On follow-up (same contextId with existing conversation turns), confirms
+    /// the meeting and returns <see cref="AgentTaskState.Completed"/>.
+    /// </summary>
+    private async Task<AgentTaskResult> HandleNegotiateMeetingAsync(
+        AgentTaskRequest request,
+        VerifiedAgentIdentity caller,
+        AgentTaskContext context,
+        CancellationToken ct)
+    {
+        var message = ExtractText(request);
+
+        // Use contextId for multi-turn state tracking
+        var contextId = request.ContextId ?? request.TaskId;
+        var sessionId = $"a2a-inbound/{contextId}";
+
+        // Check if this is a follow-up in an existing negotiation
+        var existingTurns = await conversationMemory.GetTurnsAsync(sessionId, ct);
+        var isContinuation = existingTurns.Count > 0;
+
+        // Store the turn for future reference
+        await conversationMemory.AddTurnAsync(sessionId,
+            new ConversationTurn("user", message, DateTimeOffset.UtcNow)
+            { AgentName = caller.DisplayName },
+            ct);
+
+        if (!isContinuation)
+        {
+            // First call — ask for preferred times
+            logger.LogInformation(
+                "A2A negotiate-meeting from {CallerId}: initial request, returning InputRequired",
+                caller.AgentId);
+
+            await context.PublishStatus(new AgentTaskStatusUpdate
+            {
+                TaskId = request.TaskId,
+                ContextId = contextId,
+                State = AgentTaskState.Working,
+                Message = new AgentMessage
+                {
+                    Role = "agent",
+                    Parts = [new AgentMessagePart { Kind = "text", Text = "Checking availability..." }]
+                }
+            }, ct);
+
+            var questionText =
+                $"I'd like to help coordinate this meeting. " +
+                $"My user is available tomorrow at 10:00 AM, 2:00 PM, or 4:00 PM. " +
+                $"Which of these times works for your user?";
+
+            await conversationMemory.AddTurnAsync(sessionId,
+                new ConversationTurn("assistant", questionText, DateTimeOffset.UtcNow),
+                ct);
+
+            return new AgentTaskResult
+            {
+                TaskId = request.TaskId,
+                ContextId = contextId,
+                State = AgentTaskState.InputRequired,
+                Message = new AgentMessage
+                {
+                    Role = "agent",
+                    Parts = [new AgentMessagePart { Kind = "text", Text = questionText }]
+                }
+            };
+        }
+
+        // Follow-up — confirm the meeting
+        logger.LogInformation(
+            "A2A negotiate-meeting from {CallerId}: follow-up received, confirming",
+            caller.AgentId);
+
+        var confirmationText =
+            $"Meeting confirmed. I've noted the preference from your response: \"{message}\". " +
+            $"My user will be notified about the scheduled meeting.";
+
+        await conversationMemory.AddTurnAsync(sessionId,
+            new ConversationTurn("assistant", confirmationText, DateTimeOffset.UtcNow),
+            ct);
+
+        // Notify our user about the confirmed meeting
+        await notificationQueue.EnqueueAsync(new InboundNotification
+        {
+            TaskId = request.TaskId,
+            CallerName = caller.DisplayName,
+            Summary = $"Meeting negotiated with {caller.DisplayName}: {message}",
+            ReceivedAt = DateTimeOffset.UtcNow,
+            SkillId = "negotiate-meeting"
+        }, ct);
+
+        return new AgentTaskResult
+        {
+            TaskId = request.TaskId,
+            ContextId = contextId,
+            State = AgentTaskState.Completed,
+            Message = new AgentMessage
+            {
+                Role = "agent",
+                Parts = [new AgentMessagePart { Kind = "text", Text = confirmationText }]
             }
         };
     }

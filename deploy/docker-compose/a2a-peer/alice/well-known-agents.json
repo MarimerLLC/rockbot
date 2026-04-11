@@ -10,7 +10,7 @@
     "skills": [
       { "id": "notify-user", "name": "Notify User", "description": "Send a notification to Bob's user." },
       { "id": "query-availability", "name": "Query Availability", "description": "Check if Bob's user is available." },
-      { "id": "general", "name": "General", "description": "General-purpose task handling." }
+      { "id": "negotiate-meeting", "name": "Negotiate Meeting", "description": "Multi-turn meeting negotiation with Bob's agent." }
     ]
   }
 ]

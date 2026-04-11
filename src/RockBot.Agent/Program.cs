@@ -289,7 +289,9 @@ builder.Services.AddRockBotHost(agent =>
                 new AgentSkill { Id = "notify-user", Name = "Notify User",
                     Description = "Send a notification to the user" },
                 new AgentSkill { Id = "query-availability", Name = "Query Availability",
-                    Description = "Check if the user is available (free/busy)" }
+                    Description = "Check if the user is available (free/busy)" },
+                new AgentSkill { Id = "negotiate-meeting", Name = "Negotiate Meeting",
+                    Description = "Multi-turn meeting negotiation — proposes available times and confirms when the caller selects one" }
             ]
         };
         opts.TrustStorePath = Path.Combine(a2aBasePath, "agent-trust.json");
