@@ -325,10 +325,14 @@ internal sealed class RockBotTaskHandler(
     }
 
     /// <summary>
-    /// Multi-turn meeting negotiation skill. On the first call, returns
-    /// <see cref="AgentTaskState.InputRequired"/> asking for preferred times.
-    /// On follow-up (same contextId with existing conversation turns), confirms
-    /// the meeting and returns <see cref="AgentTaskState.Completed"/>.
+    /// Multi-turn meeting negotiation skill. Gathers all meeting details from
+    /// the caller via <see cref="AgentTaskState.InputRequired"/> rounds before
+    /// confirming and notifying the user. Questions about purpose, duration, etc.
+    /// are directed at the <b>caller</b> — the user is only notified with the
+    /// final confirmed details.
+    ///
+    /// Round 1 (initial request): ask for preferred time, purpose, and duration.
+    /// Round 2 (follow-up): confirm with all details gathered.
     /// </summary>
     private async Task<AgentTaskResult> HandleNegotiateMeetingAsync(
         AgentTaskRequest request,
@@ -342,21 +346,22 @@ internal sealed class RockBotTaskHandler(
         var contextId = request.ContextId ?? request.TaskId;
         var sessionId = $"a2a-inbound/{contextId}";
 
-        // Check if this is a follow-up in an existing negotiation
+        // Check conversation history to determine which round we're in
         var existingTurns = await conversationMemory.GetTurnsAsync(sessionId, ct);
-        var isContinuation = existingTurns.Count > 0;
+        // Each round stores 2 turns (user + assistant), so turn count / 2 = completed rounds
+        var completedRounds = existingTurns.Count / 2;
 
-        // Store the turn for future reference
+        // Store the caller's message
         await conversationMemory.AddTurnAsync(sessionId,
             new ConversationTurn("user", message, DateTimeOffset.UtcNow)
             { AgentName = caller.DisplayName },
             ct);
 
-        if (!isContinuation)
+        if (completedRounds == 0)
         {
-            // First call — ask for preferred times
+            // Round 1 — gather all details from the caller
             logger.LogInformation(
-                "A2A negotiate-meeting from {CallerId}: initial request, returning InputRequired",
+                "A2A negotiate-meeting from {CallerId}: initial request, asking for details",
                 caller.AgentId);
 
             await context.PublishStatus(new AgentTaskStatusUpdate
@@ -372,9 +377,12 @@ internal sealed class RockBotTaskHandler(
             }, ct);
 
             var questionText =
-                $"I'd like to help coordinate this meeting. " +
-                $"My user is available tomorrow at 10:00 AM, 2:00 PM, or 4:00 PM. " +
-                $"Which of these times works for your user?";
+                "I'd like to help coordinate this meeting. " +
+                "My user is available tomorrow at 10:00 AM, 2:00 PM, or 4:00 PM. " +
+                "Please provide the following so I can finalize:\n" +
+                "1. Which of these times works for your user?\n" +
+                "2. What is the purpose/topic of the meeting?\n" +
+                "3. How long should it be (e.g., 30 minutes, 1 hour)?";
 
             await conversationMemory.AddTurnAsync(sessionId,
                 new ConversationTurn("assistant", questionText, DateTimeOffset.UtcNow),
@@ -393,27 +401,26 @@ internal sealed class RockBotTaskHandler(
             };
         }
 
-        // Follow-up — confirm the meeting
+        // Round 2+ — caller provided details, confirm and complete
         logger.LogInformation(
-            "A2A negotiate-meeting from {CallerId}: follow-up received, confirming",
+            "A2A negotiate-meeting from {CallerId}: details received, confirming",
             caller.AgentId);
 
         var confirmationText =
-            $"Meeting confirmed. I've noted the preference from your response: \"{message}\". " +
-            $"My user will be notified about the scheduled meeting.";
+            $"Meeting confirmed with the details you provided. " +
+            $"My user will be notified with the full meeting information.";
 
         await conversationMemory.AddTurnAsync(sessionId,
             new ConversationTurn("assistant", confirmationText, DateTimeOffset.UtcNow),
             ct);
 
-        // Persist the negotiation outcome so the agent remembers it later.
-        // Rebuild the full exchange from conversation memory for context.
+        // Persist the negotiation outcome with all details from both rounds.
         var allTurns = await conversationMemory.GetTurnsAsync(sessionId, ct);
         var exchangeSummary = string.Join("\n",
             allTurns.Select(t => $"  [{t.Role}] {t.Content}"));
         var outcomeText =
             $"Meeting negotiated with {caller.DisplayName} on {DateTimeOffset.UtcNow:yyyy-MM-dd HH:mm UTC}.\n" +
-            $"Caller's final response: {message}\n\n" +
+            $"Details from caller: {message}\n\n" +
             $"Full exchange:\n{exchangeSummary}";
 
         await workingMemory.SetAsync(
@@ -427,12 +434,14 @@ internal sealed class RockBotTaskHandler(
             "Stored negotiate-meeting outcome for {CallerId} in working memory (8h TTL)",
             caller.AgentId);
 
-        // Notify our user about the confirmed meeting
+        // Notify Bob's user with the complete meeting details — no questions,
+        // just the confirmed information. All clarifications were handled with
+        // the caller during the InputRequired rounds.
         await notificationQueue.EnqueueAsync(new InboundNotification
         {
             TaskId = request.TaskId,
             CallerName = caller.DisplayName,
-            Summary = $"Meeting negotiated with {caller.DisplayName}: {message}",
+            Summary = $"Meeting confirmed with {caller.DisplayName}: {message}",
             ReceivedAt = DateTimeOffset.UtcNow,
             SkillId = "negotiate-meeting"
         }, ct);
