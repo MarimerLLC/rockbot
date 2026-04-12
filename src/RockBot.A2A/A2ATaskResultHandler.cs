@@ -36,10 +36,13 @@ internal sealed class A2ATaskResultHandler(
     IConversationMemory conversationMemory,
     A2ATaskTracker tracker,
     ModelBehavior modelBehavior,
+    AgentNameHolder agentNameHolder,
     InputRequiredHandler inputRequiredHandler,
     A2AOptions a2aOptions,
     ILogger<A2ATaskResultHandler> logger) : IMessageHandler<AgentTaskResult>
 {
+    private string DisplayName => agentNameHolder.DisplayName ?? agent.Name;
+
     public async Task HandleAsync(AgentTaskResult result, MessageHandlerContext context)
     {
         var ct = context.CancellationToken;
@@ -288,7 +291,7 @@ internal sealed class A2ATaskResultHandler(
             using var progressCtx = ToolProgressNotifier.SetContext(new ToolProgressContext
             {
                 SessionId = rawSessionId,
-                AgentName = agent.Name,
+                AgentName = DisplayName,
                 ReplyTo = UserProxyTopics.UserResponse
             });
 
@@ -299,14 +302,14 @@ internal sealed class A2ATaskResultHandler(
             await conversationMemory.AddTurnAsync(
                 rawSessionId,
                 new ConversationTurn("assistant", finalContent, DateTimeOffset.UtcNow)
-                { AgentName = agent.Name },
+                { AgentName = DisplayName },
                 ct);
 
             var reply = new AgentReply
             {
                 Content = finalContent,
                 SessionId = rawSessionId,
-                AgentName = agent.Name,
+                AgentName = DisplayName,
                 IsFinal = true
             };
             var envelope = reply.ToEnvelope<AgentReply>(source: agent.Name);
@@ -333,7 +336,7 @@ internal sealed class A2ATaskResultHandler(
             {
                 Content = errorMessage,
                 SessionId = rawSessionId,
-                AgentName = agent.Name,
+                AgentName = DisplayName,
                 IsFinal = true
             };
             var envelope = reply.ToEnvelope<AgentReply>(source: agent.Name);

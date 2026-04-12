@@ -33,8 +33,10 @@ internal sealed class InputRequiredHandler(
     ToolGuideTools toolGuideTools,
     IConversationMemory conversationMemory,
     IAgentTrustStore trustStore,
+    AgentNameHolder agentNameHolder,
     ILogger<InputRequiredHandler> logger)
 {
+    private string DisplayName => agentNameHolder.DisplayName ?? agent.Name;
     public async Task<InputRequiredResponse> HandleAsync(
         InputRequiredContext context,
         CancellationToken ct)
@@ -120,7 +122,7 @@ internal sealed class InputRequiredHandler(
             using var progressCtx = ToolProgressNotifier.SetContext(new ToolProgressContext
             {
                 SessionId = rawSessionId,
-                AgentName = agent.Name,
+                AgentName = DisplayName,
                 ReplyTo = UserProxyTopics.UserResponse
             });
 
