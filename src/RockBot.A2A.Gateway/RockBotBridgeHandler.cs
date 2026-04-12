@@ -144,7 +144,7 @@ internal sealed class RockBotBridgeHandler(
 
             logger.LogInformation("Got response for task {TaskId}: state={State}", taskId, result.State);
 
-            // Map RockBot result back to A2A v1 Message
+            // Map RockBot result back to A2A v1
             var responseText = result.Message?.Parts
                 .Where(p => p.Kind == "text")
                 .Select(p => p.Text)
@@ -156,16 +156,14 @@ internal sealed class RockBotBridgeHandler(
                 Parts = [new Part { Text = responseText }]
             };
 
-            // Persist the completed task so ListTasks can return it.
-            // The SDK's A2AServer manages task state in memory for synchronous
-            // SendMessage flows without calling SaveTaskAsync, so we save directly.
-            var completedTask = new AgentTask
+            var a2aState = MapTaskState(result.State);
+            var task = new AgentTask
             {
                 Id = taskId,
                 ContextId = context.ContextId,
                 Status = new A2ATaskStatus
                 {
-                    State = MapTaskState(result.State),
+                    State = a2aState,
                     Message = responseMessage,
                     Timestamp = DateTimeOffset.UtcNow
                 },
@@ -178,10 +176,20 @@ internal sealed class RockBotBridgeHandler(
                     responseMessage
                 ]
             };
-            await taskStore.SaveTaskAsync(taskId, completedTask, cancellationToken);
-            _ = pushSender.TrySendTaskCompletedAsync(taskId, completedTask, cancellationToken);
+            await taskStore.SaveTaskAsync(taskId, task, cancellationToken);
 
-            await eventQueue.EnqueueMessageAsync(responseMessage, cancellationToken);
+            // For terminal states, return a Message response (simple, backwards-compatible).
+            // For non-terminal states (InputRequired, Working), return a Task response so the
+            // caller's SDK preserves the state and can act on it (e.g. InputRequired follow-up).
+            if (a2aState is TaskState.Completed or TaskState.Failed or TaskState.Canceled)
+            {
+                _ = pushSender.TrySendTaskCompletedAsync(taskId, task, cancellationToken);
+                await eventQueue.EnqueueMessageAsync(responseMessage, cancellationToken);
+            }
+            else
+            {
+                await eventQueue.EnqueueTaskAsync(task, cancellationToken);
+            }
         }
         finally
         {
