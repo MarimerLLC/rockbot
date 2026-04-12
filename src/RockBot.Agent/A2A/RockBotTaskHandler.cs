@@ -228,6 +228,9 @@ internal sealed class RockBotTaskHandler(
             SkillId = request.Skill
         }, ct);
 
+        // Return a clear "not fulfilled" response so the caller's LLM does not
+        // hallucinate success. The Observe path only summarises and notifies — it
+        // does NOT execute the requested action.
         return new AgentTaskResult
         {
             TaskId = request.TaskId,
@@ -239,8 +242,11 @@ internal sealed class RockBotTaskHandler(
                 Parts = [new AgentMessagePart
                 {
                     Kind = "text",
-                    Text = "Your request has been received and the user will be notified. " +
-                           "A summary and suggested action have been prepared for their review."
+                    Text = "IMPORTANT: This request was NOT completed. " +
+                           "It has been forwarded to my user for manual review. " +
+                           "No action has been taken and nothing has been scheduled, confirmed, or executed. " +
+                           "The user may follow up separately if they choose to act on it. " +
+                           "You should inform your user that the request is pending the other party's review."
                 }]
             }
         };
