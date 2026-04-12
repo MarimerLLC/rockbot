@@ -82,16 +82,23 @@ internal sealed class RockBotTaskHandler(
         };
         await trustStore.UpdateAsync(trust, ct);
 
-        // Dispatch built-in skills for Level 4 callers with approved skills
-        if (trust.Level >= AgentTrustLevel.Act &&
-            trust.ApprovedSkills.Contains(request.Skill, StringComparer.OrdinalIgnoreCase))
+        // Dispatch built-in skills for Level 4 callers with approved skills.
+        // Fuzzy-match the requested skill ID — callers may paraphrase
+        // (e.g. "schedule-meeting" instead of "negotiate-meeting").
+        var matchedSkill = InboundSkillMatcher.Match(request.Skill);
+        if (matchedSkill is not null &&
+            trust.Level >= AgentTrustLevel.Act &&
+            trust.ApprovedSkills.Contains(matchedSkill, StringComparer.OrdinalIgnoreCase))
         {
-            return request.Skill.ToLowerInvariant() switch
+            logger.LogInformation(
+                "Skill match: requested '{Requested}' → matched '{Matched}'",
+                request.Skill, matchedSkill);
+
+            return matchedSkill switch
             {
                 "notify-user" => await HandleNotifyUserAsync(request, identity, ct),
                 "query-availability" => HandleQueryAvailability(request),
-                "negotiate-meeting" or "schedule-meeting" =>
-                    await HandleNegotiateMeetingAsync(request, identity, context, ct),
+                "negotiate-meeting" => await HandleNegotiateMeetingAsync(request, identity, context, ct),
                 _ => await HandleObserveAsync(request, identity, context, ct)
             };
         }

@@ -84,8 +84,8 @@ public sealed class A2ACallerSkillProvider : IToolSkillProvider
         - Call the skill that matches the user's request. Do NOT call query-availability
           or other skills as a prerequisite — the target agent handles its own availability
           logic within its skill implementation.
-        - Use the exact skill ID from list_known_agents. Do not paraphrase or invent
-          skill IDs — the target agent only recognises the IDs listed in its agent card.
+        - Use the skill ID from list_known_agents. The target agent uses fuzzy matching,
+          so close paraphrases will work, but using the listed ID is most reliable.
         - Only call one invoke_agent per user request unless the user explicitly asks
           you to contact multiple agents.
         """;
