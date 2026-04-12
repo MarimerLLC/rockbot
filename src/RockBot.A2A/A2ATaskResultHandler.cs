@@ -275,7 +275,12 @@ internal sealed class A2ATaskResultHandler(
 
         var sessionWorkingMemoryTools = new WorkingMemoryTools(workingMemory, sessionNamespace, logger);
         var sessionSkillTools = new SkillTools(skillStore, llmClient, logger, rawSessionId);
+        // Exclude A2A caller tools (invoke_agent, register_agent, etc.) from the result
+        // synthesis — the LLM should present the result, not start new agent interactions.
+        var a2aToolNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+            { "invoke_agent", "register_agent", "unregister_agent", "list_known_agents", "get_agent_details" };
         var registryTools = toolRegistry.GetTools()
+            .Where(r => !a2aToolNames.Contains(r.Name))
             .Select(r => (AIFunction)new RegistryToolFunction(
                 r, toolRegistry.GetExecutor(r.Name)!, sessionNamespace))
             .ToArray();
