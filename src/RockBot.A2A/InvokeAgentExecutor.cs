@@ -72,6 +72,13 @@ internal sealed class InvokeAgentExecutor(
         var messageText = messageEl.GetString()!;
         int timeoutMinutes = args.TryGetValue("timeout_minutes", out var toEl) && toEl.TryGetInt32(out var to) ? to : 5;
 
+        // Reject self-invocation — the LLM sometimes uses its own identity name
+        // instead of the target agent's name from the directory.
+        if (agentName.Equals(identity.Name, StringComparison.OrdinalIgnoreCase))
+            return Error(request,
+                $"Cannot invoke yourself ('{agentName}'). " +
+                $"Use list_known_agents to find the correct external agent name.");
+
         var taskId = Guid.NewGuid().ToString("N");
         var primarySessionId = request.SessionId ?? "unknown";
 

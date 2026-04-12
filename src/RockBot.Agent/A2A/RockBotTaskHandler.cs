@@ -203,7 +203,7 @@ internal sealed class RockBotTaskHandler(
 
         // Persist a searchable outcome so the agent can recall this interaction later.
         // Uses a stable key pattern under a2a-outcomes/ with long TTL.
-        var outcomeKey = $"a2a-outcomes/{request.Skill}/{request.ContextId ?? request.TaskId}";
+        var outcomeKey = $"session/{WellKnownSessions.Primary}/a2a-outcomes/{request.Skill}/{request.ContextId ?? request.TaskId}";
         await workingMemory.SetAsync(
             outcomeKey,
             $"Inbound A2A task from {caller.DisplayName} (skill: {request.Skill}) on {DateTimeOffset.UtcNow:yyyy-MM-dd HH:mm UTC}.\n" +
@@ -268,7 +268,7 @@ internal sealed class RockBotTaskHandler(
 
         // Persist notification so the agent can recall it later
         await workingMemory.SetAsync(
-            $"a2a-outcomes/notify-user/{request.TaskId}",
+            $"session/{WellKnownSessions.Primary}/a2a-outcomes/notify-user/{request.TaskId}",
             $"Notification from {caller.DisplayName} on {DateTimeOffset.UtcNow:yyyy-MM-dd HH:mm UTC}:\n{message}",
             ttl: TimeSpan.FromHours(8),
             category: "a2a-outcome",
@@ -417,7 +417,7 @@ internal sealed class RockBotTaskHandler(
             $"Full exchange:\n{exchangeSummary}";
 
         await workingMemory.SetAsync(
-            $"a2a-outcomes/negotiate-meeting/{contextId}",
+            $"session/{WellKnownSessions.Primary}/a2a-outcomes/negotiate-meeting/{contextId}",
             outcomeText,
             ttl: TimeSpan.FromHours(8),
             category: "a2a-outcome",

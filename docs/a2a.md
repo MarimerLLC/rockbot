@@ -289,7 +289,7 @@ interaction after the request completes.
 
 ```csharp
 await workingMemory.SetAsync(
-    $"a2a-outcomes/{request.Skill}/{contextId}",  // stable key pattern
+    $"session/{WellKnownSessions.Primary}/a2a-outcomes/{request.Skill}/{contextId}",
     outcomeText,                                    // human-readable summary
     ttl: TimeSpan.FromHours(8),                     // long enough to be useful
     category: "a2a-outcome",                        // standard category for all A2A outcomes
@@ -297,7 +297,9 @@ await workingMemory.SetAsync(
 ```
 
 **Requirements:**
-- **Key pattern**: `a2a-outcomes/{skillId}/{contextId}` — consistent across all skills
+- **Key pattern**: `session/{WellKnownSessions.Primary}/a2a-outcomes/{skillId}/{contextId}` —
+  must be under the primary session namespace so `SearchWorkingMemory` finds it
+  without the user specifying a custom namespace
 - **Category**: always `"a2a-outcome"` — enables `SearchWorkingMemory` by category
 - **TTL**: 8 hours minimum — shorter TTLs risk the agent forgetting before the
   user asks about it
