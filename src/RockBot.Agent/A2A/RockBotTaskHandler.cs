@@ -90,7 +90,8 @@ internal sealed class RockBotTaskHandler(
             {
                 "notify-user" => await HandleNotifyUserAsync(request, identity, ct),
                 "query-availability" => HandleQueryAvailability(request),
-                "negotiate-meeting" => await HandleNegotiateMeetingAsync(request, identity, context, ct),
+                "negotiate-meeting" or "schedule-meeting" =>
+                    await HandleNegotiateMeetingAsync(request, identity, context, ct),
                 _ => await HandleObserveAsync(request, identity, context, ct)
             };
         }

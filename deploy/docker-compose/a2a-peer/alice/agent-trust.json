@@ -2,7 +2,7 @@
   {
     "agentId": "Bob",
     "level": 4,
-    "approvedSkills": ["notify-user", "query-availability", "negotiate-meeting"],
+    "approvedSkills": ["notify-user", "query-availability", "negotiate-meeting", "schedule-meeting"],
     "firstSeen": "2025-01-01T00:00:00+00:00",
     "lastInteraction": "2025-01-01T00:00:00+00:00",
     "interactionCount": 0
