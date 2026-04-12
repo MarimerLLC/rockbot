@@ -148,7 +148,9 @@ internal sealed class InvokeAgentExecutor(
             ToolCallId = request.ToolCallId,
             ToolName = request.ToolName,
             Content = $"Task dispatched to agent '{agentName}' with task_id: {taskId}. " +
-                      $"The result will arrive asynchronously and fold into the conversation.",
+                      $"The result will arrive asynchronously as a follow-up message. " +
+                      $"STOP here — do not call invoke_agent again or take further action. " +
+                      $"Present a brief status to the user and wait for the agent's response.",
             IsError = false
         };
     }
