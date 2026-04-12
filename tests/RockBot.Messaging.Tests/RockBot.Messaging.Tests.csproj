@@ -22,6 +22,7 @@
     <ProjectReference Include="..\..\src\RockBot.Messaging.Abstractions\RockBot.Messaging.Abstractions.csproj" />
     <ProjectReference Include="..\..\src\RockBot.Messaging.RabbitMQ\RockBot.Messaging.RabbitMQ.csproj" />
     <ProjectReference Include="..\..\src\RockBot.Messaging.InProcess\RockBot.Messaging.InProcess.csproj" />
+    <ProjectReference Include="..\..\src\RockBot.UserProxy\RockBot.UserProxy.csproj" />
   </ItemGroup>
 
 </Project>
