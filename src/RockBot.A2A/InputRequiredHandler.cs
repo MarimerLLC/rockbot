@@ -76,23 +76,9 @@ internal sealed class InputRequiredHandler(
               $"Question: {context.QuestionText}\n\n" +
               $"Please provide a response to send back to the agent on behalf of the user.";
 
-        // Publish the question as a non-final bubble so the user can see it
-        try
-        {
-            var questionReply = new AgentReply
-            {
-                Content = $"**{context.TargetAgent}** asks (round {context.Round}): {context.QuestionText}",
-                SessionId = context.PrimarySessionId,
-                AgentName = context.TargetAgent,
-                IsFinal = false
-            };
-            var questionEnvelope = questionReply.ToEnvelope<AgentReply>(source: context.TargetAgent);
-            await publisher.PublishAsync(UserProxyTopics.UserResponse, questionEnvelope, ct);
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            logger.LogWarning(ex, "Failed to publish InputRequired question bubble for task {TaskId}", context.TaskId);
-        }
+        // For autonomous follow-ups (Act-level trust), don't publish intermediate
+        // bubbles to the UI — the user only needs the final result. For non-autonomous
+        // follow-ups, the question is surfaced through the conversation context.
 
         await conversationMemory.AddTurnAsync(
             rawSessionId,

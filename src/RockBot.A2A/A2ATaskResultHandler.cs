@@ -239,30 +239,9 @@ internal sealed class A2ATaskResultHandler(
             $"The result ({resultText.Length:N0} chars) is in working memory. " +
             $"Call get_from_working_memory with key '{memoryKey}' to read it before responding.";
 
-        // Publish the agent's raw completion output as a final bubble under the
-        // target agent's name. Marked IsFinal so the Blazor UI stops the spinner
-        // for this agent. The primary agent's synthesis follows as a separate reply
-        // under its own name.
-        try
-        {
-            const int PreviewMax = 500;
-            var previewText = resultText.Length > PreviewMax
-                ? resultText[..PreviewMax] + $"\n\n…({resultText.Length - PreviewMax:N0} more chars in working memory)"
-                : resultText;
-            var completionReply = new AgentReply
-            {
-                Content = previewText,
-                SessionId = pending.PrimarySessionId,
-                AgentName = pending.TargetAgent,
-                IsFinal = true
-            };
-            var completionEnvelope = completionReply.ToEnvelope<AgentReply>(source: pending.TargetAgent);
-            await publisher.PublishAsync(UserProxyTopics.UserResponse, completionEnvelope, ct);
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            logger.LogWarning(ex, "Failed to publish completion bubble for A2A task {TaskId}", result.TaskId);
-        }
+        // No separate preview bubble — the LLM synthesis below is the single
+        // user-facing message. Publishing a preview AND a synthesis creates
+        // duplicate confirmation messages in the UI.
 
         await conversationMemory.AddTurnAsync(
             rawSessionId,
