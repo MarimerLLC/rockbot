@@ -79,5 +79,14 @@ public sealed class A2ACallerSkillProvider : IToolSkillProvider
            conversation containing a working memory key. Call
            get_from_working_memory with that key to retrieve the full result,
            then present it to the user.
+
+        ## Important: use the right skill directly
+        - Call the skill that matches the user's request. Do NOT call query-availability
+          or other skills as a prerequisite — the target agent handles its own availability
+          logic within its skill implementation.
+        - Use the exact skill ID from list_known_agents. Do not paraphrase or invent
+          skill IDs — the target agent only recognises the IDs listed in its agent card.
+        - Only call one invoke_agent per user request unless the user explicitly asks
+          you to contact multiple agents.
         """;
 }
