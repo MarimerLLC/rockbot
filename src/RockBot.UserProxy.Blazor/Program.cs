@@ -12,7 +12,10 @@ builder.Services.AddRazorComponents()
 
 // Add RockBot services
 builder.Services.AddRockBotRabbitMq(opts => builder.Configuration.GetSection("RabbitMq").Bind(opts));
-builder.Services.AddUserProxy();
+builder.Services.AddUserProxy(opts =>
+{
+    opts.AgentName = builder.Configuration["Agent:Name"] ?? "RockBot";
+});
 builder.Services.AddSingleton<IUserFrontend, BlazorUserFrontend>();
 builder.Services.AddSingleton<ChatStateService>();
 

@@ -20,17 +20,21 @@ internal sealed class ReportProgressFunctions
     private readonly string _subagentId;
     private readonly ILogger _logger;
 
+    private readonly string _agentName;
+
     public ReportProgressFunctions(
         string taskId,
         string primarySessionId,
         IMessagePublisher publisher,
         string subagentId,
+        string agentName,
         ILogger logger)
     {
         _taskId = taskId;
         _primarySessionId = primarySessionId;
         _publisher = publisher;
         _subagentId = subagentId;
+        _agentName = agentName;
         _logger = logger;
 
         Tools =
@@ -54,7 +58,7 @@ internal sealed class ReportProgressFunctions
         };
 
         var envelope = progress.ToEnvelope<SubagentProgressMessage>(source: _subagentId);
-        await _publisher.PublishAsync(SubagentTopics.Progress, envelope, CancellationToken.None);
+        await _publisher.PublishAsync($"{SubagentTopics.Progress}.{_agentName}", envelope, CancellationToken.None);
 
         _logger.LogInformation("Subagent {TaskId} reported progress: {Message}", _taskId, message);
         return "Progress reported.";

@@ -27,6 +27,7 @@ internal sealed class SubagentRunner(
     IToolRegistry toolRegistry,
     ToolGuideTools toolGuideTools,
     IMessagePublisher publisher,
+    AgentIdentity agent,
     TierRoutingLogger tierRoutingLogger,
     AgentProfile agentProfile,
     ILogger<SubagentRunner> logger)
@@ -125,7 +126,7 @@ internal sealed class SubagentRunner(
         // report_progress tool — baked with taskId and primarySessionId
         var subagentId = $"subagent-{taskId}";
         var reportProgressFunctions = new ReportProgressFunctions(
-            taskId, primarySessionId, publisher, subagentId, logger);
+            taskId, primarySessionId, publisher, subagentId, agent.Name, logger);
 
         var chatOptions = new ChatOptions
         {
@@ -160,7 +161,7 @@ internal sealed class SubagentRunner(
             {
                 SessionId = primarySessionId,
                 AgentName = $"subagent-{taskId}",
-                ReplyTo = UserProxy.UserProxyTopics.UserResponse
+                ReplyTo = $"{UserProxy.UserProxyTopics.UserResponse}.{agent.Name}"
             });
 
             finalOutput = await agentLoopRunner.RunAsync(
@@ -226,7 +227,7 @@ internal sealed class SubagentRunner(
         };
 
         var envelope = result.ToEnvelope<SubagentResultMessage>(source: subagentId);
-        await publisher.PublishAsync(SubagentTopics.Result, envelope, CancellationToken.None);
+        await publisher.PublishAsync($"{SubagentTopics.Result}.{agent.Name}", envelope, CancellationToken.None);
 
         logger.LogInformation("Subagent {TaskId} published result (success={Success})", taskId, isSuccess);
     }

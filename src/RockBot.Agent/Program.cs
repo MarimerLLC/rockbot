@@ -253,9 +253,11 @@ builder.Services.AddSingleton<SkillRecallTracker>();
 builder.Services.AddSingleton<IToolSkillProvider, MemoryToolSkillProvider>();
 builder.Services.AddSingleton<IToolSkillProvider, SkillToolSkillProvider>();
 
+var agentName = builder.Configuration["Agent:Name"] ?? "RockBot";
+
 builder.Services.AddRockBotHost(agent =>
 {
-    agent.WithIdentity("RockBot");
+    agent.WithIdentity(agentName);
     agent.WithProfile();
     agent.WithRules();
     agent.WithMemory();
@@ -281,7 +283,7 @@ builder.Services.AddRockBotHost(agent =>
     {
         opts.Card = new AgentCard
         {
-            AgentName = "RockBot",
+            AgentName = agentName,
             Description = "Personal AI agent — accepts notifications and availability queries",
             Version = "1.0",
             Skills =
@@ -335,17 +337,17 @@ builder.Services.AddRockBotHost(agent =>
     agent.HandleMessage<ListSavedResponsesRequest, ListSavedResponsesRequestHandler>();
     agent.HandleMessage<GetSavedResponseRequest, GetSavedResponseRequestHandler>();
     agent.HandleMessage<DeleteSavedResponseRequest, DeleteSavedResponseRequestHandler>();
-    agent.SubscribeTo(UserProxyTopics.UserMessage);
-    agent.SubscribeTo(UserProxyTopics.UserFeedback);
-    agent.SubscribeTo(UserProxyTopics.CancelSession);
-    agent.SubscribeTo(UserProxyTopics.ClearContext);
-    agent.SubscribeTo(UserProxyTopics.ConversationHistoryRequest);
-    agent.SubscribeTo(UserProxyTopics.AgentInfoRequest);
-    agent.SubscribeTo(UserProxyTopics.ActiveStatusRequest);
-    agent.SubscribeTo(UserProxyTopics.SaveResponseRequest);
-    agent.SubscribeTo(UserProxyTopics.ListSavedResponsesRequest);
-    agent.SubscribeTo(UserProxyTopics.GetSavedResponseRequest);
-    agent.SubscribeTo(UserProxyTopics.DeleteSavedResponseRequest);
+    agent.SubscribeTo($"{UserProxyTopics.UserMessage}.{agentName}");
+    agent.SubscribeTo($"{UserProxyTopics.UserFeedback}.{agentName}");
+    agent.SubscribeTo($"{UserProxyTopics.CancelSession}.{agentName}");
+    agent.SubscribeTo($"{UserProxyTopics.ClearContext}.{agentName}");
+    agent.SubscribeTo($"{UserProxyTopics.ConversationHistoryRequest}.{agentName}");
+    agent.SubscribeTo($"{UserProxyTopics.AgentInfoRequest}.{agentName}");
+    agent.SubscribeTo($"{UserProxyTopics.ActiveStatusRequest}.{agentName}");
+    agent.SubscribeTo($"{UserProxyTopics.SaveResponseRequest}.{agentName}");
+    agent.SubscribeTo($"{UserProxyTopics.ListSavedResponsesRequest}.{agentName}");
+    agent.SubscribeTo($"{UserProxyTopics.GetSavedResponseRequest}.{agentName}");
+    agent.SubscribeTo($"{UserProxyTopics.DeleteSavedResponseRequest}.{agentName}");
 });
 
 // Bind AgentProfileOptions from the AgentProfile config section so AgentProfile__BasePath

@@ -109,7 +109,7 @@ internal sealed class InputRequiredHandler(
             {
                 SessionId = rawSessionId,
                 AgentName = DisplayName,
-                ReplyTo = UserProxyTopics.UserResponse
+                ReplyTo = $"{UserProxyTopics.UserResponse}.{agent.Name}"
             });
 
             responseText = await agentLoopRunner.RunAsync(

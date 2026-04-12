@@ -105,7 +105,7 @@ internal sealed class ScheduledTaskHandler(
                 {
                     SessionId = replySessionId,
                     AgentName = agent.Name,
-                    ReplyTo = UserProxyTopics.UserResponse
+                    ReplyTo = $"{UserProxyTopics.UserResponse}.{agent.Name}"
                 });
 
                 finalText = await agentLoopRunner.RunAsync(
@@ -148,6 +148,6 @@ internal sealed class ScheduledTaskHandler(
         };
 
         var envelope = reply.ToEnvelope<AgentReply>(source: agent.Name);
-        await publisher.PublishAsync(UserProxyTopics.UserResponse, envelope, ct);
+        await publisher.PublishAsync($"{UserProxyTopics.UserResponse}.{agent.Name}", envelope, ct);
     }
 }

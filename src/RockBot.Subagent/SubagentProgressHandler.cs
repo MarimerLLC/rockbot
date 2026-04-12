@@ -50,7 +50,7 @@ internal sealed class SubagentProgressHandler(
                 IsFinal = false
             };
             var envelope = progressReply.ToEnvelope<AgentReply>(source: agent.Name);
-            await publisher.PublishAsync(UserProxyTopics.UserResponse, envelope, ct);
+            await publisher.PublishAsync($"{UserProxyTopics.UserResponse}.{agent.Name}", envelope, ct);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {

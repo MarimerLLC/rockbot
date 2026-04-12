@@ -29,8 +29,9 @@ public static class SubagentServiceCollectionExtensions
         // Message handlers for primary agent side
         builder.HandleMessage<SubagentProgressMessage, SubagentProgressHandler>();
         builder.HandleMessage<SubagentResultMessage, SubagentResultHandler>();
-        builder.SubscribeTo(SubagentTopics.Progress);
-        builder.SubscribeTo(SubagentTopics.Result);
+        var agentName = builder.Identity.Name;
+        builder.SubscribeTo($"{SubagentTopics.Progress}.{agentName}");
+        builder.SubscribeTo($"{SubagentTopics.Result}.{agentName}");
 
         // Tool registrar (registers spawn_subagent, cancel_subagent, list_subagents)
         builder.Services.AddHostedService<SubagentToolRegistrar>();

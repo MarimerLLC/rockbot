@@ -174,7 +174,7 @@ internal sealed class AgentProfileLoader : IHostedService, IDisposable
         {
             var notification = new AgentNameChanged { AgentName = agentName };
             var envelope = notification.ToEnvelope<AgentNameChanged>(source: _agent.Name);
-            await _publisher.PublishAsync(UserProxyTopics.UserResponse, envelope);
+            await _publisher.PublishAsync($"{UserProxyTopics.UserResponse}.{_agent.Name}", envelope);
             _logger.LogInformation("Published agent name change notification: {Name}", agentName);
         }
         catch (Exception ex)

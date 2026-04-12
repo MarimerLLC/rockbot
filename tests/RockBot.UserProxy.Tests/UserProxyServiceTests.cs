@@ -38,7 +38,7 @@ public sealed class UserProxyServiceTests
     [TestMethod]
     public void StartAsync_SubscribesToUserResponseTopic()
     {
-        Assert.AreEqual(UserProxyTopics.UserResponse, _subscriber.CapturedTopic);
+        Assert.AreEqual($"{UserProxyTopics.UserResponse}.{_options.AgentName}", _subscriber.CapturedTopic);
         Assert.AreEqual("user-proxy.test-proxy", _subscriber.CapturedSubscriptionName);
     }
 
@@ -53,7 +53,7 @@ public sealed class UserProxyServiceTests
         // Verify publish happened
         await Task.Delay(10);
         Assert.AreEqual(1, _publisher.Published.Count);
-        Assert.AreEqual(UserProxyTopics.UserMessage, _publisher.Published[0].Topic);
+        Assert.AreEqual($"{UserProxyTopics.UserMessage}.{_options.AgentName}", _publisher.Published[0].Topic);
 
         // Let it timeout
         var result = await sendTask;
@@ -70,7 +70,7 @@ public sealed class UserProxyServiceTests
 
         var envelope = _publisher.Published[0].Envelope;
         Assert.IsNotNull(envelope.CorrelationId);
-        Assert.AreEqual(UserProxyTopics.UserResponse, envelope.ReplyTo);
+        Assert.AreEqual($"{UserProxyTopics.UserResponse}.{_options.AgentName}", envelope.ReplyTo);
         Assert.AreEqual("test-proxy", envelope.Source);
 
         await sendTask;
@@ -189,7 +189,7 @@ public sealed class UserProxyServiceTests
         await _service.SendFireAndForgetAsync(message);
 
         Assert.AreEqual(1, _publisher.Published.Count);
-        Assert.AreEqual(UserProxyTopics.UserMessage, _publisher.Published[0].Topic);
+        Assert.AreEqual($"{UserProxyTopics.UserMessage}.{_options.AgentName}", _publisher.Published[0].Topic);
         Assert.IsNotNull(_publisher.Published[0].Envelope.CorrelationId);
     }
 
@@ -263,7 +263,7 @@ public sealed class UserProxyServiceTests
         await connected.Task.WaitAsync(TimeSpan.FromSeconds(5));
 
         Assert.IsTrue(svc.IsConnected);
-        Assert.AreEqual(UserProxyTopics.UserResponse, failingSubscriber.CapturedTopic);
+        Assert.AreEqual($"{UserProxyTopics.UserResponse}.{retryOptions.AgentName}", failingSubscriber.CapturedTopic);
         // 1 initial failure + 1 retry failure + 1 retry success = 3 total calls
         Assert.AreEqual(3, failingSubscriber.CallCount);
 
@@ -348,7 +348,7 @@ public sealed class UserProxyServiceTests
         await Task.Delay(10);
 
         Assert.AreEqual(1, _publisher.Published.Count);
-        Assert.AreEqual(UserProxyTopics.ConversationHistoryRequest, _publisher.Published[0].Topic);
+        Assert.AreEqual($"{UserProxyTopics.ConversationHistoryRequest}.{_options.AgentName}", _publisher.Published[0].Topic);
 
         await historyTask; // let it timeout
     }

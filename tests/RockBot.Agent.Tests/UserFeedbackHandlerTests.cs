@@ -164,7 +164,7 @@ public class UserFeedbackHandlerTests
         Assert.AreEqual(1, _publisher.Published.Count);
 
         var (topic, envelope) = _publisher.Published[0];
-        Assert.AreEqual(UserProxyTopics.UserResponse, topic);
+        Assert.AreEqual($"{UserProxyTopics.UserResponse}.{AgentName}", topic);
 
         var reply = envelope.GetPayload<AgentReply>();
         Assert.IsNotNull(reply);

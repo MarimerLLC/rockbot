@@ -89,7 +89,7 @@ public class InboundNotificationServiceTests
         await _publisher.WaitForPublish();
 
         Assert.AreEqual(1, _publisher.Published.Count);
-        Assert.AreEqual(UserProxyTopics.UserResponse, _publisher.Published[0].Topic);
+        Assert.AreEqual($"{UserProxyTopics.UserResponse}.RockBot", _publisher.Published[0].Topic);
 
         var reply = _publisher.Published[0].Envelope.GetPayload<AgentReply>();
         Assert.IsNotNull(reply);

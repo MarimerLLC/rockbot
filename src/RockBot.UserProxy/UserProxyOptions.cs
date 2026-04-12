@@ -6,6 +6,12 @@ namespace RockBot.UserProxy;
 public sealed class UserProxyOptions
 {
     public string ProxyId { get; set; } = "user-proxy";
+
+    /// <summary>
+    /// Name of the agent this proxy communicates with.
+    /// Used to scope message bus topics so multiple agent instances can share the same broker.
+    /// </summary>
+    public string AgentName { get; set; } = "RockBot";
     public TimeSpan DefaultReplyTimeout { get; set; } = TimeSpan.FromMinutes(3);
 
     /// <summary>
