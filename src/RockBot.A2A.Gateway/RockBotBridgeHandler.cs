@@ -120,10 +120,11 @@ internal sealed class RockBotBridgeHandler(
             // Brief delay for subscriptions to bind
             await Task.Delay(300, cancellationToken);
 
-            // Publish task to RockBot
+            // Publish task to RockBot — propagate contextId for multi-turn continuation
             var request = new RbAgentTaskRequest
             {
                 TaskId = taskId,
+                ContextId = context.ContextId,
                 Skill = skill,
                 Message = new RbAgentMessage
                 {
@@ -157,10 +158,13 @@ internal sealed class RockBotBridgeHandler(
             };
 
             var a2aState = MapTaskState(result.State);
+            // Use the contextId from the agent's response (it may have created one
+            // for multi-turn tracking), falling back to the caller's contextId.
+            var effectiveContextId = result.ContextId ?? context.ContextId;
             var task = new AgentTask
             {
                 Id = taskId,
-                ContextId = context.ContextId,
+                ContextId = effectiveContextId,
                 Status = new A2ATaskStatus
                 {
                     State = a2aState,
