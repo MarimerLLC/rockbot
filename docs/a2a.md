@@ -12,8 +12,12 @@ result folded back into the conversation.
 1. The primary agent calls `invoke_agent(agent_name, skill, message)`.
 2. The request is published to `agent.task.{agentName}`.
 3. The target agent processes the task, sending `Working` status updates.
-4. On completion the target publishes a result to `agent.response.{callerName}`.
-5. `A2ATaskResultHandler` stores the result in working memory at
+4. If the response is non-terminal (Working/Submitted), the caller polls or
+   waits for follow-up messages until a terminal state is reached.
+5. If the response is `InputRequired`, the caller generates a trust-gated
+   follow-up response and sends it back to continue the multi-turn conversation.
+6. On completion the target publishes a result to `agent.response.{callerName}`.
+7. `A2ATaskResultHandler` stores the result in working memory at
    `session/{sessionId}/a2a/{agentName}/{taskId}/result` (60-minute TTL) and
    injects a synthetic user turn into the conversation that contains the exact
    key. The primary agent calls `get_from_working_memory` with that key to
@@ -27,6 +31,86 @@ ScaledJob spins up).
 > of size. The synthetic turn that arrives in the conversation is a notification,
 > not the result itself — the agent must call `get_from_working_memory` with the
 > provided key to read the actual content before responding to the user.
+
+---
+
+## Long-running tasks and multi-turn interaction
+
+RockBot supports the full A2A task lifecycle — not just single-shot request/response.
+This enables scenarios like two RockBot instances collaborating on behalf of their
+users (e.g., negotiating a meeting time).
+
+### Long-running task polling (HTTP transport)
+
+When an HTTP-transport agent returns a non-terminal state (`Working` or `Submitted`),
+the outbound dispatcher polls `GetTask` with exponential backoff until the task
+reaches a terminal state (`Completed`, `Failed`, `Canceled`) or transitions to
+`InputRequired`.
+
+| Setting | Default | Description |
+|---|---|---|
+| `PollingInitialDelay` | 2s | First polling delay |
+| `PollingMaxDelay` | 30s | Maximum delay (backoff cap) |
+
+Intermediate `Working` status updates are forwarded to the user via the internal
+message bus so they can see progress in real time.
+
+### InputRequired multi-turn follow-up
+
+When a remote agent returns `state: inputRequired`, the caller automatically
+generates a follow-up response and sends it back with the same `contextId` to
+continue the conversation. This works on **both** HTTP and queue transports.
+
+**Trust-gated behavior**: The response generation is gated by the existing
+[trust model](#trust-levels):
+
+- If the target agent has **Act-level trust** and the skill is in `ApprovedSkills`:
+  the LLM generates the follow-up response autonomously using its full tool set
+  (calendar access, memory search, etc.).
+- Otherwise: the question is surfaced through the user's conversation. The LLM
+  still generates a response, but the framing asks it to involve the user.
+
+Both paths run through `AgentLoopRunner` with the complete tool set, so the LLM
+can look up calendars, check working memory, invoke skills, etc.
+
+**Transport differences**:
+
+| Transport | Mechanism |
+|---|---|
+| HTTP | The dispatch loop calls `SendMessage` again with the same `contextId` |
+| Queue (RabbitMQ) | `A2ATaskResultHandler` publishes a follow-up `AgentTaskRequest` with the same `contextId` and `correlationId` |
+
+### Loop protection
+
+Two safety mechanisms prevent infinite InputRequired ping-pong:
+
+1. **Max round limit** (`MaxInputRequiredRounds`, default **20**): Hard cap on
+   the number of follow-up round-trips. When exceeded, the task is terminated
+   with a descriptive error.
+
+2. **Repetition detection** (`InputRequiredRepetitionThreshold`, default **3**):
+   Detects when the same question/answer pair repeats consecutively. When
+   triggered, the loop is broken with a suggestion to restructure the request.
+
+### ContextId and conversation continuity
+
+The `contextId` field on `AgentTaskRequest` links messages that belong to the same
+multi-turn conversation. On the **inbound** side, `RockBotTaskHandler` uses the
+`contextId` to derive the LLM session ID (`a2a-inbound/{contextId}`). When a
+follow-up message arrives with a known `contextId`, the handler rebuilds the chat
+context from stored conversation history so the LLM sees the full exchange.
+
+### Observability
+
+All polling and InputRequired activity is instrumented with OpenTelemetry:
+
+- **Metrics**: `rockbot.a2a.polling_attempts`, `rockbot.a2a.input_required_rounds`,
+  `rockbot.a2a.input_required_breaks`
+- **Spans**: `rockbot.a2a.poll_loop`, `rockbot.a2a.input_required_loop`,
+  `rockbot.a2a.input_required_round`
+- **Cross-container tags**: Every span includes `task_id`, `context_id`,
+  `correlation_id`, and `session_id` so distributed traces can be stitched
+  across caller and responder containers.
 
 ---
 
@@ -169,6 +253,105 @@ publishing to the message bus. The result is folded into the conversation by the
 same `A2ATaskResultHandler` used for queue-based results.
 
 See `RockBot.SampleAgent.Http` for a complete working example.
+
+---
+
+## Implementing inbound A2A skills
+
+RockBot dispatches inbound A2A requests through `RockBotTaskHandler` based on
+trust level and skill ID. To add a new Act-level skill, follow this pattern.
+
+### 1. Register the skill
+
+Add it in three places:
+
+1. **Agent card** in `Program.cs` — so other agents can discover it:
+   ```csharp
+   new AgentSkill { Id = "my-skill", Name = "My Skill",
+       Description = "What this skill does" }
+   ```
+
+2. **Gateway appsettings.json** — so HTTP callers see it in the agent card:
+   ```json
+   { "Id": "my-skill", "Name": "My Skill", "Description": "..." }
+   ```
+
+3. **Skill dispatch** in `RockBotTaskHandler.HandleTaskAsync` — route to your handler:
+   ```csharp
+   "my-skill" => await HandleMySkillAsync(request, identity, context, ct),
+   ```
+
+### 2. Persist outcomes in working memory
+
+Every skill that produces a meaningful result **must** store it in working memory
+so the agent can recall it later. Without this, the agent has no memory of the
+interaction after the request completes.
+
+```csharp
+await workingMemory.SetAsync(
+    $"session/{WellKnownSessions.Primary}/a2a-outcomes/{request.Skill}/{contextId}",
+    outcomeText,                                    // human-readable summary
+    ttl: TimeSpan.FromHours(8),                     // long enough to be useful
+    category: "a2a-outcome",                        // standard category for all A2A outcomes
+    tags: [caller.DisplayName, "meeting"]);          // searchable tags
+```
+
+**Requirements:**
+- **Key pattern**: `session/{WellKnownSessions.Primary}/a2a-outcomes/{skillId}/{contextId}` —
+  must be under the primary session namespace so `SearchWorkingMemory` finds it
+  without the user specifying a custom namespace
+- **Category**: always `"a2a-outcome"` — enables `SearchWorkingMemory` by category
+- **TTL**: 8 hours minimum — shorter TTLs risk the agent forgetting before the
+  user asks about it
+- **Tags**: include the caller's display name and domain-relevant keywords
+- **Content**: include a timestamp, the caller identity, and enough context to
+  be useful standalone (the agent may retrieve this hours later without the
+  original conversation in context)
+
+### 3. Multi-turn skills (InputRequired)
+
+Skills that need follow-up information from the caller return
+`AgentTaskState.InputRequired` instead of `Completed`. The caller's
+`InputRequiredHandler` generates a response (trust-gated) and sends it back
+with the same `contextId`.
+
+**Required patterns for multi-turn skills:**
+
+- **Use `contextId`** for session continuity:
+  ```csharp
+  var contextId = request.ContextId ?? request.TaskId;
+  var sessionId = $"a2a-inbound/{contextId}";
+  ```
+
+- **Check conversation history** to distinguish first call from follow-up:
+  ```csharp
+  var existingTurns = await conversationMemory.GetTurnsAsync(sessionId, ct);
+  var isContinuation = existingTurns.Count > 0;
+  ```
+
+- **Store turns** in conversation memory for future continuation:
+  ```csharp
+  await conversationMemory.AddTurnAsync(sessionId,
+      new ConversationTurn("user", message, DateTimeOffset.UtcNow)
+      { AgentName = caller.DisplayName }, ct);
+  ```
+
+- **Persist the outcome** when the multi-turn exchange completes (not on
+  intermediate InputRequired rounds — only on the final Completed response).
+
+See `HandleNegotiateMeetingAsync` in `RockBotTaskHandler.cs` for the reference
+implementation.
+
+### 4. Trust and approval
+
+Callers must have Act-level trust (`AgentTrustLevel.Act`) **and** the skill ID
+in their `ApprovedSkills` list to reach the Act-level dispatch. Otherwise the
+request falls through to the Observe path (read-only LLM summary + user
+notification).
+
+Trust entries are managed in `agent-trust.json` on the data volume. For
+docker-compose deployments, pre-seed the trust store with the skills you want
+approved. For production, trust is granted incrementally by the user.
 
 ---
 

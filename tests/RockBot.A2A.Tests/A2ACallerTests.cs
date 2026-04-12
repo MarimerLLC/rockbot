@@ -37,6 +37,7 @@ public class A2ACallerTests
         new(publisher, tracker, directory ?? EmptyDirectory,
             options ?? DefaultOptions, TestIdentity,
             NullHttpClientFactory.Instance,
+            null!, // InputRequiredHandler — not needed for queue-transport tests
             NullLogger<InvokeAgentExecutor>.Instance);
 
     // ─── InvokeAgentExecutor ────────────────────────────────────────────────────
@@ -456,6 +457,60 @@ public class A2ACallerTests
         Assert.IsNull(result);
     }
 
+    [TestMethod]
+    public void MapV1Response_PreservesContextId_OnInputRequired()
+    {
+        var response = new A2AV1.SendMessageResponse
+        {
+            Task = new A2AV1.AgentTask
+            {
+                Id = "task-ir",
+                ContextId = "ctx-multi-turn",
+                Status = new A2AV1.TaskStatus
+                {
+                    State = A2AV1.TaskState.InputRequired,
+                    Message = new A2AV1.Message
+                    {
+                        Role = A2AV1.Role.Agent,
+                        Parts = [new A2AV1.Part { Text = "What time works for you?" }]
+                    }
+                }
+            }
+        };
+
+        var result = InvokeAgentExecutor.MapV1Response(response, "task-ir");
+
+        Assert.IsNotNull(result);
+        Assert.AreEqual(AgentTaskState.InputRequired, result.State);
+        Assert.AreEqual("ctx-multi-turn", result.ContextId);
+        Assert.AreEqual("What time works for you?", result.Message?.Parts[0].Text);
+    }
+
+    [TestMethod]
+    public void MapV1TaskResponse_MapsWorkingState()
+    {
+        var task = new A2AV1.AgentTask
+        {
+            Id = "task-w",
+            ContextId = "ctx-w",
+            Status = new A2AV1.TaskStatus
+            {
+                State = A2AV1.TaskState.Working,
+                Message = new A2AV1.Message
+                {
+                    Role = A2AV1.Role.Agent,
+                    Parts = [new A2AV1.Part { Text = "Still processing..." }]
+                }
+            }
+        };
+
+        var result = InvokeAgentExecutor.MapV1TaskResponse(task, "task-w");
+
+        Assert.IsNotNull(result);
+        Assert.AreEqual(AgentTaskState.Working, result.State);
+        Assert.AreEqual("ctx-w", result.ContextId);
+    }
+
     // ─── V0.3 response mapping ──────────────────────────────────────────────────
 
     [TestMethod]
@@ -473,6 +528,95 @@ public class A2ACallerTests
         Assert.AreEqual(AgentTaskState.Completed, result.State);
         Assert.AreEqual("assistant", result.Message?.Role);
         Assert.AreEqual("Done v0.3", result.Message?.Parts[0].Text);
+    }
+
+    [TestMethod]
+    public void MapV03Response_MapsInputRequired_CorrectState()
+    {
+        var response = (A2AV03.A2AResponse)new A2AV03.AgentTask
+        {
+            ContextId = "ctx-v03",
+            Status = new A2AV03.AgentTaskStatus
+            {
+                State = A2AV03.TaskState.InputRequired,
+                Message = new A2AV03.AgentMessage
+                {
+                    Role = A2AV03.MessageRole.Agent,
+                    Parts = [new A2AV03.TextPart { Text = "Need more info" }]
+                }
+            }
+        };
+
+        var result = InvokeAgentExecutor.MapV03Response(response, "task-v03ir");
+
+        Assert.IsNotNull(result);
+        Assert.AreEqual(AgentTaskState.InputRequired, result.State);
+        Assert.AreEqual("ctx-v03", result.ContextId);
+        Assert.AreEqual("Need more info", result.Message?.Parts[0].Text);
+    }
+
+    [TestMethod]
+    public void MapV03Response_PreservesContextId_OnWorking()
+    {
+        var response = (A2AV03.A2AResponse)new A2AV03.AgentTask
+        {
+            ContextId = "ctx-working",
+            Status = new A2AV03.AgentTaskStatus
+            {
+                State = A2AV03.TaskState.Working,
+            }
+        };
+
+        var result = InvokeAgentExecutor.MapV03Response(response, "task-v03w");
+
+        Assert.IsNotNull(result);
+        Assert.AreEqual(AgentTaskState.Working, result.State);
+        Assert.AreEqual("ctx-working", result.ContextId);
+    }
+
+    // ─── PendingA2ATask multi-turn state ────────────────────────────────────────
+
+    [TestMethod]
+    public void PendingA2ATask_MultiTurnState_DefaultsCorrectly()
+    {
+        var task = new PendingA2ATask
+        {
+            TaskId = "t1",
+            TargetAgent = "Agent",
+            Skill = "test",
+            PrimarySessionId = "sess",
+            StartedAt = DateTimeOffset.UtcNow,
+            Cts = new CancellationTokenSource()
+        };
+
+        Assert.IsNull(task.ContextId);
+        Assert.AreEqual(0, task.InputRequiredRound);
+        Assert.IsNull(task.LastInputRequiredQuestion);
+        Assert.IsNull(task.LastInputRequiredAnswer);
+    }
+
+    [TestMethod]
+    public void PendingA2ATask_MultiTurnState_IsMutable()
+    {
+        var task = new PendingA2ATask
+        {
+            TaskId = "t1",
+            TargetAgent = "Agent",
+            Skill = "test",
+            PrimarySessionId = "sess",
+            StartedAt = DateTimeOffset.UtcNow,
+            Cts = new CancellationTokenSource()
+        };
+
+        task.ContextId = "ctx-1";
+        task.InputRequiredRound = 3;
+        task.LastInputRequiredQuestion = "What time?";
+        task.LastInputRequiredAnswer = "3pm";
+
+        Assert.AreEqual("ctx-1", task.ContextId);
+        Assert.AreEqual(3, task.InputRequiredRound);
+        Assert.AreEqual("What time?", task.LastInputRequiredQuestion);
+        Assert.AreEqual("3pm", task.LastInputRequiredAnswer);
     }
 
     // ─── AgentCard ProtocolVersion persistence ──────────────────────────────────

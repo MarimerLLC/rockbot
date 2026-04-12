@@ -29,8 +29,10 @@ internal sealed class A2ATaskStatusHandler(
     ToolGuideTools toolGuideTools,
     IConversationMemory conversationMemory,
     A2ATaskTracker tracker,
+    AgentNameHolder agentNameHolder,
     ILogger<A2ATaskStatusHandler> logger) : IMessageHandler<AgentTaskStatusUpdate>
 {
+    private string DisplayName => agentNameHolder.DisplayName ?? agent.Name;
     public async Task HandleAsync(AgentTaskStatusUpdate update, MessageHandlerContext context)
     {
         var ct = context.CancellationToken;
@@ -111,7 +113,7 @@ internal sealed class A2ATaskStatusHandler(
             using var progressCtx = ToolProgressNotifier.SetContext(new ToolProgressContext
             {
                 SessionId = rawSessionId,
-                AgentName = agent.Name,
+                AgentName = DisplayName,
                 ReplyTo = UserProxyTopics.UserResponse
             });
 
@@ -129,7 +131,7 @@ internal sealed class A2ATaskStatusHandler(
             {
                 Content = finalContent,
                 SessionId = rawSessionId,
-                AgentName = agent.Name,
+                AgentName = DisplayName,
                 IsFinal = false
             };
             var envelope = reply.ToEnvelope<AgentReply>(source: agent.Name);

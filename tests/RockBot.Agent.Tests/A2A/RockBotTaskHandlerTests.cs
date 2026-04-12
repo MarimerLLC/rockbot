@@ -231,6 +231,64 @@ public class RockBotTaskHandlerTests
         Assert.AreEqual("ExternalAgent", _notificationQueue.Enqueued[0].CallerName);
     }
 
+    // ── contextId-based continuation ────────────────────────────────────
+
+    [TestMethod]
+    public async Task HandleTask_WithContextId_UsesContextIdBasedSessionId()
+    {
+        var llmClient = new StubLlmClient { ResponseText = "Follow-up summary" };
+        var handler = CreateHandlerWithLlm(llmClient);
+
+        // First request — no contextId
+        var request1 = new AgentTaskRequest
+        {
+            TaskId = Guid.NewGuid().ToString("N"),
+            Skill = "general",
+            Message = new AgentMessage
+            {
+                Role = "user",
+                Parts = [new AgentMessagePart { Kind = "text", Text = "Can we meet?" }]
+            }
+        };
+        var context1 = CreateVerifiedContext(request1, "CallerBot");
+        await handler.HandleTaskAsync(request1, context1);
+
+        // Second request — with contextId (simulating a follow-up)
+        var contextId = Guid.NewGuid().ToString("N");
+        var request2 = new AgentTaskRequest
+        {
+            TaskId = Guid.NewGuid().ToString("N"),
+            ContextId = contextId,
+            Skill = "general",
+            Message = new AgentMessage
+            {
+                Role = "user",
+                Parts = [new AgentMessagePart { Kind = "text", Text = "How about 3pm?" }]
+            }
+        };
+        var context2 = CreateVerifiedContext(request2, "CallerBot");
+        var result2 = await handler.HandleTaskAsync(request2, context2);
+
+        Assert.AreEqual(AgentTaskState.Completed, result2.State);
+        Assert.AreEqual(contextId, result2.ContextId);
+    }
+
+    [TestMethod]
+    public async Task HandleTask_WithoutContextId_StartsNewConversation()
+    {
+        var llmClient = new StubLlmClient { ResponseText = "New conversation summary" };
+        var handler = CreateHandlerWithLlm(llmClient);
+
+        var request = A2ATestEnvelopeHelper.CreateRequest(skill: "general", message: "First request");
+        var context = CreateVerifiedContext(request, "CallerBot");
+
+        var result = await handler.HandleTaskAsync(request, context);
+
+        Assert.AreEqual(AgentTaskState.Completed, result.State);
+        // Without contextId, the sessionId is taskId-based — no continuation
+        Assert.IsNull(result.ContextId);
+    }
+
     // ── helpers ──────────────────────────────────────────────────────────
 
     /// <summary>
@@ -245,6 +303,7 @@ public class RockBotTaskHandlerTests
             notificationQueue: _notificationQueue,
             userActivityMonitor: _activityMonitor,
             sessionTracker: _sessionTracker,
+            conversationMemory: new StubConversationMemory(),
             logger: NullLogger<RockBotTaskHandler>.Instance);
 
     /// <summary>
@@ -288,6 +347,7 @@ public class RockBotTaskHandlerTests
             _notificationQueue,
             _activityMonitor,
             _sessionTracker,
+            new StubConversationMemory(),
             NullLogger<RockBotTaskHandler>.Instance);
     }
 

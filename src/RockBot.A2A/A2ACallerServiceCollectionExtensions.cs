@@ -57,6 +57,9 @@ public static class A2ACallerServiceCollectionExtensions
         // Pending task tracker
         builder.Services.AddSingleton<A2ATaskTracker>();
 
+        // InputRequired handler for multi-turn follow-up (trust-gated LLM response generation)
+        builder.Services.AddSingleton<InputRequiredHandler>();
+
         // Message handlers for result/error/status
         builder.HandleMessage<AgentTaskResult, A2ATaskResultHandler>();
         builder.HandleMessage<AgentTaskError, A2ATaskErrorHandler>();

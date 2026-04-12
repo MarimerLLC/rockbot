@@ -35,4 +35,25 @@ internal static class A2ADiagnostics
             "rockbot.a2a.duration",
             unit: "ms",
             description: "Duration of A2A task round-trips from dispatch to result");
+
+    /// <summary>Number of InputRequired follow-up rounds completed.</summary>
+    public static readonly Counter<long> InputRequiredRounds =
+        Meter.CreateCounter<long>(
+            "rockbot.a2a.input_required_rounds",
+            unit: "{round}",
+            description: "A2A InputRequired follow-up rounds completed");
+
+    /// <summary>Number of InputRequired loops terminated by max-round or repetition limits.</summary>
+    public static readonly Counter<long> InputRequiredBreaks =
+        Meter.CreateCounter<long>(
+            "rockbot.a2a.input_required_breaks",
+            unit: "{break}",
+            description: "A2A InputRequired loops terminated by safety limits");
+
+    /// <summary>Number of GetTask polling attempts for long-running HTTP tasks.</summary>
+    public static readonly Counter<long> PollingAttempts =
+        Meter.CreateCounter<long>(
+            "rockbot.a2a.polling_attempts",
+            unit: "{attempt}",
+            description: "A2A GetTask polling attempts for long-running tasks");
 }

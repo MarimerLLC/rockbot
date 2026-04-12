@@ -7,6 +7,20 @@ namespace RockBot.A2A.Gateway;
 public sealed class GatewayOptions
 {
     public string AgentName { get; set; } = "RockBot";
+
+    /// <summary>
+    /// Internal agent identity name used for RabbitMQ topic routing
+    /// (<c>agent.task.{name}</c>). Must match the agent's <c>WithIdentity()</c>
+    /// name. Defaults to <see cref="AgentName"/> when not set separately.
+    /// </summary>
+    public string? InternalAgentName { get; set; }
+
+    /// <summary>
+    /// Resolved internal name: <see cref="InternalAgentName"/> if set,
+    /// otherwise <see cref="AgentName"/>.
+    /// </summary>
+    public string RoutingName => InternalAgentName ?? AgentName;
+
     public string? Description { get; set; }
     public string? Version { get; set; }
     public List<GatewaySkillConfig> Skills { get; set; } = [];

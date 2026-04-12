@@ -28,8 +28,11 @@ internal sealed class A2ATaskErrorHandler(
     ToolGuideTools toolGuideTools,
     IConversationMemory conversationMemory,
     A2ATaskTracker tracker,
+    AgentNameHolder agentNameHolder,
     ILogger<A2ATaskErrorHandler> logger) : IMessageHandler<AgentTaskError>
 {
+    private string DisplayName => agentNameHolder.DisplayName ?? agent.Name;
+
     public async Task HandleAsync(AgentTaskError error, MessageHandlerContext context)
     {
         var ct = context.CancellationToken;
@@ -92,7 +95,7 @@ internal sealed class A2ATaskErrorHandler(
             using var progressCtx = ToolProgressNotifier.SetContext(new ToolProgressContext
             {
                 SessionId = rawSessionId,
-                AgentName = agent.Name,
+                AgentName = DisplayName,
                 ReplyTo = UserProxyTopics.UserResponse
             });
 
@@ -110,7 +113,7 @@ internal sealed class A2ATaskErrorHandler(
             {
                 Content = finalContent,
                 SessionId = rawSessionId,
-                AgentName = agent.Name,
+                AgentName = DisplayName,
                 IsFinal = true
             };
             var envelope = reply.ToEnvelope<AgentReply>(source: agent.Name);

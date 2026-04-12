@@ -120,10 +120,11 @@ internal sealed class RockBotBridgeHandler(
             // Brief delay for subscriptions to bind
             await Task.Delay(300, cancellationToken);
 
-            // Publish task to RockBot
+            // Publish task to RockBot — propagate contextId for multi-turn continuation
             var request = new RbAgentTaskRequest
             {
                 TaskId = taskId,
+                ContextId = context.ContextId,
                 Skill = skill,
                 Message = new RbAgentMessage
                 {
@@ -137,14 +138,14 @@ internal sealed class RockBotBridgeHandler(
                 correlationId: taskId,
                 replyTo: replyTopic);
 
-            await publisher.PublishAsync("agent.task.RockBot", envelope, cancellationToken);
+            await publisher.PublishAsync($"agent.task.{gatewayOptions.Value.RoutingName}", envelope, cancellationToken);
 
             // Wait for RockBot's response
             var result = await resultTcs.Task.WaitAsync(timeout, cancellationToken);
 
             logger.LogInformation("Got response for task {TaskId}: state={State}", taskId, result.State);
 
-            // Map RockBot result back to A2A v1 Message
+            // Map RockBot result back to A2A v1
             var responseText = result.Message?.Parts
                 .Where(p => p.Kind == "text")
                 .Select(p => p.Text)
@@ -156,16 +157,17 @@ internal sealed class RockBotBridgeHandler(
                 Parts = [new Part { Text = responseText }]
             };
 
-            // Persist the completed task so ListTasks can return it.
-            // The SDK's A2AServer manages task state in memory for synchronous
-            // SendMessage flows without calling SaveTaskAsync, so we save directly.
-            var completedTask = new AgentTask
+            var a2aState = MapTaskState(result.State);
+            // Use the contextId from the agent's response (it may have created one
+            // for multi-turn tracking), falling back to the caller's contextId.
+            var effectiveContextId = result.ContextId ?? context.ContextId;
+            var task = new AgentTask
             {
                 Id = taskId,
-                ContextId = context.ContextId,
+                ContextId = effectiveContextId,
                 Status = new A2ATaskStatus
                 {
-                    State = MapTaskState(result.State),
+                    State = a2aState,
                     Message = responseMessage,
                     Timestamp = DateTimeOffset.UtcNow
                 },
@@ -178,10 +180,20 @@ internal sealed class RockBotBridgeHandler(
                     responseMessage
                 ]
             };
-            await taskStore.SaveTaskAsync(taskId, completedTask, cancellationToken);
-            _ = pushSender.TrySendTaskCompletedAsync(taskId, completedTask, cancellationToken);
+            await taskStore.SaveTaskAsync(taskId, task, cancellationToken);
 
-            await eventQueue.EnqueueMessageAsync(responseMessage, cancellationToken);
+            // For terminal states, return a Message response (simple, backwards-compatible).
+            // For non-terminal states (InputRequired, Working), return a Task response so the
+            // caller's SDK preserves the state and can act on it (e.g. InputRequired follow-up).
+            if (a2aState is TaskState.Completed or TaskState.Failed or TaskState.Canceled)
+            {
+                _ = pushSender.TrySendTaskCompletedAsync(taskId, task, cancellationToken);
+                await eventQueue.EnqueueMessageAsync(responseMessage, cancellationToken);
+            }
+            else
+            {
+                await eventQueue.EnqueueTaskAsync(task, cancellationToken);
+            }
         }
         finally
         {
@@ -205,7 +217,7 @@ internal sealed class RockBotBridgeHandler(
             source: callerId,
             correlationId: taskId);
 
-        await publisher.PublishAsync("agent.task.cancel.RockBot", envelope, cancellationToken);
+        await publisher.PublishAsync($"agent.task.cancel.{gatewayOptions.Value.RoutingName}", envelope, cancellationToken);
     }
 
     private static TaskState MapTaskState(AgentTaskState state) => state switch

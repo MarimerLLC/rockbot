@@ -21,6 +21,7 @@ internal sealed class RockBotTaskHandler(
     IInboundNotificationQueue notificationQueue,
     IUserActivityMonitor userActivityMonitor,
     ISessionTracker sessionTracker,
+    IConversationMemory conversationMemory,
     ILogger<RockBotTaskHandler> logger) : IAgentTaskHandler
 {
     private const string ObserveSystemPrompt =
@@ -81,14 +82,23 @@ internal sealed class RockBotTaskHandler(
         };
         await trustStore.UpdateAsync(trust, ct);
 
-        // Dispatch built-in skills for Level 4 callers with approved skills
-        if (trust.Level >= AgentTrustLevel.Act &&
-            trust.ApprovedSkills.Contains(request.Skill, StringComparer.OrdinalIgnoreCase))
+        // Dispatch built-in skills for Level 4 callers with approved skills.
+        // Fuzzy-match the requested skill ID — callers may paraphrase
+        // (e.g. "schedule-meeting" instead of "negotiate-meeting").
+        var matchedSkill = InboundSkillMatcher.Match(request.Skill);
+        if (matchedSkill is not null &&
+            trust.Level >= AgentTrustLevel.Act &&
+            trust.ApprovedSkills.Contains(matchedSkill, StringComparer.OrdinalIgnoreCase))
         {
-            return request.Skill.ToLowerInvariant() switch
+            logger.LogInformation(
+                "Skill match: requested '{Requested}' → matched '{Matched}'",
+                request.Skill, matchedSkill);
+
+            return matchedSkill switch
             {
                 "notify-user" => await HandleNotifyUserAsync(request, identity, ct),
                 "query-availability" => HandleQueryAvailability(request),
+                "negotiate-meeting" => await HandleNegotiateMeetingAsync(request, identity, context, ct),
                 _ => await HandleObserveAsync(request, identity, context, ct)
             };
         }
@@ -117,21 +127,53 @@ internal sealed class RockBotTaskHandler(
         }, ct);
 
         var question = ExtractText(request);
-        var sessionId = $"a2a-inbound/{request.TaskId}";
+
+        // Use contextId for session continuity if provided, otherwise use taskId.
+        // This allows multi-turn conversations to maintain LLM context across rounds.
+        var sessionId = !string.IsNullOrEmpty(request.ContextId)
+            ? $"a2a-inbound/{request.ContextId}"
+            : $"a2a-inbound/{request.TaskId}";
+
+        // Check if this is a continuation of an existing conversation
+        var existingTurns = await conversationMemory.GetTurnsAsync(sessionId, ct);
+        var isContinuation = existingTurns.Count > 0;
+
+        if (isContinuation)
+        {
+            logger.LogInformation(
+                "A2A inbound continuation for contextId={ContextId} (existing turns={Count})",
+                request.ContextId, existingTurns.Count);
+        }
 
         // Build restricted tool set
         var tools = InboundA2AToolSet.Build(workingMemory, memoryTools, request.TaskId, logger);
-
         var chatOptions = new ChatOptions { Tools = [.. tools] };
-        var chatMessages = new List<ChatMessage>
+
+        List<ChatMessage> chatMessages;
+        if (isContinuation)
         {
-            new(ChatRole.System, ObserveSystemPrompt),
-            new(ChatRole.User,
-                $"Inbound request from agent '{caller.DisplayName}' (ID: {caller.AgentId}, " +
-                $"self-asserted: {caller.IsSelfAsserted}).\n" +
-                $"Skill requested: {request.Skill}\n\n" +
-                $"Message:\n{question}")
-        };
+            // Rebuild from conversation history + new follow-up turn
+            chatMessages = [new(ChatRole.System, ObserveSystemPrompt)];
+            foreach (var turn in existingTurns)
+            {
+                var role = turn.Role == "assistant" ? ChatRole.Assistant : ChatRole.User;
+                chatMessages.Add(new ChatMessage(role, turn.Content));
+            }
+            chatMessages.Add(new(ChatRole.User,
+                $"Follow-up from agent '{caller.DisplayName}' (ID: {caller.AgentId}):\n{question}"));
+        }
+        else
+        {
+            chatMessages =
+            [
+                new(ChatRole.System, ObserveSystemPrompt),
+                new(ChatRole.User,
+                    $"Inbound request from agent '{caller.DisplayName}' (ID: {caller.AgentId}, " +
+                    $"self-asserted: {caller.IsSelfAsserted}).\n" +
+                    $"Skill requested: {request.Skill}\n\n" +
+                    $"Message:\n{question}")
+            ];
+        }
 
         // Run read-only LLM pass
         var summary = await agentLoopRunner.RunAsync(
@@ -140,6 +182,15 @@ internal sealed class RockBotTaskHandler(
             enableFollowUp: false,
             enableCompletionEval: false,
             cancellationToken: ct);
+
+        // Store turns for future continuation
+        await conversationMemory.AddTurnAsync(sessionId,
+            new ConversationTurn("user", question, DateTimeOffset.UtcNow)
+            { AgentName = caller.DisplayName },
+            ct);
+        await conversationMemory.AddTurnAsync(sessionId,
+            new ConversationTurn("assistant", summary, DateTimeOffset.UtcNow),
+            ct);
 
         // Ensure caller info is in working memory
         await workingMemory.SetAsync(
@@ -155,12 +206,24 @@ internal sealed class RockBotTaskHandler(
 
         await workingMemory.SetAsync(
             $"a2a-inbox/{request.TaskId}/status",
-            "pending-review",
+            isContinuation ? "follow-up-processed" : "pending-review",
             TimeSpan.FromHours(24), "a2a", ["inbound", "status"]);
 
+        // Persist a searchable outcome so the agent can recall this interaction later.
+        // Uses a stable key pattern under a2a-outcomes/ with long TTL.
+        var outcomeKey = $"session/{WellKnownSessions.Primary}/a2a-outcomes/{request.Skill}/{request.ContextId ?? request.TaskId}";
+        await workingMemory.SetAsync(
+            outcomeKey,
+            $"Inbound A2A task from {caller.DisplayName} (skill: {request.Skill}) on {DateTimeOffset.UtcNow:yyyy-MM-dd HH:mm UTC}.\n" +
+            $"Request: {question}\n" +
+            $"Summary: {summary}",
+            ttl: TimeSpan.FromHours(8),
+            category: "a2a-outcome",
+            tags: [caller.DisplayName, request.Skill]);
+
         logger.LogInformation(
-            "A2A task {TaskId} from {CallerId} processed at Observe level, summary length={Len}",
-            request.TaskId, caller.AgentId, summary.Length);
+            "A2A task {TaskId} from {CallerId} processed at Observe level (continuation={IsContinuation}), summary length={Len}",
+            request.TaskId, caller.AgentId, isContinuation, summary.Length);
 
         // Queue notification for the user (batched delivery when idle)
         await notificationQueue.EnqueueAsync(new InboundNotification
@@ -172,6 +235,9 @@ internal sealed class RockBotTaskHandler(
             SkillId = request.Skill
         }, ct);
 
+        // Return a clear "not fulfilled" response so the caller's LLM does not
+        // hallucinate success. The Observe path only summarises and notifies — it
+        // does NOT execute the requested action.
         return new AgentTaskResult
         {
             TaskId = request.TaskId,
@@ -183,8 +249,11 @@ internal sealed class RockBotTaskHandler(
                 Parts = [new AgentMessagePart
                 {
                     Kind = "text",
-                    Text = "Your request has been received and the user will be notified. " +
-                           "A summary and suggested action have been prepared for their review."
+                    Text = "IMPORTANT: This request was NOT completed. " +
+                           "It has been forwarded to my user for manual review. " +
+                           "No action has been taken and nothing has been scheduled, confirmed, or executed. " +
+                           "The user may follow up separately if they choose to act on it. " +
+                           "You should inform your user that the request is pending the other party's review."
                 }]
             }
         };
@@ -210,6 +279,14 @@ internal sealed class RockBotTaskHandler(
 
         logger.LogInformation("A2A notify-user from {CallerId}: {Preview}",
             caller.AgentId, message.Length > 100 ? message[..100] + "..." : message);
+
+        // Persist notification so the agent can recall it later
+        await workingMemory.SetAsync(
+            $"session/{WellKnownSessions.Primary}/a2a-outcomes/notify-user/{request.TaskId}",
+            $"Notification from {caller.DisplayName} on {DateTimeOffset.UtcNow:yyyy-MM-dd HH:mm UTC}:\n{message}",
+            ttl: TimeSpan.FromHours(8),
+            category: "a2a-outcome",
+            tags: [caller.DisplayName, "notification"]);
 
         await notificationQueue.EnqueueAsync(new InboundNotification
         {
@@ -257,6 +334,141 @@ internal sealed class RockBotTaskHandler(
             {
                 Role = "agent",
                 Parts = [new AgentMessagePart { Kind = "text", Text = status }]
+            }
+        };
+    }
+
+    /// <summary>
+    /// Multi-turn meeting negotiation skill. Gathers all meeting details from
+    /// the caller via <see cref="AgentTaskState.InputRequired"/> rounds before
+    /// confirming and notifying the user. Questions about purpose, duration, etc.
+    /// are directed at the <b>caller</b> — the user is only notified with the
+    /// final confirmed details.
+    ///
+    /// Round 1 (initial request): ask for preferred time, purpose, and duration.
+    /// Round 2 (follow-up): confirm with all details gathered.
+    /// </summary>
+    private async Task<AgentTaskResult> HandleNegotiateMeetingAsync(
+        AgentTaskRequest request,
+        VerifiedAgentIdentity caller,
+        AgentTaskContext context,
+        CancellationToken ct)
+    {
+        var message = ExtractText(request);
+
+        // Use contextId for multi-turn state tracking
+        var contextId = request.ContextId ?? request.TaskId;
+        var sessionId = $"a2a-inbound/{contextId}";
+
+        // Check conversation history to determine which round we're in
+        var existingTurns = await conversationMemory.GetTurnsAsync(sessionId, ct);
+        // Each round stores 2 turns (user + assistant), so turn count / 2 = completed rounds
+        var completedRounds = existingTurns.Count / 2;
+
+        // Store the caller's message
+        await conversationMemory.AddTurnAsync(sessionId,
+            new ConversationTurn("user", message, DateTimeOffset.UtcNow)
+            { AgentName = caller.DisplayName },
+            ct);
+
+        if (completedRounds == 0)
+        {
+            // Round 1 — gather all details from the caller
+            logger.LogInformation(
+                "A2A negotiate-meeting from {CallerId}: initial request, asking for details",
+                caller.AgentId);
+
+            await context.PublishStatus(new AgentTaskStatusUpdate
+            {
+                TaskId = request.TaskId,
+                ContextId = contextId,
+                State = AgentTaskState.Working,
+                Message = new AgentMessage
+                {
+                    Role = "agent",
+                    Parts = [new AgentMessagePart { Kind = "text", Text = "Checking availability..." }]
+                }
+            }, ct);
+
+            var questionText =
+                "I'd like to help coordinate this meeting. " +
+                "My user is available tomorrow at 10:00 AM, 2:00 PM, or 4:00 PM. " +
+                "Please provide the following so I can finalize:\n" +
+                "1. Which of these times works for your user?\n" +
+                "2. What is the purpose/topic of the meeting?\n" +
+                "3. How long should it be (e.g., 30 minutes, 1 hour)?";
+
+            await conversationMemory.AddTurnAsync(sessionId,
+                new ConversationTurn("assistant", questionText, DateTimeOffset.UtcNow),
+                ct);
+
+            return new AgentTaskResult
+            {
+                TaskId = request.TaskId,
+                ContextId = contextId,
+                State = AgentTaskState.InputRequired,
+                Message = new AgentMessage
+                {
+                    Role = "agent",
+                    Parts = [new AgentMessagePart { Kind = "text", Text = questionText }]
+                }
+            };
+        }
+
+        // Round 2+ — caller provided details, confirm and complete
+        logger.LogInformation(
+            "A2A negotiate-meeting from {CallerId}: details received, confirming",
+            caller.AgentId);
+
+        var confirmationText =
+            $"Meeting confirmed with the details you provided. " +
+            $"My user will be notified with the full meeting information.";
+
+        await conversationMemory.AddTurnAsync(sessionId,
+            new ConversationTurn("assistant", confirmationText, DateTimeOffset.UtcNow),
+            ct);
+
+        // Persist the negotiation outcome with all details from both rounds.
+        var allTurns = await conversationMemory.GetTurnsAsync(sessionId, ct);
+        var exchangeSummary = string.Join("\n",
+            allTurns.Select(t => $"  [{t.Role}] {t.Content}"));
+        var outcomeText =
+            $"Meeting negotiated with {caller.DisplayName} on {DateTimeOffset.UtcNow:yyyy-MM-dd HH:mm UTC}.\n" +
+            $"Details from caller: {message}\n\n" +
+            $"Full exchange:\n{exchangeSummary}";
+
+        await workingMemory.SetAsync(
+            $"session/{WellKnownSessions.Primary}/a2a-outcomes/negotiate-meeting/{contextId}",
+            outcomeText,
+            ttl: TimeSpan.FromHours(8),
+            category: "a2a-outcome",
+            tags: [caller.DisplayName, "meeting", "negotiation"]);
+
+        logger.LogInformation(
+            "Stored negotiate-meeting outcome for {CallerId} in working memory (8h TTL)",
+            caller.AgentId);
+
+        // Notify Bob's user with the complete meeting details — no questions,
+        // just the confirmed information. All clarifications were handled with
+        // the caller during the InputRequired rounds.
+        await notificationQueue.EnqueueAsync(new InboundNotification
+        {
+            TaskId = request.TaskId,
+            CallerName = caller.DisplayName,
+            Summary = $"Meeting confirmed with {caller.DisplayName}: {message}",
+            ReceivedAt = DateTimeOffset.UtcNow,
+            SkillId = "negotiate-meeting"
+        }, ct);
+
+        return new AgentTaskResult
+        {
+            TaskId = request.TaskId,
+            ContextId = contextId,
+            State = AgentTaskState.Completed,
+            Message = new AgentMessage
+            {
+                Role = "agent",
+                Parts = [new AgentMessagePart { Kind = "text", Text = confirmationText }]
             }
         };
     }
