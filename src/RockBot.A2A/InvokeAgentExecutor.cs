@@ -82,6 +82,14 @@ internal sealed class InvokeAgentExecutor(
         var taskId = Guid.NewGuid().ToString("N");
         var primarySessionId = request.SessionId ?? "unknown";
 
+        // Reject duplicate dispatch — if this session already has a pending A2A task,
+        // the LLM should wait for that result instead of dispatching another.
+        var activeTasks = tracker.ListActive();
+        if (activeTasks.Any(t => t.PrimarySessionId == primarySessionId))
+            return Error(request,
+                "An agent task is already in progress for this session. " +
+                "Wait for the pending result before invoking another agent.");
+
         var taskRequest = new AgentTaskRequest
         {
             TaskId = taskId,
