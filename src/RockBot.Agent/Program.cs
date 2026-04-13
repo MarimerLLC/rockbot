@@ -40,13 +40,21 @@ builder.Configuration.AddUserSecrets<Program>();
         builder.Configuration.AddJsonFile(Path.Combine(pvcBase, "appsettings.json"), optional: true, reloadOnChange: false);
 }
 
+var agentName = builder.Configuration["Agent:Name"] ?? "RockBot";
+
 builder.Services.AddRockBotRabbitMq(opts => builder.Configuration.GetSection("RabbitMq").Bind(opts));
 
 // OpenTelemetry — enabled via Telemetry:Enabled config key (set in k8s ConfigMap)
+// ServiceName defaults to the agent name so multi-instance deployments are
+// distinguishable in Grafana dashboards without extra config.
 if (builder.Configuration.GetValue<bool>("Telemetry:Enabled"))
 {
     builder.Services.AddRockBotTelemetry(opts =>
-        builder.Configuration.GetSection("Telemetry").Bind(opts));
+    {
+        builder.Configuration.GetSection("Telemetry").Bind(opts);
+        if (opts.ServiceName == "rockbot")
+            opts.ServiceName = agentName;
+    });
 }
 
 // ── LLM configuration — three-tier (Low / Balanced / High) ──────────────────
@@ -252,8 +260,6 @@ builder.Services.AddSingleton<SkillRecallTracker>();
 // Tool guides for memory and skill subsystems
 builder.Services.AddSingleton<IToolSkillProvider, MemoryToolSkillProvider>();
 builder.Services.AddSingleton<IToolSkillProvider, SkillToolSkillProvider>();
-
-var agentName = builder.Configuration["Agent:Name"] ?? "RockBot";
 
 builder.Services.AddRockBotHost(agent =>
 {
