@@ -69,20 +69,52 @@ public sealed class RabbitMqSubscriber : IMessageSubscriber
                 routingKey: topic,
                 cancellationToken: ct);
 
-            // Declare the main queue with dead-letter routing
+            // Declare the main queue with dead-letter routing.
+            // If the queue already exists with different arguments (e.g. after a
+            // topic-scoping upgrade), RabbitMQ returns 406 PRECONDITION_FAILED and
+            // kills the channel. We handle that by deleting the stale queue on a
+            // fresh channel and retrying.
             var args = new Dictionary<string, object?>
             {
                 ["x-dead-letter-exchange"] = dlxName,
                 ["x-dead-letter-routing-key"] = topic
             };
 
-            await channel.QueueDeclareAsync(
-                queue: queueName,
-                durable: durable,
-                exclusive: false,
-                autoDelete: false,
-                arguments: args,
-                cancellationToken: ct);
+            try
+            {
+                await channel.QueueDeclareAsync(
+                    queue: queueName,
+                    durable: durable,
+                    exclusive: false,
+                    autoDelete: false,
+                    arguments: args,
+                    cancellationToken: ct);
+            }
+            catch (global::RabbitMQ.Client.Exceptions.OperationInterruptedException ex)
+                when (ex.ShutdownReason?.ReplyCode == 406)
+            {
+                _logger.LogWarning(
+                    "Queue {Queue} has stale arguments — deleting and recreating: {Reason}",
+                    queueName, ex.ShutdownReason.ReplyText);
+
+                // The original channel is dead after a 406; open a new one.
+                channel = await _connectionManager.CreateChannelAsync(ct);
+                await channel.BasicQosAsync(0, prefetchCount, false, cancellationToken: ct);
+
+                await channel.QueueDeleteAsync(queueName, cancellationToken: ct);
+
+                // Re-declare DLQ and main queue on the fresh channel
+                await channel.QueueDeclareAsync(
+                    queue: dlqName, durable: durable, exclusive: false,
+                    autoDelete: false, cancellationToken: ct);
+                await channel.QueueBindAsync(
+                    queue: dlqName, exchange: dlxName,
+                    routingKey: topic, cancellationToken: ct);
+
+                await channel.QueueDeclareAsync(
+                    queue: queueName, durable: durable, exclusive: false,
+                    autoDelete: false, arguments: args, cancellationToken: ct);
+            }
 
             await channel.QueueBindAsync(
                 queue: queueName,
