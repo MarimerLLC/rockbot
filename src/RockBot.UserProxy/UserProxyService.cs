@@ -59,7 +59,7 @@ public sealed class UserProxyService(
         try
         {
             _subscription = await subscriber.SubscribeAsync(
-                UserProxyTopics.UserResponse,
+                $"{UserProxyTopics.UserResponse}.{options.AgentName}",
                 $"user-proxy.{options.ProxyId}",
                 HandleResponseAsync,
                 cancellationToken);
@@ -67,14 +67,14 @@ public sealed class UserProxyService(
             IsConnected = true;
             OnConnectionChanged?.Invoke();
             logger.LogInformation("User proxy {ProxyId} subscribed to {Topic}",
-                options.ProxyId, UserProxyTopics.UserResponse);
+                options.ProxyId, $"{UserProxyTopics.UserResponse}.{options.AgentName}");
         }
         catch (Exception ex)
         {
             IsConnected = false;
             OnConnectionChanged?.Invoke();
             logger.LogError(ex, "User proxy {ProxyId} failed to subscribe to {Topic}",
-                options.ProxyId, UserProxyTopics.UserResponse);
+                options.ProxyId, $"{UserProxyTopics.UserResponse}.{options.AgentName}");
 
             if (options.MaxSubscribeRetries > 0)
             {
@@ -107,7 +107,7 @@ public sealed class UserProxyService(
             try
             {
                 _subscription = await subscriber.SubscribeAsync(
-                    UserProxyTopics.UserResponse,
+                    $"{UserProxyTopics.UserResponse}.{options.AgentName}",
                     $"user-proxy.{options.ProxyId}",
                     HandleResponseAsync,
                     ct);
@@ -116,7 +116,7 @@ public sealed class UserProxyService(
                 OnConnectionChanged?.Invoke();
                 logger.LogInformation(
                     "User proxy {ProxyId} subscribed to {Topic} on retry attempt {Attempt}",
-                    options.ProxyId, UserProxyTopics.UserResponse, attempt);
+                    options.ProxyId, $"{UserProxyTopics.UserResponse}.{options.AgentName}", attempt);
                 return;
             }
             catch (OperationCanceledException)
@@ -127,7 +127,7 @@ public sealed class UserProxyService(
             {
                 logger.LogWarning(ex,
                     "User proxy {ProxyId} retry attempt {Attempt} failed for {Topic}",
-                    options.ProxyId, attempt, UserProxyTopics.UserResponse);
+                    options.ProxyId, attempt, $"{UserProxyTopics.UserResponse}.{options.AgentName}");
 
                 // Exponential backoff capped at MaxSubscribeRetryDelay
                 delay = TimeSpan.FromTicks(Math.Min(
@@ -138,7 +138,7 @@ public sealed class UserProxyService(
 
         logger.LogError(
             "User proxy {ProxyId} exhausted all {MaxRetries} retry attempts for {Topic}",
-            options.ProxyId, options.MaxSubscribeRetries, UserProxyTopics.UserResponse);
+            options.ProxyId, options.MaxSubscribeRetries, $"{UserProxyTopics.UserResponse}.{options.AgentName}");
     }
 
     public async Task StopAsync(CancellationToken cancellationToken)
@@ -260,14 +260,14 @@ public sealed class UserProxyService(
             var envelope = message.ToEnvelope<UserMessage>(
                 source: options.ProxyId,
                 correlationId: correlationId,
-                replyTo: UserProxyTopics.UserResponse,
+                replyTo: $"{UserProxyTopics.UserResponse}.{options.AgentName}",
                 destination: message.TargetAgent);
 
-            await publisher.PublishAsync(UserProxyTopics.UserMessage, envelope, cancellationToken);
+            await publisher.PublishAsync($"{UserProxyTopics.UserMessage}.{options.AgentName}", envelope, cancellationToken);
             UserProxyDiagnostics.MessagesSent.Add(1);
 
             logger.LogDebug("Published user message {CorrelationId} to {Topic}",
-                correlationId, UserProxyTopics.UserMessage);
+                correlationId, $"{UserProxyTopics.UserMessage}.{options.AgentName}");
 
             using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             timeoutCts.CancelAfter(effectiveTimeout);
@@ -306,7 +306,7 @@ public sealed class UserProxyService(
             source: options.ProxyId,
             destination: feedback.AgentName);
 
-        await publisher.PublishAsync(UserProxyTopics.UserFeedback, envelope, cancellationToken);
+        await publisher.PublishAsync($"{UserProxyTopics.UserFeedback}.{options.AgentName}", envelope, cancellationToken);
 
         logger.LogDebug("Published {FeedbackType} feedback for message {MessageId} to {Agent}",
             feedback.IsPositive ? "positive" : "negative",
@@ -326,10 +326,10 @@ public sealed class UserProxyService(
         var envelope = message.ToEnvelope<UserMessage>(
             source: options.ProxyId,
             correlationId: correlationId,
-            replyTo: UserProxyTopics.UserResponse,
+            replyTo: $"{UserProxyTopics.UserResponse}.{options.AgentName}",
             destination: message.TargetAgent);
 
-        await publisher.PublishAsync(UserProxyTopics.UserMessage, envelope, cancellationToken);
+        await publisher.PublishAsync($"{UserProxyTopics.UserMessage}.{options.AgentName}", envelope, cancellationToken);
         UserProxyDiagnostics.MessagesSent.Add(1);
 
         logger.LogDebug("Published fire-and-forget user message {CorrelationId}", correlationId);
@@ -342,7 +342,7 @@ public sealed class UserProxyService(
     {
         var request = new CancelSessionRequest { SessionId = sessionId };
         var envelope = request.ToEnvelope<CancelSessionRequest>(source: options.ProxyId);
-        await publisher.PublishAsync(UserProxyTopics.CancelSession, envelope, cancellationToken);
+        await publisher.PublishAsync($"{UserProxyTopics.CancelSession}.{options.AgentName}", envelope, cancellationToken);
         logger.LogInformation("Published cancel request for session {SessionId}", sessionId);
     }
 
@@ -354,7 +354,7 @@ public sealed class UserProxyService(
     {
         var request = new ClearContextRequest { SessionId = sessionId };
         var envelope = request.ToEnvelope<ClearContextRequest>(source: options.ProxyId);
-        await publisher.PublishAsync(UserProxyTopics.ClearContext, envelope, cancellationToken);
+        await publisher.PublishAsync($"{UserProxyTopics.ClearContext}.{options.AgentName}", envelope, cancellationToken);
         logger.LogInformation("Published clear context request for session {SessionId}", sessionId);
     }
 
@@ -452,7 +452,7 @@ public sealed class UserProxyService(
                 correlationId: correlationId,
                 replyTo: HistoryResponseTopic);
 
-            await publisher.PublishAsync(UserProxyTopics.ConversationHistoryRequest, envelope, cancellationToken);
+            await publisher.PublishAsync($"{UserProxyTopics.ConversationHistoryRequest}.{options.AgentName}", envelope, cancellationToken);
 
             logger.LogDebug("Published ConversationHistoryRequest {CorrelationId} for session {SessionId}",
                 correlationId, sessionId);
@@ -526,7 +526,7 @@ public sealed class UserProxyService(
                 correlationId: correlationId,
                 replyTo: AgentInfoResponseTopic);
 
-            await publisher.PublishAsync(UserProxyTopics.AgentInfoRequest, envelope, cancellationToken);
+            await publisher.PublishAsync($"{UserProxyTopics.AgentInfoRequest}.{options.AgentName}", envelope, cancellationToken);
 
             logger.LogDebug("Published AgentInfoRequest {CorrelationId}", correlationId);
 
@@ -638,7 +638,7 @@ public sealed class UserProxyService(
                 correlationId: correlationId,
                 replyTo: ActiveStatusResponseTopic);
 
-            await publisher.PublishAsync(UserProxyTopics.ActiveStatusRequest, envelope, cancellationToken);
+            await publisher.PublishAsync($"{UserProxyTopics.ActiveStatusRequest}.{options.AgentName}", envelope, cancellationToken);
 
             logger.LogDebug("Published ActiveStatusRequest {CorrelationId}", correlationId);
 
@@ -749,7 +749,7 @@ public sealed class UserProxyService(
                 correlationId: correlationId,
                 replyTo: SaveResponseAckTopic);
 
-            await publisher.PublishAsync(UserProxyTopics.SaveResponseRequest, envelope, cancellationToken);
+            await publisher.PublishAsync($"{UserProxyTopics.SaveResponseRequest}.{options.AgentName}", envelope, cancellationToken);
 
             logger.LogDebug("Published SaveResponseRequest {CorrelationId}", correlationId);
 
@@ -796,7 +796,7 @@ public sealed class UserProxyService(
                 correlationId: correlationId,
                 replyTo: ListSavedResponsesTopic);
 
-            await publisher.PublishAsync(UserProxyTopics.ListSavedResponsesRequest, envelope, cancellationToken);
+            await publisher.PublishAsync($"{UserProxyTopics.ListSavedResponsesRequest}.{options.AgentName}", envelope, cancellationToken);
 
             logger.LogDebug("Published ListSavedResponsesRequest {CorrelationId}", correlationId);
 
@@ -844,7 +844,7 @@ public sealed class UserProxyService(
                 correlationId: correlationId,
                 replyTo: GetSavedResponseTopic);
 
-            await publisher.PublishAsync(UserProxyTopics.GetSavedResponseRequest, envelope, cancellationToken);
+            await publisher.PublishAsync($"{UserProxyTopics.GetSavedResponseRequest}.{options.AgentName}", envelope, cancellationToken);
 
             logger.LogDebug("Published GetSavedResponseRequest {CorrelationId} for {Id}", correlationId, id);
 
@@ -892,7 +892,7 @@ public sealed class UserProxyService(
                 correlationId: correlationId,
                 replyTo: DeleteSavedAckTopic);
 
-            await publisher.PublishAsync(UserProxyTopics.DeleteSavedResponseRequest, envelope, cancellationToken);
+            await publisher.PublishAsync($"{UserProxyTopics.DeleteSavedResponseRequest}.{options.AgentName}", envelope, cancellationToken);
 
             logger.LogDebug("Published DeleteSavedResponseRequest {CorrelationId} for {Id}", correlationId, id);
 

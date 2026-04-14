@@ -14,6 +14,7 @@ public sealed class SubagentManager(
     IServiceScopeFactory scopeFactory,
     IOptions<SubagentOptions> options,
     IMessagePublisher publisher,
+    AgentIdentity agent,
     ILogger<SubagentManager> logger) : ISubagentManager
 {
     private readonly ConcurrentDictionary<string, SubagentEntry> _active = new();
@@ -143,7 +144,7 @@ public sealed class SubagentManager(
                     Consolidate = consolidate
                 };
                 var envelope = result.ToEnvelope<SubagentResultMessage>(source: $"subagent-{taskId}");
-                await publisher.PublishAsync(SubagentTopics.Result, envelope, CancellationToken.None);
+                await publisher.PublishAsync($"{SubagentTopics.Result}.{agent.Name}", envelope, CancellationToken.None);
             }
             catch (Exception pubEx)
             {

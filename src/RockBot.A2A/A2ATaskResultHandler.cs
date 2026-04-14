@@ -276,7 +276,7 @@ internal sealed class A2ATaskResultHandler(
             {
                 SessionId = rawSessionId,
                 AgentName = DisplayName,
-                ReplyTo = UserProxyTopics.UserResponse
+                ReplyTo = $"{UserProxyTopics.UserResponse}.{agent.Name}"
             });
 
             var finalContent = await agentLoopRunner.RunAsync(
@@ -297,7 +297,7 @@ internal sealed class A2ATaskResultHandler(
                 IsFinal = true
             };
             var envelope = reply.ToEnvelope<AgentReply>(source: agent.Name);
-            await publisher.PublishAsync(UserProxyTopics.UserResponse, envelope, ct);
+            await publisher.PublishAsync($"{UserProxyTopics.UserResponse}.{agent.Name}", envelope, ct);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -324,7 +324,7 @@ internal sealed class A2ATaskResultHandler(
                 IsFinal = true
             };
             var envelope = reply.ToEnvelope<AgentReply>(source: agent.Name);
-            await publisher.PublishAsync(UserProxyTopics.UserResponse, envelope, ct);
+            await publisher.PublishAsync($"{UserProxyTopics.UserResponse}.{agent.Name}", envelope, ct);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {

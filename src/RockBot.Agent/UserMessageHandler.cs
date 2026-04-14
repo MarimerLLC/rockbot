@@ -66,7 +66,7 @@ internal sealed class UserMessageHandler(
 
     public async Task HandleAsync(UserMessage message, MessageHandlerContext context)
     {
-        var replyTo = context.Envelope.ReplyTo ?? UserProxyTopics.UserResponse;
+        var replyTo = context.Envelope.ReplyTo ?? $"{UserProxyTopics.UserResponse}.{agent.Name}";
         var correlationId = context.Envelope.CorrelationId;
         var ct = context.CancellationToken;
         var wipMessageId = context.Items.TryGetValue(WipConstants.MessageIdKey, out var id)

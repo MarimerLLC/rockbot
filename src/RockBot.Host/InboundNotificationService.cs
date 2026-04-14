@@ -102,7 +102,7 @@ internal sealed class InboundNotificationService : IHostedService, IDisposable
             };
 
             var envelope = reply.ToEnvelope<AgentReply>(source: _agent.Name);
-            await _publisher.PublishAsync(UserProxyTopics.UserResponse, envelope, ct);
+            await _publisher.PublishAsync($"{UserProxyTopics.UserResponse}.{_agent.Name}", envelope, ct);
         }
         catch (Exception ex)
         {

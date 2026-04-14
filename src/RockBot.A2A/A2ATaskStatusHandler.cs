@@ -67,7 +67,7 @@ internal sealed class A2ATaskStatusHandler(
                     IsFinal = false
                 };
                 var progressEnvelope = progressReply.ToEnvelope<AgentReply>(source: agent.Name);
-                await publisher.PublishAsync(UserProxyTopics.UserResponse, progressEnvelope, ct);
+                await publisher.PublishAsync($"{UserProxyTopics.UserResponse}.{agent.Name}", progressEnvelope, ct);
             }
             return;
         }
@@ -114,7 +114,7 @@ internal sealed class A2ATaskStatusHandler(
             {
                 SessionId = rawSessionId,
                 AgentName = DisplayName,
-                ReplyTo = UserProxyTopics.UserResponse
+                ReplyTo = $"{UserProxyTopics.UserResponse}.{agent.Name}"
             });
 
             var finalContent = await agentLoopRunner.RunAsync(
@@ -135,7 +135,7 @@ internal sealed class A2ATaskStatusHandler(
                 IsFinal = false
             };
             var envelope = reply.ToEnvelope<AgentReply>(source: agent.Name);
-            await publisher.PublishAsync(UserProxyTopics.UserResponse, envelope, ct);
+            await publisher.PublishAsync($"{UserProxyTopics.UserResponse}.{agent.Name}", envelope, ct);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {

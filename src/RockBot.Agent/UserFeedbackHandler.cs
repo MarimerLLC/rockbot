@@ -185,7 +185,7 @@ internal sealed class UserFeedbackHandler(
         };
 
         var envelope = reply.ToEnvelope<AgentReply>(source: agent.Name);
-        await publisher.PublishAsync(UserProxyTopics.UserResponse, envelope, ct);
+        await publisher.PublishAsync($"{UserProxyTopics.UserResponse}.{agent.Name}", envelope, ct);
 
         logger.LogInformation(
             "Published re-evaluated reply for session {SessionId} ({Length} chars)",

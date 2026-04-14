@@ -80,7 +80,7 @@ internal sealed class SubagentResultHandler(
             };
             var completionEnvelope = completionReply.ToEnvelope<AgentReply>(
                 source: $"subagent-{message.TaskId}");
-            await publisher.PublishAsync(UserProxyTopics.UserResponse, completionEnvelope, ct);
+            await publisher.PublishAsync($"{UserProxyTopics.UserResponse}.{agent.Name}", completionEnvelope, ct);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -198,7 +198,7 @@ internal sealed class SubagentResultHandler(
             {
                 SessionId = rawSessionId,
                 AgentName = agent.Name,
-                ReplyTo = UserProxyTopics.UserResponse
+                ReplyTo = $"{UserProxyTopics.UserResponse}.{agent.Name}"
             });
 
             var finalContent = await agentLoopRunner.RunAsync(
@@ -219,7 +219,7 @@ internal sealed class SubagentResultHandler(
                 IsFinal = true
             };
             var envelope = reply.ToEnvelope<AgentReply>(source: agent.Name);
-            await publisher.PublishAsync(UserProxyTopics.UserResponse, envelope, ct);
+            await publisher.PublishAsync($"{UserProxyTopics.UserResponse}.{agent.Name}", envelope, ct);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {

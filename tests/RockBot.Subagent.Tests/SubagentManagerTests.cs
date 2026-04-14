@@ -88,6 +88,7 @@ public class SubagentManagerTests
             provider.GetRequiredService<IServiceScopeFactory>(),
             opts,
             provider.GetRequiredService<IMessagePublisher>(),
+            new AgentIdentity("TestBot"),
             NullLogger<SubagentManager>.Instance);
     }
 
@@ -111,6 +112,7 @@ public class SubagentManagerTests
             provider.GetRequiredService<IServiceScopeFactory>(),
             opts,
             provider.GetRequiredService<IMessagePublisher>(),
+            new AgentIdentity("TestBot"),
             NullLogger<SubagentManager>.Instance);
 
         return (manager, tcs);

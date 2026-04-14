@@ -37,6 +37,6 @@ internal sealed class ClearContextHandler(
             IsFinal = true
         };
         var envelope = reply.ToEnvelope<AgentReply>(source: agent.Name);
-        await publisher.PublishAsync(UserProxyTopics.UserResponse, envelope, ct);
+        await publisher.PublishAsync($"{UserProxyTopics.UserResponse}.{agent.Name}", envelope, ct);
     }
 }
