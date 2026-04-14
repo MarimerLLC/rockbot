@@ -252,6 +252,105 @@ internal static class HttpA2AScenarios
     }
 
     /// <summary>
+    /// Scenario 6b: Verify outbound streaming consumption — exercises the same event
+    /// processing that <c>InvokeAgentExecutor.DispatchV1StreamingAsync</c> performs.
+    /// Fetches the agent card to confirm streaming capability, then sends a streaming
+    /// request and verifies the event sequence: intermediate StatusUpdate events with
+    /// consistent contextId, followed by a terminal event.
+    /// </summary>
+    public static async Task OutboundStreamingConsumptionAsync(string gatewayUrl, string? apiKey, IServiceProvider services, CancellationToken ct)
+    {
+        // Step 1: Verify the agent card advertises streaming — this is what
+        // RegisterAgentExecutor.TryDetectV1Async parses to set SupportsStreaming
+        var httpClientFactory = services.GetRequiredService<IHttpClientFactory>();
+        var httpClient = httpClientFactory.CreateClient();
+        await WaitForGateway(gatewayUrl, services, ct);
+
+        var cardResponse = await httpClient.GetAsync($"{gatewayUrl}/.well-known/agent-card.json", ct);
+        cardResponse.EnsureSuccessStatusCode();
+        var cardJson = await cardResponse.Content.ReadAsStringAsync(ct);
+        using var doc = JsonDocument.Parse(cardJson);
+        var root = doc.RootElement;
+
+        Assert(root.TryGetProperty("capabilities", out var caps),
+            "Agent card missing 'capabilities' — RegisterAgentExecutor would not detect streaming");
+        Assert(caps.TryGetProperty("streaming", out var streamProp) && streamProp.GetBoolean(),
+            "Agent card capabilities.streaming is not true — DispatchV1StreamingAsync would not be chosen");
+
+        // Step 2: Consume streaming events the same way DispatchV1StreamingAsync does
+        var a2aClient = CreateA2AClient(gatewayUrl, apiKey, services);
+        var sendRequest = new A2AV1.SendMessageRequest
+        {
+            Message = new A2AV1.Message
+            {
+                Role = A2AV1.Role.User,
+                MessageId = Guid.NewGuid().ToString("N"),
+                Parts = [new A2AV1.Part { Text = "Integration test: outbound streaming consumption" }]
+            },
+            Metadata = new Dictionary<string, JsonElement>
+            {
+                ["skill"] = JsonSerializer.SerializeToElement("notify-user")
+            }
+        };
+
+        var statusUpdates = new List<A2AV1.TaskStatusUpdateEvent>();
+        A2AV1.AgentTask? terminalTask = null;
+        A2AV1.Message? terminalMessage = null;
+        string? contextId = null;
+
+        await foreach (var evt in a2aClient.SendStreamingMessageAsync(sendRequest, ct))
+        {
+            switch (evt.PayloadCase)
+            {
+                case A2AV1.StreamResponseCase.StatusUpdate when evt.StatusUpdate is { } su:
+                    statusUpdates.Add(su);
+                    contextId ??= su.ContextId;
+                    // Verify contextId consistency across events
+                    if (contextId is not null && su.ContextId is not null)
+                        Assert(su.ContextId == contextId,
+                            $"ContextId changed mid-stream: expected '{contextId}', got '{su.ContextId}'");
+                    break;
+
+                case A2AV1.StreamResponseCase.Task when evt.Task is { } task:
+                    contextId ??= task.ContextId;
+                    if (task.Status.State is A2AV1.TaskState.Completed or A2AV1.TaskState.Failed or A2AV1.TaskState.Canceled)
+                        terminalTask = task;
+                    break;
+
+                case A2AV1.StreamResponseCase.Message when evt.Message is { } msg:
+                    terminalMessage = msg;
+                    break;
+            }
+        }
+
+        // Step 3: Verify streaming event sequence
+        var totalEvents = statusUpdates.Count + (terminalTask is not null ? 1 : 0) + (terminalMessage is not null ? 1 : 0);
+        Assert(totalEvents >= 1, $"Expected at least 1 streaming event, got {totalEvents}");
+
+        // Must have a terminal event (Message or Completed Task)
+        var hasTerminal = terminalMessage is not null ||
+            (terminalTask?.Status.State is A2AV1.TaskState.Completed);
+        Assert(hasTerminal, "Stream ended without a terminal Completed event — " +
+            $"got {statusUpdates.Count} status updates, terminalTask state={terminalTask?.Status.State}");
+
+        // Terminal event should contain text content
+        var terminalText = terminalMessage?.Parts.FirstOrDefault(p => !string.IsNullOrEmpty(p.Text))?.Text
+            ?? terminalTask?.Status.Message?.Parts.FirstOrDefault(p => !string.IsNullOrEmpty(p.Text))?.Text;
+        Assert(!string.IsNullOrEmpty(terminalText),
+            "Terminal streaming event has no text content — DispatchV1StreamingAsync would return a result with no message");
+
+        // If we got StatusUpdate events, verify they have valid states
+        foreach (var su in statusUpdates)
+        {
+            Assert(su.Status is not null, "StatusUpdate event has null Status");
+            var validStates = new[] { A2AV1.TaskState.Working, A2AV1.TaskState.Submitted,
+                A2AV1.TaskState.Completed, A2AV1.TaskState.InputRequired };
+            Assert(validStates.Contains(su.Status.State),
+                $"Unexpected StatusUpdate state: {su.Status.State}");
+        }
+    }
+
+    /// <summary>
     /// Scenario 7: Exercise push notification config CRUD — create, get, list, delete.
     /// If the SDK's A2AServer doesn't support push notifications (no store wired up),
     /// the test catches the expected error and passes with a note.
