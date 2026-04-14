@@ -66,7 +66,7 @@ internal sealed class PushNotificationSender(
             var httpClient = httpClientFactory.CreateClient();
 
             // Attach authentication if configured
-            if (config.PushNotificationConfig.Authentication is { } auth &&
+            if (config.PushNotificationConfig?.Authentication is { } auth &&
                 !string.IsNullOrEmpty(auth.Scheme) && !string.IsNullOrEmpty(auth.Credentials))
             {
                 httpClient.DefaultRequestHeaders.Authorization =
@@ -74,10 +74,10 @@ internal sealed class PushNotificationSender(
             }
 
             // Attach token as bearer if configured (shorthand)
-            if (!string.IsNullOrEmpty(config.PushNotificationConfig.Token))
+            if (!string.IsNullOrEmpty(config.PushNotificationConfig?.Token))
             {
                 httpClient.DefaultRequestHeaders.Authorization =
-                    new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", config.PushNotificationConfig.Token);
+                    new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", config.PushNotificationConfig!.Token!);
             }
 
             var content = new StringContent(payload, System.Text.Encoding.UTF8, "application/json");

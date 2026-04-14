@@ -97,12 +97,12 @@ internal static class HttpA2AScenarios
 
         // The response should be a Message (immediate reply) since the gateway
         // waits for RockBot's result before responding.
-        var hasContent = response.PayloadCase switch
+        var hasContent = response!.PayloadCase switch
         {
             A2AV1.SendMessageResponseCase.Message when response.Message is { } msg =>
                 msg.Parts.Any(p => !string.IsNullOrEmpty(p.Text)),
             A2AV1.SendMessageResponseCase.Task when response.Task is { } task =>
-                task.Status.Message?.Parts.Any(p => !string.IsNullOrEmpty(p.Text)) ?? false,
+                task.Status?.Message?.Parts.Any(p => !string.IsNullOrEmpty(p.Text)) ?? false,
             _ => false
         };
 
@@ -201,7 +201,7 @@ internal static class HttpA2AScenarios
         var listResponse = await a2aClient.ListTasksAsync(new A2AV1.ListTasksRequest(), ct);
         Assert(listResponse is not null, "ListTasks response is null");
         Assert(listResponse!.Tasks is not null, "ListTasks Tasks list is null");
-        Assert(listResponse.Tasks.Count >= 1, $"Expected at least 1 task, got {listResponse.Tasks.Count}");
+        Assert(listResponse.Tasks!.Count >= 1, $"Expected at least 1 task, got {listResponse.Tasks.Count}");
     }
 
     /// <summary>
@@ -345,7 +345,7 @@ internal static class HttpA2AScenarios
             Assert(su.Status is not null, "StatusUpdate event has null Status");
             var validStates = new[] { A2AV1.TaskState.Working, A2AV1.TaskState.Submitted,
                 A2AV1.TaskState.Completed, A2AV1.TaskState.InputRequired };
-            Assert(validStates.Contains(su.Status.State),
+            Assert(validStates.Contains(su.Status!.State),
                 $"Unexpected StatusUpdate state: {su.Status.State}");
         }
     }
@@ -422,7 +422,7 @@ internal static class HttpA2AScenarios
         var listed = await a2aClient.ListTaskPushNotificationConfigAsync(
             new A2AV1.ListTaskPushNotificationConfigRequest { TaskId = taskId! }, ct);
         Assert(listed is not null, "ListTaskPushNotificationConfig returned null");
-        Assert(listed!.Configs.Any(c => c.Id == configId),
+        Assert(listed!.Configs?.Any(c => c.Id == configId) == true,
             "Created config not found in list");
 
         // Delete
@@ -436,7 +436,7 @@ internal static class HttpA2AScenarios
         // Verify deletion
         var afterDelete = await a2aClient.ListTaskPushNotificationConfigAsync(
             new A2AV1.ListTaskPushNotificationConfigRequest { TaskId = taskId! }, ct);
-        Assert(!afterDelete!.Configs.Any(c => c.Id == configId),
+        Assert(afterDelete!.Configs?.Any(c => c.Id == configId) != true,
             "Config still present after deletion");
     }
 
