@@ -23,7 +23,6 @@ internal sealed class InputRequiredHandler(
     AgentLoopRunner agentLoopRunner,
     AgentContextBuilder agentContextBuilder,
     ILlmClient llmClient,
-    IMessagePublisher publisher,
     AgentIdentity agent,
     IWorkingMemory workingMemory,
     MemoryTools memoryTools,

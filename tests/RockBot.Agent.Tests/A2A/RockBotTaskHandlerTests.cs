@@ -372,7 +372,7 @@ public class RockBotTaskHandlerTests
     }
 
     private static string ExtractText(AgentTaskResult result) =>
-        result.Message.Parts
+        result.Message?.Parts
             .Where(p => p.Kind == "text")
             .Select(p => p.Text)
             .FirstOrDefault() ?? "";

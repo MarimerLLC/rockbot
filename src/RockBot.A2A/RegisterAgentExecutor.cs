@@ -15,6 +15,8 @@ internal sealed class RegisterAgentExecutor(
     IHttpClientFactory httpClientFactory,
     ILogger<RegisterAgentExecutor> logger) : IToolExecutor
 {
+    private sealed record DetectedProtocol(string? Version, bool SupportsStreaming);
+
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
@@ -78,15 +80,15 @@ internal sealed class RegisterAgentExecutor(
 
         // Auto-detect protocol version from the remote agent's well-known card
         // unless the caller explicitly specified one.
-        string? detectedVersion = null;
+        DetectedProtocol? detected = null;
         if (string.IsNullOrEmpty(explicitProtocolVersion))
         {
-            detectedVersion = await DetectProtocolVersionAsync(url, authHeaderName, authHeaderValueBase64, ct);
+            detected = await DetectProtocolVersionAsync(url, authHeaderName, authHeaderValueBase64, ct);
         }
 
         var protocolVersion = !string.IsNullOrEmpty(explicitProtocolVersion)
             ? explicitProtocolVersion
-            : detectedVersion;
+            : detected?.Version;
 
         // When updating an existing agent, preserve fields that weren't provided in this call
         // (e.g. auth config, description, skills) so a simple URL update doesn't wipe them.
@@ -100,7 +102,8 @@ internal sealed class RegisterAgentExecutor(
             Skills = skills ?? existing?.Skills,
             AuthHeaderName = string.IsNullOrEmpty(authHeaderName) ? existing?.AuthHeaderName : authHeaderName,
             AuthHeaderValueBase64 = string.IsNullOrEmpty(authHeaderValueBase64) ? existing?.AuthHeaderValueBase64 : authHeaderValueBase64,
-            ProtocolVersion = protocolVersion ?? existing?.ProtocolVersion
+            ProtocolVersion = protocolVersion ?? existing?.ProtocolVersion,
+            SupportsStreaming = detected?.SupportsStreaming ?? existing?.SupportsStreaming
         };
 
         directory.AddOrUpdate(card);
@@ -121,11 +124,12 @@ internal sealed class RegisterAgentExecutor(
     }
 
     /// <summary>
-    /// Probes the remote agent's well-known card endpoints to detect the A2A protocol version.
-    /// Tries v1 (<c>/.well-known/a2a/agent-card</c>) first, then v0.3 (<c>/.well-known/agent-card.json</c>).
+    /// Probes the remote agent's well-known card endpoints to detect the A2A protocol version
+    /// and streaming capability. Tries v1 (<c>/.well-known/a2a/agent-card</c>) first,
+    /// then v0.3 (<c>/.well-known/agent-card.json</c>).
     /// Returns null if detection fails (caller falls back to existing behavior).
     /// </summary>
-    internal async Task<string?> DetectProtocolVersionAsync(
+    private async Task<DetectedProtocol?> DetectProtocolVersionAsync(
         string baseUrl,
         string? authHeaderName,
         string? authHeaderValueBase64,
@@ -147,14 +151,14 @@ internal sealed class RegisterAgentExecutor(
             var trimmedUrl = baseUrl.TrimEnd('/');
 
             // Try v1 well-known endpoint first
-            var v1Version = await TryDetectV1Async(httpClient, trimmedUrl, ct);
-            if (v1Version is not null)
-                return v1Version;
+            var v1Result = await TryDetectV1Async(httpClient, trimmedUrl, ct);
+            if (v1Result is not null)
+                return v1Result;
 
             // Try v0.3 well-known endpoint
-            var v03Version = await TryDetectV03Async(httpClient, trimmedUrl, ct);
-            if (v03Version is not null)
-                return v03Version;
+            var v03Result = await TryDetectV03Async(httpClient, trimmedUrl, ct);
+            if (v03Result is not null)
+                return v03Result;
         }
         catch (Exception ex)
         {
@@ -164,7 +168,7 @@ internal sealed class RegisterAgentExecutor(
         return null;
     }
 
-    private async Task<string?> TryDetectV1Async(HttpClient httpClient, string trimmedUrl, CancellationToken ct)
+    private async Task<DetectedProtocol?> TryDetectV1Async(HttpClient httpClient, string trimmedUrl, CancellationToken ct)
     {
         try
         {
@@ -180,6 +184,11 @@ internal sealed class RegisterAgentExecutor(
             if (root.TryGetProperty("supportedInterfaces", out var interfaces) &&
                 interfaces.ValueKind == JsonValueKind.Array)
             {
+                // Check capabilities.streaming
+                bool streaming = root.TryGetProperty("capabilities", out var caps) &&
+                    caps.TryGetProperty("streaming", out var streamProp) &&
+                    streamProp.ValueKind == JsonValueKind.True;
+
                 // Extract the protocol version from the first interface if available
                 foreach (var iface in interfaces.EnumerateArray())
                 {
@@ -190,17 +199,18 @@ internal sealed class RegisterAgentExecutor(
                         if (!string.IsNullOrEmpty(version))
                         {
                             logger.LogInformation(
-                                "Detected A2A protocol version '{Version}' from v1 agent card at {Url}",
-                                version, trimmedUrl);
-                            return version;
+                                "Detected A2A protocol version '{Version}' from v1 agent card at {Url} (streaming={Streaming})",
+                                version, trimmedUrl, streaming);
+                            return new DetectedProtocol(version, streaming);
                         }
                     }
                 }
 
                 // Has supportedInterfaces but no explicit protocolVersion — assume 1.0
                 logger.LogInformation(
-                    "Detected A2A v1 agent card (supportedInterfaces present) at {Url}", trimmedUrl);
-                return "1.0";
+                    "Detected A2A v1 agent card (supportedInterfaces present) at {Url} (streaming={Streaming})",
+                    trimmedUrl, streaming);
+                return new DetectedProtocol("1.0", streaming);
             }
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -211,7 +221,7 @@ internal sealed class RegisterAgentExecutor(
         return null;
     }
 
-    private async Task<string?> TryDetectV03Async(HttpClient httpClient, string trimmedUrl, CancellationToken ct)
+    private async Task<DetectedProtocol?> TryDetectV03Async(HttpClient httpClient, string trimmedUrl, CancellationToken ct)
     {
         try
         {
@@ -233,13 +243,13 @@ internal sealed class RegisterAgentExecutor(
                     logger.LogInformation(
                         "Detected A2A protocol version '{Version}' from v0.3 agent card at {Url}",
                         version, trimmedUrl);
-                    return version;
+                    return new DetectedProtocol(version, SupportsStreaming: false);
                 }
             }
 
             // Card exists at v0.3 endpoint but no explicit version — assume 0.3
             logger.LogInformation("Detected A2A v0.3 agent card at {Url}", trimmedUrl);
-            return "0.3";
+            return new DetectedProtocol("0.3", SupportsStreaming: false);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {

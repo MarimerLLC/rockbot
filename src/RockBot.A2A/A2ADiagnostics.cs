@@ -56,4 +56,11 @@ internal static class A2ADiagnostics
             "rockbot.a2a.polling_attempts",
             unit: "{attempt}",
             description: "A2A GetTask polling attempts for long-running tasks");
+
+    /// <summary>Number of streaming events received during outbound A2A streaming dispatch.</summary>
+    public static readonly Counter<long> StreamingEvents =
+        Meter.CreateCounter<long>(
+            "rockbot.a2a.streaming_events",
+            unit: "{event}",
+            description: "Streaming events received during outbound A2A dispatch");
 }
