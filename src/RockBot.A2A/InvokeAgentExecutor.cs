@@ -206,9 +206,38 @@ internal sealed class InvokeAgentExecutor(
 
             AgentTaskResult? result;
             if (useV1)
-                result = await DispatchV1Async(httpClient, endpoint, taskRequest, taskId, messageText, pending, ct);
+            {
+                var a2aClient = new A2AV1.A2AClient(endpoint, httpClient);
+
+                if (agentCard.SupportsStreaming == true)
+                {
+                    httpActivity?.SetTag("rockbot.a2a.transport", "streaming");
+                    try
+                    {
+                        result = await DispatchV1StreamingAsync(
+                            a2aClient, taskRequest, taskId, messageText, pending, ct);
+                    }
+                    catch (Exception ex) when (ex is not OperationCanceledException)
+                    {
+                        logger.LogWarning(ex,
+                            "Streaming dispatch failed for task {TaskId} to '{AgentName}', falling back to polling",
+                            taskId, agentName);
+                        httpActivity?.SetTag("rockbot.a2a.transport", "streaming-fallback");
+                        result = await DispatchV1Async(
+                            a2aClient, taskRequest, taskId, messageText, pending, ct);
+                    }
+                }
+                else
+                {
+                    httpActivity?.SetTag("rockbot.a2a.transport", "polling");
+                    result = await DispatchV1Async(
+                        a2aClient, taskRequest, taskId, messageText, pending, ct);
+                }
+            }
             else
+            {
                 result = await DispatchV03Async(httpClient, endpoint, taskRequest, taskId, messageText, pending, ct);
+            }
 
             httpSw.Stop();
             var latencyGrade = httpSw.Elapsed.TotalSeconds > 5 ? "slow" : "fast";
@@ -534,15 +563,13 @@ internal sealed class InvokeAgentExecutor(
     // ── V1 dispatch ──────────────────────────────────────────────────────────────
 
     private async Task<AgentTaskResult?> DispatchV1Async(
-        HttpClient httpClient,
-        Uri endpoint,
+        A2AV1.A2AClient a2aClient,
         AgentTaskRequest taskRequest,
         string taskId,
         string messageText,
         PendingA2ATask pending,
         CancellationToken ct)
     {
-        var a2aClient = new A2AV1.A2AClient(endpoint, httpClient);
         string? contextId = null;
         var repetitionDetector = new InputRequiredRepetitionDetector(options.InputRequiredRepetitionThreshold);
 
@@ -626,6 +653,185 @@ internal sealed class InvokeAgentExecutor(
         }
 
         return result;
+    }
+
+    // ── V1 streaming dispatch ───────────────────────────────────────────────────
+
+    /// <summary>
+    /// Dispatches a v1 A2A task using streaming (<c>SendStreamingMessageAsync</c>).
+    /// Consumes SSE events in real time, forwarding intermediate status updates to the
+    /// internal bus. Falls through to the caller's fallback on exception.
+    /// </summary>
+    private async Task<AgentTaskResult?> DispatchV1StreamingAsync(
+        A2AV1.A2AClient a2aClient,
+        AgentTaskRequest taskRequest,
+        string taskId,
+        string messageText,
+        PendingA2ATask pending,
+        CancellationToken ct)
+    {
+        using var streamActivity = A2ADiagnostics.Source.StartActivity("rockbot.a2a.streaming_dispatch");
+        streamActivity?.SetTag("rockbot.a2a.task_id", taskId);
+        streamActivity?.SetTag("rockbot.a2a.target_agent", pending.TargetAgent);
+        streamActivity?.SetTag("rockbot.a2a.session_id", pending.PrimarySessionId);
+
+        string? contextId = null;
+        var repetitionDetector = new InputRequiredRepetitionDetector(options.InputRequiredRepetitionThreshold);
+        var sendRequest = BuildV1SendRequest(taskId, messageText, contextId, taskRequest.Skill);
+
+        while (!ct.IsCancellationRequested)
+        {
+            AgentTaskResult? lastResult = null;
+            bool inputRequired = false;
+
+            await foreach (var evt in a2aClient.SendStreamingMessageAsync(sendRequest, ct))
+            {
+                A2ADiagnostics.StreamingEvents.Add(1,
+                    new KeyValuePair<string, object?>("rockbot.a2a.target_agent", pending.TargetAgent),
+                    new KeyValuePair<string, object?>("rockbot.a2a.event_type", evt.PayloadCase.ToString()));
+
+                switch (evt.PayloadCase)
+                {
+                    case A2AV1.StreamResponseCase.StatusUpdate when evt.StatusUpdate is { } su:
+                        lastResult = MapV1StatusUpdateEvent(su, taskId);
+                        contextId ??= su.ContextId;
+                        pending.ContextId ??= contextId;
+
+                        if (lastResult.State is AgentTaskState.Completed or AgentTaskState.Failed or AgentTaskState.Canceled)
+                            return lastResult;
+
+                        if (lastResult.State is AgentTaskState.Working or AgentTaskState.Submitted)
+                            await PublishStatusUpdateAsync(lastResult, pending.TargetAgent, taskId, ct);
+
+                        if (lastResult.State == AgentTaskState.InputRequired)
+                        {
+                            inputRequired = true;
+                            goto EndStream; // break out of await foreach
+                        }
+                        break;
+
+                    case A2AV1.StreamResponseCase.Task when evt.Task is { } task:
+                        lastResult = MapV1TaskResponse(task, taskId);
+                        contextId ??= task.ContextId;
+                        pending.ContextId ??= contextId;
+
+                        if (lastResult is null) break;
+
+                        if (lastResult.State is AgentTaskState.Completed or AgentTaskState.Failed or AgentTaskState.Canceled)
+                            return lastResult;
+
+                        if (lastResult.State is AgentTaskState.Working or AgentTaskState.Submitted)
+                            await PublishStatusUpdateAsync(lastResult, pending.TargetAgent, taskId, ct);
+
+                        if (lastResult.State == AgentTaskState.InputRequired)
+                        {
+                            inputRequired = true;
+                            goto EndStream;
+                        }
+                        break;
+
+                    case A2AV1.StreamResponseCase.Message when evt.Message is { } msg:
+                        return new AgentTaskResult
+                        {
+                            TaskId = taskId,
+                            ContextId = contextId,
+                            State = AgentTaskState.Completed,
+                            Message = MapV1Message(msg)
+                        };
+
+                    default:
+                        logger.LogDebug("Ignoring streaming event with PayloadCase={PayloadCase} for task {TaskId}",
+                            evt.PayloadCase, taskId);
+                        break;
+                }
+            }
+
+            EndStream:
+
+            // InputRequired follow-up — same logic as the polling path
+            if (inputRequired && lastResult is not null)
+            {
+                pending.InputRequiredRound++;
+                if (pending.InputRequiredRound > options.MaxInputRequiredRounds)
+                {
+                    logger.LogWarning(
+                        "A2A streaming task {TaskId} exceeded max InputRequired rounds ({Max})",
+                        taskId, options.MaxInputRequiredRounds);
+                    A2ADiagnostics.InputRequiredBreaks.Add(1,
+                        new KeyValuePair<string, object?>("rockbot.a2a.target_agent", pending.TargetAgent),
+                        new KeyValuePair<string, object?>("rockbot.a2a.reason", "max_rounds"));
+                    return MakeLoopExceededResult(taskId, contextId, "max rounds exceeded");
+                }
+
+                var questionText = ExtractResultText(lastResult);
+                logger.LogInformation(
+                    "A2A streaming task {TaskId} from '{AgentName}' requires input (round {Round})",
+                    taskId, pending.TargetAgent, pending.InputRequiredRound);
+
+                var followUp = await inputRequiredHandler.HandleAsync(
+                    new InputRequiredContext
+                    {
+                        TaskId = taskId,
+                        ContextId = contextId,
+                        TargetAgent = pending.TargetAgent,
+                        Skill = pending.Skill,
+                        QuestionText = questionText,
+                        PrimarySessionId = pending.PrimarySessionId,
+                        Round = pending.InputRequiredRound
+                    }, ct);
+
+                if (repetitionDetector.Track(questionText, followUp.ResponseText))
+                {
+                    logger.LogWarning(
+                        "A2A streaming task {TaskId} InputRequired loop stuck (repeated {Threshold}x)",
+                        taskId, options.InputRequiredRepetitionThreshold);
+                    A2ADiagnostics.InputRequiredBreaks.Add(1,
+                        new KeyValuePair<string, object?>("rockbot.a2a.target_agent", pending.TargetAgent),
+                        new KeyValuePair<string, object?>("rockbot.a2a.reason", "repetition"));
+                    return MakeLoopExceededResult(taskId, contextId, "conversation stuck in a loop");
+                }
+
+                logger.LogInformation(
+                    "A2A streaming InputRequired follow-up sent for task {TaskId} round {Round} (autonomous={Autonomous})",
+                    taskId, pending.InputRequiredRound, followUp.WasAutonomous);
+
+                // Send follow-up with contextId — continue streaming
+                sendRequest = BuildV1SendRequest(taskId, followUp.ResponseText, contextId, taskRequest.Skill);
+                continue;
+            }
+
+            // Stream ended without a terminal event
+            return lastResult;
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Maps a streaming <see cref="A2AV1.TaskStatusUpdateEvent"/> to an <see cref="AgentTaskResult"/>.
+    /// </summary>
+    internal static AgentTaskResult MapV1StatusUpdateEvent(A2AV1.TaskStatusUpdateEvent statusUpdate, string taskId)
+    {
+        var state = statusUpdate.Status.State switch
+        {
+            A2AV1.TaskState.Completed => AgentTaskState.Completed,
+            A2AV1.TaskState.Failed => AgentTaskState.Failed,
+            A2AV1.TaskState.Canceled => AgentTaskState.Canceled,
+            A2AV1.TaskState.Working => AgentTaskState.Working,
+            A2AV1.TaskState.InputRequired => AgentTaskState.InputRequired,
+            A2AV1.TaskState.Submitted => AgentTaskState.Submitted,
+            A2AV1.TaskState.Rejected => AgentTaskState.Failed,
+            A2AV1.TaskState.AuthRequired => AgentTaskState.InputRequired,
+            _ => AgentTaskState.Completed
+        };
+
+        return new AgentTaskResult
+        {
+            TaskId = taskId,
+            ContextId = statusUpdate.ContextId,
+            State = state,
+            Message = statusUpdate.Status.Message is { } msg ? MapV1Message(msg) : null
+        };
     }
 
     private static A2AV1.SendMessageRequest BuildV1SendRequest(

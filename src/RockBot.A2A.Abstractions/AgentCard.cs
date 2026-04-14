@@ -40,6 +40,14 @@ public sealed record AgentCard
     public string? ProtocolVersion { get; init; }
 
     /// <summary>
+    /// Whether the remote agent advertises streaming support (<c>capabilities.streaming: true</c>).
+    /// When true and protocol version is v1, <c>InvokeAgentExecutor</c> uses
+    /// <c>SendStreamingMessageAsync</c> instead of polling.
+    /// Populated automatically by <c>RegisterAgentExecutor</c> during protocol detection.
+    /// </summary>
+    public bool? SupportsStreaming { get; init; }
+
+    /// <summary>
     /// When true, the agent is shutting down and should be removed from the directory.
     /// Published by <c>AgentDiscoveryService.StopAsync</c> on graceful shutdown.
     /// </summary>

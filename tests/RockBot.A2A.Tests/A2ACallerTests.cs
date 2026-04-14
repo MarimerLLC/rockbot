@@ -640,6 +640,139 @@ public class A2ACallerTests
         Assert.AreEqual("1.0", card.ProtocolVersion);
     }
 
+    // ─── V1 streaming event mapping ────────────────────────────────────────────
+
+    [TestMethod]
+    public void MapV1StatusUpdateEvent_MapsWorkingState()
+    {
+        var statusUpdate = new A2AV1.TaskStatusUpdateEvent
+        {
+            TaskId = "task-sw",
+            ContextId = "ctx-sw",
+            Status = new A2AV1.TaskStatus
+            {
+                State = A2AV1.TaskState.Working,
+                Message = new A2AV1.Message
+                {
+                    Role = A2AV1.Role.Agent,
+                    Parts = [new A2AV1.Part { Text = "Processing..." }]
+                }
+            }
+        };
+
+        var result = InvokeAgentExecutor.MapV1StatusUpdateEvent(statusUpdate, "task-sw");
+
+        Assert.AreEqual("task-sw", result.TaskId);
+        Assert.AreEqual(AgentTaskState.Working, result.State);
+        Assert.AreEqual("ctx-sw", result.ContextId);
+        Assert.AreEqual("Processing...", result.Message?.Parts[0].Text);
+    }
+
+    [TestMethod]
+    public void MapV1StatusUpdateEvent_MapsCompletedState()
+    {
+        var statusUpdate = new A2AV1.TaskStatusUpdateEvent
+        {
+            TaskId = "task-sc",
+            Status = new A2AV1.TaskStatus
+            {
+                State = A2AV1.TaskState.Completed,
+                Message = new A2AV1.Message
+                {
+                    Role = A2AV1.Role.Agent,
+                    Parts = [new A2AV1.Part { Text = "All done" }]
+                }
+            }
+        };
+
+        var result = InvokeAgentExecutor.MapV1StatusUpdateEvent(statusUpdate, "task-sc");
+
+        Assert.AreEqual(AgentTaskState.Completed, result.State);
+        Assert.AreEqual("All done", result.Message?.Parts[0].Text);
+    }
+
+    [TestMethod]
+    public void MapV1StatusUpdateEvent_MapsInputRequiredState()
+    {
+        var statusUpdate = new A2AV1.TaskStatusUpdateEvent
+        {
+            TaskId = "task-sir",
+            ContextId = "ctx-sir",
+            Status = new A2AV1.TaskStatus
+            {
+                State = A2AV1.TaskState.InputRequired,
+                Message = new A2AV1.Message
+                {
+                    Role = A2AV1.Role.Agent,
+                    Parts = [new A2AV1.Part { Text = "What day?" }]
+                }
+            }
+        };
+
+        var result = InvokeAgentExecutor.MapV1StatusUpdateEvent(statusUpdate, "task-sir");
+
+        Assert.AreEqual(AgentTaskState.InputRequired, result.State);
+        Assert.AreEqual("What day?", result.Message?.Parts[0].Text);
+    }
+
+    [TestMethod]
+    public void MapV1StatusUpdateEvent_PreservesContextId()
+    {
+        var statusUpdate = new A2AV1.TaskStatusUpdateEvent
+        {
+            TaskId = "task-ctx",
+            ContextId = "ctx-preserved",
+            Status = new A2AV1.TaskStatus { State = A2AV1.TaskState.Working }
+        };
+
+        var result = InvokeAgentExecutor.MapV1StatusUpdateEvent(statusUpdate, "task-ctx");
+
+        Assert.AreEqual("ctx-preserved", result.ContextId);
+    }
+
+    [TestMethod]
+    public void MapV1StatusUpdateEvent_MapsRejected_ToFailed()
+    {
+        var statusUpdate = new A2AV1.TaskStatusUpdateEvent
+        {
+            TaskId = "task-rej",
+            Status = new A2AV1.TaskStatus { State = A2AV1.TaskState.Rejected }
+        };
+
+        var result = InvokeAgentExecutor.MapV1StatusUpdateEvent(statusUpdate, "task-rej");
+
+        Assert.AreEqual(AgentTaskState.Failed, result.State);
+    }
+
+    [TestMethod]
+    public void MapV1StatusUpdateEvent_MapsAuthRequired_ToInputRequired()
+    {
+        var statusUpdate = new A2AV1.TaskStatusUpdateEvent
+        {
+            TaskId = "task-auth",
+            Status = new A2AV1.TaskStatus { State = A2AV1.TaskState.AuthRequired }
+        };
+
+        var result = InvokeAgentExecutor.MapV1StatusUpdateEvent(statusUpdate, "task-auth");
+
+        Assert.AreEqual(AgentTaskState.InputRequired, result.State);
+    }
+
+    [TestMethod]
+    public void MapV1StatusUpdateEvent_HandlesNullMessage()
+    {
+        var statusUpdate = new A2AV1.TaskStatusUpdateEvent
+        {
+            TaskId = "task-nm",
+            Status = new A2AV1.TaskStatus { State = A2AV1.TaskState.Working }
+        };
+
+        var result = InvokeAgentExecutor.MapV1StatusUpdateEvent(statusUpdate, "task-nm");
+
+        Assert.AreEqual(AgentTaskState.Working, result.State);
+        Assert.IsNull(result.Message);
+    }
+
     // ─── A2ATaskStatusHandler ────────────────────────────────────────────────────
 
     [TestMethod]
