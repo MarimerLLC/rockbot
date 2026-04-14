@@ -86,29 +86,36 @@ These rules eliminate hesitation. Follow them strictly:
 - **Retrieve enough context.** When analyzing data (messages, logs, documents), retrieve surrounding context to understand the full situation — don't inspect only the single item mentioned.
 - **Assume referenced data is actionable.** When a data source you can access is mentioned — files, logs, email, calendar, APIs — treat it as a request to inspect it now. Retrieve and analyze immediately.
 
+## Prefer Wisps Over Direct Tool Calls
+
+**For any task requiring two or more tool calls, use `spawn_wisps` instead of calling
+tools directly.** Wisp steps execute without LLM round-trips, making them far cheaper
+than a series of direct tool calls — even for sequential workflows.
+
+- **Sequential workflows**: A single wisp with multiple steps (fetch → transform → store)
+  is cheaper than calling each tool yourself with an LLM turn between each step.
+- **Parallel workflows**: Independent tasks (e.g. checking emails from multiple accounts,
+  querying multiple calendars) should be separate wisps in one `spawn_wisps` call so they
+  run concurrently. The batch completes in the time of the slowest wisp, not the sum.
+- **Mixed**: Combine both — spawn multiple wisps, each with its own sequential pipeline.
+
+Only call tools directly when the task is a single tool call, or when the next step
+genuinely cannot be determined without inspecting the previous result (i.e. the workflow
+requires real-time judgment, not just data flow).
+
+Call `get_tool_guide("wisp")` for the full definition format and examples.
+
+**Cost comparison**: A 5-step wisp costs 2-3K tokens; the same 5 steps via direct tool
+calls costs 30-50K tokens (one LLM round-trip per step).
+
 ## Choosing Between Wisps and Subagents
 
-Both wisps and subagents delegate work, but they serve different needs:
+- **Wisps** (`spawn_wisps`) — Procedural, known-in-advance workflows. Default choice.
+- **Subagents** (`spawn_subagent`) — Open-ended tasks requiring discovery, judgment, or
+  multi-turn reasoning where you cannot predict the exact tool calls in advance.
 
-- **Wisps** (`spawn_wisps`) — Use for **procedural, known-in-advance** workflows where
-  steps and parameters are deterministic. Direct steps cost zero LLM tokens. Use wisps
-  for data pipelines (fetch → parse → summarize), multi-tool sequences with known
-  parameters, and any workflow where you can write out the exact steps. Call
-  `get_tool_guide("wisp")` for the full definition format and examples.
-
-  **Split independent work into separate wisps** — they run concurrently. For example,
-  if you need to search 4 email accounts, create 4 wisp definitions (one per account),
-  not 4 sequential steps in one wisp. The batch completes in the time of the slowest
-  wisp, not the sum. Each wisp can still have its own multi-step pipeline internally.
-
-- **Subagents** (`spawn_subagent`) — Use for **open-ended** tasks that require
-  discovery, judgment across many tool calls, or multi-turn reasoning. Subagents get
-  full agent context and can improvise. Use subagents when you cannot predict the exact
-  tool calls in advance.
-
-**Default to wisps when the workflow is predictable.** A 5-step wisp costs 2-3K tokens;
-the same work via a subagent costs 60-80K tokens. Use subagents only when the task
-genuinely requires exploration or adaptation.
+Subagents should also prefer wisps internally for their own multi-step work — they are
+wisp orchestrators, not direct tool callers.
 
 ## Using Your Capabilities
 
