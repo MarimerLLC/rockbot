@@ -28,6 +28,10 @@ internal sealed class SubagentToolRegistrar(
               "type": "integer",
               "description": "Optional timeout in minutes (default: 10)."
             },
+            "max_iterations": {
+              "type": "integer",
+              "description": "Optional maximum tool-calling iterations for this subagent (default: model-specific, typically 25). Increase for tasks that require many sequential tool calls. When the subagent will use spawn_wisps for parallel work, the default is usually sufficient."
+            },
             "consolidate": {
               "type": "boolean",
               "description": "When true (default), this subagent's result will be batched with sibling subagent results into a single consolidated response. Set to false to deliver this subagent's result immediately as its own response."

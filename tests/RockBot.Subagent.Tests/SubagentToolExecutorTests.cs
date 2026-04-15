@@ -170,6 +170,46 @@ public class SubagentToolExecutorTests
     }
 
     [TestMethod]
+    public async Task SpawnSubagentExecutor_WithMaxIterations_PassesToManager()
+    {
+        var manager = new FakeSubagentManager([]) { SpawnResult = "task456" };
+        var executor = new SpawnSubagentExecutor(manager);
+        var args = JsonSerializer.Serialize(new { description = "Heavy task", max_iterations = 50 });
+        var request = new ToolInvokeRequest
+        {
+            ToolCallId = "call-1",
+            ToolName = "spawn_subagent",
+            Arguments = args,
+            SessionId = "session-1"
+        };
+
+        var response = await executor.ExecuteAsync(request, CancellationToken.None);
+
+        Assert.IsFalse(response.IsError);
+        Assert.AreEqual(50, manager.LastMaxIterations);
+    }
+
+    [TestMethod]
+    public async Task SpawnSubagentExecutor_WithoutMaxIterations_PassesNullToManager()
+    {
+        var manager = new FakeSubagentManager([]) { SpawnResult = "task789" };
+        var executor = new SpawnSubagentExecutor(manager);
+        var args = JsonSerializer.Serialize(new { description = "Normal task" });
+        var request = new ToolInvokeRequest
+        {
+            ToolCallId = "call-1",
+            ToolName = "spawn_subagent",
+            Arguments = args,
+            SessionId = "session-1"
+        };
+
+        var response = await executor.ExecuteAsync(request, CancellationToken.None);
+
+        Assert.IsFalse(response.IsError);
+        Assert.IsNull(manager.LastMaxIterations);
+    }
+
+    [TestMethod]
     public async Task SpawnSubagentExecutor_InvalidJson_ReturnsError()
     {
         var manager = new FakeSubagentManager([]);
@@ -195,11 +235,15 @@ public class SubagentToolExecutorTests
     {
         public string SpawnResult { get; set; } = "fake-task-id";
         public bool CancelResult { get; set; }
+        public int? LastMaxIterations { get; private set; }
 
         public Task<string> SpawnAsync(string description, string? context, int? timeoutMinutes,
             string primarySessionId, CancellationToken ct,
-            string? batchId = null, bool consolidate = true) =>
-            Task.FromResult(SpawnResult);
+            string? batchId = null, bool consolidate = true, int? maxIterations = null)
+        {
+            LastMaxIterations = maxIterations;
+            return Task.FromResult(SpawnResult);
+        }
 
         public Task<bool> CancelAsync(string taskId) =>
             Task.FromResult(CancelResult);

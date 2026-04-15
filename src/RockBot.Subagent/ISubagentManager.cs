@@ -11,7 +11,7 @@ public interface ISubagentManager
     /// </summary>
     Task<string> SpawnAsync(string description, string? context, int? timeoutMinutes,
         string primarySessionId, CancellationToken ct,
-        string? batchId = null, bool consolidate = true);
+        string? batchId = null, bool consolidate = true, int? maxIterations = null);
 
     /// <summary>
     /// Cancels a running subagent by task ID. Returns true if found and cancelled.

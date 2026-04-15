@@ -30,6 +30,10 @@ public sealed class SubagentToolSkillProvider : IToolSkillProvider
           search terms, timezone, expected output format).
         - context (optional): Additional data or context the subagent needs
         - timeout_minutes (optional): How long to allow (default 10 minutes)
+        - max_iterations (optional): Maximum tool-calling iterations (default: model-
+          specific, typically 25). Increase when the subagent needs many sequential
+          tool calls. When the subagent will use spawn_wisps for parallel work, the
+          default is usually sufficient since wisps don't consume iteration budget.
         - consolidate (optional, default true): When true, this subagent's result is
           batched with sibling results into a single consolidated response. Set to false
           to deliver this subagent's result immediately as its own independent response.

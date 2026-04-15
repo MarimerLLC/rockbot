@@ -50,9 +50,35 @@ public sealed record WispStep
 
     /// <summary>
     /// Tool parameters as a JSON object. Interpretation depends on the gateway type.
+    /// Accepts both <c>"params"</c> and <c>"input"</c> as the JSON property name;
+    /// if both are present, <c>"params"</c> wins.
     /// </summary>
     [JsonPropertyName("params")]
     public JsonElement? Params { get; init; }
+
+    /// <summary>
+    /// Alias for <see cref="Params"/>. LLMs sometimes use <c>"input"</c> instead of
+    /// <c>"params"</c>; this property captures the value so the gateway router can
+    /// fall back to it when <c>Params</c> is null.
+    /// </summary>
+    [JsonPropertyName("input")]
+    public JsonElement? Input { get; init; }
+
+    /// <summary>
+    /// Alias for <see cref="Params"/>. LLMs sometimes use <c>"arguments"</c> instead of
+    /// <c>"params"</c>.
+    /// </summary>
+    [JsonPropertyName("arguments")]
+    public JsonElement? Arguments { get; init; }
+
+    /// <summary>
+    /// Resolved parameters: returns the first non-null of <see cref="Params"/>,
+    /// <see cref="Input"/>, <see cref="Arguments"/>. As a last resort, if
+    /// <see cref="InputFrom"/> looks like a JSON object (starts with '{'), it is
+    /// parsed and used — LLMs sometimes stuff tool arguments into that field.
+    /// </summary>
+    [JsonIgnore]
+    public JsonElement? ResolvedParams => Params ?? Input ?? Arguments ?? TryParseInputFromAsParams();
 
     /// <summary>
     /// Prompt/instruction for <c>llm</c> mode steps.
@@ -106,4 +132,24 @@ public sealed record WispStep
     /// </summary>
     [JsonPropertyName("on_failure")]
     public OnFailureAction? OnFailure { get; init; }
+
+    /// <summary>
+    /// Attempts to parse <see cref="InputFrom"/> as a JSON object. LLMs sometimes
+    /// stuff tool arguments into <c>input_from</c> as a JSON string instead of using
+    /// <c>params</c>. Returns null if <c>InputFrom</c> is null, empty, or not valid JSON.
+    /// </summary>
+    private JsonElement? TryParseInputFromAsParams()
+    {
+        if (string.IsNullOrEmpty(InputFrom) || !InputFrom.TrimStart().StartsWith('{'))
+            return null;
+
+        try
+        {
+            return JsonDocument.Parse(InputFrom).RootElement;
+        }
+        catch
+        {
+            return null;
+        }
+    }
 }

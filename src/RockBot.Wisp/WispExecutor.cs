@@ -592,6 +592,21 @@ internal sealed class WispExecutor(
 
         Directory.CreateDirectory(Path.GetDirectoryName(fullPath)!);
         await File.WriteAllTextAsync(fullPath, content, ct);
+
+        // Make files world-writable so other containers sharing the volume
+        // (script pods, MCP servers) can read and overwrite them regardless
+        // of which user created them.
+        try
+        {
+            File.SetUnixFileMode(fullPath,
+                UnixFileMode.UserRead | UnixFileMode.UserWrite |
+                UnixFileMode.GroupRead | UnixFileMode.GroupWrite |
+                UnixFileMode.OtherRead | UnixFileMode.OtherWrite);
+        }
+        catch
+        {
+            // Non-Unix platforms or permission errors — best-effort only.
+        }
     }
 
     private async Task<string?> ReadFromSharedVolumeAsync(string relativePath, CancellationToken ct)

@@ -36,6 +36,57 @@ public class GatewayRouterTests
     }
 
     [TestMethod]
+    public void Route_Mcp_WithInputAlias_PassesArgumentsCorrectly()
+    {
+        var step = new WispStep
+        {
+            Id = "fetch_events",
+            Mode = StepMode.Direct,
+            Gateway = GatewayType.Mcp,
+            Server = "calendar-mcp",
+            Tool = "get_calendar_events",
+            // LLM used "input" instead of "params" — should still route correctly
+            Input = JsonDocument.Parse("""{"timeZone": "America/Chicago", "startDate": "2025-04-01"}""").RootElement
+        };
+
+        var result = GatewayRouter.Route(step, "wisp-123", EmptyResults);
+
+        Assert.IsTrue(result.IsSuccess);
+        Assert.AreEqual("mcp_invoke_tool", result.ToolName);
+        Assert.IsNotNull(result.Arguments);
+
+        var args = JsonDocument.Parse(result.Arguments!).RootElement;
+        Assert.AreEqual("calendar-mcp", args.GetProperty("server_name").GetString());
+        Assert.AreEqual("get_calendar_events", args.GetProperty("tool_name").GetString());
+        Assert.AreEqual("America/Chicago",
+            args.GetProperty("arguments").GetProperty("timeZone").GetString());
+    }
+
+    [TestMethod]
+    public void Route_Mcp_WithArgsInInputFrom_RescuesAndRoutes()
+    {
+        // LLM put tool arguments in input_from as a JSON string
+        var step = new WispStep
+        {
+            Id = "fetch_events",
+            Mode = StepMode.Direct,
+            Gateway = GatewayType.Mcp,
+            Server = "calendar-mcp",
+            Tool = "get_calendar_events",
+            InputFrom = """{"timeZone": "America/Chicago", "startDate": "2025-04-01"}"""
+        };
+
+        var result = GatewayRouter.Route(step, "wisp-123", EmptyResults);
+
+        Assert.IsTrue(result.IsSuccess, result.ErrorMessage);
+        Assert.AreEqual("mcp_invoke_tool", result.ToolName);
+
+        var args = JsonDocument.Parse(result.Arguments!).RootElement;
+        Assert.AreEqual("America/Chicago",
+            args.GetProperty("arguments").GetProperty("timeZone").GetString());
+    }
+
+    [TestMethod]
     public void Route_Mcp_MissingServer_ReturnsStructuralError()
     {
         var step = new WispStep

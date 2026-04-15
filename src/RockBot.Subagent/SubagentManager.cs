@@ -26,7 +26,8 @@ public sealed class SubagentManager(
         string primarySessionId,
         CancellationToken ct,
         string? batchId = null,
-        bool consolidate = true)
+        bool consolidate = true,
+        int? maxIterations = null)
     {
         // Clean up completed tasks first
         foreach (var key in _active.Keys.ToList())
@@ -53,7 +54,7 @@ public sealed class SubagentManager(
         var cts = new CancellationTokenSource();
         cts.CancelAfter(TimeSpan.FromMinutes(timeout));
 
-        var task = RunSubagentAsync(taskId, subagentSessionId, description, context, primarySessionId, batchId, consolidate, cts.Token);
+        var task = RunSubagentAsync(taskId, subagentSessionId, description, context, primarySessionId, batchId, consolidate, maxIterations, cts.Token);
 
         var newEntry = new SubagentEntry
         {
@@ -111,6 +112,7 @@ public sealed class SubagentManager(
         string primarySessionId,
         string? batchId,
         bool consolidate,
+        int? maxIterations,
         CancellationToken ct)
     {
         // SubagentRunner.RunAsync handles all its own exit paths (success, failure,
@@ -121,7 +123,7 @@ public sealed class SubagentManager(
         {
             await using var scope = scopeFactory.CreateAsyncScope();
             var runner = scope.ServiceProvider.GetRequiredService<SubagentRunner>();
-            await runner.RunAsync(taskId, subagentSessionId, description, context, primarySessionId, batchId, consolidate, ct);
+            await runner.RunAsync(taskId, subagentSessionId, description, context, primarySessionId, batchId, consolidate, maxIterations, ct);
         }
         catch (Exception ex)
         {

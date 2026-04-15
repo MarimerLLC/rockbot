@@ -40,6 +40,7 @@ internal sealed class SubagentRunner(
         string primarySessionId,
         string? batchId,
         bool consolidate,
+        int? maxIterations,
         CancellationToken ct)
     {
         var classification = tierSelector.Classify(description, new TierRoutingContext(Origin: "subagent"));
@@ -56,6 +57,11 @@ internal sealed class SubagentRunner(
             "using your tools — do not design frameworks, save skills, or plan methodology. " +
             "Start calling the required tools immediately. " +
             "Call ReportProgress after each significant step so the user stays informed. " +
+            "For repetitive operations with known parameters (e.g., the same API call across " +
+            "multiple date ranges, accounts, or categories), use spawn_wisps to execute them " +
+            "in parallel rather than calling tools sequentially. Wisps don't consume your " +
+            "iteration budget and run concurrently. Use Direct mode steps with the correct " +
+            "gateway and put tool arguments in the \"params\" field. " +
             $"For large outputs (reports, document lists, structured data): use save_to_working_memory " +
             $"to store them (set ttl_minutes to 240 or more). Your outputs are stored under namespace " +
             $"'{subagentNamespace}' and the primary agent can retrieve them using " +
@@ -167,6 +173,7 @@ internal sealed class SubagentRunner(
             finalOutput = await agentLoopRunner.RunAsync(
                 chatMessages, chatOptions, subagentSessionId,
                 tier: tier, enableFollowUp: false, enableCompletionEval: false,
+                maxIterationsOverride: maxIterations,
                 cancellationToken: ct);
             finalOutput = ResponseSanitizer.StripTrailingOffers(finalOutput);
             isSuccess = true;

@@ -25,12 +25,13 @@ internal sealed class SpawnSubagentExecutor(ISubagentManager manager) : IToolExe
         var description = descEl.GetString()!;
         var context = args.TryGetValue("context", out var ctxEl) ? ctxEl.GetString() : null;
         int? timeoutMinutes = args.TryGetValue("timeout_minutes", out var toEl) && toEl.TryGetInt32(out var to) ? to : null;
+        int? maxIterations = args.TryGetValue("max_iterations", out var miEl) && miEl.TryGetInt32(out var mi) ? mi : null;
         bool consolidate = !args.TryGetValue("consolidate", out var consEl) || consEl.ValueKind != JsonValueKind.False;
 
         var primarySessionId = request.SessionId ?? "unknown";
 
         var taskId = await manager.SpawnAsync(description, context, timeoutMinutes, primarySessionId, ct,
-            batchId: request.BatchId, consolidate: consolidate);
+            batchId: request.BatchId, consolidate: consolidate, maxIterations: maxIterations);
 
         return new ToolInvokeResponse
         {

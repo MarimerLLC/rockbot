@@ -94,7 +94,11 @@ public sealed class WispToolSkillProvider : IToolSkillProvider
 
         ### Gateways (for Direct steps)
 
-        Each Direct step routes through a gateway that maps to the correct registered tool:
+        Each Direct step routes through a gateway that maps to the correct registered tool.
+
+        **IMPORTANT:** Tool arguments go in the `"params"` field (not `"input"` or
+        `"arguments"`). Include ALL required parameters — the harness passes them
+        directly to the tool with no defaulting or inference.
 
         **MCP** — Call any MCP server tool:
         ```json

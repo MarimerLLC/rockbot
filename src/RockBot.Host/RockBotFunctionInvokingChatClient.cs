@@ -173,11 +173,20 @@ public class RockBotFunctionInvokingChatClient : FunctionInvokingChatClient
     {
         _consecutiveTimeoutIterations = 0;
         _repetitiveCallDetector.Reset();
+
+        // Apply per-request max iterations override if set (e.g. by a subagent
+        // that was spawned with an elevated iteration budget).
+        var saved = MaximumIterationsPerRequest;
+        if (MaxIterationsOverrideContext.Value is int overrideValue)
+            MaximumIterationsPerRequest = overrideValue;
+
         _logger.LogInformation(
             "RockBotFunctionInvokingChatClient handling request (maxIterations={MaxIter})",
             MaximumIterationsPerRequest);
         var messageList = messages as List<ChatMessage> ?? [.. messages];
 
+        try
+        {
         if (_knownContextLimit is int preLimit)
             TrimLargeToolResults(messageList, preLimit);
 
@@ -268,6 +277,11 @@ public class RockBotFunctionInvokingChatClient : FunctionInvokingChatClient
         }
 
         return response;
+        }
+        finally
+        {
+            MaximumIterationsPerRequest = saved;
+        }
     }
 
     private void TrimLargeToolResults(List<ChatMessage> messages, int maxTokens)
