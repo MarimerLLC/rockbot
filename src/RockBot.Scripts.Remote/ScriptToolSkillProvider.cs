@@ -145,25 +145,35 @@ internal sealed class ScriptToolSkillProvider : IToolSkillProvider
           to stdout; be deliberate about what the script does
 
 
-        ## Producing Output Files (shared volume)
+        ## Reading and Writing Files (shared volume)
 
-        Script containers have the shared volume mounted at the path in the
-        `ROCKBOT_SHARED_PATH` environment variable. Files written there persist after the
-        container exits and are accessible to the agent and other services.
+        **CRITICAL:** Script containers do NOT share the agent's working directory.
+        The ONLY persistent filesystem is the shared volume, mounted at the path in
+        the `ROCKBOT_SHARED_PATH` environment variable (typically `/rockbot/shared`).
 
-        **Typical workflow:**
+        **You MUST use absolute paths built from `ROCKBOT_SHARED_PATH` for ALL file
+        access.** Relative paths like `staging/file.json` will fail — the container's
+        working directory is NOT the shared volume.
 
-        1. Write a script that saves output to `os.environ['ROCKBOT_SHARED_PATH']`:
-           ```python
-           import os
-           shared = os.environ['ROCKBOT_SHARED_PATH']
-           path = os.path.join(shared, 'exports', 'report.xlsx')
-           os.makedirs(os.path.dirname(path), exist_ok=True)
-           # ... write the file ...
-           print(f"exports/report.xlsx")
-           ```
-        2. Have the script print the relative path to stdout on success.
-        3. After the script completes, use `file_read` or `file_get_path` to access the output.
+        **Reading files** (e.g. files created by wisps via `output_to`):
+        ```python
+        import os, json
+        shared = os.environ['ROCKBOT_SHARED_PATH']
+        with open(os.path.join(shared, 'staging', 'events.json')) as f:
+            data = json.load(f)
+        ```
+
+        **Writing files:**
+        ```python
+        import os
+        shared = os.environ['ROCKBOT_SHARED_PATH']
+        path = os.path.join(shared, 'exports', 'report.xlsx')
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        # ... write the file ...
+        print(f"exports/report.xlsx")
+        ```
+
+        After the script completes, use `file_read` or `file_get_path` to access the output.
 
 
         ## Common Pitfalls
@@ -175,6 +185,10 @@ internal sealed class ScriptToolSkillProvider : IToolSkillProvider
           `timeout_seconds` when installing large dependencies like `torch` or `scipy`
         - Printing debug statements that pollute the output — use stderr for debug output:
           `import sys; print("debug", file=sys.stderr)`
+        - **Using relative file paths** — the container's cwd is NOT `/rockbot/shared`.
+          Always build paths with `os.path.join(os.environ['ROCKBOT_SHARED_PATH'], ...)`.
+          If wisps wrote files via `output_to: "staging/file.json"`, the script must read
+          them at `os.path.join(shared, 'staging', 'file.json')`, not `"staging/file.json"`
         - Writing files outside `ROCKBOT_SHARED_PATH` — only files on the shared volume
           persist after the container exits
         """;

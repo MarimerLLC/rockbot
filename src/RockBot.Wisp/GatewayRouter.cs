@@ -53,8 +53,14 @@ internal static class GatewayRouter
             return ToolRouteResult.Failure("MCP gateway requires 'server' field", FailureCategory.Structural);
         if (string.IsNullOrEmpty(step.Tool))
             return ToolRouteResult.Failure("MCP gateway requires 'tool' field", FailureCategory.Structural);
+        if (step.ResolvedParams is null)
+            return ToolRouteResult.Failure(
+                $"MCP step '{step.Id}' has no 'params' field. Put the tool arguments " +
+                $"for {step.Server}/{step.Tool} in \"params\": {{...}}. Example: " +
+                $"\"params\": {{\"timeZone\": \"America/Chicago\", \"startDate\": \"2025-04-01\"}}",
+                FailureCategory.Structural);
 
-        var resolvedParams = ResolveTemplates(step.Params, priorResults);
+        var resolvedParams = ResolveTemplates(step.ResolvedParams, priorResults);
 
         var args = new Dictionary<string, object?>
         {
@@ -94,14 +100,14 @@ internal static class GatewayRouter
 
     private static ToolRouteResult RouteScript(WispStep step, string wispId, IReadOnlyDictionary<string, WispStepResult> priorResults)
     {
-        if (step.Params is null)
+        if (step.ResolvedParams is null)
             return ToolRouteResult.Failure("Script gateway requires 'params' with 'script' field", FailureCategory.Structural);
 
-        var paramsObj = step.Params.Value;
+        var paramsObj = step.ResolvedParams.Value;
         if (!paramsObj.TryGetProperty("script", out _))
             return ToolRouteResult.Failure("Script gateway requires 'script' in params", FailureCategory.Structural);
 
-        var resolvedParams = ResolveTemplates(step.Params, priorResults);
+        var resolvedParams = ResolveTemplates(step.ResolvedParams, priorResults);
         var language = step.Language ?? "python";
         var toolName = $"execute_{language}_script";
 
@@ -117,7 +123,7 @@ internal static class GatewayRouter
         if (step.Tool is not ("web_search" or "web_browse"))
             return ToolRouteResult.Failure($"Web gateway tool must be 'web_search' or 'web_browse', got '{step.Tool}'", FailureCategory.Structural);
 
-        var resolvedParams = ResolveTemplates(step.Params, priorResults);
+        var resolvedParams = ResolveTemplates(step.ResolvedParams, priorResults);
 
         return ToolRouteResult.Success(step.Tool,
             resolvedParams is JsonElement je ? je.GetRawText() : JsonSerializer.Serialize(resolvedParams ?? new object(), JsonOptions));

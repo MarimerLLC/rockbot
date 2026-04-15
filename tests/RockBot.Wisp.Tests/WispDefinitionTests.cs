@@ -179,6 +179,143 @@ public class WispDefinitionTests
     }
 
     [TestMethod]
+    public void Deserialize_InputAlias_MapsToResolvedParams()
+    {
+        var json = """
+        {
+          "description": "Using input instead of params",
+          "steps": [
+            {
+              "id": "fetch",
+              "gateway": "Mcp",
+              "mode": "Direct",
+              "server": "calendar-mcp",
+              "tool": "get_calendar_events",
+              "input": { "timeZone": "America/Chicago", "startDate": "2025-04-01" }
+            }
+          ]
+        }
+        """;
+
+        var definition = JsonSerializer.Deserialize<WispDefinition>(json, JsonOptions)!;
+
+        var step = definition.Steps[0];
+        Assert.IsNull(step.Params, "Params should be null when 'input' is used");
+        Assert.IsNotNull(step.Input, "Input should be populated from the 'input' field");
+        Assert.IsNotNull(step.ResolvedParams, "ResolvedParams should fall back to Input");
+        Assert.AreEqual("America/Chicago",
+            step.ResolvedParams!.Value.GetProperty("timeZone").GetString());
+    }
+
+    [TestMethod]
+    public void Deserialize_ArgumentsAlias_MapsToResolvedParams()
+    {
+        var json = """
+        {
+          "description": "Using arguments instead of params",
+          "steps": [
+            {
+              "id": "fetch",
+              "gateway": "Mcp",
+              "mode": "Direct",
+              "server": "calendar-mcp",
+              "tool": "get_calendar_events",
+              "arguments": { "timeZone": "America/Chicago" }
+            }
+          ]
+        }
+        """;
+
+        var definition = JsonSerializer.Deserialize<WispDefinition>(json, JsonOptions)!;
+
+        var step = definition.Steps[0];
+        Assert.IsNotNull(step.ResolvedParams);
+        Assert.AreEqual("America/Chicago",
+            step.ResolvedParams!.Value.GetProperty("timeZone").GetString());
+    }
+
+    [TestMethod]
+    public void Deserialize_InputFromWithJsonObject_RescuedAsParams()
+    {
+        var json = """
+        {
+          "description": "LLM stuffed args into input_from",
+          "steps": [
+            {
+              "id": "fetch",
+              "gateway": "Mcp",
+              "mode": "Direct",
+              "server": "calendar-mcp",
+              "tool": "get_calendar_events",
+              "input_from": "{\"timeZone\":\"America/Chicago\",\"startDate\":\"2025-04-01\"}"
+            }
+          ]
+        }
+        """;
+
+        var definition = JsonSerializer.Deserialize<WispDefinition>(json, JsonOptions)!;
+
+        var step = definition.Steps[0];
+        Assert.IsNull(step.Params);
+        Assert.IsNull(step.Input);
+        Assert.IsNotNull(step.ResolvedParams, "Should rescue JSON from input_from");
+        Assert.AreEqual("America/Chicago",
+            step.ResolvedParams!.Value.GetProperty("timeZone").GetString());
+    }
+
+    [TestMethod]
+    public void Deserialize_InputFromWithFilePath_DoesNotRescue()
+    {
+        var json = """
+        {
+          "description": "Normal file path in input_from",
+          "steps": [
+            {
+              "id": "process",
+              "mode": "Llm",
+              "prompt": "Summarize",
+              "input_from": "wisp-data/results.json"
+            }
+          ]
+        }
+        """;
+
+        var definition = JsonSerializer.Deserialize<WispDefinition>(json, JsonOptions)!;
+
+        var step = definition.Steps[0];
+        Assert.IsNull(step.ResolvedParams, "File path should not be rescued as params");
+    }
+
+    [TestMethod]
+    public void Deserialize_ParamsTakesPrecedenceOverInput()
+    {
+        var json = """
+        {
+          "description": "Both params and input present",
+          "steps": [
+            {
+              "id": "fetch",
+              "gateway": "Mcp",
+              "mode": "Direct",
+              "server": "test",
+              "tool": "test_tool",
+              "params": { "from_params": true },
+              "input": { "from_input": true }
+            }
+          ]
+        }
+        """;
+
+        var definition = JsonSerializer.Deserialize<WispDefinition>(json, JsonOptions)!;
+
+        var step = definition.Steps[0];
+        Assert.IsNotNull(step.Params);
+        Assert.IsNotNull(step.Input);
+        Assert.IsTrue(step.ResolvedParams!.Value.TryGetProperty("from_params", out _),
+            "ResolvedParams should prefer Params when both are set");
+    }
+
+    [TestMethod]
     public void Deserialize_LlmStep_WithInputFrom()
     {
         var json = """

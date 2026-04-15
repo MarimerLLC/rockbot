@@ -239,9 +239,13 @@ public sealed partial class AgentLoopRunner(
         bool enableFollowUp = true,
         bool enableCompletionEval = true,
         double? complexityScore = null,
+        int? maxIterationsOverride = null,
         CancellationToken cancellationToken = default)
     {
         using var _ = ToolCallSessionContext.Set(sessionId);
+        // Set the per-async-flow override so RockBotFunctionInvokingChatClient
+        // (singleton, native path) picks it up for this request.
+        using var __ = MaxIterationsOverrideContext.Set(maxIterationsOverride);
 
         // Ensure a current datetime context is always present.
         EnsureDateTimeContext(chatMessages);
@@ -498,7 +502,9 @@ public sealed partial class AgentLoopRunner(
                 return;
         }
 
-        var maxIterations = modelBehavior.MaxToolIterationsOverride ?? hostOptions.Value.MaxToolIterations;
+        var maxIterations = MaxIterationsOverrideContext.Value
+            ?? modelBehavior.MaxToolIterationsOverride
+            ?? hostOptions.Value.MaxToolIterations;
 
         var text =
             $"You have up to {maxIterations} tool-calling iterations available for this request. " +
@@ -550,7 +556,9 @@ public sealed partial class AgentLoopRunner(
 
         ChatResponse? pendingResponse = firstResponse;
         var anyToolCalled = false;
-        var maxIterations = modelBehavior.MaxToolIterationsOverride ?? hostOptions.Value.MaxToolIterations;
+        var maxIterations = MaxIterationsOverrideContext.Value
+            ?? modelBehavior.MaxToolIterationsOverride
+            ?? hostOptions.Value.MaxToolIterations;
         var consecutiveTimeoutIterations = 0;
         var repetitiveCallDetector = new RepetitiveToolCallDetector();
 
