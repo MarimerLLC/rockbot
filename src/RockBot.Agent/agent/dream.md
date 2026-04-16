@@ -23,11 +23,18 @@ You will receive a numbered list of ALL current memory entries, each with an ID,
    - Has an accurate category and descriptive tags
    - Lists ALL source entry IDs in `sourceIds`
 
-4. **Identify ephemeral/situational content** — entries that describe transient state with no lasting value across conversations:
+4. **Identify ephemeral/situational content** — entries that describe **present-tense real-time status** that is already stale:
    - Current physical position ("currently sitting by the fireplace", "in the living room right now")
    - What someone is momentarily doing ("Teresa is on a phone call", "user is at their desk")
-   - Temporary real-time status that will be meaningless tomorrow
+   - Live system state ("pod restarted 3 minutes ago", "waiting on tool result")
    These should be added to `toDelete` with **nothing saved in their place** (unless the entry also contains a durable fact — in that case, save only the durable part).
+
+   **Not ephemeral — keep these even when tied to a specific date or time window:**
+   - **Past experiences** — trips taken, events attended, meals eaten, projects completed. These are biographical context, not transient state. A memory from months ago about a fishing trip in Montana is durable, not stale.
+   - **Future commitments** — upcoming trips, scheduled events, planned projects. The user expects you to remember these leading up to, during, and after the event.
+   - **People, places, and preferences** first mentioned inside a trip or event — keep the durable fact even when its original wrapper was time-bound ("enjoyed the Madison River with guide Chris" survives the trip ending).
+
+   When in doubt, keep it. A named place, person, event, or preference is almost never ephemeral — err heavily toward preservation.
 
 5. **Leave everything else unchanged** — do not delete or modify entries that are not part of a duplicate group or ephemeral.
 
