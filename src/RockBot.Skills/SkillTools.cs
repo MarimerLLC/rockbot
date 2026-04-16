@@ -105,7 +105,7 @@ public sealed class SkillTools
         var existing = await _skillStore.GetAsync(name);
 
         // Save immediately with empty summary; LLM generates it in the background
-        var skill = new Skill(name, "", content, existing?.CreatedAt ?? now, now);
+        var skill = new Skill(name, "", content, existing?.CreatedAt ?? now, now, LastUsedAt: now);
         await _skillStore.SaveAsync(skill);
 
         _ = Task.Run(() => GenerateSummaryAsync(name, content));
