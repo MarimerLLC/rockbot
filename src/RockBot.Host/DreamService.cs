@@ -550,11 +550,14 @@ internal sealed class DreamService : IHostedService, IDisposable
     {
         var all = await _skillStore!.ListAsync();
 
-        // Prune skills that have not been used in 18 months
+        // Prune skills that have not been used in 18 months (skip protected skills)
         var threshold = DateTimeOffset.UtcNow.AddMonths(-18);
         var pruned = 0;
         foreach (var skill in all)
         {
+            if (IsProtectedSkill(skill.Name))
+                continue;
+
             var lastActivity = skill.LastUsedAt ?? skill.UpdatedAt ?? skill.CreatedAt;
             if (lastActivity < threshold)
             {
@@ -712,6 +715,17 @@ internal sealed class DreamService : IHostedService, IDisposable
         foreach (var dto in result.ToSave ?? [])
             foreach (var srcName in dto.SourceNames ?? [])
                 allToDelete.Add(srcName);
+
+        // Guard: never delete skills whose names match a protected prefix (e.g. patrol/).
+        // These skills are referenced by system directives and must not be removed by dream passes.
+        var protectedNames = allToDelete.Where(IsProtectedSkill).ToList();
+        foreach (var name in protectedNames)
+        {
+            allToDelete.Remove(name);
+            _logger.LogWarning(
+                "DreamService: skill consolidation LLM proposed deleting protected skill '{Name}' — skipping",
+                name);
+        }
 
         // Safety guard: refuse to delete skills when nothing is being saved in return.
         // The directive says "never delete without replacement" — enforce it in code so an
@@ -964,6 +978,16 @@ internal sealed class DreamService : IHostedService, IDisposable
         foreach (var dto in result.ToSave ?? [])
             foreach (var srcName in dto.SourceNames ?? [])
                 allToDelete.Add(srcName);
+
+        // Guard: never delete skills whose names match a protected prefix (e.g. patrol/).
+        var protectedOptNames = allToDelete.Where(IsProtectedSkill).ToList();
+        foreach (var name in protectedOptNames)
+        {
+            allToDelete.Remove(name);
+            _logger.LogWarning(
+                "DreamService: skill optimization LLM proposed deleting protected skill '{Name}' — skipping",
+                name);
+        }
 
         foreach (var name in allToDelete)
         {
@@ -2687,6 +2711,17 @@ internal sealed class DreamService : IHostedService, IDisposable
                 context, ex.Message, preview);
             return default;
         }
+    }
+
+    private bool IsProtectedSkill(string name)
+    {
+        foreach (var prefix in _options.ProtectedSkillPrefixes)
+        {
+            if (name.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+                return true;
+        }
+
+        return false;
     }
 
     private static string ExtractJsonObject(string text)

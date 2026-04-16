@@ -110,6 +110,15 @@ public sealed class DreamOptions
     /// </summary>
     public string GraphConsolidationDirectivePath { get; set; } = "graph-consolidation-dream.md";
 
+    /// <summary>
+    /// Skill name prefixes that are protected from deletion by dream consolidation and
+    /// optimization passes. Skills whose names start with any of these prefixes (case-insensitive)
+    /// will never be deleted, even if the LLM proposes merging or removing them.
+    /// Default: <c>["patrol/"]</c> — protects the patrol checklist skills that are referenced
+    /// by system directives.
+    /// </summary>
+    public List<string> ProtectedSkillPrefixes { get; set; } = ["patrol/"];
+
     /// <summary>Whether the narrative identity reflection pass is enabled.</summary>
     public bool IdentityReflectionEnabled { get; set; } = true;
 
