@@ -42,7 +42,9 @@ public sealed class WorkingMemoryTools
                  "Data is stored under your namespace automatically — just provide a descriptive key. " +
                  "Use this after receiving a large payload from any tool, or to store intermediate results " +
                  "that a subagent or patrol task should leave for the primary agent to pick up. " +
-                 "Assign a category and tags to make the data easier to find with search_working_memory.")]
+                 "To hand data off to a different session, patrol, or subagent, pass a full-path key beginning " +
+                 "with 'shared/' (e.g. 'shared/drafts/tina-vslive') — entries under shared/ are auto-listed in " +
+                 "every context. Assign a category and tags to make the data easier to find with search_working_memory.")]
     public async Task<string> SaveToWorkingMemory(
         [Description("Short descriptive key (e.g. 'emails_inbox', 'research_results', 'patrol_alert')")] string key,
         [Description("The data to cache — can be a large string, JSON payload, or formatted summary")] string data,
@@ -90,7 +92,7 @@ public sealed class WorkingMemoryTools
     [Description("List all keys currently in working memory with their category, tags, and expiry times. " +
                  "Defaults to your own namespace. Pass a namespace prefix to browse another context — " +
                  "for example 'subagent/task1' to see what a completed subagent stored, " +
-                 "or 'patrol' to see all patrol task outputs.")]
+                 "'patrol' to see all patrol task outputs, or 'shared' to see the cross-session handoff namespace.")]
     public async Task<string> ListWorkingMemory(
         [Description("Optional namespace prefix to browse (e.g. 'subagent/task1', 'patrol'). Omit to list your own namespace.")] string? @namespace = null)
     {

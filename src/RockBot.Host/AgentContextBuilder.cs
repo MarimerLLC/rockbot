@@ -145,14 +145,18 @@ public sealed class AgentContextBuilder(
         var subagentTask = isUserSession
             ? workingMemory.ListAsync("subagent")
             : Task.FromResult<IReadOnlyList<WorkingMemoryEntry>>([]);
+        // shared/ is the conventional cross-session handoff namespace — visible to every
+        // context (user, patrol, subagent) so entries written by one session are discoverable
+        // by any other without prior knowledge of the writer's namespace.
+        var sharedTask = workingMemory.ListAsync("shared");
 
         // Await all wave-1 tasks. graphTask may be null when no knowledge graph is configured.
         if (graphTask is not null)
             await Task.WhenAll(historyTask, ltmTask, episodicTask, identityTask,
-                skillListTask, skillSearchTask, wmTask, graphTask, patrolTask, subagentTask);
+                skillListTask, skillSearchTask, wmTask, graphTask, patrolTask, subagentTask, sharedTask);
         else
             await Task.WhenAll(historyTask, ltmTask, episodicTask, identityTask,
-                skillListTask, skillSearchTask, wmTask, patrolTask, subagentTask);
+                skillListTask, skillSearchTask, wmTask, patrolTask, subagentTask, sharedTask);
 
         var history = historyTask.Result;
         var recalled = ltmTask.Result;
@@ -164,6 +168,7 @@ public sealed class AgentContextBuilder(
         var matchedEntities = graphTask?.Result;
         var patrolEntries = patrolTask.Result;
         var subagentEntries = subagentTask.Result;
+        var sharedEntries = sharedTask.Result;
 
         // ── Wave 2: conditional lookups that depend on wave 1 results ─────────
 
@@ -408,6 +413,36 @@ public sealed class AgentContextBuilder(
                 "The patrol runs on a schedule and loads that skill as its directive each run.";
             chatMessages.Add(new ChatMessage(ChatRole.System, patrolContext));
             logger.LogInformation("Injected {Count} patrol working memory entries into context", patrolEntries.Count);
+        }
+
+        // Shared working memory — cross-session handoff namespace. Visible to every context
+        // (user sessions, patrols, subagents). Skipped when the caller's own namespace is
+        // already "shared" to avoid double-listing.
+        if (sharedEntries.Count > 0 &&
+            !wmNamespace.Equals("shared", StringComparison.OrdinalIgnoreCase))
+        {
+            var now = DateTimeOffset.UtcNow;
+            var lines = sharedEntries.Select(e =>
+            {
+                var remaining = e.ExpiresAt - now;
+                var remainingStr = remaining.TotalMinutes >= 1
+                    ? $"{(int)remaining.TotalMinutes}m{remaining.Seconds:D2}s"
+                    : $"{Math.Max(0, remaining.Seconds)}s";
+                var meta = new System.Text.StringBuilder($"- {e.Key}: expires in {remainingStr}");
+                if (e.Category is not null) meta.Append($", category: {e.Category}");
+                if (e.Tags is { Count: > 0 }) meta.Append($", tags: {string.Join(", ", e.Tags)}");
+                return meta.ToString();
+            });
+            var sharedContext =
+                "Shared working memory (cross-session handoff — any session, patrol, or subagent can write here):\n" +
+                string.Join("\n", lines) + "\n\n" +
+                "- Use get_from_working_memory with the full key (e.g. 'shared/drafts/tina-vslive') to read an entry.\n" +
+                "- To write here, pass a full path key beginning with 'shared/' to save_to_working_memory " +
+                "(e.g. 'shared/drafts/...', 'shared/pending/...'). Choose self-describing keys — other sessions " +
+                "discover entries by name, not content.\n" +
+                "- Prefer this over your own namespace when the entry is meant for another session to pick up.";
+            chatMessages.Add(new ChatMessage(ChatRole.System, sharedContext));
+            logger.LogInformation("Injected {Count} shared working memory entries into context", sharedEntries.Count);
         }
 
         // Subagent research index chunks
