@@ -180,6 +180,11 @@ shared:
   tmpTtlDays: 1
   draftsTtlDays: 14
   exportsTtlDays: 14
+  # Catch-all sweep: after the per-directory sweeps, delete any remaining file
+  # anywhere under /rockbot/shared older than this many days. Directories are
+  # not touched, so empty structure is preserved. Safety net for ad-hoc paths
+  # (e.g. patrol drafts, subagent artifacts) that don't have a dedicated TTL.
+  globalTtlDays: 30
 
 # ── TodoApp MCP server ────────────────────────────────────────────────────────
 # Standalone MCP server that exposes a persistent to-do list to the agent.
