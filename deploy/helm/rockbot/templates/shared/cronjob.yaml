@@ -25,6 +25,9 @@ spec:
                   find /rockbot/shared/tmp     -mindepth 1 -mtime +{{ .Values.shared.tmpTtlDays }}     -delete
                   find /rockbot/shared/drafts  -mindepth 1 -mtime +{{ .Values.shared.draftsTtlDays }}  -delete
                   find /rockbot/shared/exports -mindepth 1 -mtime +{{ .Values.shared.exportsTtlDays }} -delete
+                  # Catch-all: any remaining file anywhere on the shared volume older than
+                  # globalTtlDays. Uses -type f so directory structure is preserved.
+                  find /rockbot/shared -mindepth 1 -type f -mtime +{{ .Values.shared.globalTtlDays }} -delete
               volumeMounts:
                 - name: shared-data
                   mountPath: /rockbot/shared

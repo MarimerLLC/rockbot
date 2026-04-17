@@ -128,6 +128,23 @@ public sealed class MemoryToolSkillProvider : IToolSkillProvider
         outputs, patrol findings) using `list_working_memory(namespace: ...)`. Entries expire
         automatically based on their TTL (default: 5 minutes).
 
+        ### Namespaces auto-injected into your context
+
+        At the start of every turn the framework lists entry keys from these namespaces in
+        your system context — you do not need to call `list_working_memory` to see them:
+
+        - **Your own namespace** — always.
+        - **`patrol/`** — in user sessions only; lets you see patrol findings.
+        - **`subagent/*-index`** — in user sessions only; lets you see subagent research indexes.
+        - **`shared/`** — in every context (user, patrol, subagent). This is the conventional
+          cross-session handoff namespace. If you need to leave something short-lived for
+          another session to pick up, write a full-path key beginning with `shared/`
+          (e.g. `save_to_working_memory(key: "shared/drafts/tina-vslive-2026-04-17", data: ...)`).
+          Other sessions will see the key automatically and can fetch the value with
+          `get_from_working_memory`. Choose self-describing keys — discovery is by name, not
+          content. Use `shared/` for pointers to files on the shared volume, not for large
+          payloads that would be lost if the pod restarts.
+
         ### When to save
 
         - After receiving a large payload from any tool (email list, calendar events,

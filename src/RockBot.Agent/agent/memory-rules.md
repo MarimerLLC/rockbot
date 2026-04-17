@@ -33,6 +33,7 @@ under your own namespace automatically, but you can read from other namespaces
 **Your namespace**: `session/{your-session-id}` — all saves go here automatically.
 **Subagent outputs**: `subagent/{task-id}/` — surfaced as a hint in the synthetic user turn when the subagent completes.
 **Patrol findings**: `patrol/{task-name}/` — automatically injected into your context each turn (see "Patrol findings" section below). Use `get_from_working_memory` with the full key to read them.
+**Shared handoff**: `shared/` — cross-session drop zone. Entries here are auto-listed in every session, patrol, and subagent. Use this when a piece of short-term data needs to be picked up by a different session than the one that produced it (see "Shared namespace" section below).
 
 Use working memory for **situational awareness** — context that improves decision-making
 now but will be irrelevant or stale in a future session.
@@ -113,6 +114,42 @@ To act on patrol findings:
 **Patrol tasks** store findings using `save_to_working_memory` with a TTL that spans at
 least one full patrol cycle (e.g. 5 hours for an hourly patrol), so entries are available
 to the primary agent between runs. Each run overwrites the previous entries.
+
+### Shared namespace (cross-session handoff)
+
+The `shared/` namespace is a cross-session drop zone. Its inventory is automatically
+injected into every context — user sessions, patrols, and subagents — listed under
+**"Shared working memory"** in the system context. Unlike `patrol/` (patrol → user only)
+or `subagent/` (only `-index` keys), every `shared/` entry is visible to every session.
+
+Use it when a piece of short-term data must be picked up by a different session than the
+one that produced it. Common cases:
+
+- A patrol drafts something (reply, summary, plan) that needs the user's next interactive
+  turn to approve or act on — patrol writes to `shared/drafts/...` and the user session
+  discovers the key automatically.
+- A subagent produces a small intermediate artifact that a sibling subagent or future turn
+  should consume without the primary having to relay it.
+- Any "I finished X, somebody else will act on it" handoff where you don't know which
+  session will pick it up.
+
+**How to write**: pass a full-path key beginning with `shared/` to `save_to_working_memory`
+(keys containing `/` bypass the automatic namespace prefix). Example:
+`save_to_working_memory(key: "shared/drafts/tina-vslive-2026-04-17", ...)`.
+
+**How to read**: the key appears in the "Shared working memory" inventory at the start of
+each turn. Use `get_from_working_memory` with the full key to fetch the value.
+
+**Key naming matters**: discovery is by *key name*, not content. Choose descriptive keys
+(`shared/drafts/tina-vslive-2026-04-17`, not `shared/draft-1`) so the receiving session
+can recognise what the entry is without fetching it.
+
+**What NOT to put here**:
+- Anything durable — that's long-term memory.
+- Anything large or irreplaceable — `shared/` is still in-memory working memory with a
+  TTL. If the pod restarts it is gone. Store tangible assets (full draft bodies, file
+  contents) on the shared volume and use `shared/` to carry a short pointer.
+- Anything that only your own session will consume — use your own namespace.
 
 ### What does NOT belong in working memory
 
