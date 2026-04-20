@@ -391,12 +391,18 @@ internal static class HttpA2AScenarios
         }
         Assert(taskId is not null, "Could not obtain a task id for SubscribeToTask");
 
-        // Step 2: Subscribe to the task — verify the stream opens and terminates.
-        // The task may already be complete by the time we subscribe, in which case
-        // we expect either no events or a single terminal event. Either way, the
-        // stream must terminate cleanly without throwing.
+        // Step 2: Subscribe to the task. Two outcomes are both valid here:
+        //   (a) The stream opens and yields at least one well-formed event — this
+        //       proves the SubscribeToTask RPC path works end-to-end.
+        //   (b) The server rejects the subscribe because the task is already in a
+        //       terminal state (fast-completing EchoChatClient). This is the
+        //       scenario that `SubscribeV1UntilNonWorkingAsync`'s caller handles
+        //       by falling back to GetTask polling — so a terminal-state error is
+        //       expected and valid behavior that our fallback depends on.
+        // Either outcome confirms the wiring through the gateway is correct.
         var subscribeRequest = new A2AV1.SubscribeToTaskRequest { Id = taskId! };
         var events = new List<A2AV1.StreamResponse>();
+        bool terminalStateError = false;
 
         using var subscribeCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         subscribeCts.CancelAfter(TimeSpan.FromSeconds(20));
@@ -423,12 +429,22 @@ internal static class HttpA2AScenarios
                 if (isTerminal) break;
             }
         }
+        catch (A2AV1.A2AException ex) when (ex.Message.Contains("terminal state", StringComparison.OrdinalIgnoreCase))
+        {
+            // Outcome (b): task already terminal when we attached. Our production
+            // code catches this at the Exception level in WaitForNonWorkingV1Async
+            // and falls back to GetTask polling, which correctly returns the
+            // already-completed task.
+            terminalStateError = true;
+        }
         catch (OperationCanceledException) when (subscribeCts.IsCancellationRequested && !ct.IsCancellationRequested)
         {
-            // Stream didn't close on its own within the timeout; that's acceptable
-            // as long as we observed at least one event or the server is keeping
-            // a completed-task subscription open.
+            // Stream didn't close on its own within the timeout; acceptable as
+            // long as we observed at least one event.
         }
+
+        Assert(events.Count > 0 || terminalStateError,
+            "SubscribeToTask produced no events and no terminal-state error — the RPC wiring is not reachable");
 
         // Validate any events we did receive have well-formed payloads.
         foreach (var evt in events)
