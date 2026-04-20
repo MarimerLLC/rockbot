@@ -56,6 +56,11 @@ internal sealed class TestRunner(IServiceProvider services, TestConfig config)
             ct => Scenarios.HttpA2AScenarios.OutboundStreamingConsumptionAsync(config.GatewayUrl, config.GatewayApiKey, services, ct),
             timeout: TimeSpan.FromSeconds(90)));
 
+        // Outbound SubscribeToTask — exercises the SubscribeV1UntilNonWorkingAsync event processing path
+        results.Add(await RunAsync("A2A: Outbound SubscribeToTask",
+            ct => Scenarios.HttpA2AScenarios.OutboundSubscribeToTaskAsync(config.GatewayUrl, config.GatewayApiKey, services, ct),
+            timeout: TimeSpan.FromSeconds(60)));
+
         // Push notification config CRUD
         results.Add(await RunAsync("A2A: Push Notification Config CRUD",
             ct => Scenarios.HttpA2AScenarios.PushNotificationConfigCrudAsync(config.GatewayUrl, config.GatewayApiKey, services, ct),

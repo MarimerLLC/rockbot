@@ -209,7 +209,8 @@ internal sealed class InvokeAgentExecutor(
             {
                 var a2aClient = new A2AV1.A2AClient(endpoint, httpClient);
 
-                if (agentCard.SupportsStreaming == true)
+                var supportsStreaming = agentCard.SupportsStreaming == true;
+                if (supportsStreaming)
                 {
                     httpActivity?.SetTag("rockbot.a2a.transport", "streaming");
                     try
@@ -224,14 +225,14 @@ internal sealed class InvokeAgentExecutor(
                             taskId, agentName);
                         httpActivity?.SetTag("rockbot.a2a.transport", "streaming-fallback");
                         result = await DispatchV1Async(
-                            a2aClient, taskRequest, taskId, messageText, pending, ct);
+                            a2aClient, taskRequest, taskId, messageText, pending, supportsStreaming, ct);
                     }
                 }
                 else
                 {
                     httpActivity?.SetTag("rockbot.a2a.transport", "polling");
                     result = await DispatchV1Async(
-                        a2aClient, taskRequest, taskId, messageText, pending, ct);
+                        a2aClient, taskRequest, taskId, messageText, pending, supportsStreaming, ct);
                 }
             }
             else
@@ -568,6 +569,7 @@ internal sealed class InvokeAgentExecutor(
         string taskId,
         string messageText,
         PendingA2ATask pending,
+        bool supportsStreaming,
         CancellationToken ct)
     {
         string? contextId = null;
@@ -587,11 +589,11 @@ internal sealed class InvokeAgentExecutor(
             if (result.State is AgentTaskState.Completed or AgentTaskState.Failed or AgentTaskState.Canceled)
                 return result;
 
-            // Working/Submitted — poll until non-working
+            // Working/Submitted — subscribe if the agent supports streaming, else poll.
             if (result.State is AgentTaskState.Working or AgentTaskState.Submitted)
             {
                 await PublishStatusUpdateAsync(result, pending.TargetAgent, taskId, ct);
-                result = await PollV1UntilNonWorkingAsync(a2aClient, taskId, pending, ct);
+                result = await WaitForNonWorkingV1Async(a2aClient, taskId, pending, supportsStreaming, ct);
                 continue;
             }
 
@@ -851,6 +853,125 @@ internal sealed class InvokeAgentExecutor(
                 ["skill"] = JsonSerializer.SerializeToElement(skill)
             }
         };
+    }
+
+    /// <summary>
+    /// Waits for a v1 task to leave Working/Submitted. Prefers <c>SubscribeToTask</c>
+    /// (SSE push) when the agent advertises streaming, falling back to <c>GetTask</c>
+    /// polling if the subscription fails or streaming is unsupported.
+    /// </summary>
+    private async Task<AgentTaskResult?> WaitForNonWorkingV1Async(
+        A2AV1.A2AClient a2aClient,
+        string taskId,
+        PendingA2ATask pending,
+        bool supportsStreaming,
+        CancellationToken ct)
+    {
+        if (supportsStreaming)
+        {
+            try
+            {
+                return await SubscribeV1UntilNonWorkingAsync(a2aClient, taskId, pending, ct);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                logger.LogWarning(ex,
+                    "SubscribeToTask failed for task {TaskId} to '{AgentName}', falling back to GetTask polling",
+                    taskId, pending.TargetAgent);
+                A2ADiagnostics.SubscribeFallbacks.Add(1,
+                    new KeyValuePair<string, object?>("rockbot.a2a.target_agent", pending.TargetAgent));
+            }
+        }
+
+        return await PollV1UntilNonWorkingAsync(a2aClient, taskId, pending, ct);
+    }
+
+    /// <summary>
+    /// Subscribes to an existing v1 task via <c>SubscribeToTaskAsync</c> and consumes
+    /// SSE events until the task leaves Working/Submitted. Mirrors the event
+    /// processing in <see cref="DispatchV1StreamingAsync"/>, but only for an
+    /// already-created task (no initial SendMessage, no InputRequired follow-up
+    /// here — that is handled one level up by the caller).
+    /// </summary>
+    private async Task<AgentTaskResult?> SubscribeV1UntilNonWorkingAsync(
+        A2AV1.A2AClient a2aClient,
+        string taskId,
+        PendingA2ATask pending,
+        CancellationToken ct)
+    {
+        using var subActivity = A2ADiagnostics.Source.StartActivity("rockbot.a2a.subscribe_loop");
+        subActivity?.SetTag("rockbot.a2a.task_id", taskId);
+        subActivity?.SetTag("rockbot.a2a.target_agent", pending.TargetAgent);
+        subActivity?.SetTag("rockbot.a2a.session_id", pending.PrimarySessionId);
+
+        logger.LogInformation(
+            "Subscribing to task {TaskId} updates from '{AgentName}' via SSE",
+            taskId, pending.TargetAgent);
+
+        var subscribeRequest = new A2AV1.SubscribeToTaskRequest { Id = taskId };
+        AgentTaskResult? lastResult = null;
+        int eventCount = 0;
+
+        await foreach (var evt in a2aClient.SubscribeToTaskAsync(subscribeRequest, ct))
+        {
+            eventCount++;
+            A2ADiagnostics.StreamingEvents.Add(1,
+                new KeyValuePair<string, object?>("rockbot.a2a.target_agent", pending.TargetAgent),
+                new KeyValuePair<string, object?>("rockbot.a2a.event_type", evt.PayloadCase.ToString()));
+
+            switch (evt.PayloadCase)
+            {
+                case A2AV1.StreamResponseCase.StatusUpdate when evt.StatusUpdate is { } su:
+                    lastResult = MapV1StatusUpdateEvent(su, taskId);
+                    pending.ContextId ??= su.ContextId;
+
+                    if (lastResult.State is AgentTaskState.Completed or AgentTaskState.Failed or AgentTaskState.Canceled
+                        or AgentTaskState.InputRequired)
+                    {
+                        subActivity?.SetTag("rockbot.a2a.total_events", eventCount);
+                        return lastResult;
+                    }
+
+                    if (lastResult.State is AgentTaskState.Working or AgentTaskState.Submitted)
+                        await PublishStatusUpdateAsync(lastResult, pending.TargetAgent, taskId, ct);
+                    break;
+
+                case A2AV1.StreamResponseCase.Task when evt.Task is { } task:
+                    lastResult = MapV1TaskResponse(task, taskId);
+                    pending.ContextId ??= task.ContextId;
+
+                    if (lastResult is null) break;
+
+                    if (lastResult.State is AgentTaskState.Completed or AgentTaskState.Failed or AgentTaskState.Canceled
+                        or AgentTaskState.InputRequired)
+                    {
+                        subActivity?.SetTag("rockbot.a2a.total_events", eventCount);
+                        return lastResult;
+                    }
+
+                    if (lastResult.State is AgentTaskState.Working or AgentTaskState.Submitted)
+                        await PublishStatusUpdateAsync(lastResult, pending.TargetAgent, taskId, ct);
+                    break;
+
+                case A2AV1.StreamResponseCase.Message when evt.Message is { } msg:
+                    subActivity?.SetTag("rockbot.a2a.total_events", eventCount);
+                    return new AgentTaskResult
+                    {
+                        TaskId = taskId,
+                        ContextId = pending.ContextId,
+                        State = AgentTaskState.Completed,
+                        Message = MapV1Message(msg)
+                    };
+
+                default:
+                    logger.LogDebug("Ignoring subscribe event with PayloadCase={PayloadCase} for task {TaskId}",
+                        evt.PayloadCase, taskId);
+                    break;
+            }
+        }
+
+        subActivity?.SetTag("rockbot.a2a.total_events", eventCount);
+        return lastResult;
     }
 
     private async Task<AgentTaskResult?> PollV1UntilNonWorkingAsync(
