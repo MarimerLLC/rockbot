@@ -63,4 +63,11 @@ internal static class A2ADiagnostics
             "rockbot.a2a.streaming_events",
             unit: "{event}",
             description: "Streaming events received during outbound A2A dispatch");
+
+    /// <summary>Number of times SubscribeToTask failed and fell back to GetTask polling.</summary>
+    public static readonly Counter<long> SubscribeFallbacks =
+        Meter.CreateCounter<long>(
+            "rockbot.a2a.subscribe_fallbacks",
+            unit: "{fallback}",
+            description: "SubscribeToTask failures that fell back to GetTask polling");
 }

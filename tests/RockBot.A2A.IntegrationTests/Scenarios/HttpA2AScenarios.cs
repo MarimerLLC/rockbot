@@ -351,6 +351,116 @@ internal static class HttpA2AScenarios
     }
 
     /// <summary>
+    /// Scenario 6c: Verify outbound <c>SubscribeToTask</c> — exercises the event
+    /// processing that <c>InvokeAgentExecutor.SubscribeV1UntilNonWorkingAsync</c>
+    /// performs. Sends a task via <c>SendMessageAsync</c>, captures the task id,
+    /// then calls <c>SubscribeToTaskAsync</c> on it and verifies the stream
+    /// terminates cleanly (either immediately-completed with no events, or with
+    /// a terminal event).
+    /// </summary>
+    public static async Task OutboundSubscribeToTaskAsync(string gatewayUrl, string? apiKey, IServiceProvider services, CancellationToken ct)
+    {
+        var a2aClient = CreateA2AClient(gatewayUrl, apiKey, services);
+        await WaitForGateway(gatewayUrl, services, ct);
+
+        // Step 1: Send a task so we have a valid task id to subscribe to
+        var sendRequest = new A2AV1.SendMessageRequest
+        {
+            Message = new A2AV1.Message
+            {
+                Role = A2AV1.Role.User,
+                MessageId = Guid.NewGuid().ToString("N"),
+                Parts = [new A2AV1.Part { Text = "Integration test: subscribe to task" }]
+            },
+            Metadata = new Dictionary<string, JsonElement>
+            {
+                ["skill"] = JsonSerializer.SerializeToElement("notify-user")
+            }
+        };
+        var sendResponse = await a2aClient.SendMessageAsync(sendRequest, ct);
+        Assert(sendResponse is not null, "SendMessage response is null");
+
+        var taskId = sendResponse!.PayloadCase == A2AV1.SendMessageResponseCase.Task
+            ? sendResponse.Task?.Id
+            : null;
+
+        if (taskId is null)
+        {
+            var list = await a2aClient.ListTasksAsync(new A2AV1.ListTasksRequest(), ct);
+            taskId = list?.Tasks?.FirstOrDefault()?.Id;
+        }
+        Assert(taskId is not null, "Could not obtain a task id for SubscribeToTask");
+
+        // Step 2: Subscribe to the task. Two outcomes are both valid here:
+        //   (a) The stream opens and yields at least one well-formed event — this
+        //       proves the SubscribeToTask RPC path works end-to-end.
+        //   (b) The server rejects the subscribe because the task is already in a
+        //       terminal state (fast-completing EchoChatClient). This is the
+        //       scenario that `SubscribeV1UntilNonWorkingAsync`'s caller handles
+        //       by falling back to GetTask polling — so a terminal-state error is
+        //       expected and valid behavior that our fallback depends on.
+        // Either outcome confirms the wiring through the gateway is correct.
+        var subscribeRequest = new A2AV1.SubscribeToTaskRequest { Id = taskId! };
+        var events = new List<A2AV1.StreamResponse>();
+        bool terminalStateError = false;
+
+        using var subscribeCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        subscribeCts.CancelAfter(TimeSpan.FromSeconds(20));
+
+        try
+        {
+            await foreach (var evt in a2aClient.SubscribeToTaskAsync(subscribeRequest, subscribeCts.Token))
+            {
+                events.Add(evt);
+
+                // Bail out once we see a terminal event so the test doesn't wait
+                // for the server to close the stream.
+                var isTerminal = evt.PayloadCase switch
+                {
+                    A2AV1.StreamResponseCase.Message => true,
+                    A2AV1.StreamResponseCase.Task when evt.Task is { } task =>
+                        task.Status?.State is A2AV1.TaskState.Completed
+                            or A2AV1.TaskState.Failed or A2AV1.TaskState.Canceled,
+                    A2AV1.StreamResponseCase.StatusUpdate when evt.StatusUpdate is { } su =>
+                        su.Status?.State is A2AV1.TaskState.Completed
+                            or A2AV1.TaskState.Failed or A2AV1.TaskState.Canceled,
+                    _ => false
+                };
+                if (isTerminal) break;
+            }
+        }
+        catch (A2AV1.A2AException ex) when (ex.Message.Contains("terminal state", StringComparison.OrdinalIgnoreCase))
+        {
+            // Outcome (b): task already terminal when we attached. Our production
+            // code catches this at the Exception level in WaitForNonWorkingV1Async
+            // and falls back to GetTask polling, which correctly returns the
+            // already-completed task.
+            terminalStateError = true;
+        }
+        catch (OperationCanceledException) when (subscribeCts.IsCancellationRequested && !ct.IsCancellationRequested)
+        {
+            // Stream didn't close on its own within the timeout; acceptable as
+            // long as we observed at least one event.
+        }
+
+        Assert(events.Count > 0 || terminalStateError,
+            "SubscribeToTask produced no events and no terminal-state error — the RPC wiring is not reachable");
+
+        // Validate any events we did receive have well-formed payloads.
+        foreach (var evt in events)
+        {
+            var wellFormed = evt.PayloadCase switch
+            {
+                A2AV1.StreamResponseCase.Message => evt.Message is not null,
+                A2AV1.StreamResponseCase.Task => evt.Task?.Status is not null,
+                A2AV1.StreamResponseCase.StatusUpdate => evt.StatusUpdate?.Status is not null,
+                _ => true
+            };
+            Assert(wellFormed, $"Malformed subscribe event with PayloadCase={evt.PayloadCase}");
+        }
+    }
+
+    /// <summary>
     /// Scenario 7: Exercise push notification config CRUD — create, get, list, delete.
     /// If the SDK's A2AServer doesn't support push notifications (no store wired up),
     /// the test catches the expected error and passes with a note.
