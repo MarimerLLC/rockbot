@@ -1,4 +1,5 @@
 using System.Security.Claims;
+using System.Text.Json;
 using A2A;
 using Microsoft.Extensions.Options;
 
@@ -47,6 +48,15 @@ internal sealed class RockBotBridgeHandler(
 
         var messageText = context.UserText ?? "(empty)";
         var timeout = TimeSpan.FromSeconds(gatewayOptions.Value.TaskTimeoutSeconds);
+
+        // Request-level metadata — everything except the "skill" key already consumed for routing.
+        var requestMetadata = ExtractRequestMetadata(context.Metadata);
+
+        // Message-level metadata — propagate straight through.
+        var messageMetadata = StringifyMetadata(context.Message.Metadata);
+
+        // Map all inbound parts — not just the first text — so data parts round-trip too.
+        var inboundParts = MapInboundParts(context.Message.Parts, messageText);
 
         logger.LogInformation(
             "Bridging A2A task {TaskId} skill={Skill} caller={CallerId} streaming={Streaming} to RockBot via RabbitMQ",
@@ -126,10 +136,12 @@ internal sealed class RockBotBridgeHandler(
                 TaskId = taskId,
                 ContextId = context.ContextId,
                 Skill = skill,
+                Metadata = requestMetadata,
                 Message = new RbAgentMessage
                 {
                     Role = "user",
-                    Parts = [new RbAgentMessagePart { Kind = "text", Text = messageText }]
+                    Parts = inboundParts,
+                    Metadata = messageMetadata
                 }
             };
 
@@ -145,17 +157,16 @@ internal sealed class RockBotBridgeHandler(
 
             logger.LogInformation("Got response for task {TaskId}: state={State}", taskId, result.State);
 
-            // Map RockBot result back to A2A v1
-            var responseText = result.Message?.Parts
-                .Where(p => p.Kind == "text")
-                .Select(p => p.Text)
-                .FirstOrDefault() ?? "(no response)";
-
+            // Map RockBot result back to A2A v1 — carry all parts (text + data) and metadata through.
+            var responseParts = MapOutboundParts(result.Message?.Parts);
             var responseMessage = new Message
             {
                 Role = Role.Agent,
-                Parts = [new Part { Text = responseText }]
+                Parts = responseParts
             };
+            var outboundMetadata = ToJsonElementMetadata(result.Message?.Metadata);
+            if (outboundMetadata is not null)
+                responseMessage.Metadata = outboundMetadata;
 
             var a2aState = MapTaskState(result.State);
             // Use the contextId from the agent's response (it may have created one
@@ -172,11 +183,7 @@ internal sealed class RockBotBridgeHandler(
                     Timestamp = DateTimeOffset.UtcNow
                 },
                 History = [
-                    new Message
-                    {
-                        Role = Role.User,
-                        Parts = [new Part { Text = messageText }]
-                    },
+                    BuildUserHistoryMessage(context.Message, messageText, messageMetadata),
                     responseMessage
                 ]
             };
@@ -218,6 +225,132 @@ internal sealed class RockBotBridgeHandler(
             correlationId: taskId);
 
         await publisher.PublishAsync($"agent.task.cancel.{gatewayOptions.Value.RoutingName}", envelope, cancellationToken);
+    }
+
+    internal static IReadOnlyDictionary<string, string>? ExtractRequestMetadata(
+        IReadOnlyDictionary<string, JsonElement>? metadata)
+    {
+        if (metadata is null || metadata.Count == 0)
+            return null;
+
+        var result = new Dictionary<string, string>(metadata.Count, StringComparer.Ordinal);
+        foreach (var kvp in metadata)
+        {
+            // "skill" is already consumed for routing; don't double-propagate it.
+            if (string.Equals(kvp.Key, "skill", StringComparison.Ordinal))
+                continue;
+            result[kvp.Key] = JsonElementToString(kvp.Value);
+        }
+        return result.Count == 0 ? null : result;
+    }
+
+    internal static IReadOnlyDictionary<string, string>? StringifyMetadata(
+        IReadOnlyDictionary<string, JsonElement>? metadata)
+    {
+        if (metadata is null || metadata.Count == 0)
+            return null;
+
+        var result = new Dictionary<string, string>(metadata.Count, StringComparer.Ordinal);
+        foreach (var kvp in metadata)
+            result[kvp.Key] = JsonElementToString(kvp.Value);
+        return result;
+    }
+
+    private static string JsonElementToString(JsonElement value) => value.ValueKind switch
+    {
+        JsonValueKind.String => value.GetString() ?? string.Empty,
+        JsonValueKind.Null or JsonValueKind.Undefined => string.Empty,
+        _ => value.GetRawText()
+    };
+
+    internal static Dictionary<string, JsonElement>? ToJsonElementMetadata(
+        IReadOnlyDictionary<string, string>? metadata)
+    {
+        if (metadata is null || metadata.Count == 0)
+            return null;
+
+        var result = new Dictionary<string, JsonElement>(metadata.Count, StringComparer.Ordinal);
+        foreach (var kvp in metadata)
+            result[kvp.Key] = JsonSerializer.SerializeToElement(kvp.Value);
+        return result;
+    }
+
+    internal static IReadOnlyList<RbAgentMessagePart> MapInboundParts(
+        IReadOnlyList<Part>? parts, string fallbackText)
+    {
+        if (parts is null || parts.Count == 0)
+            return [new RbAgentMessagePart { Kind = "text", Text = fallbackText }];
+
+        var mapped = new List<RbAgentMessagePart>(parts.Count);
+        foreach (var part in parts)
+        {
+            switch (part.ContentCase)
+            {
+                case PartContentCase.Text:
+                    mapped.Add(new RbAgentMessagePart { Kind = "text", Text = part.Text });
+                    break;
+                case PartContentCase.Data:
+                    mapped.Add(new RbAgentMessagePart
+                    {
+                        Kind = "data",
+                        Data = part.Data?.GetRawText(),
+                        MimeType = part.MediaType
+                    });
+                    break;
+                // Raw/Url parts fall outside the current RbAgentMessagePart model; skip them
+                // so handlers see only what the RockBot contract can represent.
+            }
+        }
+
+        if (mapped.Count == 0)
+            mapped.Add(new RbAgentMessagePart { Kind = "text", Text = fallbackText });
+
+        return mapped;
+    }
+
+    internal static List<Part> MapOutboundParts(IReadOnlyList<RbAgentMessagePart>? parts)
+    {
+        if (parts is null || parts.Count == 0)
+            return [new Part { Text = "(no response)" }];
+
+        var mapped = new List<Part>(parts.Count);
+        foreach (var part in parts)
+        {
+            if (string.Equals(part.Kind, "data", StringComparison.Ordinal) && part.Data is not null)
+            {
+                var element = JsonSerializer.Deserialize<JsonElement>(part.Data);
+                var a2aPart = Part.FromData(element);
+                if (!string.IsNullOrEmpty(part.MimeType))
+                    a2aPart.MediaType = part.MimeType;
+                mapped.Add(a2aPart);
+            }
+            else
+            {
+                mapped.Add(new Part { Text = part.Text ?? string.Empty });
+            }
+        }
+        return mapped;
+    }
+
+    private static Message BuildUserHistoryMessage(
+        Message? originalMessage,
+        string messageText,
+        IReadOnlyDictionary<string, string>? messageMetadata)
+    {
+        // Preserve the client's original parts and metadata verbatim when available
+        // so the task history reflects what was actually sent.
+        if (originalMessage is not null && originalMessage.Parts.Count > 0)
+            return originalMessage;
+
+        var history = new Message
+        {
+            Role = Role.User,
+            Parts = [new Part { Text = messageText }]
+        };
+        var meta = ToJsonElementMetadata(messageMetadata);
+        if (meta is not null)
+            history.Metadata = meta;
+        return history;
     }
 
     private static TaskState MapTaskState(AgentTaskState state) => state switch
