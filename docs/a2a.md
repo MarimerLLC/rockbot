@@ -205,6 +205,35 @@ messages (state `Working`) while processing, and must publish either an
 
 See `RockBot.ResearchAgent` and `RockBot.SampleAgent` for working examples.
 
+#### Per-skill handlers (alternative to a single dispatcher)
+
+If the agent has more than one skill, use `AddSkillHandler<T>()` instead of
+writing a custom `IAgentTaskHandler` that switches on `request.Skill`. Each
+handler declares its own `AgentSkill` metadata, the framework dispatches by
+skill id (case-insensitive), and `AgentCard.Skills` is auto-populated:
+
+```csharp
+public sealed class EchoSkillHandler : IAgentSkillHandler
+{
+    public AgentSkill Skill { get; } = new()
+    {
+        Id = "echo",
+        Name = "Echo",
+        Description = "Echoes the input message back."
+    };
+
+    public Task<AgentTaskResult> ExecuteAsync(
+        AgentTaskRequest request, AgentTaskContext context) => /* ... */;
+}
+
+agent.AddA2A(opts => opts.Card = new AgentCard { AgentName = "MyAgent", Version = "1.0" })
+     .AddSkillHandler<EchoSkillHandler>()
+     .AddSkillHandler<SearchSkillHandler>();
+```
+
+Registering both an `IAgentTaskHandler` and one or more `IAgentSkillHandler`s
+on the same agent is an error: pick one model per agent.
+
 ---
 
 ### HTTP-based agent
