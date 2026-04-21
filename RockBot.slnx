@@ -45,6 +45,7 @@
     <Project Path="src/RockBot.SampleAgent.Http/RockBot.SampleAgent.Http.csproj" />
     <Project Path="src/RockBot.ResearchAgent/RockBot.ResearchAgent.csproj" />
     <Project Path="src/RockBot.A2A.Gateway/RockBot.A2A.Gateway.csproj" />
+    <Project Path="src/RockBot.A2A.Gateway.Host/RockBot.A2A.Gateway.Host.csproj" />
   </Folder>
   <Folder Name="/tests/">
 <Project Path="tests/RockBot.Host.Tests/RockBot.Host.Tests.csproj" />
