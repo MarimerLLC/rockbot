@@ -10,4 +10,12 @@ public sealed record AgentTaskRequest
     public string? ContextId { get; init; }
     public required string Skill { get; init; }
     public required AgentMessage Message { get; init; }
+
+    /// <summary>
+    /// Optional structured metadata attached to the overall request, propagated
+    /// from the A2A v1 <c>SendMessageRequest.metadata</c> field. Bridges carry
+    /// this through the bus so capability handlers can read per-task
+    /// configuration or identifiers alongside the message payload.
+    /// </summary>
+    public IReadOnlyDictionary<string, string>? Metadata { get; init; }
 }
