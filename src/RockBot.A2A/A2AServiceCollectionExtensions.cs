@@ -45,6 +45,12 @@ public static class A2AServiceCollectionExtensions
         // Summarizer — uses ILlmClient if available, otherwise falls back gracefully
         builder.Services.TryAddSingleton<AgentCardSummarizer>();
 
+        // Skill-handler validator — runs before AgentDiscoveryService so the
+        // card it publishes already reflects any auto-populated skills.
+        builder.Services.AddSingleton<SkillRegistrationValidator>();
+        builder.Services.AddSingleton<Microsoft.Extensions.Hosting.IHostedService>(
+            sp => sp.GetRequiredService<SkillRegistrationValidator>());
+
         // Discovery hosted service
         builder.Services.AddSingleton<AgentDiscoveryService>();
         builder.Services.AddSingleton<Microsoft.Extensions.Hosting.IHostedService>(
