@@ -12,7 +12,10 @@ namespace RockBot.Host;
 /// <c>{basePath}/{name}.json</c>, where the name may contain forward slashes
 /// to form subcategories (e.g. <c>research/summarize-paper</c>).
 /// Sub-resource files for a skill named <c>myskill</c> live in the sibling
-/// folder <c>{basePath}/myskill/</c>.
+/// folder <c>{basePath}/myskill.resources/</c>. The <c>.resources</c> suffix is
+/// reserved (skill names cannot contain dots) and unambiguously distinguishes
+/// resource folders from subcategory folders, so a top-level skill <c>a</c> and
+/// a subcategory skill <c>a/b</c> can coexist without collision.
 /// Thread safety via <see cref="SemaphoreSlim"/>.
 /// </summary>
 internal sealed partial class FileSkillStore : ISkillStore
@@ -60,7 +63,6 @@ internal sealed partial class FileSkillStore : ISkillStore
         try
         {
             var index = await EnsureIndexAsync();
-            ValidateNoConflict(skill.Name, index);
 
             // Preserve the existing manifest when the caller hasn't provided one.
             // This prevents a plain metadata/markdown update from silently orphaning
@@ -107,7 +109,6 @@ internal sealed partial class FileSkillStore : ISkillStore
         try
         {
             var index = await EnsureIndexAsync();
-            ValidateNoConflict(skill.Name, index);
 
             var filePath = GetFilePath(skill.Name);
             var folderPath = GetResourceFolderPath(skill.Name);
@@ -323,9 +324,10 @@ internal sealed partial class FileSkillStore : ISkillStore
 
         foreach (var file in Directory.EnumerateFiles(_basePath, "*.json", SearchOption.AllDirectories))
         {
-            // Skip JSON files that live inside a skill's resource subfolder.
-            // A resource subfolder is identified by having a sibling .json file with the same name.
-            if (IsInsideResourceSubfolder(file))
+            // Skip JSON files that live inside a skill's resource folder.
+            // Resource folders are suffixed with ".resources" — skill names cannot
+            // contain dots, so there is no ambiguity with subcategory folders.
+            if (IsInsideResourceFolder(file))
                 continue;
 
             try
@@ -346,34 +348,32 @@ internal sealed partial class FileSkillStore : ISkillStore
     }
 
     /// <summary>
-    /// Returns <c>true</c> if <paramref name="filePath"/> lives inside a skill's resource subfolder
-    /// (i.e., the file's immediate parent directory has a sibling <c>.json</c> entry-point file).
+    /// Returns <c>true</c> if <paramref name="filePath"/> lives inside a skill's resource folder,
+    /// identified by the reserved <c>.resources</c> suffix on any path segment below
+    /// <see cref="_basePath"/>.
     /// </summary>
-    private bool IsInsideResourceSubfolder(string filePath)
+    private static bool IsInsideResourceFolder(string filePath)
     {
-        var parentDir = Path.GetDirectoryName(filePath);
-        if (parentDir is null)
-            return false;
-
-        // Top-level files are always skill entry points
-        if (string.Equals(Path.GetFullPath(parentDir), Path.GetFullPath(_basePath), StringComparison.OrdinalIgnoreCase))
-            return false;
-
-        // If there is a .json file with the same name as the parent directory, the parent is a resource subfolder
-        var siblingJson = parentDir.TrimEnd(Path.DirectorySeparatorChar) + ".json";
-        return File.Exists(siblingJson);
+        var dir = Path.GetDirectoryName(filePath);
+        return dir is not null
+            && dir.Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
+                .Any(segment => segment.EndsWith(ResourceFolderSuffix, StringComparison.Ordinal));
     }
 
     private string GetFilePath(string name) =>
         Path.Combine(_basePath, name.Replace('/', Path.DirectorySeparatorChar) + ".json");
 
     /// <summary>
-    /// Returns the path of the resource subfolder for a skill.
-    /// For a skill named <c>myskill</c> the folder is <c>{basePath}/myskill/</c>;
-    /// for <c>research/summarize</c> it is <c>{basePath}/research/summarize/</c>.
+    /// Returns the path of the resource folder for a skill.
+    /// For a skill named <c>myskill</c> the folder is <c>{basePath}/myskill.resources/</c>;
+    /// for <c>research/summarize</c> it is <c>{basePath}/research/summarize.resources/</c>.
+    /// The <c>.resources</c> suffix is reserved — skill names cannot contain dots — so
+    /// the folder never collides with a subcategory folder.
     /// </summary>
     private string GetResourceFolderPath(string name) =>
-        Path.Combine(_basePath, name.Replace('/', Path.DirectorySeparatorChar));
+        Path.Combine(_basePath, name.Replace('/', Path.DirectorySeparatorChar) + ResourceFolderSuffix);
+
+    private const string ResourceFolderSuffix = ".resources";
 
     internal static string ResolvePath(string skillBasePath, string profileBasePath)
     {
@@ -425,43 +425,6 @@ internal sealed partial class FileSkillStore : ISkillStore
                 $"Resource filename contains invalid characters: '{filename}'. " +
                 "Only alphanumeric, hyphens, underscores, and dots are allowed.",
                 nameof(filename));
-    }
-
-    /// <summary>
-    /// Detects name conflicts that would make a skill invisible after indexing.
-    /// <list type="bullet">
-    ///   <item>Saving <c>a/b</c> when skill <c>a</c> already exists: <c>a/b.json</c> would land
-    ///   inside <c>a</c>'s resource folder and be skipped by <see cref="IsInsideResourceSubfolder"/>.</item>
-    ///   <item>Saving <c>a</c> when skill <c>a/b</c> already exists: <c>a/</c> would be treated as
-    ///   a resource folder after the save, making <c>a/b</c> unreachable.</item>
-    /// </list>
-    /// Must be called while the semaphore is held and the index is loaded.
-    /// </summary>
-    private static void ValidateNoConflict(string name, Dictionary<string, Skill> index)
-    {
-        var parts = name.Split('/');
-
-        // Case A: saving "a/b/c" — reject if any ancestor "a" or "a/b" is already a skill.
-        // If "a" exists, "a/" is its resource folder and "a/b/c.json" would land inside it.
-        for (var i = 1; i < parts.Length; i++)
-        {
-            var ancestorName = string.Join("/", parts[..i]);
-            if (index.ContainsKey(ancestorName))
-                throw new InvalidOperationException(
-                    $"Skill name conflict: cannot save '{name}' because ancestor skill '{ancestorName}' already exists. " +
-                    $"Saving '{name}' would place it inside '{ancestorName}'s resource folder, making it unreachable.");
-        }
-
-        // Case B: saving "a" — reject if any skill "a/b" already exists.
-        // After saving "a.json", "a/" would be treated as its resource folder, hiding "a/b".
-        var subcategoryPrefix = name + "/";
-        foreach (var existingName in index.Keys)
-        {
-            if (existingName.StartsWith(subcategoryPrefix, StringComparison.Ordinal))
-                throw new InvalidOperationException(
-                    $"Skill name conflict: cannot save '{name}' because subcategory skill '{existingName}' exists. " +
-                    $"Saving '{name}' would turn '{name}/' into a resource folder, making '{existingName}' unreachable.");
-        }
     }
 
     [GeneratedRegex(@"^[a-zA-Z0-9_\-]+(/[a-zA-Z0-9_\-]+)*$")]
