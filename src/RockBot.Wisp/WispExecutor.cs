@@ -19,7 +19,8 @@ internal sealed class WispExecutor(
     IWorkingMemory workingMemory,
     AgentLoopRunner agentLoopRunner,
     WispOptions options,
-    ILogger<WispExecutor> logger)
+    ILogger<WispExecutor> logger,
+    ILlmClient? llmClient = null)
 {
     private const int DefaultLlmStepMaxIterations = 10;
     private const int InputChunkingThreshold = 8_000;
@@ -224,6 +225,66 @@ internal sealed class WispExecutor(
                 },
                 Duration = stepSw.Elapsed
             };
+        }
+
+        // Pre-flight schema validation for MCP gateway steps. Catches authoring
+        // mistakes (missing required fields, unknown fields under a closed schema)
+        // before the tool is invoked, so a silent "empty result" can't be mistaken
+        // for a valid answer. On failure, attempt a single focused auto-correction
+        // LLM call — a tool-less one-shot that sees only the failing params and the
+        // schema summary. If the correction passes validation, the step proceeds
+        // with corrected params; otherwise the original error is surfaced.
+        var validationError = McpStepValidator.Validate(step, toolRegistry);
+        if (validationError is not null)
+        {
+            var corrected = await TryAutoCorrectMcpParamsAsync(step, validationError, ct);
+            if (corrected is null)
+            {
+                return new WispStepResult
+                {
+                    StepId = step.Id,
+                    StepIndex = index,
+                    IsSuccess = false,
+                    Error = validationError,
+                    Duration = stepSw.Elapsed
+                };
+            }
+
+            // Re-route with corrected params. A fresh validation pass proves the
+            // correction is schema-clean; if it isn't, bubble the original error
+            // rather than trying again.
+            step = corrected;
+            route = GatewayRouter.Route(step, wispId, priorResults);
+            if (!route.IsSuccess)
+            {
+                return new WispStepResult
+                {
+                    StepId = step.Id,
+                    StepIndex = index,
+                    IsSuccess = false,
+                    Error = new WispStepError
+                    {
+                        Category = route.ErrorCategory ?? FailureCategory.Structural,
+                        Message = route.ErrorMessage!
+                    },
+                    Duration = stepSw.Elapsed
+                };
+            }
+            var recheck = McpStepValidator.Validate(step, toolRegistry);
+            if (recheck is not null)
+            {
+                return new WispStepResult
+                {
+                    StepId = step.Id,
+                    StepIndex = index,
+                    IsSuccess = false,
+                    Error = validationError,
+                    Duration = stepSw.Elapsed
+                };
+            }
+            logger.LogInformation(
+                "Wisp {WispId} step {StepId}: auto-corrected schema validation failure for {Server}/{Tool}",
+                wispId, step.Id, step.Server, step.Tool);
         }
 
         // Resolve the executor from the registry
@@ -663,5 +724,76 @@ internal sealed class WispExecutor(
             return FailureCategory.Data;
 
         return FailureCategory.External;
+    }
+
+    /// <summary>
+    /// Single-shot focused LLM call that rewrites the failing step's <c>params</c>
+    /// to match the tool's schema. No tools available, narrow prompt, cheap tier.
+    /// Returns a new <see cref="WispStep"/> with corrected params on success, or
+    /// <c>null</c> if the correction attempt was skipped (no llm client wired up),
+    /// threw, or produced something we couldn't parse as a JSON object.
+    /// The caller re-validates — we don't trust this output blindly.
+    /// </summary>
+    private async Task<WispStep?> TryAutoCorrectMcpParamsAsync(
+        WispStep step, WispStepError error, CancellationToken ct)
+    {
+        if (llmClient is null)
+            return null;
+
+        var currentParams = step.ResolvedParams?.GetRawText() ?? "{}";
+        var prompt =
+            $"A wisp step's `params` failed schema validation. " +
+            $"Rewrite the params to match the tool's schema.\n\n" +
+            $"Tool: {step.Server}/{step.Tool}\n\n" +
+            $"Current params:\n{currentParams}\n\n" +
+            $"Validation error (includes the expected schema):\n{error.Message}\n\n" +
+            "Return ONLY a single JSON object containing the corrected params — " +
+            "no code fences, no commentary, no prose. The object must contain every " +
+            "required field and no unknown fields.";
+
+        try
+        {
+            var response = await llmClient.GetResponseAsync(
+                [new ChatMessage(ChatRole.User, prompt)],
+                ModelTier.Low,
+                options: null,
+                cancellationToken: ct);
+
+            var text = StripCodeFences(response.Text?.Trim() ?? "");
+            if (string.IsNullOrEmpty(text))
+                return null;
+
+            using var doc = JsonDocument.Parse(text);
+            if (doc.RootElement.ValueKind != JsonValueKind.Object)
+                return null;
+
+            // Clone the element so it outlives the JsonDocument's dispose
+            var corrected = JsonDocument.Parse(doc.RootElement.GetRawText()).RootElement;
+            return step with { Params = corrected, Input = null, Arguments = null };
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex,
+                "Wisp auto-correction attempt failed for step {StepId} on {Server}/{Tool}",
+                step.Id, step.Server, step.Tool);
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Strips optional ```json / ``` fences an LLM may emit around a JSON payload.
+    /// </summary>
+    private static string StripCodeFences(string text)
+    {
+        if (text.StartsWith("```"))
+        {
+            var firstNewline = text.IndexOf('\n');
+            if (firstNewline > 0)
+                text = text[(firstNewline + 1)..];
+            if (text.EndsWith("```"))
+                text = text[..^3];
+            text = text.Trim();
+        }
+        return text;
     }
 }

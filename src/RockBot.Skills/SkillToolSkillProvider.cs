@@ -242,6 +242,14 @@ public sealed class SkillToolSkillProvider : IToolSkillProvider
           wisp definitions, and similar files into `resources` rather than embedding them
           in the markdown body; this keeps the markdown readable and lets `get_skill_resource`
           load them on demand without bloating the context
+        - **Save working wisps back to their skill** — once a wisp is authored, debugged,
+          and confirmed working, save the final definition as a `Wisp`-type resource on the
+          relevant skill with a description. Future sessions that load the skill will see
+          the resource in the manifest and can reuse it via `get_skill_resource` + `spawn_wisps`
+          instead of re-authoring from scratch
+        - **Check for Wisp resources before authoring** — when a loaded skill's manifest
+          lists a Wisp resource, fetch it first; start from the saved definition and adapt
+          it rather than composing a new one
         - **Rules are permanent and broad** — confirm intent with the user before adding
           one; they affect every future interaction
         - **Use `list_rules` to audit** — periodically surfacing active rules helps

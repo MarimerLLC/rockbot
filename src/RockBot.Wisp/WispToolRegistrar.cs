@@ -89,6 +89,18 @@ internal sealed class WispToolRegistrar(
                 zero LLM tokens. LLM steps use minimal context. Much cheaper than subagents for
                 procedural tasks. Returns a batch result with per-wisp success/failure and writes
                 a summary to working memory.
+
+                Before authoring a wisp that targets an MCP server, call
+                mcp_get_service_details(server_name=...) once so you have the exact parameter
+                schema for each tool in context. Authoring from training priors is where wisps
+                most often go wrong — parameter names (e.g. `timeMin` vs `startDate`) vary by
+                server and cannot be guessed reliably.
+
+                Reuse before authoring: if a skill you've loaded has a Wisp resource listed in
+                its manifest, fetch it with get_skill_resource and start from that definition
+                rather than composing from scratch. Conversely, once you've authored a wisp
+                that works — especially after debugging through a failure — save it back as
+                a Wisp resource on the relevant skill so future sessions can reuse it.
                 """,
             ParametersSchema = SpawnWispsSchema,
             Source = "wisp"
