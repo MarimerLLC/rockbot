@@ -408,7 +408,9 @@ public sealed class ChatStateService
     }
 
     private static string ActivityLogKey(MessageCategory category, string? agentName)
-        => $"{category}:{agentName ?? ""}";
+        => category == MessageCategory.PrimaryProgress
+            ? $"{category}:"
+            : $"{category}:{agentName ?? ""}";
 
     private void NotifyStateChanged() => OnStateChanged?.Invoke();
 }
