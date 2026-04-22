@@ -142,8 +142,14 @@ public sealed class SkillTools
         var now = DateTimeOffset.UtcNow;
         var existing = await _skillStore.GetAsync(name);
 
+        // When resources is null the caller is only updating the markdown/metadata;
+        // preserve the existing manifest so resource files on disk stay in sync.
+        // When resources is explicitly provided the 2-arg SaveAsync rebuilds the manifest.
+        var preservedManifest = resources is null ? existing?.Manifest : null;
+
         // Save immediately with empty summary; LLM generates it in the background
-        var skill = new Skill(name, "", content, existing?.CreatedAt ?? now, now, LastUsedAt: now);
+        var skill = new Skill(name, "", content, existing?.CreatedAt ?? now, now, LastUsedAt: now,
+            Manifest: preservedManifest);
         await _skillStore.SaveAsync(skill, resources);
 
         _ = Task.Run(() => GenerateSummaryAsync(name, content));

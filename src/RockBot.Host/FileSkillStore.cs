@@ -60,14 +60,24 @@ internal sealed partial class FileSkillStore : ISkillStore
         try
         {
             var index = await EnsureIndexAsync();
+            ValidateNoConflict(skill.Name, index);
+
+            // Preserve the existing manifest when the caller hasn't provided one.
+            // This prevents a plain metadata/markdown update from silently orphaning
+            // resource files that are still on disk.
+            var existing = index.GetValueOrDefault(skill.Name);
+            var skillToSave = skill.Manifest is null && existing?.Manifest is not null
+                ? skill with { Manifest = existing.Manifest }
+                : skill;
+
             var filePath = GetFilePath(skill.Name);
 
             Directory.CreateDirectory(Path.GetDirectoryName(filePath)!);
 
-            var json = JsonSerializer.Serialize(skill, JsonOptions);
+            var json = JsonSerializer.Serialize(skillToSave, JsonOptions);
             await File.WriteAllTextAsync(filePath, json);
 
-            index[skill.Name] = skill;
+            index[skill.Name] = skillToSave;
 
             _logger.LogDebug("Saved skill '{Name}'", skill.Name);
         }
@@ -97,13 +107,17 @@ internal sealed partial class FileSkillStore : ISkillStore
         try
         {
             var index = await EnsureIndexAsync();
+            ValidateNoConflict(skill.Name, index);
+
             var filePath = GetFilePath(skill.Name);
             var folderPath = GetResourceFolderPath(skill.Name);
 
             Directory.CreateDirectory(Path.GetDirectoryName(filePath)!);
             Directory.CreateDirectory(folderPath);
 
-            // Write new resource files
+            // Write new resource files.
+            // Note: folderPath and newFilenames both use OrdinalIgnoreCase for the prune step;
+            // on case-sensitive file systems (Linux) ensure filenames are consistently cased.
             var newFilenames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             foreach (var resource in resources)
             {
@@ -161,33 +175,29 @@ internal sealed partial class FileSkillStore : ISkillStore
         }
     }
 
-    public async Task<string?> GetResourceAsync(string skillName, string filename)
+    public Task<string?> GetResourceAsync(string skillName, string filename)
     {
         ValidateName(skillName);
         ValidateFilename(filename);
 
-        await _semaphore.WaitAsync();
-        try
-        {
-            var folderPath = GetResourceFolderPath(skillName);
-            var filePath = Path.Combine(folderPath, filename);
+        var folderPath = GetResourceFolderPath(skillName);
+        var filePath = Path.Combine(folderPath, filename);
 
-            // Security: ensure the resolved file stays within the resource folder
-            var resolvedFolder = Path.GetFullPath(folderPath);
-            var resolvedFile = Path.GetFullPath(filePath);
-            var relative = Path.GetRelativePath(resolvedFolder, resolvedFile);
-            if (relative.StartsWith("..") || Path.IsPathRooted(relative))
-                throw new ArgumentException($"Resource filename would escape the skill folder: '{filename}'", nameof(filename));
+        // Security: ensure the resolved file stays within the resource folder.
+        // ValidateFilename already rejects separators and '..' — this is a belt-and-suspenders check.
+        var resolvedFolder = Path.GetFullPath(folderPath);
+        var resolvedFile = Path.GetFullPath(filePath);
+        var relative = Path.GetRelativePath(resolvedFolder, resolvedFile);
+        if (relative.StartsWith("..") || Path.IsPathRooted(relative))
+            throw new ArgumentException($"Resource filename would escape the skill folder: '{filename}'", nameof(filename));
 
-            if (!File.Exists(filePath))
-                return null;
+        if (!File.Exists(filePath))
+            return Task.FromResult<string?>(null);
 
-            return await File.ReadAllTextAsync(filePath);
-        }
-        finally
-        {
-            _semaphore.Release();
-        }
+        return ReadResourceFileAsync(filePath);
+
+        static async Task<string?> ReadResourceFileAsync(string path) =>
+            await File.ReadAllTextAsync(path);
     }
 
     public async Task<IReadOnlyList<Skill>> ListAsync()
@@ -415,6 +425,43 @@ internal sealed partial class FileSkillStore : ISkillStore
                 $"Resource filename contains invalid characters: '{filename}'. " +
                 "Only alphanumeric, hyphens, underscores, and dots are allowed.",
                 nameof(filename));
+    }
+
+    /// <summary>
+    /// Detects name conflicts that would make a skill invisible after indexing.
+    /// <list type="bullet">
+    ///   <item>Saving <c>a/b</c> when skill <c>a</c> already exists: <c>a/b.json</c> would land
+    ///   inside <c>a</c>'s resource folder and be skipped by <see cref="IsInsideResourceSubfolder"/>.</item>
+    ///   <item>Saving <c>a</c> when skill <c>a/b</c> already exists: <c>a/</c> would be treated as
+    ///   a resource folder after the save, making <c>a/b</c> unreachable.</item>
+    /// </list>
+    /// Must be called while the semaphore is held and the index is loaded.
+    /// </summary>
+    private static void ValidateNoConflict(string name, Dictionary<string, Skill> index)
+    {
+        var parts = name.Split('/');
+
+        // Case A: saving "a/b/c" — reject if any ancestor "a" or "a/b" is already a skill.
+        // If "a" exists, "a/" is its resource folder and "a/b/c.json" would land inside it.
+        for (var i = 1; i < parts.Length; i++)
+        {
+            var ancestorName = string.Join("/", parts[..i]);
+            if (index.ContainsKey(ancestorName))
+                throw new InvalidOperationException(
+                    $"Skill name conflict: cannot save '{name}' because ancestor skill '{ancestorName}' already exists. " +
+                    $"Saving '{name}' would place it inside '{ancestorName}'s resource folder, making it unreachable.");
+        }
+
+        // Case B: saving "a" — reject if any skill "a/b" already exists.
+        // After saving "a.json", "a/" would be treated as its resource folder, hiding "a/b".
+        var subcategoryPrefix = name + "/";
+        foreach (var existingName in index.Keys)
+        {
+            if (existingName.StartsWith(subcategoryPrefix, StringComparison.OrdinalIgnoreCase))
+                throw new InvalidOperationException(
+                    $"Skill name conflict: cannot save '{name}' because subcategory skill '{existingName}' exists. " +
+                    $"Saving '{name}' would turn '{name}/' into a resource folder, making '{existingName}' unreachable.");
+        }
     }
 
     [GeneratedRegex(@"^[a-zA-Z0-9_\-]+(/[a-zA-Z0-9_\-]+)*$")]

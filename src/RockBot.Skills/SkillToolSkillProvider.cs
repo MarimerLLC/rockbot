@@ -137,6 +137,21 @@ public sealed class SkillToolSkillProvider : IToolSkillProvider
         )
         ```
 
+        **Writing a good skill document:**
+        - Start with a `# Title` heading
+        - Include a "When to use" section so the agent knows when to load the skill
+        - Number the steps — skills are procedures, not reference docs
+        - Include concrete examples with actual parameter values
+        - Note any pitfalls or edge cases discovered during real use
+        - Keep it focused on one task type; create separate skills for related but distinct tasks
+        - Move scripts, schemas, and other structured artifacts into `resources` instead of embedding them in markdown
+
+        **Updating an existing skill:**
+        - Load the current skill with `get_skill` first
+        - Add new steps, examples, or pitfall notes discovered during use
+        - If updating only the markdown, omit `resources` — existing resource files are preserved
+        - Save with the same name to overwrite
+
 
         ### delete_skill
 

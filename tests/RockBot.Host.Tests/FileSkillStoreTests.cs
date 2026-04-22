@@ -405,6 +405,90 @@ public class FileSkillStoreTests
     }
 
     [TestMethod]
+    public async Task SaveAsync_WithoutResources_PreservesExistingManifestAndFiles()
+    {
+        // Ensure re-saving a skill (markdown-only update) does not orphan resource files
+        // or clear the manifest from the JSON.
+        var store = CreateStore();
+        await store.SaveAsync(MakeSkill("my-skill", "summary", "v1 content"),
+            [new("script.py", SkillResourceType.Python, "desc", "# v1")]);
+
+        // Re-save without resources (markdown update only)
+        await store.SaveAsync(MakeSkill("my-skill", "updated summary", "v2 content"));
+
+        var result = await store.GetAsync("my-skill");
+        Assert.IsNotNull(result);
+        Assert.AreEqual("v2 content", result!.Content);
+
+        // Manifest must still be present and file must still be on disk
+        Assert.IsNotNull(result.Manifest);
+        Assert.AreEqual(1, result.Manifest!.Count);
+        Assert.AreEqual("script.py", result.Manifest[0].Filename);
+        Assert.IsTrue(File.Exists(Path.Combine(_tempDir, "my-skill", "script.py")));
+    }
+
+    // ── Name conflict detection ────────────────────────────────────────────────
+
+    [TestMethod]
+    public async Task SaveAsync_AncestorSkillExists_ThrowsInvalidOperation()
+    {
+        // Saving "research/summarize" when "research" already exists would place
+        // "research/summarize.json" inside "research"'s resource folder, making it unreachable.
+        var store = CreateStore();
+        await store.SaveAsync(MakeSkill("research", "summary", "content"));
+
+        await Assert.ThrowsExactlyAsync<InvalidOperationException>(() =>
+            store.SaveAsync(MakeSkill("research/summarize", "summary", "content")));
+    }
+
+    [TestMethod]
+    public async Task SaveAsync_SubcategorySkillExists_ThrowsInvalidOperation()
+    {
+        // Saving "research" when "research/summarize" already exists would turn
+        // "research/" into a resource folder, making "research/summarize" unreachable.
+        var store = CreateStore();
+        await store.SaveAsync(MakeSkill("research/summarize", "summary", "content"));
+
+        await Assert.ThrowsExactlyAsync<InvalidOperationException>(() =>
+            store.SaveAsync(MakeSkill("research", "summary", "content")));
+    }
+
+    [TestMethod]
+    public async Task SaveAsync_DeepNestingAncestorConflict_ThrowsInvalidOperation()
+    {
+        // "a" exists; saving "a/b/c" should fail because "a" is an ancestor
+        var store = CreateStore();
+        await store.SaveAsync(MakeSkill("a", "summary", "content"));
+
+        await Assert.ThrowsExactlyAsync<InvalidOperationException>(() =>
+            store.SaveAsync(MakeSkill("a/b/c", "summary", "content")));
+    }
+
+    [TestMethod]
+    public async Task SaveAsync_NoConflict_SiblingSkillsSucceed()
+    {
+        // "alpha" and "alpha-extended" share no prefix relationship — both should save fine.
+        var store = CreateStore();
+        await store.SaveAsync(MakeSkill("alpha", "summary", "content"));
+        await store.SaveAsync(MakeSkill("alpha-extended", "summary", "content"));
+
+        Assert.IsNotNull(await store.GetAsync("alpha"));
+        Assert.IsNotNull(await store.GetAsync("alpha-extended"));
+    }
+
+    [TestMethod]
+    public async Task SaveAsync_NoConflict_SiblingSubcategorySkillsSucceed()
+    {
+        // "research/plan" and "research/summarize" are siblings — both should save fine.
+        var store = CreateStore();
+        await store.SaveAsync(MakeSkill("research/plan", "summary", "content"));
+        await store.SaveAsync(MakeSkill("research/summarize", "summary", "content"));
+
+        Assert.IsNotNull(await store.GetAsync("research/plan"));
+        Assert.IsNotNull(await store.GetAsync("research/summarize"));
+    }
+
+    [TestMethod]
     public void ValidateFilename_RejectsEmptyString()
     {
         Assert.ThrowsExactly<ArgumentException>(() =>

@@ -164,6 +164,53 @@ public class SkillToolsTests
         Assert.IsTrue(result.Contains("Schedule a meeting"));
     }
 
+    // ── SaveSkill – manifest preservation ────────────────────────────────────
+
+    [TestMethod]
+    public async Task SaveSkill_WithoutResources_PreservesExistingManifest()
+    {
+        var store = new StubSkillStore();
+        var manifest = new List<SkillResource>
+        {
+            new("script.py", SkillResourceType.Python, "Helper script")
+        };
+        store.Add(new Skill("my-skill", "summary", "v1 content", DateTimeOffset.UtcNow, Manifest: manifest));
+
+        var tools = new SkillTools(store, new StubChatClient(), NullLogger<SkillTools>.Instance);
+
+        // Re-save without supplying resources — manifest should be preserved
+        await tools.SaveSkill("my-skill", "v2 content");
+
+        var result = await store.GetAsync("my-skill");
+        Assert.IsNotNull(result);
+        Assert.AreEqual("v2 content", result!.Content);
+        Assert.IsNotNull(result.Manifest, "Manifest should be preserved when no resources are provided");
+        Assert.AreEqual(1, result.Manifest!.Count);
+        Assert.AreEqual("script.py", result.Manifest[0].Filename);
+    }
+
+    [TestMethod]
+    public async Task SaveSkill_WithResources_ReplacesManifest()
+    {
+        var store = new StubSkillStore();
+        var oldManifest = new List<SkillResource>
+        {
+            new("old.py", SkillResourceType.Python, "Old script")
+        };
+        store.Add(new Skill("my-skill", "summary", "content", DateTimeOffset.UtcNow, Manifest: oldManifest));
+
+        var tools = new SkillTools(store, new StubChatClient(), NullLogger<SkillTools>.Instance);
+
+        // Re-save with new resources — manifest should be replaced
+        await tools.SaveSkill("my-skill", "content",
+            resources: [new SkillResourceInput("new.py", SkillResourceType.Python, "New script", "# new")]);
+
+        var result = await store.GetAsync("my-skill");
+        Assert.IsNotNull(result?.Manifest);
+        Assert.AreEqual(1, result!.Manifest!.Count);
+        Assert.AreEqual("new.py", result.Manifest[0].Filename);
+    }
+
     // ── DeleteSkill ───────────────────────────────────────────────────────────
 
     [TestMethod]
@@ -294,6 +341,17 @@ public class SkillToolsTests
         }
 
         public Task SaveAsync(Skill skill) { _skills[skill.Name] = skill; return Task.CompletedTask; }
+        public Task SaveAsync(Skill skill, IReadOnlyList<SkillResourceInput>? resources)
+        {
+            if (resources is null || resources.Count == 0)
+            {
+                _skills[skill.Name] = skill;
+                return Task.CompletedTask;
+            }
+            var manifest = resources.Select(r => new SkillResource(r.Filename, r.Type, r.Description)).ToList();
+            _skills[skill.Name] = skill with { Manifest = manifest };
+            return Task.CompletedTask;
+        }
         public Task<Skill?> GetAsync(string name) => Task.FromResult(_skills.GetValueOrDefault(name));
         public Task<IReadOnlyList<Skill>> ListAsync() =>
             Task.FromResult<IReadOnlyList<Skill>>(_skills.Values.OrderBy(s => s.Name).ToList());
