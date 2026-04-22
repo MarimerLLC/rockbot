@@ -37,6 +37,10 @@ internal sealed class A2ACallerToolRegistrar(
               "type": "string",
               "description": "The message or instruction to send to the agent."
             },
+            "data": {
+              "type": "object",
+              "description": "Optional structured data payload sent alongside the text message as an A2A DataPart. Use when the target agent's skill accepts structured inputs (fields, records, identifiers). Must be a JSON object; most A2A agents only understand text, so omit unless the agent is known to consume data."
+            },
             "timeout_minutes": {
               "type": "integer",
               "description": "Optional timeout in minutes (default: 5)."

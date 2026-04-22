@@ -146,6 +146,149 @@ public class A2ACallerTests
         Assert.IsTrue(response.IsError);
     }
 
+    [TestMethod]
+    public async Task InvokeAgentExecutor_OmitsDataPart_WhenDataArgMissing()
+    {
+        var publisher = new TrackingPublisher();
+        var tracker = new A2ATaskTracker();
+        var executor = BuildExecutor(publisher, tracker);
+
+        var request = BuildToolRequest("""
+            { "agent_name": "TargetAgent", "skill": "chat", "message": "Hi." }
+            """);
+
+        await executor.ExecuteAsync(request, CancellationToken.None);
+
+        var taskReq = publisher.Published[0].Envelope.GetPayload<AgentTaskRequest>()!;
+        Assert.AreEqual(1, taskReq.Message.Parts.Count);
+        Assert.AreEqual("text", taskReq.Message.Parts[0].Kind);
+    }
+
+    [TestMethod]
+    public async Task InvokeAgentExecutor_AddsDataPart_WhenDataObjectProvided()
+    {
+        var publisher = new TrackingPublisher();
+        var tracker = new A2ATaskTracker();
+        var executor = BuildExecutor(publisher, tracker);
+
+        var request = BuildToolRequest("""
+            {
+              "agent_name": "TargetAgent",
+              "skill": "summarize",
+              "message": "Summarize this record.",
+              "data": { "recordId": "abc-123", "fields": ["title", "body"] }
+            }
+            """);
+
+        await executor.ExecuteAsync(request, CancellationToken.None);
+
+        var taskReq = publisher.Published[0].Envelope.GetPayload<AgentTaskRequest>()!;
+        Assert.AreEqual(2, taskReq.Message.Parts.Count);
+        Assert.AreEqual("text", taskReq.Message.Parts[0].Kind);
+        Assert.AreEqual("Summarize this record.", taskReq.Message.Parts[0].Text);
+
+        var dataPart = taskReq.Message.Parts[1];
+        Assert.AreEqual("data", dataPart.Kind);
+        Assert.AreEqual("application/json", dataPart.MimeType);
+        Assert.IsNotNull(dataPart.Data);
+
+        using var parsed = System.Text.Json.JsonDocument.Parse(dataPart.Data!);
+        Assert.AreEqual("abc-123", parsed.RootElement.GetProperty("recordId").GetString());
+        Assert.AreEqual(2, parsed.RootElement.GetProperty("fields").GetArrayLength());
+    }
+
+    [TestMethod]
+    public async Task InvokeAgentExecutor_ReturnsError_WhenDataIsNotObject()
+    {
+        var publisher = new TrackingPublisher();
+        var tracker = new A2ATaskTracker();
+        var executor = BuildExecutor(publisher, tracker);
+
+        var request = BuildToolRequest("""
+            { "agent_name": "TargetAgent", "skill": "chat", "message": "Hi.", "data": "not-an-object" }
+            """);
+
+        var response = await executor.ExecuteAsync(request, CancellationToken.None);
+
+        Assert.IsTrue(response.IsError);
+        StringAssert.Contains(response.Content, "data");
+        Assert.AreEqual(0, publisher.Published.Count);
+    }
+
+    [TestMethod]
+    public async Task InvokeAgentExecutor_AcceptsNullData_AsMissing()
+    {
+        var publisher = new TrackingPublisher();
+        var tracker = new A2ATaskTracker();
+        var executor = BuildExecutor(publisher, tracker);
+
+        var request = BuildToolRequest("""
+            { "agent_name": "TargetAgent", "skill": "chat", "message": "Hi.", "data": null }
+            """);
+
+        var response = await executor.ExecuteAsync(request, CancellationToken.None);
+
+        Assert.IsFalse(response.IsError);
+        var taskReq = publisher.Published[0].Envelope.GetPayload<AgentTaskRequest>()!;
+        Assert.AreEqual(1, taskReq.Message.Parts.Count);
+    }
+
+    [TestMethod]
+    public void MapOutboundV03Part_TextPart_MapsToV03TextPart()
+    {
+        var part = new AgentMessagePart { Kind = "text", Text = "hello" };
+
+        var mapped = InvokeAgentExecutor.MapOutboundV03Part(part);
+
+        var textPart = (A2AV03.TextPart)mapped;
+        Assert.AreEqual("hello", textPart.Text);
+    }
+
+    [TestMethod]
+    public void MapOutboundV03Part_DataPart_MapsToV03DataPartWithDictionary()
+    {
+        var part = new AgentMessagePart
+        {
+            Kind = "data",
+            Data = """{ "id": "x-1", "count": 3 }""",
+            MimeType = "application/json"
+        };
+
+        var mapped = InvokeAgentExecutor.MapOutboundV03Part(part);
+
+        var dataPart = (A2AV03.DataPart)mapped;
+        Assert.AreEqual("x-1", dataPart.Data["id"].GetString());
+        Assert.AreEqual(3, dataPart.Data["count"].GetInt32());
+    }
+
+    [TestMethod]
+    public void MapOutboundV1Part_TextPart_MapsToV1TextPart()
+    {
+        var part = new AgentMessagePart { Kind = "text", Text = "hello" };
+
+        var mapped = InvokeAgentExecutor.MapOutboundV1Part(part);
+
+        Assert.AreEqual(A2AV1.PartContentCase.Text, mapped.ContentCase);
+        Assert.AreEqual("hello", mapped.Text);
+    }
+
+    [TestMethod]
+    public void MapOutboundV1Part_DataPart_MapsToV1DataPartWithMediaType()
+    {
+        var part = new AgentMessagePart
+        {
+            Kind = "data",
+            Data = """{ "ok": true }""",
+            MimeType = "application/json"
+        };
+
+        var mapped = InvokeAgentExecutor.MapOutboundV1Part(part);
+
+        Assert.AreEqual(A2AV1.PartContentCase.Data, mapped.ContentCase);
+        Assert.AreEqual("application/json", mapped.MediaType);
+        Assert.IsTrue(mapped.Data!.Value.GetProperty("ok").GetBoolean());
+    }
+
     // ─── ListKnownAgentsExecutor ─────────────────────────────────────────────────
 
     [TestMethod]
