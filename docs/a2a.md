@@ -9,7 +9,7 @@ result folded back into the conversation.
 
 ## How it works
 
-1. The primary agent calls `invoke_agent(agent_name, skill, message)`.
+1. The primary agent calls `invoke_agent(agent_name, skill, message, [data])`.
 2. The request is published to `agent.task.{agentName}`.
 3. The target agent processes the task, sending `Working` status updates.
 4. If the response is non-terminal (Working/Submitted), the caller polls or
@@ -31,6 +31,39 @@ ScaledJob spins up).
 > of size. The synthetic turn that arrives in the conversation is a notification,
 > not the result itself — the agent must call `get_from_working_memory` with the
 > provided key to read the actual content before responding to the user.
+
+---
+
+## Structured data alongside the text message
+
+A2A messages are composed of one or more `Part`s, where each part is either a
+`TextPart` or a `DataPart`. `invoke_agent` accepts an optional `data` argument
+that is sent as a `DataPart` alongside the required `message` text part:
+
+```json
+{
+  "agent_name": "ExtractionAgent",
+  "skill": "extract-structured-data",
+  "message": "Extract the title and author from this record.",
+  "data": {
+    "recordId": "rec-42",
+    "source": "https://example.com/doc"
+  }
+}
+```
+
+The `data` value must be a JSON **object** (per the A2A spec — non-object values
+are rejected). It is serialized to a `DataPart` with `media_type:
+application/json` and appended after the text part.
+
+Most A2A agents in the wild only understand text, so omit `data` unless the
+target agent's skill is known to consume structured input. On the receiving
+side, RockBot's `RockBotBridgeHandler.MapInboundParts` already preserves
+inbound `DataPart`s as `AgentMessagePart { Kind = "data" }` so skill handlers
+can read both parts from `AgentTaskRequest.Message.Parts`.
+
+`InputRequired` follow-ups remain text-only — only the initial `invoke_agent`
+call carries the structured payload.
 
 ---
 

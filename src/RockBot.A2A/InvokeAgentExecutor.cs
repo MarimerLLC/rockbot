@@ -72,6 +72,18 @@ internal sealed class InvokeAgentExecutor(
         var messageText = messageEl.GetString()!;
         int timeoutMinutes = args.TryGetValue("timeout_minutes", out var toEl) && toEl.TryGetInt32(out var to) ? to : 5;
 
+        // Optional structured-data payload. Spec requires data to be a JSON object;
+        // reject other JSON shapes early so callers learn the contract instead of
+        // silently dropping the value or failing downstream in the A2A SDK.
+        string? dataJson = null;
+        if (args.TryGetValue("data", out var dataEl) && dataEl.ValueKind != JsonValueKind.Null &&
+            dataEl.ValueKind != JsonValueKind.Undefined)
+        {
+            if (dataEl.ValueKind != JsonValueKind.Object)
+                return Error(request, "Argument 'data' must be a JSON object.");
+            dataJson = dataEl.GetRawText();
+        }
+
         // Reject self-invocation — the LLM sometimes uses its own identity name
         // instead of the target agent's name from the directory.
         if (agentName.Equals(identity.Name, StringComparison.OrdinalIgnoreCase))
@@ -90,6 +102,20 @@ internal sealed class InvokeAgentExecutor(
                 "An agent task is already in progress for this session. " +
                 "Wait for the pending result before invoking another agent.");
 
+        var parts = new List<AgentMessagePart>
+        {
+            new() { Kind = "text", Text = messageText }
+        };
+        if (dataJson is not null)
+        {
+            parts.Add(new AgentMessagePart
+            {
+                Kind = "data",
+                Data = dataJson,
+                MimeType = "application/json"
+            });
+        }
+
         var taskRequest = new AgentTaskRequest
         {
             TaskId = taskId,
@@ -97,7 +123,7 @@ internal sealed class InvokeAgentExecutor(
             Message = new AgentMessage
             {
                 Role = "user",
-                Parts = [new AgentMessagePart { Kind = "text", Text = messageText }]
+                Parts = parts
             }
         };
 
@@ -201,8 +227,7 @@ internal sealed class InvokeAgentExecutor(
             httpActivity?.SetTag("rockbot.a2a.correlation_id", taskId);
             var httpSw = Stopwatch.StartNew();
 
-            var messageText = taskRequest.Message.Parts.FirstOrDefault(p => p.Kind == "text")?.Text
-                ?? string.Empty;
+            var outboundParts = taskRequest.Message.Parts;
 
             AgentTaskResult? result;
             if (useV1)
@@ -216,7 +241,7 @@ internal sealed class InvokeAgentExecutor(
                     try
                     {
                         result = await DispatchV1StreamingAsync(
-                            a2aClient, taskRequest, taskId, messageText, pending, ct);
+                            a2aClient, taskRequest, taskId, outboundParts, pending, ct);
                     }
                     catch (Exception ex) when (ex is not OperationCanceledException)
                     {
@@ -225,19 +250,19 @@ internal sealed class InvokeAgentExecutor(
                             taskId, agentName);
                         httpActivity?.SetTag("rockbot.a2a.transport", "streaming-fallback");
                         result = await DispatchV1Async(
-                            a2aClient, taskRequest, taskId, messageText, pending, supportsStreaming, ct);
+                            a2aClient, taskRequest, taskId, outboundParts, pending, supportsStreaming, ct);
                     }
                 }
                 else
                 {
                     httpActivity?.SetTag("rockbot.a2a.transport", "polling");
                     result = await DispatchV1Async(
-                        a2aClient, taskRequest, taskId, messageText, pending, supportsStreaming, ct);
+                        a2aClient, taskRequest, taskId, outboundParts, pending, supportsStreaming, ct);
                 }
             }
             else
             {
-                result = await DispatchV03Async(httpClient, endpoint, taskRequest, taskId, messageText, pending, ct);
+                result = await DispatchV03Async(httpClient, endpoint, taskRequest, taskId, outboundParts, pending, ct);
             }
 
             httpSw.Stop();
@@ -338,7 +363,7 @@ internal sealed class InvokeAgentExecutor(
         Uri endpoint,
         AgentTaskRequest taskRequest,
         string taskId,
-        string messageText,
+        IReadOnlyList<AgentMessagePart> initialParts,
         PendingA2ATask pending,
         CancellationToken ct)
     {
@@ -347,7 +372,7 @@ internal sealed class InvokeAgentExecutor(
         var repetitionDetector = new InputRequiredRepetitionDetector(options.InputRequiredRepetitionThreshold);
 
         // Initial send
-        var sendParams = BuildV03SendParams(taskId, messageText, contextId, taskRequest.Skill);
+        var sendParams = BuildV03SendParams(taskId, initialParts, contextId, taskRequest.Skill);
         var a2aResponse = await a2aClient.SendMessageAsync(sendParams, ct);
         var result = MapV03Response(a2aResponse, taskId);
 
@@ -416,7 +441,7 @@ internal sealed class InvokeAgentExecutor(
                     taskId, pending.InputRequiredRound, followUp.WasAutonomous);
 
                 // Send follow-up with contextId
-                sendParams = BuildV03SendParams(taskId, followUp.ResponseText, contextId, taskRequest.Skill);
+                sendParams = BuildV03SendParams(taskId, TextOnlyParts(followUp.ResponseText), contextId, taskRequest.Skill);
                 a2aResponse = await a2aClient.SendMessageAsync(sendParams, ct);
                 result = MapV03Response(a2aResponse, taskId);
                 continue;
@@ -429,7 +454,7 @@ internal sealed class InvokeAgentExecutor(
     }
 
     private static A2AV03.MessageSendParams BuildV03SendParams(
-        string taskId, string messageText, string? contextId, string skill)
+        string taskId, IReadOnlyList<AgentMessagePart> parts, string? contextId, string skill)
     {
         return new A2AV03.MessageSendParams
         {
@@ -438,7 +463,7 @@ internal sealed class InvokeAgentExecutor(
                 Role = A2AV03.MessageRole.User,
                 MessageId = taskId,
                 ContextId = contextId,
-                Parts = [new A2AV03.TextPart { Text = messageText }]
+                Parts = parts.Select(MapOutboundV03Part).ToList()
             },
             Metadata = new Dictionary<string, JsonElement>
             {
@@ -446,6 +471,21 @@ internal sealed class InvokeAgentExecutor(
             }
         };
     }
+
+    internal static A2AV03.Part MapOutboundV03Part(AgentMessagePart part)
+    {
+        if (string.Equals(part.Kind, "data", StringComparison.Ordinal) && part.Data is not null)
+        {
+            var data = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(part.Data)
+                       ?? new Dictionary<string, JsonElement>();
+            return new A2AV03.DataPart { Data = data };
+        }
+
+        return new A2AV03.TextPart { Text = part.Text ?? string.Empty };
+    }
+
+    private static IReadOnlyList<AgentMessagePart> TextOnlyParts(string text) =>
+        [new AgentMessagePart { Kind = "text", Text = text }];
 
     private async Task<AgentTaskResult?> PollV03UntilNonWorkingAsync(
         A2AV03.A2AClient a2aClient,
@@ -567,7 +607,7 @@ internal sealed class InvokeAgentExecutor(
         A2AV1.A2AClient a2aClient,
         AgentTaskRequest taskRequest,
         string taskId,
-        string messageText,
+        IReadOnlyList<AgentMessagePart> initialParts,
         PendingA2ATask pending,
         bool supportsStreaming,
         CancellationToken ct)
@@ -576,7 +616,7 @@ internal sealed class InvokeAgentExecutor(
         var repetitionDetector = new InputRequiredRepetitionDetector(options.InputRequiredRepetitionThreshold);
 
         // Initial send
-        var sendRequest = BuildV1SendRequest(taskId, messageText, contextId, taskRequest.Skill);
+        var sendRequest = BuildV1SendRequest(taskId, initialParts, contextId, taskRequest.Skill);
         var a2aResponse = await a2aClient.SendMessageAsync(sendRequest, ct);
         var result = MapV1Response(a2aResponse, taskId);
 
@@ -645,7 +685,7 @@ internal sealed class InvokeAgentExecutor(
                     taskId, pending.InputRequiredRound, followUp.WasAutonomous);
 
                 // Send follow-up with contextId
-                sendRequest = BuildV1SendRequest(taskId, followUp.ResponseText, contextId, taskRequest.Skill);
+                sendRequest = BuildV1SendRequest(taskId, TextOnlyParts(followUp.ResponseText), contextId, taskRequest.Skill);
                 a2aResponse = await a2aClient.SendMessageAsync(sendRequest, ct);
                 result = MapV1Response(a2aResponse, taskId);
                 continue;
@@ -668,7 +708,7 @@ internal sealed class InvokeAgentExecutor(
         A2AV1.A2AClient a2aClient,
         AgentTaskRequest taskRequest,
         string taskId,
-        string messageText,
+        IReadOnlyList<AgentMessagePart> initialParts,
         PendingA2ATask pending,
         CancellationToken ct)
     {
@@ -679,7 +719,7 @@ internal sealed class InvokeAgentExecutor(
 
         string? contextId = null;
         var repetitionDetector = new InputRequiredRepetitionDetector(options.InputRequiredRepetitionThreshold);
-        var sendRequest = BuildV1SendRequest(taskId, messageText, contextId, taskRequest.Skill);
+        var sendRequest = BuildV1SendRequest(taskId, initialParts, contextId, taskRequest.Skill);
 
         while (!ct.IsCancellationRequested)
         {
@@ -798,7 +838,7 @@ internal sealed class InvokeAgentExecutor(
                     taskId, pending.InputRequiredRound, followUp.WasAutonomous);
 
                 // Send follow-up with contextId — continue streaming
-                sendRequest = BuildV1SendRequest(taskId, followUp.ResponseText, contextId, taskRequest.Skill);
+                sendRequest = BuildV1SendRequest(taskId, TextOnlyParts(followUp.ResponseText), contextId, taskRequest.Skill);
                 continue;
             }
 
@@ -837,7 +877,7 @@ internal sealed class InvokeAgentExecutor(
     }
 
     private static A2AV1.SendMessageRequest BuildV1SendRequest(
-        string taskId, string messageText, string? contextId, string skill)
+        string taskId, IReadOnlyList<AgentMessagePart> parts, string? contextId, string skill)
     {
         return new A2AV1.SendMessageRequest
         {
@@ -846,13 +886,27 @@ internal sealed class InvokeAgentExecutor(
                 Role = A2AV1.Role.User,
                 MessageId = taskId,
                 ContextId = contextId,
-                Parts = [new A2AV1.Part { Text = messageText }]
+                Parts = parts.Select(MapOutboundV1Part).ToList()
             },
             Metadata = new Dictionary<string, JsonElement>
             {
                 ["skill"] = JsonSerializer.SerializeToElement(skill)
             }
         };
+    }
+
+    internal static A2AV1.Part MapOutboundV1Part(AgentMessagePart part)
+    {
+        if (string.Equals(part.Kind, "data", StringComparison.Ordinal) && part.Data is not null)
+        {
+            var element = JsonSerializer.Deserialize<JsonElement>(part.Data);
+            var a2aPart = A2AV1.Part.FromData(element);
+            if (!string.IsNullOrEmpty(part.MimeType))
+                a2aPart.MediaType = part.MimeType;
+            return a2aPart;
+        }
+
+        return new A2AV1.Part { Text = part.Text ?? string.Empty };
     }
 
     /// <summary>
