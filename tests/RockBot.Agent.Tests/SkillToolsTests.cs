@@ -345,7 +345,13 @@ public class SkillToolsTests
         {
             if (resources is null || resources.Count == 0)
             {
-                _skills[skill.Name] = skill;
+                // Preserve the existing manifest when no resources are provided,
+                // mirroring FileSkillStore's behaviour.
+                var existing = _skills.GetValueOrDefault(skill.Name);
+                var skillToSave = skill.Manifest is null && existing?.Manifest is not null
+                    ? skill with { Manifest = existing.Manifest }
+                    : skill;
+                _skills[skill.Name] = skillToSave;
                 return Task.CompletedTask;
             }
             var manifest = resources.Select(r => new SkillResource(r.Filename, r.Type, r.Description)).ToList();

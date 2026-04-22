@@ -457,7 +457,7 @@ internal sealed partial class FileSkillStore : ISkillStore
         var subcategoryPrefix = name + "/";
         foreach (var existingName in index.Keys)
         {
-            if (existingName.StartsWith(subcategoryPrefix, StringComparison.OrdinalIgnoreCase))
+            if (existingName.StartsWith(subcategoryPrefix, StringComparison.Ordinal))
                 throw new InvalidOperationException(
                     $"Skill name conflict: cannot save '{name}' because subcategory skill '{existingName}' exists. " +
                     $"Saving '{name}' would turn '{name}/' into a resource folder, making '{existingName}' unreachable.");
