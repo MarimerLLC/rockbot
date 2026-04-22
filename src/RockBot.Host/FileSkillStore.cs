@@ -11,6 +11,8 @@ namespace RockBot.Host;
 /// File-based skill store. Each skill is persisted as a JSON file at
 /// <c>{basePath}/{name}.json</c>, where the name may contain forward slashes
 /// to form subcategories (e.g. <c>research/summarize-paper</c>).
+/// Sub-resource files for a skill named <c>myskill</c> live in the sibling
+/// folder <c>{basePath}/myskill/</c>.
 /// Thread safety via <see cref="SemaphoreSlim"/>.
 /// </summary>
 internal sealed partial class FileSkillStore : ISkillStore
@@ -58,14 +60,24 @@ internal sealed partial class FileSkillStore : ISkillStore
         try
         {
             var index = await EnsureIndexAsync();
+            ValidateNoConflict(skill.Name, index);
+
+            // Preserve the existing manifest when the caller hasn't provided one.
+            // This prevents a plain metadata/markdown update from silently orphaning
+            // resource files that are still on disk.
+            var existing = index.GetValueOrDefault(skill.Name);
+            var skillToSave = skill.Manifest is null && existing?.Manifest is not null
+                ? skill with { Manifest = existing.Manifest }
+                : skill;
+
             var filePath = GetFilePath(skill.Name);
 
             Directory.CreateDirectory(Path.GetDirectoryName(filePath)!);
 
-            var json = JsonSerializer.Serialize(skill, JsonOptions);
+            var json = JsonSerializer.Serialize(skillToSave, JsonOptions);
             await File.WriteAllTextAsync(filePath, json);
 
-            index[skill.Name] = skill;
+            index[skill.Name] = skillToSave;
 
             _logger.LogDebug("Saved skill '{Name}'", skill.Name);
         }
@@ -75,6 +87,76 @@ internal sealed partial class FileSkillStore : ISkillStore
         }
 
         // Generate embedding in the background — agent flow should not block on vectorization.
+        if (_embeddingCache is not null)
+            _ = _embeddingCache.UpdateAsync(skill.Name, GetDocumentText(skill));
+    }
+
+    public async Task SaveAsync(Skill skill, IReadOnlyList<SkillResourceInput>? resources)
+    {
+        if (resources is null || resources.Count == 0)
+        {
+            await SaveAsync(skill);
+            return;
+        }
+
+        ValidateName(skill.Name);
+        foreach (var r in resources)
+            ValidateFilename(r.Filename);
+
+        await _semaphore.WaitAsync();
+        try
+        {
+            var index = await EnsureIndexAsync();
+            ValidateNoConflict(skill.Name, index);
+
+            var filePath = GetFilePath(skill.Name);
+            var folderPath = GetResourceFolderPath(skill.Name);
+
+            Directory.CreateDirectory(Path.GetDirectoryName(filePath)!);
+            Directory.CreateDirectory(folderPath);
+
+            // Write new resource files.
+            // Note: folderPath and newFilenames both use OrdinalIgnoreCase for the prune step;
+            // on case-sensitive file systems (Linux) ensure filenames are consistently cased.
+            var newFilenames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var resource in resources)
+            {
+                newFilenames.Add(resource.Filename);
+                var resourcePath = Path.Combine(folderPath, resource.Filename);
+                await File.WriteAllTextAsync(resourcePath, resource.Content);
+            }
+
+            // Prune orphaned files from the folder that are not in the new bundle
+            foreach (var existingFile in Directory.EnumerateFiles(folderPath))
+            {
+                var name = Path.GetFileName(existingFile);
+                if (!newFilenames.Contains(name))
+                {
+                    File.Delete(existingFile);
+                    _logger.LogDebug("Pruned orphaned resource '{File}' from skill '{Name}'", name, skill.Name);
+                }
+            }
+
+            // Build manifest from the provided resources
+            var manifest = resources
+                .Select(r => new SkillResource(r.Filename, r.Type, r.Description))
+                .ToList();
+
+            // Save skill JSON with updated manifest
+            var skillWithManifest = skill with { Manifest = manifest };
+            var json = JsonSerializer.Serialize(skillWithManifest, JsonOptions);
+            await File.WriteAllTextAsync(filePath, json);
+
+            index[skill.Name] = skillWithManifest;
+
+            _logger.LogDebug("Saved skill '{Name}' with {Count} resource(s)", skill.Name, manifest.Count);
+        }
+        finally
+        {
+            _semaphore.Release();
+        }
+
+        // Generate embedding in the background
         if (_embeddingCache is not null)
             _ = _embeddingCache.UpdateAsync(skill.Name, GetDocumentText(skill));
     }
@@ -91,6 +173,31 @@ internal sealed partial class FileSkillStore : ISkillStore
         {
             _semaphore.Release();
         }
+    }
+
+    public Task<string?> GetResourceAsync(string skillName, string filename)
+    {
+        ValidateName(skillName);
+        ValidateFilename(filename);
+
+        var folderPath = GetResourceFolderPath(skillName);
+        var filePath = Path.Combine(folderPath, filename);
+
+        // Security: ensure the resolved file stays within the resource folder.
+        // ValidateFilename already rejects separators and '..' — this is a belt-and-suspenders check.
+        var resolvedFolder = Path.GetFullPath(folderPath);
+        var resolvedFile = Path.GetFullPath(filePath);
+        var relative = Path.GetRelativePath(resolvedFolder, resolvedFile);
+        if (relative.StartsWith("..") || Path.IsPathRooted(relative))
+            throw new ArgumentException($"Resource filename would escape the skill folder: '{filename}'", nameof(filename));
+
+        if (!File.Exists(filePath))
+            return Task.FromResult<string?>(null);
+
+        return ReadResourceFileAsync(filePath);
+
+        static async Task<string?> ReadResourceFileAsync(string path) =>
+            await File.ReadAllTextAsync(path);
     }
 
     public async Task<IReadOnlyList<Skill>> ListAsync()
@@ -122,6 +229,11 @@ internal sealed partial class FileSkillStore : ISkillStore
             var filePath = GetFilePath(name);
             if (File.Exists(filePath))
                 File.Delete(filePath);
+
+            // Delete the resource subfolder if it exists
+            var folderPath = GetResourceFolderPath(name);
+            if (Directory.Exists(folderPath))
+                Directory.Delete(folderPath, recursive: true);
 
             _embeddingCache?.Remove(name);
 
@@ -211,6 +323,11 @@ internal sealed partial class FileSkillStore : ISkillStore
 
         foreach (var file in Directory.EnumerateFiles(_basePath, "*.json", SearchOption.AllDirectories))
         {
+            // Skip JSON files that live inside a skill's resource subfolder.
+            // A resource subfolder is identified by having a sibling .json file with the same name.
+            if (IsInsideResourceSubfolder(file))
+                continue;
+
             try
             {
                 var json = await File.ReadAllTextAsync(file);
@@ -228,8 +345,35 @@ internal sealed partial class FileSkillStore : ISkillStore
         return _index;
     }
 
+    /// <summary>
+    /// Returns <c>true</c> if <paramref name="filePath"/> lives inside a skill's resource subfolder
+    /// (i.e., the file's immediate parent directory has a sibling <c>.json</c> entry-point file).
+    /// </summary>
+    private bool IsInsideResourceSubfolder(string filePath)
+    {
+        var parentDir = Path.GetDirectoryName(filePath);
+        if (parentDir is null)
+            return false;
+
+        // Top-level files are always skill entry points
+        if (string.Equals(Path.GetFullPath(parentDir), Path.GetFullPath(_basePath), StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        // If there is a .json file with the same name as the parent directory, the parent is a resource subfolder
+        var siblingJson = parentDir.TrimEnd(Path.DirectorySeparatorChar) + ".json";
+        return File.Exists(siblingJson);
+    }
+
     private string GetFilePath(string name) =>
         Path.Combine(_basePath, name.Replace('/', Path.DirectorySeparatorChar) + ".json");
+
+    /// <summary>
+    /// Returns the path of the resource subfolder for a skill.
+    /// For a skill named <c>myskill</c> the folder is <c>{basePath}/myskill/</c>;
+    /// for <c>research/summarize</c> it is <c>{basePath}/research/summarize/</c>.
+    /// </summary>
+    private string GetResourceFolderPath(string name) =>
+        Path.Combine(_basePath, name.Replace('/', Path.DirectorySeparatorChar));
 
     internal static string ResolvePath(string skillBasePath, string profileBasePath)
     {
@@ -261,6 +405,68 @@ internal sealed partial class FileSkillStore : ISkillStore
                 nameof(name));
     }
 
+    internal static void ValidateFilename(string filename)
+    {
+        if (string.IsNullOrWhiteSpace(filename))
+            throw new ArgumentException("Resource filename cannot be empty.", nameof(filename));
+
+        if (filename.Contains('/') || filename.Contains('\\'))
+            throw new ArgumentException(
+                $"Resource filename cannot contain path separators: '{filename}'",
+                nameof(filename));
+
+        if (filename.Contains(".."))
+            throw new ArgumentException(
+                $"Resource filename cannot contain '..': '{filename}'",
+                nameof(filename));
+
+        if (!FilenamePattern().IsMatch(filename))
+            throw new ArgumentException(
+                $"Resource filename contains invalid characters: '{filename}'. " +
+                "Only alphanumeric, hyphens, underscores, and dots are allowed.",
+                nameof(filename));
+    }
+
+    /// <summary>
+    /// Detects name conflicts that would make a skill invisible after indexing.
+    /// <list type="bullet">
+    ///   <item>Saving <c>a/b</c> when skill <c>a</c> already exists: <c>a/b.json</c> would land
+    ///   inside <c>a</c>'s resource folder and be skipped by <see cref="IsInsideResourceSubfolder"/>.</item>
+    ///   <item>Saving <c>a</c> when skill <c>a/b</c> already exists: <c>a/</c> would be treated as
+    ///   a resource folder after the save, making <c>a/b</c> unreachable.</item>
+    /// </list>
+    /// Must be called while the semaphore is held and the index is loaded.
+    /// </summary>
+    private static void ValidateNoConflict(string name, Dictionary<string, Skill> index)
+    {
+        var parts = name.Split('/');
+
+        // Case A: saving "a/b/c" — reject if any ancestor "a" or "a/b" is already a skill.
+        // If "a" exists, "a/" is its resource folder and "a/b/c.json" would land inside it.
+        for (var i = 1; i < parts.Length; i++)
+        {
+            var ancestorName = string.Join("/", parts[..i]);
+            if (index.ContainsKey(ancestorName))
+                throw new InvalidOperationException(
+                    $"Skill name conflict: cannot save '{name}' because ancestor skill '{ancestorName}' already exists. " +
+                    $"Saving '{name}' would place it inside '{ancestorName}'s resource folder, making it unreachable.");
+        }
+
+        // Case B: saving "a" — reject if any skill "a/b" already exists.
+        // After saving "a.json", "a/" would be treated as its resource folder, hiding "a/b".
+        var subcategoryPrefix = name + "/";
+        foreach (var existingName in index.Keys)
+        {
+            if (existingName.StartsWith(subcategoryPrefix, StringComparison.Ordinal))
+                throw new InvalidOperationException(
+                    $"Skill name conflict: cannot save '{name}' because subcategory skill '{existingName}' exists. " +
+                    $"Saving '{name}' would turn '{name}/' into a resource folder, making '{existingName}' unreachable.");
+        }
+    }
+
     [GeneratedRegex(@"^[a-zA-Z0-9_\-]+(/[a-zA-Z0-9_\-]+)*$")]
     private static partial Regex NamePattern();
+
+    [GeneratedRegex(@"^[a-zA-Z0-9_\-\.]+$")]
+    private static partial Regex FilenamePattern();
 }
