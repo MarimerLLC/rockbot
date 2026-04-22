@@ -176,13 +176,91 @@ public sealed class AgentContextBuilder(
         if (recalled.Count == 0 && history.Count == 1)
             recalled = await longTermMemory.SearchAsync(new MemorySearchCriteria(MaxResults: 5));
 
-        // Knowledge graph traverse needs matched entities from wave 1.
+        // Knowledge graph traverse: BFS from user-seed entities at MaxHops, then expand
+        // a second time from top-ranked recalled memories at the (shorter) MemorySeedMaxHops.
+        // User-seed triples fill the budget first; memory-seed triples fill any remaining
+        // capacity and are deduped by triple ID. Admission for memory seeds is ranked-K
+        // (scores are not exposed by ILongTermMemory) — K=2 is conservative so BM25-only
+        // deployments do not amplify keyword-collision noise.
         IReadOnlyList<KnowledgeTriple>? graphTriples = null;
-        if (matchedEntities is { Count: > 0 })
+        var userSeedTripleCount = 0;
+        var memorySeedTripleCount = 0;
+        var mutualTripleCount = 0;
+        List<(string MemoryId, IReadOnlyList<string> SeedEntityIds, IReadOnlyList<string> TripleIds)>? memorySeedSources = null;
+
+        if (_knowledgeGraph is not null)
         {
-            var seedIds = matchedEntities.Select(e => e.Id).ToList();
-            _ = _knowledgeGraph!.TouchEntitiesAsync(seedIds);
-            graphTriples = await _knowledgeGraph.TraverseAsync(seedIds, _graphOptions.MaxHops);
+            var userSeedIds = matchedEntities is { Count: > 0 }
+                ? matchedEntities.Select(e => e.Id).ToHashSet(StringComparer.OrdinalIgnoreCase)
+                : new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+            IReadOnlyList<KnowledgeTriple> userTriples = [];
+            if (userSeedIds.Count > 0)
+            {
+                var userSeedList = userSeedIds.ToList();
+                _ = _knowledgeGraph.TouchEntitiesAsync(userSeedList);
+                userTriples = await _knowledgeGraph.TraverseAsync(userSeedList, _graphOptions.MaxHops, ct);
+            }
+            userSeedTripleCount = userTriples.Count;
+            var userTripleIds = userTriples.Select(t => t.Id).ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+            var memoryTripleMap = new Dictionary<string, KnowledgeTriple>(StringComparer.OrdinalIgnoreCase);
+            var mutualTripleIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+            if (_graphOptions.MaxMemorySeedSources > 0 && recalled.Count > 0)
+            {
+                memorySeedSources = [];
+                var topMemories = recalled.Take(_graphOptions.MaxMemorySeedSources);
+
+                foreach (var entry in topMemories)
+                {
+                    if (string.IsNullOrWhiteSpace(entry.Content))
+                    {
+                        memorySeedSources.Add((entry.Id, [], []));
+                        continue;
+                    }
+
+                    var memEntities = await _knowledgeGraph.FindEntitiesByNameAsync(entry.Content, ct);
+                    var memSeedIds = memEntities
+                        .Select(e => e.Id)
+                        .Where(id => !userSeedIds.Contains(id))
+                        .Distinct(StringComparer.OrdinalIgnoreCase)
+                        .ToList();
+
+                    if (memSeedIds.Count == 0)
+                    {
+                        memorySeedSources.Add((entry.Id, [], []));
+                        continue;
+                    }
+
+                    _ = _knowledgeGraph.TouchEntitiesAsync(memSeedIds);
+                    var memTriples = await _knowledgeGraph.TraverseAsync(
+                        memSeedIds, _graphOptions.MemorySeedMaxHops, ct);
+
+                    var perMemTripleIds = new List<string>(memTriples.Count);
+                    foreach (var t in memTriples)
+                    {
+                        perMemTripleIds.Add(t.Id);
+                        if (userTripleIds.Contains(t.Id))
+                            mutualTripleIds.Add(t.Id);
+                        else
+                            memoryTripleMap.TryAdd(t.Id, t);
+                    }
+
+                    memorySeedSources.Add((entry.Id, memSeedIds, perMemTripleIds));
+                }
+            }
+
+            memorySeedTripleCount = memoryTripleMap.Count;
+            mutualTripleCount = mutualTripleIds.Count;
+
+            if (userTriples.Count > 0 || memoryTripleMap.Count > 0)
+            {
+                var combined = new List<KnowledgeTriple>(userTriples.Count + memoryTripleMap.Count);
+                combined.AddRange(userTriples);
+                combined.AddRange(memoryTripleMap.Values);
+                graphTriples = combined;
+            }
         }
 
         // ── Assemble chatMessages in deterministic order ──────────────────────
@@ -285,9 +363,29 @@ public sealed class AgentContextBuilder(
                     "Related knowledge graph connections:\n" +
                     string.Join("\n", lines);
                 chatMessages.Add(new ChatMessage(ChatRole.System, graphContext));
+
+                var userMatchCount = matchedEntities?.Count ?? 0;
+                var memorySources = memorySeedSources is null
+                    ? "[]"
+                    : "[" + string.Join(", ", memorySeedSources.Select(s =>
+                        $"{{MemoryId={s.MemoryId}, Seeds=[{string.Join(",", s.SeedEntityIds)}], Triples=[{string.Join(",", s.TripleIds)}]}}")) + "]";
                 logger.LogInformation(
-                    "Injected {Count} knowledge graph triples for {EntityCount} matched entities in session {SessionId}",
-                    newTriples.Count, matchedEntities!.Count, sessionId);
+                    "Injected {Count} knowledge graph triples for {EntityCount} matched entities in session {SessionId} " +
+                    "(UserSeedTripleCount={UserSeedTripleCount}, MemorySeedTripleCount={MemorySeedTripleCount}, " +
+                    "MutualTripleCount={MutualTripleCount}, MemorySeedSources={MemorySeedSources})",
+                    newTriples.Count, userMatchCount, sessionId,
+                    userSeedTripleCount, memorySeedTripleCount, mutualTripleCount, memorySources);
+
+                Activity.Current?.AddEvent(new ActivityEvent("kg_expansion_complete",
+                    tags: new ActivityTagsCollection
+                    {
+                        { "injected_count", newTriples.Count },
+                        { "user_seed_entity_count", userMatchCount },
+                        { "memory_seed_source_count", memorySeedSources?.Count ?? 0 },
+                        { "user_seed_triple_count", userSeedTripleCount },
+                        { "memory_seed_triple_count", memorySeedTripleCount },
+                        { "mutual_triple_count", mutualTripleCount }
+                    }));
             }
         }
 
