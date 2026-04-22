@@ -172,10 +172,11 @@ internal sealed partial class FileSkillStore : ISkillStore
             var folderPath = GetResourceFolderPath(skillName);
             var filePath = Path.Combine(folderPath, filename);
 
-            // Security: ensure the resolved path stays within the resource folder
+            // Security: ensure the resolved file stays within the resource folder
             var resolvedFolder = Path.GetFullPath(folderPath);
             var resolvedFile = Path.GetFullPath(filePath);
-            if (!resolvedFile.StartsWith(resolvedFolder + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
+            var relative = Path.GetRelativePath(resolvedFolder, resolvedFile);
+            if (relative.StartsWith("..") || Path.IsPathRooted(relative))
                 throw new ArgumentException($"Resource filename would escape the skill folder: '{filename}'", nameof(filename));
 
             if (!File.Exists(filePath))
