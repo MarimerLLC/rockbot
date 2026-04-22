@@ -46,6 +46,7 @@ public sealed class SkillTools
         Tools =
         [
             AIFunctionFactory.Create(GetSkill),
+            AIFunctionFactory.Create(GetSkillResource),
             AIFunctionFactory.Create(ListSkills),
             AIFunctionFactory.Create(SaveSkill),
             AIFunctionFactory.Create(DeleteSkill)
@@ -55,7 +56,9 @@ public sealed class SkillTools
     public IList<AITool> Tools { get; }
 
     [Description("Load the full instructions for a named skill so you can follow them. " +
-                 "Call this when the skill index shows a skill relevant to the user's request.")]
+                 "Call this when the skill index shows a skill relevant to the user's request. " +
+                 "Returns the skill content and the list of sub-resources (if any) that can be " +
+                 "fetched individually with get_skill_resource.")]
     public async Task<string> GetSkill(
         [Description("The skill name as shown in the index (e.g. 'plan-meeting')")] string name)
     {
@@ -77,7 +80,38 @@ public sealed class SkillTools
                 Timestamp: DateTimeOffset.UtcNow));
         }
 
+        if (skill.Manifest is { Count: > 0 } manifest)
+        {
+            var sb = new StringBuilder(skill.Content);
+            sb.AppendLine();
+            sb.AppendLine("---");
+            sb.AppendLine($"**Resources** (fetch with `get_skill_resource(\"{name}\", \"<filename>\")`):");
+            foreach (var entry in manifest)
+                sb.AppendLine($"- `{entry.Filename}` ({entry.Type}): {entry.Description}");
+            return sb.ToString().TrimEnd();
+        }
+
         return skill.Content;
+    }
+
+    [Description("Fetch a single sub-resource file from a skill's resource folder. " +
+                 "Use the manifest shown by get_skill to decide which resource to load.")]
+    public async Task<string> GetSkillResource(
+        [Description("The skill name (e.g. 'plan-meeting')")] string skillName,
+        [Description("The filename of the resource to fetch (e.g. 'script.py', 'schema.json')")] string filename)
+    {
+        _logger.LogInformation("Tool call: GetSkillResource(skillName={Name}, filename={Filename})", skillName, filename);
+
+        var skill = await _skillStore.GetAsync(skillName);
+        if (skill is null)
+            return $"Skill '{skillName}' not found. Call list_skills to see available skills.";
+
+        var content = await _skillStore.GetResourceAsync(skillName, filename);
+        if (content is null)
+            return $"Resource '{filename}' not found in skill '{skillName}'. " +
+                   "Call get_skill to see the list of available resources.";
+
+        return content;
     }
 
     [Description("List all available skills with their one-line summaries. " +
@@ -92,21 +126,25 @@ public sealed class SkillTools
 
     [Description("Create or update a skill with markdown instructions for completing a specific type of task. " +
                  "Write the content as markdown: include a heading, a 'When to use' section, and numbered steps. " +
+                 "Attach structured artifacts (scripts, schemas, etc.) as resources rather than embedding them in markdown. " +
                  "A summary will be generated automatically and added to the skill index. " +
                  "Returns the updated skill index.")]
     public async Task<string> SaveSkill(
         [Description("Skill name — lowercase, hyphens allowed, forward slash for subcategories " +
                      "(e.g. 'plan-meeting', 'research/summarize')")] string name,
-        [Description("Full skill content in markdown format")] string content)
+        [Description("Full skill content in markdown format")] string content,
+        [Description("Optional list of sub-resource files to save alongside the skill. " +
+                     "Each resource must supply filename, type, description, and content. " +
+                     "Providing this list replaces all previously saved resources for this skill.")] IReadOnlyList<SkillResourceInput>? resources = null)
     {
-        _logger.LogInformation("Tool call: SaveSkill(name={Name})", name);
+        _logger.LogInformation("Tool call: SaveSkill(name={Name}, resourceCount={Count})", name, resources?.Count ?? 0);
 
         var now = DateTimeOffset.UtcNow;
         var existing = await _skillStore.GetAsync(name);
 
         // Save immediately with empty summary; LLM generates it in the background
         var skill = new Skill(name, "", content, existing?.CreatedAt ?? now, now, LastUsedAt: now);
-        await _skillStore.SaveAsync(skill);
+        await _skillStore.SaveAsync(skill, resources);
 
         _ = Task.Run(() => GenerateSummaryAsync(name, content));
 

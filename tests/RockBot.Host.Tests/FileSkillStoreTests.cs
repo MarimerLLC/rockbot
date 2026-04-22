@@ -250,6 +250,205 @@ public class FileSkillStoreTests
         CollectionAssert.Contains(result!.SeeAlso!.ToList(), "mcp/guide");
     }
 
+    // ── Resources ─────────────────────────────────────────────────────────────
+
+    [TestMethod]
+    public async Task SaveAsync_WithResources_WritesResourceFiles()
+    {
+        var store = CreateStore();
+        var skill = MakeSkill("my-skill", "summary", "content");
+        var resources = new List<SkillResourceInput>
+        {
+            new("script.py", SkillResourceType.Python, "A helper script", "print('hello')")
+        };
+
+        await store.SaveAsync(skill, resources);
+
+        Assert.IsTrue(File.Exists(Path.Combine(_tempDir, "my-skill", "script.py")));
+        Assert.AreEqual("print('hello')", await File.ReadAllTextAsync(Path.Combine(_tempDir, "my-skill", "script.py")));
+    }
+
+    [TestMethod]
+    public async Task SaveAsync_WithResources_StoresManifestInSkillJson()
+    {
+        var store = CreateStore();
+        var skill = MakeSkill("my-skill", "summary", "content");
+        var resources = new List<SkillResourceInput>
+        {
+            new("script.py", SkillResourceType.Python, "A helper script", "print('hello')"),
+            new("schema.json", SkillResourceType.JsonSchema, "Input schema", "{}")
+        };
+
+        await store.SaveAsync(skill, resources);
+
+        var result = await store.GetAsync("my-skill");
+        Assert.IsNotNull(result);
+        Assert.IsNotNull(result.Manifest);
+        Assert.AreEqual(2, result.Manifest!.Count);
+        Assert.AreEqual("script.py", result.Manifest[0].Filename);
+        Assert.AreEqual(SkillResourceType.Python, result.Manifest[0].Type);
+        Assert.AreEqual("A helper script", result.Manifest[0].Description);
+        Assert.AreEqual("schema.json", result.Manifest[1].Filename);
+        Assert.AreEqual(SkillResourceType.JsonSchema, result.Manifest[1].Type);
+    }
+
+    [TestMethod]
+    public async Task SaveAsync_WithResources_ManifestPersistedAcrossInstances()
+    {
+        var store1 = CreateStore();
+        var skill = MakeSkill("my-skill", "summary", "content");
+        var resources = new List<SkillResourceInput>
+        {
+            new("helper.py", SkillResourceType.Python, "Helper", "# code")
+        };
+
+        await store1.SaveAsync(skill, resources);
+
+        var store2 = CreateStore();
+        var result = await store2.GetAsync("my-skill");
+        Assert.IsNotNull(result?.Manifest);
+        Assert.AreEqual(1, result!.Manifest!.Count);
+        Assert.AreEqual("helper.py", result.Manifest[0].Filename);
+    }
+
+    [TestMethod]
+    public async Task GetResourceAsync_ReturnsFileContent()
+    {
+        var store = CreateStore();
+        await store.SaveAsync(MakeSkill("my-skill", "summary", "content"),
+            [new("script.py", SkillResourceType.Python, "desc", "print('hello')")]);
+
+        var content = await store.GetResourceAsync("my-skill", "script.py");
+
+        Assert.AreEqual("print('hello')", content);
+    }
+
+    [TestMethod]
+    public async Task GetResourceAsync_NonexistentResource_ReturnsNull()
+    {
+        var store = CreateStore();
+        await store.SaveAsync(MakeSkill("my-skill", "summary", "content"));
+
+        var content = await store.GetResourceAsync("my-skill", "ghost.py");
+
+        Assert.IsNull(content);
+    }
+
+    [TestMethod]
+    public async Task SaveAsync_WithResources_PrunesOrphanedFiles()
+    {
+        var store = CreateStore();
+        var skill = MakeSkill("my-skill", "summary", "content");
+
+        // First save with two resources
+        await store.SaveAsync(skill,
+        [
+            new("a.py", SkillResourceType.Python, "desc", "code a"),
+            new("b.py", SkillResourceType.Python, "desc", "code b")
+        ]);
+
+        // Re-save with only one resource — the other should be pruned
+        await store.SaveAsync(skill with { },
+        [
+            new("a.py", SkillResourceType.Python, "desc", "code a v2")
+        ]);
+
+        Assert.IsTrue(File.Exists(Path.Combine(_tempDir, "my-skill", "a.py")));
+        Assert.IsFalse(File.Exists(Path.Combine(_tempDir, "my-skill", "b.py")));
+
+        var manifest = (await store.GetAsync("my-skill"))?.Manifest;
+        Assert.IsNotNull(manifest);
+        Assert.AreEqual(1, manifest!.Count);
+        Assert.AreEqual("a.py", manifest[0].Filename);
+    }
+
+    [TestMethod]
+    public async Task DeleteAsync_WithResources_DeletesResourceFolder()
+    {
+        var store = CreateStore();
+        await store.SaveAsync(MakeSkill("my-skill", "summary", "content"),
+            [new("script.py", SkillResourceType.Python, "desc", "code")]);
+
+        Assert.IsTrue(Directory.Exists(Path.Combine(_tempDir, "my-skill")));
+
+        await store.DeleteAsync("my-skill");
+
+        Assert.IsFalse(File.Exists(Path.Combine(_tempDir, "my-skill.json")));
+        Assert.IsFalse(Directory.Exists(Path.Combine(_tempDir, "my-skill")));
+    }
+
+    [TestMethod]
+    public async Task EnsureIndexAsync_SkipsResourceSubfolderJsonFiles()
+    {
+        // Write a skill and a resource JSON inside its subfolder
+        var store1 = CreateStore();
+        await store1.SaveAsync(MakeSkill("my-skill", "summary", "content"),
+            [new("extra.json", SkillResourceType.JsonSchema, "desc", "{\"type\":\"object\"}")]);
+
+        // A new store instance should load exactly one skill, not the resource JSON
+        var store2 = CreateStore();
+        var list = await store2.ListAsync();
+
+        Assert.AreEqual(1, list.Count);
+        Assert.AreEqual("my-skill", list[0].Name);
+    }
+
+    [TestMethod]
+    public async Task SaveAsync_WithResources_SubcategorySkill_CreatesCorrectFolderLayout()
+    {
+        var store = CreateStore();
+        await store.SaveAsync(MakeSkill("research/summarize", "summary", "content"),
+            [new("helper.py", SkillResourceType.Python, "desc", "# code")]);
+
+        Assert.IsTrue(File.Exists(Path.Combine(_tempDir, "research", "summarize.json")));
+        Assert.IsTrue(File.Exists(Path.Combine(_tempDir, "research", "summarize", "helper.py")));
+    }
+
+    [TestMethod]
+    public void ValidateFilename_RejectsEmptyString()
+    {
+        Assert.ThrowsExactly<ArgumentException>(() =>
+            FileSkillStore.ValidateFilename(""));
+    }
+
+    [TestMethod]
+    public void ValidateFilename_RejectsPathSeparator()
+    {
+        Assert.ThrowsExactly<ArgumentException>(() =>
+            FileSkillStore.ValidateFilename("sub/path.py"));
+    }
+
+    [TestMethod]
+    public void ValidateFilename_RejectsBackslash()
+    {
+        Assert.ThrowsExactly<ArgumentException>(() =>
+            FileSkillStore.ValidateFilename(@"sub\path.py"));
+    }
+
+    [TestMethod]
+    public void ValidateFilename_RejectsDotDot()
+    {
+        Assert.ThrowsExactly<ArgumentException>(() =>
+            FileSkillStore.ValidateFilename("../etc/passwd"));
+    }
+
+    [TestMethod]
+    public void ValidateFilename_RejectsInvalidCharacters()
+    {
+        Assert.ThrowsExactly<ArgumentException>(() =>
+            FileSkillStore.ValidateFilename("my script .py"));
+    }
+
+    [TestMethod]
+    public void ValidateFilename_AcceptsValidFilenames()
+    {
+        // Should not throw
+        FileSkillStore.ValidateFilename("script.py");
+        FileSkillStore.ValidateFilename("schema.json");
+        FileSkillStore.ValidateFilename("my-helper_v2.py");
+        FileSkillStore.ValidateFilename("automation.wisp");
+    }
+
     // ── SearchAsync (BM25) ────────────────────────────────────────────────────
 
     [TestMethod]

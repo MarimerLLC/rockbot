@@ -20,6 +20,11 @@ namespace RockBot.Host;
 /// prefix cluster, commonly co-used skills, or logical complements. Populated by the dream
 /// consolidation pass; <c>null</c> or empty if no cross-references have been established.
 /// </param>
+/// <param name="Manifest">
+/// Descriptions of sub-resource files stored in the skill's subfolder on disk.
+/// Each entry corresponds to a file that can be fetched via <c>get_skill_resource</c>.
+/// <c>null</c> or empty for skills with no sub-resources (backwards-compatible).
+/// </param>
 public sealed record Skill(
     string Name,
     string Summary,
@@ -27,4 +32,5 @@ public sealed record Skill(
     DateTimeOffset CreatedAt,
     DateTimeOffset? UpdatedAt = null,
     DateTimeOffset? LastUsedAt = null,
-    IReadOnlyList<string>? SeeAlso = null);
+    IReadOnlyList<string>? SeeAlso = null,
+    IReadOnlyList<SkillResource>? Manifest = null);

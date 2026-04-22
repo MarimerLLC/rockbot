@@ -9,7 +9,7 @@ namespace RockBot.Skills;
 public sealed class SkillToolSkillProvider : IToolSkillProvider
 {
     public string Name => "skills";
-    public string Summary => "Skill documents (reusable procedures) and behavioral rules — how to create, use, and maintain them.";
+    public string Summary => "Skill documents (reusable procedures) and behavioral rules — how to create, use, maintain them, and attach structured artifacts as sub-resources.";
 
     public string GetDocument() =>
         """
@@ -79,6 +79,8 @@ public sealed class SkillToolSkillProvider : IToolSkillProvider
 
         Loads the full content of a named skill. Call this when the index shows a skill
         relevant to the current task — always load and follow it rather than improvising.
+        If the skill has sub-resources (scripts, schemas, etc.), they are listed at the
+        end of the response; use `get_skill_resource` to fetch them on demand.
 
         **Parameters**
         - `name` (string, required) — the skill name as shown in the index
@@ -88,34 +90,52 @@ public sealed class SkillToolSkillProvider : IToolSkillProvider
         ```
 
 
+        ### get_skill_resource
+
+        Fetches a single sub-resource file from a skill's resource folder. Call this
+        when `get_skill` shows a resource that you need — e.g. a Python script or JSON
+        schema that is referenced in the skill's instructions.
+
+        **Parameters**
+        - `skillName` (string, required) — the skill name
+        - `filename` (string, required) — the filename shown in the manifest (e.g. `script.py`)
+
+        ```
+        get_skill_resource("scripts/csv-processing", "transform.py")
+        ```
+
+
         ### save_skill
 
         Creates a new skill or updates an existing one. A one-line summary is generated
-        automatically and added to the index.
+        automatically and added to the index. Pass structured artifacts (scripts, schemas,
+        etc.) as `resources` rather than embedding them in the markdown body — this keeps
+        the markdown readable and lets native tooling (linters, diff tools) see the files.
 
         **Parameters**
         - `name` (string, required) — skill name following the naming conventions above
         - `content` (string, required) — full skill content in markdown
+        - `resources` (array, optional) — sub-resource files to save alongside the skill.
+          Each entry: `{ filename, type, description, content }`.
+          Providing this list **replaces** all previously saved resources for this skill.
+          Omit or pass an empty array to keep the skill markdown-only.
+
+        Available resource types: `Python`, `Wisp`, `JsonSchema`, `Markdown`, `Text`, `Other`.
 
         ```
         save_skill(
-          name: "plan-meeting",
-          content: "# Plan a Meeting\n\n## When to use\n..."
+          name: "scripts/csv-processing",
+          content: "# CSV Processing\n\n## When to use\n...",
+          resources: [
+            {
+              filename: "transform.py",
+              type: "Python",
+              description: "Transforms raw CSV rows into the normalized output format",
+              content: "import csv\n..."
+            }
+          ]
         )
         ```
-
-        **Writing a good skill document:**
-        - Start with a `# Title` heading
-        - Include a "When to use" section so the agent knows when to load the skill
-        - Number the steps — skills are procedures, not reference docs
-        - Include concrete examples with actual parameter values
-        - Note any pitfalls or edge cases discovered during real use
-        - Keep it focused on one task type; create separate skills for related but distinct tasks
-
-        **Updating an existing skill:**
-        - Load the current skill with `get_skill` first
-        - Add new steps, examples, or pitfall notes discovered during use
-        - Save with the same name to overwrite
 
 
         ### delete_skill
@@ -203,6 +223,10 @@ public sealed class SkillToolSkillProvider : IToolSkillProvider
           discover; the skill document should get better each time you use it
         - **Prefer updating over creating** — before saving a new skill, check whether
           an existing one covers the same ground and could be extended instead
+        - **Use resources for structured artifacts** — move Python scripts, JSON schemas,
+          wisp definitions, and similar files into `resources` rather than embedding them
+          in the markdown body; this keeps the markdown readable and lets `get_skill_resource`
+          load them on demand without bloating the context
         - **Rules are permanent and broad** — confirm intent with the user before adding
           one; they affect every future interaction
         - **Use `list_rules` to audit** — periodically surfacing active rules helps
@@ -215,6 +239,9 @@ public sealed class SkillToolSkillProvider : IToolSkillProvider
           the instructions in it
         - Creating skills that are too broad — one skill per distinct task type works
           better than a monolithic "how to do everything" document
+        - Embedding scripts or schemas inline in markdown — use `resources` instead so
+          native tooling can read them and agents can load them without paying for the
+          whole skill body
         - Adding rules for session-specific preferences — use conversational acknowledgment
           for per-session requests, rules only for permanent changes
         - Forgetting to update a skill after discovering a new pitfall — the next use

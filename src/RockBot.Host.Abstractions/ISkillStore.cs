@@ -6,8 +6,17 @@ namespace RockBot.Host;
 /// </summary>
 public interface ISkillStore
 {
-    /// <summary>Creates or replaces a skill.</summary>
+    /// <summary>Creates or replaces a skill (metadata and markdown only; does not touch resource files).</summary>
     Task SaveAsync(Skill skill);
+
+    /// <summary>
+    /// Saves a skill together with its sub-resource files as an atomic bundle.
+    /// Resource files are written to the skill's subfolder, orphaned files from previous saves
+    /// are removed, and the manifest is rebuilt from the provided resources.
+    /// When <paramref name="resources"/> is <c>null</c> or empty the call is equivalent to
+    /// <see cref="SaveAsync(Skill)"/>.
+    /// </summary>
+    Task SaveAsync(Skill skill, IReadOnlyList<SkillResourceInput>? resources) => SaveAsync(skill);
 
     /// <summary>Returns the skill by name, or <c>null</c> if not found.</summary>
     Task<Skill?> GetAsync(string name);
@@ -15,8 +24,17 @@ public interface ISkillStore
     /// <summary>Returns all skills ordered by name.</summary>
     Task<IReadOnlyList<Skill>> ListAsync();
 
-    /// <summary>Removes a skill. No-op if the skill does not exist.</summary>
+    /// <summary>Removes a skill and its resource subfolder. No-op if the skill does not exist.</summary>
     Task DeleteAsync(string name);
+
+    /// <summary>
+    /// Returns the text content of a named sub-resource file for a skill, or <c>null</c>
+    /// if the skill or the resource does not exist.
+    /// </summary>
+    /// <param name="skillName">The skill name (e.g. <c>plan-meeting</c>).</param>
+    /// <param name="filename">Simple filename of the resource (e.g. <c>script.py</c>).</param>
+    Task<string?> GetResourceAsync(string skillName, string filename) =>
+        Task.FromResult<string?>(null);
 
     /// <summary>
     /// Returns skills ranked by BM25 relevance against <paramref name="query"/>.
