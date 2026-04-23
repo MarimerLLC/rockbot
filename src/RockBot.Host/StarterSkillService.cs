@@ -55,9 +55,19 @@ internal sealed class StarterSkillService : IHostedService
                 UpdatedAt: DateTimeOffset.UtcNow,
                 LastUsedAt: null);
 
-            await _skillStore.SaveAsync(skill);
-            seeded++;
-            _logger.LogInformation("StarterSkillService: seeded starter skill '{Name}'", provider.Name);
+            try
+            {
+                await _skillStore.SaveAsync(skill);
+                seeded++;
+                _logger.LogInformation("StarterSkillService: seeded starter skill '{Name}'", provider.Name);
+            }
+            catch (Exception ex)
+            {
+                // Seeding is best-effort — a starter skill failing to save must not crash the host.
+                _logger.LogWarning(ex,
+                    "StarterSkillService: failed to seed starter skill '{Name}'; continuing",
+                    provider.Name);
+            }
         }
 
         _logger.LogInformation(

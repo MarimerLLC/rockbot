@@ -264,8 +264,8 @@ public class FileSkillStoreTests
 
         await store.SaveAsync(skill, resources);
 
-        Assert.IsTrue(File.Exists(Path.Combine(_tempDir, "my-skill", "script.py")));
-        Assert.AreEqual("print('hello')", await File.ReadAllTextAsync(Path.Combine(_tempDir, "my-skill", "script.py")));
+        Assert.IsTrue(File.Exists(Path.Combine(_tempDir, "my-skill.resources", "script.py")));
+        Assert.AreEqual("print('hello')", await File.ReadAllTextAsync(Path.Combine(_tempDir, "my-skill.resources", "script.py")));
     }
 
     [TestMethod]
@@ -353,8 +353,8 @@ public class FileSkillStoreTests
             new("a.py", SkillResourceType.Python, "desc", "code a v2")
         ]);
 
-        Assert.IsTrue(File.Exists(Path.Combine(_tempDir, "my-skill", "a.py")));
-        Assert.IsFalse(File.Exists(Path.Combine(_tempDir, "my-skill", "b.py")));
+        Assert.IsTrue(File.Exists(Path.Combine(_tempDir, "my-skill.resources", "a.py")));
+        Assert.IsFalse(File.Exists(Path.Combine(_tempDir, "my-skill.resources", "b.py")));
 
         var manifest = (await store.GetAsync("my-skill"))?.Manifest;
         Assert.IsNotNull(manifest);
@@ -369,18 +369,18 @@ public class FileSkillStoreTests
         await store.SaveAsync(MakeSkill("my-skill", "summary", "content"),
             [new("script.py", SkillResourceType.Python, "desc", "code")]);
 
-        Assert.IsTrue(Directory.Exists(Path.Combine(_tempDir, "my-skill")));
+        Assert.IsTrue(Directory.Exists(Path.Combine(_tempDir, "my-skill.resources")));
 
         await store.DeleteAsync("my-skill");
 
         Assert.IsFalse(File.Exists(Path.Combine(_tempDir, "my-skill.json")));
-        Assert.IsFalse(Directory.Exists(Path.Combine(_tempDir, "my-skill")));
+        Assert.IsFalse(Directory.Exists(Path.Combine(_tempDir, "my-skill.resources")));
     }
 
     [TestMethod]
-    public async Task EnsureIndexAsync_SkipsResourceSubfolderJsonFiles()
+    public async Task EnsureIndexAsync_SkipsResourceFolderJsonFiles()
     {
-        // Write a skill and a resource JSON inside its subfolder
+        // Write a skill and a resource JSON inside its resource folder
         var store1 = CreateStore();
         await store1.SaveAsync(MakeSkill("my-skill", "summary", "content"),
             [new("extra.json", SkillResourceType.JsonSchema, "desc", "{\"type\":\"object\"}")]);
@@ -401,7 +401,7 @@ public class FileSkillStoreTests
             [new("helper.py", SkillResourceType.Python, "desc", "# code")]);
 
         Assert.IsTrue(File.Exists(Path.Combine(_tempDir, "research", "summarize.json")));
-        Assert.IsTrue(File.Exists(Path.Combine(_tempDir, "research", "summarize", "helper.py")));
+        Assert.IsTrue(File.Exists(Path.Combine(_tempDir, "research", "summarize.resources", "helper.py")));
     }
 
     [TestMethod]
@@ -424,50 +424,44 @@ public class FileSkillStoreTests
         Assert.IsNotNull(result.Manifest);
         Assert.AreEqual(1, result.Manifest!.Count);
         Assert.AreEqual("script.py", result.Manifest[0].Filename);
-        Assert.IsTrue(File.Exists(Path.Combine(_tempDir, "my-skill", "script.py")));
+        Assert.IsTrue(File.Exists(Path.Combine(_tempDir, "my-skill.resources", "script.py")));
     }
 
-    // ── Name conflict detection ────────────────────────────────────────────────
+    // ── Top-level and subcategory skill coexistence ───────────────────────────
+    // The reserved ".resources" folder suffix means top-level skill "a" (which
+    // stores its resources under "a.resources/") cannot collide with subcategory
+    // skill "a/b" (which lives under "a/b.json"). Both layouts must coexist.
 
     [TestMethod]
-    public async Task SaveAsync_AncestorSkillExists_ThrowsInvalidOperation()
+    public async Task SaveAsync_TopLevelAndSubcategorySkillsCoexist()
     {
-        // Saving "research/summarize" when "research" already exists would place
-        // "research/summarize.json" inside "research"'s resource folder, making it unreachable.
         var store = CreateStore();
-        await store.SaveAsync(MakeSkill("research", "summary", "content"));
+        await store.SaveAsync(MakeSkill("research", "summary", "top-level"));
+        await store.SaveAsync(MakeSkill("research/summarize", "summary", "subcategory"));
 
-        await Assert.ThrowsExactlyAsync<InvalidOperationException>(() =>
-            store.SaveAsync(MakeSkill("research/summarize", "summary", "content")));
-    }
-
-    [TestMethod]
-    public async Task SaveAsync_SubcategorySkillExists_ThrowsInvalidOperation()
-    {
-        // Saving "research" when "research/summarize" already exists would turn
-        // "research/" into a resource folder, making "research/summarize" unreachable.
-        var store = CreateStore();
-        await store.SaveAsync(MakeSkill("research/summarize", "summary", "content"));
-
-        await Assert.ThrowsExactlyAsync<InvalidOperationException>(() =>
-            store.SaveAsync(MakeSkill("research", "summary", "content")));
+        Assert.IsNotNull(await store.GetAsync("research"));
+        Assert.IsNotNull(await store.GetAsync("research/summarize"));
     }
 
     [TestMethod]
-    public async Task SaveAsync_DeepNestingAncestorConflict_ThrowsInvalidOperation()
+    public async Task SaveAsync_TopLevelSkillWithResources_DoesNotShadowSubcategory()
     {
-        // "a" exists; saving "a/b/c" should fail because "a" is an ancestor
-        var store = CreateStore();
-        await store.SaveAsync(MakeSkill("a", "summary", "content"));
+        var store1 = CreateStore();
+        await store1.SaveAsync(MakeSkill("research/summarize", "summary", "subcategory"));
+        await store1.SaveAsync(MakeSkill("research", "summary", "top-level"),
+            [new("helper.py", SkillResourceType.Python, "desc", "# code")]);
 
-        await Assert.ThrowsExactlyAsync<InvalidOperationException>(() =>
-            store.SaveAsync(MakeSkill("a/b/c", "summary", "content")));
+        // A new store must see both skills after re-indexing
+        var store2 = CreateStore();
+        var names = (await store2.ListAsync()).Select(s => s.Name).ToList();
+
+        CollectionAssert.Contains(names, "research");
+        CollectionAssert.Contains(names, "research/summarize");
     }
 
     [TestMethod]
     public async Task SaveAsync_NoConflict_SiblingSkillsSucceed()
     {
-        // "alpha" and "alpha-extended" share no prefix relationship — both should save fine.
         var store = CreateStore();
         await store.SaveAsync(MakeSkill("alpha", "summary", "content"));
         await store.SaveAsync(MakeSkill("alpha-extended", "summary", "content"));
@@ -479,7 +473,6 @@ public class FileSkillStoreTests
     [TestMethod]
     public async Task SaveAsync_NoConflict_SiblingSubcategorySkillsSucceed()
     {
-        // "research/plan" and "research/summarize" are siblings — both should save fine.
         var store = CreateStore();
         await store.SaveAsync(MakeSkill("research/plan", "summary", "content"));
         await store.SaveAsync(MakeSkill("research/summarize", "summary", "content"));

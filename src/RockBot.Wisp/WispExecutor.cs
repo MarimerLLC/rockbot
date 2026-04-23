@@ -19,11 +19,13 @@ internal sealed class WispExecutor(
     IWorkingMemory workingMemory,
     AgentLoopRunner agentLoopRunner,
     WispOptions options,
-    ILogger<WispExecutor> logger)
+    ILogger<WispExecutor> logger,
+    ILlmClient? llmClient = null)
 {
     private const int DefaultLlmStepMaxIterations = 10;
     private const int InputChunkingThreshold = 8_000;
     private const int ChunkMaxLength = 20_000;
+    private const string NoCorrectionSentinel = "NO_CORRECTION";
     private static readonly TimeSpan WispChunkTtl = TimeSpan.FromMinutes(30);
 
     internal static readonly string WispDirectives =
@@ -226,6 +228,66 @@ internal sealed class WispExecutor(
             };
         }
 
+        // Pre-flight schema validation for MCP gateway steps. Catches authoring
+        // mistakes (missing required fields, unknown fields under a closed schema)
+        // before the tool is invoked, so a silent "empty result" can't be mistaken
+        // for a valid answer. On failure, attempt a single focused auto-correction
+        // LLM call — a tool-less one-shot that sees only the failing params and the
+        // schema summary. If the correction passes validation, the step proceeds
+        // with corrected params; otherwise the original error is surfaced.
+        var validationError = McpStepValidator.Validate(step, toolRegistry);
+        if (validationError is not null)
+        {
+            var corrected = await TryAutoCorrectMcpParamsAsync(step, validationError, ct);
+            if (corrected is null)
+            {
+                return new WispStepResult
+                {
+                    StepId = step.Id,
+                    StepIndex = index,
+                    IsSuccess = false,
+                    Error = validationError,
+                    Duration = stepSw.Elapsed
+                };
+            }
+
+            // Re-route with corrected params. A fresh validation pass proves the
+            // correction is schema-clean; if it isn't, bubble the original error
+            // rather than trying again.
+            step = corrected;
+            route = GatewayRouter.Route(step, wispId, priorResults);
+            if (!route.IsSuccess)
+            {
+                return new WispStepResult
+                {
+                    StepId = step.Id,
+                    StepIndex = index,
+                    IsSuccess = false,
+                    Error = new WispStepError
+                    {
+                        Category = route.ErrorCategory ?? FailureCategory.Structural,
+                        Message = route.ErrorMessage!
+                    },
+                    Duration = stepSw.Elapsed
+                };
+            }
+            var recheck = McpStepValidator.Validate(step, toolRegistry);
+            if (recheck is not null)
+            {
+                return new WispStepResult
+                {
+                    StepId = step.Id,
+                    StepIndex = index,
+                    IsSuccess = false,
+                    Error = validationError,
+                    Duration = stepSw.Elapsed
+                };
+            }
+            logger.LogInformation(
+                "Wisp {WispId} step {StepId}: auto-corrected schema validation failure for {Server}/{Tool}",
+                wispId, step.Id, step.Server, step.Tool);
+        }
+
         // Resolve the executor from the registry
         var executor = toolRegistry.GetExecutor(route.ToolName!);
         if (executor is null)
@@ -271,6 +333,29 @@ internal sealed class WispExecutor(
                 {
                     Category = category,
                     Message = response.Content ?? "Tool returned an error with no message",
+                    ToolName = route.ToolName
+                },
+                Duration = stepSw.Elapsed
+            };
+        }
+
+        // "Soft" error detection: some MCP servers return 200 OK with a body like
+        // {"error":"accountId is required"} instead of an MCP-transport error.
+        // Without this check the wisp treats the error text as valid output and
+        // propagates it to downstream steps.
+        var softErrorMessage = TryExtractSoftError(response.Content);
+        if (softErrorMessage is not null)
+        {
+            return new WispStepResult
+            {
+                StepId = step.Id,
+                StepIndex = index,
+                IsSuccess = false,
+                Content = response.Content,
+                Error = new WispStepError
+                {
+                    Category = ClassifyToolError(softErrorMessage),
+                    Message = softErrorMessage,
                     ToolName = route.ToolName
                 },
                 Duration = stepSw.Elapsed
@@ -632,6 +717,39 @@ internal sealed class WispExecutor(
     }
 
     /// <summary>
+    /// Inspects a (nominally successful) tool response body for a "soft error" —
+    /// a JSON object whose top-level <c>error</c> property is a string. Some MCP
+    /// servers return these instead of flagging a transport-level error. Returns
+    /// the error message when detected, or <c>null</c> when the content is not a
+    /// soft-error shape.
+    /// </summary>
+    private static string? TryExtractSoftError(string? content)
+    {
+        if (string.IsNullOrWhiteSpace(content))
+            return null;
+
+        var trimmed = content.TrimStart();
+        if (trimmed.Length == 0 || trimmed[0] != '{')
+            return null;
+
+        try
+        {
+            using var doc = JsonDocument.Parse(content);
+            if (doc.RootElement.ValueKind != JsonValueKind.Object)
+                return null;
+            if (!doc.RootElement.TryGetProperty("error", out var errorEl))
+                return null;
+            if (errorEl.ValueKind != JsonValueKind.String)
+                return null;
+            return errorEl.GetString();
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
     /// Classifies a tool error response into a failure category.
     /// </summary>
     private static FailureCategory ClassifyToolError(string? errorContent)
@@ -641,6 +759,9 @@ internal sealed class WispExecutor(
 
         // Structural: tool/param validation errors
         if (errorContent.Contains("Missing required parameter", StringComparison.OrdinalIgnoreCase)
+            || errorContent.Contains("is required", StringComparison.OrdinalIgnoreCase)
+            || errorContent.Contains("required parameter", StringComparison.OrdinalIgnoreCase)
+            || errorContent.Contains("was not provided", StringComparison.OrdinalIgnoreCase)
             || errorContent.Contains("not registered", StringComparison.OrdinalIgnoreCase)
             || errorContent.Contains("Unknown tool", StringComparison.OrdinalIgnoreCase)
             || errorContent.Contains("invalid", StringComparison.OrdinalIgnoreCase))
@@ -663,5 +784,92 @@ internal sealed class WispExecutor(
             return FailureCategory.Data;
 
         return FailureCategory.External;
+    }
+
+    /// <summary>
+    /// Single-shot focused LLM call that rewrites the failing step's <c>params</c>
+    /// to match the tool's schema. No tools available, narrow prompt, cheap tier.
+    /// Returns a new <see cref="WispStep"/> with corrected params on success, or
+    /// <c>null</c> if the correction attempt was skipped (no llm client wired up),
+    /// threw, or produced something we couldn't parse as a JSON object.
+    /// The caller re-validates — we don't trust this output blindly.
+    /// </summary>
+    private async Task<WispStep?> TryAutoCorrectMcpParamsAsync(
+        WispStep step, WispStepError error, CancellationToken ct)
+    {
+        if (llmClient is null)
+            return null;
+
+        var currentParams = step.ResolvedParams?.GetRawText() ?? "{}";
+        var prompt =
+            $"A wisp step's `params` failed schema validation. " +
+            $"Rewrite the params to match the tool's schema.\n\n" +
+            $"Tool: {step.Server}/{step.Tool}\n\n" +
+            $"Current params:\n{currentParams}\n\n" +
+            $"Validation error (includes the expected schema):\n{error.Message}\n\n" +
+            "Use ONLY values already present in the current params.\n" +
+            "- If a required field matches a current param's meaning under a different " +
+            "name (e.g. current `startDate` → schema `timeMin`, same value), remap it.\n" +
+            "- If a required field has NO semantic match in the current params, do NOT " +
+            $"invent one. Respond with exactly the word {NoCorrectionSentinel} and nothing " +
+            "else. The caller will surface the validation error so it can fetch the " +
+            "missing information itself.\n\n" +
+            "Return ONLY a single JSON object (corrected params) or the exact string " +
+            $"{NoCorrectionSentinel}. No code fences, no commentary, no prose.";
+
+        try
+        {
+            var response = await llmClient.GetResponseAsync(
+                [new ChatMessage(ChatRole.User, prompt)],
+                ModelTier.Low,
+                options: null,
+                cancellationToken: ct);
+
+            var text = StripCodeFences(response.Text?.Trim() ?? "");
+            if (string.IsNullOrEmpty(text))
+                return null;
+
+            // LLM declined to correct — it couldn't fill a required field honestly.
+            // Surface the original validation error to the caller instead.
+            if (text.Equals(NoCorrectionSentinel, StringComparison.Ordinal))
+            {
+                logger.LogInformation(
+                    "Wisp {StepId}: auto-correction declined (NO_CORRECTION) — bubbling validation error",
+                    step.Id);
+                return null;
+            }
+
+            using var doc = JsonDocument.Parse(text);
+            if (doc.RootElement.ValueKind != JsonValueKind.Object)
+                return null;
+
+            // Clone the element so it outlives the JsonDocument's dispose
+            var corrected = JsonDocument.Parse(doc.RootElement.GetRawText()).RootElement;
+            return step with { Params = corrected, Input = null, Arguments = null };
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex,
+                "Wisp auto-correction attempt failed for step {StepId} on {Server}/{Tool}",
+                step.Id, step.Server, step.Tool);
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Strips optional ```json / ``` fences an LLM may emit around a JSON payload.
+    /// </summary>
+    private static string StripCodeFences(string text)
+    {
+        if (text.StartsWith("```"))
+        {
+            var firstNewline = text.IndexOf('\n');
+            if (firstNewline > 0)
+                text = text[(firstNewline + 1)..];
+            if (text.EndsWith("```"))
+                text = text[..^3];
+            text = text.Trim();
+        }
+        return text;
     }
 }
