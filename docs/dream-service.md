@@ -1,3 +1,8 @@
+---
+title: Dream service
+nav_order: 11
+---
+
 # Dream service
 
 The dream service is a background `IHostedService` that runs on a configurable timer to

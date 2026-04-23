@@ -1,3 +1,8 @@
+---
+title: Agent host
+nav_order: 4
+---
+
 # Agent host
 
 The agent host is the runtime that wires together messaging, LLM calls, memory, skills, tools,

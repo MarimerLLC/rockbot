@@ -1,3 +1,8 @@
+---
+title: Getting started with Docker Desktop
+nav_order: 2
+---
+
 # Getting Started with Docker Desktop
 
 Run RockBot locally with Docker Compose on Docker Desktop. This is the simplest way to experiment with the agent — chat with it, explore its memory and skills system, and get a feel for how it works.

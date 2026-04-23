@@ -1,3 +1,8 @@
+---
+title: NuGet release
+nav_order: 14
+---
+
 # NuGet Package Release Process
 
 ## Overview

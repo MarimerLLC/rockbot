@@ -1,3 +1,8 @@
+---
+title: Memory
+nav_order: 6
+---
+
 # Memory subsystem
 
 RockBot uses a three-tier memory architecture. Each tier has a different scope, lifetime, and

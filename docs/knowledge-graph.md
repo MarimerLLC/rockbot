@@ -1,3 +1,8 @@
+---
+title: Knowledge graph
+nav_order: 12
+---
+
 # Knowledge graph
 
 RockBot includes a knowledge graph subsystem that stores entities and their relationships
