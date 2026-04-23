@@ -25,6 +25,7 @@ internal sealed class WispExecutor(
     private const int DefaultLlmStepMaxIterations = 10;
     private const int InputChunkingThreshold = 8_000;
     private const int ChunkMaxLength = 20_000;
+    private const string NoCorrectionSentinel = "NO_CORRECTION";
     private static readonly TimeSpan WispChunkTtl = TimeSpan.FromMinutes(30);
 
     internal static readonly string WispDirectives =
@@ -747,9 +748,15 @@ internal sealed class WispExecutor(
             $"Tool: {step.Server}/{step.Tool}\n\n" +
             $"Current params:\n{currentParams}\n\n" +
             $"Validation error (includes the expected schema):\n{error.Message}\n\n" +
-            "Return ONLY a single JSON object containing the corrected params — " +
-            "no code fences, no commentary, no prose. The object must contain every " +
-            "required field and no unknown fields.";
+            "Use ONLY values already present in the current params.\n" +
+            "- If a required field matches a current param's meaning under a different " +
+            "name (e.g. current `startDate` → schema `timeMin`, same value), remap it.\n" +
+            "- If a required field has NO semantic match in the current params, do NOT " +
+            $"invent one. Respond with exactly the word {NoCorrectionSentinel} and nothing " +
+            "else. The caller will surface the validation error so it can fetch the " +
+            "missing information itself.\n\n" +
+            "Return ONLY a single JSON object (corrected params) or the exact string " +
+            $"{NoCorrectionSentinel}. No code fences, no commentary, no prose.";
 
         try
         {
@@ -762,6 +769,16 @@ internal sealed class WispExecutor(
             var text = StripCodeFences(response.Text?.Trim() ?? "");
             if (string.IsNullOrEmpty(text))
                 return null;
+
+            // LLM declined to correct — it couldn't fill a required field honestly.
+            // Surface the original validation error to the caller instead.
+            if (text.Equals(NoCorrectionSentinel, StringComparison.Ordinal))
+            {
+                logger.LogInformation(
+                    "Wisp {StepId}: auto-correction declined (NO_CORRECTION) — bubbling validation error",
+                    step.Id);
+                return null;
+            }
 
             using var doc = JsonDocument.Parse(text);
             if (doc.RootElement.ValueKind != JsonValueKind.Object)

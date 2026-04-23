@@ -108,6 +108,29 @@ public class WispAutoCorrectTests
     }
 
     [TestMethod]
+    public async Task ValidationFailure_LlmReturnsNoCorrectionSentinel_OriginalErrorBubbled()
+    {
+        // When a required field is genuinely absent from the current params (no
+        // remappable equivalent), the rewriter must refuse to invent a value and
+        // instead emit NO_CORRECTION so the main agent can fetch the missing info.
+        var llm = new ScriptedLlmClient("NO_CORRECTION");
+        var (executor, registry, _) = CreateExecutor(llm);
+        RegisterCalendarMcp(registry, capturedArgs: null);
+
+        // Missing accountId entirely — no way for the rewriter to fill it honestly.
+        var definition = MakeCalendarWisp(
+            """{"calendarId":"c","timeMin":"t1","timeMax":"t2"}""");
+
+        var result = await executor.ExecuteAsync(definition, "wisp-ac-6", CancellationToken.None);
+
+        Assert.IsFalse(result.IsSuccess);
+        Assert.AreEqual(FailureCategory.Structural, result.FailedStep!.Error!.Category);
+        StringAssert.Contains(result.FailedStep.Error.Message, "accountId",
+            "Original validation error should be surfaced so the caller can fetch the missing field");
+        Assert.AreEqual(1, llm.CallCount, "LLM was called (and declined), not skipped");
+    }
+
+    [TestMethod]
     public async Task ValidationFailure_LlmWrapsResponseInCodeFences_StillParsed()
     {
         var llm = new ScriptedLlmClient("""
@@ -151,7 +174,7 @@ public class WispAutoCorrectTests
                 Source = "mcp-management"
             },
             capturedArgs is not null
-                ? new CapturingToolExecutor(r => capturedArgs.Add(r.Arguments), "{\"events\":[]}")
+                ? new CapturingToolExecutor(r => capturedArgs.Add(r.Arguments ?? ""), "{\"events\":[]}")
                 : new FakeToolExecutor("{\"events\":[]}"));
 
         // The target MCP tool whose schema the validator consults.
