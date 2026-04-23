@@ -355,6 +355,8 @@ Additional properties are configurable in `appsettings.json` under `ModelBehavio
 | Property | Type | Default | Purpose |
 |---|---|---|---|
 | `NudgeOnHallucinatedToolCalls` | bool | false | Inject a nudge when the model describes tool actions without emitting calls |
+| `NudgeOnLeakedToolSyntax` | bool | false | Retry when the model leaks tool-calling scaffolding (`to=multi_tool_use.parallel`, `to=functions.X`) into its text output. Language-agnostic; targets a documented OpenAI GPT-family failure mode. Safe to enable for any deployment |
+| `NudgeOnUnexpectedCjkOutput` | bool | false | Retry when the model emits 3+ consecutive CJK codepoints — a heuristic for English-primary deployments where CJK output correlates with training-data contamination. **Leave off for agents that legitimately respond in Chinese or Japanese** |
 | `MaxToolIterationsOverride` | int? | null (uses `AgentHost:MaxToolIterations`) | Override the per-request tool-loop iteration cap |
 | `ToolResultChunkingThreshold` | int? | null (uses 64 000) | Char count above which tool results are chunked into working memory instead of appended inline |
 | `ScheduledTaskResultMode` | enum | `Summarize` | How scheduled task output is presented (`Summarize`, `VerbatimOutput`, `SummarizeWithOutput`) |

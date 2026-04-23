@@ -76,6 +76,39 @@ public sealed partial class AgentLoopRunner(
         "mcp_list_services or search_known_services, then use mcp_invoke_tool to call them.";
 
     /// <summary>
+    /// Detects internal tool-call scaffolding that has leaked into the model's text output
+    /// (e.g. <c>to=multi_tool_use.parallel</c>, <c>to=functions.X</c>). A specific,
+    /// language-agnostic signature of a known OpenAI GPT-family failure mode. Gated by
+    /// <see cref="ModelBehavior.NudgeOnLeakedToolSyntax"/>.
+    /// </summary>
+    public static readonly Regex LeakedToolSyntaxRegex = new(
+        @"\bto\s*=\s*multi_tool_use\.parallel\b" +
+        @"|\bto\s*=\s*functions\.[A-Za-z_]\w*",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+    public const string LeakedToolSyntaxNudge =
+        "Your previous response contained leaked tool-call scaffolding (e.g. " +
+        "'to=multi_tool_use.parallel' or 'to=functions.*') as literal text. " +
+        "Discard that response and answer again using valid tool calls and normal prose only. " +
+        "Never emit those internal formatting tokens as output.";
+
+    /// <summary>
+    /// Detects runs of 3+ consecutive CJK codepoints — a heuristic signal that an
+    /// English-primary agent has drifted off-distribution (e.g. into gambling-SEO
+    /// training-data contamination). Covers CJK Unified Ideographs and Extension A.
+    /// Does not cover hiragana / katakana. Gated by
+    /// <see cref="ModelBehavior.NudgeOnUnexpectedCjkOutput"/> — only enable for
+    /// deployments that never legitimately respond in Chinese or Japanese.
+    /// </summary>
+    public static readonly Regex UnexpectedCjkRegex = new(
+        @"[㐀-䶿一-鿿]{3,}",
+        RegexOptions.Compiled);
+
+    public const string UnexpectedCjkNudge =
+        "Your previous response contained unexpected Chinese or Japanese text that was " +
+        "not requested. Discard that response and answer the user again in English only.";
+
+    /// <summary>
     /// Context window limit in tokens, learned from the first overflow error (text-based path only).
     /// </summary>
     private int? _knownContextLimit;
@@ -275,6 +308,49 @@ public sealed partial class AgentLoopRunner(
                 HostDiagnostics.CompletionCheckSkipped.Add(1);
                 logger.LogInformation("Completion evaluator: SKIPPED (consecutive timeouts)");
                 return result.Response;
+            }
+
+            // Model-specific sanity checks on the output. Each is independently gated by
+            // a flag in ModelBehavior so operators can enable only what applies to their
+            // deployment (e.g. CJK detection is wrong for a Chinese- or Japanese-language
+            // agent). If any enabled check matches, force a retry using the existing
+            // reprompt budget.
+            var toolSyntaxLeak = modelBehavior.NudgeOnLeakedToolSyntax
+                && LeakedToolSyntaxRegex.IsMatch(result.Response);
+            var cjkLeak = modelBehavior.NudgeOnUnexpectedCjkOutput
+                && UnexpectedCjkRegex.IsMatch(result.Response);
+
+            if (toolSyntaxLeak || cjkLeak)
+            {
+                var diagnostic = (toolSyntaxLeak, cjkLeak) switch
+                {
+                    (true, true) => "leaked tool-call scaffolding AND unexpected CJK output",
+                    (true, false) => "leaked tool-call scaffolding",
+                    (false, true) => "unexpected CJK output",
+                    _ => "broken output",
+                };
+
+                if (reprompt < maxReprompts)
+                {
+                    logger.LogWarning(
+                        "Output quality check failed ({Diagnostic}) in response ({Length} chars); " +
+                        "forcing retry (reprompt {Reprompt}/{Max})",
+                        diagnostic, result.Response.Length, reprompt, maxReprompts);
+
+                    chatMessages.Add(new ChatMessage(ChatRole.Assistant, result.Response));
+                    var qualityNudge = toolSyntaxLeak && cjkLeak
+                        ? LeakedToolSyntaxNudge + " " + UnexpectedCjkNudge
+                        : toolSyntaxLeak
+                            ? LeakedToolSyntaxNudge
+                            : UnexpectedCjkNudge;
+                    chatMessages.Add(new ChatMessage(ChatRole.User, qualityNudge));
+                    continue;
+                }
+
+                logger.LogError(
+                    "Output quality check failed ({Diagnostic}) in final response ({Length} chars); " +
+                    "no reprompt budget remaining — returning as-is",
+                    diagnostic, result.Response.Length);
             }
 
             // Skip evaluation when disabled or on the final re-prompt.

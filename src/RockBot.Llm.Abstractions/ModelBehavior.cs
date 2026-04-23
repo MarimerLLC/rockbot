@@ -87,4 +87,23 @@ public sealed class ModelBehavior
     /// Null means use the host's built-in default (<see cref="Host.AgentHostOptions.MaxFollowUpPasses"/>).
     /// </summary>
     public int? MaxFollowUpPassesOverride { get; init; }
+
+    /// <summary>
+    /// When true, detect leaked internal tool-call scaffolding in the model's text output
+    /// (e.g. <c>to=multi_tool_use.parallel</c> or <c>to=functions.X</c>) and force a retry
+    /// (consuming one completion-reprompt slot) instead of returning the malformed response.
+    /// Targets a specific, documented failure mode of OpenAI GPT-family models where the
+    /// model emits training-time scaffolding as literal text. Language-agnostic and safe
+    /// to enable for any deployment; legitimate responses never contain these tokens.
+    /// </summary>
+    public bool NudgeOnLeakedToolSyntax { get; init; }
+
+    /// <summary>
+    /// When true, detect runs of 3+ consecutive CJK codepoints in the model's output and
+    /// force a retry. Intended for English-primary deployments where CJK output correlates
+    /// with the model producing gambling-SEO spam or other training-data contamination.
+    /// This is a heuristic — DO NOT enable for agents that legitimately process or respond
+    /// in Chinese or Japanese, or it will force unnecessary retries on valid responses.
+    /// </summary>
+    public bool NudgeOnUnexpectedCjkOutput { get; init; }
 }
