@@ -56,4 +56,8 @@ public sealed class ModelBehaviorEntry
 
     /// <inheritdoc cref="ModelBehavior.NudgeOnUnexpectedCjkOutput"/>
     public bool NudgeOnUnexpectedCjkOutput { get; set; }
+
+    /// <inheritdoc cref="ModelBehavior.NudgeOnToolFailureGiveup"/>
+    /// <remarks>Defaults to true when this entry is absent; nullable so individual entries can opt out.</remarks>
+    public bool? NudgeOnToolFailureGiveup { get; set; }
 }

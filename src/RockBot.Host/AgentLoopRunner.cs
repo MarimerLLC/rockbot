@@ -109,6 +109,28 @@ public sealed partial class AgentLoopRunner(
         "not requested. Discard that response and answer the user again in English only.";
 
     /// <summary>
+    /// Detects responses where the model gives up after a tool returned an error instead of
+    /// retrying. Matches phrasings that specifically invoke tool failure ("tool failure",
+    /// "errored on both", "from the current tool state", <c>tool_name errored</c>, etc.),
+    /// not generic business-logic failures. Gated by
+    /// <see cref="ModelBehavior.NudgeOnToolFailureGiveup"/>.
+    /// </summary>
+    public static readonly Regex ToolFailureGiveupRegex = new(
+        @"\btool\s+(?:failure|error|call\s+failed|call\s+errored)\b" +
+        @"|\bfrom\s+(?:the\s+)?current\s+tool\s+state\b" +
+        @"|\b[a-z][a-z0-9]*_[a-z0-9_]+\s+(?:errored|failed|returned\s+an?\s+error)\b" +
+        @"|\berrored\s+on\s+(?:both|all|every|the)\b" +
+        @"|\b(?:tool|call)\s+returned\s+an?\s+error\b" +
+        @"|\bfailed\s+to\s+(?:invoke|call|execute)\s+(?:the\s+)?(?:tool|[a-z][a-z0-9]*_[a-z0-9_]+)\b",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+    public const string ToolFailureRetryNudge =
+        "A tool call returned an error, but you reported failure to the user without retrying. " +
+        "Transient tool errors are common — call the same tool again once before giving up. " +
+        "If it fails again with the same error, try a different approach or different arguments. " +
+        "Only report failure to the user after a retry has also failed.";
+
+    /// <summary>
     /// Context window limit in tokens, learned from the first overflow error (text-based path only).
     /// </summary>
     private int? _knownContextLimit;
@@ -289,6 +311,7 @@ public sealed partial class AgentLoopRunner(
         var originalUserRequest = ExtractOriginalUserRequest(chatMessages);
         var maxReprompts = modelBehavior.MaxCompletionRepromptsOverride
             ?? hostOptions.Value.MaxCompletionReprompts;
+        var alreadyNudgedToolFailure = false;
 
         for (var reprompt = 0; reprompt <= maxReprompts; reprompt++)
         {
@@ -351,6 +374,29 @@ public sealed partial class AgentLoopRunner(
                     "Output quality check failed ({Diagnostic}) in final response ({Length} chars); " +
                     "no reprompt budget remaining — returning as-is",
                     diagnostic, result.Response.Length);
+            }
+
+            // Model-gave-up-on-tool-failure check. Fires when the final response strongly
+            // suggests the model saw a tool error and reported failure to the user without
+            // retrying. One nudge (per reprompt slot) asks it to try once more. The
+            // RepetitiveToolCallDetector caps runaway repeated-failure loops at 3 identical
+            // calls; the reprompt budget caps total turns. Only fires once per RunAsync
+            // invocation so we don't loop on the same nudge.
+            if (modelBehavior.NudgeOnToolFailureGiveup
+                && !alreadyNudgedToolFailure
+                && result.ExitReason == LoopExitReason.ModelStopped
+                && ToolFailureGiveupRegex.IsMatch(result.Response)
+                && reprompt < maxReprompts)
+            {
+                logger.LogWarning(
+                    "Tool-failure giveup detected in response ({Length} chars); " +
+                    "nudging model to retry the tool (reprompt {Reprompt}/{Max})",
+                    result.Response.Length, reprompt, maxReprompts);
+
+                chatMessages.Add(new ChatMessage(ChatRole.Assistant, result.Response));
+                chatMessages.Add(new ChatMessage(ChatRole.User, ToolFailureRetryNudge));
+                alreadyNudgedToolFailure = true;
+                continue;
             }
 
             // Skip evaluation when disabled or on the final re-prompt.

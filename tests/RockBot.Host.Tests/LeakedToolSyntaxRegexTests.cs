@@ -100,4 +100,71 @@ public class LeakedToolSyntaxRegexTests
         Assert.IsFalse(AgentLoopRunner.UnexpectedCjkRegex.IsMatch(
             "Here is a summary:\n- Item 1\n- Item 2\n\n## Next steps\nI will do X."));
     }
+
+    // ── ToolFailureGiveupRegex — model gave up after a tool error ────────────
+
+    [TestMethod]
+    public void ToolFailureGiveup_Matches_HitToolFailure()
+    {
+        Assert.IsTrue(AgentLoopRunner.ToolFailureGiveupRegex.IsMatch(
+            "I hit a tool failure completing the todo: complete_task errored on both todo backends."));
+    }
+
+    [TestMethod]
+    public void ToolFailureGiveup_Matches_FromCurrentToolState()
+    {
+        Assert.IsTrue(AgentLoopRunner.ToolFailureGiveupRegex.IsMatch(
+            "I've verified the task details, but I could not mark it complete from the current tool state."));
+    }
+
+    [TestMethod]
+    public void ToolFailureGiveup_Matches_SnakeCaseToolNameErrored()
+    {
+        Assert.IsTrue(AgentLoopRunner.ToolFailureGiveupRegex.IsMatch(
+            "complete_task errored and delete_task also errored on the cluster."));
+    }
+
+    [TestMethod]
+    public void ToolFailureGiveup_Matches_ErroredOnBoth()
+    {
+        Assert.IsTrue(AgentLoopRunner.ToolFailureGiveupRegex.IsMatch(
+            "The call errored on both backends so I stopped."));
+    }
+
+    [TestMethod]
+    public void ToolFailureGiveup_Matches_FailedToInvokeToolName()
+    {
+        Assert.IsTrue(AgentLoopRunner.ToolFailureGiveupRegex.IsMatch(
+            "I failed to invoke mcp_invoke_tool and could not proceed."));
+    }
+
+    [TestMethod]
+    public void ToolFailureGiveup_DoesNotMatch_NormalSuccess()
+    {
+        Assert.IsFalse(AgentLoopRunner.ToolFailureGiveupRegex.IsMatch(
+            "I completed the task and the record was updated successfully."));
+    }
+
+    [TestMethod]
+    public void ToolFailureGiveup_DoesNotMatch_EmptySearchResult()
+    {
+        Assert.IsFalse(AgentLoopRunner.ToolFailureGiveupRegex.IsMatch(
+            "The search returned no results, so I could not find a matching entry."));
+    }
+
+    [TestMethod]
+    public void ToolFailureGiveup_DoesNotMatch_BusinessLogicFailure()
+    {
+        // A business-level failure that doesn't mention tools shouldn't trip this.
+        Assert.IsFalse(AgentLoopRunner.ToolFailureGiveupRegex.IsMatch(
+            "Your cancellation request failed because the event has already started."));
+    }
+
+    [TestMethod]
+    public void ToolFailureGiveup_DoesNotMatch_ProseAboutErrors()
+    {
+        // Describing an error value from a log or output as part of normal analysis.
+        Assert.IsFalse(AgentLoopRunner.ToolFailureGiveupRegex.IsMatch(
+            "The log line mentioned an error code 503, which usually indicates rate limiting."));
+    }
 }

@@ -67,6 +67,7 @@ internal sealed class DefaultModelBehaviorProvider(
 
             NudgeOnLeakedToolSyntax = entry?.NudgeOnLeakedToolSyntax ?? false,
             NudgeOnUnexpectedCjkOutput = entry?.NudgeOnUnexpectedCjkOutput ?? false,
+            NudgeOnToolFailureGiveup = entry?.NudgeOnToolFailureGiveup ?? true,
 
             // String properties: file takes priority over config value
             AdditionalSystemPrompt = additionalPrompt ?? entry?.AdditionalSystemPrompt,

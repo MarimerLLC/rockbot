@@ -17,7 +17,11 @@ public sealed class ModelBehavior
     public int ToolResultChunkingThreshold { get; init; } = 64_000;
 
     /// <summary>Behavior profile that applies no tweaks — used when no overrides are configured.</summary>
-    public static readonly ModelBehavior Default = new() { NudgeOnHallucinatedToolCalls = true };
+    public static readonly ModelBehavior Default = new()
+    {
+        NudgeOnHallucinatedToolCalls = true,
+        NudgeOnToolFailureGiveup = true,
+    };
 
     /// <summary>
     /// When true, detect responses where the model claims to have called tools (e.g. "I've
@@ -106,4 +110,14 @@ public sealed class ModelBehavior
     /// in Chinese or Japanese, or it will force unnecessary retries on valid responses.
     /// </summary>
     public bool NudgeOnUnexpectedCjkOutput { get; init; }
+
+    /// <summary>
+    /// When true, detect responses where the model gives up after a tool returned an
+    /// error ("I hit a tool failure", "errored on both", "from the current tool state",
+    /// etc.) and inject a nudge telling it to retry the tool once before reporting failure.
+    /// The <see cref="Host.AgentLoopRunner.RepetitiveToolCallDetector"/> and the existing
+    /// reprompt budget bound total retries, so persistent failures still surface to the user.
+    /// Enabled by default — general-purpose and model-agnostic.
+    /// </summary>
+    public bool NudgeOnToolFailureGiveup { get; init; }
 }
