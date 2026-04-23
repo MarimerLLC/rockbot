@@ -16,7 +16,8 @@ namespace RockBot.A2A;
 /// </summary>
 internal sealed class AgentDirectory(
     A2AOptions options,
-    ILogger<AgentDirectory> logger) : IAgentDirectory, IHostedService
+    ILogger<AgentDirectory> logger,
+    IHttpClientFactory? httpClientFactory = null) : IAgentDirectory, IHostedService
 {
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -98,6 +99,93 @@ internal sealed class AgentDirectory(
                 };
             }
             logger.LogInformation("Seeded well-known agent '{AgentName}'", card.AgentName);
+        }
+
+        // Enrich seeded well-known entries by fetching the peer's published
+        // /.well-known/agent-card.json — the A2A-spec source of truth for
+        // skills/description/version. Entries that already carry a skills array
+        // in well-known-agents.json are treated as explicit overrides and left alone
+        // (supports offline/airgapped deployments).
+        await EnrichWellKnownFromRemoteAsync(cancellationToken);
+    }
+
+    private async Task EnrichWellKnownFromRemoteAsync(CancellationToken cancellationToken)
+    {
+        if (httpClientFactory is null) return;
+
+        var toEnrich = options.WellKnownAgents
+            .Where(c => !string.IsNullOrWhiteSpace(c.Url) && (c.Skills is null || c.Skills.Count == 0))
+            .ToList();
+
+        if (toEnrich.Count == 0) return;
+
+        var tasks = toEnrich.Select(seed => FetchAndMergeAsync(seed, cancellationToken));
+        await Task.WhenAll(tasks);
+    }
+
+    private async Task FetchAndMergeAsync(AgentCard seed, CancellationToken ct)
+    {
+        try
+        {
+            using var httpClient = httpClientFactory!.CreateClient();
+            httpClient.Timeout = TimeSpan.FromSeconds(10);
+
+            if (!string.IsNullOrEmpty(seed.AuthHeaderName) &&
+                !string.IsNullOrEmpty(seed.AuthHeaderValueBase64))
+            {
+                var headerValue = System.Text.Encoding.UTF8.GetString(
+                    Convert.FromBase64String(seed.AuthHeaderValueBase64));
+                httpClient.DefaultRequestHeaders.TryAddWithoutValidation(seed.AuthHeaderName, headerValue);
+            }
+
+            var url = $"{seed.Url!.TrimEnd('/')}/.well-known/agent-card.json";
+            var response = await httpClient.GetAsync(url, ct);
+            if (!response.IsSuccessStatusCode)
+            {
+                logger.LogWarning(
+                    "Could not fetch agent-card for well-known peer '{AgentName}' from {Url}: HTTP {Status}",
+                    seed.AgentName, url, (int)response.StatusCode);
+                return;
+            }
+
+            var json = await response.Content.ReadAsStringAsync(ct);
+            var remote = JsonSerializer.Deserialize<AgentCard>(json, JsonOptions);
+            if (remote is null)
+            {
+                logger.LogWarning(
+                    "Empty agent-card response for well-known peer '{AgentName}' from {Url}",
+                    seed.AgentName, url);
+                return;
+            }
+
+            // Merge remote fields into the seeded card while preserving locally-configured
+            // coordinates (Url, AuthHeader*) and the AgentName key.
+            var merged = seed with
+            {
+                Description = remote.Description ?? seed.Description,
+                Version = remote.Version ?? seed.Version,
+                Skills = remote.Skills ?? seed.Skills,
+                ProtocolVersion = remote.ProtocolVersion ?? seed.ProtocolVersion,
+                SupportsStreaming = remote.SupportsStreaming ?? seed.SupportsStreaming
+            };
+
+            if (_agents.TryGetValue(seed.AgentName, out var existing))
+            {
+                _agents[seed.AgentName] = existing with { Card = merged };
+                logger.LogInformation(
+                    "Enriched well-known agent '{AgentName}' from {Url} ({SkillCount} skill(s))",
+                    seed.AgentName, url, merged.Skills?.Count ?? 0);
+            }
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex,
+                "Failed to enrich well-known agent '{AgentName}' from {Url} — entry kept without remote data",
+                seed.AgentName, seed.Url);
         }
     }
 

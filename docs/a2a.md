@@ -178,22 +178,42 @@ agents on a different restart schedule, or any agent you want to guarantee is
 always listed — add them to the **`well-known-agents.json`** file on the agent
 PVC (`/data/agent/well-known-agents.json`).
 
+Entries hold just the peer's coordinates (and optional auth headers). The peer's
+skills, description, version, and protocol capabilities are discovered at
+startup from `{url}/.well-known/agent-card.json` — the A2A-spec source of truth.
+
 ```json
 [
   {
     "agentName": "ResearchAgent",
-    "description": "On-demand research agent. Searches the web, fetches pages, and synthesises answers using an LLM.",
-    "version": "1.0",
-    "skills": [
-      {
-        "id": "research",
-        "name": "Research",
-        "description": "Research a topic using web search and page fetching, then synthesise a concise answer."
-      }
-    ]
+    "url": "http://researchagent:5100"
   }
 ]
 ```
+
+For peers that require an API key on inbound calls, add the auth header fields
+(the value is base64-encoded so it doesn't show up in logs in cleartext):
+
+```json
+[
+  {
+    "agentName": "Bob",
+    "url": "http://gateway-bob:5200",
+    "authHeaderName": "X-Api-Key",
+    "authHeaderValueBase64": "YWxpY2UtY2FsbHMtYm9i"
+  }
+]
+```
+
+At startup, RockBot fetches each listed peer's agent-card and merges the
+returned `description`, `version`, `protocolVersion`, `supportsStreaming`, and
+`skills` into the directory entry. Adding a new capability to a peer therefore
+propagates without editing `well-known-agents.json` — just restart the primary
+agent (or wait for the next restart).
+
+**Offline override:** if an entry carries its own `skills` array, that array is
+used as-is and no fetch is performed. Useful for airgapped deployments or when
+you want to pin a peer's advertised skills regardless of what the peer reports.
 
 Well-known agents:
 - Always appear in `list_known_agents` regardless of whether they are running.
@@ -203,6 +223,8 @@ Well-known agents:
   (e.g. a KEDA pod shutting down after completing its task).
 - Can be invoked with `invoke_agent` at any time — the message waits on the
   queue until the agent pod starts.
+- If the peer is unreachable at startup, the entry is kept as a callable skeleton
+  (by name/URL) but skills are empty until the next restart retry.
 
 > **Rule of thumb**: Any agent that is not a permanently-running deployment
 > should be listed in `well-known-agents.json`. This includes KEDA ScaledJobs,
@@ -298,16 +320,13 @@ auto-announce themselves via the discovery topic. Register them in
 [
   {
     "agentName": "SampleAgent-Http",
-    "description": "Sample HTTP agent.",
-    "version": "1.0",
-    "url": "http://sampleagent-http:5100",
-    "skills": [
-      { "id": "echo", "name": "Echo", "description": "Echoes the input back." },
-      { "id": "general", "name": "General Task", "description": "General-purpose LLM task." }
-    ]
+    "url": "http://sampleagent-http:5100"
   }
 ]
 ```
+
+Skills and description are discovered from the HTTP agent's own
+`/.well-known/agent-card.json` endpoint at startup.
 
 When `invoke_agent` is called for an agent whose `AgentCard` has a non-empty `Url`,
 the primary agent dispatches the task over HTTP to `{Url}/tasks/send` instead of
