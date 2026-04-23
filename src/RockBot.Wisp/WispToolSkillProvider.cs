@@ -44,6 +44,18 @@ public sealed class WispToolSkillProvider : IToolSkillProvider
         | Data pipeline: fetch → transform → output | Open-ended research or analysis |
         | 2-12K tokens total | 60-80K tokens acceptable |
 
+        **Wisps are a bad fit when:**
+
+        - The number of steps isn't known until something earlier runs.
+        - A loop is required (for-each over a discovered list, while-condition, retry-until).
+        - Results of one step determine how many downstream steps there should be.
+        - Complex conditional branching is needed (if/else trees beyond simple `on_failure`).
+        - Heavy reasoning or multi-turn deliberation is required inside the pipeline.
+
+        In those cases, either the **parent agent** does the iteration (spawning additional
+        wisp batches — see next section), or the whole task belongs in a **subagent** that
+        can itself spawn wisps for the procedural sub-steps.
+
         ## When a single wisp is not enough
 
         A wisp has a static step graph — it cannot loop over results or generate new steps
@@ -85,6 +97,28 @@ public sealed class WispToolSkillProvider : IToolSkillProvider
         Do **not** try to write a single wisp of the form
         `list_accounts → [something that loops] → get_calendar_events`. There is no "for
         each" step. The outer iteration belongs in the parent agent.
+
+        **Multi-stage fan-out — a worked example.** Suppose the user asks "show me every
+        meeting tomorrow across all my accounts." The enumeration shape is
+        `accounts → calendars per account → events per calendar`. Each stage's count
+        depends on the previous stage's data, so no single wisp can express it. The
+        parent agent runs it as a sequence of batches:
+
+        1. **Batch 1 — discover accounts.** One wisp (or a direct `mcp_invoke_tool` call):
+           `list_accounts` → returns `["marimer-work", "xebia", "personal"]`.
+        2. **Read** the result in the parent agent.
+        3. **Batch 2 — parallel per account.** One `spawn_wisps` call with N=3 definitions,
+           each calling `list_calendars` with a literal `accountId`. They run concurrently.
+        4. **Read** the batch summary; collect the (accountId, calendarId) pairs.
+        5. **Batch 3 — parallel per calendar.** One `spawn_wisps` call with one definition
+           per (accountId, calendarId) pair, each calling `get_calendar_events` with literal
+           params. Again concurrent.
+        6. **Aggregate** the results in the parent agent and answer the user.
+
+        Every wisp in every batch is static and deterministic. The dynamism lives in the
+        agent's decision to build the next batch from the previous batch's output. This
+        is much cheaper than a subagent — each per-item wisp costs zero LLM tokens — but
+        it does require the parent agent to hold state between batches.
 
         ## spawn_wisps
 
