@@ -1,16 +1,8 @@
 [
   {
     "agentName": "Alice",
-    "description": "Alice's RockBot agent — available for A2A collaboration via HTTP gateway.",
-    "version": "1.0",
     "url": "http://gateway-alice:5200",
-    "protocolVersion": "1.0",
     "authHeaderName": "X-Api-Key",
-    "authHeaderValueBase64": "Ym9iLWNhbGxzLWFsaWNl",
-    "skills": [
-      { "id": "notify-user", "name": "Notify User", "description": "Send a notification to Alice's user." },
-      { "id": "query-availability", "name": "Query Availability", "description": "Check if Alice's user is available." },
-      { "id": "negotiate-meeting", "name": "Negotiate Meeting", "description": "Multi-turn meeting negotiation with Alice's agent. Also accepts skill ID 'schedule-meeting'." }
-    ]
+    "authHeaderValueBase64": "Ym9iLWNhbGxzLWFsaWNl"
   }
 ]

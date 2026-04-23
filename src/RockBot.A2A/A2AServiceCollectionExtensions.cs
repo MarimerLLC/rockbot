@@ -21,6 +21,11 @@ public static class A2AServiceCollectionExtensions
         configure?.Invoke(options);
         builder.Services.AddSingleton(options);
 
+        // HttpClient factory — AgentDirectory uses it to fetch peers' /.well-known/agent-card.json
+        // at startup and enrich well-known seed entries. Safe to call whether or not AddA2ACaller
+        // also runs; AddHttpClient is idempotent.
+        builder.Services.AddHttpClient();
+
         // Agent directory — guard IHostedService registration with a marker so
         // calling both AddA2A() and AddA2ACaller() doesn't wire StartAsync twice.
         builder.Services.TryAddSingleton<AgentDirectory>();
