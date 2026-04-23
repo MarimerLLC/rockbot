@@ -456,6 +456,18 @@ public sealed class WispToolSkillProvider : IToolSkillProvider
            and failure pattern analysis across sessions.
         6. **Batch independent work.** When you need multiple unrelated data fetches,
            put them in a single `spawn_wisps` call to run concurrently.
+        7. **Save working wisps as skill resources.** Once a wisp has been authored,
+           debugged, and confirmed working, save the final definition as a `Wisp`-type
+           resource on the relevant skill (via `save_skill`). Future sessions can then
+           reuse the proven pipeline via `get_skill_resource` + `spawn_wisps` instead of
+           rebuilding it — and re-running schema/template/judgment mistakes in the process.
+
+           **Check before you author.** The skill index injected at session start shows a
+           compact `[Wisp, ...]` tag after each skill that has saved resources. If a skill
+           relevant to your task already shows `[Wisp]`, call `get_skill` to see the
+           manifest, then `get_skill_resource` to fetch the definition — adapt the saved
+           wisp rather than building a new one from scratch. No tag means no saved wisp
+           on that skill; author as normal and save the working result back.
 
         ### Example: Parallel data gathering
 

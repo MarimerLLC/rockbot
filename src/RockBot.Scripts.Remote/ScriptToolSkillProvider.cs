@@ -28,18 +28,24 @@ internal sealed class ScriptToolSkillProvider : IToolSkillProvider
         code. If you have a saved script skill for this type of task, load it first.
 
 
-        ## Step 0 — Check for an Existing Script Skill
+        ## Step 0 — Check for an Existing Script
 
-        Before writing a new script, check whether a reusable script for this task type
-        already exists:
+        Before writing a new script, check whether a working script for this task already
+        exists. The injected skill index shows a bracketed `[Python, ...]` tag after any
+        skill that has saved resources — scan for tags containing `Python` on skills whose
+        summary matches your task.
 
-        ```
-        list_skills()
-        ```
+        Two places scripts may live:
 
-        Look for skills named `scripts/{task-type}` (e.g. `scripts/csv-processing`,
-        `scripts/date-calculations`, `scripts/image-resize`). If one exists, load it
-        with `get_skill`, adapt the script to the current inputs, and run it.
+        1. **As a `Python`-type resource on a task-relevant skill** — the preferred pattern.
+           If a relevant skill shows `[Python]` (or `[Python, ...]`), call `get_skill` to see
+           the manifest, then `get_skill_resource(<skill>, <filename>.py)` to fetch the script.
+           Adapt it to the current inputs and run.
+        2. **As a standalone `scripts/{task-type}` skill** — an older pattern, still valid.
+           Skills named `scripts/csv-processing`, `scripts/date-calculations`, etc. Load with
+           `get_skill` and use the script inside the markdown content.
+
+        Either way: don't re-derive a script the system has already debugged.
 
 
         ## Step 1 — Write the Script
@@ -114,22 +120,32 @@ internal sealed class ScriptToolSkillProvider : IToolSkillProvider
         - If the script failed after multiple attempts, explain what was tried and why it failed
 
 
-        ## Step 5 — Save Reusable Scripts as Skills
+        ## Step 5 — Save Working Scripts for Reuse
 
-        When you write a script that solves a general problem worth reusing, save it as
-        a skill so future tasks can skip the writing step.
+        Once a script has been written, debugged, and confirmed to produce the right output,
+        save it so future sessions can skip the writing and debugging steps.
 
-        Call `save_skill` with:
-        - **name**: `scripts/{task-type}` in lowercase with hyphens
-          (e.g. `scripts/csv-summary`, `scripts/timezone-conversion`, `scripts/base64-decode`)
-        - **content**: a markdown document containing:
-          - What the script does and when to use it
-          - The script itself in a fenced code block
-          - How to pass input data and what format it expects
-          - Expected output format and how to interpret it
-          - Any pip packages required and why
+        **Preferred: save as a `Python` resource on a task-relevant skill.** If there's an
+        existing skill covering the task the script supports (or if the task itself deserves
+        a new skill), attach the script as a resource via `save_skill` with a `resources`
+        list entry of type `Python`. This keeps the script next to the narrative that explains
+        *when* and *why* to use it, and the skill index auto-surfaces a `[Python]` tag so
+        future sessions find it without loading the skill first.
 
-        Future tasks load the skill in Step 0 and run the proven script with adapted inputs.
+        Example resource entry:
+        ```
+        { "filename": "summary.py", "type": "Python",
+          "description": "Summarise a CSV of daily sales into totals by category.",
+          "content": "<script source>" }
+        ```
+
+        **Alternative: standalone `scripts/{task-type}` skill.** For general-purpose utility
+        scripts that aren't tied to a specific task domain (timezone conversion, base64
+        decoding, etc.), save as a skill of its own with markdown explaining usage and the
+        script in a fenced code block.
+
+        Either way, Step 0 on the next invocation will surface it via the skill index
+        `[Python]` tag and the agent can run the proven script with adapted inputs.
 
 
         ## Best Practices

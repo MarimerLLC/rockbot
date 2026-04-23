@@ -233,8 +233,28 @@ public sealed class SkillTools
             var lastUsedPart = s.LastUsedAt.HasValue
                 ? $"last used {(int)(now - s.LastUsedAt.Value).TotalDays}d ago"
                 : "never used";
-            sb.AppendLine($"- {s.Name} ({ageDays}d old, {lastUsedPart}): {summary}");
+            var resourceTag = FormatResourceTag(s.Manifest);
+            sb.AppendLine($"- {s.Name} ({ageDays}d old, {lastUsedPart}){resourceTag}: {summary}");
         }
         return sb.ToString().TrimEnd();
+    }
+
+    /// <summary>
+    /// Produces a compact <c>[Wisp, Python]</c>-style tag listing the distinct resource types
+    /// attached to a skill, or an empty string if the skill has no resources. Lets the LLM see
+    /// at a glance (from the skill index) which skills already carry a saved wisp, script, etc.
+    /// </summary>
+    public static string FormatResourceTag(IReadOnlyList<SkillResource>? manifest)
+    {
+        if (manifest is null || manifest.Count == 0)
+            return "";
+
+        var types = manifest
+            .Select(r => r.Type.ToString())
+            .Distinct(StringComparer.Ordinal)
+            .OrderBy(t => t, StringComparer.Ordinal)
+            .ToList();
+
+        return $" [{string.Join(", ", types)}]";
     }
 }
