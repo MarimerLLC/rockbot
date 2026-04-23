@@ -205,6 +205,29 @@ public sealed class MemoryToolSkillProvider : IToolSkillProvider
         If you need to navigate chunked content but the inline index has scrolled out of
         context, retrieve the `-index` key first to rediscover the document structure.
 
+        **Scanning all chunks: prefer parallel wisps over sequential reads.** When you need
+        to search, filter, or extract information across every chunk (not jump to one known
+        section), reading each chunk into your own context via `get_from_working_memory`
+        scales the agent-context cost with total document size. Instead, fan out with
+        `spawn_wisps` — one wisp per chunk, each with a single `Llm` step that calls
+        `get_from_working_memory` on its assigned full-path chunk key and returns a compact
+        JSON extract (e.g. matched sentences, pulled entities). The wisp LLM has a fresh
+        context per chunk, so only the extracted results come back to your turn — not the
+        full chunk content. This is the right pattern for "find everywhere X is mentioned,"
+        "aggregate all entities of type Y," or "summarise each section" across a chunked
+        document.
+
+        Minimal per-chunk wisp step:
+        ```json
+        {
+          "id": "scan",
+          "mode": "Llm",
+          "prompt": "Call get_from_working_memory with key 'session/abc123/research-chunk3'. From that content, extract every sentence mentioning 'Northstar'. Return ONLY a JSON array of strings ([] if none)."
+        }
+        ```
+        Spawn N of these — one per chunk key from the `-index` — in a single `spawn_wisps`
+        call. See the wisp guide for full pipeline mechanics.
+
 
         ### list_working_memory
 

@@ -393,13 +393,15 @@ public sealed class AgentContextBuilder(
         if (shouldInjectSkillIndex && skillList.Count > 0)
         {
             var indexText =
-                "Available skills (use get_skill to load full instructions):\n" +
+                "Available skills (use get_skill to load full instructions; " +
+                "bracketed tags like [Wisp, Python] list resource types saved on the skill):\n" +
                 string.Join("\n", skillList.Select(s =>
                 {
                     var summary = string.IsNullOrWhiteSpace(s.Summary)
                         ? "(summary pending)"
                         : s.Summary;
-                    return $"- {s.Name}: {summary}";
+                    var resourceTag = SkillTools.FormatResourceTag(s.Manifest);
+                    return $"- {s.Name}{resourceTag}: {summary}";
                 }));
             chatMessages.Add(new ChatMessage(ChatRole.System, indexText));
             logger.LogInformation("Injected skill index ({Count} skills) for session {SessionId}",
