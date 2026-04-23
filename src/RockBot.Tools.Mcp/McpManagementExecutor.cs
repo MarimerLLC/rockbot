@@ -135,7 +135,7 @@ public sealed class McpManagementExecutor : IToolExecutor, IAsyncDisposable
 
         // Serialize the nested arguments object if present
         string? toolArgs = null;
-        if (args.TryGetValue("arguments", out var argsObj) && argsObj is not null)
+        if (TryGetNestedArgs(args, out var argsObj))
         {
             toolArgs = argsObj is JsonElement je ? je.GetRawText() : JsonSerializer.Serialize(argsObj, JsonOptions);
         }
@@ -238,7 +238,7 @@ public sealed class McpManagementExecutor : IToolExecutor, IAsyncDisposable
             return Error(request, "Missing required parameter: prompt_name");
 
         var promptArgs = new Dictionary<string, string>();
-        if (args.TryGetValue("arguments", out var argsObj) && argsObj is not null)
+        if (TryGetNestedArgs(args, out var argsObj))
         {
             var argsJson = argsObj is JsonElement je ? je.GetRawText() : JsonSerializer.Serialize(argsObj, JsonOptions);
             try
@@ -397,6 +397,25 @@ public sealed class McpManagementExecutor : IToolExecutor, IAsyncDisposable
             return false;
         serverName = serverName.ToLowerInvariant();
         return true;
+    }
+
+    // Some models (notably gpt-5.4) emit the nested tool arguments under "params" or "args"
+    // instead of the schema-declared "arguments". Accept all three so the payload isn't
+    // silently dropped when the model deviates from the declared field name.
+    private static readonly string[] NestedArgAliases = ["arguments", "params", "args"];
+
+    private static bool TryGetNestedArgs(Dictionary<string, object?> args, out object argsObj)
+    {
+        foreach (var alias in NestedArgAliases)
+        {
+            if (args.TryGetValue(alias, out var v) && v is not null)
+            {
+                argsObj = v;
+                return true;
+            }
+        }
+        argsObj = null!;
+        return false;
     }
 
     private static ToolInvokeResponse Error(ToolInvokeRequest request, string message) => new()
