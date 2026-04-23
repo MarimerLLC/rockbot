@@ -1,3 +1,8 @@
+---
+title: Skills
+nav_order: 7
+---
+
 # Skills subsystem
 
 Skills are named markdown procedure documents that the agent accumulates over time and consults

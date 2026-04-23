@@ -1,3 +1,8 @@
+---
+title: Messaging
+nav_order: 3
+---
+
 # Messaging subsystem
 
 The messaging subsystem provides the communication backbone for all inter-component
