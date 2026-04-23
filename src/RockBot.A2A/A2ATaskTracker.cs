@@ -20,4 +20,9 @@ internal sealed class A2ATaskTracker
 
     public IReadOnlyList<PendingA2ATask> ListActive() =>
         _tasks.Values.ToList();
+
+    public IReadOnlyList<PendingA2ATask> ListBySession(string sessionId) =>
+        _tasks.Values
+            .Where(t => string.Equals(t.PrimarySessionId, sessionId, StringComparison.Ordinal))
+            .ToList();
 }
