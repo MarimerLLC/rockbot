@@ -43,11 +43,15 @@ spec:
               set -e
               echo "Initializing agent data volume..."
 
-              # Profile documents — live at /app/agent/ in the image
-              for f in soul.md directives.md subagent-directives.md style.md memory-rules.md dream.md skill-dream.md; do
-                src="/app/agent/$f"
+              # Profile and dream directives — live at /app/agent/*.md in the image.
+              # Copy every .md file no-clobber so operators can tune any directive
+              # (including dream passes) on the PVC without a rebuild, and new
+              # directives added in future releases get seeded automatically.
+              for src in /app/agent/*.md; do
+                [ -f "$src" ] || continue
+                f=$(basename "$src")
                 dst="/data/agent/$f"
-                if [ -f "$src" ] && [ ! -s "$dst" ]; then
+                if [ ! -s "$dst" ]; then
                   echo "  Copying default $f"
                   cp "$src" "$dst"
                 fi
