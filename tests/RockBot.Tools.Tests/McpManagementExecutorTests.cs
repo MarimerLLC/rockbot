@@ -216,6 +216,44 @@ public class McpManagementExecutorTests
     }
 
     [TestMethod]
+    [DataRow("arguments")]
+    [DataRow("params")]
+    [DataRow("args")]
+    public async Task InvokeTool_AcceptsNestedArgAliases(string nestedKey)
+    {
+        // Some models (notably gpt-5.4) emit the nested payload under "params" or "args"
+        // instead of the schema-declared "arguments". All three should be forwarded.
+        var (executor, publisher, subscriber) = CreateExecutor();
+
+        var request = new ToolInvokeRequest
+        {
+            ToolCallId = "call-alias",
+            ToolName = "mcp_invoke_tool",
+            Arguments = "{\"server_name\":\"filesystem\",\"tool_name\":\"read_file\",\"" + nestedKey + "\":{\"path\":\"/tmp/x.txt\"}}"
+        };
+
+        var executeTask = executor.ExecuteAsync(request, CancellationToken.None);
+        await Task.Delay(100);
+
+        Assert.AreEqual(1, publisher.Published.Count);
+        var innerRequest = publisher.Published[0].Envelope.GetPayload<ToolInvokeRequest>();
+        Assert.IsNotNull(innerRequest);
+        Assert.IsNotNull(innerRequest.Arguments, $"nested payload under '{nestedKey}' was dropped");
+        StringAssert.Contains(innerRequest.Arguments, "/tmp/x.txt");
+
+        var response = new ToolInvokeResponse
+        {
+            ToolCallId = "call-alias",
+            ToolName = "read_file",
+            Content = "ok"
+        };
+        var responseEnvelope = response.ToEnvelope("bridge",
+            correlationId: publisher.Published[0].Envelope.CorrelationId);
+        await subscriber.DeliverAsync($"tool.result.{_identity.Name}", responseEnvelope);
+        await executeTask;
+    }
+
+    [TestMethod]
     public async Task InvokeTool_MissingServerName_ReturnsError()
     {
         var (executor, _, _) = CreateExecutor();
