@@ -339,6 +339,29 @@ internal sealed class WispExecutor(
             };
         }
 
+        // "Soft" error detection: some MCP servers return 200 OK with a body like
+        // {"error":"accountId is required"} instead of an MCP-transport error.
+        // Without this check the wisp treats the error text as valid output and
+        // propagates it to downstream steps.
+        var softErrorMessage = TryExtractSoftError(response.Content);
+        if (softErrorMessage is not null)
+        {
+            return new WispStepResult
+            {
+                StepId = step.Id,
+                StepIndex = index,
+                IsSuccess = false,
+                Content = response.Content,
+                Error = new WispStepError
+                {
+                    Category = ClassifyToolError(softErrorMessage),
+                    Message = softErrorMessage,
+                    ToolName = route.ToolName
+                },
+                Duration = stepSw.Elapsed
+            };
+        }
+
         // Always write step output to working memory for inter-step access by LLM steps
         var stepContent = response.Content ?? "";
         var outputKey = $"{wispNamespace}/{step.Id}/output";
@@ -694,6 +717,39 @@ internal sealed class WispExecutor(
     }
 
     /// <summary>
+    /// Inspects a (nominally successful) tool response body for a "soft error" —
+    /// a JSON object whose top-level <c>error</c> property is a string. Some MCP
+    /// servers return these instead of flagging a transport-level error. Returns
+    /// the error message when detected, or <c>null</c> when the content is not a
+    /// soft-error shape.
+    /// </summary>
+    private static string? TryExtractSoftError(string? content)
+    {
+        if (string.IsNullOrWhiteSpace(content))
+            return null;
+
+        var trimmed = content.TrimStart();
+        if (trimmed.Length == 0 || trimmed[0] != '{')
+            return null;
+
+        try
+        {
+            using var doc = JsonDocument.Parse(content);
+            if (doc.RootElement.ValueKind != JsonValueKind.Object)
+                return null;
+            if (!doc.RootElement.TryGetProperty("error", out var errorEl))
+                return null;
+            if (errorEl.ValueKind != JsonValueKind.String)
+                return null;
+            return errorEl.GetString();
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
     /// Classifies a tool error response into a failure category.
     /// </summary>
     private static FailureCategory ClassifyToolError(string? errorContent)
@@ -703,6 +759,9 @@ internal sealed class WispExecutor(
 
         // Structural: tool/param validation errors
         if (errorContent.Contains("Missing required parameter", StringComparison.OrdinalIgnoreCase)
+            || errorContent.Contains("is required", StringComparison.OrdinalIgnoreCase)
+            || errorContent.Contains("required parameter", StringComparison.OrdinalIgnoreCase)
+            || errorContent.Contains("was not provided", StringComparison.OrdinalIgnoreCase)
             || errorContent.Contains("not registered", StringComparison.OrdinalIgnoreCase)
             || errorContent.Contains("Unknown tool", StringComparison.OrdinalIgnoreCase)
             || errorContent.Contains("invalid", StringComparison.OrdinalIgnoreCase))

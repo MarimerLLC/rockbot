@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using RockBot.Tools;
 
 namespace RockBot.Wisp;
@@ -7,7 +8,7 @@ namespace RockBot.Wisp;
 /// Maps wisp step definitions to concrete tool invocations via the tool registry.
 /// Each gateway type routes to a specific registered tool with appropriately formatted arguments.
 /// </summary>
-internal static class GatewayRouter
+internal static partial class GatewayRouter
 {
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -152,25 +153,41 @@ internal static class GatewayRouter
 
     /// <summary>
     /// Resolves template references in the input string. Supports:
-    /// <c>{{steps.id.result}}</c> — replaced with step's output content.
-    /// <c>{{steps.id.output_to}}</c> — replaced with step's output_to file path (from definition).
+    /// <c>{{steps.id.result}}</c> — replaced with the step's full output content.
+    /// <c>{{steps.id.result.a.b.c}}</c> — replaced with the value at the dotted path
+    ///   within the step's output parsed as JSON. A string value is inserted as its
+    ///   string value (quotes stripped); non-string values are inserted as their JSON
+    ///   representation. If the step's content isn't JSON or the path doesn't resolve,
+    ///   the literal template is left in place — downstream validation/soft-error
+    ///   detection surfaces the failure.
+    /// <c>{{steps.id.output_to}}</c> — replaced with the step's output_to file path
+    ///   (from the wisp definition).
     /// </summary>
     internal static string ResolveTemplateString(
         string input,
         IReadOnlyDictionary<string, WispStepResult> priorResults,
         WispDefinition? definition)
     {
-        var result = input;
-
-        foreach (var (stepId, stepResult) in priorResults)
+        // Match {{steps.<stepId>.result}} or {{steps.<stepId>.result.<dot.path>}}
+        var result = ResultTemplatePattern().Replace(input, match =>
         {
-            var resultPlaceholder = $"{{{{steps.{stepId}.result}}}}";
-            if (result.Contains(resultPlaceholder))
-            {
-                var escaped = JsonEscapeForEmbedding(stepResult.Content ?? "");
-                result = result.Replace(resultPlaceholder, escaped);
-            }
-        }
+            var stepId = match.Groups[1].Value;
+            var path = match.Groups[2].Success ? match.Groups[2].Value : null;
+
+            if (!priorResults.TryGetValue(stepId, out var stepResult))
+                return match.Value;
+
+            var content = stepResult.Content ?? "";
+
+            if (path is null)
+                return JsonEscapeForEmbedding(content);
+
+            // Path present — parse as JSON and navigate.
+            if (!TryNavigateJsonPath(content, path, out var extracted))
+                return match.Value; // not JSON, or path not found → leave literal
+
+            return JsonEscapeForEmbedding(extracted);
+        });
 
         // Resolve {{steps.id.output_to}} from the definition's step declarations
         if (definition is not null)
@@ -188,6 +205,48 @@ internal static class GatewayRouter
 
         return result;
     }
+
+    /// <summary>
+    /// Parses <paramref name="json"/> and walks the dotted <paramref name="path"/>
+    /// (object-property access only). Returns the extracted value as a string —
+    /// JSON strings are unwrapped; other kinds serialize to their raw JSON text.
+    /// Returns <c>false</c> when the content isn't a JSON object or the path misses.
+    /// </summary>
+    private static bool TryNavigateJsonPath(string json, string path, out string value)
+    {
+        value = "";
+        if (string.IsNullOrWhiteSpace(json))
+            return false;
+
+        try
+        {
+            using var doc = JsonDocument.Parse(json);
+            var current = doc.RootElement;
+            foreach (var segment in path.Split('.', StringSplitOptions.RemoveEmptyEntries))
+            {
+                if (current.ValueKind != JsonValueKind.Object)
+                    return false;
+                if (!current.TryGetProperty(segment, out var next))
+                    return false;
+                current = next;
+            }
+
+            value = current.ValueKind switch
+            {
+                JsonValueKind.String => current.GetString() ?? "",
+                JsonValueKind.Null => "",
+                _ => current.GetRawText()
+            };
+            return true;
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
+    }
+
+    [GeneratedRegex(@"\{\{steps\.([a-zA-Z0-9_\-]+)\.result(?:\.([a-zA-Z0-9_\-.]+))?\}\}")]
+    private static partial Regex ResultTemplatePattern();
 
     /// <summary>
     /// Escapes a string value for embedding within an already-quoted JSON string.

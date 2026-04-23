@@ -169,6 +169,105 @@ public class WispExecutorTests
         Assert.AreEqual(FailureCategory.External, result.StepResults[0].Error!.Category);
     }
 
+    [TestMethod]
+    public async Task ExecuteAsync_SoftErrorInOkResponse_TreatedAsFailure()
+    {
+        // Some MCP servers return 200 OK with {"error":"..."} instead of flagging an
+        // MCP-transport error. The wisp runner must surface these as step failures.
+        var (executor, registry) = CreateExecutor();
+
+        registry.Register(
+            new ToolRegistration { Name = "web_search", Description = "", Source = "web" },
+            new FakeToolExecutor(content: """{"error":"accountId is required"}"""));
+
+        var definition = new WispDefinition
+        {
+            Description = "Soft-error",
+            Steps =
+            [
+                new WispStep
+                {
+                    Id = "s",
+                    Mode = StepMode.Direct,
+                    Gateway = GatewayType.Web,
+                    Tool = "web_search",
+                    Params = JsonDocument.Parse("""{"query":"x"}""").RootElement
+                }
+            ]
+        };
+
+        var result = await executor.ExecuteAsync(definition, "wisp-soft", CancellationToken.None);
+
+        Assert.IsFalse(result.IsSuccess);
+        Assert.IsNotNull(result.FailedStep?.Error);
+        StringAssert.Contains(result.FailedStep!.Error!.Message, "accountId is required");
+        Assert.AreEqual(FailureCategory.Structural, result.FailedStep.Error.Category,
+            "'is required' classifies as Structural via ClassifyToolError");
+    }
+
+    [TestMethod]
+    public async Task ExecuteAsync_ResponseContainingErrorFieldThatIsNotTopLevel_RemainsSuccess()
+    {
+        // A legitimate data payload that happens to contain an `error` key nested
+        // inside should NOT be misclassified as a soft error. The detector only
+        // looks at the top-level `error` property being a string.
+        var (executor, registry) = CreateExecutor();
+
+        registry.Register(
+            new ToolRegistration { Name = "web_search", Description = "", Source = "web" },
+            new FakeToolExecutor(content: """{"results":[{"error":"diagnostic info"}]}"""));
+
+        var definition = new WispDefinition
+        {
+            Description = "Nested-error",
+            Steps =
+            [
+                new WispStep
+                {
+                    Id = "s",
+                    Mode = StepMode.Direct,
+                    Gateway = GatewayType.Web,
+                    Tool = "web_search",
+                    Params = JsonDocument.Parse("""{"query":"x"}""").RootElement
+                }
+            ]
+        };
+
+        var result = await executor.ExecuteAsync(definition, "wisp-nested", CancellationToken.None);
+
+        Assert.IsTrue(result.IsSuccess, "Nested 'error' field should not trigger soft-error detection");
+    }
+
+    [TestMethod]
+    public async Task ExecuteAsync_NonJsonResponse_NotMisclassifiedAsSoftError()
+    {
+        var (executor, registry) = CreateExecutor();
+
+        registry.Register(
+            new ToolRegistration { Name = "web_search", Description = "", Source = "web" },
+            new FakeToolExecutor(content: "just plain text output"));
+
+        var definition = new WispDefinition
+        {
+            Description = "Plain-text",
+            Steps =
+            [
+                new WispStep
+                {
+                    Id = "s",
+                    Mode = StepMode.Direct,
+                    Gateway = GatewayType.Web,
+                    Tool = "web_search",
+                    Params = JsonDocument.Parse("""{"query":"x"}""").RootElement
+                }
+            ]
+        };
+
+        var result = await executor.ExecuteAsync(definition, "wisp-text", CancellationToken.None);
+
+        Assert.IsTrue(result.IsSuccess);
+    }
+
     // ── On-failure branching ─────────────────────────────────────────────────
 
     [TestMethod]

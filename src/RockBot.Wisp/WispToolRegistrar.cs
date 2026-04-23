@@ -101,6 +101,15 @@ internal sealed class WispToolRegistrar(
                 rather than composing from scratch. Conversely, once you've authored a wisp
                 that works — especially after debugging through a failure — save it back as
                 a Wisp resource on the relevant skill so future sessions can reuse it.
+
+                Template references between steps:
+                - `{{steps.<id>.result}}` — the entire raw output of step <id>
+                - `{{steps.<id>.result.a.b.c}}` — extracts field `a.b.c` from step <id>'s
+                  output parsed as JSON. Object-property navigation only (no array index).
+                  Only valid when the upstream step produced a JSON object.
+                - `{{steps.<id>.output_to}}` — the file path that step wrote to.
+                If a template can't be resolved it is left literal in the params and the
+                tool call will fail — check your path against the upstream step's output.
                 """,
             ParametersSchema = SpawnWispsSchema,
             Source = "wisp"

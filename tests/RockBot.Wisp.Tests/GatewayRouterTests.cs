@@ -387,6 +387,144 @@ public class GatewayRouterTests
     }
 
     [TestMethod]
+    public void ResolveTemplateString_WithFieldPath_ExtractsJsonFieldValue()
+    {
+        var priorResults = new Dictionary<string, WispStepResult>
+        {
+            ["extract"] = new()
+            {
+                StepId = "extract",
+                StepIndex = 0,
+                IsSuccess = true,
+                Content = """{"accountId":"xebia","calendarId":"abc","eventId":"evt-1"}""",
+                Duration = TimeSpan.Zero
+            }
+        };
+
+        var resolved = GatewayRouter.ResolveTemplateString(
+            "{\"accountId\":\"{{steps.extract.result.accountId}}\",\"calendarId\":\"{{steps.extract.result.calendarId}}\"}",
+            priorResults);
+
+        Assert.AreEqual(
+            "{\"accountId\":\"xebia\",\"calendarId\":\"abc\"}",
+            resolved);
+    }
+
+    [TestMethod]
+    public void ResolveTemplateString_WithNestedFieldPath_ExtractsDeepValue()
+    {
+        var priorResults = new Dictionary<string, WispStepResult>
+        {
+            ["find"] = new()
+            {
+                StepId = "find",
+                StepIndex = 0,
+                IsSuccess = true,
+                Content = """{"event":{"id":"evt-42","meta":{"organizer":"bruce@example.com"}}}""",
+                Duration = TimeSpan.Zero
+            }
+        };
+
+        var resolved = GatewayRouter.ResolveTemplateString(
+            "{{steps.find.result.event.meta.organizer}}", priorResults);
+
+        Assert.AreEqual("bruce@example.com", resolved);
+    }
+
+    [TestMethod]
+    public void ResolveTemplateString_FieldPathOnNonJsonContent_LeavesLiteral()
+    {
+        var priorResults = new Dictionary<string, WispStepResult>
+        {
+            ["text"] = new()
+            {
+                StepId = "text",
+                StepIndex = 0,
+                IsSuccess = true,
+                Content = "not json at all",
+                Duration = TimeSpan.Zero
+            }
+        };
+
+        var resolved = GatewayRouter.ResolveTemplateString(
+            "{{steps.text.result.someField}}", priorResults);
+
+        Assert.AreEqual("{{steps.text.result.someField}}", resolved,
+            "Unresolvable path should leave the literal in place so downstream validation can flag it");
+    }
+
+    [TestMethod]
+    public void ResolveTemplateString_FieldPathMissing_LeavesLiteral()
+    {
+        var priorResults = new Dictionary<string, WispStepResult>
+        {
+            ["s"] = new()
+            {
+                StepId = "s",
+                StepIndex = 0,
+                IsSuccess = true,
+                Content = """{"present":"yes"}""",
+                Duration = TimeSpan.Zero
+            }
+        };
+
+        var resolved = GatewayRouter.ResolveTemplateString(
+            "{{steps.s.result.missing}}", priorResults);
+
+        Assert.AreEqual("{{steps.s.result.missing}}", resolved);
+    }
+
+    [TestMethod]
+    public void ResolveTemplateString_ResultWithoutPath_StillReplacesWholeContent()
+    {
+        // Backwards compatibility: bare {{steps.id.result}} still inserts the full content
+        var priorResults = new Dictionary<string, WispStepResult>
+        {
+            ["raw"] = new()
+            {
+                StepId = "raw",
+                StepIndex = 0,
+                IsSuccess = true,
+                Content = """{"some":"json"}""",
+                Duration = TimeSpan.Zero
+            }
+        };
+
+        var resolved = GatewayRouter.ResolveTemplateString(
+            "body: {{steps.raw.result}}", priorResults);
+
+        // JSON content gets escaped for embedding
+        StringAssert.Contains(resolved, "some");
+        StringAssert.Contains(resolved, "json");
+    }
+
+    [TestMethod]
+    public void ResolveTemplateString_FieldPathYieldingNonString_InsertsJsonRepresentation()
+    {
+        var priorResults = new Dictionary<string, WispStepResult>
+        {
+            ["s"] = new()
+            {
+                StepId = "s",
+                StepIndex = 0,
+                IsSuccess = true,
+                Content = """{"count":42,"items":["a","b"]}""",
+                Duration = TimeSpan.Zero
+            }
+        };
+
+        var num = GatewayRouter.ResolveTemplateString(
+            "{{steps.s.result.count}}", priorResults);
+        Assert.AreEqual("42", num);
+
+        var arr = GatewayRouter.ResolveTemplateString(
+            "{{steps.s.result.items}}", priorResults);
+        // Non-string values serialize to their JSON representation (escaped for embedding)
+        StringAssert.Contains(arr, "a");
+        StringAssert.Contains(arr, "b");
+    }
+
+    [TestMethod]
     public void ResolveTemplateString_ContentWithSpecialChars_EscapesForJson()
     {
         var priorResults = new Dictionary<string, WispStepResult>
