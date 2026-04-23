@@ -20,7 +20,8 @@ internal sealed class WispExecutor(
     AgentLoopRunner agentLoopRunner,
     WispOptions options,
     ILogger<WispExecutor> logger,
-    ILlmClient? llmClient = null)
+    ILlmClient? llmClient = null,
+    ISessionA2ACanceller? a2aCanceller = null)
 {
     private const int DefaultLlmStepMaxIterations = 10;
     private const int InputChunkingThreshold = 8_000;
@@ -160,9 +161,32 @@ internal sealed class WispExecutor(
                     }
                 }
 
-                // Default: abort on failure
+                // Default: abort on failure. Cancel any in-flight A2A tasks this
+                // wisp dispatched so the remote agent doesn't keep running work
+                // whose result has nowhere to go — the LLM's wisp retry would
+                // otherwise cause duplicate remote execution.
                 logger.LogWarning("Wisp {WispId} aborting at step {StepId}: {Error}",
                     wispId, step.Id, stepResult.Error?.Message);
+                if (a2aCanceller is not null)
+                {
+                    try
+                    {
+                        var cancelled = await a2aCanceller.CancelForSessionAsync(
+                            wispId, $"wisp aborted at step '{step.Id}'", ct);
+                        if (cancelled > 0)
+                        {
+                            logger.LogInformation(
+                                "Wisp {WispId} cancelled {Count} in-flight A2A task(s) on abort",
+                                wispId, cancelled);
+                        }
+                    }
+                    catch (Exception ex) when (ex is not OperationCanceledException)
+                    {
+                        logger.LogWarning(ex,
+                            "Wisp {WispId}: failure-driven A2A cancellation threw — continuing abort",
+                            wispId);
+                    }
+                }
                 break;
             }
 
@@ -209,6 +233,23 @@ internal sealed class WispExecutor(
         CancellationToken ct)
     {
         var stepSw = Stopwatch.StartNew();
+
+        // Structural validation that doesn't depend on the registry. Catches
+        // semantic-incompatibility authoring mistakes (e.g. output_to on an A2A
+        // step, which would silently capture a dispatch stub and cause a
+        // downstream step to fail while the remote task kept running).
+        var structuralError = A2AStepValidator.Validate(step);
+        if (structuralError is not null)
+        {
+            return new WispStepResult
+            {
+                StepId = step.Id,
+                StepIndex = index,
+                IsSuccess = false,
+                Error = structuralError,
+                Duration = stepSw.Elapsed
+            };
+        }
 
         // Route the step to a tool invocation
         var route = GatewayRouter.Route(step, wispId, priorResults);

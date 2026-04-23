@@ -809,6 +809,95 @@ public class WispExecutorTests
         Assert.IsTrue(wispKeys.Count > 0, "Wisp working memory should be kept on failure for debugging");
     }
 
+    // ── A2A step guardrails ──────────────────────────────────────────────────
+
+    [TestMethod]
+    public async Task ExecuteAsync_A2AStepWithOutputTo_FailsStructurallyAndDoesNotInvokeAgent()
+    {
+        // Regression: an A2A step with output_to used to dispatch invoke_agent, fail
+        // downstream on the dispatch-stub file content, and leave the remote task
+        // running — duplicating work when the LLM retried. The validator now rejects
+        // the combo up front so no dispatch happens.
+        var (executor, registry) = CreateExecutor();
+
+        var invoked = false;
+        registry.Register(
+            new ToolRegistration { Name = "invoke_agent", Description = "A2A", Source = "a2a" },
+            new CapturingToolExecutor(_ => invoked = true, "should not be called"));
+
+        var definition = new WispDefinition
+        {
+            Description = "Illegal A2A + output_to",
+            Steps =
+            [
+                new WispStep
+                {
+                    Id = "call",
+                    Mode = StepMode.Direct,
+                    Gateway = GatewayType.A2A,
+                    Agent = "foragent",
+                    Skill = "research",
+                    Message = "find something",
+                    OutputTo = "foragent_result.json"
+                }
+            ]
+        };
+
+        var result = await executor.ExecuteAsync(definition, "wisp-a2a-output-to", CancellationToken.None);
+
+        Assert.IsFalse(result.IsSuccess);
+        Assert.IsFalse(invoked, "invoke_agent must not be called when the A2A step is invalid");
+        Assert.AreEqual(FailureCategory.Structural, result.StepResults[0].Error?.Category);
+        StringAssert.Contains(result.StepResults[0].Error?.Message ?? "", "output_to");
+    }
+
+    [TestMethod]
+    public async Task ExecuteAsync_WispAborts_CancelsInFlightA2ATasksForThisWisp()
+    {
+        var (_, registry) = CreateExecutor();
+        var canceller = new RecordingA2ACanceller();
+        var executor = CreateExecutorWithCanceller(registry, canceller);
+
+        registry.Register(
+            new ToolRegistration { Name = "invoke_agent", Description = "A2A", Source = "a2a" },
+            new FakeToolExecutor(content: "Task dispatched to agent 'foragent' with task_id: abc123."));
+        registry.Register(
+            new ToolRegistration { Name = "web_search", Description = "Search", Source = "web" },
+            new FakeToolExecutor(error: "boom"));
+
+        var definition = new WispDefinition
+        {
+            Description = "A2A dispatch then failing step",
+            Steps =
+            [
+                new WispStep
+                {
+                    Id = "dispatch",
+                    Mode = StepMode.Direct,
+                    Gateway = GatewayType.A2A,
+                    Agent = "foragent",
+                    Skill = "research",
+                    Message = "find something"
+                },
+                new WispStep
+                {
+                    Id = "boom",
+                    Mode = StepMode.Direct,
+                    Gateway = GatewayType.Web,
+                    Tool = "web_search",
+                    Params = JsonDocument.Parse("""{"query":"x"}""").RootElement
+                }
+            ]
+        };
+
+        var result = await executor.ExecuteAsync(definition, "wisp-cancel-1", CancellationToken.None);
+
+        Assert.IsFalse(result.IsSuccess);
+        Assert.AreEqual(1, canceller.Calls.Count,
+            "The wisp abort should trigger exactly one cancellation pass");
+        Assert.AreEqual("wisp-cancel-1", canceller.Calls[0].SessionId);
+    }
+
     // ── Helpers ──────────────────────────────────────────────────────────────
 
     private static (WispExecutor Executor, FakeToolRegistry Registry) CreateExecutor(
@@ -826,6 +915,17 @@ public class WispExecutorTests
         return (executor, registry);
     }
 
+    private static WispExecutor CreateExecutorWithCanceller(
+        FakeToolRegistry registry, ISessionA2ACanceller canceller)
+    {
+        var memory = new FakeWorkingMemory();
+        var options = new WispOptions();
+        var logger = NullLogger<WispExecutor>.Instance;
+        return new WispExecutor(
+            registry, memory, agentLoopRunner: null!, options, logger,
+            llmClient: null, a2aCanceller: canceller);
+    }
+
     private static string CreateTempSharedVolume()
     {
         var path = Path.Combine(Path.GetTempPath(), $"rockbot-wisp-test-{Guid.NewGuid():N}");
@@ -840,6 +940,17 @@ public class WispExecutorTests
 }
 
 // ── Test doubles ─────────────────────────────────────────────────────────────
+
+internal sealed class RecordingA2ACanceller : ISessionA2ACanceller
+{
+    public List<(string SessionId, string Reason)> Calls { get; } = [];
+
+    public Task<int> CancelForSessionAsync(string sessionId, string reason, CancellationToken ct)
+    {
+        Calls.Add((sessionId, reason));
+        return Task.FromResult(1);
+    }
+}
 
 internal sealed class FakeToolExecutor(string? content = null, string? error = null) : IToolExecutor
 {
