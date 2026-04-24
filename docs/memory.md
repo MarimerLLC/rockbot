@@ -58,6 +58,16 @@ A 5×-reinforced-over-2-years entry is treated differently from a one-off — bo
 dream LLM (see the "Temporal merging rules" section in `dream.md`) and by search
 result formatting (`seen 4× from 2024-06 to today` vs. `first seen today`).
 
+`LastSeenAt` is also the key for two load-bearing behaviors:
+
+- **Importance decay** (in `DreamService.RunImportanceDecayPassAsync`) fades stale entries
+  based on how long since the last *reinforcement*, not how long since the last record
+  edit. Dream housekeeping (rephrasing, recategorization, score adjustments) does not
+  reset the decay clock — only real save-event merges do.
+- **No-query search ranking** (in `FileMemoryStore.SearchAsync` when no query text is
+  supplied) orders results by `LastSeenAt` descending, surfacing recently-reinforced
+  facts ahead of entries that dream has merely been polishing.
+
 Legacy JSON files predating these fields deserialize with sensible defaults —
 `LastSeenAt = CreatedAt`, `ReinforcementCount = 1` — via init-only property defaults.
 No migration is required.

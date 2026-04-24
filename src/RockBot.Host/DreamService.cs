@@ -1301,11 +1301,14 @@ internal sealed class DreamService : IHostedService, IDisposable
     }
 
     /// <summary>
-    /// Applies gradual importance decay to memory entries that haven't been updated recently.
-    /// Entries older than <see cref="DecayGracePeriodDays"/> days lose importance at a rate of
-    /// <see cref="DecayPerCycleFraction"/> per dream cycle, down to a floor of <see cref="DecayFloor"/>.
-    /// This ensures stale, unreferenced memories naturally fade in ranking priority
-    /// while keeping them discoverable.
+    /// Applies gradual importance decay to memory entries that haven't been reinforced recently.
+    /// Decay is keyed on <see cref="MemoryEntry.LastSeenAt"/> — the last real save-event merged
+    /// into the entry — not on <see cref="MemoryEntry.UpdatedAt"/>, so dream housekeeping
+    /// (rephrasing, recategorization, importance rescoring) does not reset the decay clock.
+    /// Entries whose LastSeenAt is older than <see cref="DecayGracePeriodDays"/> days lose
+    /// importance at <see cref="DecayPerCycleFraction"/> per dream cycle, down to a floor of
+    /// <see cref="DecayFloor"/>. Stale, unreinforced memories naturally fade in ranking priority
+    /// while remaining discoverable.
     /// </summary>
     internal async Task RunImportanceDecayPassAsync(IReadOnlyList<MemoryEntry> entries)
     {
@@ -1318,10 +1321,9 @@ internal sealed class DreamService : IHostedService, IDisposable
 
         foreach (var entry in entries)
         {
-            var lastTouched = entry.UpdatedAt ?? entry.CreatedAt;
-            var daysSinceUpdate = (now - lastTouched).TotalDays;
+            var daysSinceSeen = (now - entry.LastSeenAt).TotalDays;
 
-            if (daysSinceUpdate < DecayGracePeriodDays)
+            if (daysSinceSeen < DecayGracePeriodDays)
                 continue;
 
             if (entry.ImportanceScore <= DecayFloor)
@@ -1336,8 +1338,8 @@ internal sealed class DreamService : IHostedService, IDisposable
             decayed++;
 
             _logger.LogDebug(
-                "DreamService: decayed importance for {Id} from {Old:F2} to {New:F2} (last updated {Days:F0} days ago)",
-                entry.Id, entry.ImportanceScore, newImportance, daysSinceUpdate);
+                "DreamService: decayed importance for {Id} from {Old:F2} to {New:F2} (last seen {Days:F0} days ago)",
+                entry.Id, entry.ImportanceScore, newImportance, daysSinceSeen);
         }
 
         if (decayed > 0)

@@ -79,6 +79,13 @@ just like durable facts.
 **Directive file:** `dream.md` (relative to agent data path). Built-in fallback is used when
 the file does not exist.
 
+**Importance decay (runs before consolidation):** Entries whose `LastSeenAt` is older than
+14 days lose 5% importance per dream cycle down to a floor of 0.10. Decay is keyed on
+`LastSeenAt` (real reinforcement) rather than `UpdatedAt`, so dream rephrasing, recategorization,
+or score adjustments do not reset the decay clock — only a real save-event merged into an
+entry qualifies as reinforcement. This prevents entries that dream keeps polishing but the
+agent never actually re-observes from lingering at high importance indefinitely.
+
 ---
 
 ### Pass 2 — Skill gap detection

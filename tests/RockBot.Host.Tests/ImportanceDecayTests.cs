@@ -65,21 +65,52 @@ public class ImportanceDecayTests
     }
 
     [TestMethod]
-    public async Task Decay_UpdatedRecently_IsNotDecayed()
+    public async Task Decay_ReinforcedRecently_IsNotDecayed()
     {
         var memory = new InMemoryStore();
-        // Created long ago but updated recently
+        // Created long ago but reinforced (LastSeenAt) recently — e.g. a merge pulled in a fresh source
         var entry = new MemoryEntry(
-            "id1", "Updated fact", null, [], DateTimeOffset.UtcNow.AddDays(-60),
+            "id1", "Reinforced fact", null, [], DateTimeOffset.UtcNow.AddDays(-60),
             UpdatedAt: DateTimeOffset.UtcNow.AddDays(-3),
-            ImportanceScore: 0.7f);
+            ImportanceScore: 0.7f)
+        {
+            LastSeenAt = DateTimeOffset.UtcNow.AddDays(-3),
+            ReinforcementCount = 2
+        };
         await memory.SaveAsync(entry);
 
         var service = CreateService(memory);
         await service.RunImportanceDecayPassAsync([entry]);
 
         var result = await memory.GetAsync("id1");
-        Assert.AreEqual(0.7f, result!.ImportanceScore, "Recently updated entry should not decay");
+        Assert.AreEqual(0.7f, result!.ImportanceScore, "Recently-reinforced entry should not decay");
+    }
+
+    [TestMethod]
+    public async Task Decay_DreamRewriteWithoutReinforcement_IsDecayed()
+    {
+        var memory = new InMemoryStore();
+        // This is the specific shift from pre-0.10 behavior: an entry rewritten recently by
+        // dream housekeeping (bumping UpdatedAt) but never actually reinforced (LastSeenAt is
+        // still the original CreatedAt) should now decay. Pre-0.10 it would have been
+        // protected by the recent UpdatedAt.
+        var oldTime = DateTimeOffset.UtcNow.AddDays(-60);
+        var entry = new MemoryEntry(
+            "id1", "Stale fact that dream keeps polishing", null, [], oldTime,
+            UpdatedAt: DateTimeOffset.UtcNow.AddHours(-1),
+            ImportanceScore: 0.7f)
+        {
+            LastSeenAt = oldTime,
+            ReinforcementCount = 1
+        };
+        await memory.SaveAsync(entry);
+
+        var service = CreateService(memory);
+        await service.RunImportanceDecayPassAsync([entry]);
+
+        var result = await memory.GetAsync("id1");
+        Assert.AreEqual(0.65f, result!.ImportanceScore, 0.001,
+            "Dream rewrite alone must not reset the decay clock — only real reinforcement does.");
     }
 
     // ── Helpers ──────────────────────────────────────────────────────────────

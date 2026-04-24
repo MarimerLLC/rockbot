@@ -104,11 +104,13 @@ internal sealed partial class FileMemoryStore : ILongTermMemory
             _semaphore.Release();
         }
 
-        // No query: return most-recently updated entries up to MaxResults
+        // No query: return most-recently reinforced entries up to MaxResults.
+        // Ordered by LastSeenAt (real reinforcement) rather than UpdatedAt (dream rewrites),
+        // so dream housekeeping does not artificially promote entries in no-query results.
         if (criteria.Query is null)
         {
             return candidates
-                .OrderByDescending(e => e.UpdatedAt ?? e.CreatedAt)
+                .OrderByDescending(e => e.LastSeenAt)
                 .Take(criteria.MaxResults)
                 .ToList();
         }

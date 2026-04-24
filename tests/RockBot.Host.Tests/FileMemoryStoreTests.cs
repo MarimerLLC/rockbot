@@ -369,22 +369,38 @@ public class FileMemoryStoreTests
     }
 
     [TestMethod]
-    public async Task SearchAsync_NoQuery_UpdatedAtTakesPrecedenceOverCreatedAt()
+    public async Task SearchAsync_NoQuery_OrdersByLastSeenAtDescending()
     {
         var store = CreateStore();
         var now = DateTimeOffset.UtcNow;
-        // Created long ago but updated very recently
-        var recentlyUpdated = new MemoryEntry("updated", "Updated entry", null, [],
-            CreatedAt: now.AddDays(-30), UpdatedAt: now);
-        var recentlyCreated = new MemoryEntry("created", "Created entry", null, [],
-            CreatedAt: now.AddDays(-1));
 
-        await store.SaveAsync(recentlyUpdated);
-        await store.SaveAsync(recentlyCreated);
+        // Reinforced recently: old creation, but LastSeenAt was bumped by a real save-event merge
+        var reinforced = new MemoryEntry("reinforced", "Reinforced entry", null, [],
+            CreatedAt: now.AddDays(-30), UpdatedAt: now)
+        {
+            LastSeenAt = now.AddHours(-2),
+            ReinforcementCount = 3
+        };
+
+        // Dream-rewritten only: old creation, UpdatedAt bumped by dream housekeeping, but
+        // LastSeenAt still reflects the original creation (no real reinforcement).
+        var dreamOnly = new MemoryEntry("dream-only", "Dream-rewritten entry", null, [],
+            CreatedAt: now.AddDays(-30), UpdatedAt: now);
+        // LastSeenAt defaults to CreatedAt (-30d)
+
+        var fresh = new MemoryEntry("fresh", "Freshly created entry", null, [],
+            CreatedAt: now.AddDays(-1));
+        // LastSeenAt defaults to -1d
+
+        await store.SaveAsync(reinforced);
+        await store.SaveAsync(dreamOnly);
+        await store.SaveAsync(fresh);
 
         var results = await store.SearchAsync(new MemorySearchCriteria());
 
-        Assert.AreEqual("updated", results[0].Id, "Most-recently updated entry should rank first");
+        Assert.AreEqual("reinforced", results[0].Id, "Most-recently reinforced entry ranks first.");
+        Assert.AreEqual("fresh", results[1].Id, "A fresh single-observation entry outranks a dream-rewritten stale one.");
+        Assert.AreEqual("dream-only", results[2].Id, "Dream housekeeping (UpdatedAt bump) must not promote ranking.");
     }
 
     [TestMethod]
