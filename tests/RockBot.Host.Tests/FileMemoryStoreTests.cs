@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 
@@ -368,22 +369,38 @@ public class FileMemoryStoreTests
     }
 
     [TestMethod]
-    public async Task SearchAsync_NoQuery_UpdatedAtTakesPrecedenceOverCreatedAt()
+    public async Task SearchAsync_NoQuery_OrdersByLastSeenAtDescending()
     {
         var store = CreateStore();
         var now = DateTimeOffset.UtcNow;
-        // Created long ago but updated very recently
-        var recentlyUpdated = new MemoryEntry("updated", "Updated entry", null, [],
-            CreatedAt: now.AddDays(-30), UpdatedAt: now);
-        var recentlyCreated = new MemoryEntry("created", "Created entry", null, [],
-            CreatedAt: now.AddDays(-1));
 
-        await store.SaveAsync(recentlyUpdated);
-        await store.SaveAsync(recentlyCreated);
+        // Reinforced recently: old creation, but LastSeenAt was bumped by a real save-event merge
+        var reinforced = new MemoryEntry("reinforced", "Reinforced entry", null, [],
+            CreatedAt: now.AddDays(-30), UpdatedAt: now)
+        {
+            LastSeenAt = now.AddHours(-2),
+            ReinforcementCount = 3
+        };
+
+        // Dream-rewritten only: old creation, UpdatedAt bumped by dream housekeeping, but
+        // LastSeenAt still reflects the original creation (no real reinforcement).
+        var dreamOnly = new MemoryEntry("dream-only", "Dream-rewritten entry", null, [],
+            CreatedAt: now.AddDays(-30), UpdatedAt: now);
+        // LastSeenAt defaults to CreatedAt (-30d)
+
+        var fresh = new MemoryEntry("fresh", "Freshly created entry", null, [],
+            CreatedAt: now.AddDays(-1));
+        // LastSeenAt defaults to -1d
+
+        await store.SaveAsync(reinforced);
+        await store.SaveAsync(dreamOnly);
+        await store.SaveAsync(fresh);
 
         var results = await store.SearchAsync(new MemorySearchCriteria());
 
-        Assert.AreEqual("updated", results[0].Id, "Most-recently updated entry should rank first");
+        Assert.AreEqual("reinforced", results[0].Id, "Most-recently reinforced entry ranks first.");
+        Assert.AreEqual("fresh", results[1].Id, "A fresh single-observation entry outranks a dream-rewritten stale one.");
+        Assert.AreEqual("dream-only", results[2].Id, "Dream housekeeping (UpdatedAt bump) must not promote ranking.");
     }
 
     [TestMethod]
@@ -619,5 +636,99 @@ public class FileMemoryStoreTests
             tags ?? [],
             DateTimeOffset.UtcNow,
             ImportanceScore: importance);
+    }
+
+    // ── Temporal reinforcement fields (LastSeenAt, ReinforcementCount) ───────
+
+    [TestMethod]
+    public void MemoryEntry_NewInstance_LastSeenAtDefaultsToCreatedAt()
+    {
+        var created = new DateTimeOffset(2024, 1, 15, 12, 0, 0, TimeSpan.Zero);
+        var entry = new MemoryEntry("id1", "content", null, [], created);
+
+        Assert.AreEqual(created, entry.LastSeenAt);
+        Assert.AreEqual(1, entry.ReinforcementCount);
+    }
+
+    [TestMethod]
+    public void MemoryEntry_DeserializeFromLegacyJson_UsesCreatedAtAsLastSeenAt()
+    {
+        // JSON as written by a pre-time-feature build: no lastSeenAt, no reinforcementCount
+        var legacyJson = """
+            {
+              "id": "legacy1",
+              "content": "durable fact",
+              "category": "user-preferences",
+              "tags": ["fact"],
+              "createdAt": "2024-01-15T12:00:00+00:00",
+              "updatedAt": null,
+              "metadata": null,
+              "importanceScore": 0.5
+            }
+            """;
+
+        var entry = JsonSerializer.Deserialize<MemoryEntry>(
+            legacyJson,
+            new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+
+        Assert.IsNotNull(entry);
+        Assert.AreEqual("legacy1", entry.Id);
+        Assert.AreEqual(new DateTimeOffset(2024, 1, 15, 12, 0, 0, TimeSpan.Zero), entry.CreatedAt);
+        Assert.AreEqual(entry.CreatedAt, entry.LastSeenAt,
+            "Legacy JSON without lastSeenAt should default to CreatedAt via init-only default.");
+        Assert.AreEqual(1, entry.ReinforcementCount,
+            "Legacy JSON without reinforcementCount should default to 1.");
+    }
+
+    [TestMethod]
+    public async Task MemoryEntry_RoundtripThroughStore_PreservesNewFields()
+    {
+        var store = CreateStore();
+        var created = new DateTimeOffset(2024, 1, 15, 12, 0, 0, TimeSpan.Zero);
+        var lastSeen = new DateTimeOffset(2026, 3, 1, 8, 0, 0, TimeSpan.Zero);
+        var entry = new MemoryEntry(
+            "reinforced-1",
+            "Fact seen many times",
+            Category: "user-preferences",
+            Tags: ["fact"],
+            CreatedAt: created)
+        {
+            LastSeenAt = lastSeen,
+            ReinforcementCount = 4
+        };
+
+        await store.SaveAsync(entry);
+        var result = await store.GetAsync("reinforced-1");
+
+        Assert.IsNotNull(result);
+        Assert.AreEqual(created, result.CreatedAt);
+        Assert.AreEqual(lastSeen, result.LastSeenAt);
+        Assert.AreEqual(4, result.ReinforcementCount);
+    }
+
+    [TestMethod]
+    public async Task MemoryEntry_SubjectTimeMetadata_RoundtripsViaStore()
+    {
+        var store = CreateStore();
+        var metadata = new Dictionary<string, string>
+        {
+            ["subjectTimeStart"] = "1995",
+            ["subjectTimeEnd"] = "2003"
+        };
+        var entry = new MemoryEntry(
+            "chicago-years",
+            "User lived in Chicago",
+            Category: "user-preferences/location",
+            Tags: ["chicago"],
+            CreatedAt: DateTimeOffset.UtcNow,
+            Metadata: metadata);
+
+        await store.SaveAsync(entry);
+        var result = await store.GetAsync("chicago-years");
+
+        Assert.IsNotNull(result);
+        Assert.IsNotNull(result.Metadata);
+        Assert.AreEqual("1995", result.Metadata["subjectTimeStart"]);
+        Assert.AreEqual("2003", result.Metadata["subjectTimeEnd"]);
     }
 }
