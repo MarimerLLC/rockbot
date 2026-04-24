@@ -175,23 +175,43 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
             }
         }
 
-        // Seed default servers from infrastructure config (Helm values)
+        // Remove duplicate entries that point at the same URL with the same credentials/options.
+        // Multiple entries can accumulate when the helm auto-seed adds a default name while the
+        // user has already registered the same server manually under a different name.
+        var removedDupes = DeduplicateByIdentity(config);
+
+        // Seed default servers from infrastructure config (Helm values). Skip seeding when an
+        // entry with the same URL already exists under any name — the user's existing entry
+        // (which may carry auth headers) takes precedence.
         var seeded = false;
         foreach (var (name, url) in _options.DefaultServers)
         {
-            if (!config.McpServers.ContainsKey(name))
+            var normalizedDefaultUrl = McpBridgeServerConfig.NormalizeUrl(url);
+            var matchByUrl = string.IsNullOrEmpty(normalizedDefaultUrl)
+                ? default
+                : config.McpServers.FirstOrDefault(kvp =>
+                    McpBridgeServerConfig.NormalizeUrl(kvp.Value.Url) == normalizedDefaultUrl);
+            if (matchByUrl.Key is not null)
             {
-                _logger.LogInformation("Seeding default MCP server {Name} at {Url}", name, url);
-                config.McpServers[name] = new McpBridgeServerConfig
+                if (!string.Equals(matchByUrl.Key, name, StringComparison.OrdinalIgnoreCase))
                 {
-                    Type = "sse",
-                    Url = url
-                };
-                seeded = true;
+                    _logger.LogInformation(
+                        "Default MCP server {Name} ({Url}) already exists as {ExistingName}; skipping seed",
+                        name, url, matchByUrl.Key);
+                }
+                continue;
             }
+
+            _logger.LogInformation("Seeding default MCP server {Name} at {Url}", name, url);
+            config.McpServers[name] = new McpBridgeServerConfig
+            {
+                Type = "sse",
+                Url = url
+            };
+            seeded = true;
         }
 
-        if (seeded)
+        if (seeded || removedDupes > 0)
         {
             try
             {
@@ -201,7 +221,9 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
                     WriteIndented = true
                 });
                 await File.WriteAllTextAsync(_configPath, updatedJson, ct);
-                _logger.LogInformation("Persisted seeded MCP servers to {Path}", _configPath);
+                _logger.LogInformation(
+                    "Persisted MCP config changes to {Path} (seeded={Seeded}, duplicatesRemoved={Removed})",
+                    _configPath, seeded, removedDupes);
             }
             catch (Exception ex)
             {
@@ -257,6 +279,48 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
             _logger.LogError(backupEx, "Failed to read backup MCP config from {BackupPath}", backupPath);
             return null;
         }
+    }
+
+    /// <summary>
+    /// Removes entries from <paramref name="config"/> that share a canonical identity
+    /// (same URL, credentials, transport, and options) with another entry. When duplicates
+    /// are found, prefers keeping the entry whose name matches a helm-default server name
+    /// so a subsequent seed does not re-add what we just removed; otherwise keeps the
+    /// alphabetically first name. Returns the number of entries removed.
+    /// </summary>
+    private int DeduplicateByIdentity(McpBridgeConfig config)
+    {
+        var groups = config.McpServers
+            .GroupBy(kvp => kvp.Value.CanonicalIdentity(), StringComparer.Ordinal)
+            .Where(g => !string.IsNullOrEmpty(g.Key) && g.Count() > 1)
+            .ToList();
+
+        var removed = 0;
+        foreach (var group in groups)
+        {
+            var entries = group.ToList();
+            var preferred = entries.FirstOrDefault(e =>
+                _options.DefaultServers.ContainsKey(e.Key));
+            if (preferred.Key is null)
+            {
+                preferred = entries
+                    .OrderBy(e => e.Key, StringComparer.OrdinalIgnoreCase)
+                    .First();
+            }
+
+            foreach (var entry in entries)
+            {
+                if (string.Equals(entry.Key, preferred.Key, StringComparison.Ordinal))
+                    continue;
+
+                config.McpServers.Remove(entry.Key);
+                removed++;
+                _logger.LogWarning(
+                    "Removed duplicate MCP server entry {DuplicateName} (same URL/credentials as kept entry {KeptName}: {Url})",
+                    entry.Key, preferred.Key, entry.Value.Url);
+            }
+        }
+        return removed;
     }
 
     private async Task ConnectServerAsync(string name, McpBridgeServerConfig config, CancellationToken ct)
@@ -855,6 +919,30 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
                     Args = req.Args,
                     Env = req.Env
                 };
+
+                // Reject registrations that duplicate an existing server's URL and credentials
+                // under a different name. The name doesn't matter for dedup — URL + headers +
+                // transport + command/args/env must all match for this to be considered a dup.
+                var newIdentity = config.CanonicalIdentity();
+                if (!string.IsNullOrEmpty(newIdentity))
+                {
+                    var existingDup = _serverConfigs.FirstOrDefault(kvp =>
+                        !string.Equals(kvp.Key, req.ServerName, StringComparison.OrdinalIgnoreCase)
+                        && string.Equals(kvp.Value.CanonicalIdentity(), newIdentity, StringComparison.Ordinal));
+
+                    if (existingDup.Key is not null)
+                    {
+                        var dupResponse = new McpRegisterServerResponse
+                        {
+                            ServerName = req.ServerName,
+                            Success = false,
+                            Error = $"An MCP server with the same URL and credentials is already registered as '{existingDup.Key}'. " +
+                                    $"Use the existing registration, or unregister it before registering under a different name."
+                        };
+                        await PublishResponseAsync(dupResponse, replyTo, envelope.CorrelationId, ct);
+                        return MessageResult.Ack;
+                    }
+                }
 
                 await ConnectServerAsync(req.ServerName, config, ct);
                 await PersistServerConfigAsync(req.ServerName, config, remove: false);
