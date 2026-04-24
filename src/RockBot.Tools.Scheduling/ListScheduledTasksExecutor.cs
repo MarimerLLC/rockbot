@@ -37,9 +37,13 @@ internal sealed class ListScheduledTasksExecutor(ISchedulerService scheduler, Ag
                     else
                         sb.AppendLine($"  Next fire: none (cron has no future occurrence — task will be removed)");
                     sb.AppendLine($"  Description: {task.Description}");
-                    sb.AppendLine($"  Created: {task.CreatedAt:u}");
+                    var createdLocal = TimeZoneInfo.ConvertTime(task.CreatedAt, clock.Zone);
+                    sb.AppendLine($"  Created: {createdLocal:yyyy-MM-dd HH:mm:ss} ({clock.Zone.Id})");
                     if (task.LastFiredAt.HasValue)
-                        sb.AppendLine($"  Last fired: {task.LastFiredAt.Value:u}");
+                    {
+                        var firedLocal = TimeZoneInfo.ConvertTime(task.LastFiredAt.Value, clock.Zone);
+                        sb.AppendLine($"  Last fired: {firedLocal:yyyy-MM-dd HH:mm:ss} ({clock.Zone.Id})");
+                    }
                     sb.AppendLine();
                 }
                 content = sb.ToString().TrimEnd();
