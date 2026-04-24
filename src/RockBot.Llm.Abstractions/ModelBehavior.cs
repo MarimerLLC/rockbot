@@ -17,7 +17,11 @@ public sealed class ModelBehavior
     public int ToolResultChunkingThreshold { get; init; } = 64_000;
 
     /// <summary>Behavior profile that applies no tweaks — used when no overrides are configured.</summary>
-    public static readonly ModelBehavior Default = new() { NudgeOnHallucinatedToolCalls = true };
+    public static readonly ModelBehavior Default = new()
+    {
+        NudgeOnHallucinatedToolCalls = true,
+        NudgeOnToolFailureGiveup = true,
+    };
 
     /// <summary>
     /// When true, detect responses where the model claims to have called tools (e.g. "I've
@@ -87,4 +91,33 @@ public sealed class ModelBehavior
     /// Null means use the host's built-in default (<see cref="Host.AgentHostOptions.MaxFollowUpPasses"/>).
     /// </summary>
     public int? MaxFollowUpPassesOverride { get; init; }
+
+    /// <summary>
+    /// When true, detect leaked internal tool-call scaffolding in the model's text output
+    /// (e.g. <c>to=multi_tool_use.parallel</c> or <c>to=functions.X</c>) and force a retry
+    /// (consuming one completion-reprompt slot) instead of returning the malformed response.
+    /// Targets a specific, documented failure mode of OpenAI GPT-family models where the
+    /// model emits training-time scaffolding as literal text. Language-agnostic and safe
+    /// to enable for any deployment; legitimate responses never contain these tokens.
+    /// </summary>
+    public bool NudgeOnLeakedToolSyntax { get; init; }
+
+    /// <summary>
+    /// When true, detect runs of 3+ consecutive CJK codepoints in the model's output and
+    /// force a retry. Intended for English-primary deployments where CJK output correlates
+    /// with the model producing gambling-SEO spam or other training-data contamination.
+    /// This is a heuristic — DO NOT enable for agents that legitimately process or respond
+    /// in Chinese or Japanese, or it will force unnecessary retries on valid responses.
+    /// </summary>
+    public bool NudgeOnUnexpectedCjkOutput { get; init; }
+
+    /// <summary>
+    /// When true, detect responses where the model gives up after a tool returned an
+    /// error ("I hit a tool failure", "errored on both", "from the current tool state",
+    /// etc.) and inject a nudge telling it to retry the tool once before reporting failure.
+    /// The <see cref="Host.AgentLoopRunner.RepetitiveToolCallDetector"/> and the existing
+    /// reprompt budget bound total retries, so persistent failures still surface to the user.
+    /// Enabled by default — general-purpose and model-agnostic.
+    /// </summary>
+    public bool NudgeOnToolFailureGiveup { get; init; }
 }
