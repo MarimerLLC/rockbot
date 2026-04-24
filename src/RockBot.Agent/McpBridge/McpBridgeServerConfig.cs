@@ -58,4 +58,45 @@ public sealed class McpBridgeServerConfig
     /// Whether this config uses HTTP-based transport (SSE or streamable HTTP).
     /// </summary>
     public bool IsSse => Type?.ToLowerInvariant() is "sse" or "http" or "streamable-http";
+
+    /// <summary>
+    /// Computes a stable identity string for this server configuration that excludes the
+    /// server's dictionary name. Two entries with the same canonical identity point at the
+    /// same underlying server with the same credentials and options, and should be treated
+    /// as duplicates even if registered under different names.
+    /// </summary>
+    public string CanonicalIdentity()
+    {
+        var type = Type?.Trim().ToLowerInvariant() ?? string.Empty;
+        var url = NormalizeUrl(Url);
+        var transportMode = TransportMode?.Trim().ToLowerInvariant() ?? "auto";
+        var command = Command?.Trim() ?? string.Empty;
+        var args = string.Join("", Args);
+        var env = string.Join("", Env
+            .OrderBy(kvp => kvp.Key, StringComparer.Ordinal)
+            .Select(kvp => $"{kvp.Key}={kvp.Value}"));
+        var headers = string.Join("", Headers
+            .OrderBy(kvp => kvp.Key, StringComparer.OrdinalIgnoreCase)
+            .Select(kvp => $"{kvp.Key.ToLowerInvariant()}={kvp.Value}"));
+        var allowedTools = string.Join("", AllowedTools.OrderBy(s => s, StringComparer.OrdinalIgnoreCase));
+        var deniedTools = string.Join("", DeniedTools.OrderBy(s => s, StringComparer.OrdinalIgnoreCase));
+        return string.Join("", type, url, transportMode, command, args, env, headers, allowedTools, deniedTools);
+    }
+
+    /// <summary>
+    /// Normalizes a URL for duplicate detection: lowercases the scheme and authority,
+    /// preserves path case, and strips a trailing slash. Returns empty string for null/blank.
+    /// </summary>
+    internal static string NormalizeUrl(string? url)
+    {
+        if (string.IsNullOrWhiteSpace(url)) return string.Empty;
+        var trimmed = url.Trim();
+        if (Uri.TryCreate(trimmed, UriKind.Absolute, out var uri))
+        {
+            var authority = uri.GetLeftPart(UriPartial.Authority).ToLowerInvariant();
+            var pathAndQuery = uri.PathAndQuery;
+            return (authority + pathAndQuery).TrimEnd('/');
+        }
+        return trimmed.TrimEnd('/').ToLowerInvariant();
+    }
 }

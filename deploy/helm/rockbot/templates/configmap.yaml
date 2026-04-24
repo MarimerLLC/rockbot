@@ -30,6 +30,10 @@ data:
   McpBridge__ConfigPath: "/data/agent/mcp.json"
 
   # ── Default MCP servers (auto-seeded into mcp.json on startup) ────────────
+  # The agent skips seeding an entry when an existing mcp.json entry already points
+  # at the same URL (under any name) — this prevents duplicates when a server has
+  # also been registered manually. Duplicate entries (same URL + credentials, any
+  # name) are deduplicated at startup regardless of how they were introduced.
   {{- if .Values.routingStatsMcp.enabled }}
   McpBridge__DefaultServers__routing-stats: "http://localhost:8080/"
   {{- end }}
