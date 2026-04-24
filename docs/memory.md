@@ -63,10 +63,36 @@ result formatting (`seen 4× from 2024-06 to today` vs. `first seen today`).
 - **Importance decay** (in `DreamService.RunImportanceDecayPassAsync`) fades stale entries
   based on how long since the last *reinforcement*, not how long since the last record
   edit. Dream housekeeping (rephrasing, recategorization, score adjustments) does not
-  reset the decay clock — only real save-event merges do.
+  reset the decay clock — only real save-event merges do. Decay is **exponential with a
+  tunable half-life** — see [Importance decay shape](#importance-decay-shape) below.
 - **No-query search ranking** (in `FileMemoryStore.SearchAsync` when no query text is
   supplied) orders results by `LastSeenAt` descending, surfacing recently-reinforced
   facts ahead of entries that dream has merely been polishing.
+
+#### Importance decay shape
+
+Decay is designed for an agent running over months-to-years, not weeks:
+
+| Phase | Duration | Behavior |
+|---|---|---|
+| **Grace** | `ImportanceDecayGraceDays` (default 30) | Entry's score is untouched. |
+| **Decay** | After grace | Score multiplied each dream cycle by `0.5^(1 / (HalfLifeDays · cycles-per-day))`. Drops quickly at high scores; slows as it approaches the floor. |
+| **Floor** | Once score reaches `ImportanceDecayFloor` (default 0.10) | No further decay. Entry remains discoverable via keyword match. |
+
+With the defaults (Grace=30, HalfLife=45, Floor=0.10, 12h cron → 2 cycles/day), time
+from last reinforcement to floor by starting importance:
+
+| Starting importance | Time to floor (approx) |
+|---|---|
+| 0.95 (core fact) | ~176 days (~6 months) |
+| 0.70 (significant) | ~156 days (~5 months) |
+| 0.50 (routine) | ~134 days (~4.5 months) |
+| 0.30 (minor) | ~101 days (~3.5 months) |
+
+All three parameters are configurable on `DreamOptions` —
+`ImportanceDecayGraceDays`, `ImportanceDecayHalfLifeDays`, `ImportanceDecayFloor`.
+The half-life formula assumes 2 cycles/day; if you change `CronSchedule`, tune
+`HalfLifeDays` accordingly to preserve the calendar-time shape.
 
 Legacy JSON files predating these fields deserialize with sensible defaults —
 `LastSeenAt = CreatedAt`, `ReinforcementCount = 1` — via init-only property defaults.

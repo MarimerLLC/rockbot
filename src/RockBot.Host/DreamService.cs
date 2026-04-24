@@ -1301,20 +1301,34 @@ internal sealed class DreamService : IHostedService, IDisposable
     }
 
     /// <summary>
-    /// Applies gradual importance decay to memory entries that haven't been reinforced recently.
-    /// Decay is keyed on <see cref="MemoryEntry.LastSeenAt"/> — the last real save-event merged
-    /// into the entry — not on <see cref="MemoryEntry.UpdatedAt"/>, so dream housekeeping
-    /// (rephrasing, recategorization, importance rescoring) does not reset the decay clock.
-    /// Entries whose LastSeenAt is older than <see cref="DecayGracePeriodDays"/> days lose
-    /// importance at <see cref="DecayPerCycleFraction"/> per dream cycle, down to a floor of
-    /// <see cref="DecayFloor"/>. Stale, unreinforced memories naturally fade in ranking priority
-    /// while remaining discoverable.
+    /// Applies exponential (half-life) importance decay to memory entries that haven't been
+    /// reinforced recently. Decay is keyed on <see cref="MemoryEntry.LastSeenAt"/> — the last
+    /// real save-event merged into the entry — not on <see cref="MemoryEntry.UpdatedAt"/>, so
+    /// dream housekeeping (rephrasing, recategorization, score adjustments) does not reset
+    /// the decay clock.
+    /// <para>
+    /// Entries whose LastSeenAt is older than <see cref="DreamOptions.ImportanceDecayGraceDays"/>
+    /// have their importance multiplied each cycle by a factor derived from
+    /// <see cref="DreamOptions.ImportanceDecayHalfLifeDays"/>, clamped to
+    /// <see cref="DreamOptions.ImportanceDecayFloor"/>. The resulting curve drops quickly near
+    /// full importance and asymptotes toward the floor — matching the "rapid drop then long
+    /// slow degradation" shape appropriate for a long-running agent.
+    /// </para>
     /// </summary>
     internal async Task RunImportanceDecayPassAsync(IReadOnlyList<MemoryEntry> entries)
     {
-        const int DecayGracePeriodDays = 14;
-        const float DecayPerCycleFraction = 0.05f;
-        const float DecayFloor = 0.1f;
+        var graceDays = _options.ImportanceDecayGraceDays;
+        var halfLifeDays = _options.ImportanceDecayHalfLifeDays;
+        var floor = _options.ImportanceDecayFloor;
+
+        // Per-cycle multiplicative factor derived from the configured half-life.
+        // Assumes 2 dream cycles per day (matches the default cron '0 */12 * * *').
+        // If you change CronSchedule to run more or less often, tune HalfLifeDays to
+        // preserve the calendar-time decay shape (see DreamOptions.ImportanceDecayHalfLifeDays).
+        const double CyclesPerDay = 2.0;
+        var perCycleFactor = halfLifeDays > 0
+            ? (float)Math.Pow(0.5, 1.0 / (halfLifeDays * CyclesPerDay))
+            : 0f; // HalfLifeDays <= 0 disables the gradual curve — treat as "collapse to floor"
 
         var now = DateTimeOffset.UtcNow;
         var decayed = 0;
@@ -1323,22 +1337,22 @@ internal sealed class DreamService : IHostedService, IDisposable
         {
             var daysSinceSeen = (now - entry.LastSeenAt).TotalDays;
 
-            if (daysSinceSeen < DecayGracePeriodDays)
+            if (daysSinceSeen < graceDays)
                 continue;
 
-            if (entry.ImportanceScore <= DecayFloor)
+            if (entry.ImportanceScore <= floor)
                 continue;
 
-            var newImportance = Math.Max(DecayFloor, entry.ImportanceScore - DecayPerCycleFraction);
-            if (Math.Abs(newImportance - entry.ImportanceScore) < 0.001f)
-                continue;
+            var newImportance = Math.Max(floor, entry.ImportanceScore * perCycleFactor);
+            if (newImportance >= entry.ImportanceScore)
+                continue; // nothing to change (factor == 1 or already at floor)
 
             var updated = entry with { ImportanceScore = newImportance };
             await _memory.SaveAsync(updated);
             decayed++;
 
             _logger.LogDebug(
-                "DreamService: decayed importance for {Id} from {Old:F2} to {New:F2} (last seen {Days:F0} days ago)",
+                "DreamService: decayed importance for {Id} from {Old:F3} to {New:F3} (last seen {Days:F0} days ago)",
                 entry.Id, entry.ImportanceScore, newImportance, daysSinceSeen);
         }
 

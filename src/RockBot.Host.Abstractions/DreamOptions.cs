@@ -148,4 +148,39 @@ public sealed class DreamOptions
     /// When the file does not exist, a built-in fallback directive is used.
     /// </summary>
     public string WispFailureDirectivePath { get; set; } = "wisp-failure-dream.md";
+
+    /// <summary>
+    /// Days of no reinforcement (measured against <see cref="MemoryEntry.LastSeenAt"/>)
+    /// before importance decay begins. Entries younger than this are left alone regardless
+    /// of their score. Default: 30 days.
+    /// </summary>
+    public int ImportanceDecayGraceDays { get; set; } = 30;
+
+    /// <summary>
+    /// Half-life (in calendar days) of a memory entry's importance once the grace period
+    /// has passed. Decay is multiplicative: an entry's importance is multiplied by
+    /// <c>0.5^(1 / (HalfLifeDays · cycles-per-day))</c> each dream cycle, producing an
+    /// exponential curve that drops quickly near full importance and slows as it
+    /// approaches the floor.
+    /// <para>
+    /// With the defaults (HalfLife=45, Grace=30, Floor=0.10, default 12h cron → 2 cycles/day),
+    /// a core 0.95 memory reaches the floor in roughly <b>176 days (~6 months)</b>; a
+    /// routine 0.50 memory in ~134 days; a minor 0.30 memory in ~101 days.
+    /// </para>
+    /// <para>
+    /// <b>Cron cadence assumption:</b> The factor is computed assuming 2 dream cycles per
+    /// day (matches the default <c>0 */12 * * *</c>). If you change <see cref="CronSchedule"/>
+    /// to run more or less often, adjust <see cref="ImportanceDecayHalfLifeDays"/> accordingly
+    /// to preserve the calendar-time shape — e.g. at an hourly cadence, multiply halflife by 12.
+    /// </para>
+    /// </summary>
+    public float ImportanceDecayHalfLifeDays { get; set; } = 45f;
+
+    /// <summary>
+    /// Minimum importance score. Decay will never drive an entry below this value.
+    /// Entries at or below the floor are skipped by the decay pass entirely.
+    /// Default: 0.10 — low enough to de-rank stale entries but non-zero so they remain
+    /// discoverable via keyword search.
+    /// </summary>
+    public float ImportanceDecayFloor { get; set; } = 0.10f;
 }

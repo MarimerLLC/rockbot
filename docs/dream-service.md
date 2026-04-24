@@ -80,11 +80,21 @@ just like durable facts.
 the file does not exist.
 
 **Importance decay (runs before consolidation):** Entries whose `LastSeenAt` is older than
-14 days lose 5% importance per dream cycle down to a floor of 0.10. Decay is keyed on
-`LastSeenAt` (real reinforcement) rather than `UpdatedAt`, so dream rephrasing, recategorization,
-or score adjustments do not reset the decay clock — only a real save-event merged into an
-entry qualifies as reinforcement. This prevents entries that dream keeps polishing but the
-agent never actually re-observes from lingering at high importance indefinitely.
+the configured grace period (default 30 days) have their importance multiplied each dream
+cycle by `0.5^(1 / (HalfLifeDays · cycles-per-day))` — exponential decay with a tunable
+half-life. With the defaults (grace=30, half-life=45, floor=0.10, 2 cycles/day), a core
+0.95 memory reaches the 0.10 floor in roughly 6 months; a 0.30 minor fact in ~3.5 months.
+The curve drops quickly at high scores and asymptotes toward the floor, matching the "rapid
+drop after grace, then long slow degradation" shape appropriate for a long-running agent.
+
+Decay is keyed on `LastSeenAt` (real reinforcement) rather than `UpdatedAt`, so dream
+rephrasing, recategorization, or score adjustments do not reset the decay clock — only a
+real save-event merged into an entry qualifies as reinforcement.
+
+All three parameters are tunable via `DreamOptions.ImportanceDecayGraceDays`,
+`ImportanceDecayHalfLifeDays`, and `ImportanceDecayFloor`. The half-life formula assumes
+2 cycles/day (matching the default `0 */12 * * *` cron); if you change the dream cadence,
+adjust the half-life accordingly to preserve the calendar-time shape.
 
 ---
 
