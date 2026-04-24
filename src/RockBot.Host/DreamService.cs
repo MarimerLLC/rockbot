@@ -1348,7 +1348,14 @@ internal sealed class DreamService : IHostedService, IDisposable
             var newImportance = Math.Max(floor, entry.ImportanceScore * factor);
             if (newImportance >= entry.ImportanceScore) continue;
 
-            var updated = entry with { ImportanceScore = newImportance };
+            // Bump UpdatedAt — this is the anchor the next decay pass uses to compute
+            // elapsed time. Without this, successive passes would re-measure elapsed from
+            // the original UpdatedAt and double-count time across cycles.
+            var updated = entry with
+            {
+                ImportanceScore = newImportance,
+                UpdatedAt = now
+            };
             await _memory.SaveAsync(updated);
             decayed++;
 

@@ -24,6 +24,47 @@ public class ImportanceDecayTests
     }
 
     [TestMethod]
+    public async Task Decay_SaveBumpsUpdatedAt_SoSuccessivePassesDoNotDoubleCount()
+    {
+        // Regression: the first implementation preserved UpdatedAt on decay save, which
+        // meant each pass re-measured elapsed time from the original UpdatedAt. Over N
+        // passes, decay applied roughly N times the intended amount because each pass's
+        // "since last touch" was growing unbounded.
+        //
+        // Fix: decay save bumps UpdatedAt = now. This test runs two back-to-back passes
+        // on the SAME in-memory store (no synthetic UpdatedAt manipulation) and verifies
+        // that the second pass applies near-zero decay because almost no calendar time
+        // has elapsed since the first pass's save.
+        var memory = new InMemoryStore();
+        var lastSeen = DateTimeOffset.UtcNow.AddDays(-60);
+        var entry = new MemoryEntry("id1", "x", null, [], lastSeen, UpdatedAt: lastSeen, ImportanceScore: 0.8f)
+        {
+            LastSeenAt = lastSeen
+        };
+        await memory.SaveAsync(entry);
+
+        var opts = new DreamOptions
+        {
+            Enabled = false,
+            ImportanceDecayGraceDays = 0,
+            ImportanceDecayHalfLifeDays = 45f,
+            ImportanceDecayFloor = 0.0f
+        };
+        var service = CreateService(memory, opts);
+
+        await service.RunImportanceDecayPassAsync([entry]);
+        var afterFirst = (await memory.GetAsync("id1"))!;
+        var importanceAfterFirst = afterFirst.ImportanceScore;
+
+        await service.RunImportanceDecayPassAsync([afterFirst]);
+        var afterSecond = (await memory.GetAsync("id1"))!;
+
+        Assert.AreEqual(importanceAfterFirst, afterSecond.ImportanceScore, 0.002,
+            "A second pass run immediately after the first must apply near-zero decay — " +
+            "UpdatedAt should have been bumped to 'now' on the first save.");
+    }
+
+    [TestMethod]
     public async Task Decay_PastGrace_AppliesElapsedTimeMultiplicativeDecay()
     {
         var memory = new InMemoryStore();
