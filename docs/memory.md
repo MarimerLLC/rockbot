@@ -76,11 +76,18 @@ Decay is designed for an agent running over months-to-years, not weeks:
 | Phase | Duration | Behavior |
 |---|---|---|
 | **Grace** | `ImportanceDecayGraceDays` (default 30) | Entry's score is untouched. |
-| **Decay** | After grace | Score multiplied each dream cycle by `0.5^(1 / (HalfLifeDays · cycles-per-day))`. Drops quickly at high scores; slows as it approaches the floor. |
+| **Decay** | After grace | Score multiplied by `0.5^(elapsedDays / HalfLifeDays)` based on calendar time since last touched. Drops quickly at high scores; slows as it approaches the floor. |
 | **Floor** | Once score reaches `ImportanceDecayFloor` (default 0.10) | No further decay. Entry remains discoverable via keyword match. |
 
-With the defaults (Grace=30, HalfLife=45, Floor=0.10, 12h cron → 2 cycles/day), time
-from last reinforcement to floor by starting importance:
+**Decay is calendar-time based, not cycle-based.** Each decay pass computes the actual
+elapsed time (in calendar days) since the entry was last touched and applies the
+corresponding exponential factor. Because multiplicative decay composes — `0.5^(a/T) ·
+0.5^(b/T) == 0.5^((a+b)/T)` — running the dream cycle twice a day, once a day, or once
+a week all produce the same calendar-time decay curve for a given half-life. No tuning
+needed when you change `CronSchedule`.
+
+With the defaults (Grace=30, HalfLife=45, Floor=0.10), time from last reinforcement to
+floor by starting importance:
 
 | Starting importance | Time to floor (approx) |
 |---|---|
@@ -89,10 +96,9 @@ from last reinforcement to floor by starting importance:
 | 0.50 (routine) | ~134 days (~4.5 months) |
 | 0.30 (minor) | ~101 days (~3.5 months) |
 
-All three parameters are configurable on `DreamOptions` —
+All three parameters are configurable on `DreamOptions`:
 `ImportanceDecayGraceDays`, `ImportanceDecayHalfLifeDays`, `ImportanceDecayFloor`.
-The half-life formula assumes 2 cycles/day; if you change `CronSchedule`, tune
-`HalfLifeDays` accordingly to preserve the calendar-time shape.
+Set `ImportanceDecayHalfLifeDays <= 0` to disable decay entirely.
 
 Legacy JSON files predating these fields deserialize with sensible defaults —
 `LastSeenAt = CreatedAt`, `ReinforcementCount = 1` — via init-only property defaults.

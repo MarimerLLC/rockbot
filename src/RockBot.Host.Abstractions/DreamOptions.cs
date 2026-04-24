@@ -158,20 +158,16 @@ public sealed class DreamOptions
 
     /// <summary>
     /// Half-life (in calendar days) of a memory entry's importance once the grace period
-    /// has passed. Decay is multiplicative: an entry's importance is multiplied by
-    /// <c>0.5^(1 / (HalfLifeDays · cycles-per-day))</c> each dream cycle, producing an
-    /// exponential curve that drops quickly near full importance and slows as it
-    /// approaches the floor.
+    /// has passed. Decay is multiplicative and measured in calendar time: each decay pass
+    /// multiplies importance by <c>0.5^(elapsedDays / HalfLifeDays)</c> where
+    /// <c>elapsedDays</c> is the calendar time since the entry was last touched. This
+    /// composes correctly, so the decay curve is invariant to <see cref="CronSchedule"/>
+    /// cadence — running dream twice a day, four times a day, or once a week produces
+    /// the same calendar-time decay for a given half-life.
     /// <para>
-    /// With the defaults (HalfLife=45, Grace=30, Floor=0.10, default 12h cron → 2 cycles/day),
-    /// a core 0.95 memory reaches the floor in roughly <b>176 days (~6 months)</b>; a
-    /// routine 0.50 memory in ~134 days; a minor 0.30 memory in ~101 days.
-    /// </para>
-    /// <para>
-    /// <b>Cron cadence assumption:</b> The factor is computed assuming 2 dream cycles per
-    /// day (matches the default <c>0 */12 * * *</c>). If you change <see cref="CronSchedule"/>
-    /// to run more or less often, adjust <see cref="ImportanceDecayHalfLifeDays"/> accordingly
-    /// to preserve the calendar-time shape — e.g. at an hourly cadence, multiply halflife by 12.
+    /// With the defaults (HalfLife=45, Grace=30, Floor=0.10), a core 0.95 memory reaches
+    /// the floor in roughly <b>176 days (~6 months)</b>; a routine 0.50 memory in ~134 days;
+    /// a minor 0.30 memory in ~101 days. Set to zero or negative to disable decay entirely.
     /// </para>
     /// </summary>
     public float ImportanceDecayHalfLifeDays { get; set; } = 45f;

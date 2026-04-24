@@ -1302,17 +1302,18 @@ internal sealed class DreamService : IHostedService, IDisposable
 
     /// <summary>
     /// Applies exponential (half-life) importance decay to memory entries that haven't been
-    /// reinforced recently. Decay is keyed on <see cref="MemoryEntry.LastSeenAt"/> — the last
-    /// real save-event merged into the entry — not on <see cref="MemoryEntry.UpdatedAt"/>, so
-    /// dream housekeeping (rephrasing, recategorization, score adjustments) does not reset
-    /// the decay clock.
+    /// reinforced recently. Decay is calendar-time based — running the dream more or less
+    /// frequently produces the same decay curve in calendar days. Keyed on
+    /// <see cref="MemoryEntry.LastSeenAt"/> — the last real save-event merged into the entry
+    /// — not on <see cref="MemoryEntry.UpdatedAt"/>, so dream housekeeping (rephrasing,
+    /// recategorization, score adjustments) does not reset the decay clock.
     /// <para>
-    /// Entries whose LastSeenAt is older than <see cref="DreamOptions.ImportanceDecayGraceDays"/>
-    /// have their importance multiplied each cycle by a factor derived from
-    /// <see cref="DreamOptions.ImportanceDecayHalfLifeDays"/>, clamped to
-    /// <see cref="DreamOptions.ImportanceDecayFloor"/>. The resulting curve drops quickly near
-    /// full importance and asymptotes toward the floor — matching the "rapid drop then long
-    /// slow degradation" shape appropriate for a long-running agent.
+    /// For each entry past the grace period, we compute how many decay-eligible days have
+    /// elapsed since the last time this entry was touched and multiply the importance by
+    /// <c>0.5^(elapsedDays / HalfLifeDays)</c>. Because multiplicative decay composes
+    /// (<c>0.5^(a/T) · 0.5^(b/T) == 0.5^((a+b)/T)</c>), splitting the decay across many
+    /// small cycles or applying it in one large catch-up pass produces the same total
+    /// calendar-time curve.
     /// </para>
     /// </summary>
     internal async Task RunImportanceDecayPassAsync(IReadOnlyList<MemoryEntry> entries)
@@ -1321,14 +1322,8 @@ internal sealed class DreamService : IHostedService, IDisposable
         var halfLifeDays = _options.ImportanceDecayHalfLifeDays;
         var floor = _options.ImportanceDecayFloor;
 
-        // Per-cycle multiplicative factor derived from the configured half-life.
-        // Assumes 2 dream cycles per day (matches the default cron '0 */12 * * *').
-        // If you change CronSchedule to run more or less often, tune HalfLifeDays to
-        // preserve the calendar-time decay shape (see DreamOptions.ImportanceDecayHalfLifeDays).
-        const double CyclesPerDay = 2.0;
-        var perCycleFactor = halfLifeDays > 0
-            ? (float)Math.Pow(0.5, 1.0 / (halfLifeDays * CyclesPerDay))
-            : 0f; // HalfLifeDays <= 0 disables the gradual curve — treat as "collapse to floor"
+        if (halfLifeDays <= 0)
+            return; // decay disabled
 
         var now = DateTimeOffset.UtcNow;
         var decayed = 0;
@@ -1336,24 +1331,30 @@ internal sealed class DreamService : IHostedService, IDisposable
         foreach (var entry in entries)
         {
             var daysSinceSeen = (now - entry.LastSeenAt).TotalDays;
+            if (daysSinceSeen < graceDays) continue;
+            if (entry.ImportanceScore <= floor) continue;
 
-            if (daysSinceSeen < graceDays)
-                continue;
+            // Proxy for "time since last decay was applied": UpdatedAt is bumped every time
+            // the entry is saved (including by the prior decay pass), so for regularly-running
+            // decay on an otherwise-untouched entry this tracks cycle-to-cycle elapsed time.
+            // Bound by (daysSinceSeen - graceDays) so decay doesn't jump retroactively into
+            // the grace window when grace first expires.
+            var lastTouch = entry.UpdatedAt ?? entry.CreatedAt;
+            var daysSinceLastTouch = Math.Max(0, (now - lastTouch).TotalDays);
+            var eligibleElapsed = Math.Min(daysSinceSeen - graceDays, daysSinceLastTouch);
+            if (eligibleElapsed <= 0) continue;
 
-            if (entry.ImportanceScore <= floor)
-                continue;
-
-            var newImportance = Math.Max(floor, entry.ImportanceScore * perCycleFactor);
-            if (newImportance >= entry.ImportanceScore)
-                continue; // nothing to change (factor == 1 or already at floor)
+            var factor = (float)Math.Pow(0.5, eligibleElapsed / halfLifeDays);
+            var newImportance = Math.Max(floor, entry.ImportanceScore * factor);
+            if (newImportance >= entry.ImportanceScore) continue;
 
             var updated = entry with { ImportanceScore = newImportance };
             await _memory.SaveAsync(updated);
             decayed++;
 
             _logger.LogDebug(
-                "DreamService: decayed importance for {Id} from {Old:F3} to {New:F3} (last seen {Days:F0} days ago)",
-                entry.Id, entry.ImportanceScore, newImportance, daysSinceSeen);
+                "DreamService: decayed importance for {Id} from {Old:F3} to {New:F3} (last seen {SeenDays:F1}d ago, elapsed {Elapsed:F2}d)",
+                entry.Id, entry.ImportanceScore, newImportance, daysSinceSeen, eligibleElapsed);
         }
 
         if (decayed > 0)

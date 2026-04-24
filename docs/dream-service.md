@@ -80,21 +80,29 @@ just like durable facts.
 the file does not exist.
 
 **Importance decay (runs before consolidation):** Entries whose `LastSeenAt` is older than
-the configured grace period (default 30 days) have their importance multiplied each dream
-cycle by `0.5^(1 / (HalfLifeDays · cycles-per-day))` — exponential decay with a tunable
-half-life. With the defaults (grace=30, half-life=45, floor=0.10, 2 cycles/day), a core
-0.95 memory reaches the 0.10 floor in roughly 6 months; a 0.30 minor fact in ~3.5 months.
-The curve drops quickly at high scores and asymptotes toward the floor, matching the "rapid
-drop after grace, then long slow degradation" shape appropriate for a long-running agent.
+the configured grace period (default 30 days) have their importance multiplied by
+`0.5^(elapsedDays / HalfLifeDays)` where `elapsedDays` is the calendar time since the
+entry was last touched — exponential decay with a tunable half-life. With the defaults
+(grace=30, half-life=45, floor=0.10), a core 0.95 memory reaches the 0.10 floor in
+roughly 6 months; a 0.30 minor fact in ~3.5 months. The curve drops quickly at high
+scores and asymptotes toward the floor, matching the "rapid drop after grace, then long
+slow degradation" shape appropriate for a long-running agent.
 
-Decay is keyed on `LastSeenAt` (real reinforcement) rather than `UpdatedAt`, so dream
-rephrasing, recategorization, or score adjustments do not reset the decay clock — only a
-real save-event merged into an entry qualifies as reinforcement.
+**Calendar-time invariant.** Because multiplicative decay composes — `0.5^(a/T) · 0.5^(b/T)
+== 0.5^((a+b)/T)` — running the dream cycle twice a day, once a day, or once a week all
+produce the same calendar-time decay curve for a given half-life. No tuning is required
+when changing `CronSchedule`.
+
+Decay is keyed on `LastSeenAt` (real reinforcement) rather than `UpdatedAt`, so a recent
+dream rewrite does delay the current pass's decay (since the `elapsedDays` clock is reset
+by any record write) but does not permanently shield the entry — cumulative decay over
+calendar time continues to accrue as long as `LastSeenAt` stays stale. The grace period
+is bounded separately: first-past-grace decay applies only post-grace elapsed time, never
+retroactively into the grace window.
 
 All three parameters are tunable via `DreamOptions.ImportanceDecayGraceDays`,
-`ImportanceDecayHalfLifeDays`, and `ImportanceDecayFloor`. The half-life formula assumes
-2 cycles/day (matching the default `0 */12 * * *` cron); if you change the dream cadence,
-adjust the half-life accordingly to preserve the calendar-time shape.
+`ImportanceDecayHalfLifeDays`, and `ImportanceDecayFloor`. Set `ImportanceDecayHalfLifeDays`
+to zero or negative to disable decay entirely.
 
 ---
 

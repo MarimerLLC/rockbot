@@ -24,13 +24,23 @@ public class ImportanceDecayTests
     }
 
     [TestMethod]
-    public async Task Decay_PastGracePeriod_MultipliesByPerCycleFactor()
+    public async Task Decay_PastGrace_AppliesElapsedTimeMultiplicativeDecay()
     {
         var memory = new InMemoryStore();
-        var entry = MakeEntry("id1", "Old fact", daysOld: 60, importance: 0.8f);
+        // Entry LastSeen 40 days ago, UpdatedAt 1 day ago (simulating a prior decay pass).
+        // Under grace=14, halflife=30: eligibleElapsed = min(1, 40-14) = 1 day.
+        // Expected: 0.8 * 0.5^(1/30) = 0.8 * 0.97716 = 0.78173.
+        var lastSeen = DateTimeOffset.UtcNow.AddDays(-40);
+        var lastUpdated = DateTimeOffset.UtcNow.AddDays(-1);
+        var entry = new MemoryEntry(
+            "id1", "Old fact", null, [], lastSeen,
+            UpdatedAt: lastUpdated,
+            ImportanceScore: 0.8f)
+        {
+            LastSeenAt = lastSeen
+        };
         await memory.SaveAsync(entry);
 
-        // Grace=14, HalfLife=30. Per-cycle factor = 0.5^(1/60) ≈ 0.98853.
         var opts = new DreamOptions
         {
             Enabled = false,
@@ -42,25 +52,119 @@ public class ImportanceDecayTests
         await service.RunImportanceDecayPassAsync([entry]);
 
         var result = await memory.GetAsync("id1");
-        var expectedFactor = (float)Math.Pow(0.5, 1.0 / (30.0 * 2.0));
-        Assert.AreEqual(0.8f * expectedFactor, result!.ImportanceScore, 0.0005,
-            "One decay pass should apply exactly one per-cycle factor.");
+        var expected = 0.8f * (float)Math.Pow(0.5, 1.0 / 30.0);
+        Assert.AreEqual(expected, result!.ImportanceScore, 0.001,
+            "Decay should multiply by 0.5^(elapsedDays / halfLife) based on actual calendar elapsed time.");
+    }
+
+    [TestMethod]
+    public async Task Decay_JustPastGrace_AppliesOnlyEligibleElapsed()
+    {
+        // First decay pass after grace expires should only apply (daysSinceSeen - grace) worth
+        // of decay, not daysSinceLastTouch, so we don't retroactively decay into the grace window.
+        var memory = new InMemoryStore();
+        // LastSeen 30.5 days ago, UpdatedAt is also old (e.g. entry was never touched since creation).
+        // grace = 30, halflife = 10. eligibleElapsed = min(30.5-30, 30.5) = 0.5 days.
+        // NOT min(halflife's worth of catch-up, ...).
+        var lastSeen = DateTimeOffset.UtcNow.AddDays(-30.5);
+        var entry = new MemoryEntry("id1", "Fact", null, [], lastSeen, ImportanceScore: 0.8f)
+        {
+            LastSeenAt = lastSeen
+        };
+        await memory.SaveAsync(entry);
+
+        var opts = new DreamOptions
+        {
+            Enabled = false,
+            ImportanceDecayGraceDays = 30,
+            ImportanceDecayHalfLifeDays = 10f,
+            ImportanceDecayFloor = 0.10f
+        };
+        var service = CreateService(memory, opts);
+        await service.RunImportanceDecayPassAsync([entry]);
+
+        var result = await memory.GetAsync("id1");
+        var expected = 0.8f * (float)Math.Pow(0.5, 0.5 / 10.0);
+        Assert.AreEqual(expected, result!.ImportanceScore, 0.001,
+            "First-past-grace decay must apply only the post-grace elapsed, not the full time since UpdatedAt.");
+    }
+
+    [TestMethod]
+    public async Task Decay_CalendarTimeInvariant_SmallOrLargePassesMatch()
+    {
+        // The core property: decay is calendar-time invariant. Applying one large pass covering
+        // N days should produce the same importance as N smaller passes (simulating different
+        // cron cadences).
+        var opts = new DreamOptions
+        {
+            Enabled = false,
+            ImportanceDecayGraceDays = 0,
+            ImportanceDecayHalfLifeDays = 45f,
+            ImportanceDecayFloor = 0.0f
+        };
+
+        // Path A: one big pass covering 10 days
+        var memoryA = new InMemoryStore();
+        var tenDaysAgo = DateTimeOffset.UtcNow.AddDays(-10);
+        var entryA = new MemoryEntry("a", "x", null, [], tenDaysAgo, UpdatedAt: tenDaysAgo, ImportanceScore: 0.9f)
+        {
+            LastSeenAt = tenDaysAgo
+        };
+        await memoryA.SaveAsync(entryA);
+        var serviceA = CreateService(memoryA, opts);
+        await serviceA.RunImportanceDecayPassAsync([entryA]);
+        var resultA = await memoryA.GetAsync("a");
+
+        // Path B: 20 small passes simulating 0.5-day spacing (12h cron) over 10 calendar days.
+        // In a real running system, each decay pass bumps UpdatedAt to "now"; the NEXT pass
+        // 0.5 days later sees UpdatedAt as 0.5d old. We simulate that by constructing each
+        // iteration's entry with UpdatedAt pinned 0.5 days before the test's real-time "now."
+        var memoryB = new InMemoryStore();
+        var lastSeenB = DateTimeOffset.UtcNow.AddDays(-10);
+        var currentImportance = 0.9f;
+        for (var i = 0; i < 20; i++)
+        {
+            var entryB = new MemoryEntry(
+                "b", "x", null, [], lastSeenB,
+                UpdatedAt: DateTimeOffset.UtcNow.AddDays(-0.5),
+                ImportanceScore: currentImportance)
+            {
+                LastSeenAt = lastSeenB
+            };
+            await memoryB.SaveAsync(entryB);
+
+            var serviceB = CreateService(memoryB, opts);
+            await serviceB.RunImportanceDecayPassAsync([entryB]);
+            currentImportance = (await memoryB.GetAsync("b"))!.ImportanceScore;
+        }
+
+        // Path A applied 10 days of decay in one pass; path B applied 20 × 0.5 days.
+        // Both should arrive at the same importance.
+        Assert.AreEqual(resultA!.ImportanceScore, currentImportance, 0.01,
+            $"Calendar-time decay should be cadence-invariant: one 10-day pass ({resultA.ImportanceScore:F4}) " +
+            $"should match twenty 0.5-day passes ({currentImportance:F4}).");
     }
 
     [TestMethod]
     public async Task Decay_DoesNotGoBelowFloor()
     {
         var memory = new InMemoryStore();
-        // Near-floor entry with an aggressive config: one cycle would drive it below floor
-        // if unchecked (0.15 * 0.5 = 0.075).
-        var entry = MakeEntry("id1", "Fading fact", daysOld: 60, importance: 0.15f);
+        // Aggressive config so one pass drives well below floor without the clamp.
+        var lastSeen = DateTimeOffset.UtcNow.AddDays(-10);
+        var entry = new MemoryEntry(
+            "id1", "Fading fact", null, [], lastSeen,
+            UpdatedAt: lastSeen,
+            ImportanceScore: 0.15f)
+        {
+            LastSeenAt = lastSeen
+        };
         await memory.SaveAsync(entry);
 
         var opts = new DreamOptions
         {
             Enabled = false,
             ImportanceDecayGraceDays = 0,
-            ImportanceDecayHalfLifeDays = 0.5f,   // 12h halflife at 2 cycles/day → factor = 0.5 per cycle
+            ImportanceDecayHalfLifeDays = 0.5f,   // 0.15 × 0.5^(10/0.5) ≪ floor
             ImportanceDecayFloor = 0.10f
         };
         var service = CreateService(memory, opts);
@@ -88,7 +192,7 @@ public class ImportanceDecayTests
     public async Task Decay_ReinforcedRecently_IsNotDecayed()
     {
         var memory = new InMemoryStore();
-        // Created long ago but reinforced (LastSeenAt) recently — a merge pulled in a fresh source.
+        // Created long ago but reinforced (LastSeenAt) recently — within default 30-day grace.
         var entry = new MemoryEntry(
             "id1", "Reinforced fact", null, [], DateTimeOffset.UtcNow.AddDays(-60),
             UpdatedAt: DateTimeOffset.UtcNow.AddDays(-3),
@@ -103,42 +207,72 @@ public class ImportanceDecayTests
         await service.RunImportanceDecayPassAsync([entry]);
 
         var result = await memory.GetAsync("id1");
-        Assert.AreEqual(0.7f, result!.ImportanceScore, "Recently-reinforced entry should not decay.");
+        Assert.AreEqual(0.7f, result!.ImportanceScore, "Recently-reinforced entry within grace should not decay.");
     }
 
     [TestMethod]
-    public async Task Decay_DreamRewriteWithoutReinforcement_IsDecayed()
+    public async Task Decay_DreamRewrite_DoesNotProtectCumulativeDecay()
     {
+        // Specific shift from pre-0.10: dream housekeeping bumps UpdatedAt but does NOT
+        // permanently shield the entry from decay. Under elapsed-time decay, a recent
+        // UpdatedAt does delay decay within a single cycle, but over the agent's lifetime
+        // the decay still accumulates because LastSeenAt never advances for entries that
+        // are never actually reinforced.
+        //
+        // Here we simulate a scenario where UpdatedAt is repeatedly bumped (as if dream
+        // rewrites the entry every cycle) and verify the entry still decays over calendar
+        // time, just more slowly per pass.
         var memory = new InMemoryStore();
-        // The load-bearing behavior shift: an entry rewritten recently by dream housekeeping
-        // (bumping UpdatedAt) but never actually reinforced (LastSeenAt still the original
-        // CreatedAt) must now decay. Pre-0.10 it was protected by the recent UpdatedAt.
-        var oldTime = DateTimeOffset.UtcNow.AddDays(-60);
-        var entry = new MemoryEntry(
-            "id1", "Stale fact that dream keeps polishing", null, [], oldTime,
-            UpdatedAt: DateTimeOffset.UtcNow.AddHours(-1),
-            ImportanceScore: 0.7f)
+        var opts = new DreamOptions
         {
-            LastSeenAt = oldTime,
-            ReinforcementCount = 1
+            Enabled = false,
+            ImportanceDecayGraceDays = 0,
+            ImportanceDecayHalfLifeDays = 10f,
+            ImportanceDecayFloor = 0.0f
         };
-        await memory.SaveAsync(entry);
 
-        var service = CreateService(memory, new DreamOptions { Enabled = false });
-        await service.RunImportanceDecayPassAsync([entry]);
+        var lastSeen = DateTimeOffset.UtcNow.AddDays(-30); // 30 days past with no reinforcement
+        var currentImportance = 0.9f;
 
-        var result = await memory.GetAsync("id1");
-        Assert.IsTrue(result!.ImportanceScore < 0.7f,
-            "Dream rewrite alone must not reset the decay clock — only real reinforcement does.");
+        // Simulate 60 passes over 30 days (2/day), with UpdatedAt bumped to "now - 0.5d" each time
+        // (i.e. dream touched the entry each cycle).
+        for (var i = 0; i < 60; i++)
+        {
+            var updatedAt = DateTimeOffset.UtcNow.AddDays(-0.5);
+            var entry = new MemoryEntry(
+                "id1", "Stale but polished", null, [], lastSeen,
+                UpdatedAt: updatedAt,
+                ImportanceScore: currentImportance)
+            {
+                LastSeenAt = lastSeen
+            };
+            await memory.SaveAsync(entry);
+
+            var service = CreateService(memory, opts);
+            await service.RunImportanceDecayPassAsync([entry]);
+            currentImportance = (await memory.GetAsync("id1"))!.ImportanceScore;
+        }
+
+        // 30 days of calendar decay at halflife=10 → 3 half-lives → 0.125x
+        var expected = 0.9f * (float)Math.Pow(0.5, 30.0 / 10.0);
+        Assert.AreEqual(expected, currentImportance, 0.02,
+            "Dream rewrites must not protect an entry from cumulative calendar-time decay.");
     }
 
     [TestMethod]
     public async Task Decay_CustomGraceAndHalfLife_OverrideDefaults()
     {
         var memory = new InMemoryStore();
-        // Entry would be within the default 30-day grace (20 days old), but we set grace=5
-        // and halflife=0.5 (factor = 0.5 per cycle), so it SHOULD decay by exactly half.
-        var entry = MakeEntry("id1", "Test fact", daysOld: 20, importance: 0.8f);
+        // grace=5, halflife=0.5. Entry LastSeen 5.5d ago, UpdatedAt 0.5d ago.
+        // eligibleElapsed = min(5.5-5, 0.5) = 0.5d. factor = 0.5^(0.5/0.5) = 0.5 exactly.
+        var lastSeen = DateTimeOffset.UtcNow.AddDays(-5.5);
+        var entry = new MemoryEntry(
+            "id1", "Test fact", null, [], lastSeen,
+            UpdatedAt: DateTimeOffset.UtcNow.AddDays(-0.5),
+            ImportanceScore: 0.8f)
+        {
+            LastSeenAt = lastSeen
+        };
         await memory.SaveAsync(entry);
 
         var opts = new DreamOptions
@@ -153,20 +287,19 @@ public class ImportanceDecayTests
 
         var result = await memory.GetAsync("id1");
         Assert.AreEqual(0.4f, result!.ImportanceScore, 0.001,
-            "With halflife=0.5d at 2 cycles/day, one cycle halves the importance.");
+            "Custom half-life of 0.5d with 0.5d elapsed should halve importance exactly.");
     }
 
     [TestMethod]
-    public async Task Decay_HalfLifeBehavior_ApproximatesFiftyPercentOverHalfLife()
+    public async Task Decay_HalfLifeBehavior_SingleElapsedPassMatchesFormula()
     {
-        // Run multiple decay passes and verify that after a number of cycles equal to
-        // (halflife * 2 cycles/day), the importance is roughly halved. This locks the
-        // exponential shape in place across iterations.
+        // Verify the closed-form: after t days of decay, importance ≈ start × 0.5^(t/halflife).
+        // Single pass covering a full halflife should halve.
         var memory = new InMemoryStore();
-        var oldTime = DateTimeOffset.UtcNow.AddDays(-100);
-        var entry = new MemoryEntry("id1", "Fact", null, [], oldTime, ImportanceScore: 0.8f)
+        var lastSeen = DateTimeOffset.UtcNow.AddDays(-10);
+        var entry = new MemoryEntry("id1", "Fact", null, [], lastSeen, UpdatedAt: lastSeen, ImportanceScore: 0.8f)
         {
-            LastSeenAt = oldTime
+            LastSeenAt = lastSeen
         };
         await memory.SaveAsync(entry);
 
@@ -178,49 +311,33 @@ public class ImportanceDecayTests
             ImportanceDecayFloor = 0.0f
         };
         var service = CreateService(memory, opts);
+        await service.RunImportanceDecayPassAsync([entry]);
 
-        // 10-day halflife at 2 cycles/day = 20 cycles for one halving
-        for (var i = 0; i < 20; i++)
-        {
-            var current = await memory.GetAsync("id1");
-            await service.RunImportanceDecayPassAsync([current!]);
-        }
-
-        var final = await memory.GetAsync("id1");
-        Assert.AreEqual(0.4f, final!.ImportanceScore, 0.005,
-            "After one halflife worth of cycles, importance should be ~50% of starting value.");
+        var result = await memory.GetAsync("id1");
+        Assert.AreEqual(0.4f, result!.ImportanceScore, 0.002,
+            "10 days of decay at 10-day halflife should halve the importance.");
     }
 
     [TestMethod]
     public async Task Decay_CoreFactOverSixMonths_ReachesFloorWithDefaults()
     {
-        // Shape check: a 0.95 "core fact" with default options (grace=30, halflife=45, floor=0.10,
-        // 2 cycles/day) should reach the floor near the 6-month mark. We simulate 360 dream
-        // cycles (180 days at 2 cycles/day) of continuous non-reinforcement and verify the entry
-        // lands at the floor.
+        // End-to-end shape check: a 0.95 core fact with default options (grace=30, halflife=45,
+        // floor=0.10) should reach the floor near the 6-month mark. Run as a single elapsed-time
+        // pass representing the full calendar window.
         var memory = new InMemoryStore();
-        // Place LastSeenAt 180 days in the past so grace is exhausted and effective decay is 150 days.
-        var startedAt = DateTimeOffset.UtcNow.AddDays(-180);
-        var entry = new MemoryEntry("id1", "Core fact", null, [], startedAt, ImportanceScore: 0.95f)
+        var lastSeen = DateTimeOffset.UtcNow.AddDays(-180);
+        var entry = new MemoryEntry("id1", "Core fact", null, [], lastSeen, UpdatedAt: lastSeen, ImportanceScore: 0.95f)
         {
-            LastSeenAt = startedAt
+            LastSeenAt = lastSeen
         };
         await memory.SaveAsync(entry);
 
         var service = CreateService(memory, new DreamOptions { Enabled = false });
+        await service.RunImportanceDecayPassAsync([entry]);
 
-        // Simulate 300 cycles of housekeeping (~5 months of dream passes at 2/day, on top of
-        // the implied time already elapsed). This is an approximation — the test is about
-        // the order of magnitude, not the exact day.
-        for (var i = 0; i < 300; i++)
-        {
-            var current = await memory.GetAsync("id1");
-            await service.RunImportanceDecayPassAsync([current!]);
-        }
-
-        var final = await memory.GetAsync("id1");
-        Assert.IsTrue(final!.ImportanceScore <= 0.15f,
-            $"Default decay shape should drive a 0.95 core fact close to the 0.10 floor within a 6-month window (got {final.ImportanceScore:F3}).");
+        var result = await memory.GetAsync("id1");
+        Assert.IsTrue(result!.ImportanceScore <= 0.11f,
+            $"With defaults (grace=30, halflife=45), a 0.95 core fact should reach floor in ~6 months (got {result.ImportanceScore:F3}).");
     }
 
     // ── Helpers ──────────────────────────────────────────────────────────────
