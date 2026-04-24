@@ -38,6 +38,44 @@ You will receive a numbered list of ALL current memory entries, each with an ID,
 
 5. **Leave everything else unchanged** — do not delete or modify entries that are not part of a duplicate group or ephemeral.
 
+## Temporal merging rules
+
+Each entry shows `first` (when the fact was first observed), `last` (most
+recent reinforcement), and `reinforced=N×` (times seen). Use these to decide
+whether similar entries describe the same durable fact or distinct facts.
+
+- **Merge** when the entries describe the same persistent fact, even if
+  widely separated in time. "Rocky has a dog named Milo" seen in 2024 and
+  2026 is reinforcement, not novelty — merge. The merged entry automatically
+  inherits the earliest `first`, latest `last`, and summed `reinforced`
+  count (you do not compute these — the system does).
+
+- **Do not merge** when similar-sounding entries describe different moments
+  of a recurring pattern that should stay distinct. Trip reports, meetings,
+  incidents — episodic content stays separate even when the topic overlaps.
+
+- **Stale-but-durable facts are still durable.** A fact with `last` two years
+  ago is not automatically stale. Only mark for deletion if a newer entry
+  contradicts it or the importance pass has driven it to near-zero.
+
+- **Reinforcement is a signal of importance.** When merging, consider raising
+  importance if the combined `reinforced` count is high (e.g. 5+ observations
+  across months).
+
+- **Do not mistake your own reprocessing for reinforcement.** If you are
+  rephrasing or recategorizing an entry without pulling in new information,
+  that is not a fresh observation. The system preserves `last` and
+  `reinforced` unchanged in that case — you do not need to do anything
+  special, just don't invent reinforcement that wasn't there.
+
+- **Subject-time is a separate axis from agent-time.** Some entries show a
+  `subject=...` value — this is when the *thing the fact is about* happened
+  (e.g. "user broke their arm when they were 8" → subject≈1990s), distinct
+  from `first` (when the agent learned it). When deciding whether to merge
+  topically-similar entries, entries with widely divergent subject-times
+  usually describe different real-world moments and should stay separate,
+  even if the prose sounds alike.
+
 ## Critical rules
 
 - **Exhaustive deletion — this is the most important rule**: Every source entry you are replacing with a merged entry MUST appear in `toDelete`. If you produce one merged entry from sources A, B, and C, then A, B, and C ALL go in `toDelete`. No source survives a merge. The presence of an ID in `sourceIds` is a commitment to delete it — put it in `toDelete` too.

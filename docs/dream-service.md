@@ -40,17 +40,41 @@ not registered.
 ### Pass 1 — Memory consolidation
 
 **Input:** all long-term memory entries (up to 1000) + recent feedback signals (last 7 days,
-up to 50)
+up to 50). Each entry is rendered with its temporal context — `first=` (CreatedAt),
+`last=` (LastSeenAt), `reinforced=N×` (ReinforcementCount), and `subject=...` when
+subject-time metadata is present — so the LLM can reason about whether similar-sounding
+entries describe the same durable fact or distinct moments.
 
 **What the LLM does:**
-- Merges duplicate and near-duplicate entries into single improved entries
+- Merges duplicate and near-duplicate entries into single improved entries, including
+  widely-separated observations of the same durable fact (treating them as reinforcement,
+  not novelty)
+- Preserves topically-similar entries that describe distinct real-world moments (different
+  trips, meetings, incidents) — especially when subject-time differs sharply
 - Refines categories (e.g. promotes `general` entries to more specific categories)
 - Deletes noisy, low-value, or fully superseded entries
 - Mines `Correction` feedback for anti-patterns and writes them to `anti-patterns/{domain}`
 
+**Temporal-field arithmetic on merge (computed by the host, not the LLM):**
+
+- `CreatedAt` = `min(sources.CreatedAt)` (first-seen preserved)
+- `LastSeenAt` = `max(sources.LastSeenAt)` (reinforcement, never reset to `now`)
+- `ReinforcementCount` = `sum(sources.ReinforcementCount)`
+- `Metadata` = subject-time keys merged via `MergeSubjectTimeMetadata` (start/end widen,
+  point prefers most-specific); other metadata keys are dropped
+
+This division keeps the LLM focused on *what to merge* and prevents dream housekeeping from
+stamping every reprocessed entry as "just observed." See `dream.md` for the Temporal merging
+rules the LLM is given.
+
 **Exhaustive deletion contract:** The union of explicit `toDelete` IDs and all `sourceIds`
 referenced in merged entries are deleted. This prevents orphaned source entries when the LLM
 omits IDs from `toDelete` but lists them in `sourceIds`.
+
+**Episode reinforcement:** When a new session revisits an existing episodic memory (found by
+the episode extraction pass), the existing entry is updated with `LastSeenAt = now` and
+`ReinforcementCount += 1` — episodes that span multiple sessions accumulate reinforcement
+just like durable facts.
 
 **Directive file:** `dream.md` (relative to agent data path). Built-in fallback is used when
 the file does not exist.
@@ -265,6 +289,11 @@ prose preamble.
   ]
 }
 ```
+
+Temporal fields (`CreatedAt`, `LastSeenAt`, `ReinforcementCount`) and subject-time
+metadata are not part of the LLM response — they are computed by the host from the
+source entries listed in `sourceIds`. The LLM is given these values as context on
+input but does not emit them on output.
 
 **Skill consolidation / optimization:**
 ```json

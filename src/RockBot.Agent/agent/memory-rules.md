@@ -208,3 +208,42 @@ subdirectory structure on disk:
 - **Do not save**: current physical position, what someone is momentarily doing, temporary real-time states, passing observations with no lasting significance — these belong in working memory instead
 - **Plans are temporary by design**: entries in `active-plans/` exist only while work is in progress. Delete them when the plan is complete or abandoned. Extract any durable facts (decisions made, preferences discovered) into their proper category before deleting the plan.
 - **Patrol findings go in working memory, not here**: patrol results are stored in `patrol/{task-name}/` working memory entries with a long TTL. Only durable facts discovered during patrol (e.g. "user prefers email delivery before 9am") belong in long-term memory.
+
+### Subject-time vs. agent-time
+
+A long-term memory has two independent time axes:
+
+- **Agent-time** (`createdAt`, `lastSeenAt`) — when the agent learned or
+  re-observed the fact. The system populates these automatically; do not
+  try to set them.
+- **Subject-time** — when the thing the fact is *about* actually happened.
+  "User broke their arm when they were 8" is learned today (agent-time=today)
+  but the event happened decades ago (subject-time ≈ childhood). Subject-time
+  is independent of agent-time and often very different.
+
+When — and ONLY when — you are confident about subject-time, populate these
+optional metadata keys on the entry:
+
+- `subjectTime` — a point-in-time reference in ISO 8601 form. Use the most
+  specific form you are confident about: `"2019-06-14"` (exact date),
+  `"2019-06"` (month), `"2019"` (year).
+- `subjectTimeStart` / `subjectTimeEnd` — use for ranges (a decade lived in
+  a city, a multi-year project). Either bound may be omitted if open.
+
+**Do not guess.** Omit these keys entirely for:
+
+- Durable facts without a meaningful "when" (preferences, names, ongoing
+  attributes — "user prefers strong coffee" has no subject-time).
+- Fuzzy references you cannot resolve to an absolute date ("a while back",
+  "recently", "when I was a kid" — unless other context pins it down).
+- Anything where you would be inventing precision that was not in the
+  source material.
+
+Examples:
+
+- "User lived in Chicago from 1995 to 2003" →
+  `subjectTimeStart: "1995"`, `subjectTimeEnd: "2003"`
+- "User's wedding was June 14, 2019" → `subjectTime: "2019-06-14"`
+- "User prefers strong coffee" → no subject-time keys
+- "User mentioned a trip they took recently" → no subject-time keys
+  (unless "recently" is clarified elsewhere)

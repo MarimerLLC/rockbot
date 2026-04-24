@@ -406,7 +406,12 @@ internal sealed class DreamService : IHostedService, IDisposable
             {
                 var e = all[i];
                 var tags = e.Tags.Count > 0 ? string.Join(", ", e.Tags) : "(none)";
-                userMessage.AppendLine($"{i + 1}. [ID:{e.Id}] category={e.Category ?? "uncategorized"} importance={e.ImportanceScore:F2} tags=[{tags}]");
+                var subjectTime = FormatSubjectTimeForPrompt(e.Metadata);
+                userMessage.AppendLine(
+                    $"{i + 1}. [ID:{e.Id}] category={e.Category ?? "uncategorized"} " +
+                    $"importance={e.ImportanceScore:F2} reinforced={e.ReinforcementCount}× " +
+                    $"first={e.CreatedAt:yyyy-MM-dd} last={e.LastSeenAt:yyyy-MM-dd}" +
+                    $"{subjectTime} tags=[{tags}]");
                 userMessage.AppendLine($"   {e.Content}");
             }
 
@@ -457,48 +462,55 @@ internal sealed class DreamService : IHostedService, IDisposable
                 _logger.LogDebug("DreamService: deleted entry {Id}", id);
             }
 
-            // Build lookup of source CreatedAt values to carry forward min date for merged entries
-            var createdAtById = all.ToDictionary(e => e.Id, e => e.CreatedAt);
+            // Build source-entry lookup (case-insensitive on ID) for merge arithmetic
+            var byId = new Dictionary<string, MemoryEntry>(StringComparer.OrdinalIgnoreCase);
+            foreach (var e in all)
+                byId[e.Id] = e;
 
             foreach (var dto in result.ToSave ?? [])
             {
                 if (string.IsNullOrWhiteSpace(dto.Content))
                     continue;
 
-                // Carry forward min CreatedAt from referenced source IDs; fallback to now
                 var sourceIds = dto.SourceIds ?? [];
-                var minCreatedAt = sourceIds.Count > 0
-                    ? sourceIds
-                        .Where(createdAtById.ContainsKey)
-                        .Select(id => createdAtById[id])
-                        .DefaultIfEmpty(DateTimeOffset.UtcNow)
-                        .Min()
-                    : DateTimeOffset.UtcNow;
+                var sources = sourceIds
+                    .Where(id => byId.ContainsKey(id))
+                    .Select(id => byId[id])
+                    .ToList();
 
-                // Use LLM-provided importance, or carry forward the max importance from source entries
-                var importance = dto.Importance;
-                if (importance is null && sourceIds.Count > 0)
-                {
-                    importance = sourceIds
-                        .Where(id => all.Any(e => e.Id.Equals(id, StringComparison.OrdinalIgnoreCase)))
-                        .Select(id => all.First(e => e.Id.Equals(id, StringComparison.OrdinalIgnoreCase)).ImportanceScore)
-                        .DefaultIfEmpty(0.5f)
-                        .Max();
-                }
+                // CreatedAt = earliest source (first-seen preserved); UpdatedAt = now (record rewritten)
+                var firstSeen = sources.Count > 0 ? sources.Min(s => s.CreatedAt) : DateTimeOffset.UtcNow;
+
+                // LastSeenAt = most recent source reinforcement; never "now" on dream housekeeping
+                var lastSeen = sources.Count > 0 ? sources.Max(s => s.LastSeenAt) : DateTimeOffset.UtcNow;
+
+                // ReinforcementCount = sum of source counts; singleton merge (1 source) preserves its count
+                var reinforcementCount = sources.Count > 0 ? sources.Sum(s => s.ReinforcementCount) : 1;
+
+                // LLM-provided importance wins; otherwise carry forward max from sources
+                var importance = dto.Importance
+                    ?? (sources.Count > 0 ? sources.Max(s => s.ImportanceScore) : 0.5f);
+
+                var mergedMetadata = MergeSubjectTimeMetadata(sources);
 
                 var entry = new MemoryEntry(
                     Id: Guid.NewGuid().ToString("N")[..12],
                     Content: dto.Content.Trim(),
                     Category: string.IsNullOrWhiteSpace(dto.Category) ? null : dto.Category.Trim(),
                     Tags: dto.Tags ?? [],
-                    CreatedAt: minCreatedAt,
+                    CreatedAt: firstSeen,
                     UpdatedAt: DateTimeOffset.UtcNow,
-                    ImportanceScore: Math.Clamp(importance ?? 0.5f, 0f, 1f));
+                    Metadata: mergedMetadata,
+                    ImportanceScore: Math.Clamp(importance, 0f, 1f))
+                {
+                    LastSeenAt = lastSeen,
+                    ReinforcementCount = reinforcementCount
+                };
 
                 await _memory.SaveAsync(entry);
                 saved++;
-                _logger.LogDebug("DreamService: saved entry {Id} ({Category}, importance={Importance:F2}): {Content}",
-                    entry.Id, entry.Category ?? "(none)", entry.ImportanceScore, entry.Content);
+                _logger.LogDebug("DreamService: saved entry {Id} ({Category}, importance={Importance:F2}, reinforced={Count}×): {Content}",
+                    entry.Id, entry.Category ?? "(none)", entry.ImportanceScore, entry.ReinforcementCount, entry.Content);
             }
 
             if (_skillStore is not null)
@@ -1230,6 +1242,65 @@ internal sealed class DreamService : IHostedService, IDisposable
     }
 
     /// <summary>
+    /// Formats subject-time metadata keys as a compact suffix for the consolidation prompt
+    /// (e.g. " subject=2019-06" or " subject=1995..2003"). Returns empty string when no
+    /// subject-time metadata is present.
+    /// </summary>
+    internal static string FormatSubjectTimeForPrompt(IReadOnlyDictionary<string, string>? meta)
+    {
+        if (meta is null) return string.Empty;
+        if (meta.TryGetValue("subjectTime", out var t) && !string.IsNullOrWhiteSpace(t))
+            return $" subject={t}";
+        meta.TryGetValue("subjectTimeStart", out var s);
+        meta.TryGetValue("subjectTimeEnd", out var e);
+        if (!string.IsNullOrWhiteSpace(s) || !string.IsNullOrWhiteSpace(e))
+            return $" subject={s ?? "?"}..{e ?? "?"}";
+        return string.Empty;
+    }
+
+    /// <summary>
+    /// Merges the well-known subject-time metadata keys across a set of source entries:
+    /// "subjectTime" (point), "subjectTimeStart"/"subjectTimeEnd" (range). Returns null when
+    /// no source carries any subject-time metadata. For overlapping values, prefers the most
+    /// specific (longest string) on "subjectTime", widens the range on start/end.
+    /// Non-subject-time metadata keys are not merged — they're entry-scoped and would
+    /// conflict ambiguously across merges.
+    /// </summary>
+    internal static IReadOnlyDictionary<string, string>? MergeSubjectTimeMetadata(IReadOnlyList<MemoryEntry> sources)
+    {
+        if (sources.Count == 0) return null;
+
+        string? point = null;
+        string? start = null;
+        string? end = null;
+
+        foreach (var s in sources)
+        {
+            if (s.Metadata is null) continue;
+            if (s.Metadata.TryGetValue("subjectTime", out var p) && !string.IsNullOrWhiteSpace(p))
+            {
+                if (point is null || p.Length > point.Length) point = p;
+            }
+            if (s.Metadata.TryGetValue("subjectTimeStart", out var ss) && !string.IsNullOrWhiteSpace(ss))
+            {
+                if (start is null || string.CompareOrdinal(ss, start) < 0) start = ss;
+            }
+            if (s.Metadata.TryGetValue("subjectTimeEnd", out var se) && !string.IsNullOrWhiteSpace(se))
+            {
+                if (end is null || string.CompareOrdinal(se, end) > 0) end = se;
+            }
+        }
+
+        if (point is null && start is null && end is null) return null;
+
+        var result = new Dictionary<string, string>(StringComparer.Ordinal);
+        if (point is not null) result["subjectTime"] = point;
+        if (start is not null) result["subjectTimeStart"] = start;
+        if (end is not null) result["subjectTimeEnd"] = end;
+        return result;
+    }
+
+    /// <summary>
     /// Applies gradual importance decay to memory entries that haven't been updated recently.
     /// Entries older than <see cref="DecayGracePeriodDays"/> days lose importance at a rate of
     /// <see cref="DecayPerCycleFraction"/> per dream cycle, down to a floor of <see cref="DecayFloor"/>.
@@ -1383,14 +1454,16 @@ internal sealed class DreamService : IHostedService, IDisposable
                 {
                     Content = dto.Content.Trim(),
                     UpdatedAt = DateTimeOffset.UtcNow,
+                    LastSeenAt = DateTimeOffset.UtcNow,
+                    ReinforcementCount = existing.ReinforcementCount + 1,
                     Metadata = metadata,
                     ImportanceScore = Math.Clamp(dto.Importance ?? existing.ImportanceScore, 0f, 1f)
                 };
 
                 await _memory.SaveAsync(updated);
                 reinforced++;
-                _logger.LogDebug("DreamService: reinforced episode {Id} (importance={Importance}): {Content}",
-                    dto.Id, metadata.GetValueOrDefault("importance", "?"), dto.Content);
+                _logger.LogDebug("DreamService: reinforced episode {Id} (importance={Importance}, reinforced={Count}×): {Content}",
+                    dto.Id, metadata.GetValueOrDefault("importance", "?"), updated.ReinforcementCount, dto.Content);
             }
 
             // Process new episodes
