@@ -17,9 +17,17 @@ internal sealed class SchedulerService : IHostedService, ISchedulerService
     private readonly IMessagePipeline _pipeline;
     private readonly AgentClock _clock;
     private readonly AgentIdentity _identity;
+    private readonly IAgentWorkSerializer _workSerializer;
     private readonly ILogger<SchedulerService> _logger;
 
+    // Retry policy when a cron fires but a user session holds the work slot:
+    // re-arm the task every RetryDelay for up to MaxRetryAttempts, then fall
+    // back to the next natural cron occurrence.
+    private const int MaxRetryAttempts = 15;
+    private static readonly TimeSpan RetryDelay = TimeSpan.FromMinutes(2);
+
     private readonly Dictionary<string, Timer> _timers = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, int> _retryAttempts = new(StringComparer.OrdinalIgnoreCase);
     private readonly object _timerLock = new();
     private CancellationTokenSource _cts = new();
 
@@ -28,12 +36,14 @@ internal sealed class SchedulerService : IHostedService, ISchedulerService
         IMessagePipeline pipeline,
         AgentClock clock,
         AgentIdentity identity,
+        IAgentWorkSerializer workSerializer,
         ILogger<SchedulerService> logger)
     {
         _store = store;
         _pipeline = pipeline;
         _clock = clock;
         _identity = identity;
+        _workSerializer = workSerializer;
         _logger = logger;
     }
 
@@ -191,25 +201,66 @@ internal sealed class SchedulerService : IHostedService, ISchedulerService
     {
         if (_cts.IsCancellationRequested) return;
 
-        var firedAt = _clock.Now;
-        _logger.LogInformation("Firing scheduled task '{Name}'", task.Name);
-
-        try
+        // Acquire the work slot before dispatching. If a user session already
+        // holds it, we'd only have dispatched a message that the handler would
+        // immediately skip — so retry in a few minutes instead.
+        var slot = await _workSerializer.TryAcquireForScheduledAsync(_cts.Token);
+        if (slot is null)
         {
-            var message = new ScheduledTaskMessage(task.Name, task.Description, task.IsSystemTask);
-            var envelope = message.ToEnvelope(source: _identity.Name);
-            await _pipeline.DispatchAsync(envelope, _cts.Token);
-        }
-        catch (OperationCanceledException) when (_cts.IsCancellationRequested)
-        {
+            _logger.LogInformation(
+                "Scheduled task '{Name}' preempted by active user session — scheduling retry",
+                task.Name);
+            ScheduleRetry(task);
             return;
         }
-        catch (Exception ex)
+
+        var firedAt = _clock.Now;
+        var preempted = false;
+        var handlerCompleted = false;
+
+        await using (slot)
         {
-            _logger.LogError(ex, "Error executing scheduled task '{Name}'", task.Name);
+            _logger.LogInformation("Firing scheduled task '{Name}'", task.Name);
+            try
+            {
+                var message = new ScheduledTaskMessage(task.Name, task.Description, task.IsSystemTask);
+                var envelope = message.ToEnvelope(source: _identity.Name);
+                // Pass the slot's cancellation token so the handler (and the LLM
+                // loop it drives) stops cleanly when a user message arrives.
+                await _pipeline.DispatchAsync(envelope, slot.Token);
+                handlerCompleted = true;
+            }
+            catch (OperationCanceledException) when (_cts.IsCancellationRequested)
+            {
+                // Host is shutting down — do not retry, do not update state.
+                return;
+            }
+            catch (OperationCanceledException)
+            {
+                // User session preempted the task mid-run.
+                preempted = true;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error executing scheduled task '{Name}'", task.Name);
+                // Treat errors as "ran" so we don't loop on a broken task — the next
+                // cron occurrence will try again.
+                handlerCompleted = true;
+            }
         }
 
+        if (preempted)
+        {
+            _logger.LogInformation(
+                "Scheduled task '{Name}' preempted mid-run — scheduling retry", task.Name);
+            ScheduleRetry(task);
+            return;
+        }
+
+        if (!handlerCompleted) return;
+
         await _store.UpdateLastFiredAsync(task.Name, firedAt);
+        lock (_timerLock) { _retryAttempts.Remove(task.Name); }
 
         if (task.RunOnce)
         {
@@ -223,6 +274,32 @@ internal sealed class SchedulerService : IHostedService, ISchedulerService
         // Re-arm for the next occurrence
         var updated = task with { LastFiredAt = firedAt };
         ArmTimer(updated);
+    }
+
+    private void ScheduleRetry(ScheduledTask task)
+    {
+        int attempt;
+        lock (_timerLock)
+        {
+            _retryAttempts.TryGetValue(task.Name, out attempt);
+            attempt++;
+            if (attempt > MaxRetryAttempts)
+            {
+                _retryAttempts.Remove(task.Name);
+                _logger.LogWarning(
+                    "Scheduled task '{Name}' exceeded retry budget ({Max}); falling back to next cron occurrence",
+                    task.Name, MaxRetryAttempts);
+                ArmTimer(task);
+                return;
+            }
+            _retryAttempts[task.Name] = attempt;
+        }
+
+        var target = _clock.Now + RetryDelay;
+        _logger.LogInformation(
+            "Retry {Attempt}/{Max} for '{Name}' armed for {Target:yyyy-MM-dd HH:mm:ss} ({Zone})",
+            attempt, MaxRetryAttempts, task.Name, target, _clock.Zone.Id);
+        ArmTimerForTarget(task, target);
     }
 
     private static CronExpression ParseCron(string expression)
