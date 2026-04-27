@@ -64,9 +64,8 @@ internal sealed class ScheduledTaskHandler(
         var sessionWorkingMemoryTools = new WorkingMemoryTools(workingMemory, sessionId, logger);
         var sessionSkillTools = new SkillTools(skillStore, llmClient, logger, sessionId, skillUsageStore);
 
-        var registryTools = toolRegistry.GetTools()
-            .Select(r => (AIFunction)new RegistryToolFunction(r, toolRegistry.GetExecutor(r.Name)!, sessionId))
-            .ToArray();
+        var batchId = Guid.NewGuid().ToString("N")[..12];
+        var registryTools = toolRegistry.BuildAgentToolFunctions(sessionId, batchId);
 
         var allTools = memoryTools.Tools
             .Concat(sessionWorkingMemoryTools.Tools)

@@ -258,11 +258,9 @@ internal sealed class A2ATaskResultHandler(
         // synthesis — the LLM should present the result, not start new agent interactions.
         var a2aToolNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
             { "invoke_agent", "register_agent", "unregister_agent", "list_known_agents", "get_agent_details" };
-        var registryTools = toolRegistry.GetTools()
-            .Where(r => !a2aToolNames.Contains(r.Name))
-            .Select(r => (AIFunction)new RegistryToolFunction(
-                r, toolRegistry.GetExecutor(r.Name)!, sessionNamespace))
-            .ToArray();
+        var batchId = Guid.NewGuid().ToString("N")[..12];
+        var registryTools = toolRegistry.BuildAgentToolFunctions(
+            sessionNamespace, batchId, r => !a2aToolNames.Contains(r.Name));
 
         var chatOptions = new ChatOptions
         {
