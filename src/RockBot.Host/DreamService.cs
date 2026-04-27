@@ -1928,14 +1928,29 @@ internal sealed class DreamService : IHostedService, IDisposable
         DateTimeOffset LastSeenAt);
 
     /// <summary>
+    /// Default lookback window for retry-until-success detection. A successful tool call only
+    /// counts as a retry resolution when at least one failed call with different args occurred
+    /// within this time window before it. Tight enough to exclude unrelated activity in long-
+    /// running sessions, loose enough to span multi-minute exploratory sequences.
+    /// </summary>
+    internal static readonly TimeSpan DefaultRetryLookbackWindow = TimeSpan.FromMinutes(30);
+
+    /// <summary>
     /// Pure detection logic — extracts retry-until-success patterns from a set of tool-call
-    /// events. Within each (session, toolName) bucket, requires at least 2 events, ≥2 distinct
-    /// argument summaries, and an earlier failure followed by a success.
+    /// events. For each (session, toolName) bucket, walks events in time order and, for each
+    /// successful event, looks back <paramref name="lookbackWindow"/> for failed events with
+    /// different argument values. The window is essential for long-running session IDs where
+    /// the bucket can span weeks: a March success and an April failure don't form a retry pair.
+    /// Patterns within a bucket are deduplicated by successArgs so the same lesson hit multiple
+    /// times within one bucket emits one pattern with merged failed-arg context.
     /// </summary>
     internal static IReadOnlyList<ToolRetryPattern> DetectToolRetryPatternsFromEvents(
         IEnumerable<ToolCallEvent> events,
-        HashSet<string>? sessionsFilter = null)
+        HashSet<string>? sessionsFilter = null,
+        TimeSpan? lookbackWindow = null)
     {
+        var window = lookbackWindow ?? DefaultRetryLookbackWindow;
+
         var filtered = sessionsFilter is null
             ? events
             : events.Where(e => sessionsFilter.Contains(e.SessionId));
@@ -1947,32 +1962,67 @@ internal sealed class DreamService : IHostedService, IDisposable
             var ordered = group.OrderBy(e => e.Timestamp).ToList();
             if (ordered.Count < 2) continue;
 
-            var distinctArgs = ordered
-                .Select(e => e.ArgumentsSummary ?? "(none)")
-                .Distinct(StringComparer.Ordinal)
-                .Count();
-            if (distinctArgs < 2) continue;
+            // bucketByArgs collapses repeated successes-with-the-same-args within a bucket
+            // into one pattern, merging the in-window failed-arg context across occurrences.
+            var bucketByArgs = new Dictionary<string, (List<string> FailedArgs, DateTimeOffset LastSeen)>(
+                StringComparer.Ordinal);
 
-            var firstSuccess = ordered.FirstOrDefault(e => e.Succeeded);
-            if (firstSuccess is null) continue;
-            var anyEarlierFailure =
-                ordered.Any(e => !e.Succeeded && e.Timestamp < firstSuccess.Timestamp);
-            if (!anyEarlierFailure) continue;
+            for (int i = 0; i < ordered.Count; i++)
+            {
+                var success = ordered[i];
+                if (!success.Succeeded) continue;
 
-            var failedArgs = ordered
-                .Where(e => !e.Succeeded && e.Timestamp < firstSuccess.Timestamp)
-                .Select(e => Truncate(e.ArgumentsSummary ?? "(none)", 200))
-                .Distinct(StringComparer.Ordinal)
-                .Take(3)
-                .ToList();
-            var successArgs = Truncate(firstSuccess.ArgumentsSummary ?? "(none)", 200);
+                var successArgs = success.ArgumentsSummary ?? "(none)";
+                var windowStart = success.Timestamp - window;
 
-            patterns.Add(new ToolRetryPattern(
-                ordered[0].SessionId,
-                ordered[0].ToolName,
-                failedArgs,
-                successArgs,
-                ordered[^1].Timestamp));
+                // Walk backwards from this success; collect distinct different-args failures
+                // until we exit the window or hit the cap.
+                var windowFailures = new List<string>();
+                for (int j = i - 1; j >= 0; j--)
+                {
+                    var prior = ordered[j];
+                    if (prior.Timestamp < windowStart) break;
+                    if (prior.Succeeded) continue;
+
+                    var priorArgs = prior.ArgumentsSummary ?? "(none)";
+                    if (string.Equals(priorArgs, successArgs, StringComparison.Ordinal)) continue;
+                    if (!windowFailures.Contains(priorArgs, StringComparer.Ordinal))
+                        windowFailures.Add(priorArgs);
+                    if (windowFailures.Count >= 3) break;
+                }
+
+                if (windowFailures.Count == 0) continue;
+
+                var truncatedFailures = windowFailures.Select(a => Truncate(a, 200)).ToList();
+
+                if (bucketByArgs.TryGetValue(successArgs, out var existing))
+                {
+                    foreach (var f in truncatedFailures)
+                        if (!existing.FailedArgs.Contains(f, StringComparer.Ordinal)
+                            && existing.FailedArgs.Count < 3)
+                            existing.FailedArgs.Add(f);
+                    bucketByArgs[successArgs] = (existing.FailedArgs, success.Timestamp);
+                }
+                else
+                {
+                    bucketByArgs[successArgs] = (truncatedFailures, success.Timestamp);
+                }
+            }
+
+            if (bucketByArgs.Count == 0) continue;
+
+            var sessionId = ordered[0].SessionId;
+            var toolName = ordered[0].ToolName;
+
+            foreach (var kvp in bucketByArgs)
+            {
+                patterns.Add(new ToolRetryPattern(
+                    sessionId,
+                    toolName,
+                    kvp.Value.FailedArgs,
+                    Truncate(kvp.Key, 200),
+                    kvp.Value.LastSeen));
+            }
         }
 
         return patterns;
