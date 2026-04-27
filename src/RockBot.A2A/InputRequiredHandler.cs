@@ -90,10 +90,8 @@ internal sealed class InputRequiredHandler(
 
         var sessionWorkingMemoryTools = new WorkingMemoryTools(workingMemory, sessionNamespace, logger);
         var sessionSkillTools = new SkillTools(skillStore, llmClient, logger, rawSessionId);
-        var registryTools = toolRegistry.GetTools()
-            .Select(r => (AIFunction)new RegistryToolFunction(
-                r, toolRegistry.GetExecutor(r.Name)!, sessionNamespace))
-            .ToArray();
+        var batchId = Guid.NewGuid().ToString("N")[..12];
+        var registryTools = toolRegistry.BuildAgentToolFunctions(sessionNamespace, batchId);
 
         var chatOptions = new ChatOptions
         {
