@@ -2008,23 +2008,152 @@ internal sealed class DreamService : IHostedService, IDisposable
         HashSet<string> sessionsWithSkills, DateTimeOffset since)
     {
         var patterns = await DetectToolRetryPatternsAsync(since, sessionsWithSkills);
-        var result = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
+        return GroupRetryPatternsBySession(patterns);
+    }
 
+    /// <summary>
+    /// Converts a flat list of retry patterns into per-session human-readable notes —
+    /// the shape skill-optimize uses to inject ambiguity context per skill.
+    /// </summary>
+    internal static Dictionary<string, List<string>> GroupRetryPatternsBySession(
+        IEnumerable<ToolRetryPattern> patterns)
+    {
+        var result = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
         foreach (var p in patterns)
         {
-            var note =
-                $"Tool '{p.ToolName}' failed with args [{string.Join(" | ", p.FailedArgs)}] " +
-                $"then succeeded with args [{p.SuccessArgs}]";
-
             if (!result.TryGetValue(p.SessionId, out var list))
             {
                 list = [];
                 result[p.SessionId] = list;
             }
-            list.Add(note);
+            list.Add(FormatToolRetryNote(p));
         }
-
         return result;
+    }
+
+    /// <summary>
+    /// Single-line description of one retry pattern, suitable for injection into a skill-
+    /// optimization prompt as ambiguity context.
+    /// </summary>
+    internal static string FormatToolRetryNote(ToolRetryPattern p) =>
+        $"Tool '{p.ToolName}' failed with args [{string.Join(" | ", p.FailedArgs)}] " +
+        $"then succeeded with args [{p.SuccessArgs}]";
+
+    /// <summary>
+    /// Deduplicates retry patterns on (toolName, successArgs) keeping the most recent
+    /// occurrence of each lesson, then caps at <paramref name="maxCount"/> so the prompt
+    /// stays bounded even when a long tail of distinct lessons exists.
+    /// </summary>
+    internal static IReadOnlyList<ToolRetryPattern> DedupeRetryPatterns(
+        IEnumerable<ToolRetryPattern> patterns, int maxCount)
+    {
+        return patterns
+            .GroupBy(p => $"{p.ToolName}\0{p.SuccessArgs}")
+            .Select(g => g.OrderByDescending(p => p.LastSeenAt).First())
+            .Take(maxCount)
+            .ToList();
+    }
+
+    /// <summary>
+    /// Builds the user-message for the tool-success-learning pass from already-deduplicated
+    /// patterns. The leading paragraph instructs the LLM what to extract; each pattern is
+    /// formatted as a numbered section with failed args, successful args, and last-seen
+    /// timestamp.
+    /// </summary>
+    internal static string BuildToolSuccessLearningUserMessage(
+        IReadOnlyList<ToolRetryPattern> distinctPatterns)
+    {
+        var sb = new StringBuilder();
+        sb.AppendLine(
+            "The following tool calls each followed a retry-until-success pattern within a single session. " +
+            "Each entry shows the failed argument values followed by the value that succeeded. " +
+            "For each one, extract the durable, verified fact the success proves about the external system " +
+            "(e.g. which server holds a resource, which account ID maps to which calendar, which folder " +
+            "path is correct). Skip patterns where the lesson is uninteresting or transient.");
+        sb.AppendLine();
+
+        var i = 1;
+        foreach (var p in distinctPatterns)
+        {
+            sb.AppendLine($"### Pattern {i++}: tool '{p.ToolName}'");
+            sb.AppendLine($"- Failed args: {string.Join(" | ", p.FailedArgs)}");
+            sb.AppendLine($"- Successful args: {p.SuccessArgs}");
+            sb.AppendLine($"- Last seen: {p.LastSeenAt:yyyy-MM-dd HH:mm} UTC");
+            sb.AppendLine();
+        }
+        return sb.ToString();
+    }
+
+    /// <summary>
+    /// Normalizes the LLM's tool-success-learning JSON into <see cref="MemoryEntry"/> values
+    /// ready to persist: drops empty content, adds the canonical "verified" and
+    /// "tool-success-learned" tags if missing, defaults the category to "tool-knowledge"
+    /// when blank.
+    /// </summary>
+    internal static IReadOnlyList<MemoryEntry> NormalizeToolSuccessLearningEntries(
+        MemoryMiningResultDto? result,
+        Func<string> idFactory,
+        Func<DateTimeOffset> nowFactory)
+    {
+        var entries = new List<MemoryEntry>();
+        foreach (var dto in result?.ToSave ?? [])
+        {
+            if (string.IsNullOrWhiteSpace(dto.Content))
+                continue;
+
+            var tags = new List<string>(dto.Tags ?? []);
+            if (!tags.Contains("verified", StringComparer.OrdinalIgnoreCase))
+                tags.Add("verified");
+            if (!tags.Contains("tool-success-learned", StringComparer.OrdinalIgnoreCase))
+                tags.Add("tool-success-learned");
+
+            var now = nowFactory();
+            entries.Add(new MemoryEntry(
+                Id: idFactory(),
+                Content: dto.Content.Trim(),
+                Category: string.IsNullOrWhiteSpace(dto.Category) ? "tool-knowledge" : dto.Category.Trim(),
+                Tags: tags,
+                CreatedAt: now,
+                UpdatedAt: now));
+        }
+        return entries;
+    }
+
+    /// <summary>
+    /// Builds the "Subagent verified data" section appended to the memory-mining input, or
+    /// returns null when there are no entries to include. Caps each entry value at
+    /// <paramref name="perEntryCap"/> chars and emits at most <paramref name="maxEntries"/>
+    /// entries (newest first by <see cref="WorkingMemoryEntry.StoredAt"/>).
+    /// </summary>
+    internal static string? BuildSubagentWhiteboardSection(
+        IReadOnlyList<WorkingMemoryEntry> entries, int perEntryCap, int maxEntries)
+    {
+        if (entries.Count == 0)
+            return null;
+
+        var ordered = entries
+            .OrderByDescending(e => e.StoredAt)
+            .Take(maxEntries)
+            .ToList();
+
+        var sb = new StringBuilder();
+        sb.AppendLine("## Subagent verified data (working memory whiteboards)");
+        sb.AppendLine("These entries were written by subagents based on tool-call results, so the");
+        sb.AppendLine("facts in them are verified — not speculation. Mine them for durable facts");
+        sb.AppendLine("about external systems (server names, account IDs, file paths, parameter shapes).");
+        sb.AppendLine();
+
+        foreach (var e in ordered)
+        {
+            var value = e.Value.Length > perEntryCap
+                ? e.Value[..perEntryCap] + "…[truncated]"
+                : e.Value;
+            var category = string.IsNullOrEmpty(e.Category) ? "(uncategorized)" : e.Category;
+            sb.AppendLine($"[{e.Key}] category={category}");
+            sb.AppendLine(value);
+            sb.AppendLine();
+        }
+        return sb.ToString();
     }
 
     private static string Truncate(string s, int max) =>
@@ -2050,43 +2179,20 @@ internal sealed class DreamService : IHostedService, IDisposable
             return;
         }
 
-        // Deduplicate across sessions on (toolName, successArgs) — the same lesson learned
-        // multiple times only needs to be mined once.
-        var distinctPatterns = patterns
-            .GroupBy(p => $"{p.ToolName}\0{p.SuccessArgs}")
-            .Select(g => g.OrderByDescending(p => p.LastSeenAt).First())
-            .Take(50)
-            .ToList();
+        var distinctPatterns = DedupeRetryPatterns(patterns, maxCount: 50);
 
         _logger.LogInformation(
             "DreamService: tool-success-learning pass — {Distinct} distinct pattern(s) from {Total} occurrence(s)",
             distinctPatterns.Count, patterns.Count);
 
-        var userMessage = new StringBuilder();
-        userMessage.AppendLine(
-            "The following tool calls each followed a retry-until-success pattern within a single session. " +
-            "Each entry shows the failed argument values followed by the value that succeeded. " +
-            "For each one, extract the durable, verified fact the success proves about the external system " +
-            "(e.g. which server holds a resource, which account ID maps to which calendar, which folder " +
-            "path is correct). Skip patterns where the lesson is uninteresting or transient.");
-        userMessage.AppendLine();
-
-        var i = 1;
-        foreach (var p in distinctPatterns)
-        {
-            userMessage.AppendLine($"### Pattern {i++}: tool '{p.ToolName}'");
-            userMessage.AppendLine($"- Failed args: {string.Join(" | ", p.FailedArgs)}");
-            userMessage.AppendLine($"- Successful args: {p.SuccessArgs}");
-            userMessage.AppendLine($"- Last seen: {p.LastSeenAt:yyyy-MM-dd HH:mm} UTC");
-            userMessage.AppendLine();
-        }
+        var userMessage = BuildToolSuccessLearningUserMessage(distinctPatterns);
 
         try
         {
             var messages = new List<ChatMessage>
             {
                 new(ChatRole.System, _toolSuccessLearningDirective ?? BuiltInToolSuccessLearningDirective),
-                new(ChatRole.User, userMessage.ToString())
+                new(ChatRole.User, userMessage)
             };
 
             var response = await _llmClient.GetResponseAsync(messages, ModelTier.Balanced,
@@ -2101,34 +2207,20 @@ internal sealed class DreamService : IHostedService, IDisposable
             }
 
             var result = TryDeserializeJson<MemoryMiningResultDto>(json, "tool-success-learning");
-            var saved = 0;
+            var entries = NormalizeToolSuccessLearningEntries(
+                result,
+                idFactory: () => Guid.NewGuid().ToString("N")[..12],
+                nowFactory: () => DateTimeOffset.UtcNow);
 
-            foreach (var dto in result?.ToSave ?? [])
+            foreach (var entry in entries)
             {
-                if (string.IsNullOrWhiteSpace(dto.Content))
-                    continue;
-
-                var tags = new List<string>(dto.Tags ?? []);
-                if (!tags.Contains("verified", StringComparer.OrdinalIgnoreCase))
-                    tags.Add("verified");
-                if (!tags.Contains("tool-success-learned", StringComparer.OrdinalIgnoreCase))
-                    tags.Add("tool-success-learned");
-
-                var entry = new MemoryEntry(
-                    Id: Guid.NewGuid().ToString("N")[..12],
-                    Content: dto.Content.Trim(),
-                    Category: string.IsNullOrWhiteSpace(dto.Category) ? "tool-knowledge" : dto.Category.Trim(),
-                    Tags: tags,
-                    CreatedAt: DateTimeOffset.UtcNow,
-                    UpdatedAt: DateTimeOffset.UtcNow);
-
                 await _memory.SaveAsync(entry);
-                saved++;
                 _logger.LogDebug("DreamService: tool-success-learning saved {Id} ({Category}): {Content}",
                     entry.Id, entry.Category, entry.Content);
             }
 
-            _logger.LogInformation("DreamService: tool-success-learning pass complete — {Saved} entry(ies) saved", saved);
+            _logger.LogInformation(
+                "DreamService: tool-success-learning pass complete — {Saved} entry(ies) saved", entries.Count);
         }
         catch (Exception ex)
         {
@@ -2150,36 +2242,15 @@ internal sealed class DreamService : IHostedService, IDisposable
         try
         {
             var entries = await _workingMemory.ListAsync("subagent/");
-            if (entries.Count == 0)
+            var section = BuildSubagentWhiteboardSection(entries, perEntryCap: 2000, maxEntries: 50);
+            if (section is null)
                 return;
 
-            // Newest first, capped to keep prompt bounded.
-            var ordered = entries
-                .OrderByDescending(e => e.StoredAt)
-                .Take(50)
-                .ToList();
-
-            userMessage.AppendLine("## Subagent verified data (working memory whiteboards)");
-            userMessage.AppendLine("These entries were written by subagents based on tool-call results, so the");
-            userMessage.AppendLine("facts in them are verified — not speculation. Mine them for durable facts");
-            userMessage.AppendLine("about external systems (server names, account IDs, file paths, parameter shapes).");
-            userMessage.AppendLine();
-
-            const int perEntryCap = 2000;
-            foreach (var e in ordered)
-            {
-                var value = e.Value.Length > perEntryCap
-                    ? e.Value[..perEntryCap] + "…[truncated]"
-                    : e.Value;
-                var category = string.IsNullOrEmpty(e.Category) ? "(uncategorized)" : e.Category;
-                userMessage.AppendLine($"[{e.Key}] category={category}");
-                userMessage.AppendLine(value);
-                userMessage.AppendLine();
-            }
+            userMessage.Append(section);
 
             _logger.LogDebug(
                 "DreamService: memory mining included {Count} subagent whiteboard entry(ies) in input",
-                ordered.Count);
+                Math.Min(entries.Count, 50));
         }
         catch (Exception ex)
         {
@@ -3407,9 +3478,9 @@ internal sealed class DreamService : IHostedService, IDisposable
         IReadOnlyList<string>? Tags,
         float? Importance);
 
-    private sealed record MemoryMiningResultDto(List<MemoryMiningEntryDto>? ToSave);
+    internal sealed record MemoryMiningResultDto(List<MemoryMiningEntryDto>? ToSave);
 
-    private sealed record MemoryMiningEntryDto(
+    internal sealed record MemoryMiningEntryDto(
         string Content,
         string? Category,
         IReadOnlyList<string>? Tags);
