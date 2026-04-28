@@ -60,7 +60,7 @@ So in practice:
 - Use **`soul.md`** when you want to change who the agent is, how it describes itself, and the role or character it should inhabit
 - Change **`AgentIdentity`** only when you actually need a different routing identity for deployment or messaging
 
-If you want the agent to present itself as "Aki", "Roxy", or something other than "RockBot", you can absolutely do that at runtime via the display-name path. Updating `soul.md` may still be the right companion change if you also want its deeper persona and self-description to match the new name.
+If you want the agent to present itself as "Aki", "Roxy", or something other than "RockBot", do that through the display-name path. Treat `soul.md` as persona and role, not as the authoritative place to rename the agent.
 
 ### Customize `soul.md`, `directives.md`, and `style.md`
 
@@ -280,7 +280,7 @@ Then adjust:
 If you want a concrete sequence, this is a good starting point:
 
 1. Finish the [Docker Desktop guide](getting-started-docker-desktop)
-2. Edit `soul.md` so the agent has the right role and name
+2. Set the display name you want the agent to use in chat and the UI
 3. Add `style.md` if tone matters
 4. Tell the agent your name, timezone, and main areas of life or work it should care about
 5. Connect 1-3 MCP servers you will use every week
