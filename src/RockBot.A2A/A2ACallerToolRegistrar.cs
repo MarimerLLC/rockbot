@@ -39,7 +39,7 @@ internal sealed class A2ACallerToolRegistrar(
             },
             "data": {
               "type": "object",
-              "description": "Optional structured data payload sent alongside the text message as an A2A DataPart. Use when the target agent's skill accepts structured inputs (fields, records, identifiers). Must be a JSON object; most A2A agents only understand text, so omit unless the agent is known to consume data."
+              "description": "Optional structured data payload sent alongside the text message as an A2A DataPart. Include it whenever the request has structured inputs — identifiers, records, parameters, filters, coordinates, enums, etc. — rather than stuffing them into the message text. Inspect the target skill's description, tags, and examples (via get_agent_details) for field hints. If the skill doesn't document structured fields, send the values in message text instead — don't fabricate field names. Must be a JSON object."
             },
             "timeout_minutes": {
               "type": "integer",

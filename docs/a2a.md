@@ -61,11 +61,13 @@ The `data` value must be a JSON **object** (per the A2A spec — non-object valu
 are rejected). It is serialized to a `DataPart` with `media_type:
 application/json` and appended after the text part.
 
-Most A2A agents in the wild only understand text, so omit `data` unless the
-target agent's skill is known to consume structured input. On the receiving
-side, RockBot's `RockBotBridgeHandler.MapInboundParts` already preserves
-inbound `DataPart`s as `AgentMessagePart { Kind = "data" }` so skill handlers
-can read both parts from `AgentTaskRequest.Message.Parts`.
+Use `data` whenever the target skill documents structured inputs — check the
+skill's description, tags, and examples via `get_agent_details` for field
+hints. Don't fabricate field names: if a skill is text-only or its expected
+fields are unknown, send the values inline in the `message` text instead. On
+the receiving side, RockBot's `RockBotBridgeHandler.MapInboundParts` already
+preserves inbound `DataPart`s as `AgentMessagePart { Kind = "data" }` so
+skill handlers can read both parts from `AgentTaskRequest.Message.Parts`.
 
 `InputRequired` follow-ups remain text-only — only the initial `invoke_agent`
 call carries the structured payload.
