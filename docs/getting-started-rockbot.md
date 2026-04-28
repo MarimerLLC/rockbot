@@ -269,7 +269,11 @@ This is how the agent keeps a usable history instead of endlessly rewriting a fl
 
 If you want consistent long-term behavior, do not rely only on one chat instruction. The important thing is to get the policy into the agent's durable configuration.
 
-In practice, many users will just tell the agent how memory should work and let it maintain that guidance over time. If you want direct control, you can also edit `memory-rules.md` yourself.
+In today's RockBot setup, `memory-rules.md` is part of the agent profile rather than the shared file area the agent normally writes to. So the practical path is:
+
+1. tell the agent how you want memory to work
+2. let it help draft or refine the policy
+3. update `memory-rules.md` yourself when you want that policy locked in
 
 A good memory-rules policy usually tells the agent:
 
@@ -310,7 +314,7 @@ Then adjust:
 - `soul.md` if the role feels wrong
 - `style.md` if the tone feels wrong
 - `directives.md` if the workflow is wrong
-- the agent's memory rules if it is remembering the wrong things
+- `memory-rules.md` if it is remembering the wrong things
 - the agent's MCP setup if it lacks key systems
 - scheduled tasks if it is not being proactive enough
 
