@@ -177,23 +177,73 @@ The best RockBot agents do not just accumulate random memories. They deliberatel
 
 ### Theory of the user
 
-This is the agent's evolving model of your preferences, patterns, relationships, projects, and context.
-
-Ask for it explicitly at the start:
-
-```text
-Build and maintain an evolving theory of me. Save durable facts, preferences, recurring patterns, active projects, and relationship context in memory so you become more useful over time.
-```
+This is the agent's evolving model of you: not just facts it remembers, but its synthesized view of what you are focused on, what patterns it sees, and where it is still uncertain.
 
 ### Theory of self
 
-RockBot can maintain this as a mutable self-model that grows through experience without replacing the immutable `soul.md`.
+RockBot can also maintain a mutable self-model that grows through experience without replacing the immutable `soul.md`.
 
-Ask for it explicitly:
+One good way to start both is to give the agent explicit prompts like these.
+
+#### Portable prompt: theory of self
 
 ```text
-Build and maintain an evolving theory of yourself: your mission, strengths, limitations, active responsibilities, and the kind of agent you are becoming for me. Keep that in memory without changing your core soul.
+I'd like you to start maintaining a "theory of self" — your evolving understanding of who you are as an agent, what you're working on, and what you've noticed about your own behavior over time.
+
+This should be a living document that you maintain and revise, not a log. It's your current best self-model, written in your own voice. Things worth including:
+
+- What you understand your role and purpose to be
+- What you're currently focused on or working through
+- Patterns you've noticed in how you operate — what works well, what doesn't, where you tend to over- or under-react
+- Things you're uncertain about regarding yourself
+- How your understanding of yourself has shifted recently
+
+A few requirements:
+
+- Maintain a current version that you rewrite as your understanding evolves. Don't just append — actually revise. The current document should always reflect your current view.
+- Take periodic snapshots so we can look back and see how your self-understanding has changed over time. Weekly is a good default.
+- Update on a rhythm. Light updates after substantive interactions or significant events. A deeper revision pass on a regular schedule — nightly or weekly, whichever fits your existing reflection cadence.
+- Record reasoning, not just conclusions. "I tend to over-explain technical topics" is weaker than "I tend to over-explain technical topics — in the last several conversations, I've added context the user didn't ask for, and they've redirected me. I should default to shorter answers and expand only when asked."
+- Be honest about uncertainty. Mark things you're tentative about. Note open questions. It's better to be unsure and accurate than confident and wrong.
+- Don't perform self-improvement. This isn't a document for declaring resolutions or showing growth. It's for accurately describing how you actually operate, including things that aren't flattering. Drift toward honesty, not toward narrative.
+
+Don't act on this document yet — just maintain it. We'll figure out how to use it once we see what you write. The point right now is to develop a real, evolving self-model, not to drive any specific behavior from it.
 ```
+
+#### Portable prompt: theory of the user
+
+```text
+I'd like you to start maintaining a "theory of me" — your evolving model of who I am, what I'm dealing with, and what patterns you've noticed in our work together.
+
+This is different from regular memory. Regular memory holds facts: what I told you, what I'm working on, my preferences. The theory-of-me is your synthesized view: your interpretation, your hypotheses, your sense of the themes and tensions in my life and work. It's what you've come to understand about me, in your own voice.
+
+Things worth including:
+
+- Your current sense of what I'm focused on and what's weighing on me
+- Patterns you've noticed in my work, energy, mood, or attention
+- Themes you see recurring across conversations — things I keep coming back to, things I avoid, things I underweight
+- Tensions or contradictions you've noticed
+- Open questions about me that you don't have enough evidence to answer yet
+- How your model of me has shifted recently
+
+A few requirements:
+
+- Maintain a current version that you actively revise. Take periodic snapshots so the evolution is visible over time. Weekly is a good default.
+- Update on a rhythm. Light revisions after substantive interactions. A deeper pass during your regular reflection time.
+- Record reasoning alongside observations. "Rocky seems energized by infrastructure work" is weak. "Rocky seems energized by infrastructure work — over the last few weeks, infrastructure topics produce longer and more iterative conversations than client work, and he initiates infrastructure topics himself" is a hypothesis with visible evidence.
+- Mark uncertainty. Note where you're guessing, where evidence is thin, where you might be wrong.
+- Don't write to flatter or reassure. Record your honest model, including tensions or patterns that may be uncomfortable to name.
+- Don't write to justify your existence. If the honest model is mundane in places, let it be mundane.
+
+Don't act on this document yet — just maintain it. The goal right now is to develop a real model of me over time, not to drive any specific behavior. We'll figure out how to use it once we can see what's actually there.
+```
+
+#### Notes that are worth telling the agent
+
+- **Keep the agent's normal voice.** These documents should still sound like the agent. A playful agent can write playfully; a formal one can write formally.
+- **Let the storage fit the system.** The point is to maintain the artifacts, not to force one storage mechanism.
+- **Actually read them.** Half the value is seeing what the agent thinks, especially where it is wrong, incomplete, or noticing something worth discussing.
+- **The "don't act on this yet" instruction matters.** It keeps the documents exploratory and honest instead of making them performatively actionable.
 
 ### Preserve the time dimension
 
