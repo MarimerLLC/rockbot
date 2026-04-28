@@ -124,6 +124,8 @@ Key files you can customize:
 
 The agent hot-reloads these files via `FileSystemWatcher` — changes take effect within seconds, no restart needed.
 
+Once the stack is running, the next step is onboarding the agent so it has the right identity, memory behavior, MCP integrations, and scheduled jobs. See [Getting started with RockBot](getting-started-rockbot).
+
 ## Choosing an LLM
 
 ### OpenAI-compatible providers (per-token billing)
@@ -240,4 +242,4 @@ docker compose down -v
 
 ## Next steps
 
-This minimal setup gets you chatting with the agent. For the full experience with script execution, MCP tools, and multi-agent coordination, see the [Helm deployment guide](../deploy/values.personal.example.yaml) for Kubernetes.
+This minimal setup gets you chatting with the agent. Next, follow [Getting started with RockBot](getting-started-rockbot) to turn that running agent into a useful personal one. For the full experience with script execution, MCP tools, and multi-agent coordination, see the [Helm deployment guide](../deploy/values.personal.example.yaml) for Kubernetes.

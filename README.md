@@ -202,6 +202,8 @@ The agent's personality and behavior are defined by markdown documents on the da
 
 Want to try RockBot without setting up Kubernetes? The [Docker Desktop getting started guide](docs/getting-started-docker-desktop.md) gets you chatting with the agent in minutes using just Docker Compose, an LLM API key, and a Brave Search key.
 
+After that, use the [Getting started with RockBot](docs/getting-started-rockbot.md) guide to customize the agent's identity, memory behavior, MCP integrations, and scheduled tasks.
+
 ### Prerequisites
 
 - [.NET 10 SDK](https://dotnet.microsoft.com/download) — for local development and building
