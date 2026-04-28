@@ -46,12 +46,21 @@ These belong in long-term memory, typically under `user-preferences/...` or `age
 
 ### Decide who the agent is
 
-There are two different "names" in RockBot:
+There are really **three** related identity surfaces in RockBot:
 
-- **Conversational identity** - what the agent calls itself in chat. This is mostly driven by `soul.md`.
-- **Technical identity** - the deployment/runtime `AgentIdentity` used for routing on the message bus.
+- **Runtime identity** — the deployment/runtime `AgentIdentity` used for routing on the message bus
+- **Display name** — the mutable name shown in chat and user-facing UI
+- **Persona** — the broader self-description and role conveyed by `soul.md`
 
-For most onboarding, you only need to change the **conversational identity** by editing `soul.md`. If you want the agent to present itself as "Aki", "Roxy", or something other than "RockBot", put that in `soul.md`. Changing the runtime routing identity is a deeper deployment change and is not usually required just to get started.
+The important correction is that the **display name is not only driven by `soul.md`**. RockBot supports a runtime-changeable display name backed by `agent-name.md`, and that name can be changed by the agent itself through the introspection MCP tools. The host hot-reloads it, publishes an `AgentNameChanged` notification, and frontends such as the Blazor UI update to show the new name.
+
+So in practice:
+
+- Use **`set_agent_name`** / `agent-name.md` when you want to rename how the agent appears in chat and the UI
+- Use **`soul.md`** when you want to change who the agent is, how it describes itself, and the role or character it should inhabit
+- Change **`AgentIdentity`** only when you actually need a different routing identity for deployment or messaging
+
+If you want the agent to present itself as "Aki", "Roxy", or something other than "RockBot", you can absolutely do that at runtime via the display-name path. Updating `soul.md` may still be the right companion change if you also want its deeper persona and self-description to match the new name.
 
 ### Customize `soul.md`, `directives.md`, and `style.md`
 
@@ -63,6 +72,7 @@ The profile files on the agent data volume shape how the agent behaves:
 | `directives.md` | Operational instructions, workflows, priorities, and what "good work" looks like |
 | `style.md` | Optional voice and tone polish |
 | `memory-rules.md` | What to remember, what not to remember, and how memory should evolve |
+| `agent-name.md` | Optional mutable display name shown in chat and UI |
 
 Good onboarding practice:
 
