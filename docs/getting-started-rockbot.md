@@ -109,7 +109,13 @@ Typical high-value servers:
 - Files or notes
 - Internal line-of-business tools
 
-For example, if you want calendar access, add an MCP server such as [`calendar-mcp`](https://github.com/MarimerLLC/calendar-mcp) to `mcp.json`:
+The normal user-facing path is to ask the agent to connect the server for you. For example:
+
+```text
+Connect the calendar MCP server for me so you can read my calendar. Use this SSE endpoint: http://host.docker.internal:3000/
+```
+
+Under the hood, RockBot can maintain the MCP configuration through chat. If you prefer direct control, you can also edit `mcp.json` yourself. For example, a calendar server entry looks like:
 
 ```json
 {
@@ -122,7 +128,7 @@ For example, if you want calendar access, add an MCP server such as [`calendar-m
 }
 ```
 
-After the file updates, the agent hot-reloads the MCP configuration. Then, in chat, have the agent confirm what it sees:
+After the configuration updates, the agent hot-reloads the MCP setup. Then, in chat, have the agent confirm what it sees:
 
 ```text
 List the MCP services you currently have available and summarize what each one is for.
@@ -259,11 +265,13 @@ Practical guidance:
 
 This is how the agent keeps a usable history instead of endlessly rewriting a flat summary.
 
-## 5. Tune `memory-rules.md`
+## 5. Tune how memory works
 
-If you want consistent long-term behavior, do not rely only on one chat instruction. Put the policy in `memory-rules.md`.
+If you want consistent long-term behavior, do not rely only on one chat instruction. The important thing is to get the policy into the agent's durable configuration.
 
-A good `memory-rules.md` usually tells the agent:
+In practice, many users will just tell the agent how memory should work and let it maintain that guidance over time. If you want direct control, you can also edit `memory-rules.md` yourself.
+
+A good memory-rules policy usually tells the agent:
 
 - what counts as durable user context
 - what should stay in working memory instead
@@ -302,8 +310,8 @@ Then adjust:
 - `soul.md` if the role feels wrong
 - `style.md` if the tone feels wrong
 - `directives.md` if the workflow is wrong
-- `memory-rules.md` if it is remembering the wrong things
-- `mcp.json` if it lacks key systems
+- the agent's memory rules if it is remembering the wrong things
+- the agent's MCP setup if it lacks key systems
 - scheduled tasks if it is not being proactive enough
 
 ## 7. A simple onboarding sequence that works well
@@ -314,11 +322,11 @@ If you want a concrete sequence, this is a good starting point:
 2. Set the display name you want the agent to use in chat and the UI
 3. Add `style.md` if tone matters
 4. Tell the agent your name, timezone, and main areas of life or work it should care about
-5. Connect 1-3 MCP servers you will use every week
+5. Ask the agent to connect 1-3 MCP servers you will use every week
 6. Ask it to test each server with one real task
 7. Create 2-4 scheduled tasks that produce proactive value
 8. Tell it to maintain a theory of the user and a theory of self in memory
-9. Tune `memory-rules.md` so that behavior is durable and repeatable
+9. Tune the agent's memory rules so that behavior is durable and repeatable
 10. Revisit the profile and memory after a few days of real use
 
 ## Related docs
