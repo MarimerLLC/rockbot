@@ -42,7 +42,7 @@ Remember that I am in America/Chicago and I prefer concise, direct answers.
 Remember that I use RockBot mainly for communications, scheduling, technical work, and research.
 ```
 
-These belong in long-term memory, typically under `user-preferences/...` or `agent-knowledge`.
+These belong in long-term memory.
 
 ### Decide who the agent is
 
@@ -179,16 +179,6 @@ The best RockBot agents do not just accumulate random memories. They deliberatel
 
 This is the agent's evolving model of your preferences, patterns, relationships, projects, and context.
 
-Useful categories include:
-
-- `user-preferences/identity`
-- `user-preferences/work`
-- `user-preferences/location`
-- `user-preferences/lifestyle`
-- `user-preferences/attitudes`
-- `project-context/<project-name>`
-- `agent-knowledge`
-
 Ask for it explicitly at the start:
 
 ```text
@@ -197,15 +187,7 @@ Build and maintain an evolving theory of me. Save durable facts, preferences, re
 
 ### Theory of self
 
-RockBot already has a good place for this: the `agent-identity/...` memory categories. These are for the mutable self-model that grows through experience without replacing the immutable `soul.md`.
-
-Useful categories include:
-
-- `agent-identity/mission`
-- `agent-identity/goals`
-- `agent-identity/projects`
-- `agent-identity/capabilities`
-- `agent-identity/self-model`
+RockBot can maintain this as a mutable self-model that grows through experience without replacing the immutable `soul.md`.
 
 Ask for it explicitly:
 
@@ -220,8 +202,8 @@ Do not treat memory like a timeless blob. RockBot's memory model already tracks 
 Practical guidance:
 
 1. Save durable facts as durable facts
-2. Save active plans in `active-plans/...`
-3. Save evolving self-model entries under `agent-identity/...`
+2. Save in-progress multi-session work as plans the agent can resume later
+3. Let the agent keep an evolving self-model separate from `soul.md`
 4. When a meaningful shift happens, update the relevant memory instead of stuffing everything into `soul.md`
 5. When the underlying fact refers to a real period in your life, preserve that time context if known
 
@@ -235,8 +217,7 @@ A good `memory-rules.md` usually tells the agent:
 
 - what counts as durable user context
 - what should stay in working memory instead
-- which categories to prefer
-- when to create or update `agent-identity/...` entries
+- when to create or update its self-model
 - how aggressively to save preferences
 - how to handle active plans and completed plans
 
