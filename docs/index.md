@@ -13,6 +13,7 @@ An event-driven autonomous agent framework for .NET — message-based, process-i
 {: .fs-6 .fw-300 }
 
 [Get started on Docker Desktop](getting-started-docker-desktop){: .btn .btn-primary .fs-5 .mb-4 .mb-md-0 .mr-2 }
+[Onboard your agent](getting-started-rockbot){: .btn .fs-5 .mb-4 .mb-md-0 .mr-2 }
 [View on GitHub](https://github.com/MarimerLLC/rockbot){: .btn .fs-5 .mb-4 .mb-md-0 }
 
 ---
@@ -28,6 +29,7 @@ Each agent is an isolated process that reacts to messages, invokes tools, calls 
 ## Documentation
 
 - [Getting started on Docker Desktop](getting-started-docker-desktop)
+- [Getting started with RockBot](getting-started-rockbot)
 - [Messaging](messaging) — envelopes, transports, topic conventions
 - [Agent host](agent-host) — handler pipeline, profile loading, system prompt composition
 - [Subagents](subagents) — isolated LLM loops with progress reporting
