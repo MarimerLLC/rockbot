@@ -148,4 +148,48 @@ public sealed class DreamOptions
     /// When the file does not exist, a built-in fallback directive is used.
     /// </summary>
     public string WispFailureDirectivePath { get; set; } = "wisp-failure-dream.md";
+
+    /// <summary>
+    /// Whether the tool-success-learning pass (requires <see cref="IToolCallLog"/>) is enabled.
+    /// Mines the tool-call log for retry-until-success patterns and writes the verified
+    /// argument values as durable long-term memory entries.
+    /// </summary>
+    public bool ToolSuccessLearningEnabled { get; set; } = true;
+
+    /// <summary>
+    /// Path to the tool-success-learning directive file, relative to <see cref="AgentProfileOptions.BasePath"/>.
+    /// When the file does not exist, a built-in fallback directive is used.
+    /// </summary>
+    public string ToolSuccessLearningDirectivePath { get; set; } = "tool-success-learning.md";
+
+    /// <summary>
+    /// Days of no reinforcement (measured against <see cref="MemoryEntry.LastSeenAt"/>)
+    /// before importance decay begins. Entries younger than this are left alone regardless
+    /// of their score. Default: 30 days.
+    /// </summary>
+    public int ImportanceDecayGraceDays { get; set; } = 30;
+
+    /// <summary>
+    /// Half-life (in calendar days) of a memory entry's importance once the grace period
+    /// has passed. Decay is multiplicative and measured in calendar time: each decay pass
+    /// multiplies importance by <c>0.5^(elapsedDays / HalfLifeDays)</c> where
+    /// <c>elapsedDays</c> is the calendar time since the entry was last touched. This
+    /// composes correctly, so the decay curve is invariant to <see cref="CronSchedule"/>
+    /// cadence — running dream twice a day, four times a day, or once a week produces
+    /// the same calendar-time decay for a given half-life.
+    /// <para>
+    /// With the defaults (HalfLife=45, Grace=30, Floor=0.10), a core 0.95 memory reaches
+    /// the floor in roughly <b>176 days (~6 months)</b>; a routine 0.50 memory in ~134 days;
+    /// a minor 0.30 memory in ~101 days. Set to zero or negative to disable decay entirely.
+    /// </para>
+    /// </summary>
+    public float ImportanceDecayHalfLifeDays { get; set; } = 45f;
+
+    /// <summary>
+    /// Minimum importance score. Decay will never drive an entry below this value.
+    /// Entries at or below the floor are skipped by the decay pass entirely.
+    /// Default: 0.10 — low enough to de-rank stale entries but non-zero so they remain
+    /// discoverable via keyword search.
+    /// </summary>
+    public float ImportanceDecayFloor { get; set; } = 0.10f;
 }

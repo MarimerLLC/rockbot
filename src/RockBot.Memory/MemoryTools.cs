@@ -44,11 +44,18 @@ public sealed class MemoryTools
           0.95:    Maximum — foundational to the user's identity or primary work
 
         Return ONLY a valid JSON array of objects. No markdown, no explanation, no
-        code fences — just the raw JSON array. Each object must have exactly these fields:
+        code fences — just the raw JSON array. Each object must have these fields:
           "content"    : string
           "category"   : string or null
           "tags"       : array of strings
           "importance" : number (0.0 to 1.0)
+          "metadata"   : object (optional) — string-to-string map. May include the
+                         well-known subject-time keys "subjectTime",
+                         "subjectTimeStart", "subjectTimeEnd" when confident about
+                         when the thing the fact is about actually happened
+                         (see the "Subject-time vs. agent-time" section in the
+                         memory rules above). Omit this field entirely when no
+                         well-known metadata applies.
 
         If the content contains nothing worth saving as a durable memory, return: []
         """;
@@ -143,14 +150,47 @@ public sealed class MemoryTools
 
         foreach (var entry in results)
         {
-            var daysOld = (int)(DateTimeOffset.UtcNow - entry.CreatedAt).TotalDays;
-            var age = daysOld == 0 ? "today" : daysOld == 1 ? "1 day ago" : $"{daysOld} days ago";
-            sb.AppendLine($"- [{entry.Id}] ({entry.Category ?? "uncategorized"}, importance={entry.ImportanceScore:F2}, remembered {age}): {entry.Content}");
+            var age = FormatAge(entry);
+            var subject = FormatSubjectTime(entry.Metadata);
+            sb.AppendLine($"- [{entry.Id}] ({entry.Category ?? "uncategorized"}, importance={entry.ImportanceScore:F2}, {age}){subject}: {entry.Content}");
             if (entry.Tags.Count > 0)
                 sb.AppendLine($"  Tags: {string.Join(", ", entry.Tags)}");
         }
 
         return sb.ToString();
+    }
+
+    private static string FormatAge(MemoryEntry e)
+    {
+        var now = DateTimeOffset.UtcNow;
+        var firstDays = (int)(now - e.CreatedAt).TotalDays;
+        var lastDays = (int)(now - e.LastSeenAt).TotalDays;
+
+        if (e.ReinforcementCount <= 1)
+        {
+            return firstDays switch
+            {
+                0 => "first seen today",
+                1 => "first seen 1 day ago",
+                _ => $"first seen {firstDays} days ago"
+            };
+        }
+
+        var firstStr = firstDays < 30 ? $"{firstDays}d ago" : e.CreatedAt.ToString("yyyy-MM");
+        var lastStr = lastDays < 1 ? "today" : e.LastSeenAt.ToString("yyyy-MM-dd");
+        return $"seen {e.ReinforcementCount}× from {firstStr} to {lastStr}";
+    }
+
+    private static string FormatSubjectTime(IReadOnlyDictionary<string, string>? meta)
+    {
+        if (meta is null) return string.Empty;
+        if (meta.TryGetValue("subjectTime", out var t) && !string.IsNullOrWhiteSpace(t))
+            return $" (subject: {t})";
+        meta.TryGetValue("subjectTimeStart", out var s);
+        meta.TryGetValue("subjectTimeEnd", out var e);
+        if (!string.IsNullOrWhiteSpace(s) || !string.IsNullOrWhiteSpace(e))
+            return $" (subject: {s ?? "?"}..{e ?? "?"})";
+        return string.Empty;
     }
 
     [Description("Delete a memory entry by its ID. Use this to remove facts that are wrong, outdated, or " +
@@ -296,6 +336,7 @@ public sealed class MemoryTools
                         Category: string.IsNullOrWhiteSpace(d.Category) ? null : d.Category.Trim(),
                         Tags: d.Tags ?? [],
                         CreatedAt: DateTimeOffset.UtcNow,
+                        Metadata: SanitizeMetadata(d.Metadata),
                         ImportanceScore: Math.Clamp(d.Importance ?? 0.5f, 0f, 1f)))
                     .ToList();
             }
@@ -355,9 +396,24 @@ public sealed class MemoryTools
         return string.Empty;
     }
 
+    /// <summary>
+    /// Drops keys with null or whitespace-only values from a metadata dictionary,
+    /// and returns null if the result is empty. Protects against the extraction LLM
+    /// returning empty-string subject-time keys when it should have omitted them.
+    /// </summary>
+    private static IReadOnlyDictionary<string, string>? SanitizeMetadata(IReadOnlyDictionary<string, string>? meta)
+    {
+        if (meta is null || meta.Count == 0) return null;
+        var clean = meta
+            .Where(kv => !string.IsNullOrWhiteSpace(kv.Key) && !string.IsNullOrWhiteSpace(kv.Value))
+            .ToDictionary(kv => kv.Key, kv => kv.Value.Trim());
+        return clean.Count == 0 ? null : clean;
+    }
+
     private sealed record MemoryEntryDto(
         string Content,
         string? Category,
         IReadOnlyList<string>? Tags,
-        float? Importance = null);
+        float? Importance = null,
+        IReadOnlyDictionary<string, string>? Metadata = null);
 }

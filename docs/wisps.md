@@ -1,3 +1,8 @@
+---
+title: Wisps
+nav_order: 10
+---
+
 # Wisps
 
 Wisps are a **lightweight execution tier** for procedural, multi-step tasks that don't

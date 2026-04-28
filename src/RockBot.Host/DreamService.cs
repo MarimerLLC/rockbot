@@ -31,6 +31,7 @@ internal sealed class DreamService : IHostedService, IDisposable
     private readonly IToolCallLog? _toolCallLog;
     private readonly IWispExecutionLog? _wispExecutionLog;
     private readonly IKnowledgeGraph? _knowledgeGraph;
+    private readonly IWorkingMemory? _workingMemory;
     private readonly ILlmClient _llmClient;
     private readonly IAgentWorkSerializer _workSerializer;
     private readonly IUserActivityMonitor _userActivityMonitor;
@@ -54,6 +55,7 @@ internal sealed class DreamService : IHostedService, IDisposable
     private string? _dlqDirective;
     private string? _identityDirective;
     private string? _wispFailureDirective;
+    private string? _toolSuccessLearningDirective;
 
     public DreamService(
         ILongTermMemory memory,
@@ -72,7 +74,8 @@ internal sealed class DreamService : IHostedService, IDisposable
         IDlqSampler? dlqSampler = null,
         IToolCallLog? toolCallLog = null,
         IKnowledgeGraph? knowledgeGraph = null,
-        IWispExecutionLog? wispExecutionLog = null)
+        IWispExecutionLog? wispExecutionLog = null,
+        IWorkingMemory? workingMemory = null)
     {
         _memory = memory;
         _skillStore = skillStores.FirstOrDefault();
@@ -84,6 +87,7 @@ internal sealed class DreamService : IHostedService, IDisposable
         _toolCallLog = toolCallLog;
         _knowledgeGraph = knowledgeGraph;
         _wispExecutionLog = wispExecutionLog;
+        _workingMemory = workingMemory;
         _llmClient = llmClient;
         _workSerializer = workSerializer;
         _userActivityMonitor = userActivityMonitor;
@@ -281,6 +285,19 @@ internal sealed class DreamService : IHostedService, IDisposable
                 _logger.LogInformation("DreamService: loaded wisp failure directive from {Path}", wispDirectivePath);
         }
 
+        if (_options.ToolSuccessLearningEnabled && _toolCallLog is not null)
+        {
+            var path = ResolvePath(_options.ToolSuccessLearningDirectivePath, _profileOptions.BasePath);
+            _toolSuccessLearningDirective = File.Exists(path)
+                ? File.ReadAllText(path)
+                : null;
+
+            if (!File.Exists(path))
+                _logger.LogDebug("DreamService: tool-success-learning directive not found at {Path}; using built-in", path);
+            else
+                _logger.LogInformation("DreamService: loaded tool-success-learning directive from {Path}", path);
+        }
+
         try
         {
             _cron = CronExpression.Parse(_options.CronSchedule,
@@ -406,7 +423,12 @@ internal sealed class DreamService : IHostedService, IDisposable
             {
                 var e = all[i];
                 var tags = e.Tags.Count > 0 ? string.Join(", ", e.Tags) : "(none)";
-                userMessage.AppendLine($"{i + 1}. [ID:{e.Id}] category={e.Category ?? "uncategorized"} importance={e.ImportanceScore:F2} tags=[{tags}]");
+                var subjectTime = FormatSubjectTimeForPrompt(e.Metadata);
+                userMessage.AppendLine(
+                    $"{i + 1}. [ID:{e.Id}] category={e.Category ?? "uncategorized"} " +
+                    $"importance={e.ImportanceScore:F2} reinforced={e.ReinforcementCount}× " +
+                    $"first={e.CreatedAt:yyyy-MM-dd} last={e.LastSeenAt:yyyy-MM-dd}" +
+                    $"{subjectTime} tags=[{tags}]");
                 userMessage.AppendLine($"   {e.Content}");
             }
 
@@ -457,48 +479,55 @@ internal sealed class DreamService : IHostedService, IDisposable
                 _logger.LogDebug("DreamService: deleted entry {Id}", id);
             }
 
-            // Build lookup of source CreatedAt values to carry forward min date for merged entries
-            var createdAtById = all.ToDictionary(e => e.Id, e => e.CreatedAt);
+            // Build source-entry lookup (case-insensitive on ID) for merge arithmetic
+            var byId = new Dictionary<string, MemoryEntry>(StringComparer.OrdinalIgnoreCase);
+            foreach (var e in all)
+                byId[e.Id] = e;
 
             foreach (var dto in result.ToSave ?? [])
             {
                 if (string.IsNullOrWhiteSpace(dto.Content))
                     continue;
 
-                // Carry forward min CreatedAt from referenced source IDs; fallback to now
                 var sourceIds = dto.SourceIds ?? [];
-                var minCreatedAt = sourceIds.Count > 0
-                    ? sourceIds
-                        .Where(createdAtById.ContainsKey)
-                        .Select(id => createdAtById[id])
-                        .DefaultIfEmpty(DateTimeOffset.UtcNow)
-                        .Min()
-                    : DateTimeOffset.UtcNow;
+                var sources = sourceIds
+                    .Where(id => byId.ContainsKey(id))
+                    .Select(id => byId[id])
+                    .ToList();
 
-                // Use LLM-provided importance, or carry forward the max importance from source entries
-                var importance = dto.Importance;
-                if (importance is null && sourceIds.Count > 0)
-                {
-                    importance = sourceIds
-                        .Where(id => all.Any(e => e.Id.Equals(id, StringComparison.OrdinalIgnoreCase)))
-                        .Select(id => all.First(e => e.Id.Equals(id, StringComparison.OrdinalIgnoreCase)).ImportanceScore)
-                        .DefaultIfEmpty(0.5f)
-                        .Max();
-                }
+                // CreatedAt = earliest source (first-seen preserved); UpdatedAt = now (record rewritten)
+                var firstSeen = sources.Count > 0 ? sources.Min(s => s.CreatedAt) : DateTimeOffset.UtcNow;
+
+                // LastSeenAt = most recent source reinforcement; never "now" on dream housekeeping
+                var lastSeen = sources.Count > 0 ? sources.Max(s => s.LastSeenAt) : DateTimeOffset.UtcNow;
+
+                // ReinforcementCount = sum of source counts; singleton merge (1 source) preserves its count
+                var reinforcementCount = sources.Count > 0 ? sources.Sum(s => s.ReinforcementCount) : 1;
+
+                // LLM-provided importance wins; otherwise carry forward max from sources
+                var importance = dto.Importance
+                    ?? (sources.Count > 0 ? sources.Max(s => s.ImportanceScore) : 0.5f);
+
+                var mergedMetadata = MergeSubjectTimeMetadata(sources);
 
                 var entry = new MemoryEntry(
                     Id: Guid.NewGuid().ToString("N")[..12],
                     Content: dto.Content.Trim(),
                     Category: string.IsNullOrWhiteSpace(dto.Category) ? null : dto.Category.Trim(),
                     Tags: dto.Tags ?? [],
-                    CreatedAt: minCreatedAt,
+                    CreatedAt: firstSeen,
                     UpdatedAt: DateTimeOffset.UtcNow,
-                    ImportanceScore: Math.Clamp(importance ?? 0.5f, 0f, 1f));
+                    Metadata: mergedMetadata,
+                    ImportanceScore: Math.Clamp(importance, 0f, 1f))
+                {
+                    LastSeenAt = lastSeen,
+                    ReinforcementCount = reinforcementCount
+                };
 
                 await _memory.SaveAsync(entry);
                 saved++;
-                _logger.LogDebug("DreamService: saved entry {Id} ({Category}, importance={Importance:F2}): {Content}",
-                    entry.Id, entry.Category ?? "(none)", entry.ImportanceScore, entry.Content);
+                _logger.LogDebug("DreamService: saved entry {Id} ({Category}, importance={Importance:F2}, reinforced={Count}×): {Content}",
+                    entry.Id, entry.Category ?? "(none)", entry.ImportanceScore, entry.ReinforcementCount, entry.Content);
             }
 
             if (_skillStore is not null)
@@ -520,6 +549,8 @@ internal sealed class DreamService : IHostedService, IDisposable
             ct.ThrowIfCancellationRequested(); await RunSequenceSkillDetectionPassAsync();
 
             ct.ThrowIfCancellationRequested(); await RunWispFailureAnalysisPassAsync();
+
+            ct.ThrowIfCancellationRequested(); await RunToolSuccessLearningPassAsync();
 
             ct.ThrowIfCancellationRequested(); await RunTierRoutingReviewPassAsync();
 
@@ -853,6 +884,14 @@ internal sealed class DreamService : IHostedService, IDisposable
             }
         }
 
+        // Tool-retry signal: sessions that called the same tool repeatedly with different args
+        // until one succeeded indicate the guiding skill left an ambiguity. The arg pair
+        // (failed → succeeded) is exactly the context the optimizer needs to tighten the skill.
+        var toolRetryNotesBySession =
+            await DetectToolRetrySessionsAsync(sessionsWithSkills, since);
+        foreach (var sessionId in toolRetryNotesBySession.Keys)
+            atRiskSessions.Add(sessionId);
+
         if (atRiskSessions.Count == 0)
         {
             _logger.LogDebug("DreamService: no at-risk sessions found; skipping optimization pass");
@@ -929,6 +968,25 @@ internal sealed class DreamService : IHostedService, IDisposable
                     var detail = string.IsNullOrWhiteSpace(fb.Detail) ? string.Empty : $" — \"{fb.Detail}\"";
                     userMessage.AppendLine($"- [{fb.SignalType}] {fb.Summary}{detail}");
                 }
+                userMessage.AppendLine();
+            }
+
+            // Tool-retry context: failed→succeeded arg pairs from sessions that used this skill.
+            // These show exactly which ambiguity in the skill caused costly retries.
+            var retryNotesForSkill = sessionsUsingSkill
+                .Where(toolRetryNotesBySession.ContainsKey)
+                .SelectMany(s => toolRetryNotesBySession[s])
+                .ToList();
+
+            if (retryNotesForSkill.Count > 0)
+            {
+                userMessage.AppendLine("### Tool retry-until-success patterns (skill ambiguity signals):");
+                foreach (var note in retryNotesForSkill)
+                    userMessage.AppendLine($"- {note}");
+                userMessage.AppendLine();
+                userMessage.AppendLine(
+                    "Consider tightening the skill to specify the verified argument value(s) above, " +
+                    "replacing any hedging language (\"typically X and sometimes Y\") with the concrete answer.");
                 userMessage.AppendLine();
             }
         }
@@ -1230,43 +1288,126 @@ internal sealed class DreamService : IHostedService, IDisposable
     }
 
     /// <summary>
-    /// Applies gradual importance decay to memory entries that haven't been updated recently.
-    /// Entries older than <see cref="DecayGracePeriodDays"/> days lose importance at a rate of
-    /// <see cref="DecayPerCycleFraction"/> per dream cycle, down to a floor of <see cref="DecayFloor"/>.
-    /// This ensures stale, unreferenced memories naturally fade in ranking priority
-    /// while keeping them discoverable.
+    /// Formats subject-time metadata keys as a compact suffix for the consolidation prompt
+    /// (e.g. " subject=2019-06" or " subject=1995..2003"). Returns empty string when no
+    /// subject-time metadata is present.
+    /// </summary>
+    internal static string FormatSubjectTimeForPrompt(IReadOnlyDictionary<string, string>? meta)
+    {
+        if (meta is null) return string.Empty;
+        if (meta.TryGetValue("subjectTime", out var t) && !string.IsNullOrWhiteSpace(t))
+            return $" subject={t}";
+        meta.TryGetValue("subjectTimeStart", out var s);
+        meta.TryGetValue("subjectTimeEnd", out var e);
+        if (!string.IsNullOrWhiteSpace(s) || !string.IsNullOrWhiteSpace(e))
+            return $" subject={s ?? "?"}..{e ?? "?"}";
+        return string.Empty;
+    }
+
+    /// <summary>
+    /// Merges the well-known subject-time metadata keys across a set of source entries:
+    /// "subjectTime" (point), "subjectTimeStart"/"subjectTimeEnd" (range). Returns null when
+    /// no source carries any subject-time metadata. For overlapping values, prefers the most
+    /// specific (longest string) on "subjectTime", widens the range on start/end.
+    /// Non-subject-time metadata keys are not merged — they're entry-scoped and would
+    /// conflict ambiguously across merges.
+    /// </summary>
+    internal static IReadOnlyDictionary<string, string>? MergeSubjectTimeMetadata(IReadOnlyList<MemoryEntry> sources)
+    {
+        if (sources.Count == 0) return null;
+
+        string? point = null;
+        string? start = null;
+        string? end = null;
+
+        foreach (var s in sources)
+        {
+            if (s.Metadata is null) continue;
+            if (s.Metadata.TryGetValue("subjectTime", out var p) && !string.IsNullOrWhiteSpace(p))
+            {
+                if (point is null || p.Length > point.Length) point = p;
+            }
+            if (s.Metadata.TryGetValue("subjectTimeStart", out var ss) && !string.IsNullOrWhiteSpace(ss))
+            {
+                if (start is null || string.CompareOrdinal(ss, start) < 0) start = ss;
+            }
+            if (s.Metadata.TryGetValue("subjectTimeEnd", out var se) && !string.IsNullOrWhiteSpace(se))
+            {
+                if (end is null || string.CompareOrdinal(se, end) > 0) end = se;
+            }
+        }
+
+        if (point is null && start is null && end is null) return null;
+
+        var result = new Dictionary<string, string>(StringComparer.Ordinal);
+        if (point is not null) result["subjectTime"] = point;
+        if (start is not null) result["subjectTimeStart"] = start;
+        if (end is not null) result["subjectTimeEnd"] = end;
+        return result;
+    }
+
+    /// <summary>
+    /// Applies exponential (half-life) importance decay to memory entries that haven't been
+    /// reinforced recently. Decay is calendar-time based — running the dream more or less
+    /// frequently produces the same decay curve in calendar days. Keyed on
+    /// <see cref="MemoryEntry.LastSeenAt"/> — the last real save-event merged into the entry
+    /// — not on <see cref="MemoryEntry.UpdatedAt"/>, so dream housekeeping (rephrasing,
+    /// recategorization, score adjustments) does not reset the decay clock.
+    /// <para>
+    /// For each entry past the grace period, we compute how many decay-eligible days have
+    /// elapsed since the last time this entry was touched and multiply the importance by
+    /// <c>0.5^(elapsedDays / HalfLifeDays)</c>. Because multiplicative decay composes
+    /// (<c>0.5^(a/T) · 0.5^(b/T) == 0.5^((a+b)/T)</c>), splitting the decay across many
+    /// small cycles or applying it in one large catch-up pass produces the same total
+    /// calendar-time curve.
+    /// </para>
     /// </summary>
     internal async Task RunImportanceDecayPassAsync(IReadOnlyList<MemoryEntry> entries)
     {
-        const int DecayGracePeriodDays = 14;
-        const float DecayPerCycleFraction = 0.05f;
-        const float DecayFloor = 0.1f;
+        var graceDays = _options.ImportanceDecayGraceDays;
+        var halfLifeDays = _options.ImportanceDecayHalfLifeDays;
+        var floor = _options.ImportanceDecayFloor;
+
+        if (halfLifeDays <= 0)
+            return; // decay disabled
 
         var now = DateTimeOffset.UtcNow;
         var decayed = 0;
 
         foreach (var entry in entries)
         {
-            var lastTouched = entry.UpdatedAt ?? entry.CreatedAt;
-            var daysSinceUpdate = (now - lastTouched).TotalDays;
+            var daysSinceSeen = (now - entry.LastSeenAt).TotalDays;
+            if (daysSinceSeen < graceDays) continue;
+            if (entry.ImportanceScore <= floor) continue;
 
-            if (daysSinceUpdate < DecayGracePeriodDays)
-                continue;
+            // Proxy for "time since last decay was applied": UpdatedAt is bumped every time
+            // the entry is saved (including by the prior decay pass), so for regularly-running
+            // decay on an otherwise-untouched entry this tracks cycle-to-cycle elapsed time.
+            // Bound by (daysSinceSeen - graceDays) so decay doesn't jump retroactively into
+            // the grace window when grace first expires.
+            var lastTouch = entry.UpdatedAt ?? entry.CreatedAt;
+            var daysSinceLastTouch = Math.Max(0, (now - lastTouch).TotalDays);
+            var eligibleElapsed = Math.Min(daysSinceSeen - graceDays, daysSinceLastTouch);
+            if (eligibleElapsed <= 0) continue;
 
-            if (entry.ImportanceScore <= DecayFloor)
-                continue;
+            var factor = (float)Math.Pow(0.5, eligibleElapsed / halfLifeDays);
+            var newImportance = Math.Max(floor, entry.ImportanceScore * factor);
+            if (newImportance >= entry.ImportanceScore) continue;
 
-            var newImportance = Math.Max(DecayFloor, entry.ImportanceScore - DecayPerCycleFraction);
-            if (Math.Abs(newImportance - entry.ImportanceScore) < 0.001f)
-                continue;
-
-            var updated = entry with { ImportanceScore = newImportance };
+            // Bump UpdatedAt — this is the anchor the next decay pass uses to compute
+            // elapsed time. Without this, successive passes would re-measure elapsed from
+            // the original UpdatedAt and double-count time across cycles.
+            var updated = entry with
+            {
+                ImportanceScore = newImportance,
+                UpdatedAt = now
+            };
             await _memory.SaveAsync(updated);
             decayed++;
 
             _logger.LogDebug(
-                "DreamService: decayed importance for {Id} from {Old:F2} to {New:F2} (last updated {Days:F0} days ago)",
-                entry.Id, entry.ImportanceScore, newImportance, daysSinceUpdate);
+                "DreamService: decayed importance for {Id} from {Old:F3} to {New:F3} (last seen {SeenDays:F1}d ago, elapsed {Elapsed:F2}d)",
+                entry.Id, entry.ImportanceScore, newImportance, daysSinceSeen, eligibleElapsed);
         }
 
         if (decayed > 0)
@@ -1383,14 +1524,16 @@ internal sealed class DreamService : IHostedService, IDisposable
                 {
                     Content = dto.Content.Trim(),
                     UpdatedAt = DateTimeOffset.UtcNow,
+                    LastSeenAt = DateTimeOffset.UtcNow,
+                    ReinforcementCount = existing.ReinforcementCount + 1,
                     Metadata = metadata,
                     ImportanceScore = Math.Clamp(dto.Importance ?? existing.ImportanceScore, 0f, 1f)
                 };
 
                 await _memory.SaveAsync(updated);
                 reinforced++;
-                _logger.LogDebug("DreamService: reinforced episode {Id} (importance={Importance}): {Content}",
-                    dto.Id, metadata.GetValueOrDefault("importance", "?"), dto.Content);
+                _logger.LogDebug("DreamService: reinforced episode {Id} (importance={Importance}, reinforced={Count}×): {Content}",
+                    dto.Id, metadata.GetValueOrDefault("importance", "?"), updated.ReinforcementCount, dto.Content);
             }
 
             // Process new episodes
@@ -1718,6 +1861,8 @@ internal sealed class DreamService : IHostedService, IDisposable
                 userMessage.AppendLine();
             }
 
+            await AppendSubagentWhiteboardEntriesAsync(userMessage);
+
             var messages = new List<ChatMessage>
             {
                 new(ChatRole.System, _memoryMiningDirective ?? BuiltInMemoryMiningDirective),
@@ -1768,6 +1913,398 @@ internal sealed class DreamService : IHostedService, IDisposable
         catch (Exception ex)
         {
             _logger.LogError(ex, "DreamService: memory mining pass failed");
+        }
+    }
+
+    /// <summary>
+    /// One retry-until-success occurrence: within a single session, a tool was called multiple
+    /// times with different argument values, with at least one failure followed by a success.
+    /// </summary>
+    internal sealed record ToolRetryPattern(
+        string SessionId,
+        string ToolName,
+        IReadOnlyList<string> FailedArgs,
+        string SuccessArgs,
+        DateTimeOffset LastSeenAt);
+
+    /// <summary>
+    /// Default lookback window for retry-until-success detection. A successful tool call only
+    /// counts as a retry resolution when at least one failed call with different args occurred
+    /// within this time window before it. Tight enough to exclude unrelated activity in long-
+    /// running sessions, loose enough to span multi-minute exploratory sequences.
+    /// </summary>
+    internal static readonly TimeSpan DefaultRetryLookbackWindow = TimeSpan.FromMinutes(30);
+
+    /// <summary>
+    /// Pure detection logic — extracts retry-until-success patterns from a set of tool-call
+    /// events. For each (session, toolName) bucket, walks events in time order and, for each
+    /// successful event, looks back <paramref name="lookbackWindow"/> for failed events with
+    /// different argument values. The window is essential for long-running session IDs where
+    /// the bucket can span weeks: a March success and an April failure don't form a retry pair.
+    /// Patterns within a bucket are deduplicated by successArgs so the same lesson hit multiple
+    /// times within one bucket emits one pattern with merged failed-arg context.
+    /// </summary>
+    internal static IReadOnlyList<ToolRetryPattern> DetectToolRetryPatternsFromEvents(
+        IEnumerable<ToolCallEvent> events,
+        HashSet<string>? sessionsFilter = null,
+        TimeSpan? lookbackWindow = null)
+    {
+        var window = lookbackWindow ?? DefaultRetryLookbackWindow;
+
+        var filtered = sessionsFilter is null
+            ? events
+            : events.Where(e => sessionsFilter.Contains(e.SessionId));
+
+        var patterns = new List<ToolRetryPattern>();
+
+        foreach (var group in filtered.GroupBy(e => $"{e.SessionId}\0{e.ToolName}"))
+        {
+            var ordered = group.OrderBy(e => e.Timestamp).ToList();
+            if (ordered.Count < 2) continue;
+
+            // bucketByArgs collapses repeated successes-with-the-same-args within a bucket
+            // into one pattern, merging the in-window failed-arg context across occurrences.
+            var bucketByArgs = new Dictionary<string, (List<string> FailedArgs, DateTimeOffset LastSeen)>(
+                StringComparer.Ordinal);
+
+            for (int i = 0; i < ordered.Count; i++)
+            {
+                var success = ordered[i];
+                if (!success.Succeeded) continue;
+
+                var successArgs = success.ArgumentsSummary ?? "(none)";
+                var windowStart = success.Timestamp - window;
+
+                // Walk backwards from this success; collect distinct different-args failures
+                // until we exit the window or hit the cap.
+                var windowFailures = new List<string>();
+                for (int j = i - 1; j >= 0; j--)
+                {
+                    var prior = ordered[j];
+                    if (prior.Timestamp < windowStart) break;
+                    if (prior.Succeeded) continue;
+
+                    var priorArgs = prior.ArgumentsSummary ?? "(none)";
+                    if (string.Equals(priorArgs, successArgs, StringComparison.Ordinal)) continue;
+                    if (!windowFailures.Contains(priorArgs, StringComparer.Ordinal))
+                        windowFailures.Add(priorArgs);
+                    if (windowFailures.Count >= 3) break;
+                }
+
+                if (windowFailures.Count == 0) continue;
+
+                var truncatedFailures = windowFailures.Select(a => Truncate(a, 200)).ToList();
+
+                if (bucketByArgs.TryGetValue(successArgs, out var existing))
+                {
+                    foreach (var f in truncatedFailures)
+                        if (!existing.FailedArgs.Contains(f, StringComparer.Ordinal)
+                            && existing.FailedArgs.Count < 3)
+                            existing.FailedArgs.Add(f);
+                    bucketByArgs[successArgs] = (existing.FailedArgs, success.Timestamp);
+                }
+                else
+                {
+                    bucketByArgs[successArgs] = (truncatedFailures, success.Timestamp);
+                }
+            }
+
+            if (bucketByArgs.Count == 0) continue;
+
+            var sessionId = ordered[0].SessionId;
+            var toolName = ordered[0].ToolName;
+
+            foreach (var kvp in bucketByArgs)
+            {
+                patterns.Add(new ToolRetryPattern(
+                    sessionId,
+                    toolName,
+                    kvp.Value.FailedArgs,
+                    Truncate(kvp.Key, 200),
+                    kvp.Value.LastSeen));
+            }
+        }
+
+        return patterns;
+    }
+
+    /// <summary>
+    /// Scans the tool-call log for retry-until-success patterns. The differing argument value is
+    /// the ambiguity that the guiding skill (or the agent's reasoning) failed to resolve up front,
+    /// and is exactly what skill-optimize and tool-success-learning need to act on.
+    /// </summary>
+    /// <param name="sessionsFilter">If non-null, only events from these sessions are considered.</param>
+    private async Task<IReadOnlyList<ToolRetryPattern>> DetectToolRetryPatternsAsync(
+        DateTimeOffset since, HashSet<string>? sessionsFilter = null)
+    {
+        if (_toolCallLog is null)
+            return [];
+
+        try
+        {
+            var events = await _toolCallLog.QueryRecentAsync(since, maxResults: 20000);
+            return events.Count == 0
+                ? []
+                : DetectToolRetryPatternsFromEvents(events, sessionsFilter);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "DreamService: failed to scan tool-call log for retry patterns");
+            return [];
+        }
+    }
+
+    private async Task<Dictionary<string, List<string>>> DetectToolRetrySessionsAsync(
+        HashSet<string> sessionsWithSkills, DateTimeOffset since)
+    {
+        var patterns = await DetectToolRetryPatternsAsync(since, sessionsWithSkills);
+        return GroupRetryPatternsBySession(patterns);
+    }
+
+    /// <summary>
+    /// Converts a flat list of retry patterns into per-session human-readable notes —
+    /// the shape skill-optimize uses to inject ambiguity context per skill.
+    /// </summary>
+    internal static Dictionary<string, List<string>> GroupRetryPatternsBySession(
+        IEnumerable<ToolRetryPattern> patterns)
+    {
+        var result = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
+        foreach (var p in patterns)
+        {
+            if (!result.TryGetValue(p.SessionId, out var list))
+            {
+                list = [];
+                result[p.SessionId] = list;
+            }
+            list.Add(FormatToolRetryNote(p));
+        }
+        return result;
+    }
+
+    /// <summary>
+    /// Single-line description of one retry pattern, suitable for injection into a skill-
+    /// optimization prompt as ambiguity context.
+    /// </summary>
+    internal static string FormatToolRetryNote(ToolRetryPattern p) =>
+        $"Tool '{p.ToolName}' failed with args [{string.Join(" | ", p.FailedArgs)}] " +
+        $"then succeeded with args [{p.SuccessArgs}]";
+
+    /// <summary>
+    /// Deduplicates retry patterns on (toolName, successArgs) keeping the most recent
+    /// occurrence of each lesson, then caps at <paramref name="maxCount"/> so the prompt
+    /// stays bounded even when a long tail of distinct lessons exists.
+    /// </summary>
+    internal static IReadOnlyList<ToolRetryPattern> DedupeRetryPatterns(
+        IEnumerable<ToolRetryPattern> patterns, int maxCount)
+    {
+        return patterns
+            .GroupBy(p => $"{p.ToolName}\0{p.SuccessArgs}")
+            .Select(g => g.OrderByDescending(p => p.LastSeenAt).First())
+            .Take(maxCount)
+            .ToList();
+    }
+
+    /// <summary>
+    /// Builds the user-message for the tool-success-learning pass from already-deduplicated
+    /// patterns. The leading paragraph instructs the LLM what to extract; each pattern is
+    /// formatted as a numbered section with failed args, successful args, and last-seen
+    /// timestamp.
+    /// </summary>
+    internal static string BuildToolSuccessLearningUserMessage(
+        IReadOnlyList<ToolRetryPattern> distinctPatterns)
+    {
+        var sb = new StringBuilder();
+        sb.AppendLine(
+            "The following tool calls each followed a retry-until-success pattern within a single session. " +
+            "Each entry shows the failed argument values followed by the value that succeeded. " +
+            "For each one, extract the durable, verified fact the success proves about the external system " +
+            "(e.g. which server holds a resource, which account ID maps to which calendar, which folder " +
+            "path is correct). Skip patterns where the lesson is uninteresting or transient.");
+        sb.AppendLine();
+
+        var i = 1;
+        foreach (var p in distinctPatterns)
+        {
+            sb.AppendLine($"### Pattern {i++}: tool '{p.ToolName}'");
+            sb.AppendLine($"- Failed args: {string.Join(" | ", p.FailedArgs)}");
+            sb.AppendLine($"- Successful args: {p.SuccessArgs}");
+            sb.AppendLine($"- Last seen: {p.LastSeenAt:yyyy-MM-dd HH:mm} UTC");
+            sb.AppendLine();
+        }
+        return sb.ToString();
+    }
+
+    /// <summary>
+    /// Normalizes the LLM's tool-success-learning JSON into <see cref="MemoryEntry"/> values
+    /// ready to persist: drops empty content, adds the canonical "verified" and
+    /// "tool-success-learned" tags if missing, defaults the category to "tool-knowledge"
+    /// when blank.
+    /// </summary>
+    internal static IReadOnlyList<MemoryEntry> NormalizeToolSuccessLearningEntries(
+        MemoryMiningResultDto? result,
+        Func<string> idFactory,
+        Func<DateTimeOffset> nowFactory)
+    {
+        var entries = new List<MemoryEntry>();
+        foreach (var dto in result?.ToSave ?? [])
+        {
+            if (string.IsNullOrWhiteSpace(dto.Content))
+                continue;
+
+            var tags = new List<string>(dto.Tags ?? []);
+            if (!tags.Contains("verified", StringComparer.OrdinalIgnoreCase))
+                tags.Add("verified");
+            if (!tags.Contains("tool-success-learned", StringComparer.OrdinalIgnoreCase))
+                tags.Add("tool-success-learned");
+
+            var now = nowFactory();
+            entries.Add(new MemoryEntry(
+                Id: idFactory(),
+                Content: dto.Content.Trim(),
+                Category: string.IsNullOrWhiteSpace(dto.Category) ? "tool-knowledge" : dto.Category.Trim(),
+                Tags: tags,
+                CreatedAt: now,
+                UpdatedAt: now));
+        }
+        return entries;
+    }
+
+    /// <summary>
+    /// Builds the "Subagent verified data" section appended to the memory-mining input, or
+    /// returns null when there are no entries to include. Caps each entry value at
+    /// <paramref name="perEntryCap"/> chars and emits at most <paramref name="maxEntries"/>
+    /// entries (newest first by <see cref="WorkingMemoryEntry.StoredAt"/>).
+    /// </summary>
+    internal static string? BuildSubagentWhiteboardSection(
+        IReadOnlyList<WorkingMemoryEntry> entries, int perEntryCap, int maxEntries)
+    {
+        if (entries.Count == 0)
+            return null;
+
+        var ordered = entries
+            .OrderByDescending(e => e.StoredAt)
+            .Take(maxEntries)
+            .ToList();
+
+        var sb = new StringBuilder();
+        sb.AppendLine("## Subagent verified data (working memory whiteboards)");
+        sb.AppendLine("These entries were written by subagents based on tool-call results, so the");
+        sb.AppendLine("facts in them are verified — not speculation. Mine them for durable facts");
+        sb.AppendLine("about external systems (server names, account IDs, file paths, parameter shapes).");
+        sb.AppendLine();
+
+        foreach (var e in ordered)
+        {
+            var value = e.Value.Length > perEntryCap
+                ? e.Value[..perEntryCap] + "…[truncated]"
+                : e.Value;
+            var category = string.IsNullOrEmpty(e.Category) ? "(uncategorized)" : e.Category;
+            sb.AppendLine($"[{e.Key}] category={category}");
+            sb.AppendLine(value);
+            sb.AppendLine();
+        }
+        return sb.ToString();
+    }
+
+    private static string Truncate(string s, int max) =>
+        s.Length <= max ? s : s[..max] + "…";
+
+    /// <summary>
+    /// Mines the tool-call log for retry-until-success patterns and asks the LLM to extract
+    /// the verified fact each pattern proves (e.g. "Teams bridge JSON lives on
+    /// onedrive-personal at /Apps/RockBot/xebia-teams"). Saves results as durable long-term
+    /// memory entries tagged "verified" and "tool-success-learned" so future sessions surface
+    /// them via BM25 or vector recall before the agent has to re-discover the same answer.
+    /// </summary>
+    private async Task RunToolSuccessLearningPassAsync()
+    {
+        if (!_options.ToolSuccessLearningEnabled || _toolCallLog is null)
+            return;
+
+        var since = DateTimeOffset.UtcNow.AddDays(-7);
+        var patterns = await DetectToolRetryPatternsAsync(since);
+        if (patterns.Count == 0)
+        {
+            _logger.LogDebug("DreamService: tool-success-learning — no retry patterns found; skipping");
+            return;
+        }
+
+        var distinctPatterns = DedupeRetryPatterns(patterns, maxCount: 50);
+
+        _logger.LogInformation(
+            "DreamService: tool-success-learning pass — {Distinct} distinct pattern(s) from {Total} occurrence(s)",
+            distinctPatterns.Count, patterns.Count);
+
+        var userMessage = BuildToolSuccessLearningUserMessage(distinctPatterns);
+
+        try
+        {
+            var messages = new List<ChatMessage>
+            {
+                new(ChatRole.System, _toolSuccessLearningDirective ?? BuiltInToolSuccessLearningDirective),
+                new(ChatRole.User, userMessage)
+            };
+
+            var response = await _llmClient.GetResponseAsync(messages, ModelTier.Balanced,
+                new ChatOptions { ResponseFormat = ChatResponseFormat.Json });
+            var raw = response.Text?.Trim() ?? string.Empty;
+            var json = ExtractJsonObject(raw);
+
+            if (string.IsNullOrEmpty(json))
+            {
+                _logger.LogWarning("DreamService: tool-success-learning LLM returned no parseable JSON; skipping");
+                return;
+            }
+
+            var result = TryDeserializeJson<MemoryMiningResultDto>(json, "tool-success-learning");
+            var entries = NormalizeToolSuccessLearningEntries(
+                result,
+                idFactory: () => Guid.NewGuid().ToString("N")[..12],
+                nowFactory: () => DateTimeOffset.UtcNow);
+
+            foreach (var entry in entries)
+            {
+                await _memory.SaveAsync(entry);
+                _logger.LogDebug("DreamService: tool-success-learning saved {Id} ({Category}): {Content}",
+                    entry.Id, entry.Category, entry.Content);
+            }
+
+            _logger.LogInformation(
+                "DreamService: tool-success-learning pass complete — {Saved} entry(ies) saved", entries.Count);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "DreamService: tool-success-learning pass failed");
+        }
+    }
+
+    /// <summary>
+    /// Appends recent subagent whiteboard entries (live working-memory entries with key prefix
+    /// "subagent/") to the memory-mining input so the miner can see facts that subagents
+    /// verified via tool calls but never restated in the conversation log. Entries are size-capped
+    /// to keep the prompt bounded.
+    /// </summary>
+    private async Task AppendSubagentWhiteboardEntriesAsync(StringBuilder userMessage)
+    {
+        if (_workingMemory is null)
+            return;
+
+        try
+        {
+            var entries = await _workingMemory.ListAsync("subagent/");
+            var section = BuildSubagentWhiteboardSection(entries, perEntryCap: 2000, maxEntries: 50);
+            if (section is null)
+                return;
+
+            userMessage.Append(section);
+
+            _logger.LogDebug(
+                "DreamService: memory mining included {Count} subagent whiteboard entry(ies) in input",
+                Math.Min(entries.Count, 50));
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "DreamService: failed to load subagent whiteboard entries for memory mining");
         }
     }
 
@@ -2991,9 +3528,9 @@ internal sealed class DreamService : IHostedService, IDisposable
         IReadOnlyList<string>? Tags,
         float? Importance);
 
-    private sealed record MemoryMiningResultDto(List<MemoryMiningEntryDto>? ToSave);
+    internal sealed record MemoryMiningResultDto(List<MemoryMiningEntryDto>? ToSave);
 
-    private sealed record MemoryMiningEntryDto(
+    internal sealed record MemoryMiningEntryDto(
         string Content,
         string? Category,
         IReadOnlyList<string>? Tags);
@@ -3164,6 +3701,41 @@ internal sealed class DreamService : IHostedService, IDisposable
         }
 
         If nothing should be deleted: { "deleteEntities": [], "deleteTriples": [] }
+        """;
+
+    private const string BuiltInToolSuccessLearningDirective = """
+        You are a tool-success learning assistant. The agent's tool-call log contains
+        retry-until-success patterns: cases where the same tool was invoked with different
+        argument values within one session, with at least one failure followed by a success.
+        The argument value that succeeded is verified information about the external system.
+        Your job is to extract the durable, actionable fact each pattern proves so future
+        sessions can recall it before re-running the same exploration.
+
+        Mine for facts that:
+        - Identify the correct server, account, or namespace for a resource
+          (e.g. "Teams bridge JSON archives live on the onedrive-personal MCP server at /Apps/RockBot/xebia-teams")
+        - Specify required argument shape, casing, or path conventions
+          (e.g. "list_files on onedrive-marimer rejects a leading slash on folder_path; use 'Apps/...' not '/Apps/...'")
+        - Map account IDs or identifiers to their meaning
+          (e.g. "accountId 'xebia' is required to query the Xebia work calendar; omitting it returns the personal calendar")
+
+        Do NOT mine:
+        - Transient values (specific filenames, search hits, one-off IDs that won't recur)
+        - Generic best-practices already obvious from tool documentation
+        - Speculation: the failed args may have been wrong for many reasons; only commit to
+          what the successful args directly prove
+
+        Phrase each fact in third-person, self-contained, with the specific tool/server/argument
+        named explicitly. The fact should make sense to a future session that has no memory of
+        today's retry sequence.
+
+        Return ONLY a JSON object:
+        { "toSave": [ { "content": "...", "category": "...", "tags": ["verified", "tool-success-learned"] } ] }
+
+        Category should reflect the tool domain (e.g. "tool-knowledge/onedrive",
+        "tool-knowledge/calendar", "tool-knowledge/email"). Default to "tool-knowledge".
+
+        If none of the patterns prove a durable, useful fact, return: { "toSave": [] }
         """;
 
     private const string BuiltInMemoryMiningDirective = """

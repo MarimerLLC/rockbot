@@ -26,7 +26,6 @@ internal sealed class ScheduledTaskHandler(
     ISkillStore skillStore,
     ToolGuideTools toolGuideTools,
     ModelBehavior modelBehavior,
-    IAgentWorkSerializer workSerializer,
     AgentLoopRunner agentLoopRunner,
     AgentContextBuilder agentContextBuilder,
     IOptions<AgentProfileOptions> profileOptions,
@@ -65,9 +64,8 @@ internal sealed class ScheduledTaskHandler(
         var sessionWorkingMemoryTools = new WorkingMemoryTools(workingMemory, sessionId, logger);
         var sessionSkillTools = new SkillTools(skillStore, llmClient, logger, sessionId, skillUsageStore);
 
-        var registryTools = toolRegistry.GetTools()
-            .Select(r => (AIFunction)new RegistryToolFunction(r, toolRegistry.GetExecutor(r.Name)!, sessionId))
-            .ToArray();
+        var batchId = Guid.NewGuid().ToString("N")[..12];
+        var registryTools = toolRegistry.BuildAgentToolFunctions(sessionId, batchId);
 
         var allTools = memoryTools.Tools
             .Concat(sessionWorkingMemoryTools.Tools)
@@ -83,46 +81,35 @@ internal sealed class ScheduledTaskHandler(
             Tools = allTools
         };
 
-        // Try to acquire the single execution slot. If a user loop is running,
-        // skip this tick — the next scheduled cron tick will try again.
-        var slot = await workSerializer.TryAcquireForScheduledAsync(ct);
-        if (slot is null)
-        {
-            logger.LogInformation(
-                "Skipping scheduled task '{TaskName}' — user session is active", message.TaskName);
-            return;
-        }
+        // The scheduler already holds the work-serializer slot and passes its
+        // cancellation token in via context.CancellationToken — a user session
+        // starting during execution will fire that token so the LLM loop stops
+        // cleanly. If preemption happens, re-throw so the scheduler can retry.
 
         var replySessionId = message.IsSystemTask ? "scheduled-system" : "scheduled";
 
         string finalText;
         try
         {
-            // Use slot.Token so a new user message can preempt this task cleanly.
-            await using (slot)
+            using var progressCtx = ToolProgressNotifier.SetContext(new ToolProgressContext
             {
-                using var progressCtx = ToolProgressNotifier.SetContext(new ToolProgressContext
-                {
-                    SessionId = replySessionId,
-                    AgentName = agent.Name,
-                    ReplyTo = $"{UserProxyTopics.UserResponse}.{agent.Name}"
-                });
+                SessionId = replySessionId,
+                AgentName = agent.Name,
+                ReplyTo = $"{UserProxyTopics.UserResponse}.{agent.Name}"
+            });
 
-                finalText = await agentLoopRunner.RunAsync(
-                    chatMessages, chatOptions, sessionId: sessionId,
-                    enableFollowUp: false, cancellationToken: slot.Token);
-            }
+            finalText = await agentLoopRunner.RunAsync(
+                chatMessages, chatOptions, sessionId: sessionId,
+                enableFollowUp: false, cancellationToken: ct);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
-            return;
-        }
-        catch (OperationCanceledException)
-        {
-            // Preempted by a user session — exit silently, no error to report.
+            // Let the scheduler see the cancellation so it can distinguish
+            // host-shutdown from user-preemption and decide whether to retry.
             logger.LogInformation(
-                "Scheduled task '{TaskName}' was preempted by a user session", message.TaskName);
-            return;
+                "Scheduled task '{TaskName}' cancelled (host shutdown or user preemption)",
+                message.TaskName);
+            throw;
         }
         catch (Exception ex)
         {

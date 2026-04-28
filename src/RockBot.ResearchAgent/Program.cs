@@ -33,12 +33,17 @@ if (!tierOptions.Balanced.IsConfigured)
     tierOptions.Balanced.ModelId  = llmSection["ModelId"];
 }
 
+// Seed single Balanced from BalancedModels[0] so Low/High tier fallback resolution works
+// when only the ordered fallback chain is configured.
+if (!tierOptions.Balanced.IsConfigured && tierOptions.BalancedModels.Count > 0)
+    tierOptions.Balanced = tierOptions.BalancedModels[0];
+
 // ModelBehavior: raise iteration limit — research tasks routinely need more than the default 12
 // to search, browse, cache, and then synthesise without hitting the wall mid-loop.
 // Pre-registered before AddRockBotTieredChatClients so the TryAdd in that method respects this override.
 builder.Services.AddSingleton(new ModelBehavior { MaxToolIterationsOverride = 50 });
 
-if (tierOptions.Balanced.IsConfigured)
+if (tierOptions.Balanced.IsConfigured || tierOptions.BalancedModels.Count > 0)
 {
     IChatClient BuildClient(LlmTierConfig config)
     {
@@ -48,10 +53,33 @@ if (tierOptions.Balanced.IsConfigured)
             .GetChatClient(config.ModelId!).AsIChatClient();
     }
 
+    // Build the balanced inner client: use FallbackChatClient when BalancedModels lists
+    // multiple models (e.g. Azure Foundry primary, OpenRouter fallback).
+    IChatClient balancedClient;
+    if (tierOptions.BalancedModels.Count > 1)
+    {
+        var fallbackLoggerFactory = LoggerFactory.Create(b =>
+            b.AddConsole().SetMinimumLevel(LogLevel.Warning));
+        var fallbackLogger = fallbackLoggerFactory.CreateLogger<FallbackChatClient>();
+
+        var entries = new List<(string ModelId, IChatClient Client)>();
+        foreach (var cfg in tierOptions.BalancedModels)
+            entries.Add((cfg.ModelId!, BuildClient(cfg)));
+
+        balancedClient = new FallbackChatClient(entries, fallbackLogger);
+    }
+    else if (tierOptions.BalancedModels.Count == 1)
+    {
+        balancedClient = BuildClient(tierOptions.BalancedModels[0]);
+    }
+    else
+    {
+        balancedClient = BuildClient(tierOptions.Balanced);
+    }
+
     // ResearchAgent only uses Balanced (fallback synthesis) and High (main research loop).
     // Low is not needed — pass Balanced for the Low slot so it is never exercised.
-    var balancedClient = BuildClient(tierOptions.Balanced);
-    var highClient     = BuildClient(tierOptions.Resolve(ModelTier.High));
+    var highClient = BuildClient(tierOptions.Resolve(ModelTier.High));
 
     builder.Services.AddRockBotTieredChatClients(
         lowInnerClient:      balancedClient,

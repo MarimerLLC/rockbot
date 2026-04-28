@@ -1,3 +1,8 @@
+---
+title: Agent-to-agent (A2A)
+nav_order: 9
+---
+
 # Agent-to-Agent (A2A) Communication
 
 RockBot can invoke external agents over the RabbitMQ message bus using the

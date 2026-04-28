@@ -57,6 +57,12 @@ public static class A2ACallerServiceCollectionExtensions
         // Pending task tracker
         builder.Services.AddSingleton<A2ATaskTracker>();
 
+        // Session-scoped A2A cancellation seam. Wisp code (which doesn't reference
+        // RockBot.A2A) uses this to cancel any in-flight A2A tasks dispatched by a
+        // wisp that then failed locally — preventing duplicate remote execution
+        // when the LLM retries the wisp.
+        builder.Services.AddSingleton<ISessionA2ACanceller, A2ATaskCanceller>();
+
         // InputRequired handler for multi-turn follow-up (trust-gated LLM response generation)
         builder.Services.AddSingleton<InputRequiredHandler>();
 

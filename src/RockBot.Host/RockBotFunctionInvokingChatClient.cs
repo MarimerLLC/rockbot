@@ -124,6 +124,18 @@ public class RockBotFunctionInvokingChatClient : FunctionInvokingChatClient
             _consecutiveTimeoutIterations = 0;
         }
 
+        // Detect content-level errors that didn't throw an exception. Tool executors that
+        // return ToolInvokeResponse with IsError=true are surfaced by RegistryToolFunction
+        // as a string prefixed with "Error: " — so any tool result starting with that prefix
+        // indicates a logical failure even though the call mechanically completed. Flagging
+        // these as Succeeded=false is what lets the dream-time retry-pattern detector see
+        // MCP errors (e.g. "the resource could not be found") as failures rather than as
+        // successful calls that just happened to return an error message.
+        if (status == "ok" && resultStr is not null && IsErrorResult(resultStr))
+        {
+            status = ToolError.Codes.ExecutionFailed;
+        }
+
         // Track consecutive identical (tool, args, result) triples to detect stuck loops.
         if (_repetitiveCallDetector.Track(callContent.Name, argsSummary ?? string.Empty, resultStr ?? string.Empty))
         {
@@ -364,6 +376,16 @@ public class RockBotFunctionInvokingChatClient : FunctionInvokingChatClient
 
     private static bool IsTimeoutResult(string result) =>
         result.Contains("timed out", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// True when the tool result indicates a logical (content-level) error rather than a
+    /// transport success. <see cref="RegistryToolFunction"/> prepends "Error: " to any
+    /// response with <c>IsError=true</c>, so this prefix reliably signals "the executor
+    /// completed but the operation failed" — including MCP server errors propagated by
+    /// <c>McpToolProxy</c>.
+    /// </summary>
+    internal static bool IsErrorResult(string result) =>
+        result.StartsWith("Error: ", StringComparison.Ordinal);
 
     private static string DescribeToolCall(string name, string? argsSummary)
     {

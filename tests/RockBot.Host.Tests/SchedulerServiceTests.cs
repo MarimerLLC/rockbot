@@ -14,11 +14,13 @@ public sealed class SchedulerServiceTests
 
     private static SchedulerService MakeService(
         IScheduledTaskStore store,
-        IMessagePipeline pipeline) =>
+        IMessagePipeline pipeline,
+        IAgentWorkSerializer? workSerializer = null) =>
         new(store,
             pipeline,
             MakeClock(),
             new AgentIdentity("test-agent"),
+            workSerializer ?? new AlwaysFreeWorkSerializer(),
             NullLogger<SchedulerService>.Instance);
 
     // ── ListAsync ─────────────────────────────────────────────────────────────
@@ -105,6 +107,32 @@ public sealed class SchedulerServiceTests
     }
 
     [TestMethod]
+    public async Task FireTask_WhenWorkSlotBusy_DoesNotDispatchAndDoesNotUpdateLastFired()
+    {
+        // Cron fires every second; work serializer always denies. Scheduler should
+        // never dispatch to the pipeline and never stamp LastFiredAt — instead it
+        // arms a 2-minute retry (which won't fire in the test window).
+        var task = new ScheduledTask("busy-task", "* * * * * *", "Should be skipped", DateTimeOffset.UtcNow);
+        var store = new FakeScheduledTaskStore([task]);
+        var pipeline = new CapturingPipeline();
+        var serializer = new AlwaysBusyWorkSerializer();
+        var service = MakeService(store, pipeline, serializer);
+
+        await service.StartAsync(CancellationToken.None);
+
+        // Wait long enough for at least one cron tick.
+        await Task.Delay(1500);
+
+        await service.StopAsync(CancellationToken.None);
+
+        Assert.AreEqual(0, pipeline.DispatchCount, "Pipeline should not receive dispatches when work slot is busy");
+        Assert.IsTrue(serializer.AttemptCount >= 1, "Scheduler should have attempted to acquire the slot at least once");
+        var stored = await store.GetAsync("busy-task");
+        Assert.IsNotNull(stored);
+        Assert.IsNull(stored.LastFiredAt, "LastFiredAt must not be stamped when the task was skipped");
+    }
+
+    [TestMethod]
     public async Task FiresTask_WhenTimerElapses()
     {
         // Use a 6-field cron with seconds so we can test with a 1-second interval
@@ -176,6 +204,49 @@ public sealed class SchedulerServiceTests
         {
             Interlocked.Increment(ref DispatchCount);
             return Task.FromResult(MessageResult.Ack);
+        }
+    }
+
+    /// <summary>
+    /// Test double that always grants the work slot and hands back a token
+    /// that only fires on the passed-in host cancellation token. Adequate for
+    /// scheduler-level tests that don't exercise user/scheduled contention.
+    /// </summary>
+    private sealed class AlwaysFreeWorkSerializer : IAgentWorkSerializer
+    {
+        public Task<IAsyncDisposable> AcquireForUserAsync(CancellationToken ct) =>
+            Task.FromResult<IAsyncDisposable>(new NullSlot());
+
+        public Task<IScheduledTaskSlot?> TryAcquireForScheduledAsync(CancellationToken ct) =>
+            Task.FromResult<IScheduledTaskSlot?>(new Slot(ct));
+
+        private sealed class NullSlot : IAsyncDisposable
+        {
+            public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+        }
+
+        private sealed class Slot(CancellationToken token) : IScheduledTaskSlot
+        {
+            public CancellationToken Token { get; } = token;
+            public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+        }
+    }
+
+    /// <summary>
+    /// Test double that always reports the work slot busy — used to verify the
+    /// scheduler's skip-and-retry path when a user session has the slot.
+    /// </summary>
+    private sealed class AlwaysBusyWorkSerializer : IAgentWorkSerializer
+    {
+        public int AttemptCount;
+
+        public Task<IAsyncDisposable> AcquireForUserAsync(CancellationToken ct) =>
+            throw new InvalidOperationException("Not used in this test");
+
+        public Task<IScheduledTaskSlot?> TryAcquireForScheduledAsync(CancellationToken ct)
+        {
+            Interlocked.Increment(ref AttemptCount);
+            return Task.FromResult<IScheduledTaskSlot?>(null);
         }
     }
 }

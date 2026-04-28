@@ -1,3 +1,8 @@
+---
+title: Tools
+nav_order: 8
+---
+
 # Tools subsystem
 
 Tools are the agent's interface to the external world. Every side-effecting action — web

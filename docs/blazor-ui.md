@@ -1,3 +1,8 @@
+---
+title: Blazor UI
+nav_order: 13
+---
+
 # Blazor UI (`RockBot.UserProxy.Blazor`)
 
 The Blazor UI is a standalone ASP.NET Core Blazor Server application that provides a real-time

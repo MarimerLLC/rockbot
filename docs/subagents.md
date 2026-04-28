@@ -1,3 +1,8 @@
+---
+title: Subagents
+nav_order: 5
+---
+
 # Subagents
 
 The subagent subsystem lets the primary agent delegate long-running or complex

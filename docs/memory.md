@@ -1,3 +1,8 @@
+---
+title: Memory
+nav_order: 6
+---
+
 # Memory subsystem
 
 RockBot uses a three-tier memory architecture. Each tier has a different scope, lifetime, and
@@ -26,11 +31,98 @@ public sealed record MemoryEntry(
     string Content,                                     // The fact or preference
     string? Category,                                   // e.g. "user-preferences/timezone"
     IReadOnlyList<string> Tags,                         // Searchable labels
-    DateTimeOffset CreatedAt,
-    DateTimeOffset? UpdatedAt,
-    IReadOnlyDictionary<string, string>? Metadata       // Arbitrary key-value data
-);
+    DateTimeOffset CreatedAt,                           // First-seen agent-time
+    DateTimeOffset? UpdatedAt,                          // Last rewritten (edits, rephrasing)
+    IReadOnlyDictionary<string, string>? Metadata,      // Arbitrary key-value data
+    float ImportanceScore = 0.5f                        // Salience 0.0–1.0
+)
+{
+    public DateTimeOffset LastSeenAt { get; init; } = CreatedAt;   // Last reinforcement (save-event merged in)
+    public int ReinforcementCount { get; init; } = 1;              // Distinct observations consolidated
+}
 ```
+
+#### Temporal semantics
+
+Three time fields on each entry capture how the agent's relationship with a fact has
+evolved, and they are used by the consolidation pass and by search-result formatting:
+
+| Field | Meaning | When it advances |
+|---|---|---|
+| `CreatedAt` | First-seen agent-time | Set on entry creation; carried forward to `min(sources)` on merge |
+| `LastSeenAt` | Last reinforcement — last time a fresh save-event produced content that merged into this fact | Set to `max(sources.LastSeenAt)` on merge; bumped to `now` on episode reinforcement; **not** bumped on dream rephrasing, importance decay, or other record edits |
+| `UpdatedAt` | Record last rewritten | Bumped on any edit, including pure rephrasing |
+| `ReinforcementCount` | Count of distinct observations consolidated into this entry | Starts at 1; summed across sources on merge; incremented by 1 on episode reinforcement |
+
+A 5×-reinforced-over-2-years entry is treated differently from a one-off — both by the
+dream LLM (see the "Temporal merging rules" section in `dream.md`) and by search
+result formatting (`seen 4× from 2024-06 to today` vs. `first seen today`).
+
+`LastSeenAt` is also the key for two load-bearing behaviors:
+
+- **Importance decay** (in `DreamService.RunImportanceDecayPassAsync`) fades stale entries
+  based on how long since the last *reinforcement*, not how long since the last record
+  edit. Dream housekeeping (rephrasing, recategorization, score adjustments) does not
+  reset the decay clock — only real save-event merges do. Decay is **exponential with a
+  tunable half-life** — see [Importance decay shape](#importance-decay-shape) below.
+- **No-query search ranking** (in `FileMemoryStore.SearchAsync` when no query text is
+  supplied) orders results by `LastSeenAt` descending, surfacing recently-reinforced
+  facts ahead of entries that dream has merely been polishing.
+
+#### Importance decay shape
+
+Decay is designed for an agent running over months-to-years, not weeks:
+
+| Phase | Duration | Behavior |
+|---|---|---|
+| **Grace** | `ImportanceDecayGraceDays` (default 30) | Entry's score is untouched. |
+| **Decay** | After grace | Score multiplied by `0.5^(elapsedDays / HalfLifeDays)` based on calendar time since last touched. Drops quickly at high scores; slows as it approaches the floor. |
+| **Floor** | Once score reaches `ImportanceDecayFloor` (default 0.10) | No further decay. Entry remains discoverable via keyword match. |
+
+**Decay is calendar-time based, not cycle-based.** Each decay pass computes the actual
+elapsed time (in calendar days) since the entry was last touched and applies the
+corresponding exponential factor. Because multiplicative decay composes — `0.5^(a/T) ·
+0.5^(b/T) == 0.5^((a+b)/T)` — running the dream cycle twice a day, once a day, or once
+a week all produce the same calendar-time decay curve for a given half-life. No tuning
+needed when you change `CronSchedule`.
+
+With the defaults (Grace=30, HalfLife=45, Floor=0.10), time from last reinforcement to
+floor by starting importance:
+
+| Starting importance | Time to floor (approx) |
+|---|---|
+| 0.95 (core fact) | ~176 days (~6 months) |
+| 0.70 (significant) | ~156 days (~5 months) |
+| 0.50 (routine) | ~134 days (~4.5 months) |
+| 0.30 (minor) | ~101 days (~3.5 months) |
+
+All three parameters are configurable on `DreamOptions`:
+`ImportanceDecayGraceDays`, `ImportanceDecayHalfLifeDays`, `ImportanceDecayFloor`.
+Set `ImportanceDecayHalfLifeDays <= 0` to disable decay entirely.
+
+Legacy JSON files predating these fields deserialize with sensible defaults —
+`LastSeenAt = CreatedAt`, `ReinforcementCount = 1` — via init-only property defaults.
+No migration is required.
+
+#### Subject-time metadata convention
+
+A memory has two independent time axes: **agent-time** (when the agent learned the
+fact, tracked by `CreatedAt`/`LastSeenAt`) and **subject-time** (when the thing the
+fact is about actually happened — user's childhood, a trip in 2019, a decade lived
+in a city). Subject-time is captured lazily via optional well-known keys on `Metadata`,
+populated by the extraction LLM only when confident:
+
+| Key | Contents |
+|---|---|
+| `subjectTime` | ISO 8601 point-in-time reference (`"2019-06-14"`, `"2019-06"`, `"2019"`). Use the most specific form the source justifies. |
+| `subjectTimeStart` / `subjectTimeEnd` | Range bounds. Either may be omitted if open. |
+
+These are a convention, not typed fields. They ride on the existing `Metadata`
+dictionary and require no schema change. The extraction prompt (in `memory-rules.md`)
+instructs the LLM to populate them only when confident and omit them for fuzzy
+references or durable facts with no meaningful "when." The consolidation merge
+preserves them across dedupe (start/end widen, point prefers the most-specific
+value) via `DreamService.MergeSubjectTimeMetadata`.
 
 ### Storage
 
@@ -282,14 +374,32 @@ The dream service runs two memory-related passes:
 Reviews all long-term memory entries for duplicates, near-duplicates, and outdated content.
 
 **Inputs provided to the LLM:**
-- All memory entries (up to 1000), numbered with ID, category, tags, and content
+- All memory entries (up to 1000), numbered with ID, category, tags, content, and temporal
+  context (`first=`, `last=`, `reinforced=N×`, and `subject=...` when subject-time metadata
+  is present)
 - Recent feedback signals (last 7 days, up to 50) for quality context
 
 **What the LLM can do:**
-1. Merge duplicate or near-duplicate entries, carrying forward the earliest `CreatedAt`
+1. Merge duplicate or near-duplicate entries — even when widely separated in time, treating
+   them as reinforcement rather than novelty
 2. Refine categories and tags
 3. Delete noisy or redundant entries
 4. Write `anti-patterns/{domain}` entries from Correction feedback
+
+**Temporal arithmetic on merge (computed by the host, not the LLM):**
+
+- `CreatedAt` = `min(sources.CreatedAt)` — earliest first-seen preserved
+- `LastSeenAt` = `max(sources.LastSeenAt)` — most recent reinforcement preserved; never
+  reset to `now` on dream housekeeping
+- `ReinforcementCount` = `sum(sources.ReinforcementCount)` — observations accumulate
+- `ImportanceScore` = LLM-provided, else `max(sources.ImportanceScore)`
+- `Metadata` = subject-time keys merged via `MergeSubjectTimeMetadata` (start/end widen,
+  point prefers most-specific); other metadata keys are dropped (entry-scoped, ambiguous
+  across merges)
+
+This split keeps the LLM focused on *what to merge* while the host guarantees consistent
+temporal arithmetic and prevents the dream cycle from inadvertently stamping every
+reprocessed entry as "just seen today."
 
 **Exhaustive deletion contract:** The union of explicit `toDelete` IDs and all `sourceIds` from
 merged entries are deleted — preventing orphaned source entries even if the LLM omits some IDs.
