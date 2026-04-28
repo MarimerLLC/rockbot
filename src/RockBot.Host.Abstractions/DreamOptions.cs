@@ -150,6 +150,19 @@ public sealed class DreamOptions
     public string WispFailureDirectivePath { get; set; } = "wisp-failure-dream.md";
 
     /// <summary>
+    /// Whether the tool-success-learning pass (requires <see cref="IToolCallLog"/>) is enabled.
+    /// Mines the tool-call log for retry-until-success patterns and writes the verified
+    /// argument values as durable long-term memory entries.
+    /// </summary>
+    public bool ToolSuccessLearningEnabled { get; set; } = true;
+
+    /// <summary>
+    /// Path to the tool-success-learning directive file, relative to <see cref="AgentProfileOptions.BasePath"/>.
+    /// When the file does not exist, a built-in fallback directive is used.
+    /// </summary>
+    public string ToolSuccessLearningDirectivePath { get; set; } = "tool-success-learning.md";
+
+    /// <summary>
     /// Days of no reinforcement (measured against <see cref="MemoryEntry.LastSeenAt"/>)
     /// before importance decay begins. Entries younger than this are left alone regardless
     /// of their score. Default: 30 days.
