@@ -174,6 +174,37 @@ List my scheduled tasks and tell me which ones seem redundant or missing.
 
 The scheduling tools are `schedule_task`, `list_scheduled_tasks`, and `cancel_scheduled_task`. See [Tools](tools#scheduling-tools-rockbottoolsscheduling) for the cron details.
 
+### Confirm the background cadences
+
+In addition to user-visible scheduled tasks, RockBot also has two important background rhythms you should confirm early:
+
+- **Dream cycle** — the background reflection and consolidation pass
+- **Heartbeat patrol** — the recurring proactive patrol
+
+These are configured in the agent config with cron strings:
+
+- `Dream:CronSchedule`
+- `HeartbeatPatrol:CronExpression`
+
+The current defaults are:
+
+- Dream: `0 */12 * * *` — every 12 hours
+- Heartbeat patrol: `0 */6 * * *`
+
+Practical guidance:
+
+- Run the **dream** about **1-2 times per day**
+- Run the **heartbeat patrol** as often as is useful for the user
+- Remember that more frequent patrols can noticeably increase LLM usage cost
+
+For many users, a good onboarding step is simply to ask:
+
+```text
+Check the current dream and heartbeat patrol schedules and tell me whether they seem right for how I want to use you.
+```
+
+If you want to change them, update the config values with the cron schedules you want.
+
 ## 4. Teach it how to build memory on purpose
 
 The best RockBot agents do not just accumulate random memories. They deliberately maintain:
@@ -317,6 +348,7 @@ Then adjust:
 - `memory-rules.md` if it is remembering the wrong things
 - the agent's MCP setup if it lacks key systems
 - scheduled tasks if it is not being proactive enough
+- the dream or heartbeat patrol cadence if background behavior feels off
 
 ## 7. A simple onboarding sequence that works well
 
@@ -329,9 +361,10 @@ If you want a concrete sequence, this is a good starting point:
 5. Ask the agent to connect 1-3 MCP servers you will use every week
 6. Ask it to test each server with one real task
 7. Create 2-4 scheduled tasks that produce proactive value
-8. Tell it to maintain a theory of the user and a theory of self in memory
-9. Tune the agent's memory rules so that behavior is durable and repeatable
-10. Revisit the profile and memory after a few days of real use
+8. Confirm the dream and heartbeat patrol schedules are appropriate
+9. Tell it to maintain a theory of the user and a theory of self in memory
+10. Tune the agent's memory rules so that behavior is durable and repeatable
+11. Revisit the profile and memory after a few days of real use
 
 ## Related docs
 
