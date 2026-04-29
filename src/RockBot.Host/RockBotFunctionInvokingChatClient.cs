@@ -22,6 +22,7 @@ public class RockBotFunctionInvokingChatClient : FunctionInvokingChatClient
     private readonly IToolProgressNotifier? _progressNotifier;
     private readonly IToolCallLog? _toolCallLog;
     private readonly ModelBehavior _modelBehavior;
+    private readonly LlmCostEstimator _costEstimator;
     private readonly ILogger _logger;
 
     private int _consecutiveTimeoutIterations;
@@ -33,12 +34,14 @@ public class RockBotFunctionInvokingChatClient : FunctionInvokingChatClient
         IToolProgressNotifier? progressNotifier,
         IToolCallLog? toolCallLog,
         ModelBehavior modelBehavior,
+        LlmCostEstimator costEstimator,
         IOptions<AgentHostOptions> hostOptions,
         ILogger logger) : base(innerClient)
     {
         _progressNotifier = progressNotifier;
         _toolCallLog = toolCallLog;
         _modelBehavior = modelBehavior;
+        _costEstimator = costEstimator;
         _logger = logger;
 
         MaximumIterationsPerRequest = modelBehavior.MaxToolIterationsOverride ?? hostOptions.Value.MaxToolIterations;
@@ -271,7 +274,7 @@ public class RockBotFunctionInvokingChatClient : FunctionInvokingChatClient
                         HostDiagnostics.LlmTokenInput.Add(inputTokens, modelTag);
                     if (summaryUsage.OutputTokenCount.HasValue)
                         HostDiagnostics.LlmTokenOutput.Add(outputTokens, modelTag);
-                    var costUsd = LlmCostEstimator.EstimateCost(summaryModelId, inputTokens, outputTokens);
+                    var costUsd = _costEstimator.EstimateCost(summaryModelId, inputTokens, outputTokens);
                     if (costUsd > 0)
                     {
                         HostDiagnostics.LlmCostUsd.Add(costUsd, modelTag);

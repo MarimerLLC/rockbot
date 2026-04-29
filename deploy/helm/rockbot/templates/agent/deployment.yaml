@@ -63,6 +63,13 @@ spec:
                 cp /app/mcp.json /data/agent/mcp.json
               fi
 
+              # llm-pricing.json — operator-editable pricing table consumed by LlmCostEstimator.
+              # Copy no-clobber so manual price tweaks survive image upgrades.
+              if [ -f /app/agent/llm-pricing.json ] && [ ! -s /data/agent/llm-pricing.json ]; then
+                echo "  Copying default llm-pricing.json"
+                cp /app/agent/llm-pricing.json /data/agent/llm-pricing.json
+              fi
+
               # Per-model behavior prompt files — copy per-file so users can customise
               # individual prompts without losing others on upgrade
               for model_dir in /app/model-behaviors/*/; do

@@ -1,0 +1,32 @@
+[
+  { "prefix": "gpt-5.4-pro",      "inputPerM": 30.00, "outputPerM": 180.00 },
+  { "prefix": "gpt-5.4-mini",     "inputPerM":  0.75, "outputPerM":   4.50 },
+  { "prefix": "gpt-5.4",          "inputPerM":  2.50, "outputPerM":  15.00 },
+
+  { "prefix": "claude-opus-4",    "inputPerM": 15.00, "outputPerM":  75.00 },
+  { "prefix": "claude-sonnet-4",  "inputPerM":  3.00, "outputPerM":  15.00 },
+  { "prefix": "claude-haiku-4",   "inputPerM":  0.80, "outputPerM":   4.00 },
+  { "prefix": "claude-3-opus",    "inputPerM": 15.00, "outputPerM":  75.00 },
+  { "prefix": "claude-3-5-sonnet","inputPerM":  3.00, "outputPerM":  15.00 },
+  { "prefix": "claude-3-5-haiku", "inputPerM":  0.80, "outputPerM":   4.00 },
+  { "prefix": "claude-3-haiku",   "inputPerM":  0.25, "outputPerM":   1.25 },
+
+  { "prefix": "gpt-5.3",          "inputPerM":  1.75, "outputPerM":  14.00 },
+  { "prefix": "gpt-4o-mini",      "inputPerM":  0.15, "outputPerM":   0.60 },
+  { "prefix": "gpt-4o",           "inputPerM":  2.50, "outputPerM":  10.00 },
+  { "prefix": "gpt-4-turbo",      "inputPerM": 10.00, "outputPerM":  30.00 },
+  { "prefix": "o1-mini",          "inputPerM":  1.10, "outputPerM":   4.40 },
+  { "prefix": "o1",               "inputPerM": 15.00, "outputPerM":  60.00 },
+  { "prefix": "o3-mini",          "inputPerM":  1.10, "outputPerM":   4.40 },
+
+  { "prefix": "gemini-3.1-pro",   "inputPerM":  2.00, "outputPerM":  12.00 },
+  { "prefix": "gemini-3-flash",   "inputPerM":  0.50, "outputPerM":   3.00 },
+  { "prefix": "gemini-2.5-pro",   "inputPerM":  1.25, "outputPerM":  10.00 },
+  { "prefix": "gemini-2.5-flash", "inputPerM":  0.15, "outputPerM":   0.60 },
+  { "prefix": "gemini-2.0-flash", "inputPerM":  0.10, "outputPerM":   0.40 },
+  { "prefix": "gemini-1.5-pro",   "inputPerM":  1.25, "outputPerM":   5.00 },
+  { "prefix": "gemini-1.5-flash", "inputPerM":  0.075,"outputPerM":   0.30 },
+
+  { "prefix": "deepseek-chat",    "inputPerM":  0.14, "outputPerM":   0.28 },
+  { "prefix": "deepseek-r1",      "inputPerM":  0.55, "outputPerM":   2.19 }
+]

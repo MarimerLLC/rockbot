@@ -363,6 +363,10 @@ builder.Services.Configure<AgentProfileOptions>(builder.Configuration.GetSection
 // Allow MaxToolIterations and other AgentHostOptions to be overridden via appsettings.json or env vars.
 builder.Services.Configure<AgentHostOptions>(builder.Configuration.GetSection("AgentHost"));
 
+// LLM pricing — loaded from a JSON file on the agent PVC so prices can be refreshed
+// without rebuilding the image. LlmPricing__ConfigPath in the ConfigMap overrides the default.
+builder.Services.Configure<LlmPricingOptions>(builder.Configuration.GetSection("LlmPricing"));
+
 // MCP bridge (replaces external RockBot.Tools.Mcp.Bridge process)
 builder.Services.Configure<McpBridgeOptions>(builder.Configuration.GetSection("McpBridge"));
 builder.Services.AddHostedService<McpBridgeService>();
