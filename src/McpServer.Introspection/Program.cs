@@ -6,7 +6,8 @@ builder.Services.AddHealthChecks();
 builder.Services.AddMcpServer()
     .WithHttpTransport()
     .WithTools<AgentNameTools>()
-    .WithTools<CopilotUsageTools>();
+    .WithTools<CopilotUsageTools>()
+    .WithTools<LlmPricingTools>();
 
 var app = builder.Build();
 
