@@ -32,6 +32,8 @@ public static class ServiceCollectionExtensions
         configure(builder);
         builder.Build();
 
+        services.AddSingleton<LlmCostEstimator>();
+        services.Configure<LlmPricingOptions>(_ => { });
         services.AddTransient<ILlmClient, LlmClient>();
         services.AddSingleton<IToolProgressNotifier, ToolProgressNotifier>();
         services.AddTransient<AgentLoopRunner>();
@@ -94,6 +96,7 @@ public static class ServiceCollectionExtensions
                 sp.GetService<IToolProgressNotifier>(),
                 sp.GetService<IToolCallLog>(),
                 behavior,
+                sp.GetRequiredService<LlmCostEstimator>(),
                 sp.GetRequiredService<IOptions<AgentHostOptions>>(),
                 sp.GetRequiredService<ILogger<RockBotFunctionInvokingChatClient>>());
         });

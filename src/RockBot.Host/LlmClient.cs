@@ -14,6 +14,7 @@ namespace RockBot.Host;
 /// </summary>
 internal sealed class LlmClient(
     TieredChatClientRegistry registry,
+    LlmCostEstimator costEstimator,
     ILogger<LlmClient> logger) : ILlmClient
 {
     /// <summary>Calls the LLM using the Balanced tier.</summary>
@@ -81,7 +82,7 @@ internal sealed class LlmClient(
                 if (usage.OutputTokenCount.HasValue)
                     HostDiagnostics.LlmTokenOutput.Add(outputTokens, tierTag, modelTag);
 
-                var costUsd = LlmCostEstimator.EstimateCost(modelId, inputTokens, outputTokens);
+                var costUsd = costEstimator.EstimateCost(modelId, inputTokens, outputTokens);
                 if (costUsd > 0)
                 {
                     HostDiagnostics.LlmCostUsd.Add(costUsd, tierTag, modelTag);
