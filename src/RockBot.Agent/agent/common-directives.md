@@ -65,6 +65,35 @@ If verification shows the outcome is wrong, fix it and verify again — silently
 
 **Never ask the user to check something you can verify yourself.** You have the same access to their data that they do.
 
+## Invalidate Stale Shared/Patrol Memory After Completion
+
+Completion is not just "do the thing." It also includes scrubbing the working-memory
+entries that asserted the thing was still pending. The framework auto-injects every
+`shared/` and `patrol/` entry into every future context — entries that go stale (the
+todo is done, the deadline passed, the draft was sent) keep contradicting reality
+until their TTL lapses.
+
+**When to do it**: any action that flips an item's status — marking a todo complete,
+finishing or abandoning an `active-plans/` entry, sending a draft that was queued for
+review, dismissing a deadline, completing a meeting prep item.
+
+**How to do it**: as part of the completion turn, before reporting back to the user:
+
+1. `search_working_memory` (or `list_working_memory`) over `shared/` and `patrol/`
+   for keys or content referencing the just-completed item — search by the task
+   title, the deadline name, the draft subject, etc.
+2. For each match: either `delete_from_working_memory` (the entry is fully obsolete)
+   or `save_to_working_memory` with the same key to overwrite with the corrected
+   status (the entry covered multiple items and only one is now done).
+3. Treat this as part of the completion action, not optional cleanup. A "completed"
+   task that still has three shared-memory entries claiming it is active is not
+   actually completed from the agent's perspective — the next patrol or session will
+   re-surface it as live work.
+
+The cost of skipping this is real: stale entries cause the agent to re-investigate
+already-resolved work, contradict its own status reports, and burn tool calls
+re-confirming things the user already closed.
+
 ## Report Outcomes, Not Process
 
 Lead with what happened, not what you did:

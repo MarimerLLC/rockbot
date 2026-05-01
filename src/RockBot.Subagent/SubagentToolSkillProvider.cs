@@ -58,9 +58,13 @@ public sealed class SubagentToolSkillProvider : IToolSkillProvider
 
         ## Sharing data (whiteboard convention)
         Both you and the subagent share long-term memory. The category
-        'subagent-whiteboards/{task_id}' is the per-subagent scratchpad:
+        'subagent-whiteboards/<actual-task-id>' is the per-subagent scratchpad —
+        substitute the actual task_id you received from spawn_subagent (the GUID-
+        shaped value), never the literal text {task_id}. This is a long-term memory
+        CATEGORY (the `category` parameter of save_memory), distinct from the
+        subagent's working-memory namespace `subagent/<actual-task-id>`.
 
-        - Before spawning: write input data the subagent needs
+        - Before spawning: write input data the subagent needs to that category
         - After the completion message: search that category for detailed outputs
 
         ## Workflow

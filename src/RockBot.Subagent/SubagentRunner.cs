@@ -50,6 +50,7 @@ internal sealed class SubagentRunner(
             taskId, subagentSessionId, tier, classification.ComplexityScore);
 
         var subagentNamespace = $"subagent/{taskId}";
+        var whiteboardCategory = $"subagent-whiteboards/{taskId}";
 
         // Dynamic preamble — includes runtime values (namespace, working memory keys).
         var preamble =
@@ -63,10 +64,15 @@ internal sealed class SubagentRunner(
             "iteration budget and run concurrently. Use Direct mode steps with the correct " +
             "gateway and put tool arguments in the \"params\" field. " +
             $"For large outputs (reports, document lists, structured data): use save_to_working_memory " +
-            $"to store them (set ttl_minutes to 240 or more). Your outputs are stored under namespace " +
+            $"to store them (set ttl_minutes to 240 or more). Your working memory namespace is " +
             $"'{subagentNamespace}' and the primary agent can retrieve them using " +
             $"list_working_memory(namespace: '{subagentNamespace}') or " +
             $"get_from_working_memory('{subagentNamespace}/your-key'). " +
+            $"For long-term memory entries the primary agent should read after you complete, use " +
+            $"the category '{whiteboardCategory}' when calling save_memory. This is a long-term " +
+            $"memory CATEGORY (passed to save_memory's category parameter), NOT a working-memory " +
+            $"key — do not use it as a key with save_to_working_memory. Substitute the literal " +
+            $"value above; never write the placeholder text {{task_id}} into a category or key. " +
             "Your final message must summarise what was done and list each key you saved " +
             "so the primary agent knows where to find the detailed data. " +
             "Do not return an empty or vague final response.";

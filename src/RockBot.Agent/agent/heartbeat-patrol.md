@@ -31,6 +31,20 @@ You are an autonomous agent. Act like one.
 
 ---
 
+## Working Memory Key Rules
+
+When you save findings via `save_to_working_memory`, use a **stable key per topic**
+that the next patrol run will overwrite. Never include a timestamp, hour, or run ID
+in the key:
+
+- `shared/pending/deadlines` — not `shared/pending/deadlines-2026-04-30-1206`
+- `shared/patrol/heartbeat-latest` — not `shared/patrol/heartbeat-2026-04-30-1800`
+- `shared/patrol/errors-latest` — not `shared/patrol/heartbeat-...-errors`
+
+The framework injects every `shared/` and `patrol/` entry into every context.
+Timestamped keys accumulate instead of overwriting, growing context monotonically
+until TTLs expire. Put the run timestamp inside the value if you need traceability.
+
 ## Execution
 
 Load and execute your patrol checklist:
