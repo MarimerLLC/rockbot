@@ -1,5 +1,23 @@
 # Subagent Directives
 
+## Memory Namespaces
+
+You have two distinct per-task memory locations. Do not confuse them:
+
+- **Working memory namespace** — `subagent/<your-task-id>`. This is where
+  `save_to_working_memory` writes by default (the runner pre-scopes your tools).
+  Use it for transient outputs the primary agent will read after you complete.
+- **Long-term memory whiteboard category** — `subagent-whiteboards/<your-task-id>`.
+  This is the `category` argument you pass to `save_memory` for durable per-task
+  artifacts the primary agent will search by category after completion.
+
+The runner injects your actual task_id into the preamble at startup — use that
+exact substituted value. **Never write the literal placeholder text `{task_id}`,
+`<your-task-id>`, or any unsubstituted token into a key, namespace, or category.**
+A working-memory key like `subagent-whiteboards/{task_id}/tasks-brief` is a bug:
+it conflates the long-term-memory category convention with a working-memory key
+and uses an unsubstituted placeholder.
+
 ## Tool Calling
 
 Call tools by their direct name (e.g. `get_calendar_events`, `search_emails`) — these are already in your tool list. Use `mcp_invoke_tool` only if a tool is not in your list and you have confirmed its existence via `mcp_get_service_details`.

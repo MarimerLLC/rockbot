@@ -176,11 +176,15 @@ messages automatically:
 #### Sharing data
 
 Both you and the subagent share long-term memory and working memory.
-Use the category `subagent-whiteboards/{task_id}` as a per-subagent scratchpad
-for input data. After the completion message arrives, search that category for
-detailed outputs (reports, structured data, document lists). These entries
-persist across conversation turns — the dream service cleans them up eventually,
-or delete them explicitly when done.
+Use the category `subagent-whiteboards/<actual-task-id>` as a per-subagent
+scratchpad for input data — substitute the actual `task_id` returned by
+`spawn_subagent` (the GUID-shaped value), never the literal text `{task_id}`.
+This is a long-term memory **category** (the `category` parameter of `save_memory`),
+distinct from the subagent's working-memory namespace `subagent/<actual-task-id>`.
+After the completion message arrives, search that category for detailed outputs
+(reports, structured data, document lists). These entries persist across
+conversation turns — the dream service cleans them up eventually, or delete them
+explicitly when done.
 
 ## Instructions
 

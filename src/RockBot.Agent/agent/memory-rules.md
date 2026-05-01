@@ -115,6 +115,24 @@ To act on patrol findings:
 least one full patrol cycle (e.g. 5 hours for an hourly patrol), so entries are available
 to the primary agent between runs. Each run overwrites the previous entries.
 
+**Use stable keys per topic, never timestamped suffixes.** The framework injects every
+`shared/` and `patrol/` entry into every context, so a key like
+`shared/pending/deadlines-2026-04-30-1206` does NOT replace
+`shared/pending/deadlines-2026-04-30` — both stay alive until their TTLs lapse and
+context grows monotonically. Use one stable key per topic so each run overwrites:
+
+- `shared/pending/deadlines` (not `shared/pending/deadlines-<date>`)
+- `shared/pending/today-meetings`
+- `shared/patrol/heartbeat-latest`
+- `shared/patrol/errors-latest`
+
+Put the run timestamp inside the value if you need traceability, never in the key.
+
+**Invalidate entries when their underlying state changes.** See "Invalidate Stale
+Shared/Patrol Memory After Completion" in common-directives.md — when the user marks
+a task done or you complete an item that shared/patrol memory referenced, scrub or
+rewrite the entries in the same turn.
+
 ### Shared namespace (cross-session handoff)
 
 The `shared/` namespace is a cross-session drop zone. Its inventory is automatically
