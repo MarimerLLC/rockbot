@@ -109,7 +109,8 @@ internal sealed class ContainerScriptRunner(
                         Env =
                         [
                             new V1EnvVar { Name = "ROCKBOT_SCRIPT", Value = request.Script },
-                            new V1EnvVar { Name = "ROCKBOT_INPUT", Value = request.InputData }
+                            new V1EnvVar { Name = "ROCKBOT_INPUT", Value = request.InputData },
+                            new V1EnvVar { Name = "PIP_NO_CACHE_DIR", Value = "1" }
                         ],
                         Resources = new V1ResourceRequirements
                         {
