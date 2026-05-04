@@ -278,28 +278,245 @@ public class WellKnownAgentEnrichmentTests
         Assert.IsNull(card.Skills);
     }
 
+    [TestMethod]
+    public async Task RefreshAllWellKnownAsync_RefetchesAndUpdatesSkills()
+    {
+        var initial = new AgentCard
+        {
+            AgentName = "Bob",
+            Description = "Bob's agent",
+            Version = "1.0",
+            Skills = [new AgentSkill { Id = "old-skill", Name = "Old", Description = "x" }]
+        };
+        var handler = new RecordingHandler(JsonSerializer.Serialize(initial, CamelCase));
+        var options = new A2AOptions
+        {
+            DirectoryPersistencePath = string.Empty,
+            WellKnownAgents = [new AgentCard { AgentName = "Bob", Url = "http://gateway-bob:5200" }]
+        };
+        var directory = new AgentDirectory(options, NullLogger<AgentDirectory>.Instance, new StubFactory(handler));
+        await directory.StartAsync(CancellationToken.None);
+
+        var updated = new AgentCard
+        {
+            AgentName = "Bob",
+            Description = "Bob's agent v2",
+            Version = "1.1",
+            Skills =
+            [
+                new AgentSkill { Id = "old-skill", Name = "Old", Description = "x" },
+                new AgentSkill { Id = "new-skill", Name = "New", Description = "y" }
+            ]
+        };
+        handler.Body = JsonSerializer.Serialize(updated, CamelCase);
+
+        var results = await directory.RefreshAllWellKnownAsync(CancellationToken.None);
+
+        Assert.AreEqual(1, results.Count);
+        Assert.AreEqual("Bob", results[0].AgentName);
+        Assert.IsTrue(results[0].Refreshed);
+        Assert.IsTrue(results[0].SkillsChanged);
+
+        var card = directory.GetAgent("Bob");
+        Assert.IsNotNull(card?.Skills);
+        Assert.AreEqual(2, card.Skills.Count);
+        Assert.IsTrue(card.Skills.Any(s => s.Id == "new-skill"));
+    }
+
+    [TestMethod]
+    public async Task RefreshAllWellKnownAsync_PreservesOfflineOverride()
+    {
+        var handler = new RecordingHandler("""{"agentName":"Bob","skills":[{"id":"remote"}]}""");
+        var options = new A2AOptions
+        {
+            DirectoryPersistencePath = string.Empty,
+            WellKnownAgents =
+            [
+                new AgentCard
+                {
+                    AgentName = "Bob",
+                    Url = "http://gateway-bob:5200",
+                    Skills = [new AgentSkill { Id = "override", Name = "O", Description = "x" }]
+                }
+            ]
+        };
+        var directory = new AgentDirectory(options, NullLogger<AgentDirectory>.Instance, new StubFactory(handler));
+        await directory.StartAsync(CancellationToken.None);
+
+        var startCount = handler.RequestCount;
+        var results = await directory.RefreshAllWellKnownAsync(CancellationToken.None);
+
+        Assert.AreEqual(0, results.Count, "Offline overrides should not be refreshed.");
+        Assert.AreEqual(startCount, handler.RequestCount, "No HTTP request should have been made.");
+
+        var card = directory.GetAgent("Bob");
+        Assert.AreEqual("override", card?.Skills?.Single().Id);
+    }
+
+    [TestMethod]
+    public async Task RefreshAllWellKnownAsync_ClearsLlmSummary_WhenSkillsChange()
+    {
+        var initial = new AgentCard
+        {
+            AgentName = "Bob",
+            Skills = [new AgentSkill { Id = "old", Name = "Old", Description = "x" }]
+        };
+        var handler = new RecordingHandler(JsonSerializer.Serialize(initial, CamelCase));
+        var options = new A2AOptions
+        {
+            DirectoryPersistencePath = string.Empty,
+            WellKnownAgents = [new AgentCard { AgentName = "Bob", Url = "http://gateway-bob:5200" }]
+        };
+        var directory = new AgentDirectory(options, NullLogger<AgentDirectory>.Instance, new StubFactory(handler));
+        await directory.StartAsync(CancellationToken.None);
+        directory.SetSummary("Bob", "An agent that does old things.");
+        Assert.AreEqual("An agent that does old things.", directory.GetAllEntries().Single().LlmSummary);
+
+        var updated = new AgentCard
+        {
+            AgentName = "Bob",
+            Skills = [new AgentSkill { Id = "new", Name = "New", Description = "y" }]
+        };
+        handler.Body = JsonSerializer.Serialize(updated, CamelCase);
+
+        var results = await directory.RefreshAllWellKnownAsync(CancellationToken.None);
+
+        Assert.IsTrue(results.Single().SkillsChanged);
+        Assert.IsNull(directory.GetAllEntries().Single().LlmSummary,
+            "LlmSummary must be cleared when skills change so a fresh summary is regenerated.");
+    }
+
+    [TestMethod]
+    public async Task RefreshAllWellKnownAsync_PreservesLlmSummary_WhenSkillsUnchanged()
+    {
+        var card = new AgentCard
+        {
+            AgentName = "Bob",
+            Description = "v1",
+            Skills = [new AgentSkill { Id = "same-skill", Name = "Same", Description = "x" }]
+        };
+        var handler = new RecordingHandler(JsonSerializer.Serialize(card, CamelCase));
+        var options = new A2AOptions
+        {
+            DirectoryPersistencePath = string.Empty,
+            WellKnownAgents = [new AgentCard { AgentName = "Bob", Url = "http://gateway-bob:5200" }]
+        };
+        var directory = new AgentDirectory(options, NullLogger<AgentDirectory>.Instance, new StubFactory(handler));
+        await directory.StartAsync(CancellationToken.None);
+        directory.SetSummary("Bob", "Bob does things.");
+
+        // Same skill set, just a bumped description — skills unchanged should preserve summary.
+        var same = card with { Description = "v2" };
+        handler.Body = JsonSerializer.Serialize(same, CamelCase);
+
+        var results = await directory.RefreshAllWellKnownAsync(CancellationToken.None);
+
+        Assert.IsTrue(results.Single().Refreshed);
+        Assert.IsFalse(results.Single().SkillsChanged);
+        Assert.AreEqual("Bob does things.", directory.GetAllEntries().Single().LlmSummary);
+    }
+
+    [TestMethod]
+    public async Task RefreshAgentCardAsync_ReturnsNotFound_ForUnknownAgent()
+    {
+        var handler = new RecordingHandler("");
+        var options = new A2AOptions { DirectoryPersistencePath = string.Empty };
+        var directory = new AgentDirectory(options, NullLogger<AgentDirectory>.Instance, new StubFactory(handler));
+        await directory.StartAsync(CancellationToken.None);
+
+        var result = await directory.RefreshAgentCardAsync("nobody", CancellationToken.None);
+
+        Assert.IsFalse(result.Refreshed);
+        Assert.IsFalse(result.SkillsChanged);
+        Assert.AreEqual("agent not found", result.Reason);
+    }
+
+    [TestMethod]
+    public async Task RefreshAgentCardAsync_ReturnsSkipped_ForOfflineOverride()
+    {
+        var handler = new RecordingHandler("""{"agentName":"Bob","skills":[{"id":"remote"}]}""");
+        var options = new A2AOptions
+        {
+            DirectoryPersistencePath = string.Empty,
+            WellKnownAgents =
+            [
+                new AgentCard
+                {
+                    AgentName = "Bob",
+                    Url = "http://gateway-bob:5200",
+                    Skills = [new AgentSkill { Id = "override", Name = "O", Description = "x" }]
+                }
+            ]
+        };
+        var directory = new AgentDirectory(options, NullLogger<AgentDirectory>.Instance, new StubFactory(handler));
+        await directory.StartAsync(CancellationToken.None);
+
+        var beforeCount = handler.RequestCount;
+        var result = await directory.RefreshAgentCardAsync("Bob", CancellationToken.None);
+
+        Assert.IsFalse(result.Refreshed);
+        Assert.AreEqual("offline override", result.Reason);
+        Assert.AreEqual(beforeCount, handler.RequestCount);
+    }
+
+    [TestMethod]
+    public async Task RefreshAgentCardAsync_RefetchesByName()
+    {
+        var initial = new AgentCard
+        {
+            AgentName = "Bob",
+            Skills = [new AgentSkill { Id = "v1", Name = "V1", Description = "x" }]
+        };
+        var handler = new RecordingHandler(JsonSerializer.Serialize(initial, CamelCase));
+        var options = new A2AOptions
+        {
+            DirectoryPersistencePath = string.Empty,
+            WellKnownAgents = [new AgentCard { AgentName = "Bob", Url = "http://gateway-bob:5200" }]
+        };
+        var directory = new AgentDirectory(options, NullLogger<AgentDirectory>.Instance, new StubFactory(handler));
+        await directory.StartAsync(CancellationToken.None);
+
+        var updated = initial with
+        {
+            Skills = [new AgentSkill { Id = "v2", Name = "V2", Description = "y" }]
+        };
+        handler.Body = JsonSerializer.Serialize(updated, CamelCase);
+
+        var beforeCount = handler.RequestCount;
+        var result = await directory.RefreshAgentCardAsync("Bob", CancellationToken.None);
+
+        Assert.IsTrue(result.Refreshed);
+        Assert.IsTrue(result.SkillsChanged);
+        Assert.AreEqual(beforeCount + 1, handler.RequestCount);
+        Assert.AreEqual("v2", directory.GetAgent("Bob")?.Skills?.Single().Id);
+    }
+
     private sealed class RecordingHandler : HttpMessageHandler
     {
-        private readonly string _body;
-        private readonly HttpStatusCode _status;
+        private HttpStatusCode _status;
 
         public RecordingHandler(string body = "", HttpStatusCode status = HttpStatusCode.OK)
         {
-            _body = body;
+            Body = body;
             _status = status;
         }
 
+        public string Body { get; set; }
         public Uri? LastRequestUri { get; private set; }
         public System.Net.Http.Headers.HttpRequestHeaders? LastRequestHeaders { get; private set; }
+        public int RequestCount { get; private set; }
+
+        public void SetStatus(HttpStatusCode status) => _status = status;
 
         protected override Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request, CancellationToken cancellationToken)
         {
             LastRequestUri = request.RequestUri;
             LastRequestHeaders = request.Headers;
+            RequestCount++;
             return Task.FromResult(new HttpResponseMessage(_status)
             {
-                Content = new StringContent(_body, Encoding.UTF8, "application/json")
+                Content = new StringContent(Body, Encoding.UTF8, "application/json")
             });
         }
     }

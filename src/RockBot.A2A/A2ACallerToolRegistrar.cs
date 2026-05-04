@@ -19,6 +19,7 @@ internal sealed class A2ACallerToolRegistrar(
     AgentIdentity identity,
     IHttpClientFactory httpClientFactory,
     InputRequiredHandler inputRequiredHandler,
+    AgentCardSummarizer summarizer,
     ILoggerFactory loggerFactory) : IHostedService
 {
     private const string InvokeAgentSchema = """
@@ -138,6 +139,19 @@ internal sealed class A2ACallerToolRegistrar(
         }
         """;
 
+    private const string RefreshAgentCardSchema = """
+        {
+          "type": "object",
+          "properties": {
+            "agent_name": {
+              "type": "string",
+              "description": "The name of the agent whose /.well-known/agent-card.json should be re-fetched."
+            }
+          },
+          "required": ["agent_name"]
+        }
+        """;
+
     public Task StartAsync(CancellationToken cancellationToken)
     {
         var invokeLogger = loggerFactory.CreateLogger<InvokeAgentExecutor>();
@@ -193,6 +207,20 @@ internal sealed class A2ACallerToolRegistrar(
             Source = "a2a"
         }, new UnregisterAgentExecutor(directory, loggerFactory.CreateLogger<UnregisterAgentExecutor>()));
         registrarLogger.LogInformation("Registered tool: unregister_agent");
+
+        registry.Register(new ToolRegistration
+        {
+            Name = "refresh_agent_card",
+            Description = """
+                Re-fetch a known agent's /.well-known/agent-card.json so its skills, metadata,
+                and description reflect the current published state. Use this when an invoke_agent
+                call returns an unexpected error (e.g. unknown skill or metadata key), when the
+                user asks "what can X do now?", or when you suspect cached capabilities are stale.
+                """,
+            ParametersSchema = RefreshAgentCardSchema,
+            Source = "a2a"
+        }, new RefreshAgentCardExecutor(directory, summarizer, loggerFactory.CreateLogger<RefreshAgentCardExecutor>()));
+        registrarLogger.LogInformation("Registered tool: refresh_agent_card");
 
         return Task.CompletedTask;
     }

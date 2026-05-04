@@ -109,22 +109,47 @@ internal sealed class AgentDirectory(
         await EnrichWellKnownFromRemoteAsync(cancellationToken);
     }
 
-    private async Task EnrichWellKnownFromRemoteAsync(CancellationToken cancellationToken)
-    {
-        if (httpClientFactory is null) return;
+    private Task EnrichWellKnownFromRemoteAsync(CancellationToken cancellationToken) =>
+        RefreshAllWellKnownAsync(cancellationToken);
 
-        var toEnrich = options.WellKnownAgents
+    public async Task<IReadOnlyList<AgentCardRefreshResult>> RefreshAllWellKnownAsync(CancellationToken ct)
+    {
+        if (httpClientFactory is null) return Array.Empty<AgentCardRefreshResult>();
+
+        var toRefresh = options.WellKnownAgents
             .Where(c => !string.IsNullOrWhiteSpace(c.Url) && (c.Skills is null || c.Skills.Count == 0))
             .ToList();
 
-        if (toEnrich.Count == 0) return;
+        if (toRefresh.Count == 0) return Array.Empty<AgentCardRefreshResult>();
 
-        var tasks = toEnrich.Select(seed => FetchAndMergeAsync(seed, cancellationToken));
-        await Task.WhenAll(tasks);
+        var tasks = toRefresh.Select(seed => FetchAndMergeAsync(seed, ct));
+        var results = await Task.WhenAll(tasks);
+        return results;
     }
 
-    private async Task FetchAndMergeAsync(AgentCard seed, CancellationToken ct)
+    public async Task<AgentCardRefreshResult> RefreshAgentCardAsync(string agentName, CancellationToken ct)
     {
+        if (!_agents.TryGetValue(agentName, out var entry))
+            return new AgentCardRefreshResult(agentName, false, false, "agent not found");
+
+        var seed = options.WellKnownAgents.FirstOrDefault(
+            c => string.Equals(c.AgentName, agentName, StringComparison.OrdinalIgnoreCase));
+        if (seed is not null && seed.Skills is { Count: > 0 })
+            return new AgentCardRefreshResult(agentName, false, false, "offline override");
+
+        if (httpClientFactory is null)
+            return new AgentCardRefreshResult(agentName, false, false, "http client factory unavailable");
+
+        if (string.IsNullOrWhiteSpace(entry.Card.Url))
+            return new AgentCardRefreshResult(agentName, false, false, "agent has no URL");
+
+        return await FetchAndMergeAsync(entry.Card, ct);
+    }
+
+    private async Task<AgentCardRefreshResult> FetchAndMergeAsync(AgentCard seed, CancellationToken ct)
+    {
+        var prevSkills = _agents.TryGetValue(seed.AgentName, out var prev) ? prev.Card.Skills : null;
+
         try
         {
             using var httpClient = httpClientFactory!.CreateClient();
@@ -146,7 +171,7 @@ internal sealed class AgentDirectory(
                 logger.LogWarning(
                     "Skipping enrichment for well-known peer '{AgentName}': invalid URL '{Url}'",
                     seed.AgentName, seed.Url);
-                return;
+                return new AgentCardRefreshResult(seed.AgentName, false, false, "invalid URL");
             }
 
             var url = new Uri(baseUri, "/.well-known/agent-card.json").ToString();
@@ -156,7 +181,7 @@ internal sealed class AgentDirectory(
                 logger.LogWarning(
                     "Could not fetch agent-card for well-known peer '{AgentName}' from {Url}: HTTP {Status}",
                     seed.AgentName, url, (int)response.StatusCode);
-                return;
+                return new AgentCardRefreshResult(seed.AgentName, false, false, $"HTTP {(int)response.StatusCode}");
             }
 
             var json = await response.Content.ReadAsStringAsync(ct);
@@ -178,14 +203,22 @@ internal sealed class AgentDirectory(
                 SupportsStreaming = remote.SupportsStreaming ?? seed.SupportsStreaming
             };
 
+            var skillsChanged = !SkillIdsEqual(prevSkills, merged.Skills);
+
             if (_agents.TryGetValue(seed.AgentName, out var existing))
             {
-                _agents[seed.AgentName] = existing with { Card = merged };
+                _agents[seed.AgentName] = existing with
+                {
+                    Card = merged,
+                    LlmSummary = skillsChanged ? null : existing.LlmSummary
+                };
                 logger.LogInformation(
-                    "Enriched well-known agent '{AgentName}' from {Url} (protocol={Protocol}, streaming={Streaming}, {SkillCount} skill(s))",
+                    "Refreshed well-known agent '{AgentName}' from {Url} (protocol={Protocol}, streaming={Streaming}, {SkillCount} skill(s), skillsChanged={Changed})",
                     seed.AgentName, url, merged.ProtocolVersion ?? "(unset)",
-                    merged.SupportsStreaming, merged.Skills?.Count ?? 0);
+                    merged.SupportsStreaming, merged.Skills?.Count ?? 0, skillsChanged);
             }
+
+            return new AgentCardRefreshResult(seed.AgentName, true, skillsChanged, null);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
@@ -194,9 +227,21 @@ internal sealed class AgentDirectory(
         catch (Exception ex)
         {
             logger.LogWarning(ex,
-                "Failed to enrich well-known agent '{AgentName}' from {Url} — entry kept without remote data",
+                "Failed to refresh well-known agent '{AgentName}' from {Url} — entry kept without remote data",
                 seed.AgentName, seed.Url);
+            return new AgentCardRefreshResult(seed.AgentName, false, false, ex.Message);
         }
+    }
+
+    private static bool SkillIdsEqual(IReadOnlyList<AgentSkill>? a, IReadOnlyList<AgentSkill>? b)
+    {
+        var aSet = new HashSet<string>(
+            (a ?? []).Select(s => s.Id ?? string.Empty),
+            StringComparer.OrdinalIgnoreCase);
+        var bSet = new HashSet<string>(
+            (b ?? []).Select(s => s.Id ?? string.Empty),
+            StringComparer.OrdinalIgnoreCase);
+        return aSet.SetEquals(bSet);
     }
 
     internal sealed record RemoteFields(
