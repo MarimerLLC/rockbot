@@ -96,6 +96,9 @@ internal static partial class GatewayRouter
         if (step.TimeoutMinutes is not null)
             args["timeout_minutes"] = step.TimeoutMinutes;
 
+        if (step.Metadata is JsonElement md && md.ValueKind == JsonValueKind.Object)
+            args["metadata"] = md;
+
         return ToolRouteResult.Success("invoke_agent", JsonSerializer.Serialize(args, JsonOptions));
     }
 

@@ -105,6 +105,15 @@ public sealed record WispStep
     public string? Message { get; init; }
 
     /// <summary>
+    /// Optional A2A message metadata (gateway=a2a only) — per-skill control parameters
+    /// that the target agent advertises in its skill description (e.g. <c>providerId</c>,
+    /// <c>count</c>, <c>since</c>). Forwarded into <c>invoke_agent</c>'s <c>metadata</c>
+    /// argument. Values must be primitives (string/number/boolean).
+    /// </summary>
+    [JsonPropertyName("metadata")]
+    public JsonElement? Metadata { get; init; }
+
+    /// <summary>
     /// Timeout in minutes for A2A steps. Defaults to 5.
     /// </summary>
     [JsonPropertyName("timeout_minutes")]

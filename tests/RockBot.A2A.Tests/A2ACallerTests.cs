@@ -234,6 +234,150 @@ public class A2ACallerTests
     }
 
     [TestMethod]
+    public async Task InvokeAgentExecutor_AttachesMetadata_ToAgentMessage()
+    {
+        var publisher = new TrackingPublisher();
+        var tracker = new A2ATaskTracker();
+        var executor = BuildExecutor(publisher, tracker);
+
+        var request = BuildToolRequest("""
+            {
+              "agent_name": "SocialAgent",
+              "skill": "recent-mentions",
+              "message": "Recent mentions only.",
+              "metadata": { "providerId": "bluesky", "count": 10, "active": true }
+            }
+            """);
+
+        await executor.ExecuteAsync(request, CancellationToken.None);
+
+        var taskReq = publisher.Published[0].Envelope.GetPayload<AgentTaskRequest>()!;
+        Assert.IsNotNull(taskReq.Message.Metadata);
+        Assert.AreEqual("bluesky", taskReq.Message.Metadata["providerId"]);
+        Assert.AreEqual("10",      taskReq.Message.Metadata["count"]);
+        Assert.AreEqual("true",    taskReq.Message.Metadata["active"]);
+    }
+
+    [TestMethod]
+    public async Task InvokeAgentExecutor_RejectsMetadata_WithNestedObject()
+    {
+        var publisher = new TrackingPublisher();
+        var tracker = new A2ATaskTracker();
+        var executor = BuildExecutor(publisher, tracker);
+
+        // Nested objects belong in 'data', not 'metadata'.
+        var request = BuildToolRequest("""
+            {
+              "agent_name": "TargetAgent",
+              "skill": "chat",
+              "message": "x",
+              "metadata": { "filter": { "platform": "bluesky" } }
+            }
+            """);
+
+        var response = await executor.ExecuteAsync(request, CancellationToken.None);
+
+        Assert.IsTrue(response.IsError);
+        StringAssert.Contains(response.Content, "metadata");
+        Assert.AreEqual(0, publisher.Published.Count);
+    }
+
+    [TestMethod]
+    public async Task InvokeAgentExecutor_RejectsMetadata_WithArrayValue()
+    {
+        var publisher = new TrackingPublisher();
+        var tracker = new A2ATaskTracker();
+        var executor = BuildExecutor(publisher, tracker);
+
+        var request = BuildToolRequest("""
+            {
+              "agent_name": "TargetAgent",
+              "skill": "chat",
+              "message": "x",
+              "metadata": { "providers": ["bluesky", "mastodon"] }
+            }
+            """);
+
+        var response = await executor.ExecuteAsync(request, CancellationToken.None);
+
+        Assert.IsTrue(response.IsError);
+        StringAssert.Contains(response.Content, "providers");
+        Assert.AreEqual(0, publisher.Published.Count);
+    }
+
+    [TestMethod]
+    public async Task InvokeAgentExecutor_RejectsMetadata_WhenSkillKeyReserved()
+    {
+        var publisher = new TrackingPublisher();
+        var tracker = new A2ATaskTracker();
+        var executor = BuildExecutor(publisher, tracker);
+
+        // 'skill' is auto-set from the top-level argument; allowing it in metadata
+        // would create an ambiguity about which value wins on the wire.
+        var request = BuildToolRequest("""
+            {
+              "agent_name": "TargetAgent",
+              "skill": "chat",
+              "message": "x",
+              "metadata": { "skill": "something-else" }
+            }
+            """);
+
+        var response = await executor.ExecuteAsync(request, CancellationToken.None);
+
+        Assert.IsTrue(response.IsError);
+        StringAssert.Contains(response.Content, "skill");
+        Assert.AreEqual(0, publisher.Published.Count);
+    }
+
+    [TestMethod]
+    public async Task InvokeAgentExecutor_AcceptsNullMetadata_AsMissing()
+    {
+        var publisher = new TrackingPublisher();
+        var tracker = new A2ATaskTracker();
+        var executor = BuildExecutor(publisher, tracker);
+
+        var request = BuildToolRequest("""
+            { "agent_name": "TargetAgent", "skill": "chat", "message": "Hi.", "metadata": null }
+            """);
+
+        var response = await executor.ExecuteAsync(request, CancellationToken.None);
+
+        Assert.IsFalse(response.IsError);
+        var taskReq = publisher.Published[0].Envelope.GetPayload<AgentTaskRequest>()!;
+        Assert.IsNull(taskReq.Message.Metadata);
+    }
+
+    [TestMethod]
+    public void BuildOutboundMetadata_AlwaysIncludesSkill()
+    {
+        var dict = InvokeAgentExecutor.BuildOutboundMetadata("recent-mentions", null);
+        Assert.IsTrue(dict.ContainsKey("skill"));
+        Assert.AreEqual("recent-mentions", dict["skill"].GetString());
+    }
+
+    [TestMethod]
+    public void BuildOutboundMetadata_MergesExtras_AlongsideSkill()
+    {
+        var extras = new Dictionary<string, string> { ["providerId"] = "bluesky", ["count"] = "10" };
+        var dict = InvokeAgentExecutor.BuildOutboundMetadata("recent-mentions", extras);
+
+        Assert.AreEqual("recent-mentions", dict["skill"].GetString());
+        Assert.AreEqual("bluesky", dict["providerId"].GetString());
+        Assert.AreEqual("10",      dict["count"].GetString());
+    }
+
+    [TestMethod]
+    public void BuildOutboundMetadata_IgnoresExtraSkillKey_DefenseInDepth()
+    {
+        // The executor blocks "skill" at input, but the helper should also
+        // refuse to overwrite the auto-set value if a caller ever bypasses that.
+        var extras = new Dictionary<string, string> { ["skill"] = "evil" };
+        var dict = InvokeAgentExecutor.BuildOutboundMetadata("recent-mentions", extras);
+        Assert.AreEqual("recent-mentions", dict["skill"].GetString());
+    }
+
+    [TestMethod]
     public void MapOutboundV03Part_TextPart_MapsToV03TextPart()
     {
         var part = new AgentMessagePart { Kind = "text", Text = "hello" };

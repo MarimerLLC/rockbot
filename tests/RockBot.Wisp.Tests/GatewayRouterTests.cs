@@ -151,6 +151,50 @@ public class GatewayRouterTests
     }
 
     [TestMethod]
+    public void Route_A2A_ForwardsMetadata_WhenStepProvidesIt()
+    {
+        var step = new WispStep
+        {
+            Id = "filter-mentions",
+            Mode = StepMode.Direct,
+            Gateway = GatewayType.A2A,
+            Agent = "SocialAgent",
+            Skill = "recent-mentions",
+            Message = "Bluesky only.",
+            Metadata = JsonDocument.Parse("""{"providerId":"bluesky","count":10}""").RootElement
+        };
+
+        var result = GatewayRouter.Route(step, "wisp-123", EmptyResults);
+
+        Assert.IsTrue(result.IsSuccess);
+        var args = JsonDocument.Parse(result.Arguments!).RootElement;
+        Assert.IsTrue(args.TryGetProperty("metadata", out var md));
+        Assert.AreEqual("bluesky", md.GetProperty("providerId").GetString());
+        Assert.AreEqual(10, md.GetProperty("count").GetInt32());
+    }
+
+    [TestMethod]
+    public void Route_A2A_OmitsMetadata_WhenStepHasNone()
+    {
+        var step = new WispStep
+        {
+            Id = "no-md",
+            Mode = StepMode.Direct,
+            Gateway = GatewayType.A2A,
+            Agent = "TargetAgent",
+            Skill = "summarize",
+            Message = "x"
+        };
+
+        var result = GatewayRouter.Route(step, "wisp-123", EmptyResults);
+
+        Assert.IsTrue(result.IsSuccess);
+        var args = JsonDocument.Parse(result.Arguments!).RootElement;
+        Assert.IsFalse(args.TryGetProperty("metadata", out _),
+            "metadata key must not appear when the wisp step doesn't supply it.");
+    }
+
+    [TestMethod]
     public void Route_A2A_MissingAgent_ReturnsStructuralError()
     {
         var step = new WispStep
