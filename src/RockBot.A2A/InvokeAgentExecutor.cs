@@ -394,6 +394,109 @@ internal sealed class InvokeAgentExecutor(
         }
     }
 
+    // ── Shared InputRequired orchestration ───────────────────────────────────────
+
+    /// <summary>
+    /// Sends an outbound message (initial or follow-up) and returns once the task
+    /// has left <see cref="AgentTaskState.Working"/>/<see cref="AgentTaskState.Submitted"/>.
+    /// Each protocol-specific dispatch supplies its own implementation: v0.3 polls
+    /// after Send, v1-polling delegates to subscribe-or-poll, v1-streaming consumes
+    /// the SSE stream until a terminal or input-required event arrives.
+    /// </summary>
+    private delegate Task<AgentTaskResult?> SendAndWaitDelegate(
+        IReadOnlyList<AgentMessagePart> parts,
+        string? contextId,
+        CancellationToken ct);
+
+    /// <summary>
+    /// Drives the multi-turn A2A InputRequired loop: send → wait for non-working
+    /// result → on InputRequired, ask the handler for an answer, run repetition /
+    /// max-rounds checks, and send a follow-up. Terminal results are returned
+    /// as-is. The protocol-specific transport is abstracted via
+    /// <paramref name="sendAndWait"/> — round counting, repetition detection,
+    /// max-rounds enforcement, logging, and diagnostics live here so they cannot
+    /// drift between v0.3, v1-polling, and v1-streaming.
+    /// </summary>
+    private async Task<AgentTaskResult?> RunInputRequiredLoopAsync(
+        AgentTaskRequest taskRequest,
+        IReadOnlyList<AgentMessagePart> initialParts,
+        PendingA2ATask pending,
+        SendAndWaitDelegate sendAndWait,
+        CancellationToken ct)
+    {
+        var taskId = taskRequest.TaskId;
+        var repetitionDetector = new InputRequiredRepetitionDetector(options.InputRequiredRepetitionThreshold);
+        string? contextId = null;
+        var parts = initialParts;
+
+        while (!ct.IsCancellationRequested)
+        {
+            var result = await sendAndWait(parts, contextId, ct);
+            if (result is null) return null;
+
+            contextId ??= result.ContextId;
+            pending.ContextId ??= contextId;
+
+            // Terminal states — done
+            if (result.State is AgentTaskState.Completed or AgentTaskState.Failed or AgentTaskState.Canceled)
+                return result;
+
+            // Anything other than InputRequired (or an unknown state) — return as-is.
+            // This matches the previous "break + return result" semantics.
+            if (result.State != AgentTaskState.InputRequired)
+                return result;
+
+            // ── InputRequired follow-up ──
+            pending.InputRequiredRound++;
+            if (pending.InputRequiredRound > options.MaxInputRequiredRounds)
+            {
+                logger.LogWarning(
+                    "A2A task {TaskId} exceeded max InputRequired rounds ({Max})",
+                    taskId, options.MaxInputRequiredRounds);
+                A2ADiagnostics.InputRequiredBreaks.Add(1,
+                    new KeyValuePair<string, object?>("rockbot.a2a.target_agent", pending.TargetAgent),
+                    new KeyValuePair<string, object?>("rockbot.a2a.reason", "max_rounds"));
+                return MakeLoopExceededResult(taskId, contextId, "max rounds exceeded");
+            }
+
+            var questionText = ExtractResultText(result);
+            logger.LogInformation(
+                "A2A task {TaskId} from '{AgentName}' requires input (round {Round})",
+                taskId, pending.TargetAgent, pending.InputRequiredRound);
+
+            var followUp = await inputRequiredHandler.HandleAsync(
+                new InputRequiredContext
+                {
+                    TaskId = taskId,
+                    ContextId = contextId,
+                    TargetAgent = pending.TargetAgent,
+                    Skill = pending.Skill,
+                    QuestionText = questionText,
+                    PrimarySessionId = pending.PrimarySessionId,
+                    Round = pending.InputRequiredRound
+                }, ct);
+
+            if (repetitionDetector.Track(questionText, followUp.ResponseText))
+            {
+                logger.LogWarning(
+                    "A2A task {TaskId} InputRequired loop stuck (repeated {Threshold}x)",
+                    taskId, options.InputRequiredRepetitionThreshold);
+                A2ADiagnostics.InputRequiredBreaks.Add(1,
+                    new KeyValuePair<string, object?>("rockbot.a2a.target_agent", pending.TargetAgent),
+                    new KeyValuePair<string, object?>("rockbot.a2a.reason", "repetition"));
+                return MakeLoopExceededResult(taskId, contextId, "conversation stuck in a loop");
+            }
+
+            logger.LogInformation(
+                "A2A InputRequired follow-up sent for task {TaskId} round {Round} (autonomous={Autonomous})",
+                taskId, pending.InputRequiredRound, followUp.WasAutonomous);
+
+            parts = TextOnlyParts(followUp.ResponseText);
+        }
+
+        return null;
+    }
+
     // ── V0.3 dispatch ────────────────────────────────────────────────────────────
 
     private async Task<AgentTaskResult?> DispatchV03Async(
@@ -406,89 +509,25 @@ internal sealed class InvokeAgentExecutor(
         CancellationToken ct)
     {
         var a2aClient = new A2AV03.A2AClient(endpoint, httpClient);
-        string? contextId = null;
-        var repetitionDetector = new InputRequiredRepetitionDetector(options.InputRequiredRepetitionThreshold);
 
-        // Initial send
-        var sendParams = BuildV03SendParams(taskId, initialParts, contextId, taskRequest.Skill, taskRequest.Message.Metadata);
-        var a2aResponse = await a2aClient.SendMessageAsync(sendParams, ct);
-        var result = MapV03Response(a2aResponse, taskId);
+        return await RunInputRequiredLoopAsync(
+            taskRequest, initialParts, pending,
+            async (parts, contextId, c) =>
+            {
+                var sendParams = BuildV03SendParams(
+                    taskId, parts, contextId, taskRequest.Skill, taskRequest.Message.Metadata);
+                var a2aResponse = await a2aClient.SendMessageAsync(sendParams, c);
+                var result = MapV03Response(a2aResponse, taskId);
 
-        while (result is not null && !ct.IsCancellationRequested)
-        {
-            contextId ??= result.ContextId;
-            pending.ContextId ??= contextId;
+                if (result is { State: AgentTaskState.Working or AgentTaskState.Submitted })
+                {
+                    await PublishStatusUpdateAsync(result, pending.TargetAgent, taskId, c);
+                    result = await PollV03UntilNonWorkingAsync(a2aClient, taskId, pending, c);
+                }
 
-            // Terminal states — done
-            if (result.State is AgentTaskState.Completed or AgentTaskState.Failed or AgentTaskState.Canceled)
                 return result;
-
-            // Working/Submitted — poll until non-working
-            if (result.State is AgentTaskState.Working or AgentTaskState.Submitted)
-            {
-                await PublishStatusUpdateAsync(result, pending.TargetAgent, taskId, ct);
-                result = await PollV03UntilNonWorkingAsync(a2aClient, taskId, pending, ct);
-                continue;
-            }
-
-            // InputRequired — follow-up loop
-            if (result.State == AgentTaskState.InputRequired)
-            {
-                pending.InputRequiredRound++;
-                if (pending.InputRequiredRound > options.MaxInputRequiredRounds)
-                {
-                    logger.LogWarning(
-                        "A2A task {TaskId} exceeded max InputRequired rounds ({Max})",
-                        taskId, options.MaxInputRequiredRounds);
-                    A2ADiagnostics.InputRequiredBreaks.Add(1,
-                        new KeyValuePair<string, object?>("rockbot.a2a.target_agent", pending.TargetAgent),
-                        new KeyValuePair<string, object?>("rockbot.a2a.reason", "max_rounds"));
-                    return MakeLoopExceededResult(taskId, contextId, "max rounds exceeded");
-                }
-
-                var questionText = ExtractResultText(result);
-                logger.LogInformation(
-                    "A2A task {TaskId} from '{AgentName}' requires input (round {Round})",
-                    taskId, pending.TargetAgent, pending.InputRequiredRound);
-
-                var followUp = await inputRequiredHandler.HandleAsync(
-                    new InputRequiredContext
-                    {
-                        TaskId = taskId,
-                        ContextId = contextId,
-                        TargetAgent = pending.TargetAgent,
-                        Skill = pending.Skill,
-                        QuestionText = questionText,
-                        PrimarySessionId = pending.PrimarySessionId,
-                        Round = pending.InputRequiredRound
-                    }, ct);
-
-                if (repetitionDetector.Track(questionText, followUp.ResponseText))
-                {
-                    logger.LogWarning(
-                        "A2A task {TaskId} InputRequired loop stuck (repeated {Threshold}x)",
-                        taskId, options.InputRequiredRepetitionThreshold);
-                    A2ADiagnostics.InputRequiredBreaks.Add(1,
-                        new KeyValuePair<string, object?>("rockbot.a2a.target_agent", pending.TargetAgent),
-                        new KeyValuePair<string, object?>("rockbot.a2a.reason", "repetition"));
-                    return MakeLoopExceededResult(taskId, contextId, "conversation stuck in a loop");
-                }
-
-                logger.LogInformation(
-                    "A2A InputRequired follow-up sent for task {TaskId} round {Round} (autonomous={Autonomous})",
-                    taskId, pending.InputRequiredRound, followUp.WasAutonomous);
-
-                // Send follow-up with contextId
-                sendParams = BuildV03SendParams(taskId, TextOnlyParts(followUp.ResponseText), contextId, taskRequest.Skill, taskRequest.Message.Metadata);
-                a2aResponse = await a2aClient.SendMessageAsync(sendParams, ct);
-                result = MapV03Response(a2aResponse, taskId);
-                continue;
-            }
-
-            break; // Unknown state
-        }
-
-        return result;
+            },
+            ct);
     }
 
     internal static A2AV03.MessageSendParams BuildV03SendParams(
@@ -648,89 +687,24 @@ internal sealed class InvokeAgentExecutor(
         bool supportsStreaming,
         CancellationToken ct)
     {
-        string? contextId = null;
-        var repetitionDetector = new InputRequiredRepetitionDetector(options.InputRequiredRepetitionThreshold);
+        return await RunInputRequiredLoopAsync(
+            taskRequest, initialParts, pending,
+            async (parts, contextId, c) =>
+            {
+                var sendRequest = BuildV1SendRequest(
+                    taskId, parts, contextId, taskRequest.Skill, taskRequest.Message.Metadata);
+                var a2aResponse = await a2aClient.SendMessageAsync(sendRequest, c);
+                var result = MapV1Response(a2aResponse, taskId);
 
-        // Initial send
-        var sendRequest = BuildV1SendRequest(taskId, initialParts, contextId, taskRequest.Skill, taskRequest.Message.Metadata);
-        var a2aResponse = await a2aClient.SendMessageAsync(sendRequest, ct);
-        var result = MapV1Response(a2aResponse, taskId);
+                if (result is { State: AgentTaskState.Working or AgentTaskState.Submitted })
+                {
+                    await PublishStatusUpdateAsync(result, pending.TargetAgent, taskId, c);
+                    result = await WaitForNonWorkingV1Async(a2aClient, taskId, pending, supportsStreaming, c);
+                }
 
-        while (result is not null && !ct.IsCancellationRequested)
-        {
-            contextId ??= result.ContextId;
-            pending.ContextId ??= contextId;
-
-            // Terminal states — done
-            if (result.State is AgentTaskState.Completed or AgentTaskState.Failed or AgentTaskState.Canceled)
                 return result;
-
-            // Working/Submitted — subscribe if the agent supports streaming, else poll.
-            if (result.State is AgentTaskState.Working or AgentTaskState.Submitted)
-            {
-                await PublishStatusUpdateAsync(result, pending.TargetAgent, taskId, ct);
-                result = await WaitForNonWorkingV1Async(a2aClient, taskId, pending, supportsStreaming, ct);
-                continue;
-            }
-
-            // InputRequired — follow-up loop
-            if (result.State == AgentTaskState.InputRequired)
-            {
-                pending.InputRequiredRound++;
-                if (pending.InputRequiredRound > options.MaxInputRequiredRounds)
-                {
-                    logger.LogWarning(
-                        "A2A task {TaskId} exceeded max InputRequired rounds ({Max})",
-                        taskId, options.MaxInputRequiredRounds);
-                    A2ADiagnostics.InputRequiredBreaks.Add(1,
-                        new KeyValuePair<string, object?>("rockbot.a2a.target_agent", pending.TargetAgent),
-                        new KeyValuePair<string, object?>("rockbot.a2a.reason", "max_rounds"));
-                    return MakeLoopExceededResult(taskId, contextId, "max rounds exceeded");
-                }
-
-                var questionText = ExtractResultText(result);
-                logger.LogInformation(
-                    "A2A task {TaskId} from '{AgentName}' requires input (round {Round})",
-                    taskId, pending.TargetAgent, pending.InputRequiredRound);
-
-                var followUp = await inputRequiredHandler.HandleAsync(
-                    new InputRequiredContext
-                    {
-                        TaskId = taskId,
-                        ContextId = contextId,
-                        TargetAgent = pending.TargetAgent,
-                        Skill = pending.Skill,
-                        QuestionText = questionText,
-                        PrimarySessionId = pending.PrimarySessionId,
-                        Round = pending.InputRequiredRound
-                    }, ct);
-
-                if (repetitionDetector.Track(questionText, followUp.ResponseText))
-                {
-                    logger.LogWarning(
-                        "A2A task {TaskId} InputRequired loop stuck (repeated {Threshold}x)",
-                        taskId, options.InputRequiredRepetitionThreshold);
-                    A2ADiagnostics.InputRequiredBreaks.Add(1,
-                        new KeyValuePair<string, object?>("rockbot.a2a.target_agent", pending.TargetAgent),
-                        new KeyValuePair<string, object?>("rockbot.a2a.reason", "repetition"));
-                    return MakeLoopExceededResult(taskId, contextId, "conversation stuck in a loop");
-                }
-
-                logger.LogInformation(
-                    "A2A InputRequired follow-up sent for task {TaskId} round {Round} (autonomous={Autonomous})",
-                    taskId, pending.InputRequiredRound, followUp.WasAutonomous);
-
-                // Send follow-up with contextId
-                sendRequest = BuildV1SendRequest(taskId, TextOnlyParts(followUp.ResponseText), contextId, taskRequest.Skill, taskRequest.Message.Metadata);
-                a2aResponse = await a2aClient.SendMessageAsync(sendRequest, ct);
-                result = MapV1Response(a2aResponse, taskId);
-                continue;
-            }
-
-            break; // Unknown state
-        }
-
-        return result;
+            },
+            ct);
     }
 
     // ── V1 streaming dispatch ───────────────────────────────────────────────────
@@ -753,136 +727,84 @@ internal sealed class InvokeAgentExecutor(
         streamActivity?.SetTag("rockbot.a2a.target_agent", pending.TargetAgent);
         streamActivity?.SetTag("rockbot.a2a.session_id", pending.PrimarySessionId);
 
-        string? contextId = null;
-        var repetitionDetector = new InputRequiredRepetitionDetector(options.InputRequiredRepetitionThreshold);
-        var sendRequest = BuildV1SendRequest(taskId, initialParts, contextId, taskRequest.Skill, taskRequest.Message.Metadata);
+        return await RunInputRequiredLoopAsync(
+            taskRequest, initialParts, pending,
+            async (parts, contextId, c) =>
+            {
+                var sendRequest = BuildV1SendRequest(
+                    taskId, parts, contextId, taskRequest.Skill, taskRequest.Message.Metadata);
+                return await ConsumeV1StreamUntilNonWorkingAsync(a2aClient, sendRequest, taskId, pending, c);
+            },
+            ct);
+    }
 
-        while (!ct.IsCancellationRequested)
+    /// <summary>
+    /// Consumes a v1 SSE stream from <c>SendStreamingMessageAsync</c> until the task
+    /// reaches a terminal state, transitions to <see cref="AgentTaskState.InputRequired"/>,
+    /// or the stream ends. Working/Submitted updates are forwarded to the internal
+    /// status topic. The InputRequired follow-up loop is handled one level up by
+    /// <see cref="RunInputRequiredLoopAsync"/>.
+    /// </summary>
+    private async Task<AgentTaskResult?> ConsumeV1StreamUntilNonWorkingAsync(
+        A2AV1.A2AClient a2aClient,
+        A2AV1.SendMessageRequest sendRequest,
+        string taskId,
+        PendingA2ATask pending,
+        CancellationToken ct)
+    {
+        AgentTaskResult? lastResult = null;
+
+        await foreach (var evt in a2aClient.SendStreamingMessageAsync(sendRequest, ct))
         {
-            AgentTaskResult? lastResult = null;
-            bool inputRequired = false;
+            A2ADiagnostics.StreamingEvents.Add(1,
+                new KeyValuePair<string, object?>("rockbot.a2a.target_agent", pending.TargetAgent),
+                new KeyValuePair<string, object?>("rockbot.a2a.event_type", evt.PayloadCase.ToString()));
 
-            await foreach (var evt in a2aClient.SendStreamingMessageAsync(sendRequest, ct))
+            switch (evt.PayloadCase)
             {
-                A2ADiagnostics.StreamingEvents.Add(1,
-                    new KeyValuePair<string, object?>("rockbot.a2a.target_agent", pending.TargetAgent),
-                    new KeyValuePair<string, object?>("rockbot.a2a.event_type", evt.PayloadCase.ToString()));
+                case A2AV1.StreamResponseCase.StatusUpdate when evt.StatusUpdate is { } su:
+                    lastResult = MapV1StatusUpdateEvent(su, taskId);
+                    pending.ContextId ??= su.ContextId;
 
-                switch (evt.PayloadCase)
-                {
-                    case A2AV1.StreamResponseCase.StatusUpdate when evt.StatusUpdate is { } su:
-                        lastResult = MapV1StatusUpdateEvent(su, taskId);
-                        contextId ??= su.ContextId;
-                        pending.ContextId ??= contextId;
+                    if (lastResult.State is AgentTaskState.Completed or AgentTaskState.Failed or AgentTaskState.Canceled
+                        or AgentTaskState.InputRequired)
+                        return lastResult;
 
-                        if (lastResult.State is AgentTaskState.Completed or AgentTaskState.Failed or AgentTaskState.Canceled)
-                            return lastResult;
+                    if (lastResult.State is AgentTaskState.Working or AgentTaskState.Submitted)
+                        await PublishStatusUpdateAsync(lastResult, pending.TargetAgent, taskId, ct);
+                    break;
 
-                        if (lastResult.State is AgentTaskState.Working or AgentTaskState.Submitted)
-                            await PublishStatusUpdateAsync(lastResult, pending.TargetAgent, taskId, ct);
+                case A2AV1.StreamResponseCase.Task when evt.Task is { } task:
+                    lastResult = MapV1TaskResponse(task, taskId);
+                    pending.ContextId ??= task.ContextId;
 
-                        if (lastResult.State == AgentTaskState.InputRequired)
-                        {
-                            inputRequired = true;
-                            goto EndStream; // break out of await foreach
-                        }
-                        break;
+                    if (lastResult is null) break;
 
-                    case A2AV1.StreamResponseCase.Task when evt.Task is { } task:
-                        lastResult = MapV1TaskResponse(task, taskId);
-                        contextId ??= task.ContextId;
-                        pending.ContextId ??= contextId;
+                    if (lastResult.State is AgentTaskState.Completed or AgentTaskState.Failed or AgentTaskState.Canceled
+                        or AgentTaskState.InputRequired)
+                        return lastResult;
 
-                        if (lastResult is null) break;
+                    if (lastResult.State is AgentTaskState.Working or AgentTaskState.Submitted)
+                        await PublishStatusUpdateAsync(lastResult, pending.TargetAgent, taskId, ct);
+                    break;
 
-                        if (lastResult.State is AgentTaskState.Completed or AgentTaskState.Failed or AgentTaskState.Canceled)
-                            return lastResult;
-
-                        if (lastResult.State is AgentTaskState.Working or AgentTaskState.Submitted)
-                            await PublishStatusUpdateAsync(lastResult, pending.TargetAgent, taskId, ct);
-
-                        if (lastResult.State == AgentTaskState.InputRequired)
-                        {
-                            inputRequired = true;
-                            goto EndStream;
-                        }
-                        break;
-
-                    case A2AV1.StreamResponseCase.Message when evt.Message is { } msg:
-                        return new AgentTaskResult
-                        {
-                            TaskId = taskId,
-                            ContextId = contextId,
-                            State = AgentTaskState.Completed,
-                            Message = MapV1Message(msg)
-                        };
-
-                    default:
-                        logger.LogDebug("Ignoring streaming event with PayloadCase={PayloadCase} for task {TaskId}",
-                            evt.PayloadCase, taskId);
-                        break;
-                }
-            }
-
-            EndStream:
-
-            // InputRequired follow-up — same logic as the polling path
-            if (inputRequired && lastResult is not null)
-            {
-                pending.InputRequiredRound++;
-                if (pending.InputRequiredRound > options.MaxInputRequiredRounds)
-                {
-                    logger.LogWarning(
-                        "A2A streaming task {TaskId} exceeded max InputRequired rounds ({Max})",
-                        taskId, options.MaxInputRequiredRounds);
-                    A2ADiagnostics.InputRequiredBreaks.Add(1,
-                        new KeyValuePair<string, object?>("rockbot.a2a.target_agent", pending.TargetAgent),
-                        new KeyValuePair<string, object?>("rockbot.a2a.reason", "max_rounds"));
-                    return MakeLoopExceededResult(taskId, contextId, "max rounds exceeded");
-                }
-
-                var questionText = ExtractResultText(lastResult);
-                logger.LogInformation(
-                    "A2A streaming task {TaskId} from '{AgentName}' requires input (round {Round})",
-                    taskId, pending.TargetAgent, pending.InputRequiredRound);
-
-                var followUp = await inputRequiredHandler.HandleAsync(
-                    new InputRequiredContext
+                case A2AV1.StreamResponseCase.Message when evt.Message is { } msg:
+                    return new AgentTaskResult
                     {
                         TaskId = taskId,
-                        ContextId = contextId,
-                        TargetAgent = pending.TargetAgent,
-                        Skill = pending.Skill,
-                        QuestionText = questionText,
-                        PrimarySessionId = pending.PrimarySessionId,
-                        Round = pending.InputRequiredRound
-                    }, ct);
+                        ContextId = pending.ContextId,
+                        State = AgentTaskState.Completed,
+                        Message = MapV1Message(msg)
+                    };
 
-                if (repetitionDetector.Track(questionText, followUp.ResponseText))
-                {
-                    logger.LogWarning(
-                        "A2A streaming task {TaskId} InputRequired loop stuck (repeated {Threshold}x)",
-                        taskId, options.InputRequiredRepetitionThreshold);
-                    A2ADiagnostics.InputRequiredBreaks.Add(1,
-                        new KeyValuePair<string, object?>("rockbot.a2a.target_agent", pending.TargetAgent),
-                        new KeyValuePair<string, object?>("rockbot.a2a.reason", "repetition"));
-                    return MakeLoopExceededResult(taskId, contextId, "conversation stuck in a loop");
-                }
-
-                logger.LogInformation(
-                    "A2A streaming InputRequired follow-up sent for task {TaskId} round {Round} (autonomous={Autonomous})",
-                    taskId, pending.InputRequiredRound, followUp.WasAutonomous);
-
-                // Send follow-up with contextId — continue streaming
-                sendRequest = BuildV1SendRequest(taskId, TextOnlyParts(followUp.ResponseText), contextId, taskRequest.Skill, taskRequest.Message.Metadata);
-                continue;
+                default:
+                    logger.LogDebug("Ignoring streaming event with PayloadCase={PayloadCase} for task {TaskId}",
+                        evt.PayloadCase, taskId);
+                    break;
             }
-
-            // Stream ended without a terminal event
-            return lastResult;
         }
 
-        return null;
+        return lastResult;
     }
 
     /// <summary>
