@@ -320,6 +320,11 @@ body.dark-mode .form-control:focus {
     cursor: default;
 }
 
+/* Monochrome SVG icons need more opacity than colored emoji to read at the same weight */
+.btn-feedback:has(svg) {
+    opacity: 0.7;
+}
+
 body.dark-mode .feedback-bar {
     border-top-color: rgba(255, 255, 255, 0.1);
 }
