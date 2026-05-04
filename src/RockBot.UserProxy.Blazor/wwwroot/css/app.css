@@ -325,6 +325,11 @@ body.dark-mode .form-control:focus {
     opacity: 0.7;
 }
 
+/* In dark mode, tint the SVG orange so it stands out against the dark bubble */
+body.dark-mode .btn-feedback svg {
+    color: #fb923c;
+}
+
 body.dark-mode .feedback-bar {
     border-top-color: rgba(255, 255, 255, 0.1);
 }
