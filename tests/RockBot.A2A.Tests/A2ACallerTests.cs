@@ -349,6 +349,43 @@ public class A2ACallerTests
     }
 
     [TestMethod]
+    public void BuildV1SendRequest_PutsMetadata_OnMessage_NotOnRequest()
+    {
+        // Per A2A v1 spec, per-message metadata (skill + per-skill params)
+        // belongs on Message.metadata. Receivers like SocialAgent dispatch
+        // skills and read filter parameters from Message.metadata. Putting it
+        // on SendMessageRequest.metadata makes the values invisible to them.
+        var extras = new Dictionary<string, string> { ["providerId"] = "bluesky" };
+        var req = InvokeAgentExecutor.BuildV1SendRequest(
+            taskId: "t1", parts: [new AgentMessagePart { Kind = "text", Text = "hi" }],
+            contextId: null, skill: "recent-mentions", extraMetadata: extras);
+
+        Assert.IsNotNull(req.Message.Metadata,
+            "Message.metadata must carry the skill + per-skill keys.");
+        Assert.AreEqual("recent-mentions", req.Message.Metadata["skill"].GetString());
+        Assert.AreEqual("bluesky", req.Message.Metadata["providerId"].GetString());
+
+        Assert.IsNull(req.Metadata,
+            "SendMessageRequest.metadata must remain unset — receivers read Message.metadata.");
+    }
+
+    [TestMethod]
+    public void BuildV03SendParams_PutsMetadata_OnMessage_NotOnParams()
+    {
+        var extras = new Dictionary<string, string> { ["providerId"] = "bluesky" };
+        var p = InvokeAgentExecutor.BuildV03SendParams(
+            taskId: "t1", parts: [new AgentMessagePart { Kind = "text", Text = "hi" }],
+            contextId: null, skill: "recent-mentions", extraMetadata: extras);
+
+        Assert.IsNotNull(p.Message.Metadata);
+        Assert.AreEqual("recent-mentions", p.Message.Metadata["skill"].GetString());
+        Assert.AreEqual("bluesky", p.Message.Metadata["providerId"].GetString());
+
+        Assert.IsNull(p.Metadata,
+            "MessageSendParams.metadata must remain unset — receivers read Message.metadata.");
+    }
+
+    [TestMethod]
     public void BuildOutboundMetadata_AlwaysIncludesSkill()
     {
         var dict = InvokeAgentExecutor.BuildOutboundMetadata("recent-mentions", null);
