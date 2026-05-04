@@ -1,4 +1,6 @@
 [
+  { "prefix": "gpt-5.5-pro",      "inputPerM": 30.00, "outputPerM": 180.00 },
+  { "prefix": "gpt-5.5",          "inputPerM":  5.00, "outputPerM":  30.00 },
   { "prefix": "gpt-5.4-pro",      "inputPerM": 30.00, "outputPerM": 180.00 },
   { "prefix": "gpt-5.4-mini",     "inputPerM":  0.75, "outputPerM":   4.50 },
   { "prefix": "gpt-5.4",          "inputPerM":  2.50, "outputPerM":  15.00 },
