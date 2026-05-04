@@ -491,7 +491,7 @@ internal sealed class InvokeAgentExecutor(
         return result;
     }
 
-    private static A2AV03.MessageSendParams BuildV03SendParams(
+    internal static A2AV03.MessageSendParams BuildV03SendParams(
         string taskId, IReadOnlyList<AgentMessagePart> parts, string? contextId, string skill,
         IReadOnlyDictionary<string, string>? extraMetadata = null)
     {
@@ -502,9 +502,9 @@ internal sealed class InvokeAgentExecutor(
                 Role = A2AV03.MessageRole.User,
                 MessageId = taskId,
                 ContextId = contextId,
-                Parts = parts.Select(MapOutboundV03Part).ToList()
-            },
-            Metadata = BuildOutboundMetadata(skill, extraMetadata)
+                Parts = parts.Select(MapOutboundV03Part).ToList(),
+                Metadata = BuildOutboundMetadata(skill, extraMetadata)
+            }
         };
     }
 
@@ -912,10 +912,14 @@ internal sealed class InvokeAgentExecutor(
         };
     }
 
-    private static A2AV1.SendMessageRequest BuildV1SendRequest(
+    internal static A2AV1.SendMessageRequest BuildV1SendRequest(
         string taskId, IReadOnlyList<AgentMessagePart> parts, string? contextId, string skill,
         IReadOnlyDictionary<string, string>? extraMetadata = null)
     {
+        // Per A2A spec, per-message metadata (skill, providerId, count, …) belongs
+        // on Message.metadata, not SendMessageRequest.metadata. Receivers like
+        // SocialAgent read Message.metadata for skill dispatch and per-skill params;
+        // request-level metadata is at most a fallback for the skill key.
         return new A2AV1.SendMessageRequest
         {
             Message = new A2AV1.Message
@@ -923,9 +927,9 @@ internal sealed class InvokeAgentExecutor(
                 Role = A2AV1.Role.User,
                 MessageId = taskId,
                 ContextId = contextId,
-                Parts = parts.Select(MapOutboundV1Part).ToList()
-            },
-            Metadata = BuildOutboundMetadata(skill, extraMetadata)
+                Parts = parts.Select(MapOutboundV1Part).ToList(),
+                Metadata = BuildOutboundMetadata(skill, extraMetadata)
+            }
         };
     }
 
