@@ -212,10 +212,16 @@ internal sealed class A2ACallerToolRegistrar(
         {
             Name = "refresh_agent_card",
             Description = """
-                Re-fetch a known agent's /.well-known/agent-card.json so its skills, metadata,
-                and description reflect the current published state. Use this when an invoke_agent
-                call returns an unexpected error (e.g. unknown skill or metadata key), when the
-                user asks "what can X do now?", or when you suspect cached capabilities are stale.
+                FORCES a fresh HTTP re-fetch of an A2A agent's /.well-known/agent-card.json so
+                the local directory reflects its CURRENT published skills and metadata.
+                Distinct from get_agent_details, which only returns the locally-cached card
+                (potentially hours stale). Call this — before get_agent_details / invoke_agent —
+                whenever: (a) invoke_agent fails with 'unknown skill' or 'unknown metadata key',
+                (b) the user asks "what can X do now?", "is X up to date?", or mentions a new
+                feature/skill the agent should support, (c) you otherwise suspect the cached
+                capabilities are stale. Note: this is for A2A agents (use list_known_agents),
+                NOT MCP servers. Returns a status summary; read the refreshed card via
+                get_agent_details.
                 """,
             ParametersSchema = RefreshAgentCardSchema,
             Source = "a2a"
