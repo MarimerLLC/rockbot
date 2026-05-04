@@ -84,6 +84,43 @@ internal sealed class InvokeAgentExecutor(
             dataJson = dataEl.GetRawText();
         }
 
+        // Optional A2A message metadata — per-skill control parameters that some
+        // agents advertise (e.g. SocialAgent's providerId/count/since). Only
+        // primitives are allowed; objects/arrays would push outside the v1 metadata
+        // contract and most receiving handlers can't interpret them. Values are
+        // serialized to strings — receivers coerce to int/date/etc as needed.
+        Dictionary<string, string>? metadata = null;
+        if (args.TryGetValue("metadata", out var metaEl) && metaEl.ValueKind != JsonValueKind.Null &&
+            metaEl.ValueKind != JsonValueKind.Undefined)
+        {
+            if (metaEl.ValueKind != JsonValueKind.Object)
+                return Error(request, "Argument 'metadata' must be a JSON object.");
+
+            metadata = new Dictionary<string, string>(StringComparer.Ordinal);
+            foreach (var prop in metaEl.EnumerateObject())
+            {
+                var v = prop.Value;
+                string? str = v.ValueKind switch
+                {
+                    JsonValueKind.String => v.GetString(),
+                    JsonValueKind.Number => v.GetRawText(),
+                    JsonValueKind.True => "true",
+                    JsonValueKind.False => "false",
+                    _ => null
+                };
+                if (str is null)
+                    return Error(request,
+                        $"Argument 'metadata.{prop.Name}' must be a string, number, or boolean. " +
+                        "Use 'data' for nested objects/arrays.");
+
+                metadata[prop.Name] = str;
+            }
+
+            if (metadata.ContainsKey("skill"))
+                return Error(request,
+                    "Argument 'metadata.skill' is reserved — it's set automatically from the 'skill' parameter.");
+        }
+
         // Reject self-invocation — the LLM sometimes uses its own identity name
         // instead of the target agent's name from the directory.
         if (agentName.Equals(identity.Name, StringComparison.OrdinalIgnoreCase))
@@ -123,7 +160,8 @@ internal sealed class InvokeAgentExecutor(
             Message = new AgentMessage
             {
                 Role = "user",
-                Parts = parts
+                Parts = parts,
+                Metadata = metadata
             }
         };
 
@@ -372,7 +410,7 @@ internal sealed class InvokeAgentExecutor(
         var repetitionDetector = new InputRequiredRepetitionDetector(options.InputRequiredRepetitionThreshold);
 
         // Initial send
-        var sendParams = BuildV03SendParams(taskId, initialParts, contextId, taskRequest.Skill);
+        var sendParams = BuildV03SendParams(taskId, initialParts, contextId, taskRequest.Skill, taskRequest.Message.Metadata);
         var a2aResponse = await a2aClient.SendMessageAsync(sendParams, ct);
         var result = MapV03Response(a2aResponse, taskId);
 
@@ -441,7 +479,7 @@ internal sealed class InvokeAgentExecutor(
                     taskId, pending.InputRequiredRound, followUp.WasAutonomous);
 
                 // Send follow-up with contextId
-                sendParams = BuildV03SendParams(taskId, TextOnlyParts(followUp.ResponseText), contextId, taskRequest.Skill);
+                sendParams = BuildV03SendParams(taskId, TextOnlyParts(followUp.ResponseText), contextId, taskRequest.Skill, taskRequest.Message.Metadata);
                 a2aResponse = await a2aClient.SendMessageAsync(sendParams, ct);
                 result = MapV03Response(a2aResponse, taskId);
                 continue;
@@ -454,7 +492,8 @@ internal sealed class InvokeAgentExecutor(
     }
 
     private static A2AV03.MessageSendParams BuildV03SendParams(
-        string taskId, IReadOnlyList<AgentMessagePart> parts, string? contextId, string skill)
+        string taskId, IReadOnlyList<AgentMessagePart> parts, string? contextId, string skill,
+        IReadOnlyDictionary<string, string>? extraMetadata = null)
     {
         return new A2AV03.MessageSendParams
         {
@@ -465,10 +504,7 @@ internal sealed class InvokeAgentExecutor(
                 ContextId = contextId,
                 Parts = parts.Select(MapOutboundV03Part).ToList()
             },
-            Metadata = new Dictionary<string, JsonElement>
-            {
-                ["skill"] = JsonSerializer.SerializeToElement(skill)
-            }
+            Metadata = BuildOutboundMetadata(skill, extraMetadata)
         };
     }
 
@@ -616,7 +652,7 @@ internal sealed class InvokeAgentExecutor(
         var repetitionDetector = new InputRequiredRepetitionDetector(options.InputRequiredRepetitionThreshold);
 
         // Initial send
-        var sendRequest = BuildV1SendRequest(taskId, initialParts, contextId, taskRequest.Skill);
+        var sendRequest = BuildV1SendRequest(taskId, initialParts, contextId, taskRequest.Skill, taskRequest.Message.Metadata);
         var a2aResponse = await a2aClient.SendMessageAsync(sendRequest, ct);
         var result = MapV1Response(a2aResponse, taskId);
 
@@ -685,7 +721,7 @@ internal sealed class InvokeAgentExecutor(
                     taskId, pending.InputRequiredRound, followUp.WasAutonomous);
 
                 // Send follow-up with contextId
-                sendRequest = BuildV1SendRequest(taskId, TextOnlyParts(followUp.ResponseText), contextId, taskRequest.Skill);
+                sendRequest = BuildV1SendRequest(taskId, TextOnlyParts(followUp.ResponseText), contextId, taskRequest.Skill, taskRequest.Message.Metadata);
                 a2aResponse = await a2aClient.SendMessageAsync(sendRequest, ct);
                 result = MapV1Response(a2aResponse, taskId);
                 continue;
@@ -719,7 +755,7 @@ internal sealed class InvokeAgentExecutor(
 
         string? contextId = null;
         var repetitionDetector = new InputRequiredRepetitionDetector(options.InputRequiredRepetitionThreshold);
-        var sendRequest = BuildV1SendRequest(taskId, initialParts, contextId, taskRequest.Skill);
+        var sendRequest = BuildV1SendRequest(taskId, initialParts, contextId, taskRequest.Skill, taskRequest.Message.Metadata);
 
         while (!ct.IsCancellationRequested)
         {
@@ -838,7 +874,7 @@ internal sealed class InvokeAgentExecutor(
                     taskId, pending.InputRequiredRound, followUp.WasAutonomous);
 
                 // Send follow-up with contextId — continue streaming
-                sendRequest = BuildV1SendRequest(taskId, TextOnlyParts(followUp.ResponseText), contextId, taskRequest.Skill);
+                sendRequest = BuildV1SendRequest(taskId, TextOnlyParts(followUp.ResponseText), contextId, taskRequest.Skill, taskRequest.Message.Metadata);
                 continue;
             }
 
@@ -877,7 +913,8 @@ internal sealed class InvokeAgentExecutor(
     }
 
     private static A2AV1.SendMessageRequest BuildV1SendRequest(
-        string taskId, IReadOnlyList<AgentMessagePart> parts, string? contextId, string skill)
+        string taskId, IReadOnlyList<AgentMessagePart> parts, string? contextId, string skill,
+        IReadOnlyDictionary<string, string>? extraMetadata = null)
     {
         return new A2AV1.SendMessageRequest
         {
@@ -888,11 +925,34 @@ internal sealed class InvokeAgentExecutor(
                 ContextId = contextId,
                 Parts = parts.Select(MapOutboundV1Part).ToList()
             },
-            Metadata = new Dictionary<string, JsonElement>
-            {
-                ["skill"] = JsonSerializer.SerializeToElement(skill)
-            }
+            Metadata = BuildOutboundMetadata(skill, extraMetadata)
         };
+    }
+
+    /// <summary>
+    /// Builds the outbound A2A <c>Message.metadata</c> dict. Always includes
+    /// <c>skill</c> (set from the tool argument). Caller-supplied metadata is
+    /// serialized as JSON strings — receivers coerce to int/date/bool as needed.
+    /// </summary>
+    internal static Dictionary<string, JsonElement> BuildOutboundMetadata(
+        string skill, IReadOnlyDictionary<string, string>? extraMetadata)
+    {
+        var dict = new Dictionary<string, JsonElement>(StringComparer.Ordinal)
+        {
+            ["skill"] = JsonSerializer.SerializeToElement(skill)
+        };
+
+        if (extraMetadata is null) return dict;
+
+        foreach (var kvp in extraMetadata)
+        {
+            // Reserve "skill" — the executor already rejects this at the input
+            // boundary, but defend in depth in case a future caller bypasses it.
+            if (kvp.Key == "skill") continue;
+            dict[kvp.Key] = JsonSerializer.SerializeToElement(kvp.Value);
+        }
+
+        return dict;
     }
 
     internal static A2AV1.Part MapOutboundV1Part(AgentMessagePart part)

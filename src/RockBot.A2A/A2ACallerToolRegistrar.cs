@@ -41,6 +41,10 @@ internal sealed class A2ACallerToolRegistrar(
               "type": "object",
               "description": "Optional structured data payload sent alongside the text message as an A2A DataPart. Include it whenever the request has structured inputs — identifiers, records, parameters, filters, coordinates, enums, etc. — rather than stuffing them into the message text. Inspect the target skill's description, tags, and examples (via get_agent_details) for field hints. If the skill doesn't document structured fields, send the values in message text instead — don't fabricate field names. Must be a JSON object."
             },
+            "metadata": {
+              "type": "object",
+              "description": "Optional A2A message metadata — per-skill control parameters that the target agent advertises in its skill description (e.g. 'providerId', 'count', 'since'). Send filter/control values here when the skill description documents them as 'metadata parameters' or 'metadata keys'. Values must be primitives (string, number, boolean) or ISO-8601 strings — no nested objects or arrays. Distinct from 'data': metadata is for routing/filter hints; data is for the request body. Must be a JSON object."
+            },
             "timeout_minutes": {
               "type": "integer",
               "description": "Optional timeout in minutes (default: 5)."

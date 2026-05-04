@@ -45,9 +45,22 @@ public sealed class A2ACallerSkillProvider : IToolSkillProvider
         - agent_name (required): The name of the target agent (from list_known_agents)
         - skill (required): The skill ID to invoke on the target agent
         - message (required): The instruction or question for the agent
+        - data (optional): Structured payload sent as a DataPart (use for nested objects/arrays)
+        - metadata (optional): Per-skill control parameters that the target agent advertises
+          (e.g. providerId, count, since). Look for "metadata parameters" or "metadata keys"
+          in the skill description. Values must be primitives (string, number, boolean) — use
+          'data' for anything nested.
         - timeout_minutes (optional): How long to wait (default 5 minutes)
 
         Returns: task_id for tracking
+
+        Example: filter recent-mentions to a single platform
+            invoke_agent(
+              agent_name="SocialAgent",
+              skill="recent-mentions",
+              message="Recent mentions for Bluesky.",
+              metadata={"providerId": "bluesky", "count": 10}
+            )
 
         ## register_agent
         Register or update an HTTP-based A2A agent in the directory. The agent
