@@ -1230,7 +1230,9 @@ public sealed partial class AgentLoopRunner(
     /// <summary>
     /// Removes conversation history (user and assistant messages that aren't the current request)
     /// from the chat message list. Keeps system messages, tool messages, and the last user message.
-    /// Returns the number of messages removed.
+    /// Then sweeps for orphaned tool messages whose paired assistant FunctionCallContent was just
+    /// removed — leaving them in would trigger the same OpenAI 400 we get from the summary path.
+    /// Returns the number of history messages removed (orphan sweep is logged separately).
     /// </summary>
     internal static int StripConversationHistory(List<ChatMessage> chatMessages)
     {
@@ -1260,6 +1262,8 @@ public sealed partial class AgentLoopRunner(
                 if (i < lastUserIdx) lastUserIdx--;
             }
         }
+
+        RockBotFunctionInvokingChatClient.StripOrphanedToolCalls(chatMessages);
 
         return removed;
     }
