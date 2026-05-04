@@ -155,6 +155,108 @@ public class WellKnownAgentEnrichmentTests
     }
 
     [TestMethod]
+    public async Task StartAsync_FetchesWellKnown_AtHostRoot_WhenSeedUrlHasPath()
+    {
+        // Seed URL with a path prefix (e.g. SocialAgent at "http://host/a2a/").
+        // Well-known is host-relative per RFC 8615 — must hit "http://host/.well-known/agent-card.json",
+        // not "http://host/a2a/.well-known/agent-card.json".
+        var handler = new RecordingHandler("""{"agentName":"Bob","description":"x"}""");
+        var options = new A2AOptions
+        {
+            DirectoryPersistencePath = string.Empty,
+            WellKnownAgents =
+            [
+                new AgentCard { AgentName = "Bob", Url = "http://gateway-bob:5200/a2a/" }
+            ]
+        };
+
+        var directory = new AgentDirectory(options, NullLogger<AgentDirectory>.Instance, new StubFactory(handler));
+
+        await directory.StartAsync(CancellationToken.None);
+
+        Assert.AreEqual("http://gateway-bob:5200/.well-known/agent-card.json",
+            handler.LastRequestUri?.ToString(),
+            "Well-known must be fetched from the URL authority, not the seed path.");
+    }
+
+    [TestMethod]
+    public async Task StartAsync_ExtractsProtocolVersion_FromV1SupportedInterfaces()
+    {
+        // A2A v1 card: protocolVersion lives inside supportedInterfaces[], not at the top.
+        const string v1Card = """
+        {
+          "name": "SocialAgent",
+          "description": "Social media agent",
+          "version": "1.3.0.0",
+          "supportedInterfaces": [
+            { "url": "/a2a", "protocolBinding": "JSONRPC",  "protocolVersion": "1.0" },
+            { "url": "/a2a", "protocolBinding": "HTTPJSON", "protocolVersion": "1.0" }
+          ],
+          "capabilities": { "streaming": true },
+          "skills": [{ "id": "engagement-summary", "name": "Engagement", "description": "x" }]
+        }
+        """;
+        var handler = new RecordingHandler(v1Card);
+        var options = new A2AOptions
+        {
+            DirectoryPersistencePath = string.Empty,
+            WellKnownAgents =
+            [
+                new AgentCard { AgentName = "SocialAgent", Url = "http://social-agent/a2a/" }
+            ]
+        };
+
+        var directory = new AgentDirectory(options, NullLogger<AgentDirectory>.Instance, new StubFactory(handler));
+
+        await directory.StartAsync(CancellationToken.None);
+
+        var card = directory.GetAgent("SocialAgent");
+        Assert.IsNotNull(card);
+        Assert.AreEqual("1.0", card.ProtocolVersion,
+            "v1 card protocolVersion must be extracted from supportedInterfaces[0].");
+        Assert.AreEqual(true, card.SupportsStreaming,
+            "v1 card streaming capability must be extracted from capabilities.streaming.");
+        Assert.AreEqual("Social media agent", card.Description);
+        Assert.IsNotNull(card.Skills);
+        Assert.AreEqual(1, card.Skills.Count);
+    }
+
+    [TestMethod]
+    public void ExtractRemoteFields_ReturnsNulls_ForMalformedJson()
+    {
+        var fields = AgentDirectory.ExtractRemoteFields("not json");
+        Assert.IsNull(fields.ProtocolVersion);
+        Assert.IsNull(fields.SupportsStreaming);
+    }
+
+    [TestMethod]
+    public void ExtractRemoteFields_ReturnsNulls_WhenFieldsAbsent()
+    {
+        var fields = AgentDirectory.ExtractRemoteFields("""{"agentName":"x"}""");
+        Assert.IsNull(fields.ProtocolVersion);
+        Assert.IsNull(fields.SupportsStreaming);
+    }
+
+    [TestMethod]
+    public void ExtractRemoteFields_HandlesNullStreaming()
+    {
+        // SocialAgent emits capabilities.streaming: null — must round-trip as null,
+        // not as false (which would be a meaningful "no streaming" signal).
+        var fields = AgentDirectory.ExtractRemoteFields(
+            """{"capabilities":{"streaming":null}}""");
+        Assert.IsNull(fields.SupportsStreaming);
+    }
+
+    [TestMethod]
+    public void ExtractRemoteFields_PrefersTopLevelProtocolVersion_OverInterfaces()
+    {
+        // If both layouts are present, the explicit top-level wins (v0.3-style).
+        var fields = AgentDirectory.ExtractRemoteFields(
+            """{"protocolVersion":"0.3","supportedInterfaces":[{"protocolVersion":"1.0"}]}""");
+        Assert.AreEqual("0.3", fields.ProtocolVersion);
+    }
+
+    [TestMethod]
     public async Task StartAsync_NoEnrichment_WhenHttpFactoryNotProvided()
     {
         var options = new A2AOptions

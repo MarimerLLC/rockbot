@@ -138,7 +138,18 @@ internal sealed class AgentDirectory(
                 httpClient.DefaultRequestHeaders.TryAddWithoutValidation(seed.AuthHeaderName, headerValue);
             }
 
-            var url = $"{seed.Url!.TrimEnd('/')}/.well-known/agent-card.json";
+            // Well-known is host-relative per RFC 8615 — resolve against the URL's
+            // authority, not the (possibly path-prefixed) seed URL. Seeds like
+            // "http://host/a2a/" must still fetch "http://host/.well-known/agent-card.json".
+            if (!Uri.TryCreate(seed.Url, UriKind.Absolute, out var baseUri))
+            {
+                logger.LogWarning(
+                    "Skipping enrichment for well-known peer '{AgentName}': invalid URL '{Url}'",
+                    seed.AgentName, seed.Url);
+                return;
+            }
+
+            var url = new Uri(baseUri, "/.well-known/agent-card.json").ToString();
             var response = await httpClient.GetAsync(url, ct);
             if (!response.IsSuccessStatusCode)
             {
@@ -149,14 +160,12 @@ internal sealed class AgentDirectory(
             }
 
             var json = await response.Content.ReadAsStringAsync(ct);
-            var remote = JsonSerializer.Deserialize<AgentCard>(json, JsonOptions);
-            if (remote is null)
-            {
-                logger.LogWarning(
-                    "Empty agent-card response for well-known peer '{AgentName}' from {Url}",
-                    seed.AgentName, url);
-                return;
-            }
+
+            // Extract via JsonDocument rather than deserializing as AgentCard — a v1
+            // card uses "name" instead of "agentName" and would fail the required-field
+            // check. The agent-card schema also varies between v0.3 and v1; pulling
+            // fields explicitly keeps both paths working.
+            var remote = ExtractRemoteFields(json);
 
             // Merge remote fields into the seeded card while preserving locally-configured
             // coordinates (Url, AuthHeader*) and the AgentName key.
@@ -173,8 +182,9 @@ internal sealed class AgentDirectory(
             {
                 _agents[seed.AgentName] = existing with { Card = merged };
                 logger.LogInformation(
-                    "Enriched well-known agent '{AgentName}' from {Url} ({SkillCount} skill(s))",
-                    seed.AgentName, url, merged.Skills?.Count ?? 0);
+                    "Enriched well-known agent '{AgentName}' from {Url} (protocol={Protocol}, streaming={Streaming}, {SkillCount} skill(s))",
+                    seed.AgentName, url, merged.ProtocolVersion ?? "(unset)",
+                    merged.SupportsStreaming, merged.Skills?.Count ?? 0);
             }
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
@@ -188,6 +198,88 @@ internal sealed class AgentDirectory(
                 seed.AgentName, seed.Url);
         }
     }
+
+    internal sealed record RemoteFields(
+        string? Description,
+        string? Version,
+        IReadOnlyList<AgentSkill>? Skills,
+        string? ProtocolVersion,
+        bool? SupportsStreaming);
+
+    /// <summary>
+    /// Extracts the subset of agent-card fields we merge during enrichment, accepting
+    /// both A2A v0.3 and v1 layouts. v1 collapses <c>protocolVersion</c>/<c>url</c>/
+    /// <c>preferredTransport</c> into <c>supportedInterfaces[]</c> and stream support
+    /// into <c>capabilities.streaming</c>; v0.3 keeps them at the top level. Using
+    /// JsonDocument (rather than <c>JsonSerializer.Deserialize&lt;AgentCard&gt;</c>)
+    /// avoids tripping on the v1 <c>name</c>-vs-<c>agentName</c> rename.
+    /// </summary>
+    internal static RemoteFields ExtractRemoteFields(string cardJson)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(cardJson);
+            var root = doc.RootElement;
+            if (root.ValueKind != JsonValueKind.Object) return new(null, null, null, null, null);
+
+            string? description = TryGetString(root, "description");
+            string? version = TryGetString(root, "version");
+
+            IReadOnlyList<AgentSkill>? skills = null;
+            if (root.TryGetProperty("skills", out var skillsEl) &&
+                skillsEl.ValueKind == JsonValueKind.Array)
+            {
+                try
+                {
+                    skills = JsonSerializer.Deserialize<List<AgentSkill>>(skillsEl.GetRawText(), JsonOptions);
+                }
+                catch (JsonException) { /* leave skills null — partial enrichment is fine */ }
+            }
+
+            // protocolVersion: v0.3 uses top-level; v1 uses supportedInterfaces[].protocolVersion.
+            string? protocolVersion = TryGetString(root, "protocolVersion");
+            if (protocolVersion is null &&
+                root.TryGetProperty("supportedInterfaces", out var interfaces) &&
+                interfaces.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var iface in interfaces.EnumerateArray())
+                {
+                    if (iface.ValueKind == JsonValueKind.Object)
+                    {
+                        var pv = TryGetString(iface, "protocolVersion");
+                        if (pv is not null) { protocolVersion = pv; break; }
+                    }
+                }
+            }
+
+            // SupportsStreaming: v0.3 emits as a top-level bool; v1 nests under capabilities.
+            bool? streaming = null;
+            if (root.TryGetProperty("supportsStreaming", out var topStream))
+            {
+                if (topStream.ValueKind == JsonValueKind.True) streaming = true;
+                else if (topStream.ValueKind == JsonValueKind.False) streaming = false;
+            }
+            if (streaming is null &&
+                root.TryGetProperty("capabilities", out var caps) &&
+                caps.ValueKind == JsonValueKind.Object &&
+                caps.TryGetProperty("streaming", out var nested))
+            {
+                if (nested.ValueKind == JsonValueKind.True) streaming = true;
+                else if (nested.ValueKind == JsonValueKind.False) streaming = false;
+            }
+
+            return new RemoteFields(description, version, skills, protocolVersion, streaming);
+        }
+        catch (JsonException)
+        {
+            return new RemoteFields(null, null, null, null, null);
+        }
+    }
+
+    private static string? TryGetString(JsonElement obj, string name) =>
+        obj.TryGetProperty(name, out var el) && el.ValueKind == JsonValueKind.String
+            ? el.GetString()
+            : null;
 
     public Task StopAsync(CancellationToken cancellationToken) =>
         FlushAsync(cancellationToken);
