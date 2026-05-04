@@ -235,6 +235,13 @@ public class RockBotFunctionInvokingChatClient : FunctionInvokingChatClient
 
                 var summaryMessages = new List<ChatMessage>(messageList);
                 summaryMessages.AddRange(response.Messages);
+                var (orphanedCalls, orphanedResults) = StripOrphanedToolCalls(summaryMessages);
+                if (orphanedCalls > 0 || orphanedResults > 0)
+                {
+                    _logger.LogWarning(
+                        "Stripped {Calls} orphaned tool call(s) and {Results} orphaned tool result(s) before summary follow-up",
+                        orphanedCalls, orphanedResults);
+                }
                 summaryMessages.Add(new ChatMessage(ChatRole.User,
                     "The task loop has ended. Write a concise summary of what was accomplished. " +
                     "Report only what was completed — do not describe intentions or future actions."));
@@ -339,6 +346,68 @@ public class RockBotFunctionInvokingChatClient : FunctionInvokingChatClient
                 "Trimmed tool result for call {CallId}: {Before:N0} → {After:N0} chars",
                 old.CallId, bestLen, trimmed.Length);
         }
+    }
+
+    /// <summary>
+    /// Removes <see cref="FunctionCallContent"/> entries whose CallId has no matching
+    /// <see cref="FunctionResultContent"/>, and vice versa. The OpenAI-compatible API
+    /// rejects requests where an assistant tool_calls message lacks a corresponding tool
+    /// response (or where a tool message references an unknown call_id). This pairing
+    /// can break when the tool loop hits its iteration limit mid-call, leaving an
+    /// unanswered FunctionCallContent in the response we then reuse for a follow-up.
+    /// Returns the number of orphans removed in each direction.
+    /// </summary>
+    internal static (int orphanedCalls, int orphanedResults) StripOrphanedToolCalls(
+        List<ChatMessage> messages)
+    {
+        var resultIds = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var msg in messages)
+            foreach (var c in msg.Contents)
+                if (c is FunctionResultContent frc && !string.IsNullOrEmpty(frc.CallId))
+                    resultIds.Add(frc.CallId);
+
+        var orphanedCalls = 0;
+        foreach (var msg in messages)
+        {
+            for (var i = msg.Contents.Count - 1; i >= 0; i--)
+            {
+                if (msg.Contents[i] is FunctionCallContent fcc &&
+                    !string.IsNullOrEmpty(fcc.CallId) &&
+                    !resultIds.Contains(fcc.CallId))
+                {
+                    msg.Contents.RemoveAt(i);
+                    orphanedCalls++;
+                }
+            }
+        }
+
+        var callIds = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var msg in messages)
+            foreach (var c in msg.Contents)
+                if (c is FunctionCallContent fcc && !string.IsNullOrEmpty(fcc.CallId))
+                    callIds.Add(fcc.CallId);
+
+        var orphanedResults = 0;
+        foreach (var msg in messages)
+        {
+            for (var i = msg.Contents.Count - 1; i >= 0; i--)
+            {
+                if (msg.Contents[i] is FunctionResultContent frc &&
+                    (string.IsNullOrEmpty(frc.CallId) || !callIds.Contains(frc.CallId)))
+                {
+                    msg.Contents.RemoveAt(i);
+                    orphanedResults++;
+                }
+            }
+        }
+
+        for (var i = messages.Count - 1; i >= 0; i--)
+        {
+            if (messages[i].Contents.Count == 0)
+                messages.RemoveAt(i);
+        }
+
+        return (orphanedCalls, orphanedResults);
     }
 
     private static int EstimateMessageChars(ChatMessage m) =>
