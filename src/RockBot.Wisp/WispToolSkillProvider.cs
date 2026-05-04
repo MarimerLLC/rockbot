@@ -243,6 +243,23 @@ public sealed class WispToolSkillProvider : IToolSkillProvider
         }
         ```
 
+        Use `metadata` to pass per-skill filter/control parameters the target agent
+        advertises in its skill description (e.g. `providerId`, `count`, `since`).
+        Read the skill description in `list_known_agents` / `get_agent_details` for
+        the recognized keys. Don't bury filter values in `message` text — most
+        agents won't parse them out:
+        ```json
+        {
+          "id": "bluesky_mentions",
+          "mode": "Direct",
+          "gateway": "A2A",
+          "agent": "SocialAgent",
+          "skill": "recent-mentions",
+          "message": "Recent Bluesky mentions for the user.",
+          "metadata": { "providerId": "bluesky", "count": 10 }
+        }
+        ```
+
         ### LLM steps
 
         LLM steps omit the gateway. The wisp LLM is a blank slate — it has no

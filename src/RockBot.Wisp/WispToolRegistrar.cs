@@ -55,6 +55,8 @@ internal sealed class WispToolRegistrar(
                         "agent": { "type": "string", "description": "A2A agent name (gateway=A2A)." },
                         "skill": { "type": "string", "description": "A2A skill ID (gateway=A2A)." },
                         "message": { "type": "string", "description": "A2A message content (gateway=A2A)." },
+                        "metadata": { "type": "object", "description": "Optional A2A message metadata (gateway=A2A): per-skill control parameters the target agent advertises in its skill description (e.g. providerId, count, since). Values must be primitives (string/number/boolean). Use this for filter/control hints, not the message text." },
+                        "timeout_minutes": { "type": "integer", "description": "A2A task timeout in minutes (gateway=A2A, default 5)." },
                         "input_from": { "type": "string", "description": "File path or {{steps.id.result}} template for step input." },
                         "output_to": { "type": "string", "description": "File path to write step output." },
                         "on_failure": {
