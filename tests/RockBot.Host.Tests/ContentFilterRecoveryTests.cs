@@ -111,6 +111,50 @@ public class ContentFilterRecoveryTests
     }
 
     [TestMethod]
+    public void StripConversationHistory_DropsToolResultsOrphanedByAssistantRemoval()
+    {
+        // The previous assistant turn invoked a tool — when that assistant message is
+        // stripped as "history", the tool-result message it paired with is left orphaned.
+        // The orphan would re-trigger HTTP 400 on the recovery retry, so it must go too.
+        var messages = new List<ChatMessage>
+        {
+            new(ChatRole.System, "system prompt"),
+            new(ChatRole.User, "what's the weather?"),
+            new(ChatRole.Assistant, [new FunctionCallContent("c1", "get_weather")]),
+            new(ChatRole.Tool, [new FunctionResultContent("c1", "72F sunny")]),
+            new(ChatRole.Assistant, "It's 72 and sunny."),
+            new(ChatRole.User, "current request"),
+        };
+
+        var removed = AgentLoopRunner.StripConversationHistory(messages);
+
+        Assert.AreEqual(3, removed, "Two assistant messages and one user history message removed");
+        Assert.AreEqual(2, messages.Count, "Orphan tool result should be swept too, leaving system + current user");
+        Assert.AreEqual(ChatRole.System, messages[0].Role);
+        Assert.AreEqual("current request", messages[1].Text);
+    }
+
+    [TestMethod]
+    public void StripConversationHistory_KeepsToolMessageWithPlainText()
+    {
+        // Tool messages that don't contain FunctionResultContent (e.g. plain text contents)
+        // shouldn't be touched by the orphan sweep — they're not part of a tool_call pairing.
+        var messages = new List<ChatMessage>
+        {
+            new(ChatRole.System, "system"),
+            new(ChatRole.User, "old"),
+            new(ChatRole.Tool, "free-form tool note"),
+            new(ChatRole.User, "current"),
+        };
+
+        var removed = AgentLoopRunner.StripConversationHistory(messages);
+
+        Assert.AreEqual(1, removed);
+        Assert.AreEqual(3, messages.Count);
+        Assert.AreEqual(ChatRole.Tool, messages[1].Role);
+    }
+
+    [TestMethod]
     public void StripConversationHistory_MultipleSystemInterleavedWithHistory()
     {
         // Simulates real context: system messages interspersed with history
