@@ -19,6 +19,7 @@ internal sealed class A2ACallerToolRegistrar(
     AgentIdentity identity,
     IHttpClientFactory httpClientFactory,
     InputRequiredHandler inputRequiredHandler,
+    AgentCardSummarizer summarizer,
     ILoggerFactory loggerFactory) : IHostedService
 {
     private const string InvokeAgentSchema = """
@@ -138,6 +139,19 @@ internal sealed class A2ACallerToolRegistrar(
         }
         """;
 
+    private const string RefreshAgentCardSchema = """
+        {
+          "type": "object",
+          "properties": {
+            "agent_name": {
+              "type": "string",
+              "description": "The name of the agent whose /.well-known/agent-card.json should be re-fetched."
+            }
+          },
+          "required": ["agent_name"]
+        }
+        """;
+
     public Task StartAsync(CancellationToken cancellationToken)
     {
         var invokeLogger = loggerFactory.CreateLogger<InvokeAgentExecutor>();
@@ -193,6 +207,26 @@ internal sealed class A2ACallerToolRegistrar(
             Source = "a2a"
         }, new UnregisterAgentExecutor(directory, loggerFactory.CreateLogger<UnregisterAgentExecutor>()));
         registrarLogger.LogInformation("Registered tool: unregister_agent");
+
+        registry.Register(new ToolRegistration
+        {
+            Name = "refresh_agent_card",
+            Description = """
+                FORCES a fresh HTTP re-fetch of an A2A agent's /.well-known/agent-card.json so
+                the local directory reflects its CURRENT published skills and metadata.
+                Distinct from get_agent_details, which only returns the locally-cached card
+                (potentially hours stale). Call this — before get_agent_details / invoke_agent —
+                whenever: (a) invoke_agent fails with 'unknown skill' or 'unknown metadata key',
+                (b) the user asks "what can X do now?", "is X up to date?", or mentions a new
+                feature/skill the agent should support, (c) you otherwise suspect the cached
+                capabilities are stale. Note: this is for A2A agents (use list_known_agents),
+                NOT MCP servers. Returns a status summary; read the refreshed card via
+                get_agent_details.
+                """,
+            ParametersSchema = RefreshAgentCardSchema,
+            Source = "a2a"
+        }, new RefreshAgentCardExecutor(directory, summarizer, loggerFactory.CreateLogger<RefreshAgentCardExecutor>()));
+        registrarLogger.LogInformation("Registered tool: refresh_agent_card");
 
         return Task.CompletedTask;
     }

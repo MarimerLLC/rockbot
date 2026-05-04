@@ -61,6 +61,12 @@ public static class A2AServiceCollectionExtensions
         builder.Services.AddSingleton<Microsoft.Extensions.Hosting.IHostedService>(
             sp => sp.GetRequiredService<AgentDiscoveryService>());
 
+        // Periodic well-known refresh — re-fetches /.well-known/agent-card.json
+        // so peer skill/metadata changes become visible without a pod restart.
+        builder.Services.AddSingleton<WellKnownRefreshService>();
+        builder.Services.AddSingleton<Microsoft.Extensions.Hosting.IHostedService>(
+            sp => sp.GetRequiredService<WellKnownRefreshService>());
+
         // Task request handler on agent.task.{agentName}
         var agentName = builder.Identity.Name;
 

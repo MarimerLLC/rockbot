@@ -44,6 +44,13 @@ public sealed class A2AOptions
     /// </summary>
     public List<AgentCard> WellKnownAgents { get; set; } = [];
 
+    /// <summary>
+    /// How often to re-fetch well-known peers' <c>/.well-known/agent-card.json</c>
+    /// so changes to a peer's skills/metadata become visible without restarting.
+    /// <see cref="TimeSpan.Zero"/> disables the periodic refresh. Default: 4 hours.
+    /// </summary>
+    public TimeSpan WellKnownRefreshInterval { get; set; } = TimeSpan.FromHours(4);
+
     // ── Long-running task polling ───────────────────────────────────────────
 
     /// <summary>Initial polling delay for long-running HTTP tasks (exponential backoff start).</summary>
