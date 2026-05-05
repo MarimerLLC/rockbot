@@ -81,7 +81,7 @@ public class BlazorUserFrontendTests
             IsFinal = false
         };
 
-        await _frontend.DisplayReplyAsync(reply);
+        await _frontend.DisplayStatusAsync(reply);
 
         var msg = GetLastMessage();
         Assert.AreEqual(MessageCategory.A2AActivity, msg.Category);
@@ -100,7 +100,7 @@ public class BlazorUserFrontendTests
             IsFinal = false
         };
 
-        await _frontend.DisplayReplyAsync(reply);
+        await _frontend.DisplayStatusAsync(reply);
 
         var msg = GetLastMessage();
         Assert.AreEqual(MessageCategory.SubagentActivity, msg.Category);
@@ -147,7 +147,7 @@ public class BlazorUserFrontendTests
             IsFinal = false
         };
 
-        await _frontend.DisplayReplyAsync(externalReply);
+        await _frontend.DisplayStatusAsync(externalReply);
 
         var msg = GetLastMessage();
         Assert.AreEqual(MessageCategory.A2AActivity, msg.Category);
@@ -174,7 +174,7 @@ public class BlazorUserFrontendTests
             IsFinal = false
         };
 
-        await _frontend.DisplayReplyAsync(reply);
+        await _frontend.DisplayStatusAsync(reply);
 
         var msg = GetLastMessage();
         Assert.AreEqual(MessageCategory.PrimaryProgress, msg.Category);
@@ -192,7 +192,7 @@ public class BlazorUserFrontendTests
             IsFinal = false
         };
 
-        await _frontend.DisplayReplyAsync(reply);
+        await _frontend.DisplayStatusAsync(reply);
 
         var msg = GetLastMessage();
         Assert.AreEqual(MessageCategory.PrimaryProgress, msg.Category);
@@ -211,7 +211,7 @@ public class BlazorUserFrontendTests
             IsFinal = false
         };
 
-        await _frontend.DisplayReplyAsync(reply);
+        await _frontend.DisplayStatusAsync(reply);
 
         var msg = GetLastMessage();
         Assert.AreEqual(MessageCategory.PrimaryProgress, msg.Category);

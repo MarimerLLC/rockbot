@@ -21,6 +21,15 @@ internal sealed class SpectreConsoleFrontend : IUserFrontend
         return Task.CompletedTask;
     }
 
+    public Task DisplayStatusAsync(AgentReply reply, CancellationToken cancellationToken = default)
+    {
+        // Render ephemeral progress as a single dim line rather than a panel,
+        // so unsolicited subagent / A2A progress doesn't stack as bubbles.
+        AnsiConsole.MarkupLine(
+            $"[dim italic]{Markup.Escape(reply.AgentName)}: {Markup.Escape(reply.Content)}[/]");
+        return Task.CompletedTask;
+    }
+
     public Task DisplayErrorAsync(string message, CancellationToken cancellationToken = default)
     {
         AnsiConsole.MarkupLine($"[red]Error:[/] {Markup.Escape(message)}");

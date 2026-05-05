@@ -20,21 +20,22 @@ public sealed class BlazorUserFrontend(ChatStateService chatState) : IUserFronte
 
         var category = CategorizeReply(reply);
 
-        if (reply.IsFinal)
-        {
-            // Final result — add as a permanent chat bubble and clear the progress indicator
-            chatState.SetThinkingMessage(null);
-            chatState.AddAgentReply(reply, category);
-        }
-        else
-        {
-            // Non-final progress — append to the source's activity log bubble
-            // instead of creating a separate bubble per message.
-            // IsCompletion signals the source has finished (e.g. subagent result Phase 1) —
-            // close the activity log so the spinner and header indicator disappear.
-            chatState.AppendActivityLogEntry(reply.Content, category, reply.AgentName,
-                close: reply.IsCompletion);
-        }
+        // Final result — add as a permanent chat bubble and clear the progress indicator
+        chatState.SetThinkingMessage(null);
+        chatState.AddAgentReply(reply, category);
+        return Task.CompletedTask;
+    }
+
+    public Task DisplayStatusAsync(AgentReply reply, CancellationToken cancellationToken = default)
+    {
+        var category = CategorizeReply(reply);
+
+        // Non-final progress — append to the source's activity log bubble
+        // instead of creating a separate bubble per message.
+        // IsCompletion signals the source has finished (e.g. subagent result Phase 1) —
+        // close the activity log so the spinner and header indicator disappear.
+        chatState.AppendActivityLogEntry(reply.Content, category, reply.AgentName,
+            close: reply.IsCompletion);
         return Task.CompletedTask;
     }
 

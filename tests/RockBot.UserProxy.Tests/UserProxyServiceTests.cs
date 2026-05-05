@@ -168,7 +168,8 @@ public sealed class UserProxyServiceTests
         {
             Content = "Unsolicited hello",
             SessionId = "s1",
-            AgentName = "agent-x"
+            AgentName = "agent-x",
+            IsFinal = true
         };
         var envelope = TestEnvelopeHelper.CreateEnvelope(reply,
             source: "agent-x",
@@ -179,6 +180,53 @@ public sealed class UserProxyServiceTests
         Assert.AreEqual(MessageResult.Ack, result);
         Assert.AreEqual(1, _frontend.DisplayedReplies.Count);
         Assert.AreEqual("Unsolicited hello", _frontend.DisplayedReplies[0].Content);
+    }
+
+    [TestMethod]
+    public async Task HandleResponse_UnsolicitedNonFinal_RoutesToDisplayStatus()
+    {
+        // Unsolicited progress (subagent / A2A status) — IsFinal=false should land
+        // in DisplayStatusAsync, not DisplayReplyAsync, so it doesn't stack as a bubble.
+        var reply = new AgentReply
+        {
+            Content = "Searching the web...",
+            SessionId = "s1",
+            AgentName = "subagent-research",
+            IsFinal = false
+        };
+        var envelope = TestEnvelopeHelper.CreateEnvelope(reply,
+            source: "subagent-research",
+            correlationId: "no-match");
+
+        var result = await _subscriber.CapturedHandler!(envelope, CancellationToken.None);
+
+        Assert.AreEqual(MessageResult.Ack, result);
+        Assert.AreEqual(0, _frontend.DisplayedReplies.Count,
+            "Non-final unsolicited reply must not be displayed as a chat bubble");
+        Assert.AreEqual(1, _frontend.DisplayedStatusReplies.Count);
+        Assert.AreEqual("Searching the web...", _frontend.DisplayedStatusReplies[0].Content);
+    }
+
+    [TestMethod]
+    public async Task HandleResponse_UnsolicitedFinal_RoutesToDisplayReply()
+    {
+        var reply = new AgentReply
+        {
+            Content = "Final answer",
+            SessionId = "s1",
+            AgentName = "agent-x",
+            IsFinal = true
+        };
+        var envelope = TestEnvelopeHelper.CreateEnvelope(reply,
+            source: "agent-x",
+            correlationId: "no-match");
+
+        var result = await _subscriber.CapturedHandler!(envelope, CancellationToken.None);
+
+        Assert.AreEqual(MessageResult.Ack, result);
+        Assert.AreEqual(1, _frontend.DisplayedReplies.Count);
+        Assert.AreEqual(0, _frontend.DisplayedStatusReplies.Count,
+            "Final unsolicited reply must not be routed to DisplayStatusAsync");
     }
 
     [TestMethod]
