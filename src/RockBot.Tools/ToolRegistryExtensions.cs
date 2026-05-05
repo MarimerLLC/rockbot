@@ -20,7 +20,8 @@ public static class ToolRegistryExtensions
         this IToolRegistry registry,
         string? sessionId,
         string? batchId,
-        Func<ToolRegistration, bool>? filter = null)
+        Func<ToolRegistration, bool>? filter = null,
+        Action<string>? onInvoke = null)
     {
         ArgumentNullException.ThrowIfNull(registry);
 
@@ -29,7 +30,7 @@ public static class ToolRegistryExtensions
 
         return tools
             .Select(r => (AIFunction)new RegistryToolFunction(
-                r, registry.GetExecutor(r.Name)!, sessionId, batchId))
+                r, registry.GetExecutor(r.Name)!, sessionId, batchId, onInvoke))
             .ToArray();
     }
 }

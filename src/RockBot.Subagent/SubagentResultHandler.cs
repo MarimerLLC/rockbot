@@ -1,6 +1,5 @@
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
-using Microsoft.Extensions.Options;
 using RockBot.Host;
 using RockBot.Llm;
 using RockBot.Memory;
@@ -32,7 +31,6 @@ internal sealed class SubagentResultHandler(
     SubagentResultGate gate,
     ISubagentManager subagentManager,
     ISessionTracker sessionTracker,
-    IOptions<SubagentOptions> options,
     ILogger<SubagentResultHandler> logger) : IMessageHandler<SubagentResultMessage>
 {
     public async Task HandleAsync(SubagentResultMessage message, MessageHandlerContext context)
@@ -110,8 +108,7 @@ internal sealed class SubagentResultHandler(
 
         // ── Gate: accumulate and decide who synthesizes ─────────────────────────
 
-        var batchedResults = await gate.AccumulateAsync(
-            message, subagentManager, options.Value.ConsolidationTimeoutSeconds, ct);
+        var batchedResults = await gate.AccumulateAsync(message, subagentManager, ct);
 
         if (batchedResults is null)
         {
