@@ -96,6 +96,45 @@ public class AttachmentGatewayTests
     }
 
     [TestMethod]
+    public async Task RewriteRequest_ServerUrlIncludesSsePath_AttachmentsHitServerRoot()
+    {
+        // Real MCP servers (e.g. calendar-mcp) have URLs that point at the SSE endpoint
+        // ("/sse"), but the REST attachment endpoints are siblings at the server root.
+        // The gateway must NOT post to "/sse/attachments".
+        var bytes = new byte[4 * 1024];
+        _storage.Files["/rockbot/shared/attachments/big.pdf"] = bytes;
+
+        Uri? captured = null;
+        _httpHandler.NextResponse = (req, _) =>
+        {
+            captured = req.RequestUri;
+            return new HttpResponseMessage(HttpStatusCode.Created)
+            {
+                Content = new StringContent("{\"attachmentId\":\"id-x\"}", Encoding.UTF8, "application/json")
+            };
+        };
+
+        _serverBase = new Uri("http://calendar-mcp.example.test:8080/sse");
+        _httpClient.Dispose();
+        _httpClient = new HttpClient(_httpHandler);
+
+        var gateway = NewGateway(thresholdBytes: 1024, outbound: ["attachments[*]"]);
+        var args = new Dictionary<string, object?>
+        {
+            ["attachments"] = new List<object?>
+            {
+                new Dictionary<string, object?> { ["path"] = "/rockbot/shared/attachments/big.pdf" }
+            }
+        };
+
+        await gateway.RewriteRequestAsync(ToolName, args, CancellationToken.None);
+
+        Assert.IsNotNull(captured);
+        Assert.AreEqual("http://calendar-mcp.example.test:8080/attachments", captured!.ToString(),
+            "Endpoint must hit the server root, not the SSE path.");
+    }
+
+    [TestMethod]
     public async Task RewriteRequest_LargeFile_AcceptsHttp200OnPost()
     {
         // Defensive — some servers return 200 instead of 201 for create. Both must succeed.

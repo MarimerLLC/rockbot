@@ -328,14 +328,16 @@ public sealed class AttachmentGateway
         if (!string.IsNullOrEmpty(id))
             path = path.TrimEnd('/') + "/" + Uri.EscapeDataString(id);
 
-        // Combine while preserving the server's base path (e.g. "/sse" or "/api").
-        var basePathTrimmed = _serverBaseUrl.AbsolutePath.TrimEnd('/');
-        var combinedPath = basePathTrimmed + path;
-        var builder = new UriBuilder(_serverBaseUrl)
+        // Build off the server's authority — the URL stored in mcp.json typically points at
+        // a transport-specific endpoint (e.g. ".../sse"), but the attachment REST endpoints
+        // live at the server root. Operators who need a non-default prefix can express it
+        // via EndpointPath (e.g. "/api/attachments").
+        var builder = new UriBuilder
         {
-            Path = combinedPath,
-            Query = string.Empty,
-            Fragment = string.Empty
+            Scheme = _serverBaseUrl.Scheme,
+            Host = _serverBaseUrl.Host,
+            Port = _serverBaseUrl.IsDefaultPort ? -1 : _serverBaseUrl.Port,
+            Path = path
         };
         return builder.Uri;
     }
