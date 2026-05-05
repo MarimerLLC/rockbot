@@ -1,3 +1,5 @@
+using RockBot.Agent.McpBridge.Attachments;
+
 namespace RockBot.Agent.McpBridge;
 
 /// <summary>
@@ -53,6 +55,14 @@ public sealed class McpBridgeServerConfig
     /// Example: <c>"X-Api-Key": "${MY_API_KEY}"</c>
     /// </summary>
     public Dictionary<string, string> Headers { get; set; } = [];
+
+    /// <summary>
+    /// Optional attachment-passthrough manifest. When set, the bridge transforms attachment
+    /// arguments and responses for this server (see <see cref="AttachmentManifest"/>).
+    /// Excluded from <see cref="CanonicalIdentity"/> because the manifest changes how the
+    /// server is invoked, not which server is being talked to.
+    /// </summary>
+    public AttachmentManifest? Attachments { get; set; }
 
     /// <summary>
     /// Whether this config uses HTTP-based transport (SSE or streamable HTTP).
