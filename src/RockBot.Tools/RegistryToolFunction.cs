@@ -12,7 +12,8 @@ public sealed class RegistryToolFunction(
     ToolRegistration registration,
     IToolExecutor executor,
     string? sessionId,
-    string? batchId = null) : AIFunction
+    string? batchId = null,
+    Action<string>? onInvoke = null) : AIFunction
 {
     private static readonly JsonSerializerOptions SerializerOptions = new();
 
@@ -57,6 +58,8 @@ public sealed class RegistryToolFunction(
             SessionId = sessionId,
             BatchId = batchId
         };
+
+        onInvoke?.Invoke(registration.Name);
 
         var response = await executor.ExecuteAsync(request, cancellationToken);
 

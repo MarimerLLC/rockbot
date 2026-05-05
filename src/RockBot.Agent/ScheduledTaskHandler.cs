@@ -65,7 +65,14 @@ internal sealed class ScheduledTaskHandler(
         var sessionSkillTools = new SkillTools(skillStore, llmClient, logger, sessionId, skillUsageStore);
 
         var batchId = Guid.NewGuid().ToString("N")[..12];
-        var registryTools = toolRegistry.BuildAgentToolFunctions(sessionId, batchId);
+        var spawnedSubagent = false;
+        var registryTools = toolRegistry.BuildAgentToolFunctions(
+            sessionId, batchId,
+            onInvoke: name =>
+            {
+                if (string.Equals(name, "spawn_subagent", StringComparison.OrdinalIgnoreCase))
+                    spawnedSubagent = true;
+            });
 
         var allTools = memoryTools.Tools
             .Concat(sessionWorkingMemoryTools.Tools)
@@ -123,6 +130,18 @@ internal sealed class ScheduledTaskHandler(
         if (string.IsNullOrWhiteSpace(finalText))
         {
             logger.LogInformation("Scheduled task '{TaskName}' produced no output; suppressing reply", message.TaskName);
+            return;
+        }
+
+        // If the loop spawned a subagent, the user-facing report comes from the subagent's
+        // Phase 1 completion bubble plus the consolidated Phase 2 synthesis. Whatever the
+        // parent loop emitted around its spawn_subagent call would just be a redundant
+        // pre-results bubble.
+        if (spawnedSubagent)
+        {
+            logger.LogInformation(
+                "Scheduled task '{TaskName}' delegated to subagent — suppressing parent reply",
+                message.TaskName);
             return;
         }
 
