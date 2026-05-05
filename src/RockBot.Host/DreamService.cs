@@ -1370,7 +1370,7 @@ internal sealed class DreamService : IHostedService, IDisposable
 
         _logger.LogInformation("DreamService: episode extraction pass — {Count} log entries to analyze", entries.Count);
 
-        try
+        await RunPassAsync("episode extraction", async () =>
         {
             // Fetch existing episodic memories so the LLM can reinforce them
             var existingEpisodes = await _memory.SearchAsync(
@@ -1498,11 +1498,7 @@ internal sealed class DreamService : IHostedService, IDisposable
             _logger.LogInformation(
                 "DreamService: episode extraction pass complete — {Created} created, {Reinforced} reinforced",
                 created, reinforced);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "DreamService: episode extraction pass failed");
-        }
+        });
     }
 
     /// <summary>
@@ -1529,7 +1525,7 @@ internal sealed class DreamService : IHostedService, IDisposable
 
         _logger.LogInformation("DreamService: entity extraction pass — {Count} log entries to analyze", entries.Count);
 
-        try
+        await RunPassAsync("entity extraction", async () =>
         {
             // Provide existing entities so the LLM can reference/update them
             var existingEntities = await _knowledgeGraph.ListEntitiesAsync();
@@ -1619,11 +1615,7 @@ internal sealed class DreamService : IHostedService, IDisposable
             _logger.LogInformation(
                 "DreamService: entity extraction pass complete — {Entities} entities, {Triples} triples created",
                 entitiesCreated, triplesCreated);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "DreamService: entity extraction pass failed");
-        }
+        });
     }
 
     /// <summary>
@@ -1649,7 +1641,7 @@ internal sealed class DreamService : IHostedService, IDisposable
             "DreamService: graph consolidation pass — {Entities} entities, {Triples} triples to review",
             entities.Count, triples.Count);
 
-        try
+        await RunPassAsync("graph consolidation", async () =>
         {
             var now = _clock.Now;
             var userMessage = new StringBuilder();
@@ -1708,11 +1700,7 @@ internal sealed class DreamService : IHostedService, IDisposable
             _logger.LogInformation(
                 "DreamService: graph consolidation pass complete — {EntitiesDeleted} entities deleted, {TriplesDeleted} triples deleted",
                 entitiesDeleted, triplesDeleted);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "DreamService: graph consolidation pass failed");
-        }
+        });
     }
 
     /// <summary>
@@ -1735,7 +1723,7 @@ internal sealed class DreamService : IHostedService, IDisposable
 
         _logger.LogInformation("DreamService: memory mining pass — {Count} log entries to analyze", entries.Count);
 
-        try
+        await RunPassAsync("memory mining", async () =>
         {
             var userMessage = new StringBuilder();
             userMessage.AppendLine("Review the following conversation log for facts worth storing in long-term memory:");
@@ -1787,11 +1775,7 @@ internal sealed class DreamService : IHostedService, IDisposable
             }
 
             _logger.LogInformation("DreamService: memory mining pass complete — {Saved} entry(ies) saved", saved);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "DreamService: memory mining pass failed");
-        }
+        });
     }
 
     /// <summary>
@@ -2115,7 +2099,7 @@ internal sealed class DreamService : IHostedService, IDisposable
 
         var userMessage = BuildToolSuccessLearningUserMessage(distinctPatterns);
 
-        try
+        await RunPassAsync("tool-success-learning", async () =>
         {
             var result = await InvokeDreamPassAsync<MemoryMiningResultDto>(
                 "tool-success-learning",
@@ -2136,11 +2120,7 @@ internal sealed class DreamService : IHostedService, IDisposable
 
             _logger.LogInformation(
                 "DreamService: tool-success-learning pass complete — {Saved} entry(ies) saved", entries.Count);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "DreamService: tool-success-learning pass failed");
-        }
+        });
     }
 
     /// <summary>
@@ -2191,6 +2171,8 @@ internal sealed class DreamService : IHostedService, IDisposable
 
         try
         {
+            await RunPassAsync("preference inference", async () =>
+            {
             // Build user message: turns grouped by session
             var userMessage = new StringBuilder();
             userMessage.AppendLine("Review the following conversation log for durable user preference patterns:");
@@ -2271,10 +2253,7 @@ internal sealed class DreamService : IHostedService, IDisposable
 
                 _logger.LogInformation("DreamService: preference inference pass complete — {Saved} preference(s) inferred", saved);
             }
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "DreamService: preference inference pass failed");
+            });
         }
         finally
         {
@@ -2425,7 +2404,7 @@ internal sealed class DreamService : IHostedService, IDisposable
         if (_toolCallLog is null || _skillStore is null || !_options.SequenceSkillDetectionEnabled)
             return;
 
-        try
+        await RunPassAsync("sequence skill detection", async () =>
         {
             var events = await _toolCallLog.QueryRecentAsync(
                 DateTimeOffset.UtcNow.AddDays(-14), maxResults: 10_000);
@@ -2520,11 +2499,7 @@ internal sealed class DreamService : IHostedService, IDisposable
             _logger.LogInformation(
                 "DreamService: sequence skill detection pass complete — {Created} skills created from {SessionCount} sessions",
                 created, sessions.Count);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "DreamService: sequence skill detection pass failed");
-        }
+        });
     }
 
     // ── Wisp failure analysis ─────────────────────────────────────────────
@@ -2574,7 +2549,7 @@ internal sealed class DreamService : IHostedService, IDisposable
         if (_wispExecutionLog is null || _skillStore is null || !_options.WispFailureAnalysisEnabled)
             return;
 
-        try
+        await RunPassAsync("wisp failure analysis", async () =>
         {
             var records = await _wispExecutionLog.QueryRecentAsync(
                 DateTimeOffset.UtcNow.AddDays(-14), maxResults: 500);
@@ -2682,11 +2657,7 @@ internal sealed class DreamService : IHostedService, IDisposable
             _logger.LogInformation(
                 "DreamService: wisp failure analysis pass complete — {Patterns} patterns, {Updates} skill updates, {Candidates} promotion candidates",
                 result?.Patterns?.Count ?? 0, updated, result?.PromotionCandidates?.Count ?? 0);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "DreamService: wisp failure analysis pass failed");
-        }
+        });
     }
 
     private sealed record WispFailureAnalysisResultDto
@@ -2727,7 +2698,7 @@ internal sealed class DreamService : IHostedService, IDisposable
     {
         if (_dlqSampler is null || !_options.DlqReviewEnabled) return;
 
-        try
+        await RunPassAsync("DLQ review", async () =>
         {
             var queues = await _dlqSampler.GetDlqQueuesAsync();
             var nonEmpty = queues.Where(q => q.MessageCount > 0).ToList();
@@ -2845,11 +2816,7 @@ internal sealed class DreamService : IHostedService, IDisposable
             _logger.LogInformation(
                 "DreamService: DLQ review complete — {Patterns} pattern(s) saved, {Purged} queue(s) purged",
                 savedPatterns, purged);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "DreamService: DLQ review pass failed");
-        }
+        });
     }
 
     /// <summary>
@@ -2864,7 +2831,7 @@ internal sealed class DreamService : IHostedService, IDisposable
 
         _logger.LogInformation("DreamService: identity reflection pass — starting");
 
-        try
+        await RunPassAsync("identity reflection", async () =>
         {
             // Fetch current identity entries
             var identityEntries = await _memory.SearchAsync(
@@ -2997,10 +2964,28 @@ internal sealed class DreamService : IHostedService, IDisposable
             _logger.LogInformation(
                 "DreamService: identity reflection pass complete — {Deleted} deleted, {Saved} saved",
                 deleted, saved);
+        });
+    }
+
+    /// <summary>
+    /// Wraps a single dream-pass body so unhandled exceptions become a per-pass
+    /// error log without aborting the whole cycle. <see cref="OperationCanceledException"/>
+    /// is rethrown so DreamAsync's outer handler can log a single
+    /// "preempted by user request" line — see issue #333.
+    /// </summary>
+    private async Task RunPassAsync(string passName, Func<Task> body)
+    {
+        try
+        {
+            await body();
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "DreamService: identity reflection pass failed");
+            _logger.LogError(ex, "DreamService: {Pass} pass failed", passName);
         }
     }
 
