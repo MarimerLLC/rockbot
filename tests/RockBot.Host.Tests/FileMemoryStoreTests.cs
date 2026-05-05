@@ -419,6 +419,224 @@ public class FileMemoryStoreTests
         Assert.IsTrue(results.Any(r => r.Id == "content"));
     }
 
+    // ── Regex mode ────────────────────────────────────────────────────────────
+
+    [TestMethod]
+    public async Task Search_RegexMode_MatchesLiteralToken()
+    {
+        var store = CreateStore();
+        await store.SaveAsync(CreateEntry("v0", "deploy v0.10.30 to staging"));
+        await store.SaveAsync(CreateEntry("other", "unrelated content"));
+
+        var results = await store.SearchAsync(new MemorySearchCriteria(
+            Query: @"v\d+\.\d+\.\d+", Mode: MemorySearchMode.Regex));
+
+        Assert.AreEqual(1, results.Count);
+        Assert.AreEqual("v0", results[0].Id);
+    }
+
+    [TestMethod]
+    public async Task Search_RegexMode_MatchesMemoryIdInPathName()
+    {
+        var store = CreateStore();
+        // Content does not mention "openrouter-key" — only the id does.
+        await store.SaveAsync(CreateEntry("openrouter-key-rotation", "An unrelated note about rotation."));
+        await store.SaveAsync(CreateEntry("foo", "Different entry."));
+
+        var results = await store.SearchAsync(new MemorySearchCriteria(
+            Query: "openrouter-key", Mode: MemorySearchMode.Regex));
+
+        Assert.AreEqual(1, results.Count);
+        Assert.AreEqual("openrouter-key-rotation", results[0].Id);
+    }
+
+    [TestMethod]
+    public async Task Search_RegexMode_MatchesCategoryInPathName()
+    {
+        var store = CreateStore();
+        await store.SaveAsync(CreateEntry("foo", "Some content", category: "project-context"));
+        await store.SaveAsync(CreateEntry("bar", "Other content", category: "user-preferences"));
+
+        var results = await store.SearchAsync(new MemorySearchCriteria(
+            Query: @"^project-context/", Mode: MemorySearchMode.Regex));
+
+        Assert.AreEqual(1, results.Count);
+        Assert.AreEqual("foo", results[0].Id);
+    }
+
+    [TestMethod]
+    public async Task Search_RegexMode_DoesNotMatchOnDiskFilePath()
+    {
+        // The on-disk path ends in ".json" but the regex surface deliberately omits it.
+        // A pattern that hits the storage layout (.json suffix) must not match anything.
+        var store = CreateStore();
+        await store.SaveAsync(CreateEntry("entry-1", "Some plain content"));
+
+        var results = await store.SearchAsync(new MemorySearchCriteria(
+            Query: @"\.json$", Mode: MemorySearchMode.Regex));
+
+        Assert.AreEqual(0, results.Count, "Storage-layout details must not be exposed to regex matches.");
+    }
+
+    [TestMethod]
+    public async Task Search_RegexMode_DefaultIsCaseInsensitive()
+    {
+        var store = CreateStore();
+        await store.SaveAsync(CreateEntry("h", "Helm release in cluster"));
+
+        var results = await store.SearchAsync(new MemorySearchCriteria(
+            Query: "helm", Mode: MemorySearchMode.Regex));
+
+        Assert.AreEqual(1, results.Count);
+    }
+
+    [TestMethod]
+    public async Task Search_RegexMode_CaseSensitive_RespectsFlag()
+    {
+        var store = CreateStore();
+        await store.SaveAsync(CreateEntry("h", "Helm release in cluster"));
+
+        var lowerResults = await store.SearchAsync(new MemorySearchCriteria(
+            Query: "helm", Mode: MemorySearchMode.Regex, RegexCaseSensitive: true));
+        Assert.AreEqual(0, lowerResults.Count);
+
+        var upperResults = await store.SearchAsync(new MemorySearchCriteria(
+            Query: "Helm", Mode: MemorySearchMode.Regex, RegexCaseSensitive: true));
+        Assert.AreEqual(1, upperResults.Count);
+    }
+
+    [TestMethod]
+    public async Task Search_RegexMode_HonorsCategoryFilter()
+    {
+        var store = CreateStore();
+        await store.SaveAsync(CreateEntry("a", "shared keyword", category: "project-context"));
+        await store.SaveAsync(CreateEntry("b", "shared keyword", category: "user-preferences"));
+
+        var results = await store.SearchAsync(new MemorySearchCriteria(
+            Query: "shared", Category: "project-context", Mode: MemorySearchMode.Regex));
+
+        Assert.AreEqual(1, results.Count);
+        Assert.AreEqual("a", results[0].Id);
+    }
+
+    [TestMethod]
+    public async Task Search_RegexMode_RespectsMaxResults()
+    {
+        var store = CreateStore();
+        for (int i = 0; i < 10; i++)
+            await store.SaveAsync(CreateEntry($"e{i}", "matching content"));
+
+        var results = await store.SearchAsync(new MemorySearchCriteria(
+            Query: "matching", Mode: MemorySearchMode.Regex, MaxResults: 3));
+
+        Assert.AreEqual(3, results.Count);
+    }
+
+    [TestMethod]
+    public async Task Search_RegexMode_InvalidPattern_Throws()
+    {
+        var store = CreateStore();
+        await store.SaveAsync(CreateEntry("a", "anything"));
+
+        await Assert.ThrowsExactlyAsync<MemorySearchException>(async () =>
+        {
+            await store.SearchAsync(new MemorySearchCriteria(
+                Query: "[", Mode: MemorySearchMode.Regex));
+        });
+    }
+
+    [TestMethod]
+    public async Task Search_RegexMode_NoMatches_ReturnsEmpty()
+    {
+        var store = CreateStore();
+        await store.SaveAsync(CreateEntry("a", "the cat sat on the mat"));
+
+        var results = await store.SearchAsync(new MemorySearchCriteria(
+            Query: "nothing-here", Mode: MemorySearchMode.Regex));
+
+        Assert.AreEqual(0, results.Count);
+    }
+
+    [TestMethod]
+    public async Task Search_RegexMode_OrdersByImportanceThenLastSeen()
+    {
+        var store = CreateStore();
+        var now = DateTimeOffset.UtcNow;
+
+        await store.SaveAsync(new MemoryEntry("low", "shared content", null, [], now,
+            ImportanceScore: 0.2f) { LastSeenAt = now });
+        await store.SaveAsync(new MemoryEntry("highOld", "shared content", null, [], now.AddDays(-10),
+            ImportanceScore: 0.9f) { LastSeenAt = now.AddDays(-10) });
+        await store.SaveAsync(new MemoryEntry("highRecent", "shared content", null, [], now,
+            ImportanceScore: 0.9f) { LastSeenAt = now });
+
+        var results = await store.SearchAsync(new MemorySearchCriteria(
+            Query: "shared", Mode: MemorySearchMode.Regex));
+
+        Assert.AreEqual(3, results.Count);
+        Assert.AreEqual("highRecent", results[0].Id, "Highest importance, most recent wins.");
+        Assert.AreEqual("highOld", results[1].Id, "Same importance, older LastSeenAt comes second.");
+        Assert.AreEqual("low", results[2].Id);
+    }
+
+    [TestMethod]
+    public async Task Search_RegexMode_NullQuery_FallsBackToNoQueryPath()
+    {
+        var store = CreateStore();
+        var now = DateTimeOffset.UtcNow;
+        await store.SaveAsync(new MemoryEntry("old", "old", null, [], now.AddDays(-5)));
+        await store.SaveAsync(new MemoryEntry("new", "new", null, [], now));
+
+        var results = await store.SearchAsync(new MemorySearchCriteria(
+            Mode: MemorySearchMode.Regex));
+
+        Assert.AreEqual(2, results.Count);
+        Assert.AreEqual("new", results[0].Id, "Null query falls through to LastSeenAt ordering.");
+    }
+
+    [TestMethod]
+    public void Search_RegexMode_PathologicalPattern_ThrowsTimeout()
+    {
+        // Catastrophic backtracking: (a+)+$ on a string that's all 'a's plus a trailing 'b'.
+        // Force a tiny per-entry timeout so the test stays under ~200ms.
+        var entry = new MemoryEntry("evil", new string('a', 60) + "b", null, [], DateTimeOffset.UtcNow);
+
+        Assert.ThrowsExactly<MemorySearchException>(() =>
+            RegexMatcher.MatchEntries(
+                new[] { entry },
+                @"(a+)+$",
+                caseSensitive: false,
+                maxResults: 10,
+                FileMemoryStore.BuildRegexSurface,
+                perEntryTimeout: TimeSpan.FromMilliseconds(50),
+                overallBudget: TimeSpan.FromSeconds(5)));
+    }
+
+    [TestMethod]
+    public void Search_RegexMode_OverallBudget_BoundsTotalScan()
+    {
+        // Build many candidates and force per-entry surface generation to be slow via the
+        // documentText delegate. Each "entry" adds ~5ms to wall clock; with a 30ms overall
+        // budget we expect to throw before scanning all 200.
+        var now = DateTimeOffset.UtcNow;
+        var candidates = Enumerable.Range(0, 200)
+            .Select(i => new MemoryEntry($"e{i}", "content", null, [], now))
+            .ToList();
+
+        var ex = Assert.ThrowsExactly<MemorySearchException>(() =>
+            RegexMatcher.MatchEntries(
+                candidates,
+                "content",
+                caseSensitive: false,
+                maxResults: 10,
+                e => { Thread.Sleep(5); return e.Content; },
+                perEntryTimeout: TimeSpan.FromSeconds(1),
+                overallBudget: TimeSpan.FromMilliseconds(30)));
+
+        StringAssert.Contains(ex.Message, "/200");
+        StringAssert.Contains(ex.Message, "exceeded");
+    }
+
     // ── Tokenizer unit tests ──────────────────────────────────────────────────
 
     [TestMethod]

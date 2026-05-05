@@ -126,18 +126,34 @@ public sealed class MemoryTools
     }
 
     [Description("Search long-term memory for previously saved facts, preferences, or patterns. " +
-                 "Use query for keyword search and category for scoping to a knowledge area.")]
+                 "Use query for keyword search and category for scoping to a knowledge area. " +
+                 "Set mode='regex' when you know the literal token (file path, id, version, exact phrase); " +
+                 "otherwise leave mode='hybrid' (default) for semantic/keyword search.")]
     public async Task<string> SearchMemory(
-        [Description("Optional keyword to search for in memory content")] string? query = null,
-        [Description("Optional category prefix to filter by (e.g. 'user-preferences')")] string? category = null)
+        [Description("Optional keyword (hybrid mode) or .NET regex pattern (regex mode) to search for")] string? query = null,
+        [Description("Optional category prefix to filter by (e.g. 'user-preferences')")] string? category = null,
+        [Description("Search backend: 'hybrid' (default, BM25 + optional vector) or 'regex' (case-insensitive .NET regex against memory path name and content)")] string? mode = null)
     {
-        _logger.LogInformation("Tool call: SearchMemory(query={Query}, category={Category})", query, category);
+        _logger.LogInformation("Tool call: SearchMemory(query={Query}, category={Category}, mode={Mode})", query, category, mode);
+
+        if (!TryParseMode(mode, out var parsedMode))
+            return $"Unknown search mode '{mode}'. Use 'hybrid' or 'regex'.";
 
         var criteria = new MemorySearchCriteria(
             Query: string.IsNullOrWhiteSpace(query) ? null : query.Trim(),
-            Category: string.IsNullOrWhiteSpace(category) ? null : category.Trim());
+            Category: string.IsNullOrWhiteSpace(category) ? null : category.Trim(),
+            Mode: parsedMode);
 
-        var results = await _memory.SearchAsync(criteria);
+        IReadOnlyList<MemoryEntry> results;
+        try
+        {
+            results = await _memory.SearchAsync(criteria);
+        }
+        catch (MemorySearchException ex)
+        {
+            _logger.LogInformation("SearchMemory rejected by backend: {Message}", ex.Message);
+            return ex.Message;
+        }
 
         _logger.LogInformation("SearchMemory returned {Count} results", results.Count);
 
@@ -158,6 +174,21 @@ public sealed class MemoryTools
         }
 
         return sb.ToString();
+    }
+
+    private static bool TryParseMode(string? mode, out MemorySearchMode parsed)
+    {
+        if (string.IsNullOrWhiteSpace(mode))
+        {
+            parsed = MemorySearchMode.Hybrid;
+            return true;
+        }
+
+        if (Enum.TryParse(mode.Trim(), ignoreCase: true, out parsed))
+            return true;
+
+        parsed = MemorySearchMode.Hybrid;
+        return false;
     }
 
     private static string FormatAge(MemoryEntry e)

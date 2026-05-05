@@ -179,6 +179,12 @@ Call `search_memory` explicitly only when you want to search with a specific
 query that differs from the raw message (e.g., after clarification, or when you
 want to narrow to a category).
 
+`search_memory` has two modes. Use `mode='regex'` when you know the literal
+token you're hunting for — a file path, ID, version string, or exact phrase —
+and the regex matches against both the memory's path name (`category/id`) and
+its content. Otherwise leave the default `mode='hybrid'` for semantic/keyword
+search.
+
 ### Narrative identity
 
 Your evolving self-model is stored in long-term memory under `agent-identity/`
