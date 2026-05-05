@@ -394,6 +394,56 @@ public class AttachmentGatewayTests
     // ── Storage env-var honored ───────────────────────────────────────────────
 
     [TestMethod]
+    public async Task AttachmentStorage_RelativePath_StripsRedundantAttachmentsPrefix()
+    {
+        // The model often passes shared-volume-relative paths like `attachments/foo.txt`,
+        // because that's the form `file_write` and `file_get_path` use from the volume root.
+        // BasePath already ends in `/attachments`, so naive concatenation hits
+        // `/<root>/attachments/attachments/foo.txt`. Strip the redundant leaf.
+        var temp = Path.Combine(Path.GetTempPath(), "rockbot-storage-" + Guid.NewGuid().ToString("N"));
+        var attachmentsDir = Path.Combine(temp, "attachments");
+        Directory.CreateDirectory(attachmentsDir);
+        var bytes = Encoding.UTF8.GetBytes("hello-from-shared-volume-root");
+        await File.WriteAllBytesAsync(Path.Combine(attachmentsDir, "foo.txt"), bytes);
+
+        var storage = new AttachmentStorage(attachmentsDir);
+
+        var read = await storage.ReadAsync("attachments/foo.txt", CancellationToken.None);
+        CollectionAssert.AreEqual(bytes, read);
+
+        // Bare filename still works.
+        var read2 = await storage.ReadAsync("foo.txt", CancellationToken.None);
+        CollectionAssert.AreEqual(bytes, read2);
+
+        // Absolute path under BasePath still works.
+        var read3 = await storage.ReadAsync(Path.Combine(attachmentsDir, "foo.txt"), CancellationToken.None);
+        CollectionAssert.AreEqual(bytes, read3);
+
+        Directory.Delete(temp, recursive: true);
+    }
+
+    [TestMethod]
+    public async Task AttachmentStorage_RelativePath_OnlyStripsExactBaseLeafBoundary()
+    {
+        // A relative path that *starts with* "attachments" but doesn't have it as a complete
+        // path segment (e.g. "attachments-archive/x") must not be stripped. Otherwise a
+        // sibling directory named with the leaf as a prefix would silently lose its prefix.
+        var temp = Path.Combine(Path.GetTempPath(), "rockbot-storage-" + Guid.NewGuid().ToString("N"));
+        var attachmentsDir = Path.Combine(temp, "attachments");
+        var nestedDir = Path.Combine(attachmentsDir, "attachments-archive");
+        Directory.CreateDirectory(nestedDir);
+        var bytes = new byte[] { 1, 2, 3 };
+        await File.WriteAllBytesAsync(Path.Combine(nestedDir, "x.bin"), bytes);
+
+        var storage = new AttachmentStorage(attachmentsDir);
+
+        var read = await storage.ReadAsync("attachments-archive/x.bin", CancellationToken.None);
+        CollectionAssert.AreEqual(bytes, read);
+
+        Directory.Delete(temp, recursive: true);
+    }
+
+    [TestMethod]
     public async Task AttachmentStorage_HonorsEnvVarWhenSet()
     {
         // Real AttachmentStorage path resolution: env var > "/rockbot/shared".

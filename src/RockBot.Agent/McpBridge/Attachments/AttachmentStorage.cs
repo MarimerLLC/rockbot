@@ -47,7 +47,15 @@ public sealed class AttachmentStorage : IAttachmentStorage
         // the base directory so callers can't reach arbitrary filesystem locations through
         // model-controlled inputs.
         if (!Path.IsPathRooted(path))
-            return Path.Combine(BasePath, path);
+        {
+            // The shared-volume convention is to refer to files via `<subdir>/<file>` from
+            // the volume root. Scripts and the file-tools speak that form, so the model
+            // naturally writes `attachments/foo.pdf` even though the gateway's BasePath
+            // already ends in `/attachments`. Strip the redundant leaf so the path resolves
+            // to a single layer instead of `<base>/attachments/foo.pdf`.
+            var normalized = StripRedundantBaseLeaf(path);
+            return Path.Combine(BasePath, normalized);
+        }
 
         var fullBase = Path.GetFullPath(BasePath);
         var fullPath = Path.GetFullPath(path);
@@ -55,6 +63,21 @@ public sealed class AttachmentStorage : IAttachmentStorage
             throw new UnauthorizedAccessException(
                 $"Attachment path '{path}' is outside the shared attachments directory '{BasePath}'.");
         return fullPath;
+    }
+
+    private string StripRedundantBaseLeaf(string relativePath)
+    {
+        var leaf = Path.GetFileName(BasePath.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
+        if (string.IsNullOrEmpty(leaf)) return relativePath;
+
+        ReadOnlySpan<char> span = relativePath;
+        if (span.StartsWith(leaf, StringComparison.OrdinalIgnoreCase)
+            && span.Length > leaf.Length
+            && (span[leaf.Length] == '/' || span[leaf.Length] == '\\'))
+        {
+            return relativePath[(leaf.Length + 1)..];
+        }
+        return relativePath;
     }
 
     public async Task<string> WriteAsync(string preferredFileName, byte[] data, CancellationToken ct)
