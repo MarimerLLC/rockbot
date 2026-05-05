@@ -122,11 +122,17 @@ Under the hood, RockBot can maintain the MCP configuration through chat. If you 
   "mcpServers": {
     "calendar-mcp": {
       "type": "sse",
-      "url": "http://host.docker.internal:3000/"
+      "url": "http://host.docker.internal:3000/",
+      "attachments": {
+        "outbound": { "paramPaths": ["attachments[*]"] },
+        "inbound":  { "tools": ["get_email_attachment"] }
+      }
     }
   }
 }
 ```
+
+The optional `attachments` block opts the server into the bridge's [attachment passthrough](tools.md#attachment-passthrough): the agent passes `{ path: "/rockbot/shared/attachments/<file>" }` instead of base64, and the bridge handles upload/download against the server's REST endpoints behind the scenes.
 
 After the configuration updates, the agent hot-reloads the MCP setup. Then, in chat, have the agent confirm what it sees:
 

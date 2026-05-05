@@ -252,6 +252,82 @@ agent.AddMcpTools(opts => builder.Configuration.GetSection("Mcp").Bind(opts));
 This registers `McpToolRegistrar` and `McpStartupProbeService` directly, skipping the message
 bus hop.
 
+### Attachment passthrough
+
+Some MCP servers (calendar, email, drive) take or return file attachments. Passing those bytes
+through the LLM as base64 wastes context and confuses the model — and most servers also accept a
+"stash + handle" REST flow that the model cannot easily orchestrate by itself. The bridge's
+**attachment passthrough** hides both shapes behind a single convention: **the model speaks
+paths**, and the bridge translates them into whatever the server expects.
+
+Storage is the shared volume mounted into the agent and script pods at `$ROCKBOT_SHARED_PATH`
+(defaults to `/rockbot/shared`). Attachments live under `${ROCKBOT_SHARED_PATH}/attachments/`,
+so a script can write a file there and the agent can hand it to an MCP tool without ever
+loading the bytes into context.
+
+Opt in per server with an `attachments` block in `mcp.json`:
+
+```json
+{
+  "mcpServers": {
+    "calendar": {
+      "type": "sse",
+      "url": "https://calendar-mcp.example/",
+      "attachments": {
+        "thresholdBytes": 262144,
+        "uploadFieldName": "file",
+        "endpointPath": "/attachments",
+        "outbound": {
+          "paramPaths": ["attachments[*]"]
+        },
+        "inbound": {
+          "tools": ["get_email_attachment"]
+        }
+      }
+    }
+  }
+}
+```
+
+| Field | Default | Purpose |
+|---|---|---|
+| `thresholdBytes` | 262144 (256 KB) | Below: outbound files are inlined as `{name, base64Content}`. At or above: uploaded via `POST /attachments` and replaced with `{attachmentId}`. |
+| `uploadFieldName` | `file` | Multipart form-field name used for the upload. |
+| `endpointPath` | `/attachments` | Path appended to the server URL for `POST` (upload), `GET /{id}` (download), and `DELETE /{id}` (cleanup). |
+| `outbound.paramPaths` | _none_ | JSON paths that contain attachment objects to rewrite. First version supports `arrayKey[*]` — a top-level array whose items have a `path` field. |
+| `inbound.tools` | _none_ | Tool names that accept the gateway-only `mode: "save"` argument. |
+
+#### Outbound (model attaches a file)
+
+When the model calls e.g. `send_email({ attachments: [{ path: "/rockbot/shared/attachments/report.xlsx" }] })`:
+
+1. Bridge reads bytes from the path via `IAttachmentStorage`.
+2. **Below threshold** → replaces the entry with `{ name, base64Content }`.
+3. **At or above threshold** → `POST /attachments` (multipart), accepts **200 or 201**,
+   replaces the entry with `{ attachmentId }`.
+
+The underlying tool sees a fully populated payload and never knows the gateway was involved.
+
+#### Inbound (model wants a file written to disk)
+
+For tools listed in `inbound.tools`, the model can pass a gateway-only argument
+`mode: "save"`. The bridge translates this into `mode: "stash"` (default) or
+`mode: "inline"` (when an optional `sizeHint` is below threshold), invokes the tool, and
+then materializes the bytes:
+
+- **Stash path** → `GET /attachments/{id}` to fetch the body, write to
+  `${ROCKBOT_SHARED_PATH}/attachments/<name>`, fire-and-forget `DELETE /attachments/{id}`.
+  A 404 on DELETE is tolerated.
+- **Inline path** → base64-decode the response and write to disk.
+
+Either way the agent receives `{ path, name, size, mime }` — a tiny JSON payload it can act on
+without seeing the bytes. Filename collisions are resolved with `-2`, `-3`, … suffixes.
+
+Attachment passthrough is a no-op when a server has no `attachments` block. The agent skill
+guide instructs the model to pass `{ path: "/rockbot/shared/attachments/<file>" }` rather than
+base64 whenever a tool's parameter takes attachments — operators don't need to do anything more
+than enable the manifest.
+
 ---
 
 ## Service search (`RockBot.ServiceSearch`)

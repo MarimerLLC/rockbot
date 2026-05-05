@@ -191,6 +191,26 @@ internal sealed class ScriptToolSkillProvider : IToolSkillProvider
 
         After the script completes, use `file_read` or `file_get_path` to access the output.
 
+        ### Generating files for MCP attachments
+
+        The `attachments/` subdirectory under `ROCKBOT_SHARED_PATH` is where files destined
+        for MCP tools live (e.g. attachments on a `send_email` call). A script writes the
+        file there and returns the path; the agent then hands the path to the MCP tool and
+        the bridge takes care of upload/download — no base64 ever crosses the LLM context.
+
+        ```python
+        import os, json
+        shared = os.environ['ROCKBOT_SHARED_PATH']
+        out = os.path.join(shared, 'attachments', 'q3-report.xlsx')
+        os.makedirs(os.path.dirname(out), exist_ok=True)
+        # ... build the workbook ...
+        print(json.dumps({"path": out, "name": "q3-report.xlsx"}))
+        ```
+
+        The agent then calls something like:
+        `mcp_invoke_tool(server_name="calendar-mcp", tool_name="send_email",
+        arguments={ "to": "...", "attachments": [{ "path": out }] })`.
+
 
         ## Common Pitfalls
 

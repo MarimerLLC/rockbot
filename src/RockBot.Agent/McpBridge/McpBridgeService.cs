@@ -5,6 +5,7 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using ModelContextProtocol.Client;
 using ModelContextProtocol.Protocol;
+using RockBot.Agent.McpBridge.Attachments;
 using RockBot.Host;
 using RockBot.Messaging;
 using RockBot.Tools;
@@ -30,6 +31,8 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
     private readonly Dictionary<string, McpBridgeServerConfig> _serverConfigs = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, List<McpClientTool>> _serverTools = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, List<McpClientPrompt>> _serverPrompts = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, AttachmentGatewayEntry> _attachmentGateways = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Lazy<IAttachmentStorage> _attachmentStorage = new(() => new AttachmentStorage());
     private readonly SemaphoreSlim _configPersistLock = new(1, 1);
     private ISubscription? _invokeSubscription;
     private ISubscription? _refreshSubscription;
@@ -340,8 +343,11 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
         }
 
         // Store config before attempting connection so the reconnect sweep can
-        // retry servers that never connected successfully at startup.
+        // retry servers that never connected successfully at startup. Invalidate any
+        // cached attachment gateway so the next call rebuilds it against the fresh
+        // URL/headers/manifest.
         _serverConfigs[name] = config;
+        InvalidateAttachmentGateway(name);
 
         var maxAttempts = 1 + Math.Max(0, _options.ConnectRetryCount);
         var delayMs = _options.ConnectRetryBaseDelayMs;
@@ -451,11 +457,51 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
         _serverTools.Remove(name);
         _serverPrompts.Remove(name);
         _serverConfigs.Remove(name);
+        InvalidateAttachmentGateway(name);
 
         await PublishServersIndexedAsync([], [name], CancellationToken.None);
 
         _logger.LogInformation("Disconnected from MCP server {Name}", name);
     }
+
+    private AttachmentGateway? GetOrCreateAttachmentGateway(string serverName)
+    {
+        if (!_serverConfigs.TryGetValue(serverName, out var config)) return null;
+        if (config.Attachments is null) return null;
+        if (string.IsNullOrEmpty(config.Url)) return null;
+
+        if (_attachmentGateways.TryGetValue(serverName, out var entry))
+            return entry.Gateway;
+
+        var http = new HttpClient();
+        foreach (var (key, rawValue) in config.Headers)
+        {
+            var expanded = ExpandEnvVars(rawValue);
+            if (!string.IsNullOrEmpty(expanded))
+                http.DefaultRequestHeaders.TryAddWithoutValidation(key, expanded);
+        }
+
+        var gateway = new AttachmentGateway(
+            _attachmentStorage.Value,
+            http,
+            new Uri(config.Url),
+            config.Attachments,
+            _logger);
+
+        _attachmentGateways[serverName] = new AttachmentGatewayEntry(gateway, http);
+        return gateway;
+    }
+
+    private void InvalidateAttachmentGateway(string serverName)
+    {
+        if (_attachmentGateways.Remove(serverName, out var entry))
+        {
+            try { entry.HttpClient.Dispose(); }
+            catch { /* Best-effort cleanup */ }
+        }
+    }
+
+    private sealed record AttachmentGatewayEntry(AttachmentGateway Gateway, HttpClient HttpClient);
 
     private static List<McpClientTool> ApplyToolFilters(List<McpClientTool> tools, McpBridgeServerConfig config)
     {
@@ -712,6 +758,40 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
             }
         }
 
+        // Apply attachment-passthrough request rewrite (no-op when the server has no manifest).
+        // We capture ShouldRewriteResponse BEFORE RewriteRequestAsync because the rewrite
+        // mutates the gateway-only `mode: "save"` to `stash`/`inline`.
+        var attachmentGateway = GetOrCreateAttachmentGateway(serverName);
+        var rewriteResponse = false;
+        if (attachmentGateway is not null)
+        {
+            try
+            {
+                rewriteResponse = attachmentGateway.ShouldRewriteResponse(request.ToolName, arguments);
+                await attachmentGateway.RewriteRequestAsync(request.ToolName, arguments, ct);
+            }
+            catch (Exception attachmentEx)
+            {
+                _logger.LogWarning(attachmentEx,
+                    "Attachment gateway request rewrite failed for {Server}/{Tool}",
+                    serverName, request.ToolName);
+
+                var attachmentError = new ToolError
+                {
+                    ToolCallId = request.ToolCallId,
+                    ToolName = request.ToolName,
+                    Code = ToolError.Codes.InvalidArguments,
+                    Message =
+                        $"Attachment passthrough failed: {attachmentEx.Message}. " +
+                        $"Verify each attachment path exists under the shared attachments directory.",
+                    IsRetryable = false
+                };
+
+                await PublishResponseAsync(attachmentError, replyTo, envelope.CorrelationId, ct);
+                return MessageResult.Ack;
+            }
+        }
+
         try
         {
             using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
@@ -719,6 +799,12 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
 
             var result = await client.CallToolAsync(
                 request.ToolName, arguments, cancellationToken: timeoutCts.Token);
+
+            if (rewriteResponse && attachmentGateway is not null)
+            {
+                result = await attachmentGateway.RewriteResponseAsync(
+                    request.ToolName, arguments, result, ct);
+            }
 
             sw.Stop();
             var blocks = McpToolExecutor.MapContentBlocks(result);
@@ -809,6 +895,16 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
 
                         var retryResult = await freshClient.CallToolAsync(
                             request.ToolName, arguments, cancellationToken: retryCts.Token);
+
+                        if (rewriteResponse)
+                        {
+                            var freshGateway = GetOrCreateAttachmentGateway(serverName);
+                            if (freshGateway is not null)
+                            {
+                                retryResult = await freshGateway.RewriteResponseAsync(
+                                    request.ToolName, arguments, retryResult, ct);
+                            }
+                        }
 
                         sw.Stop();
                         var retryBlocks = McpToolExecutor.MapContentBlocks(retryResult);
@@ -1371,6 +1467,13 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
         _serverTools.Clear();
         _serverPrompts.Clear();
         _serverConfigs.Clear();
+
+        foreach (var (_, entry) in _attachmentGateways)
+        {
+            try { entry.HttpClient.Dispose(); }
+            catch { /* Best-effort cleanup */ }
+        }
+        _attachmentGateways.Clear();
     }
 
     /// <summary>
