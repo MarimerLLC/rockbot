@@ -417,11 +417,18 @@ public sealed class UserProxyService(
                     envelope.CorrelationId, reply.AgentName);
             }
         }
-        else
+        else if (reply.IsFinal)
         {
-            // Unsolicited reply — display via frontend
+            // Unsolicited final reply — display as a chat bubble
             logger.LogDebug("Unsolicited reply from {Agent}, displaying via frontend", reply.AgentName);
             _ = frontend.DisplayReplyAsync(reply, ct);
+        }
+        else
+        {
+            // Unsolicited non-final reply (subagent progress, A2A status) — render as
+            // ephemeral status so progress doesn't stack as separate chat bubbles.
+            logger.LogDebug("Unsolicited progress from {Agent}, displaying as status", reply.AgentName);
+            _ = frontend.DisplayStatusAsync(reply, ct);
         }
 
         return Task.FromResult(MessageResult.Ack);

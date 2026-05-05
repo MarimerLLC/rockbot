@@ -70,11 +70,20 @@ internal sealed class StubSubscription(string topic, string subscriptionName) : 
 internal sealed class StubUserFrontend : IUserFrontend
 {
     public List<AgentReply> DisplayedReplies { get; } = [];
+    public List<AgentReply> DisplayedStatusReplies { get; } = [];
     public List<string> DisplayedErrors { get; } = [];
 
     public Task DisplayReplyAsync(AgentReply reply, CancellationToken cancellationToken = default)
     {
         DisplayedReplies.Add(reply);
+        return Task.CompletedTask;
+    }
+
+    // Override so the default interface implementation (which delegates to
+    // DisplayReplyAsync) doesn't fold status replies back into DisplayedReplies.
+    public Task DisplayStatusAsync(AgentReply reply, CancellationToken cancellationToken = default)
+    {
+        DisplayedStatusReplies.Add(reply);
         return Task.CompletedTask;
     }
 
