@@ -432,31 +432,12 @@ internal sealed class DreamService : IHostedService, IDisposable
                 userMessage.AppendLine($"   {e.Content}");
             }
 
-            var messages = new List<ChatMessage>
-            {
-                new(ChatRole.System, _dreamDirective!),
-                new(ChatRole.User, userMessage.ToString())
-            };
-
-            ct.ThrowIfCancellationRequested();
-            var response = await _llmClient.GetResponseAsync(messages, ModelTier.Balanced, new ChatOptions { ResponseFormat = ChatResponseFormat.Json }, ct);
-            var raw = response.Text?.Trim() ?? string.Empty;
-            var json = ExtractJsonObject(raw);
-
-            if (string.IsNullOrEmpty(json))
-            {
-                _logger.LogWarning("DreamService: LLM returned no parseable JSON object; skipping cycle");
-                return;
-            }
-
-            _logger.LogDebug("DreamService: LLM response JSON ({Length} chars): {Json}", json.Length, json);
-
-            var result = TryDeserializeJson<DreamResultDto>(json, "memory dream");
-            if (result is null)
-            {
-                _logger.LogWarning("DreamService: failed to deserialize dream result; skipping cycle");
-                return;
-            }
+            var result = await InvokeDreamPassAsync<DreamResultDto>(
+                "memory dream",
+                _dreamDirective!,
+                userMessage.ToString(),
+                ct);
+            if (result is null) return;
 
             var deleted = 0;
             var saved = 0;
@@ -531,32 +512,32 @@ internal sealed class DreamService : IHostedService, IDisposable
             }
 
             if (_skillStore is not null)
-            { ct.ThrowIfCancellationRequested(); await RunSkillGapDetectionPassAsync(); }
+            { ct.ThrowIfCancellationRequested(); await RunSkillGapDetectionPassAsync(ct); }
 
             if (_skillStore is not null)
-            { ct.ThrowIfCancellationRequested(); await ConsolidateSkillsAsync(); }
+            { ct.ThrowIfCancellationRequested(); await ConsolidateSkillsAsync(ct); }
 
-            ct.ThrowIfCancellationRequested(); await RunEpisodeExtractionPassAsync();
+            ct.ThrowIfCancellationRequested(); await RunEpisodeExtractionPassAsync(ct);
 
-            ct.ThrowIfCancellationRequested(); await RunEntityExtractionPassAsync();
+            ct.ThrowIfCancellationRequested(); await RunEntityExtractionPassAsync(ct);
 
-            ct.ThrowIfCancellationRequested(); await RunGraphConsolidationPassAsync();
+            ct.ThrowIfCancellationRequested(); await RunGraphConsolidationPassAsync(ct);
 
-            ct.ThrowIfCancellationRequested(); await RunMemoryMiningPassAsync();
+            ct.ThrowIfCancellationRequested(); await RunMemoryMiningPassAsync(ct);
 
-            ct.ThrowIfCancellationRequested(); await RunPreferenceInferencePassAsync();
+            ct.ThrowIfCancellationRequested(); await RunPreferenceInferencePassAsync(ct);
 
-            ct.ThrowIfCancellationRequested(); await RunSequenceSkillDetectionPassAsync();
+            ct.ThrowIfCancellationRequested(); await RunSequenceSkillDetectionPassAsync(ct);
 
-            ct.ThrowIfCancellationRequested(); await RunWispFailureAnalysisPassAsync();
+            ct.ThrowIfCancellationRequested(); await RunWispFailureAnalysisPassAsync(ct);
 
-            ct.ThrowIfCancellationRequested(); await RunToolSuccessLearningPassAsync();
+            ct.ThrowIfCancellationRequested(); await RunToolSuccessLearningPassAsync(ct);
 
-            ct.ThrowIfCancellationRequested(); await RunTierRoutingReviewPassAsync();
+            ct.ThrowIfCancellationRequested(); await RunTierRoutingReviewPassAsync(ct);
 
-            ct.ThrowIfCancellationRequested(); await RunDlqReviewPassAsync();
+            ct.ThrowIfCancellationRequested(); await RunDlqReviewPassAsync(ct);
 
-            ct.ThrowIfCancellationRequested(); await RunIdentityReflectionPassAsync();
+            ct.ThrowIfCancellationRequested(); await RunIdentityReflectionPassAsync(ct);
 
             sw.Stop();
             _logger.LogInformation(
@@ -577,7 +558,7 @@ internal sealed class DreamService : IHostedService, IDisposable
         }
     }
 
-    private async Task ConsolidateSkillsAsync()
+    private async Task ConsolidateSkillsAsync(CancellationToken ct)
     {
         var all = await _skillStore!.ListAsync();
 
@@ -709,30 +690,12 @@ internal sealed class DreamService : IHostedService, IDisposable
             }
         }
 
-        var messages = new List<ChatMessage>
-        {
-            new(ChatRole.System, _skillDreamDirective!),
-            new(ChatRole.User, userMessage.ToString())
-        };
-
-        var response = await _llmClient.GetResponseAsync(messages, ModelTier.Balanced, new ChatOptions { ResponseFormat = ChatResponseFormat.Json });
-        var raw = response.Text?.Trim() ?? string.Empty;
-        var json = ExtractJsonObject(raw);
-
-        if (string.IsNullOrEmpty(json))
-        {
-            _logger.LogWarning("DreamService: skill LLM returned no parseable JSON; skipping skill consolidation");
-            return;
-        }
-
-        _logger.LogDebug("DreamService: skill LLM response JSON ({Length} chars): {Json}", json.Length, json);
-
-        var result = TryDeserializeJson<SkillDreamResultDto>(json, "skill consolidation");
-        if (result is null)
-        {
-            _logger.LogWarning("DreamService: failed to deserialize skill dream result; skipping");
-            return;
-        }
+        var result = await InvokeDreamPassAsync<SkillDreamResultDto>(
+            "skill consolidation",
+            _skillDreamDirective!,
+            userMessage.ToString(),
+            ct);
+        if (result is null) return;
 
         var deleted = 0;
         var saved = 0;
@@ -827,7 +790,7 @@ internal sealed class DreamService : IHostedService, IDisposable
                 skill.Name, skill.SeeAlso is { Count: > 0 } ? string.Join(", ", skill.SeeAlso) : "none");
         }
 
-        await OptimizeSkillsAsync();
+        await OptimizeSkillsAsync(ct);
 
         _logger.LogInformation(
             "DreamService: skill consolidation complete — {Deleted} deleted, {Saved} saved",
@@ -838,7 +801,7 @@ internal sealed class DreamService : IHostedService, IDisposable
     /// Identifies skills associated with poor-quality sessions and asks the LLM to improve them.
     /// Skipped when the skill usage store or feedback store is unavailable, or no at-risk skills are found.
     /// </summary>
-    private async Task OptimizeSkillsAsync()
+    private async Task OptimizeSkillsAsync(CancellationToken ct)
     {
         if (_skillUsageStore is null || _feedbackStore is null || _skillOptimizeDirective is null)
             return;
@@ -1006,28 +969,12 @@ internal sealed class DreamService : IHostedService, IDisposable
             }
         }
 
-        var messages = new List<ChatMessage>
-        {
-            new(ChatRole.System, _skillOptimizeDirective),
-            new(ChatRole.User, userMessage.ToString())
-        };
-
-        var response = await _llmClient.GetResponseAsync(messages, ModelTier.Balanced, new ChatOptions { ResponseFormat = ChatResponseFormat.Json });
-        var raw = response.Text?.Trim() ?? string.Empty;
-        var json = ExtractJsonObject(raw);
-
-        if (string.IsNullOrEmpty(json))
-        {
-            _logger.LogWarning("DreamService: skill optimize LLM returned no parseable JSON; skipping optimization");
-            return;
-        }
-
-        var result = TryDeserializeJson<SkillDreamResultDto>(json, "skill optimization");
-        if (result is null)
-        {
-            _logger.LogWarning("DreamService: failed to deserialize skill optimize result; skipping");
-            return;
-        }
+        var result = await InvokeDreamPassAsync<SkillDreamResultDto>(
+            "skill optimization",
+            _skillOptimizeDirective,
+            userMessage.ToString(),
+            ct);
+        if (result is null) return;
 
         var deleted = 0;
         var saved = 0;
@@ -1095,7 +1042,7 @@ internal sealed class DreamService : IHostedService, IDisposable
     /// Runs before skill consolidation so that the consolidation pass can deduplicate
     /// any new skills alongside existing ones.
     /// </summary>
-    private async Task RunSkillGapDetectionPassAsync()
+    private async Task RunSkillGapDetectionPassAsync(CancellationToken ct)
     {
         if (_conversationLog is null || _skillStore is null || !_options.SkillGapEnabled)
             return;
@@ -1245,25 +1192,12 @@ internal sealed class DreamService : IHostedService, IDisposable
             }
         }
 
-        var messages = new List<ChatMessage>
-        {
-            new(ChatRole.System, _skillGapDirective ?? BuiltInSkillGapDirective),
-            new(ChatRole.User, userMessage.ToString())
-        };
-
-        var response = await _llmClient.GetResponseAsync(messages, ModelTier.Balanced, new ChatOptions { ResponseFormat = ChatResponseFormat.Json });
-        var raw = response.Text?.Trim() ?? string.Empty;
-        var json = ExtractJsonObject(raw);
-
-        if (string.IsNullOrEmpty(json))
-        {
-            _logger.LogWarning("DreamService: skill gap LLM returned no parseable JSON; skipping");
-            return;
-        }
-
-        _logger.LogDebug("DreamService: skill gap JSON ({Length} chars): {Json}", json.Length, json);
-
-        var result = TryDeserializeJson<SkillGapResultDto>(json, "skill gap");
+        var result = await InvokeDreamPassAsync<SkillGapResultDto>(
+            "skill gap",
+            _skillGapDirective ?? BuiltInSkillGapDirective,
+            userMessage.ToString(),
+            ct);
+        if (result is null) return;
         var saved = 0;
 
         foreach (var dto in result?.ToSave ?? [])
@@ -1422,7 +1356,7 @@ internal sealed class DreamService : IHostedService, IDisposable
     /// Runs before memory mining so episodes exist before facts are distilled.
     /// Does NOT clear the log — that is deferred to <see cref="RunPreferenceInferencePassAsync"/>.
     /// </summary>
-    private async Task RunEpisodeExtractionPassAsync()
+    private async Task RunEpisodeExtractionPassAsync(CancellationToken ct)
     {
         if (_conversationLog is null || !_options.EpisodeExtractionEnabled)
             return;
@@ -1471,26 +1405,12 @@ internal sealed class DreamService : IHostedService, IDisposable
                 userMessage.AppendLine();
             }
 
-            var messages = new List<ChatMessage>
-            {
-                new(ChatRole.System, _episodeDirective ?? BuiltInEpisodeDirective),
-                new(ChatRole.User, userMessage.ToString())
-            };
-
-            var response = await _llmClient.GetResponseAsync(messages, ModelTier.Balanced,
-                new ChatOptions { ResponseFormat = ChatResponseFormat.Json });
-            var raw = response.Text?.Trim() ?? string.Empty;
-            var json = ExtractJsonObject(raw);
-
-            if (string.IsNullOrEmpty(json))
-            {
-                _logger.LogWarning("DreamService: episode extraction LLM returned no parseable JSON; skipping");
-                return;
-            }
-
-            _logger.LogDebug("DreamService: episode extraction JSON ({Length} chars): {Json}", json.Length, json);
-
-            var result = TryDeserializeJson<EpisodeExtractionResultDto>(json, "episode extraction");
+            var result = await InvokeDreamPassAsync<EpisodeExtractionResultDto>(
+                "episode extraction",
+                _episodeDirective ?? BuiltInEpisodeDirective,
+                userMessage.ToString(),
+                ct);
+            if (result is null) return;
             var created = 0;
             var reinforced = 0;
 
@@ -1589,7 +1509,7 @@ internal sealed class DreamService : IHostedService, IDisposable
     /// Extracts entities and relationships from episodic memories and conversation logs,
     /// populating the knowledge graph triple store for relational reasoning.
     /// </summary>
-    private async Task RunEntityExtractionPassAsync()
+    private async Task RunEntityExtractionPassAsync(CancellationToken ct)
     {
         if (_knowledgeGraph is null || !_options.EntityExtractionEnabled)
             return;
@@ -1642,26 +1562,12 @@ internal sealed class DreamService : IHostedService, IDisposable
                 userMessage.AppendLine();
             }
 
-            var messages = new List<ChatMessage>
-            {
-                new(ChatRole.System, _entityExtractionDirective ?? BuiltInEntityExtractionDirective),
-                new(ChatRole.User, userMessage.ToString())
-            };
-
-            var response = await _llmClient.GetResponseAsync(messages, ModelTier.Balanced,
-                new ChatOptions { ResponseFormat = ChatResponseFormat.Json });
-            var raw = response.Text?.Trim() ?? string.Empty;
-            var json = ExtractJsonObject(raw);
-
-            if (string.IsNullOrEmpty(json))
-            {
-                _logger.LogWarning("DreamService: entity extraction LLM returned no parseable JSON; skipping");
-                return;
-            }
-
-            _logger.LogDebug("DreamService: entity extraction JSON ({Length} chars): {Json}", json.Length, json);
-
-            var result = TryDeserializeJson<EntityExtractionResultDto>(json, "entity extraction");
+            var result = await InvokeDreamPassAsync<EntityExtractionResultDto>(
+                "entity extraction",
+                _entityExtractionDirective ?? BuiltInEntityExtractionDirective,
+                userMessage.ToString(),
+                ct);
+            if (result is null) return;
             var entitiesCreated = 0;
             var triplesCreated = 0;
 
@@ -1725,7 +1631,7 @@ internal sealed class DreamService : IHostedService, IDisposable
     /// LLM to decide what to delete or merge. Runs after entity extraction so newly created
     /// entities are included in the review.
     /// </summary>
-    private async Task RunGraphConsolidationPassAsync()
+    private async Task RunGraphConsolidationPassAsync(CancellationToken ct)
     {
         if (_knowledgeGraph is null || !_options.GraphConsolidationEnabled)
             return;
@@ -1774,26 +1680,12 @@ internal sealed class DreamService : IHostedService, IDisposable
                     $"- [{t.Id}] {t.Subject} --{t.Predicate}--> {t.Object} (confidence={t.Confidence:F2}, created={t.CreatedAt:yyyy-MM-dd}{source})");
             }
 
-            var messages = new List<ChatMessage>
-            {
-                new(ChatRole.System, _graphConsolidationDirective ?? BuiltInGraphConsolidationDirective),
-                new(ChatRole.User, userMessage.ToString())
-            };
-
-            var response = await _llmClient.GetResponseAsync(messages, ModelTier.Balanced,
-                new ChatOptions { ResponseFormat = ChatResponseFormat.Json });
-            var raw = response.Text?.Trim() ?? string.Empty;
-            var json = ExtractJsonObject(raw);
-
-            if (string.IsNullOrEmpty(json))
-            {
-                _logger.LogWarning("DreamService: graph consolidation LLM returned no parseable JSON; skipping");
-                return;
-            }
-
-            _logger.LogDebug("DreamService: graph consolidation JSON ({Length} chars): {Json}", json.Length, json);
-
-            var result = TryDeserializeJson<GraphConsolidationResultDto>(json, "graph consolidation");
+            var result = await InvokeDreamPassAsync<GraphConsolidationResultDto>(
+                "graph consolidation",
+                _graphConsolidationDirective ?? BuiltInGraphConsolidationDirective,
+                userMessage.ToString(),
+                ct);
+            if (result is null) return;
             var entitiesDeleted = 0;
             var triplesDeleted = 0;
 
@@ -1829,7 +1721,7 @@ internal sealed class DreamService : IHostedService, IDisposable
     /// (which targets behavioral patterns) and skill gap detection (which targets procedures).
     /// Does NOT clear the log — that is deferred to <see cref="RunPreferenceInferencePassAsync"/>.
     /// </summary>
-    private async Task RunMemoryMiningPassAsync()
+    private async Task RunMemoryMiningPassAsync(CancellationToken ct)
     {
         if (_conversationLog is null || !_options.MemoryMiningEnabled)
             return;
@@ -1863,26 +1755,12 @@ internal sealed class DreamService : IHostedService, IDisposable
 
             await AppendSubagentWhiteboardEntriesAsync(userMessage);
 
-            var messages = new List<ChatMessage>
-            {
-                new(ChatRole.System, _memoryMiningDirective ?? BuiltInMemoryMiningDirective),
-                new(ChatRole.User, userMessage.ToString())
-            };
-
-            var response = await _llmClient.GetResponseAsync(messages, ModelTier.Balanced,
-                new ChatOptions { ResponseFormat = ChatResponseFormat.Json });
-            var raw = response.Text?.Trim() ?? string.Empty;
-            var json = ExtractJsonObject(raw);
-
-            if (string.IsNullOrEmpty(json))
-            {
-                _logger.LogWarning("DreamService: memory mining LLM returned no parseable JSON; skipping");
-                return;
-            }
-
-            _logger.LogDebug("DreamService: memory mining JSON ({Length} chars): {Json}", json.Length, json);
-
-            var result = TryDeserializeJson<MemoryMiningResultDto>(json, "memory mining");
+            var result = await InvokeDreamPassAsync<MemoryMiningResultDto>(
+                "memory mining",
+                _memoryMiningDirective ?? BuiltInMemoryMiningDirective,
+                userMessage.ToString(),
+                ct);
+            if (result is null) return;
             var saved = 0;
 
             foreach (var dto in result?.ToSave ?? [])
@@ -2216,7 +2094,7 @@ internal sealed class DreamService : IHostedService, IDisposable
     /// memory entries tagged "verified" and "tool-success-learned" so future sessions surface
     /// them via BM25 or vector recall before the agent has to re-discover the same answer.
     /// </summary>
-    private async Task RunToolSuccessLearningPassAsync()
+    private async Task RunToolSuccessLearningPassAsync(CancellationToken ct)
     {
         if (!_options.ToolSuccessLearningEnabled || _toolCallLog is null)
             return;
@@ -2239,24 +2117,11 @@ internal sealed class DreamService : IHostedService, IDisposable
 
         try
         {
-            var messages = new List<ChatMessage>
-            {
-                new(ChatRole.System, _toolSuccessLearningDirective ?? BuiltInToolSuccessLearningDirective),
-                new(ChatRole.User, userMessage)
-            };
-
-            var response = await _llmClient.GetResponseAsync(messages, ModelTier.Balanced,
-                new ChatOptions { ResponseFormat = ChatResponseFormat.Json });
-            var raw = response.Text?.Trim() ?? string.Empty;
-            var json = ExtractJsonObject(raw);
-
-            if (string.IsNullOrEmpty(json))
-            {
-                _logger.LogWarning("DreamService: tool-success-learning LLM returned no parseable JSON; skipping");
-                return;
-            }
-
-            var result = TryDeserializeJson<MemoryMiningResultDto>(json, "tool-success-learning");
+            var result = await InvokeDreamPassAsync<MemoryMiningResultDto>(
+                "tool-success-learning",
+                _toolSuccessLearningDirective ?? BuiltInToolSuccessLearningDirective,
+                userMessage,
+                ct);
             var entries = NormalizeToolSuccessLearningEntries(
                 result,
                 idFactory: () => Guid.NewGuid().ToString("N")[..12],
@@ -2313,7 +2178,7 @@ internal sealed class DreamService : IHostedService, IDisposable
     /// and saves inferred preferences as tagged memory entries.
     /// Always clears the log after the pass to prevent unbounded growth.
     /// </summary>
-    private async Task RunPreferenceInferencePassAsync()
+    private async Task RunPreferenceInferencePassAsync(CancellationToken ct)
     {
         if (_conversationLog is null || !_options.PreferenceInferenceEnabled)
             return;
@@ -2363,28 +2228,16 @@ internal sealed class DreamService : IHostedService, IDisposable
                 }
             }
 
-            var messages = new List<ChatMessage>
+            var result = await InvokeDreamPassAsync<PrefDreamResultDto>(
+                "preference inference",
+                _prefDreamDirective ?? BuiltInPrefDirective,
+                userMessage.ToString(),
+                ct);
+            if (result is not null)
             {
-                new(ChatRole.System, _prefDreamDirective ?? BuiltInPrefDirective),
-                new(ChatRole.User, userMessage.ToString())
-            };
-
-            var response = await _llmClient.GetResponseAsync(messages, ModelTier.Balanced, new ChatOptions { ResponseFormat = ChatResponseFormat.Json });
-            var raw = response.Text?.Trim() ?? string.Empty;
-            var json = ExtractJsonObject(raw);
-
-            if (string.IsNullOrEmpty(json))
-            {
-                _logger.LogWarning("DreamService: preference inference LLM returned no parseable JSON; skipping");
-            }
-            else
-            {
-                _logger.LogDebug("DreamService: pref inference JSON ({Length} chars): {Json}", json.Length, json);
-
-                var result = TryDeserializeJson<PrefDreamResultDto>(json, "preference inference");
                 var saved = 0;
 
-                foreach (var dto in result?.ToSave ?? [])
+                foreach (var dto in result.ToSave ?? [])
                 {
                     if (string.IsNullOrWhiteSpace(dto.Content))
                         continue;
@@ -2435,7 +2288,7 @@ internal sealed class DreamService : IHostedService, IDisposable
     /// Reviews recent tier-routing decisions and writes an updated <c>tier-selector.json</c>
     /// when the LLM detects systematic mis-routing. Skipped when fewer than 10 entries exist.
     /// </summary>
-    private async Task RunTierRoutingReviewPassAsync()
+    private async Task RunTierRoutingReviewPassAsync(CancellationToken ct)
     {
         if (_tierRoutingLogger is null || !_options.TierRoutingReviewEnabled)
             return;
@@ -2492,26 +2345,11 @@ internal sealed class DreamService : IHostedService, IDisposable
             userMessage.AppendLine(await File.ReadAllTextAsync(configPath));
         }
 
-        var messages = new List<ChatMessage>
-        {
-            new(ChatRole.System, _tierRoutingDirective ?? BuiltInTierRoutingDirective),
-            new(ChatRole.User, userMessage.ToString())
-        };
-
-        var response = await _llmClient.GetResponseAsync(
-            messages, ModelTier.Balanced, new ChatOptions { ResponseFormat = ChatResponseFormat.Json });
-        var raw = response.Text?.Trim() ?? string.Empty;
-        var json = ExtractJsonObject(raw);
-
-        if (string.IsNullOrEmpty(json))
-        {
-            _logger.LogWarning("DreamService: tier routing review LLM returned no parseable JSON; skipping");
-            return;
-        }
-
-        _logger.LogDebug("DreamService: tier routing review JSON ({Length} chars): {Json}", json.Length, json);
-
-        var result = TryDeserializeJson<TierRoutingReviewResultDto>(json, "tier routing review");
+        var result = await InvokeDreamPassAsync<TierRoutingReviewResultDto>(
+            "tier routing review",
+            _tierRoutingDirective ?? BuiltInTierRoutingDirective,
+            userMessage.ToString(),
+            ct);
         if (result is null) return;
 
         // Save anti-pattern entries regardless of whether the config changed
@@ -2582,7 +2420,7 @@ internal sealed class DreamService : IHostedService, IDisposable
     /// and synthesize them into reusable skills. Requires <see cref="IToolCallLog"/> and
     /// <see cref="ISkillStore"/> to be available.
     /// </summary>
-    private async Task RunSequenceSkillDetectionPassAsync()
+    private async Task RunSequenceSkillDetectionPassAsync(CancellationToken ct)
     {
         if (_toolCallLog is null || _skillStore is null || !_options.SequenceSkillDetectionEnabled)
             return;
@@ -2644,26 +2482,12 @@ internal sealed class DreamService : IHostedService, IDisposable
                     userMessage.AppendLine($"  - {name}");
             }
 
-            var messages = new List<ChatMessage>
-            {
-                new(ChatRole.System, _sequenceSkillDirective ?? BuiltInSequenceSkillDirective),
-                new(ChatRole.User, userMessage.ToString())
-            };
-
-            var response = await _llmClient.GetResponseAsync(
-                messages, ModelTier.Balanced, new ChatOptions { ResponseFormat = ChatResponseFormat.Json });
-            var raw = response.Text?.Trim() ?? string.Empty;
-            var json = ExtractJsonObject(raw);
-
-            if (string.IsNullOrEmpty(json))
-            {
-                _logger.LogWarning("DreamService: sequence skill detection LLM returned no parseable JSON; skipping");
-                return;
-            }
-
-            _logger.LogDebug("DreamService: sequence skill detection JSON ({Length} chars): {Json}", json.Length, json);
-
-            var result = TryDeserializeJson<SequenceSkillResultDto>(json, "sequence skill detection");
+            var result = await InvokeDreamPassAsync<SequenceSkillResultDto>(
+                "sequence skill detection",
+                _sequenceSkillDirective ?? BuiltInSequenceSkillDirective,
+                userMessage.ToString(),
+                ct);
+            if (result is null) return;
             var created = 0;
 
             foreach (var dto in result?.ToSave ?? [])
@@ -2745,7 +2569,7 @@ internal sealed class DreamService : IHostedService, IDisposable
     /// Analyzes wisp execution records to detect recurring failure patterns and propose
     /// skill corrections. Requires <see cref="IWispExecutionLog"/> and <see cref="ISkillStore"/>.
     /// </summary>
-    private async Task RunWispFailureAnalysisPassAsync()
+    private async Task RunWispFailureAnalysisPassAsync(CancellationToken ct)
     {
         if (_wispExecutionLog is null || _skillStore is null || !_options.WispFailureAnalysisEnabled)
             return;
@@ -2805,26 +2629,12 @@ internal sealed class DreamService : IHostedService, IDisposable
                     userMessage.AppendLine($"  - {skill.Name}: {skill.Summary}");
             }
 
-            var messages = new List<ChatMessage>
-            {
-                new(ChatRole.System, _wispFailureDirective ?? BuiltInWispFailureDirective),
-                new(ChatRole.User, userMessage.ToString())
-            };
-
-            var response = await _llmClient.GetResponseAsync(
-                messages, ModelTier.Balanced, new ChatOptions { ResponseFormat = ChatResponseFormat.Json });
-            var raw = response.Text?.Trim() ?? string.Empty;
-            var json = ExtractJsonObject(raw);
-
-            if (string.IsNullOrEmpty(json))
-            {
-                _logger.LogWarning("DreamService: wisp failure analysis LLM returned no parseable JSON; skipping");
-                return;
-            }
-
-            _logger.LogDebug("DreamService: wisp failure analysis JSON ({Length} chars): {Json}", json.Length, json);
-
-            var result = TryDeserializeJson<WispFailureAnalysisResultDto>(json, "wisp failure analysis");
+            var result = await InvokeDreamPassAsync<WispFailureAnalysisResultDto>(
+                "wisp failure analysis",
+                _wispFailureDirective ?? BuiltInWispFailureDirective,
+                userMessage.ToString(),
+                ct);
+            if (result is null) return;
             var updated = 0;
 
             // Apply skill updates
@@ -2913,7 +2723,7 @@ internal sealed class DreamService : IHostedService, IDisposable
     /// saves patterns as memory entries, and purges queues the LLM deems safe to clear.
     /// Skipped when the DLQ sampler is unavailable or <see cref="DreamOptions.DlqReviewEnabled"/> is false.
     /// </summary>
-    private async Task RunDlqReviewPassAsync()
+    private async Task RunDlqReviewPassAsync(CancellationToken ct)
     {
         if (_dlqSampler is null || !_options.DlqReviewEnabled) return;
 
@@ -2978,26 +2788,11 @@ internal sealed class DreamService : IHostedService, IDisposable
                 }
             }
 
-            var chatMessages = new List<ChatMessage>
-            {
-                new(ChatRole.System, _dlqDirective ?? BuiltInDlqDirective),
-                new(ChatRole.User, userMessage.ToString())
-            };
-
-            var response = await _llmClient.GetResponseAsync(
-                chatMessages, ModelTier.Balanced, new ChatOptions { ResponseFormat = ChatResponseFormat.Json });
-            var raw = response.Text?.Trim() ?? string.Empty;
-            var json = ExtractJsonObject(raw);
-
-            if (string.IsNullOrEmpty(json))
-            {
-                _logger.LogWarning("DreamService: DLQ review LLM returned no parseable JSON; skipping");
-                return;
-            }
-
-            _logger.LogDebug("DreamService: DLQ review JSON ({Length} chars): {Json}", json.Length, json);
-
-            var result = TryDeserializeJson<DlqReviewResultDto>(json, "DLQ review");
+            var result = await InvokeDreamPassAsync<DlqReviewResultDto>(
+                "DLQ review",
+                _dlqDirective ?? BuiltInDlqDirective,
+                userMessage.ToString(),
+                ct);
             if (result is null) return;
 
             if (result.NoDlqIssues == true)
@@ -3062,7 +2857,7 @@ internal sealed class DreamService : IHostedService, IDisposable
     /// under the <c>agent-identity/</c> memory category. These entries complement the immutable
     /// soul.md — the pass cannot override core values or boundaries.
     /// </summary>
-    private async Task RunIdentityReflectionPassAsync()
+    private async Task RunIdentityReflectionPassAsync(CancellationToken ct)
     {
         if (!_options.IdentityReflectionEnabled)
             return;
@@ -3143,26 +2938,11 @@ internal sealed class DreamService : IHostedService, IDisposable
                 userMessage.AppendLine();
             }
 
-            var messages = new List<ChatMessage>
-            {
-                new(ChatRole.System, _identityDirective ?? BuiltInIdentityDirective),
-                new(ChatRole.User, userMessage.ToString())
-            };
-
-            var response = await _llmClient.GetResponseAsync(messages, ModelTier.Balanced,
-                new ChatOptions { ResponseFormat = ChatResponseFormat.Json });
-            var raw = response.Text?.Trim() ?? string.Empty;
-            var json = ExtractJsonObject(raw);
-
-            if (string.IsNullOrEmpty(json))
-            {
-                _logger.LogWarning("DreamService: identity reflection LLM returned no parseable JSON; skipping");
-                return;
-            }
-
-            _logger.LogDebug("DreamService: identity reflection JSON ({Length} chars): {Json}", json.Length, json);
-
-            var result = TryDeserializeJson<IdentityReflectionResultDto>(json, "identity reflection");
+            var result = await InvokeDreamPassAsync<IdentityReflectionResultDto>(
+                "identity reflection",
+                _identityDirective ?? BuiltInIdentityDirective,
+                userMessage.ToString(),
+                ct);
             if (result is null) return;
 
             if (result.NoChange == true)
@@ -3222,6 +3002,47 @@ internal sealed class DreamService : IHostedService, IDisposable
         {
             _logger.LogError(ex, "DreamService: identity reflection pass failed");
         }
+    }
+
+    /// <summary>
+    /// Runs a single dream pass: builds a System+User chat message pair, calls the
+    /// Balanced-tier LLM in JSON-response mode with the supplied cancellation token,
+    /// extracts the outermost JSON object from the response, and deserializes it.
+    /// Returns <c>null</c> if the LLM produced no parseable JSON or the JSON failed
+    /// to deserialize into <typeparamref name="TResult"/>; in both cases the helper
+    /// has already logged a warning. The cancellation token MUST be the slot token
+    /// (<see cref="IScheduledTaskSlot.Token"/>) so that user preemption interrupts
+    /// the in-flight LLM call promptly — see issue #333.
+    /// </summary>
+    private async Task<TResult?> InvokeDreamPassAsync<TResult>(
+        string passName,
+        string systemDirective,
+        string userMessage,
+        CancellationToken ct)
+        where TResult : class
+    {
+        var messages = new List<ChatMessage>
+        {
+            new(ChatRole.System, systemDirective),
+            new(ChatRole.User, userMessage)
+        };
+
+        var response = await _llmClient.GetResponseAsync(
+            messages,
+            ModelTier.Balanced,
+            new ChatOptions { ResponseFormat = ChatResponseFormat.Json },
+            ct);
+
+        var raw = response.Text?.Trim() ?? string.Empty;
+        var json = ExtractJsonObject(raw);
+        if (string.IsNullOrEmpty(json))
+        {
+            _logger.LogWarning("DreamService: {Pass} LLM returned no parseable JSON; skipping", passName);
+            return null;
+        }
+
+        _logger.LogDebug("DreamService: {Pass} JSON ({Length} chars): {Json}", passName, json.Length, json);
+        return TryDeserializeJson<TResult>(json, passName);
     }
 
     /// <summary>
