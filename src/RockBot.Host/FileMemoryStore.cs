@@ -107,12 +107,23 @@ internal sealed partial class FileMemoryStore : ILongTermMemory
         // No query: return most-recently reinforced entries up to MaxResults.
         // Ordered by LastSeenAt (real reinforcement) rather than UpdatedAt (dream rewrites),
         // so dream housekeeping does not artificially promote entries in no-query results.
-        if (criteria.Query is null)
+        if (string.IsNullOrWhiteSpace(criteria.Query))
         {
             return candidates
                 .OrderByDescending(e => e.LastSeenAt)
                 .Take(criteria.MaxResults)
                 .ToList();
+        }
+
+        // Regex mode: literal pattern matching, no scoring, bounded by timeouts.
+        if (criteria.Mode == MemorySearchMode.Regex)
+        {
+            return RegexMatcher.MatchEntries(
+                candidates,
+                criteria.Query,
+                criteria.RegexCaseSensitive,
+                criteria.MaxResults,
+                BuildRegexSurface);
         }
 
         // With query: use hybrid ranking if embeddings available, else BM25-only.
@@ -261,6 +272,21 @@ internal sealed partial class FileMemoryStore : ILongTermMemory
         if (entry.Category is not null)
             parts.Add(entry.Category.Replace('/', ' ').Replace('-', ' '));
         return string.Join(" ", parts);
+    }
+
+    // ── Regex match surface ───────────────────────────────────────────────────
+
+    /// <summary>
+    /// Returns the text the regex backend matches against: the entry's logical memory
+    /// path name (<c>{category}/{id}</c> or <c>{id}</c> when uncategorized) on its own
+    /// line, then the BM25 document text (content + tags + category words). The on-disk
+    /// file path from <see cref="GetFilePath"/> is deliberately never included — the
+    /// model interacts with memories by id, not by storage layout.
+    /// </summary>
+    internal static string BuildRegexSurface(MemoryEntry entry)
+    {
+        var pathName = entry.Category is null ? entry.Id : $"{entry.Category}/{entry.Id}";
+        return $"{pathName}\n{GetDocumentText(entry)}";
     }
 
     // ── Structural Filter ─────────────────────────────────────────────────────

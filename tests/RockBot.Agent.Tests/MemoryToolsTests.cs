@@ -223,6 +223,72 @@ public class MemoryToolsTests
     }
 
     // -------------------------------------------------------------------------
+    // SearchMemory — mode parameter
+    // -------------------------------------------------------------------------
+
+    [TestMethod]
+    public async Task SearchMemory_DefaultMode_PassesHybrid()
+    {
+        var memory = new StubLongTermMemory();
+        var tools = MakeTools(memory);
+
+        await tools.SearchMemory("anything");
+
+        Assert.IsNotNull(memory.LastCriteria);
+        Assert.AreEqual(MemorySearchMode.Hybrid, memory.LastCriteria.Mode);
+    }
+
+    [TestMethod]
+    public async Task SearchMemory_ModeRegex_PassesRegex()
+    {
+        var memory = new StubLongTermMemory();
+        var tools = MakeTools(memory);
+
+        await tools.SearchMemory("anything", mode: "Regex");
+
+        Assert.IsNotNull(memory.LastCriteria);
+        Assert.AreEqual(MemorySearchMode.Regex, memory.LastCriteria.Mode);
+    }
+
+    [TestMethod]
+    public async Task SearchMemory_ModeRegex_LowerCase_PassesRegex()
+    {
+        var memory = new StubLongTermMemory();
+        var tools = MakeTools(memory);
+
+        await tools.SearchMemory("anything", mode: "regex");
+
+        Assert.IsNotNull(memory.LastCriteria);
+        Assert.AreEqual(MemorySearchMode.Regex, memory.LastCriteria.Mode);
+    }
+
+    [TestMethod]
+    public async Task SearchMemory_UnknownMode_ReturnsErrorString_AndDoesNotCallStore()
+    {
+        var memory = new StubLongTermMemory();
+        var tools = MakeTools(memory);
+
+        var result = await tools.SearchMemory("anything", mode: "fuzzy");
+
+        StringAssert.Contains(result, "Unknown search mode");
+        Assert.IsNull(memory.LastCriteria, "Store should not be called for an invalid mode.");
+    }
+
+    [TestMethod]
+    public async Task SearchMemory_MemorySearchException_ReturnsMessage()
+    {
+        var memory = new StubLongTermMemory
+        {
+            SearchOverride = _ => throw new MemorySearchException("bad pattern: nope")
+        };
+        var tools = MakeTools(memory);
+
+        var result = await tools.SearchMemory("[", mode: "regex");
+
+        StringAssert.Contains(result, "bad pattern: nope");
+    }
+
+    // -------------------------------------------------------------------------
     // Helpers
     // -------------------------------------------------------------------------
 
@@ -246,6 +312,9 @@ internal sealed class StubLongTermMemory : ILongTermMemory
 {
     private readonly List<MemoryEntry> _entries = [];
 
+    public MemorySearchCriteria? LastCriteria { get; private set; }
+    public Func<MemorySearchCriteria, IReadOnlyList<MemoryEntry>>? SearchOverride { get; set; }
+
     public void Add(MemoryEntry entry) => _entries.Add(entry);
 
     public Task SaveAsync(MemoryEntry entry, CancellationToken cancellationToken = default)
@@ -256,8 +325,12 @@ internal sealed class StubLongTermMemory : ILongTermMemory
     }
 
     public Task<IReadOnlyList<MemoryEntry>> SearchAsync(
-        MemorySearchCriteria criteria, CancellationToken cancellationToken = default) =>
-        Task.FromResult<IReadOnlyList<MemoryEntry>>([.. _entries]);
+        MemorySearchCriteria criteria, CancellationToken cancellationToken = default)
+    {
+        LastCriteria = criteria;
+        var results = SearchOverride is not null ? SearchOverride(criteria) : (IReadOnlyList<MemoryEntry>)[.. _entries];
+        return Task.FromResult(results);
+    }
 
     public Task<MemoryEntry?> GetAsync(string id, CancellationToken cancellationToken = default) =>
         Task.FromResult(_entries.FirstOrDefault(e => e.Id == id));
