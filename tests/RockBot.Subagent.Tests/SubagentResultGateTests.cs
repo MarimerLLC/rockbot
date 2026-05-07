@@ -227,6 +227,72 @@ public class SubagentResultGateTests
         Assert.IsNull(batch2, "Late arrival to a fired batch must not trigger another synthesis");
     }
 
+    // ── Late arrival inside ceiling+slack must return null even if Phase 2 was slow ─
+
+    [TestMethod]
+    public async Task AccumulateAsync_LateArrival_WithinCeilingPlusSlack_ReturnsNull()
+    {
+        // Background ceiling = 3 s. With +2 min slack the gate keeps a fired batch
+        // discoverable for ~2 min 3 s. A sibling arriving 1 s after fire (well within
+        // that window) must short-circuit to null, matching the production scenario
+        // where Phase 2 synthesis takes longer than the legacy 30 s staleness check.
+        var gate = CreateGate(backgroundCeilingSec: 3);
+        var result1 = MakeResult("task-1", primarySessionId: "patrol/morning-brief");
+
+        var batch1 = await gate.AccumulateAsync(result1, new FakeSubagentManager([]), CancellationToken.None);
+        Assert.IsNotNull(batch1);
+
+        // Simulate the time a Phase 2 synthesis would consume before the next
+        // sibling result is dequeued from the broker.
+        await Task.Delay(TimeSpan.FromSeconds(1));
+
+        var result2 = MakeResult("task-2", primarySessionId: "patrol/morning-brief");
+        var batch2 = await gate.AccumulateAsync(result2, new FakeSubagentManager([]), CancellationToken.None);
+
+        Assert.IsNull(batch2,
+            "Late arrival within ceiling+slack must defer to the already-fired winner, " +
+            "not start a fresh batch that produces a duplicate Phase 2 synthesis.");
+    }
+
+    // ── Concurrent arrivals accumulate into a single batch ────────────────────
+
+    [TestMethod]
+    public async Task AccumulateAsync_ConcurrentArrivals_AccumulateIntoOneBatch()
+    {
+        // Models the post-fix runtime: with raised consumer dispatch concurrency, all
+        // sibling results enter AccumulateAsync simultaneously (instead of arriving
+        // serially after each Phase 2). They must coalesce into one batch with one
+        // winner, not one batch per result.
+        var gate = CreateGate(interactiveCeilingSec: 30);
+        var primarySessionId = "session/concurrent-1";
+
+        var entries = Enumerable.Range(1, 3)
+            .Select(i => MakeActiveEntry($"task-{i}", TimeSpan.FromSeconds(20), primarySessionId))
+            .ToList();
+
+        // Start all three handlers in parallel. Each sees the others as active siblings
+        // initially; the manager mutates as each task "completes" (its entry is removed).
+        var manager = new FakeMutableSubagentManager(entries);
+        var results = new[] { "task-1", "task-2", "task-3" }
+            .Select(id => MakeResult(id, primarySessionId)).ToArray();
+
+        var tasks = results.Select(r => Task.Run(async () =>
+        {
+            // Stagger entries' removal so the wait loop has something to detect.
+            await Task.Delay(50);
+            manager.MarkComplete(r.TaskId);
+            return await gate.AccumulateAsync(r, manager, CancellationToken.None);
+        })).ToArray();
+
+        var outcomes = await Task.WhenAll(tasks);
+
+        var winners = outcomes.Where(o => o is not null).ToList();
+        Assert.AreEqual(1, winners.Count, "Exactly one handler should be the synthesis winner.");
+        Assert.AreEqual(3, winners[0]!.Count, "Winner's batch must contain all three sibling results.");
+        Assert.IsTrue(winners[0]!.Select(r => r.TaskId).OrderBy(x => x)
+            .SequenceEqual(new[] { "task-1", "task-2", "task-3" }));
+    }
+
     // ── Duplicate result (already fired) returns null ───────────────────────
 
     [TestMethod]
@@ -285,5 +351,35 @@ public class SubagentResultGateTests
         }
 
         public IReadOnlyList<SubagentEntry> ListActive() => _active.ToList();
+    }
+
+    private sealed class FakeMutableSubagentManager(IReadOnlyList<SubagentEntry> activeEntries) : ISubagentManager
+    {
+        private readonly object _lock = new();
+        private readonly List<SubagentEntry> _active = activeEntries.ToList();
+
+        public Task<string> SpawnAsync(string description, string? context, int? timeoutMinutes,
+            string primarySessionId, CancellationToken ct,
+            string? batchId = null, bool consolidate = true, int? maxIterations = null) =>
+            Task.FromResult("fake-task-id");
+
+        public Task<bool> CancelAsync(string taskId)
+        {
+            lock (_lock)
+            {
+                var removed = _active.RemoveAll(e => e.TaskId == taskId) > 0;
+                return Task.FromResult(removed);
+            }
+        }
+
+        public IReadOnlyList<SubagentEntry> ListActive()
+        {
+            lock (_lock) return _active.ToList();
+        }
+
+        public void MarkComplete(string taskId)
+        {
+            lock (_lock) _active.RemoveAll(e => e.TaskId == taskId);
+        }
     }
 }

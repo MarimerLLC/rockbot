@@ -18,8 +18,12 @@ internal sealed class InProcessSubscriber : IMessageSubscriber
         string topic,
         string subscriptionName,
         Func<MessageEnvelope, CancellationToken, Task<MessageResult>> handler,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        int dispatchConcurrency = 1)
     {
+        // dispatchConcurrency is a transport hint; the in-process bus already invokes
+        // each subscription handler asynchronously per publish call, so there's no
+        // separate dispatch loop to widen.
         var subscription = new InProcessSubscription(topic, subscriptionName, handler, _bus, _logger);
         _bus.Register(subscription);
         return Task.FromResult<ISubscription>(subscription);

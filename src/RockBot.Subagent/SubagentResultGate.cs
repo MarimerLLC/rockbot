@@ -24,6 +24,14 @@ internal sealed class SubagentResultGate(
     // result before returning, but message dispatch through RabbitMQ is async.
     private static readonly TimeSpan CancellationGrace = TimeSpan.FromSeconds(5);
 
+    // Extra slack added on top of the consolidation ceiling for the late-arrival window
+    // and post-fire batch retention. Phase 2 synthesis can run for tens of seconds, and
+    // a stragger result message may sit in the broker through that whole time before
+    // being delivered to a fresh handler invocation. We must keep the fired batch around
+    // long enough for that late arrival to find it and short-circuit (return null)
+    // instead of starting a brand-new batch that fires its own duplicate synthesis.
+    private static readonly TimeSpan PostFireRetentionSlack = TimeSpan.FromMinutes(2);
+
     /// <summary>
     /// Accumulates a subagent result into its batch. Returns:
     /// <list type="bullet">
@@ -44,9 +52,16 @@ internal sealed class SubagentResultGate(
 
         var batch = _pending.GetOrAdd(batchKey, _ => new PendingBatch());
 
-        // If a stale batch (already fired > 30s ago), replace it
+        // If a fired batch is "stale enough" to be safely replaced — i.e. older than
+        // (consolidation ceiling + slack) — start a fresh one. Within that window we
+        // assume any incoming result with this batchId is a delayed sibling of the
+        // already-fired batch, not a brand-new batch with a coincidentally reused key.
+        // BatchIds are 12-char GUID prefixes per primary session, so true reuse is
+        // astronomically unlikely; the staleness check only protects against pathological
+        // edge cases (e.g. clock skew on resume after suspend).
+        var staleThreshold = ChooseCeiling(result.PrimarySessionId) + PostFireRetentionSlack;
         if (batch.Fired && batch.FiredAt is { } firedAt
-            && DateTimeOffset.UtcNow - firedAt > TimeSpan.FromSeconds(30))
+            && DateTimeOffset.UtcNow - firedAt > staleThreshold)
         {
             var fresh = new PendingBatch();
             if (_pending.TryUpdate(batchKey, fresh, batch))
@@ -95,7 +110,7 @@ internal sealed class SubagentResultGate(
                 {
                     logger.LogInformation(
                         "Batch {BatchKey} fired with {Count} result(s)", batchKey, fired.Count);
-                    CleanupBatch(batchKey);
+                    CleanupBatch(batchKey, result.PrimarySessionId);
                     return fired;
                 }
                 return null; // someone else won the race
@@ -188,7 +203,7 @@ internal sealed class SubagentResultGate(
             logger.LogInformation(
                 "Batch {BatchKey} fired at ceiling with {Count} result(s) ({Cancelled} cancelled)",
                 batchKey, ceilingFired.Count, stragglers.Count);
-            CleanupBatch(batchKey);
+            CleanupBatch(batchKey, result.PrimarySessionId);
             return ceilingFired;
         }
 
@@ -216,10 +231,15 @@ internal sealed class SubagentResultGate(
         }
     }
 
-    private void CleanupBatch(string batchKey)
+    private void CleanupBatch(string batchKey, string primarySessionId)
     {
-        // Don't remove immediately — keep for late-arrival detection (30s staleness window)
-        _ = Task.Delay(TimeSpan.FromSeconds(35)).ContinueWith(_ => _pending.TryRemove(batchKey, out PendingBatch? _));
+        // Keep the fired batch around for at least (consolidation ceiling + slack) so
+        // late-arriving sibling results find it and return null (deferred-to-winner)
+        // instead of provoking a fresh PendingBatch with a duplicate synthesis. Must
+        // outlive both the staleness window in AccumulateAsync and any plausible
+        // Phase 2 synthesis time.
+        var retention = ChooseCeiling(primarySessionId) + PostFireRetentionSlack + TimeSpan.FromSeconds(5);
+        _ = Task.Delay(retention).ContinueWith(_ => _pending.TryRemove(batchKey, out PendingBatch? _));
     }
 
     private sealed class PendingBatch

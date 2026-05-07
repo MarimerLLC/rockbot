@@ -58,7 +58,8 @@ internal sealed class StubSubscriber : IMessageSubscriber
         string topic,
         string subscriptionName,
         Func<MessageEnvelope, CancellationToken, Task<MessageResult>> handler,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        int dispatchConcurrency = 1)
     {
         Subscriptions.Add((topic, subscriptionName, handler));
         ISubscription sub = new StubSubscription(topic, subscriptionName);

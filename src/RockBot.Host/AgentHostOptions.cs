@@ -1,14 +1,24 @@
 namespace RockBot.Host;
 
 /// <summary>
+/// A topic subscription paired with its dispatch concurrency.
+/// </summary>
+/// <param name="Topic">The topic pattern (with wildcards).</param>
+/// <param name="DispatchConcurrency">Maximum concurrent in-flight handler invocations
+/// for this subscription. Default 1 (sequential, preserves ordering). Bump only for
+/// re-entrant handlers where cross-message coordination would otherwise deadlock the
+/// consumer (e.g. the subagent-result consolidation gate).</param>
+public sealed record TopicSubscription(string Topic, int DispatchConcurrency = 1);
+
+/// <summary>
 /// Configuration options for the agent host.
 /// </summary>
 public sealed class AgentHostOptions
 {
     /// <summary>
-    /// Topics the agent subscribes to.
+    /// Topics the agent subscribes to, paired with their dispatch concurrency.
     /// </summary>
-    public List<string> Topics { get; } = [];
+    public List<TopicSubscription> Topics { get; } = [];
 
     /// <summary>
     /// Default maximum number of tool-calling round-trips per request.

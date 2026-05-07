@@ -29,10 +29,30 @@ public sealed class RabbitMqConnectionManager : IAsyncDisposable
     /// Each caller gets its own channel (publishers and subscribers should
     /// not share channels in RabbitMQ).
     /// </summary>
-    public async Task<IChannel> CreateChannelAsync(CancellationToken cancellationToken = default)
+    /// <param name="consumerDispatchConcurrency">When non-null and greater than 1,
+    /// configures the channel to dispatch consumer events concurrently. Used by
+    /// subscriber channels whose handlers must run in parallel (e.g. subagent
+    /// result accumulation). Null falls back to the connection-level default.</param>
+    public async Task<IChannel> CreateChannelAsync(
+        CancellationToken cancellationToken = default,
+        ushort? consumerDispatchConcurrency = null)
     {
         var connection = await GetConnectionAsync(cancellationToken);
-        var channel = await connection.CreateChannelAsync(cancellationToken: cancellationToken);
+
+        IChannel channel;
+        if (consumerDispatchConcurrency is { } concurrency && concurrency > 1)
+        {
+            var options = new CreateChannelOptions(
+                publisherConfirmationsEnabled: false,
+                publisherConfirmationTrackingEnabled: false,
+                outstandingPublisherConfirmationsRateLimiter: null,
+                consumerDispatchConcurrency: concurrency);
+            channel = await connection.CreateChannelAsync(options, cancellationToken);
+        }
+        else
+        {
+            channel = await connection.CreateChannelAsync(cancellationToken: cancellationToken);
+        }
 
         // Declare the topic exchange
         await channel.ExchangeDeclareAsync(
