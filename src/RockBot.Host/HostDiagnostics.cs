@@ -46,6 +46,18 @@ public static class HostDiagnostics
             unit: "{token}",
             description: "Total number of output tokens produced");
 
+    /// <summary>
+    /// Time a caller spent waiting for a per-tier gateway slot before its LLM call
+    /// could proceed. Non-zero values indicate contention; sustained high values
+    /// indicate the tier's <c>MaxConcurrent</c> cap is too low for the workload
+    /// (or that callers are issuing too many parallel calls).
+    /// </summary>
+    public static readonly Histogram<double> LlmGatewaySlotWaitDuration =
+        Meter.CreateHistogram<double>(
+            "rockbot.llm.gateway.slot_wait.duration",
+            unit: "ms",
+            description: "Time spent waiting for a per-tier LLM gateway slot");
+
     // ── Agent turn metrics — recorded at architectural boundaries ─────────────
 
     /// <summary>Duration from user message receipt to final reply published.</summary>

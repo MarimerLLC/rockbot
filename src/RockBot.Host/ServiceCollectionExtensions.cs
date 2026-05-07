@@ -34,6 +34,8 @@ public static class ServiceCollectionExtensions
 
         services.AddSingleton<LlmCostEstimator>();
         services.Configure<LlmPricingOptions>(_ => { });
+        services.Configure<LlmGatewayOptions>(_ => { });
+        services.AddSingleton<ILlmGateway, LlmGateway>();
         services.AddTransient<ILlmClient, LlmClient>();
         services.AddSingleton<IToolProgressNotifier, ToolProgressNotifier>();
         services.AddTransient<AgentLoopRunner>();
