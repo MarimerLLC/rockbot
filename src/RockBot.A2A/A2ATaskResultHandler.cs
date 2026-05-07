@@ -43,6 +43,18 @@ internal sealed class A2ATaskResultHandler(
 {
     private string DisplayName => agentNameHolder.DisplayName ?? agent.Name;
 
+    /// <summary>
+    /// True only when an A2A task originated from the primary agent's user session
+    /// (e.g. "session/blazor-session"). Subagent sessions ("session/subagent-...") and
+    /// transient executor sessions ("wisp-...") are not user-facing — A2A results
+    /// directed at them must flow back to the calling loop via working memory rather
+    /// than producing their own user-visible chat bubble. Only the primary agent
+    /// communicates with the user.
+    /// </summary>
+    private static bool IsUserSession(string primarySessionId) =>
+        primarySessionId.StartsWith("session/", StringComparison.OrdinalIgnoreCase) &&
+        !primarySessionId.StartsWith("session/subagent-", StringComparison.OrdinalIgnoreCase);
+
     public async Task HandleAsync(AgentTaskResult result, MessageHandlerContext context)
     {
         var ct = context.CancellationToken;
@@ -234,6 +246,20 @@ internal sealed class A2ATaskResultHandler(
             "A2A result for task {TaskId} ({Len:N0} chars) stored in working memory at key '{Key}'",
             result.TaskId, resultText.Length, memoryKey);
 
+        // If the A2A invocation didn't originate in a user session, the result must flow
+        // back to the calling loop (subagent or wisp) via working memory — not as a
+        // user-visible chat bubble. The caller will pull the result and incorporate it
+        // into its own output, which is the only thing the user should see. Skip the
+        // synthesis + publish entirely for those callers.
+        if (!IsUserSession(pending.PrimarySessionId))
+        {
+            logger.LogInformation(
+                "A2A task {TaskId} originated from non-user session {SessionId} — skipping " +
+                "synthesis and bubble publish (caller will consume the working-memory result)",
+                result.TaskId, pending.PrimarySessionId);
+            return;
+        }
+
         syntheticUserTurn =
             $"[Agent '{pending.TargetAgent}' completed task {result.TaskId} (state={result.State})]: " +
             $"The result ({resultText.Length:N0} chars) is in working memory. " +
@@ -306,6 +332,19 @@ internal sealed class A2ATaskResultHandler(
     private async Task PublishErrorToUserAsync(
         PendingA2ATask pending, string taskId, string errorMessage, CancellationToken ct)
     {
+        // Only the primary agent talks to the user. When the failed A2A invocation came
+        // from a subagent or wisp, surface the error through that caller's normal output
+        // path (it sees the failure via working memory / its loop's exception handling)
+        // rather than emitting our own bubble.
+        if (!IsUserSession(pending.PrimarySessionId))
+        {
+            logger.LogInformation(
+                "Suppressing A2A error bubble for task {TaskId} — invocation came from non-user " +
+                "session {SessionId}; caller will surface the error in its own output",
+                taskId, pending.PrimarySessionId);
+            return;
+        }
+
         var sessionNamespace = pending.PrimarySessionId;
         const string SessionPrefix = "session/";
         var rawSessionId = sessionNamespace.StartsWith(SessionPrefix, StringComparison.OrdinalIgnoreCase)

@@ -33,6 +33,15 @@ internal sealed class A2ATaskErrorHandler(
 {
     private string DisplayName => agentNameHolder.DisplayName ?? agent.Name;
 
+    /// <summary>
+    /// True only when an A2A task originated from the primary agent's user session.
+    /// Subagent and wisp sessions are not user-facing; their A2A errors flow back to
+    /// the calling loop rather than producing user bubbles.
+    /// </summary>
+    private static bool IsUserSession(string primarySessionId) =>
+        primarySessionId.StartsWith("session/", StringComparison.OrdinalIgnoreCase) &&
+        !primarySessionId.StartsWith("session/subagent-", StringComparison.OrdinalIgnoreCase);
+
     public async Task HandleAsync(AgentTaskError error, MessageHandlerContext context)
     {
         var ct = context.CancellationToken;
@@ -57,6 +66,19 @@ internal sealed class A2ATaskErrorHandler(
         logger.LogWarning(
             "A2A task error for task {TaskId} from agent '{TargetAgent}' in session {SessionId}: [{Code}] {Message}",
             error.TaskId, pending.TargetAgent, pending.PrimarySessionId, error.Code, error.Message);
+
+        // Only the primary agent talks to the user. When the failed A2A invocation came
+        // from a subagent or wisp, the calling loop will surface the failure in its own
+        // output — emitting a separate user-facing bubble here would bypass the primary
+        // agent and show transport-layer noise to the user.
+        if (!IsUserSession(pending.PrimarySessionId))
+        {
+            logger.LogInformation(
+                "A2A task error for {TaskId} originated from non-user session {SessionId} — " +
+                "skipping synthesis and bubble publish (caller will surface the error)",
+                error.TaskId, pending.PrimarySessionId);
+            return;
+        }
 
         // PrimarySessionId is the full WM session namespace (e.g. "session/blazor-session").
         // Strip the prefix for conversation memory and context builder consistency.
