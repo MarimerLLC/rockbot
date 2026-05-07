@@ -7,13 +7,13 @@ namespace RockBot.Host;
 /// <summary>
 /// Default implementation of <see cref="ILlmClient"/>.
 /// Selects the appropriate <see cref="IChatClient"/> from the
-/// <see cref="TieredChatClientRegistry"/> and adds retry logic for
-/// known model-specific SDK quirks. Registered as transient so each consumer
-/// gets its own instance — concurrent calls from the user loop, background tasks,
-/// dreaming, and session evaluation proceed independently without queuing.
+/// <see cref="TieredChatClientRegistry"/>, adds retry logic for known
+/// model-specific SDK quirks, and routes the call through the singleton
+/// <see cref="ILlmGateway"/> which caps per-tier concurrency.
 /// </summary>
 internal sealed class LlmClient(
     TieredChatClientRegistry registry,
+    ILlmGateway gateway,
     LlmCostEstimator costEstimator,
     ILogger<LlmClient> logger) : ILlmClient
 {
@@ -67,7 +67,13 @@ internal sealed class LlmClient(
             // next model. The original cancellation token is passed through so
             // FallbackChatClient can correctly distinguish user cancellation from
             // provider timeouts.
-            var response = await InvokeWithNullArgRetryAsync(client, messages, options, cancellationToken);
+            //
+            // The gateway gates the actual SDK call on the per-tier concurrency
+            // semaphore so bursty parallel callers cannot overwhelm a tier.
+            var response = await gateway.ExecuteAsync(
+                tier,
+                ct => InvokeWithNullArgRetryAsync(client, messages, options, ct),
+                cancellationToken);
 
             if (response.Usage is { } usage)
             {
