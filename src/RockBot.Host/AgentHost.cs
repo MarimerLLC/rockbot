@@ -45,19 +45,22 @@ internal sealed class AgentHost : IHostedService
 
         await RecoverWipEntriesAsync(cancellationToken);
 
-        foreach (var topic in _options.Topics)
+        foreach (var sub in _options.Topics)
         {
-            var sanitizedTopic = topic.Replace(".", "-").Replace("*", "_").Replace("#", "__");
+            var sanitizedTopic = sub.Topic.Replace(".", "-").Replace("*", "_").Replace("#", "__");
             var subscriptionName = $"{_identity.Name}.{sanitizedTopic}";
 
             var subscription = await _subscriber.SubscribeAsync(
-                topic,
+                sub.Topic,
                 subscriptionName,
                 (envelope, ct) => _pipeline.DispatchAsync(envelope, ct),
-                cancellationToken);
+                cancellationToken,
+                sub.DispatchConcurrency);
 
             _subscriptions.Add(subscription);
-            _logger.LogInformation("Subscribed to {Topic} as {SubscriptionName}", topic, subscriptionName);
+            _logger.LogInformation(
+                "Subscribed to {Topic} as {SubscriptionName} (dispatchConcurrency={Concurrency})",
+                sub.Topic, subscriptionName, sub.DispatchConcurrency);
         }
     }
 

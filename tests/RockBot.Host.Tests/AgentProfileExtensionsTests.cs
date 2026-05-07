@@ -92,7 +92,8 @@ public class AgentProfileExtensionsTests
     {
         public Task<ISubscription> SubscribeAsync(string topic, string subscriptionName,
             Func<MessageEnvelope, CancellationToken, Task<MessageResult>> handler,
-            CancellationToken cancellationToken = default)
+            CancellationToken cancellationToken = default,
+            int dispatchConcurrency = 1)
             => Task.FromResult<ISubscription>(new StubSubscription(topic, subscriptionName));
 
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;

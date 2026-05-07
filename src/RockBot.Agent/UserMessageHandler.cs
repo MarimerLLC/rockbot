@@ -452,6 +452,10 @@ internal sealed class UserMessageHandler(
                 { AgentName = agent.Name },
                 ct);
 
+            // The parent reply is the user's "I'm starting work" / direct answer bubble
+            // and resolves the user-proxy SendAsync TCS. If the loop spawned consolidating
+            // subagents, their Phase 2 synthesis will arrive later as a separate
+            // unsolicited final bubble — that's the consolidated answer.
             await PublishReplyAsync(text, replyTo, correlationId, sessionId, isFinal: true, ct);
             loopSw.Stop();
             turnActivity?.SetTag("rockbot.turn.status", "ok");

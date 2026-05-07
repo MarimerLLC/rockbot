@@ -40,11 +40,14 @@ public sealed class AgentHostBuilder
     }
 
     /// <summary>
-    /// Subscribe to a topic.
+    /// Subscribe to a topic. Optionally specify <paramref name="dispatchConcurrency"/>
+    /// to allow concurrent handler invocations for this subscription. Default 1
+    /// (sequential dispatch, preserves message ordering). Only bump when the handler
+    /// is re-entrant and may block on cross-message coordination.
     /// </summary>
-    public AgentHostBuilder SubscribeTo(string topic)
+    public AgentHostBuilder SubscribeTo(string topic, int dispatchConcurrency = 1)
     {
-        _options.Topics.Add(topic);
+        _options.Topics.Add(new TopicSubscription(topic, dispatchConcurrency));
         return this;
     }
 
@@ -77,8 +80,8 @@ public sealed class AgentHostBuilder
         _services.AddSingleton<AgentClock>();
         _services.Configure<AgentHostOptions>(opts =>
         {
-            foreach (var topic in _options.Topics)
-                opts.Topics.Add(topic);
+            foreach (var sub in _options.Topics)
+                opts.Topics.Add(sub);
         });
     }
 }

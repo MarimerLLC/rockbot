@@ -208,6 +208,12 @@ internal sealed class SubagentResultHandler(
                 { AgentName = agent.Name },
                 ct);
 
+            // The synthesis is the consolidated answer bubble. The parent loop already
+            // emitted its own final reply (with the original user correlationId) before
+            // spawning subagents, so this synthesis arrives as an unsolicited final
+            // reply and renders as a separate chat bubble in the UI — the user sees
+            // the parent's "I'll delegate…" announcement followed by this consolidated
+            // answer once all subagents complete.
             var reply = new AgentReply
             {
                 Content = finalContent,

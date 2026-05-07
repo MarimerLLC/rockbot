@@ -78,8 +78,8 @@ public class A2ARegistrationTests
         var provider = services.BuildServiceProvider();
 
         var options = provider.GetRequiredService<IOptions<AgentHostOptions>>();
-        Assert.IsTrue(options.Value.Topics.Contains("agent.task.my-agent"));
-        Assert.IsTrue(options.Value.Topics.Contains("agent.task.cancel.my-agent"));
+        Assert.IsTrue(options.Value.Topics.Any(t => t.Topic == "agent.task.my-agent"));
+        Assert.IsTrue(options.Value.Topics.Any(t => t.Topic == "agent.task.cancel.my-agent"));
     }
 
     [TestMethod]
@@ -109,7 +109,8 @@ public class A2ARegistrationTests
         public Task<ISubscription> SubscribeAsync(
             string topic, string subscriptionName,
             Func<MessageEnvelope, CancellationToken, Task<MessageResult>> handler,
-            CancellationToken cancellationToken = default)
+            CancellationToken cancellationToken = default,
+            int dispatchConcurrency = 1)
         {
             return Task.FromResult<ISubscription>(new StubSubscription());
         }

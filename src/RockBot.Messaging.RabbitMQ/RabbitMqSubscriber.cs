@@ -33,7 +33,8 @@ public sealed class RabbitMqSubscriber : IMessageSubscriber
         string topic,
         string subscriptionName,
         Func<MessageEnvelope, CancellationToken, Task<MessageResult>> handler,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        int dispatchConcurrency = 1)
     {
         var queueName = $"rockbot.{subscriptionName}";
         var dlqName = $"{queueName}.dlq";
@@ -41,13 +42,17 @@ public sealed class RabbitMqSubscriber : IMessageSubscriber
         var dlxName = _options.DeadLetterExchangeName;
         var prefetchCount = _options.PrefetchCount;
         var durable = _options.Durable;
+        // Translate the abstraction's dispatchConcurrency hint into a channel-level
+        // ConsumerDispatchConcurrency. Values <=1 leave it unset so we keep the
+        // connection-level default and the channel processes deliveries sequentially.
+        var channelConcurrency = dispatchConcurrency > 1 ? (ushort?)dispatchConcurrency : null;
 
         // Factory that creates a fresh channel + consumer, called both for initial
         // setup and for transparent reconnection after unexpected channel closure.
         async Task<(IChannel channel, string consumerTag)> CreateChannelAndConsumerAsync(
             CancellationToken ct)
         {
-            var channel = await _connectionManager.CreateChannelAsync(ct);
+            var channel = await _connectionManager.CreateChannelAsync(ct, channelConcurrency);
 
             await channel.BasicQosAsync(
                 prefetchSize: 0,
@@ -97,8 +102,9 @@ public sealed class RabbitMqSubscriber : IMessageSubscriber
                     "Queue {Queue} has stale arguments — deleting and recreating: {Reason}",
                     queueName, ex.ShutdownReason.ReplyText);
 
-                // The original channel is dead after a 406; open a new one.
-                channel = await _connectionManager.CreateChannelAsync(ct);
+                // The original channel is dead after a 406; open a new one with the
+                // same concurrency setting as the original.
+                channel = await _connectionManager.CreateChannelAsync(ct, channelConcurrency);
                 await channel.BasicQosAsync(0, prefetchCount, false, cancellationToken: ct);
 
                 await channel.QueueDeleteAsync(queueName, cancellationToken: ct);

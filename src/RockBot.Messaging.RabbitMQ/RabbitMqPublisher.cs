@@ -17,6 +17,13 @@ public sealed class RabbitMqPublisher : IMessagePublisher
     private readonly ILogger<RabbitMqPublisher> _logger;
     private IChannel? _channel;
     private readonly SemaphoreSlim _channelLock = new(1, 1);
+
+    // RabbitMQ.Client v7 IChannel is NOT thread-safe for publishing — concurrent
+    // BasicPublishAsync calls on the same channel can interleave AMQP frames and
+    // corrupt the wire protocol. Serialize publishes through this semaphore so the
+    // singleton publisher remains safe even when consumers (e.g. subagent results
+    // with raised dispatch concurrency) trigger parallel publish paths.
+    private readonly SemaphoreSlim _publishLock = new(1, 1);
     private bool _disposed;
 
     public RabbitMqPublisher(
@@ -79,13 +86,21 @@ public sealed class RabbitMqPublisher : IMessagePublisher
                 "Publishing message {MessageId} to topic {Topic} (type: {Type})",
                 envelope.MessageId, topic, envelope.MessageType);
 
-            await channel.BasicPublishAsync(
-                exchange: _options.ExchangeName,
-                routingKey: topic,
-                mandatory: false,
-                basicProperties: properties,
-                body: envelope.Body,
-                cancellationToken: cancellationToken);
+            await _publishLock.WaitAsync(cancellationToken);
+            try
+            {
+                await channel.BasicPublishAsync(
+                    exchange: _options.ExchangeName,
+                    routingKey: topic,
+                    mandatory: false,
+                    basicProperties: properties,
+                    body: envelope.Body,
+                    cancellationToken: cancellationToken);
+            }
+            finally
+            {
+                _publishLock.Release();
+            }
 
             sw.Stop();
             RabbitMqDiagnostics.PublishDuration.Record(sw.Elapsed.TotalMilliseconds,
@@ -132,5 +147,6 @@ public sealed class RabbitMqPublisher : IMessagePublisher
             await _channel.CloseAsync();
 
         _channelLock.Dispose();
+        _publishLock.Dispose();
     }
 }

@@ -44,7 +44,8 @@ internal sealed class StubSubscriber : IMessageSubscriber
         string topic,
         string subscriptionName,
         Func<MessageEnvelope, CancellationToken, Task<MessageResult>> handler,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        int dispatchConcurrency = 1)
     {
         _subscriptions.Add((topic, subscriptionName, handler));
         return Task.FromResult<ISubscription>(new StubSubscription(topic, subscriptionName));
@@ -111,7 +112,8 @@ internal sealed class FailingThenSucceedingSubscriber(int failCount) : IMessageS
         string topic,
         string subscriptionName,
         Func<MessageEnvelope, CancellationToken, Task<MessageResult>> handler,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        int dispatchConcurrency = 1)
     {
         var call = Interlocked.Increment(ref _callCount);
 

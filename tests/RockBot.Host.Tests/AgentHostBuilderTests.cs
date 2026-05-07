@@ -51,8 +51,27 @@ public class AgentHostBuilderTests
         var options = provider.GetRequiredService<IOptions<AgentHostOptions>>().Value;
 
         Assert.AreEqual(2, options.Topics.Count);
-        CollectionAssert.Contains(options.Topics, "agent.task.*");
-        CollectionAssert.Contains(options.Topics, "llm.response");
+        Assert.IsTrue(options.Topics.Any(t => t.Topic == "agent.task.*"));
+        Assert.IsTrue(options.Topics.Any(t => t.Topic == "llm.response"));
+        Assert.IsTrue(options.Topics.All(t => t.DispatchConcurrency == 1),
+            "Topics added without explicit concurrency should default to 1.");
+    }
+
+    [TestMethod]
+    public void SubscribeTo_RecordsDispatchConcurrency()
+    {
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddRockBotHost(agent => agent
+            .WithIdentity("my-agent")
+            .SubscribeTo("subagent.result.*", dispatchConcurrency: 4));
+
+        var provider = services.BuildServiceProvider();
+        var options = provider.GetRequiredService<IOptions<AgentHostOptions>>().Value;
+
+        Assert.AreEqual(1, options.Topics.Count);
+        Assert.AreEqual("subagent.result.*", options.Topics[0].Topic);
+        Assert.AreEqual(4, options.Topics[0].DispatchConcurrency);
     }
 
     [TestMethod]
