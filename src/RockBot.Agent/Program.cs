@@ -1,4 +1,5 @@
 using System.ClientModel;
+using System.ClientModel.Primitives;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -127,7 +128,10 @@ IChatClient BuildOpenAIClient(LlmTierConfig config)
             Endpoint = new Uri(config.Endpoint!),
             // Extend from the 100s default — subagents with large tool sets generate
             // longer responses that can exceed the default before the body is fully read.
-            NetworkTimeout = TimeSpan.FromMinutes(5)
+            NetworkTimeout = TimeSpan.FromMinutes(5),
+            // Disable SDK retry: the LlmGateway owns rate-limit retry policy. Without
+            // this, gateway and SDK both retry on 429 and silently double-retry.
+            RetryPolicy = new ClientRetryPolicy(maxRetries: 0)
         })
         .GetChatClient(config.ModelId!).AsIChatClient();
 }

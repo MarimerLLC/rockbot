@@ -6,15 +6,65 @@ namespace RockBot.Host.Tests;
 [TestClass]
 public class LlmGatewayTests
 {
-    private static LlmGateway CreateGateway(int low = 2, int balanced = 2, int high = 2)
+    private static LlmGateway CreateGateway(
+        int low = 2,
+        int balanced = 2,
+        int high = 2,
+        int maxRetries = 0,
+        int maxBackoffSeconds = 16,
+        ILlmRateLimitClassifier? classifier = null)
     {
         var options = Options.Create(new LlmGatewayOptions
         {
             LowMaxConcurrent = low,
             BalancedMaxConcurrent = balanced,
             HighMaxConcurrent = high,
+            MaxRateLimitRetries = maxRetries,
+            MaxBackoffSeconds = maxBackoffSeconds,
         });
-        return new LlmGateway(options, NullLogger<LlmGateway>.Instance);
+        return new LlmGateway(
+            options,
+            classifier ?? new NeverRateLimitClassifier(),
+            NullLogger<LlmGateway>.Instance);
+    }
+
+    /// <summary>Stub classifier that never reports rate-limit conditions.</summary>
+    private sealed class NeverRateLimitClassifier : ILlmRateLimitClassifier
+    {
+        public bool TryClassify(Exception exception, out TimeSpan? retryAfter)
+        {
+            retryAfter = null;
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Stub classifier that recognises a custom marker exception as rate-limit and
+    /// surfaces an optional Retry-After hint carried on the exception.
+    /// </summary>
+    private sealed class FakeRateLimitException(TimeSpan? retryAfter = null) : Exception("simulated 429")
+    {
+        public TimeSpan? RetryAfter { get; } = retryAfter;
+    }
+
+    private sealed class FakeRateLimitClassifier : ILlmRateLimitClassifier
+    {
+        public bool TryClassify(Exception exception, out TimeSpan? retryAfter)
+        {
+            // Walk the inner-exception chain so wrapped throws are still recognised.
+            var current = exception;
+            while (current is not null)
+            {
+                if (current is FakeRateLimitException frle)
+                {
+                    retryAfter = frle.RetryAfter;
+                    return true;
+                }
+                current = current.InnerException;
+            }
+            retryAfter = null;
+            return false;
+        }
     }
 
     [TestMethod]
@@ -219,7 +269,169 @@ public class LlmGatewayTests
     {
         var bad = Options.Create(new LlmGatewayOptions { LowMaxConcurrent = 0 });
         Assert.ThrowsExactly<ArgumentOutOfRangeException>(() =>
-            new LlmGateway(bad, NullLogger<LlmGateway>.Instance));
+            new LlmGateway(bad, new NeverRateLimitClassifier(), NullLogger<LlmGateway>.Instance));
+    }
+
+    [TestMethod]
+    public void Constructor_NegativeMaxRetries_Throws()
+    {
+        var bad = Options.Create(new LlmGatewayOptions { MaxRateLimitRetries = -1 });
+        Assert.ThrowsExactly<ArgumentOutOfRangeException>(() =>
+            new LlmGateway(bad, new NeverRateLimitClassifier(), NullLogger<LlmGateway>.Instance));
+    }
+
+    [TestMethod]
+    public void Constructor_MaxBackoffBelowOne_Throws()
+    {
+        var bad = Options.Create(new LlmGatewayOptions { MaxBackoffSeconds = 0 });
+        Assert.ThrowsExactly<ArgumentOutOfRangeException>(() =>
+            new LlmGateway(bad, new NeverRateLimitClassifier(), NullLogger<LlmGateway>.Instance));
+    }
+
+    [TestMethod]
+    public async Task ExecuteAsync_NonRateLimitError_NotRetried()
+    {
+        using var gateway = CreateGateway(maxRetries: 5, classifier: new FakeRateLimitClassifier());
+        var attempts = 0;
+
+        await Assert.ThrowsExactlyAsync<InvalidOperationException>(async () =>
+            await gateway.ExecuteAsync<int>(
+                ModelTier.Balanced,
+                ct =>
+                {
+                    attempts++;
+                    throw new InvalidOperationException("not a 429");
+                },
+                CancellationToken.None));
+
+        Assert.AreEqual(1, attempts, "Non-rate-limit errors must not be retried");
+    }
+
+    [TestMethod]
+    public async Task ExecuteAsync_RateLimit_RetriesAndSucceeds()
+    {
+        using var gateway = CreateGateway(
+            maxRetries: 3,
+            classifier: new FakeRateLimitClassifier());
+        var attempts = 0;
+
+        var result = await gateway.ExecuteAsync(
+            ModelTier.Balanced,
+            ct =>
+            {
+                attempts++;
+                if (attempts < 3)
+                    throw new FakeRateLimitException(retryAfter: TimeSpan.FromMilliseconds(1));
+                return Task.FromResult(42);
+            },
+            CancellationToken.None);
+
+        Assert.AreEqual(42, result);
+        Assert.AreEqual(3, attempts, "Should have retried twice before success");
+    }
+
+    [TestMethod]
+    public async Task ExecuteAsync_RateLimit_ExhaustsRetriesAndThrows()
+    {
+        using var gateway = CreateGateway(
+            maxRetries: 2,
+            classifier: new FakeRateLimitClassifier());
+        var attempts = 0;
+
+        await Assert.ThrowsExactlyAsync<FakeRateLimitException>(async () =>
+            await gateway.ExecuteAsync<int>(
+                ModelTier.Balanced,
+                ct =>
+                {
+                    attempts++;
+                    throw new FakeRateLimitException(retryAfter: TimeSpan.FromMilliseconds(1));
+                },
+                CancellationToken.None));
+
+        // Initial attempt + 2 retries = 3 attempts total.
+        Assert.AreEqual(3, attempts);
+    }
+
+    [TestMethod]
+    public async Task ExecuteAsync_RateLimit_HonorsRetryAfter()
+    {
+        using var gateway = CreateGateway(
+            maxRetries: 1,
+            classifier: new FakeRateLimitClassifier());
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        var attempts = 0;
+
+        await gateway.ExecuteAsync(
+            ModelTier.Balanced,
+            ct =>
+            {
+                attempts++;
+                if (attempts == 1)
+                    throw new FakeRateLimitException(retryAfter: TimeSpan.FromMilliseconds(200));
+                return Task.FromResult(0);
+            },
+            CancellationToken.None);
+
+        sw.Stop();
+        Assert.AreEqual(2, attempts);
+        Assert.IsTrue(sw.ElapsedMilliseconds >= 180,
+            $"Expected at least ~200ms wait honoring Retry-After, but only {sw.ElapsedMilliseconds}ms elapsed");
+    }
+
+    [TestMethod]
+    public async Task ExecuteAsync_RateLimit_CancelDuringWait_Aborts()
+    {
+        using var gateway = CreateGateway(
+            maxRetries: 5,
+            classifier: new FakeRateLimitClassifier());
+        using var cts = new CancellationTokenSource();
+        var attempts = 0;
+
+        var task = gateway.ExecuteAsync<int>(
+            ModelTier.Balanced,
+            ct =>
+            {
+                attempts++;
+                throw new FakeRateLimitException(retryAfter: TimeSpan.FromSeconds(30));
+            },
+            cts.Token);
+
+        // Let the first attempt run and start the retry wait.
+        await WaitUntilAsync(() => attempts == 1, TimeSpan.FromSeconds(5));
+
+        cts.Cancel();
+
+        await Assert.ThrowsAsync<OperationCanceledException>(async () => await task);
+        Assert.AreEqual(1, attempts, "Cancellation should abort during the retry wait");
+    }
+
+    [TestMethod]
+    public async Task ExecuteAsync_RateLimit_NoRetryAfter_UsesExponentialBackoff()
+    {
+        var maxBackoffSeconds = 1; // Cap backoff at 1s so the test runs quickly.
+        using var gateway = CreateGateway(
+            maxRetries: 1,
+            maxBackoffSeconds: maxBackoffSeconds,
+            classifier: new FakeRateLimitClassifier());
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        var attempts = 0;
+
+        await gateway.ExecuteAsync(
+            ModelTier.Balanced,
+            ct =>
+            {
+                attempts++;
+                if (attempts == 1)
+                    throw new FakeRateLimitException(retryAfter: null);
+                return Task.FromResult(0);
+            },
+            CancellationToken.None);
+
+        sw.Stop();
+        Assert.AreEqual(2, attempts);
+        // Attempt 1 backoff is 2^0 = 1 second; capped at maxBackoff so still 1s.
+        Assert.IsTrue(sw.ElapsedMilliseconds >= 900,
+            $"Expected at least ~1s exponential backoff, but only {sw.ElapsedMilliseconds}ms elapsed");
     }
 
     private static async Task WaitUntilAsync(Func<bool> predicate, TimeSpan timeout)

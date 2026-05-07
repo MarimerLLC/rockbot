@@ -1,4 +1,5 @@
 using System.ClientModel;
+using System.ClientModel.Primitives;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -26,7 +27,12 @@ if (!string.IsNullOrEmpty(endpoint) && !string.IsNullOrEmpty(apiKey) && !string.
 {
     var openAiClient = new OpenAIClient(
         new ApiKeyCredential(apiKey),
-        new OpenAIClientOptions { Endpoint = new Uri(endpoint) });
+        new OpenAIClientOptions
+        {
+            Endpoint = new Uri(endpoint),
+            // Disable SDK retry: the LlmGateway owns rate-limit retry policy.
+            RetryPolicy = new ClientRetryPolicy(maxRetries: 0)
+        });
 
     builder.Services.AddRockBotChatClient(
         openAiClient.GetChatClient(modelId).AsIChatClient());

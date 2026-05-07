@@ -27,4 +27,20 @@ public sealed class LlmGatewayOptions
     /// Expensive judgment calls; lower cap.
     /// </summary>
     public int HighMaxConcurrent { get; set; } = 2;
+
+    /// <summary>
+    /// Maximum number of retry attempts on rate-limit (HTTP 429) responses before
+    /// the call surfaces the failure to the caller. Each retry honors any
+    /// <c>Retry-After</c> response header; in its absence, exponential backoff
+    /// (1s, 2s, 4s, 8s, ...) is used, capped by <see cref="MaxBackoffSeconds"/>.
+    /// Set to zero to disable retry on rate-limit errors.
+    /// </summary>
+    public int MaxRateLimitRetries { get; set; } = 5;
+
+    /// <summary>
+    /// Maximum backoff (in seconds) between retry attempts when no
+    /// <c>Retry-After</c> header is supplied by the provider. Caps the
+    /// exponential growth of fallback backoff.
+    /// </summary>
+    public int MaxBackoffSeconds { get; set; } = 16;
 }

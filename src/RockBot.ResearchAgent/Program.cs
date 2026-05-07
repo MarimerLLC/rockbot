@@ -1,4 +1,5 @@
 using System.ClientModel;
+using System.ClientModel.Primitives;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -49,7 +50,13 @@ if (tierOptions.Balanced.IsConfigured || tierOptions.BalancedModels.Count > 0)
     {
         return new OpenAIClient(
             new ApiKeyCredential(config.ApiKey!),
-            new OpenAIClientOptions { Endpoint = new Uri(config.Endpoint!) })
+            new OpenAIClientOptions
+            {
+                Endpoint = new Uri(config.Endpoint!),
+                // Disable SDK retry: the LlmGateway owns rate-limit retry policy.
+                // Without this, gateway and SDK both retry on 429 and silently double-retry.
+                RetryPolicy = new ClientRetryPolicy(maxRetries: 0)
+            })
             .GetChatClient(config.ModelId!).AsIChatClient();
     }
 

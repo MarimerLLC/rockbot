@@ -58,6 +58,18 @@ public static class HostDiagnostics
             unit: "ms",
             description: "Time spent waiting for a per-tier LLM gateway slot");
 
+    /// <summary>
+    /// Number of rate-limit retries performed by the LLM gateway. Tagged by tier
+    /// and by retry-after source (<c>"header"</c> when the provider supplied a
+    /// <c>Retry-After</c> hint, <c>"backoff"</c> when the gateway used its
+    /// exponential-backoff fallback).
+    /// </summary>
+    public static readonly Counter<long> LlmGatewayRateLimitRetries =
+        Meter.CreateCounter<long>(
+            "rockbot.llm.gateway.rate_limit_retries",
+            unit: "{retry}",
+            description: "Number of rate-limit (429) retries performed by the LLM gateway");
+
     // ── Agent turn metrics — recorded at architectural boundaries ─────────────
 
     /// <summary>Duration from user message receipt to final reply published.</summary>
