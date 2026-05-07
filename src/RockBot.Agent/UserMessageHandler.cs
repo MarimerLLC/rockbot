@@ -51,7 +51,6 @@ internal sealed class UserMessageHandler(
     IOptions<AgentProfileOptions> profileOptions,
     IWipTracker wipTracker,
     AgentNameHolder agentNameHolder,
-    IPendingTurnCorrelations pendingTurnCorrelations,
     ILogger<UserMessageHandler> logger,
     TierRoutingLogger tierRoutingLogger,
     ISkillUsageStore? skillUsageStore = null) : IMessageHandler<UserMessage>
@@ -148,19 +147,7 @@ internal sealed class UserMessageHandler(
             var sessionSkillTools = new SkillTools(skillStore, llmClient, logger, message.SessionId, skillUsageStore);
 
             var batchId = Guid.NewGuid().ToString("N")[..12];
-            // When the parent loop spawns a consolidating subagent, the user's final
-            // answer comes from SubagentResultHandler's Phase 2 synthesis (one bubble per
-            // batch, owned by the primary agent). The parent's intermediate text becomes
-            // a non-final progress message — the UI collapses it as activity log so the
-            // user can see what's happening but it is clearly not the result.
-            var spawnedConsolidatingSubagent = false;
-            var registryTools = toolRegistry.BuildAgentToolFunctions(
-                sessionNamespace, batchId,
-                onInvoke: name =>
-                {
-                    if (string.Equals(name, "spawn_subagent", StringComparison.OrdinalIgnoreCase))
-                        spawnedConsolidatingSubagent = true;
-                });
+            var registryTools = toolRegistry.BuildAgentToolFunctions(sessionNamespace, batchId);
 
             var allTools = memoryTools.Tools
                 .Concat(sessionWorkingMemoryTools.Tools)
@@ -202,8 +189,7 @@ internal sealed class UserMessageHandler(
                 turnActivityHandedOff = true;
                 context.Items[WipConstants.DeferredKey] = true;
                 _ = NativeLlmLoopAsync(chatMessages, chatOptions, classification, postInjectionTokenEstimate,
-                    message.SessionId, replyTo, correlationId, sessionHandle.Generation, wipMessageId, turnActivity,
-                    () => spawnedConsolidatingSubagent, sessionCt);
+                    message.SessionId, replyTo, correlationId, sessionHandle.Generation, wipMessageId, turnActivity, sessionCt);
             }
             else
             {
@@ -263,8 +249,7 @@ internal sealed class UserMessageHandler(
                     context.Items[WipConstants.DeferredKey] = true;
                     _ = BackgroundToolLoopAsync(
                         chatMessages, chatOptions, firstResponse, tier, classification.ComplexityScore,
-                        message.SessionId, replyTo, correlationId, sessionHandle.Generation, wipMessageId, turnActivity,
-                        () => spawnedConsolidatingSubagent, sessionCt);
+                        message.SessionId, replyTo, correlationId, sessionHandle.Generation, wipMessageId, turnActivity, sessionCt);
                 }
                 else
                 {
@@ -284,8 +269,7 @@ internal sealed class UserMessageHandler(
                         context.Items[WipConstants.DeferredKey] = true;
                         _ = BackgroundToolLoopAsync(
                             chatMessages, chatOptions, firstResponse, tier, classification.ComplexityScore,
-                            message.SessionId, replyTo, correlationId, sessionHandle.Generation, wipMessageId, turnActivity,
-                            () => spawnedConsolidatingSubagent, sessionCt);
+                            message.SessionId, replyTo, correlationId, sessionHandle.Generation, wipMessageId, turnActivity, sessionCt);
                     }
                     else if (modelBehavior.NudgeOnHallucinatedToolCalls
                         && (HallucinatedActionRegex.IsMatch(text) || AgentLoopRunner.CapabilityDenialRegex.IsMatch(text)))
@@ -302,8 +286,7 @@ internal sealed class UserMessageHandler(
                         context.Items[WipConstants.DeferredKey] = true;
                         _ = BackgroundToolLoopAsync(
                             chatMessages, chatOptions, firstResponse, tier, classification.ComplexityScore,
-                            message.SessionId, replyTo, correlationId, sessionHandle.Generation, wipMessageId, turnActivity,
-                            () => spawnedConsolidatingSubagent, sessionCt);
+                            message.SessionId, replyTo, correlationId, sessionHandle.Generation, wipMessageId, turnActivity, sessionCt);
                     }
                     else
                     {
@@ -385,7 +368,6 @@ internal sealed class UserMessageHandler(
         long sessionGeneration,
         string? wipMessageId,
         System.Diagnostics.Activity? turnActivity,
-        Func<bool> wasConsolidatingSubagentSpawned,
         CancellationToken ct)
     {
         var loopSw = System.Diagnostics.Stopwatch.StartNew();
@@ -470,19 +452,11 @@ internal sealed class UserMessageHandler(
                 { AgentName = agent.Name },
                 ct);
 
-            // Demote to non-final when subagents will produce the actual answer.
-            // Register the user's correlationId so SubagentResultHandler's Phase 2
-            // synthesis publishes with the same correlationId, resolving the user-proxy
-            // SendAsync pending TCS.
-            var spawnedSubagent = wasConsolidatingSubagentSpawned();
-            if (spawnedSubagent && correlationId is not null)
-            {
-                pendingTurnCorrelations.Set(sessionId, correlationId);
-                logger.LogInformation(
-                    "Native loop spawned a consolidating subagent — demoting parent reply to non-final " +
-                    "and registering correlationId for Phase 2 synthesis to consume");
-            }
-            await PublishReplyAsync(text, replyTo, correlationId, sessionId, isFinal: !spawnedSubagent, ct);
+            // The parent reply is the user's "I'm starting work" / direct answer bubble
+            // and resolves the user-proxy SendAsync TCS. If the loop spawned consolidating
+            // subagents, their Phase 2 synthesis will arrive later as a separate
+            // unsolicited final bubble — that's the consolidated answer.
+            await PublishReplyAsync(text, replyTo, correlationId, sessionId, isFinal: true, ct);
             loopSw.Stop();
             turnActivity?.SetTag("rockbot.turn.status", "ok");
             turnActivity?.SetStatus(ActivityStatusCode.Ok);
@@ -531,7 +505,6 @@ internal sealed class UserMessageHandler(
         long sessionGeneration,
         string? wipMessageId,
         System.Diagnostics.Activity? turnActivity,
-        Func<bool> wasConsolidatingSubagentSpawned,
         CancellationToken ct)
     {
         var loopSw = System.Diagnostics.Stopwatch.StartNew();
@@ -600,16 +573,7 @@ internal sealed class UserMessageHandler(
                 { AgentName = agent.Name },
                 ct);
 
-            // See NativeLlmLoopAsync for rationale.
-            var spawnedSubagent = wasConsolidatingSubagentSpawned();
-            if (spawnedSubagent && correlationId is not null)
-            {
-                pendingTurnCorrelations.Set(sessionId, correlationId);
-                logger.LogInformation(
-                    "Background loop spawned a consolidating subagent — demoting parent reply to non-final " +
-                    "and registering correlationId for Phase 2 synthesis to consume");
-            }
-            await PublishReplyAsync(finalContent, replyTo, correlationId, sessionId, isFinal: !spawnedSubagent, ct);
+            await PublishReplyAsync(finalContent, replyTo, correlationId, sessionId, isFinal: true, ct);
             loopSw.Stop();
             turnActivity?.SetTag("rockbot.turn.status", "ok");
             turnActivity?.SetStatus(ActivityStatusCode.Ok);

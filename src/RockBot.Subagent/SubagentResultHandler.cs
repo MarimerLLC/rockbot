@@ -31,7 +31,6 @@ internal sealed class SubagentResultHandler(
     SubagentResultGate gate,
     ISubagentManager subagentManager,
     ISessionTracker sessionTracker,
-    IPendingTurnCorrelations pendingTurnCorrelations,
     ILogger<SubagentResultHandler> logger) : IMessageHandler<SubagentResultMessage>
 {
     public async Task HandleAsync(SubagentResultMessage message, MessageHandlerContext context)
@@ -209,17 +208,12 @@ internal sealed class SubagentResultHandler(
                 { AgentName = agent.Name },
                 ct);
 
-            // If the entry handler (UserMessageHandler) demoted its parent reply because
-            // it spawned consolidating subagents, the user-proxy is still waiting on its
-            // pending TaskCompletionSource for a final reply with the original
-            // correlationId. Reuse it here so the user's SendAsync wait resolves cleanly
-            // and the bubble is correlated with the original user message.
-            var pendingCorrelationId = pendingTurnCorrelations.TryTake(rawSessionId);
-            if (pendingCorrelationId is not null)
-                logger.LogInformation(
-                    "Phase 2 synthesis publishing with original user correlationId {CorrelationId} " +
-                    "(resolves user-proxy pending request)", pendingCorrelationId);
-
+            // The synthesis is the consolidated answer bubble. The parent loop already
+            // emitted its own final reply (with the original user correlationId) before
+            // spawning subagents, so this synthesis arrives as an unsolicited final
+            // reply and renders as a separate chat bubble in the UI — the user sees
+            // the parent's "I'll delegate…" announcement followed by this consolidated
+            // answer once all subagents complete.
             var reply = new AgentReply
             {
                 Content = finalContent,
@@ -227,7 +221,7 @@ internal sealed class SubagentResultHandler(
                 AgentName = agent.Name,
                 IsFinal = true
             };
-            var envelope = reply.ToEnvelope<AgentReply>(source: agent.Name, correlationId: pendingCorrelationId);
+            var envelope = reply.ToEnvelope<AgentReply>(source: agent.Name);
             await publisher.PublishAsync($"{UserProxyTopics.UserResponse}.{agent.Name}", envelope, ct);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
