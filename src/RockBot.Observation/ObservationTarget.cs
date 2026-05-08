@@ -77,19 +77,20 @@ public sealed class ObservationTarget
     public int PromotionThreshold { get; init; } = 3;
 
     /// <summary>
-    /// Number of dream cycles a candidate may go without new references
-    /// before it is dropped. At twice-daily dreaming, 14 dreams is one week.
+    /// Number of days a candidate may go without new references before it is
+    /// dropped. Calendar-time aging is cadence-independent: changing the dream
+    /// cron schedule does not silently change how aggressively candidates fade.
     /// </summary>
-    public int CandidateAgingWindowDreams { get; init; } = 14;
+    public int CandidateAgingWindowDays { get; init; } = 7;
 
     /// <summary>
-    /// Number of dream cycles a theory may go without new supporting
-    /// references before it is demoted or removed. Should be substantially
-    /// longer than <see cref="CandidateAgingWindowDreams"/> — promoted
-    /// theories represent durable observations and should not fade quickly
-    /// just because the agent hasn't had relevant conversations recently.
+    /// Number of days a theory may go without new supporting references
+    /// before it is dropped. Should be substantially longer than
+    /// <see cref="CandidateAgingWindowDays"/> — promoted theories represent
+    /// durable observations and should not fade quickly just because the
+    /// agent hasn't had relevant conversations recently.
     /// </summary>
-    public int TheoryAgingWindowDreams { get; init; } = 60;
+    public int TheoryAgingWindowDays { get; init; } = 30;
 
     /// <summary>
     /// Vector-similarity cosine threshold for matching new observations to
