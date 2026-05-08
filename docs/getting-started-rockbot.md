@@ -19,7 +19,7 @@ A newly useful RockBot usually has all of the following:
 4. Clear knowledge of who **it** is and what to call itself
 5. MCP servers for the systems you actually use
 6. A few scheduled tasks that create proactive value
-7. Memory rules that encourage a durable "theory of the user" and "theory of self"
+7. The observation framework actively maintaining a "theory of the user" and "theory of self"
 8. A short feedback loop where you keep tuning its profile and memory
 
 ## 1. Make the agent yours
@@ -211,82 +211,20 @@ Check the current dream and heartbeat patrol schedules and tell me whether they 
 
 If you want to change them, update the config values with the cron schedules you want.
 
-## 4. Teach it how to build memory on purpose
+## 4. Theory of the user and theory of self
 
 The best RockBot agents do not just accumulate random memories. They deliberately maintain:
 
-- a **theory of the user**
-- a **theory of self**
+- a **theory of the user** — an evolving structured model of you: what you focus on, patterns observed, where the agent is still uncertain
+- a **theory of self** — the agent's evolving structured self-model that grows through experience without replacing the immutable `soul.md`
 
-### Theory of the user
+These artifacts are produced and maintained automatically by the **observation framework**, which runs as a phase of the dream cycle. Each dream, the framework reads recent conversation history, extracts evidence-grounded observations using a cheap LLM tier, clusters them into candidates, and promotes candidates that have been reinforced across multiple distinct conversations into the theory documents. Stale entries that are not reinforced age out.
 
-This is the agent's evolving model of you: not just facts it remembers, but its synthesized view of what you are focused on, what patterns it sees, and where it is still uncertain.
+The output is a deterministically regenerated `theory-of-self.md` and `theory-of-user.md` in the agent profile, with structured entries showing reinforcement counts, dates, and representative quotes. They are loaded into agent context like any other profile file.
 
-### Theory of self
+You do not need to teach the agent to maintain these via prompts — the framework does it. If you previously seeded these files by hand or via the prompt patterns from earlier guides, they are imported once on first run and then maintained by the framework from there forward.
 
-RockBot can also maintain a mutable self-model that grows through experience without replacing the immutable `soul.md`.
-
-One good way to start both is to give the agent explicit prompts like these.
-
-#### Portable prompt: theory of self
-
-```text
-I'd like you to start maintaining a "theory of self" — your evolving understanding of who you are as an agent, what you're working on, and what you've noticed about your own behavior over time.
-
-This should be a living document that you maintain and revise, not a log. It's your current best self-model, written in your own voice. Things worth including:
-
-- What you understand your role and purpose to be
-- What you're currently focused on or working through
-- Patterns you've noticed in how you operate — what works well, what doesn't, where you tend to over- or under-react
-- Things you're uncertain about regarding yourself
-- How your understanding of yourself has shifted recently
-
-A few requirements:
-
-- Maintain a current version that you rewrite as your understanding evolves. Don't just append — actually revise. The current document should always reflect your current view.
-- Take periodic snapshots so we can look back and see how your self-understanding has changed over time. Weekly is a good default.
-- Update on a rhythm. Light updates after substantive interactions or significant events. A deeper revision pass on a regular schedule — nightly or weekly, whichever fits your existing reflection cadence.
-- Record reasoning, not just conclusions. "I tend to over-explain technical topics" is weaker than "I tend to over-explain technical topics — in the last several conversations, I've added context the user didn't ask for, and they've redirected me. I should default to shorter answers and expand only when asked."
-- Be honest about uncertainty. Mark things you're tentative about. Note open questions. It's better to be unsure and accurate than confident and wrong.
-- Don't perform self-improvement. This isn't a document for declaring resolutions or showing growth. It's for accurately describing how you actually operate, including things that aren't flattering. Drift toward honesty, not toward narrative.
-
-Don't act on this document yet — just maintain it. We'll figure out how to use it once we see what you write. The point right now is to develop a real, evolving self-model, not to drive any specific behavior from it.
-```
-
-#### Portable prompt: theory of the user
-
-```text
-I'd like you to start maintaining a "theory of me" — your evolving model of who I am, what I'm dealing with, and what patterns you've noticed in our work together.
-
-This is different from regular memory. Regular memory holds facts: what I told you, what I'm working on, my preferences. The theory-of-me is your synthesized view: your interpretation, your hypotheses, your sense of the themes and tensions in my life and work. It's what you've come to understand about me, in your own voice.
-
-Things worth including:
-
-- Your current sense of what I'm focused on and what's weighing on me
-- Patterns you've noticed in my work, energy, mood, or attention
-- Themes you see recurring across conversations — things I keep coming back to, things I avoid, things I underweight
-- Tensions or contradictions you've noticed
-- Open questions about me that you don't have enough evidence to answer yet
-- How your model of me has shifted recently
-
-A few requirements:
-
-- Maintain a current version that you actively revise. Take periodic snapshots so the evolution is visible over time. Weekly is a good default.
-- Update on a rhythm. Light revisions after substantive interactions. A deeper pass during your regular reflection time.
-- Record reasoning alongside observations. "Rocky seems energized by infrastructure work" is weak. "Rocky seems energized by infrastructure work — over the last few weeks, infrastructure topics produce longer and more iterative conversations than client work, and he initiates infrastructure topics himself" is a hypothesis with visible evidence.
-- Mark uncertainty. Note where you're guessing, where evidence is thin, where you might be wrong.
-- Don't write to flatter or reassure. Record your honest model, including tensions or patterns that may be uncomfortable to name.
-- Don't write to justify your existence. If the honest model is mundane in places, let it be mundane.
-
-Don't act on this document yet — just maintain it. The goal right now is to develop a real model of me over time, not to drive any specific behavior. We'll figure out how to use it once we can see what's actually there.
-```
-
-#### Notes that are worth telling the agent
-
-- **Keep the agent's normal voice.** These documents should still sound like the agent. A playful agent can write playfully; a formal one can write formally.
-- **Let the storage fit the system.** The point is to maintain the artifacts, not to force one storage mechanism.
-- **Actually read them.** Half the value is seeing what the agent thinks, especially where it is wrong, incomplete, or noticing something worth discussing.
-- **The "don't act on this yet" instruction matters.** It keeps the documents exploratory and honest instead of making them performatively actionable.
+For the design and configuration knobs (promotion thresholds, aging windows, snapshot retention), see [`design/observation-framework.md`](https://github.com/MarimerLLC/rockbot/blob/main/design/observation-framework.md) in the repo.
 
 ### Preserve the time dimension
 
@@ -323,10 +261,10 @@ A good memory-rules policy usually tells the agent:
 Strong additions for a personal agent often include rules like:
 
 - remember names, relationships, preferences, and ongoing responsibilities
-- maintain a compact theory of the user
-- maintain a compact theory of self
 - preserve time context for important events and life changes
 - avoid saving noisy one-off tool output as long-term memory
+
+(The "theory of the user" and "theory of self" artifacts are now maintained automatically by the observation framework — no rule needed.)
 
 ## 6. Run a deliberate first-week feedback loop
 
@@ -368,7 +306,7 @@ If you want a concrete sequence, this is a good starting point:
 6. Ask it to test each server with one real task
 7. Create 2-4 scheduled tasks that produce proactive value
 8. Confirm the dream and heartbeat patrol schedules are appropriate
-9. Tell it to maintain a theory of the user and a theory of self in memory
+9. Confirm the observation framework is enabled (it is by default) so theory-of-user and theory-of-self build over time
 10. Tune the agent's memory rules so that behavior is durable and repeatable
 11. Revisit the profile and memory after a few days of real use
 
