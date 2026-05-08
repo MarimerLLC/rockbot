@@ -51,4 +51,20 @@ public sealed class Candidate
     /// for promotion-threshold counting.
     /// </summary>
     public List<ObservationReference> References { get; init; } = [];
+
+    /// <summary>
+    /// Centroid embedding of the candidate's text. Set by the merge step at
+    /// candidate creation and refreshed when observations are added. New
+    /// observations are matched to existing candidates by computing the
+    /// cosine similarity between their embedding and this centroid; matches
+    /// above <see cref="ObservationTarget.ClusteringSimilarityThreshold"/>
+    /// are merged into the candidate.
+    /// </summary>
+    /// <remarks>
+    /// Persisted in the JSON state file so re-loading the state does not
+    /// require re-embedding every candidate. Older state files written before
+    /// this field was introduced (still schema v1, additive change) load with
+    /// <c>null</c> here; the merge step recomputes on first use.
+    /// </remarks>
+    public float[]? Vector { get; set; }
 }

@@ -18,6 +18,8 @@ public static class ServiceCollectionExtensions
         ArgumentNullException.ThrowIfNull(services);
 
         services.TryAddSingleton<IObservationStateStore, FileObservationStateStore>();
+        services.TryAddSingleton<IObservationExtractor, LlmObservationExtractor>();
+        services.TryAddSingleton<IObservationExtractionPhase, ObservationExtractionPhase>();
         return services;
     }
 
