@@ -39,6 +39,7 @@
     <ProjectReference Include="..\RockBot.Telemetry\RockBot.Telemetry.csproj" />
     <ProjectReference Include="..\RockBot.Llm\RockBot.Llm.csproj" />
     <ProjectReference Include="..\RockBot.Memory\RockBot.Memory.csproj" />
+    <ProjectReference Include="..\RockBot.Observation\RockBot.Observation.csproj" />
     <ProjectReference Include="..\RockBot.Skills\RockBot.Skills.csproj" />
     <ProjectReference Include="..\RockBot.Tools\RockBot.Tools.csproj" />
     <ProjectReference Include="..\RockBot.Tools.Mcp\RockBot.Tools.Mcp.csproj" />

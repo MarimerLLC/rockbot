@@ -136,6 +136,12 @@ public static class AgentMemoryExtensions
 
         builder.Services.AddSingleton<IConversationLog, FileConversationLog>();
 
+        // Adapter that exposes the conversation log to the observation
+        // framework. Registered alongside IConversationLog so its lifecycle
+        // tracks the log; DreamService takes it as an optional dependency
+        // and skips the observation pass when this is absent.
+        builder.Services.AddSingleton<ConversationLogTranscriptAdapter>();
+
         return builder;
     }
 

@@ -12,6 +12,7 @@ using RockBot.Agent.McpBridge;
 using RockBot.Scripts.Remote;
 using RockBot.Agent;
 using RockBot.Memory;
+using RockBot.Observation;
 using RockBot.Skills;
 using RockBot.Tools;
 using RockBot.Tools.Mcp;
@@ -373,6 +374,25 @@ builder.Services.AddHostedService<McpBridgeService>();
 
 // Remote script runner — delegates script execution to the Script Manager pod via RabbitMQ
 builder.Services.AddRemoteScriptRunner("RockBot");
+
+// Observation framework — registers core services (state store, extractor,
+// evaluator, pipeline phases, coordinator) plus the default theory-of-self
+// and theory-of-user targets. The dream cycle's RunObservationPassAsync
+// drives the pipeline once per dream when DreamOptions.ObservationEnabled
+// is true. Markdown copies are written under {profile}/observation/ for
+// inspection; promoted theories are also published as long-term memory
+// entries (category="observation/theory/{name}") so SearchMemory finds them.
+{
+    var profileBasePath = builder.Configuration["AgentProfile:BasePath"]
+        ?? builder.Configuration["AgentProfile__BasePath"]
+        ?? "agent";
+    var resolvedProfileBasePath = Path.IsPathRooted(profileBasePath)
+        ? profileBasePath
+        : Path.Combine(AppContext.BaseDirectory, profileBasePath);
+
+    builder.Services.AddRockBotObservation();
+    builder.Services.AddDefaultObservationTargets(resolvedProfileBasePath);
+}
 
 var app = builder.Build();
 

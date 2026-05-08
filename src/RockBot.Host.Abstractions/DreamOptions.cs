@@ -163,6 +163,17 @@ public sealed class DreamOptions
     public string ToolSuccessLearningDirectivePath { get; set; } = "tool-success-learning.md";
 
     /// <summary>
+    /// Whether the observation framework pass is enabled. When true, the
+    /// dream cycle runs the observation pipeline (theory-of-self,
+    /// theory-of-user, plus any other registered targets) between the
+    /// memory-mining and preference-inference passes. The framework
+    /// requires <c>IEmbeddingGenerator&lt;string, Embedding&lt;float&gt;&gt;</c>
+    /// and <see cref="ILongTermMemory"/> to be registered; if either is
+    /// missing, agent startup fails.
+    /// </summary>
+    public bool ObservationEnabled { get; set; } = true;
+
+    /// <summary>
     /// Days of no reinforcement (measured against <see cref="MemoryEntry.LastSeenAt"/>)
     /// before importance decay begins. Entries younger than this are left alone regardless
     /// of their score. Default: 30 days.

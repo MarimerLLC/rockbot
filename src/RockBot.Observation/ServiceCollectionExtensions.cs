@@ -22,6 +22,7 @@ public static class ServiceCollectionExtensions
         services.TryAddSingleton<IObservationExtractionPhase, ObservationExtractionPhase>();
         services.TryAddSingleton<IObservationEvaluator, LlmObservationEvaluator>();
         services.TryAddSingleton<IObservationEvaluationPhase, ObservationEvaluationPhase>();
+        services.TryAddSingleton<IObservationPipelineCoordinator, ObservationPipelineCoordinator>();
         return services;
     }
 
