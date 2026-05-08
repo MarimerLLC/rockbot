@@ -349,7 +349,12 @@ public sealed class MemoryTools
 
         try
         {
-            var response = await _llmClient.GetResponseAsync(messages, options);
+            // Detached background work: SaveMemory queues this via Task.Run with no
+            // caller-supplied ct, so the LLM call has no cancellation source. A future
+            // refactor could plumb IHostApplicationLifetime.ApplicationStopping for
+            // graceful shutdown of in-flight extraction; for now the work is tied to
+            // the agent process lifetime.
+            var response = await _llmClient.GetResponseAsync(messages, options, CancellationToken.None);
             var raw = response.Text?.Trim() ?? string.Empty;
             var json = ExtractJsonArray(raw);
 

@@ -190,7 +190,12 @@ public sealed class SkillTools
                 new(ChatRole.User, content)
             };
 
-            var response = await _llmClient.GetResponseAsync(messages, new ChatOptions());
+            // Detached background work: skill save queues this via Task.Run with no
+            // caller-supplied ct, so the LLM call has no cancellation source. The
+            // summary refresh is best-effort; if the agent shuts down mid-call the
+            // task is orphaned. A future refactor could use ApplicationStopping.
+            var response = await _llmClient.GetResponseAsync(
+                messages, new ChatOptions(), CancellationToken.None);
             var summary = response.Text?.Trim() ?? string.Empty;
 
             if (string.IsNullOrWhiteSpace(summary))
