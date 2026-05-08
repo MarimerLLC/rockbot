@@ -202,8 +202,12 @@ public class MemoryContradictionDetectorTests
     }
 
     [TestMethod]
-    public async Task ResolveAsync_Feedback_AmbiguousMultipleMatches_DefersToDreamSweep()
+    public async Task ResolveAsync_Feedback_MultipleSameValenceMatches_AllSupersededByNewer()
     {
+        // Every candidate in `contradicted` already shares the inverse valence of the
+        // incoming entry (the loop filters that), so multi-match is not ambiguous —
+        // it just means the same rule was written more than once before a reversal.
+        // The detector should supersede them all.
         var memory = new RecordingMemory();
         memory.Existing.Add(NewEntry(
             category: "feedback/from-agent/style",
@@ -222,8 +226,41 @@ public class MemoryContradictionDetectorTests
 
         var resolution = await detector.ResolveAsync(incoming);
 
-        Assert.IsFalse(resolution.HasContradiction,
-            "Multiple non-correction candidates is ambiguous — Phase 3 design defers these to the dream sweep.");
+        Assert.IsTrue(resolution.HasContradiction);
+        CollectionAssert.AreEquivalent(
+            new[] { "old-1", "old-2" },
+            resolution.ExistingIdsToSupersede.ToArray());
+    }
+
+    [TestMethod]
+    public async Task ResolveAsync_Feedback_UserCorrectionAmongMultipleCandidates_StillWins()
+    {
+        // The user-correction protection still trumps everything: if any candidate is a
+        // user correction, the incoming agent-self save is the one marked superseded,
+        // even when other candidates would otherwise be supersed-able.
+        var memory = new RecordingMemory();
+        memory.Existing.Add(NewEntry(
+            category: "feedback/from-agent/style",
+            content: "Always use bullet points for status reports",
+            id: "old-1"));
+        memory.Existing.Add(NewEntry(
+            category: "feedback/from-user/style",
+            content: "Always use bullet points for status reports — user said so",
+            id: "user-correction-1",
+            tags: ["correction"]));
+
+        var detector = NewDetector(memory);
+        var incoming = NewEntry(
+            category: "feedback/from-agent/style",
+            content: "Never use bullet points for status reports",
+            id: "new-1");
+
+        var resolution = await detector.ResolveAsync(incoming);
+
+        Assert.IsTrue(resolution.HasContradiction);
+        Assert.AreEqual("user-correction-1", resolution.IncomingSupersededBy,
+            "User-correction protection trumps the supersede-all rule.");
+        Assert.AreEqual(0, resolution.ExistingIdsToSupersede.Count);
     }
 
     [TestMethod]

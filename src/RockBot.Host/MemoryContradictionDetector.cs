@@ -169,8 +169,6 @@ internal sealed partial class MemoryContradictionDetector : IMemoryContradiction
             contradicted.Add(e);
         }
 
-        // Phase 3 design: ambiguous matches skip auto-resolution. We treat "more than one
-        // candidate where a user correction does NOT obviously win" as ambiguous.
         if (contradicted.Count == 0)
             return ContradictionResolution.None;
 
@@ -183,16 +181,11 @@ internal sealed partial class MemoryContradictionDetector : IMemoryContradiction
             return ContradictionResolution.UserCorrectionWins(correction.Id);
         }
 
-        // If the incoming entry is itself a user correction, it wins over all matches.
-        // Otherwise more than one non-correction match is ambiguous — defer to the dream sweep.
-        if (!FeedbackMemoryCategories.IsUserCorrection(incoming) && contradicted.Count > 1)
-        {
-            _logger.LogInformation(
-                "ContradictionDetector: feedback save {IncomingId} matched {Count} candidates with no correction — deferring to dream sweep",
-                incoming.Id, contradicted.Count);
-            return ContradictionResolution.None;
-        }
-
+        // Multiple candidates here are not ambiguous: every entry in `contradicted` already
+        // shares the inverse valence of the incoming entry (filtered above) and clears the
+        // category + lexical-overlap gates. The original "skip when count>1" rule was overly
+        // defensive and produced false-negatives in real workloads where the same affirmative
+        // rule had been written multiple times before a single negative reversal.
         var ids = contradicted.Select(c => c.Id).ToList();
         _logger.LogInformation(
             "ContradictionDetector: feedback {IncomingId} supersedes {Count} older entry/entries: {Ids}",
