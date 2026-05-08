@@ -3,6 +3,7 @@ using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
 using Microsoft.Extensions.Logging;
+using RockBot.Host;
 
 namespace RockBot.Tools.Mcp.Recovery;
 
@@ -40,17 +41,20 @@ public sealed class McpRecoveryExecutor
     private readonly McpInvokeDelegate _invoke;
     private readonly IReadOnlyList<IToolArgumentDefaultsProvider> _providers;
     private readonly StageBLlmFiller? _stageB;
+    private readonly ICapabilityClaimWriter? _capabilityClaimWriter;
     private readonly ILogger<McpRecoveryExecutor> _logger;
 
     public McpRecoveryExecutor(
         McpInvokeDelegate invoke,
         IEnumerable<IToolArgumentDefaultsProvider> providers,
         ILogger<McpRecoveryExecutor> logger,
-        StageBLlmFiller? stageB = null)
+        StageBLlmFiller? stageB = null,
+        ICapabilityClaimWriter? capabilityClaimWriter = null)
     {
         _invoke = invoke;
         _providers = providers.ToList();
         _stageB = stageB;
+        _capabilityClaimWriter = capabilityClaimWriter;
         _logger = logger;
     }
 
@@ -80,9 +84,15 @@ public sealed class McpRecoveryExecutor
         {
             // Chain exhausted — if the response still carries a recoverable error,
             // annotate so the agent sees recovery was attempted but ran out of budget.
-            return TryExtractRecoverableError(response) is not null
-                ? Annotate(response, $"chain-exhausted at depth {depth}")
-                : response;
+            var chainErrorText = TryExtractRecoverableError(response);
+            if (chainErrorText is null) return response;
+
+            await EmitCapabilityClaimAsync(
+                serverName, toolName, innerRequest,
+                statement: $"recovery-exhausted: chain depth {depth} reached for {serverName}/{toolName}",
+                evidence: chainErrorText,
+                ct);
+            return Annotate(response, $"chain-exhausted at depth {depth}");
         }
 
         var errorText = TryExtractRecoverableError(response);
@@ -162,6 +172,11 @@ public sealed class McpRecoveryExecutor
             }
 
             // Retry still failed and isn't chainable.
+            await EmitCapabilityClaimAsync(
+                serverName, toolName, innerRequest,
+                statement: $"recovery-exhausted: Stage A provider {providerName} resolved field {fieldName} but the call still failed",
+                evidence: retryError ?? errorText,
+                ct);
             return Annotate(response, $"stageA={providerName} retry-failed: {Truncate(retryResponse.Content)}");
         }
 
@@ -206,6 +221,11 @@ public sealed class McpRecoveryExecutor
                     return await TryRecoverAsync(serverName, toolName, nextRequest, retryResponse, depth + 1, ct);
                 }
 
+                await EmitCapabilityClaimAsync(
+                    serverName, toolName, innerRequest,
+                    statement: $"recovery-exhausted: Stage B filled field {fieldName} but the call still failed",
+                    evidence: retryError ?? errorText,
+                    ct);
                 return Annotate(response,
                     $"stageA=no-provider; stageB=filled retry-failed: {Truncate(retryResponse.Content)}");
             }
@@ -213,6 +233,11 @@ public sealed class McpRecoveryExecutor
             sw.Stop();
             RecordTelemetry(serverName, toolName, fieldName, "B", recovered: false, "StageBLlmFiller",
                 sw.Elapsed.TotalMilliseconds);
+            await EmitCapabilityClaimAsync(
+                serverName, toolName, innerRequest,
+                statement: $"recovery-exhausted: Stage B could not fill field {fieldName}",
+                evidence: errorText,
+                ct);
             return Annotate(response, "stageA=no-provider; stageB=fill-failed");
         }
 
@@ -452,5 +477,72 @@ public sealed class McpRecoveryExecutor
 
         RecoveryDiagnostics.Attempts.Add(1, tags);
         RecoveryDiagnostics.Duration.Record(durationMs, tags);
+    }
+
+    /// <summary>
+    /// Phase 2 producer side: when recovery has been attempted but exhausted, write
+    /// a falsifiable capability claim against (server, tool, current arguments).
+    /// The verify shape replays the same call expecting success — so the next
+    /// session that pulls the claim will evict it automatically once the underlying
+    /// problem is fixed (e.g. a future provider lands that fills the missing field,
+    /// or the MCP server starts accepting the call). Best-effort; failures here
+    /// never break the recovery path.
+    /// </summary>
+    private async Task EmitCapabilityClaimAsync(
+        string serverName,
+        string toolName,
+        ToolInvokeRequest innerRequest,
+        string statement,
+        string? evidence,
+        CancellationToken ct)
+    {
+        if (_capabilityClaimWriter is null) return;
+
+        JsonElement argsElement;
+        try
+        {
+            using var doc = JsonDocument.Parse(
+                string.IsNullOrWhiteSpace(innerRequest.Arguments) ? "{}" : innerRequest.Arguments!);
+            argsElement = doc.RootElement.Clone();
+        }
+        catch (JsonException)
+        {
+            // Arguments aren't JSON we can replay — record a claim with empty args
+            // rather than skipping; the statement still names server/tool.
+            using var fallback = JsonDocument.Parse("{}");
+            argsElement = fallback.RootElement.Clone();
+        }
+
+        var verify = new VerifyShape(
+            Server: serverName,
+            Tool: toolName,
+            Arguments: argsElement,
+            Expect: new VerifyExpectation(VerifyExpectationKind.Success));
+
+        var claim = new CapabilityClaim(
+            Server: serverName,
+            Tool: toolName,
+            Statement: statement,
+            Verify: verify,
+            Evidence: evidence is null ? [] : [Truncate(evidence, 512)],
+            CreatedAt: DateTimeOffset.UtcNow);
+
+        try
+        {
+            await _capabilityClaimWriter.SaveCapabilityClaimAsync(claim, ct);
+            _logger.LogInformation(
+                "Saved capability claim after exhausted recovery for {Server}/{Tool}: {Statement}",
+                serverName, toolName, statement);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex,
+                "Failed to save capability claim after exhausted recovery for {Server}/{Tool}",
+                serverName, toolName);
+        }
     }
 }
