@@ -24,8 +24,8 @@ public class ObservationTargetDefaultsTests
         Assert.AreEqual(ModelTier.Low, target.ExtractionTier);
         Assert.AreEqual(ModelTier.Balanced, target.EvaluationTier);
         Assert.AreEqual(3, target.PromotionThreshold);
-        Assert.AreEqual(14, target.CandidateAgingWindowDreams);
-        Assert.AreEqual(60, target.TheoryAgingWindowDreams);
+        Assert.AreEqual(7, target.CandidateAgingWindowDays);
+        Assert.AreEqual(30, target.TheoryAgingWindowDays);
         Assert.AreEqual(0.85f, target.ClusteringSimilarityThreshold);
         Assert.AreEqual(12, target.SnapshotRetentionCount);
         Assert.IsFalse(target.IncludeBehaviorSummary);

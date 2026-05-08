@@ -122,8 +122,8 @@ public sealed class ObservationTarget
     public LlmTier ExtractionTier { get; init; }    // Low
     public LlmTier EvaluationTier { get; init; }    // Balanced/High
     public int PromotionThreshold { get; init; }    // distinct conversations
-    public int CandidateAgingWindowDreams { get; init; }
-    public int TheoryAgingWindowDreams { get; init; }
+    public int CandidateAgingWindowDays { get; init; }
+    public int TheoryAgingWindowDays { get; init; }
     public bool IncludeBehaviorSummary { get; init; }
 }
 ```
@@ -248,8 +248,8 @@ Per target (parallel across targets):
 2. Higher-tier LLM call with the evaluation prompt. Differential framing: "for each candidate, is it grounded in the cited references? does it conflict with existing theories? should it be promoted, refined, or rejected?" Verification against fixed input is much harder to confabulate than open-ended generation.
 3. Apply the LLM's verdicts deterministically: promoted candidates become theory entries (carrying their references); rejected ones are removed.
 4. Aging (deterministic):
-   - Drop candidates with no new references in the last *K* dreams.
-   - Drop or demote theories with no new supporting references in the last *M* dreams (M > K).
+   - Drop candidates with no new references in the last *K* days (default 7).
+   - Drop theories with no new supporting references in the last *M* days (M > K, default 30).
 5. Regenerate the markdown file from the JSON state via a pure template. No LLM polish — that re-introduces the rewriting risk.
 6. Append a snapshot of the regenerated markdown to `snapshots[]`, evicting the oldest entry if the cap is exceeded.
 
@@ -338,7 +338,7 @@ The observation framework's parallelism makes a global LLM rate-limit-handling a
 - **Behavior summary metric set.** What mechanically computed metrics are most useful for theory-of-self extraction? Tool call count and iteration count are obvious; what else carries signal without dragging in raw transcripts?
 - **Exact placement in `DreamService.DreamAsync`.** After memory consolidation, before or after identity reflection? The existing phase order has accumulated reasons that should be reviewed.
 - **Promotion threshold defaults.** Two distinct conversations? Three? Different per target. Calibrate against real dream output, not by guessing up front.
-- **Aging window defaults.** At 2 dreams/day, K=14 (one week) for candidates feels right; M=60+ for theories. Should be reviewed once there's data.
+- **Aging window defaults.** Calendar-time aging in days makes the behaviour cadence-independent. Initial defaults: K=7 days for candidates, M=30 days for theories. Should be reviewed once there's data on real reinforcement frequency.
 - **Evaluation prompt structure.** Differential framing is the right shape, but the exact prompt template needs iteration once Phase 1 is producing real candidate pools.
 - **Telemetry surfacing.** Should the framework emit an end-of-phase summary message ("X candidates added, Y promoted, Z aged out per target") so dream activity is visible in logs without inspecting JSON files?
 - **Closed-loop sequencing.** v1 is loop A (context-only) by design. The decision on whether/which of loops B and C to build follows real evidence about what the data layer produces — but a rough trigger condition would help: "if after 2 months of accumulation the theories look coherent and operator-validated, consider loop B for the completion evaluator first."

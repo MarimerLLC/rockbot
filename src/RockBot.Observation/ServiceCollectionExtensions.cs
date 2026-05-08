@@ -20,6 +20,8 @@ public static class ServiceCollectionExtensions
         services.TryAddSingleton<IObservationStateStore, FileObservationStateStore>();
         services.TryAddSingleton<IObservationExtractor, LlmObservationExtractor>();
         services.TryAddSingleton<IObservationExtractionPhase, ObservationExtractionPhase>();
+        services.TryAddSingleton<IObservationEvaluator, LlmObservationEvaluator>();
+        services.TryAddSingleton<IObservationEvaluationPhase, ObservationEvaluationPhase>();
         return services;
     }
 
