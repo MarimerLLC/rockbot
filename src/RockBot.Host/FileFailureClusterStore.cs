@@ -79,7 +79,11 @@ internal sealed class FileFailureClusterStore : IFailureClusterStore, IHostedSer
             _flushTimer = null;
         }
 
-        await FlushAsync(cancellationToken);
+        // CancellationToken.None — the host's stopping token may already have been
+        // disposed by the time other hosted services finish shutting down, and
+        // SemaphoreSlim.WaitAsync(disposedToken) throws ObjectDisposedException.
+        // Shutdown flush is critical work; let it run to completion.
+        await FlushAsync(CancellationToken.None);
     }
 
     public async ValueTask DisposeAsync()
