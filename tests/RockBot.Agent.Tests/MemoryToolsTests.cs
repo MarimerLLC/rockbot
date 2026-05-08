@@ -297,6 +297,33 @@ public class MemoryToolsTests
 
     private static MemoryEntry Entry(string id, string content, DateTimeOffset createdAt) =>
         new(id, content, null, [], createdAt);
+
+    // -------------------------------------------------------------------------
+    // SaveMemory — observation soft gate (Phase 2)
+    // -------------------------------------------------------------------------
+
+    [TestMethod]
+    public async Task SaveMemory_ClaimLanguage_AppendsObservationHintToResult()
+    {
+        var memory = new StubLongTermMemory();
+        var tools = MakeTools(memory);
+
+        var result = await tools.SaveMemory("calendar wrapper cannot pass arguments");
+
+        StringAssert.Contains(result, "looks like a capability claim");
+    }
+
+    [TestMethod]
+    public async Task SaveMemory_BenignContent_ReturnsBareQueuedMessage()
+    {
+        var memory = new StubLongTermMemory();
+        var tools = MakeTools(memory);
+
+        var result = await tools.SaveMemory("user prefers concise updates");
+
+        Assert.IsFalse(result.Contains("capability claim"),
+            "Benign content must not produce a soft-gate hint.");
+    }
 }
 
 // ---------------------------------------------------------------------------

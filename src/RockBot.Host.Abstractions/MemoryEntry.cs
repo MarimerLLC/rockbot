@@ -35,4 +35,13 @@ public sealed record MemoryEntry(
     /// Starts at 1 for a fresh save; merges sum this across source entries.
     /// </summary>
     public int ReinforcementCount { get; init; } = 1;
+
+    /// <summary>
+    /// Optional structured predicate that lets readers falsify this entry by re-running
+    /// the call it describes. Populated only on entries in the
+    /// <c>claim/capability/*</c> category (see <see cref="CapabilityClaimCategories"/>);
+    /// always <c>null</c> for general memory entries. Read-side filters in the
+    /// agent context builder evaluate this shape before injection.
+    /// </summary>
+    public VerifyShape? Verify { get; init; }
 }

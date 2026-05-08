@@ -55,6 +55,11 @@ public static class AgentMemoryExtensions
 
         builder.Services.AddSingleton<ILongTermMemory, FileMemoryStore>();
 
+        // Phase 2 self-repair: capability-claim writer and read-side verifier.
+        // Both are internal services — not exposed as LLM tools.
+        builder.Services.AddSingleton<ICapabilityClaimWriter, CapabilityClaimWriter>();
+        builder.Services.AddSingleton<ICapabilityClaimVerifier, CapabilityClaimVerifier>();
+
         return builder;
     }
 

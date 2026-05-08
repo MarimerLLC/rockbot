@@ -111,4 +111,69 @@ public class AgentMemoryExtensionsTests
 
         Assert.AreSame(memory1, memory2);
     }
+
+    [TestMethod]
+    public void WithLongTermMemory_RegistersCapabilityClaimWriter()
+    {
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddRockBotHost(agent =>
+        {
+            agent.WithIdentity("test-agent");
+            agent.WithProfile();
+            agent.WithLongTermMemory();
+        });
+
+        var provider = services.BuildServiceProvider();
+        var writer = provider.GetService<ICapabilityClaimWriter>();
+
+        Assert.IsNotNull(writer, "Phase 2 requires ICapabilityClaimWriter to be registered alongside ILongTermMemory.");
+    }
+
+    [TestMethod]
+    public void WithLongTermMemory_CapabilityClaimWriter_IsSingleton()
+    {
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddRockBotHost(agent =>
+        {
+            agent.WithIdentity("test-agent");
+            agent.WithProfile();
+            agent.WithLongTermMemory();
+        });
+
+        var provider = services.BuildServiceProvider();
+        var first = provider.GetRequiredService<ICapabilityClaimWriter>();
+        var second = provider.GetRequiredService<ICapabilityClaimWriter>();
+
+        Assert.AreSame(first, second);
+    }
+
+    [TestMethod]
+    public void WithLongTermMemory_RegistersCapabilityClaimVerifier()
+    {
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddRockBotHost(agent =>
+        {
+            agent.WithIdentity("test-agent");
+            agent.WithProfile();
+            agent.WithLongTermMemory();
+        });
+        // Verifier needs an IToolRegistry — supply a minimal one for resolution.
+        services.AddSingleton<RockBot.Tools.IToolRegistry, EmptyToolRegistry>();
+
+        var provider = services.BuildServiceProvider();
+        var verifier = provider.GetService<ICapabilityClaimVerifier>();
+
+        Assert.IsNotNull(verifier, "Phase 2 requires ICapabilityClaimVerifier to be registered alongside ILongTermMemory.");
+    }
+
+    private sealed class EmptyToolRegistry : RockBot.Tools.IToolRegistry
+    {
+        public IReadOnlyList<RockBot.Tools.ToolRegistration> GetTools() => [];
+        public RockBot.Tools.IToolExecutor? GetExecutor(string toolName) => null;
+        public void Register(RockBot.Tools.ToolRegistration registration, RockBot.Tools.IToolExecutor executor) { }
+        public bool Unregister(string toolName) => false;
+    }
 }
