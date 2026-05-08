@@ -3,6 +3,7 @@ using System.Text.Json;
 using Microsoft.Extensions.Logging;
 using RockBot.Host;
 using RockBot.Messaging;
+using RockBot.Tools.Mcp.Recovery;
 
 namespace RockBot.Tools.Mcp;
 
@@ -27,6 +28,7 @@ public sealed class McpManagementExecutor : IToolExecutor, IAsyncDisposable
     private readonly AgentIdentity _identity;
     private readonly ILogger<McpManagementExecutor> _logger;
     private readonly TimeSpan _timeout;
+    private readonly McpRecoveryExecutor? _recovery;
 
     private readonly ConcurrentDictionary<string, TaskCompletionSource<MessageEnvelope>> _pending = new();
     private ISubscription? _responseSubscription;
@@ -48,7 +50,8 @@ public sealed class McpManagementExecutor : IToolExecutor, IAsyncDisposable
         IMessageSubscriber subscriber,
         AgentIdentity identity,
         ILogger<McpManagementExecutor> logger,
-        TimeSpan? timeout = null)
+        TimeSpan? timeout = null,
+        McpRecoveryExecutor? recovery = null)
     {
         _index = index;
         _proxy = proxy;
@@ -57,6 +60,7 @@ public sealed class McpManagementExecutor : IToolExecutor, IAsyncDisposable
         _identity = identity;
         _logger = logger;
         _timeout = timeout ?? TimeSpan.FromSeconds(30);
+        _recovery = recovery;
     }
 
     public string ResponseTopic => $"mcp.manage.response.{_identity.Name}";
@@ -152,7 +156,18 @@ public sealed class McpManagementExecutor : IToolExecutor, IAsyncDisposable
             [McpHeaders.ServerName] = serverName
         };
 
-        return await _proxy.ExecuteAsync(innerRequest, extraHeaders, ct);
+        var response = await _proxy.ExecuteAsync(innerRequest, extraHeaders, ct);
+
+        // Always pass through recovery — it inspects both IsError=true responses
+        // and IsError=false responses with embedded JSON error bodies (some MCP
+        // servers report schema errors that way). Recovery short-circuits cheaply
+        // when the response is genuinely successful.
+        if (_recovery is not null)
+        {
+            response = await _recovery.RecoverAsync(serverName, toolName, innerRequest, response, ct);
+        }
+
+        return response;
     }
 
     // ── mcp_register_server ──────────────────────────────────────────────────
