@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
+using Microsoft.Extensions.Logging;
 
 namespace RockBot.Host;
 
@@ -12,13 +13,23 @@ namespace RockBot.Host;
 internal sealed class CapabilityClaimWriter : ICapabilityClaimWriter
 {
     private readonly ILongTermMemory _memory;
+    private readonly IMemoryContradictionDetector? _contradictionDetector;
+    private readonly ILogger<CapabilityClaimWriter>? _logger;
 
     public CapabilityClaimWriter(ILongTermMemory memory)
+        : this(memory, contradictionDetector: null, logger: null) { }
+
+    public CapabilityClaimWriter(
+        ILongTermMemory memory,
+        IMemoryContradictionDetector? contradictionDetector,
+        ILogger<CapabilityClaimWriter>? logger)
     {
         _memory = memory ?? throw new ArgumentNullException(nameof(memory));
+        _contradictionDetector = contradictionDetector;
+        _logger = logger;
     }
 
-    public Task SaveCapabilityClaimAsync(CapabilityClaim claim, CancellationToken cancellationToken = default)
+    public async Task SaveCapabilityClaimAsync(CapabilityClaim claim, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(claim);
         Validate(claim);
@@ -34,7 +45,43 @@ internal sealed class CapabilityClaimWriter : ICapabilityClaimWriter
             Verify = claim.Verify
         };
 
-        return _memory.SaveAsync(entry, cancellationToken);
+        if (_contradictionDetector is not null)
+        {
+            var resolution = await _contradictionDetector.ResolveAsync(entry, cancellationToken);
+            if (resolution.IncomingSupersededBy is not null)
+            {
+                // An existing user-correction wins — the new claim lands on disk already marked
+                // as superseded so it is excluded from search/recall but preserved for audit.
+                entry = entry with { SupersededBy = resolution.IncomingSupersededBy };
+                _logger?.LogInformation(
+                    "CapabilityClaimWriter: incoming claim {Id} marked superseded by user-correction {ExistingId}",
+                    entry.Id, resolution.IncomingSupersededBy);
+            }
+            else if (resolution.ExistingIdsToSupersede.Count > 0)
+            {
+                await ApplySupersessionAsync(resolution.ExistingIdsToSupersede, entry.Id, cancellationToken);
+            }
+        }
+
+        await _memory.SaveAsync(entry, cancellationToken);
+    }
+
+    private async Task ApplySupersessionAsync(IReadOnlyList<string> ids, string winnerId, CancellationToken ct)
+    {
+        foreach (var id in ids)
+        {
+            var existing = await _memory.GetAsync(id, ct);
+            if (existing is null) continue;
+            if (existing.SupersededBy is not null) continue;
+
+            await _memory.SaveAsync(
+                existing with { SupersededBy = winnerId, UpdatedAt = DateTimeOffset.UtcNow },
+                ct);
+
+            _logger?.LogInformation(
+                "CapabilityClaimWriter: marked {ExistingId} superseded by {WinnerId} ({Category})",
+                id, winnerId, existing.Category ?? "(none)");
+        }
     }
 
     private static void Validate(CapabilityClaim claim)

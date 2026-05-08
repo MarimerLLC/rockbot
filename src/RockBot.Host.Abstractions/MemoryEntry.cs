@@ -44,4 +44,14 @@ public sealed record MemoryEntry(
     /// agent context builder evaluate this shape before injection.
     /// </summary>
     public VerifyShape? Verify { get; init; }
+
+    /// <summary>
+    /// Id of the memory entry that contradicted and replaced this one. Set by the
+    /// Phase 3 contradiction detector (hot path on save) or the dream contradiction
+    /// sweep (LLM-mediated backstop). Superseded entries are excluded from
+    /// <see cref="ILongTermMemory.SearchAsync"/> and from recall surfaces, but remain
+    /// retrievable by id via <see cref="ILongTermMemory.GetAsync"/> for audit.
+    /// Always <c>null</c> for live entries.
+    /// </summary>
+    public string? SupersededBy { get; init; }
 }

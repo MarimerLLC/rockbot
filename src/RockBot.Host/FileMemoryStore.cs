@@ -293,6 +293,12 @@ internal sealed partial class FileMemoryStore : ILongTermMemory
 
     private static bool PassesStructuralFilters(MemoryEntry entry, MemorySearchCriteria criteria)
     {
+        // Phase 3 self-repair: entries marked as superseded by a contradicting save are
+        // hidden from search/recall by default but remain on disk for audit.
+        // Direct GetAsync still returns them; supersession traversal needs the by-id path.
+        if (entry.SupersededBy is not null && !criteria.IncludeSuperseded)
+            return false;
+
         if (criteria.Category is not null)
         {
             if (entry.Category is null) return false;

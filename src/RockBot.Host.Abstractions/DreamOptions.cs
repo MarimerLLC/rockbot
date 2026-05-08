@@ -174,6 +174,19 @@ public sealed class DreamOptions
     public bool ObservationEnabled { get; set; } = true;
 
     /// <summary>
+    /// Whether the Phase 3 self-repair contradiction sweep pass is enabled.
+    /// LLM-mediated backstop for <c>claim/capability/*</c> and <c>feedback/*</c>
+    /// contradictions the hot-path keyword detector missed.
+    /// </summary>
+    public bool ContradictionSweepEnabled { get; set; } = true;
+
+    /// <summary>
+    /// Path to the contradiction sweep directive file, relative to <see cref="AgentProfileOptions.BasePath"/>.
+    /// When the file does not exist, a built-in fallback directive is used.
+    /// </summary>
+    public string ContradictionSweepDirectivePath { get; set; } = "contradiction-sweep.md";
+
+    /// <summary>
     /// Days of no reinforcement (measured against <see cref="MemoryEntry.LastSeenAt"/>)
     /// before importance decay begins. Entries younger than this are left alone regardless
     /// of their score. Default: 30 days.

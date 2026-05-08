@@ -62,6 +62,7 @@ public sealed class MemoryTools
 
     private readonly ILongTermMemory _memory;
     private readonly ILlmClient _llmClient;
+    private readonly IMemoryContradictionDetector? _contradictionDetector;
     private readonly ILogger<MemoryTools> _logger;
     private readonly IList<AITool> _tools;
     private readonly string _extractionSystemPrompt;
@@ -70,10 +71,12 @@ public sealed class MemoryTools
         ILongTermMemory memory,
         ILlmClient llmClient,
         IOptions<AgentProfileOptions> profileOptions,
-        ILogger<MemoryTools> logger)
+        ILogger<MemoryTools> logger,
+        IMemoryContradictionDetector? contradictionDetector = null)
     {
         _memory = memory;
         _llmClient = llmClient;
+        _contradictionDetector = contradictionDetector;
         _logger = logger;
 
         // Load shared memory rules and prepend to the extraction prompt
@@ -331,9 +334,10 @@ public sealed class MemoryTools
 
             foreach (var entry in entries)
             {
-                await _memory.SaveAsync(entry);
+                var resolved = await ApplyContradictionResolutionAsync(entry);
+                await _memory.SaveAsync(resolved);
                 _logger.LogInformation("Background save: {Id} ({Category}): {Content}",
-                    entry.Id, entry.Category ?? "(none)", entry.Content);
+                    resolved.Id, resolved.Category ?? "(none)", resolved.Content);
             }
 
             _logger.LogInformation("Background SaveMemory complete: {Count} new entries saved for content '{Content}'",
@@ -343,6 +347,45 @@ public sealed class MemoryTools
         {
             _logger.LogError(ex, "Background SaveMemory failed for content: {Content}", content);
         }
+    }
+
+    /// <summary>
+    /// Phase 3 self-repair: when the incoming entry sits under <c>feedback/*</c>, ask the
+    /// contradiction detector to resolve any conflicts with existing entries. Saves outside
+    /// that subtree skip the detector entirely, satisfying the design's narrow-scope rule
+    /// (no impact on saves outside <c>claim/capability/*</c> and <c>feedback/*</c>).
+    /// </summary>
+    private async Task<MemoryEntry> ApplyContradictionResolutionAsync(MemoryEntry entry)
+    {
+        if (_contradictionDetector is null) return entry;
+        if (!FeedbackMemoryCategories.IsFeedbackMemory(entry.Category)) return entry;
+
+        var resolution = await _contradictionDetector.ResolveAsync(entry, CancellationToken.None);
+        if (!resolution.HasContradiction) return entry;
+
+        if (resolution.IncomingSupersededBy is not null)
+        {
+            _logger.LogInformation(
+                "MemoryTools: incoming feedback {Id} marked superseded by user-correction {ExistingId}",
+                entry.Id, resolution.IncomingSupersededBy);
+            return entry with { SupersededBy = resolution.IncomingSupersededBy };
+        }
+
+        foreach (var loserId in resolution.ExistingIdsToSupersede)
+        {
+            var existing = await _memory.GetAsync(loserId);
+            if (existing is null || existing.SupersededBy is not null) continue;
+            await _memory.SaveAsync(existing with
+            {
+                SupersededBy = entry.Id,
+                UpdatedAt = DateTimeOffset.UtcNow
+            });
+            _logger.LogInformation(
+                "MemoryTools: marked {ExistingId} superseded by {WinnerId}",
+                loserId, entry.Id);
+        }
+
+        return entry;
     }
 
     /// <summary>
