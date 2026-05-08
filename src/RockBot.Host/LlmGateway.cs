@@ -38,26 +38,37 @@ internal sealed class LlmGateway : ILlmGateway, IDisposable
         _slots = new TierSlot[tierValues.Length];
         foreach (var tier in tierValues)
         {
-            var cap = tier switch
+            var (concurrent, pending) = tier switch
             {
-                ModelTier.Low => opts.LowMaxConcurrent,
-                ModelTier.High => opts.HighMaxConcurrent,
-                _ => opts.BalancedMaxConcurrent,
+                ModelTier.Low => (opts.LowMaxConcurrent, opts.LowMaxPending),
+                ModelTier.High => (opts.HighMaxConcurrent, opts.HighMaxPending),
+                _ => (opts.BalancedMaxConcurrent, opts.BalancedMaxPending),
             };
 
-            if (cap < 1)
+            if (concurrent < 1)
                 throw new ArgumentOutOfRangeException(
                     nameof(options),
-                    $"LlmGatewayOptions {tier}MaxConcurrent must be >= 1 (was {cap}).");
+                    $"LlmGatewayOptions {tier}MaxConcurrent must be >= 1 (was {concurrent}).");
 
-            _slots[(int)tier] = new TierSlot(cap);
+            if (pending < 0)
+                throw new ArgumentOutOfRangeException(
+                    nameof(options),
+                    $"LlmGatewayOptions {tier}MaxPending must be >= 0 (was {pending}).");
+
+            _slots[(int)tier] = new TierSlot(concurrent, pending);
         }
 
         _logger = logger;
 
         _logger.LogInformation(
-            "LlmGateway: per-tier concurrency caps Low={Low} Balanced={Balanced} High={High}",
-            opts.LowMaxConcurrent, opts.BalancedMaxConcurrent, opts.HighMaxConcurrent);
+            "LlmGateway: per-tier caps " +
+            "Low={LowConcurrent}+{LowPending} " +
+            "Balanced={BalancedConcurrent}+{BalancedPending} " +
+            "High={HighConcurrent}+{HighPending} " +
+            "(MaxConcurrent + MaxPending)",
+            opts.LowMaxConcurrent, opts.LowMaxPending,
+            opts.BalancedMaxConcurrent, opts.BalancedMaxPending,
+            opts.HighMaxConcurrent, opts.HighMaxPending);
     }
 
     /// <summary>
@@ -82,29 +93,50 @@ internal sealed class LlmGateway : ILlmGateway, IDisposable
         var slot = _slots[(int)tier];
         var tierTag = new KeyValuePair<string, object?>("rockbot.llm.tier", tier.ToString());
 
-        var slotWaitSw = Stopwatch.StartNew();
-        Interlocked.Increment(ref slot.Pending);
-        try
+        // Bounded queue: atomically reserve a "ticket" (counted against in-flight + queued).
+        // If the tier is at its cap, fail fast rather than queuing indefinitely.
+        var capacityCap = slot.MaxConcurrent + slot.MaxPending;
+        var active = Interlocked.Increment(ref slot.Active);
+        if (active > capacityCap)
         {
-            await slot.Semaphore.WaitAsync(cancellationToken).ConfigureAwait(false);
-        }
-        finally
-        {
-            Interlocked.Decrement(ref slot.Pending);
-            slotWaitSw.Stop();
-            HostDiagnostics.LlmGatewaySlotWaitDuration.Record(
-                slotWaitSw.Elapsed.TotalMilliseconds, tierTag);
+            Interlocked.Decrement(ref slot.Active);
+            HostDiagnostics.LlmGatewaySaturationRejections.Add(1, tierTag);
+            _logger.LogWarning(
+                "LlmGateway: tier {Tier} saturated (active={Active} > cap={Cap}); rejecting call",
+                tier, active, capacityCap);
+            throw new LlmGatewaySaturatedException(tier, capacityCap);
         }
 
-        Interlocked.Increment(ref slot.InFlight);
         try
         {
-            return await operation(cancellationToken).ConfigureAwait(false);
+            var slotWaitSw = Stopwatch.StartNew();
+            Interlocked.Increment(ref slot.Pending);
+            try
+            {
+                await slot.Semaphore.WaitAsync(cancellationToken).ConfigureAwait(false);
+            }
+            finally
+            {
+                Interlocked.Decrement(ref slot.Pending);
+                slotWaitSw.Stop();
+                HostDiagnostics.LlmGatewaySlotWaitDuration.Record(
+                    slotWaitSw.Elapsed.TotalMilliseconds, tierTag);
+            }
+
+            Interlocked.Increment(ref slot.InFlight);
+            try
+            {
+                return await operation(cancellationToken).ConfigureAwait(false);
+            }
+            finally
+            {
+                Interlocked.Decrement(ref slot.InFlight);
+                slot.Semaphore.Release();
+            }
         }
         finally
         {
-            Interlocked.Decrement(ref slot.InFlight);
-            slot.Semaphore.Release();
+            Interlocked.Decrement(ref slot.Active);
         }
     }
 
@@ -117,12 +149,23 @@ internal sealed class LlmGateway : ILlmGateway, IDisposable
     private sealed class TierSlot
     {
         public readonly SemaphoreSlim Semaphore;
+        public readonly int MaxConcurrent;
+        public readonly int MaxPending;
+
+        /// <summary>Callers waiting on the semaphore (have not yet acquired a slot).</summary>
         public int Pending;
+
+        /// <summary>Callers currently running their operation.</summary>
         public int InFlight;
 
-        public TierSlot(int maxConcurrent)
+        /// <summary>Total callers active on this tier (Pending + InFlight). Used for the bounded-queue cap.</summary>
+        public int Active;
+
+        public TierSlot(int maxConcurrent, int maxPending)
         {
             Semaphore = new SemaphoreSlim(maxConcurrent, maxConcurrent);
+            MaxConcurrent = maxConcurrent;
+            MaxPending = maxPending;
         }
     }
 }
