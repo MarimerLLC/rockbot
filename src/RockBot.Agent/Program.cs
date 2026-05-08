@@ -272,6 +272,7 @@ builder.Services.AddRockBotHost(agent =>
     agent.WithFeedback();
     agent.WithSkills();
     agent.WithKnowledgeGraph();
+    agent.WithFailureClusterStore();
     agent.WithDreaming();
     agent.AddToolHandler();
     agent.AddMcpToolProxy();
