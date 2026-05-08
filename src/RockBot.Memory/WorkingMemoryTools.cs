@@ -58,8 +58,13 @@ public sealed class WorkingMemoryTools
         _logger.LogInformation("Tool call: SaveToWorkingMemory(key={Key}, ttl={Ttl}min, category={Category})", fullKey, ttl_minutes, category);
         var ttl = ttl_minutes.HasValue ? TimeSpan.FromMinutes(ttl_minutes.Value) : (TimeSpan?)null;
         var tagList = ParseTags(tags);
-        await _workingMemory.SetAsync(fullKey, data, ttl, category, tagList);
-        return $"Saved to working memory under key '{fullKey}'.";
+
+        // Phase 2 soft gate — capability-claim language is flagged as an observation
+        // (write proceeds; tag added so the dream service can later evaluate promotion).
+        var (gatedTags, hint) = ObservationLanguageDetector.ApplySoftGate(data, tagList);
+
+        await _workingMemory.SetAsync(fullKey, data, ttl, category, gatedTags);
+        return $"Saved to working memory under key '{fullKey}'.{hint}";
     }
 
     [Description("Retrieve previously cached data from working memory by key. " +

@@ -30,7 +30,8 @@ public sealed class AgentContextBuilder(
     IEnumerable<IKnowledgeGraph> knowledgeGraphProviders,
     IOptions<KnowledgeGraphOptions> knowledgeGraphOptions,
     IEnumerable<IEmbeddingGenerator<string, Embedding<float>>> embeddingGenerators,
-    ILogger<AgentContextBuilder> logger)
+    ILogger<AgentContextBuilder> logger,
+    ICapabilityClaimVerifier? capabilityClaimVerifier = null)
 {
     private const int MaxLlmContextTurns = 20;
     private readonly IServiceSearchIndex? _serviceSearchIndex = serviceSearchIndexProviders.FirstOrDefault();
@@ -176,6 +177,15 @@ public sealed class AgentContextBuilder(
         if (recalled.Count == 0 && history.Count == 1)
             recalled = await longTermMemory.SearchAsync(new MemorySearchCriteria(MaxResults: 5));
 
+        // Phase 2 read-side falsification: capability-claim entries (entries with a
+        // VerifyShape under category claim/capability/*) get re-verified before injection.
+        // Predicate-succeeded claims are evicted from the store and dropped from injection;
+        // uncertain claims are kept but annotated so the LLM sees the unsettled status.
+        var uncertainClaimAnnotations = new Dictionary<string, string>(StringComparer.Ordinal);
+        recalled = await FilterCapabilityClaimsAsync(recalled, uncertainClaimAnnotations, ct);
+        episodes = await FilterCapabilityClaimsAsync(episodes, uncertainClaimAnnotations, ct);
+        identityEntries = await FilterCapabilityClaimsAsync(identityEntries, uncertainClaimAnnotations, ct);
+
         // Knowledge graph traverse: BFS from user-seed entities at MaxHops, then expand
         // a second time from top-ranked recalled memories at the (shorter) MemorySeedMaxHops.
         // User-seed triples fill the budget first; memory-seed triples fill any remaining
@@ -283,7 +293,7 @@ public sealed class AgentContextBuilder(
             if (newEntries.Count > 0)
             {
                 var lines = newEntries.Select(e =>
-                    $"- [{e.Id}] ({e.Category ?? "general"}, importance={e.ImportanceScore:F2}): {e.Content}");
+                    $"- [{e.Id}] ({e.Category ?? "general"}, importance={e.ImportanceScore:F2}): {e.Content}{ClaimAnnotation(uncertainClaimAnnotations, e.Id)}");
                 var recallContext =
                     "Recalled from long-term memory (relevant to this message):\n" +
                     string.Join("\n", lines);
@@ -305,7 +315,7 @@ public sealed class AgentContextBuilder(
             if (newEpisodes.Count > 0)
             {
                 var lines = newEpisodes.Select(e =>
-                    $"- [{e.Id}] (importance={e.ImportanceScore:F2}): {e.Content}");
+                    $"- [{e.Id}] (importance={e.ImportanceScore:F2}): {e.Content}{ClaimAnnotation(uncertainClaimAnnotations, e.Id)}");
                 var episodicContext =
                     "Relevant past experiences (episodic memory):\n" +
                     string.Join("\n", lines);
@@ -322,7 +332,7 @@ public sealed class AgentContextBuilder(
             {
                 var isPrimary = systemPromptOverride is null;
                 var lines = identityEntries.Select(e =>
-                    $"- ({e.Category ?? AgentIdentityCategories.SelfModel}): {e.Content}");
+                    $"- ({e.Category ?? AgentIdentityCategories.SelfModel}): {e.Content}{ClaimAnnotation(uncertainClaimAnnotations, e.Id)}");
 
                 string identityContext;
                 if (isPrimary)
@@ -620,4 +630,85 @@ public sealed class AgentContextBuilder(
 
         return chatMessages;
     }
+
+    /// <summary>
+    /// Phase 2 read-side falsification gate. For each entry under
+    /// <c>claim/capability/*</c> with a <see cref="VerifyShape"/>, runs the verifier
+    /// and (a) drops + evicts entries whose predicate succeeds, (b) keeps entries
+    /// whose predicate fails, (c) keeps entries whose verifier was uncertain and
+    /// records an annotation in <paramref name="uncertainAnnotations"/>. Non-claim
+    /// entries pass through unchanged. Returns the kept-for-injection list.
+    /// </summary>
+    private async Task<IReadOnlyList<MemoryEntry>> FilterCapabilityClaimsAsync(
+        IReadOnlyList<MemoryEntry> entries,
+        IDictionary<string, string> uncertainAnnotations,
+        CancellationToken ct)
+    {
+        if (capabilityClaimVerifier is null || entries.Count == 0)
+            return entries;
+
+        var keep = new List<MemoryEntry>(entries.Count);
+        foreach (var entry in entries)
+        {
+            if (entry.Verify is null || !CapabilityClaimCategories.IsCapabilityClaim(entry.Category))
+            {
+                keep.Add(entry);
+                continue;
+            }
+
+            VerifyResult result;
+            try
+            {
+                result = await capabilityClaimVerifier.VerifyAsync(entry.Verify, ct);
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                logger.LogWarning(ex,
+                    "Capability claim verifier threw for entry {Id} ({Category}); injecting with uncertainty annotation",
+                    entry.Id, entry.Category);
+                uncertainAnnotations[entry.Id] = "verifier-error";
+                keep.Add(entry);
+                continue;
+            }
+
+            switch (result.Outcome)
+            {
+                case VerifyOutcome.PredicateSucceeded:
+                    logger.LogInformation(
+                        "Capability claim {Id} ({Category}) falsified by verifier — evicting from long-term memory",
+                        entry.Id, entry.Category);
+                    try
+                    {
+                        await longTermMemory.DeleteAsync(entry.Id, ct);
+                    }
+                    catch (Exception delEx)
+                    {
+                        logger.LogWarning(delEx, "Failed to evict falsified claim {Id}", entry.Id);
+                    }
+                    // Skip — do not inject.
+                    break;
+
+                case VerifyOutcome.PredicateFailed:
+                    keep.Add(entry);
+                    break;
+
+                case VerifyOutcome.Uncertain:
+                default:
+                    uncertainAnnotations[entry.Id] = result.Detail ?? "uncertain";
+                    keep.Add(entry);
+                    break;
+            }
+        }
+
+        return keep;
+    }
+
+    private static string ClaimAnnotation(IReadOnlyDictionary<string, string> uncertain, string id) =>
+        uncertain.TryGetValue(id, out var detail)
+            ? $" [verifier-uncertain: {detail}]"
+            : string.Empty;
 }

@@ -120,10 +120,30 @@ public sealed class MemoryTools
         _logger.LogInformation("Tool call: SaveMemory (queuing background task) content={Content}, category={Category}",
             content, category);
 
-        _ = Task.Run(() => SaveMemoryBackgroundAsync(content, category, tags));
+        // Phase 2 soft gate — capability-claim language is flagged as an observation
+        // (write proceeds; the appended observation tag rides through to the persisted entry).
+        var (augmentedTags, hint) = ApplyObservationSoftGate(content, tags);
 
-        return Task.FromResult("Memory save queued.");
+        _ = Task.Run(() => SaveMemoryBackgroundAsync(content, category, augmentedTags));
+
+        return Task.FromResult($"Memory save queued.{hint}");
     }
+
+    private static (string? Tags, string Hint) ApplyObservationSoftGate(string content, string? tags)
+    {
+        var existing = ParseTagsList(tags);
+        var (gated, hint) = ObservationLanguageDetector.ApplySoftGate(content, existing);
+        if (gated is null || gated.Count == 0)
+            return (tags, hint);
+
+        // Re-serialise to the comma-separated string the background path expects.
+        return (string.Join(",", gated), hint);
+    }
+
+    private static IReadOnlyList<string>? ParseTagsList(string? tags) =>
+        string.IsNullOrWhiteSpace(tags)
+            ? null
+            : tags.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
 
     [Description("Search long-term memory for previously saved facts, preferences, or patterns. " +
                  "Use query for keyword search and category for scoping to a knowledge area. " +
