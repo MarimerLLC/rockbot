@@ -88,8 +88,13 @@ internal sealed class FileConversationLog : IConversationLog
         {
             if (File.Exists(_filePath))
             {
-                File.Delete(_filePath);
-                _logger.LogDebug("ConversationLog: log file cleared");
+                // Move-with-overwrite to a single rolling .bak file so the
+                // previous dream cycle's conversations stay recoverable until
+                // the next clear. Move is atomic (same directory) and removes
+                // the original file in one step.
+                var bakPath = _filePath + ".bak";
+                File.Move(_filePath, bakPath, overwrite: true);
+                _logger.LogDebug("ConversationLog: cleared (previous content moved to {BakPath})", bakPath);
             }
         }
         finally

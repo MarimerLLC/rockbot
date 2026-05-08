@@ -84,6 +84,60 @@ public class FileConversationLogTests
     }
 
     [TestMethod]
+    public async Task ClearAsync_MovesPreviousContentToBakFile()
+    {
+        var log = CreateLog();
+
+        await log.AppendAsync(MakeEntry("session-1", "user", "first cycle content"));
+        await log.AppendAsync(MakeEntry("session-1", "assistant", "first cycle reply"));
+
+        await log.ClearAsync();
+
+        var bakPath = Path.Combine(_tempDir, "conversation-log", "turns.jsonl.bak");
+        Assert.IsTrue(File.Exists(bakPath), "Clear should move the previous content to a .bak file");
+
+        var bakLines = await File.ReadAllLinesAsync(bakPath);
+        Assert.AreEqual(2, bakLines.Length, ".bak file preserves all entries from before the clear");
+        Assert.IsTrue(bakLines[0].Contains("first cycle content"));
+        Assert.IsTrue(bakLines[1].Contains("first cycle reply"));
+
+        // Original file is gone
+        Assert.IsFalse(File.Exists(Path.Combine(_tempDir, "conversation-log", "turns.jsonl")));
+    }
+
+    [TestMethod]
+    public async Task ClearAsync_OverwritesExistingBakFile()
+    {
+        var log = CreateLog();
+
+        // First cycle
+        await log.AppendAsync(MakeEntry("session-1", "user", "first cycle"));
+        await log.ClearAsync();
+
+        // Second cycle
+        await log.AppendAsync(MakeEntry("session-1", "user", "second cycle"));
+        await log.ClearAsync();
+
+        var bakPath = Path.Combine(_tempDir, "conversation-log", "turns.jsonl.bak");
+        var bakLines = await File.ReadAllLinesAsync(bakPath);
+        Assert.AreEqual(1, bakLines.Length, ".bak should contain only the most recent cycle's content");
+        Assert.IsTrue(bakLines[0].Contains("second cycle"),
+            ".bak should be overwritten with the latest cleared content");
+        Assert.IsFalse(bakLines[0].Contains("first cycle"));
+    }
+
+    [TestMethod]
+    public async Task ClearAsync_WhenNoFile_DoesNotCreateBak()
+    {
+        var log = CreateLog();
+        await log.ClearAsync();
+
+        var bakPath = Path.Combine(_tempDir, "conversation-log", "turns.jsonl.bak");
+        Assert.IsFalse(File.Exists(bakPath),
+            "Empty clear should not create a .bak file");
+    }
+
+    [TestMethod]
     public async Task AppendAsync_AfterClear_StartsFromEmpty()
     {
         var log = CreateLog();
