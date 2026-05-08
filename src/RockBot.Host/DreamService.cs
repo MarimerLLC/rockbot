@@ -39,6 +39,8 @@ internal sealed class DreamService : IHostedService, IDisposable
     private readonly DreamOptions _options;
     private readonly AgentProfileOptions _profileOptions;
     private readonly ILogger<DreamService> _logger;
+    private readonly RockBot.Observation.IObservationPipelineCoordinator? _observationCoordinator;
+    private readonly ConversationLogTranscriptAdapter? _observationTranscriptAdapter;
     private Timer? _timer;
     private CronExpression? _cron;
     private string? _dreamDirective;
@@ -75,7 +77,9 @@ internal sealed class DreamService : IHostedService, IDisposable
         IToolCallLog? toolCallLog = null,
         IKnowledgeGraph? knowledgeGraph = null,
         IWispExecutionLog? wispExecutionLog = null,
-        IWorkingMemory? workingMemory = null)
+        IWorkingMemory? workingMemory = null,
+        RockBot.Observation.IObservationPipelineCoordinator? observationCoordinator = null,
+        ConversationLogTranscriptAdapter? observationTranscriptAdapter = null)
     {
         _memory = memory;
         _skillStore = skillStores.FirstOrDefault();
@@ -95,6 +99,8 @@ internal sealed class DreamService : IHostedService, IDisposable
         _options = options.Value;
         _profileOptions = profileOptions.Value;
         _logger = logger;
+        _observationCoordinator = observationCoordinator;
+        _observationTranscriptAdapter = observationTranscriptAdapter;
     }
 
     public Task StartAsync(CancellationToken cancellationToken)
@@ -524,6 +530,12 @@ internal sealed class DreamService : IHostedService, IDisposable
             ct.ThrowIfCancellationRequested(); await RunGraphConsolidationPassAsync(ct);
 
             ct.ThrowIfCancellationRequested(); await RunMemoryMiningPassAsync(ct);
+
+            // Observation framework reads the same conversation log used by
+            // memory mining and preference inference, so it must run before
+            // RunPreferenceInferencePassAsync (which clears the log in its
+            // finally block).
+            ct.ThrowIfCancellationRequested(); await RunObservationPassAsync(ct);
 
             ct.ThrowIfCancellationRequested(); await RunPreferenceInferencePassAsync(ct);
 
@@ -2151,6 +2163,78 @@ internal sealed class DreamService : IHostedService, IDisposable
         {
             _logger.LogWarning(ex, "DreamService: failed to load subagent whiteboard entries for memory mining");
         }
+    }
+
+    /// <summary>
+    /// Runs the observation framework pipeline (theory-of-self, theory-of-user,
+    /// plus any other registered targets) against the conversation log.
+    /// Promoted theories are published to long-term memory so they appear
+    /// in <c>SearchMemory</c>; markdown copies are written to the agent
+    /// profile's <c>observation/</c> subdirectory for human inspection.
+    /// </summary>
+    /// <remarks>
+    /// Skipped silently when <see cref="DreamOptions.ObservationEnabled"/>
+    /// is false or when the framework's services are not registered (no
+    /// targets in DI, no coordinator available). Per-target failures are
+    /// logged inside the coordinator and do not block other targets.
+    /// MUST run before <see cref="RunPreferenceInferencePassAsync"/> because
+    /// pref inference clears the conversation log in its finally block.
+    /// </remarks>
+    private async Task RunObservationPassAsync(CancellationToken ct)
+    {
+        if (!_options.ObservationEnabled) return;
+        if (_observationCoordinator is null || _observationTranscriptAdapter is null)
+        {
+            _logger.LogDebug(
+                "DreamService: observation pass skipped — coordinator or adapter not registered");
+            return;
+        }
+
+        await RunPassAsync("observation", async () =>
+        {
+            var transcripts = await _observationTranscriptAdapter
+                .GetTranscriptAsync(ct).ConfigureAwait(false);
+
+            if (transcripts.Count == 0)
+            {
+                _logger.LogDebug(
+                    "DreamService: observation pass — no transcripts in this dream window");
+                return;
+            }
+
+            var results = await _observationCoordinator
+                .RunAllAsync(transcripts, ct).ConfigureAwait(false);
+
+            foreach (var r in results)
+            {
+                if (r.Failure is not null)
+                {
+                    _logger.LogWarning(
+                        "DreamService: observation target {Target} failed: {Message}",
+                        r.TargetName, r.Failure.Message);
+                    continue;
+                }
+
+                _logger.LogInformation(
+                    "DreamService: observation target {Target} — " +
+                    "phase1: {Proposed} proposed/{Grounded} grounded → " +
+                    "{NewCands} new candidate(s), {Matched} matched; " +
+                    "phase2: {Eligible} evaluated, {Promoted} promoted, " +
+                    "{Refined} refined, {Rejected} rejected, " +
+                    "{CandsAged} candidates aged out, {ThriesAged} theories aged out",
+                    r.TargetName,
+                    r.ExtractionResult?.ProposalsReceived ?? 0,
+                    r.ExtractionResult?.ProposalsGrounded ?? 0,
+                    r.ExtractionResult?.NewCandidatesCreated ?? 0,
+                    r.ExtractionResult?.MatchedExistingCandidates ?? 0,
+                    r.EvaluationResult?.CandidatesEvaluated ?? 0,
+                    r.EvaluationResult?.CandidatesPromoted ?? 0,
+                    r.EvaluationResult?.CandidatesRefined ?? 0,
+                    r.EvaluationResult?.CandidatesRejected ?? 0,
+                    r.EvaluationResult?.CandidatesAged ?? 0,
+                    r.EvaluationResult?.TheoriesAged ?? 0);
+            }
+        });
     }
 
     /// <summary>
