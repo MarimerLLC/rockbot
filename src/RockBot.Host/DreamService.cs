@@ -2182,11 +2182,16 @@ internal sealed class DreamService : IHostedService, IDisposable
     /// </remarks>
     private async Task RunObservationPassAsync(CancellationToken ct)
     {
-        if (!_options.ObservationEnabled) return;
+        if (!_options.ObservationEnabled)
+        {
+            _logger.LogInformation("DreamService: observation pass disabled by configuration");
+            return;
+        }
         if (_observationCoordinator is null || _observationTranscriptAdapter is null)
         {
-            _logger.LogDebug(
-                "DreamService: observation pass skipped — coordinator or adapter not registered");
+            _logger.LogInformation(
+                "DreamService: observation pass skipped — coordinator={Coordinator}, adapter={Adapter}",
+                _observationCoordinator is not null, _observationTranscriptAdapter is not null);
             return;
         }
 
@@ -2195,13 +2200,13 @@ internal sealed class DreamService : IHostedService, IDisposable
             var transcripts = await _observationTranscriptAdapter
                 .GetTranscriptAsync(ct).ConfigureAwait(false);
 
-            if (transcripts.Count == 0)
-            {
-                _logger.LogDebug(
-                    "DreamService: observation pass — no transcripts in this dream window");
-                return;
-            }
+            _logger.LogInformation(
+                "DreamService: observation pass starting — {TurnCount} transcript turns loaded",
+                transcripts.Count);
 
+            // Run the coordinator even when transcripts.Count == 0: the
+            // evaluation phase still needs to age out stale candidates/theories
+            // and regenerate the markdown so the operator sees current state.
             var results = await _observationCoordinator
                 .RunAllAsync(transcripts, ct).ConfigureAwait(false);
 
