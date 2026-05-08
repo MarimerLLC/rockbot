@@ -308,6 +308,13 @@ public sealed partial class AgentLoopRunner(
         // Inject reasoning scaffolding so the model knows its iteration budget.
         InjectReasoningScaffolding(chatMessages);
 
+        // Per-run task list (issue #336): in-memory plan that survives context trimming
+        // because RefreshTaskListContext rebuilds the system message from this state on
+        // each iteration. Built fresh per RunAsync — not persisted, not shared.
+        var taskList = new AgentTaskList();
+        var taskListTools = new AgentTaskListTools(taskList, logger);
+        AppendTaskListTools(chatOptions, taskListTools);
+
         var originalUserRequest = ExtractOriginalUserRequest(chatMessages);
         var maxReprompts = modelBehavior.MaxCompletionRepromptsOverride
             ?? hostOptions.Value.MaxCompletionReprompts;
@@ -318,9 +325,18 @@ public sealed partial class AgentLoopRunner(
             var result = modelBehavior.UseTextBasedToolCalling
                 ? await RunTextBasedLoopAsync(
                     chatMessages, chatOptions, sessionId, firstResponse, tier,
-                    onPreToolCall, onProgress, onToolTimeout, cancellationToken)
+                    onPreToolCall, onProgress, onToolTimeout, taskList, cancellationToken)
                 : await RunNativeLoopAsync(
-                    chatMessages, chatOptions, firstResponse, tier, sessionId, cancellationToken);
+                    chatMessages, chatOptions, firstResponse, tier, sessionId, taskList, cancellationToken);
+
+            if (taskList.HasUnfinishedItems)
+            {
+                logger.LogWarning(
+                    "Task list ended with unfinished items: {Items}",
+                    string.Join("; ", taskList.Snapshot()
+                        .Where(t => !string.Equals(t.Status, AgentTaskList.StatusCompleted, StringComparison.OrdinalIgnoreCase))
+                        .Select(t => $"{t.Id}=[{t.Status}] {t.Description}")));
+            }
 
             // Clear first response after the first iteration — it's already been consumed.
             firstResponse = null;
@@ -441,7 +457,7 @@ public sealed partial class AgentLoopRunner(
                         chatMessages, chatOptions, sessionId, result.Response,
                         originalUserRequest, tier, complexityScore,
                         onPreToolCall, onProgress, onToolTimeout, onStageProgress,
-                        cancellationToken);
+                        taskList, cancellationToken);
 
                     return followUpResult ?? result.Response;
                 }
@@ -485,7 +501,7 @@ public sealed partial class AgentLoopRunner(
                         chatMessages, chatOptions, sessionId, result.Response,
                         originalUserRequest, tier, complexityScore,
                         onPreToolCall, onProgress, onToolTimeout, onStageProgress,
-                        cancellationToken);
+                        taskList, cancellationToken);
 
                     return followUpResult ?? result.Response;
                 }
@@ -539,11 +555,19 @@ public sealed partial class AgentLoopRunner(
         ChatResponse? firstResponse,
         ModelTier tier,
         string? sessionId,
+        AgentTaskList taskList,
         CancellationToken cancellationToken)
     {
         logger.LogInformation(
             "Tool execution path: NATIVE (M.E.AI FunctionInvokingChatClient) — {MessageCount} messages in context",
             chatMessages.Count);
+
+        // Refresh the task-list system message from the in-memory state. The native
+        // path does not expose a per-iteration hook (FunctionInvokingChatClient owns
+        // the inner loop), so this is a once-per-request snapshot. Within the inner
+        // loop the model still sees task_create/task_update tool results as it goes —
+        // the system message just doesn't track those updates until the next request.
+        RefreshTaskListContext(chatMessages, taskList);
 
         // If there's a pre-fetched first response with tool calls, add it to history
         // and let the middleware continue from there.
@@ -650,6 +674,73 @@ public sealed partial class AgentLoopRunner(
         chatMessages.Insert(insertAt, new ChatMessage(ChatRole.System, text));
     }
 
+    private const string TaskListMarker = "Current task list:";
+
+    /// <summary>
+    /// Adds the per-run task-list tools (<c>task_create</c>, <c>task_update</c>) to
+    /// <paramref name="chatOptions"/>. Initialises <see cref="ChatOptions.Tools"/> if null.
+    /// </summary>
+    private static void AppendTaskListTools(ChatOptions chatOptions, AgentTaskListTools taskListTools)
+    {
+        chatOptions.Tools ??= [];
+        foreach (var tool in taskListTools.Tools)
+            chatOptions.Tools.Add(tool);
+    }
+
+    /// <summary>
+    /// Re-renders the per-run task list (<paramref name="taskList"/>) into a system
+    /// message inside <paramref name="chatMessages"/>. Idempotent: replaces an existing
+    /// task-list system message if present, otherwise inserts one just before the final
+    /// user message for recency. Removes the message entirely when the list is empty.
+    /// Issue #336: the rendering is rebuilt from in-memory state on every call, so the
+    /// current plan is always visible to the model even after older task_create /
+    /// task_update tool results have been trimmed by <see cref="TrimLargeToolResults"/>.
+    /// </summary>
+    private static void RefreshTaskListContext(List<ChatMessage> chatMessages, AgentTaskList taskList)
+    {
+        var existingIndex = -1;
+        for (var i = 0; i < chatMessages.Count; i++)
+        {
+            if (chatMessages[i].Role == ChatRole.System &&
+                chatMessages[i].Text?.StartsWith(TaskListMarker) == true)
+            {
+                existingIndex = i;
+                break;
+            }
+        }
+
+        if (taskList.IsEmpty)
+        {
+            if (existingIndex >= 0)
+                chatMessages.RemoveAt(existingIndex);
+            return;
+        }
+
+        var sb = new StringBuilder();
+        sb.AppendLine(TaskListMarker);
+        foreach (var item in taskList.Snapshot())
+            sb.AppendLine($"  {item.Id}. [{item.Status}] {item.Description}");
+        var text = sb.ToString().TrimEnd();
+
+        var msg = new ChatMessage(ChatRole.System, text);
+        if (existingIndex >= 0)
+        {
+            chatMessages[existingIndex] = msg;
+            return;
+        }
+
+        var insertAt = chatMessages.Count;
+        for (var i = chatMessages.Count - 1; i >= 0; i--)
+        {
+            if (chatMessages[i].Role == ChatRole.User)
+            {
+                insertAt = i;
+                break;
+            }
+        }
+        chatMessages.Insert(insertAt, msg);
+    }
+
     /// <summary>
     /// Text-based tool-calling loop for models that do not support native structured
     /// tool calling (e.g. DeepSeek). Parses tool calls from free text and manually
@@ -664,6 +755,7 @@ public sealed partial class AgentLoopRunner(
         Func<string, CancellationToken, Task>? onPreToolCall,
         Func<string, CancellationToken, Task>? onProgress,
         Func<string, CancellationToken, Task>? onToolTimeout,
+        AgentTaskList taskList,
         CancellationToken cancellationToken)
     {
         logger.LogInformation(
@@ -698,6 +790,11 @@ public sealed partial class AgentLoopRunner(
             }
             else
             {
+                // Refresh the task-list system message from the in-memory state so the
+                // current plan is always visible to the model, even after older tool
+                // results that recorded earlier task_update calls have been trimmed.
+                RefreshTaskListContext(chatMessages, taskList);
+
                 if (_knownContextLimit is int preLimit)
                     TrimLargeToolResults(chatMessages, preLimit);
 
@@ -1615,6 +1712,7 @@ public sealed partial class AgentLoopRunner(
         Func<string, CancellationToken, Task>? onProgress,
         Func<string, CancellationToken, Task>? onToolTimeout,
         Func<string, CancellationToken, Task>? onStageProgress,
+        AgentTaskList taskList,
         CancellationToken cancellationToken)
     {
         var maxFollowUps = modelBehavior.MaxFollowUpPassesOverride
@@ -1679,9 +1777,9 @@ public sealed partial class AgentLoopRunner(
         var result = modelBehavior.UseTextBasedToolCalling
             ? await RunTextBasedLoopAsync(
                 chatMessages, chatOptions, sessionId, null, tier,
-                onPreToolCall, onProgress, onToolTimeout, cancellationToken)
+                onPreToolCall, onProgress, onToolTimeout, taskList, cancellationToken)
             : await RunNativeLoopAsync(
-                chatMessages, chatOptions, null, tier, sessionId, cancellationToken);
+                chatMessages, chatOptions, null, tier, sessionId, taskList, cancellationToken);
 
         // Native path: FunctionCallContent in response messages.
         // Text-based path: tool results appear as "[Tool result for ...]" user messages.
