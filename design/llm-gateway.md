@@ -14,10 +14,9 @@ The trigger for this design is the [observation framework](observation-framework
 
 - Single chokepoint for every LLM call, regardless of caller.
 - Per-tier concurrency caps (Low / Balanced / High treated independently).
-- Honor `Retry-After` on 429s, with exponential backoff as fallback.
 - Cancellation propagates end-to-end: pending and in-flight calls abort when their `ct` fires.
 - User-facing calls effectively preempt background calls without a priority queue.
-- Centralized observability: token counts, latency, retry counts, queue depth, cost.
+- Centralized observability: queue depth, slot wait time, in-flight count.
 - Bounded queue depth: the system fails fast under sustained rate limiting rather than piling up indefinitely.
 
 ## Non-goals
@@ -26,10 +25,11 @@ The trigger for this design is the [observation framework](observation-framework
 - Replacing the SDK. The gateway wraps the SDK; it does not reimplement provider clients.
 - Per-call routing across providers. Tier selection remains the caller's concern; the gateway only mediates calls within whatever tier the caller chose.
 - Solving observation-framework parallelism by itself. The gateway is a prerequisite, not a replacement.
+- **Owning rate-limit retry.** The OpenAI SDK's `ClientRetryPolicy` already does this well — `Retry-After` honoring, exponential backoff with jitter, and retries for 429s, 5xx, and transient network errors. Reimplementing it in the gateway was attempted in an earlier draft of this design and rejected: the gateway version was less mature (no jitter, no 5xx, no transient-error coverage) and added code without meaningful benefit beyond the metrics. The SDK retry stays enabled. See "Retry policy" below for the consequences.
 
 ## Architecture
 
-Every LLM call passes through the gateway. The gateway holds per-tier `SemaphoreSlim` instances and applies retry middleware on the way through.
+Every LLM call passes through the gateway. The gateway holds per-tier `SemaphoreSlim` instances; rate-limit retry happens *inside* the slot, in the SDK pipeline.
 
 ```
    Caller (handler / dream phase / subagent)
@@ -40,21 +40,20 @@ Every LLM call passes through the gateway. The gateway holds per-tier `Semaphore
    │                                                 │
    │   await _tierSemaphores[tier].WaitAsync(ct);    │
    │   try {                                         │
-   │     // retry middleware:                        │
-   │     //   on 429 -> honor Retry-After or         │
-   │     //   exponential backoff (ct-aware sleep)   │
-   │     //   max attempts capped                    │
-   │     // metrics: tokens, latency, retries, $$    │
+   │     // metrics: slot wait, in-flight, queue     │
+   │     // depth, latency                           │
+   │     // SDK pipeline handles 429/5xx retry       │
+   │     // internally; ct propagates                │
    │   } finally {                                   │
    │     _tierSemaphores[tier].Release();            │
    │   }                                             │
    └────────────────────┬────────────────────────────┘
                         │
                         ▼
-                Provider SDK (with built-in retry disabled)
+                Provider SDK (with built-in retry policy)
 ```
 
-The gateway is the only direct consumer of the provider SDK. `ILlmClient` implementations that bypass it must be removed.
+The gateway is the only direct consumer of the provider SDK. `ILlmClient` implementations that bypass it must be removed. The slot is held during any SDK-internal retry waits — releasing the slot during a retry would not help, since rate limits are per-tier so any other call in the same tier would hit the same limit.
 
 ## Cancellation, not priority lanes
 
@@ -72,17 +71,22 @@ The one behavioral difference: priority lanes would let dream continue running i
 
 ## Retry policy
 
-On 429:
+The OpenAI SDK's `ClientRetryPolicy` (the default in `System.ClientModel`) owns retry. It already provides:
 
-1. If the response carries a `Retry-After` header (Anthropic and OpenAI both do), wait that long. The wait is `ct`-aware (`Task.Delay(retryAfter, ct)`).
-2. If no `Retry-After`, fall back to exponential backoff: 1s, 2s, 4s, 8s, capped at some configurable maximum (16s suggested).
-3. After a configurable maximum number of retries (default 5), surface the failure to the caller. The caller decides what to do.
+- `Retry-After` header honoring on 429 and 503 responses
+- Exponential backoff with jitter when no header is supplied
+- Retries on 408, 429, 500, 502, 503, 504, and transient network errors
+- Configurable max attempts (default 3)
+- Cancellation propagation through the pipeline
 
-The slot is held during the retry wait. Releasing the slot during the wait does not help: rate limits are per-tier, so any other call in that tier will hit the same limit. Holding the slot also keeps priority semantics simple: a retried call does not jump ahead of a newly-arrived call (or vice versa) because there is no priority to think about.
+This is more thorough than what the gateway could reasonably reimplement. The gateway therefore does *not* wrap retry. The SDK pipeline runs retry inside the gateway slot, which means:
 
-The provider SDK's built-in retry MUST be disabled. Gateway and SDK both retrying causes them to fight: the SDK retries silently, gateway sees success, then the same call hits the limit again. The gateway owns retry; the SDK does not.
+- Retry waits hold the slot. As discussed above, releasing during a retry wait would not help under per-tier rate limiting.
+- Cancellation reaches retry waits through the standard `ct` propagation. The gateway does not need its own retry-cancellation logic.
 
-Other error classes (5xx, network errors) get their own short retry policy (1 retry with brief backoff) for transient failures, but are not the primary concern. 401/403 and 4xx-other are non-retryable and surface immediately.
+**Implication for cross-provider observability:** the gateway does not see individual retry events — they happen inside the SDK pipeline, below the gateway's instrumentation. If retry counts and retry-after sources become important enough to centralize, they should be added by hooking the SDK pipeline (a `PipelinePolicy`-derived listener that forwards retry telemetry into `HostDiagnostics`), not by reimplementing retry above the SDK. This is recorded as a possible future enhancement.
+
+**Non-OpenAI providers.** `CopilotChatClient` has its own retry inside the client (configured via `LlmTierConfig.MaxRetries`). Other future providers will likewise own their own retry. The gateway is provider-agnostic and remains so.
 
 ## Cancellation discipline
 
@@ -135,15 +139,16 @@ Surface via the existing telemetry pipeline (logs at minimum; metrics endpoint i
 
 ## Implementation phases
 
-1. **Wrap, don't replace.** The gateway is a thin layer in front of `ILlmClient` (or whatever the existing abstraction is). Existing call sites already go through that abstraction; the gateway is plumbed in behind it without touching call sites.
-2. **Disable SDK retry.** Configure the underlying SDK clients to not retry. Confirm via test.
-3. **Add per-tier semaphores + retry middleware.** Honor `Retry-After`, exponential fallback, ct-aware sleeps.
-4. **Audit ct propagation.** Walk every existing LLM call site, confirm ct flows. Fix any that pass `None`.
-5. **Add metrics.** Wire tokens / latency / retries through the existing telemetry pipeline.
-6. **Add bounded queue.** Start with fail-fast.
-7. **Test cancellation contract.** Per-tier test that asserts cancellation aborts pending and in-flight calls promptly.
+1. **Wrap, don't replace.** The gateway is a thin layer in front of `ILlmClient` (or whatever the existing abstraction is). Existing call sites already go through that abstraction; the gateway is plumbed in behind it without touching call sites. ✅ Landed in #355.
+2. **Add per-tier semaphores.** Done as part of phase 1 — `LlmGateway` with per-tier `SemaphoreSlim` and configurable caps. ✅
+3. **Add gateway metrics.** Slot wait time, in-flight count, queue depth. Slot-wait metric landed in phase 1. ✅
+4. **Add bounded queue.** `MaxPendingPerTier` with fail-fast. (Phase 3.)
+5. **Audit ct propagation.** Walk every existing LLM call site, confirm `ct` flows. Fix any that pass `default`/`None`. Make `ct` mandatory at the `ILlmClient` boundary so future violations cannot be introduced. (Phase 4.)
+6. **Test cancellation contract.** Per-tier test that asserts cancellation aborts pending and in-flight calls promptly. Pending-side covered in phase 1; in-flight side completed in phase 4 alongside the audit.
 
-Step 4 is the one that has follow-on work elsewhere in the codebase. Each violation is small but they have to all be fixed before the cancellation guarantee holds.
+A previously-planned phase to wrap rate-limit retry inside the gateway was attempted and reverted (see "Retry policy" and "Non-goals"). The OpenAI SDK's retry is more capable than what the gateway would build; we keep it enabled and let it run inside the gateway slot.
+
+Phase 5 is the one that has follow-on work elsewhere in the codebase. Each violation is small but they have to all be fixed before the cancellation guarantee holds.
 
 ## Open questions
 
@@ -151,4 +156,4 @@ Step 4 is the one that has follow-on work elsewhere in the codebase. Each violat
 - **Cross-process coordination.** If multiple agent processes run against the same provider account, per-process caps undercount real concurrency. Out of scope for v1, but worth noting as a future concern (Redis-backed gateway? provider-side rate-limit tracking?).
 - **Streaming responses.** Do any current call sites use streaming? If so, "in-flight" measurement and cancellation behave differently. Confirm during the audit pass.
 - **Subagent message-bus boundary.** Subagent calls are dispatched via `IMessagePublisher`, which means `ct` does not naturally cross the bus. The receiving handler establishes a fresh `ct` from its own work-serializer slot, which is the right behavior — but worth confirming that no LLM calls inside a subagent handler accidentally fall back to `None` because the original ct didn't survive the boundary.
-- **Retry budget per call vs. per cycle.** Should there be a global budget on retries-per-dream-cycle so that a degraded provider doesn't burn the whole cycle on a single phase's retries? Probably premature, but record as a thought.
+- **Pipeline-level retry telemetry.** The SDK does retries inside the gateway slot but doesn't surface retry events to our diagnostics. If centralized retry visibility becomes important, add a `PipelinePolicy`-derived listener that forwards retry telemetry into `HostDiagnostics`. Probably premature; record as a thought.
