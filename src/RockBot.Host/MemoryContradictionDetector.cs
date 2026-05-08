@@ -49,7 +49,7 @@ internal sealed partial class MemoryContradictionDetector : IMemoryContradiction
         "please", "should", "would", "could", "may", "might", "will", "shall"
     };
 
-    private const float MinFeedbackOverlap = 0.4f;
+    private const float MinFeedbackOverlap = 0.3f;
 
     private readonly ILongTermMemory _memory;
     private readonly ILogger<MemoryContradictionDetector> _logger;
@@ -241,10 +241,21 @@ internal sealed partial class MemoryContradictionDetector : IMemoryContradiction
             var token = m.Value;
             if (token.Length < 3) continue;
             if (Stopwords.Contains(token)) continue;
-            tokens.Add(token);
+            tokens.Add(StripPluralS(token));
         }
         return tokens;
     }
+
+    /// <summary>
+    /// Strips a trailing 's' from tokens of length 4+ so that singular/plural pairs
+    /// (report/reports, list/lists) collapse to the same key. Naive but adequate for the
+    /// rule-subject overlap heuristic — false-merges (e.g. "process" → "proces") don't
+    /// hurt because the comparison is symmetric, and over-merging only increases recall.
+    /// </summary>
+    private static string StripPluralS(string token) =>
+        token.Length >= 4 && (token[^1] == 's' || token[^1] == 'S')
+            ? token[..^1]
+            : token;
 
     private static float JaccardOverlap(HashSet<string> a, HashSet<string> b)
     {

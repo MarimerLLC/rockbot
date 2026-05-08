@@ -135,6 +135,31 @@ public class MemoryContradictionDetectorTests
     }
 
     [TestMethod]
+    public async Task ResolveAsync_Feedback_RealisticPhrasing_PluralAndTrailingClause_StillMatches()
+    {
+        // Mirrors the real prompt that previously slipped past the threshold:
+        // "report" vs "reports" plus a trailing clause introducing extra tokens.
+        // After plural-s stemming and the 0.3 Jaccard threshold, this must contradict.
+        var memory = new RecordingMemory();
+        memory.Existing.Add(NewEntry(
+            category: "feedback/from-agent/status-reports",
+            content: "Always include a TL;DR section at the top of every status report I send",
+            id: "old-1"));
+
+        var detector = NewDetector(memory);
+        var incoming = NewEntry(
+            category: "feedback/from-agent/status-reports",
+            content: "Never include a TL;DR section in status reports — they should be concise without one",
+            id: "new-1");
+
+        var resolution = await detector.ResolveAsync(incoming);
+
+        Assert.IsTrue(resolution.HasContradiction,
+            "Singular/plural mismatch and trailing clauses must not break realistic supersession.");
+        CollectionAssert.AreEqual(new[] { "old-1" }, resolution.ExistingIdsToSupersede.ToArray());
+    }
+
+    [TestMethod]
     public async Task ResolveAsync_Feedback_OppositeDirective_NewerWins()
     {
         var memory = new RecordingMemory();
