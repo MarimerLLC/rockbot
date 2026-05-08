@@ -220,9 +220,12 @@ The best RockBot agents do not just accumulate random memories. They deliberatel
 
 These artifacts are produced and maintained automatically by the **observation framework**, which runs as a phase of the dream cycle. Each dream, the framework reads recent conversation history, extracts evidence-grounded observations using a cheap LLM tier, clusters them into candidates, and promotes candidates that have been reinforced across multiple distinct conversations into the theory documents. Stale entries that are not reinforced age out.
 
-The output is a deterministically regenerated `theory-of-self.md` and `theory-of-user.md` in the agent profile, with structured entries showing reinforcement counts, dates, and representative quotes. They are loaded into agent context like any other profile file.
+The output is twofold:
 
-You do not need to teach the agent to maintain these via prompts — the framework does it. Any existing `theory-of-self.md` or `theory-of-user.md` you seeded by hand or via earlier prompt patterns will be overwritten on the first dream after the framework is enabled, since the framework regenerates them deterministically from its own JSON state. (If your deployment backs up the agent profile, the prior content is preserved there.) Until the framework accumulates enough observations to promote any theories, the files will simply show in-progress candidate observations.
+1. **Promoted theories are published as long-term memory entries** under category `observation/theory/{target-name}` with importance 0.7 and tags `observation, theory-of-self` (or `theory-of-user`). They participate in the hybrid-search index, so the agent finds them via `SearchMemory` like any other memory. This is the v1 closed loop — searchability without forced context injection.
+2. **Markdown copies** of the state — `theory-of-self.md` and `theory-of-user.md` under `{agent-profile}/observation/` — are regenerated each cycle for human inspection. These are NOT auto-injected into the agent's system prompt; you read them yourself to see what the framework is accumulating.
+
+Any existing `theory-of-self.md` or `theory-of-user.md` you seeded by hand at the agent profile root is left untouched by the framework, which writes only under `observation/`. Until the framework accumulates enough observations to promote any theories, the regenerated markdown will show in-progress candidate observations only and no memory entries will be published.
 
 For the design and configuration knobs (promotion thresholds, aging windows, snapshot retention), see [`design/observation-framework.md`](https://github.com/MarimerLLC/rockbot/blob/main/design/observation-framework.md) in the repo.
 

@@ -12,7 +12,7 @@ This design **supersedes** the portable-prompt approach in the getting-started d
 
 ### Research-first framing
 
-This is a science experiment: it has no *closed loop yet*. The artifacts it produces (`theory-of-self.md`, `theory-of-user.md`) are loaded into agent context the same way memory and skills are, but nothing actively drives behaviour from them — no evaluator queries them, no rule promotion, no self-monitoring loop. v1 ships as research instrumentation: build the data layer cleanly so months of accumulated observations are available, then decide what closed loop (if any) earns its complexity. See "Closed loops (future)" below.
+This is a science experiment: it has no *closed loop yet* in the sense of pushing structured theories into agent reasoning, but theories ARE published to the host's long-term memory store so they participate in `SearchMemory` and the hybrid-search index. The agent will surface a theory only when its query happens to match — there is no always-loaded injection into the system prompt, no evaluator that interrogates them, no rule promotion. Markdown copies of the state are also written to `{agentProfile}/observation/` for human inspection. Operators read those directly; the agent reaches theories only through normal memory recall. This deliberate scope keeps theories observable (and hybrid-searchable) without forcing them into every turn, so we can evaluate the data layer's quality before committing to any tighter closed loop. See "Closed loops (future)" below.
 
 This framing affects design priorities: data integrity beats narrative readability. Better to have rigorous, evidence-grounded structured observations than a flowing self-portrait that may be partly confabulated. Synthesis can be layered on later if a closed loop demands it.
 
@@ -34,23 +34,26 @@ This framing affects design priorities: data integrity beats narrative readabili
 - Self-editing of always-loaded directives. The framework owns regeneration; the agent does not edit its own theory files.
 - Solving broader dream-cycle parallelism. That is a separate effort. The new phase introduced here parallelizes *within itself*.
 - **Narrative synthesis in v1.** The existing getting-started prompt asked the agent to write its theories in narrative form ("themes you see recurring," "tensions or contradictions you've noticed"). v1 explicitly rejects this in favor of structured, evidence-grounded observations. Synthesis-on-top is a future possibility (see "Closed loops") but not part of v1.
-- **Closed-loop behaviour change.** v1 is research instrumentation. The regenerated markdown is loaded into agent context the same way memory and skills are, and that's the only path by which it can influence behaviour. No evaluators, rules, or self-monitoring loops are wired up in v1.
+- **Always-loaded context injection.** v1 does NOT auto-load the regenerated theory markdown into the agent's system prompt. Theories surface to the agent only when its own queries happen to match them via `SearchMemory` / hybrid search.
+- **Evaluators, rules, self-monitoring loops.** No subsystems consume the theory data programmatically. v1 publishes for visibility; future work decides what to do with it.
 
 ## Closed loops (future)
 
-v1 has no active closed loop — the regenerated markdown is loaded into agent context like any other memory/skills file, and that's the entire mechanism by which it can affect behaviour. This section records the closed-loop options under consideration so future work has a roadmap.
+v1 ships with one minimal closed loop: each promoted theory is published to the host's `ILongTermMemory` so the agent's existing `SearchMemory` tool and hybrid-search index can surface it on relevance. There is no always-loaded injection, no programmatic consumer of the data, and no rule promotion — theories only influence behaviour to the extent that the agent's own queries happen to match them. This section records the additional closed-loop options under consideration for later phases.
 
-**Loop A — context-only (v1).** Markdown is loaded into context every turn. If context says "user prefers terse responses," the agent might do that. Implicit, easy to lose in a long context, zero new mechanism. This is what v1 ships.
+**Loop A — load markdown into context.** Inject the regenerated theory markdown into the agent's system prompt every turn (similar to how soul/directives/style are injected today). Theories would be visible every turn rather than only on relevance match. Costs: token budget per turn, requires plumbing into the profile loader.
 
-**Loop B — targeted feed into specific subsystems.** Theories become structured input to specific decision points where they could plausibly help. Examples:
+**Loop B — publish theories as searchable memory entries (✅ shipped in v1).** Each promoted theory is written via `ILongTermMemory.SaveAsync` with category `observation/theory/{target.Name}`, importance 0.7, tagged with `observation` and the target name. The framework owns the lifecycle: insert on promote, delete on age-out. JSON state remains the source of truth; memory entries are derived. Memory writes are best-effort — JSON commit happens first, then memory writes — so a memory failure leaves a recoverable state.
+
+**Loop C — targeted feed into specific subsystems.** Theories become structured input to specific decision points where they could plausibly help. Examples:
 - `theory-of-user` → completion evaluator: "would this response satisfy this user given the observed patterns?"
 - `theory-of-self` → mid-loop self-check: a Low-tier query like "given the observed pattern that I tend to over-explain, is this draft response in that pattern?"
 
-Higher leverage than loop A, requires touching the relevant evaluators. Each integration point is its own change.
+Higher leverage than A. Each integration point is its own change.
 
-**Loop C — promote high-confidence theories into rules/directives.** A theory reinforced over many conversations across many weeks could graduate to an actual rule the agent must follow. Strongest closed loop, highest risk: the agent's behaviour shifts based on its own observations of itself. Almost certainly needs human approval before promotion (a "review surface" where promotions are queued for the operator to approve, not auto-applied).
+**Loop D — promote high-confidence theories into rules/directives.** A theory reinforced over many conversations across many weeks could graduate to an actual rule the agent must follow. Strongest closed loop, highest risk: the agent's behaviour shifts based on its own observations of itself. Almost certainly needs human approval before promotion (a "review surface" where promotions are queued for the operator to approve, not auto-applied).
 
-The decision to add any of these loops will follow real evidence about what the v1 data layer actually produces. If the structured theories are coherent and useful, loop B is the natural next step. If they're noisy or shallow, loop A may be all the framework should ever do.
+The decision to add loops A, C, or D will follow real evidence about what the v1 data layer actually produces. If theories surface usefully via `SearchMemory` (loop B), loop A may be unnecessary. If queries don't naturally reach them, loop A is a candidate. Loops C/D wait on their own evidence.
 
 ## Background: why not just edit directives?
 
@@ -314,12 +317,13 @@ Broader dream-cycle parallelism (running multiple existing phases concurrently) 
 New project: **`RockBot.Observation`**.
 
 Dependencies:
-- LLM client (`ILlmClient`)
-- Vector embedding service (already present for hybrid search)
+- LLM client (`ILlmClient`) — extraction + evaluation calls.
+- Vector embedding service (`IEmbeddingGenerator<string, Embedding<float>>`) — already present for hybrid search.
+- Long-term memory (`ILongTermMemory`) — publishes promoted theories so they appear in `SearchMemory` and the hybrid-search index. v1 closed loop B.
 
 It does *not* depend on messaging. The dream cycle is the only invoker. Agent code's role is limited to:
 - Registering observation targets at startup (DI configuration).
-- Loading the regenerated markdown files into agent context (this already happens for the existing theory-of files; nothing changes there).
+- Nothing else. The framework is self-contained: agent context loading is unchanged in v1 (markdown is written for inspection but not auto-loaded), and theories reach the agent only via the existing `SearchMemory` tool and hybrid-search index.
 
 ## Schema evolution
 
@@ -341,4 +345,4 @@ The observation framework's parallelism makes a global LLM rate-limit-handling a
 - **Aging window defaults.** Calendar-time aging in days makes the behaviour cadence-independent. Initial defaults: K=7 days for candidates, M=30 days for theories. Should be reviewed once there's data on real reinforcement frequency.
 - **Evaluation prompt structure.** Differential framing is the right shape, but the exact prompt template needs iteration once Phase 1 is producing real candidate pools.
 - **Telemetry surfacing.** Should the framework emit an end-of-phase summary message ("X candidates added, Y promoted, Z aged out per target") so dream activity is visible in logs without inspecting JSON files?
-- **Closed-loop sequencing.** v1 is loop A (context-only) by design. The decision on whether/which of loops B and C to build follows real evidence about what the data layer produces — but a rough trigger condition would help: "if after 2 months of accumulation the theories look coherent and operator-validated, consider loop B for the completion evaluator first."
+- **Closed-loop sequencing.** v1 ships with loop B (memory publish) only. The decision on whether/which of loops A, C, D to build follows real evidence about what the data layer produces — a rough trigger condition would help: "if after 2 months of accumulation theories surface usefully via `SearchMemory`, loop A may be unnecessary; if they're rarely surfaced naturally, loop A is the next step; loops C/D wait on their own evidence."

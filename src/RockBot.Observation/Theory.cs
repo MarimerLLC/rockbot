@@ -44,4 +44,13 @@ public sealed class Theory
     /// by post-promotion reinforcements that matched the theory's cluster.
     /// </summary>
     public List<ObservationReference> References { get; init; } = [];
+
+    /// <summary>
+    /// ID of the long-term memory entry published for this theory, or null
+    /// when no memory entry exists (e.g. publishing failed last cycle and
+    /// reconciliation has not yet recreated it). The framework writes a
+    /// memory entry on promotion, deletes it on aging, so theories show up
+    /// in <c>SearchMemory</c> and the host's hybrid-search index.
+    /// </summary>
+    public string? MemoryEntryId { get; set; }
 }

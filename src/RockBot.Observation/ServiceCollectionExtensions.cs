@@ -40,4 +40,24 @@ public static class ServiceCollectionExtensions
         services.AddSingleton(target);
         return services;
     }
+
+    /// <summary>
+    /// Registers the framework's two default targets — theory-of-self and
+    /// theory-of-user — rooted at the given agent profile directory. The
+    /// targets use the built-in <see cref="TranscriptFilters"/> and
+    /// <see cref="DefaultPrompts"/>. Hosts that want different prompts or
+    /// filters should construct <see cref="ObservationTarget"/> instances
+    /// directly and register them with <see cref="AddObservationTarget"/>.
+    /// </summary>
+    public static IServiceCollection AddDefaultObservationTargets(
+        this IServiceCollection services,
+        string agentProfileBasePath)
+    {
+        ArgumentNullException.ThrowIfNull(services);
+        ArgumentException.ThrowIfNullOrWhiteSpace(agentProfileBasePath);
+
+        services.AddObservationTarget(ObservationDefaults.CreateTheoryOfSelf(agentProfileBasePath));
+        services.AddObservationTarget(ObservationDefaults.CreateTheoryOfUser(agentProfileBasePath));
+        return services;
+    }
 }
