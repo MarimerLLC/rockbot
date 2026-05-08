@@ -136,7 +136,6 @@ One file per target. Schema versioned for future migration.
 {
   "schemaVersion": 1,
   "lastDreamAt": "2026-05-07T12:00:00Z",
-  "bootstrappedFrom": "theory-of-self.md (imported 2026-05-07)",
   "candidates": [
     {
       "id": "cand_abc123",
@@ -158,7 +157,6 @@ One file per target. Schema versioned for future migration.
       "promotedAt": "2026-03-15T08:00:00Z",
       "lastReinforced": "2026-05-06T18:00:00Z",
       "sourceCandidateIds": ["cand_..."],
-      "bootstrap": false,
       "references": [ /* same shape */ ]
     }
   ],
@@ -173,25 +171,13 @@ One file per target. Schema versioned for future migration.
 
 References (conversation id + turn id + quote) are the load-bearing piece. They are what makes "promote when seen N times" honest — N distinct conversations, not N paraphrases of one.
 
-**Bootstrap fields.** `bootstrappedFrom` records the origin file imported on first run (see "Bootstrap" below). Theories carrying `bootstrap: true` were imported from the pre-existing markdown rather than promoted via the normal pipeline; they have no references and are subject to the standard aging window like any other theory.
-
 **Snapshots.** `snapshots` retains the last *N* (default 12) regenerated markdown bodies with timestamps so evolution over time is observable without external tooling. At the framework's typical cadence (twice daily), 12 snapshots cover roughly the last week of history. Configurable per target. A new snapshot is appended each dream when phase 2 regenerates the markdown; oldest entries are evicted to maintain the cap.
 
-## Bootstrap from existing markdown
+## First-run behaviour
 
-On first run for a target, if the configured `OutputMarkdownPath` already exists and the target's JSON state file does not, the framework imports the existing markdown content as initial theories before any dream cycle runs.
+No bootstrap or import: any existing `theory-of-self.md` / `theory-of-user.md` file at `OutputMarkdownPath` is simply overwritten on the first phase-2 regeneration. The K8s deployment's PVC backups preserve the prior content if it is ever needed.
 
-Import procedure:
-
-1. Read the existing markdown file.
-2. A Low-tier LLM call extracts discrete observations from the narrative content. Prompt: "the following is a hand-written 'theory of self' / 'theory of user' document. Extract distinct claims as separate observations, preserving the document's voice. Do not invent new claims."
-3. Each extracted observation becomes a theory entry with `bootstrap: true`, `references: []`, `promotedAt = now`, and `sourceCandidateIds: []`.
-4. The state file is written with `bootstrappedFrom: "<filename> (imported <date>)"`.
-5. The next regular pipeline run (a few seconds later or on the next dream) operates against this seeded state.
-
-Import is one-time: the bootstrap markdown is not re-read on subsequent runs. Once imported, the existing markdown is **renamed** to `<original>.bootstrap.md` so the agent context loader picks up the regenerated file (which writes to `<original>`) without conflict, and the original content remains on disk as a record.
-
-Bootstrap entries carry `bootstrap: true` so the markdown template can mark them visually ("(imported, not yet observationally reinforced)"). They participate in normal aging — if no new conversation references arrive within the theory aging window, they age out. This is intentional: imported claims that no longer match current behaviour should fade.
+Until candidates accumulate enough reinforcement to promote, the regenerated markdown will show "Theories (0)" with a candidate-observations section listing in-progress signals. This is the honest state — the framework has no validated theories yet because it hasn't observed enough conversations. The first promoted theories appear once the configured threshold (default: 3 distinct conversations) is met for some candidate.
 
 ## Markdown template format
 
@@ -218,7 +204,6 @@ Manual edits to this file will be overwritten on the next dream cycle._
 - **First observed:** 2026-04-02
 - **Last reinforced:** 2026-05-04
 - **Representative quote:** "...you don't need to read three files for a one-line change..."
-- _(imported, not yet observationally reinforced)_
 
 ## Candidate observations (12)
 

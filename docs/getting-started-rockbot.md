@@ -222,7 +222,7 @@ These artifacts are produced and maintained automatically by the **observation f
 
 The output is a deterministically regenerated `theory-of-self.md` and `theory-of-user.md` in the agent profile, with structured entries showing reinforcement counts, dates, and representative quotes. They are loaded into agent context like any other profile file.
 
-You do not need to teach the agent to maintain these via prompts — the framework does it. If you previously seeded these files by hand or via the prompt patterns from earlier guides, they are imported once on first run and then maintained by the framework from there forward.
+You do not need to teach the agent to maintain these via prompts — the framework does it. Any existing `theory-of-self.md` or `theory-of-user.md` you seeded by hand or via earlier prompt patterns will be overwritten on the first dream after the framework is enabled, since the framework regenerates them deterministically from its own JSON state. (If your deployment backs up the agent profile, the prior content is preserved there.) Until the framework accumulates enough observations to promote any theories, the files will simply show in-progress candidate observations.
 
 For the design and configuration knobs (promotion thresholds, aging windows, snapshot retention), see [`design/observation-framework.md`](https://github.com/MarimerLLC/rockbot/blob/main/design/observation-framework.md) in the repo.
 
