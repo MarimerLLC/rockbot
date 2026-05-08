@@ -174,6 +174,64 @@ public class McpRecoveryExecutorFailureClusterTests
     }
 
     [TestMethod]
+    public async Task NonSchemaError_RecordsClusterAsUnknown()
+    {
+        // Error string doesn't match any of Phase 1's "missing required field"
+        // patterns — recovery has no field to fill, but the failure should still
+        // land in the cluster store under errorClass="unknown" so DreamService
+        // can spot recurring auth/network/server-side failures.
+        var store = new RecordingClusterStore();
+        McpInvokeDelegate invoke = (r, _, _) => Task.FromResult(Ok(r, ""));
+
+        var exec = new McpRecoveryExecutor(
+            invoke, [], NullLogger<McpRecoveryExecutor>.Instance,
+            failureClusterStore: store);
+
+        var req = new ToolInvokeRequest { ToolCallId = "1", ToolName = "get_generation", Arguments = "{}" };
+        var failed = Err(req, "An error occurred invoking 'get_generation'.");
+
+        var result = await exec.RecoverAsync("openrouter", "get_generation", req, failed, default,
+            sessionId: "session-X");
+
+        Assert.IsTrue(result.IsError);
+        Assert.AreEqual(1, store.Records.Count);
+        Assert.AreEqual("unknown", store.Records[0].Key.ErrorClass);
+        Assert.AreEqual("openrouter", store.Records[0].Key.Server);
+        Assert.AreEqual("get_generation", store.Records[0].Key.Tool);
+        Assert.AreEqual("session-X", store.Records[0].SessionId);
+    }
+
+    [TestMethod]
+    public async Task FieldAlreadyInArgs_RecordsClusterAsUnknown()
+    {
+        // The error matches a schema pattern (extracts "timeZone") but timeZone
+        // is already in the request arguments — the actual error is about
+        // something else. Don't loop on recovery; record under "unknown" so
+        // these "server says X is required but X is present" failures cluster
+        // together rather than fragmenting by the misleading field name.
+        var store = new RecordingClusterStore();
+        McpInvokeDelegate invoke = (r, _, _) => Task.FromResult(Ok(r, ""));
+
+        var exec = new McpRecoveryExecutor(
+            invoke, [], NullLogger<McpRecoveryExecutor>.Instance,
+            failureClusterStore: store);
+
+        var req = new ToolInvokeRequest
+        {
+            ToolCallId = "1", ToolName = "get",
+            Arguments = """{"timeZone":"UTC"}"""
+        };
+        var failed = Err(req, "Required parameter 'timeZone' not satisfied");
+
+        var result = await exec.RecoverAsync("srv", "get", req, failed, default,
+            sessionId: "session-Y");
+
+        Assert.IsTrue(result.IsError);
+        Assert.AreEqual(1, store.Records.Count);
+        Assert.AreEqual("unknown", store.Records[0].Key.ErrorClass);
+    }
+
+    [TestMethod]
     public async Task NullSessionId_StillRecords()
     {
         var store = new RecordingClusterStore();

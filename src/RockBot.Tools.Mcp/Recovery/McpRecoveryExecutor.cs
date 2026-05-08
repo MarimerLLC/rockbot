@@ -108,13 +108,23 @@ public sealed class McpRecoveryExecutor
         if (errorText is null) return response;
 
         if (!SchemaErrorPatterns.TryExtractMissingField(errorText, out var fieldName))
+        {
+            // Non-schema error — recovery has no field to fill. Still a post-recovery
+            // failure from the gateway's perspective; record under "unknown" so
+            // DreamService can spot recurring auth/network/server-side failures the
+            // same way it spots schema-pattern failures.
+            await RecordFailureAsync(serverName, toolName, sessionId, errorText, fieldHint: null, ct);
             return response;
+        }
 
         var existingArgs = McpToolExecutor.ParseArguments(innerRequest.Arguments);
         if (existingArgs.ContainsKey(fieldName))
         {
             // The field is already present — the error is something else despite matching
-            // the pattern (e.g., the value was wrong, not missing). Don't loop.
+            // the pattern (e.g., the value was wrong, not missing). Don't loop. Cluster
+            // these as "unknown" so the merged group reflects "server complains a field
+            // is required even though it's in args" rather than fragmenting by field.
+            await RecordFailureAsync(serverName, toolName, sessionId, errorText, fieldHint: "unknown", ct);
             return response;
         }
 
