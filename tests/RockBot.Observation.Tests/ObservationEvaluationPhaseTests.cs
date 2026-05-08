@@ -42,8 +42,9 @@ public class ObservationEvaluationPhaseTests
 
     private FileObservationStateStore Store() => new(NullLogger<FileObservationStateStore>.Instance);
 
-    private ObservationEvaluationPhase MakePhase(StubEvaluator evaluator) =>
-        new(evaluator, Store(), NullLogger<ObservationEvaluationPhase>.Instance);
+    private ObservationEvaluationPhase MakePhase(StubEvaluator evaluator, StubLongTermMemory? memory = null) =>
+        new(evaluator, Store(), memory ?? new StubLongTermMemory(),
+            NullLogger<ObservationEvaluationPhase>.Instance);
 
     private static Candidate Candidate(
         string id, int distinctConvs, DateTimeOffset lastSeen, string text = "obs")
@@ -408,5 +409,182 @@ public class ObservationEvaluationPhaseTests
             CallCount++;
             return Task.FromResult<IReadOnlyList<EvaluationVerdict>>(Verdicts);
         }
+    }
+
+    /// <summary>
+    /// Minimal in-memory <see cref="ILongTermMemory"/> stub that records
+    /// saves and deletes for verification. Optionally throws on save/delete
+    /// to exercise the framework's best-effort error handling.
+    /// </summary>
+    internal sealed class StubLongTermMemory : RockBot.Host.ILongTermMemory
+    {
+        public Dictionary<string, RockBot.Host.MemoryEntry> Saved { get; } = new(StringComparer.Ordinal);
+        public List<string> Deleted { get; } = [];
+        public bool ThrowOnSave { get; set; }
+        public bool ThrowOnDelete { get; set; }
+
+        public Task SaveAsync(RockBot.Host.MemoryEntry entry, CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (ThrowOnSave) throw new InvalidOperationException("simulated memory save failure");
+            Saved[entry.Id] = entry;
+            return Task.CompletedTask;
+        }
+
+        public Task DeleteAsync(string id, CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (ThrowOnDelete) throw new InvalidOperationException("simulated memory delete failure");
+            Deleted.Add(id);
+            Saved.Remove(id);
+            return Task.CompletedTask;
+        }
+
+        public Task<IReadOnlyList<RockBot.Host.MemoryEntry>> SearchAsync(
+            RockBot.Host.MemorySearchCriteria criteria, CancellationToken cancellationToken = default)
+            => Task.FromResult<IReadOnlyList<RockBot.Host.MemoryEntry>>(Saved.Values.ToList());
+
+        public Task<RockBot.Host.MemoryEntry?> GetAsync(string id, CancellationToken cancellationToken = default)
+            => Task.FromResult(Saved.TryGetValue(id, out var entry) ? entry : null);
+
+        public Task<IReadOnlyList<string>> ListTagsAsync(CancellationToken cancellationToken = default)
+            => Task.FromResult<IReadOnlyList<string>>(
+                Saved.Values.SelectMany(e => e.Tags).Distinct().ToList());
+
+        public Task<IReadOnlyList<string>> ListCategoriesAsync(CancellationToken cancellationToken = default)
+            => Task.FromResult<IReadOnlyList<string>>(
+                Saved.Values.Select(e => e.Category).Where(c => c is not null).Distinct().ToList()!);
+    }
+
+    [TestMethod]
+    public async Task ExecuteAsync_PromotedTheoryPublishedToMemory()
+    {
+        var target = MakeTarget(promotionThreshold: 3);
+        await Store().SaveAsync(target, new ObservationState
+        {
+            Candidates = { Candidate("cand_1", 3, DateTimeOffset.UtcNow, text: "User prefers terse responses") },
+        }, CancellationToken.None);
+
+        var stubEval = new StubEvaluator
+        {
+            Verdicts =
+            {
+                new EvaluationVerdict("cand_1", EvaluationAction.Promote, null, null),
+            },
+        };
+        var stubMemory = new StubLongTermMemory();
+
+        await MakePhase(stubEval, stubMemory).ExecuteAsync(target, CancellationToken.None);
+
+        Assert.AreEqual(1, stubMemory.Saved.Count, "Promoted theory should be published to long-term memory");
+        var entry = stubMemory.Saved.Values.Single();
+        Assert.AreEqual("User prefers terse responses", entry.Content);
+        Assert.AreEqual($"observation/theory/{target.Name}", entry.Category);
+        CollectionAssert.AreEquivalent(new[] { "observation", target.Name }, entry.Tags.ToArray());
+        Assert.IsTrue(entry.ImportanceScore > 0.5f, "Theories carry above-default importance");
+
+        var state = await Store().LoadAsync(target, CancellationToken.None);
+        Assert.AreEqual(entry.Id, state.Theories[0].MemoryEntryId,
+            "Theory should record the published memory entry's ID");
+    }
+
+    [TestMethod]
+    public async Task ExecuteAsync_AgedTheoryRemovedFromMemory()
+    {
+        var target = MakeTarget(theoryAgingDays: 30);
+        var now = DateTimeOffset.UtcNow;
+
+        var stale = Theory("stale", now.AddDays(-90));
+        stale.MemoryEntryId = "obs_existing_stale";
+        var fresh = Theory("fresh", now.AddDays(-5));
+        fresh.MemoryEntryId = "obs_existing_fresh";
+
+        await Store().SaveAsync(target, new ObservationState
+        {
+            Theories = { stale, fresh },
+        }, CancellationToken.None);
+
+        var stubMemory = new StubLongTermMemory();
+        // Pretend the entries existed in memory before this dream
+        stubMemory.Saved["obs_existing_stale"] = new RockBot.Host.MemoryEntry(
+            "obs_existing_stale", "stale", null, [], now.AddDays(-90));
+        stubMemory.Saved["obs_existing_fresh"] = new RockBot.Host.MemoryEntry(
+            "obs_existing_fresh", "fresh", null, [], now.AddDays(-5));
+
+        await MakePhase(new StubEvaluator(), stubMemory).ExecuteAsync(target, CancellationToken.None);
+
+        CollectionAssert.AreEqual(new[] { "obs_existing_stale" }, stubMemory.Deleted.ToArray(),
+            "Aged theory's memory entry should be deleted; fresh theory's preserved");
+        Assert.IsTrue(stubMemory.Saved.ContainsKey("obs_existing_fresh"));
+    }
+
+    [TestMethod]
+    public async Task ExecuteAsync_MemorySaveFailure_PhaseStillSucceeds()
+    {
+        var target = MakeTarget(promotionThreshold: 3);
+        await Store().SaveAsync(target, new ObservationState
+        {
+            Candidates = { Candidate("cand_1", 3, DateTimeOffset.UtcNow) },
+        }, CancellationToken.None);
+
+        var stubEval = new StubEvaluator
+        {
+            Verdicts = { new EvaluationVerdict("cand_1", EvaluationAction.Promote, null, null) },
+        };
+        var stubMemory = new StubLongTermMemory { ThrowOnSave = true };
+
+        var result = await MakePhase(stubEval, stubMemory).ExecuteAsync(target, CancellationToken.None);
+
+        Assert.AreEqual(1, result.CandidatesPromoted,
+            "Phase still reports the promotion even though memory publishing failed");
+
+        var state = await Store().LoadAsync(target, CancellationToken.None);
+        Assert.AreEqual(1, state.Theories.Count,
+            "Theory still committed to JSON state — memory side-effects are best-effort");
+        Assert.IsNotNull(state.Theories[0].MemoryEntryId,
+            "MemoryEntryId is recorded even if the publish failed; reconciliation can recover");
+    }
+
+    [TestMethod]
+    public async Task ExecuteAsync_MemoryDeleteFailure_PhaseStillSucceeds()
+    {
+        var target = MakeTarget(theoryAgingDays: 30);
+        var now = DateTimeOffset.UtcNow;
+
+        var stale = Theory("stale", now.AddDays(-90));
+        stale.MemoryEntryId = "obs_stale";
+        await Store().SaveAsync(target, new ObservationState
+        {
+            Theories = { stale },
+        }, CancellationToken.None);
+
+        var stubMemory = new StubLongTermMemory { ThrowOnDelete = true };
+        var result = await MakePhase(new StubEvaluator(), stubMemory).ExecuteAsync(target, CancellationToken.None);
+
+        Assert.AreEqual(1, result.TheoriesAged);
+
+        var state = await Store().LoadAsync(target, CancellationToken.None);
+        Assert.AreEqual(0, state.Theories.Count,
+            "Theory still removed from JSON; orphaned memory entry is recoverable later");
+    }
+
+    [TestMethod]
+    public async Task ExecuteAsync_RejectedCandidateNotPublishedToMemory()
+    {
+        var target = MakeTarget(promotionThreshold: 3);
+        await Store().SaveAsync(target, new ObservationState
+        {
+            Candidates = { Candidate("cand_1", 3, DateTimeOffset.UtcNow) },
+        }, CancellationToken.None);
+
+        var stubEval = new StubEvaluator
+        {
+            Verdicts = { new EvaluationVerdict("cand_1", EvaluationAction.Reject, null, null) },
+        };
+        var stubMemory = new StubLongTermMemory();
+
+        await MakePhase(stubEval, stubMemory).ExecuteAsync(target, CancellationToken.None);
+
+        Assert.AreEqual(0, stubMemory.Saved.Count, "Rejected candidates must not become memory entries");
     }
 }

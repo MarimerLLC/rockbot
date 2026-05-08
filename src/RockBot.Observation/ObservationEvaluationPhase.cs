@@ -1,4 +1,5 @@
 using Microsoft.Extensions.Logging;
+using RockBot.Host;
 
 namespace RockBot.Observation;
 
@@ -6,13 +7,24 @@ namespace RockBot.Observation;
 /// Default <see cref="IObservationEvaluationPhase"/>. Aging is deterministic
 /// in-memory work; evaluation is one Higher-tier LLM call only when there
 /// are candidates eligible for promotion. Markdown is regenerated from the
-/// resulting state and a snapshot is appended.
+/// resulting state and a snapshot is appended. Promoted theories are also
+/// published to <see cref="ILongTermMemory"/> so they participate in the
+/// host's hybrid-search index and surface via <c>SearchMemory</c>; aged-out
+/// theories have their memory entries deleted.
 /// </summary>
 internal sealed class ObservationEvaluationPhase(
     IObservationEvaluator evaluator,
     IObservationStateStore stateStore,
+    ILongTermMemory longTermMemory,
     ILogger<ObservationEvaluationPhase> logger) : IObservationEvaluationPhase
 {
+    /// <summary>
+    /// Importance score assigned to memory entries published for promoted
+    /// theories. Above the default (0.5) — promoted theories represent
+    /// reinforced observations — but not maximum, so they do not crowd out
+    /// hand-saved high-importance memories.
+    /// </summary>
+    private const float TheoryMemoryImportance = 0.7f;
     public async Task<EvaluationPhaseResult> ExecuteAsync(
         ObservationTarget target,
         CancellationToken cancellationToken)
@@ -23,9 +35,11 @@ internal sealed class ObservationEvaluationPhase(
 
         var now = DateTimeOffset.UtcNow;
 
-        // Aging — deterministic, in-memory
+        // Aging — deterministic, in-memory. Capture memory entry IDs of aged
+        // theories so we can delete them from the long-term store after the
+        // JSON save succeeds.
         var candidatesAged = AgeCandidates(state, target, now);
-        var theoriesAged = AgeTheories(state, target, now);
+        var (theoriesAged, agedMemoryEntryIds) = AgeTheories(state, target, now);
 
         cancellationToken.ThrowIfCancellationRequested();
 
@@ -37,13 +51,14 @@ internal sealed class ObservationEvaluationPhase(
         var promoted = 0;
         var refined = 0;
         var rejected = 0;
+        var promotedTheories = new List<Theory>();
 
         if (eligible.Count > 0)
         {
             var verdicts = await evaluator.EvaluateAsync(
                 target, eligible, state.Theories, cancellationToken).ConfigureAwait(false);
 
-            (promoted, refined, rejected) = ApplyVerdicts(state, verdicts, now);
+            (promoted, refined, rejected, promotedTheories) = ApplyVerdicts(state, verdicts, now);
         }
 
         // Regenerate markdown
@@ -53,12 +68,28 @@ internal sealed class ObservationEvaluationPhase(
         // Snapshot — append + evict oldest beyond cap
         AppendSnapshot(state, target, markdown, now);
 
-        // Atomic writes: state first, then markdown. Both files end up
-        // mutually consistent because we hold the rendered markdown in
-        // memory before either write.
+        // Atomic writes: JSON state first (single source of truth), then
+        // markdown. Memory side-effects come AFTER the JSON commit so a
+        // failure during JSON save leaves the long-term store unchanged.
+        // Memory failures after this point leave orphan/missing entries
+        // recoverable on a future dream's reconciliation pass.
         await stateStore.SaveAsync(target, state, cancellationToken).ConfigureAwait(false);
         await WriteMarkdownAtomicAsync(target.OutputMarkdownPath, markdown, cancellationToken)
             .ConfigureAwait(false);
+
+        // Long-term memory side-effects: best-effort. Per-entry exceptions
+        // are logged and swallowed so one broken memory write does not
+        // prevent the rest from completing. Cancellation still propagates.
+        foreach (var memoryId in agedMemoryEntryIds)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            await TryDeleteMemoryAsync(memoryId, target, cancellationToken).ConfigureAwait(false);
+        }
+        foreach (var theory in promotedTheories)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            await TrySaveTheoryMemoryAsync(target, theory, now, cancellationToken).ConfigureAwait(false);
+        }
 
         var result = new EvaluationPhaseResult(
             CandidatesAged: candidatesAged,
@@ -81,6 +112,49 @@ internal sealed class ObservationEvaluationPhase(
         return result;
     }
 
+    private async Task TryDeleteMemoryAsync(string memoryEntryId, ObservationTarget target, CancellationToken ct)
+    {
+        try
+        {
+            await longTermMemory.DeleteAsync(memoryEntryId, ct).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex,
+                "Observation: failed to delete memory entry {MemoryEntryId} for aged theory in target {Target}",
+                memoryEntryId, target.Name);
+        }
+    }
+
+    private async Task TrySaveTheoryMemoryAsync(
+        ObservationTarget target, Theory theory, DateTimeOffset now, CancellationToken ct)
+    {
+        if (theory.MemoryEntryId is null) return;
+
+        var entry = new MemoryEntry(
+            Id: theory.MemoryEntryId,
+            Content: theory.Text,
+            Category: $"observation/theory/{target.Name}",
+            Tags: new[] { "observation", target.Name },
+            CreatedAt: now,
+            UpdatedAt: now,
+            Metadata: null,
+            ImportanceScore: TheoryMemoryImportance);
+
+        try
+        {
+            await longTermMemory.SaveAsync(entry, ct).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex,
+                "Observation: failed to publish memory entry {MemoryEntryId} for promoted theory {TheoryId} in target {Target}; theory remains in JSON state but is not searchable until a future reconciliation",
+                theory.MemoryEntryId, theory.Id, target.Name);
+        }
+    }
+
     private static int AgeCandidates(ObservationState state, ObservationTarget target, DateTimeOffset now)
     {
         var threshold = now - TimeSpan.FromDays(target.CandidateAgingWindowDays);
@@ -89,15 +163,21 @@ internal sealed class ObservationEvaluationPhase(
         return before - state.Candidates.Count;
     }
 
-    private static int AgeTheories(ObservationState state, ObservationTarget target, DateTimeOffset now)
+    private static (int Aged, IReadOnlyList<string> AgedMemoryEntryIds) AgeTheories(
+        ObservationState state, ObservationTarget target, DateTimeOffset now)
     {
         var threshold = now - TimeSpan.FromDays(target.TheoryAgingWindowDays);
-        var before = state.Theories.Count;
-        state.Theories.RemoveAll(t => t.LastReinforced < threshold);
-        return before - state.Theories.Count;
+        var aged = state.Theories.Where(t => t.LastReinforced < threshold).ToList();
+        var memoryEntryIds = aged
+            .Where(t => !string.IsNullOrEmpty(t.MemoryEntryId))
+            .Select(t => t.MemoryEntryId!)
+            .ToList();
+        foreach (var t in aged)
+            state.Theories.Remove(t);
+        return (aged.Count, memoryEntryIds);
     }
 
-    private static (int Promoted, int Refined, int Rejected) ApplyVerdicts(
+    private static (int Promoted, int Refined, int Rejected, List<Theory> PromotedTheories) ApplyVerdicts(
         ObservationState state,
         IReadOnlyList<EvaluationVerdict> verdicts,
         DateTimeOffset now)
@@ -105,6 +185,7 @@ internal sealed class ObservationEvaluationPhase(
         var promoted = 0;
         var refined = 0;
         var rejected = 0;
+        var promotedTheories = new List<Theory>();
 
         foreach (var v in verdicts)
         {
@@ -120,12 +201,14 @@ internal sealed class ObservationEvaluationPhase(
                         Text = string.IsNullOrWhiteSpace(v.RefinedText) ? candidate.Text : v.RefinedText,
                         PromotedAt = now,
                         LastReinforced = candidate.LastSeen,
+                        MemoryEntryId = "obs_" + Guid.NewGuid().ToString("N")[..12],
                     };
                     theory.SourceCandidateIds.Add(candidate.Id);
                     foreach (var r in candidate.References)
                         theory.References.Add(r);
                     state.Theories.Add(theory);
                     state.Candidates.Remove(candidate);
+                    promotedTheories.Add(theory);
                     promoted++;
                     break;
 
@@ -149,7 +232,7 @@ internal sealed class ObservationEvaluationPhase(
             }
         }
 
-        return (promoted, refined, rejected);
+        return (promoted, refined, rejected, promotedTheories);
     }
 
     private static void AppendSnapshot(
