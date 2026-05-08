@@ -1,7 +1,10 @@
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Hosting;
 using RockBot.Host;
 using RockBot.Tools;
+using RockBot.Tools.Mcp.Recovery;
+using RockBot.Tools.Mcp.Recovery.Providers;
 
 namespace RockBot.Tools.Mcp;
 
@@ -41,6 +44,19 @@ public static class McpServiceCollectionExtensions
         builder.Services.AddSingleton<McpManagementExecutor>();
         builder.Services.AddHostedService<McpStartupProbeService>();
         builder.Services.AddSingleton<IToolSkillProvider, McpToolSkillProvider>();
+
+        // Self-repair Phase 1: mechanical recovery for missing required parameters.
+        // See design/self-repair.md.
+        builder.Services.AddSingleton<McpInvokeDelegate>(sp =>
+        {
+            var proxy = sp.GetRequiredService<McpToolProxy>();
+            return (req, headers, ct) => proxy.ExecuteAsync(req, headers, ct);
+        });
+        builder.Services.TryAddEnumerable(ServiceDescriptor.Singleton<IToolArgumentDefaultsProvider, TimeZoneDefaultProvider>());
+        builder.Services.TryAddEnumerable(ServiceDescriptor.Singleton<IToolArgumentDefaultsProvider, CurrentTimeDefaultProvider>());
+        builder.Services.TryAddEnumerable(ServiceDescriptor.Singleton<IToolArgumentDefaultsProvider, AccountIdFanoutProvider>());
+        builder.Services.AddSingleton<StageBLlmFiller>();
+        builder.Services.AddSingleton<McpRecoveryExecutor>();
 
         builder.HandleMessage<McpServersIndexed, McpServersIndexedHandler>();
         builder.SubscribeTo($"tool.meta.mcp.{agentName}");
