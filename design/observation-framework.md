@@ -2,11 +2,19 @@
 
 ## Problem
 
-The agent maintains "theory of self" and "theory of user" markdown files that are intended to evolve over time as the agent observes its own behavior and the user's. In practice, they only evolve when the user explicitly asks the agent to update them — there is no recurring process driving accumulation, so the files stagnate and never reflect actual ongoing observation.
+The agent maintains "theory of self" and "theory of user" markdown files that are intended to evolve over time as the agent observes its own behavior and the user's. Today these are seeded by the portable prompts in `docs/getting-started-rockbot.md` ("Maintain a 'theory of self'..."), which ask the agent to write narrative self-models in its own voice. In practice, they only evolve when the user explicitly asks the agent to update them — there is no recurring process driving accumulation, so the files stagnate and never reflect actual ongoing observation.
 
 More broadly: the agent has no general mechanism for *accumulating evidence-based observations over time about anything*. Skills are recallable knowledge, memory is recallable facts, but neither serves the role of "observations that compound across many interactions, get reinforced or fade, and graduate into stable knowledge." That is the gap this design fills.
 
 The two theory-of files are the first concrete consumers, but the framework is intended to be reused for additional observational domains as they emerge.
+
+This design **supersedes** the portable-prompt approach in the getting-started doc. Once the framework lands, the agent no longer hand-writes narrative theories — the framework accumulates structured, evidence-grounded observations, and the markdown files are deterministically regenerated from that data each dream. The getting-started doc will be updated to reference the framework instead of teaching the prompt pattern.
+
+### Research-first framing
+
+This is a science experiment: it has no *closed loop yet*. The artifacts it produces (`theory-of-self.md`, `theory-of-user.md`) are loaded into agent context the same way memory and skills are, but nothing actively drives behaviour from them — no evaluator queries them, no rule promotion, no self-monitoring loop. v1 ships as research instrumentation: build the data layer cleanly so months of accumulated observations are available, then decide what closed loop (if any) earns its complexity. See "Closed loops (future)" below.
+
+This framing affects design priorities: data integrity beats narrative readability. Better to have rigorous, evidence-grounded structured observations than a flowing self-portrait that may be partly confabulated. Synthesis can be layered on later if a closed loop demands it.
 
 ## Goals
 
@@ -17,6 +25,7 @@ The two theory-of files are the first concrete consumers, but the framework is i
 - Stale observations age out without manual intervention.
 - Cost-tiered: cheap LLM for high-recall extraction, expensive LLM only for judgment.
 - Parallelizable from day one. Dream cycle runtime is already a concern; new phases must not make it worse.
+- Historical visibility: snapshots of the regenerated markdown are retained so evolution over time is observable without external tooling.
 
 ## Non-goals
 
@@ -24,6 +33,24 @@ The two theory-of files are the first concrete consumers, but the framework is i
 - Real-time observation. This is dream-cycle work, not per-turn.
 - Self-editing of always-loaded directives. The framework owns regeneration; the agent does not edit its own theory files.
 - Solving broader dream-cycle parallelism. That is a separate effort. The new phase introduced here parallelizes *within itself*.
+- **Narrative synthesis in v1.** The existing getting-started prompt asked the agent to write its theories in narrative form ("themes you see recurring," "tensions or contradictions you've noticed"). v1 explicitly rejects this in favor of structured, evidence-grounded observations. Synthesis-on-top is a future possibility (see "Closed loops") but not part of v1.
+- **Closed-loop behaviour change.** v1 is research instrumentation. The regenerated markdown is loaded into agent context the same way memory and skills are, and that's the only path by which it can influence behaviour. No evaluators, rules, or self-monitoring loops are wired up in v1.
+
+## Closed loops (future)
+
+v1 has no active closed loop — the regenerated markdown is loaded into agent context like any other memory/skills file, and that's the entire mechanism by which it can affect behaviour. This section records the closed-loop options under consideration so future work has a roadmap.
+
+**Loop A — context-only (v1).** Markdown is loaded into context every turn. If context says "user prefers terse responses," the agent might do that. Implicit, easy to lose in a long context, zero new mechanism. This is what v1 ships.
+
+**Loop B — targeted feed into specific subsystems.** Theories become structured input to specific decision points where they could plausibly help. Examples:
+- `theory-of-user` → completion evaluator: "would this response satisfy this user given the observed patterns?"
+- `theory-of-self` → mid-loop self-check: a Low-tier query like "given the observed pattern that I tend to over-explain, is this draft response in that pattern?"
+
+Higher leverage than loop A, requires touching the relevant evaluators. Each integration point is its own change.
+
+**Loop C — promote high-confidence theories into rules/directives.** A theory reinforced over many conversations across many weeks could graduate to an actual rule the agent must follow. Strongest closed loop, highest risk: the agent's behaviour shifts based on its own observations of itself. Almost certainly needs human approval before promotion (a "review surface" where promotions are queued for the operator to approve, not auto-applied).
+
+The decision to add any of these loops will follow real evidence about what the v1 data layer actually produces. If the structured theories are coherent and useful, loop B is the natural next step. If they're noisy or shallow, loop A may be all the framework should ever do.
 
 ## Background: why not just edit directives?
 
@@ -132,11 +159,69 @@ One file per target. Schema versioned for future migration.
       "sourceCandidateIds": ["cand_..."],
       "references": [ /* same shape */ ]
     }
+  ],
+  "snapshots": [
+    {
+      "takenAt": "2026-05-01T12:00:00Z",
+      "markdown": "# Theory of self\n\n..."
+    }
   ]
 }
 ```
 
 References (conversation id + turn id + quote) are the load-bearing piece. They are what makes "promote when seen N times" honest — N distinct conversations, not N paraphrases of one.
+
+**Snapshots.** `snapshots` retains the last *N* (default 12) regenerated markdown bodies with timestamps so evolution over time is observable without external tooling. At the framework's typical cadence (twice daily), 12 snapshots cover roughly the last week of history. Configurable per target. A new snapshot is appended each dream when phase 2 regenerates the markdown; oldest entries are evicted to maintain the cap.
+
+## First-run behaviour
+
+No bootstrap or import: any existing `theory-of-self.md` / `theory-of-user.md` file at `OutputMarkdownPath` is simply overwritten on the first phase-2 regeneration. The K8s deployment's PVC backups preserve the prior content if it is ever needed.
+
+Until candidates accumulate enough reinforcement to promote, the regenerated markdown will show "Theories (0)" with a candidate-observations section listing in-progress signals. This is the honest state — the framework has no validated theories yet because it hasn't observed enough conversations. The first promoted theories appear once the configured threshold (default: 3 distinct conversations) is met for some candidate.
+
+## Markdown template format
+
+The regenerated markdown is a deterministic template render of the JSON state. No LLM polish (per the design's anti-rewriting rule). Concrete shape:
+
+```markdown
+# Theory of self
+
+_Generated by the observation framework on 2026-05-07 12:00 UTC.
+Manual edits to this file will be overwritten on the next dream cycle._
+
+## Theories (5)
+
+### User prefers terse responses with no trailing summaries.
+
+- **Reinforced:** 7 conversations
+- **First observed:** 2026-03-15
+- **Last reinforced:** 2026-05-06
+- **Representative quote:** "...just give me the diff, I can read it..."
+
+### Agent over-explores before acting on simple file edits.
+
+- **Reinforced:** 4 conversations
+- **First observed:** 2026-04-02
+- **Last reinforced:** 2026-05-04
+- **Representative quote:** "...you don't need to read three files for a one-line change..."
+
+## Candidate observations (12)
+
+_Observations seen but not yet reinforced enough to promote.
+Threshold: 3 distinct conversations._
+
+- **Agent retries failed bash commands without diagnosing the root cause.** (1 conversation, 2026-05-06)
+- **User defers decisions when given more than 3 options.** (2 conversations, 2026-04-22 → 2026-05-03)
+- ...
+
+## History
+
+_Last 12 snapshots retained in JSON state. View with `rockbot snapshots theory-of-self`._
+```
+
+The "representative quote" is the verbatim quote from the most recent reference, truncated to ~120 chars. This keeps the evidence visible in agent context without bloating the file.
+
+The candidate-observations section is included specifically so the operator (and the agent reading this in context) can see what's accumulating. Hiding candidates would lose the texture of "the framework has noticed something but isn't sure yet."
 
 ## Pipeline mechanics
 
@@ -166,6 +251,32 @@ Per target (parallel across targets):
    - Drop candidates with no new references in the last *K* dreams.
    - Drop or demote theories with no new supporting references in the last *M* dreams (M > K).
 5. Regenerate the markdown file from the JSON state via a pure template. No LLM polish — that re-introduces the rewriting risk.
+6. Append a snapshot of the regenerated markdown to `snapshots[]`, evicting the oldest entry if the cap is exceeded.
+
+### Per-conversation extraction failure handling
+
+If the Low-tier extraction call for one conversation in the batch fails (LLM error, timeout, malformed JSON, gateway-saturated), the framework **skips that conversation, logs the failure, and continues with the rest of the batch**. Rationale:
+
+- Single-conversation failures shouldn't lose the entire dream's worth of observation work.
+- The skipped conversation will be revisited on the next dream cycle (if it falls within the dream window).
+- Per-conversation retry within a single phase risks burning the gateway's slot budget on a failing conversation; the dream cadence handles retry naturally.
+
+If *all* extractions in a batch fail (suggesting a systemic problem — gateway down, LLM provider outage, malformed prompt), the phase logs the failure, skips merge/evaluation, and exits without writing JSON state. The next dream cycle retries from scratch with the same conversation window.
+
+Per-conversation failure metrics (count, tagged by target) are emitted so a non-zero rate is visible.
+
+### Cancellation atomicity
+
+Dream cycles can be preempted at any time by the work-serializer (a user message arriving). When `ct` fires mid-pipeline:
+
+- **Phase 1 in-flight extractions** abort via `ct` propagation through the LLM gateway. The merge step does not run; the candidate pool in JSON is **not modified**. All extraction work for the current dream is lost. Acceptable: the next dream picks up the same conversation window or a superset.
+- **Phase 1 merge** is in-memory and fast; if `ct` fires after merge has started, it completes (cheap deterministic code, no LLM calls). The JSON state file is then written.
+- **Phase 2 evaluation** aborts via `ct` propagation if cancelled before the Higher-tier LLM call completes. Promotion/aging/regen do not run. JSON state is not modified.
+- **Phase 2 promotion + aging + regen** are deterministic and run as a single in-memory unit; once started, they complete even if `ct` fires (small cost, ensures markdown stays consistent with JSON). The new state and regenerated markdown are then written together.
+
+The contract: **JSON state is written atomically per phase-target**. A target either has all of phase 1's work for the current dream applied or none of it; same for phase 2. Partial states are never persisted. The trade-off is that cancellation can lose up to one phase's worth of work per target, which is acceptable given the dream cadence.
+
+Implementation note: writes use an atomic rename pattern (write to `<file>.tmp`, fsync, rename to `<file>`). Crash mid-write does not corrupt the canonical file.
 
 ## Anti-hallucination levers (summary)
 
@@ -230,3 +341,4 @@ The observation framework's parallelism makes a global LLM rate-limit-handling a
 - **Aging window defaults.** At 2 dreams/day, K=14 (one week) for candidates feels right; M=60+ for theories. Should be reviewed once there's data.
 - **Evaluation prompt structure.** Differential framing is the right shape, but the exact prompt template needs iteration once Phase 1 is producing real candidate pools.
 - **Telemetry surfacing.** Should the framework emit an end-of-phase summary message ("X candidates added, Y promoted, Z aged out per target") so dream activity is visible in logs without inspecting JSON files?
+- **Closed-loop sequencing.** v1 is loop A (context-only) by design. The decision on whether/which of loops B and C to build follows real evidence about what the data layer produces — but a rough trigger condition would help: "if after 2 months of accumulation the theories look coherent and operator-validated, consider loop B for the completion evaluator first."
