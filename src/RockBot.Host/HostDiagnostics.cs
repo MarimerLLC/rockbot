@@ -58,6 +58,19 @@ public static class HostDiagnostics
             unit: "ms",
             description: "Time spent waiting for a per-tier LLM gateway slot");
 
+    /// <summary>
+    /// Number of LLM calls that were rejected immediately because the per-tier
+    /// gateway queue had reached its bounded depth
+    /// (<c>MaxConcurrent + MaxPending</c>). Tagged by tier. A non-zero rate is
+    /// a strong signal of either a runaway loop submitting work or sustained
+    /// upstream rate limiting; investigate before raising the caps.
+    /// </summary>
+    public static readonly Counter<long> LlmGatewaySaturationRejections =
+        Meter.CreateCounter<long>(
+            "rockbot.llm.gateway.saturation_rejections",
+            unit: "{rejection}",
+            description: "LLM calls rejected because the gateway queue was full");
+
     // ── Agent turn metrics — recorded at architectural boundaries ─────────────
 
     /// <summary>Duration from user message receipt to final reply published.</summary>

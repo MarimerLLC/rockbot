@@ -6,13 +6,22 @@ namespace RockBot.Host.Tests;
 [TestClass]
 public class LlmGatewayTests
 {
-    private static LlmGateway CreateGateway(int low = 2, int balanced = 2, int high = 2)
+    private static LlmGateway CreateGateway(
+        int low = 2,
+        int balanced = 2,
+        int high = 2,
+        int lowMaxPending = 64,
+        int balancedMaxPending = 64,
+        int highMaxPending = 64)
     {
         var options = Options.Create(new LlmGatewayOptions
         {
             LowMaxConcurrent = low,
             BalancedMaxConcurrent = balanced,
             HighMaxConcurrent = high,
+            LowMaxPending = lowMaxPending,
+            BalancedMaxPending = balancedMaxPending,
+            HighMaxPending = highMaxPending,
         });
         return new LlmGateway(options, NullLogger<LlmGateway>.Instance);
     }
@@ -220,6 +229,143 @@ public class LlmGatewayTests
         var bad = Options.Create(new LlmGatewayOptions { LowMaxConcurrent = 0 });
         Assert.ThrowsExactly<ArgumentOutOfRangeException>(() =>
             new LlmGateway(bad, NullLogger<LlmGateway>.Instance));
+    }
+
+    [TestMethod]
+    public void Constructor_NegativeMaxPending_Throws()
+    {
+        var bad = Options.Create(new LlmGatewayOptions { LowMaxPending = -1 });
+        Assert.ThrowsExactly<ArgumentOutOfRangeException>(() =>
+            new LlmGateway(bad, NullLogger<LlmGateway>.Instance));
+    }
+
+    [TestMethod]
+    public async Task ExecuteAsync_AtSaturation_ThrowsLlmGatewaySaturatedException()
+    {
+        // Cap = MaxConcurrent (1) + MaxPending (1) = 2 callers max.
+        // Hold both with gates; the 3rd should fail fast.
+        using var gateway = CreateGateway(low: 1, lowMaxPending: 1);
+        var holdGate1 = new TaskCompletionSource();
+        var holdGate2 = new TaskCompletionSource();
+
+        // Caller 1: takes the slot
+        var caller1 = gateway.ExecuteAsync(ModelTier.Low, async ct =>
+        {
+            await holdGate1.Task;
+            return 0;
+        }, CancellationToken.None);
+
+        await WaitUntilAsync(
+            () => gateway.GetInFlightCount(ModelTier.Low) == 1,
+            TimeSpan.FromSeconds(5));
+
+        // Caller 2: queued (slot occupied, but cap allows 1 pending)
+        var caller2 = gateway.ExecuteAsync(ModelTier.Low, async ct =>
+        {
+            await holdGate2.Task;
+            return 0;
+        }, CancellationToken.None);
+
+        await WaitUntilAsync(
+            () => gateway.GetPendingCount(ModelTier.Low) == 1,
+            TimeSpan.FromSeconds(5));
+
+        // Caller 3: must fail fast
+        var ex = await Assert.ThrowsExactlyAsync<LlmGatewaySaturatedException>(async () =>
+            await gateway.ExecuteAsync(ModelTier.Low, ct => Task.FromResult(0), CancellationToken.None));
+
+        Assert.AreEqual(ModelTier.Low, ex.Tier);
+        Assert.AreEqual(2, ex.CapacityCap, "Cap should be MaxConcurrent + MaxPending");
+
+        // Drain so callers 1 and 2 finish; this also confirms Active was decremented
+        // correctly so the next call can proceed.
+        holdGate1.SetResult();
+        holdGate2.SetResult();
+        await caller1;
+        await caller2;
+
+        // After drain, a new call should be admitted (Active counter unwound cleanly)
+        var followup = await gateway.ExecuteAsync(
+            ModelTier.Low,
+            ct => Task.FromResult(99),
+            CancellationToken.None);
+        Assert.AreEqual(99, followup);
+    }
+
+    [TestMethod]
+    public async Task ExecuteAsync_RejectionDoesNotConsumeCapacity()
+    {
+        // Cap = 1 + 0 = 1. After a reject, we should still be able to make a call.
+        using var gateway = CreateGateway(low: 1, lowMaxPending: 0);
+        var gate = new TaskCompletionSource();
+
+        var holder = gateway.ExecuteAsync(ModelTier.Low, async ct =>
+        {
+            await gate.Task;
+            return 0;
+        }, CancellationToken.None);
+
+        await WaitUntilAsync(
+            () => gateway.GetInFlightCount(ModelTier.Low) == 1,
+            TimeSpan.FromSeconds(5));
+
+        // Multiple rejections in a row — each must fully release the ticket.
+        for (int i = 0; i < 5; i++)
+        {
+            await Assert.ThrowsExactlyAsync<LlmGatewaySaturatedException>(async () =>
+                await gateway.ExecuteAsync(ModelTier.Low,
+                    ct => Task.FromResult(0),
+                    CancellationToken.None));
+        }
+
+        // Holder is still in-flight; Active should still be 1, not 6 from leaked tickets.
+        Assert.AreEqual(1, gateway.GetInFlightCount(ModelTier.Low));
+
+        gate.SetResult();
+        await holder;
+
+        // After holder finishes, Active is 0; new call accepted.
+        var follow = await gateway.ExecuteAsync(
+            ModelTier.Low,
+            ct => Task.FromResult(7),
+            CancellationToken.None);
+        Assert.AreEqual(7, follow);
+    }
+
+    [TestMethod]
+    public async Task ExecuteAsync_SaturationIsPerTier()
+    {
+        // Saturate Low; Balanced and High should still accept calls.
+        using var gateway = CreateGateway(
+            low: 1, balanced: 1, high: 1,
+            lowMaxPending: 0, balancedMaxPending: 0, highMaxPending: 0);
+
+        var lowGate = new TaskCompletionSource();
+        var lowHolder = gateway.ExecuteAsync(ModelTier.Low, async ct =>
+        {
+            await lowGate.Task;
+            return 0;
+        }, CancellationToken.None);
+
+        await WaitUntilAsync(
+            () => gateway.GetInFlightCount(ModelTier.Low) == 1,
+            TimeSpan.FromSeconds(5));
+
+        // Low is saturated (cap=1, holder consumes it)
+        await Assert.ThrowsExactlyAsync<LlmGatewaySaturatedException>(async () =>
+            await gateway.ExecuteAsync(ModelTier.Low, ct => Task.FromResult(0), CancellationToken.None));
+
+        // Balanced and High remain available
+        var balancedResult = await gateway.ExecuteAsync(
+            ModelTier.Balanced, ct => Task.FromResult(1), CancellationToken.None);
+        var highResult = await gateway.ExecuteAsync(
+            ModelTier.High, ct => Task.FromResult(2), CancellationToken.None);
+
+        Assert.AreEqual(1, balancedResult);
+        Assert.AreEqual(2, highResult);
+
+        lowGate.SetResult();
+        await lowHolder;
     }
 
     private static async Task WaitUntilAsync(Func<bool> predicate, TimeSpan timeout)
