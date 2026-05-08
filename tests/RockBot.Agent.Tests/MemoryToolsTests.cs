@@ -324,6 +324,148 @@ public class MemoryToolsTests
         Assert.IsFalse(result.Contains("capability claim"),
             "Benign content must not produce a soft-gate hint.");
     }
+
+    // -------------------------------------------------------------------------
+    // SaveMemory — Phase 3 scoped-category direct save
+    // -------------------------------------------------------------------------
+
+    [TestMethod]
+    public async Task SaveMemory_FeedbackCategory_BypassesLlmExtraction_AndPreservesCategoryVerbatim()
+    {
+        var memory = new StubLongTermMemory();
+        var llm = new StubChatClient();
+        var tools = MakeToolsWith(memory, llm);
+
+        await tools.SaveMemory(
+            "Always include a TL;DR section at the top of status reports",
+            category: "feedback/from-agent/status-reports",
+            tags: "style,reports");
+
+        var saved = await WaitForSavedAsync(memory, expected: 1);
+        Assert.AreEqual(0, llm.CallCount,
+            "Scoped feedback saves must bypass the LLM extraction pass entirely.");
+        Assert.AreEqual("feedback/from-agent/status-reports", saved[0].Category,
+            "Caller-supplied scoped category must be preserved verbatim.");
+        Assert.AreEqual(
+            "Always include a TL;DR section at the top of status reports",
+            saved[0].Content,
+            "Scoped saves must persist content verbatim, no LLM rewriting.");
+        CollectionAssert.AreEquivalent(new[] { "style", "reports" }, saved[0].Tags.ToArray());
+    }
+
+    [TestMethod]
+    public async Task SaveMemory_CapabilityClaimCategory_BypassesLlmExtraction()
+    {
+        var memory = new StubLongTermMemory();
+        var llm = new StubChatClient();
+        var tools = MakeToolsWith(memory, llm);
+
+        await tools.SaveMemory(
+            "wrapper cannot pass arguments",
+            category: "claim/capability/calendar-mcp/get_calendar_events");
+
+        var saved = await WaitForSavedAsync(memory, expected: 1);
+        Assert.AreEqual(0, llm.CallCount);
+        Assert.AreEqual("claim/capability/calendar-mcp/get_calendar_events", saved[0].Category);
+    }
+
+    [TestMethod]
+    public async Task SaveMemory_FeedbackCategory_OppositeDirective_SupersedesEarlierEntry()
+    {
+        var memory = new StubLongTermMemory();
+        // Test the wiring contract: a detector returning NewerWins drives the supersession path.
+        // The real keyword detector behaviour is covered by MemoryContradictionDetectorTests.
+        var detector = new FakeContradictionDetector(memory);
+        var tools = MakeToolsWith(memory, new StubChatClient(), detector);
+
+        await tools.SaveMemory(
+            "Always include a TL;DR section at the top of status reports",
+            category: "feedback/from-agent/status-reports");
+        await WaitForSavedAsync(memory, expected: 1);
+
+        await tools.SaveMemory(
+            "Never include a TL;DR section in status reports — they should be concise without one",
+            category: "feedback/from-agent/status-reports");
+        await WaitForSavedAsync(memory, expected: 2);
+
+        // Both entries land on disk; the older one carries SupersededBy after the
+        // contradiction detector runs.
+        var entries = memory.SnapshotAll();
+        Assert.AreEqual(2, entries.Count);
+        var loser = entries.Single(e => e.Content.Contains("Always"));
+        var winner = entries.Single(e => e.Content.Contains("Never"));
+        Assert.AreEqual(winner.Id, loser.SupersededBy,
+            "Older entry in the same scoped category should be marked superseded.");
+        Assert.IsNull(winner.SupersededBy);
+    }
+
+    /// <summary>
+    /// Test detector that supersedes any prior live entry sharing the incoming entry's
+    /// category. Validates the MemoryTools wiring without coupling to the real keyword
+    /// detector's heuristics.
+    /// </summary>
+    private sealed class FakeContradictionDetector : IMemoryContradictionDetector
+    {
+        private readonly StubLongTermMemory _memory;
+        public FakeContradictionDetector(StubLongTermMemory memory) => _memory = memory;
+
+        public Task<ContradictionResolution> ResolveAsync(MemoryEntry incoming, CancellationToken cancellationToken = default)
+        {
+            var existing = _memory.SnapshotAll()
+                .Where(e => e.Id != incoming.Id
+                    && e.SupersededBy is null
+                    && string.Equals(e.Category, incoming.Category, StringComparison.OrdinalIgnoreCase))
+                .Select(e => e.Id)
+                .ToList();
+            return Task.FromResult(existing.Count > 0
+                ? ContradictionResolution.NewerWins(existing)
+                : ContradictionResolution.None);
+        }
+    }
+
+    [TestMethod]
+    public async Task SaveMemory_NonScopedCategory_StillUsesLlmExtractionPath()
+    {
+        var memory = new StubLongTermMemory();
+        var llm = new StubChatClient();
+        var tools = MakeToolsWith(memory, llm);
+
+        await tools.SaveMemory(
+            "Loves dogs and lives in Minneapolis",
+            category: "user-preferences/pets");
+
+        // Wait for the LLM call (regression: the existing extractor path must remain wired up).
+        for (var i = 0; i < 50 && llm.CallCount == 0; i++)
+            await Task.Delay(20);
+
+        Assert.AreEqual(1, llm.CallCount,
+            "Non-scoped categories should still go through the LLM extraction pass.");
+    }
+
+    private static MemoryTools MakeToolsWith(
+        StubLongTermMemory memory,
+        StubChatClient llm,
+        IMemoryContradictionDetector? detector = null) =>
+        new(
+            memory,
+            llm,
+            Microsoft.Extensions.Options.Options.Create(new AgentProfileOptions()),
+            NullLogger<MemoryTools>.Instance,
+            detector);
+
+    private static async Task<IReadOnlyList<MemoryEntry>> WaitForSavedAsync(
+        StubLongTermMemory memory, int expected, int timeoutMs = 2000)
+    {
+        var deadline = DateTime.UtcNow.AddMilliseconds(timeoutMs);
+        while (DateTime.UtcNow < deadline)
+        {
+            var snapshot = memory.SnapshotAll();
+            if (snapshot.Count >= expected) return snapshot;
+            await Task.Delay(20);
+        }
+        Assert.Fail($"Timed out waiting for {expected} saved entry/entries; got {memory.SnapshotAll().Count}.");
+        return [];
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -344,10 +486,19 @@ internal sealed class StubLongTermMemory : ILongTermMemory
 
     public void Add(MemoryEntry entry) => _entries.Add(entry);
 
+    public IReadOnlyList<MemoryEntry> SnapshotAll()
+    {
+        lock (_entries)
+            return _entries.ToList();
+    }
+
     public Task SaveAsync(MemoryEntry entry, CancellationToken cancellationToken = default)
     {
-        _entries.RemoveAll(e => e.Id == entry.Id);
-        _entries.Add(entry);
+        lock (_entries)
+        {
+            _entries.RemoveAll(e => e.Id == entry.Id);
+            _entries.Add(entry);
+        }
         return Task.CompletedTask;
     }
 
@@ -382,13 +533,19 @@ internal sealed class StubLongTermMemory : ILongTermMemory
 /// </summary>
 internal sealed class StubChatClient : ILlmClient
 {
+    private int _callCount;
+
     public bool IsIdle => true;
+    public int CallCount => Volatile.Read(ref _callCount);
 
     public Task<ChatResponse> GetResponseAsync(
         IEnumerable<ChatMessage> messages,
         ChatOptions? options = null,
-        CancellationToken cancellationToken = default) =>
-        Task.FromResult(new ChatResponse(new ChatMessage(ChatRole.Assistant, "[]")));
+        CancellationToken cancellationToken = default)
+    {
+        Interlocked.Increment(ref _callCount);
+        return Task.FromResult(new ChatResponse(new ChatMessage(ChatRole.Assistant, "[]")));
+    }
 
     public Task<ChatResponse> GetResponseAsync(
         IEnumerable<ChatMessage> messages,

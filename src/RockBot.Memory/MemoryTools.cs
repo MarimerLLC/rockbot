@@ -114,7 +114,10 @@ public sealed class MemoryTools
     [Description("Save an important fact, user preference, or learned pattern to long-term memory. " +
                  "Returns immediately — the actual enrichment happens in the background. " +
                  "The system will automatically expand the content into focused, keyword-rich entries. " +
-                 "Pass a natural-language description; no pre-structuring needed.")]
+                 "Pass a natural-language description; no pre-structuring needed. " +
+                 "Reserved categories — 'feedback/...' (feedback rules and corrections) and " +
+                 "'claim/capability/...' (capability claims) — bypass expansion and persist " +
+                 "the content verbatim under the supplied category for the contradiction detector.")]
     public Task<string> SaveMemory(
         [Description("The content to remember — can be a natural-language sentence or a compound fact")] string content,
         [Description("Optional category hint (e.g. 'user-preferences/pets')")] string? category = null,
@@ -127,9 +130,51 @@ public sealed class MemoryTools
         // (write proceeds; the appended observation tag rides through to the persisted entry).
         var (augmentedTags, hint) = ApplyObservationSoftGate(content, tags);
 
+        // Phase 3: scoped categories (feedback/* and claim/capability/*) are contracts,
+        // not hints. The default LLM extraction pass freely rewrites the category, which
+        // would defeat the contradiction detector's narrow-scope rule. Save scoped writes
+        // direct so the category and content survive verbatim.
+        if (IsScopedCategory(category))
+        {
+            _ = Task.Run(() => SaveScopedDirectAsync(content, category!, augmentedTags));
+            return Task.FromResult($"Memory save queued.{hint}");
+        }
+
         _ = Task.Run(() => SaveMemoryBackgroundAsync(content, category, augmentedTags));
 
         return Task.FromResult($"Memory save queued.{hint}");
+    }
+
+    private static bool IsScopedCategory(string? category) =>
+        FeedbackMemoryCategories.IsFeedbackMemory(category)
+        || CapabilityClaimCategories.IsCapabilityClaim(category);
+
+    /// <summary>
+    /// Direct save path for scoped categories — bypasses LLM extraction so the caller's
+    /// category and tags are preserved exactly. The contradiction detector still runs.
+    /// </summary>
+    private async Task SaveScopedDirectAsync(string content, string category, string? tags)
+    {
+        try
+        {
+            var entry = new MemoryEntry(
+                Id: Guid.NewGuid().ToString("N")[..12],
+                Content: content,
+                Category: category,
+                Tags: ParseTagsList(tags) ?? [],
+                CreatedAt: DateTimeOffset.UtcNow);
+
+            var resolved = await ApplyContradictionResolutionAsync(entry);
+            await _memory.SaveAsync(resolved);
+
+            _logger.LogInformation(
+                "MemoryTools: scoped direct save {Id} ({Category}, superseded={Superseded}): {Content}",
+                resolved.Id, resolved.Category, resolved.SupersededBy ?? "no", resolved.Content);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "MemoryTools: scoped direct save failed for content: {Content}", content);
+        }
     }
 
     private static (string? Tags, string Hint) ApplyObservationSoftGate(string content, string? tags)
