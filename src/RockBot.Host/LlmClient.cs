@@ -20,16 +20,16 @@ internal sealed class LlmClient(
     /// <summary>Calls the LLM using the Balanced tier.</summary>
     public Task<ChatResponse> GetResponseAsync(
         IEnumerable<ChatMessage> messages,
-        ChatOptions? options = null,
-        CancellationToken cancellationToken = default)
+        ChatOptions? options,
+        CancellationToken cancellationToken)
         => GetResponseAsync(messages, ModelTier.Balanced, options, cancellationToken);
 
     /// <summary>Calls the LLM using the specified tier, falling back to Balanced on failure for Low/High tiers.</summary>
     public async Task<ChatResponse> GetResponseAsync(
         IEnumerable<ChatMessage> messages,
         ModelTier tier,
-        ChatOptions? options = null,
-        CancellationToken cancellationToken = default)
+        ChatOptions? options,
+        CancellationToken cancellationToken)
     {
         try
         {

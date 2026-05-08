@@ -149,7 +149,11 @@ internal sealed class SessionSummaryService : IHostedService, IDisposable
 
         try
         {
-            var response = await _llmClient.GetResponseAsync(messages, new ChatOptions());
+            // Timer-driven background evaluation: no caller-supplied ct. A future
+            // refactor could expose IHostApplicationLifetime.ApplicationStopping so
+            // agent shutdown cancels in-flight evaluation. For now the work is tied
+            // to the agent process lifetime.
+            var response = await _llmClient.GetResponseAsync(messages, new ChatOptions(), CancellationToken.None);
             var raw = response.Text?.Trim() ?? string.Empty;
             var json = ExtractJsonObject(raw);
 

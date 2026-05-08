@@ -563,7 +563,7 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
                     """;
 
                 var messages = new[] { new ChatMessage(ChatRole.User, prompt) };
-                var response = await _llmClient.GetResponseAsync(messages, cancellationToken: ct);
+                var response = await _llmClient.GetResponseAsync(messages, options: null, cancellationToken: ct);
                 summaryText = response.Text?.Trim();
             }
             catch (Exception ex)

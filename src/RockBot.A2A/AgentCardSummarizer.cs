@@ -58,7 +58,7 @@ internal sealed class AgentCardSummarizer(
                 """;
 
             var messages = new[] { new ChatMessage(ChatRole.User, prompt) };
-            var response = await llmClient.GetResponseAsync(messages, ModelTier.Low, cancellationToken: ct);
+            var response = await llmClient.GetResponseAsync(messages, ModelTier.Low, options: null, cancellationToken: ct);
             return response.Text?.Trim() ?? fallback;
         }
         catch (Exception ex)

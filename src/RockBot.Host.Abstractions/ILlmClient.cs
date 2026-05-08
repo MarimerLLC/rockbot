@@ -18,17 +18,27 @@ public interface ILlmClient
     /// <summary>
     /// Calls the LLM using the <see cref="ModelTier.Balanced"/> client.
     /// </summary>
+    /// <remarks>
+    /// <paramref name="cancellationToken"/> is mandatory: the gateway uses it to
+    /// drain queued and in-flight calls when the caller is preempted (e.g. when
+    /// a user message cancels the dream cycle). Callers without a natural ct
+    /// MUST pass <see cref="CancellationToken.None"/> explicitly so the choice
+    /// is intentional and visible in code review. See <c>design/llm-gateway.md</c>.
+    /// </remarks>
     Task<ChatResponse> GetResponseAsync(
         IEnumerable<ChatMessage> messages,
-        ChatOptions? options = null,
-        CancellationToken cancellationToken = default);
+        ChatOptions? options,
+        CancellationToken cancellationToken);
 
     /// <summary>
     /// Calls the LLM using the client for the specified <paramref name="tier"/>.
     /// </summary>
+    /// <remarks>
+    /// <paramref name="cancellationToken"/> is mandatory: see the single-arg overload.
+    /// </remarks>
     Task<ChatResponse> GetResponseAsync(
         IEnumerable<ChatMessage> messages,
         ModelTier tier,
-        ChatOptions? options = null,
-        CancellationToken cancellationToken = default);
+        ChatOptions? options,
+        CancellationToken cancellationToken);
 }

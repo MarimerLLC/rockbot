@@ -192,6 +192,43 @@ public class LlmGatewayTests
     }
 
     [TestMethod]
+    public async Task ExecuteAsync_CancellationWhileInFlight_AbortsAndReleasesSlot()
+    {
+        using var gateway = CreateGateway(low: 1);
+        using var cts = new CancellationTokenSource();
+        var operationStarted = new TaskCompletionSource();
+
+        // Operation respects ct: it parks until ct fires, then throws.
+        var task = gateway.ExecuteAsync<int>(ModelTier.Low, async ct =>
+        {
+            operationStarted.SetResult();
+            await Task.Delay(Timeout.Infinite, ct);
+            return 0;
+        }, cts.Token);
+
+        await operationStarted.Task;
+        await WaitUntilAsync(
+            () => gateway.GetInFlightCount(ModelTier.Low) == 1,
+            TimeSpan.FromSeconds(5));
+
+        cts.Cancel();
+
+        await Assert.ThrowsAsync<OperationCanceledException>(async () => await task);
+
+        // Slot should have been released; in-flight back to zero
+        await WaitUntilAsync(
+            () => gateway.GetInFlightCount(ModelTier.Low) == 0,
+            TimeSpan.FromSeconds(5));
+
+        // And a follow-up call should proceed
+        var followup = await gateway.ExecuteAsync(
+            ModelTier.Low,
+            ct => Task.FromResult(123),
+            CancellationToken.None);
+        Assert.AreEqual(123, followup);
+    }
+
+    [TestMethod]
     public async Task ExecuteAsync_ExceptionInOperation_ReleasesSlot()
     {
         using var gateway = CreateGateway(low: 1);
