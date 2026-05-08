@@ -25,6 +25,12 @@ namespace RockBot.Host;
 /// When <see cref="Mode"/> is <see cref="MemorySearchMode.Regex"/>, controls case sensitivity of the regex.
 /// Default <c>false</c> mirrors Claude Code's Grep tool. Ignored in hybrid mode.
 /// </param>
+/// <param name="IncludeSuperseded">
+/// When <c>true</c>, entries with <see cref="MemoryEntry.SupersededBy"/> set are included in
+/// search results. Default <c>false</c> hides them from recall, mirroring Phase 3 self-repair
+/// semantics. Used by audit tooling and the dream contradiction sweep that need to inspect
+/// the full corpus.
+/// </param>
 public sealed record MemorySearchCriteria(
     string? Query = null,
     string? Category = null,
@@ -34,4 +40,5 @@ public sealed record MemorySearchCriteria(
     int MaxResults = 20,
     float[]? QueryEmbedding = null,
     MemorySearchMode Mode = MemorySearchMode.Hybrid,
-    bool RegexCaseSensitive = false);
+    bool RegexCaseSensitive = false,
+    bool IncludeSuperseded = false);

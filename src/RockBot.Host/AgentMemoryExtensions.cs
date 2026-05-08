@@ -60,6 +60,10 @@ public static class AgentMemoryExtensions
         builder.Services.AddSingleton<ICapabilityClaimWriter, CapabilityClaimWriter>();
         builder.Services.AddSingleton<ICapabilityClaimVerifier, CapabilityClaimVerifier>();
 
+        // Phase 3 self-repair: hot-path contradiction detector. Narrowly scoped to
+        // claim/capability/* and feedback/* writes; other categories short-circuit.
+        builder.Services.AddSingleton<IMemoryContradictionDetector, MemoryContradictionDetector>();
+
         return builder;
     }
 

@@ -41,6 +41,7 @@ internal sealed class DreamService : IHostedService, IDisposable
     private readonly ILogger<DreamService> _logger;
     private readonly RockBot.Observation.IObservationPipelineCoordinator? _observationCoordinator;
     private readonly ConversationLogTranscriptAdapter? _observationTranscriptAdapter;
+    private readonly IMemoryContradictionDetector? _contradictionDetector;
     private Timer? _timer;
     private CronExpression? _cron;
     private string? _dreamDirective;
@@ -58,6 +59,7 @@ internal sealed class DreamService : IHostedService, IDisposable
     private string? _identityDirective;
     private string? _wispFailureDirective;
     private string? _toolSuccessLearningDirective;
+    private string? _contradictionSweepDirective;
 
     public DreamService(
         ILongTermMemory memory,
@@ -79,7 +81,8 @@ internal sealed class DreamService : IHostedService, IDisposable
         IWispExecutionLog? wispExecutionLog = null,
         IWorkingMemory? workingMemory = null,
         RockBot.Observation.IObservationPipelineCoordinator? observationCoordinator = null,
-        ConversationLogTranscriptAdapter? observationTranscriptAdapter = null)
+        ConversationLogTranscriptAdapter? observationTranscriptAdapter = null,
+        IMemoryContradictionDetector? contradictionDetector = null)
     {
         _memory = memory;
         _skillStore = skillStores.FirstOrDefault();
@@ -101,6 +104,7 @@ internal sealed class DreamService : IHostedService, IDisposable
         _logger = logger;
         _observationCoordinator = observationCoordinator;
         _observationTranscriptAdapter = observationTranscriptAdapter;
+        _contradictionDetector = contradictionDetector;
     }
 
     public Task StartAsync(CancellationToken cancellationToken)
@@ -302,6 +306,19 @@ internal sealed class DreamService : IHostedService, IDisposable
                 _logger.LogDebug("DreamService: tool-success-learning directive not found at {Path}; using built-in", path);
             else
                 _logger.LogInformation("DreamService: loaded tool-success-learning directive from {Path}", path);
+        }
+
+        if (_options.ContradictionSweepEnabled)
+        {
+            var path = ResolvePath(_options.ContradictionSweepDirectivePath, _profileOptions.BasePath);
+            _contradictionSweepDirective = File.Exists(path)
+                ? File.ReadAllText(path)
+                : null; // null → BuiltInContradictionSweepDirective used in RunContradictionSweepPassAsync
+
+            if (!File.Exists(path))
+                _logger.LogDebug("DreamService: contradiction sweep directive not found at {Path}; using built-in", path);
+            else
+                _logger.LogInformation("DreamService: loaded contradiction sweep directive from {Path}", path);
         }
 
         try
@@ -550,6 +567,8 @@ internal sealed class DreamService : IHostedService, IDisposable
             ct.ThrowIfCancellationRequested(); await RunDlqReviewPassAsync(ct);
 
             ct.ThrowIfCancellationRequested(); await RunIdentityReflectionPassAsync(ct);
+
+            ct.ThrowIfCancellationRequested(); await RunContradictionSweepPassAsync(ct);
 
             sw.Stop();
             _logger.LogInformation(
@@ -3055,6 +3074,140 @@ internal sealed class DreamService : IHostedService, IDisposable
                 deleted, saved);
         });
     }
+
+    /// <summary>
+    /// Phase 3 self-repair contradiction sweep — LLM-mediated backstop for cases the
+    /// hot-path keyword detector missed. Narrowly scoped to <c>claim/capability/*</c>
+    /// and <c>feedback/*</c>; entries elsewhere are not loaded. Includes already-superseded
+    /// entries in the corpus so the LLM can reason about chains, but only marks live
+    /// entries as superseded.
+    /// </summary>
+    private async Task RunContradictionSweepPassAsync(CancellationToken ct)
+    {
+        if (!_options.ContradictionSweepEnabled) return;
+
+        await RunPassAsync("contradiction sweep", async () =>
+        {
+            var claims = await _memory.SearchAsync(
+                new MemorySearchCriteria(
+                    Category: CapabilityClaimCategories.Prefix,
+                    MaxResults: 500),
+                ct);
+            var feedback = await _memory.SearchAsync(
+                new MemorySearchCriteria(
+                    Category: FeedbackMemoryCategories.Prefix,
+                    MaxResults: 500),
+                ct);
+
+            var corpus = claims.Concat(feedback)
+                .GroupBy(e => e.Id, StringComparer.OrdinalIgnoreCase)
+                .Select(g => g.First())
+                .ToList();
+
+            if (corpus.Count < 2)
+            {
+                _logger.LogInformation(
+                    "DreamService: contradiction sweep — only {Count} claim/feedback entry/entries; skipping",
+                    corpus.Count);
+                return;
+            }
+
+            var directive = _contradictionSweepDirective ?? BuiltInContradictionSweepDirective;
+
+            var userMessage = new StringBuilder();
+            userMessage.AppendLine($"Review {corpus.Count} claim/feedback memory entries for contradictions:");
+            userMessage.AppendLine();
+
+            for (var i = 0; i < corpus.Count; i++)
+            {
+                var e = corpus[i];
+                var tags = e.Tags.Count > 0 ? string.Join(", ", e.Tags) : "(none)";
+                var marker = FeedbackMemoryCategories.IsUserCorrection(e) ? " (user-correction)" : string.Empty;
+                userMessage.AppendLine(
+                    $"{i + 1}. [ID:{e.Id}] category={e.Category ?? "uncategorized"}{marker} " +
+                    $"created={e.CreatedAt:yyyy-MM-dd} tags=[{tags}]");
+                userMessage.AppendLine($"   {e.Content}");
+            }
+
+            var result = await InvokeDreamPassAsync<ContradictionSweepResultDto>(
+                "contradiction sweep",
+                directive,
+                userMessage.ToString(),
+                ct);
+            if (result is null) return;
+
+            var supersededCount = await ApplyContradictionSweepResultAsync(
+                _memory, corpus, result.Pairs, _logger, ct);
+
+            _logger.LogInformation(
+                "DreamService: contradiction sweep complete — {Count} entry/entries marked superseded out of {Corpus} reviewed",
+                supersededCount, corpus.Count);
+        });
+    }
+
+    /// <summary>
+    /// Applies LLM-proposed contradiction pairs to the long-term memory store, enforcing
+    /// the user-correction protection invariant: a user correction may never be superseded
+    /// by a non-correction. Internal to enable direct unit testing without a real LLM call.
+    /// </summary>
+    internal static async Task<int> ApplyContradictionSweepResultAsync(
+        ILongTermMemory memory,
+        IReadOnlyList<MemoryEntry> corpus,
+        IReadOnlyList<ContradictionPairDto>? pairs,
+        ILogger logger,
+        CancellationToken ct)
+    {
+        var byId = corpus.ToDictionary(e => e.Id, StringComparer.OrdinalIgnoreCase);
+        var supersededCount = 0;
+
+        foreach (var pair in pairs ?? [])
+        {
+            if (string.IsNullOrWhiteSpace(pair.WinnerId) || string.IsNullOrWhiteSpace(pair.LoserId))
+                continue;
+            if (string.Equals(pair.WinnerId, pair.LoserId, StringComparison.OrdinalIgnoreCase))
+                continue;
+            if (!byId.TryGetValue(pair.WinnerId, out var winner)) continue;
+            if (!byId.TryGetValue(pair.LoserId, out var loser)) continue;
+            if (loser.SupersededBy is not null) continue;
+
+            if (FeedbackMemoryCategories.IsUserCorrection(loser)
+                && !FeedbackMemoryCategories.IsUserCorrection(winner))
+            {
+                logger.LogInformation(
+                    "DreamService: contradiction sweep ignored — sweep tried to supersede user-correction {LoserId} with non-correction {WinnerId}",
+                    pair.LoserId, pair.WinnerId);
+                continue;
+            }
+
+            await memory.SaveAsync(
+                loser with { SupersededBy = winner.Id, UpdatedAt = DateTimeOffset.UtcNow },
+                ct);
+            supersededCount++;
+            logger.LogInformation(
+                "DreamService: contradiction sweep marked {LoserId} superseded by {WinnerId} (reason: {Reason})",
+                pair.LoserId, pair.WinnerId, pair.Reason ?? "(none)");
+        }
+
+        return supersededCount;
+    }
+
+    internal sealed record ContradictionSweepResultDto(IReadOnlyList<ContradictionPairDto>? Pairs);
+    internal sealed record ContradictionPairDto(string? WinnerId, string? LoserId, string? Reason);
+
+    private const string BuiltInContradictionSweepDirective = """
+        You are a memory contradiction reviewer. Inspect the listed claim/feedback memory entries
+        and identify pairs that contradict each other on the same subject (same tool, same rule).
+
+        Rules for choosing the winner of a contradicting pair:
+        - If exactly one entry is marked (user-correction), it ALWAYS wins.
+        - Otherwise the more recent entry (later created date) wins.
+        - If you cannot decide unambiguously, omit the pair.
+
+        Return ONLY valid JSON in this shape and nothing else:
+        { "pairs": [ { "winnerId": "...", "loserId": "...", "reason": "..." } ] }
+
+        If you find no contradictions, return: { "pairs": [] }
+        """;
 
     /// <summary>
     /// Wraps a single dream-pass body so unhandled exceptions become a per-pass
