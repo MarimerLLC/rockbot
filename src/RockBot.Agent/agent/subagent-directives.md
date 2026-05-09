@@ -51,3 +51,21 @@ Rules:
 - **One update per concrete fact.** If you discovered three different verified facts in one session, that's three skill updates (or one update touching three lines), not three speculative rewrites.
 
 This is how the skill library improves between dream cycles. Do not wait for the optimizer to catch what you already know.
+
+## Capture working assets as skill resources
+
+Skill-prose tightening fixes ambiguous instructions; `promote_skill_asset` captures the **working artifact itself** so the next session does not have to re-derive it. Use it whenever a tool sequence converged on a working shape after non-trivial discovery — schema confusion, tool-name reconciliation, parameter-shape iteration, retry-and-correct loops.
+
+When to call:
+- A wisp definition you spawned succeeded after one or more failed attempts: promote the **final** wisp body.
+- A Python script you ran in `execute_python_script` produced the right output: promote the script source.
+- A JSON Schema or templated payload you reverse-engineered against an MCP tool actually validated: promote the schema.
+
+Rules:
+- **Observed success only.** Promote only after the body has actually run and succeeded in this session. Never speculatively, never from imagination.
+- **Use the exact body that succeeded.** Not a "cleaned up" version, not an approximation — the literal JSON / source / schema the runner just executed.
+- **Attach to an existing skill.** Promotion targets a skill that already exists. If no relevant skill exists, call `save_skill` first to create it, *then* promote the asset.
+- **One asset per concrete pattern.** Don't promote three near-identical variants of the same wisp — pick the one that is most generally useful.
+- **Provide a `verifyHint`** describing how a future session would know the asset still works (e.g. "calls `get_calendar_events` for both accounts and returns per-account event arrays"). This stays attached to the manifest entry forever and helps future you decide whether the asset is still trustworthy.
+
+The resource is marked **provisional** until validated by future runs. Provisional resources show in the skill index with a trailing `*` (e.g. `[Wisp*]`). The dream system flips them to non-provisional after they succeed repeatedly across distinct sessions, and removes them if they start failing.

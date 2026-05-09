@@ -1,4 +1,5 @@
 using System.ComponentModel;
+using System.Security.Cryptography;
 using System.Text;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
@@ -35,7 +36,8 @@ public sealed class SkillTools
         ILlmClient llmClient,
         ILogger logger,
         string? sessionId = null,
-        ISkillUsageStore? usageStore = null)
+        ISkillUsageStore? usageStore = null,
+        bool enablePromote = false)
     {
         _skillStore = skillStore;
         _llmClient = llmClient;
@@ -43,14 +45,23 @@ public sealed class SkillTools
         _sessionId = sessionId;
         _usageStore = usageStore;
 
-        Tools =
-        [
+        var tools = new List<AITool>
+        {
             AIFunctionFactory.Create(GetSkill),
             AIFunctionFactory.Create(GetSkillResource),
             AIFunctionFactory.Create(ListSkills),
             AIFunctionFactory.Create(SaveSkill),
-            AIFunctionFactory.Create(DeleteSkill)
-        ];
+            AIFunctionFactory.Create(DeleteSkill),
+        };
+
+        // Promotion is currently a subagent-only path. Subagents are the part of the
+        // system that performs the exploratory tool-call discovery whose result is
+        // worth capturing as a typed asset; the main agent reaches assets via skills
+        // the dream pass has already promoted.
+        if (enablePromote)
+            tools.Add(AIFunctionFactory.Create(PromoteSkillAsset));
+
+        Tools = tools;
     }
 
     public IList<AITool> Tools { get; }
@@ -158,6 +169,50 @@ public sealed class SkillTools
         return $"Skill '{name}' saved. Summary is being generated.\n\n{FormatIndex(index)}";
     }
 
+    [Description("Save a working asset (wisp definition, script, schema) you just verified " +
+                 "as a resource attached to the skill that guided you. Use this only after " +
+                 "a tool-call sequence has actually executed successfully — never speculatively. " +
+                 "The resource is marked provisional until validated by future runs. " +
+                 "Promotion attaches to an existing skill — call save_skill first if no relevant " +
+                 "skill exists yet.")]
+    public async Task<string> PromoteSkillAsset(
+        [Description("The skill that guided you to this working asset (must already exist).")] string skillName,
+        [Description("Filename for the asset (e.g. 'fanout.json', 'compute.py'). Simple filename only — no path separators.")] string filename,
+        [Description("The asset's type — Wisp for a wisp definition, Python for a script, JsonSchema for a schema, etc.")] SkillResourceType type,
+        [Description("One-line description of what this asset does.")] string description,
+        [Description("The exact body that just executed successfully — the wisp definition JSON, the script source, etc.")] string content,
+        [Description("Optional advisory text describing how a future session would know this asset still works (e.g. 'returns per-account event arrays').")] string? verifyHint = null)
+    {
+        _logger.LogInformation(
+            "Tool call: PromoteSkillAsset(skill={Skill}, filename={Filename}, type={Type})",
+            skillName, filename, type);
+
+        var existing = await _skillStore.GetAsync(skillName);
+        if (existing is null)
+            return $"Skill '{skillName}' not found. Promotion attaches to an existing skill; " +
+                   "call save_skill first to create it, then promote the asset.";
+
+        // Pre-build the manifest entry so Provisional, CreatedAt, VerifyHint, and
+        // DefinitionHash are all set per the in-session-promotion contract.
+        var input = new SkillResourceInput(
+            filename, type, description, content,
+            Provisional: true,
+            VerifyHint: verifyHint);
+        var entry = new SkillResource(
+            filename, type, description,
+            Provisional: true,
+            CreatedAt: DateTimeOffset.UtcNow,
+            VerifyHint: verifyHint,
+            DefinitionHash: ComputeContentHash(content));
+
+        var attached = await _skillStore.AttachResourceAsync(skillName, input, entry);
+        if (!attached)
+            return $"Skill '{skillName}' not found.";
+
+        return $"Asset '{filename}' attached to skill '{skillName}' as provisional {type}. " +
+               "It will be validated by future successful runs and demoted if it stops working.";
+    }
+
     [Description("Delete a skill by name. Returns the updated skill index.")]
     public async Task<string> DeleteSkill(
         [Description("The skill name to delete")] string name)
@@ -248,6 +303,8 @@ public sealed class SkillTools
     /// Produces a compact <c>[Wisp, Python]</c>-style tag listing the distinct resource types
     /// attached to a skill, or an empty string if the skill has no resources. Lets the LLM see
     /// at a glance (from the skill index) which skills already carry a saved wisp, script, etc.
+    /// A trailing <c>*</c> on a type marks that at least one entry of that type is provisional —
+    /// captured in-session and not yet validated by repeated successful use.
     /// </summary>
     public static string FormatResourceTag(IReadOnlyList<SkillResource>? manifest)
     {
@@ -255,11 +312,23 @@ public sealed class SkillTools
             return "";
 
         var types = manifest
-            .Select(r => r.Type.ToString())
-            .Distinct(StringComparer.Ordinal)
-            .OrderBy(t => t, StringComparer.Ordinal)
+            .GroupBy(r => r.Type)
+            .Select(g => new { Type = g.Key.ToString(), HasProvisional = g.Any(r => r.Provisional) })
+            .OrderBy(x => x.Type, StringComparer.Ordinal)
+            .Select(x => x.HasProvisional ? x.Type + "*" : x.Type)
             .ToList();
 
         return $" [{string.Join(", ", types)}]";
+    }
+
+    /// <summary>
+    /// SHA-256-hex16 of <paramref name="content"/> — same scheme as the wisp execution
+    /// log's definition hash. Used by promotion so the validation pass can cross-reference
+    /// resource bodies against recent wisp records.
+    /// </summary>
+    internal static string ComputeContentHash(string content)
+    {
+        var bytes = SHA256.HashData(Encoding.UTF8.GetBytes(content));
+        return Convert.ToHexStringLower(bytes)[..16];
     }
 }

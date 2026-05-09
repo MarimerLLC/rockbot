@@ -325,6 +325,147 @@ public class SkillToolsTests
         Assert.IsFalse(tracker.TryMarkAsRecalled("session-2", "plan-meeting"));
     }
 
+    // ── PromoteSkillAsset (Phase 2b: skill-asset promotion) ──────────────────
+
+    [TestMethod]
+    public async Task SkillTools_DefaultCtor_DoesNotIncludePromote()
+    {
+        var tools = new SkillTools(new StubSkillStore(), new StubChatClient(), NullLogger<SkillTools>.Instance);
+
+        var names = tools.Tools.OfType<AIFunction>().Select(f => f.Name).ToList();
+        Assert.IsFalse(names.Any(n => n.Contains("promote", StringComparison.OrdinalIgnoreCase)),
+            "promote_skill_asset must not be in the main-agent tool list");
+    }
+
+    [TestMethod]
+    public async Task SkillTools_EnablePromote_IncludesPromoteTool()
+    {
+        var tools = new SkillTools(new StubSkillStore(), new StubChatClient(), NullLogger<SkillTools>.Instance,
+            enablePromote: true);
+
+        var names = tools.Tools.OfType<AIFunction>().Select(f => f.Name).ToList();
+        Assert.IsTrue(names.Any(n => n.Contains("promote", StringComparison.OrdinalIgnoreCase)),
+            $"promote_skill_asset should be in the subagent tool list. Got: {string.Join(", ", names)}");
+    }
+
+    [TestMethod]
+    public async Task PromoteSkillAsset_AttachesProvisionalManifestEntry()
+    {
+        var store = new StubSkillStore();
+        store.Add(new Skill("calendar/scan", "Scan", "# Scan", DateTimeOffset.UtcNow));
+
+        var tools = new SkillTools(store, new StubChatClient(), NullLogger<SkillTools>.Instance,
+            enablePromote: true);
+
+        var body = """{"description":"x","steps":[]}""";
+        var result = await tools.PromoteSkillAsset(
+            "calendar/scan", "fanout.json", SkillResourceType.Wisp,
+            "Per-account fan-out", body,
+            verifyHint: "exercises both accounts");
+
+        Assert.IsTrue(result.Contains("attached"), result);
+
+        var saved = await store.GetAsync("calendar/scan");
+        var entry = saved!.Manifest!.Single();
+        Assert.AreEqual("fanout.json", entry.Filename);
+        Assert.AreEqual(SkillResourceType.Wisp, entry.Type);
+        Assert.IsTrue(entry.Provisional);
+        Assert.IsNotNull(entry.CreatedAt);
+        Assert.AreEqual("exercises both accounts", entry.VerifyHint);
+        Assert.IsNotNull(entry.DefinitionHash);
+        Assert.AreEqual(16, entry.DefinitionHash!.Length);
+
+        // DefinitionHash should match SHA-256-hex16 of the body
+        var bytes = System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(body));
+        var expected = Convert.ToHexStringLower(bytes)[..16];
+        Assert.AreEqual(expected, entry.DefinitionHash);
+    }
+
+    [TestMethod]
+    public async Task PromoteSkillAsset_UnknownSkill_ReturnsHelpfulError()
+    {
+        var tools = new SkillTools(new StubSkillStore(), new StubChatClient(), NullLogger<SkillTools>.Instance,
+            enablePromote: true);
+
+        var result = await tools.PromoteSkillAsset(
+            "nope", "x.json", SkillResourceType.Wisp, "x", "{}");
+
+        Assert.IsTrue(result.Contains("not found"));
+        Assert.IsTrue(result.Contains("save_skill"));
+    }
+
+    [TestMethod]
+    public async Task PromoteSkillAsset_TwiceSameFilename_ReplacesPreservingOthers()
+    {
+        var store = new StubSkillStore();
+        store.Add(new Skill("calendar/scan", "Scan", "# Scan", DateTimeOffset.UtcNow));
+
+        var tools = new SkillTools(store, new StubChatClient(), NullLogger<SkillTools>.Instance,
+            enablePromote: true);
+
+        await tools.PromoteSkillAsset("calendar/scan", "a.json", SkillResourceType.Wisp, "first", "{\"v\":1}");
+        await tools.PromoteSkillAsset("calendar/scan", "b.py", SkillResourceType.Python, "second", "print('b')");
+        await tools.PromoteSkillAsset("calendar/scan", "a.json", SkillResourceType.Wisp, "first-v2", "{\"v\":2}");
+
+        var saved = await store.GetAsync("calendar/scan");
+        Assert.AreEqual(2, saved!.Manifest!.Count);
+        Assert.AreEqual("first-v2", saved.Manifest.Single(r => r.Filename == "a.json").Description);
+
+        // b.py is preserved
+        var bBody = await store.GetResourceAsync("calendar/scan", "b.py");
+        Assert.AreEqual("print('b')", bBody);
+    }
+
+    // ── FormatResourceTag — provisional asterisk ─────────────────────────────
+
+    [TestMethod]
+    public void FormatResourceTag_ProvisionalEntry_AppendsAsterisk()
+    {
+        var manifest = new List<SkillResource>
+        {
+            new("a.json", SkillResourceType.Wisp, "x", Provisional: true),
+        };
+        var tag = SkillTools.FormatResourceTag(manifest);
+        Assert.AreEqual(" [Wisp*]", tag);
+    }
+
+    [TestMethod]
+    public void FormatResourceTag_MixedProvisionalAndValidated_OnlyMarksAffectedTypes()
+    {
+        var manifest = new List<SkillResource>
+        {
+            new("a.json", SkillResourceType.Wisp, "x", Provisional: true),
+            new("script.py", SkillResourceType.Python, "y"),
+            new("schema.json", SkillResourceType.JsonSchema, "z"),
+        };
+        var tag = SkillTools.FormatResourceTag(manifest);
+        Assert.AreEqual(" [JsonSchema, Python, Wisp*]", tag);
+    }
+
+    [TestMethod]
+    public void FormatResourceTag_ProvisionalAndValidatedSameType_UsesAsterisk()
+    {
+        var manifest = new List<SkillResource>
+        {
+            new("a.json", SkillResourceType.Wisp, "x", Provisional: true),
+            new("b.json", SkillResourceType.Wisp, "y"),  // validated
+        };
+        var tag = SkillTools.FormatResourceTag(manifest);
+        Assert.AreEqual(" [Wisp*]", tag);
+    }
+
+    [TestMethod]
+    public void FormatResourceTag_AllValidated_NoAsterisk()
+    {
+        var manifest = new List<SkillResource>
+        {
+            new("a.json", SkillResourceType.Wisp, "x"),
+            new("b.py", SkillResourceType.Python, "y"),
+        };
+        var tag = SkillTools.FormatResourceTag(manifest);
+        Assert.AreEqual(" [Python, Wisp]", tag);
+    }
+
     // ── Stubs ─────────────────────────────────────────────────────────────────
 
     private sealed class StubSkillStore : ISkillStore
@@ -369,6 +510,88 @@ public class SkillToolsTests
             if (_resources.TryGetValue(skillName, out var files) && files.TryGetValue(filename, out var content))
                 return Task.FromResult<string?>(content);
             return Task.FromResult<string?>(null);
+        }
+
+        public Task<bool> AttachResourceAsync(string skillName, SkillResourceInput resource, SkillResource? manifestEntry = null)
+        {
+            if (!_skills.TryGetValue(skillName, out var existing))
+                return Task.FromResult(false);
+
+            if (!_resources.TryGetValue(skillName, out var files))
+                _resources[skillName] = files = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            files[resource.Filename] = resource.Content;
+
+            var entry = manifestEntry ?? new SkillResource(
+                resource.Filename, resource.Type, resource.Description,
+                Provisional: resource.Provisional,
+                CreatedAt: DateTimeOffset.UtcNow,
+                VerifyHint: resource.VerifyHint);
+
+            var oldManifest = existing.Manifest ?? [];
+            var newManifest = new List<SkillResource>(oldManifest.Count + 1);
+            var replaced = false;
+            foreach (var old in oldManifest)
+            {
+                if (string.Equals(old.Filename, resource.Filename, StringComparison.OrdinalIgnoreCase))
+                {
+                    newManifest.Add(entry);
+                    replaced = true;
+                }
+                else
+                {
+                    newManifest.Add(old);
+                }
+            }
+            if (!replaced)
+                newManifest.Add(entry);
+
+            _skills[skillName] = existing with { Manifest = newManifest };
+            return Task.FromResult(true);
+        }
+
+        public Task<bool> RemoveResourceAsync(string skillName, string filename)
+        {
+            if (!_skills.TryGetValue(skillName, out var existing) || existing.Manifest is null)
+                return Task.FromResult(false);
+
+            var oldManifest = existing.Manifest;
+            var newManifest = oldManifest
+                .Where(r => !string.Equals(r.Filename, filename, StringComparison.OrdinalIgnoreCase))
+                .ToList();
+            if (newManifest.Count == oldManifest.Count)
+                return Task.FromResult(false);
+
+            if (_resources.TryGetValue(skillName, out var files))
+                files.Remove(filename);
+
+            _skills[skillName] = existing with { Manifest = newManifest.Count == 0 ? null : newManifest };
+            return Task.FromResult(true);
+        }
+
+        public Task<bool> UpdateResourceMetadataAsync(string skillName, SkillResource updated)
+        {
+            if (!_skills.TryGetValue(skillName, out var existing) || existing.Manifest is null)
+                return Task.FromResult(false);
+
+            var oldManifest = existing.Manifest;
+            var newManifest = new List<SkillResource>(oldManifest.Count);
+            var matched = false;
+            foreach (var old in oldManifest)
+            {
+                if (string.Equals(old.Filename, updated.Filename, StringComparison.OrdinalIgnoreCase))
+                {
+                    newManifest.Add(updated);
+                    matched = true;
+                }
+                else
+                {
+                    newManifest.Add(old);
+                }
+            }
+            if (!matched)
+                return Task.FromResult(false);
+            _skills[skillName] = existing with { Manifest = newManifest };
+            return Task.FromResult(true);
         }
     }
 
