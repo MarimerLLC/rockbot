@@ -234,6 +234,7 @@ public static class AgentMemoryExtensions
 
         builder.Services.AddSingleton<IRepairTicketStore, FileRepairTicketStore>();
         builder.Services.AddSingleton<IRepairTargetApplier, SkillBodyApplier>();
+        builder.Services.AddSingleton<IRepairTargetApplier, SkillResourceApplier>();
         builder.Services.AddSingleton<IRepairTargetApplier, WorkingMemoryEvictApplier>();
         builder.Services.AddSingleton<IRepairTargetApplier, ToolDefaultRegisterApplier>();
         builder.Services.AddSingleton<IRepairTargetApplier, PromptBuilderHintApplier>();

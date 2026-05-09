@@ -18,4 +18,11 @@ public enum RepairTarget
 
     /// <summary>Append or replace a hint section in <c>/data/agent/prompt-hints/{category}.md</c>.</summary>
     PromptBuilderHint,
+
+    /// <summary>
+    /// Attach, demote, or remove a sub-resource on a named skill. Self-repair attaches
+    /// always land provisional; the validation pass promotes them to non-provisional
+    /// after observed repeated success.
+    /// </summary>
+    SkillResource,
 }
