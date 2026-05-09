@@ -150,6 +150,28 @@ public sealed class DreamOptions
     public string WispFailureDirectivePath { get; set; } = "wisp-failure-dream.md";
 
     /// <summary>
+    /// Whether the wisp success analysis pass (requires <see cref="IWispExecutionLog"/>) is enabled.
+    /// Detects wisp definitions that have repeated successfully across distinct sessions and
+    /// promotes them to validated skill resources via <c>ISkillStore.AttachResourceAsync</c>.
+    /// Symmetric complement to the failure pass.
+    /// </summary>
+    public bool WispSuccessAnalysisEnabled { get; set; } = true;
+
+    /// <summary>
+    /// Path to the wisp success analysis directive file, relative to <see cref="AgentProfileOptions.BasePath"/>.
+    /// When the file does not exist, a built-in fallback directive is used.
+    /// </summary>
+    public string WispSuccessDirectivePath { get; set; } = "wisp-success-dream.md";
+
+    /// <summary>
+    /// Minimum number of successful executions of the same definition hash required
+    /// before the success pass considers it a candidate for promotion. Tighter than
+    /// the failure pass (which uses <c>frequency &gt;= 3</c>) so we filter zero false
+    /// positives over recall.
+    /// </summary>
+    public int WispSuccessFrequencyThreshold { get; set; } = 3;
+
+    /// <summary>
     /// Whether the tool-success-learning pass (requires <see cref="IToolCallLog"/>) is enabled.
     /// Mines the tool-call log for retry-until-success patterns and writes the verified
     /// argument values as durable long-term memory entries.
