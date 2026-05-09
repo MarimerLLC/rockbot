@@ -138,9 +138,20 @@ internal sealed partial class FileSkillStore : ISkillStore
                 }
             }
 
-            // Build manifest from the provided resources
+            // Build manifest from the provided resources. Preserve provisional/verify-hint
+            // metadata supplied on the input. CreatedAt is set to "now" for new entries
+            // (the bulk path nukes the pre-existing manifest, so existing CreatedAt is
+            // not preserved here — use AttachResourceAsync for additive single-resource saves).
+            var nowStamp = DateTimeOffset.UtcNow;
             var manifest = resources
-                .Select(r => new SkillResource(r.Filename, r.Type, r.Description))
+                .Select(r => new SkillResource(
+                    r.Filename,
+                    r.Type,
+                    r.Description,
+                    Provisional: r.Provisional,
+                    CreatedAt: nowStamp,
+                    VerifyHint: r.VerifyHint,
+                    DefinitionHash: ComputeDefinitionHash(r.Content)))
                 .ToList();
 
             // Save skill JSON with updated manifest
@@ -174,6 +185,186 @@ internal sealed partial class FileSkillStore : ISkillStore
         {
             _semaphore.Release();
         }
+    }
+
+    public async Task<bool> AttachResourceAsync(
+        string skillName,
+        SkillResourceInput resource,
+        SkillResource? manifestEntry = null)
+    {
+        ValidateName(skillName);
+        ValidateFilename(resource.Filename);
+
+        Skill saved;
+        await _semaphore.WaitAsync();
+        try
+        {
+            var index = await EnsureIndexAsync();
+            if (!index.TryGetValue(skillName, out var existing))
+                return false;
+
+            var folderPath = GetResourceFolderPath(skillName);
+            Directory.CreateDirectory(folderPath);
+
+            // Write/replace the resource file
+            var resourcePath = Path.Combine(folderPath, resource.Filename);
+            await File.WriteAllTextAsync(resourcePath, resource.Content);
+
+            // Build the manifest entry — caller-supplied entry wins; otherwise derive from input.
+            var entry = manifestEntry ?? new SkillResource(
+                resource.Filename,
+                resource.Type,
+                resource.Description,
+                Provisional: resource.Provisional,
+                CreatedAt: DateTimeOffset.UtcNow,
+                VerifyHint: resource.VerifyHint,
+                DefinitionHash: ComputeDefinitionHash(resource.Content));
+
+            // Replace by filename (case-insensitive to match folder semantics) or append.
+            var oldManifest = existing.Manifest ?? [];
+            var newManifest = new List<SkillResource>(oldManifest.Count + 1);
+            var replaced = false;
+            foreach (var old in oldManifest)
+            {
+                if (string.Equals(old.Filename, resource.Filename, StringComparison.OrdinalIgnoreCase))
+                {
+                    newManifest.Add(entry);
+                    replaced = true;
+                }
+                else
+                {
+                    newManifest.Add(old);
+                }
+            }
+            if (!replaced)
+                newManifest.Add(entry);
+
+            saved = existing with { Manifest = newManifest, UpdatedAt = DateTimeOffset.UtcNow };
+            var json = JsonSerializer.Serialize(saved, JsonOptions);
+            await File.WriteAllTextAsync(GetFilePath(skillName), json);
+            index[skillName] = saved;
+
+            _logger.LogDebug(
+                "Attached resource '{File}' to skill '{Name}' (provisional={Provisional})",
+                resource.Filename, skillName, entry.Provisional);
+        }
+        finally
+        {
+            _semaphore.Release();
+        }
+
+        if (_embeddingCache is not null)
+            _ = _embeddingCache.UpdateAsync(saved.Name, GetDocumentText(saved));
+
+        return true;
+    }
+
+    public async Task<bool> RemoveResourceAsync(string skillName, string filename)
+    {
+        ValidateName(skillName);
+        ValidateFilename(filename);
+
+        Skill saved;
+        await _semaphore.WaitAsync();
+        try
+        {
+            var index = await EnsureIndexAsync();
+            if (!index.TryGetValue(skillName, out var existing) || existing.Manifest is null)
+                return false;
+
+            var oldManifest = existing.Manifest;
+            var newManifest = oldManifest
+                .Where(r => !string.Equals(r.Filename, filename, StringComparison.OrdinalIgnoreCase))
+                .ToList();
+
+            if (newManifest.Count == oldManifest.Count)
+                return false;  // no entry matched
+
+            // Delete the file from disk
+            var folderPath = GetResourceFolderPath(skillName);
+            var resourcePath = Path.Combine(folderPath, filename);
+            if (File.Exists(resourcePath))
+                File.Delete(resourcePath);
+
+            saved = existing with
+            {
+                Manifest = newManifest.Count == 0 ? null : newManifest,
+                UpdatedAt = DateTimeOffset.UtcNow
+            };
+            var json = JsonSerializer.Serialize(saved, JsonOptions);
+            await File.WriteAllTextAsync(GetFilePath(skillName), json);
+            index[skillName] = saved;
+
+            _logger.LogDebug("Removed resource '{File}' from skill '{Name}'", filename, skillName);
+        }
+        finally
+        {
+            _semaphore.Release();
+        }
+
+        if (_embeddingCache is not null)
+            _ = _embeddingCache.UpdateAsync(saved.Name, GetDocumentText(saved));
+
+        return true;
+    }
+
+    public async Task<bool> UpdateResourceMetadataAsync(string skillName, SkillResource updated)
+    {
+        ValidateName(skillName);
+        ValidateFilename(updated.Filename);
+
+        Skill saved;
+        await _semaphore.WaitAsync();
+        try
+        {
+            var index = await EnsureIndexAsync();
+            if (!index.TryGetValue(skillName, out var existing) || existing.Manifest is null)
+                return false;
+
+            var oldManifest = existing.Manifest;
+            var newManifest = new List<SkillResource>(oldManifest.Count);
+            var matched = false;
+            foreach (var old in oldManifest)
+            {
+                if (string.Equals(old.Filename, updated.Filename, StringComparison.OrdinalIgnoreCase))
+                {
+                    newManifest.Add(updated);
+                    matched = true;
+                }
+                else
+                {
+                    newManifest.Add(old);
+                }
+            }
+
+            if (!matched)
+                return false;
+
+            saved = existing with { Manifest = newManifest, UpdatedAt = DateTimeOffset.UtcNow };
+            var json = JsonSerializer.Serialize(saved, JsonOptions);
+            await File.WriteAllTextAsync(GetFilePath(skillName), json);
+            index[skillName] = saved;
+        }
+        finally
+        {
+            _semaphore.Release();
+        }
+
+        if (_embeddingCache is not null)
+            _ = _embeddingCache.UpdateAsync(saved.Name, GetDocumentText(saved));
+
+        return true;
+    }
+
+    /// <summary>
+    /// SHA-256-hex16 of <paramref name="content"/> — same scheme as
+    /// <c>SpawnWispsExecutor.ComputeDefinitionHash</c>, kept here to avoid taking a
+    /// project dependency on RockBot.Wisp from the Host layer.
+    /// </summary>
+    internal static string ComputeDefinitionHash(string content)
+    {
+        var bytes = System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(content));
+        return Convert.ToHexStringLower(bytes)[..16];
     }
 
     public Task<string?> GetResourceAsync(string skillName, string filename)
