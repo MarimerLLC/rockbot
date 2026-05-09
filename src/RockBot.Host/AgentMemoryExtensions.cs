@@ -215,6 +215,34 @@ public static class AgentMemoryExtensions
     }
 
     /// <summary>
+    /// Registers the closed-loop repair-ticket pipeline (Phase 4 self-repair):
+    /// the file-backed <see cref="IRepairTicketStore"/>, the four
+    /// <see cref="IRepairTargetApplier"/> implementations, and the cache-free
+    /// <see cref="IRepairTicketVerifier"/>. Opt-in — call after
+    /// <see cref="WithFailureClusterStore"/>, <see cref="WithMemory"/>,
+    /// <see cref="WithSkills"/>, and <see cref="WithWorkingMemory"/>.
+    /// See <c>design/self-repair.md</c> Phase 4.
+    /// </summary>
+    public static AgentHostBuilder WithRepairTickets(
+        this AgentHostBuilder builder,
+        Action<RepairTicketOptions>? configure = null)
+    {
+        if (configure is not null)
+            builder.Services.Configure(configure);
+        else
+            builder.Services.Configure<RepairTicketOptions>(_ => { });
+
+        builder.Services.AddSingleton<IRepairTicketStore, FileRepairTicketStore>();
+        builder.Services.AddSingleton<IRepairTargetApplier, SkillBodyApplier>();
+        builder.Services.AddSingleton<IRepairTargetApplier, WorkingMemoryEvictApplier>();
+        builder.Services.AddSingleton<IRepairTargetApplier, ToolDefaultRegisterApplier>();
+        builder.Services.AddSingleton<IRepairTargetApplier, PromptBuilderHintApplier>();
+        builder.Services.AddSingleton<IRepairTicketVerifier, RepairTicketVerifier>();
+
+        return builder;
+    }
+
+    /// <summary>
     /// Registers the file-backed knowledge graph store for entity-relationship reasoning.
     /// </summary>
     public static AgentHostBuilder WithKnowledgeGraph(

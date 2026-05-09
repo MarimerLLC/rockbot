@@ -42,6 +42,11 @@ internal sealed class DreamService : IHostedService, IDisposable
     private readonly RockBot.Observation.IObservationPipelineCoordinator? _observationCoordinator;
     private readonly ConversationLogTranscriptAdapter? _observationTranscriptAdapter;
     private readonly IMemoryContradictionDetector? _contradictionDetector;
+    private readonly IFailureClusterStore? _failureClusterStore;
+    private readonly IRepairTicketStore? _repairTicketStore;
+    private readonly IReadOnlyDictionary<RepairTarget, IRepairTargetApplier>? _repairAppliers;
+    private readonly IRepairTicketVerifier? _repairTicketVerifier;
+    private readonly RepairTicketOptions? _repairOptions;
     private Timer? _timer;
     private CronExpression? _cron;
     private string? _dreamDirective;
@@ -60,6 +65,7 @@ internal sealed class DreamService : IHostedService, IDisposable
     private string? _wispFailureDirective;
     private string? _toolSuccessLearningDirective;
     private string? _contradictionSweepDirective;
+    private string? _repairTicketCreationDirective;
 
     public DreamService(
         ILongTermMemory memory,
@@ -82,7 +88,12 @@ internal sealed class DreamService : IHostedService, IDisposable
         IWorkingMemory? workingMemory = null,
         RockBot.Observation.IObservationPipelineCoordinator? observationCoordinator = null,
         ConversationLogTranscriptAdapter? observationTranscriptAdapter = null,
-        IMemoryContradictionDetector? contradictionDetector = null)
+        IMemoryContradictionDetector? contradictionDetector = null,
+        IFailureClusterStore? failureClusterStore = null,
+        IRepairTicketStore? repairTicketStore = null,
+        IEnumerable<IRepairTargetApplier>? repairAppliers = null,
+        IRepairTicketVerifier? repairTicketVerifier = null,
+        IOptions<RepairTicketOptions>? repairOptions = null)
     {
         _memory = memory;
         _skillStore = skillStores.FirstOrDefault();
@@ -105,6 +116,17 @@ internal sealed class DreamService : IHostedService, IDisposable
         _observationCoordinator = observationCoordinator;
         _observationTranscriptAdapter = observationTranscriptAdapter;
         _contradictionDetector = contradictionDetector;
+        _failureClusterStore = failureClusterStore;
+        _repairTicketStore = repairTicketStore;
+        _repairTicketVerifier = repairTicketVerifier;
+        _repairOptions = repairOptions?.Value;
+        if (repairAppliers is not null)
+        {
+            var map = new Dictionary<RepairTarget, IRepairTargetApplier>();
+            foreach (var applier in repairAppliers)
+                map[applier.Target] = applier;
+            _repairAppliers = map;
+        }
     }
 
     public Task StartAsync(CancellationToken cancellationToken)
@@ -319,6 +341,19 @@ internal sealed class DreamService : IHostedService, IDisposable
                 _logger.LogDebug("DreamService: contradiction sweep directive not found at {Path}; using built-in", path);
             else
                 _logger.LogInformation("DreamService: loaded contradiction sweep directive from {Path}", path);
+        }
+
+        if (RepairLoopEnabled)
+        {
+            var path = ResolvePath(_repairOptions!.CreationDirectivePath, _profileOptions.BasePath);
+            _repairTicketCreationDirective = File.Exists(path)
+                ? File.ReadAllText(path)
+                : null;
+
+            if (!File.Exists(path))
+                _logger.LogDebug("DreamService: repair-ticket creation directive not found at {Path}; using built-in", path);
+            else
+                _logger.LogInformation("DreamService: loaded repair-ticket creation directive from {Path}", path);
         }
 
         try
@@ -569,6 +604,10 @@ internal sealed class DreamService : IHostedService, IDisposable
             ct.ThrowIfCancellationRequested(); await RunIdentityReflectionPassAsync(ct);
 
             ct.ThrowIfCancellationRequested(); await RunContradictionSweepPassAsync(ct);
+
+            ct.ThrowIfCancellationRequested(); await RunRepairTicketCreationPassAsync(ct);
+
+            ct.ThrowIfCancellationRequested(); await RunRepairTicketApplyPassAsync(ct);
 
             sw.Stop();
             _logger.LogInformation(
@@ -3984,5 +4023,472 @@ internal sealed class DreamService : IHostedService, IDisposable
         }
 
         If no meaningful shifts are evident: {"noChange": true, "toDelete": [], "toSave": []}
+        """;
+
+    // ── Phase 4 self-repair: closed-loop repair tickets ───────────────────────
+
+    /// <summary>
+    /// Whether the closed-loop repair-ticket passes can run in the current cycle.
+    /// All four collaborators must be present; missing any of them disables the loop.
+    /// </summary>
+    private bool RepairLoopEnabled =>
+        _repairOptions is { Enabled: true } &&
+        _repairTicketStore is not null &&
+        _failureClusterStore is not null &&
+        _repairAppliers is { Count: > 0 } &&
+        _repairTicketVerifier is not null;
+
+    /// <summary>
+    /// LLM-driven creation pass: turns escalatable failure clusters into open
+    /// <see cref="RepairTicket"/> proposals. Dedups against existing tickets so
+    /// the same cluster does not produce a parade of duplicates.
+    /// </summary>
+    private async Task RunRepairTicketCreationPassAsync(CancellationToken ct)
+    {
+        if (!RepairLoopEnabled) return;
+
+        var now = _clock.Now;
+        var clusters = await _failureClusterStore!.GetEscalatableAsync(now, ct);
+        if (clusters.Count == 0)
+        {
+            _logger.LogDebug("DreamService: repair-ticket creation — no escalatable clusters");
+            return;
+        }
+
+        var existing = await _repairTicketStore!.ListAsync(ct);
+        var byPattern = existing
+            .GroupBy(t => t.PatternKey, StringComparer.Ordinal)
+            .ToDictionary(g => g.Key, g => g.ToList(), StringComparer.Ordinal);
+        var failedChangeHashes = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var t in existing.Where(t => t.Status is RepairStatus.Escalated or RepairStatus.Resolved))
+        {
+            failedChangeHashes.Add(t.Target + "|" + HashJsonElement(t.Change));
+        }
+
+        var newClusters = clusters
+            .Where(c => !byPattern.TryGetValue(SerializeClusterKey(c.Key), out var list)
+                        || list.All(t => t.Status is RepairStatus.Escalated))
+            .ToList();
+        if (newClusters.Count == 0)
+        {
+            _logger.LogDebug("DreamService: repair-ticket creation — all escalatable clusters already have tickets");
+            return;
+        }
+
+        _logger.LogInformation(
+            "DreamService: repair-ticket creation pass — {Count} cluster(s) without active tickets",
+            newClusters.Count);
+
+        var userMsg = BuildRepairTicketCreationPrompt(newClusters);
+
+        var result = await InvokeDreamPassAsync<RepairTicketProposalsDto>(
+            "repair ticket creation",
+            _repairTicketCreationDirective ?? BuiltInRepairTicketCreationDirective,
+            userMsg,
+            ct);
+        if (result is null || result.Proposals is null) return;
+
+        var maxPerCycle = _repairOptions!.MaxTicketsPerCycle;
+        var created = 0;
+
+        foreach (var prop in result.Proposals)
+        {
+            if (created >= maxPerCycle)
+            {
+                _logger.LogInformation(
+                    "DreamService: repair-ticket creation cap of {Cap} reached; dropping {Remaining} proposal(s)",
+                    maxPerCycle, result.Proposals.Count - created);
+                break;
+            }
+
+            if (!TryBuildTicketFromProposal(prop, now, failedChangeHashes, out var ticket, out var reason))
+            {
+                _logger.LogInformation(
+                    "DreamService: dropping repair-ticket proposal — {Reason}",
+                    reason);
+                continue;
+            }
+
+            await _repairTicketStore!.SaveAsync(ticket, ct);
+            created++;
+            _logger.LogInformation(
+                "DreamService: opened repair ticket {Id} ({Target}) for pattern {Pattern}",
+                ticket.Id, ticket.Target, ticket.PatternKey);
+        }
+
+        _logger.LogInformation(
+            "DreamService: repair-ticket creation pass complete — {Created} ticket(s) opened",
+            created);
+    }
+
+    /// <summary>
+    /// Deterministic apply pass: thin wrapper around the static
+    /// <see cref="RunRepairTicketApplyAsync"/> helper that takes its
+    /// dependencies explicitly so the loop can be tested without constructing
+    /// a full DreamService.
+    /// </summary>
+    private Task RunRepairTicketApplyPassAsync(CancellationToken ct)
+    {
+        if (!RepairLoopEnabled) return Task.CompletedTask;
+        return RunRepairTicketApplyAsync(
+            _repairTicketStore!,
+            _repairAppliers!,
+            _repairTicketVerifier!,
+            _workingMemory,
+            _repairOptions!,
+            _logger,
+            ct);
+    }
+
+    /// <summary>
+    /// Static apply-pass implementation. For each open ticket: mark in-progress,
+    /// dispatch to the matching applier, run verify, auto-revert on failure (when
+    /// reversible), classify the new status (Resolved/Open/Escalated/Uncertain),
+    /// save. After the loop, write a rolling escalation summary to working memory
+    /// when any ticket newly transitioned to Escalated.
+    /// </summary>
+    internal static async Task RunRepairTicketApplyAsync(
+        IRepairTicketStore store,
+        IReadOnlyDictionary<RepairTarget, IRepairTargetApplier> appliers,
+        IRepairTicketVerifier verifier,
+        IWorkingMemory? workingMemory,
+        RepairTicketOptions options,
+        ILogger logger,
+        CancellationToken ct)
+    {
+        var open = await store.ListOpenAsync(ct);
+        if (open.Count == 0)
+        {
+            logger.LogDebug("Repair-ticket apply — no open tickets");
+            return;
+        }
+
+        logger.LogInformation("Repair-ticket apply pass — {Count} open ticket(s)", open.Count);
+
+        var newlyEscalated = false;
+
+        foreach (var openTicket in open)
+        {
+            ct.ThrowIfCancellationRequested();
+
+            var inProgress = openTicket with
+            {
+                Status = RepairStatus.InProgress,
+                UpdatedAt = DateTimeOffset.UtcNow,
+            };
+            await store.SaveAsync(inProgress, ct);
+
+            var result = await ApplyAndVerifyTicketAsync(appliers, verifier, inProgress, logger, ct);
+
+            var attempts = new List<RepairAttempt>(inProgress.Attempts) { result.Attempt };
+            var newStatus = ComputeNextStatus(attempts, result.Outcome, options.MaxAttempts);
+            if (newStatus == RepairStatus.Escalated && inProgress.Status != RepairStatus.Escalated)
+                newlyEscalated = true;
+
+            var saved = inProgress with
+            {
+                Status = newStatus,
+                Attempts = attempts,
+                UpdatedAt = DateTimeOffset.UtcNow,
+            };
+            await store.SaveAsync(saved, ct);
+
+            logger.LogInformation(
+                "Repair ticket {Id} ({Target}) → {Outcome} → status {Status}",
+                saved.Id, saved.Target, result.Outcome, saved.Status);
+        }
+
+        if (newlyEscalated && workingMemory is not null)
+        {
+            await WriteEscalationSummaryAsync(store, workingMemory, options, logger, ct);
+        }
+    }
+
+    /// <summary>
+    /// Pure status-classification function: given the post-apply attempt history
+    /// and the latest verify outcome, decide what status the ticket should land in.
+    /// </summary>
+    internal static RepairStatus ComputeNextStatus(
+        IReadOnlyList<RepairAttempt> attempts,
+        VerifyOutcome lastOutcome,
+        int maxAttempts) =>
+        lastOutcome switch
+        {
+            VerifyOutcome.PredicateSucceeded => RepairStatus.Resolved,
+            VerifyOutcome.PredicateFailed =>
+                attempts.Count(a => a.Result.Outcome == VerifyOutcome.PredicateFailed) >= maxAttempts
+                    ? RepairStatus.Escalated
+                    : RepairStatus.Open,
+            _ => RepairStatus.Open, // Uncertain — don't count toward MaxAttempts
+        };
+
+    internal static async Task<TicketCycleResult> ApplyAndVerifyTicketAsync(
+        IReadOnlyDictionary<RepairTarget, IRepairTargetApplier> appliers,
+        IRepairTicketVerifier verifier,
+        RepairTicket ticket,
+        ILogger logger,
+        CancellationToken ct)
+    {
+        if (!appliers.TryGetValue(ticket.Target, out var applier))
+        {
+            return new TicketCycleResult(
+                Outcome: VerifyOutcome.PredicateFailed,
+                Attempt: new RepairAttempt(
+                    DateTimeOffset.UtcNow,
+                    JsonSerializer.SerializeToElement(new { error = "no applier registered for target", target = ticket.Target.ToString() }, JsonOptions),
+                    new VerifyResult(VerifyOutcome.PredicateFailed, $"no applier registered for target {ticket.Target}")));
+        }
+
+        Func<CancellationToken, Task>? revert = null;
+        JsonElement diff;
+
+        try
+        {
+            var outcome = await applier.ApplyAsync(ticket, ct);
+            diff = outcome.AppliedDiff;
+            revert = outcome.Revert;
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "Applier {Target} failed for ticket {Id}", ticket.Target, ticket.Id);
+            return new TicketCycleResult(
+                Outcome: VerifyOutcome.Uncertain,
+                Attempt: new RepairAttempt(
+                    DateTimeOffset.UtcNow,
+                    JsonSerializer.SerializeToElement(new { error = ex.Message, type = ex.GetType().Name }, JsonOptions),
+                    new VerifyResult(VerifyOutcome.Uncertain, $"apply error: {ex.GetType().Name}: {ex.Message}")));
+        }
+
+        var verifyResult = await verifier.VerifyAsync(ticket.Verify, ct);
+
+        // Auto-revert when verify fails and the applier supports reversal.
+        if (verifyResult.Outcome != VerifyOutcome.PredicateSucceeded && revert is not null)
+        {
+            try
+            {
+                await revert(ct);
+            }
+            catch (Exception ex)
+            {
+                logger.LogWarning(ex,
+                    "Revert failed for ticket {Id}; the applied change remains in place",
+                    ticket.Id);
+            }
+        }
+
+        return new TicketCycleResult(
+            Outcome: verifyResult.Outcome,
+            Attempt: new RepairAttempt(DateTimeOffset.UtcNow, diff, verifyResult));
+    }
+
+    private static async Task WriteEscalationSummaryAsync(
+        IRepairTicketStore store,
+        IWorkingMemory workingMemory,
+        RepairTicketOptions options,
+        ILogger logger,
+        CancellationToken ct)
+    {
+        var all = await store.ListAsync(ct);
+        var escalated = all
+            .Where(t => t.Status == RepairStatus.Escalated)
+            .OrderByDescending(t => t.UpdatedAt)
+            .ToList();
+
+        if (escalated.Count == 0) return;
+
+        var sb = new StringBuilder();
+        sb.AppendLine($"Repair tickets escalated as of {DateTimeOffset.UtcNow:u}:");
+        foreach (var t in escalated)
+        {
+            var lastDetail = t.Attempts.LastOrDefault()?.Result.Detail ?? "(no detail)";
+            sb.AppendLine($"- [{t.Id}] target={t.Target} pattern={t.PatternKey} attempts={t.Attempts.Count} last={lastDetail}");
+        }
+
+        await workingMemory.SetAsync(
+            options.EscalationWmKey,
+            sb.ToString(),
+            ttl: options.EscalationWmTtl,
+            category: "repair-escalations");
+
+        logger.LogInformation(
+            "Repair-ticket apply: wrote escalation summary ({Count} ticket(s)) to {Key}",
+            escalated.Count, options.EscalationWmKey);
+    }
+
+    private static string BuildRepairTicketCreationPrompt(IEnumerable<FailureCluster> clusters)
+    {
+        var sb = new StringBuilder();
+        sb.AppendLine("The following failure clusters meet the escalation thresholds and have no active repair ticket.");
+        sb.AppendLine("Propose one repair ticket per cluster (or skip a cluster if no useful proposal is possible).");
+        sb.AppendLine();
+        var i = 0;
+        foreach (var c in clusters)
+        {
+            i++;
+            sb.AppendLine($"{i}. server={c.Key.Server} tool={c.Key.Tool} errorClass={c.Key.ErrorClass} " +
+                          $"count={c.Count} sessions={c.SessionIds.Count} firstSeen={c.FirstSeen:u} lastSeen={c.LastSeen:u}");
+            foreach (var s in c.SampleErrorMessages.Take(3))
+            {
+                sb.AppendLine($"   - {Truncate(s, 240)}");
+            }
+        }
+        return sb.ToString();
+    }
+
+    private static string SerializeClusterKey(ClusterKey k) =>
+        $"{k.Server}|{k.Tool}|{k.ErrorClass}";
+
+    private static string HashJsonElement(JsonElement el)
+    {
+        var raw = el.ValueKind == JsonValueKind.Undefined ? string.Empty : el.GetRawText();
+        var bytes = System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(raw));
+        return Convert.ToHexString(bytes, 0, 8).ToLowerInvariant();
+    }
+
+    private bool TryBuildTicketFromProposal(
+        RepairTicketProposalDto prop,
+        DateTimeOffset now,
+        HashSet<string> failedChangeHashes,
+        out RepairTicket ticket,
+        out string reason)
+    {
+        ticket = null!;
+        reason = string.Empty;
+
+        if (prop is null)
+        {
+            reason = "null proposal";
+            return false;
+        }
+        if (string.IsNullOrWhiteSpace(prop.PatternKey))
+        {
+            reason = "missing patternKey";
+            return false;
+        }
+        if (!Enum.TryParse<RepairTarget>(prop.Target, ignoreCase: true, out var target))
+        {
+            reason = $"unknown target '{prop.Target}'";
+            return false;
+        }
+        if (prop.Change.ValueKind == JsonValueKind.Undefined)
+        {
+            reason = "missing change";
+            return false;
+        }
+        if (prop.Verify is null
+            || string.IsNullOrWhiteSpace(prop.Verify.Server)
+            || string.IsNullOrWhiteSpace(prop.Verify.Tool))
+        {
+            reason = "missing verify shape";
+            return false;
+        }
+
+        if (_repairAppliers is null || !_repairAppliers.ContainsKey(target))
+        {
+            reason = $"no applier for target {target}";
+            return false;
+        }
+
+        var changeHash = target + "|" + HashJsonElement(prop.Change);
+        if (failedChangeHashes.Contains(changeHash))
+        {
+            reason = $"change-hash {changeHash} already attempted in a prior failed/resolved ticket";
+            return false;
+        }
+
+        var verifyKind = Enum.TryParse<VerifyExpectationKind>(prop.Verify.ExpectKind, ignoreCase: true, out var k)
+            ? k
+            : VerifyExpectationKind.Success;
+
+        var args = prop.Verify.Arguments.ValueKind == JsonValueKind.Undefined
+            ? JsonDocument.Parse("{}").RootElement
+            : prop.Verify.Arguments;
+
+        var verify = new VerifyShape(
+            Server: prop.Verify.Server!,
+            Tool: prop.Verify.Tool!,
+            Arguments: args,
+            Expect: new VerifyExpectation(verifyKind, prop.Verify.FailurePattern));
+
+        ticket = new RepairTicket(
+            Id: "ticket-" + Guid.NewGuid().ToString("N")[..12],
+            PatternKey: prop.PatternKey!,
+            Target: target,
+            Change: prop.Change,
+            Verify: verify,
+            Attempts: [],
+            Status: RepairStatus.Open,
+            CreatedAt: now,
+            UpdatedAt: now);
+        return true;
+    }
+
+    internal sealed record TicketCycleResult(VerifyOutcome Outcome, RepairAttempt Attempt);
+
+    private sealed record RepairTicketProposalsDto
+    {
+        public List<RepairTicketProposalDto>? Proposals { get; init; }
+    }
+
+    private sealed record RepairTicketProposalDto
+    {
+        public string? PatternKey { get; init; }
+        public string? Target { get; init; }
+        public JsonElement Change { get; init; }
+        public RepairVerifyShapeDto? Verify { get; init; }
+    }
+
+    private sealed record RepairVerifyShapeDto
+    {
+        public string? Server { get; init; }
+        public string? Tool { get; init; }
+        public JsonElement Arguments { get; init; }
+        public string? ExpectKind { get; init; }
+        public string? FailurePattern { get; init; }
+    }
+
+    private const string BuiltInRepairTicketCreationDirective = """
+        You are a self-repair planner. Your job is to look at recurring tool-call
+        failure clusters from the agent's runtime telemetry and propose targeted
+        repair tickets that another component will apply, verify, and escalate.
+
+        Each cluster shows: server, tool, errorClass (the missing field name or
+        'unknown'), count, distinct sessions, and a few sample error messages.
+
+        Choose at most one of these target types per ticket:
+          - SkillBody: edit a named skill's body. Use ops [{op:"append"|"replaceSection"|"deleteSection", header?, text?}].
+            Use this when a skill's instructions are misleading the agent into the failure.
+          - WorkingMemoryEvict: delete working-memory entries by keyPrefix or keys.
+            Use this when a stale belief in WM ("X is broken") needs purging so the
+            next session re-evaluates from current evidence.
+          - ToolDefaultRegister: register a default value for a missing required field
+            ({server, providerName, field, tool?, value}). Use when the failure is a
+            consistent schema gap (e.g. timeZone always missing) that recovery can
+            paper over deterministically.
+          - PromptBuilderHint: append/replace a hint section in a prompt category file
+            ({category, hintId, text}). category is the working-memory namespace
+            top-level — typically "session", "patrol", or "subagent".
+
+        Every ticket MUST include a verify shape — a tool call that, when it
+        succeeds, proves the cluster has been resolved.
+
+        Output strict JSON in this shape:
+        {
+          "proposals": [
+            {
+              "patternKey": "<server>|<tool>|<errorClass>",
+              "target": "SkillBody|WorkingMemoryEvict|ToolDefaultRegister|PromptBuilderHint",
+              "change": { ... target-specific ... },
+              "verify": {
+                "server": "...",
+                "tool": "...",
+                "arguments": { ... },
+                "expectKind": "Success",
+                "failurePattern": null
+              }
+            }
+          ]
+        }
+        If no useful proposals can be formed, return: { "proposals": [] }
         """;
 }

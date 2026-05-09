@@ -59,7 +59,7 @@ public class SubagentManagerTests
         services.AddSingleton(profileHolder);
         var nameHolder = new AgentNameHolder();
         services.AddSingleton(nameHolder);
-        services.AddSingleton<ISystemPromptBuilder>(new DefaultSystemPromptBuilder(profileHolder, nameHolder));
+        services.AddSingleton<ISystemPromptBuilder>(new DefaultSystemPromptBuilder(profileHolder, nameHolder, Microsoft.Extensions.Options.Options.Create(new AgentProfileOptions())));
         services.AddSingleton<IRulesStore>(new NoopRulesStore());
         services.AddSingleton<IConversationMemory>(new NoopConversationMemory());
         services.AddSingleton<InjectedMemoryTracker>();

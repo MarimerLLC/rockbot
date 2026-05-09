@@ -64,7 +64,12 @@ public sealed class AgentContextBuilder(
         string? systemPromptOverride = null)
     {
         var profile = profileHolder.Profile;
-        var systemPrompt = systemPromptOverride ?? promptBuilder.Build(profile, agent);
+        // Derive a category for prompt-hint injection (Phase 4 PromptBuilderHint).
+        // Categories are the top-level segment of the working-memory namespace —
+        // "session", "patrol", "subagent" — so a hint file like
+        // /data/agent/prompt-hints/patrol.md is injected into patrol-task prompts only.
+        var category = DerivePromptCategory(workingMemoryNamespace);
+        var systemPrompt = systemPromptOverride ?? promptBuilder.Build(profile, agent, category);
         var chatMessages = new List<ChatMessage>
         {
             new(ChatRole.System, systemPrompt),
@@ -711,4 +716,18 @@ public sealed class AgentContextBuilder(
         uncertain.TryGetValue(id, out var detail)
             ? $" [verifier-uncertain: {detail}]"
             : string.Empty;
+
+    /// <summary>
+    /// Returns the top-level segment of the working-memory namespace as the prompt
+    /// category. Defaults to <c>"session"</c> when no namespace is supplied.
+    /// </summary>
+    internal static string? DerivePromptCategory(string? workingMemoryNamespace)
+    {
+        if (string.IsNullOrWhiteSpace(workingMemoryNamespace))
+            return "session";
+
+        var slash = workingMemoryNamespace.IndexOf('/');
+        var head = slash < 0 ? workingMemoryNamespace : workingMemoryNamespace[..slash];
+        return string.IsNullOrWhiteSpace(head) ? null : head;
+    }
 }

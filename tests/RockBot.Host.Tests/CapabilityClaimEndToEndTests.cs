@@ -146,7 +146,7 @@ public class CapabilityClaimEndToEndTests
         return new AgentContextBuilder(
             profileHolder: profileHolder,
             agent: new AgentIdentity("TestBot"),
-            promptBuilder: new DefaultSystemPromptBuilder(profileHolder, new AgentNameHolder()),
+            promptBuilder: new DefaultSystemPromptBuilder(profileHolder, new AgentNameHolder(), Microsoft.Extensions.Options.Options.Create(new AgentProfileOptions())),
             rulesStore: new EmptyRulesStore(),
             modelBehavior: ModelBehavior.Default,
             conversationMemory: new EmptyConversationMemory(),

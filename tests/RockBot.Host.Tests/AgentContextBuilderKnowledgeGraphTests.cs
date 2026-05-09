@@ -191,7 +191,7 @@ public class AgentContextBuilderKnowledgeGraphTests
         var builder = new AgentContextBuilder(
             profileHolder: profileHolder,
             agent: new AgentIdentity("TestBot"),
-            promptBuilder: new DefaultSystemPromptBuilder(profileHolder, nameHolder),
+            promptBuilder: new DefaultSystemPromptBuilder(profileHolder, nameHolder, Microsoft.Extensions.Options.Options.Create(new AgentProfileOptions())),
             rulesStore: new StubRulesStore(),
             modelBehavior: ModelBehavior.Default,
             conversationMemory: new StubConversationMemory(),
