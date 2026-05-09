@@ -1,18 +1,32 @@
-using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Hosting;
-using RockBot.Messaging.RabbitMQ;
-using RockBot.UserProxy;
 using RockBot.UserProxy.Cli;
+using Spectre.Console.Cli;
 
-var builder = Host.CreateApplicationBuilder(args);
+var app = new CommandApp<ChatCommand>();
 
-builder.Services.AddRockBotRabbitMq();
-builder.Services.AddUserProxy(opts =>
+app.Configure(config =>
 {
-    opts.AgentName = builder.Configuration["Agent:Name"] ?? "RockBot";
-});
-builder.Services.AddSingleton<IUserFrontend, SpectreConsoleFrontend>();
-builder.Services.AddHostedService<ChatLoopService>();
+    config.SetApplicationName("rockbot");
 
-var app = builder.Build();
-await app.RunAsync();
+    config.AddCommand<ChatCommand>("chat")
+        .WithDescription("Interactive chat (default), or one-shot with --message <TEXT>.")
+        .WithExample(["chat", "--message", "hello"])
+        .WithExample(["chat", "--rabbitmq-host", "localhost"]);
+
+    config.AddCommand<InfoCommand>("info")
+        .WithDescription("Print the agent's name and version.");
+
+    config.AddCommand<StatusCommand>("status")
+        .WithDescription("Show the agent's current activity (processing, subagents).");
+
+    config.AddCommand<HistoryCommand>("history")
+        .WithDescription("Print stored conversation history for a session.")
+        .WithExample(["history", "--session", "cli-session"]);
+
+    config.AddCommand<ClearCommand>("clear")
+        .WithDescription("Reset the agent's in-memory conversation context for a session.");
+
+    config.AddCommand<CancelCommand>("cancel")
+        .WithDescription("Ask the agent to cancel in-flight work for a session.");
+});
+
+return await app.RunAsync(args);
