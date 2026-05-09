@@ -2688,19 +2688,13 @@ internal sealed class DreamService : IHostedService, IDisposable
               "name": "skill-name-to-update",
               "annotation": "Negative example or correction to append to the skill content"
             }
-          ],
-          "promotionCandidates": [
-            {
-              "description": "Description pattern that succeeded consistently",
-              "frequency": 5,
-              "recommendation": "Consider promoting to a stored wisp skill"
-            }
           ]
         }
 
         Only include patterns with frequency >= 3. Only include skill updates when you are confident
-        the correction is valid. Only include promotion candidates with frequency >= 5 and >80% success rate.
-        Return empty arrays if no patterns are found.
+        the correction is valid. Return empty arrays if no patterns are found.
+        Successful patterns worth saving as reusable assets are handled by the separate
+        wisp-success-dream pass — do not surface them here.
         """;
 
     /// <summary>
@@ -2810,16 +2804,9 @@ internal sealed class DreamService : IHostedService, IDisposable
                     pattern.Description, pattern.FailureCategory, pattern.Frequency, pattern.Recommendation);
             }
 
-            foreach (var candidate in result?.PromotionCandidates ?? [])
-            {
-                _logger.LogInformation(
-                    "DreamService: wisp promotion candidate — {Description} (freq={Frequency}): {Recommendation}",
-                    candidate.Description, candidate.Frequency, candidate.Recommendation);
-            }
-
             _logger.LogInformation(
-                "DreamService: wisp failure analysis pass complete — {Patterns} patterns, {Updates} skill updates, {Candidates} promotion candidates",
-                result?.Patterns?.Count ?? 0, updated, result?.PromotionCandidates?.Count ?? 0);
+                "DreamService: wisp failure analysis pass complete — {Patterns} patterns, {Updates} skill updates",
+                result?.Patterns?.Count ?? 0, updated);
         });
     }
 
@@ -2827,7 +2814,6 @@ internal sealed class DreamService : IHostedService, IDisposable
     {
         public List<WispPatternDto>? Patterns { get; init; }
         public List<WispSkillUpdateDto>? SkillUpdates { get; init; }
-        public List<WispPromotionCandidateDto>? PromotionCandidates { get; init; }
     }
 
     private sealed record WispPatternDto
@@ -2843,13 +2829,6 @@ internal sealed class DreamService : IHostedService, IDisposable
     {
         public string? Name { get; init; }
         public string? Annotation { get; init; }
-    }
-
-    private sealed record WispPromotionCandidateDto
-    {
-        public string? Description { get; init; }
-        public int Frequency { get; init; }
-        public string? Recommendation { get; init; }
     }
 
     /// <summary>

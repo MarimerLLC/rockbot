@@ -18,16 +18,11 @@ Analyze the provided records and respond with a JSON object containing:
       "name": "skill-name-to-update",
       "annotation": "Negative example or correction to append to the skill content"
     }
-  ],
-  "promotionCandidates": [
-    {
-      "description": "Description pattern that succeeded consistently",
-      "frequency": 5,
-      "recommendation": "Consider promoting to a stored wisp skill"
-    }
   ]
 }
 
 Only include patterns with frequency >= 3. Only include skill updates when you are confident
-the correction is valid. Only include promotion candidates with frequency >= 5 and >80% success rate.
-Return empty arrays if no patterns are found.
+the correction is valid. Return empty arrays if no patterns are found.
+
+Successful patterns worth saving as reusable assets are handled by the separate
+wisp-success-dream pass — do not surface them here.
