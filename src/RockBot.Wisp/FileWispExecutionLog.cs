@@ -68,6 +68,21 @@ internal sealed class FileWispExecutionLog : IWispExecutionLog
             .FirstOrDefault();
     }
 
+    public async Task<string?> GetCanonicalBodyAsync(string definitionHash, CancellationToken ct = default)
+    {
+        if (string.IsNullOrEmpty(definitionHash))
+            return null;
+
+        var records = await ReadAllAsync(ct);
+        return records
+            .Where(r => r.Succeeded
+                && r.DefinitionHash == definitionHash
+                && !string.IsNullOrEmpty(r.DefinitionBody))
+            .OrderBy(r => r.Timestamp)
+            .Select(r => r.DefinitionBody)
+            .FirstOrDefault();
+    }
+
     private async Task<IReadOnlyList<WispExecutionRecord>> ReadAllAsync(CancellationToken ct)
     {
         if (!File.Exists(_filePath))

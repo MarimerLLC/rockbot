@@ -336,6 +336,265 @@ public class WispExecutionLogTests
         Assert.AreNotEqual(hash1, hash2);
     }
 
+    // ── GetCanonicalBodyAsync (Phase 1: skill-asset promotion) ───────────────
+
+    [TestMethod]
+    public async Task GetCanonicalBodyAsync_SuccessfulRecord_ReturnsBody()
+    {
+        var tempDir = CreateTempDir();
+        try
+        {
+            var log = CreateLog(tempDir);
+            var body = """{"description":"x","steps":[]}""";
+
+            await log.AppendAsync(new WispExecutionRecord
+            {
+                WispId = "wisp-ok",
+                Description = "x",
+                DefinitionHash = "hash-ok",
+                Succeeded = true,
+                StepCount = 0,
+                StepsCompleted = 0,
+                DurationMs = 5,
+                Timestamp = DateTimeOffset.UtcNow,
+                DefinitionBody = body
+            });
+
+            var result = await log.GetCanonicalBodyAsync("hash-ok");
+            Assert.AreEqual(body, result);
+        }
+        finally
+        {
+            CleanupTempDir(tempDir);
+        }
+    }
+
+    [TestMethod]
+    public async Task GetCanonicalBodyAsync_FailedRecord_ReturnsNull()
+    {
+        var tempDir = CreateTempDir();
+        try
+        {
+            var log = CreateLog(tempDir);
+
+            // Failed record: even if a body were stored, it would be null per executor policy.
+            await log.AppendAsync(new WispExecutionRecord
+            {
+                WispId = "wisp-bad",
+                Description = "x",
+                DefinitionHash = "hash-bad",
+                Succeeded = false,
+                StepCount = 1,
+                StepsCompleted = 0,
+                DurationMs = 5,
+                Timestamp = DateTimeOffset.UtcNow,
+                DefinitionBody = null
+            });
+
+            var result = await log.GetCanonicalBodyAsync("hash-bad");
+            Assert.IsNull(result);
+        }
+        finally
+        {
+            CleanupTempDir(tempDir);
+        }
+    }
+
+    [TestMethod]
+    public async Task GetCanonicalBodyAsync_TwoSuccessesSameHash_ReturnsFirstBody()
+    {
+        var tempDir = CreateTempDir();
+        try
+        {
+            var log = CreateLog(tempDir);
+            var body = """{"description":"dup","steps":[]}""";
+            var earlier = DateTimeOffset.UtcNow.AddMinutes(-5);
+            var later = DateTimeOffset.UtcNow;
+
+            await log.AppendAsync(new WispExecutionRecord
+            {
+                WispId = "first",
+                Description = "dup",
+                DefinitionHash = "h-dup",
+                Succeeded = true,
+                StepCount = 0,
+                StepsCompleted = 0,
+                DurationMs = 5,
+                Timestamp = earlier,
+                DefinitionBody = body
+            });
+
+            // Second success of same hash — second-time executors may omit the body to dedup.
+            await log.AppendAsync(new WispExecutionRecord
+            {
+                WispId = "second",
+                Description = "dup",
+                DefinitionHash = "h-dup",
+                Succeeded = true,
+                StepCount = 0,
+                StepsCompleted = 0,
+                DurationMs = 6,
+                Timestamp = later,
+                DefinitionBody = null
+            });
+
+            var result = await log.GetCanonicalBodyAsync("h-dup");
+            Assert.AreEqual(body, result);
+        }
+        finally
+        {
+            CleanupTempDir(tempDir);
+        }
+    }
+
+    [TestMethod]
+    public async Task GetCanonicalBodyAsync_OversizeBodyOmittedFlag_ReturnsNull()
+    {
+        var tempDir = CreateTempDir();
+        try
+        {
+            var log = CreateLog(tempDir);
+
+            await log.AppendAsync(new WispExecutionRecord
+            {
+                WispId = "wisp-big",
+                Description = "big",
+                DefinitionHash = "h-big",
+                Succeeded = true,
+                StepCount = 1,
+                StepsCompleted = 1,
+                DurationMs = 5,
+                Timestamp = DateTimeOffset.UtcNow,
+                DefinitionBody = null,
+                BodyOmittedTooLarge = true
+            });
+
+            var result = await log.GetCanonicalBodyAsync("h-big");
+            Assert.IsNull(result);
+        }
+        finally
+        {
+            CleanupTempDir(tempDir);
+        }
+    }
+
+    [TestMethod]
+    public async Task GetCanonicalBodyAsync_UnknownHash_ReturnsNull()
+    {
+        var tempDir = CreateTempDir();
+        try
+        {
+            var log = CreateLog(tempDir);
+            var result = await log.GetCanonicalBodyAsync("nope");
+            Assert.IsNull(result);
+        }
+        finally
+        {
+            CleanupTempDir(tempDir);
+        }
+    }
+
+    // ── SpawnWispsExecutor body retention ────────────────────────────────────
+
+    [TestMethod]
+    public async Task SpawnWispsExecutor_SuccessfulRun_PersistsDefinitionBody()
+    {
+        var tempDir = CreateTempDir();
+        try
+        {
+            var executionLog = CreateLog(tempDir);
+            var registry = new FakeToolRegistry();
+            var memory = new FakeWorkingMemory();
+            var options = new WispOptions();
+            var wispExecutor = new WispExecutor(registry, memory, agentLoopRunner: null!, options,
+                NullLogger<WispExecutor>.Instance);
+            var spawnExecutor = new SpawnWispsExecutor(wispExecutor, executionLog, feedbackStore: null,
+                memory, options, NullLogger<SpawnWispsExecutor>.Instance);
+
+            registry.Register(
+                new ToolRegistration { Name = "web_search", Description = "ok", Source = "web" },
+                new ConditionalToolExecutor(() => ("done", false)));
+
+            var defJson = """
+            {
+              "definitions": [
+                {
+                  "description": "Smoke test",
+                  "steps": [{"id":"s1","mode":"Direct","gateway":"Web","tool":"web_search","params":{"query":"x"}}]
+                }
+              ]
+            }
+            """;
+
+            var req = new ToolInvokeRequest { ToolCallId = "tc", ToolName = "spawn_wisps", Arguments = defJson, SessionId = "sess" };
+            var resp = await spawnExecutor.ExecuteAsync(req, CancellationToken.None);
+            Assert.IsFalse(resp.IsError, resp.Content);
+
+            await Task.Delay(100);
+
+            var records = await executionLog.QueryRecentAsync(DateTimeOffset.UtcNow.AddMinutes(-1), 10);
+            Assert.AreEqual(1, records.Count);
+            Assert.IsTrue(records[0].Succeeded, $"record errored: {records[0].FailureCategory}: {records[0].ErrorMessage}");
+            Assert.IsNotNull(records[0].DefinitionBody);
+            Assert.IsFalse(records[0].BodyOmittedTooLarge);
+
+            // Body should round-trip back through GetCanonicalBodyAsync
+            var canonical = await executionLog.GetCanonicalBodyAsync(records[0].DefinitionHash);
+            Assert.AreEqual(records[0].DefinitionBody, canonical);
+        }
+        finally
+        {
+            CleanupTempDir(tempDir);
+        }
+    }
+
+    [TestMethod]
+    public async Task SpawnWispsExecutor_FailedRun_OmitsDefinitionBody()
+    {
+        var tempDir = CreateTempDir();
+        try
+        {
+            var executionLog = CreateLog(tempDir);
+            var registry = new FakeToolRegistry();
+            var memory = new FakeWorkingMemory();
+            var options = new WispOptions();
+            var wispExecutor = new WispExecutor(registry, memory, agentLoopRunner: null!, options,
+                NullLogger<WispExecutor>.Instance);
+            var spawnExecutor = new SpawnWispsExecutor(wispExecutor, executionLog, feedbackStore: null,
+                memory, options, NullLogger<SpawnWispsExecutor>.Instance);
+
+            registry.Register(
+                new ToolRegistration { Name = "web_search", Description = "fail", Source = "web" },
+                new ConditionalToolExecutor(() => ("boom", true)));
+
+            var defJson = """
+            {
+              "definitions": [
+                {
+                  "description": "Should fail",
+                  "steps": [{"id":"s1","mode":"Direct","gateway":"Web","tool":"web_search","params":{"query":"x"}}]
+                }
+              ]
+            }
+            """;
+
+            var req = new ToolInvokeRequest { ToolCallId = "tc", ToolName = "spawn_wisps", Arguments = defJson, SessionId = "sess" };
+            await spawnExecutor.ExecuteAsync(req, CancellationToken.None);
+
+            await Task.Delay(100);
+
+            var records = await executionLog.QueryRecentAsync(DateTimeOffset.UtcNow.AddMinutes(-1), 10);
+            Assert.AreEqual(1, records.Count);
+            Assert.IsFalse(records[0].Succeeded);
+            Assert.IsNull(records[0].DefinitionBody);
+            Assert.IsFalse(records[0].BodyOmittedTooLarge);
+        }
+        finally
+        {
+            CleanupTempDir(tempDir);
+        }
+    }
+
     // ── Helpers ──────────────────────────────────────────────────────────────
 
     private static FileWispExecutionLog CreateLog(string basePath)
