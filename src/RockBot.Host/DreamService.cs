@@ -4259,7 +4259,24 @@ internal sealed class DreamService : IHostedService, IDisposable
                     new VerifyResult(VerifyOutcome.Uncertain, $"apply error: {ex.GetType().Name}: {ex.Message}")));
         }
 
-        var verifyResult = await verifier.VerifyAsync(ticket.Verify, ct);
+        // Backoff schedule for slow verify shapes: each prior timeout doubles the budget
+        // up to a cap. After MaxBackoffTimeouts cycles still timing out, promote the
+        // outcome to PredicateFailed so the ticket can eventually escalate instead of
+        // retrying indefinitely with no signal. Non-timeout Uncertain (executor missing,
+        // gateway error) doesn't increment the count — it's a different problem.
+        var priorTimeouts = ticket.Attempts.Count(a => a.Result.TimedOut);
+        var budget = ComputeVerifyBackoffBudget(priorTimeouts);
+
+        var verifyResult = await verifier.VerifyAsync(ticket.Verify, budget, ct);
+
+        if (verifyResult.TimedOut && priorTimeouts >= MaxBackoffTimeouts)
+        {
+            verifyResult = verifyResult with
+            {
+                Outcome = VerifyOutcome.PredicateFailed,
+                Detail = $"verify still timing out at max budget ({budget.TotalSeconds:F0}s) after {priorTimeouts + 1} attempts; promoting to failure",
+            };
+        }
 
         // Auto-revert when verify fails and the applier supports reversal.
         if (verifyResult.Outcome != VerifyOutcome.PredicateSucceeded && revert is not null)
@@ -4280,6 +4297,30 @@ internal sealed class DreamService : IHostedService, IDisposable
             Outcome: verifyResult.Outcome,
             Attempt: new RepairAttempt(DateTimeOffset.UtcNow, diff, verifyResult));
     }
+
+    /// <summary>
+    /// Number of timeout-Uncertain attempts the apply pass tolerates before promoting
+    /// the outcome to <see cref="VerifyOutcome.PredicateFailed"/>. Steps 0..4 use the
+    /// backoff schedule below (5s → 10s → 20s → 40s → 80s); attempt 5+ at 80s converts.
+    /// </summary>
+    internal const int MaxBackoffTimeouts = 4;
+
+    /// <summary>
+    /// Backoff schedule for repair-ticket verify budget. Each prior timeout doubles the
+    /// next call's wallclock cap up to 80 seconds. Tools that fan out (e.g.
+    /// <c>get_calendar_events</c> across multiple accounts) routinely exceed 5s — without
+    /// backoff they'd return <see cref="VerifyOutcome.Uncertain"/> forever and never
+    /// escalate.
+    /// </summary>
+    internal static TimeSpan ComputeVerifyBackoffBudget(int priorTimeouts) =>
+        priorTimeouts switch
+        {
+            <= 0 => TimeSpan.FromSeconds(5),
+            1 => TimeSpan.FromSeconds(10),
+            2 => TimeSpan.FromSeconds(20),
+            3 => TimeSpan.FromSeconds(40),
+            _ => TimeSpan.FromSeconds(80),
+        };
 
     private static async Task WriteEscalationSummaryAsync(
         IRepairTicketStore store,
@@ -4471,6 +4512,23 @@ internal sealed class DreamService : IHostedService, IDisposable
 
         Every ticket MUST include a verify shape — a tool call that, when it
         succeeds, proves the cluster has been resolved.
+
+        Verify shape selection — IMPORTANT for the closed loop to work:
+        - Prefer the cheapest call that proves the cluster is no longer broken.
+          A fast list_* / health-check / single-targeted call is a stronger
+          signal than rerunning the failing call itself.
+        - Avoid tools that fan out across accounts, calendars, or pages — they
+          routinely exceed the verifier's wallclock budget and the ticket will
+          churn on Uncertain outcomes.
+        - Concrete example: for a calendar-mcp/get_calendar_events cluster,
+          DO NOT verify by calling get_calendar_events without an accountId
+          (fans out, slow). Instead verify with calendar-mcp/list_accounts and
+          expect Success — if list_accounts works, the server is reachable;
+          if a hint or skill change is going to fix anything, this proves the
+          baseline is healthy enough for the agent to retry.
+        - If verifying a recovery default (ToolDefaultRegister), verify by
+          calling the same tool with the OTHER required arguments filled but
+          deliberately omitting the field your default fills, expecting Success.
 
         Output strict JSON in this shape:
         {

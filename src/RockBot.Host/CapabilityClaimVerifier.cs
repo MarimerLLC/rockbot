@@ -98,8 +98,10 @@ public sealed class CapabilityClaimVerifier : ICapabilityClaimVerifier
         }
         catch (OperationCanceledException) when (!ct.IsCancellationRequested)
         {
-            result = new VerifyResult(VerifyOutcome.Uncertain,
-                $"verify budget exceeded ({_budget.TotalSeconds:F1}s)");
+            result = new VerifyResult(
+                VerifyOutcome.Uncertain,
+                $"verify budget exceeded ({_budget.TotalSeconds:F1}s)",
+                TimedOut: true);
         }
         catch (OperationCanceledException)
         {

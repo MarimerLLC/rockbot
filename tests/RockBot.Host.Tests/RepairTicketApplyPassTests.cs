@@ -160,6 +160,147 @@ public class RepairTicketApplyPassTests
     }
 
     [TestMethod]
+    public void ComputeVerifyBackoffBudget_DoublesUpTo80Seconds()
+    {
+        Assert.AreEqual(TimeSpan.FromSeconds(5), DreamService.ComputeVerifyBackoffBudget(0));
+        Assert.AreEqual(TimeSpan.FromSeconds(10), DreamService.ComputeVerifyBackoffBudget(1));
+        Assert.AreEqual(TimeSpan.FromSeconds(20), DreamService.ComputeVerifyBackoffBudget(2));
+        Assert.AreEqual(TimeSpan.FromSeconds(40), DreamService.ComputeVerifyBackoffBudget(3));
+        Assert.AreEqual(TimeSpan.FromSeconds(80), DreamService.ComputeVerifyBackoffBudget(4));
+        Assert.AreEqual(TimeSpan.FromSeconds(80), DreamService.ComputeVerifyBackoffBudget(10));
+    }
+
+    [TestMethod]
+    public async Task TimeoutBackoff_PassesEscalatingBudgets_ToVerifier()
+    {
+        var store = NewStore();
+        var skillStore = new SkillBodyApplierTests.InMemorySkillStore();
+        await skillStore.SaveAsync(new Skill("calendar/foo", "s", "body\n", DateTimeOffset.UtcNow));
+        await store.SaveAsync(NewSkillTicket("t-1", "calendar/foo"));
+
+        var appliers = AppliersWith(new SkillBodyApplier(skillStore, NullLogger<SkillBodyApplier>.Instance));
+        var verifier = new RecordingTimeoutVerifier();
+        var options = new RepairTicketOptions { MaxAttempts = 99 };
+
+        // Run 5 cycles. Verifier returns timeout-Uncertain each time.
+        for (var i = 0; i < 5; i++)
+        {
+            await DreamService.RunRepairTicketApplyAsync(
+                store, appliers, verifier, workingMemory: null, options,
+                NullLogger.Instance, CancellationToken.None);
+        }
+
+        var expectedBudgets = new[]
+        {
+            TimeSpan.FromSeconds(5),
+            TimeSpan.FromSeconds(10),
+            TimeSpan.FromSeconds(20),
+            TimeSpan.FromSeconds(40),
+            TimeSpan.FromSeconds(80),
+        };
+
+        CollectionAssert.AreEqual(expectedBudgets, verifier.RequestedBudgets.ToArray());
+    }
+
+    [TestMethod]
+    public async Task TimeoutBackoff_AfterMaxBackoffTimeouts_PromotesToFailureAndEscalates()
+    {
+        var store = NewStore();
+        var skillStore = new SkillBodyApplierTests.InMemorySkillStore();
+        await skillStore.SaveAsync(new Skill("calendar/foo", "s", "body\n", DateTimeOffset.UtcNow));
+        await store.SaveAsync(NewSkillTicket("t-1", "calendar/foo"));
+
+        var appliers = AppliersWith(new SkillBodyApplier(skillStore, NullLogger<SkillBodyApplier>.Instance));
+        var verifier = new RecordingTimeoutVerifier();
+        var workingMemory = new WorkingMemoryEvictApplierTests.InMemoryWorkingMemory();
+        var options = new RepairTicketOptions { MaxAttempts = 3 };
+
+        // Cycles 1..4 record TimedOut Uncertains (budget grows 5→10→20→40).
+        // Cycle 5 still times out at 80s — promoted to PredicateFailed (1st failure).
+        // Cycles 6..7 also promote (2nd, 3rd failure) → Escalated after the 7th cycle.
+        for (var i = 0; i < 7; i++)
+        {
+            await DreamService.RunRepairTicketApplyAsync(
+                store, appliers, verifier, workingMemory, options,
+                NullLogger.Instance, CancellationToken.None);
+        }
+
+        var ticket = await store.GetAsync("t-1");
+        Assert.AreEqual(RepairStatus.Escalated, ticket!.Status);
+
+        var promotedFailures = ticket.Attempts.Count(a => a.Result.Outcome == VerifyOutcome.PredicateFailed);
+        Assert.IsTrue(promotedFailures >= options.MaxAttempts,
+            $"expected at least {options.MaxAttempts} PredicateFailed attempts, got {promotedFailures}");
+
+        var summary = await workingMemory.GetAsync(options.EscalationWmKey);
+        Assert.IsNotNull(summary);
+    }
+
+    [TestMethod]
+    public async Task NonTimeoutUncertain_DoesNotIncrementBackoff()
+    {
+        var store = NewStore();
+        var skillStore = new SkillBodyApplierTests.InMemorySkillStore();
+        await skillStore.SaveAsync(new Skill("calendar/foo", "s", "body\n", DateTimeOffset.UtcNow));
+        await store.SaveAsync(NewSkillTicket("t-1", "calendar/foo"));
+
+        var appliers = AppliersWith(new SkillBodyApplier(skillStore, NullLogger<SkillBodyApplier>.Instance));
+        // Returns Uncertain WITHOUT TimedOut flag (e.g. gateway error).
+        var verifier = new GatewayErrorVerifier();
+        var options = new RepairTicketOptions { MaxAttempts = 3 };
+
+        for (var i = 0; i < 5; i++)
+        {
+            await DreamService.RunRepairTicketApplyAsync(
+                store, appliers, verifier, workingMemory: null, options,
+                NullLogger.Instance, CancellationToken.None);
+        }
+
+        // All requested budgets must be the initial 5s — non-timeout uncertains
+        // should not increment the backoff counter.
+        Assert.IsTrue(verifier.RequestedBudgets.All(b => b == TimeSpan.FromSeconds(5)));
+
+        var ticket = await store.GetAsync("t-1");
+        Assert.AreEqual(RepairStatus.Open, ticket!.Status);
+    }
+
+    /// <summary>Records the budget the apply pass requested on each call.</summary>
+    private sealed class RecordingTimeoutVerifier : IRepairTicketVerifier
+    {
+        public List<TimeSpan> RequestedBudgets { get; } = [];
+
+        public Task<VerifyResult> VerifyAsync(VerifyShape shape, CancellationToken cancellationToken = default) =>
+            VerifyAsync(shape, budget: null, cancellationToken);
+
+        public Task<VerifyResult> VerifyAsync(VerifyShape shape, TimeSpan? budget, CancellationToken cancellationToken = default)
+        {
+            RequestedBudgets.Add(budget ?? TimeSpan.FromSeconds(5));
+            return Task.FromResult(new VerifyResult(
+                VerifyOutcome.Uncertain,
+                $"verify budget exceeded ({(budget ?? TimeSpan.FromSeconds(5)).TotalSeconds:F1}s)",
+                TimedOut: true));
+        }
+    }
+
+    /// <summary>Returns an Uncertain that is NOT a timeout (e.g. gateway down).</summary>
+    private sealed class GatewayErrorVerifier : IRepairTicketVerifier
+    {
+        public List<TimeSpan> RequestedBudgets { get; } = [];
+
+        public Task<VerifyResult> VerifyAsync(VerifyShape shape, CancellationToken cancellationToken = default) =>
+            VerifyAsync(shape, budget: null, cancellationToken);
+
+        public Task<VerifyResult> VerifyAsync(VerifyShape shape, TimeSpan? budget, CancellationToken cancellationToken = default)
+        {
+            RequestedBudgets.Add(budget ?? TimeSpan.FromSeconds(5));
+            return Task.FromResult(new VerifyResult(
+                VerifyOutcome.Uncertain,
+                "gateway temporarily unavailable",
+                TimedOut: false));
+        }
+    }
+
+    [TestMethod]
     public async Task WorkingMemoryEvictTicket_IsApplied_Resolved()
     {
         var store = NewStore();

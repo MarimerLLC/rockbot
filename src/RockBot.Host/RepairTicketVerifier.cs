@@ -38,7 +38,10 @@ internal sealed class RepairTicketVerifier : IRepairTicketVerifier
         _budget = budget ?? DefaultBudget;
     }
 
-    public async Task<VerifyResult> VerifyAsync(VerifyShape shape, CancellationToken cancellationToken = default)
+    public Task<VerifyResult> VerifyAsync(VerifyShape shape, CancellationToken cancellationToken = default) =>
+        VerifyAsync(shape, budget: null, cancellationToken);
+
+    public async Task<VerifyResult> VerifyAsync(VerifyShape shape, TimeSpan? budget, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(shape);
 
@@ -52,10 +55,11 @@ internal sealed class RepairTicketVerifier : IRepairTicketVerifier
         }
 
         var request = BuildRequest(shape);
+        var effectiveBudget = budget ?? _budget;
 
         VerifyResult result;
         using var budgetCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        budgetCts.CancelAfter(_budget);
+        budgetCts.CancelAfter(effectiveBudget);
 
         try
         {
@@ -64,8 +68,10 @@ internal sealed class RepairTicketVerifier : IRepairTicketVerifier
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
-            result = new VerifyResult(VerifyOutcome.Uncertain,
-                $"verify budget exceeded ({_budget.TotalSeconds:F1}s)");
+            result = new VerifyResult(
+                VerifyOutcome.Uncertain,
+                $"verify budget exceeded ({effectiveBudget.TotalSeconds:F1}s)",
+                TimedOut: true);
         }
         catch (OperationCanceledException)
         {
@@ -78,8 +84,8 @@ internal sealed class RepairTicketVerifier : IRepairTicketVerifier
         }
 
         _logger.LogDebug(
-            "RepairTicketVerifier {Server}/{Tool} → {Outcome}{Detail}",
-            shape.Server, shape.Tool, result.Outcome,
+            "RepairTicketVerifier {Server}/{Tool} budget={Budget:F1}s → {Outcome}{Detail}",
+            shape.Server, shape.Tool, effectiveBudget.TotalSeconds, result.Outcome,
             result.Detail is null ? "" : $" ({result.Detail})");
 
         return result;
