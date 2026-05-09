@@ -16,6 +16,13 @@ namespace RockBot.Host;
 /// When true the task is a system-internal background task (e.g. heartbeat patrol)
 /// whose results are collapsed in the UI. User-created tasks default to false.
 /// </param>
+/// <param name="Directive">
+/// Optional, evolving free-form directive content the agent maintains for itself across runs of
+/// this task (e.g. the heartbeat patrol's running checklist). When non-null the content is
+/// injected as a system message immediately after the task's static framing on every fire,
+/// and the agent updates it via the <c>update_task_directive</c> tool. Distinct from
+/// <see cref="Description"/>, which is the user-facing prompt the task fires with.
+/// </param>
 public sealed record ScheduledTask(
     string Name,
     string CronExpression,
@@ -23,4 +30,5 @@ public sealed record ScheduledTask(
     DateTimeOffset CreatedAt,
     DateTimeOffset? LastFiredAt = null,
     bool RunOnce = false,
-    bool IsSystemTask = false);
+    bool IsSystemTask = false,
+    string? Directive = null);

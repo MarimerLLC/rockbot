@@ -156,6 +156,51 @@ public sealed class FileScheduledTaskStoreTests
         await store.UpdateLastFiredAsync("nonexistent", DateTimeOffset.UtcNow);
     }
 
+    // ── Directive ─────────────────────────────────────────────────────────────
+
+    [TestMethod]
+    public async Task SaveAsync_WithDirective_RoundTripsAcrossRestarts()
+    {
+        var filePath = Path.Combine(_tempDir, "scheduled-tasks.json");
+        var store1 = new FileScheduledTaskStore(filePath, NullLogger<FileScheduledTaskStore>.Instance);
+
+        var task = MakeTask("with-directive") with { Directive = "## Checklist\n- one\n- two" };
+        await store1.SaveAsync(task);
+
+        var store2 = new FileScheduledTaskStore(filePath, NullLogger<FileScheduledTaskStore>.Instance);
+        var retrieved = await store2.GetAsync("with-directive");
+
+        Assert.IsNotNull(retrieved);
+        Assert.AreEqual("## Checklist\n- one\n- two", retrieved.Directive);
+    }
+
+    [TestMethod]
+    public async Task UpdateDirectiveAsync_SetsDirectiveAndPreservesOtherFields()
+    {
+        var store = CreateStore();
+        var firedAt = new DateTimeOffset(2026, 2, 19, 8, 0, 0, TimeSpan.Zero);
+        await store.SaveAsync(MakeTask("patrol", cron: "0 8 * * *", description: "Patrol"));
+        await store.UpdateLastFiredAsync("patrol", firedAt);
+
+        await store.UpdateDirectiveAsync("patrol", "new directive body");
+
+        var retrieved = await store.GetAsync("patrol");
+        Assert.IsNotNull(retrieved);
+        Assert.AreEqual("new directive body", retrieved.Directive);
+        Assert.AreEqual("0 8 * * *", retrieved.CronExpression, "Cron must be preserved.");
+        Assert.AreEqual("Patrol", retrieved.Description, "Description must be preserved.");
+        Assert.AreEqual(firedAt, retrieved.LastFiredAt, "LastFiredAt must be preserved.");
+    }
+
+    [TestMethod]
+    public async Task UpdateDirectiveAsync_UnknownTask_IsNoOp()
+    {
+        var store = CreateStore();
+        // Should not throw
+        await store.UpdateDirectiveAsync("nonexistent", "body");
+        Assert.IsNull(await store.GetAsync("nonexistent"));
+    }
+
     // ── Persistence ───────────────────────────────────────────────────────────
 
     [TestMethod]

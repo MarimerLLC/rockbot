@@ -6,6 +6,7 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using RockBot.Messaging;
+using RockBot.Tools;
 
 namespace RockBot.Host;
 
@@ -47,6 +48,7 @@ internal sealed class DreamService : IHostedService, IDisposable
     private readonly IReadOnlyDictionary<RepairTarget, IRepairTargetApplier>? _repairAppliers;
     private readonly IRepairTicketVerifier? _repairTicketVerifier;
     private readonly RepairTicketOptions? _repairOptions;
+    private readonly IReadOnlyList<IToolSkillProvider> _toolSkillProviders;
     private Timer? _timer;
     private CronExpression? _cron;
     private string? _dreamDirective;
@@ -93,7 +95,8 @@ internal sealed class DreamService : IHostedService, IDisposable
         IRepairTicketStore? repairTicketStore = null,
         IEnumerable<IRepairTargetApplier>? repairAppliers = null,
         IRepairTicketVerifier? repairTicketVerifier = null,
-        IOptions<RepairTicketOptions>? repairOptions = null)
+        IOptions<RepairTicketOptions>? repairOptions = null,
+        IEnumerable<IToolSkillProvider>? toolSkillProviders = null)
     {
         _memory = memory;
         _skillStore = skillStores.FirstOrDefault();
@@ -127,6 +130,7 @@ internal sealed class DreamService : IHostedService, IDisposable
                 map[applier.Target] = applier;
             _repairAppliers = map;
         }
+        _toolSkillProviders = toolSkillProviders?.ToList() ?? (IReadOnlyList<IToolSkillProvider>)Array.Empty<IToolSkillProvider>();
     }
 
     public Task StartAsync(CancellationToken cancellationToken)
@@ -632,14 +636,11 @@ internal sealed class DreamService : IHostedService, IDisposable
     {
         var all = await _skillStore!.ListAsync();
 
-        // Prune skills that have not been used in 18 months (skip protected skills)
+        // Prune skills that have not been used in 18 months
         var threshold = DateTimeOffset.UtcNow.AddMonths(-18);
         var pruned = 0;
         foreach (var skill in all)
         {
-            if (IsProtectedSkill(skill.Name))
-                continue;
-
             var lastActivity = skill.LastUsedAt ?? skill.UpdatedAt ?? skill.CreatedAt;
             if (lastActivity < threshold)
             {
@@ -702,68 +703,15 @@ internal sealed class DreamService : IHostedService, IDisposable
             coUsed[parts[1]].Add(parts[0]);
         }
 
-        var userMessage = new StringBuilder();
-        userMessage.AppendLine($"The agent currently has {all.Count} skills. Consolidate them:");
-        userMessage.AppendLine();
+        var singletonPrefixes = GetSingletonPrefixes(_toolSkillProviders);
 
-        var sparseThreshold = DateTimeOffset.UtcNow.AddDays(-7);
-        for (var i = 0; i < all.Count; i++)
-        {
-            var s = all[i];
-            var count = usageCount.TryGetValue(s.Name, out var c) ? c : 0;
-            var usageAnnotation = $" [usage: {count}x in last 30d]";
-            var coUsedAnnotation = coUsed.TryGetValue(s.Name, out var coSkills) && coSkills.Count > 0
-                ? $" [co-used with: {string.Join(", ", coSkills.Take(3))}]"
-                : string.Empty;
-            var isSparse = s.Content.Length < 200 && s.CreatedAt < sparseThreshold;
-            var sparseAnnotation = isSparse ? " [sparse-content: may need examples or steps]" : string.Empty;
-            userMessage.AppendLine($"{i + 1}. [NAME:{s.Name}]{usageAnnotation}{coUsedAnnotation}{sparseAnnotation} summary: {s.Summary}");
-            // Cap content at 800 chars so the LLM doesn't reproduce long markdown verbatim
-            // (long content with inline double-quotes breaks JSON encoding in the response).
-            const int ContentCap = 800;
-            var displayContent = s.Content.Length > ContentCap
-                ? s.Content[..ContentCap] + "\n[... truncated for consolidation pass ...]"
-                : s.Content;
-            userMessage.AppendLine(displayContent);
-            userMessage.AppendLine();
-        }
-
-        // Append co-occurrence section for the top pairs
-        var topPairs = coOccurrences.OrderByDescending(p => p.Value).Take(10).ToList();
-        if (topPairs.Count > 0)
-        {
-            userMessage.AppendLine();
-            userMessage.AppendLine("Frequently co-used skill pairs (across sessions in last 30 days):");
-            foreach (var (pair, cnt) in topPairs)
-            {
-                var parts = pair.Split('|');
-                userMessage.AppendLine($"- {parts[0]} + {parts[1]}: {cnt} session(s)");
-            }
-        }
-
-        // Append prefix cluster section for abstract parent guide detection
-        var prefixClusters = all
-            .Where(s => s.Name.Contains('/'))
-            .GroupBy(s => s.Name[..s.Name.IndexOf('/')])
-            .Where(g => g.Count() >= 2)
-            .OrderByDescending(g => g.Count())
-            .ToList();
-
-        if (prefixClusters.Count > 0)
-        {
-            userMessage.AppendLine();
-            userMessage.AppendLine("Skill name-prefix clusters (consider whether each cluster warrants an abstract parent guide skill):");
-            foreach (var cluster in prefixClusters)
-            {
-                var names = cluster.OrderBy(s => s.Name).Select(s => s.Name).ToList();
-                userMessage.AppendLine($"- '{cluster.Key}/*': {string.Join(", ", names)}");
-            }
-        }
+        var userMessage = BuildSkillConsolidationUserMessage(
+            all, usageCount, coUsed, coOccurrences, singletonPrefixes, DateTimeOffset.UtcNow);
 
         var result = await InvokeDreamPassAsync<SkillDreamResultDto>(
             "skill consolidation",
             _skillDreamDirective!,
-            userMessage.ToString(),
+            userMessage,
             ct);
         if (result is null) return;
 
@@ -779,17 +727,6 @@ internal sealed class DreamService : IHostedService, IDisposable
         foreach (var dto in result.ToSave ?? [])
             foreach (var srcName in dto.SourceNames ?? [])
                 allToDelete.Add(srcName);
-
-        // Guard: never delete skills whose names match a protected prefix (e.g. patrol/).
-        // These skills are referenced by system directives and must not be removed by dream passes.
-        var protectedNames = allToDelete.Where(IsProtectedSkill).ToList();
-        foreach (var name in protectedNames)
-        {
-            allToDelete.Remove(name);
-            _logger.LogWarning(
-                "DreamService: skill consolidation LLM proposed deleting protected skill '{Name}' — skipping",
-                name);
-        }
 
         // Safety guard: refuse to delete skills when nothing is being saved in return.
         // The directive says "never delete without replacement" — enforce it in code so an
@@ -1053,16 +990,6 @@ internal sealed class DreamService : IHostedService, IDisposable
         foreach (var dto in result.ToSave ?? [])
             foreach (var srcName in dto.SourceNames ?? [])
                 allToDelete.Add(srcName);
-
-        // Guard: never delete skills whose names match a protected prefix (e.g. patrol/).
-        var protectedOptNames = allToDelete.Where(IsProtectedSkill).ToList();
-        foreach (var name in protectedOptNames)
-        {
-            allToDelete.Remove(name);
-            _logger.LogWarning(
-                "DreamService: skill optimization LLM proposed deleting protected skill '{Name}' — skipping",
-                name);
-        }
 
         foreach (var name in allToDelete)
         {
@@ -3337,14 +3264,130 @@ internal sealed class DreamService : IHostedService, IDisposable
         }
     }
 
-    private bool IsProtectedSkill(string name)
+    /// <summary>
+    /// Collects every prefix declared by an <see cref="IToolSkillProvider"/> with
+    /// <see cref="ConsolidationPolicy.NamespacedSingleton"/>. Prefix strings are returned
+    /// verbatim (e.g. <c>"mcp/"</c> including the trailing slash).
+    /// </summary>
+    internal static IReadOnlyList<string> GetSingletonPrefixes(
+        IEnumerable<IToolSkillProvider>? providers)
     {
-        foreach (var prefix in _options.ProtectedSkillPrefixes)
+        if (providers is null) return Array.Empty<string>();
+
+        var prefixes = new List<string>();
+        foreach (var p in providers)
         {
-            if (name.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
-                return true;
+            var policy = p.ConsolidationPolicy;
+            if (policy is { Policy: ConsolidationPolicy.NamespacedSingleton } && !string.IsNullOrWhiteSpace(policy.Value.Prefix))
+                prefixes.Add(policy.Value.Prefix);
+        }
+        return prefixes;
+    }
+
+    /// <summary>
+    /// Builds the user-message text submitted to the LLM during the skill consolidation pass.
+    /// Extracted from <see cref="ConsolidateSkillsAsync"/> for unit-testing without invoking the LLM.
+    /// </summary>
+    /// <remarks>
+    /// Singleton-prefixed skill names (those whose name starts with a prefix declared as
+    /// <see cref="ConsolidationPolicy.NamespacedSingleton"/>) are excluded from the prefix-cluster
+    /// section and a constraints paragraph is appended naming each such prefix so the LLM does not
+    /// propose merging across them.
+    /// </remarks>
+    internal static string BuildSkillConsolidationUserMessage(
+        IReadOnlyList<Skill> all,
+        IReadOnlyDictionary<string, int> usageCount,
+        IReadOnlyDictionary<string, List<string>> coUsed,
+        IReadOnlyDictionary<string, int> coOccurrences,
+        IReadOnlyCollection<string> singletonPrefixes,
+        DateTimeOffset now)
+    {
+        var userMessage = new StringBuilder();
+        userMessage.AppendLine($"The agent currently has {all.Count} skills. Consolidate them:");
+        userMessage.AppendLine();
+
+        var sparseThreshold = now.AddDays(-7);
+        for (var i = 0; i < all.Count; i++)
+        {
+            var s = all[i];
+            var count = usageCount.TryGetValue(s.Name, out var c) ? c : 0;
+            var usageAnnotation = $" [usage: {count}x in last 30d]";
+            var coUsedAnnotation = coUsed.TryGetValue(s.Name, out var coSkills) && coSkills.Count > 0
+                ? $" [co-used with: {string.Join(", ", coSkills.Take(3))}]"
+                : string.Empty;
+            var isSparse = s.Content.Length < 200 && s.CreatedAt < sparseThreshold;
+            var sparseAnnotation = isSparse ? " [sparse-content: may need examples or steps]" : string.Empty;
+            userMessage.AppendLine($"{i + 1}. [NAME:{s.Name}]{usageAnnotation}{coUsedAnnotation}{sparseAnnotation} summary: {s.Summary}");
+            // Cap content at 800 chars so the LLM doesn't reproduce long markdown verbatim
+            // (long content with inline double-quotes breaks JSON encoding in the response).
+            const int ContentCap = 800;
+            var displayContent = s.Content.Length > ContentCap
+                ? s.Content[..ContentCap] + "\n[... truncated for consolidation pass ...]"
+                : s.Content;
+            userMessage.AppendLine(displayContent);
+            userMessage.AppendLine();
         }
 
+        // Append co-occurrence section for the top pairs
+        var topPairs = coOccurrences.OrderByDescending(p => p.Value).Take(10).ToList();
+        if (topPairs.Count > 0)
+        {
+            userMessage.AppendLine();
+            userMessage.AppendLine("Frequently co-used skill pairs (across sessions in last 30 days):");
+            foreach (var (pair, cnt) in topPairs)
+            {
+                var parts = pair.Split('|');
+                userMessage.AppendLine($"- {parts[0]} + {parts[1]}: {cnt} session(s)");
+            }
+        }
+
+        // Append prefix cluster section for abstract parent guide detection,
+        // omitting any cluster whose key matches a namespaced-singleton prefix.
+        var prefixClusters = all
+            .Where(s => s.Name.Contains('/'))
+            .GroupBy(s => s.Name[..s.Name.IndexOf('/')])
+            .Where(g => g.Count() >= 2)
+            .Where(g => !IsSingletonClusterKey(g.Key, singletonPrefixes))
+            .OrderByDescending(g => g.Count())
+            .ToList();
+
+        if (prefixClusters.Count > 0)
+        {
+            userMessage.AppendLine();
+            userMessage.AppendLine("Skill name-prefix clusters (consider whether each cluster warrants an abstract parent guide skill):");
+            foreach (var cluster in prefixClusters)
+            {
+                var names = cluster.OrderBy(s => s.Name).Select(s => s.Name).ToList();
+                userMessage.AppendLine($"- '{cluster.Key}/*': {string.Join(", ", names)}");
+            }
+        }
+
+        if (singletonPrefixes.Count > 0)
+        {
+            userMessage.AppendLine();
+            userMessage.AppendLine("Constraints — namespaced-singleton prefixes:");
+            userMessage.AppendLine(
+                $"The following skill name prefix(es) are namespaced bindings to live external entities: " +
+                $"{string.Join(", ", singletonPrefixes.Select(p => $"'{p}*'"))}. " +
+                "Each suffix is a 1:1 binding (e.g. 'mcp/{server-name}' refers to a specific MCP server). " +
+                "Do NOT merge skills across these prefixes, replace them with an abstract parent guide, " +
+                "or delete them as duplicates of one another. They may only be improved or kept as-is.");
+        }
+
+        return userMessage.ToString();
+    }
+
+    private static bool IsSingletonClusterKey(string clusterKey, IReadOnlyCollection<string> singletonPrefixes)
+    {
+        foreach (var prefix in singletonPrefixes)
+        {
+            // Cluster keys do not include the trailing slash; prefixes do (e.g. "mcp/").
+            if (prefix.Length > 0 && prefix[^1] == '/' &&
+                string.Equals(clusterKey, prefix[..^1], StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+        }
         return false;
     }
 

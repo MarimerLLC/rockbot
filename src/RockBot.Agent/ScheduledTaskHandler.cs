@@ -29,6 +29,7 @@ internal sealed class ScheduledTaskHandler(
     AgentLoopRunner agentLoopRunner,
     AgentContextBuilder agentContextBuilder,
     IOptions<AgentProfileOptions> profileOptions,
+    IScheduledTaskStore scheduledTaskStore,
     ILogger<ScheduledTaskHandler> logger,
     ISkillUsageStore? skillUsageStore = null) : IMessageHandler<ScheduledTaskMessage>
 {
@@ -49,11 +50,25 @@ internal sealed class ScheduledTaskHandler(
         // as a system message immediately after the main system prompt (index 1).
         var basePath = profileOptions.Value.BasePath;
         var directivePath = Path.Combine(basePath, $"{message.TaskName}.md");
+        var nextSystemInsertIndex = 1;
         if (File.Exists(directivePath))
         {
             var directiveContent = await File.ReadAllTextAsync(directivePath, ct);
-            chatMessages.Insert(1, new ChatMessage(ChatRole.System, directiveContent));
+            chatMessages.Insert(nextSystemInsertIndex, new ChatMessage(ChatRole.System, directiveContent));
+            nextSystemInsertIndex++;
             logger.LogInformation("Injected task directive from '{Path}'", directivePath);
+        }
+
+        // If the scheduled task carries an evolving Directive body (the agent's running checklist
+        // updated via update_task_directive), inject it as the next system message so it sits
+        // immediately after the static framing on every fire.
+        var taskRecord = await scheduledTaskStore.GetAsync(message.TaskName);
+        if (!string.IsNullOrWhiteSpace(taskRecord?.Directive))
+        {
+            chatMessages.Insert(nextSystemInsertIndex, new ChatMessage(ChatRole.System, taskRecord.Directive));
+            logger.LogInformation(
+                "Injected evolving task directive for '{Task}' ({Length} chars)",
+                message.TaskName, taskRecord.Directive.Length);
         }
 
         // Add the task description as the user turn (context builder doesn't add it;
@@ -63,6 +78,7 @@ internal sealed class ScheduledTaskHandler(
         // Per-session tools — same set the user handler builds (sessionId already is "patrol/name")
         var sessionWorkingMemoryTools = new WorkingMemoryTools(workingMemory, sessionId, logger);
         var sessionSkillTools = new SkillTools(skillStore, llmClient, logger, sessionId, skillUsageStore);
+        var taskDirectiveTools = new TaskDirectiveTools(scheduledTaskStore, message.TaskName, logger);
 
         var batchId = Guid.NewGuid().ToString("N")[..12];
         var spawnedSubagent = false;
@@ -77,6 +93,7 @@ internal sealed class ScheduledTaskHandler(
         var allTools = memoryTools.Tools
             .Concat(sessionWorkingMemoryTools.Tools)
             .Concat(sessionSkillTools.Tools)
+            .Concat(taskDirectiveTools.Tools)
             .Concat(rulesTools.Tools)
             .Concat(toolGuideTools.Tools)
             .Concat(registryTools)

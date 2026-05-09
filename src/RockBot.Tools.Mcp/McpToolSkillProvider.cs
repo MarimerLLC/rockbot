@@ -11,6 +11,9 @@ internal sealed class McpToolSkillProvider : IToolSkillProvider
     public string Name => "mcp";
     public string Summary => "MCP server discovery and tool invocation (mcp_list_services, mcp_get_service_details, mcp_invoke_tool).";
 
+    public (string Prefix, ConsolidationPolicy Policy)? ConsolidationPolicy
+        => ("mcp/", RockBot.Tools.ConsolidationPolicy.NamespacedSingleton);
+
     public string GetDocument() =>
         """
         # MCP Server Discovery and Invocation Guide

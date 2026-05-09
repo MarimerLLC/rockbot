@@ -47,24 +47,26 @@ until TTLs expire. Put the run timestamp inside the value if you need traceabili
 
 ## Execution
 
-Load and execute your patrol checklist:
+Your evolving patrol checklist is delivered to you automatically as part of the system
+prompt for this run — there is nothing to load. **Execute everything in it.**
+
+If no checklist has been delivered (first run, post-migration), build a sensible starting
+checklist covering: active plans, upcoming calendar, recent email, scheduled task health,
+and pending work queues. Save it with:
 
 ```
-get_skill("patrol/proactive-actions")
+update_task_directive(content: "<your starting checklist as markdown>")
 ```
 
-**Execute everything in it.**
-
-If the skill does not exist yet, create a sensible starting checklist via
-`save_skill("patrol/proactive-actions", ...)` covering: active plans, upcoming
-calendar, recent email, scheduled task health, and pending work queues. Then execute it.
+Then execute it.
 
 ---
 
 ## After the Patrol
 
 If you discovered a new recurring pattern or check that belongs in future patrols,
-update `patrol/proactive-actions` via `save_skill`. Only add patterns that recur —
-not one-offs.
+call `update_task_directive` with the revised checklist body — it replaces the entire
+directive, so include the existing items plus your additions. Only add patterns that
+recur — not one-offs.
 
 **Produce no text output. End the response.**
