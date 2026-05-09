@@ -55,6 +55,10 @@ public static class McpServiceCollectionExtensions
         builder.Services.TryAddEnumerable(ServiceDescriptor.Singleton<IToolArgumentDefaultsProvider, TimeZoneDefaultProvider>());
         builder.Services.TryAddEnumerable(ServiceDescriptor.Singleton<IToolArgumentDefaultsProvider, CurrentTimeDefaultProvider>());
         builder.Services.TryAddEnumerable(ServiceDescriptor.Singleton<IToolArgumentDefaultsProvider, AccountIdFanoutProvider>());
+        // Self-repair Phase 4: file-backed defaults registered by repair tickets.
+        // Registered after the deterministic providers so hard-coded resolution wins
+        // when both can answer; the file-backed provider augments rather than overrides.
+        builder.Services.TryAddEnumerable(ServiceDescriptor.Singleton<IToolArgumentDefaultsProvider, FileToolDefaultsProvider>());
         builder.Services.AddSingleton<StageBLlmFiller>();
         builder.Services.AddSingleton<McpRecoveryExecutor>();
 
