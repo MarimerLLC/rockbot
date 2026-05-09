@@ -30,6 +30,7 @@ public sealed class SkillTools
     private readonly ILogger _logger;
     private readonly string? _sessionId;
     private readonly ISkillUsageStore? _usageStore;
+    private readonly ISkillResourceUsageStore? _resourceUsageStore;
 
     public SkillTools(
         ISkillStore skillStore,
@@ -37,13 +38,15 @@ public sealed class SkillTools
         ILogger logger,
         string? sessionId = null,
         ISkillUsageStore? usageStore = null,
-        bool enablePromote = false)
+        bool enablePromote = false,
+        ISkillResourceUsageStore? resourceUsageStore = null)
     {
         _skillStore = skillStore;
         _llmClient = llmClient;
         _logger = logger;
         _sessionId = sessionId;
         _usageStore = usageStore;
+        _resourceUsageStore = resourceUsageStore;
 
         var tools = new List<AITool>
         {
@@ -121,6 +124,16 @@ public sealed class SkillTools
         if (content is null)
             return $"Resource '{filename}' not found in skill '{skillName}'. " +
                    "Call get_skill to see the list of available resources.";
+
+        // Fire-and-forget checkout recording — soft validation signal for the
+        // provisional validation pass (a full success/failure signal exists for
+        // wisp resources via DefinitionHash cross-reference; checkouts are the
+        // fallback for non-wisp resources like Python and JsonSchema).
+        if (_resourceUsageStore is not null && _sessionId is not null)
+        {
+            _ = _resourceUsageStore.RecordCheckoutAsync(
+                skillName, filename, _sessionId, DateTimeOffset.UtcNow);
+        }
 
         return content;
     }

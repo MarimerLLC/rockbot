@@ -172,6 +172,37 @@ public sealed class DreamOptions
     public int WispSuccessFrequencyThreshold { get; set; } = 3;
 
     /// <summary>
+    /// Whether the provisional skill-resource validation/demotion pass is enabled.
+    /// Reads recent wisp records and resource checkouts, then flips provisional
+    /// resources to non-provisional after repeated success or removes them after
+    /// repeated failure. Requires <see cref="ISkillStore"/> and
+    /// <see cref="IWispExecutionLog"/>; uses <see cref="IFailureClusterStore"/>
+    /// to record demotions when present.
+    /// </summary>
+    public bool ProvisionalValidationEnabled { get; set; } = true;
+
+    /// <summary>
+    /// Distinct-session successful executions required to flip a provisional
+    /// wisp resource to non-provisional. (Or distinct-session checkouts for
+    /// non-wisp resources, which use access as a soft signal.)
+    /// </summary>
+    public int ProvisionalSuccessThreshold { get; set; } = 3;
+
+    /// <summary>
+    /// Number of consecutive recent failures of a provisional wisp resource that
+    /// triggers removal of the resource and a corresponding entry in the
+    /// failure-cluster store.
+    /// </summary>
+    public int ProvisionalFailureThreshold { get; set; } = 2;
+
+    /// <summary>
+    /// Provisional resources older than this with zero usage activity have a
+    /// <c>[stale]</c> prefix added to their description so the LLM stops loading
+    /// them. The body is preserved on disk in case it becomes interesting again.
+    /// </summary>
+    public TimeSpan ProvisionalStaleAfter { get; set; } = TimeSpan.FromDays(30);
+
+    /// <summary>
     /// Whether the tool-success-learning pass (requires <see cref="IToolCallLog"/>) is enabled.
     /// Mines the tool-call log for retry-until-success patterns and writes the verified
     /// argument values as durable long-term memory entries.

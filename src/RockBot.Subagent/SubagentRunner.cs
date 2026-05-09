@@ -30,7 +30,8 @@ internal sealed class SubagentRunner(
     AgentIdentity agent,
     TierRoutingLogger tierRoutingLogger,
     AgentProfile agentProfile,
-    ILogger<SubagentRunner> logger)
+    ILogger<SubagentRunner> logger,
+    ISkillResourceUsageStore? skillResourceUsageStore = null)
 {
     public async Task RunAsync(
         string taskId,
@@ -113,7 +114,7 @@ internal sealed class SubagentRunner(
         // tool-call discovery whose result is worth capturing as a typed asset; the main
         // agent reaches assets via skills the dream pass has already promoted.
         var skillTools = new SkillTools(skillStore, llmClient, logger, subagentSessionId,
-            enablePromote: true);
+            enablePromote: true, resourceUsageStore: skillResourceUsageStore);
 
         // Working memory tools scoped to this subagent's namespace
         var sessionWorkingMemoryTools = new WorkingMemoryTools(workingMemory, subagentNamespace, logger);
