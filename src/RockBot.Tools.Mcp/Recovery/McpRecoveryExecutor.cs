@@ -42,6 +42,7 @@ public sealed class McpRecoveryExecutor
     private readonly IReadOnlyList<IToolArgumentDefaultsProvider> _providers;
     private readonly StageBLlmFiller? _stageB;
     private readonly ICapabilityClaimWriter? _capabilityClaimWriter;
+    private readonly IFailureClusterStore? _failureClusterStore;
     private readonly ILogger<McpRecoveryExecutor> _logger;
 
     public McpRecoveryExecutor(
@@ -49,12 +50,14 @@ public sealed class McpRecoveryExecutor
         IEnumerable<IToolArgumentDefaultsProvider> providers,
         ILogger<McpRecoveryExecutor> logger,
         StageBLlmFiller? stageB = null,
-        ICapabilityClaimWriter? capabilityClaimWriter = null)
+        ICapabilityClaimWriter? capabilityClaimWriter = null,
+        IFailureClusterStore? failureClusterStore = null)
     {
         _invoke = invoke;
         _providers = providers.ToList();
         _stageB = stageB;
         _capabilityClaimWriter = capabilityClaimWriter;
+        _failureClusterStore = failureClusterStore;
         _logger = logger;
     }
 
@@ -64,13 +67,17 @@ public sealed class McpRecoveryExecutor
     /// successful recovered response. Exhausted-recovery responses carry an
     /// annotated trail in <see cref="ToolInvokeResponse.Content"/>.
     /// </summary>
+    /// <param name="sessionId">Originating session id (from the outer
+    /// <c>mcp_invoke_tool</c> request). Forwarded to the failure cluster store so
+    /// post-recovery failures can be grouped by distinct sessions. May be null.</param>
     public Task<ToolInvokeResponse> RecoverAsync(
         string serverName,
         string toolName,
         ToolInvokeRequest innerRequest,
         ToolInvokeResponse response,
-        CancellationToken ct) =>
-        TryRecoverAsync(serverName, toolName, innerRequest, response, depth: 0, ct);
+        CancellationToken ct,
+        string? sessionId = null) =>
+        TryRecoverAsync(serverName, toolName, innerRequest, response, depth: 0, sessionId, ct);
 
     private async Task<ToolInvokeResponse> TryRecoverAsync(
         string serverName,
@@ -78,6 +85,7 @@ public sealed class McpRecoveryExecutor
         ToolInvokeRequest innerRequest,
         ToolInvokeResponse response,
         int depth,
+        string? sessionId,
         CancellationToken ct)
     {
         if (depth >= MaxChainDepth)
@@ -92,6 +100,7 @@ public sealed class McpRecoveryExecutor
                 statement: $"recovery-exhausted: chain depth {depth} reached for {serverName}/{toolName}",
                 evidence: chainErrorText,
                 ct);
+            await RecordFailureAsync(serverName, toolName, sessionId, chainErrorText, fieldHint: null, ct);
             return Annotate(response, $"chain-exhausted at depth {depth}");
         }
 
@@ -99,13 +108,23 @@ public sealed class McpRecoveryExecutor
         if (errorText is null) return response;
 
         if (!SchemaErrorPatterns.TryExtractMissingField(errorText, out var fieldName))
+        {
+            // Non-schema error — recovery has no field to fill. Still a post-recovery
+            // failure from the gateway's perspective; record under "unknown" so
+            // DreamService can spot recurring auth/network/server-side failures the
+            // same way it spots schema-pattern failures.
+            await RecordFailureAsync(serverName, toolName, sessionId, errorText, fieldHint: null, ct);
             return response;
+        }
 
         var existingArgs = McpToolExecutor.ParseArguments(innerRequest.Arguments);
         if (existingArgs.ContainsKey(fieldName))
         {
             // The field is already present — the error is something else despite matching
-            // the pattern (e.g., the value was wrong, not missing). Don't loop.
+            // the pattern (e.g., the value was wrong, not missing). Don't loop. Cluster
+            // these as "unknown" so the merged group reflects "server complains a field
+            // is required even though it's in args" rather than fragmenting by field.
+            await RecordFailureAsync(serverName, toolName, sessionId, errorText, fieldHint: "unknown", ct);
             return response;
         }
 
@@ -168,7 +187,7 @@ public sealed class McpRecoveryExecutor
                     ToolName = toolName,
                     Arguments = JsonSerializer.Serialize(mergedArgs)
                 };
-                return await TryRecoverAsync(serverName, toolName, nextRequest, retryResponse, depth + 1, ct);
+                return await TryRecoverAsync(serverName, toolName, nextRequest, retryResponse, depth + 1, sessionId, ct);
             }
 
             // Retry still failed and isn't chainable.
@@ -177,6 +196,7 @@ public sealed class McpRecoveryExecutor
                 statement: $"recovery-exhausted: Stage A provider {providerName} resolved field {fieldName} but the call still failed",
                 evidence: retryError ?? errorText,
                 ct);
+            await RecordFailureAsync(serverName, toolName, sessionId, retryError ?? errorText, fieldHint: null, ct);
             return Annotate(response, $"stageA={providerName} retry-failed: {Truncate(retryResponse.Content)}");
         }
 
@@ -218,7 +238,7 @@ public sealed class McpRecoveryExecutor
                         ToolName = toolName,
                         Arguments = JsonSerializer.Serialize(mergedArgs)
                     };
-                    return await TryRecoverAsync(serverName, toolName, nextRequest, retryResponse, depth + 1, ct);
+                    return await TryRecoverAsync(serverName, toolName, nextRequest, retryResponse, depth + 1, sessionId, ct);
                 }
 
                 await EmitCapabilityClaimAsync(
@@ -226,6 +246,7 @@ public sealed class McpRecoveryExecutor
                     statement: $"recovery-exhausted: Stage B filled field {fieldName} but the call still failed",
                     evidence: retryError ?? errorText,
                     ct);
+                await RecordFailureAsync(serverName, toolName, sessionId, retryError ?? errorText, fieldHint: null, ct);
                 return Annotate(response,
                     $"stageA=no-provider; stageB=filled retry-failed: {Truncate(retryResponse.Content)}");
             }
@@ -238,12 +259,14 @@ public sealed class McpRecoveryExecutor
                 statement: $"recovery-exhausted: Stage B could not fill field {fieldName}",
                 evidence: errorText,
                 ct);
+            await RecordFailureAsync(serverName, toolName, sessionId, errorText, fieldHint: fieldName, ct);
             return Annotate(response, "stageA=no-provider; stageB=fill-failed");
         }
 
         sw.Stop();
         RecordTelemetry(serverName, toolName, fieldName, "A", recovered: false, "no-provider",
             sw.Elapsed.TotalMilliseconds);
+        await RecordFailureAsync(serverName, toolName, sessionId, errorText, fieldHint: fieldName, ct);
         return Annotate(response, "stageA=no-provider; stageB=disabled");
     }
 
@@ -478,6 +501,62 @@ public sealed class McpRecoveryExecutor
         RecoveryDiagnostics.Attempts.Add(1, tags);
         RecoveryDiagnostics.Duration.Record(durationMs, tags);
     }
+
+    /// <summary>
+    /// Phase 5 producer side: records a post-recovery failure into the cluster store
+    /// so DreamService can spot recurring (server, tool, error-class) patterns and
+    /// open repair tickets. Auto-recovered calls are not recorded — those are
+    /// covered by <see cref="RecoveryDiagnostics"/> metrics. Error class is the
+    /// missing field name from <see cref="SchemaErrorPatterns"/>, or
+    /// <c>"unknown"</c> if no pattern matches. Best-effort; failures here never
+    /// break the recovery path.
+    /// </summary>
+    private async Task RecordFailureAsync(
+        string serverName,
+        string toolName,
+        string? sessionId,
+        string? errorText,
+        string? fieldHint,
+        CancellationToken ct)
+    {
+        if (_failureClusterStore is null) return;
+
+        var errorClass = !string.IsNullOrEmpty(fieldHint)
+            ? fieldHint
+            : ExtractErrorClass(errorText);
+
+        ClusterKey key;
+        try
+        {
+            key = new ClusterKey(serverName, toolName, errorClass);
+        }
+        catch (ArgumentException ex)
+        {
+            _logger.LogWarning(ex,
+                "Skipping failure cluster record for {Server}/{Tool} — invalid key components",
+                serverName, toolName);
+            return;
+        }
+
+        try
+        {
+            await _failureClusterStore.RecordAsync(
+                key, sessionId, errorText ?? string.Empty, DateTimeOffset.UtcNow, ct);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex,
+                "Failed to record failure cluster for {Server}/{Tool} class {ErrorClass}",
+                serverName, toolName, errorClass);
+        }
+    }
+
+    private static string ExtractErrorClass(string? errorText) =>
+        SchemaErrorPatterns.TryExtractMissingField(errorText, out var fieldName) ? fieldName : "unknown";
 
     /// <summary>
     /// Phase 2 producer side: when recovery has been attempted but exhausted, write

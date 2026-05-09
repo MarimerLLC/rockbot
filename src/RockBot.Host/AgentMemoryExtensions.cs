@@ -193,6 +193,28 @@ public static class AgentMemoryExtensions
     }
 
     /// <summary>
+    /// Registers the in-process, PVC-backed failure cluster store. Records every
+    /// post-recovery MCP tool failure so DreamService can spot recurring patterns
+    /// and open repair tickets. Opt-in — call after <see cref="WithMemory"/>.
+    /// See <c>design/self-repair.md</c> Phase 5.
+    /// </summary>
+    public static AgentHostBuilder WithFailureClusterStore(
+        this AgentHostBuilder builder,
+        Action<FailureClusterOptions>? configure = null)
+    {
+        if (configure is not null)
+            builder.Services.Configure(configure);
+        else
+            builder.Services.Configure<FailureClusterOptions>(_ => { });
+
+        builder.Services.AddSingleton<FileFailureClusterStore>();
+        builder.Services.AddSingleton<IFailureClusterStore>(sp => sp.GetRequiredService<FileFailureClusterStore>());
+        builder.Services.AddSingleton<IHostedService>(sp => sp.GetRequiredService<FileFailureClusterStore>());
+
+        return builder;
+    }
+
+    /// <summary>
     /// Registers the file-backed knowledge graph store for entity-relationship reasoning.
     /// </summary>
     public static AgentHostBuilder WithKnowledgeGraph(

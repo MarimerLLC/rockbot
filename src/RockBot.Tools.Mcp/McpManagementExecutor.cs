@@ -161,10 +161,13 @@ public sealed class McpManagementExecutor : IToolExecutor, IAsyncDisposable
         // Always pass through recovery — it inspects both IsError=true responses
         // and IsError=false responses with embedded JSON error bodies (some MCP
         // servers report schema errors that way). Recovery short-circuits cheaply
-        // when the response is genuinely successful.
+        // when the response is genuinely successful. SessionId from the outer
+        // request is forwarded so post-recovery failures cluster by distinct
+        // sessions in IFailureClusterStore (Phase 5).
         if (_recovery is not null)
         {
-            response = await _recovery.RecoverAsync(serverName, toolName, innerRequest, response, ct);
+            response = await _recovery.RecoverAsync(
+                serverName, toolName, innerRequest, response, ct, sessionId: request.SessionId);
         }
 
         return response;
