@@ -128,6 +128,25 @@ internal sealed class FileScheduledTaskStore : IScheduledTaskStore
         }
     }
 
+    public async Task UpdateDirectiveAsync(string name, string directive)
+    {
+        await _lock.WaitAsync();
+        try
+        {
+            var tasks = await ReadAllAsync();
+            if (!tasks.TryGetValue(name, out var existing))
+                return;
+
+            tasks[name] = existing with { Directive = directive };
+            await WriteAllAsync(tasks);
+            _logger.LogDebug("Updated directive for scheduled task '{Name}' ({Length} chars)", name, directive.Length);
+        }
+        finally
+        {
+            _lock.Release();
+        }
+    }
+
     // ── Internal ─────────────────────────────────────────────────────────────
 
     private async Task<Dictionary<string, ScheduledTask>> ReadAllAsync()

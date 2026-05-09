@@ -188,6 +188,13 @@ public sealed class SchedulerServiceTests
                 _tasks[name] = existing with { LastFiredAt = firedAt };
             return Task.CompletedTask;
         }
+
+        public Task UpdateDirectiveAsync(string name, string directive)
+        {
+            if (_tasks.TryGetValue(name, out var existing))
+                _tasks[name] = existing with { Directive = directive };
+            return Task.CompletedTask;
+        }
     }
 
     private sealed class NullPipeline : IMessagePipeline

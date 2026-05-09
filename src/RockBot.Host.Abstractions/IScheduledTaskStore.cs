@@ -19,4 +19,11 @@ public interface IScheduledTaskStore
 
     /// <summary>Updates the LastFiredAt timestamp for an existing task. No-op if not found.</summary>
     Task UpdateLastFiredAsync(string name, DateTimeOffset firedAt);
+
+    /// <summary>
+    /// Replaces the <see cref="ScheduledTask.Directive"/> body for an existing task.
+    /// No-op if the task does not exist. Other fields (cron, description, timestamps,
+    /// system/runOnce flags) are left unchanged.
+    /// </summary>
+    Task UpdateDirectiveAsync(string name, string directive);
 }

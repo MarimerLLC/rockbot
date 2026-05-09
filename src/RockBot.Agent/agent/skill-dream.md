@@ -34,6 +34,7 @@ Review the skills and:
 - **Never delete without replacement**: Do not delete a skill unless its content is fully covered by a merged skill in `toSave`.
 - **Do not hallucinate**: Only work with the content provided. Do not invent procedures, tool names, or steps not present in the source skills.
 - **Preserve specificity**: Merged skills must retain all specific tool names, parameter names, account identifiers, and nuances from all sources.
+- **Search-keyword preservation**: When merging, the new summary must preserve search-relevant keywords from each original source — tool names, service names, and other distinguishing terms — so BM25 recall on any original query still surfaces the merged skill. A merged skill that drops the keywords its sources used is unreachable.
 
 ## Output format
 

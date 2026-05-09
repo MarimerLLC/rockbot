@@ -524,8 +524,9 @@ public sealed class AgentContextBuilder(
                 "- To read a finding: call get_from_working_memory with the full key.\n" +
                 "- To dismiss a resolved finding: call delete_from_working_memory with the full key. " +
                 "Do this when the user confirms something is resolved or not a real issue — dismissed entries stop being re-surfaced.\n" +
-                "- To change what the patrol checks and reports: edit the 'patrol/proactive-actions' skill via save_skill. " +
-                "The patrol runs on a schedule and loads that skill as its directive each run.";
+                "- The patrol updates its own checklist each run based on what it learns. " +
+                "If you want the patrol to check or report something differently, ask in this session " +
+                "and the change can be made — patrol updates take effect on the next scheduled run.";
             chatMessages.Add(new ChatMessage(ChatRole.System, patrolContext));
             logger.LogInformation("Injected {Count} patrol working memory entries into context", patrolEntries.Count);
         }
