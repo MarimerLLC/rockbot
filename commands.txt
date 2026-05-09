@@ -3,5 +3,14 @@ dotnet user-secrets set "AzureAI:Endpoint" "https://rockbot-ai.services.ai.azure
 dotnet user-secrets set "AzureAI:Key" "<your-key>" --project src/RockBot.Agent
 dotnet user-secrets set "AzureAI:DeploymentName" "DeepSeek-V3.2" --project src/RockBot.Agent
 ROCKBOT_RABBITMQ_HOST=localhost dotnet run --project src/RockBot.Agent
-ROCKBOT_RABBITMQ_HOST=localhost dotnet run --project src/RockBot.UserProxy.Cli
 ROCKBOT_RABBITMQ_HOST=localhost dotnet run --project src/RockBot.Tools.Mcp.Bridge
+
+# UserProxy.Cli — interactive chat (default subcommand):
+dotnet run --project src/RockBot.UserProxy.Cli -- --rabbitmq-host localhost
+
+# One-shot prompt (prints final reply to stdout, exits):
+dotnet run --project src/RockBot.UserProxy.Cli -- --rabbitmq-host localhost --message "hello agent"
+
+# Other subcommands: info, status, history, clear, cancel
+dotnet run --project src/RockBot.UserProxy.Cli -- info --rabbitmq-host localhost
+dotnet run --project src/RockBot.UserProxy.Cli -- history --session cli-session --rabbitmq-host localhost
