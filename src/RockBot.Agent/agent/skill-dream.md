@@ -26,6 +26,25 @@ Review the skills and:
 
 3. **Leave everything else unchanged** — do not delete or modify skills that are not part of an overlap group.
 
+## Namespaced-singleton namespaces (e.g. `mcp/`)
+
+The user message may declare certain prefixes as **namespaced singletons** —
+prefixes where each immediate suffix is a 1:1 binding to a live external
+entity (e.g. `mcp/{server-name}` binds to a specific MCP server). For these:
+
+- **Across distinct singletons: do NOT merge.** Each `mcp/{server-name}` is a
+  unique binding. `mcp/calendar-mcp` and `mcp/ms365` must never be merged into
+  a parent guide or into each other, and a sub-skill of one
+  (e.g. `mcp/ms365/calendar-tools`) must never be merged with a sub-skill or
+  canonical entry of another.
+- **Within a single singleton's namespace: normal merge rules apply.** If two
+  skills under the same `mcp/{server-name}` prefix have genuine semantic
+  overlap (e.g. `mcp/calendar-mcp/send-email` and `mcp/calendar-mcp/email-send`
+  cover the same tool), merge them as you would any topical-cluster overlap.
+  Sub-skills that cover *different* parts of a large server (e.g.
+  `mcp/ms365/email-tools` vs `mcp/ms365/calendar-tools`) are NOT duplicates —
+  leave them alone.
+
 ## Critical rules
 
 - **Exhaustive deletion — this is the most important rule**: Every source skill you are replacing MUST appear in `toDelete`. If you produce one merged skill from sources A and B, then A and B both go in `toDelete`. No source survives a merge.

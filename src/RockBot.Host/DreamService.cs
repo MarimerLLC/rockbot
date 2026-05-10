@@ -3369,9 +3369,13 @@ internal sealed class DreamService : IHostedService, IDisposable
             userMessage.AppendLine(
                 $"The following skill name prefix(es) are namespaced bindings to live external entities: " +
                 $"{string.Join(", ", singletonPrefixes.Select(p => $"'{p}*'"))}. " +
-                "Each suffix is a 1:1 binding (e.g. 'mcp/{server-name}' refers to a specific MCP server). " +
-                "Do NOT merge skills across these prefixes, replace them with an abstract parent guide, " +
-                "or delete them as duplicates of one another. They may only be improved or kept as-is.");
+                "Each immediate suffix is a 1:1 binding (e.g. 'mcp/{server-name}' refers to a specific MCP server). " +
+                "Do NOT merge skills across distinct suffixes — 'mcp/calendar-mcp' and 'mcp/ms365' must remain separate, " +
+                "and a sub-skill of one ('mcp/ms365/calendar-tools') must never be merged with a sub-skill or canonical entry of another. " +
+                "Do NOT replace these prefixes with an abstract parent guide. " +
+                "Within a single suffix's namespace (e.g. 'mcp/calendar-mcp/*'), normal semantic-overlap merging applies — " +
+                "duplicate sub-skills covering the same tool may be merged, " +
+                "but sub-skills covering distinct functional areas of a large server should be left alone.");
         }
 
         return userMessage.ToString();

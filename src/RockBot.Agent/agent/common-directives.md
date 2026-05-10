@@ -224,6 +224,32 @@ If you complete a real task using a tool guide and no skill exists yet, save one
 Combine the guide's instructions with anything you discovered: edge cases, better
 argument patterns, pitfalls to avoid.
 
+### MCP server skill naming
+
+When you save a skill that documents a specific MCP server, the skill name MUST
+start with `mcp/{server-name}/`, using the exact `server_name` returned by
+`mcp_list_services` (lowercase, e.g. `mcp/ms365`, `mcp/calendar-mcp`,
+`mcp/github`). Either of these shapes is fine:
+
+- **Single per-server skill** — `mcp/{server-name}` covering all tools on the
+  server. Best fit for small or single-purpose servers.
+- **Sub-skills under the namespace** — `mcp/{server-name}/{area}` (e.g.
+  `mcp/ms365/email-tools`, `mcp/ms365/calendar-tools`). Use this when a server
+  is large enough that one document gets unwieldy. Group sub-skills by
+  functional area, not per-tool — don't create a separate sub-skill for every
+  individual tool when several tools share a workflow.
+
+Do NOT:
+
+- Save per-server skills at the top level (`calendar-mcp`, `routing-stats`)
+  or under topical folders that aren't `mcp/` (`calendar-mcp/...`,
+  `email/calendar-mcp-...`).
+- Substitute a display name, slug, or guess for the `server_name`.
+
+Topical workflow skills that genuinely span multiple servers
+(e.g. `email/mcp-search-send-drafts-and-verification`) stay topical and are
+NOT under the `mcp/` namespace — only per-server reference docs use it.
+
 ## Persistence When Facing Obstacles
 
 When a tool call returns an unexpected result, an error, or content that doesn't
