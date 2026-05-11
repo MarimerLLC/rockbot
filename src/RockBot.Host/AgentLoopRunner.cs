@@ -131,6 +131,26 @@ public sealed partial class AgentLoopRunner(
         "Only report failure to the user after a retry has also failed.";
 
     /// <summary>
+    /// Detects the "Noted, I saved X" closing pattern observed in production when a
+    /// smaller Low-tier model summarises injected long-term memory instead of replying
+    /// to the actual short user message. Targets the specific phrasing seen in the
+    /// blazor-session incidents tracked under #383 — anchored at the start of the
+    /// response and requiring a memory-write vocabulary token so legitimate
+    /// "noted" acknowledgements without a self-narration don't match. Gated by
+    /// <see cref="ModelBehavior.NudgeOnMemorySummaryReply"/> AND requires the user
+    /// message to be short AND <c>SaveMemory</c> to have been invoked this turn.
+    /// </summary>
+    public static readonly Regex MemorySummaryReplyRegex = new(
+        @"^\s*Noted[.!,]?\s.*\b(saved|stored|memory|memor(?:y\s+)?ledger|ledger|on the board|on the wishlist|on the (?:travel\s+)?list)\b",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+    public const string MemorySummaryReplyNudge =
+        "Your previous reply summarised what you just stored in memory instead of " +
+        "answering the user's actual most recent message. Discard that response and " +
+        "respond directly to what the user just said, continuing the active " +
+        "conversational thread. Do not narrate your memory-write activity.";
+
+    /// <summary>
     /// Context window limit in tokens, learned from the first overflow error (text-based path only).
     /// </summary>
     private int? _knownContextLimit;
@@ -319,6 +339,7 @@ public sealed partial class AgentLoopRunner(
         var maxReprompts = modelBehavior.MaxCompletionRepromptsOverride
             ?? hostOptions.Value.MaxCompletionReprompts;
         var alreadyNudgedToolFailure = false;
+        var alreadyNudgedMemorySummary = false;
 
         for (var reprompt = 0; reprompt <= maxReprompts; reprompt++)
         {
@@ -413,6 +434,36 @@ public sealed partial class AgentLoopRunner(
                 chatMessages.Add(new ChatMessage(ChatRole.User, ToolFailureRetryNudge));
                 alreadyNudgedToolFailure = true;
                 continue;
+            }
+
+            // Memory-summary reply guard (#383). Fires when a short user message
+            // produced a turn that invoked SaveMemory AND closed with the
+            // "Noted, I saved X" pattern — the production signature for a model
+            // summarising injected long-term memory instead of replying to the
+            // actual follow-up. Logs every match for telemetry on false positives,
+            // and re-prompts at most once per RunAsync.
+            if (modelBehavior.NudgeOnMemorySummaryReply
+                && originalUserRequest.Length <= ShortMessageHeuristics.UserMessageCharThreshold
+                && MemorySummaryReplyRegex.IsMatch(result.Response)
+                && SavedMemoryThisTurn(chatMessages))
+            {
+                var preview = result.Response.Length > 80
+                    ? result.Response[..80]
+                    : result.Response;
+                logger.LogWarning(
+                    "Memory-summary reply detected (user msg {Len} chars, SaveMemory invoked, " +
+                    "response matches Noted/saved/ledger pattern); reprompt {Reprompt}/{Max}, " +
+                    "alreadyNudged={AlreadyNudged}; preview=\"{Preview}\"",
+                    originalUserRequest.Length, reprompt, maxReprompts,
+                    alreadyNudgedMemorySummary, preview);
+
+                if (!alreadyNudgedMemorySummary && reprompt < maxReprompts)
+                {
+                    chatMessages.Add(new ChatMessage(ChatRole.Assistant, result.Response));
+                    chatMessages.Add(new ChatMessage(ChatRole.User, MemorySummaryReplyNudge));
+                    alreadyNudgedMemorySummary = true;
+                    continue;
+                }
             }
 
             // Skip evaluation when disabled or on the final re-prompt.
@@ -1909,6 +1960,26 @@ public sealed partial class AgentLoopRunner(
         }
 
         return string.Empty;
+    }
+
+    /// <summary>
+    /// True when any message in the current loop's chat history contains a
+    /// <see cref="FunctionCallContent"/> targeting the <c>SaveMemory</c> tool.
+    /// Used by the memory-summary-reply guard (#383) to confirm that this turn
+    /// actually wrote to long-term memory before re-prompting on the
+    /// "Noted, I saved X" pattern. Internal so tests can exercise it directly.
+    /// </summary>
+    internal static bool SavedMemoryThisTurn(List<ChatMessage> chatMessages)
+    {
+        foreach (var m in chatMessages)
+        {
+            foreach (var c in m.Contents.OfType<FunctionCallContent>())
+            {
+                if (string.Equals(c.Name, "SaveMemory", StringComparison.Ordinal))
+                    return true;
+            }
+        }
+        return false;
     }
 
     /// <summary>

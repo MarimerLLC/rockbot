@@ -170,6 +170,20 @@ public sealed class KeywordTierSelector : ILlmTierSelector
             tier = ModelTier.Low;
         }
 
+        // Active-thread short-message override: when a short follow-up arrives on
+        // an established conversational thread, route through Balanced. The
+        // Low-tier model otherwise tends to summarise injected long-term memory
+        // instead of continuing the thread — see issue #383. Bounded by the
+        // matched-high-keyword gate so genuinely complex short prompts still
+        // escalate naturally.
+        if (context?.ThreadEstablished == true
+            && tier == ModelTier.Low
+            && promptText.Length <= ShortMessageHeuristics.UserMessageCharThreshold
+            && matchedHigh.Length == 0)
+        {
+            tier = ModelTier.Balanced;
+        }
+
         return new TierClassification(tier, score, matchedHigh, matchedLow);
     }
 

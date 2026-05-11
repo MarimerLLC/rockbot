@@ -35,12 +35,6 @@ public sealed class AgentContextBuilder(
     IToolCallLog? toolCallLog = null)
 {
     private const int MaxLlmContextTurns = 20;
-
-    // Below this length, the user message is treated as a low-signal follow-up: BM25
-    // searches over its text return noise that drowns out the recent conversation
-    // thread, leading the LLM to summarise injected memory instead of replying to
-    // what was actually said. See issue #383.
-    private const int ShortMessageThreshold = 30;
     private readonly IServiceSearchIndex? _serviceSearchIndex = serviceSearchIndexProviders.FirstOrDefault();
     private readonly IKnowledgeGraph? _knowledgeGraph = knowledgeGraphProviders.FirstOrDefault();
     private readonly KnowledgeGraphOptions _graphOptions = knowledgeGraphOptions.Value;
@@ -116,11 +110,11 @@ public sealed class AgentContextBuilder(
         // identity, and working memory still flow — those are session grounding,
         // not topic-search. See issue #383.
         var isShortMessage = !string.IsNullOrWhiteSpace(currentUserContent)
-            && currentUserContent.Length <= ShortMessageThreshold;
+            && currentUserContent.Length <= ShortMessageHeuristics.UserMessageCharThreshold;
         if (isShortMessage)
             logger.LogInformation(
                 "Short user message ({Len} chars ≤ {Threshold}) — skipping per-turn topic search injection",
-                currentUserContent.Length, ShortMessageThreshold);
+                currentUserContent.Length, ShortMessageHeuristics.UserMessageCharThreshold);
 
         // ── Wave 0: generate the query embedding once, shared across all searches ──
         // Avoids redundant calls to the embedding endpoint — each store would otherwise

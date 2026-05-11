@@ -21,6 +21,7 @@ public sealed class ModelBehavior
     {
         NudgeOnHallucinatedToolCalls = true,
         NudgeOnToolFailureGiveup = true,
+        NudgeOnMemorySummaryReply = true,
     };
 
     /// <summary>
@@ -120,4 +121,16 @@ public sealed class ModelBehavior
     /// Enabled by default — general-purpose and model-agnostic.
     /// </summary>
     public bool NudgeOnToolFailureGiveup { get; init; }
+
+    /// <summary>
+    /// When true, detect responses to short user messages where the model invoked
+    /// <c>SaveMemory</c> this turn and replied with a "Noted, I saved X" closing
+    /// that summarises the just-stored content instead of answering the user. Logs
+    /// every occurrence and re-prompts once per <see cref="Host.AgentLoopRunner"/>
+    /// invocation. Targets a specific failure mode of smaller Low-tier models that
+    /// pattern-match injected long-term memory and treat it as the conversation
+    /// topic on low-signal follow-ups (see issue #383). Enabled by default —
+    /// language-agnostic and safe to leave on for any deployment.
+    /// </summary>
+    public bool NudgeOnMemorySummaryReply { get; init; }
 }

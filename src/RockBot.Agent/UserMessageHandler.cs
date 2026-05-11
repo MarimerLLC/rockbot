@@ -57,6 +57,12 @@ internal sealed class UserMessageHandler(
 {
     private static readonly TimeSpan ProgressMessageThreshold = TimeSpan.FromSeconds(5);
 
+    // Heuristic for "thread is currently active" — controls whether the tier selector
+    // applies the short-message-on-active-thread override. Conservative enough to leave
+    // first-turn and stale-session messages on the existing routing path. See #383.
+    private const int ThreadEstablishedMinTurns = 3;
+    private static readonly TimeSpan ThreadEstablishedRecency = TimeSpan.FromMinutes(30);
+
     // Shared with AgentLoopRunner — single source of truth for hallucinated-action detection.
     private static readonly Regex HallucinatedActionRegex = AgentLoopRunner.HallucinatedActionRegex;
 
@@ -82,9 +88,21 @@ internal sealed class UserMessageHandler(
         logger.LogInformation("Received message from {UserId} in session {SessionId}: {Content}",
             message.UserId, message.SessionId, message.Content);
 
-        var classification = tierSelector.Classify(message.Content, new TierRoutingContext(Origin: "user-message"));
+        // Establish whether this session already has an active topical thread, so
+        // the tier selector can route short follow-ups through Balanced instead of
+        // Low. Read prior turns before AddTurnAsync runs (further below) so the
+        // count reflects history, not the incoming message itself. See issue #383.
+        var priorTurns = await conversationMemory.GetTurnsAsync(message.SessionId, ct);
+        var threadEstablished = priorTurns.Count >= ThreadEstablishedMinTurns
+            && (DateTimeOffset.UtcNow - priorTurns[^1].Timestamp) <= ThreadEstablishedRecency;
+
+        var classification = tierSelector.Classify(
+            message.Content,
+            new TierRoutingContext(Origin: "user-message", ThreadEstablished: threadEstablished));
         var tier = classification.Tier;
-        logger.LogInformation("Routing user message to tier={Tier} (score={Score:F3})", tier, classification.ComplexityScore);
+        logger.LogInformation(
+            "Routing user message to tier={Tier} (score={Score:F3}, threadEstablished={ThreadEstablished})",
+            tier, classification.ComplexityScore, threadEstablished);
         var turnSw = System.Diagnostics.Stopwatch.StartNew();
         var tierTag = new KeyValuePair<string, object?>("rockbot.llm.tier", tier.ToString());
 
