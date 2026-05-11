@@ -2,5 +2,29 @@
   {
     "agentName": "SampleAgent-Http",
     "url": "http://rockbot-sample-agent-http.rockbot.svc.cluster.local"
+  },
+  {
+    "agentName": "ResearchAgent",
+    "description": "On-demand research agent. Searches the web, fetches pages, and synthesises answers using an LLM.",
+    "version": "1.0",
+    "skills": [
+      {
+        "id": "research",
+        "name": "Research",
+        "description": "Research a topic using web search and page fetching, then synthesise a concise answer."
+      }
+    ]
+  },
+  {
+    "agentName": "AdvisorCouncil",
+    "description": "Multi-perspective advisor council. Analyzes questions from a curated set of personas and returns integrated guidance.",
+    "version": "1.0",
+    "skills": [
+      {
+        "id": "advise",
+        "name": "Advise",
+        "description": "Take a question or idea and return multi-perspective analysis with synthesis."
+      }
+    ]
   }
 ]
