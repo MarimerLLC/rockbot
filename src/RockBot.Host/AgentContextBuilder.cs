@@ -31,7 +31,8 @@ public sealed class AgentContextBuilder(
     IOptions<KnowledgeGraphOptions> knowledgeGraphOptions,
     IEnumerable<IEmbeddingGenerator<string, Embedding<float>>> embeddingGenerators,
     ILogger<AgentContextBuilder> logger,
-    ICapabilityClaimVerifier? capabilityClaimVerifier = null)
+    ICapabilityClaimVerifier? capabilityClaimVerifier = null,
+    IToolCallLog? toolCallLog = null)
 {
     private const int MaxLlmContextTurns = 20;
 
@@ -202,6 +203,15 @@ public sealed class AgentContextBuilder(
         var patrolEntries = patrolTask.Result;
         var subagentEntries = subagentTask.Result;
         var sharedEntries = sharedTask.Result;
+
+        // Amendment 1 step 4: evict capability-claim-shaped observations contradicted
+        // by a more-recent successful call to the same (server, tool). Without this,
+        // false rationalisations like "the wrapper cannot pass arguments" linger as
+        // observations until TTL and keep re-injecting through the WM listings.
+        workingEntries = await FilterStaleObservationsAsync(workingEntries, ct);
+        patrolEntries = await FilterStaleObservationsAsync(patrolEntries, ct);
+        sharedEntries = await FilterStaleObservationsAsync(sharedEntries, ct);
+        subagentEntries = await FilterStaleObservationsAsync(subagentEntries, ct);
 
         // ── Wave 2: conditional lookups that depend on wave 1 results ─────────
 
@@ -746,6 +756,118 @@ public sealed class AgentContextBuilder(
         uncertain.TryGetValue(id, out var detail)
             ? $" [verifier-uncertain: {detail}]"
             : string.Empty;
+
+    /// <summary>
+    /// Amendment 1 step 4: opportunistic falsification of working-memory entries
+    /// tagged <see cref="ObservationLanguageDetector.ObservationTag"/>. For each
+    /// entry whose content matches capability-claim language and names one or
+    /// more <c>server/tool</c> references, looks for a successful tool call to
+    /// the same pair in <see cref="IToolCallLog"/> that occurred AFTER the
+    /// observation was written. A newer success contradicts the observation,
+    /// so the entry is evicted from working memory and excluded from injection.
+    ///
+    /// "Successful" is determined from <see cref="ToolCallEvent.Succeeded"/>.
+    /// The recency window is bounded by the earliest observation timestamp, so
+    /// a single log query covers all observations under consideration.
+    /// </summary>
+    private async Task<IReadOnlyList<WorkingMemoryEntry>> FilterStaleObservationsAsync(
+        IReadOnlyList<WorkingMemoryEntry> entries, CancellationToken ct)
+    {
+        if (toolCallLog is null || entries.Count == 0) return entries;
+
+        // First pass: collect observation entries that could be falsified.
+        var candidates = new List<(WorkingMemoryEntry Entry, IReadOnlyList<(string Server, string Tool)> Refs)>();
+        foreach (var entry in entries)
+        {
+            if (!IsObservation(entry)) continue;
+            if (!ObservationLanguageDetector.LooksLikeCapabilityClaim(entry.Value)) continue;
+            var refs = ObservationLanguageDetector.TryExtractToolReferences(entry.Value);
+            if (refs.Count == 0) continue;
+            candidates.Add((entry, refs));
+        }
+
+        if (candidates.Count == 0) return entries;
+
+        // Query the tool-call log once, since the earliest observation timestamp,
+        // and let per-observation filtering narrow it down. Bound the result count
+        // so a chatty session doesn't blow context.
+        var earliest = candidates.Min(c => c.Entry.StoredAt);
+        IReadOnlyList<ToolCallEvent> recentCalls;
+        try
+        {
+            recentCalls = await toolCallLog.QueryRecentAsync(earliest, maxResults: 500, ct);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex,
+                "FilterStaleObservations: tool-call log query failed; skipping observation eviction");
+            return entries;
+        }
+
+        var successes = recentCalls.Where(c => c.Succeeded).ToList();
+        if (successes.Count == 0) return entries;
+
+        // Eviction pass: keep everything that wasn't falsified.
+        var toEvict = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var (entry, refs) in candidates)
+        {
+            var matched = successes.FirstOrDefault(s =>
+                s.Timestamp > entry.StoredAt && CallMatchesAnyRef(s, refs));
+            if (matched is null) continue;
+
+            try
+            {
+                await workingMemory.DeleteAsync(entry.Key);
+                toEvict.Add(entry.Key);
+                logger.LogInformation(
+                    "Evicted stale observation {Key} (stored {StoredAt:u}): contradicted by successful call to {Server}/{Tool} at {SuccessAt:u}",
+                    entry.Key, entry.StoredAt, matched.ToolName, matched.ArgumentsSummary ?? "(no args)",
+                    matched.Timestamp);
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                logger.LogWarning(ex,
+                    "FilterStaleObservations: failed to evict {Key}; will pass through to injection",
+                    entry.Key);
+            }
+        }
+
+        return toEvict.Count == 0
+            ? entries
+            : entries.Where(e => !toEvict.Contains(e.Key)).ToList();
+    }
+
+    private static bool IsObservation(WorkingMemoryEntry entry) =>
+        entry.Tags is not null
+        && entry.Tags.Any(t => string.Equals(t, ObservationLanguageDetector.ObservationTag, StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>
+    /// A successful tool call matches a (server, tool) reference when both names
+    /// appear in either the call's <see cref="ToolCallEvent.ToolName"/> or
+    /// <see cref="ToolCallEvent.ArgumentsSummary"/>. MCP calls are logged as
+    /// <c>mcp_invoke_tool</c> with the inner tool exposed via the args summary
+    /// (<c>server_name=X, tool_name=Y</c>), so both fields must be searched.
+    /// </summary>
+    private static bool CallMatchesAnyRef(
+        ToolCallEvent call, IReadOnlyList<(string Server, string Tool)> refs)
+    {
+        var hay = $"{call.ToolName} {call.ArgumentsSummary ?? string.Empty}";
+        foreach (var r in refs)
+        {
+            if (hay.Contains(r.Server, StringComparison.OrdinalIgnoreCase)
+                && hay.Contains(r.Tool, StringComparison.OrdinalIgnoreCase))
+                return true;
+        }
+        return false;
+    }
 
     /// <summary>
     /// Returns the top-level segment of the working-memory namespace as the prompt

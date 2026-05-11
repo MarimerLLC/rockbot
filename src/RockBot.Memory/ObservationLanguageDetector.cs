@@ -58,4 +58,50 @@ public static partial class ObservationLanguageDetector
         var augmented = new List<string>(existingTags ?? []) { ObservationTag };
         return (augmented, " " + ObservationHint);
     }
+
+    [GeneratedRegex(
+        @"\b(?<server>[a-z][a-z0-9-]*)/(?<tool>[a-z_][a-z_0-9]*)\b",
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant,
+        matchTimeoutMilliseconds: 200)]
+    private static partial Regex ToolReferencePattern();
+
+    /// <summary>
+    /// Returns distinct <c>(server, tool)</c> pairs named in the content using the
+    /// <c>server/tool</c> shape conventionally used in observation text and
+    /// recovery error messages (e.g. <c>calendar-mcp/search_emails</c>). Returns
+    /// an empty list for null or empty input. Used by Amendment 1 step 4 to
+    /// opportunistically verify observations against the tool-call log.
+    /// </summary>
+    public static IReadOnlyList<(string Server, string Tool)> TryExtractToolReferences(string? content)
+    {
+        if (string.IsNullOrWhiteSpace(content)) return [];
+
+        var seen = new HashSet<(string, string)>(
+            new ToolReferenceComparer());
+        var refs = new List<(string Server, string Tool)>();
+
+        foreach (Match match in ToolReferencePattern().Matches(content))
+        {
+            var server = match.Groups["server"].Value;
+            var tool = match.Groups["tool"].Value;
+            if (string.IsNullOrEmpty(server) || string.IsNullOrEmpty(tool))
+                continue;
+            var pair = (server, tool);
+            if (seen.Add(pair)) refs.Add(pair);
+        }
+
+        return refs;
+    }
+
+    private sealed class ToolReferenceComparer : IEqualityComparer<(string, string)>
+    {
+        public bool Equals((string, string) x, (string, string) y) =>
+            string.Equals(x.Item1, y.Item1, StringComparison.OrdinalIgnoreCase) &&
+            string.Equals(x.Item2, y.Item2, StringComparison.OrdinalIgnoreCase);
+
+        public int GetHashCode((string, string) obj) =>
+            HashCode.Combine(
+                obj.Item1.ToLowerInvariant(),
+                obj.Item2.ToLowerInvariant());
+    }
 }

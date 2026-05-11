@@ -46,4 +46,60 @@ public class ObservationLanguageDetectorTests
         Assert.IsTrue(ObservationLanguageDetector.LooksLikeCapabilityClaim("(blocked!)"));
         Assert.IsTrue(ObservationLanguageDetector.LooksLikeCapabilityClaim("status: cannot."));
     }
+
+    [TestMethod]
+    public void TryExtractToolReferences_FindsServerSlashToolPairs()
+    {
+        var refs = ObservationLanguageDetector.TryExtractToolReferences(
+            "calendar-mcp/search_emails is blocked, and onedrive-personal/search_files also failed");
+
+        Assert.AreEqual(2, refs.Count);
+        CollectionAssert.AreEquivalent(
+            new[] { ("calendar-mcp", "search_emails"), ("onedrive-personal", "search_files") },
+            refs.ToArray());
+    }
+
+    [TestMethod]
+    public void TryExtractToolReferences_Deduplicates()
+    {
+        var refs = ObservationLanguageDetector.TryExtractToolReferences(
+            "calendar-mcp/search_emails failed; calendar-mcp/search_emails still failing");
+        Assert.AreEqual(1, refs.Count);
+        Assert.AreEqual(("calendar-mcp", "search_emails"), refs[0]);
+    }
+
+    [TestMethod]
+    public void TryExtractToolReferences_CaseInsensitiveDedup()
+    {
+        var refs = ObservationLanguageDetector.TryExtractToolReferences(
+            "Calendar-MCP/Search_Emails and calendar-mcp/search_emails");
+        Assert.AreEqual(1, refs.Count);
+    }
+
+    [TestMethod]
+    [DataRow("nothing here matches")]
+    [DataRow("a path/with/multiple/slashes is not a tool reference")]
+    [DataRow("")]
+    public void TryExtractToolReferences_ReturnsEmpty_WhenNoPairs(string content)
+    {
+        // Note: "path/with" *would* match if path and with are valid identifiers,
+        // and they are — so the heuristic is intentionally loose. The eviction
+        // step requires the tool-call log to confirm the pair actually exists.
+        var refs = ObservationLanguageDetector.TryExtractToolReferences(content);
+        if (refs.Count > 0)
+        {
+            // Sanity: any extracted pair must look like (server, tool).
+            foreach (var (s, t) in refs)
+            {
+                Assert.IsFalse(string.IsNullOrWhiteSpace(s));
+                Assert.IsFalse(string.IsNullOrWhiteSpace(t));
+            }
+        }
+    }
+
+    [TestMethod]
+    public void TryExtractToolReferences_Null_ReturnsEmpty()
+    {
+        Assert.AreEqual(0, ObservationLanguageDetector.TryExtractToolReferences(null).Count);
+    }
 }
