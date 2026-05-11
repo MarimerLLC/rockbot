@@ -102,11 +102,18 @@ internal sealed class StubUserFrontend : IUserFrontend
 internal sealed class FailingThenSucceedingSubscriber(int failCount) : IMessageSubscriber
 {
     private int _callCount;
+    private readonly List<string> _subscribedTopics = [];
 
     public int CallCount => _callCount;
 
     public Func<MessageEnvelope, CancellationToken, Task<MessageResult>>? CapturedHandler { get; private set; }
     public string? CapturedTopic { get; private set; }
+
+    /// <summary>All topics that have been successfully subscribed to, in order.</summary>
+    public IReadOnlyList<string> SubscribedTopics
+    {
+        get { lock (_subscribedTopics) return _subscribedTopics.ToArray(); }
+    }
 
     public Task<ISubscription> SubscribeAsync(
         string topic,
@@ -122,6 +129,7 @@ internal sealed class FailingThenSucceedingSubscriber(int failCount) : IMessageS
 
         CapturedHandler = handler;
         CapturedTopic = topic;
+        lock (_subscribedTopics) _subscribedTopics.Add(topic);
         return Task.FromResult<ISubscription>(new StubSubscription(topic, subscriptionName));
     }
 
