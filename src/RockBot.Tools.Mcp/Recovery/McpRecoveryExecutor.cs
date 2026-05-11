@@ -41,6 +41,7 @@ public sealed class McpRecoveryExecutor
     private readonly StageBLlmFiller? _stageB;
     private readonly ICapabilityClaimWriter? _capabilityClaimWriter;
     private readonly IFailureClusterStore? _failureClusterStore;
+    private readonly SchemaErrorEnricher? _enricher;
     private readonly ILogger<McpRecoveryExecutor> _logger;
 
     public McpRecoveryExecutor(
@@ -49,13 +50,15 @@ public sealed class McpRecoveryExecutor
         ILogger<McpRecoveryExecutor> logger,
         StageBLlmFiller? stageB = null,
         ICapabilityClaimWriter? capabilityClaimWriter = null,
-        IFailureClusterStore? failureClusterStore = null)
+        IFailureClusterStore? failureClusterStore = null,
+        SchemaErrorEnricher? enricher = null)
     {
         _invoke = invoke;
         _providers = providers.ToList();
         _stageB = stageB;
         _capabilityClaimWriter = capabilityClaimWriter;
         _failureClusterStore = failureClusterStore;
+        _enricher = enricher;
         _logger = logger;
     }
 
@@ -194,6 +197,35 @@ public sealed class McpRecoveryExecutor
                 ct);
             await RecordFailureAsync(serverName, toolName, sessionId, retryError ?? errorText, fieldHint: null, ct);
             return Annotate(response, $"stageA={providerName} retry-failed: {Truncate(retryResponse.Content)}");
+        }
+
+        // ── Amendment 1: surface schema requirements instead of guessing ────
+        // When no environmental provider can fill the missing field, return an
+        // enriched error to the LLM containing the field schema and pointers to
+        // recent same-session calls. The LLM threads the value on retry and is
+        // expected to save or update a skill. We still record the failure to
+        // the cluster store as a backstop for "LLM keeps missing despite
+        // enrichment", but we do NOT write a capability claim — the claim
+        // would just encode the recovery layer's confusion, not a durable fact
+        // about the tool. See design/self-repair.md Amendment 1.
+        if (_enricher is not null)
+        {
+            var enrichedContent = await _enricher.EnrichAsync(
+                serverName, toolName, fieldName, sessionId, errorText, ct);
+
+            sw.Stop();
+            RecordTelemetry(serverName, toolName, fieldName, "Enrich", recovered: false,
+                "SchemaErrorEnricher", sw.Elapsed.TotalMilliseconds);
+            await RecordFailureAsync(serverName, toolName, sessionId, errorText, fieldHint: fieldName, ct);
+
+            return new ToolInvokeResponse
+            {
+                ToolCallId = response.ToolCallId,
+                ToolName = response.ToolName,
+                Content = enrichedContent,
+                ContentBlocks = response.ContentBlocks,
+                IsError = true
+            };
         }
 
         // ── Stage B ─────────────────────────────────────────────────────────

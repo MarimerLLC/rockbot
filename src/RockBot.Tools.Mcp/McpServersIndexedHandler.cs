@@ -1,22 +1,36 @@
 using Microsoft.Extensions.Logging;
 using RockBot.Host;
+using RockBot.Tools.Mcp.Recovery;
 
 namespace RockBot.Tools.Mcp;
 
 /// <summary>
 /// Handles <see cref="McpServersIndexed"/> messages from the MCP Bridge.
 /// On the first message, registers the 6 MCP management tools in <see cref="IToolRegistry"/>.
-/// All subsequent messages only update the <see cref="McpServerIndex"/> cache.
+/// All subsequent messages only update the <see cref="McpServerIndex"/> cache and
+/// invalidate any cached tool schemas for the affected servers.
 /// </summary>
 public sealed class McpServersIndexedHandler(
     IToolRegistry registry,
     McpServerIndex index,
     McpManagementExecutor executor,
-    ILogger<McpServersIndexedHandler> logger) : IMessageHandler<McpServersIndexed>
+    ILogger<McpServersIndexedHandler> logger,
+    ToolSchemaCache? schemaCache = null) : IMessageHandler<McpServersIndexed>
 {
     public Task HandleAsync(McpServersIndexed message, MessageHandlerContext context)
     {
         index.Apply(message);
+
+        // Invalidate cached schemas for any server whose summary changed or that
+        // was removed. Schemas are server-state, so a reconnect invalidates the
+        // cache for that server. Lookups re-fetch lazily.
+        if (schemaCache is not null)
+        {
+            foreach (var server in message.Servers)
+                schemaCache.Invalidate(server.ServerName);
+            foreach (var removed in message.RemovedServers)
+                schemaCache.Invalidate(removed);
+        }
 
         logger.LogInformation(
             "MCP server index updated: {Added} added/updated, {Removed} removed",

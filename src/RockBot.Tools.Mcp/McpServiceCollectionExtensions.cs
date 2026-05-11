@@ -60,6 +60,15 @@ public static class McpServiceCollectionExtensions
         // when both can answer; the file-backed provider augments rather than overrides.
         builder.Services.TryAddEnumerable(ServiceDescriptor.Singleton<IToolArgumentDefaultsProvider, FileToolDefaultsProvider>());
         builder.Services.AddSingleton<StageBLlmFiller>();
+
+        // Self-repair Amendment 1: schema-error enrichment. The cache populates lazily
+        // through McpManagementExecutor.GetSchemasAsync — the Func factory defers DI
+        // resolution to call time so the executor → recovery → enricher → cache cycle
+        // resolves without DI complaining.
+        builder.Services.AddSingleton(sp => new ToolSchemaCache(
+            (server, ct) => sp.GetRequiredService<McpManagementExecutor>().GetSchemasAsync(server, ct)));
+        builder.Services.AddSingleton<SchemaErrorEnricher>();
+
         builder.Services.AddSingleton<McpRecoveryExecutor>();
 
         builder.HandleMessage<McpServersIndexed, McpServersIndexedHandler>();
