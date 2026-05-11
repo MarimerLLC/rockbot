@@ -1,0 +1,51 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <RootNamespace>RockBot.AdvisorCouncil</RootNamespace>
+    <UserSecretsId>rockbot-advisor-council-001</UserSecretsId>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Content Include="agent\**\*.md" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="RockBot.AdvisorCouncil.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="appsettings.json" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Extensions.AI" Version="10.*" />
+    <PackageReference Include="Microsoft.Extensions.AI.Abstractions" Version="10.*" />
+    <PackageReference Include="Microsoft.Extensions.AI.OpenAI" Version="10.3.0" />
+    <PackageReference Include="Microsoft.Extensions.Hosting" Version="10.0.*" />
+    <PackageReference Include="System.ClientModel" Version="1.*" />
+
+    <!-- MAF (Microsoft.Agents.AI.Workflows $(MicrosoftAgentsAIVersion)) was evaluated for
+         orchestration. The pipeline requires dynamic-graph-per-request (only N of M
+         personas selected), which negates MAF's static-graph value. CouncilOrchestrator
+         implements the same Select → optional PreResearch → Fan-out → optional Critique
+         → Synthesize shape imperatively. The design doc explicitly permits this fallback. -->
+
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\RockBot.A2A\RockBot.A2A.csproj" />
+    <ProjectReference Include="..\RockBot.A2A.Abstractions\RockBot.A2A.Abstractions.csproj" />
+    <ProjectReference Include="..\RockBot.Host.Abstractions\RockBot.Host.Abstractions.csproj" />
+    <ProjectReference Include="..\RockBot.Host\RockBot.Host.csproj" />
+    <ProjectReference Include="..\RockBot.Llm\RockBot.Llm.csproj" />
+    <ProjectReference Include="..\RockBot.Llm.Abstractions\RockBot.Llm.Abstractions.csproj" />
+    <ProjectReference Include="..\RockBot.Memory\RockBot.Memory.csproj" />
+    <ProjectReference Include="..\RockBot.Messaging.Abstractions\RockBot.Messaging.Abstractions.csproj" />
+    <ProjectReference Include="..\RockBot.Messaging.RabbitMQ\RockBot.Messaging.RabbitMQ.csproj" />
+  </ItemGroup>
+
+</Project>
