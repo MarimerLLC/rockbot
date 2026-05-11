@@ -1,3 +1,4 @@
+using System.ClientModel;
 using System.Net;
 using System.Runtime.CompilerServices;
 using Microsoft.Extensions.AI;
@@ -249,15 +250,16 @@ public sealed class FallbackChatClient : IChatClient
 
         if (ex is HttpRequestException { StatusCode: { } status })
         {
-            return status switch
-            {
-                HttpStatusCode.TooManyRequests => FallbackErrorCategory.Transient,
-                HttpStatusCode.PaymentRequired  => FallbackErrorCategory.QuotaExhausted,
-                HttpStatusCode.Unauthorized     => FallbackErrorCategory.HardError,
-                HttpStatusCode.Forbidden        => FallbackErrorCategory.HardError,
-                HttpStatusCode.NotFound         => FallbackErrorCategory.HardError,
-                _                               => FallbackErrorCategory.Unknown
-            };
+            return ClassifyStatusCode((int)status);
+        }
+
+        // OpenAI SDK (and other System.ClientModel-based SDKs) surface HTTP failures
+        // as ClientResultException rather than HttpRequestException. Without this branch
+        // a 503 from the LLM provider falls through to message-string inspection,
+        // gets classified as Unknown, and is re-thrown without retry or fallback.
+        if (ex is ClientResultException cre)
+        {
+            return ClassifyStatusCode(cre.Status);
         }
 
         var msg = ex.Message;
@@ -271,4 +273,17 @@ public sealed class FallbackChatClient : IChatClient
 
     private static bool ContainsAny(string text, params string[] values) =>
         values.Any(v => text.Contains(v, StringComparison.OrdinalIgnoreCase));
+
+    private static FallbackErrorCategory ClassifyStatusCode(int status) => status switch
+    {
+        408 => FallbackErrorCategory.Transient,        // Request Timeout
+        429 => FallbackErrorCategory.Transient,        // Too Many Requests
+        500 => FallbackErrorCategory.Transient,        // Internal Server Error
+        502 => FallbackErrorCategory.Transient,        // Bad Gateway
+        503 => FallbackErrorCategory.Transient,        // Service Unavailable
+        504 => FallbackErrorCategory.Transient,        // Gateway Timeout
+        402 => FallbackErrorCategory.QuotaExhausted,   // Payment Required
+        401 or 403 or 404 => FallbackErrorCategory.HardError,
+        _   => FallbackErrorCategory.Unknown
+    };
 }
