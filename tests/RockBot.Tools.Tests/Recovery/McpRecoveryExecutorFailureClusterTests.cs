@@ -70,52 +70,6 @@ public class McpRecoveryExecutorFailureClusterTests
     }
 
     [TestMethod]
-    public async Task StageB_FillFailed_RecordsClusterWithFieldClass()
-    {
-        var store = new RecordingClusterStore();
-        var stageB = new NullFiller();
-        McpInvokeDelegate invoke = (r, _, _) => Task.FromResult(Ok(r, "ok"));
-
-        var exec = new McpRecoveryExecutor(
-            invoke, [], NullLogger<McpRecoveryExecutor>.Instance,
-            stageB: stageB.Filler, failureClusterStore: store);
-
-        var req = new ToolInvokeRequest { ToolCallId = "1", ToolName = "do", Arguments = "{}" };
-        var failed = Err(req, "Required parameter 'novelField'");
-
-        var result = await exec.RecoverAsync("synthetic", "do", req, failed, default,
-            sessionId: "session-B");
-
-        Assert.IsTrue(result.IsError);
-        Assert.AreEqual(1, store.Records.Count);
-        Assert.AreEqual("novelField", store.Records[0].Key.ErrorClass);
-        Assert.AreEqual("session-B", store.Records[0].SessionId);
-    }
-
-    [TestMethod]
-    public async Task StageB_RetryFailed_RecordsCluster()
-    {
-        var store = new RecordingClusterStore();
-        var stageB = new CannedFiller("\"value\"");
-        McpInvokeDelegate invoke = (r, _, _) => Task.FromResult(Err(r, "permission denied"));
-
-        var exec = new McpRecoveryExecutor(
-            invoke, [], NullLogger<McpRecoveryExecutor>.Instance,
-            stageB: stageB.Filler, failureClusterStore: store);
-
-        var req = new ToolInvokeRequest { ToolCallId = "1", ToolName = "do", Arguments = "{}" };
-        var failed = Err(req, "Required parameter 'novelField'");
-
-        var result = await exec.RecoverAsync("synthetic", "do", req, failed, default,
-            sessionId: "session-C");
-
-        Assert.IsTrue(result.IsError);
-        Assert.AreEqual(1, store.Records.Count);
-        // retryError ("permission denied") doesn't match schema patterns → unknown class.
-        Assert.AreEqual("unknown", store.Records[0].Key.ErrorClass);
-    }
-
-    [TestMethod]
     public async Task NoStageAProvider_NoStageB_RecordsCluster()
     {
         var store = new RecordingClusterStore();
@@ -349,52 +303,4 @@ public class McpRecoveryExecutorFailureClusterTests
             Task.FromResult(resolve(ctx));
     }
 
-    private sealed class NullFiller
-    {
-        public StageBLlmFiller Filler { get; } = new TestFiller();
-        private sealed class TestFiller() : StageBLlmFiller(
-            new NoopLlmClient(), NullLogger<StageBLlmFiller>.Instance)
-        {
-            public override Task<object?> TryFillAsync(
-                string serverName, string toolName, string fieldName,
-                IReadOnlyDictionary<string, object?> existingArgs,
-                string? originalErrorText, CancellationToken ct) =>
-                Task.FromResult<object?>(null);
-        }
-    }
-
-    private sealed class CannedFiller
-    {
-        public StageBLlmFiller Filler { get; }
-        public CannedFiller(string canned) => Filler = new TestFiller(canned);
-
-        private sealed class TestFiller(string canned) : StageBLlmFiller(
-            new NoopLlmClient(), NullLogger<StageBLlmFiller>.Instance)
-        {
-            public override Task<object?> TryFillAsync(
-                string serverName, string toolName, string fieldName,
-                IReadOnlyDictionary<string, object?> existingArgs,
-                string? originalErrorText, CancellationToken ct)
-            {
-                var doc = JsonDocument.Parse(canned);
-                return Task.FromResult<object?>(McpToolExecutor.ConvertJsonElement(doc.RootElement));
-            }
-        }
-    }
-
-    private sealed class NoopLlmClient : ILlmClient
-    {
-        public Task<Microsoft.Extensions.AI.ChatResponse> GetResponseAsync(
-            IEnumerable<Microsoft.Extensions.AI.ChatMessage> messages,
-            Microsoft.Extensions.AI.ChatOptions? options,
-            CancellationToken cancellationToken) =>
-            throw new NotSupportedException();
-
-        public Task<Microsoft.Extensions.AI.ChatResponse> GetResponseAsync(
-            IEnumerable<Microsoft.Extensions.AI.ChatMessage> messages,
-            ModelTier tier,
-            Microsoft.Extensions.AI.ChatOptions? options,
-            CancellationToken cancellationToken) =>
-            throw new NotSupportedException();
-    }
 }

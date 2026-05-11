@@ -43,7 +43,7 @@ public class FileToolDefaultsProviderTests
     }
 
     [TestMethod]
-    public async Task ResolveAsync_StringValue_ReturnsScalar_NotFanOut()
+    public async Task ResolveAsync_StringValue_ReturnsScalar()
     {
         await WriteServerFileAsync("calendar-mcp", """
             [ { "providerName": "TimeZone", "field": "timeZone", "value": "America/Chicago" } ]
@@ -57,27 +57,31 @@ public class FileToolDefaultsProviderTests
 
         Assert.IsNotNull(resolved);
         Assert.AreEqual("America/Chicago", resolved!.Value);
-        Assert.IsFalse(resolved.RequiresFanOut);
     }
 
     [TestMethod]
-    public async Task ResolveAsync_ArrayValue_ReturnsFanOut()
+    public async Task ResolveAsync_ArrayValue_RejectedAtLoadTime()
     {
+        // Amendment 1 step 5: array entries are rejected at load time and
+        // never enter the in-memory map. CanResolve returns false (no entry
+        // to match against) rather than the resolve path returning null.
+        // This makes the misconfiguration visible in logs.
         await WriteServerFileAsync("calendar-mcp", """
-            [ { "providerName": "AccountIds", "field": "accountId", "value": ["a@x", "b@x"] } ]
+            [
+              { "providerName": "AccountIds", "field": "accountId", "value": ["a@x", "b@x"] },
+              { "providerName": "TimeZone", "field": "timeZone", "value": "UTC" }
+            ]
             """);
 
         using var provider = NewProvider();
 
+        // The array entry was dropped; the scalar entry alongside it still works.
+        Assert.IsFalse(provider.CanResolve("calendar-mcp", "get_calendar_events", "accountId"));
+        Assert.IsTrue(provider.CanResolve("calendar-mcp", "get_calendar_events", "timeZone"));
+
         var ctx = new ResolveContext("calendar-mcp", "get_calendar_events", "accountId",
             new Dictionary<string, object?>());
-        var resolved = await provider.ResolveAsync(ctx, CancellationToken.None);
-
-        Assert.IsNotNull(resolved);
-        Assert.IsTrue(resolved!.RequiresFanOut);
-        var items = (System.Collections.IEnumerable)resolved.Value!;
-        var asList = items.Cast<object?>().Select(o => (string?)o).ToList();
-        CollectionAssert.AreEquivalent(new[] { "a@x", "b@x" }, asList);
+        Assert.IsNull(await provider.ResolveAsync(ctx, CancellationToken.None));
     }
 
     [TestMethod]

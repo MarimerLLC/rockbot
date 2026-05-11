@@ -351,8 +351,12 @@ public class McpRecoveryExecutorTests
     }
 
     [TestMethod]
-    public async Task StageA_NoProvider_NoStageB_AnnotatesNoProvider()
+    public async Task NoProvider_NoEnricher_AnnotatesNoProviderNoEnricher()
     {
+        // Terminal fallback: with no providers and no enricher wired, the
+        // executor returns the original error annotated with a brief trail.
+        // Production always wires the enricher, so this primarily covers
+        // bare-bones test executors.
         McpInvokeDelegate invoke = (r, h, ct) => Task.FromResult(Ok(r, ""));
         var exec = new McpRecoveryExecutor(invoke, [], NullLogger<McpRecoveryExecutor>.Instance);
 
@@ -362,8 +366,74 @@ public class McpRecoveryExecutorTests
         var result = await exec.RecoverAsync("srv", "get", req, failed, default);
 
         Assert.IsTrue(result.IsError);
-        StringAssert.Contains(result.Content, "stageA=no-provider");
-        StringAssert.Contains(result.Content, "stageB=disabled");
+        StringAssert.Contains(result.Content, "no-provider; no-enricher");
+    }
+
+    [TestMethod]
+    public async Task NoProvider_WithEnricher_ReturnsEnrichedError()
+    {
+        // Amendment 1: when no environmental provider can fill the missing
+        // field, the gateway surfaces a schema-rich error to the LLM instead
+        // of guessing. No capability claim is written because enrichment
+        // teaches the LLM directly.
+        var claimWriter = new RecordingClaimWriter();
+        var schemasByServer = new Dictionary<string, IReadOnlyList<McpToolDefinition>>
+        {
+            ["calendar-mcp"] = new[]
+            {
+                new McpToolDefinition
+                {
+                    Name = "get_email_details",
+                    Description = "Returns email content. Both accountId and emailId are required.",
+                    ParametersSchema = """{"type":"object","properties":{"emailId":{"type":"string","description":"Email id from search_emails"}},"required":["emailId"]}"""
+                }
+            }
+        };
+        var cache = new ToolSchemaCache((server, _) =>
+            schemasByServer.TryGetValue(server, out var t)
+                ? Task.FromResult<IReadOnlyList<McpToolDefinition>?>(t)
+                : Task.FromResult<IReadOnlyList<McpToolDefinition>?>(null));
+        var enricher = new SchemaErrorEnricher(cache, new EmptyToolCallLog());
+
+        McpInvokeDelegate invoke = (r, _, _) => Task.FromResult(Ok(r, ""));
+        var exec = new McpRecoveryExecutor(
+            invoke, providers: [],
+            NullLogger<McpRecoveryExecutor>.Instance,
+            capabilityClaimWriter: claimWriter,
+            enricher: enricher);
+
+        var req = new ToolInvokeRequest { ToolCallId = "1", ToolName = "get_email_details", Arguments = "{}" };
+        var failed = Err(req, "Required parameter 'emailId' was not provided");
+
+        var result = await exec.RecoverAsync("calendar-mcp", "get_email_details", req, failed, default);
+
+        Assert.IsTrue(result.IsError);
+        StringAssert.Contains(result.Content, "[mcp-recovery]");
+        StringAssert.Contains(result.Content, "missing required field 'emailId'");
+        StringAssert.Contains(result.Content, "Field schema:");
+        StringAssert.Contains(result.Content, "Email id from search_emails");
+
+        Assert.AreEqual(0, claimWriter.Saved.Count,
+            "enrichment teaches the LLM directly — no capability claim is written");
+    }
+
+    private sealed class RecordingClaimWriter : RockBot.Host.ICapabilityClaimWriter
+    {
+        public List<RockBot.Host.CapabilityClaim> Saved { get; } = new();
+        public Task SaveCapabilityClaimAsync(RockBot.Host.CapabilityClaim claim, CancellationToken ct = default)
+        {
+            Saved.Add(claim);
+            return Task.CompletedTask;
+        }
+    }
+
+    private sealed class EmptyToolCallLog : RockBot.Host.IToolCallLog
+    {
+        public Task AppendAsync(RockBot.Host.ToolCallEvent evt, CancellationToken ct = default) => Task.CompletedTask;
+        public Task<IReadOnlyList<RockBot.Host.ToolCallEvent>> GetBySessionAsync(string sessionId, CancellationToken ct = default) =>
+            Task.FromResult<IReadOnlyList<RockBot.Host.ToolCallEvent>>([]);
+        public Task<IReadOnlyList<RockBot.Host.ToolCallEvent>> QueryRecentAsync(DateTimeOffset since, int maxResults, CancellationToken ct = default) =>
+            Task.FromResult<IReadOnlyList<RockBot.Host.ToolCallEvent>>([]);
     }
 
     [TestMethod]
@@ -389,137 +459,46 @@ public class McpRecoveryExecutorTests
     }
 
     [TestMethod]
-    public async Task FanOut_IssuesOneCallPerValue_AggregatesContent()
+    public async Task ProviderResolves_RetrySurfacesDifferentMissingField_ChainsAndFills()
     {
-        var args = new List<string>();
-        McpInvokeDelegate invoke = (r, h, ct) =>
-        {
-            args.Add(r.Arguments!);
-            // Echo the accountId in the response.
-            var doc = JsonDocument.Parse(r.Arguments!);
-            var id = doc.RootElement.GetProperty("accountId").GetString();
-            return Task.FromResult(Ok(r, $"events for {id}"));
-        };
-
-        var provider = new FakeProvider(
-            (_, _, f) => f == "accountId",
-            _ => new ResolvedDefault(new[] { "a@x.com", "b@x.com" }, RequiresFanOut: true));
-
-        var exec = new McpRecoveryExecutor(invoke, [provider], NullLogger<McpRecoveryExecutor>.Instance);
-        var req = new ToolInvokeRequest { ToolCallId = "1", ToolName = "get_events", Arguments = "{}" };
-        var failed = Err(req, "Required parameter 'accountId'");
-
-        var result = await exec.RecoverAsync("calendar-mcp", "get_events", req, failed, default);
-
-        Assert.IsFalse(result.IsError);
-        Assert.AreEqual(2, args.Count);
-        StringAssert.Contains(result.Content, "events for a@x.com");
-        StringAssert.Contains(result.Content, "events for b@x.com");
-        StringAssert.Contains(result.Content, "[accountId=a@x.com]");
-        StringAssert.Contains(result.Content, "[accountId=b@x.com]");
-    }
-
-    [TestMethod]
-    public async Task FanOut_OneLegFails_MarksOverallError()
-    {
+        // Regression for Amendment 1: previously, fan-out responses returned mergedArgs=null
+        // and blocked chained recovery. With fan-out removed, a Stage A resolve that surfaces
+        // a *different* missing field on retry must still chain to fill it on the next pass.
+        var calls = new List<string>();
         var n = 0;
         McpInvokeDelegate invoke = (r, h, ct) =>
         {
+            calls.Add(r.Arguments!);
             n++;
-            return Task.FromResult(n == 1 ? Ok(r, "good") : Err(r, "leg failed"));
+            // First retry (accountId filled) surfaces the next missing field.
+            if (n == 1)
+                return Task.FromResult(Err(r, "Required parameter 'emailId' was not provided"));
+            // Second retry (emailId filled too) succeeds.
+            return Task.FromResult(Ok(r, "email body"));
         };
 
-        var provider = new FakeProvider(
-            (_, _, _) => true,
-            _ => new ResolvedDefault(new[] { "1", "2" }, RequiresFanOut: true));
-        var exec = new McpRecoveryExecutor(invoke, [provider], NullLogger<McpRecoveryExecutor>.Instance);
+        var idProvider = new FakeProvider(
+            (_, _, f) => f == "accountId",
+            _ => new ResolvedDefault("a@x.com"));
+        var emailProvider = new FakeProvider(
+            (_, _, f) => f == "emailId",
+            _ => new ResolvedDefault("EMAIL-1"));
 
-        var req = new ToolInvokeRequest { ToolCallId = "1", ToolName = "get", Arguments = "{}" };
-        var failed = Err(req, "Required parameter 'k'");
+        var exec = new McpRecoveryExecutor(
+            invoke, [idProvider, emailProvider], NullLogger<McpRecoveryExecutor>.Instance);
 
-        var result = await exec.RecoverAsync("srv", "get", req, failed, default);
+        var req = new ToolInvokeRequest { ToolCallId = "1", ToolName = "get_email_details", Arguments = "{}" };
+        var failed = Err(req, "Required parameter 'accountId'");
 
-        Assert.IsTrue(result.IsError);
-        StringAssert.Contains(result.Content, "good");
-        StringAssert.Contains(result.Content, "leg failed");
+        var result = await exec.RecoverAsync("calendar-mcp", "get_email_details", req, failed, default);
+
+        Assert.IsFalse(result.IsError, "chained recovery should succeed for sequential missing fields");
+        Assert.AreEqual("email body", result.Content);
+        Assert.AreEqual(2, calls.Count, "two retries: one per field");
+
+        var finalArgs = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(calls[1]);
+        Assert.AreEqual("a@x.com", finalArgs!["accountId"].GetString());
+        Assert.AreEqual("EMAIL-1", finalArgs["emailId"].GetString());
     }
 
-    [TestMethod]
-    public async Task StageB_FillsNovelField_RetrySucceeds()
-    {
-        ToolInvokeRequest? captured = null;
-        McpInvokeDelegate invoke = (r, h, ct) => { captured = r; return Task.FromResult(Ok(r, "ok")); };
-
-        var stageB = new TestStageBLlmFiller("\"recovered-value\"");
-        var exec = new McpRecoveryExecutor(invoke, [], NullLogger<McpRecoveryExecutor>.Instance, stageB.Filler);
-
-        var req = new ToolInvokeRequest { ToolCallId = "1", ToolName = "do", Arguments = "{}" };
-        var failed = Err(req, "Required parameter 'quux'");
-
-        var result = await exec.RecoverAsync("synthetic", "do", req, failed, default);
-
-        Assert.IsFalse(result.IsError);
-        var args = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(captured!.Arguments!);
-        Assert.AreEqual("recovered-value", args!["quux"].GetString());
-    }
-
-    [TestMethod]
-    public async Task StageB_FillFails_AnnotatesTrail()
-    {
-        McpInvokeDelegate invoke = (r, h, ct) => Task.FromResult(Ok(r, "ok"));
-        var stageB = new TestStageBLlmFiller(null); // returns null → fill failed
-        var exec = new McpRecoveryExecutor(invoke, [], NullLogger<McpRecoveryExecutor>.Instance, stageB.Filler);
-
-        var req = new ToolInvokeRequest { ToolCallId = "1", ToolName = "do", Arguments = "{}" };
-        var failed = Err(req, "Required parameter 'quux'");
-
-        var result = await exec.RecoverAsync("synthetic", "do", req, failed, default);
-
-        Assert.IsTrue(result.IsError);
-        StringAssert.Contains(result.Content, "stageB=fill-failed");
-    }
-
-    /// <summary>
-    /// Wraps StageBLlmFiller with a stub <see cref="Microsoft.Extensions.AI.IChatClient"/>-free
-    /// path. We cannot easily stub <see cref="RockBot.Host.ILlmClient"/> here, so this helper
-    /// builds a derived filler whose <c>TryFillAsync</c> returns the canned JSON.
-    /// </summary>
-    private sealed class TestStageBLlmFiller
-    {
-        public StageBLlmFiller Filler { get; }
-        public TestStageBLlmFiller(string? cannedJson)
-        {
-            Filler = new TestFiller(cannedJson);
-        }
-
-        private sealed class TestFiller(string? cannedJson)
-            : StageBLlmFiller(new NoopLlmClient(), NullLogger<StageBLlmFiller>.Instance)
-        {
-            public override Task<object?> TryFillAsync(
-                string serverName, string toolName, string fieldName,
-                IReadOnlyDictionary<string, object?> existingArgs,
-                string? originalErrorText, CancellationToken ct)
-            {
-                if (cannedJson is null) return Task.FromResult<object?>(null);
-                var doc = JsonDocument.Parse(cannedJson);
-                return Task.FromResult<object?>(McpToolExecutor.ConvertJsonElement(doc.RootElement));
-            }
-        }
-
-        private sealed class NoopLlmClient : RockBot.Host.ILlmClient
-        {
-            public Task<Microsoft.Extensions.AI.ChatResponse> GetResponseAsync(
-                IEnumerable<Microsoft.Extensions.AI.ChatMessage> messages,
-                Microsoft.Extensions.AI.ChatOptions? options,
-                CancellationToken cancellationToken) =>
-                throw new NotSupportedException();
-
-            public Task<Microsoft.Extensions.AI.ChatResponse> GetResponseAsync(
-                IEnumerable<Microsoft.Extensions.AI.ChatMessage> messages,
-                RockBot.Host.ModelTier tier,
-                Microsoft.Extensions.AI.ChatOptions? options,
-                CancellationToken cancellationToken) =>
-                throw new NotSupportedException();
-        }
-    }
 }

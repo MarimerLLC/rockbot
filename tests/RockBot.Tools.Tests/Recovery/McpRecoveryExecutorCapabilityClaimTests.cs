@@ -38,7 +38,7 @@ public class McpRecoveryExecutorCapabilityClaimTests
 
         var exec = new McpRecoveryExecutor(
             invoke, [provider], NullLogger<McpRecoveryExecutor>.Instance,
-            stageB: null, capabilityClaimWriter: writer);
+            capabilityClaimWriter: writer);
 
         var req = new ToolInvokeRequest
         {
@@ -61,67 +61,22 @@ public class McpRecoveryExecutorCapabilityClaimTests
     }
 
     [TestMethod]
-    public async Task StageB_FillFails_EmitsCapabilityClaim()
+    public async Task NoProvider_NoEnricher_DoesNotEmitClaim()
     {
-        var writer = new RecordingClaimWriter();
-        McpInvokeDelegate invoke = (r, h, ct) => Task.FromResult(Ok(r, "ok"));
-        var stageB = new NullFillingFiller();
-
-        var exec = new McpRecoveryExecutor(
-            invoke, [], NullLogger<McpRecoveryExecutor>.Instance,
-            stageB: stageB.Filler, capabilityClaimWriter: writer);
-
-        var req = new ToolInvokeRequest { ToolCallId = "1", ToolName = "do", Arguments = "{}" };
-        var failed = Err(req, "Required parameter 'novelField'");
-
-        var result = await exec.RecoverAsync("synthetic", "do", req, failed, default);
-
-        Assert.IsTrue(result.IsError);
-        Assert.AreEqual(1, writer.Saved.Count, "Phase 2 claim must be emitted when Stage B can't fill the field.");
-        StringAssert.Contains(writer.Saved[0].Statement, "Stage B");
-        StringAssert.Contains(writer.Saved[0].Statement, "novelField");
-    }
-
-    [TestMethod]
-    public async Task StageB_RetryFailed_EmitsCapabilityClaim()
-    {
-        var writer = new RecordingClaimWriter();
-        // Stage B fills, but the retried call still returns a non-chainable error.
-        McpInvokeDelegate invoke = (r, h, ct) => Task.FromResult(Err(r, "Server unreachable"));
-        var stageB = new CannedFillingFiller("\"some-value\"");
-
-        var exec = new McpRecoveryExecutor(
-            invoke, [], NullLogger<McpRecoveryExecutor>.Instance,
-            stageB: stageB.Filler, capabilityClaimWriter: writer);
-
-        var req = new ToolInvokeRequest { ToolCallId = "1", ToolName = "do", Arguments = "{}" };
-        var failed = Err(req, "Required parameter 'foo'");
-
-        var result = await exec.RecoverAsync("synthetic", "do", req, failed, default);
-
-        Assert.IsTrue(result.IsError);
-        Assert.AreEqual(1, writer.Saved.Count);
-        StringAssert.Contains(writer.Saved[0].Statement, "Stage B");
-        StringAssert.Contains(writer.Saved[0].Statement, "foo");
-    }
-
-    [TestMethod]
-    public async Task NoProviderNoStageB_DoesNotEmitClaim_BecauseRecoveryNeverAttempted()
-    {
+        // Recovery never tried anything (no provider, no enricher wired) — no claim.
         var writer = new RecordingClaimWriter();
         McpInvokeDelegate invoke = (r, h, ct) => Task.FromResult(Ok(r, "ok"));
 
         var exec = new McpRecoveryExecutor(
             invoke, [], NullLogger<McpRecoveryExecutor>.Instance,
-            stageB: null, capabilityClaimWriter: writer);
+            capabilityClaimWriter: writer);
 
         var req = new ToolInvokeRequest { ToolCallId = "1", ToolName = "do", Arguments = "{}" };
         var failed = Err(req, "Required parameter 'fieldNobodyHandles'");
 
         await exec.RecoverAsync("synthetic", "do", req, failed, default);
 
-        Assert.AreEqual(0, writer.Saved.Count,
-            "Recovery never tried anything (no provider, Stage B disabled) — no claim.");
+        Assert.AreEqual(0, writer.Saved.Count);
     }
 
     [TestMethod]
@@ -136,7 +91,7 @@ public class McpRecoveryExecutorCapabilityClaimTests
 
         var exec = new McpRecoveryExecutor(
             invoke, [provider], NullLogger<McpRecoveryExecutor>.Instance,
-            stageB: null, capabilityClaimWriter: writer);
+            capabilityClaimWriter: writer);
 
         var req = new ToolInvokeRequest { ToolCallId = "1", ToolName = "get", Arguments = "{}" };
         var failed = Err(req, "Required parameter 'timeZone' was not provided");
@@ -158,7 +113,7 @@ public class McpRecoveryExecutorCapabilityClaimTests
 
         var exec = new McpRecoveryExecutor(
             invoke, [provider], NullLogger<McpRecoveryExecutor>.Instance,
-            stageB: null, capabilityClaimWriter: null);
+            capabilityClaimWriter: null);
 
         var req = new ToolInvokeRequest { ToolCallId = "1", ToolName = "get", Arguments = "{}" };
         var failed = Err(req, "Required parameter 'timeZone' was not provided");
@@ -184,7 +139,7 @@ public class McpRecoveryExecutorCapabilityClaimTests
 
         var exec = new McpRecoveryExecutor(
             invoke, [provider], NullLogger<McpRecoveryExecutor>.Instance,
-            stageB: null, capabilityClaimWriter: writer);
+            capabilityClaimWriter: writer);
 
         var req = new ToolInvokeRequest
         {
@@ -216,7 +171,7 @@ public class McpRecoveryExecutorCapabilityClaimTests
 
         var exec = new McpRecoveryExecutor(
             invoke, [provider], NullLogger<McpRecoveryExecutor>.Instance,
-            stageB: null, capabilityClaimWriter: writer);
+            capabilityClaimWriter: writer);
 
         var req = new ToolInvokeRequest { ToolCallId = "1", ToolName = "get", Arguments = "{}" };
         var failed = Err(req, "Required parameter 'timeZone' was not provided");
@@ -267,55 +222,4 @@ public class McpRecoveryExecutorCapabilityClaimTests
             throw new InvalidOperationException("ltm offline");
     }
 
-    private sealed class NullFillingFiller
-    {
-        public StageBLlmFiller Filler { get; } = new TestFiller();
-        private sealed class TestFiller() : StageBLlmFiller(
-            new NoopLlmClient(), NullLogger<StageBLlmFiller>.Instance)
-        {
-            public override Task<object?> TryFillAsync(
-                string serverName, string toolName, string fieldName,
-                IReadOnlyDictionary<string, object?> existingArgs,
-                string? originalErrorText, CancellationToken ct) =>
-                Task.FromResult<object?>(null);
-        }
-    }
-
-    private sealed class CannedFillingFiller
-    {
-        public StageBLlmFiller Filler { get; }
-        public CannedFillingFiller(string canned)
-        {
-            Filler = new TestFiller(canned);
-        }
-        private sealed class TestFiller(string? canned) : StageBLlmFiller(
-            new NoopLlmClient(), NullLogger<StageBLlmFiller>.Instance)
-        {
-            public override Task<object?> TryFillAsync(
-                string serverName, string toolName, string fieldName,
-                IReadOnlyDictionary<string, object?> existingArgs,
-                string? originalErrorText, CancellationToken ct)
-            {
-                if (canned is null) return Task.FromResult<object?>(null);
-                var doc = JsonDocument.Parse(canned);
-                return Task.FromResult<object?>(McpToolExecutor.ConvertJsonElement(doc.RootElement));
-            }
-        }
-    }
-
-    private sealed class NoopLlmClient : RockBot.Host.ILlmClient
-    {
-        public Task<Microsoft.Extensions.AI.ChatResponse> GetResponseAsync(
-            IEnumerable<Microsoft.Extensions.AI.ChatMessage> messages,
-            Microsoft.Extensions.AI.ChatOptions? options,
-            CancellationToken cancellationToken) =>
-            throw new NotSupportedException();
-
-        public Task<Microsoft.Extensions.AI.ChatResponse> GetResponseAsync(
-            IEnumerable<Microsoft.Extensions.AI.ChatMessage> messages,
-            RockBot.Host.ModelTier tier,
-            Microsoft.Extensions.AI.ChatOptions? options,
-            CancellationToken cancellationToken) =>
-            throw new NotSupportedException();
-    }
 }

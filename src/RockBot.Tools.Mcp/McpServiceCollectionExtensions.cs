@@ -55,12 +55,19 @@ public static class McpServiceCollectionExtensions
         });
         builder.Services.TryAddEnumerable(ServiceDescriptor.Singleton<IToolArgumentDefaultsProvider, TimeZoneDefaultProvider>());
         builder.Services.TryAddEnumerable(ServiceDescriptor.Singleton<IToolArgumentDefaultsProvider, CurrentTimeDefaultProvider>());
-        builder.Services.TryAddEnumerable(ServiceDescriptor.Singleton<IToolArgumentDefaultsProvider, AccountIdFanoutProvider>());
         // Self-repair Phase 4: file-backed defaults registered by repair tickets.
         // Registered after the deterministic providers so hard-coded resolution wins
         // when both can answer; the file-backed provider augments rather than overrides.
         builder.Services.TryAddEnumerable(ServiceDescriptor.Singleton<IToolArgumentDefaultsProvider, FileToolDefaultsProvider>());
-        builder.Services.AddSingleton<StageBLlmFiller>();
+
+        // Self-repair Amendment 1: schema-error enrichment. The cache populates lazily
+        // through McpManagementExecutor.GetSchemasAsync — the Func factory defers DI
+        // resolution to call time so the executor → recovery → enricher → cache cycle
+        // resolves without DI complaining.
+        builder.Services.AddSingleton(sp => new ToolSchemaCache(
+            (server, ct) => sp.GetRequiredService<McpManagementExecutor>().GetSchemasAsync(server, ct)));
+        builder.Services.AddSingleton<SchemaErrorEnricher>();
+
         builder.Services.AddSingleton<McpRecoveryExecutor>();
 
         builder.HandleMessage<McpServersIndexed, McpServersIndexedHandler>();

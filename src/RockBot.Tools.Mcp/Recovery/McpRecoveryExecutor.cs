@@ -1,6 +1,4 @@
-using System.Collections;
 using System.Diagnostics;
-using System.Text;
 using System.Text.Json;
 using Microsoft.Extensions.Logging;
 using RockBot.Host;
@@ -10,9 +8,12 @@ namespace RockBot.Tools.Mcp.Recovery;
 /// <summary>
 /// Recovery wrapper around <see cref="McpToolProxy"/>. When an
 /// <c>mcp_invoke_tool</c> call fails with a "missing required field" schema
-/// error, runs Stage A (deterministic providers) then Stage B (Low-tier LLM
-/// fill), retries the call once, and either returns the recovered response or
-/// returns the original error annotated with a recovery trail.
+/// error, runs the environmental-default providers (time zone, current time)
+/// first and retries silently when one resolves. When no provider can fill
+/// the field, the <see cref="SchemaErrorEnricher"/> returns an enriched
+/// response to the LLM containing the field schema, tool-description hints,
+/// and pointers to recent same-session results — the LLM threads the value
+/// itself rather than the recovery layer guessing for it.
 ///
 /// Some MCP servers report schema errors with <see cref="ToolInvokeResponse.IsError"/>
 /// set to <c>false</c> and the error embedded in a JSON body like
@@ -21,7 +22,7 @@ namespace RockBot.Tools.Mcp.Recovery;
 /// Chained recovery (multiple missing fields surfaced one at a time) is
 /// supported up to a fixed depth.
 ///
-/// See <c>design/self-repair.md</c> Phase 1.
+/// See <c>design/self-repair.md</c> Phase 1 and Amendment 1.
 /// </summary>
 public sealed class McpRecoveryExecutor
 {
@@ -40,30 +41,30 @@ public sealed class McpRecoveryExecutor
 
     private readonly McpInvokeDelegate _invoke;
     private readonly IReadOnlyList<IToolArgumentDefaultsProvider> _providers;
-    private readonly StageBLlmFiller? _stageB;
     private readonly ICapabilityClaimWriter? _capabilityClaimWriter;
     private readonly IFailureClusterStore? _failureClusterStore;
+    private readonly SchemaErrorEnricher? _enricher;
     private readonly ILogger<McpRecoveryExecutor> _logger;
 
     public McpRecoveryExecutor(
         McpInvokeDelegate invoke,
         IEnumerable<IToolArgumentDefaultsProvider> providers,
         ILogger<McpRecoveryExecutor> logger,
-        StageBLlmFiller? stageB = null,
         ICapabilityClaimWriter? capabilityClaimWriter = null,
-        IFailureClusterStore? failureClusterStore = null)
+        IFailureClusterStore? failureClusterStore = null,
+        SchemaErrorEnricher? enricher = null)
     {
         _invoke = invoke;
         _providers = providers.ToList();
-        _stageB = stageB;
         _capabilityClaimWriter = capabilityClaimWriter;
         _failureClusterStore = failureClusterStore;
+        _enricher = enricher;
         _logger = logger;
     }
 
     /// <summary>
     /// Returns the original response when no recovery is possible (no recoverable
-    /// error pattern, no provider, Stage B unavailable or unsuccessful), or a
+    /// error pattern, no provider matched, no enricher configured), or a
     /// successful recovered response. Exhausted-recovery responses carry an
     /// annotated trail in <see cref="ToolInvokeResponse.Content"/>.
     /// </summary>
@@ -161,7 +162,7 @@ public sealed class McpRecoveryExecutor
             var retryError = TryExtractRecoverableError(retryResponse);
             var recovered = retryError is null;
             RecordTelemetry(serverName, toolName, fieldName, "A", recovered, providerName,
-                sw.Elapsed.TotalMilliseconds, fanout: resolved.RequiresFanOut);
+                sw.Elapsed.TotalMilliseconds);
 
             if (recovered)
             {
@@ -172,10 +173,8 @@ public sealed class McpRecoveryExecutor
             }
 
             // Chained recovery: only recurse when the retry's error names a DIFFERENT
-            // missing field (otherwise we'd loop on the same problem). Fan-out responses
-            // are not recursable — each leg may have a different error and we cannot
-            // pick one to chain from.
-            if (mergedArgs is not null && ShouldChain(retryError, fieldName))
+            // missing field (otherwise we'd loop on the same problem).
+            if (ShouldChain(retryError, fieldName))
             {
                 _logger.LogInformation(
                     "MCP recovery {Server}/{Tool} field {Field} resolved via {Provider} but response surfaced another missing field — chaining (depth {Depth})",
@@ -200,74 +199,48 @@ public sealed class McpRecoveryExecutor
             return Annotate(response, $"stageA={providerName} retry-failed: {Truncate(retryResponse.Content)}");
         }
 
-        // ── Stage B ─────────────────────────────────────────────────────────
-        if (_stageB is not null)
+        // ── Amendment 1: surface schema requirements instead of guessing ────
+        // When no environmental provider can fill the missing field, return an
+        // enriched error to the LLM containing the field schema and pointers to
+        // recent same-session calls. The LLM threads the value on retry and is
+        // expected to save or update a skill. We still record the failure to
+        // the cluster store as a backstop for "LLM keeps missing despite
+        // enrichment", but we do NOT write a capability claim — the claim
+        // would just encode the recovery layer's confusion, not a durable fact
+        // about the tool. See design/self-repair.md Amendment 1.
+        if (_enricher is not null)
         {
-            var filled = await _stageB.TryFillAsync(
-                serverName, toolName, fieldName, existingArgs, errorText, ct);
-
-            if (filled is not null)
-            {
-                var resolved = new ResolvedDefault(filled);
-                var (retryResponse, mergedArgs) = await RetryAsync(
-                    serverName, toolName, innerRequest, existingArgs, fieldName, resolved, ct);
-
-                sw.Stop();
-                var retryError = TryExtractRecoverableError(retryResponse);
-                var recovered = retryError is null;
-                RecordTelemetry(serverName, toolName, fieldName, "B", recovered, "StageBLlmFiller",
-                    sw.Elapsed.TotalMilliseconds);
-
-                if (recovered)
-                {
-                    _logger.LogInformation(
-                        "MCP auto-recovered {Server}/{Tool} field {Field} via Stage B",
-                        serverName, toolName, fieldName);
-                    return retryResponse;
-                }
-
-                if (mergedArgs is not null && ShouldChain(retryError, fieldName))
-                {
-                    _logger.LogInformation(
-                        "MCP recovery {Server}/{Tool} field {Field} resolved via Stage B but response surfaced another missing field — chaining (depth {Depth})",
-                        serverName, toolName, fieldName, depth + 1);
-
-                    var nextRequest = new ToolInvokeRequest
-                    {
-                        ToolCallId = innerRequest.ToolCallId,
-                        ToolName = toolName,
-                        Arguments = JsonSerializer.Serialize(mergedArgs)
-                    };
-                    return await TryRecoverAsync(serverName, toolName, nextRequest, retryResponse, depth + 1, sessionId, ct);
-                }
-
-                await EmitCapabilityClaimAsync(
-                    serverName, toolName, innerRequest,
-                    statement: $"recovery-exhausted: Stage B filled field {fieldName} but the call still failed",
-                    evidence: retryError ?? errorText,
-                    ct);
-                await RecordFailureAsync(serverName, toolName, sessionId, retryError ?? errorText, fieldHint: null, ct);
-                return Annotate(response,
-                    $"stageA=no-provider; stageB=filled retry-failed: {Truncate(retryResponse.Content)}");
-            }
+            var enrichedContent = await _enricher.EnrichAsync(
+                serverName, toolName, fieldName, sessionId, errorText, ct);
 
             sw.Stop();
-            RecordTelemetry(serverName, toolName, fieldName, "B", recovered: false, "StageBLlmFiller",
-                sw.Elapsed.TotalMilliseconds);
-            await EmitCapabilityClaimAsync(
-                serverName, toolName, innerRequest,
-                statement: $"recovery-exhausted: Stage B could not fill field {fieldName}",
-                evidence: errorText,
-                ct);
+            RecordTelemetry(serverName, toolName, fieldName, "Enrich", recovered: false,
+                "SchemaErrorEnricher", sw.Elapsed.TotalMilliseconds);
             await RecordFailureAsync(serverName, toolName, sessionId, errorText, fieldHint: fieldName, ct);
-            return Annotate(response, "stageA=no-provider; stageB=fill-failed");
+
+            _logger.LogInformation(
+                "MCP recovery surfaced enriched schema error for {Server}/{Tool} field {Field}",
+                serverName, toolName, fieldName);
+
+            return new ToolInvokeResponse
+            {
+                ToolCallId = response.ToolCallId,
+                ToolName = response.ToolName,
+                Content = enrichedContent,
+                ContentBlocks = response.ContentBlocks,
+                IsError = true
+            };
         }
 
+        // Terminal: no provider matched and no enricher is configured. Record
+        // the failure and return the original error annotated with a recovery
+        // trail. In production the enricher is always wired, so this branch
+        // primarily covers tests with bare-bones executors.
         sw.Stop();
         RecordTelemetry(serverName, toolName, fieldName, "A", recovered: false, "no-provider",
             sw.Elapsed.TotalMilliseconds);
         await RecordFailureAsync(serverName, toolName, sessionId, errorText, fieldHint: fieldName, ct);
-        return Annotate(response, "stageA=no-provider; stageB=disabled");
+        return Annotate(response, "no-provider; no-enricher");
     }
 
     /// <summary>
@@ -333,7 +306,7 @@ public sealed class McpRecoveryExecutor
         return !string.Equals(nextField, justFilledField, StringComparison.OrdinalIgnoreCase);
     }
 
-    private async Task<(ToolInvokeResponse Response, Dictionary<string, object?>? MergedArgs)> RetryAsync(
+    private async Task<(ToolInvokeResponse Response, Dictionary<string, object?> MergedArgs)> RetryAsync(
         string serverName,
         string toolName,
         ToolInvokeRequest innerRequest,
@@ -342,49 +315,9 @@ public sealed class McpRecoveryExecutor
         ResolvedDefault resolved,
         CancellationToken ct)
     {
-        if (resolved.RequiresFanOut)
-        {
-            if (resolved.Value is not IEnumerable enumerable || resolved.Value is string)
-            {
-                _logger.LogWarning(
-                    "Recovery provider for {Server}/{Tool} field {Field} requested fan-out but value is not enumerable",
-                    serverName, toolName, fieldName);
-                return (ErrorResponse(innerRequest,
-                    "recovery: fan-out provider returned non-enumerable value"), null);
-            }
-
-            var values = enumerable.Cast<object?>().Where(v => v is not null).ToList();
-            if (values.Count == 0)
-            {
-                return (ErrorResponse(innerRequest, "recovery: fan-out provider returned no values"), null);
-            }
-
-            var aggregated = await FanOutAsync(serverName, toolName, innerRequest, existingArgs, fieldName, values, ct);
-            return (aggregated, null);
-        }
-
         var merged = MergeArgs(existingArgs, fieldName, resolved.Value);
         var response = await CallAsync(serverName, toolName, innerRequest, merged, ct);
         return (response, merged);
-    }
-
-    private async Task<ToolInvokeResponse> FanOutAsync(
-        string serverName,
-        string toolName,
-        ToolInvokeRequest innerRequest,
-        Dictionary<string, object?> existingArgs,
-        string fieldName,
-        IReadOnlyList<object?> values,
-        CancellationToken ct)
-    {
-        var tasks = values.Select(v =>
-        {
-            var merged = MergeArgs(existingArgs, fieldName, v);
-            return CallAsync(serverName, toolName, innerRequest, merged, ct);
-        }).ToList();
-
-        var responses = await Task.WhenAll(tasks);
-        return AggregateFanOut(innerRequest, fieldName, values, responses);
     }
 
     private async Task<ToolInvokeResponse> CallAsync(
@@ -416,63 +349,12 @@ public sealed class McpRecoveryExecutor
         return copy;
     }
 
-    private static ToolInvokeResponse AggregateFanOut(
-        ToolInvokeRequest innerRequest,
-        string fieldName,
-        IReadOnlyList<object?> values,
-        IReadOnlyList<ToolInvokeResponse> responses)
-    {
-        var combined = new List<ToolContentBlock>();
-        var sb = new StringBuilder();
-        var anyError = false;
-
-        for (var i = 0; i < responses.Count; i++)
-        {
-            var r = responses[i];
-            var label = $"[{fieldName}={values[i]}]";
-
-            // A leg "errored" if either IsError=true or its content carries an embedded error.
-            if (TryExtractRecoverableError(r) is not null) anyError = true;
-
-            sb.Append(label).Append(' ');
-            if (!string.IsNullOrEmpty(r.Content))
-                sb.Append(r.Content);
-            else
-                sb.Append("(no content)");
-            sb.AppendLine();
-
-            if (r.ContentBlocks is not null)
-            {
-                combined.Add(new ToolContentBlock { Type = "text", Text = label });
-                foreach (var b in r.ContentBlocks)
-                    combined.Add(b);
-            }
-        }
-
-        return new ToolInvokeResponse
-        {
-            ToolCallId = innerRequest.ToolCallId,
-            ToolName = innerRequest.ToolName,
-            Content = sb.ToString().TrimEnd(),
-            ContentBlocks = combined.Count > 0 ? combined : null,
-            IsError = anyError
-        };
-    }
-
     private static ToolInvokeResponse Annotate(ToolInvokeResponse failed, string trail) => new()
     {
         ToolCallId = failed.ToolCallId,
         ToolName = failed.ToolName,
         Content = $"{failed.Content}\n[recovery-trail] {trail}",
         ContentBlocks = failed.ContentBlocks,
-        IsError = true
-    };
-
-    private static ToolInvokeResponse ErrorResponse(ToolInvokeRequest req, string message) => new()
-    {
-        ToolCallId = req.ToolCallId,
-        ToolName = req.ToolName,
-        Content = message,
         IsError = true
     };
 
@@ -484,7 +366,7 @@ public sealed class McpRecoveryExecutor
 
     private static void RecordTelemetry(
         string server, string tool, string field, string stage,
-        bool recovered, string provider, double durationMs, bool fanout = false)
+        bool recovered, string provider, double durationMs)
     {
         var outcome = recovered ? "recovered" : "failed";
         var tags = new TagList
@@ -496,7 +378,6 @@ public sealed class McpRecoveryExecutor
             { "outcome", outcome },
             { "provider", provider }
         };
-        if (fanout) tags.Add("fanout", "true");
 
         RecoveryDiagnostics.Attempts.Add(1, tags);
         RecoveryDiagnostics.Duration.Record(durationMs, tags);

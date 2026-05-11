@@ -98,18 +98,10 @@ public sealed class McpManagementExecutor : IToolExecutor, IAsyncDisposable
         if (!TryGetServerName(args, out var serverName))
             return Error(request, "Missing required parameter: server_name");
 
-        var mgmtRequest = new McpGetServiceDetailsRequest { ServerName = serverName };
-        var responseEnvelope = await SendRequestAsync(mgmtRequest, ct);
-        if (responseEnvelope is null)
+        var tools = await GetSchemasAsync(serverName, ct);
+        if (tools is null)
             return Error(request, $"Timed out waiting for service details for '{serverName}'");
 
-        var response = responseEnvelope.GetPayload<McpGetServiceDetailsResponse>();
-        if (response is null)
-            return Error(request, "Failed to deserialize service details response");
-        if (response.Error is not null)
-            return Error(request, response.Error);
-
-        var tools = response.Tools;
         if (TryGetString(args, "tool_name", out var toolName))
         {
             tools = tools
@@ -125,6 +117,25 @@ public sealed class McpManagementExecutor : IToolExecutor, IAsyncDisposable
             ToolName = request.ToolName,
             Content = JsonSerializer.Serialize(tools, JsonOptions)
         };
+    }
+
+    /// <summary>
+    /// Internal entry point used by the recovery layer's <see cref="ToolSchemaCache"/>:
+    /// fetches the full tool list for one MCP server via the bridge without going
+    /// through the LLM-facing <c>mcp_get_service_details</c> tool. Returns null
+    /// on timeout or transport failure.
+    /// </summary>
+    public async Task<IReadOnlyList<McpToolDefinition>?> GetSchemasAsync(
+        string serverName, CancellationToken ct)
+    {
+        var mgmtRequest = new McpGetServiceDetailsRequest { ServerName = serverName };
+        var responseEnvelope = await SendRequestAsync(mgmtRequest, ct);
+        if (responseEnvelope is null) return null;
+
+        var response = responseEnvelope.GetPayload<McpGetServiceDetailsResponse>();
+        if (response is null || response.Error is not null) return null;
+
+        return response.Tools;
     }
 
     // ── mcp_invoke_tool ──────────────────────────────────────────────────────
