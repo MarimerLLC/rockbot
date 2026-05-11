@@ -23,7 +23,15 @@ public sealed record TierClassification(
 /// User-originated messages receive a bias toward lower tiers since their prompts
 /// are semantically simpler even when post-injection context is large.
 /// </param>
-public sealed record TierRoutingContext(string? Origin = null);
+/// <param name="ThreadEstablished">
+/// True when the caller has determined that an active topical thread already exists
+/// for this session (typically: prior turns within a recent time window). Short
+/// follow-up messages on an established thread benefit from Balanced-tier capacity
+/// to weigh recent history against injected memory — without this, smaller Low-tier
+/// models tend to summarise injected memory instead of continuing the thread.
+/// See issue #383. Defaults to <c>false</c>, preserving prior routing behaviour.
+/// </param>
+public sealed record TierRoutingContext(string? Origin = null, bool ThreadEstablished = false);
 
 /// <summary>
 /// Selects the appropriate <see cref="ModelTier"/> for a given prompt.

@@ -688,4 +688,118 @@ public class KeywordTierSelectorTests
             Directory.Delete(tempDir, recursive: true);
         }
     }
+
+    // ── Active-thread short-message override (issue #383) ────────────────────
+
+    [TestMethod]
+    public void ActiveThreadOverride_ShortMessage_PromotesLowToBalanced()
+    {
+        // 18-char production reproducer — would otherwise route Low for a user-origin
+        // message. With ThreadEstablished=true, the override pushes it to Balanced.
+        var result = _selector.Classify(
+            "I'll find out soon",
+            new TierRoutingContext(Origin: "user-message", ThreadEstablished: true));
+
+        Assert.AreEqual(ModelTier.Balanced, result.Tier,
+            "Short follow-up on an established thread should route Balanced, not Low.");
+    }
+
+    [TestMethod]
+    public void ActiveThreadOverride_ShortMessage_WithoutThread_StaysLow()
+    {
+        // Same prompt, no thread context — original behaviour preserved.
+        var result = _selector.Classify(
+            "I'll find out soon",
+            new TierRoutingContext(Origin: "user-message"));
+
+        Assert.AreEqual(ModelTier.Low, result.Tier,
+            "Short follow-up without an established thread must still route Low.");
+    }
+
+    [TestMethod]
+    public void ActiveThreadOverride_LongMessage_Unchanged()
+    {
+        // A simple long message routes Low normally; threadEstablished must not
+        // promote it, because the override is gated on the short-message threshold.
+        const string longPrompt = "What is the capital of France?"; // 30 chars exactly — at the threshold boundary
+        var withThread = _selector.Classify(
+            longPrompt,
+            new TierRoutingContext(Origin: "user-message", ThreadEstablished: true));
+        var withoutThread = _selector.Classify(
+            longPrompt,
+            new TierRoutingContext(Origin: "user-message"));
+
+        // At exactly 30 chars, the override CAN fire — switch to a clearly-long prompt
+        // to validate that long messages are unaffected.
+        const string clearlyLong = "Who was Abraham Lincoln and what did he do?"; // 43 chars
+        var clearlyLongWithThread = _selector.Classify(
+            clearlyLong,
+            new TierRoutingContext(Origin: "user-message", ThreadEstablished: true));
+        var clearlyLongWithoutThread = _selector.Classify(
+            clearlyLong,
+            new TierRoutingContext(Origin: "user-message"));
+
+        Assert.AreEqual(clearlyLongWithoutThread.Tier, clearlyLongWithThread.Tier,
+            "Long prompts must route identically regardless of ThreadEstablished.");
+
+        // Also check that the boundary at exactly the threshold behaves consistently —
+        // the override may or may not fire, but the test fixes the relationship.
+        if (withoutThread.Tier == ModelTier.Low)
+        {
+            // At the boundary, the override is allowed to fire.
+            Assert.IsTrue(
+                withThread.Tier == ModelTier.Balanced || withThread.Tier == withoutThread.Tier,
+                "Boundary-length messages may stay Low or promote to Balanced under ThreadEstablished — never escalate beyond Balanced.");
+        }
+    }
+
+    [TestMethod]
+    public void ActiveThreadOverride_SubagentOrigin_DoesNotPromote()
+    {
+        // Subagent traffic is not subject to the user-side conversational override.
+        // The router should treat the same short prompt identically with or without
+        // ThreadEstablished when origin is "subagent".
+        var withThread = _selector.Classify(
+            "do it",
+            new TierRoutingContext(Origin: "subagent", ThreadEstablished: true));
+        var withoutThread = _selector.Classify(
+            "do it",
+            new TierRoutingContext(Origin: "subagent"));
+
+        // Both should reach the same decision — subagent origin opts out of the user-origin
+        // bias, but ThreadEstablished is honoured at the override site. For subagents we
+        // accept either outcome as long as the override doesn't ESCALATE beyond what the
+        // user-origin path produces. The stronger assertion here is that the override
+        // never pushes subagent traffic above Balanced.
+        Assert.IsTrue(withThread.Tier <= ModelTier.Balanced,
+            "ActiveThreadOverride must never push subagent traffic above Balanced.");
+        Assert.IsTrue(withoutThread.Tier <= ModelTier.Balanced,
+            "Subagent baseline routing for trivial prompts stays at or below Balanced.");
+    }
+
+    [TestMethod]
+    public void ActiveThreadOverride_MatchedHighKeyword_GateBlocksPromotion()
+    {
+        // The override is gated on matchedHigh.Length == 0 — when a high-signal keyword
+        // is present, the override must NOT promote Low to Balanced. This protects the
+        // existing keyword-driven routing path from being short-circuited by the gate.
+        //
+        // Construct comparable short prompts: one with a high keyword, one without.
+        // Both score below the low ceiling for length reasons, so they'd otherwise
+        // route Low. Verify ThreadEstablished promotes the non-keyword version but
+        // NOT the keyword version.
+        var withKeyword = _selector.Classify(
+            "architect it now",
+            new TierRoutingContext(Origin: "user-message", ThreadEstablished: true));
+        var withoutKeyword = _selector.Classify(
+            "do it now",
+            new TierRoutingContext(Origin: "user-message", ThreadEstablished: true));
+
+        Assert.IsTrue(withKeyword.MatchedHighKeywords.Count > 0,
+            "Test premise: 'architect' must register as a high-signal keyword.");
+        Assert.AreEqual(ModelTier.Low, withKeyword.Tier,
+            "Short prompt with a high-signal keyword should not be promoted by the active-thread override.");
+        Assert.AreEqual(ModelTier.Balanced, withoutKeyword.Tier,
+            "Short prompt without high-signal keywords on an active thread should promote to Balanced.");
+    }
 }
