@@ -70,6 +70,12 @@ public static class McpServiceCollectionExtensions
 
         builder.Services.AddSingleton<McpRecoveryExecutor>();
 
+        // Pre-flight recovery: same providers + enricher exposed via a small abstraction
+        // so wisp Direct MCP steps can resolve environmental defaults and surface enriched
+        // errors before invoking the tool, without RockBot.Wisp taking a hard dependency
+        // on RockBot.Tools.Mcp.
+        builder.Services.AddSingleton<IMcpPreflightRecovery, McpPreflightRecovery>();
+
         builder.HandleMessage<McpServersIndexed, McpServersIndexedHandler>();
         builder.SubscribeTo($"tool.meta.mcp.{agentName}");
 

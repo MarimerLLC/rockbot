@@ -12,7 +12,8 @@ namespace RockBot.Wisp;
 internal sealed class WispRegistryToolFunction(
     ToolRegistration registration,
     IToolExecutor executor,
-    string wispId) : AIFunction
+    string wispId,
+    string? parentSessionId = null) : AIFunction
 {
     private static readonly JsonSerializerOptions SerializerOptions = new();
 
@@ -49,7 +50,7 @@ internal sealed class WispRegistryToolFunction(
             ToolCallId = $"wisp-{wispId}-{Guid.NewGuid():N}",
             ToolName = registration.Name,
             Arguments = argsJson,
-            SessionId = wispId
+            SessionId = parentSessionId ?? wispId
         };
 
         var response = await executor.ExecuteAsync(request, cancellationToken);

@@ -131,6 +131,91 @@ public class WispAutoCorrectTests
     }
 
     [TestMethod]
+    public async Task PreflightRecovery_FillsEnvDefault_NoLlmCallNeeded()
+    {
+        // When preflight recovery can silently fill every missing field from an
+        // environmental default, the step proceeds without an LLM round-trip.
+        var llm = new ScriptedLlmClient("UNUSED");
+        var preflight = new StubPreflightRecovery(
+            filledDefaults: new Dictionary<string, object?> { ["calendarId"] = "primary" },
+            unresolved: [],
+            enrichedContext: null);
+
+        var (executor, registry, captured) = CreateExecutor(llm, preflight);
+        RegisterCalendarMcp(registry, captured);
+
+        // Missing calendarId — preflight will fill it.
+        var definition = MakeCalendarWisp(
+            """{"accountId":"a","timeMin":"t1","timeMax":"t2"}""");
+
+        var result = await executor.ExecuteAsync(definition, "wisp-pf-1", parentSessionId: "parent-42", CancellationToken.None);
+
+        Assert.IsTrue(result.IsSuccess, "Step should succeed after preflight env fill");
+        Assert.AreEqual(0, llm.CallCount, "LLM auto-correct must not run when preflight filled every missing field");
+
+        // Verify the filled value flowed through to the executor.
+        Assert.AreEqual(1, captured.Count);
+        var args = JsonDocument.Parse(captured[0]).RootElement;
+        var innerArgs = args.GetProperty("arguments");
+        Assert.AreEqual("primary", innerArgs.GetProperty("calendarId").GetString());
+
+        // Verify the wisp threaded parent session id to preflight recovery.
+        Assert.AreEqual("parent-42", preflight.LastParentSessionId);
+    }
+
+    [TestMethod]
+    public async Task PreflightRecovery_PartialFill_EnrichmentInjectedIntoLlmPrompt()
+    {
+        // Preflight fills one missing field, leaves another unresolved with an
+        // enriched-error context. The auto-correct LLM gets the enriched context
+        // appended to its prompt, then supplies the final value.
+        var llm = new CapturingScriptedLlmClient("""
+            {"accountId":"acct-from-enriched","calendarId":"primary","timeMin":"t1","timeMax":"t2"}
+            """);
+        var preflight = new StubPreflightRecovery(
+            filledDefaults: new Dictionary<string, object?> { ["calendarId"] = "primary" },
+            unresolved: ["accountId"],
+            enrichedContext: "Field schema: accountId. Recent successful calls in this session: list_accounts");
+
+        var (executor, registry, captured) = CreateExecutor(llm, preflight);
+        RegisterCalendarMcp(registry, captured);
+
+        var definition = MakeCalendarWisp(
+            """{"timeMin":"t1","timeMax":"t2"}""");
+
+        var result = await executor.ExecuteAsync(definition, "wisp-pf-2", CancellationToken.None);
+
+        Assert.IsTrue(result.IsSuccess, "Step should succeed after partial fill + LLM completion");
+        Assert.AreEqual(1, llm.CallCount);
+        StringAssert.Contains(llm.LastPrompt!, "Recent successful calls in this session: list_accounts",
+            "Enriched context from preflight recovery must appear in the LLM correction prompt");
+        StringAssert.Contains(llm.LastPrompt!, "Recovery context",
+            "The prompt must introduce the recovery-context block so the LLM knows to use it");
+    }
+
+    [TestMethod]
+    public async Task PreflightRecovery_NotWired_FallsBackToBareAutoCorrect()
+    {
+        // Without an IMcpPreflightRecovery in DI the wisp keeps its prior
+        // behaviour: bare LLM auto-correct with just the validation error.
+        var llm = new CapturingScriptedLlmClient("""
+            {"accountId":"a","calendarId":"c","timeMin":"2026-04-23T00:00:00","timeMax":"2026-04-23T23:59:59"}
+            """);
+        var (executor, registry, captured) = CreateExecutor(llm, preflightRecovery: null);
+        RegisterCalendarMcp(registry, captured);
+
+        var definition = MakeCalendarWisp(
+            """{"accountId":"a","calendarId":"c","startDate":"2026-04-23","endDate":"2026-04-23"}""");
+
+        var result = await executor.ExecuteAsync(definition, "wisp-pf-3", CancellationToken.None);
+
+        Assert.IsTrue(result.IsSuccess);
+        Assert.IsNotNull(llm.LastPrompt);
+        Assert.IsFalse(llm.LastPrompt!.Contains("Recovery context"),
+            "Recovery context block must be absent when no preflight recovery is wired");
+    }
+
+    [TestMethod]
     public async Task ValidationFailure_LlmWrapsResponseInCodeFences_StillParsed()
     {
         var llm = new ScriptedLlmClient("""
@@ -152,15 +237,63 @@ public class WispAutoCorrectTests
     // ── Fixture ──────────────────────────────────────────────────────────────
 
     private static (WispExecutor Executor, FakeToolRegistry Registry, List<string> CapturedArgs)
-        CreateExecutor(ILlmClient? llmClient)
+        CreateExecutor(ILlmClient? llmClient,
+                       IMcpPreflightRecovery? preflightRecovery = null)
     {
         var registry = new FakeToolRegistry();
         var memory = new FakeWorkingMemory();
         var options = new WispOptions { SharedVolumePath = null };
         var captured = new List<string>();
         var executor = new WispExecutor(registry, memory, agentLoopRunner: null!, options,
-            NullLogger<WispExecutor>.Instance, llmClient);
+            NullLogger<WispExecutor>.Instance, llmClient,
+            a2aCanceller: null, preflightRecovery: preflightRecovery);
         return (executor, registry, captured);
+    }
+
+    private sealed class StubPreflightRecovery(
+        IReadOnlyDictionary<string, object?> filledDefaults,
+        IReadOnlyList<string> unresolved,
+        string? enrichedContext) : IMcpPreflightRecovery
+    {
+        public string? LastParentSessionId { get; private set; }
+        public IReadOnlyList<string>? LastMissingFields { get; private set; }
+
+        public Task<PreflightRecoveryResult> TryRecoverAsync(
+            string serverName,
+            string toolName,
+            IReadOnlyList<string> missingFields,
+            IReadOnlyDictionary<string, object?> existingArgs,
+            string? parentSessionId,
+            CancellationToken ct)
+        {
+            LastParentSessionId = parentSessionId;
+            LastMissingFields = missingFields;
+            return Task.FromResult(
+                new PreflightRecoveryResult(filledDefaults, unresolved, enrichedContext));
+        }
+    }
+
+    private sealed class CapturingScriptedLlmClient(string responseText) : ILlmClient
+    {
+        public int CallCount { get; private set; }
+        public string? LastPrompt { get; private set; }
+
+        public Task<ChatResponse> GetResponseAsync(
+            IEnumerable<ChatMessage> messages, ChatOptions? options = null,
+            CancellationToken cancellationToken = default) =>
+            Respond(messages);
+
+        public Task<ChatResponse> GetResponseAsync(
+            IEnumerable<ChatMessage> messages, ModelTier tier,
+            ChatOptions? options = null, CancellationToken cancellationToken = default) =>
+            Respond(messages);
+
+        private Task<ChatResponse> Respond(IEnumerable<ChatMessage> messages)
+        {
+            CallCount++;
+            LastPrompt = messages.LastOrDefault()?.Text ?? "";
+            return Task.FromResult(new ChatResponse(new ChatMessage(ChatRole.Assistant, responseText)));
+        }
     }
 
     private static void RegisterCalendarMcp(FakeToolRegistry registry, List<string>? capturedArgs)
