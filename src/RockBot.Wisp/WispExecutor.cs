@@ -21,7 +21,8 @@ internal sealed class WispExecutor(
     WispOptions options,
     ILogger<WispExecutor> logger,
     ILlmClient? llmClient = null,
-    ISessionA2ACanceller? a2aCanceller = null)
+    ISessionA2ACanceller? a2aCanceller = null,
+    IMcpPreflightRecovery? preflightRecovery = null)
 {
     private const int DefaultLlmStepMaxIterations = 10;
     private const int InputChunkingThreshold = 8_000;
@@ -44,9 +45,22 @@ internal sealed class WispExecutor(
     /// <summary>
     /// Executes all steps in the wisp definition sequentially, returning a structured result.
     /// </summary>
+    /// <param name="parentSessionId">Session id of the agent that spawned this wisp.
+    /// Used as the <c>SessionId</c> on tool invocations so post-flight recovery enrichment
+    /// (and the pre-flight recovery hook, when wired) can surface recent same-session
+    /// tool calls. Falls back to <paramref name="wispId"/> when null — preserves
+    /// pre-existing behaviour for tests and callers that don't track a parent session.</param>
+    public Task<WispExecutionResult> ExecuteAsync(
+        WispDefinition definition,
+        string wispId,
+        CancellationToken ct) =>
+        ExecuteAsync(definition, wispId, parentSessionId: null, ct);
+
+    /// <inheritdoc cref="ExecuteAsync(WispDefinition, string, CancellationToken)"/>
     public async Task<WispExecutionResult> ExecuteAsync(
         WispDefinition definition,
         string wispId,
+        string? parentSessionId,
         CancellationToken ct)
     {
         logger.LogInformation("Wisp {WispId} starting: {Description} ({StepCount} steps)",
@@ -92,8 +106,8 @@ internal sealed class WispExecutor(
             {
                 stepResult = step.Mode switch
                 {
-                    StepMode.Direct => await ExecuteDirectStepAsync(step, i, wispId, wispNamespace, resultsByStepId, ct),
-                    StepMode.Llm => await ExecuteLlmStepAsync(step, i, definition, wispId, wispNamespace, resultsByStepId, ct),
+                    StepMode.Direct => await ExecuteDirectStepAsync(step, i, wispId, parentSessionId, wispNamespace, resultsByStepId, ct),
+                    StepMode.Llm => await ExecuteLlmStepAsync(step, i, definition, wispId, parentSessionId, wispNamespace, resultsByStepId, ct),
                     _ => new WispStepResult
                     {
                         StepId = step.Id,
@@ -228,6 +242,7 @@ internal sealed class WispExecutor(
         WispStep step,
         int index,
         string wispId,
+        string? parentSessionId,
         string wispNamespace,
         IReadOnlyDictionary<string, WispStepResult> priorResults,
         CancellationToken ct)
@@ -272,14 +287,63 @@ internal sealed class WispExecutor(
         // Pre-flight schema validation for MCP gateway steps. Catches authoring
         // mistakes (missing required fields, unknown fields under a closed schema)
         // before the tool is invoked, so a silent "empty result" can't be mistaken
-        // for a valid answer. On failure, attempt a single focused auto-correction
-        // LLM call — a tool-less one-shot that sees only the failing params and the
-        // schema summary. If the correction passes validation, the step proceeds
-        // with corrected params; otherwise the original error is surfaced.
-        var validationError = McpStepValidator.Validate(step, toolRegistry);
-        if (validationError is not null)
+        // for a valid answer. On failure, first delegate to IMcpPreflightRecovery —
+        // it can silently fill environmental defaults (timeZone, current time) and
+        // build an enriched-error context for fields no provider could supply, so
+        // the downstream auto-correction LLM call gets the same schema/description/
+        // session-history hints McpRecoveryExecutor would surface post-flight. If
+        // recovery resolves every missing field the step proceeds without an LLM
+        // round-trip; otherwise we fall through to a single focused LLM correction.
+        var validation = await McpStepValidator.ValidateDetailedAsync(
+            step, toolRegistry, preflightRecovery, ct);
+        if (validation.Error is { } validationError)
         {
-            var corrected = await TryAutoCorrectMcpParamsAsync(step, validationError, ct);
+            string? enrichedContext = null;
+
+            if (preflightRecovery is not null && validation.MissingFields.Count > 0)
+            {
+                var (filledStep, unresolved, enriched) =
+                    await TryFillPreflightDefaultsAsync(step, validation.MissingFields, parentSessionId, ct);
+                enrichedContext = enriched;
+
+                if (filledStep is not null)
+                {
+                    // Some (possibly all) missing fields filled silently — re-route +
+                    // re-validate against the merged params. A clean pass proceeds
+                    // to invocation; otherwise we keep filledStep as the new baseline
+                    // for the LLM correction so it doesn't have to re-derive defaults.
+                    step = filledStep;
+                    route = GatewayRouter.Route(step, wispId, priorResults);
+                    if (!route.IsSuccess)
+                    {
+                        return new WispStepResult
+                        {
+                            StepId = step.Id,
+                            StepIndex = index,
+                            IsSuccess = false,
+                            Error = new WispStepError
+                            {
+                                Category = route.ErrorCategory ?? FailureCategory.Structural,
+                                Message = route.ErrorMessage!
+                            },
+                            Duration = stepSw.Elapsed
+                        };
+                    }
+                    var afterFill = await McpStepValidator.ValidateDetailedAsync(
+                        step, toolRegistry, preflightRecovery, ct);
+                    if (afterFill.Error is null)
+                    {
+                        logger.LogInformation(
+                            "Wisp {WispId} step {StepId}: pre-flight recovery filled environmental defaults for {Server}/{Tool}; proceeding without LLM correction",
+                            wispId, step.Id, step.Server, step.Tool);
+                        goto invoke;
+                    }
+                    // Still failing — carry the residual validation error into auto-correction.
+                    validationError = afterFill.Error;
+                }
+            }
+
+            var corrected = await TryAutoCorrectMcpParamsAsync(step, validationError, enrichedContext, ct);
             if (corrected is null)
             {
                 return new WispStepResult
@@ -312,7 +376,8 @@ internal sealed class WispExecutor(
                     Duration = stepSw.Elapsed
                 };
             }
-            var recheck = McpStepValidator.Validate(step, toolRegistry);
+            var recheck = await McpStepValidator.ValidateAsync(
+                step, toolRegistry, preflightRecovery, ct);
             if (recheck is not null)
             {
                 return new WispStepResult
@@ -329,6 +394,7 @@ internal sealed class WispExecutor(
                 wispId, step.Id, step.Server, step.Tool);
         }
 
+    invoke:
         // Resolve the executor from the registry
         var executor = toolRegistry.GetExecutor(route.ToolName!);
         if (executor is null)
@@ -348,13 +414,16 @@ internal sealed class WispExecutor(
             };
         }
 
-        // Invoke the tool
+        // Invoke the tool. Use the parent session id when available so
+        // McpRecoveryExecutor's enricher can surface recent same-session tool
+        // calls from the agent that spawned this wisp; fall back to wispId to
+        // preserve pre-existing behaviour for callers that don't track one.
         var request = new ToolInvokeRequest
         {
             ToolCallId = $"wisp-{wispId}-{step.Id}",
             ToolName = route.ToolName!,
             Arguments = route.Arguments,
-            SessionId = wispId
+            SessionId = parentSessionId ?? wispId
         };
 
         var response = await executor.ExecuteAsync(request, ct);
@@ -432,6 +501,7 @@ internal sealed class WispExecutor(
         int index,
         WispDefinition definition,
         string wispId,
+        string? parentSessionId,
         string wispNamespace,
         IReadOnlyDictionary<string, WispStepResult> priorResults,
         CancellationToken ct)
@@ -510,7 +580,7 @@ internal sealed class WispExecutor(
         chatMessages.Add(new ChatMessage(ChatRole.User, userPrompt));
 
         // Build scoped tool set for the LLM step
-        var scopedTools = BuildLlmStepTools(definition, wispNamespace);
+        var scopedTools = BuildLlmStepTools(definition, wispNamespace, parentSessionId);
 
         var chatOptions = new ChatOptions
         {
@@ -576,7 +646,7 @@ internal sealed class WispExecutor(
     /// - Tools listed in the top-level 'tools' array
     /// - Working memory tools (GetFromWorkingMemory, SearchWorkingMemory)
     /// </summary>
-    private List<AITool> BuildLlmStepTools(WispDefinition definition, string wispNamespace)
+    private List<AITool> BuildLlmStepTools(WispDefinition definition, string wispNamespace, string? parentSessionId)
     {
         var tools = new List<AITool>();
 
@@ -605,7 +675,8 @@ internal sealed class WispExecutor(
 
             if (registration is not null && executor is not null)
             {
-                tools.Add(new WispRegistryToolFunction(registration, executor, wispId: wispNamespace));
+                tools.Add(new WispRegistryToolFunction(registration, executor,
+                    wispId: wispNamespace, parentSessionId: parentSessionId));
             }
         }
 
@@ -828,33 +899,126 @@ internal sealed class WispExecutor(
     }
 
     /// <summary>
+    /// Delegates to <see cref="IMcpPreflightRecovery"/> to silently resolve any
+    /// missing required fields it can (environmental defaults like timeZone or
+    /// current time) and to build an enriched-error context for the rest. Returns
+    /// (filledStep, unresolved, enrichedContext): <c>filledStep</c> is non-null
+    /// only when at least one field was filled and is a copy of <paramref name="step"/>
+    /// with the resolved fields merged into its params; <c>unresolved</c> is the
+    /// subset of input fields that no provider could supply; <c>enrichedContext</c>
+    /// is the LLM-ready context string for those unresolved fields (null when the
+    /// enricher had nothing to contribute).
+    /// </summary>
+    private async Task<(WispStep? FilledStep, IReadOnlyList<string> Unresolved, string? EnrichedContext)>
+        TryFillPreflightDefaultsAsync(
+            WispStep step,
+            IReadOnlyList<string> missingFields,
+            string? parentSessionId,
+            CancellationToken ct)
+    {
+        if (preflightRecovery is null || string.IsNullOrEmpty(step.Server) || string.IsNullOrEmpty(step.Tool))
+            return (null, missingFields, null);
+
+        var existingArgs = ParseExistingArgs(step.ResolvedParams);
+
+        PreflightRecoveryResult result;
+        try
+        {
+            result = await preflightRecovery.TryRecoverAsync(
+                step.Server!, step.Tool!, missingFields, existingArgs, parentSessionId, ct);
+        }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex,
+                "Wisp pre-flight recovery threw for {Server}/{Tool}; falling back to LLM auto-correction",
+                step.Server, step.Tool);
+            return (null, missingFields, null);
+        }
+
+        if (result.FilledDefaults.Count == 0)
+            return (null, result.UnresolvedFields, result.EnrichedErrorContext);
+
+        // Merge filled defaults into the step's params and rebuild the JsonElement.
+        var merged = new Dictionary<string, object?>(existingArgs);
+        foreach (var (key, value) in result.FilledDefaults)
+            merged[key] = value;
+
+        JsonElement mergedParams;
+        try
+        {
+            mergedParams = JsonSerializer.SerializeToElement(merged);
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex,
+                "Failed to serialise merged params after pre-flight fill for {Server}/{Tool}",
+                step.Server, step.Tool);
+            return (null, result.UnresolvedFields, result.EnrichedErrorContext);
+        }
+
+        var filledStep = step with { Params = mergedParams, Input = null, Arguments = null };
+        return (filledStep, result.UnresolvedFields, result.EnrichedErrorContext);
+    }
+
+    private static Dictionary<string, object?> ParseExistingArgs(JsonElement? paramsEl)
+    {
+        if (paramsEl is null || paramsEl.Value.ValueKind != JsonValueKind.Object)
+            return new(StringComparer.Ordinal);
+
+        var dict = new Dictionary<string, object?>(StringComparer.Ordinal);
+        foreach (var p in paramsEl.Value.EnumerateObject())
+            dict[p.Name] = p.Value.ValueKind switch
+            {
+                JsonValueKind.String => p.Value.GetString(),
+                JsonValueKind.Number => p.Value.TryGetInt64(out var l) ? l : p.Value.GetDouble(),
+                JsonValueKind.True => true,
+                JsonValueKind.False => false,
+                JsonValueKind.Null => null,
+                _ => (object?)p.Value.Clone()
+            };
+        return dict;
+    }
+
+    /// <summary>
     /// Single-shot focused LLM call that rewrites the failing step's <c>params</c>
     /// to match the tool's schema. No tools available, narrow prompt, cheap tier.
     /// Returns a new <see cref="WispStep"/> with corrected params on success, or
     /// <c>null</c> if the correction attempt was skipped (no llm client wired up),
     /// threw, or produced something we couldn't parse as a JSON object.
+    /// <paramref name="enrichedContext"/>, when supplied by <see cref="IMcpPreflightRecovery"/>,
+    /// is appended to the prompt and carries the same schema/description/session-history
+    /// hints that <see cref="Recovery"/>'s post-flight enricher would have surfaced.
     /// The caller re-validates — we don't trust this output blindly.
     /// </summary>
     private async Task<WispStep?> TryAutoCorrectMcpParamsAsync(
-        WispStep step, WispStepError error, CancellationToken ct)
+        WispStep step, WispStepError error, string? enrichedContext, CancellationToken ct)
     {
         if (llmClient is null)
             return null;
 
         var currentParams = step.ResolvedParams?.GetRawText() ?? "{}";
+        var contextSection = string.IsNullOrEmpty(enrichedContext)
+            ? ""
+            : $"Recovery context (schema, tool-description hints, recent session calls):\n{enrichedContext}\n\n";
+
         var prompt =
             $"A wisp step's `params` failed schema validation. " +
             $"Rewrite the params to match the tool's schema.\n\n" +
             $"Tool: {step.Server}/{step.Tool}\n\n" +
             $"Current params:\n{currentParams}\n\n" +
             $"Validation error (includes the expected schema):\n{error.Message}\n\n" +
-            "Use ONLY values already present in the current params.\n" +
+            contextSection +
+            "Use ONLY values already present in the current params or values you can " +
+            "reasonably derive from the recovery context above (e.g. an emailId visible " +
+            "in a recent search_emails result listed in the context).\n" +
             "- If a required field matches a current param's meaning under a different " +
             "name (e.g. current `startDate` → schema `timeMin`, same value), remap it.\n" +
-            "- If a required field has NO semantic match in the current params, do NOT " +
-            $"invent one. Respond with exactly the word {NoCorrectionSentinel} and nothing " +
-            "else. The caller will surface the validation error so it can fetch the " +
-            "missing information itself.\n\n" +
+            "- If a required field has NO semantic match in the current params and the " +
+            "recovery context does not name a value to use, do NOT invent one. Respond " +
+            $"with exactly the word {NoCorrectionSentinel} and nothing else. The caller " +
+            "will surface the validation error so it can fetch the missing information " +
+            "itself.\n\n" +
             "Return ONLY a single JSON object (corrected params) or the exact string " +
             $"{NoCorrectionSentinel}. No code fences, no commentary, no prose.";
 

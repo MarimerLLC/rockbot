@@ -18,6 +18,20 @@ namespace RockBot.Wisp;
 internal static class McpStepValidator
 {
     /// <summary>
+    /// Structured validation outcome. <see cref="Error"/> is non-null exactly when
+    /// either <see cref="MissingFields"/> or <see cref="UnknownFields"/> is non-empty.
+    /// <see cref="MissingFields"/> is exposed so callers (e.g. wisp pre-flight recovery)
+    /// can hand the field list to <see cref="IMcpPreflightRecovery"/> for environmental
+    /// fills and schema-error enrichment.
+    /// </summary>
+    public sealed record Result(
+        IReadOnlyList<string> MissingFields,
+        IReadOnlyList<string> UnknownFields,
+        WispStepError? Error);
+
+    private static readonly Result EmptyResult = new([], [], null);
+
+    /// <summary>
     /// Validates an MCP-gateway step's resolved params against the target tool's
     /// schema. Returns <c>null</c> if valid, a schema-free step (non-MCP, or the
     /// tool is unregistered/unschematized), or if the params JSON is malformed —
@@ -26,25 +40,72 @@ internal static class McpStepValidator
     /// when required fields are missing or unknown fields are present under a
     /// closed schema.
     /// </summary>
-    public static WispStepError? Validate(WispStep step, IToolRegistry registry)
+    public static async Task<WispStepError?> ValidateAsync(
+        WispStep step, IToolRegistry registry,
+        IMcpPreflightRecovery? schemaSource, CancellationToken ct) =>
+        (await ValidateDetailedAsync(step, registry, schemaSource, ct)).Error;
+
+    /// <summary>
+    /// Same as <see cref="ValidateAsync"/> but exposes the missing and unknown field lists
+    /// structurally so callers can route them through <see cref="IMcpPreflightRecovery"/>
+    /// before falling back to LLM auto-correction.
+    /// </summary>
+    /// <param name="schemaSource">Optional fallback source for the parameters schema —
+    /// used in bridge-mode agents where per-server MCP tool registrations don't live
+    /// in the local tool registry. When non-null the validator consults this source
+    /// only if the registry lookup misses; resolution failures (timeout, no schema)
+    /// fall through to "validation skipped" rather than blocking the step.</param>
+    public static async Task<Result> ValidateDetailedAsync(
+        WispStep step, IToolRegistry registry,
+        IMcpPreflightRecovery? schemaSource, CancellationToken ct)
     {
         if (step.Gateway != GatewayType.Mcp)
-            return null;
+            return EmptyResult;
         if (string.IsNullOrEmpty(step.Server) || string.IsNullOrEmpty(step.Tool))
-            return null;
+            return EmptyResult;
 
-        var tool = FindMcpTool(registry, step.Server, step.Tool);
-        if (tool?.ParametersSchema is null)
-            return null;
+        var schemaJson = FindMcpTool(registry, step.Server, step.Tool)?.ParametersSchema;
+        if (schemaJson is null && schemaSource is not null)
+        {
+            schemaJson = await schemaSource.TryGetParametersSchemaAsync(
+                step.Server!, step.Tool!, ct);
+        }
+        return ValidateAgainstSchema(step, schemaJson);
+    }
+
+    /// <summary>
+    /// Registry-only synchronous validator, retained for unit tests and for callers
+    /// that don't have an <see cref="IMcpPreflightRecovery"/> available. Production
+    /// callers should prefer <see cref="ValidateAsync"/> so bridge-mode schemas
+    /// (cached via the MCP management proxy) are consulted too.
+    /// </summary>
+    public static WispStepError? Validate(WispStep step, IToolRegistry registry) =>
+        ValidateDetailed(step, registry).Error;
+
+    /// <inheritdoc cref="Validate"/>
+    public static Result ValidateDetailed(WispStep step, IToolRegistry registry)
+    {
+        if (step.Gateway != GatewayType.Mcp)
+            return EmptyResult;
+        if (string.IsNullOrEmpty(step.Server) || string.IsNullOrEmpty(step.Tool))
+            return EmptyResult;
+        return ValidateAgainstSchema(step,
+            FindMcpTool(registry, step.Server, step.Tool)?.ParametersSchema);
+    }
+
+    private static Result ValidateAgainstSchema(WispStep step, string? schemaJson)
+    {
+        if (schemaJson is null)
+            return EmptyResult;
 
         JsonElement schema;
         try
         {
-            schema = JsonDocument.Parse(tool.ParametersSchema).RootElement;
+            schema = JsonDocument.Parse(schemaJson).RootElement;
         }
         catch (JsonException)
         {
-            return null;
+            return EmptyResult;
         }
 
         var paramsElement = step.ResolvedParams;
@@ -53,14 +114,15 @@ internal static class McpStepValidator
 
         var (missing, unknown) = Compare(schema, paramsElement.Value);
         if (missing.Count == 0 && unknown.Count == 0)
-            return null;
+            return EmptyResult;
 
-        return new WispStepError
+        var error = new WispStepError
         {
             Category = FailureCategory.Structural,
             Message = BuildErrorMessage(step.Server!, step.Tool!, missing, unknown, schema),
             ToolName = $"{step.Server}/{step.Tool}"
         };
+        return new Result(missing, unknown, error);
     }
 
     private static ToolRegistration? FindMcpTool(IToolRegistry registry, string server, string tool)

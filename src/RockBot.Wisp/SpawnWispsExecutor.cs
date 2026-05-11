@@ -96,7 +96,7 @@ internal sealed class SpawnWispsExecutor(
             var defJson = JsonSerializer.Serialize(definition, JsonOptions);
             var defHash = ComputeDefinitionHash(defJson);
 
-            var result = await wispExecutor.ExecuteAsync(definition, wispId, ct);
+            var result = await wispExecutor.ExecuteAsync(definition, wispId, parentSessionId: sessionId, ct);
 
             // Log execution (fire-and-forget, don't block the batch)
             _ = LogExecutionAsync(result, defHash, batchId, sessionId, ct);
