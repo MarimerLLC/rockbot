@@ -202,6 +202,9 @@ internal sealed class A2ATaskResultHandler(
             result.TaskId, pending.TargetAgent, pending.PrimarySessionId, result.State);
 
         var resultText = result.Message?.Parts.FirstOrDefault(p => p.Kind == "text")?.Text ?? "(no text output)";
+        var dataPart = result.Message?.Parts.FirstOrDefault(p => p.Kind == "data");
+        var dataJson = dataPart?.Data;
+        var dataMimeType = dataPart?.MimeType;
         string syntheticUserTurn;
 
         // PrimarySessionId is the full WM session namespace (e.g. "session/blazor-session"),
@@ -223,7 +226,8 @@ internal sealed class A2ATaskResultHandler(
         foreach (var entry in staleEntries)
         {
             if (entry.Key.Contains(staleAgentPattern, StringComparison.OrdinalIgnoreCase) &&
-                entry.Key.EndsWith("/result", StringComparison.OrdinalIgnoreCase))
+                (entry.Key.EndsWith("/result", StringComparison.OrdinalIgnoreCase) ||
+                 entry.Key.EndsWith("/result.data", StringComparison.OrdinalIgnoreCase)))
             {
                 logger.LogDebug("Purging stale A2A result entry '{Key}' before storing new result", entry.Key);
                 await workingMemory.DeleteAsync(entry.Key);
@@ -246,6 +250,27 @@ internal sealed class A2ATaskResultHandler(
             "A2A result for task {TaskId} ({Len:N0} chars) stored in working memory at key '{Key}'",
             result.TaskId, resultText.Length, memoryKey);
 
+        // Multi-part responses (text + data) preserve the structured data part under a
+        // sibling key so downstream consumers — the LLM's follow-up turn, subagent
+        // callers, observability tooling — can recover the structured fields. Without
+        // this, agents like AdvisorCouncil silently lose their JSON payload (per-persona
+        // views, tensions, confidence, metadata) on the receive side.
+        string? dataMemoryKey = null;
+        if (!string.IsNullOrWhiteSpace(dataJson))
+        {
+            dataMemoryKey = $"{sessionNamespace}/a2a/{pending.TargetAgent}/{result.TaskId}/result.data";
+            await workingMemory.SetAsync(
+                dataMemoryKey,
+                dataJson,
+                ttl: TimeSpan.FromMinutes(60),
+                category: "a2a-result-data",
+                tags: [pending.TargetAgent, result.TaskId, dataMimeType ?? "application/json"]);
+
+            logger.LogInformation(
+                "A2A data part for task {TaskId} ({Len:N0} chars, mime={Mime}) stored at key '{Key}'",
+                result.TaskId, dataJson.Length, dataMimeType ?? "application/json", dataMemoryKey);
+        }
+
         // If the A2A invocation didn't originate in a user session, the result must flow
         // back to the calling loop (subagent or wisp) via working memory — not as a
         // user-visible chat bubble. The caller will pull the result and incorporate it
@@ -264,6 +289,13 @@ internal sealed class A2ATaskResultHandler(
             $"[Agent '{pending.TargetAgent}' completed task {result.TaskId} (state={result.State})]: " +
             $"The result ({resultText.Length:N0} chars) is in working memory. " +
             $"Call get_from_working_memory with key '{memoryKey}' to read it before responding.";
+
+        if (dataMemoryKey is not null)
+        {
+            syntheticUserTurn +=
+                $" Structured JSON ({dataMimeType ?? "application/json"}) is also available " +
+                $"at key '{dataMemoryKey}' — fetch it only if the structured fields are needed.";
+        }
 
         // No separate preview bubble — the LLM synthesis below is the single
         // user-facing message. Publishing a preview AND a synthesis creates
