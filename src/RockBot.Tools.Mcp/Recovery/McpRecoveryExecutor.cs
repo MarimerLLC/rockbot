@@ -8,9 +8,12 @@ namespace RockBot.Tools.Mcp.Recovery;
 /// <summary>
 /// Recovery wrapper around <see cref="McpToolProxy"/>. When an
 /// <c>mcp_invoke_tool</c> call fails with a "missing required field" schema
-/// error, runs Stage A (deterministic providers) then Stage B (Low-tier LLM
-/// fill), retries the call once, and either returns the recovered response or
-/// returns the original error annotated with a recovery trail.
+/// error, runs the environmental-default providers (time zone, current time)
+/// first and retries silently when one resolves. When no provider can fill
+/// the field, the <see cref="SchemaErrorEnricher"/> returns an enriched
+/// response to the LLM containing the field schema, tool-description hints,
+/// and pointers to recent same-session results — the LLM threads the value
+/// itself rather than the recovery layer guessing for it.
 ///
 /// Some MCP servers report schema errors with <see cref="ToolInvokeResponse.IsError"/>
 /// set to <c>false</c> and the error embedded in a JSON body like
@@ -19,7 +22,7 @@ namespace RockBot.Tools.Mcp.Recovery;
 /// Chained recovery (multiple missing fields surfaced one at a time) is
 /// supported up to a fixed depth.
 ///
-/// See <c>design/self-repair.md</c> Phase 1.
+/// See <c>design/self-repair.md</c> Phase 1 and Amendment 1.
 /// </summary>
 public sealed class McpRecoveryExecutor
 {
@@ -38,7 +41,6 @@ public sealed class McpRecoveryExecutor
 
     private readonly McpInvokeDelegate _invoke;
     private readonly IReadOnlyList<IToolArgumentDefaultsProvider> _providers;
-    private readonly StageBLlmFiller? _stageB;
     private readonly ICapabilityClaimWriter? _capabilityClaimWriter;
     private readonly IFailureClusterStore? _failureClusterStore;
     private readonly SchemaErrorEnricher? _enricher;
@@ -48,14 +50,12 @@ public sealed class McpRecoveryExecutor
         McpInvokeDelegate invoke,
         IEnumerable<IToolArgumentDefaultsProvider> providers,
         ILogger<McpRecoveryExecutor> logger,
-        StageBLlmFiller? stageB = null,
         ICapabilityClaimWriter? capabilityClaimWriter = null,
         IFailureClusterStore? failureClusterStore = null,
         SchemaErrorEnricher? enricher = null)
     {
         _invoke = invoke;
         _providers = providers.ToList();
-        _stageB = stageB;
         _capabilityClaimWriter = capabilityClaimWriter;
         _failureClusterStore = failureClusterStore;
         _enricher = enricher;
@@ -64,7 +64,7 @@ public sealed class McpRecoveryExecutor
 
     /// <summary>
     /// Returns the original response when no recovery is possible (no recoverable
-    /// error pattern, no provider, Stage B unavailable or unsuccessful), or a
+    /// error pattern, no provider matched, no enricher configured), or a
     /// successful recovered response. Exhausted-recovery responses carry an
     /// annotated trail in <see cref="ToolInvokeResponse.Content"/>.
     /// </summary>
@@ -228,74 +228,15 @@ public sealed class McpRecoveryExecutor
             };
         }
 
-        // ── Stage B ─────────────────────────────────────────────────────────
-        if (_stageB is not null)
-        {
-            var filled = await _stageB.TryFillAsync(
-                serverName, toolName, fieldName, existingArgs, errorText, ct);
-
-            if (filled is not null)
-            {
-                var resolved = new ResolvedDefault(filled);
-                var (retryResponse, mergedArgs) = await RetryAsync(
-                    serverName, toolName, innerRequest, existingArgs, fieldName, resolved, ct);
-
-                sw.Stop();
-                var retryError = TryExtractRecoverableError(retryResponse);
-                var recovered = retryError is null;
-                RecordTelemetry(serverName, toolName, fieldName, "B", recovered, "StageBLlmFiller",
-                    sw.Elapsed.TotalMilliseconds);
-
-                if (recovered)
-                {
-                    _logger.LogInformation(
-                        "MCP auto-recovered {Server}/{Tool} field {Field} via Stage B",
-                        serverName, toolName, fieldName);
-                    return retryResponse;
-                }
-
-                if (ShouldChain(retryError, fieldName))
-                {
-                    _logger.LogInformation(
-                        "MCP recovery {Server}/{Tool} field {Field} resolved via Stage B but response surfaced another missing field — chaining (depth {Depth})",
-                        serverName, toolName, fieldName, depth + 1);
-
-                    var nextRequest = new ToolInvokeRequest
-                    {
-                        ToolCallId = innerRequest.ToolCallId,
-                        ToolName = toolName,
-                        Arguments = JsonSerializer.Serialize(mergedArgs)
-                    };
-                    return await TryRecoverAsync(serverName, toolName, nextRequest, retryResponse, depth + 1, sessionId, ct);
-                }
-
-                await EmitCapabilityClaimAsync(
-                    serverName, toolName, innerRequest,
-                    statement: $"recovery-exhausted: Stage B filled field {fieldName} but the call still failed",
-                    evidence: retryError ?? errorText,
-                    ct);
-                await RecordFailureAsync(serverName, toolName, sessionId, retryError ?? errorText, fieldHint: null, ct);
-                return Annotate(response,
-                    $"stageA=no-provider; stageB=filled retry-failed: {Truncate(retryResponse.Content)}");
-            }
-
-            sw.Stop();
-            RecordTelemetry(serverName, toolName, fieldName, "B", recovered: false, "StageBLlmFiller",
-                sw.Elapsed.TotalMilliseconds);
-            await EmitCapabilityClaimAsync(
-                serverName, toolName, innerRequest,
-                statement: $"recovery-exhausted: Stage B could not fill field {fieldName}",
-                evidence: errorText,
-                ct);
-            await RecordFailureAsync(serverName, toolName, sessionId, errorText, fieldHint: fieldName, ct);
-            return Annotate(response, "stageA=no-provider; stageB=fill-failed");
-        }
-
+        // Terminal: no provider matched and no enricher is configured. Record
+        // the failure and return the original error annotated with a recovery
+        // trail. In production the enricher is always wired, so this branch
+        // primarily covers tests with bare-bones executors.
         sw.Stop();
         RecordTelemetry(serverName, toolName, fieldName, "A", recovered: false, "no-provider",
             sw.Elapsed.TotalMilliseconds);
         await RecordFailureAsync(serverName, toolName, sessionId, errorText, fieldHint: fieldName, ct);
-        return Annotate(response, "stageA=no-provider; stageB=disabled");
+        return Annotate(response, "no-provider; no-enricher");
     }
 
     /// <summary>

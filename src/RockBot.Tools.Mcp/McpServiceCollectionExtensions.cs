@@ -59,7 +59,6 @@ public static class McpServiceCollectionExtensions
         // Registered after the deterministic providers so hard-coded resolution wins
         // when both can answer; the file-backed provider augments rather than overrides.
         builder.Services.TryAddEnumerable(ServiceDescriptor.Singleton<IToolArgumentDefaultsProvider, FileToolDefaultsProvider>());
-        builder.Services.AddSingleton<StageBLlmFiller>();
 
         // Self-repair Amendment 1: schema-error enrichment. The cache populates lazily
         // through McpManagementExecutor.GetSchemasAsync — the Func factory defers DI

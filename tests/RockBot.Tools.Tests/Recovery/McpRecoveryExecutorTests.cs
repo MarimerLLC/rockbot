@@ -351,8 +351,12 @@ public class McpRecoveryExecutorTests
     }
 
     [TestMethod]
-    public async Task StageA_NoProvider_NoStageB_AnnotatesNoProvider()
+    public async Task NoProvider_NoEnricher_AnnotatesNoProviderNoEnricher()
     {
+        // Terminal fallback: with no providers and no enricher wired, the
+        // executor returns the original error annotated with a brief trail.
+        // Production always wires the enricher, so this primarily covers
+        // bare-bones test executors.
         McpInvokeDelegate invoke = (r, h, ct) => Task.FromResult(Ok(r, ""));
         var exec = new McpRecoveryExecutor(invoke, [], NullLogger<McpRecoveryExecutor>.Instance);
 
@@ -362,20 +366,17 @@ public class McpRecoveryExecutorTests
         var result = await exec.RecoverAsync("srv", "get", req, failed, default);
 
         Assert.IsTrue(result.IsError);
-        StringAssert.Contains(result.Content, "stageA=no-provider");
-        StringAssert.Contains(result.Content, "stageB=disabled");
+        StringAssert.Contains(result.Content, "no-provider; no-enricher");
     }
 
     [TestMethod]
-    public async Task NoProvider_WithEnricher_ReturnsEnrichedErrorAndSkipsStageB()
+    public async Task NoProvider_WithEnricher_ReturnsEnrichedError()
     {
-        // Amendment 1: when no environmental provider can fill the missing field
-        // and the SchemaErrorEnricher is wired, recovery surfaces a schema-rich
-        // error to the LLM instead of guessing (or recording a capability claim).
+        // Amendment 1: when no environmental provider can fill the missing
+        // field, the gateway surfaces a schema-rich error to the LLM instead
+        // of guessing. No capability claim is written because enrichment
+        // teaches the LLM directly.
         var claimWriter = new RecordingClaimWriter();
-        var stageBCalled = false;
-        var stageB = new ProbeStageBLlmFiller(() => stageBCalled = true);
-
         var schemasByServer = new Dictionary<string, IReadOnlyList<McpToolDefinition>>
         {
             ["calendar-mcp"] = new[]
@@ -398,7 +399,6 @@ public class McpRecoveryExecutorTests
         var exec = new McpRecoveryExecutor(
             invoke, providers: [],
             NullLogger<McpRecoveryExecutor>.Instance,
-            stageB: stageB,
             capabilityClaimWriter: claimWriter,
             enricher: enricher);
 
@@ -413,38 +413,8 @@ public class McpRecoveryExecutorTests
         StringAssert.Contains(result.Content, "Field schema:");
         StringAssert.Contains(result.Content, "Email id from search_emails");
 
-        Assert.IsFalse(stageBCalled, "enricher must short-circuit Stage B");
         Assert.AreEqual(0, claimWriter.Saved.Count,
             "enrichment teaches the LLM directly — no capability claim is written");
-    }
-
-    private sealed class ProbeStageBLlmFiller(Action onCall)
-        : StageBLlmFiller(new NoopLlmClientForProbe(), NullLogger<StageBLlmFiller>.Instance)
-    {
-        public override Task<object?> TryFillAsync(
-            string serverName, string toolName, string fieldName,
-            IReadOnlyDictionary<string, object?> existingArgs,
-            string? originalErrorText, CancellationToken ct)
-        {
-            onCall();
-            return Task.FromResult<object?>(null);
-        }
-    }
-
-    private sealed class NoopLlmClientForProbe : RockBot.Host.ILlmClient
-    {
-        public Task<Microsoft.Extensions.AI.ChatResponse> GetResponseAsync(
-            IEnumerable<Microsoft.Extensions.AI.ChatMessage> messages,
-            Microsoft.Extensions.AI.ChatOptions? options,
-            CancellationToken cancellationToken) =>
-            throw new NotSupportedException();
-
-        public Task<Microsoft.Extensions.AI.ChatResponse> GetResponseAsync(
-            IEnumerable<Microsoft.Extensions.AI.ChatMessage> messages,
-            RockBot.Host.ModelTier tier,
-            Microsoft.Extensions.AI.ChatOptions? options,
-            CancellationToken cancellationToken) =>
-            throw new NotSupportedException();
     }
 
     private sealed class RecordingClaimWriter : RockBot.Host.ICapabilityClaimWriter
@@ -531,82 +501,4 @@ public class McpRecoveryExecutorTests
         Assert.AreEqual("EMAIL-1", finalArgs["emailId"].GetString());
     }
 
-    [TestMethod]
-    public async Task StageB_FillsNovelField_RetrySucceeds()
-    {
-        ToolInvokeRequest? captured = null;
-        McpInvokeDelegate invoke = (r, h, ct) => { captured = r; return Task.FromResult(Ok(r, "ok")); };
-
-        var stageB = new TestStageBLlmFiller("\"recovered-value\"");
-        var exec = new McpRecoveryExecutor(invoke, [], NullLogger<McpRecoveryExecutor>.Instance, stageB.Filler);
-
-        var req = new ToolInvokeRequest { ToolCallId = "1", ToolName = "do", Arguments = "{}" };
-        var failed = Err(req, "Required parameter 'quux'");
-
-        var result = await exec.RecoverAsync("synthetic", "do", req, failed, default);
-
-        Assert.IsFalse(result.IsError);
-        var args = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(captured!.Arguments!);
-        Assert.AreEqual("recovered-value", args!["quux"].GetString());
-    }
-
-    [TestMethod]
-    public async Task StageB_FillFails_AnnotatesTrail()
-    {
-        McpInvokeDelegate invoke = (r, h, ct) => Task.FromResult(Ok(r, "ok"));
-        var stageB = new TestStageBLlmFiller(null); // returns null → fill failed
-        var exec = new McpRecoveryExecutor(invoke, [], NullLogger<McpRecoveryExecutor>.Instance, stageB.Filler);
-
-        var req = new ToolInvokeRequest { ToolCallId = "1", ToolName = "do", Arguments = "{}" };
-        var failed = Err(req, "Required parameter 'quux'");
-
-        var result = await exec.RecoverAsync("synthetic", "do", req, failed, default);
-
-        Assert.IsTrue(result.IsError);
-        StringAssert.Contains(result.Content, "stageB=fill-failed");
-    }
-
-    /// <summary>
-    /// Wraps StageBLlmFiller with a stub <see cref="Microsoft.Extensions.AI.IChatClient"/>-free
-    /// path. We cannot easily stub <see cref="RockBot.Host.ILlmClient"/> here, so this helper
-    /// builds a derived filler whose <c>TryFillAsync</c> returns the canned JSON.
-    /// </summary>
-    private sealed class TestStageBLlmFiller
-    {
-        public StageBLlmFiller Filler { get; }
-        public TestStageBLlmFiller(string? cannedJson)
-        {
-            Filler = new TestFiller(cannedJson);
-        }
-
-        private sealed class TestFiller(string? cannedJson)
-            : StageBLlmFiller(new NoopLlmClient(), NullLogger<StageBLlmFiller>.Instance)
-        {
-            public override Task<object?> TryFillAsync(
-                string serverName, string toolName, string fieldName,
-                IReadOnlyDictionary<string, object?> existingArgs,
-                string? originalErrorText, CancellationToken ct)
-            {
-                if (cannedJson is null) return Task.FromResult<object?>(null);
-                var doc = JsonDocument.Parse(cannedJson);
-                return Task.FromResult<object?>(McpToolExecutor.ConvertJsonElement(doc.RootElement));
-            }
-        }
-
-        private sealed class NoopLlmClient : RockBot.Host.ILlmClient
-        {
-            public Task<Microsoft.Extensions.AI.ChatResponse> GetResponseAsync(
-                IEnumerable<Microsoft.Extensions.AI.ChatMessage> messages,
-                Microsoft.Extensions.AI.ChatOptions? options,
-                CancellationToken cancellationToken) =>
-                throw new NotSupportedException();
-
-            public Task<Microsoft.Extensions.AI.ChatResponse> GetResponseAsync(
-                IEnumerable<Microsoft.Extensions.AI.ChatMessage> messages,
-                RockBot.Host.ModelTier tier,
-                Microsoft.Extensions.AI.ChatOptions? options,
-                CancellationToken cancellationToken) =>
-                throw new NotSupportedException();
-        }
-    }
 }
