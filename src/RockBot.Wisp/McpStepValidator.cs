@@ -40,29 +40,68 @@ internal static class McpStepValidator
     /// when required fields are missing or unknown fields are present under a
     /// closed schema.
     /// </summary>
-    public static WispStepError? Validate(WispStep step, IToolRegistry registry) =>
-        ValidateDetailed(step, registry).Error;
+    public static async Task<WispStepError?> ValidateAsync(
+        WispStep step, IToolRegistry registry,
+        IMcpPreflightRecovery? schemaSource, CancellationToken ct) =>
+        (await ValidateDetailedAsync(step, registry, schemaSource, ct)).Error;
 
     /// <summary>
-    /// Same as <see cref="Validate"/> but exposes the missing and unknown field lists
+    /// Same as <see cref="ValidateAsync"/> but exposes the missing and unknown field lists
     /// structurally so callers can route them through <see cref="IMcpPreflightRecovery"/>
     /// before falling back to LLM auto-correction.
     /// </summary>
-    public static Result ValidateDetailed(WispStep step, IToolRegistry registry)
+    /// <param name="schemaSource">Optional fallback source for the parameters schema —
+    /// used in bridge-mode agents where per-server MCP tool registrations don't live
+    /// in the local tool registry. When non-null the validator consults this source
+    /// only if the registry lookup misses; resolution failures (timeout, no schema)
+    /// fall through to "validation skipped" rather than blocking the step.</param>
+    public static async Task<Result> ValidateDetailedAsync(
+        WispStep step, IToolRegistry registry,
+        IMcpPreflightRecovery? schemaSource, CancellationToken ct)
     {
         if (step.Gateway != GatewayType.Mcp)
             return EmptyResult;
         if (string.IsNullOrEmpty(step.Server) || string.IsNullOrEmpty(step.Tool))
             return EmptyResult;
 
-        var tool = FindMcpTool(registry, step.Server, step.Tool);
-        if (tool?.ParametersSchema is null)
+        var schemaJson = FindMcpTool(registry, step.Server, step.Tool)?.ParametersSchema;
+        if (schemaJson is null && schemaSource is not null)
+        {
+            schemaJson = await schemaSource.TryGetParametersSchemaAsync(
+                step.Server!, step.Tool!, ct);
+        }
+        return ValidateAgainstSchema(step, schemaJson);
+    }
+
+    /// <summary>
+    /// Registry-only synchronous validator, retained for unit tests and for callers
+    /// that don't have an <see cref="IMcpPreflightRecovery"/> available. Production
+    /// callers should prefer <see cref="ValidateAsync"/> so bridge-mode schemas
+    /// (cached via the MCP management proxy) are consulted too.
+    /// </summary>
+    public static WispStepError? Validate(WispStep step, IToolRegistry registry) =>
+        ValidateDetailed(step, registry).Error;
+
+    /// <inheritdoc cref="Validate"/>
+    public static Result ValidateDetailed(WispStep step, IToolRegistry registry)
+    {
+        if (step.Gateway != GatewayType.Mcp)
+            return EmptyResult;
+        if (string.IsNullOrEmpty(step.Server) || string.IsNullOrEmpty(step.Tool))
+            return EmptyResult;
+        return ValidateAgainstSchema(step,
+            FindMcpTool(registry, step.Server, step.Tool)?.ParametersSchema);
+    }
+
+    private static Result ValidateAgainstSchema(WispStep step, string? schemaJson)
+    {
+        if (schemaJson is null)
             return EmptyResult;
 
         JsonElement schema;
         try
         {
-            schema = JsonDocument.Parse(tool.ParametersSchema).RootElement;
+            schema = JsonDocument.Parse(schemaJson).RootElement;
         }
         catch (JsonException)
         {

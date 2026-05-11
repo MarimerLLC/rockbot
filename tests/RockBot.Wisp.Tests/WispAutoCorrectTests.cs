@@ -193,6 +193,69 @@ public class WispAutoCorrectTests
             "The prompt must introduce the recovery-context block so the LLM knows to use it");
     }
 
+    private const string CalendarSchemaWithTimeZone = """
+        {
+          "type": "object",
+          "properties": {
+            "accountId":  { "type": "string" },
+            "calendarId": { "type": "string" },
+            "timeMin":    { "type": "string" },
+            "timeMax":    { "type": "string" },
+            "timeZone":   { "type": "string" }
+          },
+          "required": ["accountId", "calendarId", "timeMin", "timeMax", "timeZone"],
+          "additionalProperties": false
+        }
+        """;
+
+    [TestMethod]
+    public async Task PreflightRecovery_SchemaFromRecoveryHook_BridgeModeFill()
+    {
+        // Regression: in bridge-mode agents the per-server MCP tool registrations
+        // don't live in the local tool registry, so McpStepValidator.Validate would
+        // historically return null (skip validation) and the wisp would only recover
+        // via the slower post-flight path. ValidateDetailedAsync now consults the
+        // IMcpPreflightRecovery hook for the schema as a fallback — verify that path
+        // engages, the env-default fill fires, and the LLM is never called.
+        var llm = new ScriptedLlmClient("UNUSED");
+        var preflight = new StubPreflightRecovery(
+            filledDefaults: new Dictionary<string, object?> { ["timeZone"] = "America/Chicago" },
+            unresolved: [],
+            enrichedContext: null,
+            schemaJson: CalendarSchemaWithTimeZone);
+
+        var (executor, registry, captured) = CreateExecutor(llm, preflight);
+
+        // Register ONLY mcp_invoke_tool (the bridge-mode case) — NO mcp:calendar-mcp
+        // tool registration, so McpStepValidator.FindMcpTool returns null and the
+        // validator has to lean on the preflight hook for the schema.
+        registry.Register(
+            new ToolRegistration
+            {
+                Name = "mcp_invoke_tool",
+                Description = "",
+                Source = "mcp:management"
+            },
+            new CapturingToolExecutor(r => captured.Add(r.Arguments ?? ""), "{\"events\":[]}"));
+
+        // Schema requires timeZone but the wisp omits it.
+        var definition = MakeCalendarWisp(
+            """{"accountId":"a","calendarId":"c","timeMin":"t1","timeMax":"t2"}""");
+
+        var result = await executor.ExecuteAsync(definition, "wisp-bridge-1", CancellationToken.None);
+
+        Assert.IsTrue(result.IsSuccess, "Step should succeed via bridge-mode schema fallback");
+        Assert.AreEqual(0, llm.CallCount, "LLM auto-correct must not run");
+        Assert.IsTrue(preflight.SchemaLookupCount >= 1,
+            "Validator must have consulted the schema source");
+
+        // Verify the env default landed in the wire call.
+        Assert.AreEqual(1, captured.Count, $"captured args: {string.Join(" | ", captured)}");
+        var args = JsonDocument.Parse(captured[0]).RootElement;
+        var innerArgs = args.GetProperty("arguments");
+        Assert.AreEqual("America/Chicago", innerArgs.GetProperty("timeZone").GetString());
+    }
+
     [TestMethod]
     public async Task PreflightRecovery_NotWired_FallsBackToBareAutoCorrect()
     {
@@ -253,10 +316,12 @@ public class WispAutoCorrectTests
     private sealed class StubPreflightRecovery(
         IReadOnlyDictionary<string, object?> filledDefaults,
         IReadOnlyList<string> unresolved,
-        string? enrichedContext) : IMcpPreflightRecovery
+        string? enrichedContext,
+        string? schemaJson = null) : IMcpPreflightRecovery
     {
         public string? LastParentSessionId { get; private set; }
         public IReadOnlyList<string>? LastMissingFields { get; private set; }
+        public int SchemaLookupCount { get; private set; }
 
         public Task<PreflightRecoveryResult> TryRecoverAsync(
             string serverName,
@@ -270,6 +335,13 @@ public class WispAutoCorrectTests
             LastMissingFields = missingFields;
             return Task.FromResult(
                 new PreflightRecoveryResult(filledDefaults, unresolved, enrichedContext));
+        }
+
+        public Task<string?> TryGetParametersSchemaAsync(
+            string serverName, string toolName, CancellationToken ct)
+        {
+            SchemaLookupCount++;
+            return Task.FromResult(schemaJson);
         }
     }
 

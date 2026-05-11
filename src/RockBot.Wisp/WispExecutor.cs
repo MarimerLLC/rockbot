@@ -294,7 +294,8 @@ internal sealed class WispExecutor(
         // session-history hints McpRecoveryExecutor would surface post-flight. If
         // recovery resolves every missing field the step proceeds without an LLM
         // round-trip; otherwise we fall through to a single focused LLM correction.
-        var validation = McpStepValidator.ValidateDetailed(step, toolRegistry);
+        var validation = await McpStepValidator.ValidateDetailedAsync(
+            step, toolRegistry, preflightRecovery, ct);
         if (validation.Error is { } validationError)
         {
             string? enrichedContext = null;
@@ -328,7 +329,8 @@ internal sealed class WispExecutor(
                             Duration = stepSw.Elapsed
                         };
                     }
-                    var afterFill = McpStepValidator.ValidateDetailed(step, toolRegistry);
+                    var afterFill = await McpStepValidator.ValidateDetailedAsync(
+                        step, toolRegistry, preflightRecovery, ct);
                     if (afterFill.Error is null)
                     {
                         logger.LogInformation(
@@ -374,7 +376,8 @@ internal sealed class WispExecutor(
                     Duration = stepSw.Elapsed
                 };
             }
-            var recheck = McpStepValidator.Validate(step, toolRegistry);
+            var recheck = await McpStepValidator.ValidateAsync(
+                step, toolRegistry, preflightRecovery, ct);
             if (recheck is not null)
             {
                 return new WispStepResult

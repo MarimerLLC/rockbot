@@ -35,6 +35,17 @@ public interface IMcpPreflightRecovery
         IReadOnlyDictionary<string, object?> existingArgs,
         string? parentSessionId,
         CancellationToken ct);
+
+    /// <summary>
+    /// Returns the JSON parameters schema for an MCP tool as a raw string, or null
+    /// when no schema source is available. Lets wisp pre-flight validation succeed
+    /// in bridge-mode agents (where per-server tool registrations don't live in the
+    /// local tool registry) without RockBot.Wisp taking a direct dependency on the
+    /// MCP schema cache. Implementations may transparently fetch from the MCP
+    /// bridge on first use and cache for subsequent calls.
+    /// </summary>
+    Task<string?> TryGetParametersSchemaAsync(
+        string serverName, string toolName, CancellationToken ct);
 }
 
 /// <summary>

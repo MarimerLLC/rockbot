@@ -16,9 +16,29 @@ namespace RockBot.Tools.Mcp.Recovery;
 public sealed class McpPreflightRecovery(
     IEnumerable<IToolArgumentDefaultsProvider> providers,
     SchemaErrorEnricher? enricher,
-    ILogger<McpPreflightRecovery> logger) : IMcpPreflightRecovery
+    ILogger<McpPreflightRecovery> logger,
+    ToolSchemaCache? schemas = null) : IMcpPreflightRecovery
 {
     private readonly IReadOnlyList<IToolArgumentDefaultsProvider> _providers = providers.ToList();
+
+    public async Task<string?> TryGetParametersSchemaAsync(
+        string serverName, string toolName, CancellationToken ct)
+    {
+        if (schemas is null) return null;
+        try
+        {
+            var def = await schemas.GetAsync(serverName, toolName, ct);
+            return def?.ParametersSchema;
+        }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex,
+                "Pre-flight schema lookup failed for {Server}/{Tool}; falling back to no validation",
+                serverName, toolName);
+            return null;
+        }
+    }
 
     public async Task<PreflightRecoveryResult> TryRecoverAsync(
         string serverName,
