@@ -82,13 +82,13 @@ public class CapabilityClaimEndToEndTests
 
         // Use a query that BM25 will match against the claim content so the recall path
         // surfaces the entry; otherwise the entry wouldn't reach the read-side filter.
-        var messages = await builder.BuildAsync("session-1", "wrapper cannot pass arguments", CancellationToken.None);
+        var messages = await builder.BuildAsync("session-1", "wrapper cannot pass arguments to the function", CancellationToken.None);
 
         // 5. Claim must be evicted from disk and absent from the chat context.
         var afterSearch = await ltm.SearchAsync(new MemorySearchCriteria(
             Category: CapabilityClaimCategories.Prefix, MaxResults: 10));
         Assert.AreEqual(0, afterSearch.Count, "Falsified claim was not evicted from long-term memory.");
-        Assert.IsFalse(messages.Any(m => m.Text?.Contains("wrapper cannot pass arguments") == true),
+        Assert.IsFalse(messages.Any(m => m.Text?.Contains("get_calendar_events") == true),
             "Falsified claim leaked into injected context.");
 
         Assert.AreEqual(1, verifier.CallCount, "Verifier was not invoked exactly once for the claim.");
@@ -123,7 +123,7 @@ public class CapabilityClaimEndToEndTests
         var verifier = new AlwaysFailingVerifier();
         var builder = NewBuilder(ltm, verifier, profileOpts);
 
-        await builder.BuildAsync("session-1", "wrapper cannot pass arguments", CancellationToken.None);
+        await builder.BuildAsync("session-1", "wrapper cannot pass arguments to the function", CancellationToken.None);
 
         // Claim is preserved on disk.
         var search = await ltm.SearchAsync(new MemorySearchCriteria(

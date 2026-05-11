@@ -86,7 +86,42 @@ public class DreamServicePromptBuilderTests
 
         StringAssert.Contains(msg, "Constraints — namespaced-singleton prefixes");
         StringAssert.Contains(msg, "'mcp/*'");
-        StringAssert.Contains(msg, "Do NOT merge skills");
+        StringAssert.Contains(msg, "Do NOT merge skills across distinct suffixes");
+    }
+
+    [TestMethod]
+    public void BuildSkillConsolidationUserMessage_WithMcpSingleton_AllowsWithinNamespaceMerging()
+    {
+        // The constraint message must explicitly permit merging duplicate sub-skills
+        // within a single mcp/{server} namespace, while still forbidding cross-suffix merges.
+        var skills = new[]
+        {
+            MakeSkill("mcp/calendar-mcp"),
+            MakeSkill("mcp/calendar-mcp/send-email"),
+            MakeSkill("mcp/calendar-mcp/email-send"),
+            MakeSkill("mcp/ms365"),
+            MakeSkill("mcp/ms365/calendar-tools"),
+        };
+
+        var msg = DreamService.BuildSkillConsolidationUserMessage(
+            skills,
+            usageCount: new Dictionary<string, int>(),
+            coUsed: new Dictionary<string, List<string>>(),
+            coOccurrences: new Dictionary<string, int>(),
+            singletonPrefixes: new[] { "mcp/" },
+            now: Now);
+
+        // Within-namespace merging is explicitly permitted.
+        StringAssert.Contains(msg, "Within a single suffix's namespace");
+        StringAssert.Contains(msg, "normal semantic-overlap merging applies");
+
+        // Cross-suffix merging is explicitly forbidden, including across sub-skills.
+        StringAssert.Contains(msg, "must remain separate");
+        StringAssert.Contains(msg, "must never be merged with a sub-skill or canonical entry of another");
+
+        // Top-level mcp/* still excluded from abstract-parent-guide suggestions.
+        Assert.IsFalse(msg.Contains("'mcp/*':"),
+            "mcp/* cluster must NOT appear in the abstract-parent-guide section.");
     }
 
     private static Skill MakeSkill(string name) => new(

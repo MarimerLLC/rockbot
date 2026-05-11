@@ -43,6 +43,7 @@ public static class McpServiceCollectionExtensions
         builder.Services.AddSingleton<McpServerIndex>();
         builder.Services.AddSingleton<McpManagementExecutor>();
         builder.Services.AddHostedService<McpStartupProbeService>();
+        builder.Services.AddHostedService<McpSkillNameMigrationService>();
         builder.Services.AddSingleton<IToolSkillProvider, McpToolSkillProvider>();
 
         // Self-repair Phase 1: mechanical recovery for missing required parameters.

@@ -81,18 +81,27 @@ public static class LlmServiceCollectionExtensions
         {
             var behavior = sp.GetRequiredService<ModelBehavior>();
             var logger = sp.GetRequiredService<ILogger<RockBotFunctionInvokingChatClient>>();
+            var diagLogger = sp.GetRequiredService<ILogger<DiagnosticLoggingChatClient>>();
             var progressNotifier = sp.GetService<IToolProgressNotifier>();
             var toolCallLog = sp.GetService<IToolCallLog>();
             var costEstimator = sp.GetRequiredService<LlmCostEstimator>();
 
-            IChatClient Wrap(IChatClient raw) =>
-                behavior.UseTextBasedToolCalling
-                    ? raw
-                    : new RockBotFunctionInvokingChatClient(raw, progressNotifier, toolCallLog, behavior,
+            IChatClient Wrap(IChatClient raw, string tierLabel)
+            {
+                // Diagnostic-watch sits between the OpenAI client and the function-invoking
+                // middleware so it sees each tool iteration's raw response, including the
+                // assistant message before any RockBot post-processing.
+                var watched = new DiagnosticLoggingChatClient(raw, diagLogger, tierLabel);
+                return behavior.UseTextBasedToolCalling
+                    ? watched
+                    : new RockBotFunctionInvokingChatClient(watched, progressNotifier, toolCallLog, behavior,
                         costEstimator, sp.GetRequiredService<IOptions<AgentHostOptions>>(), logger);
+            }
 
             return new TieredChatClientRegistry(
-                Wrap(lowInnerClient), Wrap(balancedInnerClient), Wrap(highInnerClient));
+                Wrap(lowInnerClient, "Low"),
+                Wrap(balancedInnerClient, "Balanced"),
+                Wrap(highInnerClient, "High"));
         });
 
         // Keep Balanced as the primary IChatClient singleton for consumers that

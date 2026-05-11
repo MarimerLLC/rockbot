@@ -34,6 +34,12 @@ public sealed class AgentContextBuilder(
     ICapabilityClaimVerifier? capabilityClaimVerifier = null)
 {
     private const int MaxLlmContextTurns = 20;
+
+    // Below this length, the user message is treated as a low-signal follow-up: BM25
+    // searches over its text return noise that drowns out the recent conversation
+    // thread, leading the LLM to summarise injected memory instead of replying to
+    // what was actually said. See issue #383.
+    private const int ShortMessageThreshold = 30;
     private readonly IServiceSearchIndex? _serviceSearchIndex = serviceSearchIndexProviders.FirstOrDefault();
     private readonly IKnowledgeGraph? _knowledgeGraph = knowledgeGraphProviders.FirstOrDefault();
     private readonly KnowledgeGraphOptions _graphOptions = knowledgeGraphOptions.Value;
@@ -101,12 +107,27 @@ public sealed class AgentContextBuilder(
             logger.LogInformation("No AdditionalSystemPrompt configured for this model");
         }
 
+        // Short low-signal messages ("ok", "I'll find out soon", "any idea why?")
+        // produce noisy BM25 hits that drown out the recent conversation thread.
+        // When the message is below the threshold, skip per-turn topic searches
+        // (long-term memory, episodic, skill recall, service hints) and the
+        // embedding generation that backs them. Conversation history, rules,
+        // identity, and working memory still flow — those are session grounding,
+        // not topic-search. See issue #383.
+        var isShortMessage = !string.IsNullOrWhiteSpace(currentUserContent)
+            && currentUserContent.Length <= ShortMessageThreshold;
+        if (isShortMessage)
+            logger.LogInformation(
+                "Short user message ({Len} chars ≤ {Threshold}) — skipping per-turn topic search injection",
+                currentUserContent.Length, ShortMessageThreshold);
+
         // ── Wave 0: generate the query embedding once, shared across all searches ──
         // Avoids redundant calls to the embedding endpoint — each store would otherwise
-        // generate its own query embedding for the same user message text.
+        // generate its own query embedding for the same user message text. Skipped
+        // for short messages since none of the gated searches will run.
 
         float[]? sharedQueryEmbedding = null;
-        if (_embeddingGenerator is not null && !string.IsNullOrWhiteSpace(currentUserContent))
+        if (_embeddingGenerator is not null && !string.IsNullOrWhiteSpace(currentUserContent) && !isShortMessage)
         {
             try
             {
@@ -133,16 +154,22 @@ public sealed class AgentContextBuilder(
         var shouldInjectSkillIndex = skillIndexTracker.TryMarkAsInjected(sessionId);
 
         var historyTask = conversationMemory.GetTurnsAsync(sessionId, ct);
-        var ltmTask = longTermMemory.SearchAsync(
-            new MemorySearchCriteria(Query: currentUserContent, MaxResults: 8, QueryEmbedding: sharedQueryEmbedding));
-        var episodicTask = longTermMemory.SearchAsync(
-            new MemorySearchCriteria(Query: currentUserContent, Category: "episodic", MaxResults: 5, QueryEmbedding: sharedQueryEmbedding));
+        var ltmTask = isShortMessage
+            ? Task.FromResult<IReadOnlyList<MemoryEntry>>([])
+            : longTermMemory.SearchAsync(
+                new MemorySearchCriteria(Query: currentUserContent, MaxResults: 8, QueryEmbedding: sharedQueryEmbedding));
+        var episodicTask = isShortMessage
+            ? Task.FromResult<IReadOnlyList<MemoryEntry>>([])
+            : longTermMemory.SearchAsync(
+                new MemorySearchCriteria(Query: currentUserContent, Category: "episodic", MaxResults: 5, QueryEmbedding: sharedQueryEmbedding));
         var identityTask = longTermMemory.SearchAsync(
             new MemorySearchCriteria(Category: AgentIdentityCategories.Prefix, MaxResults: 20));
         var skillListTask = shouldInjectSkillIndex
             ? skillStore.ListAsync()
             : Task.FromResult<IReadOnlyList<Skill>>([]);
-        var skillSearchTask = skillStore.SearchAsync(currentUserContent, maxResults: 5, ct, queryEmbedding: sharedQueryEmbedding);
+        var skillSearchTask = isShortMessage
+            ? Task.FromResult<IReadOnlyList<Skill>>([])
+            : skillStore.SearchAsync(currentUserContent, maxResults: 5, ct, queryEmbedding: sharedQueryEmbedding);
         var wmTask = workingMemory.ListAsync(wmNamespace);
         var graphTask = _knowledgeGraph?.FindEntitiesByNameAsync(currentUserContent);
         var patrolTask = isUserSession
@@ -458,8 +485,10 @@ public sealed class AgentContextBuilder(
             }
         }
 
-        // Per-turn service search hints (A2A agents + MCP servers)
-        if (_serviceSearchIndex is not null && !string.IsNullOrWhiteSpace(currentUserContent))
+        // Per-turn service search hints (A2A agents + MCP servers).
+        // Gated on isShortMessage to match the BM25-search injections above —
+        // a 2-3-word query produces noisy hits regardless of which index runs it.
+        if (_serviceSearchIndex is not null && !string.IsNullOrWhiteSpace(currentUserContent) && !isShortMessage)
         {
             var candidates = _serviceSearchIndex.Search(currentUserContent, maxResults: 2);
             if (candidates.Count > 0)
