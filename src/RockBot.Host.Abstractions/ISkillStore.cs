@@ -37,6 +37,51 @@ public interface ISkillStore
         Task.FromResult<string?>(null);
 
     /// <summary>
+    /// Adds (or replaces) a single sub-resource on an existing skill without disturbing
+    /// any other resources. The skill's body and other manifest entries are preserved.
+    /// </summary>
+    /// <remarks>
+    /// Unlike <see cref="SaveAsync(Skill, IReadOnlyList{SkillResourceInput}?)"/>, which
+    /// rebuilds the manifest from the supplied set and prunes orphans, this method is
+    /// strictly additive: pass a single resource and it is appended to the manifest, or
+    /// — if a manifest entry with the same filename exists — its body and metadata are
+    /// replaced in place.
+    /// Returns false when the named skill does not exist; promotion paths require the
+    /// caller to ensure the parent skill exists before attaching an asset.
+    /// </remarks>
+    /// <param name="skillName">The skill to attach the resource to.</param>
+    /// <param name="resource">The resource metadata and content.</param>
+    /// <param name="manifestEntry">
+    /// Optional pre-built manifest entry to persist. When provided, its
+    /// <see cref="SkillResource.Provisional"/>, <see cref="SkillResource.CreatedAt"/>,
+    /// <see cref="SkillResource.VerifyHint"/>, and <see cref="SkillResource.DefinitionHash"/>
+    /// are stored verbatim. When null, the manifest entry is built from
+    /// <paramref name="resource"/>'s fields.
+    /// </param>
+    Task<bool> AttachResourceAsync(
+        string skillName,
+        SkillResourceInput resource,
+        SkillResource? manifestEntry = null) => Task.FromResult(false);
+
+    /// <summary>
+    /// Removes a single sub-resource (manifest entry plus on-disk file) from a skill.
+    /// No-op when the skill or the named resource does not exist. Other resources are
+    /// preserved; the skill body is untouched.
+    /// </summary>
+    Task<bool> RemoveResourceAsync(string skillName, string filename) =>
+        Task.FromResult(false);
+
+    /// <summary>
+    /// Replaces a single manifest entry in-place — preserves the on-disk body and all
+    /// other entries, but updates the metadata fields (<see cref="SkillResource.Provisional"/>,
+    /// <see cref="SkillResource.Description"/>, <see cref="SkillResource.VerifyHint"/>, etc.)
+    /// of the entry whose <see cref="SkillResource.Filename"/> matches.
+    /// Returns false when the skill or the named entry does not exist.
+    /// </summary>
+    Task<bool> UpdateResourceMetadataAsync(string skillName, SkillResource updated) =>
+        Task.FromResult(false);
+
+    /// <summary>
     /// Returns skills ranked by BM25 relevance against <paramref name="query"/>.
     /// Skills with no matching terms are excluded.
     /// Returns at most <paramref name="maxResults"/> entries.

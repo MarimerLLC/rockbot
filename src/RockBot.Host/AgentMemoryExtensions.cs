@@ -102,6 +102,7 @@ public static class AgentMemoryExtensions
 
         builder.Services.AddSingleton<ISkillStore, FileSkillStore>();
         builder.Services.AddSingleton<ISkillUsageStore, FileSkillUsageStore>();
+        builder.Services.AddSingleton<ISkillResourceUsageStore, FileSkillResourceUsageStore>();
         builder.Services.Configure<ToolCallLogOptions>(_ => { });
         builder.Services.AddSingleton<IToolCallLog, FileToolCallLog>();
         builder.Services.AddSingleton<IHostedService, StarterSkillService>();
@@ -234,6 +235,7 @@ public static class AgentMemoryExtensions
 
         builder.Services.AddSingleton<IRepairTicketStore, FileRepairTicketStore>();
         builder.Services.AddSingleton<IRepairTargetApplier, SkillBodyApplier>();
+        builder.Services.AddSingleton<IRepairTargetApplier, SkillResourceApplier>();
         builder.Services.AddSingleton<IRepairTargetApplier, WorkingMemoryEvictApplier>();
         builder.Services.AddSingleton<IRepairTargetApplier, ToolDefaultRegisterApplier>();
         builder.Services.AddSingleton<IRepairTargetApplier, PromptBuilderHintApplier>();

@@ -44,6 +44,7 @@ internal sealed class DreamService : IHostedService, IDisposable
     private readonly ConversationLogTranscriptAdapter? _observationTranscriptAdapter;
     private readonly IMemoryContradictionDetector? _contradictionDetector;
     private readonly IFailureClusterStore? _failureClusterStore;
+    private readonly ISkillResourceUsageStore? _skillResourceUsageStore;
     private readonly IRepairTicketStore? _repairTicketStore;
     private readonly IReadOnlyDictionary<RepairTarget, IRepairTargetApplier>? _repairAppliers;
     private readonly IRepairTicketVerifier? _repairTicketVerifier;
@@ -65,6 +66,7 @@ internal sealed class DreamService : IHostedService, IDisposable
     private string? _dlqDirective;
     private string? _identityDirective;
     private string? _wispFailureDirective;
+    private string? _wispSuccessDirective;
     private string? _toolSuccessLearningDirective;
     private string? _contradictionSweepDirective;
     private string? _repairTicketCreationDirective;
@@ -92,6 +94,7 @@ internal sealed class DreamService : IHostedService, IDisposable
         ConversationLogTranscriptAdapter? observationTranscriptAdapter = null,
         IMemoryContradictionDetector? contradictionDetector = null,
         IFailureClusterStore? failureClusterStore = null,
+        ISkillResourceUsageStore? skillResourceUsageStore = null,
         IRepairTicketStore? repairTicketStore = null,
         IEnumerable<IRepairTargetApplier>? repairAppliers = null,
         IRepairTicketVerifier? repairTicketVerifier = null,
@@ -120,6 +123,7 @@ internal sealed class DreamService : IHostedService, IDisposable
         _observationTranscriptAdapter = observationTranscriptAdapter;
         _contradictionDetector = contradictionDetector;
         _failureClusterStore = failureClusterStore;
+        _skillResourceUsageStore = skillResourceUsageStore;
         _repairTicketStore = repairTicketStore;
         _repairTicketVerifier = repairTicketVerifier;
         _repairOptions = repairOptions?.Value;
@@ -319,6 +323,19 @@ internal sealed class DreamService : IHostedService, IDisposable
                 _logger.LogDebug("DreamService: wisp failure directive not found at {Path}; using built-in", wispDirectivePath);
             else
                 _logger.LogInformation("DreamService: loaded wisp failure directive from {Path}", wispDirectivePath);
+        }
+
+        if (_options.WispSuccessAnalysisEnabled && _wispExecutionLog is not null && _skillStore is not null)
+        {
+            var wispSuccessPath = ResolvePath(_options.WispSuccessDirectivePath, _profileOptions.BasePath);
+            _wispSuccessDirective = File.Exists(wispSuccessPath)
+                ? File.ReadAllText(wispSuccessPath)
+                : null;
+
+            if (!File.Exists(wispSuccessPath))
+                _logger.LogDebug("DreamService: wisp success directive not found at {Path}; using built-in", wispSuccessPath);
+            else
+                _logger.LogInformation("DreamService: loaded wisp success directive from {Path}", wispSuccessPath);
         }
 
         if (_options.ToolSuccessLearningEnabled && _toolCallLog is not null)
@@ -598,6 +615,10 @@ internal sealed class DreamService : IHostedService, IDisposable
             ct.ThrowIfCancellationRequested(); await RunSequenceSkillDetectionPassAsync(ct);
 
             ct.ThrowIfCancellationRequested(); await RunWispFailureAnalysisPassAsync(ct);
+
+            ct.ThrowIfCancellationRequested(); await RunWispSuccessAnalysisPassAsync(ct);
+
+            ct.ThrowIfCancellationRequested(); await RunProvisionalValidationPassAsync(ct);
 
             ct.ThrowIfCancellationRequested(); await RunToolSuccessLearningPassAsync(ct);
 
@@ -2599,19 +2620,13 @@ internal sealed class DreamService : IHostedService, IDisposable
               "name": "skill-name-to-update",
               "annotation": "Negative example or correction to append to the skill content"
             }
-          ],
-          "promotionCandidates": [
-            {
-              "description": "Description pattern that succeeded consistently",
-              "frequency": 5,
-              "recommendation": "Consider promoting to a stored wisp skill"
-            }
           ]
         }
 
         Only include patterns with frequency >= 3. Only include skill updates when you are confident
-        the correction is valid. Only include promotion candidates with frequency >= 5 and >80% success rate.
-        Return empty arrays if no patterns are found.
+        the correction is valid. Return empty arrays if no patterns are found.
+        Successful patterns worth saving as reusable assets are handled by the separate
+        wisp-success-dream pass — do not surface them here.
         """;
 
     /// <summary>
@@ -2721,16 +2736,9 @@ internal sealed class DreamService : IHostedService, IDisposable
                     pattern.Description, pattern.FailureCategory, pattern.Frequency, pattern.Recommendation);
             }
 
-            foreach (var candidate in result?.PromotionCandidates ?? [])
-            {
-                _logger.LogInformation(
-                    "DreamService: wisp promotion candidate — {Description} (freq={Frequency}): {Recommendation}",
-                    candidate.Description, candidate.Frequency, candidate.Recommendation);
-            }
-
             _logger.LogInformation(
-                "DreamService: wisp failure analysis pass complete — {Patterns} patterns, {Updates} skill updates, {Candidates} promotion candidates",
-                result?.Patterns?.Count ?? 0, updated, result?.PromotionCandidates?.Count ?? 0);
+                "DreamService: wisp failure analysis pass complete — {Patterns} patterns, {Updates} skill updates",
+                result?.Patterns?.Count ?? 0, updated);
         });
     }
 
@@ -2738,7 +2746,6 @@ internal sealed class DreamService : IHostedService, IDisposable
     {
         public List<WispPatternDto>? Patterns { get; init; }
         public List<WispSkillUpdateDto>? SkillUpdates { get; init; }
-        public List<WispPromotionCandidateDto>? PromotionCandidates { get; init; }
     }
 
     private sealed record WispPatternDto
@@ -2756,12 +2763,468 @@ internal sealed class DreamService : IHostedService, IDisposable
         public string? Annotation { get; init; }
     }
 
-    private sealed record WispPromotionCandidateDto
+    /// <summary>
+    /// Symmetric complement to <see cref="RunWispFailureAnalysisPassAsync"/>. Detects wisp
+    /// definitions that have repeated successfully across distinct sessions and promotes them
+    /// to validated skill resources via <see cref="ISkillStore.AttachResourceAsync"/>.
+    /// Promotions land non-provisional because the dream pass operates on observed repetition;
+    /// the in-session promotion path (<c>promote_skill_asset</c>) is the one that lands provisional.
+    /// </summary>
+    private async Task RunWispSuccessAnalysisPassAsync(CancellationToken ct)
     {
-        public string? Description { get; init; }
-        public int Frequency { get; init; }
-        public string? Recommendation { get; init; }
+        if (!_options.WispSuccessAnalysisEnabled || _wispExecutionLog is null || _skillStore is null)
+            return;
+
+        await RunPassAsync("wisp success analysis", async () =>
+        {
+            var threshold = Math.Max(1, _options.WispSuccessFrequencyThreshold);
+            var records = await _wispExecutionLog.QueryRecentAsync(
+                DateTimeOffset.UtcNow.AddDays(-7), maxResults: 1000);
+
+            if (records.Count < threshold)
+            {
+                _logger.LogDebug(
+                    "DreamService: wisp success analysis — only {Count} records; skipping",
+                    records.Count);
+                return;
+            }
+
+            // Group by definitionHash. Keep groups where every recorded run succeeded
+            // and the cumulative count meets the threshold. Tighter than the failure
+            // pass intentionally — we want zero false positives.
+            var groups = records
+                .Where(r => !string.IsNullOrEmpty(r.DefinitionHash))
+                .GroupBy(r => r.DefinitionHash)
+                .Where(g => g.Count() >= threshold && g.All(r => r.Succeeded))
+                .ToList();
+
+            if (groups.Count == 0)
+            {
+                _logger.LogDebug("DreamService: wisp success analysis — no candidate groups; skipping");
+                return;
+            }
+
+            // Resolve invokingSkill for each group: the most recently invoked skill in
+            // any contributing session whose timestamp precedes that session's wisp run.
+            var existingSkills = await _skillStore.ListAsync();
+            var existingSkillNames = existingSkills.Select(s => s.Name).ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var candidates = new List<WispSuccessCandidate>();
+            foreach (var group in groups)
+            {
+                var hash = group.Key!;
+                var representative = group.First();
+                string? invokingSkill = null;
+
+                if (_skillUsageStore is not null)
+                {
+                    foreach (var record in group.Where(r => !string.IsNullOrEmpty(r.SessionId)).OrderByDescending(r => r.Timestamp))
+                    {
+                        var events = await _skillUsageStore.GetBySessionAsync(record.SessionId!, ct);
+                        var beforeWisp = events
+                            .Where(e => e.Timestamp <= record.Timestamp && existingSkillNames.Contains(e.SkillName))
+                            .OrderByDescending(e => e.Timestamp)
+                            .FirstOrDefault();
+                        if (beforeWisp is not null)
+                        {
+                            invokingSkill = beforeWisp.SkillName;
+                            break;
+                        }
+                    }
+                }
+
+                if (invokingSkill is null)
+                    continue;  // no target skill — cannot promote
+
+                // Recover canonical body — required for the SaveSkill call below.
+                var body = await _wispExecutionLog.GetCanonicalBodyAsync(hash, ct);
+                if (string.IsNullOrEmpty(body))
+                    continue;  // body unavailable (oversize / pre-Phase-1 record)
+
+                candidates.Add(new WispSuccessCandidate(
+                    DefinitionHash: hash,
+                    Frequency: group.Count(),
+                    DistinctSessions: group.Select(r => r.SessionId).Where(s => !string.IsNullOrEmpty(s)).Distinct().Count(),
+                    Description: representative.Description,
+                    InvokingSkill: invokingSkill,
+                    Body: body));
+            }
+
+            if (candidates.Count == 0)
+            {
+                _logger.LogDebug("DreamService: wisp success analysis — no resolvable candidates; skipping");
+                return;
+            }
+
+            _logger.LogInformation(
+                "DreamService: wisp success analysis pass — {Count} candidates",
+                candidates.Count);
+
+            // Build the prompt
+            var userMessage = new StringBuilder();
+            userMessage.AppendLine($"Successful wisp pattern candidates ({candidates.Count}):");
+            userMessage.AppendLine();
+            foreach (var c in candidates)
+            {
+                userMessage.AppendLine($"### definitionHash: {c.DefinitionHash}");
+                userMessage.AppendLine($"- frequency: {c.Frequency}");
+                userMessage.AppendLine($"- distinctSessions: {c.DistinctSessions}");
+                userMessage.AppendLine($"- description: {c.Description}");
+                userMessage.AppendLine($"- invokingSkill: {c.InvokingSkill}");
+                var preview = c.Body.Length > 1024 ? c.Body[..1024] + "...(truncated)" : c.Body;
+                userMessage.AppendLine($"- bodyPreview:");
+                userMessage.AppendLine("```json");
+                userMessage.AppendLine(preview);
+                userMessage.AppendLine("```");
+                userMessage.AppendLine();
+            }
+            userMessage.AppendLine("Existing skills (eligible promotion targets):");
+            foreach (var s in existingSkills.Take(40))
+                userMessage.AppendLine($"  - {s.Name}: {s.Summary}");
+
+            var result = await InvokeDreamPassAsync<WispSuccessAnalysisResultDto>(
+                "wisp success analysis",
+                _wispSuccessDirective ?? BuiltInWispSuccessDirective,
+                userMessage.ToString(),
+                ct);
+            if (result is null) return;
+
+            var attached = await ApplyWispSuccessPromotionsAsync(
+                _skillStore, candidates, existingSkillNames, result.Promotions, _logger, ct);
+
+            _logger.LogInformation(
+                "DreamService: wisp success analysis pass complete — {Attached}/{Total} promotions attached",
+                attached, result.Promotions?.Count ?? 0);
+        });
     }
+
+    /// <summary>
+    /// Apply loop extracted as a static helper so unit tests can drive the attach
+    /// logic without standing up the full DreamService + LLM stack.
+    /// </summary>
+    internal static async Task<int> ApplyWispSuccessPromotionsAsync(
+        ISkillStore skillStore,
+        IReadOnlyList<WispSuccessCandidate> candidates,
+        HashSet<string> existingSkillNames,
+        IReadOnlyList<WispSuccessPromotionDto>? promotions,
+        Microsoft.Extensions.Logging.ILogger logger,
+        CancellationToken ct)
+    {
+        if (promotions is null || promotions.Count == 0)
+            return 0;
+
+        var attached = 0;
+        foreach (var promotion in promotions)
+        {
+            if (string.IsNullOrWhiteSpace(promotion.TargetSkill)
+                || string.IsNullOrWhiteSpace(promotion.Filename)
+                || string.IsNullOrWhiteSpace(promotion.DefinitionHash))
+                continue;
+
+            if (!existingSkillNames.Contains(promotion.TargetSkill))
+            {
+                logger.LogDebug(
+                    "DreamService: wisp success — target skill '{Skill}' not found; skipping promotion of {Hash}",
+                    promotion.TargetSkill, promotion.DefinitionHash);
+                continue;
+            }
+
+            var candidate = candidates.FirstOrDefault(c => c.DefinitionHash == promotion.DefinitionHash);
+            if (candidate is null)
+            {
+                logger.LogDebug(
+                    "DreamService: wisp success — promotion references unknown hash {Hash}; skipping",
+                    promotion.DefinitionHash);
+                continue;
+            }
+
+            var resourceType = promotion.ResourceType ?? SkillResourceType.Wisp;
+            var description = string.IsNullOrWhiteSpace(promotion.Description)
+                ? candidate.Description
+                : promotion.Description!;
+
+            // Pre-build the manifest entry so Provisional=false (dream-pass promotions
+            // are observed-repetition validated, not hypotheses) and DefinitionHash
+            // matches the source wisp record's hash.
+            var entry = new SkillResource(
+                promotion.Filename!, resourceType, description,
+                Provisional: false,
+                CreatedAt: DateTimeOffset.UtcNow,
+                VerifyHint: null,
+                DefinitionHash: candidate.DefinitionHash);
+            var input = new SkillResourceInput(
+                promotion.Filename!, resourceType, description, candidate.Body,
+                Provisional: false);
+
+            var ok = await skillStore.AttachResourceAsync(promotion.TargetSkill!, input, entry);
+            if (ok)
+            {
+                attached++;
+                logger.LogInformation(
+                    "DreamService: wisp success — attached '{Filename}' to '{Skill}' (hash={Hash}, freq={Freq})",
+                    promotion.Filename, promotion.TargetSkill, promotion.DefinitionHash, candidate.Frequency);
+            }
+        }
+
+        return attached;
+    }
+
+    internal sealed record WispSuccessCandidate(
+        string DefinitionHash,
+        int Frequency,
+        int DistinctSessions,
+        string Description,
+        string InvokingSkill,
+        string Body);
+
+    internal sealed record WispSuccessAnalysisResultDto
+    {
+        public List<WispSuccessPromotionDto>? Promotions { get; init; }
+    }
+
+    internal sealed record WispSuccessPromotionDto
+    {
+        public string? TargetSkill { get; init; }
+        public string? Filename { get; init; }
+        public SkillResourceType? ResourceType { get; init; }
+        public string? Description { get; init; }
+        public string? DefinitionHash { get; init; }
+    }
+
+    private const string BuiltInWispSuccessDirective = """
+        You are analyzing wisp pipeline executions to identify successful patterns
+        worth promoting to skill resources. Each candidate group shares the same
+        definitionHash and has succeeded repeatedly with no failures.
+
+        Respond with JSON:
+        {
+          "promotions": [
+            {
+              "targetSkill": "<existing skill name>",
+              "filename": "<short-descriptive-filename.json>",
+              "resourceType": "Wisp",
+              "description": "<one line>",
+              "definitionHash": "<hash from candidate>"
+            }
+          ]
+        }
+
+        Filter zero false positives over recall. Skip candidates whose invokingSkill
+        is null or whose target skill is not in the existing-skills list. Empty
+        promotions array is a fine answer.
+        """;
+
+    // ── Phase 5: Provisional resource validation/demotion ───────────────────────
+
+    /// <summary>
+    /// Sweeps every provisional skill resource and decides what to do with it
+    /// based on how it has fared since it was attached. Wisp resources have a
+    /// strong signal — wisp execution records sharing the resource's
+    /// <see cref="SkillResource.DefinitionHash"/> count as direct success/failure.
+    /// Non-wisp resources fall back to checkout events from
+    /// <see cref="ISkillResourceUsageStore"/> as a soft positive signal.
+    ///
+    /// The decision is delegated to the static <see cref="DecideProvisionalAction"/>
+    /// helper so unit tests can drive it without standing up the full DreamService stack.
+    /// </summary>
+    private async Task RunProvisionalValidationPassAsync(CancellationToken ct)
+    {
+        if (!_options.ProvisionalValidationEnabled || _skillStore is null || _wispExecutionLog is null)
+            return;
+
+        await RunPassAsync("provisional resource validation", async () =>
+        {
+            var skills = await _skillStore.ListAsync();
+            var provisional = skills
+                .Where(s => s.Manifest is not null)
+                .SelectMany(s => s.Manifest!.Where(r => r.Provisional).Select(r => (s.Name, Resource: r)))
+                .ToList();
+
+            if (provisional.Count == 0)
+            {
+                _logger.LogDebug("DreamService: provisional validation — no provisional resources; skipping");
+                return;
+            }
+
+            _logger.LogInformation(
+                "DreamService: provisional validation pass — {Count} provisional resource(s)",
+                provisional.Count);
+
+            var promoted = 0;
+            var removed = 0;
+            var staled = 0;
+            var now = DateTimeOffset.UtcNow;
+
+            foreach (var (skillName, resource) in provisional)
+            {
+                var since = resource.CreatedAt ?? DateTimeOffset.UtcNow.AddDays(-30);
+
+                IReadOnlyList<WispExecutionRecord> wispRecords = [];
+                if (!string.IsNullOrEmpty(resource.DefinitionHash))
+                {
+                    var allRecords = await _wispExecutionLog.QueryRecentAsync(since, maxResults: 1000, ct);
+                    wispRecords = allRecords.Where(r => r.DefinitionHash == resource.DefinitionHash).ToList();
+                }
+
+                IReadOnlyList<SkillResourceCheckoutEvent> checkouts = [];
+                if (resource.Type != SkillResourceType.Wisp && _skillResourceUsageStore is not null)
+                {
+                    checkouts = await _skillResourceUsageStore.QueryCheckoutsAsync(
+                        skillName, resource.Filename, since, ct);
+                }
+
+                var decision = DecideProvisionalAction(
+                    resource, wispRecords, checkouts, now,
+                    successThreshold: _options.ProvisionalSuccessThreshold,
+                    failureThreshold: _options.ProvisionalFailureThreshold,
+                    staleAfter: _options.ProvisionalStaleAfter);
+
+                switch (decision.Action)
+                {
+                    case ProvisionalAction.Promote:
+                        var promotedEntry = resource with { Provisional = false };
+                        if (await _skillStore.UpdateResourceMetadataAsync(skillName, promotedEntry))
+                        {
+                            promoted++;
+                            _logger.LogInformation(
+                                "DreamService: provisional validation — promoted '{File}' on '{Skill}' (successes={Successes})",
+                                resource.Filename, skillName, decision.SuccessCount);
+                        }
+                        break;
+                    case ProvisionalAction.Remove:
+                        if (await _skillStore.RemoveResourceAsync(skillName, resource.Filename))
+                        {
+                            removed++;
+                            _logger.LogInformation(
+                                "DreamService: provisional validation — removed '{File}' on '{Skill}' (consecutiveFailures={Failures})",
+                                resource.Filename, skillName, decision.ConsecutiveFailureCount);
+
+                            if (_failureClusterStore is not null)
+                            {
+                                try
+                                {
+                                    var clusterKey = new ClusterKey(
+                                        Server: "skill-resource",
+                                        Tool: skillName,
+                                        ErrorClass: resource.Filename);
+                                    var sampleError = $"provisional resource removed after {decision.ConsecutiveFailureCount} consecutive failures";
+                                    await _failureClusterStore.RecordAsync(
+                                        clusterKey, sessionId: null, sampleError, now, ct);
+                                }
+                                catch (Exception ex)
+                                {
+                                    _logger.LogWarning(ex,
+                                        "DreamService: provisional validation — failed to record removal cluster for '{Skill}/{File}'",
+                                        skillName, resource.Filename);
+                                }
+                            }
+                        }
+                        break;
+                    case ProvisionalAction.MarkStale:
+                        var stalePrefix = "[stale] ";
+                        if (!resource.Description.StartsWith(stalePrefix, StringComparison.Ordinal))
+                        {
+                            var staleEntry = resource with { Description = stalePrefix + resource.Description };
+                            if (await _skillStore.UpdateResourceMetadataAsync(skillName, staleEntry))
+                            {
+                                staled++;
+                                _logger.LogInformation(
+                                    "DreamService: provisional validation — marked '{File}' on '{Skill}' stale",
+                                    resource.Filename, skillName);
+                            }
+                        }
+                        break;
+                    case ProvisionalAction.Keep:
+                    default:
+                        break;
+                }
+            }
+
+            _logger.LogInformation(
+                "DreamService: provisional validation pass complete — {Promoted} promoted, {Removed} removed, {Stale} marked stale ({Total} considered)",
+                promoted, removed, staled, provisional.Count);
+        });
+    }
+
+    /// <summary>
+    /// Pure decision logic for the validation pass. Public-internal so unit tests
+    /// can verify the threshold logic without driving the full pass.
+    /// </summary>
+    /// <remarks>
+    /// Promotion rule: distinct-session successes (or distinct-session checkouts for
+    /// non-wisp) reach <paramref name="successThreshold"/> → flip non-provisional.
+    /// Removal rule: most-recent <paramref name="failureThreshold"/> wisp records
+    /// for this hash all failed → remove + record cluster.
+    /// Stale rule: resource older than <paramref name="staleAfter"/> with no usage
+    /// activity since creation → mark stale.
+    /// Otherwise: keep as-is.
+    /// </remarks>
+    internal static ProvisionalDecision DecideProvisionalAction(
+        SkillResource resource,
+        IReadOnlyList<WispExecutionRecord> wispRecords,
+        IReadOnlyList<SkillResourceCheckoutEvent> checkouts,
+        DateTimeOffset now,
+        int successThreshold,
+        int failureThreshold,
+        TimeSpan staleAfter)
+    {
+        var orderedRecent = wispRecords.OrderByDescending(r => r.Timestamp).ToList();
+
+        // Removal: the most-recent N wisp executions for this hash are all failures.
+        if (failureThreshold > 0
+            && orderedRecent.Count >= failureThreshold
+            && orderedRecent.Take(failureThreshold).All(r => !r.Succeeded))
+        {
+            return new ProvisionalDecision(
+                ProvisionalAction.Remove,
+                SuccessCount: 0,
+                ConsecutiveFailureCount: failureThreshold);
+        }
+
+        // Promotion: count distinct-session signals.
+        var distinctSuccessSessions = wispRecords
+            .Where(r => r.Succeeded && !string.IsNullOrEmpty(r.SessionId))
+            .Select(r => r.SessionId!)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Count();
+
+        // For non-wisp resources, fall back to distinct-session checkouts as a soft signal.
+        if (resource.Type != SkillResourceType.Wisp)
+        {
+            distinctSuccessSessions = checkouts
+                .Select(c => c.SessionId)
+                .Where(s => !string.IsNullOrEmpty(s))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .Count();
+        }
+
+        if (successThreshold > 0 && distinctSuccessSessions >= successThreshold)
+        {
+            return new ProvisionalDecision(
+                ProvisionalAction.Promote,
+                SuccessCount: distinctSuccessSessions,
+                ConsecutiveFailureCount: 0);
+        }
+
+        // Staleness: created long ago with zero activity.
+        var createdAt = resource.CreatedAt ?? now;
+        var hasAnyActivity = wispRecords.Count > 0 || checkouts.Count > 0;
+        if (!hasAnyActivity && (now - createdAt) > staleAfter)
+        {
+            return new ProvisionalDecision(
+                ProvisionalAction.MarkStale,
+                SuccessCount: 0,
+                ConsecutiveFailureCount: 0);
+        }
+
+        return new ProvisionalDecision(ProvisionalAction.Keep, distinctSuccessSessions, 0);
+    }
+
+    internal enum ProvisionalAction { Keep, Promote, Remove, MarkStale }
+
+    internal sealed record ProvisionalDecision(
+        ProvisionalAction Action,
+        int SuccessCount,
+        int ConsecutiveFailureCount);
 
     /// <summary>
     /// Inspects non-empty dead-letter queues, asks the LLM to classify failure patterns,

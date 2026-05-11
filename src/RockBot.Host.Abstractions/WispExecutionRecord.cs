@@ -60,4 +60,19 @@ public sealed record WispExecutionRecord
     /// Null for single-wisp executions or legacy records.
     /// </summary>
     public string? BatchId { get; init; }
+
+    /// <summary>
+    /// JSON-serialized step definitions for this run, retained when the run succeeded
+    /// and the body fits the size cap so promotion to a skill resource is possible.
+    /// Null for failed runs, oversize runs (see <see cref="BodyOmittedTooLarge"/>),
+    /// and pre-existing records from before this field was added.
+    /// </summary>
+    public string? DefinitionBody { get; init; }
+
+    /// <summary>
+    /// True when <see cref="DefinitionBody"/> would have been retained but the
+    /// serialized body exceeded the per-record cap. Promotion passes treat such
+    /// records as ineligible.
+    /// </summary>
+    public bool BodyOmittedTooLarge { get; init; }
 }

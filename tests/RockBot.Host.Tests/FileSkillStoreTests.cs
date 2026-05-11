@@ -627,6 +627,211 @@ public class FileSkillStoreTests
         Assert.AreEqual("/custom/skills", options.Value.BasePath);
     }
 
+    // ── AttachResourceAsync (Phase 2a: skill-asset promotion) ─────────────────
+
+    [TestMethod]
+    public async Task AttachResourceAsync_UnknownSkill_ReturnsFalse()
+    {
+        var store = CreateStore();
+        var ok = await store.AttachResourceAsync(
+            "nope",
+            new SkillResourceInput("a.json", SkillResourceType.Wisp, "x", "{}"));
+        Assert.IsFalse(ok);
+    }
+
+    [TestMethod]
+    public async Task AttachResourceAsync_AddsManifestEntryAndWritesFile()
+    {
+        var store = CreateStore();
+        await store.SaveAsync(MakeSkill("research/scan", "Scan", "# Scan"));
+
+        var ok = await store.AttachResourceAsync(
+            "research/scan",
+            new SkillResourceInput(
+                "fanout.json",
+                SkillResourceType.Wisp,
+                "Per-account fan-out",
+                """{"description":"x","steps":[]}""",
+                Provisional: true,
+                VerifyHint: "exercises both accounts"));
+
+        Assert.IsTrue(ok);
+
+        // File on disk
+        var resourcePath = Path.Combine(_tempDir, "research", "scan.resources", "fanout.json");
+        Assert.IsTrue(File.Exists(resourcePath));
+
+        // Manifest entry has the new fields
+        var skill = await store.GetAsync("research/scan");
+        Assert.IsNotNull(skill);
+        Assert.IsNotNull(skill.Manifest);
+        Assert.AreEqual(1, skill.Manifest!.Count);
+        var entry = skill.Manifest[0];
+        Assert.AreEqual("fanout.json", entry.Filename);
+        Assert.IsTrue(entry.Provisional);
+        Assert.IsNotNull(entry.CreatedAt);
+        Assert.AreEqual("exercises both accounts", entry.VerifyHint);
+        Assert.IsNotNull(entry.DefinitionHash);
+        Assert.AreEqual(16, entry.DefinitionHash!.Length);
+    }
+
+    [TestMethod]
+    public async Task AttachResourceAsync_ReplacesByFilename_PreservesOtherEntries()
+    {
+        var store = CreateStore();
+        await store.SaveAsync(MakeSkill("calendar/scan", "Scan", "# Scan"));
+
+        await store.AttachResourceAsync(
+            "calendar/scan",
+            new SkillResourceInput("a.json", SkillResourceType.Wisp, "first", "{\"v\":1}"));
+        await store.AttachResourceAsync(
+            "calendar/scan",
+            new SkillResourceInput("b.py", SkillResourceType.Python, "second", "print('b')"));
+
+        // Re-attach a.json with new content/description.
+        await store.AttachResourceAsync(
+            "calendar/scan",
+            new SkillResourceInput("a.json", SkillResourceType.Wisp, "first-v2", "{\"v\":2}"));
+
+        var skill = await store.GetAsync("calendar/scan");
+        Assert.IsNotNull(skill?.Manifest);
+        Assert.AreEqual(2, skill!.Manifest!.Count);
+
+        var aEntry = skill.Manifest.Single(r => r.Filename == "a.json");
+        Assert.AreEqual("first-v2", aEntry.Description);
+        var aBody = await store.GetResourceAsync("calendar/scan", "a.json");
+        Assert.AreEqual("{\"v\":2}", aBody);
+
+        // b.py untouched
+        var bEntry = skill.Manifest.Single(r => r.Filename == "b.py");
+        Assert.AreEqual("second", bEntry.Description);
+        var bBody = await store.GetResourceAsync("calendar/scan", "b.py");
+        Assert.AreEqual("print('b')", bBody);
+    }
+
+    [TestMethod]
+    public async Task AttachResourceAsync_PrebuiltManifestEntry_PersistsVerbatim()
+    {
+        var store = CreateStore();
+        await store.SaveAsync(MakeSkill("calendar/scan", "Scan", "# Scan"));
+
+        var entry = new SkillResource(
+            "fanout.json",
+            SkillResourceType.Wisp,
+            "Per-account fan-out",
+            Provisional: false,
+            CreatedAt: new DateTimeOffset(2026, 1, 15, 12, 0, 0, TimeSpan.Zero),
+            VerifyHint: "exercises both accounts",
+            DefinitionHash: "deadbeefcafef00d");
+        await store.AttachResourceAsync(
+            "calendar/scan",
+            new SkillResourceInput("fanout.json", SkillResourceType.Wisp, "Per-account fan-out", "{}"),
+            manifestEntry: entry);
+
+        var skill = await store.GetAsync("calendar/scan");
+        var saved = skill!.Manifest!.Single();
+        Assert.IsFalse(saved.Provisional);
+        Assert.AreEqual(entry.CreatedAt, saved.CreatedAt);
+        Assert.AreEqual(entry.VerifyHint, saved.VerifyHint);
+        Assert.AreEqual(entry.DefinitionHash, saved.DefinitionHash);
+    }
+
+    [TestMethod]
+    public async Task RemoveResourceAsync_RemovesManifestEntryAndFile()
+    {
+        var store = CreateStore();
+        await store.SaveAsync(MakeSkill("research/scan", "Scan", "# Scan"));
+        await store.AttachResourceAsync(
+            "research/scan",
+            new SkillResourceInput("a.json", SkillResourceType.Wisp, "x", "{}"));
+        await store.AttachResourceAsync(
+            "research/scan",
+            new SkillResourceInput("b.py", SkillResourceType.Python, "y", "print('y')"));
+
+        var ok = await store.RemoveResourceAsync("research/scan", "a.json");
+        Assert.IsTrue(ok);
+
+        var skill = await store.GetAsync("research/scan");
+        Assert.AreEqual(1, skill!.Manifest!.Count);
+        Assert.AreEqual("b.py", skill.Manifest[0].Filename);
+
+        var aPath = Path.Combine(_tempDir, "research", "scan.resources", "a.json");
+        Assert.IsFalse(File.Exists(aPath));
+    }
+
+    [TestMethod]
+    public async Task RemoveResourceAsync_UnknownEntry_ReturnsFalse()
+    {
+        var store = CreateStore();
+        await store.SaveAsync(MakeSkill("s", "summary", "content"));
+
+        var ok = await store.RemoveResourceAsync("s", "missing.json");
+        Assert.IsFalse(ok);
+    }
+
+    [TestMethod]
+    public async Task UpdateResourceMetadataAsync_FlipsProvisionalAndPreservesContent()
+    {
+        var store = CreateStore();
+        await store.SaveAsync(MakeSkill("calendar/scan", "Scan", "# Scan"));
+        await store.AttachResourceAsync(
+            "calendar/scan",
+            new SkillResourceInput("a.json", SkillResourceType.Wisp, "x", "{\"v\":1}",
+                Provisional: true,
+                VerifyHint: "hint"));
+
+        var initial = (await store.GetAsync("calendar/scan"))!.Manifest!.Single();
+        Assert.IsTrue(initial.Provisional);
+
+        // Validation pass would call this to flip Provisional=false while keeping VerifyHint.
+        var ok = await store.UpdateResourceMetadataAsync(
+            "calendar/scan",
+            initial with { Provisional = false });
+        Assert.IsTrue(ok);
+
+        var after = (await store.GetAsync("calendar/scan"))!.Manifest!.Single();
+        Assert.IsFalse(after.Provisional);
+        Assert.AreEqual("hint", after.VerifyHint);  // preserved per user pref
+        Assert.AreEqual(initial.CreatedAt, after.CreatedAt);
+        Assert.AreEqual(initial.DefinitionHash, after.DefinitionHash);
+
+        // File untouched
+        var body = await store.GetResourceAsync("calendar/scan", "a.json");
+        Assert.AreEqual("{\"v\":1}", body);
+    }
+
+    [TestMethod]
+    public async Task UpdateResourceMetadataAsync_UnknownEntry_ReturnsFalse()
+    {
+        var store = CreateStore();
+        await store.SaveAsync(MakeSkill("s", "summary", "content"));
+
+        var ok = await store.UpdateResourceMetadataAsync(
+            "s",
+            new SkillResource("missing.json", SkillResourceType.Wisp, "x"));
+        Assert.IsFalse(ok);
+    }
+
+    [TestMethod]
+    public async Task SaveAsync_2Arg_PreservesProvisionalAndVerifyHintOnInput()
+    {
+        var store = CreateStore();
+        var skill = MakeSkill("calendar/scan", "Scan", "# Scan");
+        await store.SaveAsync(skill, new[]
+        {
+            new SkillResourceInput("a.json", SkillResourceType.Wisp, "x", "{\"v\":1}",
+                Provisional: true,
+                VerifyHint: "verify-A")
+        });
+
+        var saved = await store.GetAsync("calendar/scan");
+        var entry = saved!.Manifest!.Single();
+        Assert.IsTrue(entry.Provisional);
+        Assert.AreEqual("verify-A", entry.VerifyHint);
+        Assert.IsNotNull(entry.DefinitionHash);
+        Assert.IsNotNull(entry.CreatedAt);
+    }
+
     // ── Helpers ───────────────────────────────────────────────────────────────
 
     private FileSkillStore CreateStore() =>

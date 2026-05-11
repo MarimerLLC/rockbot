@@ -99,7 +99,7 @@ internal sealed class SpawnWispsExecutor(
             var result = await wispExecutor.ExecuteAsync(definition, wispId, parentSessionId: sessionId, ct);
 
             // Log execution (fire-and-forget, don't block the batch)
-            _ = LogExecutionAsync(result, defHash, batchId, sessionId, ct);
+            _ = LogExecutionAsync(result, defHash, defJson, batchId, sessionId, ct);
 
             return result;
         }
@@ -109,8 +109,16 @@ internal sealed class SpawnWispsExecutor(
         }
     }
 
+    /// <summary>
+    /// Maximum byte size of a step-definition body retained on a successful
+    /// wisp execution record. Bodies larger than this are dropped (with a
+    /// diagnostic flag) so the JSONL log does not bloat from oversize runs.
+    /// </summary>
+    internal const int DefinitionBodyMaxBytes = 8 * 1024;
+
     private async Task LogExecutionAsync(
-        WispExecutionResult result, string defHash, string batchId, string? sessionId, CancellationToken ct)
+        WispExecutionResult result, string defHash, string defJson,
+        string batchId, string? sessionId, CancellationToken ct)
     {
         if (executionLog is null)
             return;
@@ -153,6 +161,20 @@ internal sealed class SpawnWispsExecutor(
                 }
             }
 
+            // Retain the JSON step body only on successful runs, and only if it
+            // fits the cap. Failed runs leave Body=null (failure context lives on
+            // FailureCategory/ErrorMessage). Oversize successes set the diagnostic flag
+            // so the dream pass treats them as ineligible for promotion.
+            string? definitionBody = null;
+            bool bodyOmittedTooLarge = false;
+            if (result.IsSuccess)
+            {
+                if (Encoding.UTF8.GetByteCount(defJson) <= DefinitionBodyMaxBytes)
+                    definitionBody = defJson;
+                else
+                    bodyOmittedTooLarge = true;
+            }
+
             var failedStep = result.FailedStep;
             var record = new WispExecutionRecord
             {
@@ -171,7 +193,9 @@ internal sealed class SpawnWispsExecutor(
                 Timestamp = DateTimeOffset.UtcNow,
                 SessionId = sessionId,
                 RetryOf = retryOf,
-                BatchId = batchId
+                BatchId = batchId,
+                DefinitionBody = definitionBody,
+                BodyOmittedTooLarge = bodyOmittedTooLarge
             };
 
             await executionLog.AppendAsync(record, ct);

@@ -30,7 +30,8 @@ internal sealed class SubagentRunner(
     AgentIdentity agent,
     TierRoutingLogger tierRoutingLogger,
     AgentProfile agentProfile,
-    ILogger<SubagentRunner> logger)
+    ILogger<SubagentRunner> logger,
+    ISkillResourceUsageStore? skillResourceUsageStore = null)
 {
     public async Task RunAsync(
         string taskId,
@@ -108,8 +109,12 @@ internal sealed class SubagentRunner(
         // Long-term memory tools (search_memory, save_memory, etc.)
         // MemoryTools is a singleton — safe to use directly.
 
-        // Skill tools (get_skill, list_skills, save_skill) — no usage tracking needed for subagents
-        var skillTools = new SkillTools(skillStore, llmClient, logger, subagentSessionId);
+        // Skill tools (get_skill, list_skills, save_skill, promote_skill_asset). Subagents
+        // are the only path that gets promote_skill_asset — they perform the exploratory
+        // tool-call discovery whose result is worth capturing as a typed asset; the main
+        // agent reaches assets via skills the dream pass has already promoted.
+        var skillTools = new SkillTools(skillStore, llmClient, logger, subagentSessionId,
+            enablePromote: true, resourceUsageStore: skillResourceUsageStore);
 
         // Working memory tools scoped to this subagent's namespace
         var sessionWorkingMemoryTools = new WorkingMemoryTools(workingMemory, subagentNamespace, logger);
