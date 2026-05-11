@@ -824,7 +824,7 @@ public sealed class AgentContextBuilder(
                 await workingMemory.DeleteAsync(entry.Key);
                 toEvict.Add(entry.Key);
                 logger.LogInformation(
-                    "Evicted stale observation {Key} (stored {StoredAt:u}): contradicted by successful call to {Server}/{Tool} at {SuccessAt:u}",
+                    "Evicted stale observation {Key} (stored {StoredAt:u}): contradicted by successful call {ToolName} (args={ArgsSummary}) at {SuccessAt:u}",
                     entry.Key, entry.StoredAt, matched.ToolName, matched.ArgumentsSummary ?? "(no args)",
                     matched.Timestamp);
             }

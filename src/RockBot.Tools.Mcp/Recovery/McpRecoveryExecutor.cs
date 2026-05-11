@@ -218,6 +218,10 @@ public sealed class McpRecoveryExecutor
                 "SchemaErrorEnricher", sw.Elapsed.TotalMilliseconds);
             await RecordFailureAsync(serverName, toolName, sessionId, errorText, fieldHint: fieldName, ct);
 
+            _logger.LogInformation(
+                "MCP recovery surfaced enriched schema error for {Server}/{Tool} field {Field}",
+                serverName, toolName, fieldName);
+
             return new ToolInvokeResponse
             {
                 ToolCallId = response.ToolCallId,
