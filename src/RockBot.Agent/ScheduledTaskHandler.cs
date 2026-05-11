@@ -113,6 +113,7 @@ internal sealed class ScheduledTaskHandler(
         var replySessionId = message.IsSystemTask ? "scheduled-system" : "scheduled";
 
         string finalText;
+        bool succeeded;
         try
         {
             using var progressCtx = ToolProgressNotifier.SetContext(new ToolProgressContext
@@ -125,6 +126,7 @@ internal sealed class ScheduledTaskHandler(
             finalText = await agentLoopRunner.RunAsync(
                 chatMessages, chatOptions, sessionId: sessionId,
                 enableFollowUp: false, cancellationToken: ct);
+            succeeded = true;
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
@@ -139,9 +141,13 @@ internal sealed class ScheduledTaskHandler(
         {
             logger.LogError(ex, "Scheduled task '{TaskName}' failed", message.TaskName);
             finalText = $"I encountered an error while executing the scheduled task: {ex.Message}";
+            succeeded = false;
         }
 
-        logger.LogInformation("Scheduled task '{TaskName}' completed", message.TaskName);
+        if (succeeded)
+            logger.LogInformation("Scheduled task '{TaskName}' completed", message.TaskName);
+        else
+            logger.LogInformation("Scheduled task '{TaskName}' finished with error reply", message.TaskName);
 
         // Patrol tasks may produce no output when there is nothing to report — that is correct.
         if (string.IsNullOrWhiteSpace(finalText))

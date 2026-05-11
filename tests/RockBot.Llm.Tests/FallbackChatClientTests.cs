@@ -1,3 +1,5 @@
+using System.ClientModel;
+using System.ClientModel.Primitives;
 using System.Net;
 using System.Runtime.CompilerServices;
 using Microsoft.Extensions.AI;
@@ -21,6 +23,13 @@ public class FallbackChatClientTests
 
     private static HttpRequestException HttpEx(HttpStatusCode status) =>
         new("err", null, status);
+
+    /// <summary>
+    /// Constructs a <see cref="ClientResultException"/> with the given HTTP status,
+    /// matching what the OpenAI SDK throws on a failed request.
+    /// </summary>
+    private static ClientResultException ClientResultEx(int status) =>
+        new("Service request failed.", new StatusOnlyPipelineResponse(status));
 
     // ── test stubs ───────────────────────────────────────────────────────────
 
@@ -302,6 +311,56 @@ public class FallbackChatClientTests
     }
 
     [TestMethod]
+    public async Task ClientResultException_503_RetriesAndFallsBack()
+    {
+        // Regression: a 503 from the OpenAI SDK surfaces as ClientResultException, not
+        // HttpRequestException. Before the fix it was classified Unknown and re-thrown
+        // immediately, bypassing both retry and the fallback chain.
+        var first  = new SequentialStub();
+        first.Enqueue(ClientResultEx(503)); // attempt 0: 503
+        first.Enqueue(ClientResultEx(503)); // attempt 1 (retry): still 503
+        var second = new FixedStub(response: OkResponse("from-second"));
+
+        var client = Build([("m1", first), ("m2", second)], maxRetries: 1);
+
+        var response = await client.GetResponseAsync([]);
+
+        Assert.AreEqual("from-second", response.Messages[^1].Text);
+        Assert.AreEqual(2, first.CallCount, "503 should be retried once on the same model");
+        Assert.AreEqual(1, second.CallCount);
+    }
+
+    [TestMethod]
+    public async Task ClientResultException_TransientStatuses_FallBack()
+    {
+        foreach (var status in new[] { 408, 429, 500, 502, 503, 504 })
+        {
+            var first  = new FixedStub(ex: ClientResultEx(status));
+            var second = new FixedStub(response: OkResponse($"fallback-{status}"));
+            var client = Build([("m1", first), ("m2", second)], maxRetries: 0);
+
+            var response = await client.GetResponseAsync([]);
+
+            Assert.AreEqual($"fallback-{status}", response.Messages[^1].Text,
+                $"Status {status} should fall back to the next model");
+        }
+    }
+
+    [TestMethod]
+    public async Task ClientResultException_HardErrorStatus_FallsBackAndDegrades()
+    {
+        var first  = new FixedStub(ex: ClientResultEx(401));
+        var second = new FixedStub(response: OkResponse());
+        var client = Build([("m1", first), ("m2", second)], maxRetries: 0);
+
+        await client.GetResponseAsync([]);
+        await client.GetResponseAsync([]);
+
+        Assert.AreEqual(1, first.CallCount, "401 should mark model degraded; second call must skip it");
+        Assert.AreEqual(2, second.CallCount);
+    }
+
+    [TestMethod]
     public async Task PerAttemptTimeout_UserCancellation_PropagatesImmediately()
     {
         var slow = new SlowStub(delay: TimeSpan.FromSeconds(30));
@@ -324,6 +383,23 @@ public class FallbackChatClientTests
     }
 
     // ── additional stubs ────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Minimal PipelineResponse that only carries an HTTP status — enough to construct
+    /// a ClientResultException whose Status property the classifier can read.
+    /// </summary>
+    private sealed class StatusOnlyPipelineResponse(int status) : PipelineResponse
+    {
+        public override int Status { get; } = status;
+        public override string ReasonPhrase => string.Empty;
+        public override Stream? ContentStream { get => null; set { } }
+        public override BinaryData Content => BinaryData.Empty;
+        protected override PipelineResponseHeaders HeadersCore => throw new NotImplementedException();
+        public override BinaryData BufferContent(CancellationToken cancellationToken = default) => BinaryData.Empty;
+        public override ValueTask<BinaryData> BufferContentAsync(CancellationToken cancellationToken = default) =>
+            new(BinaryData.Empty);
+        public override void Dispose() { }
+    }
 
     /// <summary>Delays for a configurable period before responding (simulates a stalled model).</summary>
     private sealed class SlowStub(TimeSpan delay) : IChatClient

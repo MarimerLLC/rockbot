@@ -226,11 +226,79 @@ internal sealed class SubagentResultHandler(
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            logger.LogError(ex, "Failed to handle subagent result consolidation for session {SessionId}",
+            logger.LogError(ex,
+                "Failed to handle subagent result consolidation for session {SessionId} — emitting degraded reply",
                 rawSessionId);
+
+            await PublishDegradedReplyAsync(rawSessionId, batchedResults, ex, ct);
         }
         // Note: subagent working memory entries ("subagent/{taskId}/...") are intentionally NOT
         // deleted here. They persist until their TTL expires so the primary agent can reference
         // them across multiple follow-up turns.
+    }
+
+    /// <summary>
+    /// Synthesis LLM call failed (e.g. all providers 503'd). The per-subagent outputs are still
+    /// in working memory and conversation memory — stitch them into a plain reply so the user
+    /// receives the work that did succeed instead of silent failure.
+    /// </summary>
+    private async Task PublishDegradedReplyAsync(
+        string rawSessionId,
+        IReadOnlyList<SubagentResultMessage> batchedResults,
+        Exception synthesisError,
+        CancellationToken ct)
+    {
+        try
+        {
+            var content = BuildDegradedReplyContent(batchedResults, synthesisError);
+
+            await conversationMemory.AddTurnAsync(
+                rawSessionId,
+                new ConversationTurn("assistant", content, DateTimeOffset.UtcNow)
+                { AgentName = agent.Name },
+                ct);
+
+            var reply = new AgentReply
+            {
+                Content = content,
+                SessionId = rawSessionId,
+                AgentName = agent.Name,
+                IsFinal = true
+            };
+            var envelope = reply.ToEnvelope<AgentReply>(source: agent.Name);
+            await publisher.PublishAsync($"{UserProxyTopics.UserResponse}.{agent.Name}", envelope, ct);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            logger.LogError(ex,
+                "Degraded subagent consolidation reply also failed for session {SessionId}",
+                rawSessionId);
+        }
+    }
+
+    internal static string BuildDegradedReplyContent(
+        IReadOnlyList<SubagentResultMessage> batchedResults,
+        Exception synthesisError)
+    {
+        var successCount = batchedResults.Count(r => r.IsSuccess);
+        var failCount = batchedResults.Count - successCount;
+
+        var sb = new System.Text.StringBuilder();
+        sb.AppendLine(
+            $"I couldn't synthesize a unified summary — the synthesis step itself failed ({synthesisError.Message.Trim()}). " +
+            $"Here are the raw subagent results ({successCount} succeeded, {failCount} failed):");
+        sb.AppendLine();
+
+        foreach (var r in batchedResults)
+        {
+            sb.AppendLine($"### Subagent {r.TaskId} — {(r.IsSuccess ? "succeeded" : "failed")}");
+            if (!r.IsSuccess && !string.IsNullOrWhiteSpace(r.Error))
+                sb.AppendLine($"_Error: {r.Error}_");
+            sb.AppendLine();
+            sb.AppendLine(string.IsNullOrWhiteSpace(r.Output) ? "_(no output)_" : r.Output);
+            sb.AppendLine();
+        }
+
+        return sb.ToString().TrimEnd();
     }
 }
