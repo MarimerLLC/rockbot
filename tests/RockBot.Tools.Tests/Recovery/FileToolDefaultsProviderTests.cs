@@ -60,22 +60,28 @@ public class FileToolDefaultsProviderTests
     }
 
     [TestMethod]
-    public async Task ResolveAsync_ArrayValue_DoesNotResolve()
+    public async Task ResolveAsync_ArrayValue_RejectedAtLoadTime()
     {
-        // Amendment 1: arrays no longer produce fan-out defaults. The provider
-        // declines to resolve so the recovery executor surfaces a single
-        // schema error to the LLM instead of issuing N parallel calls.
+        // Amendment 1 step 5: array entries are rejected at load time and
+        // never enter the in-memory map. CanResolve returns false (no entry
+        // to match against) rather than the resolve path returning null.
+        // This makes the misconfiguration visible in logs.
         await WriteServerFileAsync("calendar-mcp", """
-            [ { "providerName": "AccountIds", "field": "accountId", "value": ["a@x", "b@x"] } ]
+            [
+              { "providerName": "AccountIds", "field": "accountId", "value": ["a@x", "b@x"] },
+              { "providerName": "TimeZone", "field": "timeZone", "value": "UTC" }
+            ]
             """);
 
         using var provider = NewProvider();
 
+        // The array entry was dropped; the scalar entry alongside it still works.
+        Assert.IsFalse(provider.CanResolve("calendar-mcp", "get_calendar_events", "accountId"));
+        Assert.IsTrue(provider.CanResolve("calendar-mcp", "get_calendar_events", "timeZone"));
+
         var ctx = new ResolveContext("calendar-mcp", "get_calendar_events", "accountId",
             new Dictionary<string, object?>());
-        var resolved = await provider.ResolveAsync(ctx, CancellationToken.None);
-
-        Assert.IsNull(resolved);
+        Assert.IsNull(await provider.ResolveAsync(ctx, CancellationToken.None));
     }
 
     [TestMethod]

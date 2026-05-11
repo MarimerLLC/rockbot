@@ -71,6 +71,13 @@ This design addresses all four. Point-fixing the calendar bug is explicitly a no
 
 ## Phase 1 — Mechanical recovery in the MCP gateway
 
+> **Superseded by Amendment 1 (2026-05-11).** The Stage A discovery providers
+> (`AccountIdFanoutProvider`), the fan-out mechanism, and Stage B's
+> Haiku-based fill are removed. The current contract is: environmental
+> defaults (`TimeZoneDefaultProvider`, `CurrentTimeDefaultProvider`) fill
+> silently; everything else is surfaced to the LLM as an enriched error
+> via `SchemaErrorEnricher`. See Amendment 1 below for the live design.
+
 ### Where
 
 Wraps `mcp_invoke_tool` at the gateway layer. Not in `AgentLoopRunner` — wisp `Direct` MCP steps benefit from the same recovery without going through the agent loop.
@@ -91,7 +98,7 @@ On match, look up `<X>` in an `IToolArgumentDefaultsProvider` registry. Built-in
 |---|---|---|
 | `TimeZoneDefaultProvider` | `timeZone`, `tz`, `timezone` | Same agent config the prompt builder reads |
 | `CurrentTimeDefaultProvider` | `now`, `currentTime`, `referenceTime` | `DateTimeOffset.UtcNow` |
-| `AccountIdFanoutProvider` | `accountId` for calendar-mcp | Calls `list_accounts`, returns `IEnumerable<string>` for fan-out |
+| ~~`AccountIdFanoutProvider`~~ | ~~`accountId` for calendar-mcp~~ | **Removed in Amendment 1** — fan-out is now an LLM-orchestration decision, not a recovery decision. |
 
 Providers expose:
 
@@ -99,36 +106,28 @@ Providers expose:
 public interface IToolArgumentDefaultsProvider
 {
     bool CanResolve(string serverName, string toolName, string fieldName);
-    Task<ResolvedDefault> ResolveAsync(ResolveContext ctx, CancellationToken ct);
+    Task<ResolvedDefault?> ResolveAsync(ResolveContext ctx, CancellationToken ct);
 }
 
-public record ResolvedDefault(object Value, bool RequiresFanOut = false);
+public record ResolvedDefault(object? Value);
 ```
 
-If a provider resolves, the gateway retries the call once with the field filled. On success, log a structured `auto-recovered` telemetry event (server, tool, field, provider, original error). On failure, fall through to Stage B.
+If a provider resolves, the gateway retries the call once with the field filled. On success, log a structured `auto-recovered` telemetry event (server, tool, field, provider, original error). On failure, fall through to enrichment (Amendment 1).
 
-`RequiresFanOut=true` means the provider returned a collection and the gateway issues N parallel calls, aggregating results.
+### ~~Stage B — low-tier LLM fallback~~
 
-### Stage B — low-tier LLM fallback
-
-Used only when no deterministic provider resolved the field. Constrained single-shot prompt to Haiku (no tools, no narrative):
-
-```
-Tool: <serverName>/<toolName>
-Required field: <fieldName>
-Type: <jsonSchemaType>
-Description: <fieldDescription>
-Original call args: <existingArgs>
-Return only a JSON value for <fieldName>.
-```
-
-Retry with the response. If still failing, surface to the agent with an annotated error including the recovery trail so it does not retry the malformed call. Exhausted recoveries also feed the FailureClusterStore (Phase 5).
+**Removed in Amendment 1.** Stage B's silent Haiku fill never taught the LLM
+the schema, so the same failure recurred next session. It has been replaced
+by `SchemaErrorEnricher`, which returns a schema-rich error to the calling
+LLM containing the field schema, tool-description hints, and pointers to
+recent same-session calls. The LLM threads the value on retry and saves a
+skill. See Amendment 1 below.
 
 ### Acceptance
 
 - A patrol that calls `get_calendar_events` with no arguments completes successfully on the next run after this phase ships, without skill or memory edits.
-- Telemetry shows the `auto-recovered` event with `provider=TimeZoneDefaultProvider` and `provider=AccountIdFanoutProvider`.
-- A canary with a deliberately-novel required field (synthetic test tool) is recovered via Stage B.
+- Telemetry shows the `auto-recovered` event with `provider=TimeZoneDefaultProvider`.
+- A novel-field schema error against an MCP server with no provider config completes in at most two LLM turns (turn 1 enriched error, turn 2 corrected call) — see Amendment 1 acceptance.
 
 ## Phase 2 — Falsifiable capability claims
 
@@ -177,6 +176,15 @@ When WM injection assembles context for a session, entries in `claim/capability/
 - Predicate times out or errors unrelated to the claim → entry is injected with a `verifier-uncertain` annotation; not evicted.
 
 This means capability claims have a half-life equal to the next session that triggers a verify, not a fixed TTL. Stale claims self-purge.
+
+> **Extended by Amendment 1 (2026-05-11).** The read-side filter now also runs
+> on working-memory entries the soft gate tagged `kind=observation`. For each
+> such entry whose content contains a `server/tool` reference, the builder
+> queries `IToolCallLog` for a successful call to the same pair newer than
+> the observation's `StoredAt`. A newer success contradicts the observation
+> and evicts the entry. This kills "wrapper cannot pass arguments"-class
+> rationalisations on their next injection without requiring an explicit
+> `VerifyShape`.
 
 ### Acceptance
 

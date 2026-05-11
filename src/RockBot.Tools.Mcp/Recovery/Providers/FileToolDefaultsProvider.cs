@@ -172,10 +172,31 @@ public sealed class FileToolDefaultsProvider : IToolArgumentDefaultsProvider, ID
             }
 
             var entries = JsonSerializer.Deserialize<List<DefaultEntry>>(json, JsonOptions) ?? [];
-            _byServer[server] = entries;
+
+            // Amendment 1 step 5: reject array-valued entries at load time.
+            // Fan-out is no longer a recovery operation, so an array default
+            // would silently fail to resolve at lookup. Surface the
+            // misconfiguration here instead so the operator sees it in logs.
+            var scalar = new List<DefaultEntry>(entries.Count);
+            var rejected = 0;
+            foreach (var entry in entries)
+            {
+                if (entry.Value.ValueKind == JsonValueKind.Array)
+                {
+                    rejected++;
+                    _logger.LogWarning(
+                        "FileToolDefaultsProvider: rejected array-valued entry for server {Server} field {Field} (tool={Tool}). " +
+                        "Fan-out was removed in Amendment 1 — register a scalar default or orchestrate the multi-value call from a wisp.",
+                        server, entry.Field, entry.Tool ?? "(any)");
+                    continue;
+                }
+                scalar.Add(entry);
+            }
+
+            _byServer[server] = scalar;
             _logger.LogInformation(
-                "FileToolDefaultsProvider: loaded {Count} default(s) for server {Server}",
-                entries.Count, server);
+                "FileToolDefaultsProvider: loaded {Count} default(s) for server {Server} ({Rejected} rejected as array-valued)",
+                scalar.Count, server, rejected);
         }
         catch (Exception ex)
         {
