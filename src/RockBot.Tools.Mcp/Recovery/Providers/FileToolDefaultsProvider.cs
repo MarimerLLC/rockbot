@@ -95,8 +95,8 @@ public sealed class FileToolDefaultsProvider : IToolArgumentDefaultsProvider, ID
             if (!Matches(e, ctx.ToolName, ctx.FieldName))
                 continue;
 
-            var (value, requiresFanOut) = MaterializeValue(e.Value);
-            return Task.FromResult<ResolvedDefault?>(new ResolvedDefault(value, requiresFanOut));
+            var value = MaterializeValue(e.Value);
+            return Task.FromResult<ResolvedDefault?>(value is null ? null : new ResolvedDefault(value));
         }
 
         return Task.FromResult<ResolvedDefault?>(null);
@@ -115,39 +115,22 @@ public sealed class FileToolDefaultsProvider : IToolArgumentDefaultsProvider, ID
     }
 
     /// <summary>
-    /// Materializes a stored <see cref="JsonElement"/> into a CLR value. Arrays
-    /// trigger fan-out so a single entry can cover all known accountIds, calendar
-    /// IDs, etc.
+    /// Materializes a stored <see cref="JsonElement"/> into a single CLR scalar.
+    /// Arrays are no longer supported (fan-out was removed in Amendment 1) and
+    /// return <c>null</c> so the provider declines to resolve. Step 5 of the
+    /// amendment will tighten this to reject array entries at load time.
     /// </summary>
-    internal static (object? Value, bool RequiresFanOut) MaterializeValue(JsonElement value)
+    internal static object? MaterializeValue(JsonElement value)
     {
         return value.ValueKind switch
         {
-            JsonValueKind.String => (value.GetString(), false),
-            JsonValueKind.Number => (value.TryGetInt64(out var l) ? (object)l : value.GetDouble(), false),
-            JsonValueKind.True => (true, false),
-            JsonValueKind.False => (false, false),
-            JsonValueKind.Array => (EnumerateArray(value), true),
-            JsonValueKind.Object => (value, false),
-            _ => (null, false),
+            JsonValueKind.String => value.GetString(),
+            JsonValueKind.Number => value.TryGetInt64(out var l) ? (object)l : value.GetDouble(),
+            JsonValueKind.True => true,
+            JsonValueKind.False => false,
+            JsonValueKind.Object => value,
+            _ => null,
         };
-
-        static List<object?> EnumerateArray(JsonElement arr)
-        {
-            var items = new List<object?>();
-            foreach (var item in arr.EnumerateArray())
-            {
-                items.Add(item.ValueKind switch
-                {
-                    JsonValueKind.String => item.GetString(),
-                    JsonValueKind.Number => item.TryGetInt64(out var l) ? (object)l : item.GetDouble(),
-                    JsonValueKind.True => true,
-                    JsonValueKind.False => false,
-                    _ => item,
-                });
-            }
-            return items;
-        }
     }
 
     private void LoadAllFiles()

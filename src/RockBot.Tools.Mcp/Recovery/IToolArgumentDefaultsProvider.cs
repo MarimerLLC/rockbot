@@ -1,10 +1,12 @@
 namespace RockBot.Tools.Mcp.Recovery;
 
 /// <summary>
-/// Resolves a default value for a missing required tool argument.
-/// Implementations are queried in registration order; the first one whose
-/// <see cref="CanResolve"/> returns <c>true</c> wins. See
-/// <c>design/self-repair.md</c> Phase 1, Stage A.
+/// Resolves a default value for a missing required tool argument. Providers are
+/// limited to **environmental defaults** — values sourced from agent config or
+/// system state, not from other tool calls. Examples: time zone from agent config,
+/// current time from the system clock. Implementations are queried in registration
+/// order; the first one whose <see cref="CanResolve"/> returns <c>true</c> wins.
+/// See <c>design/self-repair.md</c> Phase 1 and Amendment 1.
 /// </summary>
 public interface IToolArgumentDefaultsProvider
 {
@@ -15,7 +17,8 @@ public interface IToolArgumentDefaultsProvider
     bool CanResolve(string serverName, string toolName, string fieldName);
 
     /// <summary>
-    /// Produces a value (or null if resolution unexpectedly fails). May perform I/O.
+    /// Produces a single value (or null if resolution unexpectedly fails).
+    /// May perform I/O for environmental lookups.
     /// </summary>
     Task<ResolvedDefault?> ResolveAsync(ResolveContext ctx, CancellationToken ct);
 }
@@ -30,12 +33,10 @@ public sealed record ResolveContext(
     IReadOnlyDictionary<string, object?> ExistingArgs);
 
 /// <summary>
-/// Output of <see cref="IToolArgumentDefaultsProvider.ResolveAsync"/>.
-/// When <see cref="RequiresFanOut"/> is <c>true</c>, <see cref="Value"/> must be
-/// an <see cref="System.Collections.IEnumerable"/> of values; the recovery executor
-/// will issue one tool call per element and aggregate the responses.
+/// Output of <see cref="IToolArgumentDefaultsProvider.ResolveAsync"/>: a single
+/// value that the recovery executor merges into the call's arguments before retry.
 /// </summary>
-public sealed record ResolvedDefault(object? Value, bool RequiresFanOut = false);
+public sealed record ResolvedDefault(object? Value);
 
 /// <summary>
 /// Delegate over <see cref="McpToolProxy.ExecuteAsync(ToolInvokeRequest, IReadOnlyDictionary{string, string}?, CancellationToken)"/>.

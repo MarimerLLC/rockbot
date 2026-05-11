@@ -43,7 +43,7 @@ public class FileToolDefaultsProviderTests
     }
 
     [TestMethod]
-    public async Task ResolveAsync_StringValue_ReturnsScalar_NotFanOut()
+    public async Task ResolveAsync_StringValue_ReturnsScalar()
     {
         await WriteServerFileAsync("calendar-mcp", """
             [ { "providerName": "TimeZone", "field": "timeZone", "value": "America/Chicago" } ]
@@ -57,12 +57,14 @@ public class FileToolDefaultsProviderTests
 
         Assert.IsNotNull(resolved);
         Assert.AreEqual("America/Chicago", resolved!.Value);
-        Assert.IsFalse(resolved.RequiresFanOut);
     }
 
     [TestMethod]
-    public async Task ResolveAsync_ArrayValue_ReturnsFanOut()
+    public async Task ResolveAsync_ArrayValue_DoesNotResolve()
     {
+        // Amendment 1: arrays no longer produce fan-out defaults. The provider
+        // declines to resolve so the recovery executor surfaces a single
+        // schema error to the LLM instead of issuing N parallel calls.
         await WriteServerFileAsync("calendar-mcp", """
             [ { "providerName": "AccountIds", "field": "accountId", "value": ["a@x", "b@x"] } ]
             """);
@@ -73,11 +75,7 @@ public class FileToolDefaultsProviderTests
             new Dictionary<string, object?>());
         var resolved = await provider.ResolveAsync(ctx, CancellationToken.None);
 
-        Assert.IsNotNull(resolved);
-        Assert.IsTrue(resolved!.RequiresFanOut);
-        var items = (System.Collections.IEnumerable)resolved.Value!;
-        var asList = items.Cast<object?>().Select(o => (string?)o).ToList();
-        CollectionAssert.AreEquivalent(new[] { "a@x", "b@x" }, asList);
+        Assert.IsNull(resolved);
     }
 
     [TestMethod]

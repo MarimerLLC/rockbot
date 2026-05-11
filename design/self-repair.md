@@ -367,3 +367,162 @@ Suggested order: **1 + 5 in parallel → 2 → 6 → 3 → 4.** Phase 1 alone re
 - No migration required for existing memory or skills.
 - Existing `claim/capability/*` entries (if any are written by hand or by future code) need verify shapes; until they have them, treat as observations.
 - Existing dream passes are unchanged. Repair-ticket pass is additive.
+
+---
+
+## Amendment 1 — Surface, don't substitute (2026-05-11)
+
+After Phase 1 + Phase 4 shipped, a new recurring failure exposed a structural flaw in
+the recovery contract itself. This amendment supersedes the Stage A "discovery" portion
+of Phase 1, removes Stage B, and rebalances the load on Phases 2 and 5. The motivating
+production failure and the diagnostic chain that led here are summarised below.
+
+### What we observed
+
+The agent kept calling `calendar-mcp/get_email_details` with no `emailId`. Each call
+triggered `AccountIdFanoutProvider`, which fanned out across all 8 configured accounts
+because the missing field was `accountId`. Every fan-out leg returned a *different*
+missing-field error (`emailId is required`). The aggregator returned `mergedArgs=null`,
+which is exactly the condition under which chained recovery refuses to recurse. The
+gateway then wrote a `recovery-exhausted: Stage A provider AccountIdFanoutProvider
+resolved field accountId but the call still failed` capability claim — a misdiagnosis,
+since the resolved value was correct and the real problem was a second missing field.
+
+In parallel, subagents wrote working-memory entries asserting "the available primary
+MCP invocation wrapper exposes only `server_name` and `tool_name` and cannot pass
+required parameters". That claim is literally false (the wrapper happily passes args,
+and the same logs show thousands of successful calls with full args). The Phase 2
+soft-gate detected the capability-claim shape and tagged the entries `kind=observation`
+— but observations are still injected verbatim into future contexts and the Phase 2
+read-side verifier only runs on `claim/capability/*`. So the false narrative kept
+being injected for ~24h per write, encouraging the next patrol to repeat the same
+malformed call.
+
+Phase 5 noticed the cluster (`calendar-mcp`, `get_email_details`, `emailId`) but did
+not open a ticket: the cluster came entirely from `patrol/heartbeat-patrol`, failing
+the `SessionIds.Count >= 2` threshold.
+
+### Why the original design didn't catch this
+
+Four contributors, none individually wrong, combined badly:
+
+1. **Fan-out is a user-intent inference, not a recovery operation.** The decision
+   "scan across N accounts" belongs to whoever is orchestrating the work (the LLM,
+   a wisp). Pushing it into a recovery provider meant the same provider fired for
+   tools where fan-out is semantically wrong (`get_email_details(emailId=X)` targets
+   one specific message and one specific account).
+2. **Fan-out kills chained recovery.** Because each leg's arguments diverge, the
+   aggregator can't return a single `mergedArgs` to recurse on. The chain depth in
+   the design is unreachable for the very class of tools the chain was meant to help.
+3. **Silent recovery teaches the LLM nothing.** When a guess works, the call looks
+   identical to a clean success. The LLM doesn't save a skill that documents the
+   schema, doesn't update memory, and will make the same malformed call next session.
+   The cluster persists because the *first* call always misses; recovery just papers
+   over it.
+4. **The Phase 2 soft-gate is informational only.** Tagging an entry `observation`
+   doesn't stop it from being injected or trigger a verify. The rationalisation
+   loop is exactly the problem Phase 2 was meant to break, but the read-side
+   filter only fires on a category the agent never writes itself.
+
+The first three are downstream of the same structural choice: recovery's contract is
+"guess and retry silently". This amendment changes the contract.
+
+### New principle
+
+Recovery's job is to make schema requirements **maximally legible to the LLM**, not
+to satisfy them silently.
+
+1. **Silent fill is reserved for true environmental defaults** — values sourced
+   from agent config or system state, not from other tool calls. `timeZone` from
+   agent config, `now` from the system clock, the agent's own identity. These are
+   general (no server-specific code), unambiguous, and the LLM doesn't need to
+   reason about them.
+
+2. **Every other recoverable error is enriched and surfaced.** When a required
+   field is missing and is not an environmental default, the gateway returns a
+   structured error to the calling LLM containing:
+   - The tool's JSON schema entry for the missing field (name, type, description).
+   - Recent results from the same session whose payload includes a field with the
+     same name (e.g. a prior `search_emails` whose items expose `id` and `accountId`).
+   - The tool description's own pointer where one exists ("obtain `emailId` from
+     `search_emails` results"), extracted from `mcp_get_service_details` text.
+
+   The LLM threads the value on retry and is expected to save a skill once it has
+   the right shape. There is no fan-out, no `AccountIdFanoutProvider`, no
+   per-server discovery semantics.
+
+### What changes in the codebase
+
+| Component | Action |
+|---|---|
+| `TimeZoneDefaultProvider` | Keep — true environmental default. |
+| `CurrentTimeDefaultProvider` | Keep — true environmental default. |
+| `AccountIdFanoutProvider` | **Remove.** Cross-account scanning is a wisp/orchestration decision. |
+| `IToolArgumentDefaultsProvider` | Keep, narrow contract: environmental defaults only. Remove `RequiresFanOut`. |
+| `McpRecoveryExecutor` fan-out path (`FanOutAsync`, `AggregateFanOut`) | **Remove.** |
+| `McpRecoveryExecutor` chained recovery | Keep — but now only runs when an environmental default fills one field and surfaces a second. Far rarer. |
+| `StageBLlmFiller` (Stage B) | **Remove.** Single-shot constrained Haiku fills are silent and don't teach. Replaced by the enriched error path. |
+| Capability-claim writes from `recovery-exhausted` | **Remove.** These claims encode the recovery layer's own confusion, not durable facts about the tool. |
+| Enriched-error response shape | **New.** Gateway constructs a single response containing missing-field schema, recent session matches keyed by field name, and any in-description hint. |
+
+The Phase 2 capability-claim subsystem and Phase 4 closed-loop repair tickets are
+unchanged in shape but carry less load — the failure mode that motivated them is
+mostly prevented at source rather than mopped up downstream.
+
+### Knock-on: Phase 2 read-side filter
+
+The Phase 2 read-side verifier ran only on `claim/capability/*` because that's the
+only place capability claims are written through the typed API. The soft-gate tags
+incidentally-written rationalisations as `kind=observation`, but those are never
+verified. Extend the filter so that working-memory entries the soft-gate tagged
+`capability-claim-shaped` are opportunistically verified using the same shape
+heuristic as `claim/capability/*` — without requiring an explicit `VerifyShape`,
+fall back to: "is there a successful call to the same (server, tool) in this or
+any recent session?" If yes, evict. This kills legacy "wrapper cannot pass
+arguments"-class entries on their next injection.
+
+### Knock-on: Phase 5 thresholds
+
+Once the LLM learns the schema on the first miss, recurring clusters for that
+tool collapse. The current `Count >= 3 && SessionIds.Count >= 2 && LastSeen within
+24h` threshold is fine — it remains a backstop for cases where the LLM keeps
+getting it wrong despite enrichment (e.g. a tool whose schema is genuinely
+ambiguous). No tightening is needed; in fact noise should drop.
+
+### Acceptance
+
+- `AccountIdFanoutProvider` and the fan-out path in `McpRecoveryExecutor` are
+  deleted; no references remain in the codebase.
+- A call to `calendar-mcp/get_email_details` with no arguments returns one error
+  to the LLM containing: the field schema for `accountId` and `emailId`, the most
+  recent in-session `search_emails` result if one exists, and the tool description's
+  guidance. The LLM's retry includes both fields.
+- A call to an MCP server with **no provider config of any kind** completes in at
+  most two LLM turns when a required field is missing: turn 1 receives the enriched
+  error, turn 2 makes the corrected call.
+- `recovery-exhausted` capability claims tied to fan-out are no longer written.
+- An observation tagged `capability-claim-shaped` whose statement is contradicted
+  by a recent successful call to the same tool is evicted on next session injection.
+
+### Trade-off
+
+One extra LLM round-trip the first time the agent encounters a tool where the
+schema isn't obvious from context. Cheap, and it happens once per tool per skill:
+the round-trip teaches the LLM the shape, the LLM saves or updates a skill, future
+sessions hit the skill cache before they hit recovery.
+
+### Sequencing
+
+1. Remove `AccountIdFanoutProvider` and the fan-out path from `McpRecoveryExecutor`.
+   Smallest change. Stops the recurring bug immediately. Repairs already-written
+   `recovery-exhausted` claims by failing their verify (no provider to invoke).
+2. Replace Stage A "discovery" semantics with schema-error enrichment in the gateway.
+   Build the enriched-error response from: schema lookup via `mcp_get_service_details`,
+   recent-session tool-call results, in-description hints.
+3. Remove `StageBLlmFiller`.
+4. Extend Phase 2 read-side filter to verify capability-claim-shaped observations.
+5. Cleanup pass: drop `RequiresFanOut` from `IToolArgumentDefaultsProvider`, prune
+   `ResolvedDefault`, simplify `RetryAsync`/`AggregateFanOut`.
+
+Steps 1–3 are independent of 4–5 and can ship as a stack. Step 1 alone is a net
+improvement: less broken behaviour, no new behaviour to validate.

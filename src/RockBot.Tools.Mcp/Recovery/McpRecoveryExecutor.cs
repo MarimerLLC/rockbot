@@ -1,6 +1,4 @@
-using System.Collections;
 using System.Diagnostics;
-using System.Text;
 using System.Text.Json;
 using Microsoft.Extensions.Logging;
 using RockBot.Host;
@@ -161,7 +159,7 @@ public sealed class McpRecoveryExecutor
             var retryError = TryExtractRecoverableError(retryResponse);
             var recovered = retryError is null;
             RecordTelemetry(serverName, toolName, fieldName, "A", recovered, providerName,
-                sw.Elapsed.TotalMilliseconds, fanout: resolved.RequiresFanOut);
+                sw.Elapsed.TotalMilliseconds);
 
             if (recovered)
             {
@@ -172,10 +170,8 @@ public sealed class McpRecoveryExecutor
             }
 
             // Chained recovery: only recurse when the retry's error names a DIFFERENT
-            // missing field (otherwise we'd loop on the same problem). Fan-out responses
-            // are not recursable — each leg may have a different error and we cannot
-            // pick one to chain from.
-            if (mergedArgs is not null && ShouldChain(retryError, fieldName))
+            // missing field (otherwise we'd loop on the same problem).
+            if (ShouldChain(retryError, fieldName))
             {
                 _logger.LogInformation(
                     "MCP recovery {Server}/{Tool} field {Field} resolved via {Provider} but response surfaced another missing field — chaining (depth {Depth})",
@@ -226,7 +222,7 @@ public sealed class McpRecoveryExecutor
                     return retryResponse;
                 }
 
-                if (mergedArgs is not null && ShouldChain(retryError, fieldName))
+                if (ShouldChain(retryError, fieldName))
                 {
                     _logger.LogInformation(
                         "MCP recovery {Server}/{Tool} field {Field} resolved via Stage B but response surfaced another missing field — chaining (depth {Depth})",
@@ -333,7 +329,7 @@ public sealed class McpRecoveryExecutor
         return !string.Equals(nextField, justFilledField, StringComparison.OrdinalIgnoreCase);
     }
 
-    private async Task<(ToolInvokeResponse Response, Dictionary<string, object?>? MergedArgs)> RetryAsync(
+    private async Task<(ToolInvokeResponse Response, Dictionary<string, object?> MergedArgs)> RetryAsync(
         string serverName,
         string toolName,
         ToolInvokeRequest innerRequest,
@@ -342,49 +338,9 @@ public sealed class McpRecoveryExecutor
         ResolvedDefault resolved,
         CancellationToken ct)
     {
-        if (resolved.RequiresFanOut)
-        {
-            if (resolved.Value is not IEnumerable enumerable || resolved.Value is string)
-            {
-                _logger.LogWarning(
-                    "Recovery provider for {Server}/{Tool} field {Field} requested fan-out but value is not enumerable",
-                    serverName, toolName, fieldName);
-                return (ErrorResponse(innerRequest,
-                    "recovery: fan-out provider returned non-enumerable value"), null);
-            }
-
-            var values = enumerable.Cast<object?>().Where(v => v is not null).ToList();
-            if (values.Count == 0)
-            {
-                return (ErrorResponse(innerRequest, "recovery: fan-out provider returned no values"), null);
-            }
-
-            var aggregated = await FanOutAsync(serverName, toolName, innerRequest, existingArgs, fieldName, values, ct);
-            return (aggregated, null);
-        }
-
         var merged = MergeArgs(existingArgs, fieldName, resolved.Value);
         var response = await CallAsync(serverName, toolName, innerRequest, merged, ct);
         return (response, merged);
-    }
-
-    private async Task<ToolInvokeResponse> FanOutAsync(
-        string serverName,
-        string toolName,
-        ToolInvokeRequest innerRequest,
-        Dictionary<string, object?> existingArgs,
-        string fieldName,
-        IReadOnlyList<object?> values,
-        CancellationToken ct)
-    {
-        var tasks = values.Select(v =>
-        {
-            var merged = MergeArgs(existingArgs, fieldName, v);
-            return CallAsync(serverName, toolName, innerRequest, merged, ct);
-        }).ToList();
-
-        var responses = await Task.WhenAll(tasks);
-        return AggregateFanOut(innerRequest, fieldName, values, responses);
     }
 
     private async Task<ToolInvokeResponse> CallAsync(
@@ -416,63 +372,12 @@ public sealed class McpRecoveryExecutor
         return copy;
     }
 
-    private static ToolInvokeResponse AggregateFanOut(
-        ToolInvokeRequest innerRequest,
-        string fieldName,
-        IReadOnlyList<object?> values,
-        IReadOnlyList<ToolInvokeResponse> responses)
-    {
-        var combined = new List<ToolContentBlock>();
-        var sb = new StringBuilder();
-        var anyError = false;
-
-        for (var i = 0; i < responses.Count; i++)
-        {
-            var r = responses[i];
-            var label = $"[{fieldName}={values[i]}]";
-
-            // A leg "errored" if either IsError=true or its content carries an embedded error.
-            if (TryExtractRecoverableError(r) is not null) anyError = true;
-
-            sb.Append(label).Append(' ');
-            if (!string.IsNullOrEmpty(r.Content))
-                sb.Append(r.Content);
-            else
-                sb.Append("(no content)");
-            sb.AppendLine();
-
-            if (r.ContentBlocks is not null)
-            {
-                combined.Add(new ToolContentBlock { Type = "text", Text = label });
-                foreach (var b in r.ContentBlocks)
-                    combined.Add(b);
-            }
-        }
-
-        return new ToolInvokeResponse
-        {
-            ToolCallId = innerRequest.ToolCallId,
-            ToolName = innerRequest.ToolName,
-            Content = sb.ToString().TrimEnd(),
-            ContentBlocks = combined.Count > 0 ? combined : null,
-            IsError = anyError
-        };
-    }
-
     private static ToolInvokeResponse Annotate(ToolInvokeResponse failed, string trail) => new()
     {
         ToolCallId = failed.ToolCallId,
         ToolName = failed.ToolName,
         Content = $"{failed.Content}\n[recovery-trail] {trail}",
         ContentBlocks = failed.ContentBlocks,
-        IsError = true
-    };
-
-    private static ToolInvokeResponse ErrorResponse(ToolInvokeRequest req, string message) => new()
-    {
-        ToolCallId = req.ToolCallId,
-        ToolName = req.ToolName,
-        Content = message,
         IsError = true
     };
 
@@ -484,7 +389,7 @@ public sealed class McpRecoveryExecutor
 
     private static void RecordTelemetry(
         string server, string tool, string field, string stage,
-        bool recovered, string provider, double durationMs, bool fanout = false)
+        bool recovered, string provider, double durationMs)
     {
         var outcome = recovered ? "recovered" : "failed";
         var tags = new TagList
@@ -496,7 +401,6 @@ public sealed class McpRecoveryExecutor
             { "outcome", outcome },
             { "provider", provider }
         };
-        if (fanout) tags.Add("fanout", "true");
 
         RecoveryDiagnostics.Attempts.Add(1, tags);
         RecoveryDiagnostics.Duration.Record(durationMs, tags);

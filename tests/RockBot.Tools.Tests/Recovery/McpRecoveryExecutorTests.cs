@@ -389,59 +389,46 @@ public class McpRecoveryExecutorTests
     }
 
     [TestMethod]
-    public async Task FanOut_IssuesOneCallPerValue_AggregatesContent()
+    public async Task ProviderResolves_RetrySurfacesDifferentMissingField_ChainsAndFills()
     {
-        var args = new List<string>();
-        McpInvokeDelegate invoke = (r, h, ct) =>
-        {
-            args.Add(r.Arguments!);
-            // Echo the accountId in the response.
-            var doc = JsonDocument.Parse(r.Arguments!);
-            var id = doc.RootElement.GetProperty("accountId").GetString();
-            return Task.FromResult(Ok(r, $"events for {id}"));
-        };
-
-        var provider = new FakeProvider(
-            (_, _, f) => f == "accountId",
-            _ => new ResolvedDefault(new[] { "a@x.com", "b@x.com" }, RequiresFanOut: true));
-
-        var exec = new McpRecoveryExecutor(invoke, [provider], NullLogger<McpRecoveryExecutor>.Instance);
-        var req = new ToolInvokeRequest { ToolCallId = "1", ToolName = "get_events", Arguments = "{}" };
-        var failed = Err(req, "Required parameter 'accountId'");
-
-        var result = await exec.RecoverAsync("calendar-mcp", "get_events", req, failed, default);
-
-        Assert.IsFalse(result.IsError);
-        Assert.AreEqual(2, args.Count);
-        StringAssert.Contains(result.Content, "events for a@x.com");
-        StringAssert.Contains(result.Content, "events for b@x.com");
-        StringAssert.Contains(result.Content, "[accountId=a@x.com]");
-        StringAssert.Contains(result.Content, "[accountId=b@x.com]");
-    }
-
-    [TestMethod]
-    public async Task FanOut_OneLegFails_MarksOverallError()
-    {
+        // Regression for Amendment 1: previously, fan-out responses returned mergedArgs=null
+        // and blocked chained recovery. With fan-out removed, a Stage A resolve that surfaces
+        // a *different* missing field on retry must still chain to fill it on the next pass.
+        var calls = new List<string>();
         var n = 0;
         McpInvokeDelegate invoke = (r, h, ct) =>
         {
+            calls.Add(r.Arguments!);
             n++;
-            return Task.FromResult(n == 1 ? Ok(r, "good") : Err(r, "leg failed"));
+            // First retry (accountId filled) surfaces the next missing field.
+            if (n == 1)
+                return Task.FromResult(Err(r, "Required parameter 'emailId' was not provided"));
+            // Second retry (emailId filled too) succeeds.
+            return Task.FromResult(Ok(r, "email body"));
         };
 
-        var provider = new FakeProvider(
-            (_, _, _) => true,
-            _ => new ResolvedDefault(new[] { "1", "2" }, RequiresFanOut: true));
-        var exec = new McpRecoveryExecutor(invoke, [provider], NullLogger<McpRecoveryExecutor>.Instance);
+        var idProvider = new FakeProvider(
+            (_, _, f) => f == "accountId",
+            _ => new ResolvedDefault("a@x.com"));
+        var emailProvider = new FakeProvider(
+            (_, _, f) => f == "emailId",
+            _ => new ResolvedDefault("EMAIL-1"));
 
-        var req = new ToolInvokeRequest { ToolCallId = "1", ToolName = "get", Arguments = "{}" };
-        var failed = Err(req, "Required parameter 'k'");
+        var exec = new McpRecoveryExecutor(
+            invoke, [idProvider, emailProvider], NullLogger<McpRecoveryExecutor>.Instance);
 
-        var result = await exec.RecoverAsync("srv", "get", req, failed, default);
+        var req = new ToolInvokeRequest { ToolCallId = "1", ToolName = "get_email_details", Arguments = "{}" };
+        var failed = Err(req, "Required parameter 'accountId'");
 
-        Assert.IsTrue(result.IsError);
-        StringAssert.Contains(result.Content, "good");
-        StringAssert.Contains(result.Content, "leg failed");
+        var result = await exec.RecoverAsync("calendar-mcp", "get_email_details", req, failed, default);
+
+        Assert.IsFalse(result.IsError, "chained recovery should succeed for sequential missing fields");
+        Assert.AreEqual("email body", result.Content);
+        Assert.AreEqual(2, calls.Count, "two retries: one per field");
+
+        var finalArgs = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(calls[1]);
+        Assert.AreEqual("a@x.com", finalArgs!["accountId"].GetString());
+        Assert.AreEqual("EMAIL-1", finalArgs["emailId"].GetString());
     }
 
     [TestMethod]
