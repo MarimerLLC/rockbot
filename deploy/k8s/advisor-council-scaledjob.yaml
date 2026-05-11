@@ -1,0 +1,66 @@
+---
+# TriggerAuthentication — uses the same KEDA RabbitMQ secret as research-agent.
+# Defined once in research-agent-scaledjob.yaml; if applied independently of that
+# manifest, also apply research-agent-keda-secret.sh first.
+apiVersion: keda.sh/v1alpha1
+kind: TriggerAuthentication
+metadata:
+  name: rockbot-keda-rabbitmq-auth
+  namespace: rockbot
+spec:
+  secretTargetRef:
+    - parameter: host
+      name: rockbot-keda-rabbitmq
+      key: uri
+
+---
+# ScaledJob — KEDA watches the AdvisorCouncil queue depth and launches one pod
+# per pending message. Each pod processes one AgentTaskRequest and exits.
+apiVersion: keda.sh/v1alpha1
+kind: ScaledJob
+metadata:
+  name: rockbot-advisor-council
+  namespace: rockbot
+spec:
+  jobTargetRef:
+    template:
+      spec:
+        restartPolicy: Never
+        containers:
+          - name: advisor-council
+            image: rockylhotka/rockbot-advisor-council:0.10.55
+            imagePullPolicy: Always
+            env:
+              # Ephemeral working memory — lives on the container's local filesystem.
+              - name: Memory__BasePath
+                value: /tmp/memory
+              # Personas — image ships defaults at /app/agent/personas; override here
+              # to a PVC path if you want operator-customized personas.
+              - name: Council__PersonasPath
+                value: /app/agent/personas
+            envFrom:
+              - configMapRef:
+                  name: rockbot-config
+              - secretRef:
+                  name: rockbot-secrets
+            resources:
+              requests:
+                cpu: 200m
+                memory: 256Mi
+              limits:
+                cpu: "1"
+                memory: 1Gi
+    ttlSecondsAfterFinished: 300
+  maxReplicaCount: 3
+  minReplicaCount: 0
+  scalingStrategy:
+    strategy: accurate
+  triggers:
+    - type: rabbitmq
+      metadata:
+        protocol: amqp
+        queueName: rockbot.AdvisorCouncil.agent-task-AdvisorCouncil
+        mode: QueueLength
+        value: "1"
+      authenticationRef:
+        name: rockbot-keda-rabbitmq-auth
