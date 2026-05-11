@@ -100,7 +100,10 @@ public class AgentContextBuilderKnowledgeGraphTests
 
         var (builder, _) = BuildBuilder(graph, ltm);
 
-        await builder.BuildAsync("session-3", "what did Alice think?", CancellationToken.None);
+        // Long enough to bypass short-message dampening (#383) so LTM-seeded graph
+        // expansion still runs. The literal text doesn't matter — graph stub returns
+        // Alice regardless of the query.
+        await builder.BuildAsync("session-3", "what did Alice think about the recent meeting", CancellationToken.None);
 
         // FindEntitiesByNameAsync is called once for the user message and once per top memory
         // (K=2 by default, but only 1 memory is in the store here, so just 1 memory call).

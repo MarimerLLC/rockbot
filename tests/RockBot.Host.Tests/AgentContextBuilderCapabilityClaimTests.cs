@@ -19,6 +19,11 @@ namespace RockBot.Host.Tests;
 [TestClass]
 public class AgentContextBuilderCapabilityClaimTests
 {
+    // BuildAsync skips long-term-memory injection for user messages ≤30 chars (see #383).
+    // Capability-claim filtering runs inside the LTM injection path, so tests use a
+    // message above that threshold to keep the path engaged.
+    private const string LongMessage = "tell me what you remember about this topic";
+
     [TestMethod]
     public async Task BuildAsync_PredicateSucceeded_EvictsClaimAndSkipsInjection()
     {
@@ -27,7 +32,7 @@ public class AgentContextBuilderCapabilityClaimTests
         var verifier = new StubVerifier(VerifyOutcome.PredicateSucceeded);
         var builder = NewBuilder(ltm, verifier);
 
-        var messages = await builder.BuildAsync("session-1", "anything", CancellationToken.None);
+        var messages = await builder.BuildAsync("session-1", LongMessage, CancellationToken.None);
 
         Assert.AreEqual(1, ltm.DeletedIds.Count, "Falsified claim must be evicted from LTM.");
         Assert.AreEqual("claim-a", ltm.DeletedIds[0]);
@@ -43,7 +48,7 @@ public class AgentContextBuilderCapabilityClaimTests
         var verifier = new StubVerifier(VerifyOutcome.PredicateFailed);
         var builder = NewBuilder(ltm, verifier);
 
-        var messages = await builder.BuildAsync("session-1", "anything", CancellationToken.None);
+        var messages = await builder.BuildAsync("session-1", LongMessage, CancellationToken.None);
 
         Assert.AreEqual(0, ltm.DeletedIds.Count, "Predicate-failed claim must NOT be evicted.");
         var injected = messages.FirstOrDefault(m => m.Text?.Contains("claim-b") == true);
@@ -60,7 +65,7 @@ public class AgentContextBuilderCapabilityClaimTests
         var verifier = new StubVerifier(VerifyOutcome.Uncertain, detail: "budget exceeded");
         var builder = NewBuilder(ltm, verifier);
 
-        var messages = await builder.BuildAsync("session-1", "anything", CancellationToken.None);
+        var messages = await builder.BuildAsync("session-1", LongMessage, CancellationToken.None);
 
         Assert.AreEqual(0, ltm.DeletedIds.Count, "Uncertain claim must NOT be evicted.");
         var injected = messages.FirstOrDefault(m => m.Text?.Contains("claim-c") == true);
@@ -77,7 +82,7 @@ public class AgentContextBuilderCapabilityClaimTests
         var verifier = new StubVerifier(VerifyOutcome.PredicateSucceeded); // would evict if it ran
         var builder = NewBuilder(ltm, verifier);
 
-        var messages = await builder.BuildAsync("session-1", "anything", CancellationToken.None);
+        var messages = await builder.BuildAsync("session-1", LongMessage, CancellationToken.None);
 
         Assert.AreEqual(0, ltm.DeletedIds.Count, "Non-claim entries must not be evicted.");
         Assert.AreEqual(0, verifier.CallCount, "Verifier must not be invoked for non-claim entries.");
@@ -92,7 +97,7 @@ public class AgentContextBuilderCapabilityClaimTests
         var ltm = new RecordingMemory([claim]);
         var builder = NewBuilder(ltm, verifier: null);
 
-        var messages = await builder.BuildAsync("session-1", "anything", CancellationToken.None);
+        var messages = await builder.BuildAsync("session-1", LongMessage, CancellationToken.None);
 
         Assert.AreEqual(0, ltm.DeletedIds.Count);
         Assert.IsTrue(messages.Any(m => m.Text?.Contains("claim-d") == true),
@@ -110,7 +115,7 @@ public class AgentContextBuilderCapabilityClaimTests
         };
         var builder = NewBuilder(ltm, verifier);
 
-        var messages = await builder.BuildAsync("session-1", "anything", CancellationToken.None);
+        var messages = await builder.BuildAsync("session-1", LongMessage, CancellationToken.None);
 
         Assert.AreEqual(0, ltm.DeletedIds.Count, "Verifier exceptions must not cause eviction.");
         var injected = messages.FirstOrDefault(m => m.Text?.Contains("claim-e") == true);
