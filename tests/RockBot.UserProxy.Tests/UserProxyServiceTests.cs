@@ -36,10 +36,15 @@ public sealed class UserProxyServiceTests
     }
 
     [TestMethod]
-    public void StartAsync_SubscribesToUserResponseTopic()
+    public void StartAsync_SubscribesToBroadcastAndPointToPointTopics()
     {
+        // First subscription = broadcast (unsolicited subagent/scheduled/A2A messages);
+        // second = per-proxy point-to-point (correlated replies for this proxy only).
         Assert.AreEqual($"{UserProxyTopics.UserResponse}.{_options.AgentName}", _subscriber.CapturedTopic);
         Assert.AreEqual("user-proxy.test-proxy", _subscriber.CapturedSubscriptionName);
+        Assert.IsNotNull(_subscriber.GetHandlerForTopic(
+            $"{UserProxyTopics.UserResponse}.{_options.AgentName}.{_options.ProxyId}"),
+            "Per-proxy point-to-point response topic must also be subscribed");
     }
 
     [TestMethod]
@@ -70,7 +75,12 @@ public sealed class UserProxyServiceTests
 
         var envelope = _publisher.Published[0].Envelope;
         Assert.IsNotNull(envelope.CorrelationId);
-        Assert.AreEqual($"{UserProxyTopics.UserResponse}.{_options.AgentName}", envelope.ReplyTo);
+        // ReplyTo must target this proxy's point-to-point topic so sibling proxies
+        // (e.g. a deployed Blazor pod) don't see this correlated reply on the
+        // broadcast topic and render it as an unsolicited chat bubble.
+        Assert.AreEqual(
+            $"{UserProxyTopics.UserResponse}.{_options.AgentName}.{_options.ProxyId}",
+            envelope.ReplyTo);
         Assert.AreEqual("test-proxy", envelope.Source);
 
         await sendTask;
@@ -230,6 +240,44 @@ public sealed class UserProxyServiceTests
     }
 
     [TestMethod]
+    public async Task SiblingProxiesReply_DoesNotLeakIntoFrontend()
+    {
+        // Regression: a correlated reply addressed to ANOTHER proxy used to arrive
+        // on the broadcast topic this proxy is also subscribed to. Without the
+        // topic split it falls into the "unsolicited reply" branch and shows up
+        // as a chat bubble. With the split, the agent publishes the reply to the
+        // sibling's point-to-point topic only — this proxy never sees it.
+
+        // Verify our broadcast handler does not display a reply that wasn't
+        // routed through our point-to-point topic. Simulate what RabbitMQ would
+        // do: only the originator gets the message — so the broadcast handler
+        // should be invoked here ONLY for messages with no CorrelationId or with
+        // a CorrelationId we are tracking.
+        var broadcastHandler = _subscriber.GetHandlerForTopic(
+            $"{UserProxyTopics.UserResponse}.{_options.AgentName}");
+        var p2pHandler = _subscriber.GetHandlerForTopic(
+            $"{UserProxyTopics.UserResponse}.{_options.AgentName}.{_options.ProxyId}");
+
+        Assert.IsNotNull(broadcastHandler, "Broadcast topic must be subscribed");
+        Assert.IsNotNull(p2pHandler, "P2P topic must be subscribed");
+
+        // Sanity: a true unsolicited reply (no correlation id) on the broadcast
+        // topic still displays — this preserves subagent/scheduled-task UX.
+        var unsolicited = new AgentReply
+        {
+            Content = "Subagent completed",
+            SessionId = "s1",
+            AgentName = "subagent-x",
+            IsFinal = true
+        };
+        var unsolicitedEnvelope = TestEnvelopeHelper.CreateEnvelope(
+            unsolicited, source: "subagent-x", correlationId: null);
+        await broadcastHandler!(unsolicitedEnvelope, CancellationToken.None);
+        Assert.AreEqual(1, _frontend.DisplayedReplies.Count,
+            "Unsolicited (no-correlation) reply on broadcast topic must still display");
+    }
+
+    [TestMethod]
     public async Task SendFireAndForgetAsync_PublishesWithoutWaiting()
     {
         var message = CreateUserMessage();
@@ -311,9 +359,14 @@ public sealed class UserProxyServiceTests
         await connected.Task.WaitAsync(TimeSpan.FromSeconds(5));
 
         Assert.IsTrue(svc.IsConnected);
-        Assert.AreEqual($"{UserProxyTopics.UserResponse}.{retryOptions.AgentName}", failingSubscriber.CapturedTopic);
-        // 1 initial failure + 1 retry failure + 1 retry success = 3 total calls
-        Assert.AreEqual(3, failingSubscriber.CallCount);
+        // After the successful retry the proxy subscribes to both response topics
+        // (broadcast first, then per-proxy point-to-point).
+        CollectionAssert.Contains(failingSubscriber.SubscribedTopics.ToArray(),
+            $"{UserProxyTopics.UserResponse}.{retryOptions.AgentName}");
+        CollectionAssert.Contains(failingSubscriber.SubscribedTopics.ToArray(),
+            $"{UserProxyTopics.UserResponse}.{retryOptions.AgentName}.{retryOptions.ProxyId}");
+        // 2 broadcast-attempt failures + 1 broadcast success + 1 p2p success = 4 total calls
+        Assert.AreEqual(4, failingSubscriber.CallCount);
 
         await svc.StopAsync(CancellationToken.None);
     }

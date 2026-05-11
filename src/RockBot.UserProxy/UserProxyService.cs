@@ -26,6 +26,7 @@ public sealed class UserProxyService(
     private readonly ConcurrentDictionary<string, TaskCompletionSource<DeleteSavedResponseAck>> _pendingDeleteSaved = new();
     private readonly ConcurrentDictionary<string, TaskCompletionSource<ActiveStatusResponse>> _pendingActiveStatus = new();
     private ISubscription? _subscription;
+    private ISubscription? _p2pSubscription;
     private ISubscription? _historySubscription;
     private ISubscription? _agentInfoSubscription;
     private ISubscription? _activeStatusSubscription;
@@ -52,35 +53,86 @@ public sealed class UserProxyService(
     public bool IsConnected { get; private set; }
     public event Action? OnConnectionChanged;
 
+    /// <summary>
+    /// Broadcast topic that every connected user proxy subscribes to. Carries
+    /// unsolicited messages (subagent completions, scheduled task output, A2A
+    /// status updates) that aren't tied to any one originator.
+    /// </summary>
+    internal string UserResponseBroadcastTopic =>
+        $"{UserProxyTopics.UserResponse}.{options.AgentName}";
+
+    /// <summary>
+    /// Per-proxy point-to-point topic for correlated replies. <c>SendAsync</c>
+    /// sets this as the envelope's <c>replyTo</c>, the agent honors it in
+    /// <c>UserMessageHandler</c>, and only the originating proxy receives the
+    /// reply. Stops a sibling proxy (e.g. Blazor) from seeing a CLI's correlated
+    /// reply land on the broadcast topic and rendering it as an "unsolicited"
+    /// chat bubble.
+    /// </summary>
+    internal string UserResponsePointToPointTopic =>
+        $"{UserProxyTopics.UserResponse}.{options.AgentName}.{options.ProxyId}";
+
     public async Task StartAsync(CancellationToken cancellationToken)
     {
         _cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
 
         try
         {
-            _subscription = await subscriber.SubscribeAsync(
-                $"{UserProxyTopics.UserResponse}.{options.AgentName}",
-                $"user-proxy.{options.ProxyId}",
-                HandleResponseAsync,
-                cancellationToken);
+            await SubscribeAllAsync(cancellationToken);
 
             IsConnected = true;
             OnConnectionChanged?.Invoke();
-            logger.LogInformation("User proxy {ProxyId} subscribed to {Topic}",
-                options.ProxyId, $"{UserProxyTopics.UserResponse}.{options.AgentName}");
+            logger.LogInformation(
+                "User proxy {ProxyId} subscribed to {Broadcast} and {PointToPoint}",
+                options.ProxyId, UserResponseBroadcastTopic, UserResponsePointToPointTopic);
         }
         catch (Exception ex)
         {
             IsConnected = false;
             OnConnectionChanged?.Invoke();
-            logger.LogError(ex, "User proxy {ProxyId} failed to subscribe to {Topic}",
-                options.ProxyId, $"{UserProxyTopics.UserResponse}.{options.AgentName}");
+            logger.LogError(ex,
+                "User proxy {ProxyId} failed to subscribe to {Broadcast} / {PointToPoint}",
+                options.ProxyId, UserResponseBroadcastTopic, UserResponsePointToPointTopic);
 
             if (options.MaxSubscribeRetries > 0)
             {
                 // Fire-and-forget: retry in the background using the linked CTS
                 _ = RetrySubscribeAsync(_cts.Token);
             }
+        }
+    }
+
+    /// <summary>
+    /// Subscribes the broadcast and point-to-point response topics with distinct
+    /// queue names. Disposes any partial subscription on failure so a retry starts
+    /// from a clean slate.
+    /// </summary>
+    private async Task SubscribeAllAsync(CancellationToken ct)
+    {
+        ISubscription? broadcast = null;
+        ISubscription? p2p = null;
+        try
+        {
+            broadcast = await subscriber.SubscribeAsync(
+                UserResponseBroadcastTopic,
+                $"user-proxy.{options.ProxyId}",
+                HandleResponseAsync,
+                ct);
+
+            p2p = await subscriber.SubscribeAsync(
+                UserResponsePointToPointTopic,
+                $"user-proxy.{options.ProxyId}.p2p",
+                HandleResponseAsync,
+                ct);
+
+            _subscription = broadcast;
+            _p2pSubscription = p2p;
+        }
+        catch
+        {
+            if (broadcast is not null) await broadcast.DisposeAsync();
+            if (p2p is not null) await p2p.DisposeAsync();
+            throw;
         }
     }
 
@@ -106,17 +158,13 @@ public sealed class UserProxyService(
 
             try
             {
-                _subscription = await subscriber.SubscribeAsync(
-                    $"{UserProxyTopics.UserResponse}.{options.AgentName}",
-                    $"user-proxy.{options.ProxyId}",
-                    HandleResponseAsync,
-                    ct);
+                await SubscribeAllAsync(ct);
 
                 IsConnected = true;
                 OnConnectionChanged?.Invoke();
                 logger.LogInformation(
-                    "User proxy {ProxyId} subscribed to {Topic} on retry attempt {Attempt}",
-                    options.ProxyId, $"{UserProxyTopics.UserResponse}.{options.AgentName}", attempt);
+                    "User proxy {ProxyId} subscribed to {Broadcast} and {PointToPoint} on retry attempt {Attempt}",
+                    options.ProxyId, UserResponseBroadcastTopic, UserResponsePointToPointTopic, attempt);
                 return;
             }
             catch (OperationCanceledException)
@@ -126,8 +174,8 @@ public sealed class UserProxyService(
             catch (Exception ex)
             {
                 logger.LogWarning(ex,
-                    "User proxy {ProxyId} retry attempt {Attempt} failed for {Topic}",
-                    options.ProxyId, attempt, $"{UserProxyTopics.UserResponse}.{options.AgentName}");
+                    "User proxy {ProxyId} retry attempt {Attempt} failed for {Broadcast} / {PointToPoint}",
+                    options.ProxyId, attempt, UserResponseBroadcastTopic, UserResponsePointToPointTopic);
 
                 // Exponential backoff capped at MaxSubscribeRetryDelay
                 delay = TimeSpan.FromTicks(Math.Min(
@@ -137,8 +185,8 @@ public sealed class UserProxyService(
         }
 
         logger.LogError(
-            "User proxy {ProxyId} exhausted all {MaxRetries} retry attempts for {Topic}",
-            options.ProxyId, options.MaxSubscribeRetries, $"{UserProxyTopics.UserResponse}.{options.AgentName}");
+            "User proxy {ProxyId} exhausted all {MaxRetries} retry attempts for {Broadcast} / {PointToPoint}",
+            options.ProxyId, options.MaxSubscribeRetries, UserResponseBroadcastTopic, UserResponsePointToPointTopic);
     }
 
     public async Task StopAsync(CancellationToken cancellationToken)
@@ -203,6 +251,9 @@ public sealed class UserProxyService(
         if (_subscription is not null)
             await _subscription.DisposeAsync();
 
+        if (_p2pSubscription is not null)
+            await _p2pSubscription.DisposeAsync();
+
         if (_historySubscription is not null)
             await _historySubscription.DisposeAsync();
 
@@ -260,7 +311,7 @@ public sealed class UserProxyService(
             var envelope = message.ToEnvelope<UserMessage>(
                 source: options.ProxyId,
                 correlationId: correlationId,
-                replyTo: $"{UserProxyTopics.UserResponse}.{options.AgentName}",
+                replyTo: UserResponsePointToPointTopic,
                 destination: message.TargetAgent);
 
             await publisher.PublishAsync($"{UserProxyTopics.UserMessage}.{options.AgentName}", envelope, cancellationToken);
@@ -326,7 +377,7 @@ public sealed class UserProxyService(
         var envelope = message.ToEnvelope<UserMessage>(
             source: options.ProxyId,
             correlationId: correlationId,
-            replyTo: $"{UserProxyTopics.UserResponse}.{options.AgentName}",
+            replyTo: UserResponsePointToPointTopic,
             destination: message.TargetAgent);
 
         await publisher.PublishAsync($"{UserProxyTopics.UserMessage}.{options.AgentName}", envelope, cancellationToken);
