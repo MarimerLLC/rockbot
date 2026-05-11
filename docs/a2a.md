@@ -26,7 +26,11 @@ result folded back into the conversation.
    `session/{sessionId}/a2a/{agentName}/{taskId}/result` (60-minute TTL) and
    injects a synthetic user turn into the conversation that contains the exact
    key. The primary agent calls `get_from_working_memory` with that key to
-   retrieve and present the result.
+   retrieve and present the result. If the response also carries a `data` part
+   (structured JSON), the bytes are preserved under a sibling key
+   `session/{sessionId}/a2a/{agentName}/{taskId}/result.data` with category
+   `a2a-result-data` and the same 60-minute TTL — the synthetic turn names this
+   key so the agent can fetch it on demand instead of having it inlined.
 
 The external agent does **not** need to be running at the moment `invoke_agent`
 is called — the message sits on the queue until the agent starts (e.g. a KEDA
@@ -71,6 +75,24 @@ skill handlers can read both parts from `AgentTaskRequest.Message.Parts`.
 
 `InputRequired` follow-ups remain text-only — only the initial `invoke_agent`
 call carries the structured payload.
+
+### Structured data in responses
+
+Skills can return a `data` part alongside their text synthesis — `AdvisorCouncil`
+does this, emitting `{ personas, tensions, confidence, metadata }` as
+`application/json` next to its prose. RockBot's primary-side handler preserves
+both parts:
+
+| Key | Category | Contents |
+|-----|----------|----------|
+| `…/{taskId}/result` | `a2a-result` | The `text` part (synthesis prose) |
+| `…/{taskId}/result.data` | `a2a-result-data` | The first `data` part's raw payload (typically JSON) |
+
+The `result.data` entry is only written when the response actually contains a
+`data` part with non-empty bytes — single-text-part results behave exactly as
+before. The data-key tag list includes the mime type, agent name, and task id
+for downstream filtering. The synthetic user turn that follows the result names
+both keys so the LLM can fetch the structured payload on demand.
 
 ---
 
