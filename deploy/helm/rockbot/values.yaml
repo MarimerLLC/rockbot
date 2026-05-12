@@ -185,6 +185,13 @@ shared:
   # not touched, so empty structure is preserved. Safety net for ad-hoc paths
   # (e.g. patrol drafts, subagent artifacts) that don't have a dedicated TTL.
   globalTtlDays: 30
+  # Shared POSIX group ID applied via pod-level securityContext.fsGroup on every
+  # pod that mounts the rockbot-shared PVC (agent, shared-cleanup cronjob,
+  # ephemeral script pods). kubelet chgrp's the volume root to this GID, sets
+  # the setgid bit on directories, and OR's group rw into the mode — so the
+  # three writers (agent UID 999, cleanup UID 0, script pods UID 1000) can all
+  # read/write each other's files without coordinating UIDs.
+  fsGroup: 2000
 
 # ── TodoApp MCP server ────────────────────────────────────────────────────────
 # Standalone MCP server that exposes a persistent to-do list to the agent.

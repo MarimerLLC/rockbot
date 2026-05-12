@@ -41,4 +41,13 @@ public sealed class ContainerScriptOptions
     /// Exposed to scripts via the <c>ROCKBOT_SHARED_PATH</c> environment variable.
     /// </summary>
     public string SharedVolumePath { get; set; } = "/rockbot/shared";
+
+    /// <summary>
+    /// Optional POSIX group ID applied as the pod-level <c>fsGroup</c>. When set
+    /// (non-null and &gt; 0), kubelet chgrp's the shared volume to this GID and
+    /// adds group-rw to the mode, so script pods (which run as UID 1000) can
+    /// share files with the agent (UID 999) and the shared-cleanup cronjob
+    /// (UID 0). Must match the fsGroup configured on those other pods.
+    /// </summary>
+    public long? FsGroup { get; set; }
 }
