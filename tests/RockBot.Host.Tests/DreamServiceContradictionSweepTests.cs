@@ -153,6 +153,6 @@ public class DreamServiceContradictionSweepTests
         var memOpts = Options.Create(new MemoryOptions { BasePath = Path.Combine(_tempDir, "ltm") });
         var profOpts = Options.Create(new AgentProfileOptions { BasePath = _tempDir });
         var embedOpts = Options.Create(new EmbeddingOptions());
-        return new FileMemoryStore(memOpts, profOpts, embedOpts, NullLogger<FileMemoryStore>.Instance);
+        return new FileMemoryStore(memOpts, profOpts, embedOpts, NullLogger<FileMemoryStore>.Instance, EmbeddingTextPreparer.ForTests());
     }
 }

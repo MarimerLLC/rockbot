@@ -48,7 +48,8 @@ public class CapabilityClaimEndToEndTests
 
         var ltm = new FileMemoryStore(
             memoryOpts, profileOpts, embedOpts,
-            NullLogger<FileMemoryStore>.Instance);
+            NullLogger<FileMemoryStore>.Instance,
+            EmbeddingTextPreparer.ForTests());
 
         // 2. Save a claim through the real writer.
         var writer = new CapabilityClaimWriter(ltm);
@@ -106,7 +107,8 @@ public class CapabilityClaimEndToEndTests
 
         var ltm = new FileMemoryStore(
             memoryOpts, profileOpts, embedOpts,
-            NullLogger<FileMemoryStore>.Instance);
+            NullLogger<FileMemoryStore>.Instance,
+            EmbeddingTextPreparer.ForTests());
 
         var writer = new CapabilityClaimWriter(ltm);
         await writer.SaveCapabilityClaimAsync(new CapabilityClaim(

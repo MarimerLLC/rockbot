@@ -1,5 +1,6 @@
 using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Hosting;
 
 namespace RockBot.Host;
@@ -53,6 +54,7 @@ public static class AgentMemoryExtensions
         else
             builder.Services.Configure<MemoryOptions>(_ => { });
 
+        builder.Services.TryAddSingleton<EmbeddingTextPreparer>();
         builder.Services.AddSingleton<ILongTermMemory, FileMemoryStore>();
 
         // Phase 2 self-repair: capability-claim writer and read-side verifier.
@@ -79,6 +81,7 @@ public static class AgentMemoryExtensions
         else
             builder.Services.Configure<WorkingMemoryOptions>(_ => { });
 
+        builder.Services.TryAddSingleton<EmbeddingTextPreparer>();
         builder.Services.AddMemoryCache();
         builder.Services.AddSingleton<HybridCacheWorkingMemory>();
         builder.Services.AddSingleton<FileWorkingMemory>();
@@ -100,6 +103,7 @@ public static class AgentMemoryExtensions
         else
             builder.Services.Configure<SkillOptions>(_ => { });
 
+        builder.Services.TryAddSingleton<EmbeddingTextPreparer>();
         builder.Services.AddSingleton<ISkillStore, FileSkillStore>();
         builder.Services.AddSingleton<ISkillUsageStore, FileSkillUsageStore>();
         builder.Services.AddSingleton<ISkillResourceUsageStore, FileSkillResourceUsageStore>();

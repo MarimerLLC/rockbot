@@ -23,11 +23,21 @@ public sealed class EmbeddingOptions
     public string? ApiKey { get; set; }
 
     /// <summary>
-    /// Maximum character length of text sent to the embedding model. Text exceeding this
-    /// limit is truncated before embedding. Default 30000 (~7500 tokens) leaves headroom
-    /// below the 8192-token context window of models like <c>nomic-embed-text</c>.
+    /// Maximum character length of prose text sent to the embedding model. Text exceeding
+    /// this limit is truncated before embedding. Default 30000 (~7500 tokens at ~4 chars/token)
+    /// leaves headroom below the 8192-token context window of models like <c>nomic-embed-text</c>.
     /// </summary>
     public int MaxInputChars { get; set; } = 30_000;
+
+    /// <summary>
+    /// Stricter character cap applied when the input looks like a structured payload
+    /// (JSON object/array). JSON tokenizes ~2× denser than prose, so a 19k-char JSON
+    /// blob can push past 9k tokens — over the 8192 window — while the prose cap would
+    /// happily let it through. Default 12000 (~6000 tokens at ~2 chars/token) leaves
+    /// the same headroom for structured input. Selection is centralized in
+    /// <c>EmbeddingTextPreparer</c>; no caller picks the cap directly.
+    /// </summary>
+    public int MaxStructuredInputChars { get; set; } = 12_000;
 
     /// <summary>
     /// Minimum cosine similarity threshold for vector search results. Candidates below

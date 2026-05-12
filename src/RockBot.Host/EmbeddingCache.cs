@@ -16,7 +16,7 @@ internal sealed class EmbeddingCache
     private readonly IEmbeddingGenerator<string, Embedding<float>> _generator;
     private readonly string _embeddingsPath;
     private readonly ILogger _logger;
-    private readonly int _maxInputChars;
+    private readonly EmbeddingTextPreparer _preparer;
     private readonly SemaphoreSlim _semaphore = new(1, 1);
 
     /// <summary>
@@ -29,12 +29,12 @@ internal sealed class EmbeddingCache
         IEmbeddingGenerator<string, Embedding<float>> generator,
         string storePath,
         ILogger logger,
-        int maxInputChars = 30_000)
+        EmbeddingTextPreparer preparer)
     {
         _generator = generator;
         _embeddingsPath = Path.Combine(storePath, ".embeddings");
         _logger = logger;
-        _maxInputChars = maxInputChars;
+        _preparer = preparer;
 
         Directory.CreateDirectory(_embeddingsPath);
     }
@@ -121,8 +121,9 @@ internal sealed class EmbeddingCache
             {
                 HostDiagnostics.EmbeddingCalls.Add(1);
 
-                var texts = stillMissing.Select(m =>
-                    m.Text.Length > _maxInputChars ? m.Text[.._maxInputChars] : m.Text).ToList();
+                var texts = stillMissing
+                    .Select(m => _preparer.Prepare(m.Text, diagnosticKey: m.Id))
+                    .ToList();
                 var generated = await _generator.GenerateAsync(texts, cancellationToken: ct);
 
                 sw.Stop();
@@ -240,13 +241,7 @@ internal sealed class EmbeddingCache
         {
             HostDiagnostics.EmbeddingCalls.Add(1);
 
-            // Truncate to avoid exceeding the embedding model's context window.
-            if (text.Length > _maxInputChars)
-            {
-                _logger.LogInformation("Truncating embedding input from {Original} to {Max} chars",
-                    text.Length, _maxInputChars);
-                text = text[.._maxInputChars];
-            }
+            text = _preparer.Prepare(text);
 
             var result = await _generator.GenerateAsync(text, cancellationToken: ct);
             sw.Stop();
