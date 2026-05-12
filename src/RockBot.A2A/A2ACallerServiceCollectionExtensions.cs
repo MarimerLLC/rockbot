@@ -63,6 +63,12 @@ public static class A2ACallerServiceCollectionExtensions
         // when the LLM retries the wisp.
         builder.Services.AddSingleton<ISessionA2ACanceller, A2ATaskCanceller>();
 
+        // Session-scoped A2A wait seam. Subagent code (which doesn't reference
+        // RockBot.A2A) uses this to block before publishing its final result so a
+        // late A2A response isn't dropped against a subagent session that has
+        // already exited.
+        builder.Services.AddSingleton<ISessionA2AAwaiter, A2ATaskAwaiter>();
+
         // InputRequired handler for multi-turn follow-up (trust-gated LLM response generation)
         builder.Services.AddSingleton<InputRequiredHandler>();
 

@@ -31,7 +31,8 @@ internal sealed class SubagentRunner(
     TierRoutingLogger tierRoutingLogger,
     AgentProfile agentProfile,
     ILogger<SubagentRunner> logger,
-    ISkillResourceUsageStore? skillResourceUsageStore = null)
+    ISkillResourceUsageStore? skillResourceUsageStore = null,
+    ISessionA2AAwaiter? a2aAwaiter = null)
 {
     public async Task RunAsync(
         string taskId,
@@ -208,6 +209,36 @@ internal sealed class SubagentRunner(
             isSuccess = false;
             error = ex.Message;
             subagentActivity?.SetStatus(ActivityStatusCode.Error, ex.Message);
+        }
+
+        // Wait for any in-flight A2A tasks the subagent dispatched (via wisps) to
+        // reach a terminal state before publishing the subagent result. Without this,
+        // the wisp's "dispatched, result arrives async" semantics let the subagent's
+        // LLM declare success while the target agent is still working — and the late
+        // A2A response is then dropped by A2ATaskResultHandler because its originating
+        // subagent session has exited and is not a user session. The wait uses the
+        // subagent's overall CancellationToken so a subagent timeout/cancel doesn't
+        // get stretched waiting on remote agents. Once the wait completes, A2A result
+        // working-memory keys (subagent/{taskId}/a2a/.../result) are populated and
+        // SubagentResultHandler's existing whiteboard listing surfaces them to the
+        // primary agent's synthesis turn automatically.
+        if (a2aAwaiter is not null)
+        {
+            try
+            {
+                var awaited = await a2aAwaiter.WaitForSessionAsync(subagentNamespace, ct);
+                if (awaited > 0)
+                {
+                    logger.LogInformation(
+                        "Subagent {TaskId} awaited {Count} A2A task(s) before publishing result",
+                        taskId, awaited);
+                }
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                logger.LogWarning(ex,
+                    "Subagent {TaskId} A2A await threw — continuing to publish anyway", taskId);
+            }
         }
 
         subagentSw.Stop();
