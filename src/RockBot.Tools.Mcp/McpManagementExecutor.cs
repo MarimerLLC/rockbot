@@ -98,10 +98,13 @@ public sealed class McpManagementExecutor : IToolExecutor, IAsyncDisposable
         if (!TryGetServerName(args, out var serverName))
             return Error(request, "Missing required parameter: server_name");
 
-        var tools = await GetSchemasAsync(serverName, ct);
-        if (tools is null)
+        var details = await GetServiceDetailsAsync(serverName, ct);
+        if (details is null)
             return Error(request, $"Timed out waiting for service details for '{serverName}'");
+        if (details.Error is not null)
+            return Error(request, details.Error);
 
+        var tools = (IReadOnlyList<McpToolDefinition>)details.Tools;
         if (TryGetString(args, "tool_name", out var toolName))
         {
             tools = tools
@@ -111,11 +114,32 @@ public sealed class McpManagementExecutor : IToolExecutor, IAsyncDisposable
                 return Error(request, $"No tool named '{toolName}' found on server '{serverName}'");
         }
 
+        // Surface the server's self-reported identity alongside tool schemas so the
+        // agent can reason about what the server actually is — not just what tools
+        // happen to be exposed. The MCP `initialize` handshake provides name/version
+        // and a free-text instructions string; both shape how the LLM picks and uses
+        // a server. Always include the "server" object even when fields are null so
+        // the contract is stable for the agent's tool-result parser.
+        var payload = new
+        {
+            server = new
+            {
+                name = serverName,
+                implementationName = details.ImplementationName,
+                title = details.Title,
+                version = details.Version,
+                description = details.Description,
+                instructions = details.Instructions
+            },
+            tools,
+            prompts = details.Prompts
+        };
+
         return new ToolInvokeResponse
         {
             ToolCallId = request.ToolCallId,
             ToolName = request.ToolName,
-            Content = JsonSerializer.Serialize(tools, JsonOptions)
+            Content = JsonSerializer.Serialize(payload, JsonOptions)
         };
     }
 
@@ -128,14 +152,24 @@ public sealed class McpManagementExecutor : IToolExecutor, IAsyncDisposable
     public async Task<IReadOnlyList<McpToolDefinition>?> GetSchemasAsync(
         string serverName, CancellationToken ct)
     {
+        var response = await GetServiceDetailsAsync(serverName, ct);
+        if (response is null || response.Error is not null) return null;
+        return response.Tools;
+    }
+
+    /// <summary>
+    /// Fetches the full <see cref="McpGetServiceDetailsResponse"/> for one MCP server,
+    /// including server-level identity (name/version/instructions), tool schemas, and prompts.
+    /// Returns null on timeout or transport failure.
+    /// </summary>
+    private async Task<McpGetServiceDetailsResponse?> GetServiceDetailsAsync(
+        string serverName, CancellationToken ct)
+    {
         var mgmtRequest = new McpGetServiceDetailsRequest { ServerName = serverName };
         var responseEnvelope = await SendRequestAsync(mgmtRequest, ct);
         if (responseEnvelope is null) return null;
 
-        var response = responseEnvelope.GetPayload<McpGetServiceDetailsResponse>();
-        if (response is null || response.Error is not null) return null;
-
-        return response.Tools;
+        return responseEnvelope.GetPayload<McpGetServiceDetailsResponse>();
     }
 
     // ── mcp_invoke_tool ──────────────────────────────────────────────────────

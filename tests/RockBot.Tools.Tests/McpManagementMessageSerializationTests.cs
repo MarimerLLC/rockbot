@@ -107,6 +107,40 @@ public class McpManagementMessageSerializationTests
     }
 
     [TestMethod]
+    public void McpGetServiceDetailsResponse_WithServerMetadata_RoundTrips()
+    {
+        var original = new McpGetServiceDetailsResponse
+        {
+            ServerName = "uber",
+            ImplementationName = "rides-3p-demand-mcp",
+            Title = "Uber",
+            Version = "1.2.3",
+            Description = "Rides 3P demand surface",
+            Instructions = "MCP server for rides-3p-demand-mcp service",
+            Tools =
+            [
+                new McpToolDefinition
+                {
+                    Name = "get_estimates_between_two_locations",
+                    Description = "Returns ride estimates"
+                }
+            ]
+        };
+
+        var envelope = original.ToEnvelope("test");
+        var deserialized = envelope.GetPayload<McpGetServiceDetailsResponse>();
+
+        Assert.IsNotNull(deserialized);
+        Assert.AreEqual("uber", deserialized.ServerName);
+        Assert.AreEqual("rides-3p-demand-mcp", deserialized.ImplementationName);
+        Assert.AreEqual("Uber", deserialized.Title);
+        Assert.AreEqual("1.2.3", deserialized.Version);
+        Assert.AreEqual("Rides 3P demand surface", deserialized.Description);
+        Assert.AreEqual("MCP server for rides-3p-demand-mcp service", deserialized.Instructions);
+        Assert.AreEqual(1, deserialized.Tools.Count);
+    }
+
+    [TestMethod]
     public void McpGetServiceDetailsResponse_WithError_RoundTrips()
     {
         var original = new McpGetServiceDetailsResponse

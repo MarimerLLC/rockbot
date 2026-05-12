@@ -135,6 +135,50 @@ public class McpManagementExecutorTests
     }
 
     [TestMethod]
+    public async Task GetServiceDetails_SurfacesServerIdentityToAgent()
+    {
+        var (executor, publisher, subscriber) = CreateExecutor();
+
+        var request = new ToolInvokeRequest
+        {
+            ToolCallId = "call-1",
+            ToolName = "mcp_get_service_details",
+            Arguments = """{"server_name":"uber"}"""
+        };
+
+        var executeTask = executor.ExecuteAsync(request, CancellationToken.None);
+        await Task.Delay(100);
+
+        var published = publisher.Published[0].Envelope;
+        var response = new McpGetServiceDetailsResponse
+        {
+            ServerName = "uber",
+            ImplementationName = "rides-3p-demand-mcp",
+            Title = "Uber",
+            Version = "1.2.3",
+            Instructions = "MCP server for rides-3p-demand-mcp service",
+            Tools =
+            [
+                new McpToolDefinition { Name = "get_estimates_between_two_locations", Description = "..." }
+            ]
+        };
+        var responseEnvelope = response.ToEnvelope("bridge", correlationId: published.CorrelationId);
+        await subscriber.DeliverAsync(executor.ResponseTopic, responseEnvelope);
+
+        var result = await executeTask;
+
+        Assert.IsFalse(result.IsError);
+        var doc = JsonDocument.Parse(result.Content!);
+        var server = doc.RootElement.GetProperty("server");
+        Assert.AreEqual("uber", server.GetProperty("name").GetString());
+        Assert.AreEqual("rides-3p-demand-mcp", server.GetProperty("implementationName").GetString());
+        Assert.AreEqual("1.2.3", server.GetProperty("version").GetString());
+        Assert.AreEqual("MCP server for rides-3p-demand-mcp service",
+            server.GetProperty("instructions").GetString());
+        Assert.AreEqual(1, doc.RootElement.GetProperty("tools").GetArrayLength());
+    }
+
+    [TestMethod]
     public async Task GetServiceDetails_MissingServerName_ReturnsError()
     {
         var (executor, _, _) = CreateExecutor();
