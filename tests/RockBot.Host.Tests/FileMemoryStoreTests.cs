@@ -763,7 +763,8 @@ public class FileMemoryStoreTests
             Options.Create(new MemoryOptions { BasePath = _tempDir }),
             Options.Create(new AgentProfileOptions()),
             Options.Create(new EmbeddingOptions()),
-            NullLogger<FileMemoryStore>.Instance);
+            NullLogger<FileMemoryStore>.Instance,
+            EmbeddingTextPreparer.ForTests());
     }
 
     // ── Importance boost ─────────────────────────────────────────────────────

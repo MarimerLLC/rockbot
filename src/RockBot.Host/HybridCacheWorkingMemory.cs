@@ -17,7 +17,7 @@ internal sealed class HybridCacheWorkingMemory : IWorkingMemory
     private readonly WorkingMemoryOptions _options;
     private readonly ILogger<HybridCacheWorkingMemory> _logger;
     private readonly IEmbeddingGenerator<string, Embedding<float>>? _embeddingGenerator;
-    private readonly int _maxEmbeddingInputChars;
+    private readonly EmbeddingTextPreparer _preparer;
     private readonly float _minSimilarity;
 
     // fullKey -> EntryMeta
@@ -36,6 +36,7 @@ internal sealed class HybridCacheWorkingMemory : IWorkingMemory
         IMemoryCache cache,
         IOptions<WorkingMemoryOptions> options,
         IOptions<EmbeddingOptions> embeddingOptions,
+        EmbeddingTextPreparer preparer,
         ILogger<HybridCacheWorkingMemory> logger,
         IEmbeddingGenerator<string, Embedding<float>>? embeddingGenerator = null)
     {
@@ -43,7 +44,7 @@ internal sealed class HybridCacheWorkingMemory : IWorkingMemory
         _options = options.Value;
         _logger = logger;
         _embeddingGenerator = embeddingGenerator;
-        _maxEmbeddingInputChars = embeddingOptions.Value.MaxInputChars;
+        _preparer = preparer;
         _minSimilarity = embeddingOptions.Value.MinSimilarityThreshold;
     }
 
@@ -105,9 +106,7 @@ internal sealed class HybridCacheWorkingMemory : IWorkingMemory
     {
         try
         {
-            var docText = BuildDocumentText(key, value, category, tags);
-            if (docText.Length > _maxEmbeddingInputChars)
-                docText = docText[.._maxEmbeddingInputChars];
+            var docText = _preparer.Prepare(BuildDocumentText(key, value, category, tags), diagnosticKey: key);
             var result = await _embeddingGenerator!.GenerateAsync(docText);
 
             // Only store if the entry still exists — prevents orphaned embeddings
@@ -222,9 +221,7 @@ internal sealed class HybridCacheWorkingMemory : IWorkingMemory
         {
             try
             {
-                var queryText = criteria.Query.Length > _maxEmbeddingInputChars
-                    ? criteria.Query[.._maxEmbeddingInputChars]
-                    : criteria.Query;
+                var queryText = _preparer.Prepare(criteria.Query);
                 var queryResult = await _embeddingGenerator.GenerateAsync(queryText);
                 var queryEmbedding = queryResult.Vector.ToArray();
 

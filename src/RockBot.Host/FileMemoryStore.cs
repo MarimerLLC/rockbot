@@ -34,12 +34,13 @@ internal sealed partial class FileMemoryStore : ILongTermMemory
         IOptions<AgentProfileOptions> profileOptions,
         IOptions<EmbeddingOptions> embeddingOptions,
         ILogger<FileMemoryStore> logger,
+        EmbeddingTextPreparer embeddingTextPreparer,
         IEmbeddingGenerator<string, Embedding<float>>? embeddingGenerator = null)
     {
         _basePath = ResolvePath(memoryOptions.Value.BasePath, profileOptions.Value.BasePath);
         _logger = logger;
         _embeddingCache = embeddingGenerator is not null
-            ? new EmbeddingCache(embeddingGenerator, _basePath, logger, embeddingOptions.Value.MaxInputChars)
+            ? new EmbeddingCache(embeddingGenerator, _basePath, logger, embeddingTextPreparer)
             : null;
         _minSimilarity = embeddingOptions.Value.MinSimilarityThreshold;
 

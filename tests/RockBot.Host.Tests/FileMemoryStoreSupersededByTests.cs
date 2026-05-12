@@ -103,7 +103,7 @@ public class FileMemoryStoreSupersededByTests
         var memOpts = Options.Create(new MemoryOptions { BasePath = ltmPath });
         var profOpts = Options.Create(new AgentProfileOptions { BasePath = _tempDir });
         var embedOpts = Options.Create(new EmbeddingOptions());
-        return new FileMemoryStore(memOpts, profOpts, embedOpts, NullLogger<FileMemoryStore>.Instance);
+        return new FileMemoryStore(memOpts, profOpts, embedOpts, NullLogger<FileMemoryStore>.Instance, EmbeddingTextPreparer.ForTests());
     }
 
     private static MemoryEntry NewEntry(string id, string content, string category) =>

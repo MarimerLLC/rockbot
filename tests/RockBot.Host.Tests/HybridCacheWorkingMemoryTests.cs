@@ -582,6 +582,7 @@ public class HybridCacheWorkingMemoryTests
             _cache,
             Options.Create(opts),
             Options.Create(new EmbeddingOptions()),
+            EmbeddingTextPreparer.ForTests(),
             NullLogger<HybridCacheWorkingMemory>.Instance,
             embeddingGenerator);
     }

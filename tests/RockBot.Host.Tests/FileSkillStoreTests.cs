@@ -838,7 +838,8 @@ public class FileSkillStoreTests
         new(Options.Create(new SkillOptions { BasePath = _tempDir }),
             Options.Create(new AgentProfileOptions()),
             Options.Create(new EmbeddingOptions()),
-            NullLogger<FileSkillStore>.Instance);
+            NullLogger<FileSkillStore>.Instance,
+            EmbeddingTextPreparer.ForTests());
 
     private static Skill MakeSkill(string name, string summary, string content) =>
         new(name, summary, content, DateTimeOffset.UtcNow);
