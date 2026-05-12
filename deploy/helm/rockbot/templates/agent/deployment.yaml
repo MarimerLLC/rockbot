@@ -25,6 +25,12 @@ spec:
         app.kubernetes.io/component: agent
     spec:
       serviceAccountName: {{ include "rockbot.agentServiceAccountName" . }}
+      # fsGroup applies to the shared-data PVC: kubelet chgrp's the volume to
+      # this GID, sets setgid on dirs, and OR's group rw into the mode. Lets
+      # the agent (UID 999), shared-cleanup (UID 0), and script pods (UID 1000)
+      # all read/write each other's files on /rockbot/shared.
+      securityContext:
+        fsGroup: {{ .Values.shared.fsGroup }}
 
       initContainers:
         - name: init-agent-data

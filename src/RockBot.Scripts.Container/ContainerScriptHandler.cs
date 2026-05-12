@@ -113,7 +113,13 @@ internal sealed class ContainerScriptHandler(
     {
         var command = new List<string> { "sh", "-c" };
 
-        var scriptCommand = "";
+        // umask 002 so new files/dirs are group-writable. The shared PVC uses
+        // fsGroup, so anything the script creates inherits the shared GID via
+        // setgid on the parent dir — but only the agent and cleanup cronjob can
+        // later modify it if group write is set. Without this, scripts leave
+        // behind dirs (mode 755) and files (mode 644) that nothing else can
+        // clean up.
+        var scriptCommand = "umask 002 && ";
         if (request.PipPackages is { Count: > 0 })
         {
             scriptCommand += $"pip install --quiet --target /tmp/pypackages {string.Join(' ', request.PipPackages)} 2>&1 && ";
@@ -141,6 +147,9 @@ internal sealed class ContainerScriptHandler(
                 ActiveDeadlineSeconds = request.TimeoutSeconds,
                 AutomountServiceAccountToken = false,
                 EnableServiceLinks = false,
+                SecurityContext = options.FsGroup is { } gid && gid > 0
+                    ? new V1PodSecurityContext { FsGroup = gid }
+                    : null,
                 Containers =
                 [
                     new V1Container

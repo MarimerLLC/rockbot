@@ -22,6 +22,7 @@ data:
   Scripts__Container__MemoryLimit: {{ .Values.scripts.memoryLimit | quote }}
   Scripts__Container__SharedVolumeClaim: {{ include "rockbot.sharedPvcName" . | quote }}
   Scripts__Container__SharedVolumePath: "/rockbot/shared"
+  Scripts__Container__FsGroup: {{ .Values.shared.fsGroup | quote }}
 
   # ── Agent data paths (all under the PVC mount at /data/agent) ─────────────
   AgentProfile__BasePath: "/data/agent"
