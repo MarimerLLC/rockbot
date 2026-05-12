@@ -12,11 +12,28 @@ public sealed record McpGetServiceDetailsRequest
 }
 
 /// <summary>
-/// Bridge response carrying all tool and prompt definitions for the requested server.
+/// Bridge response carrying all tool and prompt definitions for the requested server,
+/// plus the server's self-reported identity from the MCP <c>initialize</c> handshake.
 /// </summary>
 public sealed record McpGetServiceDetailsResponse
 {
     public required string ServerName { get; init; }
+
+    /// <summary>Server's self-reported implementation name (from <c>initialize.result.serverInfo.name</c>).</summary>
+    public string? ImplementationName { get; init; }
+
+    /// <summary>Server's self-reported display title.</summary>
+    public string? Title { get; init; }
+
+    /// <summary>Server's self-reported version string.</summary>
+    public string? Version { get; init; }
+
+    /// <summary>Server's self-reported implementation description.</summary>
+    public string? Description { get; init; }
+
+    /// <summary>Free-text usage instructions supplied by the server during initialize.</summary>
+    public string? Instructions { get; init; }
+
     public List<McpToolDefinition> Tools { get; init; } = [];
     public List<McpPromptDefinition> Prompts { get; init; } = [];
     public string? Error { get; init; }

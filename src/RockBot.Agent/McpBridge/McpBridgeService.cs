@@ -31,6 +31,7 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
     private readonly Dictionary<string, McpBridgeServerConfig> _serverConfigs = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, List<McpClientTool>> _serverTools = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, List<McpClientPrompt>> _serverPrompts = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, McpServerMetadata> _serverMetadata = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, AttachmentGatewayEntry> _attachmentGateways = new(StringComparer.OrdinalIgnoreCase);
     private readonly Lazy<IAttachmentStorage> _attachmentStorage = new(() => new AttachmentStorage());
     private readonly SemaphoreSlim _configPersistLock = new(1, 1);
@@ -414,11 +415,22 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
                 _serverTools[name] = filteredTools;
                 _serverPrompts[name] = prompts;
 
-                _logger.LogInformation("Connected to MCP server {Name} with {ToolCount} tools and {PromptCount} prompts",
-                    name, filteredTools.Count, prompts.Count);
+                var serverInfo = newClient.ServerInfo;
+                var metadata = new McpServerMetadata(
+                    ImplementationName: serverInfo?.Name,
+                    Title: serverInfo?.Title,
+                    Version: serverInfo?.Version,
+                    Description: serverInfo?.Description,
+                    Instructions: newClient.ServerInstructions);
+                _serverMetadata[name] = metadata;
+
+                _logger.LogInformation(
+                    "Connected to MCP server {Name} (impl={ImplName} v{Version}) with {ToolCount} tools and {PromptCount} prompts",
+                    name, metadata.ImplementationName ?? "(unknown)", metadata.Version ?? "(unknown)",
+                    filteredTools.Count, prompts.Count);
 
                 // Build and publish server summary
-                var summary = await GenerateSummaryAsync(name, filteredTools, prompts, ct);
+                var summary = await GenerateSummaryAsync(name, metadata, filteredTools, prompts, ct);
                 await PublishServersIndexedAsync([summary], [], ct);
                 return;
             }
@@ -456,6 +468,7 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
 
         _serverTools.Remove(name);
         _serverPrompts.Remove(name);
+        _serverMetadata.Remove(name);
         _serverConfigs.Remove(name);
         InvalidateAttachmentGateway(name);
 
@@ -503,6 +516,19 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
 
     private sealed record AttachmentGatewayEntry(AttachmentGateway Gateway, HttpClient HttpClient);
 
+    /// <summary>
+    /// Snapshot of a connected MCP server's self-reported identity, captured once at connect
+    /// from <see cref="McpClient.ServerInfo"/> and <see cref="McpClient.ServerInstructions"/>.
+    /// Forwarded to agents via <see cref="McpGetServiceDetailsResponse"/> and used as input
+    /// to the LLM-generated server summary.
+    /// </summary>
+    private sealed record McpServerMetadata(
+        string? ImplementationName,
+        string? Title,
+        string? Version,
+        string? Description,
+        string? Instructions);
+
     private static List<McpClientTool> ApplyToolFilters(List<McpClientTool> tools, McpBridgeServerConfig config)
     {
         if (config.AllowedTools.Count > 0)
@@ -522,6 +548,7 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
 
     private async Task<McpServerSummary> GenerateSummaryAsync(
         string serverName,
+        McpServerMetadata metadata,
         List<McpClientTool> tools,
         List<McpClientPrompt> prompts,
         CancellationToken ct)
@@ -543,6 +570,25 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
                         $"- {p.Name}: {p.Description}"))
                     : string.Empty;
 
+                var identityLines = new List<string>();
+                if (!string.IsNullOrWhiteSpace(metadata.ImplementationName))
+                    identityLines.Add($"- Implementation name: {metadata.ImplementationName}");
+                if (!string.IsNullOrWhiteSpace(metadata.Title))
+                    identityLines.Add($"- Title: {metadata.Title}");
+                if (!string.IsNullOrWhiteSpace(metadata.Version))
+                    identityLines.Add($"- Version: {metadata.Version}");
+                if (!string.IsNullOrWhiteSpace(metadata.Description))
+                    identityLines.Add($"- Description: {metadata.Description}");
+
+                var identitySection = identityLines.Count > 0
+                    ? "Server identity (self-reported by the MCP server during initialize):\n"
+                      + string.Join("\n", identityLines) + "\n\n"
+                    : string.Empty;
+
+                var instructionsSection = !string.IsNullOrWhiteSpace(metadata.Instructions)
+                    ? $"Server instructions (the MCP server's own description of its purpose and usage):\n{metadata.Instructions}\n\n"
+                    : string.Empty;
+
                 var prompt = $"""
                     You are summarizing an MCP server's capabilities for an AI agent that must decide
                     which server to query for a given task. The agent sees ONLY this summary when
@@ -554,10 +600,13 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
                        organize emails; create, update, and delete calendar events; look up contacts")
                     3. Mention any notable specifics (e.g. multi-account support, specific platforms)
 
+                    Treat the server's self-reported identity and instructions as authoritative about
+                    its purpose; use the tool list to confirm and enumerate capability categories.
+
                     The summary must give enough detail that an agent can confidently decide "this is the
                     server I need for email/calendar/contact tasks" without seeing tool names.
 
-                    Based on these tools:
+                    {identitySection}{instructionsSection}Based on these tools:
                     {toolList}{promptSection}
                     Respond with only the summary, no preamble or explanation.
                     """;
@@ -971,9 +1020,15 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
 
             var tools = _serverTools.GetValueOrDefault(req.ServerName) ?? [];
             var serverPrompts = _serverPrompts.GetValueOrDefault(req.ServerName) ?? [];
+            var metadata = _serverMetadata.GetValueOrDefault(req.ServerName);
             var response = new McpGetServiceDetailsResponse
             {
                 ServerName = req.ServerName,
+                ImplementationName = metadata?.ImplementationName,
+                Title = metadata?.Title,
+                Version = metadata?.Version,
+                Description = metadata?.Description,
+                Instructions = metadata?.Instructions,
                 Tools = tools.Select(t => new McpToolDefinition
                 {
                     Name = t.Name,
@@ -1466,6 +1521,7 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
         _clients.Clear();
         _serverTools.Clear();
         _serverPrompts.Clear();
+        _serverMetadata.Clear();
         _serverConfigs.Clear();
 
         foreach (var (_, entry) in _attachmentGateways)
