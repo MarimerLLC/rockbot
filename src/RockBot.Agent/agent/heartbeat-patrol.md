@@ -47,8 +47,8 @@ until TTLs expire. Put the run timestamp inside the value if you need traceabili
 
 ## Execution
 
-Your evolving patrol checklist is delivered to you automatically as part of the system
-prompt for this run — there is nothing to load. **Execute everything in it.**
+Your evolving patrol checklist is delivered to you automatically as the next system
+message after this one — there is nothing to load. **Execute everything in it.**
 
 If no checklist has been delivered (first run, post-migration), build a sensible starting
 checklist covering: active plans, upcoming calendar, recent email, scheduled task health,
@@ -59,6 +59,20 @@ update_task_directive(content: "<your starting checklist as markdown>")
 ```
 
 Then execute it.
+
+---
+
+## Skills are optional, never required
+
+The patrol's playbook lives in your task directive (the next system message), **not**
+in the skill store. Do not pre-flight `get_skill("patrol/...")` to "set up" the run,
+and do not call `save_skill` to make a missing patrol skill exist before proceeding —
+nothing is gated on it.
+
+If the skill index or BM25 recall surfaces a `patrol/*` skill, treat it as optional
+reference material, not a precondition. If you find yourself codifying a useful
+recurring pattern, the right home is `update_task_directive`, which the next run
+will see. Saving a skill is fine but is documentation, not setup.
 
 ---
 
