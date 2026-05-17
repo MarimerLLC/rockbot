@@ -1,0 +1,18 @@
+{{- if .Values.introspectionMcp.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: mcp-introspection
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "rockbot.labels" . | nindent 4 }}
+    app.kubernetes.io/component: mcp-introspection
+spec:
+  type: ClusterIP
+  selector:
+    app: mcp-introspection
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8080
+{{- end }}

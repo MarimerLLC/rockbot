@@ -5,6 +5,8 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <RootNamespace>RockBot.Llm.Copilot</RootNamespace>
+    <IsPackable>true</IsPackable>
+    <Description>GitHub Copilot LLM provider for RockBot, exposing Copilot models via Microsoft.Extensions.AI.</Description>
   </PropertyGroup>
 
   <ItemGroup>

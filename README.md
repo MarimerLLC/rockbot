@@ -263,8 +263,10 @@ The Helm chart at `deploy/helm/rockbot` deploys the full stack into two namespac
 
 | Namespace | Contents |
 |---|---|
-| `rockbot` | Agent, Blazor UI, Scripts Manager, OpenRouter MCP *(optional)*, ConfigMap, Secret |
+| `rockbot` | Agent, Blazor UI, Scripts Manager, Introspection MCP, TodoApp MCP, OpenRouter MCP *(optional)*, ConfigMap, Secret |
 | `rockbot-scripts` | Ephemeral Python execution pods (created on demand) |
+
+The Introspection MCP server is enabled by default and ships as part of the standard agent install — it provides the tools the agent uses to rename itself, look up LLM pricing, and read Copilot quota. To disable it, set `introspectionMcp.enabled: false` in your values file.
 
 #### 1. Create your values file
 

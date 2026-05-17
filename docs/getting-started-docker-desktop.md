@@ -185,6 +185,10 @@ The agent logs will confirm: `Embedding model configured: nomic-embed-text @ htt
 
 The agent's MCP bridge and A2A client make standard HTTP calls — they work the same in Docker as in Kubernetes. Any SSE-based MCP server or A2A agent reachable over HTTP can be registered.
 
+### Built-in introspection MCP
+
+The compose stack ships an `introspection-mcp` service alongside the agent, and the agent's default `mcp.json` already points at it (`http://introspection-mcp:8080/`). It exposes the tools the agent uses to rename itself (`get_agent_name` / `set_agent_name`), look up LLM pricing, and read GitHub Copilot quota. You don't have to register anything — it's running by the time the agent starts.
+
 ### MCP servers
 
 Edit `/data/agent/mcp.json` on the volume to add SSE-based MCP servers:
