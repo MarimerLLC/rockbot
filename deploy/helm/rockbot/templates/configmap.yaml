@@ -39,6 +39,9 @@ data:
   {{- if .Values.routingStatsMcp.enabled }}
   McpBridge__DefaultServers__routing-stats: "http://localhost:8080/"
   {{- end }}
+  {{- if (default dict .Values.introspectionMcp).enabled }}
+  McpBridge__DefaultServers__introspection: "http://localhost:8081/"
+  {{- end }}
   {{- if .Values.openrouterMcp.enabled }}
   McpBridge__DefaultServers__openrouter: "http://{{ include "rockbot.fullname" . }}-openrouter-mcp.{{ .Values.namespace }}.svc.cluster.local/"
   {{- end }}
