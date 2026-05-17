@@ -1,4 +1,4 @@
-{{- if .Values.introspectionMcp.enabled }}
+{{- if (default dict .Values.introspectionMcp).enabled }}
 apiVersion: v1
 kind: Service
 metadata:

@@ -1,4 +1,7 @@
-{{- if .Values.introspectionMcp.enabled }}
+{{- /* `default dict` guards against `--reuse-values` upgrades whose live values
+       pre-date this template — without it, accessing `.enabled` on a nil parent
+       panics with "nil pointer evaluating interface {}.enabled". */ -}}
+{{- if (default dict .Values.introspectionMcp).enabled }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
