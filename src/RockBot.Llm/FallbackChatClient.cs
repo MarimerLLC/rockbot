@@ -248,6 +248,12 @@ public sealed class FallbackChatClient : IChatClient
         if (ex is OperationCanceledException)
             return FallbackErrorCategory.Transient; // Treat timeout as transient
 
+        // Azure's content filter surfaces as HTTP 400 with "content_filter" in the message
+        // body. Status-code-only classification would map 400 to Unknown (immediate rethrow),
+        // so check the message text first across all exception types.
+        if (ContainsAny(ex.Message, "content_filter"))
+            return FallbackErrorCategory.ContentFilter;
+
         if (ex is HttpRequestException { StatusCode: { } status })
         {
             return ClassifyStatusCode((int)status);
@@ -262,10 +268,7 @@ public sealed class FallbackChatClient : IChatClient
             return ClassifyStatusCode(cre.Status);
         }
 
-        var msg = ex.Message;
-        if (ContainsAny(msg, "content_filter"))
-            return FallbackErrorCategory.ContentFilter;
-        if (ContainsAny(msg, "credit", "quota", "billing", "insufficient_quota", "exceeded"))
+        if (ContainsAny(ex.Message, "credit", "quota", "billing", "insufficient_quota", "exceeded"))
             return FallbackErrorCategory.QuotaExhausted;
 
         return FallbackErrorCategory.Unknown;

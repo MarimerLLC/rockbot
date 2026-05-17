@@ -31,6 +31,16 @@ public class FallbackChatClientTests
     private static ClientResultException ClientResultEx(int status) =>
         new("Service request failed.", new StatusOnlyPipelineResponse(status));
 
+    /// <summary>
+    /// Constructs the exact shape Azure OpenAI surfaces when its content filter trips:
+    /// a <see cref="ClientResultException"/> with status 400 whose message includes
+    /// the literal token <c>content_filter</c>.
+    /// </summary>
+    private static ClientResultException AzureContentFilterEx() =>
+        new("HTTP 400 (: content_filter)\nParameter: prompt\n\nThe response was filtered " +
+            "due to the prompt triggering Azure OpenAI's content management policy.",
+            new StatusOnlyPipelineResponse(400));
+
     // ── test stubs ───────────────────────────────────────────────────────────
 
     /// <summary>Always returns the same response or throws the same exception.</summary>
@@ -287,6 +297,25 @@ public class FallbackChatClientTests
 
         await Assert.ThrowsExactlyAsync<InvalidOperationException>(
             () => client.GetResponseAsync([]));
+    }
+
+    [TestMethod]
+    public async Task ContentFilter_AzureClientResultException_FallsBackToNextModel()
+    {
+        // Regression: Azure surfaces content filter rejections as ClientResultException
+        // with Status=400. Status-code-only classification mapped 400 to Unknown and
+        // re-threw immediately, so the OpenRouter fallbacks configured for the Balanced
+        // tier were never reached. Verify the real exception shape now falls through.
+        var first  = new FixedStub(ex: AzureContentFilterEx());
+        var second = new FixedStub(response: OkResponse("from-openrouter"));
+
+        var client = Build([("azure-gpt", first), ("openrouter-gemini", second)], maxRetries: 0);
+
+        var response = await client.GetResponseAsync([]);
+
+        Assert.AreEqual("from-openrouter", response.Messages[^1].Text);
+        Assert.AreEqual(1, first.CallCount);
+        Assert.AreEqual(1, second.CallCount);
     }
 
     [TestMethod]

@@ -148,6 +148,42 @@ spec:
             {{- toYaml .Values.routingStatsMcp.resources | nindent 12 }}
         {{- end }}
 
+        {{- if (default dict .Values.introspectionMcp).enabled }}
+        # Introspection MCP runs as a sidecar so it can read agent state directly
+        # from the PVC at /data/agent (memory, skills, mcp.json, profile files).
+        # Port 8081 because routing-stats already owns localhost:8080 in this pod.
+        - name: introspection-mcp
+          image: {{ .Values.introspectionMcp.image.repository }}:{{ .Values.introspectionMcp.image.tag }}
+          imagePullPolicy: {{ .Values.imagePullPolicy }}
+          ports:
+            - name: http-introsp
+              containerPort: 8081
+          env:
+            - name: ASPNETCORE_URLS
+              value: http://+:8081
+            - name: AgentName__Path
+              value: /data/agent/agent-name.md
+          volumeMounts:
+            - name: agent-data
+              mountPath: /data/agent
+              readOnly: true
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8081
+            initialDelaySeconds: 15
+            periodSeconds: 15
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8081
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          resources:
+            {{- toYaml .Values.introspectionMcp.resources | nindent 12 }}
+        {{- end }}
+
       volumes:
         - name: agent-data
           persistentVolumeClaim:
