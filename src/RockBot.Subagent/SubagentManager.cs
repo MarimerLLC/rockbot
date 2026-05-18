@@ -46,15 +46,16 @@ public sealed class SubagentManager(
 
         var taskId = Guid.NewGuid().ToString("N")[..12];
         var subagentSessionId = $"subagent-{taskId}";
-        var timeout = timeoutMinutes ?? opts.DefaultTimeoutMinutes;
+        var timeoutMin = timeoutMinutes ?? opts.DefaultTimeoutMinutes;
+        var timeoutSpan = TimeSpan.FromMinutes(timeoutMin);
         // Do NOT link to the caller's ct — that token is the session token which gets
         // canceled when the next user message arrives. Subagents are independent background
         // work that must survive new user messages. They cancel only on their own timeout
         // or via explicit CancelAsync.
         var cts = new CancellationTokenSource();
-        cts.CancelAfter(TimeSpan.FromMinutes(timeout));
+        cts.CancelAfter(timeoutSpan);
 
-        var task = RunSubagentAsync(taskId, subagentSessionId, description, context, primarySessionId, batchId, consolidate, maxIterations, cts.Token);
+        var task = RunSubagentAsync(taskId, subagentSessionId, description, context, primarySessionId, batchId, consolidate, maxIterations, timeoutSpan, cts.Token);
 
         var newEntry = new SubagentEntry
         {
@@ -113,6 +114,7 @@ public sealed class SubagentManager(
         string? batchId,
         bool consolidate,
         int? maxIterations,
+        TimeSpan timeout,
         CancellationToken ct)
     {
         // SubagentRunner.RunAsync handles all its own exit paths (success, failure,
@@ -123,7 +125,7 @@ public sealed class SubagentManager(
         {
             await using var scope = scopeFactory.CreateAsyncScope();
             var runner = scope.ServiceProvider.GetRequiredService<SubagentRunner>();
-            await runner.RunAsync(taskId, subagentSessionId, description, context, primarySessionId, batchId, consolidate, maxIterations, ct);
+            await runner.RunAsync(taskId, subagentSessionId, description, context, primarySessionId, batchId, consolidate, maxIterations, timeout, ct);
         }
         catch (Exception ex)
         {
