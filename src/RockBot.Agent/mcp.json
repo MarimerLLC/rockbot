@@ -1,8 +1,8 @@
 {
   "mcpServers": {
-    "aggregator": {
+    "introspection": {
       "type": "sse",
-      "url": "https://mcp-aggregator.<your-tailnet>.ts.net/"
+      "url": "http://mcp-introspection/"
     },
     "routing-stats": {
       "type": "sse",

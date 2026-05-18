@@ -193,6 +193,27 @@ shared:
   # read/write each other's files without coordinating UIDs.
   fsGroup: 2000
 
+# ── Introspection MCP server ──────────────────────────────────────────────────
+# Standalone MCP server that exposes core agent introspection tools:
+#   - get/set agent name (drives Blazor UI title and `agent-name.md` on the PVC)
+#   - GitHub Copilot quota/usage (only meaningful when LLM provider is Copilot)
+#   - LLM pricing table lookup (cost-estimation tools the agent calls)
+# Shipped as part of the standard agent install — enable by default.
+# Cluster URL exposed as http://mcp-introspection (port 80 → containerPort 8080).
+introspectionMcp:
+  enabled: true
+  image:
+    repository: rockylhotka/rockbot-introspection-mcp
+    tag: latest
+  replicaCount: 1
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 200m
+      memory: 128Mi
+
 # ── TodoApp MCP server ────────────────────────────────────────────────────────
 # Standalone MCP server that exposes a persistent to-do list to the agent.
 # Data is stored in a Longhorn PVC mounted at /data inside the container.
