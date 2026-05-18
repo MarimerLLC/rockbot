@@ -315,12 +315,16 @@ public sealed partial class AgentLoopRunner(
         bool enableCompletionEval = true,
         double? complexityScore = null,
         int? maxIterationsOverride = null,
+        LoopDiagnostics? diagnostics = null,
         CancellationToken cancellationToken = default)
     {
         using var _ = ToolCallSessionContext.Set(sessionId);
         // Set the per-async-flow override so RockBotFunctionInvokingChatClient
         // (singleton, native path) picks it up for this request.
         using var __ = MaxIterationsOverrideContext.Set(maxIterationsOverride);
+        // Expose the per-call diagnostics handle to the native FICC so it can
+        // record per-tool-call state from its singleton context.
+        using var ___ = LoopDiagnosticsContext.Set(diagnostics);
 
         // Ensure a current datetime context is always present.
         EnsureDateTimeContext(chatMessages);
@@ -651,7 +655,14 @@ public sealed partial class AgentLoopRunner(
             response.Messages.SelectMany(m => m.Contents.OfType<FunctionCallContent>()).Count(),
             tierTag);
 
-        return new LoopResult(ExtractAssistantText(response), LoopExitReason.ModelStopped);
+        var nativeFinalText = ExtractAssistantText(response);
+        if (LoopDiagnosticsContext.Value is { } diagNative
+            && !string.IsNullOrWhiteSpace(nativeFinalText))
+        {
+            diagNative.LastAssistantText = nativeFinalText;
+        }
+
+        return new LoopResult(nativeFinalText, LoopExitReason.ModelStopped);
     }
 
     /// <summary>
@@ -886,6 +897,16 @@ public sealed partial class AgentLoopRunner(
 
             LogResponseMessages(response, iterationLabel: (iteration + 2).ToString());
 
+            // Update diagnostics with the iteration count and the latest assistant text
+            // so callers can see how far the loop got even if it later throws.
+            if (LoopDiagnosticsContext.Value is { } diagText)
+            {
+                diagText.Iterations = iteration + 1;
+                var preFunctionText = ExtractAssistantText(response);
+                if (!string.IsNullOrWhiteSpace(preFunctionText))
+                    diagText.LastAssistantText = preFunctionText;
+            }
+
             var functionCalls = response.Messages
                 .SelectMany(m => m.Contents.OfType<FunctionCallContent>())
                 .ToList();
@@ -993,6 +1014,22 @@ public sealed partial class AgentLoopRunner(
                     textToolActivity?.SetTag("rockbot.tool.name", toolName);
                     var toolSw = Stopwatch.StartNew();
                     var textToolStatus = "ok";
+
+                    // Record this tool as in-flight in diagnostics so even an
+                    // OperationCanceledException mid-call leaves a usable trail.
+                    if (LoopDiagnosticsContext.Value is { } diagTextPre)
+                    {
+                        diagTextPre.ToolCalls++;
+                        diagTextPre.LastToolName = toolName;
+                        diagTextPre.LastToolArguments = argsJson is { Length: > 500 }
+                            ? argsJson[..500] + "…"
+                            : argsJson;
+                        diagTextPre.LastToolStartedAt = DateTimeOffset.UtcNow;
+                        diagTextPre.LastToolCompletedAt = null;
+                        diagTextPre.LastToolResult = null;
+                        diagTextPre.LastToolStatus = "in-flight";
+                    }
+
                     object? result;
                     try
                     {
@@ -1029,6 +1066,15 @@ public sealed partial class AgentLoopRunner(
                     ToolDiagnostics.Invocations.Add(1,
                         new KeyValuePair<string, object?>("rockbot.tool.name", toolName),
                         new KeyValuePair<string, object?>("rockbot.tool.status", textToolStatus));
+
+                    if (LoopDiagnosticsContext.Value is { } diagTextPost)
+                    {
+                        diagTextPost.LastToolCompletedAt = DateTimeOffset.UtcNow;
+                        diagTextPost.LastToolStatus = textToolStatus;
+                        diagTextPost.LastToolResult = textResultStr is { Length: > 500 }
+                            ? textResultStr[..500] + "…"
+                            : textResultStr;
+                    }
 
                     // Chunking is handled by ChunkingAIFunction wrapper on the tool itself.
                     chatMessages.Add(new ChatMessage(ChatRole.User,

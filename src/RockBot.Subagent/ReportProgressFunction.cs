@@ -19,6 +19,7 @@ internal sealed class ReportProgressFunctions
     private readonly IMessagePublisher _publisher;
     private readonly string _subagentId;
     private readonly ILogger _logger;
+    private readonly Action<string>? _onReport;
 
     private readonly string _agentName;
 
@@ -28,7 +29,8 @@ internal sealed class ReportProgressFunctions
         IMessagePublisher publisher,
         string subagentId,
         string agentName,
-        ILogger logger)
+        ILogger logger,
+        Action<string>? onReport = null)
     {
         _taskId = taskId;
         _primarySessionId = primarySessionId;
@@ -36,6 +38,7 @@ internal sealed class ReportProgressFunctions
         _subagentId = subagentId;
         _agentName = agentName;
         _logger = logger;
+        _onReport = onReport;
 
         Tools =
         [
@@ -61,6 +64,12 @@ internal sealed class ReportProgressFunctions
         await _publisher.PublishAsync($"{SubagentTopics.Progress}.{_agentName}", envelope, CancellationToken.None);
 
         _logger.LogInformation("Subagent {TaskId} reported progress: {Message}", _taskId, message);
+
+        // Notify in-process listeners (e.g. SubagentRunner's rolling buffer used for
+        // failure-detail reports). Errors here must not break progress reporting.
+        try { _onReport?.Invoke(message); }
+        catch (Exception ex) { _logger.LogDebug(ex, "Progress callback for {TaskId} threw — ignoring", _taskId); }
+
         return "Progress reported.";
     }
 }

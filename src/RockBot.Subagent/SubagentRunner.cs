@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Text.Json;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
 using RockBot.Host;
@@ -43,6 +44,7 @@ internal sealed class SubagentRunner(
         string? batchId,
         bool consolidate,
         int? maxIterations,
+        TimeSpan timeout,
         CancellationToken ct)
     {
         var classification = tierSelector.Classify(description, new TierRoutingContext(Origin: "subagent"));
@@ -141,10 +143,23 @@ internal sealed class SubagentRunner(
                 r, toolRegistry.GetExecutor(r.Name)!, subagentNamespace))
             .ToArray();
 
-        // report_progress tool — baked with taskId and primarySessionId
+        // report_progress tool — baked with taskId and primarySessionId.
+        // The onReport callback feeds a rolling buffer used to populate the
+        // failure-details working-memory entry when the subagent fails or is cancelled.
         var subagentId = $"subagent-{taskId}";
+        var recentProgress = new System.Collections.Generic.Queue<(DateTimeOffset At, string Message)>();
+        const int RecentProgressCapacity = 5;
         var reportProgressFunctions = new ReportProgressFunctions(
-            taskId, primarySessionId, publisher, subagentId, agent.Name, logger);
+            taskId, primarySessionId, publisher, subagentId, agent.Name, logger,
+            onReport: msg =>
+            {
+                lock (recentProgress)
+                {
+                    recentProgress.Enqueue((DateTimeOffset.UtcNow, msg));
+                    while (recentProgress.Count > RecentProgressCapacity)
+                        recentProgress.Dequeue();
+                }
+            });
 
         var chatOptions = new ChatOptions
         {
@@ -164,7 +179,10 @@ internal sealed class SubagentRunner(
         string finalOutput;
         bool isSuccess;
         string? error = null;
+        string? failureReason = null;
+        var diagnostics = new LoopDiagnostics();
         var subagentSw = System.Diagnostics.Stopwatch.StartNew();
+        var startedAt = DateTimeOffset.UtcNow;
 
         using var subagentActivity = SubagentDiagnostics.Source.StartActivity("rockbot.subagent.task");
         subagentActivity?.SetTag("rockbot.subagent.task_id", taskId);
@@ -186,29 +204,58 @@ internal sealed class SubagentRunner(
                 chatMessages, chatOptions, subagentSessionId,
                 tier: tier, enableFollowUp: false, enableCompletionEval: false,
                 maxIterationsOverride: maxIterations,
+                diagnostics: diagnostics,
                 cancellationToken: ct);
             finalOutput = ResponseSanitizer.StripTrailingOffers(finalOutput);
             isSuccess = true;
             subagentActivity?.SetStatus(ActivityStatusCode.Ok);
         }
-        catch (OperationCanceledException oce)
+        catch (OperationCanceledException)
         {
-            // Timeout or explicit cancellation — always notify the primary agent
-            // so it isn't left waiting indefinitely.
-            var reason = ct.IsCancellationRequested ? "cancelled" : "timed out";
-            logger.LogWarning("Subagent {TaskId} {Reason}", taskId, reason);
-            finalOutput = $"Subagent task was {reason} before completing.";
+            // Distinguish timeout (CTS fired at deadline) from explicit cancel
+            // (manager called CancelAsync before the deadline). We compare elapsed
+            // time against the configured timeout — if we're at or past the
+            // deadline the trigger was the timer, otherwise it was an external call.
+            var elapsedAtCancel = DateTimeOffset.UtcNow - startedAt;
+            failureReason = timeout > TimeSpan.Zero && elapsedAtCancel >= timeout - TimeSpan.FromSeconds(2)
+                ? "timeout"
+                : "cancelled";
+            logger.LogWarning(
+                "Subagent {TaskId} {Reason} after {ElapsedSec:F1}s (timeout={TimeoutSec:F0}s)",
+                taskId, failureReason, elapsedAtCancel.TotalSeconds, timeout.TotalSeconds);
+            finalOutput = failureReason == "timeout"
+                ? $"Subagent timed out after {timeout.TotalMinutes:0.#} minutes. " +
+                  $"Failure diagnostics in working memory at 'subagent/{taskId}/failure-details'."
+                : $"Subagent was cancelled before completing. " +
+                  $"Failure diagnostics in working memory at 'subagent/{taskId}/failure-details'.";
             isSuccess = false;
-            error = oce.Message;
-            subagentActivity?.SetStatus(ActivityStatusCode.Error, reason);
+            error = failureReason == "timeout"
+                ? $"Timed out after {timeout.TotalMinutes:0.#} minutes"
+                : "Cancelled by request";
+            subagentActivity?.SetStatus(ActivityStatusCode.Error, failureReason);
         }
         catch (Exception ex)
         {
             logger.LogError(ex, "Subagent {TaskId} tool loop failed", taskId);
-            finalOutput = $"Task failed: {ex.Message}";
+            failureReason = "exception";
+            finalOutput = $"Subagent failed: {ex.Message}. " +
+                          $"Failure diagnostics in working memory at 'subagent/{taskId}/failure-details'.";
             isSuccess = false;
             error = ex.Message;
             subagentActivity?.SetStatus(ActivityStatusCode.Error, ex.Message);
+        }
+
+        // On any non-success path, write a structured failure-details entry to working
+        // memory so the primary agent can answer "why did it fail" without having to
+        // re-investigate from logs. Lives under the same subagent/{taskId}/ namespace
+        // as the rest of the subagent's outputs so the SubagentResultHandler's existing
+        // whiteboard-hint flow surfaces it automatically.
+        if (!isSuccess)
+        {
+            await SaveFailureDetailsAsync(
+                taskId, description, failureReason ?? "unknown",
+                error, startedAt, subagentSw.Elapsed, timeout,
+                diagnostics, recentProgress, ct);
         }
 
         // Wait for any in-flight A2A tasks the subagent dispatched (via wisps) to
@@ -279,5 +326,106 @@ internal sealed class SubagentRunner(
         await publisher.PublishAsync($"{SubagentTopics.Result}.{agent.Name}", envelope, CancellationToken.None);
 
         logger.LogInformation("Subagent {TaskId} published result (success={Success})", taskId, isSuccess);
+    }
+
+    /// <summary>
+    /// Persists a structured failure-details payload to working memory under
+    /// <c>subagent/{taskId}/failure-details</c>. The primary agent reads this entry
+    /// (surfaced automatically by SubagentResultHandler's whiteboard hint) to answer
+    /// "why did the subagent fail" without having to dig through pod logs.
+    /// </summary>
+    private async Task SaveFailureDetailsAsync(
+        string taskId,
+        string description,
+        string reason,
+        string? errorMessage,
+        DateTimeOffset startedAt,
+        TimeSpan elapsed,
+        TimeSpan timeout,
+        LoopDiagnostics diagnostics,
+        Queue<(DateTimeOffset At, string Message)> recentProgress,
+        CancellationToken ct)
+    {
+        try
+        {
+            (DateTimeOffset At, string Message)[] progressSnapshot;
+            lock (recentProgress)
+                progressSnapshot = recentProgress.ToArray();
+
+            var json = BuildFailureDetailsPayload(
+                taskId, description, reason, errorMessage,
+                startedAt, elapsed, timeout, diagnostics, progressSnapshot);
+
+            // TTL 240 minutes matches the convention subagents use for their other
+            // long-lived outputs so the primary can refer back across follow-ups.
+            await workingMemory.SetAsync(
+                $"subagent/{taskId}/failure-details",
+                json,
+                TimeSpan.FromMinutes(240),
+                category: "subagent-failure",
+                tags: ["subagent-failure", reason]);
+
+            logger.LogInformation(
+                "Subagent {TaskId} failure details saved to working memory (reason={Reason}, lastTool={Tool})",
+                taskId, reason, diagnostics.LastToolName ?? "(none)");
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            // Failure-detail persistence is best-effort — never block the result publish.
+            logger.LogWarning(ex,
+                "Failed to persist failure details for subagent {TaskId}; primary agent will see only the inline reason",
+                taskId);
+        }
+    }
+
+    /// <summary>
+    /// Builds the JSON payload that <see cref="SaveFailureDetailsAsync"/> writes to
+    /// working memory. Exposed as <c>internal static</c> so unit tests can exercise
+    /// the payload shape without instantiating the full SubagentRunner DI graph.
+    /// </summary>
+    internal static string BuildFailureDetailsPayload(
+        string taskId,
+        string description,
+        string reason,
+        string? errorMessage,
+        DateTimeOffset startedAt,
+        TimeSpan elapsed,
+        TimeSpan timeout,
+        LoopDiagnostics diagnostics,
+        IReadOnlyList<(DateTimeOffset At, string Message)> recentProgress)
+    {
+        var payload = new
+        {
+            taskId,
+            reason,
+            description = description.Length > 500 ? description[..500] + "…" : description,
+            error = errorMessage,
+            startedAt = startedAt.ToString("O"),
+            elapsedSeconds = Math.Round(elapsed.TotalSeconds, 1),
+            timeoutMinutes = timeout.TotalMinutes > 0 ? Math.Round(timeout.TotalMinutes, 1) : (double?)null,
+            iterations = diagnostics.Iterations,
+            toolCalls = diagnostics.ToolCalls,
+            lastAssistantText = diagnostics.LastAssistantText,
+            lastTool = diagnostics.LastToolName is null ? null : new
+            {
+                name = diagnostics.LastToolName,
+                arguments = diagnostics.LastToolArguments,
+                status = diagnostics.LastToolStatus,
+                result = diagnostics.LastToolResult,
+                startedAt = diagnostics.LastToolStartedAt?.ToString("O"),
+                completedAt = diagnostics.LastToolCompletedAt?.ToString("O"),
+            },
+            recentProgress = recentProgress.Select(p => new
+            {
+                at = p.At.ToString("O"),
+                message = p.Message
+            }).ToArray(),
+        };
+
+        return JsonSerializer.Serialize(payload, new JsonSerializerOptions
+        {
+            WriteIndented = true,
+            PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+        });
     }
 }

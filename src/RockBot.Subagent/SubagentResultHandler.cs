@@ -95,10 +95,31 @@ internal sealed class SubagentResultHandler(
               "Retrieve and present them to the user using get_from_working_memory with the full key."
             : string.Empty;
 
-        // Add synthetic user turn to conversation memory
-        var syntheticUserTurn = message.IsSuccess
-            ? $"[Subagent task {message.TaskId} completed]: {safeOutput}{whiteboardHint}"
-            : $"[Subagent task {message.TaskId} completed with error: {message.Error}]: {message.Output}";
+        // Add synthetic user turn to conversation memory.
+        // On the failure path, explicitly point the primary at the structured
+        // failure-details working-memory entry SubagentRunner writes — otherwise
+        // the primary only has the terse Error/Output strings and cannot answer
+        // "why did it fail?" without spawning another investigation subagent.
+        string syntheticUserTurn;
+        if (message.IsSuccess)
+        {
+            syntheticUserTurn = $"[Subagent task {message.TaskId} completed]: {safeOutput}{whiteboardHint}";
+        }
+        else
+        {
+            var failureKey = $"subagent/{message.TaskId}/failure-details";
+            var hasFailureDetails = whiteboardEntries.Any(e =>
+                string.Equals(e.Key, failureKey, StringComparison.OrdinalIgnoreCase));
+            var failurePointer = hasFailureDetails
+                ? $" Structured failure diagnostics are in working memory at '{failureKey}' " +
+                  $"(reason, last tool call, last assistant message, recent progress notes, " +
+                  $"elapsed time). Retrieve with get_from_working_memory('{failureKey}') " +
+                  $"before answering any question about why the subagent failed."
+                : string.Empty;
+            syntheticUserTurn =
+                $"[Subagent task {message.TaskId} failed with error: {message.Error}]: " +
+                $"{message.Output}{failurePointer}{whiteboardHint}";
+        }
 
         await conversationMemory.AddTurnAsync(
             rawSessionId,

@@ -73,6 +73,21 @@ public class RockBotFunctionInvokingChatClient : FunctionInvokingChatClient
             await _progressNotifier.OnToolInvokingAsync(callContent.Name, desc, cancellationToken);
         }
 
+        // Record the in-flight tool in LoopDiagnostics so a mid-call cancel still
+        // leaves a usable "last tool" trail for the caller's failure handler.
+        if (LoopDiagnosticsContext.Value is { } diagPre)
+        {
+            diagPre.ToolCalls++;
+            diagPre.LastToolName = callContent.Name;
+            diagPre.LastToolArguments = argsSummary is { Length: > 500 }
+                ? argsSummary[..500] + "…"
+                : argsSummary;
+            diagPre.LastToolStartedAt = DateTimeOffset.UtcNow;
+            diagPre.LastToolCompletedAt = null;
+            diagPre.LastToolResult = null;
+            diagPre.LastToolStatus = "in-flight";
+        }
+
         var sw = System.Diagnostics.Stopwatch.StartNew();
         var status = "ok";
         object? result;
@@ -82,6 +97,12 @@ public class RockBotFunctionInvokingChatClient : FunctionInvokingChatClient
         }
         catch (OperationCanceledException)
         {
+            // Record cancel before unwinding so the failure handler sees this tool as the last one.
+            if (LoopDiagnosticsContext.Value is { } diagCancel)
+            {
+                diagCancel.LastToolCompletedAt = DateTimeOffset.UtcNow;
+                diagCancel.LastToolStatus = "cancelled";
+            }
             throw; // host shutting down — don't record metrics
         }
         catch (Exception ex)
@@ -101,6 +122,13 @@ public class RockBotFunctionInvokingChatClient : FunctionInvokingChatClient
             ToolDiagnostics.Invocations.Add(1,
                 new KeyValuePair<string, object?>("rockbot.tool.name", callContent.Name),
                 new KeyValuePair<string, object?>("rockbot.tool.status", status));
+
+            if (LoopDiagnosticsContext.Value is { } diagEx)
+            {
+                diagEx.LastToolCompletedAt = DateTimeOffset.UtcNow;
+                diagEx.LastToolStatus = status;
+                diagEx.LastToolResult = $"Error: {ex.Message}";
+            }
             throw;
         }
         sw.Stop();
@@ -159,6 +187,15 @@ public class RockBotFunctionInvokingChatClient : FunctionInvokingChatClient
         ToolDiagnostics.Invocations.Add(1,
             new KeyValuePair<string, object?>("rockbot.tool.name", callContent.Name),
             new KeyValuePair<string, object?>("rockbot.tool.status", status));
+
+        if (LoopDiagnosticsContext.Value is { } diagPost)
+        {
+            diagPost.LastToolCompletedAt = DateTimeOffset.UtcNow;
+            diagPost.LastToolStatus = status;
+            diagPost.LastToolResult = resultStr is { Length: > 500 }
+                ? resultStr[..500] + "…"
+                : resultStr;
+        }
 
         // Log tool-call event for sequence analysis (fire-and-forget)
         if (_toolCallLog is not null && ToolCallSessionContext.SessionId is { } sid)
