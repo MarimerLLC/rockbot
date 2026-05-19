@@ -46,6 +46,12 @@ public static class ClientCapabilityPromptBuilder
         else if (caps.HasFlag(ClientCapabilities.MarkdownBasic))
             deny.Add("`[text](url)` syntax — paste bare URLs so the client auto-links them");
 
+        if (caps.HasFlag(ClientCapabilities.MarkdownStrikethrough))
+            allow.Add("strikethrough — `~~text~~`");
+
+        if (caps.HasFlag(ClientCapabilities.MarkdownTaskList))
+            allow.Add("task-list checkboxes — `- [ ]` for open items, `- [x]` for completed");
+
         // ── Rich rendering ────────────────────────────────────────────────
         if (caps.HasFlag(ClientCapabilities.HtmlInline))
         {
@@ -93,7 +99,8 @@ internal static class ClientCapabilityMasks
     public const ClientCapabilities AnyMeaningful =
         ClientCapabilities.MarkdownBasic | ClientCapabilities.MarkdownHeadings |
         ClientCapabilities.MarkdownTables | ClientCapabilities.MarkdownCode |
-        ClientCapabilities.LinkInline | ClientCapabilities.HtmlInline |
+        ClientCapabilities.LinkInline | ClientCapabilities.MarkdownStrikethrough |
+        ClientCapabilities.MarkdownTaskList | ClientCapabilities.HtmlInline |
         ClientCapabilities.SvgInline | ClientCapabilities.ImageAttachment |
         NativeUi;
 

@@ -59,6 +59,8 @@ public sealed class ClientCapabilityPromptBuilderTests
         StringAssert.Contains(snippet, "GFM-style tables");
         StringAssert.Contains(snippet, "fenced code blocks");
         StringAssert.Contains(snippet, "inline links");
+        StringAssert.Contains(snippet, "strikethrough");
+        StringAssert.Contains(snippet, "task-list");
         StringAssert.Contains(snippet, "inline HTML");
         StringAssert.Contains(snippet, "inline `<svg>`");
         // Blazor allows everything in this subset — no markdown-feature deny lines should appear.
@@ -67,6 +69,19 @@ public sealed class ClientCapabilityPromptBuilderTests
             "Blazor supports headings; the deny line must not appear");
         Assert.IsFalse(snippet.Contains("present tabular data as a bulleted"),
             "Blazor supports tables; the deny line must not appear");
+    }
+
+    [TestMethod]
+    public void Build_Strikethrough_Alone_AddsAllowLine()
+    {
+        var snippet = ClientCapabilityPromptBuilder.Build(
+            ClientCapabilities.Text | ClientCapabilities.MarkdownBasic |
+            ClientCapabilities.MarkdownStrikethrough);
+
+        Assert.IsNotNull(snippet);
+        StringAssert.Contains(snippet, "strikethrough");
+        StringAssert.Contains(snippet, "~~text~~");
+        Assert.IsFalse(snippet.Contains("task-list"), "Task-list line must not leak in");
     }
 
     [TestMethod]

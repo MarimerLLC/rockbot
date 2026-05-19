@@ -47,6 +47,8 @@ public sealed class ClientCapabilitiesTests
         var preset = ClientCapabilityPresets.Blazor;
 
         Assert.IsTrue(preset.HasFlag(ClientCapabilities.MarkdownTables));
+        Assert.IsTrue(preset.HasFlag(ClientCapabilities.MarkdownStrikethrough));
+        Assert.IsTrue(preset.HasFlag(ClientCapabilities.MarkdownTaskList));
         Assert.IsTrue(preset.HasFlag(ClientCapabilities.HtmlInline));
         Assert.IsTrue(preset.HasFlag(ClientCapabilities.SvgInline));
         Assert.IsFalse(preset.HasFlag(ClientCapabilities.ImageAttachment),
@@ -64,6 +66,32 @@ public sealed class ClientCapabilitiesTests
             "CLI preset must not advertise HTML — a terminal cannot render it");
         Assert.IsFalse(preset.HasFlag(ClientCapabilities.SvgInline));
         Assert.IsFalse(preset.HasFlag(ClientCapabilities.MarkdownTables));
+        Assert.IsFalse(preset.HasFlag(ClientCapabilities.MarkdownStrikethrough),
+            "Terminals don't render `~~text~~` — leave it as literal characters");
+        Assert.IsFalse(preset.HasFlag(ClientCapabilities.MarkdownTaskList));
+    }
+
+    [TestMethod]
+    public void ChatPlatformPresets_AllAdvertiseStrikethrough()
+    {
+        // Strikethrough is the one GFM-beyond-CommonMark feature universally supported
+        // across Discord / Slack / WhatsApp / Teams. The presets should reflect that.
+        Assert.IsTrue(ClientCapabilityPresets.Discord.HasFlag(ClientCapabilities.MarkdownStrikethrough));
+        Assert.IsTrue(ClientCapabilityPresets.Slack.HasFlag(ClientCapabilities.MarkdownStrikethrough));
+        Assert.IsTrue(ClientCapabilityPresets.WhatsApp.HasFlag(ClientCapabilities.MarkdownStrikethrough));
+        Assert.IsTrue(ClientCapabilityPresets.Teams.HasFlag(ClientCapabilities.MarkdownStrikethrough));
+    }
+
+    [TestMethod]
+    public void TaskList_IsTeamsAndBlazorOnly_AmongDeclaredPresets()
+    {
+        // Task-list checkboxes are rendered natively only by Markdig advanced (Blazor)
+        // and Teams. Other chat platforms show them as literal `- [ ]`.
+        Assert.IsTrue(ClientCapabilityPresets.Blazor.HasFlag(ClientCapabilities.MarkdownTaskList));
+        Assert.IsTrue(ClientCapabilityPresets.Teams.HasFlag(ClientCapabilities.MarkdownTaskList));
+        Assert.IsFalse(ClientCapabilityPresets.Discord.HasFlag(ClientCapabilities.MarkdownTaskList));
+        Assert.IsFalse(ClientCapabilityPresets.Slack.HasFlag(ClientCapabilities.MarkdownTaskList));
+        Assert.IsFalse(ClientCapabilityPresets.WhatsApp.HasFlag(ClientCapabilities.MarkdownTaskList));
     }
 
     [TestMethod]

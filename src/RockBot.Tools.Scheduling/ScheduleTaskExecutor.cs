@@ -106,7 +106,8 @@ internal sealed class ScheduleTaskExecutor(ISchedulerService scheduler, AgentClo
             "markdown" =>
                 ClientCapabilities.Text | ClientCapabilities.MarkdownBasic |
                 ClientCapabilities.MarkdownHeadings | ClientCapabilities.MarkdownTables |
-                ClientCapabilities.MarkdownCode | ClientCapabilities.LinkInline,
+                ClientCapabilities.MarkdownCode | ClientCapabilities.LinkInline |
+                ClientCapabilities.MarkdownStrikethrough,
             "rich" => ClientCapabilityPresets.Blazor,
             _ => ClientCapabilities.None,
         };

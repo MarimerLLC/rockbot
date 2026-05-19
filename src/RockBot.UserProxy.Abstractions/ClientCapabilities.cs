@@ -13,12 +13,14 @@ public enum ClientCapabilities : ulong
     None              = 0,
 
     // Text + markdown subsets (bits 0–15)
-    Text              = 1UL << 0,    // implicit floor — every client supports this
-    MarkdownBasic     = 1UL << 1,    // bold, italic, inline code, blockquotes
-    MarkdownHeadings  = 1UL << 2,    // # / ## / ###
-    MarkdownTables    = 1UL << 3,    // GFM tables
-    MarkdownCode      = 1UL << 4,    // fenced code blocks with language hint
-    LinkInline        = 1UL << 5,    // [text](url) renders as a clickable link
+    Text                  = 1UL << 0,    // implicit floor — every client supports this
+    MarkdownBasic         = 1UL << 1,    // bold, italic, inline code, blockquotes
+    MarkdownHeadings      = 1UL << 2,    // # / ## / ###
+    MarkdownTables        = 1UL << 3,    // GFM tables
+    MarkdownCode          = 1UL << 4,    // fenced code blocks with language hint
+    LinkInline            = 1UL << 5,    // [text](url) renders as a clickable link
+    MarkdownStrikethrough = 1UL << 6,    // ~~text~~ — GFM, supported by most chat platforms
+    MarkdownTaskList      = 1UL << 7,    // - [ ] / - [x] checkboxes — Markdig advanced + Teams
 
     // Rich rendering (bits 16–31)
     HtmlInline        = 1UL << 16,   // sanitized HTML inside markdown
@@ -45,23 +47,28 @@ public static class ClientCapabilityPresets
     public const ClientCapabilities Blazor =
         ClientCapabilities.Text | ClientCapabilities.MarkdownBasic | ClientCapabilities.MarkdownHeadings |
         ClientCapabilities.MarkdownTables | ClientCapabilities.MarkdownCode | ClientCapabilities.LinkInline |
+        ClientCapabilities.MarkdownStrikethrough | ClientCapabilities.MarkdownTaskList |
         ClientCapabilities.HtmlInline | ClientCapabilities.SvgInline;
 
     // Documented in advance so capability-vocabulary decisions stay coherent —
     // not used by code until those proxies ship.
     public const ClientCapabilities WhatsApp =
-        ClientCapabilities.Text | ClientCapabilities.MarkdownBasic | ClientCapabilities.ImageAttachment;
+        ClientCapabilities.Text | ClientCapabilities.MarkdownBasic |
+        ClientCapabilities.MarkdownStrikethrough | ClientCapabilities.ImageAttachment;
 
     public const ClientCapabilities Discord =
         ClientCapabilities.Text | ClientCapabilities.MarkdownBasic | ClientCapabilities.MarkdownCode |
-        ClientCapabilities.LinkInline | ClientCapabilities.ImageAttachment;
+        ClientCapabilities.LinkInline | ClientCapabilities.MarkdownStrikethrough |
+        ClientCapabilities.ImageAttachment;
 
     public const ClientCapabilities Slack =
         ClientCapabilities.Text | ClientCapabilities.MarkdownBasic | ClientCapabilities.MarkdownCode |
-        ClientCapabilities.LinkInline | ClientCapabilities.ImageAttachment;
+        ClientCapabilities.LinkInline | ClientCapabilities.MarkdownStrikethrough |
+        ClientCapabilities.ImageAttachment;
 
     public const ClientCapabilities Teams =
         ClientCapabilities.Text | ClientCapabilities.MarkdownBasic | ClientCapabilities.MarkdownHeadings |
         ClientCapabilities.MarkdownTables | ClientCapabilities.MarkdownCode | ClientCapabilities.LinkInline |
+        ClientCapabilities.MarkdownStrikethrough | ClientCapabilities.MarkdownTaskList |
         ClientCapabilities.ImageAttachment;
 }
