@@ -105,4 +105,59 @@ public class EmbeddingTextPreparerTests
 
         Assert.AreEqual(json, preparer.Prepare(json));
     }
+
+    [TestMethod]
+    public void Prepare_LongProse_UsesProseCap()
+    {
+        var preparer = Build(new EmbeddingOptions { MaxInputChars = 5000, MaxStructuredInputChars = 1000 });
+        // ~2k chars of realistic English prose (lots of whitespace, mostly letters).
+        var paragraph = string.Concat(Enumerable.Repeat(
+            "The quick brown fox jumps over the lazy dog near the riverbank at dawn. ", 30));
+
+        var result = preparer.Prepare(paragraph);
+
+        Assert.AreEqual(paragraph, result, "ordinary prose should never trip the density heuristic");
+    }
+
+    [TestMethod]
+    public void Prepare_LongBase64Blob_TreatedAsStructured()
+    {
+        var preparer = Build(new EmbeddingOptions { MaxInputChars = 5000, MaxStructuredInputChars = 500 });
+        // 2k-char base64-style blob — no whitespace, all letters/digits.
+        var blob = string.Concat(Enumerable.Repeat(
+            "AbCdEfGhIjKlMnOpQrStUvWxYz0123456789AbCdEfGhIjKlMnOpQrStUvWxYz0123456789", 30));
+
+        var result = preparer.Prepare(blob);
+
+        Assert.AreEqual(500, result.Length, "no-whitespace blob should hit the structured cap");
+    }
+
+    [TestMethod]
+    public void Prepare_LongUrlAndCitationMarkdown_TreatedAsStructured()
+    {
+        var preparer = Build(new EmbeddingOptions { MaxInputChars = 5000, MaxStructuredInputChars = 500 });
+        // Markdown evidence slice — short prose lines mixed with URLs, hashes, and dates.
+        // This is the shape that was busting nomic-embed-text's 8192-token context
+        // despite being under the prose cap.
+        var slice = string.Concat(Enumerable.Repeat(
+            "- 2026-05-15 https://example.com/posts/abc-def-ghi-jkl-mno/permalink#section-2 (sha:9f8e7d6c5b4a3) " +
+            "reference 04d7ed9cf308b1a2c3d4e5f6 entry-id\n", 20));
+
+        var result = preparer.Prepare(slice);
+
+        Assert.AreEqual(500, result.Length, "URL/hash-heavy markdown should hit the structured cap");
+    }
+
+    [TestMethod]
+    public void Prepare_DensityCheckSkipped_ForSmallInputs()
+    {
+        // Below ~1k chars the prose cap can't be exceeded, so density-shaped input
+        // smaller than that should still take the prose path. This protects callers
+        // from cap thrash on short identifier-heavy keys.
+        var preparer = Build(new EmbeddingOptions { MaxInputChars = 2000, MaxStructuredInputChars = 100 });
+        var smallDense = string.Concat(Enumerable.Repeat("https://example.com/abc-def ", 20));
+
+        Assert.IsTrue(smallDense.Length < 1024);
+        Assert.AreEqual(smallDense, preparer.Prepare(smallDense));
+    }
 }

@@ -30,12 +30,14 @@ public sealed class EmbeddingOptions
     public int MaxInputChars { get; set; } = 30_000;
 
     /// <summary>
-    /// Stricter character cap applied when the input looks like a structured payload
-    /// (JSON object/array). JSON tokenizes ~2× denser than prose, so a 19k-char JSON
-    /// blob can push past 9k tokens — over the 8192 window — while the prose cap would
-    /// happily let it through. Default 12000 (~6000 tokens at ~2 chars/token) leaves
-    /// the same headroom for structured input. Selection is centralized in
-    /// <c>EmbeddingTextPreparer</c>; no caller picks the cap directly.
+    /// Stricter character cap applied when the input looks like a structured or dense
+    /// payload — JSON object/array, base64 blob, hash listing, or markdown with heavy
+    /// URL / citation / identifier content. Such content tokenizes ~2× denser than
+    /// prose, so a 19k-char structured blob can push past 9k tokens — over the 8192
+    /// window — while the prose cap would happily let it through. Default 12000 (~6000
+    /// tokens at ~2 chars/token) leaves the same headroom for structured input.
+    /// Selection is centralized in <c>EmbeddingTextPreparer</c>; no caller picks the
+    /// cap directly.
     /// </summary>
     public int MaxStructuredInputChars { get; set; } = 12_000;
 
