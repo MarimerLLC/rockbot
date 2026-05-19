@@ -1,6 +1,7 @@
 using System.Text.Json;
 using RockBot.Host;
 using RockBot.Tools;
+using RockBot.UserProxy;
 
 namespace RockBot.Tools.Scheduling;
 
@@ -13,6 +14,7 @@ internal sealed class ScheduleTaskExecutor(ISchedulerService scheduler, AgentClo
     {
         string name, cron, description;
         bool runOnce;
+        ClientCapabilities capabilities;
         try
         {
             var args = ParseArgs(request.Arguments);
@@ -20,6 +22,7 @@ internal sealed class ScheduleTaskExecutor(ISchedulerService scheduler, AgentClo
             cron = GetRequired(args, "cron");
             description = GetRequired(args, "description");
             runOnce = GetOptionalBool(args, "runOnce");
+            capabilities = ParseOutputFormat(GetOptionalString(args, "outputFormat"));
         }
         catch (Exception ex)
         {
@@ -33,7 +36,8 @@ internal sealed class ScheduleTaskExecutor(ISchedulerService scheduler, AgentClo
                 CronExpression: cron,
                 Description: description,
                 CreatedAt: DateTimeOffset.UtcNow,
-                RunOnce: runOnce);
+                RunOnce: runOnce,
+                ClientCapabilities: capabilities);
 
             await scheduler.ScheduleAsync(task, ct);
 
@@ -73,9 +77,45 @@ internal sealed class ScheduleTaskExecutor(ISchedulerService scheduler, AgentClo
     private static bool GetOptionalBool(Dictionary<string, JsonElement> args, string key)
     {
         if (!args.TryGetValue(key, out var el)) return false;
-        return el.ValueKind == JsonValueKind.True;
+        return el.ValueKind switch
+        {
+            JsonValueKind.True => true,
+            JsonValueKind.False => false,
+            _ => false
+        };
     }
 
-    private static ToolInvokeResponse Error(ToolInvokeRequest request, string message) =>
-        new() { ToolCallId = request.ToolCallId, ToolName = request.ToolName, Content = message, IsError = true };
+    private static string? GetOptionalString(Dictionary<string, JsonElement> args, string key)
+    {
+        if (!args.TryGetValue(key, out var el)) return null;
+        return el.ValueKind == JsonValueKind.String ? el.GetString() : null;
+    }
+
+    /// <summary>
+    /// Maps a tool-friendly outputFormat string to a <see cref="ClientCapabilities"/> bitfield.
+    /// Three presets:
+    /// <list type="bullet">
+    /// <item><c>"plain"</c> / null / unrecognised → <see cref="ClientCapabilities.None"/></item>
+    /// <item><c>"markdown"</c> → headings, tables, code, links — the universal rich-text set</item>
+    /// <item><c>"rich"</c> → <see cref="ClientCapabilityPresets.Blazor"/> (HTML + SVG)</item>
+    /// </list>
+    /// </summary>
+    internal static ClientCapabilities ParseOutputFormat(string? format) =>
+        format?.Trim().ToLowerInvariant() switch
+        {
+            "markdown" =>
+                ClientCapabilities.Text | ClientCapabilities.MarkdownBasic |
+                ClientCapabilities.MarkdownHeadings | ClientCapabilities.MarkdownTables |
+                ClientCapabilities.MarkdownCode | ClientCapabilities.LinkInline,
+            "rich" => ClientCapabilityPresets.Blazor,
+            _ => ClientCapabilities.None,
+        };
+
+    private static ToolInvokeResponse Error(ToolInvokeRequest request, string message) => new()
+    {
+        ToolCallId = request.ToolCallId,
+        ToolName = request.ToolName,
+        Content = message,
+        IsError = true
+    };
 }

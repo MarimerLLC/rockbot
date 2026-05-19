@@ -223,7 +223,7 @@ internal sealed class SchedulerService : IHostedService, ISchedulerService
             _logger.LogInformation("Firing scheduled task '{Name}'", task.Name);
             try
             {
-                var message = new ScheduledTaskMessage(task.Name, task.Description, task.IsSystemTask);
+                var message = new ScheduledTaskMessage(task.Name, task.Description, task.IsSystemTask, task.ClientCapabilities);
                 var envelope = message.ToEnvelope(source: _identity.Name);
                 // Pass the slot's cancellation token so the handler (and the LLM
                 // loop it drives) stops cleanly when a user message arrives.

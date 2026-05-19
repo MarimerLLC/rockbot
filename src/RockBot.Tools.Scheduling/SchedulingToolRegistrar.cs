@@ -33,6 +33,11 @@ internal sealed class SchedulingToolRegistrar(
             "runOnce": {
               "type": "boolean",
               "description": "Set to true for one-time tasks (reminders, deferred actions). The task is automatically deleted after it fires. Omit or set false for recurring tasks."
+            },
+            "outputFormat": {
+              "type": "string",
+              "enum": ["plain", "markdown", "rich"],
+              "description": "Rendering format the task's output is authored for. 'plain' (default) emits plain text. 'markdown' permits headings, tables, code blocks, links. 'rich' additionally permits inline HTML for color and inline SVG for charts — use only for tasks whose audience will read the output in a client that renders HTML (e.g. the Blazor UI). Persists with the schedule; ignored on CLI/text-only clients."
             }
           },
           "required": ["name", "cron", "description"]

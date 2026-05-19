@@ -57,7 +57,8 @@ internal sealed class ChatCommand : AsyncCommand<ChatCommand.Settings>
             Content = content,
             SessionId = settings.SessionId ?? "cli-session",
             UserId = settings.UserId ?? "cli-user",
-            TargetAgent = settings.TargetAgent
+            TargetAgent = settings.TargetAgent,
+            ClientCapabilities = ClientCapabilityPresets.Cli
         };
 
         // Mirror intermediate progress to stderr so callers piping stdout get
@@ -120,7 +121,8 @@ internal sealed class ChatCommand : AsyncCommand<ChatCommand.Settings>
                 Content = input,
                 SessionId = sessionId,
                 UserId = userId,
-                TargetAgent = settings.TargetAgent
+                TargetAgent = settings.TargetAgent,
+                ClientCapabilities = ClientCapabilityPresets.Cli
             };
 
             string? progressText = null;

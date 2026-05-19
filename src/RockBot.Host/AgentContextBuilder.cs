@@ -5,6 +5,7 @@ using Microsoft.Extensions.Options;
 using RockBot.Llm;
 using RockBot.Memory;
 using RockBot.Skills;
+using RockBot.UserProxy;
 
 namespace RockBot.Host;
 
@@ -57,12 +58,19 @@ public sealed class AgentContextBuilder(
     /// Subagents use this to compose their own system prompt (preamble + subagent-specific profile
     /// documents) while still getting rules, memory recall, skills, and service hints from this builder.
     /// </param>
+    /// <param name="clientCapabilities">
+    /// Rendering capabilities of the client that will display this reply. When non-<see cref="ClientCapabilities.None"/>,
+    /// an instructional system message is injected describing the rich-content subset the agent may emit
+    /// (e.g. inline HTML for color, inline SVG for charts) and what it must avoid. Default falls through
+    /// to markdown-only behaviour for older proxies that don't advertise capabilities.
+    /// </param>
     public async Task<List<ChatMessage>> BuildAsync(
         string sessionId,
         string currentUserContent,
         CancellationToken ct,
         string? workingMemoryNamespace = null,
-        string? systemPromptOverride = null)
+        string? systemPromptOverride = null,
+        ClientCapabilities clientCapabilities = ClientCapabilities.None)
     {
         var profile = profileHolder.Profile;
         // Derive a category for prompt-hint injection (Phase 4 PromptBuilderHint).
@@ -80,6 +88,16 @@ public sealed class AgentContextBuilder(
                 "All dates and times must use this timezone. " +
                 "When any tool returns a UTC timestamp, convert it to this local timezone before using or displaying it.")
         };
+
+        // Client rendering capabilities — only injected when the caller advertised at least
+        // one opt-in beyond plain text. None / unset falls through to markdown-only default.
+        var capabilitySnippet = ClientCapabilityPromptBuilder.Build(clientCapabilities);
+        if (capabilitySnippet is not null)
+        {
+            chatMessages.Add(new ChatMessage(ChatRole.System, capabilitySnippet));
+            logger.LogInformation("Injected client capability prompt for session {SessionId} (caps={Caps})",
+                sessionId, clientCapabilities);
+        }
 
         // Active rules
         var activeRules = rulesStore.Rules;

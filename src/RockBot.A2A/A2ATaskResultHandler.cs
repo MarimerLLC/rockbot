@@ -39,6 +39,7 @@ internal sealed class A2ATaskResultHandler(
     AgentNameHolder agentNameHolder,
     InputRequiredHandler inputRequiredHandler,
     A2AOptions a2aOptions,
+    SessionClientCapabilityStore clientCapabilityStore,
     ILogger<A2ATaskResultHandler> logger) : IMessageHandler<AgentTaskResult>
 {
     private string DisplayName => agentNameHolder.DisplayName ?? agent.Name;
@@ -308,7 +309,8 @@ internal sealed class A2ATaskResultHandler(
             ct);
 
         var chatMessages = await agentContextBuilder.BuildAsync(
-            rawSessionId, syntheticUserTurn, ct);
+            rawSessionId, syntheticUserTurn, ct,
+            clientCapabilities: clientCapabilityStore.Get(rawSessionId));
 
         var sessionWorkingMemoryTools = new WorkingMemoryTools(workingMemory, sessionNamespace, logger);
         var sessionSkillTools = new SkillTools(skillStore, llmClient, logger, rawSessionId);

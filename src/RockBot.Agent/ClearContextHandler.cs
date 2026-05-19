@@ -12,6 +12,7 @@ namespace RockBot.Agent;
 internal sealed class ClearContextHandler(
     IConversationMemory conversationMemory,
     ISessionTracker sessionTracker,
+    SessionClientCapabilityStore clientCapabilityStore,
     IMessagePublisher publisher,
     AgentIdentity agent,
     ILogger<ClearContextHandler> logger) : IMessageHandler<ClearContextRequest>
@@ -26,6 +27,10 @@ internal sealed class ClearContextHandler(
 
         // Clear conversation memory (ephemeral turns only — logs are preserved)
         await conversationMemory.ClearAsync(message.SessionId, ct);
+
+        // Drop the cached client capabilities so the next inbound UserMessage re-establishes
+        // them from scratch — important if the user returns on a different client.
+        clientCapabilityStore.Clear(message.SessionId);
 
         logger.LogInformation("Cleared conversation context for session {SessionId}", message.SessionId);
 

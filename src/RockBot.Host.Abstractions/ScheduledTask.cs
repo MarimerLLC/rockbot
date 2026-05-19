@@ -1,3 +1,5 @@
+using RockBot.UserProxy;
+
 namespace RockBot.Host;
 
 /// <summary>
@@ -23,6 +25,13 @@ namespace RockBot.Host;
 /// and the agent updates it via the <c>update_task_directive</c> tool. Distinct from
 /// <see cref="Description"/>, which is the user-facing prompt the task fires with.
 /// </param>
+/// <param name="ClientCapabilities">
+/// Rendering capabilities the task's output should be authored for. Persists with the schedule
+/// so every fire produces the same rich-content subset regardless of who is currently connected
+/// — author-time intent rather than runtime audience. Defaults to <see cref="UserProxy.ClientCapabilities.None"/>
+/// (markdown-only). Scheduled tasks deliberately ignore the live-session capability stash
+/// because their audience is unpredictable at fire time.
+/// </param>
 public sealed record ScheduledTask(
     string Name,
     string CronExpression,
@@ -31,4 +40,5 @@ public sealed record ScheduledTask(
     DateTimeOffset? LastFiredAt = null,
     bool RunOnce = false,
     bool IsSystemTask = false,
-    string? Directive = null);
+    string? Directive = null,
+    ClientCapabilities ClientCapabilities = ClientCapabilities.None);

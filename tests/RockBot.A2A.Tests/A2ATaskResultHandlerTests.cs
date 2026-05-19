@@ -46,6 +46,7 @@ public class A2ATaskResultHandlerTests
             agentNameHolder: _nameHolder,
             inputRequiredHandler: null!,
             a2aOptions: _options,
+            clientCapabilityStore: new SessionClientCapabilityStore(),
             logger: NullLogger<A2ATaskResultHandler>.Instance);
 
     private void TrackPending() =>
