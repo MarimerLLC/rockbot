@@ -18,4 +18,29 @@ public sealed class WispOptions
     /// to this limit using a semaphore.
     /// </summary>
     public int MaxConcurrentWisps { get; set; } = 10;
+
+    /// <summary>
+    /// When true, wisp runs originating from a scheduled-task session
+    /// (sessionId prefixed with <c>patrol/</c>) eagerly attach their body as a
+    /// provisional resource on the originating skill once the shape has succeeded
+    /// at least <see cref="EagerScheduledTaskPromotionThreshold"/> times. Bypasses
+    /// the slower dream-pass promotion path so recurring scheduled work captures
+    /// reusable assets after the first couple of fires instead of waiting for a
+    /// nightly dream cycle.
+    /// </summary>
+    public bool EagerScheduledTaskPromotionEnabled { get; set; } = true;
+
+    /// <summary>
+    /// Minimum same-shape successful runs required before a scheduled-task wisp is
+    /// eagerly attached as a provisional skill resource. Defaults to 2 (record on
+    /// the first success, promote on the second).
+    /// </summary>
+    public int EagerScheduledTaskPromotionThreshold { get; set; } = 2;
+
+    /// <summary>
+    /// Session-id prefix that marks a scheduled-task execution. The
+    /// <see cref="RockBot.Agent.ScheduledTaskHandler"/> uses
+    /// <c>patrol/{taskName}</c>; if that convention changes, update this default.
+    /// </summary>
+    public string ScheduledTaskSessionPrefix { get; set; } = "patrol/";
 }

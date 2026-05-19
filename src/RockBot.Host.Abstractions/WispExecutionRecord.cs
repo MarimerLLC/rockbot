@@ -15,6 +15,18 @@ public sealed record WispExecutionRecord
     /// <summary>SHA-256 hash of the serialized step definitions for matching retries.</summary>
     public required string DefinitionHash { get; init; }
 
+    /// <summary>
+    /// Normalized "shape" hash of the wisp — descriptions, prompts, and per-run
+    /// parameter values are stripped, leaving only structural identity (mode,
+    /// gateway, server, tool, language, agent, skill, on_failure, and the SORTED
+    /// SET of parameter keys per step). Two runs of the same pipeline that differ
+    /// only by description text, dates, account ids, or other literal values will
+    /// share the same shape hash.
+    /// Null on records written before this field existed; consumers should fall
+    /// back to <see cref="DefinitionHash"/> grouping in that case.
+    /// </summary>
+    public string? ShapeHash { get; init; }
+
     /// <summary>Whether all steps completed successfully.</summary>
     public required bool Succeeded { get; init; }
 
