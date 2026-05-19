@@ -49,10 +49,15 @@ internal sealed class EmbeddingTextPreparer(
     }
 
     /// <summary>
-    /// Cheap heuristic: input is treated as structured when the first non-whitespace
-    /// character is <c>{</c> or <c>[</c>. Covers JSON objects, arrays, and JSON-Lines.
-    /// Misses base64/HTML/code blobs, but those don't currently exceed the prose cap
-    /// in practice — promote the heuristic only if real failures show up.
+    /// Cheap heuristic for "should this input get the stricter structured cap." Two signals:
+    /// <list type="number">
+    /// <item>First non-whitespace char is <c>{</c> or <c>[</c> — covers JSON objects, arrays, JSON-Lines.</item>
+    /// <item>Density check on a leading sample — BPE tokenizers split on whitespace and merge
+    /// common subwords, so content with long whitespace-separated runs (URLs, hashes, identifiers,
+    /// base64, dense markdown evidence slices with citations) tokenizes ~2× denser than English
+    /// prose (~5-char average word length) and busts the embedding context window even when the
+    /// char count is under the prose cap.</item>
+    /// </list>
     /// </summary>
     private static bool IsStructured(string text)
     {
@@ -60,8 +65,35 @@ internal sealed class EmbeddingTextPreparer(
         {
             var c = text[i];
             if (char.IsWhiteSpace(c)) continue;
-            return c == '{' || c == '[';
+            if (c == '{' || c == '[') return true;
+            break;
         }
-        return false;
+
+        // Density check only matters for inputs large enough to risk overflow at the
+        // prose cap. Below ~1k chars the cap can't be exceeded anyway.
+        if (text.Length < 1024) return false;
+
+        const int sampleSize = 4096;
+        var sampleLen = Math.Min(text.Length, sampleSize);
+        var whitespaceCount = 0;
+        var nonLetterNonWhitespace = 0;
+        for (var i = 0; i < sampleLen; i++)
+        {
+            var c = text[i];
+            if (char.IsWhiteSpace(c)) whitespaceCount++;
+            else if (!char.IsLetter(c)) nonLetterNonWhitespace++;
+        }
+
+        // Average run length between whitespace boundaries. English prose runs ~5;
+        // URL/hash/identifier-heavy content runs much longer.
+        var avgRunLength = whitespaceCount > 0
+            ? (double)(sampleLen - whitespaceCount) / whitespaceCount
+            : double.MaxValue;
+
+        // Symbol/digit density (excluding whitespace). Prose sits ~5%; dense markdown
+        // with URLs, dates, hashes, and citations climbs past 25%.
+        var nonLetterRatio = (double)nonLetterNonWhitespace / sampleLen;
+
+        return avgRunLength > 15 || nonLetterRatio > 0.25;
     }
 }
