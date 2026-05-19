@@ -19,4 +19,11 @@ internal sealed class CouncilOptions
 
     /// <summary>ResearchAgent invocation timeout (used in Phase 3 by ResearchAgentInvoker).</summary>
     public int ResearchAgentTimeoutSeconds { get; set; } = 90;
+
+    /// <summary>
+    /// Maximum number of research tool calls a single persona may make during its view step.
+    /// Past this cap, the scoped research tool short-circuits with a budget-exhausted sentinel
+    /// so the persona answers from existing context.
+    /// </summary>
+    public int MaxResearchCallsPerPersona { get; set; } = 3;
 }

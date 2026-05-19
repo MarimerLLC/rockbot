@@ -39,34 +39,37 @@ internal sealed class CouncilOrchestrator(
 
         var selectedPersonas = selection.Personas
             .Where(p => personas.ContainsKey(p.Id))
-            .Select(p => (Spec: p, Persona: personas[p.Id]))
+            .Select(p => personas[p.Id])
             .ToList();
 
         if (selectedPersonas.Count == 0)
             return EmptyResponse(question, "No personas selected. The persona registry may be empty or the selector returned no valid ids.", sw.Elapsed, modelCalls);
 
         // ── 2. PreResearch (conditional) ───────────────────────────────────────
-        string? preResearch = null;
+        // Persona-aware research that writes to WM at council/{taskId}/shared; personas
+        // read from there in step 3. The boolean tells us whether to flag preResearchRun
+        // in metadata.
+        var preResearchRun = false;
         if (selection.PreResearch)
         {
-            preResearch = await preResearchStep.RunAsync(question, ct);
-            if (preResearch is not null) modelCalls++;
+            preResearchRun = await preResearchStep.RunAsync(question, selectedPersonas, taskId, ct);
+            if (preResearchRun) modelCalls++;
         }
 
         // ── 3. Fan-out personas in parallel ────────────────────────────────────
         var perPersonaTimeout = TimeSpan.FromSeconds(Math.Max(5, options.Value.PerPersonaTimeoutSeconds));
-        var personaTasks = selectedPersonas.Select(async sp =>
+        var personaTasks = selectedPersonas.Select(async persona =>
         {
             using var personaCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
             personaCts.CancelAfter(perPersonaTimeout);
             try
             {
-                return await personaStep.RunAsync(sp.Persona, question, preResearch, sp.Spec.NeedsResearch, personaCts.Token);
+                return await personaStep.RunAsync(persona, question, taskId, personaCts.Token);
             }
             catch (OperationCanceledException) when (!ct.IsCancellationRequested)
             {
-                logger.LogWarning("Persona {Id} timed out after {Sec}s", sp.Spec.Id, perPersonaTimeout.TotalSeconds);
-                return new PersonaView(sp.Spec.Id, "(timed out)", [], []);
+                logger.LogWarning("Persona {Id} timed out after {Sec}s", persona.Id, perPersonaTimeout.TotalSeconds);
+                return new PersonaView(persona.Id, "(timed out)", [], []);
             }
         }).ToList();
 
@@ -79,13 +82,13 @@ internal sealed class CouncilOrchestrator(
         {
             var critiqueTasks = personaViews.Select(async (own, idx) =>
             {
-                var persona = selectedPersonas[idx].Persona;
+                var persona = selectedPersonas[idx];
                 var siblings = personaViews.Where((_, i) => i != idx).ToList();
                 using var critCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
                 critCts.CancelAfter(perPersonaTimeout);
                 try
                 {
-                    return await critiqueStep.RunAsync(persona, question, own, siblings, critCts.Token);
+                    return await critiqueStep.RunAsync(persona, question, taskId, own, siblings, critCts.Token);
                 }
                 catch (OperationCanceledException) when (!ct.IsCancellationRequested)
                 {
@@ -118,7 +121,7 @@ internal sealed class CouncilOrchestrator(
             Confidence: synthesis.Confidence,
             Metadata: new CouncilMetadata(
                 CritiqueRun: selection.Critique && personaViews.Length > 1,
-                PreResearchRun: preResearch is not null,
+                PreResearchRun: preResearchRun,
                 PersonaCount: personaViews.Length,
                 DurationMs: sw.ElapsedMilliseconds,
                 ModelCalls: modelCalls,

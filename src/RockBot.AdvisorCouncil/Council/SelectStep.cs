@@ -56,7 +56,7 @@ internal sealed class SelectStep(
                 attempt++;
                 messages.Add(new ChatMessage(ChatRole.User,
                     "Your previous response was not valid JSON matching the required schema. " +
-                    "Return ONLY a JSON object with keys: personas (array of {id, needs_research}), " +
+                    "Return ONLY a JSON object with keys: personas (array of {id}), " +
                     "pre_research (boolean), critique (boolean), rationale (string)."));
             }
         }
@@ -84,12 +84,11 @@ internal sealed class SelectStep(
         sb.AppendLine();
         sb.AppendLine("Selection guidance:");
         sb.AppendLine("- Pick 3–5 personas whose framings are most relevant. Do not select all by default.");
-        sb.AppendLine("- pre_research: true only when multiple personas would benefit from a shared factual base (specific technologies, companies, recent events).");
+        sb.AppendLine("- pre_research: true only when multiple personas would benefit from a shared factual base (specific technologies, companies, recent events). Each persona can also invoke research on its own when its lens demands it, so reserve pre_research for genuinely shared factual ground.");
         sb.AppendLine("- critique: true when the question is contested or strategic and personas are likely to disagree. False for mostly factual integration.");
-        sb.AppendLine("- needs_research per persona: true when the persona's framing requires up-to-date facts (e.g. engineer, economist) AND research is relevant to this question.");
         sb.AppendLine();
         sb.AppendLine("Respond with JSON only, in this exact shape:");
-        sb.AppendLine(@"{ ""personas"": [{""id"": ""..."", ""needs_research"": false}], ""pre_research"": false, ""critique"": false, ""rationale"": ""..."" }");
+        sb.AppendLine(@"{ ""personas"": [{""id"": ""...""}], ""pre_research"": false, ""critique"": false, ""rationale"": ""..."" }");
         return sb.ToString();
     }
 
@@ -129,13 +128,13 @@ internal sealed class SelectStep(
         var available = registry.Personas;
         var selected = defaults
             .Where(id => available.ContainsKey(id))
-            .Select(id => new SelectedPersona(id, false))
+            .Select(id => new SelectedPersona(id))
             .ToList();
         if (selected.Count == 0)
         {
             selected = available.Keys
                 .Take(3)
-                .Select(id => new SelectedPersona(id, false))
+                .Select(id => new SelectedPersona(id))
                 .ToList();
         }
         return new SelectorOutput(selected, false, false, "Fallback default selection — selector output failed schema validation.");

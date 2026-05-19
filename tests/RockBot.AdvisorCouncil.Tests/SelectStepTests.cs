@@ -27,7 +27,7 @@ public class SelectStepTests
         var registry = MakeRegistry(("skeptic", false), ("engineer", true), ("economist", true));
         var chat = new FakeChatClient().EnqueueResponse(
             """
-            { "personas": [{"id":"skeptic","needs_research":false},{"id":"engineer","needs_research":true}],
+            { "personas": [{"id":"skeptic"},{"id":"engineer"}],
               "pre_research": false, "critique": true, "rationale": "Design question with engineering tradeoffs." }
             """);
         var step = new SelectStep(chat, registry, NullLogger<SelectStep>.Instance);
@@ -38,7 +38,7 @@ public class SelectStepTests
         Assert.IsTrue(result.Critique);
         Assert.IsFalse(result.PreResearch);
         Assert.AreEqual("skeptic", result.Personas[0].Id);
-        Assert.IsTrue(result.Personas[1].NeedsResearch);
+        Assert.AreEqual("engineer", result.Personas[1].Id);
     }
 
     [TestMethod]
@@ -48,7 +48,7 @@ public class SelectStepTests
         var chat = new FakeChatClient()
             .EnqueueResponse("not json")
             .EnqueueResponse(
-                """{ "personas": [{"id":"skeptic","needs_research":false}], "pre_research": false, "critique": false, "rationale": "x" }""");
+                """{ "personas": [{"id":"skeptic"}], "pre_research": false, "critique": false, "rationale": "x" }""");
         var step = new SelectStep(chat, registry, NullLogger<SelectStep>.Instance);
 
         var result = await step.RunAsync("Trivial", CancellationToken.None);
@@ -80,7 +80,7 @@ public class SelectStepTests
     {
         var registry = MakeRegistry(("skeptic", false), ("engineer", false));
         var chat = new FakeChatClient().EnqueueResponse(
-            """{ "personas": [{"id":"unknown","needs_research":false},{"id":"skeptic","needs_research":false}], "pre_research": false, "critique": false, "rationale": "x" }""");
+            """{ "personas": [{"id":"unknown"},{"id":"skeptic"}], "pre_research": false, "critique": false, "rationale": "x" }""");
         var step = new SelectStep(chat, registry, NullLogger<SelectStep>.Instance);
 
         var result = await step.RunAsync("q", CancellationToken.None);

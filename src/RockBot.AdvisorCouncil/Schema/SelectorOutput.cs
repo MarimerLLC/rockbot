@@ -14,5 +14,4 @@ internal sealed record SelectorOutput(
     [property: JsonPropertyName("rationale")] string Rationale);
 
 internal sealed record SelectedPersona(
-    [property: JsonPropertyName("id")] string Id,
-    [property: JsonPropertyName("needs_research")] bool NeedsResearch);
+    [property: JsonPropertyName("id")] string Id);
