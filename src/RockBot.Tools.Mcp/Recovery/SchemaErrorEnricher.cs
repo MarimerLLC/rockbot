@@ -16,7 +16,8 @@ namespace RockBot.Tools.Mcp.Recovery;
 /// </summary>
 public sealed class SchemaErrorEnricher(
     ToolSchemaCache schemas,
-    IToolCallLog toolCallLog)
+    IToolCallLog toolCallLog,
+    ISkillStore? skillStore = null)
 {
     /// <summary>Maximum number of recent calls listed in the enriched output.</summary>
     internal const int MaxRecentCallsListed = 5;
@@ -83,6 +84,22 @@ public sealed class SchemaErrorEnricher(
                 sb.Append("Use the value of '").Append(fieldName)
                   .AppendLine("' from those results in your conversation history.");
             }
+        }
+
+        // Recovery-time skill injection: the LLM just hit a parameter-required
+        // error and is about to retry. If a `mcp/{server}` skill exists, append
+        // its content so the next attempt can use verified parameter shape
+        // instead of re-guessing from training priors.
+        try
+        {
+            var skillBlock = await McpServerSkillFormatter.FormatAsync(skillStore, serverName, ct);
+            if (!string.IsNullOrEmpty(skillBlock))
+                sb.AppendLine().Append(skillBlock);
+        }
+        catch (OperationCanceledException) { throw; }
+        catch
+        {
+            // Best-effort — never let skill injection break enrichment.
         }
 
         return sb.ToString().TrimEnd();
