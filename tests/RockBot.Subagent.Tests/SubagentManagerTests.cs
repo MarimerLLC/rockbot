@@ -62,9 +62,10 @@ public class SubagentManagerTests
         services.AddSingleton<ISystemPromptBuilder>(new DefaultSystemPromptBuilder(profileHolder, nameHolder, Microsoft.Extensions.Options.Options.Create(new AgentProfileOptions())));
         services.AddSingleton<IRulesStore>(new NoopRulesStore());
         services.AddSingleton<IConversationMemory>(new NoopConversationMemory());
-        services.AddSingleton<InjectedMemoryTracker>();
+                services.AddSingleton<InjectedMemoryTracker>();
         services.AddSingleton<SkillIndexTracker>();
         services.AddSingleton<SkillRecallTracker>();
+        services.AddSingleton<SessionClientCapabilityStore>();
         services.AddTransient<AgentContextBuilder>();
 
         // TierRoutingLogger requires a writable directory; point it at a temp folder

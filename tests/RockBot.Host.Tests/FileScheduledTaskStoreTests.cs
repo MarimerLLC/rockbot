@@ -70,6 +70,54 @@ public sealed class FileScheduledTaskStoreTests
         Assert.IsNull(result);
     }
 
+    [TestMethod]
+    public async Task SaveAsync_PreservesClientCapabilities()
+    {
+        var store = CreateStore();
+        var task = new ScheduledTask(
+            Name: "rich-summary",
+            CronExpression: "0 8 * * *",
+            Description: "Daily summary with charts",
+            CreatedAt: DateTimeOffset.UtcNow,
+            ClientCapabilities: RockBot.UserProxy.ClientCapabilityPresets.Blazor);
+
+        await store.SaveAsync(task);
+        var retrieved = await store.GetAsync("rich-summary");
+
+        Assert.IsNotNull(retrieved);
+        Assert.AreEqual(RockBot.UserProxy.ClientCapabilityPresets.Blazor, retrieved.ClientCapabilities);
+    }
+
+    [TestMethod]
+    public async Task GetAsync_LegacyFileWithoutClientCapabilities_DefaultsToNone()
+    {
+        // Files persisted before the ClientCapabilities field was added should round-trip
+        // with the default value, not blow up deserialization. The on-disk format is a
+        // JSON array of tasks (see FileScheduledTaskStore.WriteAllAsync).
+        var filePath = Path.Combine(_tempDir, "scheduled-tasks.json");
+        await File.WriteAllTextAsync(filePath,
+            """
+            [
+              {
+                "name": "legacy-task",
+                "cronExpression": "0 8 * * *",
+                "description": "Pre-capability task",
+                "createdAt": "2026-01-01T00:00:00+00:00",
+                "lastFiredAt": null,
+                "runOnce": false,
+                "isSystemTask": false,
+                "directive": null
+              }
+            ]
+            """);
+        var store = new FileScheduledTaskStore(filePath, NullLogger<FileScheduledTaskStore>.Instance);
+
+        var retrieved = await store.GetAsync("legacy-task");
+
+        Assert.IsNotNull(retrieved);
+        Assert.AreEqual(RockBot.UserProxy.ClientCapabilities.None, retrieved.ClientCapabilities);
+    }
+
     // ── ListAsync ─────────────────────────────────────────────────────────────
 
     [TestMethod]

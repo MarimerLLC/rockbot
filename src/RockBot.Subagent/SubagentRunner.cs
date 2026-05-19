@@ -31,6 +31,7 @@ internal sealed class SubagentRunner(
     AgentIdentity agent,
     TierRoutingLogger tierRoutingLogger,
     AgentProfile agentProfile,
+    SessionClientCapabilityStore clientCapabilityStore,
     ILogger<SubagentRunner> logger,
     ISkillResourceUsageStore? skillResourceUsageStore = null,
     ISessionA2AAwaiter? a2aAwaiter = null)
@@ -99,10 +100,20 @@ internal sealed class SubagentRunner(
         // Use AgentContextBuilder for the full context: system prompt, datetime, rules,
         // model guardrails, long-term memory recall, skill/service hints, working memory.
         // The subagent session has no conversation history, so that section is a no-op.
+        //
+        // primarySessionId is the WM namespace (e.g. "session/blazor-session") for user
+        // sessions; the capability stash is keyed by raw session id (e.g. "blazor-session").
+        // Strip the "session/" prefix to match — for non-user origins (subagent/wisp) the
+        // lookup naturally misses and returns None.
+        const string SessionPrefix = "session/";
+        var primaryRawSessionId = primarySessionId.StartsWith(SessionPrefix, StringComparison.OrdinalIgnoreCase)
+            ? primarySessionId[SessionPrefix.Length..]
+            : primarySessionId;
         var chatMessages = await agentContextBuilder.BuildAsync(
             subagentSessionId, description, ct,
             workingMemoryNamespace: subagentNamespace,
-            systemPromptOverride: systemPrompt);
+            systemPromptOverride: systemPrompt,
+            clientCapabilities: clientCapabilityStore.Get(primaryRawSessionId));
 
         if (!string.IsNullOrEmpty(context))
             chatMessages.Add(new ChatMessage(ChatRole.System, $"Context: {context}"));

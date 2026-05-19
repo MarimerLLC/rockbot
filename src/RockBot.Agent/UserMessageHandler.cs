@@ -48,6 +48,7 @@ internal sealed class UserMessageHandler(
     AgentContextBuilder agentContextBuilder,
     ISessionTracker sessionTracker,
     SessionStartTracker sessionStartTracker,
+    SessionClientCapabilityStore clientCapabilityStore,
     IOptions<AgentProfileOptions> profileOptions,
     IWipTracker wipTracker,
     AgentNameHolder agentNameHolder,
@@ -79,6 +80,12 @@ internal sealed class UserMessageHandler(
             ? (string)id : null;
 
         userActivityMonitor.RecordActivity();
+
+        // Cache the client's advertised rendering capabilities so other entry points
+        // producing replies for this session (A2A handlers, subagent runner) can honour
+        // them without the originating UserMessage in scope. Last-writer-wins handles
+        // a user switching clients mid-conversation.
+        clientCapabilityStore.Set(message.SessionId, message.ClientCapabilities);
 
         // Cancel any background loop still running for this session from a prior message.
         // This prevents stale tool calls (e.g. sending an email from a previous topic)
@@ -140,7 +147,9 @@ internal sealed class UserMessageHandler(
             }
 
             // Build context using shared builder
-            var chatMessages = await agentContextBuilder.BuildAsync(message.SessionId, message.Content, ct);
+            var chatMessages = await agentContextBuilder.BuildAsync(
+                message.SessionId, message.Content, ct,
+                clientCapabilities: message.ClientCapabilities);
             var postInjectionTokenEstimate = EstimateContextTokens(chatMessages);
             HostDiagnostics.TurnContextTokens.Record(postInjectionTokenEstimate, tierTag);
 
