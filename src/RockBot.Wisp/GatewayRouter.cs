@@ -54,23 +54,17 @@ internal static partial class GatewayRouter
             return ToolRouteResult.Failure("MCP gateway requires 'server' field", FailureCategory.Structural);
         if (string.IsNullOrEmpty(step.Tool))
             return ToolRouteResult.Failure("MCP gateway requires 'tool' field", FailureCategory.Structural);
-        if (step.ResolvedParams is null)
-            return ToolRouteResult.Failure(
-                $"MCP step '{step.Id}' has no 'params' field. Put the tool arguments " +
-                $"for {step.Server}/{step.Tool} in \"params\": {{...}}. Example: " +
-                $"\"params\": {{\"timeZone\": \"America/Chicago\", \"startDate\": \"2025-04-01\"}}",
-                FailureCategory.Structural);
 
+        // Missing params is treated as an empty arguments object. The MCP server validates
+        // its own tool schema and returns a specific error if required arguments are absent.
         var resolvedParams = ResolveTemplates(step.ResolvedParams, priorResults);
 
         var args = new Dictionary<string, object?>
         {
             ["server_name"] = step.Server,
-            ["tool_name"] = step.Tool
+            ["tool_name"] = step.Tool,
+            ["arguments"] = resolvedParams ?? JsonDocument.Parse("{}").RootElement
         };
-
-        if (resolvedParams is not null)
-            args["arguments"] = resolvedParams;
 
         return ToolRouteResult.Success("mcp_invoke_tool", JsonSerializer.Serialize(args, JsonOptions));
     }
