@@ -69,7 +69,7 @@ internal sealed class CouncilOrchestrator(
             catch (OperationCanceledException) when (!ct.IsCancellationRequested)
             {
                 logger.LogWarning("Persona {Id} timed out after {Sec}s", persona.Id, perPersonaTimeout.TotalSeconds);
-                return new PersonaView(persona.Id, "(timed out)", [], []);
+                return new PersonaView(persona.Id, "(timed out)", [], [], PersonaStatus.TimedOut);
             }
         }).ToList();
 
@@ -113,6 +113,12 @@ internal sealed class CouncilOrchestrator(
 
         sw.Stop();
 
+        var contributedCount = personaViews.Count(v => v.Status == PersonaStatus.Ok);
+        var missingIds = personaViews
+            .Where(v => v.Status != PersonaStatus.Ok)
+            .Select(v => v.Id)
+            .ToList();
+
         return new CouncilResponse(
             Question: question,
             Personas: personaViews,
@@ -126,7 +132,9 @@ internal sealed class CouncilOrchestrator(
                 DurationMs: sw.ElapsedMilliseconds,
                 ModelCalls: modelCalls,
                 PersonaSetHash: personaRegistry.PersonaSetHash,
-                SelectorRationale: selection.Rationale));
+                SelectorRationale: selection.Rationale,
+                PersonasContributed: contributedCount,
+                PersonasMissing: missingIds));
     }
 
     private CouncilResponse EmptyResponse(string question, string reason, TimeSpan duration, int modelCalls) =>

@@ -60,11 +60,18 @@ internal sealed class CritiqueStep(
             var parsed = Parse(raw, persona.Id);
             if (parsed is not null)
             {
+                // Critique can revise the view text but does not change whether the persona
+                // contributed: carry forward the original status (ok/timed_out/failed).
+                var preserved = parsed with
+                {
+                    RevisedView = parsed.RevisedView with { Status = ownView.Status }
+                };
+
                 try
                 {
                     await workingMemory.SetAsync(
                         key: $"council/{taskId}/{persona.Id}/view-revised",
-                        value: parsed.RevisedView.View,
+                        value: preserved.RevisedView.View,
                         ttl: TimeSpan.FromMinutes(30),
                         category: "council/view",
                         tags: [persona.Id, taskId, "revised"]);
@@ -73,7 +80,7 @@ internal sealed class CritiqueStep(
                 {
                     logger.LogWarning(ex, "Failed to write revised view to WM for {Persona}", persona.Id);
                 }
-                return parsed;
+                return preserved;
             }
             logger.LogWarning("CritiqueStep parse failed for persona {Id}; keeping original view", persona.Id);
             return new CritiqueOutput(ownView, []);

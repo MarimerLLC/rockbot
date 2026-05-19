@@ -9,10 +9,10 @@ internal sealed class CouncilOptions
     public string PersonasPath { get; set; } = string.Empty;
 
     /// <summary>Hard wall-clock cap on a council run before cancellation.</summary>
-    public int OverallTimeoutSeconds { get; set; } = 180;
+    public int OverallTimeoutSeconds { get; set; } = 300;
 
     /// <summary>Per-persona soft timeout. On expiry the persona view becomes "(timed out)" and synthesis proceeds without it.</summary>
-    public int PerPersonaTimeoutSeconds { get; set; } = 60;
+    public int PerPersonaTimeoutSeconds { get; set; } = 120;
 
     /// <summary>Pre-research stage timeout.</summary>
     public int PreResearchTimeoutSeconds { get; set; } = 90;

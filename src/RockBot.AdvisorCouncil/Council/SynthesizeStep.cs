@@ -93,8 +93,20 @@ internal sealed class SynthesizeStep(
     {
         var sb = new StringBuilder();
         sb.Append("Question: ").AppendLine(input.Question).AppendLine();
+
+        var contributing = input.Views.Where(v => v.Status == PersonaStatus.Ok).ToList();
+        var missing = input.Views.Where(v => v.Status != PersonaStatus.Ok).ToList();
+
+        if (missing.Count > 0)
+        {
+            sb.AppendLine("Coverage note: the following personas were selected but did NOT contribute and are absent from the views below. Acknowledge this gap in your synthesis (briefly) and lower the confidence accordingly.");
+            foreach (var v in missing)
+                sb.Append("- ").Append(v.Id).Append(" (").Append(v.Status).AppendLine(")");
+            sb.AppendLine();
+        }
+
         sb.AppendLine("Persona views:");
-        foreach (var v in input.Views)
+        foreach (var v in contributing)
         {
             sb.Append("### ").AppendLine(v.Id);
             sb.AppendLine(v.View).AppendLine();

@@ -70,7 +70,7 @@ internal sealed class PersonaStep(
                 logger.LogWarning(ex, "Failed to write persona view to WM for {Persona}", persona.Id);
             }
 
-            return new PersonaView(persona.Id, text, [], []);
+            return new PersonaView(persona.Id, text, [], [], PersonaStatus.Ok);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
@@ -79,7 +79,7 @@ internal sealed class PersonaStep(
         catch (Exception ex)
         {
             logger.LogError(ex, "PersonaStep failed for persona {Id}", persona.Id);
-            return new PersonaView(persona.Id, "(persona call failed)", [], []);
+            return new PersonaView(persona.Id, "(persona call failed)", [], [], PersonaStatus.Failed);
         }
     }
 

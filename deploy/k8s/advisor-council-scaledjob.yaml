@@ -28,7 +28,7 @@ spec:
         restartPolicy: Never
         containers:
           - name: advisor-council
-            image: rockylhotka/rockbot-advisor-council:0.10.55
+            image: rockylhotka/rockbot-advisor-council:0.10.66
             imagePullPolicy: Always
             env:
               # Ephemeral working memory — lives on the container's local filesystem.

@@ -96,6 +96,12 @@ else
 // AgentLoopRunner requires IFeedbackStore — use no-op since we have no dreaming pipeline
 builder.Services.AddSingleton<IFeedbackStore, NullFeedbackStore>();
 
+// AgentLoopRunner also depends on ISkillStore (used only on completion re-prompt,
+// which we disable via enableFollowUp:false) and IConversationMemory (used only on
+// Azure content-filter recovery). Null stores keep the ephemeral pod stateless.
+builder.Services.AddSingleton<ISkillStore, NullSkillStore>();
+builder.Services.AddSingleton<IConversationMemory, NullConversationMemory>();
+
 builder.Services.AddRockBotHost(agent =>
 {
     agent.WithIdentity("ResearchAgent");
