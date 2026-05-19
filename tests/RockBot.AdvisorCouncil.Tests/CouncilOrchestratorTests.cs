@@ -34,7 +34,7 @@ public class CouncilOrchestratorTests
         // collide with the plain persona call match.
         var chat = new FakeChatClient()
             .WhenUserContains("selector for an advisor council",
-                """{ "personas": [{"id":"skeptic","needs_research":false},{"id":"engineer","needs_research":false}], "pre_research": false, "critique": false, "rationale": "Engineering decision." }""")
+                """{ "personas": [{"id":"skeptic"},{"id":"engineer"}], "pre_research": false, "critique": false, "rationale": "Engineering decision." }""")
             .WhenUserContains("synthesis step of an advisor council",
                 """{ "synthesis": "## Synthesis\n\nProceed with caution.", "confidence": "medium", "tensions": [] }""")
             .WhenUserContains("Critique addendum",
@@ -62,7 +62,7 @@ public class CouncilOrchestratorTests
         var registry = MakeRegistry();
         var chat = new FakeChatClient()
             .WhenUserContains("selector for an advisor council",
-                """{ "personas": [{"id":"skeptic","needs_research":false},{"id":"engineer","needs_research":false}], "pre_research": false, "critique": true, "rationale": "Contested." }""")
+                """{ "personas": [{"id":"skeptic"},{"id":"engineer"}], "pre_research": false, "critique": true, "rationale": "Contested." }""")
             .WhenUserContains("synthesis step of an advisor council",
                 """{ "synthesis": "Integrated view.", "confidence": "low", "tensions": [{"between":["skeptic","engineer"],"description":"timing","stakes":"ship vs delay"}] }""")
             .WhenUserContains("Critique addendum",
@@ -86,7 +86,7 @@ public class CouncilOrchestratorTests
         // Synthesis always returns invalid; orchestrator falls back to a stub synthesis.
         var chat = new FakeChatClient()
             .WhenUserContains("selector for an advisor council",
-                """{ "personas": [{"id":"skeptic","needs_research":false}], "pre_research": false, "critique": false, "rationale": "Simple." }""")
+                """{ "personas": [{"id":"skeptic"}], "pre_research": false, "critique": false, "rationale": "Simple." }""")
             .WhenUserContains("synthesis step of an advisor council", "not valid json")
             .WhenUserContains("Skeptic body", "Persona view.");
 
@@ -117,12 +117,15 @@ public class CouncilOrchestratorTests
     private static CouncilOrchestrator BuildOrchestrator(PersonaRegistry registry, FakeChatClient chat)
     {
         var opts = Options.Create(new CouncilOptions { PerPersonaTimeoutSeconds = 30, OverallTimeoutSeconds = 60 });
+        var wm = new InMemoryWorkingMemory();
         var select = new SelectStep(chat, registry, NullLogger<SelectStep>.Instance);
-        var persona = new PersonaStep(chat, NullLogger<PersonaStep>.Instance);
-        var critique = new CritiqueStep(chat, NullLogger<CritiqueStep>.Instance);
+        // ResearchAgentInvoker passed as null! — the FakeChatClient never returns a tool-call response,
+        // so PersonaStep's scoped research tool is never invoked. Same applies to PreResearchStep when
+        // pre_research=false (the only case exercised by these orchestrator-shape tests).
+        var persona = new PersonaStep(chat, invoker: null!, wm, opts, NullLogger<PersonaStep>.Instance);
+        var critique = new CritiqueStep(chat, wm, NullLogger<CritiqueStep>.Instance);
         var synth = new SynthesizeStep(chat, NullLogger<SynthesizeStep>.Instance);
-        // PreResearchStep needs a ResearchAgentInvoker — not used in these tests because pre_research=false
-        var preResearch = new PreResearchStep(null!, NullLogger<PreResearchStep>.Instance);
+        var preResearch = new PreResearchStep(invoker: null!, wm, NullLogger<PreResearchStep>.Instance);
         return new CouncilOrchestrator(select, preResearch, persona, critique, synth, registry, opts,
             NullLogger<CouncilOrchestrator>.Instance);
     }

@@ -101,7 +101,9 @@ builder.Services.AddRockBotHost(agent =>
 
     // Working memory — persona branches with research write their findings here under
     // council/{taskId}/{personaId}; namespace shared across personas for cross-pollination.
-    agent.WithWorkingMemory();
+    // Bump per-namespace cap above the default 50: a single council run can produce
+    // ~5 personas × (1 view + 3 research + 1 revised) + 1 shared = ~26 entries, with headroom.
+    agent.WithWorkingMemory(opts => opts.MaxEntriesPerNamespace = 200);
 
     agent.AddA2A(opts =>
     {

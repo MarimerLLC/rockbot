@@ -53,7 +53,7 @@ public class CouncilResponseSchemaTests
     public void SelectorOutput_JsonSchemaShape_IsSnakeCase()
     {
         var sel = new SelectorOutput(
-            [new SelectedPersona("skeptic", true)],
+            [new SelectedPersona("skeptic")],
             PreResearch: true,
             Critique: false,
             Rationale: "r");
@@ -61,8 +61,9 @@ public class CouncilResponseSchemaTests
         var json = JsonSerializer.Serialize(sel);
 
         StringAssert.Contains(json, "\"pre_research\":");
-        StringAssert.Contains(json, "\"needs_research\":");
         StringAssert.Contains(json, "\"critique\":");
         StringAssert.Contains(json, "\"rationale\":");
+        Assert.IsFalse(json.Contains("needs_research", StringComparison.Ordinal),
+            "needs_research was removed; SelectedPersona should serialize with only id");
     }
 }

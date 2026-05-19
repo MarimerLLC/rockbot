@@ -74,6 +74,7 @@ internal sealed class AdvisorCouncilTaskHandler(
             }
 
             var json = JsonSerializer.Serialize(response, JsonOpts);
+            var textPart = BuildTextPart(response);
 
             return new AgentTaskResult
             {
@@ -85,7 +86,7 @@ internal sealed class AdvisorCouncilTaskHandler(
                     Role = "agent",
                     Parts =
                     [
-                        new AgentMessagePart { Kind = "text", Text = response.Synthesis },
+                        new AgentMessagePart { Kind = "text", Text = textPart },
                         new AgentMessagePart { Kind = "data", Data = json, MimeType = "application/json" }
                     ]
                 }
@@ -100,5 +101,30 @@ internal sealed class AdvisorCouncilTaskHandler(
         {
             shutdown.NotifyTaskComplete();
         }
+    }
+
+    /// <summary>
+    /// Prepends a coverage banner to the synthesis prose when one or more selected personas
+    /// did not contribute (timed out or failed). The caller would otherwise have no way of
+    /// knowing the recommendation is missing perspectives.
+    /// </summary>
+    private static string BuildTextPart(CouncilResponse response)
+    {
+        var missing = response.Personas
+            .Where(p => p.Status != PersonaStatus.Ok)
+            .ToList();
+
+        if (missing.Count == 0)
+            return response.Synthesis;
+
+        var contributed = response.Personas.Count - missing.Count;
+        var missingDetail = string.Join(", ",
+            missing.Select(p => $"{p.Id} ({p.Status})"));
+
+        var banner =
+            $"> **Council coverage:** {contributed} of {response.Personas.Count} personas contributed. " +
+            $"Missing perspectives: {missingDetail}. The integrated recommendation below does not reflect those viewpoints.";
+
+        return banner + "\n\n---\n\n" + response.Synthesis;
     }
 }

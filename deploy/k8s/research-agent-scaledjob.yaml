@@ -28,7 +28,7 @@ spec:
         restartPolicy: Never
         containers:
           - name: research-agent
-            image: rockylhotka/rockbot-research-agent:0.9.15
+            image: rockylhotka/rockbot-research-agent:0.10.66
             imagePullPolicy: Always
             env:
               # Ephemeral working memory path — lives on the container's local filesystem
