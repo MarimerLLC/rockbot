@@ -29,6 +29,7 @@ public sealed class McpManagementExecutor : IToolExecutor, IAsyncDisposable
     private readonly ILogger<McpManagementExecutor> _logger;
     private readonly TimeSpan _timeout;
     private readonly McpRecoveryExecutor? _recovery;
+    private readonly ISkillStore? _skillStore;
 
     private readonly ConcurrentDictionary<string, TaskCompletionSource<MessageEnvelope>> _pending = new();
     private ISubscription? _responseSubscription;
@@ -51,7 +52,8 @@ public sealed class McpManagementExecutor : IToolExecutor, IAsyncDisposable
         AgentIdentity identity,
         ILogger<McpManagementExecutor> logger,
         TimeSpan? timeout = null,
-        McpRecoveryExecutor? recovery = null)
+        McpRecoveryExecutor? recovery = null,
+        ISkillStore? skillStore = null)
     {
         _index = index;
         _proxy = proxy;
@@ -61,6 +63,7 @@ public sealed class McpManagementExecutor : IToolExecutor, IAsyncDisposable
         _logger = logger;
         _timeout = timeout ?? TimeSpan.FromSeconds(30);
         _recovery = recovery;
+        _skillStore = skillStore;
     }
 
     public string ResponseTopic => $"mcp.manage.response.{_identity.Name}";
@@ -135,11 +138,31 @@ public sealed class McpManagementExecutor : IToolExecutor, IAsyncDisposable
             prompts = details.Prompts
         };
 
+        var content = JsonSerializer.Serialize(payload, JsonOptions);
+
+        // Pre-flight skill injection: the LLM has just narrowed in on a single
+        // server, so this is the moment any `mcp/{server}` skills become uniquely
+        // relevant. Append their content to the tool response so the LLM sees
+        // verified parameter shape in the same turn it receives the schema —
+        // before the first mcp_invoke_tool attempt. No-op when no skill exists.
+        try
+        {
+            var skillBlock = await McpServerSkillFormatter.FormatAsync(_skillStore, serverName, ct);
+            if (!string.IsNullOrEmpty(skillBlock))
+                content = content + "\n" + skillBlock;
+        }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex,
+                "Failed to append skill injection block for server '{Server}'", serverName);
+        }
+
         return new ToolInvokeResponse
         {
             ToolCallId = request.ToolCallId,
             ToolName = request.ToolName,
-            Content = JsonSerializer.Serialize(payload, JsonOptions)
+            Content = content
         };
     }
 

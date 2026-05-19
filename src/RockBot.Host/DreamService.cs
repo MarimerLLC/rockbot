@@ -2789,12 +2789,15 @@ internal sealed class DreamService : IHostedService, IDisposable
                 return;
             }
 
-            // Group by definitionHash. Keep groups where every recorded run succeeded
-            // and the cumulative count meets the threshold. Tighter than the failure
-            // pass intentionally — we want zero false positives.
+            // Group by ShapeHash when present (collapses runs that differ only by
+            // description text or per-run literal values such as dates and account
+            // ids), falling back to DefinitionHash for legacy records written before
+            // the shape hash existed. Keep groups where every recorded run
+            // succeeded and the cumulative count meets the threshold. Tighter than
+            // the failure pass intentionally — we want zero false positives.
             var groups = records
-                .Where(r => !string.IsNullOrEmpty(r.DefinitionHash))
-                .GroupBy(r => r.DefinitionHash)
+                .Where(r => !string.IsNullOrEmpty(r.ShapeHash) || !string.IsNullOrEmpty(r.DefinitionHash))
+                .GroupBy(r => !string.IsNullOrEmpty(r.ShapeHash) ? r.ShapeHash! : r.DefinitionHash)
                 .Where(g => g.Count() >= threshold && g.All(r => r.Succeeded))
                 .ToList();
 
@@ -2835,8 +2838,17 @@ internal sealed class DreamService : IHostedService, IDisposable
                 if (invokingSkill is null)
                     continue;  // no target skill — cannot promote
 
-                // Recover canonical body — required for the SaveSkill call below.
-                var body = await _wispExecutionLog.GetCanonicalBodyAsync(hash, ct);
+                // Recover canonical body from any record in the group that retained
+                // one — prefer the oldest successful body so the saved asset matches
+                // the earliest verified shape. Falls back to the log lookup (keyed
+                // on DefinitionHash) when the in-memory records don't carry a body.
+                var body = group
+                    .Where(r => r.Succeeded && !string.IsNullOrEmpty(r.DefinitionBody))
+                    .OrderBy(r => r.Timestamp)
+                    .Select(r => r.DefinitionBody)
+                    .FirstOrDefault();
+                if (string.IsNullOrEmpty(body))
+                    body = await _wispExecutionLog.GetCanonicalBodyAsync(representative.DefinitionHash, ct);
                 if (string.IsNullOrEmpty(body))
                     continue;  // body unavailable (oversize / pre-Phase-1 record)
 
@@ -3061,8 +3073,12 @@ internal sealed class DreamService : IHostedService, IDisposable
                 IReadOnlyList<WispExecutionRecord> wispRecords = [];
                 if (!string.IsNullOrEmpty(resource.DefinitionHash))
                 {
+                    // Match new shape-hashed resources against either ShapeHash (preferred)
+                    // or DefinitionHash (legacy resources written with a body hash).
                     var allRecords = await _wispExecutionLog.QueryRecentAsync(since, maxResults: 1000, ct);
-                    wispRecords = allRecords.Where(r => r.DefinitionHash == resource.DefinitionHash).ToList();
+                    wispRecords = allRecords.Where(r =>
+                        r.ShapeHash == resource.DefinitionHash
+                        || r.DefinitionHash == resource.DefinitionHash).ToList();
                 }
 
                 IReadOnlyList<SkillResourceCheckoutEvent> checkouts = [];
