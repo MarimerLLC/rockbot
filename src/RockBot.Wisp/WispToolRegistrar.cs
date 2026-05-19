@@ -16,7 +16,9 @@ internal sealed class WispToolRegistrar(
     ILoggerFactory loggerFactory,
     ILogger<WispToolRegistrar> logger,
     IWispExecutionLog? executionLog = null,
-    IFeedbackStore? feedbackStore = null) : IHostedService
+    IFeedbackStore? feedbackStore = null,
+    ISkillStore? skillStore = null,
+    ISkillUsageStore? skillUsageStore = null) : IHostedService
 {
     private const string SpawnWispsSchema = """
         {
@@ -116,7 +118,7 @@ internal sealed class WispToolRegistrar(
             ParametersSchema = SpawnWispsSchema,
             Source = "wisp"
         }, new SpawnWispsExecutor(wispExecutor, executionLog, feedbackStore, workingMemory, options,
-            loggerFactory.CreateLogger<SpawnWispsExecutor>()));
+            loggerFactory.CreateLogger<SpawnWispsExecutor>(), skillStore, skillUsageStore));
         logger.LogInformation("Registered tool: spawn_wisps");
 
         return Task.CompletedTask;

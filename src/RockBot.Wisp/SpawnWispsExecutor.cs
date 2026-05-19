@@ -19,7 +19,9 @@ internal sealed class SpawnWispsExecutor(
     IFeedbackStore? feedbackStore,
     IWorkingMemory workingMemory,
     WispOptions options,
-    ILogger<SpawnWispsExecutor> logger) : IToolExecutor
+    ILogger<SpawnWispsExecutor> logger,
+    ISkillStore? skillStore = null,
+    ISkillUsageStore? skillUsageStore = null) : IToolExecutor
 {
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -95,11 +97,12 @@ internal sealed class SpawnWispsExecutor(
             var wispId = $"wisp-{Guid.NewGuid():N}"[..16];
             var defJson = JsonSerializer.Serialize(definition, JsonOptions);
             var defHash = ComputeDefinitionHash(defJson);
+            var shapeHash = ComputeShapeHash(definition);
 
             var result = await wispExecutor.ExecuteAsync(definition, wispId, parentSessionId: sessionId, ct);
 
             // Log execution (fire-and-forget, don't block the batch)
-            _ = LogExecutionAsync(result, defHash, defJson, batchId, sessionId, ct);
+            _ = LogExecutionAsync(result, defHash, shapeHash, defJson, batchId, sessionId, ct);
 
             return result;
         }
@@ -117,7 +120,7 @@ internal sealed class SpawnWispsExecutor(
     internal const int DefinitionBodyMaxBytes = 8 * 1024;
 
     private async Task LogExecutionAsync(
-        WispExecutionResult result, string defHash, string defJson,
+        WispExecutionResult result, string defHash, string shapeHash, string defJson,
         string batchId, string? sessionId, CancellationToken ct)
     {
         if (executionLog is null)
@@ -181,6 +184,7 @@ internal sealed class SpawnWispsExecutor(
                 WispId = result.WispId,
                 Description = result.Definition.Description,
                 DefinitionHash = defHash,
+                ShapeHash = shapeHash,
                 Succeeded = result.IsSuccess,
                 StepCount = result.Definition.Steps.Count,
                 StepsCompleted = result.StepResults.Count(s => s.IsSuccess || s.WasSkipped),
@@ -199,11 +203,114 @@ internal sealed class SpawnWispsExecutor(
             };
 
             await executionLog.AppendAsync(record, ct);
+
+            if (result.IsSuccess)
+                await TryEagerPromoteAsync(record, ct);
         }
         catch (Exception ex)
         {
             logger.LogWarning(ex, "Failed to log wisp execution record for {WispId}", result.WispId);
         }
+    }
+
+    /// <summary>
+    /// When a scheduled-task wisp succeeds and the same shape has already
+    /// succeeded enough times, attach its body to the originating skill as a
+    /// provisional <c>Wisp</c> resource. Bypasses the slower dream-pass promotion
+    /// path so daily/weekly scheduled work captures a reusable asset after only
+    /// a couple of fires.
+    ///
+    /// Best-effort: any failure logs and returns without disturbing the wisp run.
+    /// </summary>
+    private async Task TryEagerPromoteAsync(WispExecutionRecord record, CancellationToken ct)
+    {
+        if (!options.EagerScheduledTaskPromotionEnabled
+            || skillStore is null
+            || executionLog is null
+            || string.IsNullOrEmpty(record.SessionId)
+            || string.IsNullOrEmpty(record.ShapeHash)
+            || string.IsNullOrEmpty(record.DefinitionBody))
+            return;
+
+        if (!record.SessionId.StartsWith(options.ScheduledTaskSessionPrefix, StringComparison.OrdinalIgnoreCase))
+            return;
+
+        try
+        {
+            // Count prior successful runs of this shape (including the one just
+            // appended). The 30-day window matches the dream-pass horizon.
+            var recent = await executionLog.QueryRecentAsync(
+                DateTimeOffset.UtcNow.AddDays(-30), maxResults: 1000, ct);
+            var sameShape = recent
+                .Where(r => r.Succeeded && string.Equals(r.ShapeHash, record.ShapeHash, StringComparison.OrdinalIgnoreCase))
+                .ToList();
+
+            var threshold = Math.Max(1, options.EagerScheduledTaskPromotionThreshold);
+            if (sameShape.Count < threshold)
+                return;
+
+            // Resolve invoking skill the same way the dream pass does — most recent
+            // skill invocation in the session that precedes the wisp run.
+            var invokingSkill = await ResolveInvokingSkillAsync(record, ct);
+            if (string.IsNullOrEmpty(invokingSkill))
+                return;
+
+            // Don't re-attach if the same shape is already on the skill.
+            var skill = await skillStore.GetAsync(invokingSkill);
+            if (skill is null)
+                return;
+            if (skill.Manifest?.Any(r =>
+                    string.Equals(r.DefinitionHash, record.ShapeHash, StringComparison.OrdinalIgnoreCase)) == true)
+                return;
+
+            var filename = $"eager-{record.ShapeHash[..Math.Min(8, record.ShapeHash.Length)]}.json";
+            var description = $"Scheduled-task pattern: {record.Description}";
+            var entry = new SkillResource(
+                Filename: filename,
+                Type: SkillResourceType.Wisp,
+                Description: description,
+                Provisional: true,
+                CreatedAt: DateTimeOffset.UtcNow,
+                VerifyHint: $"Repeats shape {record.ShapeHash} from scheduled-task session {record.SessionId}",
+                DefinitionHash: record.ShapeHash);
+            var input = new SkillResourceInput(
+                filename, SkillResourceType.Wisp, description, record.DefinitionBody!,
+                Provisional: true);
+
+            var attached = await skillStore.AttachResourceAsync(invokingSkill, input, entry);
+            if (attached)
+            {
+                logger.LogInformation(
+                    "Eager promotion attached '{Filename}' to skill '{Skill}' (shape={Shape}, successes={Count}, session={Session})",
+                    filename, invokingSkill, record.ShapeHash, sameShape.Count, record.SessionId);
+            }
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex,
+                "Eager promotion failed for wisp {WispId} (session={Session})",
+                record.WispId, record.SessionId);
+        }
+    }
+
+    private async Task<string?> ResolveInvokingSkillAsync(WispExecutionRecord record, CancellationToken ct)
+    {
+        if (skillUsageStore is null || skillStore is null || string.IsNullOrEmpty(record.SessionId))
+            return null;
+
+        var events = await skillUsageStore.GetBySessionAsync(record.SessionId!, ct);
+        if (events.Count == 0)
+            return null;
+
+        var existingNames = (await skillStore.ListAsync())
+            .Select(s => s.Name)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        return events
+            .Where(e => e.Timestamp <= record.Timestamp && existingNames.Contains(e.SkillName))
+            .OrderByDescending(e => e.Timestamp)
+            .Select(e => e.SkillName)
+            .FirstOrDefault();
     }
 
     private async Task WriteBatchSummaryAsync(WispBatchResult batch, CancellationToken ct)
@@ -326,6 +433,56 @@ internal sealed class SpawnWispsExecutor(
     {
         var bytes = SHA256.HashData(Encoding.UTF8.GetBytes(definitionJson));
         return Convert.ToHexStringLower(bytes)[..16];
+    }
+
+    /// <summary>
+    /// Hash the structural shape of a wisp — gateway/server/tool/mode plus the
+    /// sorted set of parameter keys per step — while stripping description,
+    /// prompt text, and literal parameter values. Two wisps that differ only by
+    /// description or by date/accountId values share the same shape hash, so
+    /// the success-promotion pass can group repeated patterns that the LLM
+    /// authored as cosmetically distinct invocations.
+    /// </summary>
+    internal static string ComputeShapeHash(WispDefinition definition)
+    {
+        var canonical = new
+        {
+            steps = definition.Steps.Select(s => new
+            {
+                id = s.Id,
+                mode = s.Mode.ToString(),
+                gateway = s.Gateway?.ToString(),
+                server = s.Server,
+                tool = s.Tool,
+                language = s.Language,
+                agent = s.Agent,
+                skill = s.Skill,
+                hasPrompt = !string.IsNullOrEmpty(s.Prompt),
+                hasMessage = !string.IsNullOrEmpty(s.Message),
+                paramKeys = ExtractParamKeys(s.ResolvedParams),
+                metadataKeys = ExtractParamKeys(s.Metadata),
+                hasInputFrom = !string.IsNullOrEmpty(s.InputFrom),
+                hasOutputTo = !string.IsNullOrEmpty(s.OutputTo),
+                onFailure = s.OnFailure?.Action.ToString()
+            }).ToList()
+        };
+
+        var json = JsonSerializer.Serialize(canonical, JsonOptions);
+        var bytes = SHA256.HashData(Encoding.UTF8.GetBytes(json));
+        return Convert.ToHexStringLower(bytes)[..16];
+    }
+
+    private static IReadOnlyList<string> ExtractParamKeys(JsonElement? element)
+    {
+        if (element is null || element.Value.ValueKind != JsonValueKind.Object)
+            return [];
+
+        var keys = new List<string>();
+        foreach (var prop in element.Value.EnumerateObject())
+            keys.Add(prop.Name);
+
+        keys.Sort(StringComparer.Ordinal);
+        return keys;
     }
 
     internal static string FormatBatchResult(WispBatchResult batch)
