@@ -1,5 +1,4 @@
 @page "/"
-@using Markdig
 @using RockBot.UserProxy.Blazor.Services
 @using Microsoft.JSInterop
 @inject UserProxyService ProxyService
@@ -127,7 +126,7 @@
                         @if (message.IsExpanded)
                         {
                             <div class="message-content mt-2">
-                                @((MarkupString)ConvertMarkdownToHtml(message.Content))
+                                @((MarkupString)SafeMarkdownRenderer.RenderSafe(message.Content))
                             </div>
                             <div class="message-time">
                                 @TimeZoneInfo.ConvertTimeFromUtc(message.Timestamp, _displayZone).ToString("HH:mm:ss")
@@ -151,7 +150,7 @@
                             <div class="fw-bold small mb-2">@message.AgentName</div>
                         }
                         <div class="message-content mt-2">
-                            @((MarkupString)ConvertMarkdownToHtml(message.Content))
+                            @((MarkupString)SafeMarkdownRenderer.RenderSafe(message.Content))
                         </div>
                     </div>
                 </div>
@@ -166,7 +165,7 @@
                             <div class="@(message.IsInterim ? "fst-italic" : "fw-bold") small mb-2">@message.AgentName</div>
                         }
                         <div class="message-content">
-                            @((MarkupString)ConvertMarkdownToHtml(message.Content))
+                            @((MarkupString)SafeMarkdownRenderer.RenderSafe(message.Content))
                         </div>
                         <div class="message-time">
                             @TimeZoneInfo.ConvertTimeFromUtc(message.Timestamp, _displayZone).ToString("HH:mm:ss")
@@ -248,7 +247,7 @@
                         <small class="saved-item-meta">@_viewingItem.AgentName — @TimeZoneInfo.ConvertTime(_viewingItem.SavedAt, _displayZone).ToString("MMM d, yyyy h:mm tt")</small>
                     </div>
                     <div class="saved-view-content">
-                        @((MarkupString)Markdig.Markdown.ToHtml(_viewingItem.Content, MarkdownPipeline))
+                        @((MarkupString)SafeMarkdownRenderer.RenderSafe(_viewingItem.Content))
                     </div>
                     <div class="d-flex gap-2 mt-2">
                         <button class="btn btn-sm btn-secondary" @onclick="BackToSavedList">Back</button>
@@ -342,10 +341,6 @@
     private bool _showSavedModal;
     private IReadOnlyList<SavedResponseSummary>? _savedItems;
     private GetSavedResponseResponse? _viewingItem;
-
-    private static readonly MarkdownPipeline MarkdownPipeline = new MarkdownPipelineBuilder()
-        .UseAdvancedExtensions()
-        .Build();
 
     private string? _lastRenderedAgentName;
 
@@ -572,22 +567,6 @@
         // Take first line, truncate if needed
         var firstLine = text.Split('\n', 2)[0];
         return firstLine.Length <= maxLength ? firstLine : firstLine[..(maxLength - 1)] + "\u2026";
-    }
-
-    private string ConvertMarkdownToHtml(string markdown)
-    {
-        if (string.IsNullOrEmpty(markdown))
-            return string.Empty;
-
-        try
-        {
-            return Markdown.ToHtml(markdown, MarkdownPipeline);
-        }
-        catch
-        {
-            // Fallback to plain text if markdown parsing fails
-            return System.Net.WebUtility.HtmlEncode(markdown).Replace("\n", "<br/>");
-        }
     }
 
     private async Task ToggleDarkMode()
