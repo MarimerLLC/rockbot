@@ -87,6 +87,34 @@ public class GatewayRouterTests
     }
 
     [TestMethod]
+    public void Route_Mcp_MissingParams_DefaultsToEmptyArguments()
+    {
+        // No-argument MCP tools (e.g. list_calendars) should route successfully
+        // with an empty arguments object — the MCP server validates required args
+        // against its own schema and returns a tool-specific error if needed.
+        var step = new WispStep
+        {
+            Id = "list",
+            Mode = StepMode.Direct,
+            Gateway = GatewayType.Mcp,
+            Server = "ms365",
+            Tool = "list_calendars"
+        };
+
+        var result = GatewayRouter.Route(step, "wisp-123", EmptyResults);
+
+        Assert.IsTrue(result.IsSuccess, result.ErrorMessage);
+        Assert.AreEqual("mcp_invoke_tool", result.ToolName);
+
+        var args = JsonDocument.Parse(result.Arguments!).RootElement;
+        Assert.AreEqual("ms365", args.GetProperty("server_name").GetString());
+        Assert.AreEqual("list_calendars", args.GetProperty("tool_name").GetString());
+        Assert.IsTrue(args.TryGetProperty("arguments", out var argsObj));
+        Assert.AreEqual(JsonValueKind.Object, argsObj.ValueKind);
+        Assert.AreEqual(0, argsObj.EnumerateObject().Count());
+    }
+
+    [TestMethod]
     public void Route_Mcp_MissingServer_ReturnsStructuralError()
     {
         var step = new WispStep

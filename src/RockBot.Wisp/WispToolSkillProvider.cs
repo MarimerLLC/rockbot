@@ -190,7 +190,8 @@ public sealed class WispToolSkillProvider : IToolSkillProvider
 
         **IMPORTANT:** Tool arguments go in the `"params"` field (not `"input"` or
         `"arguments"`). Include ALL required parameters — the harness passes them
-        directly to the tool with no defaulting or inference.
+        directly to the tool with no defaulting or inference. For MCP tools that take
+        no arguments, you may omit `params` entirely (or set it to `{}`).
 
         **MCP** — Call any MCP server tool:
         ```json
@@ -202,6 +203,17 @@ public sealed class WispToolSkillProvider : IToolSkillProvider
           "tool": "search_emails",
           "params": { "query": "from:sales subject:report", "max_results": 5 },
           "output_to": "wisp-data/emails.json"
+        }
+        ```
+
+        For a no-argument MCP tool, `params` can be omitted:
+        ```json
+        {
+          "id": "list_calendars",
+          "mode": "Direct",
+          "gateway": "Mcp",
+          "server": "ms365",
+          "tool": "list_calendars"
         }
         ```
 
