@@ -42,6 +42,7 @@ internal sealed class FileFeedbackStore : IFeedbackStore
         try
         {
             var path = Path.Combine(_basePath, $"{entry.SessionId}.jsonl");
+            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
             var line = JsonSerializer.Serialize(entry, JsonOptions);
             await File.AppendAllTextAsync(path, line + Environment.NewLine, cancellationToken);
 
@@ -72,7 +73,7 @@ internal sealed class FileFeedbackStore : IFeedbackStore
 
         var results = new List<FeedbackEntry>();
 
-        foreach (var file in Directory.EnumerateFiles(_basePath, "*.jsonl"))
+        foreach (var file in Directory.EnumerateFiles(_basePath, "*.jsonl", SearchOption.AllDirectories))
         {
             cancellationToken.ThrowIfCancellationRequested();
 
