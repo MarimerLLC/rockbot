@@ -1,3 +1,5 @@
+using RockBot.UserProxy.Rendering;
+
 namespace RockBot.UserProxy.Cli;
 
 /// <summary>
@@ -10,13 +12,13 @@ internal sealed class PlainConsoleFrontend : IUserFrontend
 {
     public Task DisplayReplyAsync(AgentReply reply, CancellationToken cancellationToken = default)
     {
-        Console.Out.WriteLine(reply.Content);
+        Console.Out.WriteLine(HtmlPlainTextRenderer.StripHtml(reply.Content));
         return Task.CompletedTask;
     }
 
     public Task DisplayStatusAsync(AgentReply reply, CancellationToken cancellationToken = default)
     {
-        Console.Error.WriteLine($"[{reply.AgentName}] {reply.Content}");
+        Console.Error.WriteLine($"[{reply.AgentName}] {HtmlPlainTextRenderer.StripHtml(reply.Content)}");
         return Task.CompletedTask;
     }
 

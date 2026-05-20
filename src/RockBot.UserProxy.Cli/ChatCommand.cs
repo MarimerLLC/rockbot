@@ -2,6 +2,7 @@ using System.ComponentModel;
 using System.Diagnostics;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using RockBot.UserProxy.Rendering;
 using Spectre.Console;
 using Spectre.Console.Cli;
 
@@ -64,7 +65,7 @@ internal sealed class ChatCommand : AsyncCommand<ChatCommand.Settings>
         // Mirror intermediate progress to stderr so callers piping stdout get
         // only the final reply text.
         var progress = new Progress<AgentReply>(r =>
-            Console.Error.WriteLine($"[{r.AgentName}] {r.Content}"));
+            Console.Error.WriteLine($"[{r.AgentName}] {HtmlPlainTextRenderer.StripHtml(r.Content)}"));
 
         var reply = await proxy.SendAsync(message, progress: progress);
 
@@ -74,7 +75,7 @@ internal sealed class ChatCommand : AsyncCommand<ChatCommand.Settings>
             return 2;
         }
 
-        Console.Out.WriteLine(reply.Content);
+        Console.Out.WriteLine(HtmlPlainTextRenderer.StripHtml(reply.Content));
         return 0;
     }
 
