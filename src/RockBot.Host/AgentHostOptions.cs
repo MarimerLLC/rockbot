@@ -53,4 +53,21 @@ public sealed class AgentHostOptions
     /// Defaults to 90 seconds.
     /// </summary>
     public TimeSpan LlmCallTimeout { get; set; } = TimeSpan.FromSeconds(90);
+
+    /// <summary>
+    /// How long an overflow-trimmed tool result remains available in working memory
+    /// for retrieval via <c>GetFromWorkingMemory</c>. Defaults to 60 minutes — long
+    /// enough that the stash outlives a single agent run including completion
+    /// re-prompts and follow-up passes.
+    /// </summary>
+    public int ToolResultStashTtlMinutes { get; set; } = 60;
+
+    /// <summary>
+    /// Fraction of the surviving surface that goes to the head of the trimmed tool
+    /// result (the tail gets the remainder). Default 0.6 — favors the head slightly
+    /// because tools often lead with structured metadata, but keeps a meaningful tail
+    /// for the final log lines / closing JSON / row counts that the old head-only
+    /// trimmer used to discard. Clamped to [0.0, 1.0] at use time.
+    /// </summary>
+    public double ToolResultStashHeadTailRatio { get; set; } = 0.6;
 }

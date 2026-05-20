@@ -100,6 +100,7 @@ public static class ServiceCollectionExtensions
                 sp.GetService<IToolCallLog>(),
                 behavior,
                 sp.GetRequiredService<LlmCostEstimator>(),
+                sp.GetRequiredService<IWorkingMemory>(),
                 sp.GetRequiredService<IOptions<AgentHostOptions>>(),
                 sp.GetRequiredService<ILogger<RockBotFunctionInvokingChatClient>>());
         });
