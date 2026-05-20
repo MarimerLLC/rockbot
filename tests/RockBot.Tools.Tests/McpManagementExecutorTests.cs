@@ -3,6 +3,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 using RockBot.Host;
 using RockBot.Messaging;
 using RockBot.Tools.Mcp;
+using RockBot.Tools.Mcp.Recovery;
 
 namespace RockBot.Tools.Tests;
 
@@ -313,6 +314,160 @@ public class McpManagementExecutorTests
 
         Assert.IsTrue(result.IsError);
         Assert.IsTrue(result.Content!.Contains("server_name"));
+    }
+
+    // ── mcp_invoke_tool: empty-args pre-flight remediation ───────────────────
+
+    private (McpManagementExecutor Executor, TrackingPublisher Publisher, StubSubscriber Subscriber)
+        CreateExecutorWithSchemas(IReadOnlyList<McpToolDefinition> tools)
+    {
+        var publisher = new TrackingPublisher();
+        var subscriber = new StubSubscriber();
+
+        var proxy = new McpToolProxy(
+            publisher,
+            subscriber,
+            _identity,
+            NullLogger<McpToolProxy>.Instance);
+
+        var index = new McpServerIndex();
+        index.Apply(new McpServersIndexed
+        {
+            Servers =
+            [
+                new McpServerSummary
+                {
+                    ServerName = "filesystem",
+                    Summary = "File system tools.",
+                    ToolCount = tools.Count,
+                    ToolNames = tools.Select(t => t.Name).ToList()
+                }
+            ]
+        });
+
+        var schemaCache = new ToolSchemaCache((server, ct) =>
+            Task.FromResult<IReadOnlyList<McpToolDefinition>?>(
+                string.Equals(server, "filesystem", StringComparison.OrdinalIgnoreCase) ? tools : null));
+
+        var executor = new McpManagementExecutor(
+            index,
+            proxy,
+            publisher,
+            subscriber,
+            _identity,
+            NullLogger<McpManagementExecutor>.Instance,
+            timeout: null,
+            recovery: null,
+            skillStore: null,
+            schemaCache: schemaCache);
+
+        return (executor, publisher, subscriber);
+    }
+
+    [TestMethod]
+    public async Task InvokeTool_EmptyArgs_RequiredParamsTool_ReturnsRemediationBeforeDispatch()
+    {
+        // Repro of the patrol-trace failure: LLM emits a mcp_invoke_tool call with
+        // only server_name + tool_name for a parameterized tool. The framework should
+        // short-circuit with a remediation that names the required fields and shows
+        // the wrapper shape, instead of dispatching and letting the MCP server return
+        // a tool-server error that the model misinterprets as "the wrapper is broken."
+        var schema = """
+            {"type":"object","properties":{"to":{"type":"string"},"subject":{"type":"string"},"body":{"type":"string"}},"required":["to","subject","body"]}
+            """;
+        var (executor, publisher, _) = CreateExecutorWithSchemas(
+        [
+            new McpToolDefinition { Name = "send_email", Description = "Send email.", ParametersSchema = schema }
+        ]);
+
+        var request = new ToolInvokeRequest
+        {
+            ToolCallId = "call-empty",
+            ToolName = "mcp_invoke_tool",
+            Arguments = """{"server_name":"filesystem","tool_name":"send_email"}"""
+        };
+
+        var result = await executor.ExecuteAsync(request, CancellationToken.None);
+
+        Assert.IsTrue(result.IsError, "Empty-args call to a parameterized tool must short-circuit.");
+        Assert.AreEqual(0, publisher.Published.Count,
+            "Pre-flight remediation must not dispatch to the bridge.");
+        StringAssert.Contains(result.Content!, "to");
+        StringAssert.Contains(result.Content!, "subject");
+        StringAssert.Contains(result.Content!, "body");
+        StringAssert.Contains(result.Content!, "arguments",
+            "Remediation must point the model at the 'arguments' wrapper field.");
+    }
+
+    [TestMethod]
+    public async Task InvokeTool_EmptyArgs_NoRequiredParams_DispatchesNormally()
+    {
+        // No-arg MCP tools (e.g. list_accounts) must still dispatch when the wrapper
+        // carries only server_name + tool_name — the remediation is gated on the
+        // schema declaring required fields.
+        var schema = """{"type":"object","properties":{}}""";
+        var (executor, publisher, subscriber) = CreateExecutorWithSchemas(
+        [
+            new McpToolDefinition { Name = "list_accounts", Description = "List accounts.", ParametersSchema = schema }
+        ]);
+
+        var request = new ToolInvokeRequest
+        {
+            ToolCallId = "call-noargs",
+            ToolName = "mcp_invoke_tool",
+            Arguments = """{"server_name":"filesystem","tool_name":"list_accounts"}"""
+        };
+
+        var executeTask = executor.ExecuteAsync(request, CancellationToken.None);
+        await Task.Delay(100);
+
+        Assert.AreEqual(1, publisher.Published.Count,
+            "No-required-params tool should reach the bridge.");
+
+        var response = new ToolInvokeResponse
+        {
+            ToolCallId = "call-noargs",
+            ToolName = "list_accounts",
+            Content = "[]"
+        };
+        await subscriber.DeliverAsync($"tool.result.{_identity.Name}",
+            response.ToEnvelope("bridge", correlationId: publisher.Published[0].Envelope.CorrelationId));
+
+        var result = await executeTask;
+        Assert.IsFalse(result.IsError);
+    }
+
+    [TestMethod]
+    public async Task InvokeTool_EmptyArgs_SchemaCacheUnavailable_DispatchesNormally()
+    {
+        // When the schema cache can't supply a schema (cold cache miss against an
+        // unreachable bridge, unknown tool, etc.) the executor must fall through to
+        // the existing dispatch path — the MCP server's own error is still useful.
+        var (executor, publisher, subscriber) = CreateExecutor();   // no schema cache wired
+
+        var request = new ToolInvokeRequest
+        {
+            ToolCallId = "call-noschema",
+            ToolName = "mcp_invoke_tool",
+            Arguments = """{"server_name":"filesystem","tool_name":"send_email"}"""
+        };
+
+        var executeTask = executor.ExecuteAsync(request, CancellationToken.None);
+        await Task.Delay(100);
+
+        Assert.AreEqual(1, publisher.Published.Count,
+            "Without a schema cache the executor must still dispatch.");
+
+        var response = new ToolInvokeResponse
+        {
+            ToolCallId = "call-noschema",
+            ToolName = "send_email",
+            Content = "ok"
+        };
+        await subscriber.DeliverAsync($"tool.result.{_identity.Name}",
+            response.ToEnvelope("bridge", correlationId: publisher.Published[0].Envelope.CorrelationId));
+
+        await executeTask;
     }
 
     // ── mcp_register_server ──────────────────────────────────────────────────

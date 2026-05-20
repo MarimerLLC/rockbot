@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Text;
 using System.Text.Json;
 using Microsoft.Extensions.Logging;
 using RockBot.Host;
@@ -30,6 +31,7 @@ public sealed class McpManagementExecutor : IToolExecutor, IAsyncDisposable
     private readonly TimeSpan _timeout;
     private readonly McpRecoveryExecutor? _recovery;
     private readonly ISkillStore? _skillStore;
+    private readonly ToolSchemaCache? _schemaCache;
 
     private readonly ConcurrentDictionary<string, TaskCompletionSource<MessageEnvelope>> _pending = new();
     private ISubscription? _responseSubscription;
@@ -53,7 +55,8 @@ public sealed class McpManagementExecutor : IToolExecutor, IAsyncDisposable
         ILogger<McpManagementExecutor> logger,
         TimeSpan? timeout = null,
         McpRecoveryExecutor? recovery = null,
-        ISkillStore? skillStore = null)
+        ISkillStore? skillStore = null,
+        ToolSchemaCache? schemaCache = null)
     {
         _index = index;
         _proxy = proxy;
@@ -64,6 +67,7 @@ public sealed class McpManagementExecutor : IToolExecutor, IAsyncDisposable
         _timeout = timeout ?? TimeSpan.FromSeconds(30);
         _recovery = recovery;
         _skillStore = skillStore;
+        _schemaCache = schemaCache;
     }
 
     public string ResponseTopic => $"mcp.manage.response.{_identity.Name}";
@@ -210,6 +214,21 @@ public sealed class McpManagementExecutor : IToolExecutor, IAsyncDisposable
         if (TryGetNestedArgs(args, out var argsObj))
         {
             toolArgs = argsObj is JsonElement je ? je.GetRawText() : JsonSerializer.Serialize(argsObj, JsonOptions);
+        }
+        else if (!HasNonReservedKeys(args))
+        {
+            // The call carries only server_name + tool_name — no nested arguments wrapper
+            // and no flattened inner-tool fields. Some models hit this when invoking a
+            // parameterized MCP tool: they load the schema, then emit an empty call and
+            // rationalise the dispatch failure as "the wrapper can't pass arguments,"
+            // saving that rationalisation to working memory (see design/self-repair.md).
+            // If we can confirm from the cached schema that the target tool requires
+            // parameters, short-circuit with a remediation error that names the missing
+            // fields and shows the correct wrapper shape. Falls through when the cache
+            // is unavailable or the tool genuinely takes no arguments.
+            var remediation = await TryBuildEmptyArgsRemediationAsync(serverName, toolName, ct);
+            if (remediation is not null)
+                return Error(request, remediation);
         }
 
         var innerRequest = new ToolInvokeRequest
@@ -490,6 +509,11 @@ public sealed class McpManagementExecutor : IToolExecutor, IAsyncDisposable
     // silently dropped when the model deviates from the declared field name.
     private static readonly string[] NestedArgAliases = ["arguments", "params", "args"];
 
+    private static readonly HashSet<string> ReservedTopLevelKeys = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "server_name", "tool_name", "arguments", "params", "args"
+    };
+
     private static bool TryGetNestedArgs(Dictionary<string, object?> args, out object argsObj)
     {
         foreach (var alias in NestedArgAliases)
@@ -502,6 +526,91 @@ public sealed class McpManagementExecutor : IToolExecutor, IAsyncDisposable
         }
         argsObj = null!;
         return false;
+    }
+
+    private static bool HasNonReservedKeys(Dictionary<string, object?> args)
+    {
+        foreach (var key in args.Keys)
+        {
+            if (!ReservedTopLevelKeys.Contains(key))
+                return true;
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// Returns a remediation message if the cached schema for the given tool declares
+    /// any required parameters. Returns null when the schema cache is unavailable, the
+    /// schema can't be fetched, the tool isn't found, or the tool takes no required
+    /// parameters — in any of those cases the caller should fall through to the normal
+    /// MCP dispatch and let the server respond authoritatively.
+    /// </summary>
+    private async Task<string?> TryBuildEmptyArgsRemediationAsync(
+        string serverName, string toolName, CancellationToken ct)
+    {
+        if (_schemaCache is null) return null;
+
+        McpToolDefinition? schema;
+        try
+        {
+            schema = await _schemaCache.GetAsync(serverName, toolName, ct);
+        }
+        catch (OperationCanceledException) { throw; }
+        catch
+        {
+            return null;
+        }
+
+        if (schema is null) return null;
+
+        var required = ExtractRequiredFieldNames(schema.ParametersSchema);
+        if (required.Count == 0) return null;
+
+        var sample = BuildExampleArgs(required);
+        var requiredList = string.Join(", ", required);
+        return
+            $"Call to '{serverName}/{toolName}' carried no inner arguments. " +
+            $"This tool requires: {requiredList}. " +
+            $"Pass the inner-tool parameters nested inside the 'arguments' field of mcp_invoke_tool. " +
+            $"Retry with shape: {{\"server_name\":\"{serverName}\",\"tool_name\":\"{toolName}\",\"arguments\":{sample}}}";
+    }
+
+    internal static IReadOnlyList<string> ExtractRequiredFieldNames(string? parametersSchema)
+    {
+        if (string.IsNullOrWhiteSpace(parametersSchema)) return [];
+        try
+        {
+            using var doc = JsonDocument.Parse(parametersSchema);
+            if (doc.RootElement.ValueKind != JsonValueKind.Object) return [];
+            if (!doc.RootElement.TryGetProperty("required", out var req)) return [];
+            if (req.ValueKind != JsonValueKind.Array) return [];
+            var names = new List<string>(req.GetArrayLength());
+            foreach (var item in req.EnumerateArray())
+            {
+                if (item.ValueKind == JsonValueKind.String)
+                {
+                    var name = item.GetString();
+                    if (!string.IsNullOrEmpty(name)) names.Add(name);
+                }
+            }
+            return names;
+        }
+        catch (JsonException)
+        {
+            return [];
+        }
+    }
+
+    private static string BuildExampleArgs(IReadOnlyList<string> requiredFieldNames)
+    {
+        var sb = new StringBuilder("{");
+        for (var i = 0; i < requiredFieldNames.Count; i++)
+        {
+            if (i > 0) sb.Append(',');
+            sb.Append('"').Append(requiredFieldNames[i]).Append("\":\"…\"");
+        }
+        sb.Append('}');
+        return sb.ToString();
     }
 
     private static ToolInvokeResponse Error(ToolInvokeRequest request, string message) => new()
