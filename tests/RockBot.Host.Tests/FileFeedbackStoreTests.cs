@@ -97,6 +97,37 @@ public class FileFeedbackStoreTests
         Assert.IsTrue(files.Any(f => Path.GetFileNameWithoutExtension(f) == "sess-2"));
     }
 
+    // ── Slash-bearing session IDs (patrol/*) ──────────────────────────────────
+
+    [TestMethod]
+    public async Task AppendAsync_SessionIdWithSlash_CreatesSubdirectory()
+    {
+        var store = CreateStore();
+        var entry = MakeEntry("patrol/heartbeat-patrol", FeedbackSignalType.SessionSummary, "patrol summary");
+
+        await store.AppendAsync(entry);
+
+        var results = await store.GetBySessionAsync("patrol/heartbeat-patrol");
+        Assert.AreEqual(1, results.Count);
+        Assert.AreEqual("patrol summary", results[0].Summary);
+    }
+
+    [TestMethod]
+    public async Task QueryRecentAsync_IncludesEntriesFromSubdirectories()
+    {
+        var store = CreateStore();
+        var now = DateTimeOffset.UtcNow;
+
+        await store.AppendAsync(MakeEntry("session-flat", FeedbackSignalType.Correction, "flat", timestamp: now.AddMinutes(-10)));
+        await store.AppendAsync(MakeEntry("patrol/heartbeat-patrol", FeedbackSignalType.SessionSummary, "nested", timestamp: now.AddMinutes(-5)));
+
+        var results = await store.QueryRecentAsync(since: now.AddHours(-1), maxResults: 100);
+
+        Assert.AreEqual(2, results.Count);
+        Assert.IsTrue(results.Any(r => r.Summary == "flat"));
+        Assert.IsTrue(results.Any(r => r.Summary == "nested"));
+    }
+
     // ── QueryRecentAsync ──────────────────────────────────────────────────────
 
     [TestMethod]
