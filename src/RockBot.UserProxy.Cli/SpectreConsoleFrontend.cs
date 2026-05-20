@@ -10,7 +10,7 @@ internal sealed class SpectreConsoleFrontend : IUserFrontend
 {
     public Task DisplayReplyAsync(AgentReply reply, CancellationToken cancellationToken = default)
     {
-        var panel = new Panel(Markup.Escape(reply.Content))
+        var panel = new Panel(SpectreMarkupConverter.ToSpectreMarkup(reply.Content))
         {
             Header = new PanelHeader(Markup.Escape(reply.AgentName)),
             Border = BoxBorder.Rounded,
@@ -26,7 +26,7 @@ internal sealed class SpectreConsoleFrontend : IUserFrontend
         // Render ephemeral progress as a single dim line rather than a panel,
         // so unsolicited subagent / A2A progress doesn't stack as bubbles.
         AnsiConsole.MarkupLine(
-            $"[dim italic]{Markup.Escape(reply.AgentName)}: {Markup.Escape(reply.Content)}[/]");
+            $"[dim italic]{Markup.Escape(reply.AgentName)}: {SpectreMarkupConverter.ToSpectreMarkup(reply.Content)}[/]");
         return Task.CompletedTask;
     }
 
