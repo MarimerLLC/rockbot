@@ -390,6 +390,75 @@ public class FallbackChatClientTests
     }
 
     [TestMethod]
+    public async Task ClientResultException_Status0_TreatsAsTransient_AndFallsBack()
+    {
+        // Regression: when the OpenAI/Azure SDK exhausts its own internal retry policy
+        // on a transport-level failure ("Retry failed after 4 tries. (Resource
+        // temporarily unavailable …)"), it surfaces as ClientResultException with
+        // Status=0 because no HTTP response was ever received. Status-code lookup
+        // mapped 0 to Unknown and re-threw, so OpenRouter never got a chance.
+        var first  = new FixedStub(ex: ClientResultEx(0));
+        var second = new FixedStub(response: OkResponse("from-openrouter"));
+
+        var client = Build([("azure-balanced", first), ("openrouter-balanced", second)], maxRetries: 0);
+
+        var response = await client.GetResponseAsync([]);
+
+        Assert.AreEqual("from-openrouter", response.Messages[^1].Text);
+        Assert.AreEqual(1, first.CallCount);
+        Assert.AreEqual(1, second.CallCount);
+    }
+
+    [TestMethod]
+    public async Task HttpRequestException_NullStatus_TreatsAsTransient_AndFallsBack()
+    {
+        // Regression: HttpRequestException with no StatusCode means the request
+        // failed before any response was received (DNS failure, TCP reset). The
+        // previous classifier required a non-null StatusCode and fell through to
+        // Unknown.
+        var first  = new FixedStub(ex: new HttpRequestException("Connection refused"));
+        var second = new FixedStub(response: OkResponse("from-second"));
+
+        var client = Build([("m1", first), ("m2", second)], maxRetries: 0);
+
+        var response = await client.GetResponseAsync([]);
+
+        Assert.AreEqual("from-second", response.Messages[^1].Text);
+    }
+
+    [TestMethod]
+    public async Task SocketException_WrappedInInnerException_FallsBack()
+    {
+        var socketEx = new System.Net.Sockets.SocketException();
+        var wrapped  = new Exception("Pipeline failure", socketEx);
+        var first    = new FixedStub(ex: wrapped);
+        var second   = new FixedStub(response: OkResponse("from-second"));
+
+        var client = Build([("m1", first), ("m2", second)], maxRetries: 0);
+
+        var response = await client.GetResponseAsync([]);
+
+        Assert.AreEqual("from-second", response.Messages[^1].Text);
+    }
+
+    [TestMethod]
+    public async Task RetryFailedAfterMessage_FallsBack()
+    {
+        // The exact shape the user saw: a plain exception whose message is the
+        // SDK retry-exhaustion wrapper. No HTTP status, no recognizable inner.
+        var first  = new FixedStub(ex: new Exception(
+            "Retry failed after 4 tries. " +
+            "(Resource temporarily unavailable (rocky-ml1nznjr-eastus2.cognitiveservices.azure.com:443))"));
+        var second = new FixedStub(response: OkResponse("from-openrouter"));
+
+        var client = Build([("azure-balanced", first), ("openrouter-balanced", second)], maxRetries: 0);
+
+        var response = await client.GetResponseAsync([]);
+
+        Assert.AreEqual("from-openrouter", response.Messages[^1].Text);
+    }
+
+    [TestMethod]
     public async Task PerAttemptTimeout_UserCancellation_PropagatesImmediately()
     {
         var slow = new SlowStub(delay: TimeSpan.FromSeconds(30));
