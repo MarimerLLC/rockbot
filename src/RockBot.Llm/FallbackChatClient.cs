@@ -1,5 +1,7 @@
 using System.ClientModel;
+using System.IO;
 using System.Net;
+using System.Net.Sockets;
 using System.Runtime.CompilerServices;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
@@ -254,9 +256,14 @@ public sealed class FallbackChatClient : IChatClient
         if (ContainsAny(ex.Message, "content_filter"))
             return FallbackErrorCategory.ContentFilter;
 
-        if (ex is HttpRequestException { StatusCode: { } status })
+        if (ex is HttpRequestException hre)
         {
-            return ClassifyStatusCode((int)status);
+            // StatusCode is null when the request failed before any response was received
+            // (DNS failure, TCP reset, socket close). Treat as transient so the next
+            // model gets a chance.
+            return hre.StatusCode is { } status
+                ? ClassifyStatusCode((int)status)
+                : FallbackErrorCategory.Transient;
         }
 
         // OpenAI SDK (and other System.ClientModel-based SDKs) surface HTTP failures
@@ -265,8 +272,28 @@ public sealed class FallbackChatClient : IChatClient
         // gets classified as Unknown, and is re-thrown without retry or fallback.
         if (ex is ClientResultException cre)
         {
-            return ClassifyStatusCode(cre.Status);
+            // Status 0 means no HTTP response was received — the SDK's own retry
+            // policy exhausted its budget on a transport-level failure ("Retry
+            // failed after N tries."). Without this branch we'd classify it as
+            // Unknown and never fall back to OpenRouter.
+            return cre.Status == 0
+                ? FallbackErrorCategory.Transient
+                : ClassifyStatusCode(cre.Status);
         }
+
+        // Socket / IO failures (DNS, TCP reset, "Resource temporarily unavailable")
+        // wrapped inside another exception type. Walk the inner chain.
+        for (var inner = ex.InnerException; inner is not null; inner = inner.InnerException)
+        {
+            if (inner is SocketException or IOException)
+                return FallbackErrorCategory.Transient;
+        }
+
+        // SDK retry-exhaustion wrappers surface as a plain Exception whose message
+        // is "Retry failed after N tries." with the underlying network error in
+        // parentheses. Match the message so we still fall through to the next model.
+        if (ContainsAny(ex.Message, "Retry failed after", "temporarily unavailable"))
+            return FallbackErrorCategory.Transient;
 
         if (ContainsAny(ex.Message, "credit", "quota", "billing", "insufficient_quota", "exceeded"))
             return FallbackErrorCategory.QuotaExhausted;
