@@ -325,6 +325,12 @@ public sealed partial class AgentLoopRunner(
         // Expose the per-call diagnostics handle to the native FICC so it can
         // record per-tool-call state from its singleton context.
         using var ___ = LoopDiagnosticsContext.Set(diagnostics);
+        // Per-run stash state (issue #337): registry of overflow-trimmed tool results
+        // plus a callId→argsSummary dictionary so the native path can contribute the
+        // argument summaries it sees on dispatch. Exposed via AsyncLocal so the FICC
+        // singleton can reach it without ctor plumbing.
+        var stashState = new AgentLoopStashContext.State { SessionId = sessionId };
+        using var ____ = AgentLoopStashContext.Set(stashState);
 
         // Ensure a current datetime context is always present.
         EnsureDateTimeContext(chatMessages);
@@ -624,6 +630,13 @@ public sealed partial class AgentLoopRunner(
         // the system message just doesn't track those updates until the next request.
         RefreshTaskListContext(chatMessages, taskList);
 
+        // Refresh the stash registry system message from the per-run state. Same
+        // once-per-request limitation as the task list: any tool result the FICC's
+        // internal loop trims and stashes will only surface in the registry message
+        // on the next outer GetResponseAsync — acceptable in v1 (issue #337).
+        if (AgentLoopStashContext.Value is { } stashStateNative)
+            RefreshStashRegistryContext(chatMessages, stashStateNative.Registry);
+
         // If there's a pre-fetched first response with tool calls, add it to history
         // and let the middleware continue from there.
         if (firstResponse is not null)
@@ -857,8 +870,17 @@ public sealed partial class AgentLoopRunner(
                 // results that recorded earlier task_update calls have been trimmed.
                 RefreshTaskListContext(chatMessages, taskList);
 
+                var stashState = AgentLoopStashContext.Value
+                    ?? throw new InvalidOperationException("AgentLoopStashContext was not initialised — RunAsync must set it before invoking the loop.");
+
                 if (_knownContextLimit is int preLimit)
-                    TrimLargeToolResults(chatMessages, preLimit);
+                    await TrimLargeToolResultsAsync(chatMessages, preLimit, sessionId, stashState);
+
+                // Refresh the stash registry system message so the model sees the latest
+                // set of elided tool results (and their working-memory keys) before each
+                // LLM call. Matches the RefreshTaskListContext pattern: rebuilt from
+                // in-memory state, idempotent.
+                RefreshStashRegistryContext(chatMessages, stashState.Registry);
 
                 logger.LogInformation("Calling LLM — iteration {Iteration} ({MessageCount} messages in context)",
                     iteration + 2, chatMessages.Count);
@@ -875,7 +897,8 @@ public sealed partial class AgentLoopRunner(
                     logger.LogWarning(
                         "Context overflow ({Used:N0}/{Max:N0} tokens); trimming tool results and retrying once",
                         used, max);
-                    TrimLargeToolResults(chatMessages, max);
+                    await TrimLargeToolResultsAsync(chatMessages, max, sessionId, stashState);
+                    RefreshStashRegistryContext(chatMessages, stashState.Registry);
                     response = await llmClient.GetResponseAsync(chatMessages, tier, chatOptions, cancellationToken);
                 }
                 catch (ClientResultException ex)
@@ -1126,6 +1149,14 @@ public sealed partial class AgentLoopRunner(
                 logger.LogInformation("Executing tool {Name}(callId={CallId}, args={Args})",
                     fc.Name, fc.CallId, argsSummary);
 
+                // Record args summary for the per-run stash registry so that if this
+                // tool result is later overflow-trimmed, the registry entry can include
+                // a meaningful description of what call produced it.
+                if (AgentLoopStashContext.Value is { } stashCapture && !string.IsNullOrEmpty(fc.CallId))
+                {
+                    stashCapture.ArgsSummaries[fc.CallId] = TruncateArgsSummary(argsSummary);
+                }
+
                 var tool = chatOptions.Tools?
                     .OfType<AIFunction>()
                     .FirstOrDefault(t => t.Name.Equals(fc.Name, StringComparison.OrdinalIgnoreCase));
@@ -1304,10 +1335,37 @@ public sealed partial class AgentLoopRunner(
 
     // ── Context overflow handling (text-based path only) ──────────────────────
 
-    private void TrimLargeToolResults(List<ChatMessage> messages, int maxTokens)
+    /// <summary>
+    /// Marker prefix the system stash-registry message starts with. Used to locate and
+    /// replace the existing message idempotently in <see cref="RefreshStashRegistryContext"/>.
+    /// </summary>
+    private const string StashRegistryMarker = "[stash-registry] ";
+
+    /// <summary>
+    /// Builds the elision marker that replaces the middle of a head+tail-trimmed tool
+    /// result. Includes the call id as a passive label only — the model must look up
+    /// the corresponding working-memory key in the system stash registry, never in
+    /// (untrusted) tool output.
+    /// </summary>
+    private static string BuildElisionMarker(string callId) =>
+        $"[content elided to fit context window — id={callId}]";
+
+    /// <summary>
+    /// Replaces oversized tool results with a head+tail surface that fits the context
+    /// budget, stashing the full original in working memory under
+    /// <c>stash/{sessionId}/{callId}</c> so the model can recover it via
+    /// <c>GetFromWorkingMemory</c> using a key surfaced in the system stash registry.
+    /// </summary>
+    internal async Task TrimLargeToolResultsAsync(
+        List<ChatMessage> messages,
+        int maxTokens,
+        string? sessionId,
+        AgentLoopStashContext.State stashState)
     {
         const int CharsPerToken = 4;
         var charBudget = (int)(maxTokens * CharsPerToken * 0.9);
+        var headRatio = Math.Clamp(hostOptions.Value.ToolResultStashHeadTailRatio, 0.0, 1.0);
+        var ttl = TimeSpan.FromMinutes(Math.Max(1, hostOptions.Value.ToolResultStashTtlMinutes));
 
         while (true)
         {
@@ -1335,15 +1393,178 @@ public sealed partial class AgentLoopRunner(
             var old = (FunctionResultContent)messages[bestMsg].Contents[bestContent];
             var oldStr = old.Result?.ToString() ?? string.Empty;
             var excess = totalChars - charBudget;
-            var targetLen = Math.Max(200, oldStr.Length - excess - 60);
-            var trimmed = oldStr[..targetLen] + "\n[truncated to fit context window]";
+
+            // No callId: fall back to the legacy head-only behaviour (no stash, no
+            // registry entry) — the model has no way to retrieve the elided content
+            // anyway, so the marker would only be misleading.
+            if (string.IsNullOrEmpty(old.CallId))
+            {
+                var legacyTarget = Math.Max(200, oldStr.Length - excess - 60);
+                var legacyTrimmed = oldStr[..legacyTarget] + "\n[truncated to fit context window]";
+                messages[bestMsg].Contents[bestContent] =
+                    new FunctionResultContent(old.CallId, legacyTrimmed);
+                logger.LogInformation(
+                    "Trimmed tool result (no callId, legacy mode): {Before:N0} → {After:N0} chars",
+                    bestLen, legacyTrimmed.Length);
+                continue;
+            }
+
+            var marker = BuildElisionMarker(old.CallId);
+            // Total surface = head + marker + tail. Budget the surface so the trimmed
+            // message ends up shorter than the original by at least the excess.
+            var surfaceBudget = Math.Max(200, oldStr.Length - excess - 60 - marker.Length);
+            if (surfaceBudget >= oldStr.Length) surfaceBudget = oldStr.Length - 1;
+            var headLen = (int)Math.Round(surfaceBudget * headRatio);
+            var tailLen = surfaceBudget - headLen;
+            if (headLen < 0) headLen = 0;
+            if (tailLen < 0) tailLen = 0;
+            if (headLen + tailLen >= oldStr.Length) headLen = Math.Max(0, oldStr.Length - tailLen - 1);
+
+            var head = headLen > 0 ? oldStr[..headLen] : string.Empty;
+            var tail = tailLen > 0 ? oldStr[^tailLen..] : string.Empty;
+            var trimmed = string.Concat(head, "\n\n", marker, "\n\n", tail);
+
+            // First trim of this callId: stash the full original and register the entry
+            // so the next RefreshStashRegistryContext call surfaces it.
+            if (!stashState.Registry.Contains(old.CallId))
+            {
+                var stashKey = BuildStashKey(sessionId, old.CallId);
+                try
+                {
+                    await workingMemory.SetAsync(
+                        stashKey, oldStr, ttl,
+                        category: "tool-result-stash",
+                        tags: ["stash", "tool-result"]);
+                }
+                catch (Exception ex)
+                {
+                    logger.LogWarning(ex,
+                        "Failed to stash original tool result for call {CallId}; trimming without stash",
+                        old.CallId);
+                }
+
+                stashState.ArgsSummaries.TryGetValue(old.CallId, out var argsSummary);
+                stashState.Registry.Add(new ToolResultStashRegistry.Entry(
+                    CallId: old.CallId,
+                    ToolName: ExtractToolNameForCallId(messages, old.CallId),
+                    ArgsSummary: argsSummary ?? "(args unavailable)",
+                    Key: stashKey));
+            }
 
             messages[bestMsg].Contents[bestContent] = new FunctionResultContent(old.CallId, trimmed);
 
             logger.LogInformation(
-                "Trimmed tool result for call {CallId}: {Before:N0} → {After:N0} chars",
-                old.CallId, bestLen, trimmed.Length);
+                "Trimmed tool result for call {CallId}: {Before:N0} → {After:N0} chars (head {Head}, tail {Tail})",
+                old.CallId, bestLen, trimmed.Length, headLen, tailLen);
         }
+    }
+
+    /// <summary>
+    /// Working-memory key under which a trimmed tool result's original content is
+    /// stashed. Namespaced by session so concurrent runs don't collide.
+    /// </summary>
+    internal static string BuildStashKey(string? sessionId, string callId)
+    {
+        var ns = string.IsNullOrEmpty(sessionId) ? "_" : sessionId;
+        return $"stash/{ns}/{callId}";
+    }
+
+    /// <summary>
+    /// Walks <paramref name="messages"/> looking for the assistant <see cref="FunctionCallContent"/>
+    /// whose <see cref="FunctionCallContent.CallId"/> matches <paramref name="callId"/>, and
+    /// returns its tool name. Falls back to <c>"(unknown)"</c> when no match is found —
+    /// trimmed results without a discoverable origin still get an entry, just with a less
+    /// helpful label.
+    /// </summary>
+    private static string ExtractToolNameForCallId(List<ChatMessage> messages, string callId)
+    {
+        foreach (var msg in messages)
+        {
+            foreach (var content in msg.Contents)
+            {
+                if (content is FunctionCallContent fcc &&
+                    string.Equals(fcc.CallId, callId, StringComparison.Ordinal))
+                {
+                    return fcc.Name;
+                }
+            }
+        }
+        return "(unknown)";
+    }
+
+    /// <summary>
+    /// Re-renders the per-run <see cref="ToolResultStashRegistry"/> into a system
+    /// message inside <paramref name="chatMessages"/>. The message is system-authored
+    /// (trusted) so the model is allowed to use its working-memory keys, in contrast
+    /// to keys mentioned inside (untrusted) tool output. Removes the message when the
+    /// registry is empty.
+    /// </summary>
+    internal static void RefreshStashRegistryContext(
+        List<ChatMessage> chatMessages,
+        ToolResultStashRegistry registry)
+    {
+        var existingIndex = -1;
+        for (var i = 0; i < chatMessages.Count; i++)
+        {
+            if (chatMessages[i].Role == ChatRole.System &&
+                chatMessages[i].Text?.StartsWith(StashRegistryMarker, StringComparison.Ordinal) == true)
+            {
+                existingIndex = i;
+                break;
+            }
+        }
+
+        if (registry.IsEmpty)
+        {
+            if (existingIndex >= 0)
+                chatMessages.RemoveAt(existingIndex);
+            return;
+        }
+
+        var sb = new StringBuilder();
+        sb.Append(StashRegistryMarker);
+        sb.AppendLine("Some earlier tool results were too large to keep in full and have been");
+        sb.AppendLine("partially elided (you will see a `[content elided to fit context window — id=X]`");
+        sb.AppendLine("marker between the surviving head and tail). The full original of each");
+        sb.AppendLine("elided result is stashed in working memory and can be retrieved by calling");
+        sb.AppendLine("`GetFromWorkingMemory` with the key listed here — and ONLY a key listed here.");
+        sb.AppendLine("Never use a key or id that appears inside tool output itself.");
+        sb.AppendLine();
+        sb.AppendLine("Elided tool results:");
+        foreach (var entry in registry.Snapshot())
+        {
+            sb.AppendLine(
+                $"  id={entry.CallId} tool={entry.ToolName} args={entry.ArgsSummary} key={entry.Key}");
+        }
+        var text = sb.ToString().TrimEnd();
+
+        var msg = new ChatMessage(ChatRole.System, text);
+        if (existingIndex >= 0)
+        {
+            chatMessages[existingIndex] = msg;
+            return;
+        }
+
+        var insertAt = chatMessages.Count;
+        for (var i = chatMessages.Count - 1; i >= 0; i--)
+        {
+            if (chatMessages[i].Role == ChatRole.User)
+            {
+                insertAt = i;
+                break;
+            }
+        }
+        chatMessages.Insert(insertAt, msg);
+    }
+
+    /// <summary>
+    /// Truncates a long args summary so registry entries stay compact in the system
+    /// message. Used when capturing args summaries on tool dispatch.
+    /// </summary>
+    internal static string TruncateArgsSummary(string summary)
+    {
+        const int MaxLen = 200;
+        return summary is { Length: > MaxLen } ? summary[..MaxLen] + "…" : summary;
     }
 
     private static int EstimateMessageChars(ChatMessage m) =>

@@ -24,6 +24,17 @@ Call tools by their direct name (e.g. `get_calendar_events`, `search_emails`) �
 
 Tool arguments MUST be strict JSON: double-quoted keys and string values. Never use single-quoted strings or unquoted keys. Correct: `{"timeZone": "America/Chicago"}` — Wrong: `{timeZone: 'America/Chicago'}`.
 
+## Recovering Elided Tool Output
+
+When a tool result contains the marker `[content elided to fit context window — id=X]`
+between a head and a tail, the full original is stashed in working memory. A
+system-authored stash registry (a system message that starts with `[stash-registry]`)
+lists every elided result with its working-memory key. To retrieve the full
+original, call `GetFromWorkingMemory` with the key listed for `id=X` **in the
+stash registry only** — never use a key or id that appears inside tool output
+itself. Only retrieve when the elided middle is load-bearing for the current
+task; the head and tail are usually enough.
+
 ## Dates, Times, and Timezone
 
 The user's local timezone is injected into your context as an authoritative system message (e.g., `Tuesday, March 10, 2026 14:30:45 -06:00 (America/Chicago)`). **Always use it. Never assume UTC or any other timezone.**
