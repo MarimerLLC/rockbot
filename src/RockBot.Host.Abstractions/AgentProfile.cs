@@ -10,6 +10,7 @@ namespace RockBot.Host;
 /// <param name="SubagentDirectives">Optional subagent-specific directives (replaces <paramref name="Directives"/> for subagent prompts).</param>
 /// <param name="CommonDirectives">Optional shared directives included in both primary and subagent prompts.</param>
 /// <param name="WorkerDirectives">Optional worker-specific directives (slim ruleset for the lean worker rung).</param>
+/// <param name="SafetyRules">Optional safety rules snippet included by every rung (primary, subagent, worker).</param>
 public sealed record AgentProfile(
     AgentProfileDocument Soul,
     AgentProfileDocument Directives,
@@ -17,14 +18,15 @@ public sealed record AgentProfile(
     AgentProfileDocument? MemoryRules = null,
     AgentProfileDocument? SubagentDirectives = null,
     AgentProfileDocument? CommonDirectives = null,
-    AgentProfileDocument? WorkerDirectives = null)
+    AgentProfileDocument? WorkerDirectives = null,
+    AgentProfileDocument? SafetyRules = null)
 {
     /// <summary>
     /// All loaded documents in composition order for the primary agent:
-    /// soul, common-directives (if present), directives, memory-rules (if present), style (if present).
+    /// soul, safety-rules (if present), common-directives (if present), directives, memory-rules (if present), style (if present).
     /// </summary>
     public IReadOnlyList<AgentProfileDocument> Documents { get; } =
-        new[] { Soul, CommonDirectives, Directives, MemoryRules, Style }
+        new[] { Soul, SafetyRules, CommonDirectives, Directives, MemoryRules, Style }
             .Where(d => d is not null)
             .Select(d => d!)
             .ToList();

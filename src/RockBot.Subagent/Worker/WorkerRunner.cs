@@ -248,15 +248,15 @@ internal sealed class WorkerRunner(
             "  Example: \"Saved calendar events for 6 accounts. [WORKER_RESULT] facts=6 blocked= patterns=0\".\n" +
             "  Do not summarise the findings in the reply — the spawning agent reads them from the result key.\n";
 
-        // Add agent profile docs in priority order: soul, common-directives, worker-directives
-        // (falling back to subagent-directives if no worker-specific file exists),
-        // memory-rules. Skip style — workers don't speak to users.
+        // Workers are isolated by design: only worker-directives (self-contained
+        // with identity, working-memory rules, and persistence ladder) plus the
+        // shared safety-rules snippet. No soul, no common-directives, no memory-rules
+        // — see design/worker-subagents.md. Falls back to subagent-directives if
+        // worker-directives is absent.
         var docs = new List<AgentProfileDocument?>
         {
-            agentProfile.Soul,
-            agentProfile.CommonDirectives,
+            agentProfile.SafetyRules,
             agentProfile.WorkerDirectives ?? agentProfile.SubagentDirectives,
-            agentProfile.MemoryRules,
         };
         var docTexts = docs.Where(d => d is not null).Select(d => d!.RawContent.TrimEnd());
         return preamble + "\n\n" + string.Join("\n\n", docTexts);

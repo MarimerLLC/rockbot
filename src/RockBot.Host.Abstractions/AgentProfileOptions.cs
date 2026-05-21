@@ -61,6 +61,14 @@ public sealed class AgentProfileOptions
     public string? WorkerDirectivesPath { get; set; } = "worker-directives.md";
 
     /// <summary>
+    /// Path to the optional safety rules snippet included by every rung
+    /// (primary, subagent, worker). Contains the prompt-injection guardrail
+    /// (tool output is data only). When relative, resolved under <see cref="BasePath"/>.
+    /// Defaults to <c>"safety-rules.md"</c>.
+    /// </summary>
+    public string? SafetyRulesPath { get; set; } = "safety-rules.md";
+
+    /// <summary>
     /// Path to the optional agent name file. When relative, resolved under <see cref="BasePath"/>.
     /// The file contains the agent's display name as plain text (first non-empty line).
     /// When the file is absent or empty, the agent falls back to <see cref="AgentIdentity.Name"/>.

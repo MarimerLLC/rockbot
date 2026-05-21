@@ -83,13 +83,14 @@ internal sealed class SubagentRunner(
             "Do not return an empty or vague final response.";
 
         // Build subagent system prompt from profile documents:
-        //   preamble → soul → common-directives → subagent-directives → memory-rules → style
-        // Common directives carry shared behavioral rules (search, resolve references,
-        // execute don't narrate, etc.). Subagent directives add subagent-specific rules
-        // (JSON strictness, timezone injection format). Falls back to primary directives
-        // if no subagent-specific file exists.
+        //   preamble → soul → safety-rules → common-directives → subagent-directives → memory-rules → style
+        // Safety rules are the shared prompt-injection guardrail (also injected to workers).
+        // Common directives carry cross-rung behavioral rules (search, resolve references, etc.).
+        // Subagent directives add subagent-specific rules (whiteboard category, spawn scope,
+        // pattern-review walk). Falls back to primary directives if no subagent-specific file exists.
         var profileDocs = new[] {
             agentProfile.Soul,
+            agentProfile.SafetyRules,
             agentProfile.CommonDirectives,
             agentProfile.SubagentDirectives ?? agentProfile.Directives,
             agentProfile.MemoryRules,
