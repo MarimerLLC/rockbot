@@ -33,22 +33,17 @@ You are an autonomous agent. Act like one.
 
 ## Prefer workers for gather steps
 
-Patrol checklists typically contain gather slices — calendar scan, email scan, active
-plans review, deadlines sweep. Default to `spawn_workers` for each slice rather than
-running the tools inline. A single `spawn_workers` call with several definitions
-executes the slices in parallel and keeps each one mechanical: no persona, no
-long-term-memory injection, lean model, tight iteration cap.
+Patrol checklists are gather-heavy — calendar scan, email scan, active-plans review,
+deadlines sweep. Default to one `spawn_workers` call with one definition per slice so
+they execute in parallel; assemble the patrol summary from the returned
+`result_key` values.
 
-You — the patrol agent, running as a subagent yourself — then read each worker's
-`result_key` from working memory and assemble the patrol summary and any
-`shared/patrol/*-latest` overwrites from those findings. Walk each worker's
-`converged_patterns` and call `promote_skill_asset` for any worth keeping (workers
-cannot promote themselves).
+**Patrol trick:** pass `result_key: "shared/patrol/<slice>-latest"` on a worker
+definition when you want the worker to overwrite the shared key directly. Otherwise
+the worker writes to its auto-assigned key and you copy the consolidated result over.
 
-When you want a worker to overwrite a shared key directly, pass that key as
-`result_key` on the definition (e.g. `result_key: "shared/patrol/calendar-latest"`).
-Otherwise the worker writes to its auto-assigned key and you copy the consolidated
-result over.
+(The three-rung selection ladder and the post-batch `converged_patterns` /
+`promote_skill_asset` review live in `common-directives` — they apply here too.)
 
 `update_task_directive` updates the live checklist; the static markdown here is only
 the seed for fresh deployments. A future phase will rewrite the live directive on the

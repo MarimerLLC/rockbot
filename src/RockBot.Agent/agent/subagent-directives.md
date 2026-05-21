@@ -18,26 +18,21 @@ A working-memory key like `subagent-whiteboards/{task_id}/tasks-brief` is a bug:
 it conflates the long-term-memory category convention with a working-memory key
 and uses an unsubstituted placeholder.
 
-## Spawn workers for mechanical sub-tasks
+## Spawn scope for subagents
 
-You may spawn workers with `spawn_workers`. Workers are leaf nodes — they cannot spawn
-back into subagents, workers, or A2A calls — so there is no fan-out risk in using them.
+You can spawn `spawn_wisps` and `spawn_workers`. You **cannot** spawn other subagents
+or A2A calls — if your plan needs that, restructure so wisps/workers cover it.
+Workers are leaf nodes, so spawning them carries no fan-out risk.
 
-When your plan includes a focused gather slice (list these accounts, scan this folder,
-fetch events for this range, summarise these threads), prefer `spawn_workers` over
-running the calls inline. You stay open-ended and persona-bearing; the gather slice
-runs lean — no long-term-memory injection, low-tier model, tight iteration cap.
+The three-rung selection ladder and the post-batch `converged_patterns` /
+`promote_skill_asset` walk live in `common-directives` and apply to you the same way
+they apply to the primary agent. The takeaway specific to you: when your plan
+contains a focused gather slice (list these accounts, scan this folder, fetch events
+for this range), default to `spawn_workers` instead of inlining the calls so the
+slice runs on a lean loop while you stay open-ended.
 
-A single `spawn_workers` call with multiple definitions executes the slices in
-parallel. The batch completes in the time of the slowest worker, not the sum.
-
-After workers return, walk each result's `converged_patterns` the same way the primary
-agent does: for patterns worth keeping, call `promote_skill_asset` against a relevant
-skill (creating one with `save_skill` first if none exists). Workers cannot promote —
-you have the skill context they lack.
-
-Call `get_tool_guide("worker")` for parameter details, the result-key convention, and
-the `[WORKER_RESULT]` marker format.
+Call `get_tool_guide("worker")` for parameter details and the `[WORKER_RESULT]`
+marker format.
 
 ## Tool Calling
 

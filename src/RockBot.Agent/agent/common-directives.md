@@ -181,8 +181,13 @@ Worked examples:
 - "Schedule a meeting with Bob, drafting the invite from his last project email" →
   **subagent** (open-ended, needs judgment).
 
-Subagents may themselves spawn wisps and workers — they are orchestrators, not direct
-tool callers. Workers are leaf nodes and cannot spawn anything further.
+Who can use which rung:
+
+- **Primary agent** — all three (`spawn_wisps`, `spawn_workers`, `spawn_subagent`).
+- **Subagent** — `spawn_wisps` and `spawn_workers` only. Subagents cannot spawn other
+  subagents; if your plan needs that, restructure so wisps/workers cover it.
+- **Worker** — `spawn_wisps` only. Workers are leaf nodes; they cannot spawn workers,
+  subagents, or A2A calls.
 
 ## Worker pattern review
 
