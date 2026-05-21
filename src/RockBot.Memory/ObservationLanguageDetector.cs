@@ -66,11 +66,55 @@ public static partial class ObservationLanguageDetector
     private static partial Regex ToolReferencePattern();
 
     /// <summary>
+    /// Path segments that follow the <c>server/tool</c> shape syntactically but are
+    /// memory namespaces, not MCP server names. Excluding them prevents the
+    /// observation-eviction filter from treating working-memory keys like
+    /// <c>shared/patrol/...</c> or long-term memory category paths like
+    /// <c>user-preferences/family/...</c> as references to MCP tools.
+    /// </summary>
+    /// <remarks>
+    /// Real MCP server names follow the convention <c>name-mcp</c> (e.g.
+    /// <c>calendar-mcp</c>, <c>todo-mcp</c>) — none collide with this list.
+    /// </remarks>
+    private static readonly HashSet<string> NamespacePrefixes = new(StringComparer.OrdinalIgnoreCase)
+    {
+        // Working-memory namespaces
+        "shared",
+        "patrol",
+        "worker",
+        "subagent",
+        "session",
+        // Long-term memory category roots
+        "user-preferences",
+        "agent-identity",
+        "agent-knowledge",
+        "project-context",
+        "active-plans",
+        "active-tasks",
+        "subagent-whiteboards",
+        "claim",
+        "episodic",
+        "general",
+        // Skill index / catch-alls that aren't server names
+        "mcp",
+        "skill",
+        "skills",
+        // URL-shaped tokens that the regex matches but aren't tool refs
+        "http",
+        "https",
+        "file",
+        "data",
+    };
+
+    /// <summary>
     /// Returns distinct <c>(server, tool)</c> pairs named in the content using the
     /// <c>server/tool</c> shape conventionally used in observation text and
     /// recovery error messages (e.g. <c>calendar-mcp/search_emails</c>). Returns
     /// an empty list for null or empty input. Used by Amendment 1 step 4 to
     /// opportunistically verify observations against the tool-call log.
+    /// Matches whose <c>server</c> component is a known memory-namespace prefix
+    /// (see <see cref="NamespacePrefixes"/>) are dropped — those are path
+    /// segments, not server identifiers.
     /// </summary>
     public static IReadOnlyList<(string Server, string Tool)> TryExtractToolReferences(string? content)
     {
@@ -85,6 +129,8 @@ public static partial class ObservationLanguageDetector
             var server = match.Groups["server"].Value;
             var tool = match.Groups["tool"].Value;
             if (string.IsNullOrEmpty(server) || string.IsNullOrEmpty(tool))
+                continue;
+            if (NamespacePrefixes.Contains(server))
                 continue;
             var pair = (server, tool);
             if (seen.Add(pair)) refs.Add(pair);

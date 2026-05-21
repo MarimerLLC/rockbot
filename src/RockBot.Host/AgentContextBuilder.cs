@@ -827,8 +827,17 @@ public sealed class AgentContextBuilder(
         var toEvict = new HashSet<string>(StringComparer.Ordinal);
         foreach (var (entry, refs) in candidates)
         {
+            // The call that wrote (or otherwise touched) this entry's own key
+            // cannot be evidence contradicting the entry — that's the
+            // self-eviction loop where a worker saves "blocked: nothing" to
+            // shared/patrol/... and then the very same SaveToWorkingMemory call
+            // is treated as a contradicting "successful tool call" on the
+            // (shared, patrol) pseudo-reference. Filter those out before the
+            // contradiction search.
             var matched = successes.FirstOrDefault(s =>
-                s.Timestamp > entry.StoredAt && CallMatchesAnyRef(s, refs));
+                s.Timestamp > entry.StoredAt
+                && !CallTouchesEntryKey(s, entry.Key)
+                && CallMatchesAnyRef(s, refs));
             if (matched is null) continue;
 
             try
@@ -879,6 +888,21 @@ public sealed class AgentContextBuilder(
                 return true;
         }
         return false;
+    }
+
+    /// <summary>
+    /// Returns true when the call's argument summary references the given
+    /// working-memory key. Used to filter out the writing call (or any
+    /// subsequent call that touches the same entry) from the contradiction
+    /// candidate set — a SaveToWorkingMemory call to key K cannot disprove an
+    /// observation that lives at key K.
+    /// </summary>
+    private static bool CallTouchesEntryKey(ToolCallEvent call, string entryKey)
+    {
+        if (string.IsNullOrEmpty(entryKey)) return false;
+        var args = call.ArgumentsSummary;
+        if (string.IsNullOrEmpty(args)) return false;
+        return args.Contains(entryKey, StringComparison.OrdinalIgnoreCase);
     }
 
     /// <summary>
