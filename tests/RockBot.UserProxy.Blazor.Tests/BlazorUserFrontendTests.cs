@@ -106,6 +106,76 @@ public class BlazorUserFrontendTests
         Assert.AreEqual(MessageCategory.SubagentActivity, msg.Category);
     }
 
+    [TestMethod]
+    public async Task WorkerName_CategorizedAsSubagentActivity()
+    {
+        // Workers emit tool-call progress via ToolProgressNotifier with
+        // AgentName = "worker-{taskId}". Before the fix this fell through
+        // to A2AActivity because workers were neither "subagent-" prefixed
+        // nor equal to the primary agent name.
+        var reply = new AgentReply
+        {
+            Content = "Calling get_calendar_events…",
+            SessionId = "blazor-session",
+            AgentName = "worker-abc123",
+            IsFinal = false
+        };
+
+        await _frontend.DisplayStatusAsync(reply);
+
+        var msg = GetLastMessage();
+        Assert.AreEqual(MessageCategory.SubagentActivity, msg.Category);
+    }
+
+    [TestMethod]
+    public async Task WorkerName_InA2AInboundSession_CategorizedAsSubagentActivity()
+    {
+        // Workers spawned from inside an A2A inbound task receive an
+        // a2a-inbound/* session id. The AgentName check must fire BEFORE
+        // the session check so worker progress is still labelled subagent
+        // activity, not A2A activity.
+        var reply = new AgentReply
+        {
+            Content = "Calling search_emails…",
+            SessionId = "a2a-inbound/task-xyz",
+            AgentName = "worker-abc123",
+            IsFinal = false
+        };
+
+        await _frontend.DisplayStatusAsync(reply);
+
+        var msg = GetLastMessage();
+        Assert.AreEqual(MessageCategory.SubagentActivity, msg.Category);
+    }
+
+    [TestMethod]
+    public async Task WorkerName_AfterLearningPrimaryName_CategorizedAsSubagentActivity()
+    {
+        // Once the primary agent name is learned, a non-final reply from a
+        // "different" agent normally goes to A2AActivity. Workers must NOT
+        // hit that branch — the worker- prefix check fires first.
+        await _frontend.DisplayReplyAsync(new AgentReply
+        {
+            Content = "First response",
+            SessionId = "blazor-session",
+            AgentName = "RockBot",
+            IsFinal = true
+        });
+
+        var reply = new AgentReply
+        {
+            Content = "Calling mcp_invoke_tool…",
+            SessionId = "blazor-session",
+            AgentName = "worker-abc123",
+            IsFinal = false
+        };
+
+        await _frontend.DisplayStatusAsync(reply);
+
+        var msg = GetLastMessage();
+        Assert.AreEqual(MessageCategory.SubagentActivity, msg.Category);
+    }
+
     // ── final vs non-final ───────────────────────────────────────────────
 
     [TestMethod]
@@ -215,6 +285,47 @@ public class BlazorUserFrontendTests
 
         var msg = GetLastMessage();
         Assert.AreEqual(MessageCategory.PrimaryProgress, msg.Category);
+    }
+
+    // ── history categorization (LoadHistory → CategorizeHistoryTurn) ─────
+
+    [TestMethod]
+    public void LoadHistory_SubagentTurn_CategorizedAsSubagentActivity()
+    {
+        _chatState.SetAgentInfo("RockBot", "1.0.0");
+        var turn = new ConversationHistoryTurn
+        {
+            Role = "user",
+            Content = "[Subagent task abc completed]: Found 3 events.",
+            Timestamp = DateTimeOffset.UtcNow,
+            AgentName = "subagent-abc123"
+        };
+
+        _chatState.LoadHistory([turn], "blazor-session");
+
+        var msg = GetLastMessage();
+        Assert.AreEqual(MessageCategory.SubagentActivity, msg.Category);
+    }
+
+    [TestMethod]
+    public void LoadHistory_WorkerTurn_CategorizedAsSubagentActivity()
+    {
+        // Worker tool-invocation history turns (when persisted) also carry a
+        // worker-{taskId} AgentName. They must categorize the same as subagent
+        // activity so they don't show up as inbound A2A in restored chats.
+        _chatState.SetAgentInfo("RockBot", "1.0.0");
+        var turn = new ConversationHistoryTurn
+        {
+            Role = "user",
+            Content = "[Worker abc123 progress]: calling get_calendar_events",
+            Timestamp = DateTimeOffset.UtcNow,
+            AgentName = "worker-abc123"
+        };
+
+        _chatState.LoadHistory([turn], "blazor-session");
+
+        var msg = GetLastMessage();
+        Assert.AreEqual(MessageCategory.SubagentActivity, msg.Category);
     }
 
     // ── helpers ──────────────────────────────────────────────────────────

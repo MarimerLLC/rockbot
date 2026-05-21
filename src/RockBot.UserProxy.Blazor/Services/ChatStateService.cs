@@ -99,8 +99,10 @@ public sealed class ChatStateService
     {
         if (turn.Role == "user")
         {
-            // Subagent synthetic turns are stored as "user" role with a subagent AgentName
-            if (turn.AgentName?.StartsWith("subagent-", StringComparison.OrdinalIgnoreCase) == true)
+            // Subagent and worker synthetic turns are stored as "user" role with a
+            // subagent- or worker- prefixed AgentName. Both represent spawned activity.
+            if (turn.AgentName?.StartsWith("subagent-", StringComparison.OrdinalIgnoreCase) == true
+                || turn.AgentName?.StartsWith("worker-", StringComparison.OrdinalIgnoreCase) == true)
                 return (MessageCategory.SubagentActivity, false);
 
             // A2A synthetic turns have a non-null AgentName that differs from the primary agent
