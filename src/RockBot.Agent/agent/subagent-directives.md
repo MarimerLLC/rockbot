@@ -25,8 +25,9 @@ or A2A calls — if your plan needs that, restructure so wisps/workers cover it.
 Workers are leaf nodes, so spawning them carries no fan-out risk.
 
 The three-rung selection ladder and the post-batch `converged_patterns` /
-`promote_skill_asset` walk live in `common-directives` and apply to you the same way
-they apply to the primary agent. The takeaway specific to you: when your plan
+`promote_skill_asset` walk live in `common-directives`. The pattern-review walk is
+specifically *your* responsibility — you have `promote_skill_asset` in your tool
+surface and the primary does not. The takeaway specific to you: when your plan
 contains a focused gather slice (list these accounts, scan this folder, fetch events
 for this range), default to `spawn_workers` instead of inlining the calls so the
 slice runs on a lean loop while you stay open-ended.

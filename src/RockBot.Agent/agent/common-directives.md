@@ -183,9 +183,14 @@ Worked examples:
 
 Who can use which rung:
 
-- **Primary agent** — all three (`spawn_wisps`, `spawn_workers`, `spawn_subagent`).
-- **Subagent** — `spawn_wisps` and `spawn_workers` only. Subagents cannot spawn other
+- **Primary agent** — all three are technically available, but workers and wisps run
+  **synchronously** inside the primary's loop, which locks the user's input box while
+  they finish. For non-trivial work the primary's preferred path is `spawn_subagent`
+  (returns control to the user immediately); let the subagent fan out to wisps and
+  workers from inside its own loop.
+- **Subagent** — `spawn_wisps` and `spawn_workers`. Subagents cannot spawn other
   subagents; if your plan needs that, restructure so wisps/workers cover it.
+  Subagents are the canonical home for `spawn_workers` calls.
 - **Worker** — `spawn_wisps` only. Workers are leaf nodes; they cannot spawn workers,
   subagents, or A2A calls.
 
@@ -193,18 +198,22 @@ Who can use which rung:
 
 When `spawn_workers` returns, the batch receipt includes a `converged_patterns` list
 per worker — tool-call sequences the worker observed converging on success after
-non-trivial discovery. Workers cannot promote skill assets themselves; that is your
-job as the spawning agent.
+non-trivial discovery. Workers cannot promote skill assets themselves; the spawning
+agent must do it.
 
-After consuming each worker's `result_key`:
+This walk lives with **subagents**: `promote_skill_asset` is in the subagent tool
+surface, not the primary's. The canonical flow is therefore:
 
-1. Walk `converged_patterns` for that result.
-2. For each candidate worth keeping (the pattern is genuinely reusable, not a one-off),
-   call `promote_skill_asset` against an existing skill — creating the skill first with
-   `save_skill` if none fits.
-3. Skip patterns that are obviously single-use or already covered by an existing asset.
+1. Primary delegates the gather task to a subagent (`spawn_subagent`).
+2. Subagent spawns its gather slices as workers (`spawn_workers`).
+3. After workers return, the subagent walks each result's `converged_patterns`:
+   - For each candidate worth keeping (genuinely reusable, not a one-off), call
+     `promote_skill_asset` against an existing skill — creating the skill first with
+     `save_skill` if none fits.
+   - Skip patterns that are obviously single-use or already covered by an existing
+     asset.
 
-If you skip the review step, the asset-promotion loop never closes and the same
+If the subagent skips this step, the asset-promotion loop never closes and the same
 discoveries get re-derived next time.
 
 ## Using Your Capabilities
