@@ -297,6 +297,76 @@ public class AgentContextBuilderObservationEvictTests
     }
 
     [TestMethod]
+    public async Task BuildAsync_SaveToWorkingMemoryWithMcpRefsInData_NotContradiction()
+    {
+        // Real-world case from the heartbeat patrol: the email worker saved
+        // findings containing a genuine MCP reference like calendar-mcp/get_emails.
+        // The reference extracts correctly. The calendar worker then saved its
+        // own findings to a different key, but its JSON data blob mentions
+        // "calendar-mcp" and "get_emails" as substrings. With the old loose
+        // substring match, that triggered a false eviction. After the fix,
+        // CallMatchesAnyRef only accepts mcp_invoke_tool calls with the
+        // structured server_name=X, tool_name=Y form, so the sibling
+        // SaveToWorkingMemory call is rejected.
+        var observedAt = DateTimeOffset.UtcNow.AddSeconds(-1);
+        var stale = ObservationEntry(
+            "shared/patrol/email-latest",
+            "Patrol blocked by no actionable items. Queried calendar-mcp/get_emails across all accounts.",
+            observedAt);
+
+        var wm = new RecordingWorkingMemory(shared: [stale]);
+        var log = new StubToolCallLog(
+        [
+            // A sibling worker's SaveToWorkingMemory call whose data blob
+            // happens to contain "calendar-mcp" and "get_emails" as substrings
+            // (a real MCP server name and a tool name mentioned in JSON data).
+            new ToolCallEvent("s", "SaveToWorkingMemory",
+                "key=shared/patrol/calendar-latest, data={" +
+                "\"source\":\"calendar-mcp scan\", \"used\":\"get_emails for reference\"}",
+                Succeeded: true, DurationMs: 21,
+                Timestamp: observedAt.AddMilliseconds(50)),
+        ]);
+        var builder = NewBuilder(wm, log);
+
+        await builder.BuildAsync("session-1", LongMessage, CancellationToken.None);
+
+        Assert.AreEqual(0, wm.DeletedKeys.Count,
+            "SaveToWorkingMemory is not an MCP invocation. Its data blob may " +
+            "mention server and tool names but that is not contradicting evidence.");
+    }
+
+    [TestMethod]
+    public async Task BuildAsync_McpCallWithSubstringButNoStructuredArgs_NotContradiction()
+    {
+        // Defense against future cases where ToolName happens to be mcp_invoke_tool
+        // but the args summary lacks the structured server_name=X, tool_name=Y
+        // form. Substring containment alone in a free-form args string must not
+        // count as evidence.
+        var observedAt = DateTimeOffset.UtcNow.AddHours(-1);
+        var stale = ObservationEntry(
+            "patrol/email-triage-latest",
+            "calendar-mcp/search_emails wrapper cannot pass arguments",
+            observedAt);
+
+        var wm = new RecordingWorkingMemory(patrol: [stale]);
+        var log = new StubToolCallLog(
+        [
+            // Looks like an MCP call but args don't carry the structured form.
+            new ToolCallEvent("s", "mcp_invoke_tool",
+                "the message mentioned calendar-mcp and search_emails but not as call args",
+                Succeeded: true, DurationMs: 1,
+                Timestamp: observedAt.AddMinutes(30)),
+        ]);
+        var builder = NewBuilder(wm, log);
+
+        await builder.BuildAsync("session-1", LongMessage, CancellationToken.None);
+
+        Assert.AreEqual(0, wm.DeletedKeys.Count,
+            "Without the structured server_name=/tool_name= form, an " +
+            "mcp_invoke_tool args summary is not evidence of invocation.");
+    }
+
+    [TestMethod]
     public async Task BuildAsync_SharedNamespace_AlsoFiltered()
     {
         // Observations under shared/ must be evicted on the same rules as patrol/

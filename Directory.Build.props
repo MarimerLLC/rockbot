@@ -9,7 +9,7 @@
     <!-- Version can be overridden from the command line: -p:Version=0.3.1
          AssemblyVersion and FileVersion are derived automatically by the SDK
          (prerelease suffixes like -beta001 are stripped for assembly versions). -->
-<Version>0.12.4</Version>
+<Version>0.12.5</Version>
   </PropertyGroup>
 
   <!-- NuGet package metadata (shared across all packable projects) -->

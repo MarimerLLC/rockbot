@@ -871,20 +871,38 @@ public sealed class AgentContextBuilder(
         && entry.Tags.Any(t => string.Equals(t, ObservationLanguageDetector.ObservationTag, StringComparison.OrdinalIgnoreCase));
 
     /// <summary>
-    /// A successful tool call matches a (server, tool) reference when both names
-    /// appear in either the call's <see cref="ToolCallEvent.ToolName"/> or
-    /// <see cref="ToolCallEvent.ArgumentsSummary"/>. MCP calls are logged as
-    /// <c>mcp_invoke_tool</c> with the inner tool exposed via the args summary
-    /// (<c>server_name=X, tool_name=Y</c>), so both fields must be searched.
+    /// A successful tool call matches a (server, tool) reference only when:
+    /// <list type="bullet">
+    ///   <item>It is an <c>mcp_invoke_tool</c> call (the only call shape that
+    ///         actually invokes an MCP server tool), and</item>
+    ///   <item>The args summary contains the structured form
+    ///         <c>server_name=&lt;Server&gt;</c> AND
+    ///         <c>tool_name=&lt;Tool&gt;</c> matching the reference.</item>
+    /// </list>
+    /// <para>
+    /// Internal tools like <c>SaveToWorkingMemory</c>, <c>SearchMemory</c>,
+    /// etc. cannot contradict claims about external MCP capabilities — they
+    /// don't invoke MCP servers at all. Their args summaries do however
+    /// contain arbitrary JSON data that may mention server and tool names
+    /// (e.g. a patrol report mentioning <c>calendar-mcp</c> and
+    /// <c>get_emails</c>), so a substring-only match against them produces
+    /// false positives. The structured form below is precise about what
+    /// counts as a real MCP invocation.
+    /// </para>
     /// </summary>
     private static bool CallMatchesAnyRef(
         ToolCallEvent call, IReadOnlyList<(string Server, string Tool)> refs)
     {
-        var hay = $"{call.ToolName} {call.ArgumentsSummary ?? string.Empty}";
+        if (!string.Equals(call.ToolName, "mcp_invoke_tool", StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        var args = call.ArgumentsSummary;
+        if (string.IsNullOrEmpty(args)) return false;
+
         foreach (var r in refs)
         {
-            if (hay.Contains(r.Server, StringComparison.OrdinalIgnoreCase)
-                && hay.Contains(r.Tool, StringComparison.OrdinalIgnoreCase))
+            if (args.Contains($"server_name={r.Server}", StringComparison.OrdinalIgnoreCase)
+                && args.Contains($"tool_name={r.Tool}", StringComparison.OrdinalIgnoreCase))
                 return true;
         }
         return false;
