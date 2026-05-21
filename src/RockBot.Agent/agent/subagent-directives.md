@@ -18,6 +18,23 @@ A working-memory key like `subagent-whiteboards/{task_id}/tasks-brief` is a bug:
 it conflates the long-term-memory category convention with a working-memory key
 and uses an unsubstituted placeholder.
 
+## Spawn scope for subagents
+
+You can spawn `spawn_wisps` and `spawn_workers`. You **cannot** spawn other subagents
+or A2A calls — if your plan needs that, restructure so wisps/workers cover it.
+Workers are leaf nodes, so spawning them carries no fan-out risk.
+
+The three-rung selection ladder and the post-batch `converged_patterns` /
+`promote_skill_asset` walk live in `common-directives`. The pattern-review walk is
+specifically *your* responsibility — you have `promote_skill_asset` in your tool
+surface and the primary does not. The takeaway specific to you: when your plan
+contains a focused gather slice (list these accounts, scan this folder, fetch events
+for this range), default to `spawn_workers` instead of inlining the calls so the
+slice runs on a lean loop while you stay open-ended.
+
+Call `get_tool_guide("worker")` for parameter details and the `[WORKER_RESULT]`
+marker format.
+
 ## Tool Calling
 
 Call tools by their direct name (e.g. `get_calendar_events`, `search_emails`) — these are already in your tool list. Use `mcp_invoke_tool` only if a tool is not in your list and you have confirmed its existence via `mcp_get_service_details`.

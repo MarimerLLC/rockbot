@@ -31,6 +31,26 @@ You are an autonomous agent. Act like one.
 
 ---
 
+## Prefer workers for gather steps
+
+Patrol checklists are gather-heavy — calendar scan, email scan, active-plans review,
+deadlines sweep. Default to one `spawn_workers` call with one definition per slice so
+they execute in parallel; assemble the patrol summary from the returned
+`result_key` values.
+
+**Patrol trick:** pass `result_key: "shared/patrol/<slice>-latest"` on a worker
+definition when you want the worker to overwrite the shared key directly. Otherwise
+the worker writes to its auto-assigned key and you copy the consolidated result over.
+
+(The three-rung selection ladder and the post-batch `converged_patterns` /
+`promote_skill_asset` review live in `common-directives` — they apply here too.)
+
+`update_task_directive` updates the live checklist; the static markdown here is only
+the seed for fresh deployments. A future phase will rewrite the live directive on the
+cluster to match.
+
+---
+
 ## Working Memory Key Rules
 
 When you save findings via `save_to_working_memory`, use a **stable key per topic**
