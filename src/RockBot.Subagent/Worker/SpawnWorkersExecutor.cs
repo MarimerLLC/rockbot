@@ -129,7 +129,7 @@ internal sealed class SpawnWorkersExecutor(IWorkerManager manager) : IToolExecut
         sb.AppendLine();
         sb.AppendLine($"Batch id: {batch.BatchId}");
         sb.AppendLine();
-        sb.AppendLine("Receipts (each result_key holds the structured WorkerResult JSON — fetch with get_from_working_memory):");
+        sb.AppendLine("Receipts (the WorkerResult JSON is below; each worker's findings live at its result_key — fetch with get_from_working_memory):");
         sb.AppendLine(JsonSerializer.Serialize(batch, JsonOutput));
         return sb.ToString().TrimEnd();
     }

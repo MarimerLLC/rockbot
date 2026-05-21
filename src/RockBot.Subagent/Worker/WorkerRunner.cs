@@ -1,5 +1,4 @@
 using System.Diagnostics;
-using System.Text.Json;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -208,10 +207,10 @@ internal sealed class WorkerRunner(
             FailureReason = failureReason,
         };
 
-        // Always write the structured result to working memory so the spawning agent
-        // can read it via the standard get_from_working_memory path (even on failure
-        // the receipt is recoverable, helpful when the receipt itself was dropped).
-        await PersistResultAsync(resultKey, result);
+        // Do NOT write the receipt to resultKey — the worker has already saved its
+        // findings there. The receipt is returned to the spawning agent inline via
+        // the spawn_workers tool response (see SpawnWorkersExecutor.FormatBatchReceipt).
+        // Failures still get a separate failure-details entry below.
 
         if (!isSuccess)
         {
@@ -342,29 +341,6 @@ internal sealed class WorkerRunner(
         }
 
         return (facts, blocked, patterns);
-    }
-
-    private async Task PersistResultAsync(string resultKey, WorkerResult result)
-    {
-        try
-        {
-            var json = JsonSerializer.Serialize(result, new JsonSerializerOptions
-            {
-                WriteIndented = true,
-                PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower,
-            });
-            await workingMemory.SetAsync(
-                resultKey, json,
-                ttl: TimeSpan.FromMinutes(240),
-                category: "worker-result",
-                tags: ["worker-result", result.IsSuccess ? "ok" : "failed"]);
-        }
-        catch (Exception ex)
-        {
-            logger.LogWarning(ex,
-                "Worker {TaskId}: failed to persist result to {Key}; receipt-only fallback",
-                result.TaskId, resultKey);
-        }
     }
 
     private async Task SaveFailureDetailsAsync(
