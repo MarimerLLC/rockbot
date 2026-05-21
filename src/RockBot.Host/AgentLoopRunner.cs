@@ -313,6 +313,7 @@ public sealed partial class AgentLoopRunner(
         Func<string, CancellationToken, Task>? onStageProgress = null,
         bool enableFollowUp = true,
         bool enableCompletionEval = true,
+        bool enableReasoningScaffolding = true,
         double? complexityScore = null,
         int? maxIterationsOverride = null,
         LoopDiagnostics? diagnostics = null,
@@ -336,14 +337,23 @@ public sealed partial class AgentLoopRunner(
         EnsureDateTimeContext(chatMessages);
 
         // Inject reasoning scaffolding so the model knows its iteration budget.
-        InjectReasoningScaffolding(chatMessages);
+        // Workers (the lean rung between wisps and subagents) skip this — they
+        // don't need step-by-step deliberation guidance and shave the system
+        // message out entirely.
+        if (enableReasoningScaffolding)
+            InjectReasoningScaffolding(chatMessages);
 
         // Per-run task list (issue #336): in-memory plan that survives context trimming
         // because RefreshTaskListContext rebuilds the system message from this state on
         // each iteration. Built fresh per RunAsync — not persisted, not shared.
+        // Workers skip the task-list tools too — a leaf gather task does not need a
+        // TODO list, and removing the tools shrinks the schema injection cost.
         var taskList = new AgentTaskList();
-        var taskListTools = new AgentTaskListTools(taskList, logger);
-        AppendTaskListTools(chatOptions, taskListTools);
+        if (enableReasoningScaffolding)
+        {
+            var taskListTools = new AgentTaskListTools(taskList, logger);
+            AppendTaskListTools(chatOptions, taskListTools);
+        }
 
         var originalUserRequest = ExtractOriginalUserRequest(chatMessages);
         var maxReprompts = modelBehavior.MaxCompletionRepromptsOverride

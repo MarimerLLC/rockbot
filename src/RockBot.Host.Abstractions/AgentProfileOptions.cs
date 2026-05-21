@@ -52,6 +52,15 @@ public sealed class AgentProfileOptions
     public string? CommonDirectivesPath { get; set; } = "common-directives.md";
 
     /// <summary>
+    /// Path to the optional worker directives document — the lean rung between
+    /// wisps and subagents. When relative, resolved under <see cref="BasePath"/>.
+    /// Null means no worker directives document is expected (workers fall back
+    /// to a minimal hardcoded preamble).
+    /// Defaults to <c>"worker-directives.md"</c>.
+    /// </summary>
+    public string? WorkerDirectivesPath { get; set; } = "worker-directives.md";
+
+    /// <summary>
     /// Path to the optional agent name file. When relative, resolved under <see cref="BasePath"/>.
     /// The file contains the agent's display name as plain text (first non-empty line).
     /// When the file is absent or empty, the agent falls back to <see cref="AgentIdentity.Name"/>.
