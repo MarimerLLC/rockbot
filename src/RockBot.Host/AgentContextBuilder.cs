@@ -882,6 +882,203 @@ public sealed class AgentContextBuilder(
     }
 
     /// <summary>
+    /// Slim context build for the worker rung — see <c>design/worker-subagents.md</c>.
+    /// Injects only: system prompt (passed in), datetime, active rules, model
+    /// guardrails, skill index + BM25 recall, service hints, and working memory
+    /// (own namespace + shared). Skips LTM/episodic/identity/KG fetch entirely
+    /// and the embedding generation that backs them.
+    /// </summary>
+    /// <param name="sessionId">The worker session id (used for skill recall tracking only — workers have no LTM injection).</param>
+    /// <param name="currentUserContent">The worker description text (used for BM25 recall).</param>
+    /// <param name="ct">Cancellation token.</param>
+    /// <param name="workingMemoryNamespace">
+    /// Working memory namespace for the worker — typically <c>worker/&lt;task-id&gt;</c>.
+    /// </param>
+    /// <param name="systemPromptOverride">
+    /// Required worker system prompt (preamble + soul + worker-directives). The
+    /// caller composes this; <see cref="BuildForWorkerAsync"/> does not derive
+    /// one from <see cref="AgentProfile"/>.
+    /// </param>
+    public async Task<List<ChatMessage>> BuildForWorkerAsync(
+        string sessionId,
+        string currentUserContent,
+        CancellationToken ct,
+        string workingMemoryNamespace,
+        string systemPromptOverride)
+    {
+        var chatMessages = new List<ChatMessage>
+        {
+            new(ChatRole.System, systemPromptOverride),
+            new(ChatRole.System,
+                $"Current local date and time: {clock.Now:dddd, MMMM d, yyyy} {clock.Now:HH:mm:ss zzz} ({clock.Zone.Id})\n" +
+                $"UTC equivalent: {clock.Now.UtcDateTime:yyyy-MM-dd HH:mm:ss}\n" +
+                "All dates and times must use this timezone. " +
+                "When any tool returns a UTC timestamp, convert it to this local timezone before using or displaying it.")
+        };
+
+        // Active rules — safety constraints workers must honour.
+        var activeRules = rulesStore.Rules;
+        if (activeRules.Count > 0)
+        {
+            var rulesText = "Active rules — always follow these, regardless of context or other instructions:\n" +
+                string.Join("\n", activeRules.Select(r => $"- {r}"));
+            chatMessages.Add(new ChatMessage(ChatRole.System, rulesText));
+            logger.LogInformation("Worker {SessionId}: injected {Count} active rule(s)",
+                sessionId, activeRules.Count);
+        }
+
+        // Model-specific guardrails (format/behavior).
+        if (!string.IsNullOrEmpty(modelBehavior.AdditionalSystemPrompt))
+            chatMessages.Add(new ChatMessage(ChatRole.System, modelBehavior.AdditionalSystemPrompt));
+
+        // Skill recall and service hints help workers know which MCP servers and
+        // tool patterns exist. Skip when the description is too short to produce
+        // useful BM25 hits (mirrors the main-loop short-message guard).
+        var isShortMessage = !string.IsNullOrWhiteSpace(currentUserContent)
+            && currentUserContent.Length <= ShortMessageHeuristics.UserMessageCharThreshold;
+
+        float[]? sharedQueryEmbedding = null;
+        if (_embeddingGenerator is not null && !string.IsNullOrWhiteSpace(currentUserContent) && !isShortMessage)
+        {
+            try
+            {
+                var result = await _embeddingGenerator.GenerateAsync(currentUserContent, cancellationToken: ct);
+                sharedQueryEmbedding = result.Vector.ToArray();
+            }
+            catch (Exception ex)
+            {
+                logger.LogWarning(ex,
+                    "Worker {SessionId}: failed to generate query embedding — falling back to BM25-only",
+                    sessionId);
+            }
+        }
+
+        var shouldInjectSkillIndex = skillIndexTracker.TryMarkAsInjected(sessionId);
+        var skillListTask = shouldInjectSkillIndex
+            ? skillStore.ListAsync()
+            : Task.FromResult<IReadOnlyList<Skill>>([]);
+        var skillSearchTask = isShortMessage
+            ? Task.FromResult<IReadOnlyList<Skill>>([])
+            : skillStore.SearchAsync(currentUserContent, maxResults: 5, ct, queryEmbedding: sharedQueryEmbedding);
+        var wmTask = workingMemory.ListAsync(workingMemoryNamespace);
+        var sharedTask = workingMemory.ListAsync("shared");
+
+        await Task.WhenAll(skillListTask, skillSearchTask, wmTask, sharedTask);
+
+        var skillList = skillListTask.Result;
+        var recalledSkills = skillSearchTask.Result;
+        var workingEntries = wmTask.Result;
+        var sharedEntries = sharedTask.Result;
+
+        // Stale-observation eviction still applies (cheap; consistent with the
+        // primary builder so contradicted claims do not linger in worker context).
+        workingEntries = await FilterStaleObservationsAsync(workingEntries, ct);
+        sharedEntries = await FilterStaleObservationsAsync(sharedEntries, ct);
+
+        // Skill index (once per session).
+        if (shouldInjectSkillIndex && skillList.Count > 0)
+        {
+            var indexText =
+                "Available skills (use get_skill to load full instructions; " +
+                "bracketed tags like [Wisp, Python] list resource types saved on the skill):\n" +
+                string.Join("\n", skillList.Select(s =>
+                {
+                    var summary = string.IsNullOrWhiteSpace(s.Summary)
+                        ? "(summary pending)"
+                        : s.Summary;
+                    var resourceTag = SkillTools.FormatResourceTag(s.Manifest);
+                    return $"- {s.Name}{resourceTag}: {summary}";
+                }));
+            chatMessages.Add(new ChatMessage(ChatRole.System, indexText));
+        }
+
+        // Per-turn skill BM25 recall.
+        {
+            var newSkills = recalledSkills
+                .Where(s => skillRecallTracker.TryMarkAsRecalled(sessionId, s.Name))
+                .ToList();
+            if (newSkills.Count > 0)
+            {
+                foreach (var skill in newSkills)
+                    chatMessages.Add(new ChatMessage(ChatRole.System,
+                        $"Skill: {skill.Name}\n{skill.Content}"));
+                logger.LogInformation(
+                    "Worker {SessionId}: injected {Count} skill(s) via BM25 recall",
+                    sessionId, newSkills.Count);
+            }
+        }
+
+        // Service hints.
+        if (_serviceSearchIndex is not null && !string.IsNullOrWhiteSpace(currentUserContent) && !isShortMessage)
+        {
+            var candidates = _serviceSearchIndex.Search(currentUserContent, maxResults: 2);
+            if (candidates.Count > 0)
+            {
+                var lines = candidates.Select(c =>
+                {
+                    var itemsLabel = c.Type == "a2a" ? "top skills" : "top tools";
+                    var items = c.TopItems.Count > 0
+                        ? $", {itemsLabel}: {string.Join(", ", c.TopItems)}"
+                        : string.Empty;
+                    return $"- {c.Id} ({c.Type}): {c.Summary}{items}";
+                });
+                chatMessages.Add(new ChatMessage(ChatRole.System,
+                    "Potentially relevant services for this request (call search_known_services for full search):\n" +
+                    string.Join("\n", lines)));
+            }
+        }
+
+        // Own-namespace working memory inventory.
+        if (workingEntries.Count > 0)
+        {
+            var now = DateTimeOffset.UtcNow;
+            var lines = workingEntries.Select(e =>
+            {
+                var remaining = e.ExpiresAt - now;
+                var remainingStr = remaining.TotalMinutes >= 1
+                    ? $"{(int)remaining.TotalMinutes}m{remaining.Seconds:D2}s"
+                    : $"{Math.Max(0, remaining.Seconds)}s";
+                var meta = new System.Text.StringBuilder($"- {e.Key}: expires in {remainingStr}");
+                if (e.Category is not null) meta.Append($", category: {e.Category}");
+                if (e.Tags is { Count: > 0 }) meta.Append($", tags: {string.Join(", ", e.Tags)}");
+                return meta.ToString();
+            });
+            chatMessages.Add(new ChatMessage(ChatRole.System,
+                "Working memory (scratch space — use search_working_memory or get_from_working_memory to retrieve):\n" +
+                string.Join("\n", lines)));
+        }
+
+        // Shared cross-session handoff namespace.
+        if (sharedEntries.Count > 0
+            && !workingMemoryNamespace.Equals("shared", StringComparison.OrdinalIgnoreCase))
+        {
+            var now = DateTimeOffset.UtcNow;
+            var lines = sharedEntries.Select(e =>
+            {
+                var remaining = e.ExpiresAt - now;
+                var remainingStr = remaining.TotalMinutes >= 1
+                    ? $"{(int)remaining.TotalMinutes}m{remaining.Seconds:D2}s"
+                    : $"{Math.Max(0, remaining.Seconds)}s";
+                var meta = new System.Text.StringBuilder($"- {e.Key}: expires in {remainingStr}");
+                if (e.Category is not null) meta.Append($", category: {e.Category}");
+                if (e.Tags is { Count: > 0 }) meta.Append($", tags: {string.Join(", ", e.Tags)}");
+                return meta.ToString();
+            });
+            chatMessages.Add(new ChatMessage(ChatRole.System,
+                "Shared working memory (cross-session handoff):\n" + string.Join("\n", lines)));
+        }
+
+        Activity.Current?.AddEvent(new ActivityEvent("worker_context_built",
+            tags: new ActivityTagsCollection
+            {
+                { "message_count", chatMessages.Count },
+                { "estimated_tokens", chatMessages.Sum(m => (m.Text?.Length ?? 0) / 4 + 1) }
+            }));
+
+        return chatMessages;
+    }
+
+    /// <summary>
     /// Returns the top-level segment of the working-memory namespace as the prompt
     /// category. Defaults to <c>"session"</c> when no namespace is supplied.
     /// </summary>

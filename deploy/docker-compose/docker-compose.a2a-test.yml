@@ -24,7 +24,7 @@ services:
       - |
         set -e
         echo "Seeding agent data volume for A2A test..."
-        for f in soul.md directives.md subagent-directives.md style.md memory-rules.md \
+        for f in soul.md directives.md subagent-directives.md worker-directives.md style.md memory-rules.md \
                  dream.md skill-dream.md common-directives.md session-evaluator.md \
                  session-start.md heartbeat-patrol.md skill-optimize.md \
                  dlq-dream.md routing-dream.md; do

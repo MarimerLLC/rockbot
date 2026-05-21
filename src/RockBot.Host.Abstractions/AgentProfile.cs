@@ -9,13 +9,15 @@ namespace RockBot.Host;
 /// <param name="MemoryRules">Optional shared memory rules document included in every system prompt.</param>
 /// <param name="SubagentDirectives">Optional subagent-specific directives (replaces <paramref name="Directives"/> for subagent prompts).</param>
 /// <param name="CommonDirectives">Optional shared directives included in both primary and subagent prompts.</param>
+/// <param name="WorkerDirectives">Optional worker-specific directives (slim ruleset for the lean worker rung).</param>
 public sealed record AgentProfile(
     AgentProfileDocument Soul,
     AgentProfileDocument Directives,
     AgentProfileDocument? Style = null,
     AgentProfileDocument? MemoryRules = null,
     AgentProfileDocument? SubagentDirectives = null,
-    AgentProfileDocument? CommonDirectives = null)
+    AgentProfileDocument? CommonDirectives = null,
+    AgentProfileDocument? WorkerDirectives = null)
 {
     /// <summary>
     /// All loaded documents in composition order for the primary agent:
