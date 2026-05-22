@@ -120,38 +120,11 @@ spec:
           resources:
             {{- toYaml .Values.agent.resources | nindent 12 }}
 
-        {{- if .Values.routingStatsMcp.enabled }}
-        - name: routing-stats-mcp
-          image: {{ .Values.routingStatsMcp.image.repository }}:{{ .Values.routingStatsMcp.image.tag }}
-          imagePullPolicy: {{ .Values.imagePullPolicy }}
-          ports:
-            - name: http
-              containerPort: 8080
-          volumeMounts:
-            - name: agent-data
-              mountPath: /data/agent
-              readOnly: true
-          livenessProbe:
-            httpGet:
-              path: /health
-              port: 8080
-            initialDelaySeconds: 15
-            periodSeconds: 15
-            failureThreshold: 3
-          readinessProbe:
-            httpGet:
-              path: /health
-              port: 8080
-            initialDelaySeconds: 5
-            periodSeconds: 5
-          resources:
-            {{- toYaml .Values.routingStatsMcp.resources | nindent 12 }}
-        {{- end }}
-
         {{- if (default dict .Values.introspectionMcp).enabled }}
         # Introspection MCP runs as a sidecar so it can read agent state directly
-        # from the PVC at /data/agent (memory, skills, mcp.json, profile files).
-        # Port 8081 because routing-stats already owns localhost:8080 in this pod.
+        # from the PVC at /data/agent (memory, skills, mcp.json, profile files,
+        # tier-routing-log.jsonl, llm-pricing.json, tier-selector.json). Listens on
+        # 8081 — keeping the port stable preserves existing McpBridge config.
         - name: introspection-mcp
           image: {{ .Values.introspectionMcp.image.repository }}:{{ .Values.introspectionMcp.image.tag }}
           imagePullPolicy: {{ .Values.imagePullPolicy }}
