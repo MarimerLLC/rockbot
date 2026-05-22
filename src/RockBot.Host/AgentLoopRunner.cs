@@ -708,27 +708,41 @@ public sealed partial class AgentLoopRunner(
 
     /// <summary>
     /// Ensures a current datetime system message is present in <paramref name="chatMessages"/>.
-    /// Replaces an existing one if found (keeps the time current for long-running loops),
-    /// or inserts one after the first system message if absent.
+    /// Placement and granularity are chosen to preserve the provider-side prompt cache
+    /// across consecutive turns: the string is rounded to the minute (sub-minute precision
+    /// is available to the model via <c>current_datetime</c> on demand) and inserted just
+    /// before the last user message rather than near the top of the message list. Inserting
+    /// near the top — the previous behavior — busted the prompt cache on every turn because
+    /// the datetime string sat in front of the otherwise-stable conversation history; the
+    /// new placement keeps the entire history prefix cacheable. Any pre-existing datetime
+    /// system message is removed first so re-running the loop migrates the position.
     /// </summary>
     private void EnsureDateTimeContext(List<ChatMessage> chatMessages)
     {
+        var now = clock.Now;
+        var nowMinute = new DateTimeOffset(now.Year, now.Month, now.Day, now.Hour, now.Minute, 0, now.Offset);
         var text =
-            $"The user's local date and time is: {clock.Now:dddd, MMMM d, yyyy} {clock.Now:HH:mm:ss zzz} ({clock.Zone.Id}). " +
+            $"The user's local date and time is: {nowMinute:dddd, MMMM d, yyyy} {nowMinute:HH:mm zzz} ({clock.Zone.Id}). " +
             "Always express dates and times to the user in this timezone. Never assume UTC or any other timezone.";
 
-        for (var i = 0; i < chatMessages.Count; i++)
+        for (var i = chatMessages.Count - 1; i >= 0; i--)
         {
-            if (chatMessages[i].Role == ChatRole.System &&
-                chatMessages[i].Text?.StartsWith("The user's local date and time is:") == true)
+            if (chatMessages[i].Role == ChatRole.System
+                && chatMessages[i].Text?.StartsWith("The user's local date and time is:") == true)
             {
-                chatMessages[i] = new ChatMessage(ChatRole.System, text);
-                return;
+                chatMessages.RemoveAt(i);
             }
         }
 
-        // Not already present — insert after the first system message (or at 0 if none)
-        var insertAt = chatMessages.Count > 0 && chatMessages[0].Role == ChatRole.System ? 1 : 0;
+        var insertAt = chatMessages.Count;
+        for (var i = chatMessages.Count - 1; i >= 0; i--)
+        {
+            if (chatMessages[i].Role == ChatRole.User)
+            {
+                insertAt = i;
+                break;
+            }
+        }
         chatMessages.Insert(insertAt, new ChatMessage(ChatRole.System, text));
     }
 
