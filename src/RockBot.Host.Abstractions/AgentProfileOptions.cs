@@ -75,4 +75,13 @@ public sealed class AgentProfileOptions
     /// Defaults to <c>"agent-name.md"</c>.
     /// </summary>
     public string AgentNamePath { get; set; } = "agent-name.md";
+
+    /// <summary>
+    /// Maximum number of entries retained in <c>tier-routing-log.jsonl</c>. The logger trims
+    /// the oldest entries on append once this cap is reached. Defaults to 1500 (~3 busy days
+    /// of history at typical volume); raised from the previous hardcoded 200 now that the
+    /// routing-review dream pass consumes a pre-aggregated digest whose prompt cost is
+    /// independent of entry count.
+    /// </summary>
+    public int TierRoutingLogMaxEntries { get; set; } = 1500;
 }

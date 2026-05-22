@@ -7,7 +7,9 @@ namespace RockBot.Host;
 
 /// <summary>
 /// Singleton. Appends tier-routing decisions to <c>{BasePath}/tier-routing-log.jsonl</c>
-/// (capped at 200 entries) and reads them back for the dream self-correction pass.
+/// and reads them back for the dream self-correction pass and the introspection MCP server.
+/// The retention cap is controlled by <see cref="AgentProfileOptions.TierRoutingLogMaxEntries"/>
+/// (default 1500); on append the oldest entries are trimmed once the cap is reached.
 /// </summary>
 public sealed class TierRoutingLogger
 {
@@ -20,6 +22,7 @@ public sealed class TierRoutingLogger
     };
 
     private readonly string _filePath;
+    private readonly int _maxEntries;
     private readonly SemaphoreSlim _writeLock = new(1, 1);
     private readonly ILogger<TierRoutingLogger> _logger;
 
@@ -32,12 +35,13 @@ public sealed class TierRoutingLogger
             basePath = Path.Combine(AppContext.BaseDirectory, basePath);
 
         _filePath = Path.Combine(basePath, "tier-routing-log.jsonl");
+        _maxEntries = Math.Max(1, profileOptions.Value.TierRoutingLogMaxEntries);
         _logger = logger;
     }
 
     /// <summary>
-    /// Appends a routing entry. Keeps at most 200 lines total (oldest evicted).
-    /// Fire-and-forget safe: exceptions are caught and logged.
+    /// Appends a routing entry. Keeps at most <see cref="AgentProfileOptions.TierRoutingLogMaxEntries"/>
+    /// lines total (oldest evicted). Fire-and-forget safe: exceptions are caught and logged.
     /// </summary>
     public async Task AppendAsync(TierRoutingEntry entry)
     {
@@ -57,9 +61,10 @@ public sealed class TierRoutingLogger
                 existingLines = existingLines.Where(l => !string.IsNullOrWhiteSpace(l)).ToArray();
             }
 
-            // Keep last 199 non-empty lines + append new line = max 200 total
-            var linesToKeep = existingLines.Length >= 199
-                ? existingLines[^199..]
+            // Keep last (maxEntries - 1) non-empty lines + append new line = at most maxEntries total
+            var keepCount = _maxEntries - 1;
+            var linesToKeep = existingLines.Length > keepCount
+                ? existingLines[^keepCount..]
                 : existingLines;
 
             var allLines = linesToKeep.Append(newLine);
