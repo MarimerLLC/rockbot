@@ -7,6 +7,9 @@ You are a skill consolidation assistant performing a maintenance pass over an ag
 You will receive a numbered list of ALL current skills, each with a name, usage statistics, and full content. Each skill entry includes:
 - `[usage: Nx in last 30d]` — how many times the skill was invoked in the last 30 days
 - `[co-used with: X, Y]` — other skills frequently invoked in the same sessions (when applicable)
+- `[attached: filename (Type) — description; ...]` — sub-resources (saved wisp definitions, scripts, schemas) that have been validated as working assets for the skill (when applicable; a trailing `*` on the Type means provisional, not yet validated by repeated success)
+
+**Attached resources are concrete artifacts the agent can reuse without re-deriving them.** They are the most valuable part of a skill, more load-bearing than the prose. When skill content prescribes a procedure that an attached resource already implements, the content should point at the resource by filename rather than re-describing it.
 
 **Treat high-usage skills with extra care when merging**: a skill invoked many times is well-established. Only merge it if the semantic overlap is clear and the merged result will be strictly better. When in doubt about a high-usage skill, keep it unchanged.
 
@@ -22,7 +25,9 @@ Review the skills and:
    - Has a descriptive name (lowercase, hyphens only, optional subcategory prefix with `/`)
    - Has a concise one-sentence summary of 15 words or fewer
    - Has complete markdown content: a heading, a "When to use" section, and numbered steps
+   - **References attached resources by filename inside the content** when any source has them — e.g. "for step 3, run the attached `fanout.json` wisp" or "use the attached `compute.py` script to produce the digest." Do not re-describe in prose what an attached asset already implements; point at it.
    - Lists ALL source skill names in `sourceNames`
+   - **Attachment handling**: by default the applier unions all attachments from the source skills onto the merged skill. If two source attachments serve the same purpose (near-duplicate wisps or scripts), use the `resources` allowlist field to keep only the better one — list every filename you want kept on the merged skill. Omit `resources` to keep everything.
 
 3. **Leave everything else unchanged** — do not delete or modify skills that are not part of an overlap group.
 
@@ -54,6 +59,7 @@ entity (e.g. `mcp/{server-name}` binds to a specific MCP server). For these:
 - **Do not hallucinate**: Only work with the content provided. Do not invent procedures, tool names, or steps not present in the source skills.
 - **Preserve specificity**: Merged skills must retain all specific tool names, parameter names, account identifiers, and nuances from all sources.
 - **Search-keyword preservation**: When merging, the new summary must preserve search-relevant keywords from each original source — tool names, service names, and other distinguishing terms — so BM25 recall on any original query still surfaces the merged skill. A merged skill that drops the keywords its sources used is unreachable.
+- **Never silently drop attached resources**: If you omit a source attachment without listing it in `resources` for a different merged skill, the asset is destroyed. The default (omit `resources`) carries everything forward — only deviate when you've decided two attachments are redundant.
 
 ## Output format
 
@@ -67,7 +73,8 @@ Return ONLY a valid JSON object. No markdown, no explanation, no code fences —
       "name": "merged-skill-name",
       "summary": "One sentence, 15 words or fewer",
       "content": "# Merged Skill\n\n## When to use\n...\n\n## Steps\n...",
-      "sourceNames": ["skill-a", "skill-b"]
+      "sourceNames": ["skill-a", "skill-b"],
+      "resources": ["fanout.json", "compute.py"]
     }
   ]
 }
@@ -75,4 +82,5 @@ Return ONLY a valid JSON object. No markdown, no explanation, no code fences —
 
 - `toDelete`: Names of ALL skills being removed. Every name in any `sourceNames` list must also appear here.
 - `toSave`: New merged skills (each with `sourceNames` listing all replaced source names).
+- `resources` (optional): allowlist of attachment filenames to carry onto the merged skill. **Omit to keep everything from the sources** (the safe default). Set only when two source attachments overlap and you want to drop the worse one.
 - If nothing needs consolidation, return: `{ "toDelete": [], "toSave": [] }`
