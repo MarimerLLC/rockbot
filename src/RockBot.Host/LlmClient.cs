@@ -106,9 +106,11 @@ internal sealed class LlmClient(
                 if (inputTokens > 0)
                 {
                     var cachePct = cachedInputTokens * 100.0 / inputTokens;
+                    var extra = UsageReader.DescribeAdditionalCounts(usage);
                     logger.LogInformation(
-                        "LLM usage: tier={Tier} model={ModelId} input={InputTokens} cached={CachedTokens} ({CachePct:F1}%) output={OutputTokens}",
-                        tier, modelId, inputTokens, cachedInputTokens, cachePct, outputTokens);
+                        "LLM usage: tier={Tier} model={ModelId} input={InputTokens} cached={CachedTokens} ({CachePct:F1}%) output={OutputTokens} additionalCounts=[{Extra}]",
+                        tier, modelId, inputTokens, cachedInputTokens, cachePct, outputTokens,
+                        string.IsNullOrEmpty(extra) ? "(none)" : extra);
                 }
             }
 
