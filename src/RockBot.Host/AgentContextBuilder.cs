@@ -472,7 +472,10 @@ public sealed class AgentContextBuilder(
                 skillList.Count, sessionId);
         }
 
-        // Per-turn skill BM25 recall
+        // Per-turn skill BM25 recall: rank-1 full body, ranks 2+ summary-only.
+        // Why: production tool-call logs show ~1% of tool calls are get_skill while every
+        // non-short turn pushes ~5 full bodies — most are unread. Rank-1 is usually the
+        // genuinely-relevant skill; ranks 2+ are noise the agent can pull on demand.
         {
             var newSkills = recalledSkills
                 .Where(s => skillRecallTracker.TryMarkAsRecalled(sessionId, s.Name))
@@ -481,13 +484,27 @@ public sealed class AgentContextBuilder(
             if (newSkills.Count > 0)
             {
                 var skillNames = string.Join(", ", newSkills.Select(s => s.Name));
-                foreach (var skill in newSkills)
+
+                var topSkill = newSkills[0];
+                chatMessages.Add(new ChatMessage(ChatRole.System,
+                    $"Skill: {topSkill.Name}\n{topSkill.Content}"));
+
+                if (newSkills.Count > 1)
                 {
-                    var skillText = $"Skill: {skill.Name}\n{skill.Content}";
-                    chatMessages.Add(new ChatMessage(ChatRole.System, skillText));
+                    var summaryLines = newSkills.Skip(1).Select(s =>
+                    {
+                        var summary = string.IsNullOrWhiteSpace(s.Summary)
+                            ? "(summary pending)"
+                            : s.Summary;
+                        return $"- {s.Name}: {summary}";
+                    });
+                    chatMessages.Add(new ChatMessage(ChatRole.System,
+                        "Other potentially relevant skills (call get_skill to load full instructions):\n" +
+                        string.Join("\n", summaryLines)));
                 }
+
                 logger.LogInformation(
-                    "Injected {Count} relevant skill(s) (BM25 recall) for session {SessionId}: {Skills}",
+                    "Injected {Count} skill(s) (BM25 recall: rank-1 full, ranks 2+ summary) for session {SessionId}: {Skills}",
                     newSkills.Count, sessionId, skillNames);
 
                 var seeAlsoNames = newSkills
