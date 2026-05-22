@@ -7,7 +7,6 @@
   <Folder Name="/mcp-servers/">
     <Project Path="src/McpServer.Introspection/McpServer.Introspection.csproj" />
     <Project Path="src/McpServer.OpenRouter/McpServer.OpenRouter.csproj" />
-    <Project Path="src/McpServer.RoutingStats/McpServer.RoutingStats.csproj" />
 <Project Path="src/McpServer.TodoApp/McpServer.TodoApp.csproj" />
   </Folder>
   <Folder Name="/src/">
