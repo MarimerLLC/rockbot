@@ -22,6 +22,7 @@ Review them and:
    - Preserve all existing correct steps and specifics — only change what caused the problem
    - Keep the same name and subcategory structure as the original
    - **If the skill has attachments, rewrite affected steps to reference them by filename** — e.g. "for step 3, run the attached `fanout.json` wisp via `get_skill_resource` then `spawn_wisps`" rather than "build a wisp definition that does X." Attachments preserve across the optimize pass by default; you do not need to list them.
+   - **If your rewrite orphans an attachment** (e.g. you narrowed the skill's scope and an existing attachment no longer applies to any step), do NOT remove it via the `resources` allowlist. Instead add a one-line NOTE in the rewritten content that flags the mismatch and documents the asset's original purpose — e.g. "NOTE: the attached `fanout.json` wisp covers per-account calendar enumeration, which is out of scope for this narrowed skill; the asset is retained for possible future repurposing onto a calendar-focused skill." Validated assets are concrete working code that a later pass (or another skill) can relocate; silently dropping them is far worse than leaving an unused attachment.
 
 3. **Leave skills unchanged** if the failure is not clearly addressable by better instructions (e.g. the failure was caused by a transient external error or user input that no skill could prevent).
 

@@ -28,6 +28,7 @@ Review the skills and:
    - **References attached resources by filename inside the content** when any source has them — e.g. "for step 3, run the attached `fanout.json` wisp" or "use the attached `compute.py` script to produce the digest." Do not re-describe in prose what an attached asset already implements; point at it.
    - Lists ALL source skill names in `sourceNames`
    - **Attachment handling**: by default the applier unions all attachments from the source skills onto the merged skill. If two source attachments serve the same purpose (near-duplicate wisps or scripts), use the `resources` allowlist field to keep only the better one — list every filename you want kept on the merged skill. Omit `resources` to keep everything.
+   - **Don't use `resources` to drop scope-orphaned attachments.** If a source's attachment doesn't fit the merged skill's scope (e.g., a calendar-specific wisp inherited from a source that gets merged into a heartbeat-only skill), carry it forward anyway (default behavior) and add a one-line NOTE in the merged content flagging the mismatch and the asset's original purpose — e.g., "NOTE: the attached `fanout.json` wisp covers per-account calendar enumeration, retained from the merged sources for possible repurposing onto a calendar-focused skill." The `resources` allowlist is for truly redundant duplicates only; validated assets are concrete work that a later pass can relocate.
 
 3. **Leave everything else unchanged** — do not delete or modify skills that are not part of an overlap group.
 
