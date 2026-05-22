@@ -7,12 +7,14 @@ namespace RockBot.Host.Tests;
 [TestClass]
 public class TierRoutingLoggerTests
 {
-    private static (TierRoutingLogger logger, string dir) CreateLogger()
+    private static (TierRoutingLogger logger, string dir) CreateLogger(int? maxEntries = null)
     {
         var dir = Path.Combine(Path.GetTempPath(), "rb-routing-" + Path.GetRandomFileName());
         Directory.CreateDirectory(dir);
+        var options = new AgentProfileOptions { BasePath = dir };
+        if (maxEntries.HasValue) options.TierRoutingLogMaxEntries = maxEntries.Value;
         var logger = new TierRoutingLogger(
-            Options.Create(new AgentProfileOptions { BasePath = dir }),
+            Options.Create(options),
             NullLogger<TierRoutingLogger>.Instance);
         return (logger, dir);
     }
@@ -62,6 +64,36 @@ public class TierRoutingLoggerTests
             var entries = await logger.ReadRecentAsync();
             Assert.AreEqual(1, entries.Count);
             Assert.IsNull(entries[0].ModelId);
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    [TestMethod]
+    public async Task AppendAsync_RespectsConfigurableCap_EvictsOldestEntries()
+    {
+        // With max=5, writing 7 entries should leave only the most recent 5.
+        var (logger, dir) = CreateLogger(maxEntries: 5);
+        try
+        {
+            for (var i = 0; i < 7; i++)
+            {
+                await logger.AppendAsync(new TierRoutingEntry
+                {
+                    Timestamp = DateTimeOffset.UtcNow.AddSeconds(i),
+                    PromptPreview = $"entry-{i}",
+                    Tier = ModelTier.Balanced,
+                    Context = "user-message",
+                    ComplexityScore = 0.30,
+                });
+            }
+
+            var entries = await logger.ReadRecentAsync(maxResults: 100);
+            Assert.AreEqual(5, entries.Count, "Cap should have evicted the oldest entries");
+            Assert.AreEqual("entry-2", entries[0].PromptPreview);
+            Assert.AreEqual("entry-6", entries[^1].PromptPreview);
         }
         finally
         {

@@ -2452,6 +2452,10 @@ internal sealed class DreamService : IHostedService, IDisposable
         if (_tierRoutingLogger is null || !_options.TierRoutingReviewEnabled)
             return;
 
+        // Pinned at 200 even though the cap is now configurable (default 1500). The analyzer's
+        // prompt cost is independent of entry count, so we could read more — but more entries
+        // also mean more file-IO and more cluster permutations, and 200 has been shown to
+        // surface every detection rule reliably. Bump if needed; do not silently widen.
         var entries = await _tierRoutingLogger.ReadRecentAsync(200);
         if (entries.Count < 10)
         {

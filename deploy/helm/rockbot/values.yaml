@@ -15,6 +15,11 @@ agent:
   # e.g. "America/Chicago", "Europe/London", "Asia/Tokyo"
   # Defaults to UTC (the k8s node timezone) if unset.
   timezone: "America/Chicago"
+  # Retention cap for tier-routing-log.jsonl (the routing-decision telemetry log
+  # consumed by the dream self-correction pass and the introspection MCP server's
+  # get_routing_summary tool). Once the cap is reached the logger trims the oldest
+  # entries on every append. ~500 bytes per entry, so 1500 ≈ 750 KB on disk.
+  tierRoutingLogMaxEntries: 1500
   resources:
     requests:
       cpu: 500m
