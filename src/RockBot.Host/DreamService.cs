@@ -70,6 +70,7 @@ internal sealed class DreamService : IHostedService, IDisposable
     private string? _toolSuccessLearningDirective;
     private string? _contradictionSweepDirective;
     private string? _repairTicketCreationDirective;
+    private IReadOnlyList<LlmPricingRow>? _pricingRows;
 
     public DreamService(
         ILongTermMemory memory,
@@ -318,6 +319,29 @@ internal sealed class DreamService : IHostedService, IDisposable
                 _logger.LogDebug("DreamService: tier routing directive not found at {Path}; using built-in", tierRoutingDirectivePath);
             else
                 _logger.LogDebug("DreamService: loaded tier routing directive from {Path}", tierRoutingDirectivePath);
+
+            // Load the pricing table so the routing analyzer can compute USD cost.
+            // Optional — if the file is missing or malformed, the analyzer returns null
+            // cost fields and the LLM proceeds without that signal. Reloaded on every
+            // LoadDirectives call so operator edits to llm-pricing.json take effect at
+            // the next dream cycle without restarting the agent.
+            var pricingPath = ResolvePath("llm-pricing.json", _profileOptions.BasePath);
+            if (File.Exists(pricingPath))
+            {
+                try
+                {
+                    var pricingJson = File.ReadAllText(pricingPath);
+                    _pricingRows = JsonSerializer.Deserialize<List<LlmPricingRow>>(pricingJson, JsonOptions);
+                    if (initialLoad)
+                        _logger.LogInformation(
+                            "DreamService: loaded {Count} pricing rows from {Path}",
+                            _pricingRows?.Count ?? 0, pricingPath);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "DreamService: failed to parse pricing file {Path}; cost analysis will be skipped", pricingPath);
+                }
+            }
         }
 
         if (_options.SequenceSkillDetectionEnabled && _toolCallLog is not null && _skillStore is not null)
@@ -2442,44 +2466,46 @@ internal sealed class DreamService : IHostedService, IDisposable
             entries.Count);
 
         var configPath = ResolvePath("tier-selector.json", _profileOptions.BasePath);
-
-        var userMessage = new StringBuilder();
-        userMessage.AppendLine("Recent tier-routing decisions to review:");
-        userMessage.AppendLine();
-        foreach (var e in entries)
+        TierSelectorConfig? currentConfig = null;
+        if (File.Exists(configPath))
         {
-            userMessage.Append(
-                $"[{e.Timestamp:O}] tier={e.Tier} score={e.ComplexityScore:F3} context={e.Context}");
-
-            if (!string.IsNullOrEmpty(e.ModelId))
-                userMessage.Append($" model={e.ModelId}");
-            if (e.MatchedHighKeywords.Count > 0)
-                userMessage.Append($" highKeywords=[{string.Join(",", e.MatchedHighKeywords)}]");
-            if (e.MatchedLowKeywords.Count > 0)
-                userMessage.Append($" lowKeywords=[{string.Join(",", e.MatchedLowKeywords)}]");
-            if (e.PostInjectionTokenEstimate.HasValue)
-                userMessage.Append($" postInjectionTokens={e.PostInjectionTokenEstimate}");
-            if (e.InputTokens.HasValue)
-                userMessage.Append($" inputTokens={e.InputTokens}");
-            if (e.OutputTokens.HasValue)
-                userMessage.Append($" outputTokens={e.OutputTokens}");
-            if (e.LatencyMs.HasValue)
-                userMessage.Append($" latencyMs={e.LatencyMs}");
-            if (e.ToolCallCount.HasValue)
-                userMessage.Append($" toolCalls={e.ToolCallCount}");
-            if (e.ToolsUsed is { Count: > 0 })
-                userMessage.Append($" tools=[{string.Join(",", e.ToolsUsed)}]");
-            if (e.IsFallbackTriggered)
-                userMessage.Append(" fallback=true");
-
-            userMessage.AppendLine($" prompt=\"{e.PromptPreview}\"");
+            try
+            {
+                var configJson = await File.ReadAllTextAsync(configPath);
+                currentConfig = JsonSerializer.Deserialize<TierSelectorConfig>(configJson, JsonOptions);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "DreamService: failed to parse tier-selector.json at {Path}", configPath);
+            }
         }
 
-        if (File.Exists(configPath))
+        // Pre-aggregate the raw entries into a structured analysis so the LLM
+        // works against deterministic statistics instead of recomputing them.
+        // This decouples prompt size from entry count — N entries collapse to ~M clusters.
+        var analysis = TierRoutingAnalyzer.Analyze(entries, currentConfig, _pricingRows);
+
+        var analysisJson = JsonSerializer.Serialize(analysis, new JsonSerializerOptions
+        {
+            PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+            WriteIndented = true,
+            Converters = { new System.Text.Json.Serialization.JsonStringEnumConverter() }
+        });
+
+        var userMessage = new StringBuilder();
+        userMessage.AppendLine("Pre-aggregated tier-routing analysis for review:");
+        userMessage.AppendLine();
+        userMessage.AppendLine(analysisJson);
+
+        if (currentConfig is not null)
         {
             userMessage.AppendLine();
             userMessage.AppendLine("Current tier-selector.json:");
-            userMessage.AppendLine(await File.ReadAllTextAsync(configPath));
+            userMessage.AppendLine(JsonSerializer.Serialize(currentConfig, new JsonSerializerOptions
+            {
+                PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+                WriteIndented = true
+            }));
         }
 
         var result = await InvokeDreamPassAsync<TierRoutingReviewResultDto>(
@@ -4158,30 +4184,48 @@ internal sealed class DreamService : IHostedService, IDisposable
 
     private const string BuiltInTierRoutingDirective = """
         You are a tier-routing self-correction assistant for an LLM agent framework.
-        Review the routing decisions and telemetry provided. Each entry includes:
-        - tier: the selected model tier (Low / Balanced / High)
-        - score: the pre-injection complexity score [0,1] that drove the decision
-        - highKeywords / lowKeywords: signals matched in the raw user prompt (Option A classification)
-        - postInjectionTokens: estimated tokens after memory recall and tool guide injection
-        - inputTokens / outputTokens: actual LLM token usage
-        - toolCalls / tools: how many tool calls fired and which tools
-        - latencyMs: request latency
-        - fallback=true: model fallback was triggered by quota/API error — exclude from quality signals
-        - prompt: first 150 chars of the user prompt
+        The user message is a pre-aggregated JSON analysis (schemaVersion: 1) — NOT a stream
+        of raw routing entries. The analyzer has already done all the statistical heavy lifting;
+        your job is judgment.
 
-        Detection patterns to look for:
-        1. PANIC ESCALATION: A Low-tier session triggered many tool calls (toolCalls ≥ 3) — the model
-           likely struggled. Prompts of that shape should be routed Balanced.
-        2. TOKEN SURPRISE: postInjectionTokens >> complexity score (e.g., score < 0.20 but
-           postInjectionTokens > 2000). The pre-injection classification systematically underestimated
-           the actual context cost. Adjust thresholds or add keywords for that prompt shape.
-        3. CAPABILITY FINGERPRINTS: Recurring prompt shapes consistently mis-routed. Identify
-           keywords in those prompts that should be added to highSignalKeywords or lowSignalKeywords.
-        4. COST-AWARE CORRECTION: If a class of prompts routed Low produces many tool calls and high
-           token usage, routing them to Balanced upfront is more efficient.
+        Refuse to proceed if schemaVersion != 1.
 
-        IMPORTANT: Exclude sessions with fallback=true from all quality-signal reasoning — those
-        represent infrastructure errors, not genuine routing quality failures.
+        The analysis JSON contains:
+        - globalStats: per-tier counts, percentages, avg latency/tokens, fallback rate
+        - clusters: groups of similar routing decisions (same keyword signature + tier + tool-call bucket)
+        - flaggedClusters: clusters that tripped a deterministic detection rule
+          (panicEscalation | tokenSurprise | lowOutputAtHigh), each with a rationale and
+          projected cost at the current and alternate tier when pricing is available
+        - keywordCandidates: words appearing disproportionately in High- or Low-tier prompts
+          (frequencyRatio ≥ 3, count ≥ 5), already filtered to exclude words that are
+          currently matched keywords
+        - thresholdScans: "what if" projections showing how many entries would flip tier if
+          lowCeiling or balancedCeiling moved by ±0.05, with projected USD cost delta
+        - projectedCost: total USD spend across the window plus a per-tier breakdown
+        - fallbackExcludedCount: fallback-triggered entries are already excluded from
+          clusters/flagged/candidates — you don't need to filter them yourself
+
+        Your three jobs:
+
+        1. VALIDATE flagged clusters. For each flagged cluster, decide:
+           - Is this a true misroute, or noise? (samplePrompt + count + rationale guide this.)
+           - If true, the alternateTier field suggests the corrective direction.
+
+        2. FILTER keyword candidates. The analyzer surfaces statistical candidates; you apply
+           the cognitive-complexity-vs-topic rule. Apply this test BEFORE accepting any candidate:
+           "Would a prompt containing ONLY this word and a simple verb be complex?"
+           If "check my [keyword]" or "list the [keyword]" would be simple, the word is a TOPIC
+           indicator (calendar, email, todo, schedule, flight) and MUST NOT be added — topic
+           keyword pollution is the #1 cause of over-routing to High tier.
+           Good high-signal keywords describe REASONING DIFFICULTY: analyze, architect, trade-off,
+           compare and contrast, threat model, prove, optimize.
+
+        3. PICK threshold shifts from thresholdScans, if any. The scan tells you exactly how
+           many entries would flip and the projected cost delta. Apply a shift only when:
+           - At least ~5 entries would flip in the desired direction
+           - The cost delta is favorable (or you have an explicit quality reason)
+           Adjustments must be small (±0.05). Bounds: lowCeiling in [0.05, 0.30],
+           balancedCeiling in [lowCeiling+0.10, 0.70].
 
         Return ONLY a JSON object in this exact format:
         {
