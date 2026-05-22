@@ -94,18 +94,30 @@ public sealed class SkillTools
                 Timestamp: DateTimeOffset.UtcNow));
         }
 
-        if (skill.Manifest is { Count: > 0 } manifest)
-        {
-            var sb = new StringBuilder(skill.Content);
-            sb.AppendLine();
-            sb.AppendLine("---");
-            sb.AppendLine($"**Resources** (fetch with `get_skill_resource(\"{name}\", \"<filename>\")`):");
-            foreach (var entry in manifest)
-                sb.AppendLine($"- `{entry.Filename}` ({entry.Type}): {entry.Description}");
-            return sb.ToString().TrimEnd();
-        }
+        var manifestBlock = FormatManifestBlock(name, skill.Manifest);
+        if (manifestBlock.Length > 0)
+            return skill.Content + "\n" + manifestBlock;
 
         return skill.Content;
+    }
+
+    /// <summary>
+    /// Renders the "Resources" block listing attached assets for a skill, in the same
+    /// format <see cref="GetSkill"/> appends to its response. Returns empty when the
+    /// manifest is null or empty. Used by the auto-inject paths (BM25 rank-1 push) so
+    /// the agent sees attached wisps/scripts without a get_skill round-trip.
+    /// </summary>
+    public static string FormatManifestBlock(string skillName, IReadOnlyList<SkillResource>? manifest)
+    {
+        if (manifest is null || manifest.Count == 0)
+            return string.Empty;
+
+        var sb = new StringBuilder();
+        sb.AppendLine("---");
+        sb.AppendLine($"**Resources** (fetch with `get_skill_resource(\"{skillName}\", \"<filename>\")`):");
+        foreach (var entry in manifest)
+            sb.AppendLine($"- `{entry.Filename}` ({entry.Type}): {entry.Description}");
+        return sb.ToString().TrimEnd();
     }
 
     [Description("Fetch a single sub-resource file from a skill's resource folder. " +

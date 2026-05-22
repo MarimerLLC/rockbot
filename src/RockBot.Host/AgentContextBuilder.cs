@@ -486,8 +486,11 @@ public sealed class AgentContextBuilder(
                 var skillNames = string.Join(", ", newSkills.Select(s => s.Name));
 
                 var topSkill = newSkills[0];
-                chatMessages.Add(new ChatMessage(ChatRole.System,
-                    $"Skill: {topSkill.Name}\n{topSkill.Content}"));
+                var topBody = $"Skill: {topSkill.Name}\n{topSkill.Content}";
+                var topManifest = SkillTools.FormatManifestBlock(topSkill.Name, topSkill.Manifest);
+                if (topManifest.Length > 0)
+                    topBody += "\n" + topManifest;
+                chatMessages.Add(new ChatMessage(ChatRole.System, topBody));
 
                 if (newSkills.Count > 1)
                 {
@@ -1059,8 +1062,13 @@ public sealed class AgentContextBuilder(
             if (newSkills.Count > 0)
             {
                 foreach (var skill in newSkills)
-                    chatMessages.Add(new ChatMessage(ChatRole.System,
-                        $"Skill: {skill.Name}\n{skill.Content}"));
+                {
+                    var body = $"Skill: {skill.Name}\n{skill.Content}";
+                    var manifestBlock = SkillTools.FormatManifestBlock(skill.Name, skill.Manifest);
+                    if (manifestBlock.Length > 0)
+                        body += "\n" + manifestBlock;
+                    chatMessages.Add(new ChatMessage(ChatRole.System, body));
+                }
                 logger.LogInformation(
                     "Worker {SessionId}: injected {Count} skill(s) via BM25 recall",
                     sessionId, newSkills.Count);
