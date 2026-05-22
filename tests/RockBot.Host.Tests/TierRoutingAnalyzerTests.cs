@@ -242,6 +242,25 @@ public class TierRoutingAnalyzerTests
     }
 
     [TestMethod]
+    public void BuildThresholdScans_AtExactBoundary_NoFloatingPointFlips()
+    {
+        // Regression: 0.15 - 0.05 yields 0.09999999999999998 as a double, which made
+        // entries with score 0.10 falsely appear to flip when lowCeiling shifted by -0.05.
+        // After rounding the shifted threshold to 4 decimals, score 0.10 entries should
+        // remain Low (0.10 <= 0.10) and only entries strictly above the new ceiling flip.
+        var entries = new[]
+        {
+            MakeEntry(tier: ModelTier.Low, score: 0.10),  // at the new boundary — should NOT flip
+            MakeEntry(tier: ModelTier.Low, score: 0.10),  // at the new boundary — should NOT flip
+            MakeEntry(tier: ModelTier.Low, score: 0.11),  // above the new boundary — should flip
+        };
+
+        var result = TierRoutingAnalyzer.Analyze(entries);
+        var lowCeilingDown = result.ThresholdScans.First(s => s.Threshold == "lowCeiling" && s.Delta < 0);
+        Assert.AreEqual(1, lowCeilingDown.EntriesFlipped, "Only the score=0.11 entry should flip after rounding the shifted threshold");
+    }
+
+    [TestMethod]
     public void BuildThresholdScans_NoCostDelta_WhenPricingMissing()
     {
         var entries = new[]

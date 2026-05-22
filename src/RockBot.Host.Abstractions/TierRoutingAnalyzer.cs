@@ -343,8 +343,12 @@ public static class TierRoutingAnalyzer
         IReadOnlyList<LlmPricingRow>? pricing,
         IReadOnlyDictionary<ModelTier, string?>? tierModelMap)
     {
-        var newLow = threshold == "lowCeiling" ? lowCeiling + delta : lowCeiling;
-        var newBal = threshold == "balancedCeiling" ? balancedCeiling + delta : balancedCeiling;
+        // Round shifted thresholds to 4 decimals — bare double subtraction yields
+        // 0.15 - 0.05 = 0.09999999999999998, which makes boundary entries (score 0.10)
+        // appear to flip when they wouldn't with the actual selector's <=  comparison.
+        // Config values are at most 2 decimal places, so 4 is plenty of precision.
+        var newLow = threshold == "lowCeiling" ? Math.Round(lowCeiling + delta, 4) : lowCeiling;
+        var newBal = threshold == "balancedCeiling" ? Math.Round(balancedCeiling + delta, 4) : balancedCeiling;
         var flips = new List<(TierRoutingEntry e, ModelTier from, ModelTier to)>();
 
         // Compare simulated(original) vs simulated(shifted) — both apply pure threshold
