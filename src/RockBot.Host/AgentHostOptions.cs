@@ -70,4 +70,15 @@ public sealed class AgentHostOptions
     /// trimmer used to discard. Clamped to [0.0, 1.0] at use time.
     /// </summary>
     public double ToolResultStashHeadTailRatio { get; set; } = 0.6;
+
+    /// <summary>
+    /// Soft context-size watermark in tokens. When the running message list exceeds
+    /// this size before an LLM call, large tool results are trimmed into the WM stash
+    /// proactively — without waiting for a provider-side context-overflow error.
+    /// Default 40,000 tokens (≈144,000 chars at the 4-chars-per-token estimate, which
+    /// trims to a ~36k-token effective ceiling because the trimmer targets 90% of
+    /// the char budget). Set to 0 to disable proactive trimming and fall back to the
+    /// legacy behaviour (trim only after a 400 overflow has been observed).
+    /// </summary>
+    public int ToolResultStashWatermarkTokens { get; set; } = 40_000;
 }

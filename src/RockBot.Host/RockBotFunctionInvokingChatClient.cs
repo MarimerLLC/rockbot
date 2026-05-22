@@ -64,6 +64,36 @@ public class RockBotFunctionInvokingChatClient : FunctionInvokingChatClient
         _logger.LogInformation("Executing tool {Name}(callId={CallId}, args={Args})",
             callContent.Name, callContent.CallId, argsSummary ?? "(none)");
 
+        // Temporary diagnostic — per-tool-call context size for patrol/* sessions so we
+        // can see growth across FICC's internal iterations (this override is the only
+        // observable boundary inside FunctionInvokingChatClient's tool loop).
+        if (context.Messages is IList<ChatMessage> ficcMessages)
+        {
+            AgentLoopRunner.LogContextSize(
+                ficcMessages,
+                $"ficc-pre-{callContent.Name}",
+                ToolCallSessionContext.SessionId,
+                _logger);
+        }
+
+        // Soft watermark trim inside FICC's inner loop. Without this, long tool-heavy
+        // subagent runs grow the message list from ~17k to 100k+ tokens entirely within
+        // a single outer GetResponseAsync call, and the outer-boundary trim never fires.
+        // The 'pre-invoke' point is the right hook because (N-1) prior tool results have
+        // already been appended to context.Messages by this point — we trim the tail
+        // accumulated so far before letting FICC append yet another large result.
+        if (context.Messages is List<ChatMessage> trimList
+            && _hostOptions.Value.ToolResultStashWatermarkTokens is int watermarkTokens
+            and > 0)
+        {
+            int effectiveLimit = _knownContextLimit is int hardLimit
+                ? Math.Min(watermarkTokens, hardLimit)
+                : watermarkTokens;
+            await TrimLargeToolResultsAsync(trimList, effectiveLimit);
+            if (AgentLoopStashContext.Value is { } stashStateInner)
+                AgentLoopRunner.RefreshStashRegistryContext(trimList, stashStateInner.Registry);
+        }
+
         using var activity = ToolDiagnostics.Source.StartActivity(
             $"tool.invoke {callContent.Name}", ActivityKind.Internal);
         activity?.SetTag("rockbot.tool.name", callContent.Name);
@@ -253,7 +283,19 @@ public class RockBotFunctionInvokingChatClient : FunctionInvokingChatClient
 
         try
         {
-        if (_knownContextLimit is int preLimit)
+        // Soft watermark: trim proactively when the message list exceeds
+        // ToolResultStashWatermarkTokens, without waiting for a provider 400.
+        // Falls back to _knownContextLimit when the watermark is disabled or larger
+        // than the learned hard limit. (issue: context-bloat investigation)
+        var watermark = _hostOptions.Value.ToolResultStashWatermarkTokens;
+        int? effectiveLimit = (watermark, _knownContextLimit) switch
+        {
+            (> 0, int hard) => Math.Min(watermark, hard),
+            (> 0, null) => watermark,
+            (_, int hard) => hard,
+            _ => null
+        };
+        if (effectiveLimit is int preLimit)
             await TrimLargeToolResultsAsync(messageList, preLimit);
 
         ChatResponse response;
@@ -327,16 +369,27 @@ public class RockBotFunctionInvokingChatClient : FunctionInvokingChatClient
                 {
                     var inputTokens = summaryUsage.InputTokenCount ?? 0;
                     var outputTokens = summaryUsage.OutputTokenCount ?? 0;
+                    var cachedInputTokens = UsageReader.GetCachedInputTokens(summaryUsage);
                     var modelTag = new KeyValuePair<string, object?>("rockbot.llm.model", summaryModelId);
                     if (summaryUsage.InputTokenCount.HasValue)
                         HostDiagnostics.LlmTokenInput.Add(inputTokens, modelTag);
                     if (summaryUsage.OutputTokenCount.HasValue)
                         HostDiagnostics.LlmTokenOutput.Add(outputTokens, modelTag);
+                    if (cachedInputTokens > 0)
+                        HostDiagnostics.LlmTokenInputCached.Add(cachedInputTokens, modelTag);
                     var costUsd = _costEstimator.EstimateCost(summaryModelId, inputTokens, outputTokens);
                     if (costUsd > 0)
                     {
                         HostDiagnostics.LlmCostUsd.Add(costUsd, modelTag);
                         HostDiagnostics.LlmCostPerRequest.Record(costUsd, modelTag);
+                    }
+
+                    if (inputTokens > 0)
+                    {
+                        var cachePct = cachedInputTokens * 100.0 / inputTokens;
+                        _logger.LogInformation(
+                            "Summary-follow-up usage: model={ModelId} input={InputTokens} cached={CachedTokens} ({CachePct:F1}%) output={OutputTokens}",
+                            summaryModelId, inputTokens, cachedInputTokens, cachePct, outputTokens);
                     }
                 }
 

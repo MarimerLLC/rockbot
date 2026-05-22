@@ -655,6 +655,8 @@ public sealed partial class AgentLoopRunner(
             logger.LogInformation("Added pre-fetched first response to context for native path");
         }
 
+        LogContextBreakdown(chatMessages, "native-entry", sessionId, logger);
+
         ChatResponse response;
         try
         {
@@ -671,12 +673,28 @@ public sealed partial class AgentLoopRunner(
         // Append response messages to chatMessages so re-prompts have full tool-call history.
         chatMessages.AddRange(response.Messages);
 
+        LogContextBreakdown(chatMessages, "native-exit", sessionId, logger);
+
         var tierTag = new KeyValuePair<string, object?>("rockbot.llm.tier", tier.ToString());
-        HostDiagnostics.TurnTokensInput.Record(response.Usage?.InputTokenCount ?? 0, tierTag);
-        HostDiagnostics.TurnTokensOutput.Record(response.Usage?.OutputTokenCount ?? 0, tierTag);
+        var nativeInputTokens = response.Usage?.InputTokenCount ?? 0;
+        var nativeOutputTokens = response.Usage?.OutputTokenCount ?? 0;
+        var nativeCachedInputTokens = response.Usage is { } nativeUsage
+            ? UsageReader.GetCachedInputTokens(nativeUsage)
+            : 0;
+        HostDiagnostics.TurnTokensInput.Record(nativeInputTokens, tierTag);
+        HostDiagnostics.TurnTokensOutput.Record(nativeOutputTokens, tierTag);
+        HostDiagnostics.TurnTokensInputCached.Record(nativeCachedInputTokens, tierTag);
         HostDiagnostics.TurnToolCalls.Record(
             response.Messages.SelectMany(m => m.Contents.OfType<FunctionCallContent>()).Count(),
             tierTag);
+
+        if (nativeInputTokens > 0)
+        {
+            var cachePct = nativeCachedInputTokens * 100.0 / nativeInputTokens;
+            logger.LogInformation(
+                "Native loop usage: tier={Tier} input={InputTokens} cached={CachedTokens} ({CachePct:F1}%) output={OutputTokens}",
+                tier, nativeInputTokens, nativeCachedInputTokens, cachePct, nativeOutputTokens);
+        }
 
         var nativeFinalText = ExtractAssistantText(response);
         if (LoopDiagnosticsContext.Value is { } diagNative
@@ -883,7 +901,21 @@ public sealed partial class AgentLoopRunner(
                 var stashState = AgentLoopStashContext.Value
                     ?? throw new InvalidOperationException("AgentLoopStashContext was not initialised — RunAsync must set it before invoking the loop.");
 
-                if (_knownContextLimit is int preLimit)
+                // Soft watermark: trim proactively when the running message list exceeds
+                // ToolResultStashWatermarkTokens, even if the provider hasn't yet returned
+                // a 400 overflow. Falls back to _knownContextLimit if the watermark is
+                // disabled or larger than the learned hard limit. Without this, long
+                // tool-heavy subagent loops climb to 100k+ tokens before any trim fires
+                // (issue: context-bloat investigation).
+                var watermark = hostOptions.Value.ToolResultStashWatermarkTokens;
+                int? effectiveLimit = (watermark, _knownContextLimit) switch
+                {
+                    (> 0, int hard) => Math.Min(watermark, hard),
+                    (> 0, null) => watermark,
+                    (_, int hard) => hard,
+                    _ => null
+                };
+                if (effectiveLimit is int preLimit)
                     await TrimLargeToolResultsAsync(chatMessages, preLimit, sessionId, stashState);
 
                 // Refresh the stash registry system message so the model sees the latest
@@ -891,6 +923,8 @@ public sealed partial class AgentLoopRunner(
                 // LLM call. Matches the RefreshTaskListContext pattern: rebuilt from
                 // in-memory state, idempotent.
                 RefreshStashRegistryContext(chatMessages, stashState.Registry);
+
+                LogContextBreakdown(chatMessages, $"text-iter-{iteration + 2}", sessionId, logger);
 
                 logger.LogInformation("Calling LLM — iteration {Iteration} ({MessageCount} messages in context)",
                     iteration + 2, chatMessages.Count);
@@ -1577,13 +1611,111 @@ public sealed partial class AgentLoopRunner(
         return summary is { Length: > MaxLen } ? summary[..MaxLen] + "…" : summary;
     }
 
-    private static int EstimateMessageChars(ChatMessage m) =>
+    internal static int EstimateMessageChars(ChatMessage m) =>
         m.Contents.Sum(static c => c switch
         {
             TextContent tc => tc.Text?.Length ?? 0,
             FunctionResultContent frc => frc.Result?.ToString()?.Length ?? 0,
             _ => 50
         });
+
+    /// <summary>
+    /// Temporary diagnostic (issue: context-bloat investigation) — emits a per-LLM-call
+    /// breakdown of the current message list for scheduled-task sessions only. Categorises
+    /// by role, lists the top-15 largest messages with a short preview, and reports
+    /// estimated tokens. Gated on <paramref name="sessionId"/> starting with <c>patrol/</c>
+    /// so user-session logs are unaffected. Remove after the bloat root cause is identified.
+    /// </summary>
+    internal static void LogContextBreakdown(
+        IList<ChatMessage> messages,
+        string label,
+        string? sessionId,
+        ILogger logger)
+    {
+        if (sessionId is null
+            || !(sessionId.StartsWith("patrol/", StringComparison.Ordinal)
+                 || sessionId.StartsWith("subagent-", StringComparison.Ordinal)
+                 || sessionId.StartsWith("worker-", StringComparison.Ordinal)))
+            return;
+        if (!logger.IsEnabled(LogLevel.Information))
+            return;
+
+        var totalChars = 0;
+        var byRole = new Dictionary<string, (int Count, int Chars)>(StringComparer.Ordinal);
+        var entries = new List<(int Idx, string Role, int Chars, string Preview)>(messages.Count);
+
+        for (var i = 0; i < messages.Count; i++)
+        {
+            var m = messages[i];
+            var chars = EstimateMessageChars(m);
+            totalChars += chars;
+            var role = m.Role.Value;
+            if (!byRole.TryGetValue(role, out var agg)) agg = (0, 0);
+            byRole[role] = (agg.Count + 1, agg.Chars + chars);
+
+            string preview;
+            var fc = m.Contents.OfType<FunctionCallContent>().FirstOrDefault();
+            var fr = m.Contents.OfType<FunctionResultContent>().FirstOrDefault();
+            if (fc is not null)
+            {
+                preview = $"call:{fc.Name}({fc.CallId})";
+            }
+            else if (fr is not null)
+            {
+                preview = $"result:{fr.CallId}";
+            }
+            else
+            {
+                var text = (m.Text ?? string.Empty).Replace('\n', ' ').Replace('\r', ' ');
+                preview = text.Length > 100 ? text[..100] : text;
+            }
+            entries.Add((i, role, chars, preview));
+        }
+
+        logger.LogInformation(
+            "ContextBreakdown[{Label}] session={Session} msgs={Count} chars={Chars:N0} ~tokens={Tokens:N0}",
+            label, sessionId, messages.Count, totalChars, totalChars / 4);
+
+        foreach (var kv in byRole.OrderByDescending(static kv => kv.Value.Chars))
+        {
+            logger.LogInformation(
+                "  ByRole {Role,-10} {Count,3} msgs  {Chars,9:N0} chars  ~{Tokens,7:N0} tok  ({Pct,5:F1}%)",
+                kv.Key, kv.Value.Count, kv.Value.Chars, kv.Value.Chars / 4,
+                totalChars > 0 ? 100.0 * kv.Value.Chars / totalChars : 0);
+        }
+
+        foreach (var e in entries.OrderByDescending(static x => x.Chars).Take(15))
+        {
+            logger.LogInformation(
+                "  Msg[{Idx,3}] {Role,-10} {Chars,8:N0} chars  {Preview}",
+                e.Idx, e.Role, e.Chars, e.Preview);
+        }
+    }
+
+    /// <summary>
+    /// Temporary diagnostic — compact one-line size summary for use inside tight loops
+    /// where the full breakdown would be too verbose (e.g. between tool invocations
+    /// inside the native FICC loop). Gated like <see cref="LogContextBreakdown"/>.
+    /// </summary>
+    internal static void LogContextSize(
+        IList<ChatMessage> messages,
+        string label,
+        string? sessionId,
+        ILogger logger)
+    {
+        if (sessionId is null
+            || !(sessionId.StartsWith("patrol/", StringComparison.Ordinal)
+                 || sessionId.StartsWith("subagent-", StringComparison.Ordinal)
+                 || sessionId.StartsWith("worker-", StringComparison.Ordinal)))
+            return;
+        if (!logger.IsEnabled(LogLevel.Information))
+            return;
+
+        var totalChars = messages.Sum(EstimateMessageChars);
+        logger.LogInformation(
+            "ContextSize[{Label}] session={Session} msgs={Count} chars={Chars:N0} ~tokens={Tokens:N0}",
+            label, sessionId, messages.Count, totalChars, totalChars / 4);
+    }
 
     private static bool TryParseContextOverflow(string message, out int maxTokens, out int usedTokens)
     {

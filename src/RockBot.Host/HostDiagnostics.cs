@@ -47,6 +47,18 @@ public static class HostDiagnostics
             description: "Total number of output tokens produced");
 
     /// <summary>
+    /// Subset of <see cref="LlmTokenInput"/> that the provider served from its prompt
+    /// cache. Read from <c>Usage.AdditionalCounts["InputTokenDetails.CachedTokenCount"]</c>
+    /// when present (OpenAI/Azure Foundry surface this; other providers may not). A high
+    /// ratio of cached/input tokens indicates a stable prefix across calls.
+    /// </summary>
+    public static readonly Counter<long> LlmTokenInputCached =
+        Meter.CreateCounter<long>(
+            "rockbot.llm.token.input.cached",
+            unit: "{token}",
+            description: "Input tokens served from provider-side prompt cache (subset of LlmTokenInput)");
+
+    /// <summary>
     /// Time a caller spent waiting for a per-tier gateway slot before its LLM call
     /// could proceed. Non-zero values indicate contention; sustained high values
     /// indicate the tier's <c>MaxConcurrent</c> cap is too low for the workload
@@ -107,6 +119,13 @@ public static class HostDiagnostics
             "rockbot.agent.turn.tokens.output",
             unit: "{token}",
             description: "Output tokens per turn, aggregated across all LLM calls in the loop");
+
+    /// <summary>Cached-input-token subset of <see cref="TurnTokensInput"/> per turn.</summary>
+    public static readonly Histogram<long> TurnTokensInputCached =
+        Meter.CreateHistogram<long>(
+            "rockbot.agent.turn.tokens.input.cached",
+            unit: "{token}",
+            description: "Cached input tokens per turn (subset of TurnTokensInput) — indicates prompt-cache effectiveness");
 
     /// <summary>Number of tool calls executed per turn.</summary>
     public static readonly Histogram<long> TurnToolCalls =

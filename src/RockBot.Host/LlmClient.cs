@@ -79,6 +79,7 @@ internal sealed class LlmClient(
             {
                 var inputTokens = usage.InputTokenCount ?? 0;
                 var outputTokens = usage.OutputTokenCount ?? 0;
+                var cachedInputTokens = UsageReader.GetCachedInputTokens(usage);
 
                 var tierTag = new KeyValuePair<string, object?>("rockbot.llm.tier", tier.ToString());
                 var modelTag = new KeyValuePair<string, object?>("rockbot.llm.model", modelId);
@@ -87,6 +88,8 @@ internal sealed class LlmClient(
                     HostDiagnostics.LlmTokenInput.Add(inputTokens, tierTag, modelTag);
                 if (usage.OutputTokenCount.HasValue)
                     HostDiagnostics.LlmTokenOutput.Add(outputTokens, tierTag, modelTag);
+                if (cachedInputTokens > 0)
+                    HostDiagnostics.LlmTokenInputCached.Add(cachedInputTokens, tierTag, modelTag);
 
                 var costUsd = costEstimator.EstimateCost(modelId, inputTokens, outputTokens);
                 if (costUsd > 0)
@@ -97,7 +100,16 @@ internal sealed class LlmClient(
 
                 activity?.SetTag("rockbot.llm.tokens.input", inputTokens);
                 activity?.SetTag("rockbot.llm.tokens.output", outputTokens);
+                activity?.SetTag("rockbot.llm.tokens.input.cached", cachedInputTokens);
                 activity?.SetTag("rockbot.llm.cost.usd", costUsd);
+
+                if (inputTokens > 0)
+                {
+                    var cachePct = cachedInputTokens * 100.0 / inputTokens;
+                    logger.LogInformation(
+                        "LLM usage: tier={Tier} model={ModelId} input={InputTokens} cached={CachedTokens} ({CachePct:F1}%) output={OutputTokens}",
+                        tier, modelId, inputTokens, cachedInputTokens, cachePct, outputTokens);
+                }
             }
 
             activity?.SetStatus(ActivityStatusCode.Ok);
