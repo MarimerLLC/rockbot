@@ -255,6 +255,7 @@ internal sealed class UserMessageHandler(
                     MatchedHighKeywords = classification.MatchedHighKeywords,
                     MatchedLowKeywords = classification.MatchedLowKeywords,
                     PostInjectionTokenEstimate = postInjectionTokenEstimate,
+                    ModelId = firstResponse.ModelId ?? registry.GetModelId(tier),
                     InputTokens = firstResponse.Usage?.InputTokenCount,
                     OutputTokens = firstResponse.Usage?.OutputTokenCount,
                     LatencyMs = routingSw.ElapsedMilliseconds,
@@ -469,6 +470,7 @@ internal sealed class UserMessageHandler(
                 MatchedHighKeywords = classification.MatchedHighKeywords,
                 MatchedLowKeywords = classification.MatchedLowKeywords,
                 PostInjectionTokenEstimate = postInjectionTokenEstimate,
+                ModelId = registry.GetModelId(classification.Tier),
             });
 
             text = ResponseSanitizer.StripTrailingOffers(text);

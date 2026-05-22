@@ -44,6 +44,14 @@ public sealed record TierRoutingEntry
 
     // ── LLM response telemetry ─────────────────────────────────────────────────
 
+    /// <summary>
+    /// The model that handled this routing decision. Populated from the chat response's
+    /// <c>ModelId</c> when available, falling back to the tier's configured default model.
+    /// Used by the routing analyzer to compute per-entry USD cost by joining with the
+    /// pricing table. Null on entries written before this field existed.
+    /// </summary>
+    public string? ModelId { get; init; }
+
     public long? InputTokens { get; init; }
     public long? OutputTokens { get; init; }
     public long? LatencyMs { get; init; }
