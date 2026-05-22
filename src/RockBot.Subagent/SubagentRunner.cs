@@ -22,6 +22,7 @@ internal sealed class SubagentRunner(
     AgentContextBuilder agentContextBuilder,
     ILlmClient llmClient,
     ILlmTierSelector tierSelector,
+    TieredChatClientRegistry registry,
     IWorkingMemory workingMemory,
     MemoryTools memoryTools,
     ISkillStore skillStore,
@@ -317,6 +318,7 @@ internal sealed class SubagentRunner(
             MatchedHighKeywords = classification.MatchedHighKeywords,
             MatchedLowKeywords = classification.MatchedLowKeywords,
             PostInjectionTokenEstimate = postInjectionTokenEstimate,
+            ModelId = registry.GetModelId(classification.Tier),
             LatencyMs = subagentSw.ElapsedMilliseconds,
         });
 

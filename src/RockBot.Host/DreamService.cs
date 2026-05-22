@@ -2451,6 +2451,8 @@ internal sealed class DreamService : IHostedService, IDisposable
             userMessage.Append(
                 $"[{e.Timestamp:O}] tier={e.Tier} score={e.ComplexityScore:F3} context={e.Context}");
 
+            if (!string.IsNullOrEmpty(e.ModelId))
+                userMessage.Append($" model={e.ModelId}");
             if (e.MatchedHighKeywords.Count > 0)
                 userMessage.Append($" highKeywords=[{string.Join(",", e.MatchedHighKeywords)}]");
             if (e.MatchedLowKeywords.Count > 0)

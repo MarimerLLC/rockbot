@@ -153,6 +153,7 @@ internal sealed record RoutingEntry
     public List<string> MatchedHighKeywords { get; init; } = [];
     public List<string> MatchedLowKeywords { get; init; } = [];
     public int? PostInjectionTokenEstimate { get; init; }
+    public string? ModelId { get; init; }
     public long? InputTokens { get; init; }
     public long? OutputTokens { get; init; }
     public long? LatencyMs { get; init; }
