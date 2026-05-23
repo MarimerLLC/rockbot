@@ -75,12 +75,16 @@ public sealed class AgentHostOptions
     /// Soft context-size watermark in tokens. When the running message list exceeds
     /// this size before an LLM call, large tool results are trimmed into the WM stash
     /// proactively — without waiting for a provider-side context-overflow error.
-    /// Default 25,000 tokens (≈90,000 chars at the 4-chars-per-token estimate, which
-    /// trims to a ~22.5k-token effective ceiling because the trimmer targets 90% of
-    /// the char budget). Set to 0 to disable proactive trimming and fall back to the
-    /// legacy behaviour (trim only after a 400 overflow has been observed).
+    /// Default 30,000 tokens (≈108,000 chars at the 4-chars-per-token estimate, which
+    /// trims to a ~27k-token effective ceiling because the trimmer targets 90% of
+    /// the char budget). The per-tool-result cap (<see cref="ToolResultMaxChars"/>)
+    /// already prevents any single tool from singlehandedly bloating the loop, so the
+    /// watermark mostly catches cumulative bloat across many medium-sized results;
+    /// dropping it to 25k forced hyper-elision of recent results in live runs.
+    /// Set to 0 to disable proactive trimming and fall back to the legacy behaviour
+    /// (trim only after a 400 overflow has been observed).
     /// </summary>
-    public int ToolResultStashWatermarkTokens { get; set; } = 25_000;
+    public int ToolResultStashWatermarkTokens { get; set; } = 30_000;
 
     /// <summary>
     /// Per-tool-result hard cap in characters. Any single tool result longer than this
