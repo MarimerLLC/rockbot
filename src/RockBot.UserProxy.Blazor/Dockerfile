@@ -18,6 +18,7 @@ COPY RockBot.slnx Directory.Build.props ./
 COPY src/RockBot.UserProxy.Blazor/RockBot.UserProxy.Blazor.csproj src/RockBot.UserProxy.Blazor/
 COPY src/RockBot.UserProxy/RockBot.UserProxy.csproj src/RockBot.UserProxy/
 COPY src/RockBot.UserProxy.Abstractions/RockBot.UserProxy.Abstractions.csproj src/RockBot.UserProxy.Abstractions/
+COPY src/RockBot.UserProxy.WorkIqAuth/RockBot.UserProxy.WorkIqAuth.csproj src/RockBot.UserProxy.WorkIqAuth/
 COPY src/RockBot.Messaging.RabbitMQ/RockBot.Messaging.RabbitMQ.csproj src/RockBot.Messaging.RabbitMQ/
 COPY src/RockBot.Messaging.Abstractions/RockBot.Messaging.Abstractions.csproj src/RockBot.Messaging.Abstractions/
 
