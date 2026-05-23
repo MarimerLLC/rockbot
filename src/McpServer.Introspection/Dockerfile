@@ -13,13 +13,22 @@ WORKDIR /src
 RUN printf '<configuration><fallbackPackageFolders><clear /></fallbackPackageFolders></configuration>' \
     > /src/NuGet.config
 
-# Copy project file for layer-cached restore
+# Copy csproj files for layer-cached restore. Host.Abstractions (and its
+# transitive Messaging/UserProxy abstractions) are referenced via ProjectReference
+# so the introspection sidecar can use TierRoutingEntry / TierRoutingAnalyzer
+# directly instead of carrying a drift-prone local mirror.
 COPY Directory.Build.props .
 COPY src/McpServer.Introspection/McpServer.Introspection.csproj src/McpServer.Introspection/
+COPY src/RockBot.Host.Abstractions/RockBot.Host.Abstractions.csproj src/RockBot.Host.Abstractions/
+COPY src/RockBot.Messaging.Abstractions/RockBot.Messaging.Abstractions.csproj src/RockBot.Messaging.Abstractions/
+COPY src/RockBot.UserProxy.Abstractions/RockBot.UserProxy.Abstractions.csproj src/RockBot.UserProxy.Abstractions/
 
 RUN dotnet restore src/McpServer.Introspection/McpServer.Introspection.csproj
 
 COPY src/McpServer.Introspection/ src/McpServer.Introspection/
+COPY src/RockBot.Host.Abstractions/ src/RockBot.Host.Abstractions/
+COPY src/RockBot.Messaging.Abstractions/ src/RockBot.Messaging.Abstractions/
+COPY src/RockBot.UserProxy.Abstractions/ src/RockBot.UserProxy.Abstractions/
 
 WORKDIR /src/src/McpServer.Introspection
 RUN dotnet build McpServer.Introspection.csproj -c $BUILD_CONFIGURATION -o /app/build --no-restore

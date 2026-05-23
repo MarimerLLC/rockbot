@@ -70,6 +70,7 @@ internal sealed class DreamService : IHostedService, IDisposable
     private string? _toolSuccessLearningDirective;
     private string? _contradictionSweepDirective;
     private string? _repairTicketCreationDirective;
+    private IReadOnlyList<LlmPricingRow>? _pricingRows;
 
     public DreamService(
         ILongTermMemory memory,
@@ -145,237 +146,7 @@ internal sealed class DreamService : IHostedService, IDisposable
             return Task.CompletedTask;
         }
 
-        // Load shared memory rules (if present) to prepend to the dream directive
-        var memoryRulesPath = ResolvePath("memory-rules.md", _profileOptions.BasePath);
-        var memoryRules = File.Exists(memoryRulesPath) ? File.ReadAllText(memoryRulesPath) : string.Empty;
-        if (!string.IsNullOrEmpty(memoryRules))
-            _logger.LogInformation("DreamService: loaded memory-rules from {Path}", memoryRulesPath);
-
-        var directivePath = ResolvePath(_options.DirectivePath, _profileOptions.BasePath);
-        var dreamDirective = File.Exists(directivePath)
-            ? File.ReadAllText(directivePath)
-            : BuiltInDirective;
-
-        if (!File.Exists(directivePath))
-            _logger.LogWarning("DreamService: dream directive not found at {Path}; using built-in fallback", directivePath);
-        else
-            _logger.LogInformation("DreamService: loaded dream directive from {Path}", directivePath);
-
-        _dreamDirective = string.IsNullOrEmpty(memoryRules)
-            ? dreamDirective
-            : memoryRules + "\n\n---\n\n" + dreamDirective;
-
-        if (_skillStore is not null)
-        {
-            var skillDirectivePath = ResolvePath(_options.SkillDirectivePath, _profileOptions.BasePath);
-            _skillDreamDirective = File.Exists(skillDirectivePath)
-                ? File.ReadAllText(skillDirectivePath)
-                : BuiltInSkillDirective;
-
-            if (!File.Exists(skillDirectivePath))
-                _logger.LogWarning("DreamService: skill directive not found at {Path}; using built-in fallback", skillDirectivePath);
-            else
-                _logger.LogInformation("DreamService: loaded skill directive from {Path}", skillDirectivePath);
-
-            var skillOptimizeDirectivePath = ResolvePath(_options.SkillOptimizeDirectivePath, _profileOptions.BasePath);
-            _skillOptimizeDirective = File.Exists(skillOptimizeDirectivePath)
-                ? File.ReadAllText(skillOptimizeDirectivePath)
-                : BuiltInSkillOptimizeDirective;
-
-            if (!File.Exists(skillOptimizeDirectivePath))
-                _logger.LogWarning("DreamService: skill optimize directive not found at {Path}; using built-in fallback", skillOptimizeDirectivePath);
-            else
-                _logger.LogInformation("DreamService: loaded skill optimize directive from {Path}", skillOptimizeDirectivePath);
-        }
-
-        if (_conversationLog is not null)
-        {
-            var prefDirectivePath = ResolvePath(_options.PreferenceDirectivePath, _profileOptions.BasePath);
-            _prefDreamDirective = File.Exists(prefDirectivePath)
-                ? File.ReadAllText(prefDirectivePath)
-                : BuiltInPrefDirective;
-
-            if (!File.Exists(prefDirectivePath))
-                _logger.LogWarning("DreamService: pref directive not found at {Path}; using built-in fallback", prefDirectivePath);
-            else
-                _logger.LogInformation("DreamService: loaded pref directive from {Path}", prefDirectivePath);
-        }
-
-        if (_conversationLog is not null)
-        {
-            var memoryMiningDirectivePath = ResolvePath(_options.MemoryMiningDirectivePath, _profileOptions.BasePath);
-            _memoryMiningDirective = File.Exists(memoryMiningDirectivePath)
-                ? File.ReadAllText(memoryMiningDirectivePath)
-                : null; // null → BuiltInMemoryMiningDirective used in RunMemoryMiningPassAsync
-
-            if (!File.Exists(memoryMiningDirectivePath))
-                _logger.LogDebug("DreamService: memory mining directive not found at {Path}; using built-in", memoryMiningDirectivePath);
-            else
-                _logger.LogInformation("DreamService: loaded memory mining directive from {Path}", memoryMiningDirectivePath);
-
-            var episodeDirectivePath = ResolvePath(_options.EpisodeDirectivePath, _profileOptions.BasePath);
-            _episodeDirective = File.Exists(episodeDirectivePath)
-                ? File.ReadAllText(episodeDirectivePath)
-                : null; // null → BuiltInEpisodeDirective used in RunEpisodeExtractionPassAsync
-
-            if (!File.Exists(episodeDirectivePath))
-                _logger.LogDebug("DreamService: episode directive not found at {Path}; using built-in", episodeDirectivePath);
-            else
-                _logger.LogInformation("DreamService: loaded episode directive from {Path}", episodeDirectivePath);
-        }
-
-        if (_knowledgeGraph is not null)
-        {
-            var entityDirectivePath = ResolvePath(_options.EntityExtractionDirectivePath, _profileOptions.BasePath);
-            _entityExtractionDirective = File.Exists(entityDirectivePath)
-                ? File.ReadAllText(entityDirectivePath)
-                : null; // null → BuiltInEntityExtractionDirective used in RunEntityExtractionPassAsync
-
-            if (!File.Exists(entityDirectivePath))
-                _logger.LogDebug("DreamService: entity extraction directive not found at {Path}; using built-in", entityDirectivePath);
-            else
-                _logger.LogInformation("DreamService: loaded entity extraction directive from {Path}", entityDirectivePath);
-
-            var graphConsolidationPath = ResolvePath(_options.GraphConsolidationDirectivePath, _profileOptions.BasePath);
-            _graphConsolidationDirective = File.Exists(graphConsolidationPath)
-                ? File.ReadAllText(graphConsolidationPath)
-                : null; // null → BuiltInGraphConsolidationDirective used in RunGraphConsolidationPassAsync
-
-            if (!File.Exists(graphConsolidationPath))
-                _logger.LogDebug("DreamService: graph consolidation directive not found at {Path}; using built-in", graphConsolidationPath);
-            else
-                _logger.LogInformation("DreamService: loaded graph consolidation directive from {Path}", graphConsolidationPath);
-        }
-
-        if (_skillStore is not null && _conversationLog is not null)
-        {
-            var skillGapDirectivePath = ResolvePath(_options.SkillGapDirectivePath, _profileOptions.BasePath);
-            _skillGapDirective = File.Exists(skillGapDirectivePath)
-                ? File.ReadAllText(skillGapDirectivePath)
-                : BuiltInSkillGapDirective;
-
-            if (!File.Exists(skillGapDirectivePath))
-                _logger.LogWarning("DreamService: skill gap directive not found at {Path}; using built-in fallback", skillGapDirectivePath);
-            else
-                _logger.LogInformation("DreamService: loaded skill gap directive from {Path}", skillGapDirectivePath);
-        }
-
-        if (_options.TierRoutingReviewEnabled)
-        {
-            var tierRoutingDirectivePath = ResolvePath(_options.TierRoutingDirectivePath, _profileOptions.BasePath);
-            _tierRoutingDirective = File.Exists(tierRoutingDirectivePath)
-                ? File.ReadAllText(tierRoutingDirectivePath)
-                : null; // null → BuiltInTierRoutingDirective used in RunTierRoutingReviewPassAsync
-
-            if (!File.Exists(tierRoutingDirectivePath))
-                _logger.LogDebug("DreamService: tier routing directive not found at {Path}; using built-in", tierRoutingDirectivePath);
-            else
-                _logger.LogInformation("DreamService: loaded tier routing directive from {Path}", tierRoutingDirectivePath);
-        }
-
-        if (_options.SequenceSkillDetectionEnabled && _toolCallLog is not null && _skillStore is not null)
-        {
-            var sequenceSkillDirectivePath = ResolvePath(_options.SequenceSkillDirectivePath, _profileOptions.BasePath);
-            _sequenceSkillDirective = File.Exists(sequenceSkillDirectivePath)
-                ? File.ReadAllText(sequenceSkillDirectivePath)
-                : null;
-
-            if (!File.Exists(sequenceSkillDirectivePath))
-                _logger.LogDebug("DreamService: sequence skill directive not found at {Path}; using built-in", sequenceSkillDirectivePath);
-            else
-                _logger.LogInformation("DreamService: loaded sequence skill directive from {Path}", sequenceSkillDirectivePath);
-        }
-
-        if (_options.DlqReviewEnabled && _dlqSampler is not null)
-        {
-            var dlqDirectivePath = ResolvePath(_options.DlqDirectivePath, _profileOptions.BasePath);
-            _dlqDirective = File.Exists(dlqDirectivePath)
-                ? File.ReadAllText(dlqDirectivePath)
-                : null; // null → BuiltInDlqDirective used in RunDlqReviewPassAsync
-
-            if (!File.Exists(dlqDirectivePath))
-                _logger.LogDebug("DreamService: DLQ directive not found at {Path}; using built-in", dlqDirectivePath);
-            else
-                _logger.LogInformation("DreamService: loaded DLQ directive from {Path}", dlqDirectivePath);
-        }
-
-        if (_options.IdentityReflectionEnabled)
-        {
-            var identityDirectivePath = ResolvePath(_options.IdentityDirectivePath, _profileOptions.BasePath);
-            _identityDirective = File.Exists(identityDirectivePath)
-                ? File.ReadAllText(identityDirectivePath)
-                : null; // null → BuiltInIdentityDirective used in RunIdentityReflectionPassAsync
-
-            if (!File.Exists(identityDirectivePath))
-                _logger.LogDebug("DreamService: identity directive not found at {Path}; using built-in", identityDirectivePath);
-            else
-                _logger.LogInformation("DreamService: loaded identity directive from {Path}", identityDirectivePath);
-        }
-
-        if (_options.WispFailureAnalysisEnabled && _wispExecutionLog is not null && _skillStore is not null)
-        {
-            var wispDirectivePath = ResolvePath(_options.WispFailureDirectivePath, _profileOptions.BasePath);
-            _wispFailureDirective = File.Exists(wispDirectivePath)
-                ? File.ReadAllText(wispDirectivePath)
-                : null;
-
-            if (!File.Exists(wispDirectivePath))
-                _logger.LogDebug("DreamService: wisp failure directive not found at {Path}; using built-in", wispDirectivePath);
-            else
-                _logger.LogInformation("DreamService: loaded wisp failure directive from {Path}", wispDirectivePath);
-        }
-
-        if (_options.WispSuccessAnalysisEnabled && _wispExecutionLog is not null && _skillStore is not null)
-        {
-            var wispSuccessPath = ResolvePath(_options.WispSuccessDirectivePath, _profileOptions.BasePath);
-            _wispSuccessDirective = File.Exists(wispSuccessPath)
-                ? File.ReadAllText(wispSuccessPath)
-                : null;
-
-            if (!File.Exists(wispSuccessPath))
-                _logger.LogDebug("DreamService: wisp success directive not found at {Path}; using built-in", wispSuccessPath);
-            else
-                _logger.LogInformation("DreamService: loaded wisp success directive from {Path}", wispSuccessPath);
-        }
-
-        if (_options.ToolSuccessLearningEnabled && _toolCallLog is not null)
-        {
-            var path = ResolvePath(_options.ToolSuccessLearningDirectivePath, _profileOptions.BasePath);
-            _toolSuccessLearningDirective = File.Exists(path)
-                ? File.ReadAllText(path)
-                : null;
-
-            if (!File.Exists(path))
-                _logger.LogDebug("DreamService: tool-success-learning directive not found at {Path}; using built-in", path);
-            else
-                _logger.LogInformation("DreamService: loaded tool-success-learning directive from {Path}", path);
-        }
-
-        if (_options.ContradictionSweepEnabled)
-        {
-            var path = ResolvePath(_options.ContradictionSweepDirectivePath, _profileOptions.BasePath);
-            _contradictionSweepDirective = File.Exists(path)
-                ? File.ReadAllText(path)
-                : null; // null → BuiltInContradictionSweepDirective used in RunContradictionSweepPassAsync
-
-            if (!File.Exists(path))
-                _logger.LogDebug("DreamService: contradiction sweep directive not found at {Path}; using built-in", path);
-            else
-                _logger.LogInformation("DreamService: loaded contradiction sweep directive from {Path}", path);
-        }
-
-        if (RepairLoopEnabled)
-        {
-            var path = ResolvePath(_repairOptions!.CreationDirectivePath, _profileOptions.BasePath);
-            _repairTicketCreationDirective = File.Exists(path)
-                ? File.ReadAllText(path)
-                : null;
-
-            if (!File.Exists(path))
-                _logger.LogDebug("DreamService: repair-ticket creation directive not found at {Path}; using built-in", path);
-            else
-                _logger.LogInformation("DreamService: loaded repair-ticket creation directive from {Path}", path);
-        }
+        LoadDirectives(initialLoad: true);
 
         try
         {
@@ -412,6 +183,263 @@ internal sealed class DreamService : IHostedService, IDisposable
     }
 
     public void Dispose() => _timer?.Dispose();
+
+    /// <summary>
+    /// Re-reads every dream-pass directive file from disk into the in-memory fields.
+    /// Called once at StartAsync and again at the top of every dream cycle so live edits
+    /// to /data/agent/*-dream.md, skill-optimize.md, etc. take effect without a pod
+    /// restart. The cost is ~18 small file reads per cycle (negligible).
+    /// </summary>
+    /// <param name="initialLoad">
+    /// True on first load from <see cref="StartAsync"/>; false on per-cycle reload.
+    /// Only used to choose between an Information ("loading") and Debug ("reloading") log line
+    /// — per-file load messages are always Debug so the per-cycle reload does not spam logs.
+    /// </param>
+    private void LoadDirectives(bool initialLoad)
+    {
+        // Once per cycle (every 12h) — keep at Information so the per-cycle reload
+        // is visible in default logs without elevating the namespace to Debug.
+        _logger.LogInformation(
+            "DreamService: {Mode} dream directives from disk",
+            initialLoad ? "loading" : "reloading");
+
+        // Load shared memory rules (if present) to prepend to the dream directive
+        var memoryRulesPath = ResolvePath("memory-rules.md", _profileOptions.BasePath);
+        var memoryRules = File.Exists(memoryRulesPath) ? File.ReadAllText(memoryRulesPath) : string.Empty;
+        if (!string.IsNullOrEmpty(memoryRules))
+            _logger.LogDebug("DreamService: loaded memory-rules from {Path}", memoryRulesPath);
+
+        var directivePath = ResolvePath(_options.DirectivePath, _profileOptions.BasePath);
+        var dreamDirective = File.Exists(directivePath)
+            ? File.ReadAllText(directivePath)
+            : BuiltInDirective;
+        if (!File.Exists(directivePath))
+            _logger.LogWarning("DreamService: dream directive not found at {Path}; using built-in fallback", directivePath);
+        else
+            _logger.LogDebug("DreamService: loaded dream directive from {Path}", directivePath);
+
+        _dreamDirective = string.IsNullOrEmpty(memoryRules)
+            ? dreamDirective
+            : memoryRules + "\n\n---\n\n" + dreamDirective;
+
+        if (_skillStore is not null)
+        {
+            var skillDirectivePath = ResolvePath(_options.SkillDirectivePath, _profileOptions.BasePath);
+            _skillDreamDirective = File.Exists(skillDirectivePath)
+                ? File.ReadAllText(skillDirectivePath)
+                : BuiltInSkillDirective;
+            if (!File.Exists(skillDirectivePath))
+                _logger.LogWarning("DreamService: skill directive not found at {Path}; using built-in fallback", skillDirectivePath);
+            else
+                _logger.LogDebug("DreamService: loaded skill directive from {Path}", skillDirectivePath);
+
+            var skillOptimizeDirectivePath = ResolvePath(_options.SkillOptimizeDirectivePath, _profileOptions.BasePath);
+            _skillOptimizeDirective = File.Exists(skillOptimizeDirectivePath)
+                ? File.ReadAllText(skillOptimizeDirectivePath)
+                : BuiltInSkillOptimizeDirective;
+            if (!File.Exists(skillOptimizeDirectivePath))
+                _logger.LogWarning("DreamService: skill optimize directive not found at {Path}; using built-in fallback", skillOptimizeDirectivePath);
+            else
+                _logger.LogDebug("DreamService: loaded skill optimize directive from {Path}", skillOptimizeDirectivePath);
+        }
+
+        if (_conversationLog is not null)
+        {
+            var prefDirectivePath = ResolvePath(_options.PreferenceDirectivePath, _profileOptions.BasePath);
+            _prefDreamDirective = File.Exists(prefDirectivePath)
+                ? File.ReadAllText(prefDirectivePath)
+                : BuiltInPrefDirective;
+            if (!File.Exists(prefDirectivePath))
+                _logger.LogWarning("DreamService: pref directive not found at {Path}; using built-in fallback", prefDirectivePath);
+            else
+                _logger.LogDebug("DreamService: loaded pref directive from {Path}", prefDirectivePath);
+        }
+
+        if (_conversationLog is not null)
+        {
+            var memoryMiningDirectivePath = ResolvePath(_options.MemoryMiningDirectivePath, _profileOptions.BasePath);
+            _memoryMiningDirective = File.Exists(memoryMiningDirectivePath)
+                ? File.ReadAllText(memoryMiningDirectivePath)
+                : null;
+            if (!File.Exists(memoryMiningDirectivePath))
+                _logger.LogDebug("DreamService: memory mining directive not found at {Path}; using built-in", memoryMiningDirectivePath);
+            else
+                _logger.LogDebug("DreamService: loaded memory mining directive from {Path}", memoryMiningDirectivePath);
+
+            var episodeDirectivePath = ResolvePath(_options.EpisodeDirectivePath, _profileOptions.BasePath);
+            _episodeDirective = File.Exists(episodeDirectivePath)
+                ? File.ReadAllText(episodeDirectivePath)
+                : null;
+            if (!File.Exists(episodeDirectivePath))
+                _logger.LogDebug("DreamService: episode directive not found at {Path}; using built-in", episodeDirectivePath);
+            else
+                _logger.LogDebug("DreamService: loaded episode directive from {Path}", episodeDirectivePath);
+        }
+
+        if (_knowledgeGraph is not null)
+        {
+            var entityDirectivePath = ResolvePath(_options.EntityExtractionDirectivePath, _profileOptions.BasePath);
+            _entityExtractionDirective = File.Exists(entityDirectivePath)
+                ? File.ReadAllText(entityDirectivePath)
+                : null;
+            if (!File.Exists(entityDirectivePath))
+                _logger.LogDebug("DreamService: entity extraction directive not found at {Path}; using built-in", entityDirectivePath);
+            else
+                _logger.LogDebug("DreamService: loaded entity extraction directive from {Path}", entityDirectivePath);
+
+            var graphConsolidationPath = ResolvePath(_options.GraphConsolidationDirectivePath, _profileOptions.BasePath);
+            _graphConsolidationDirective = File.Exists(graphConsolidationPath)
+                ? File.ReadAllText(graphConsolidationPath)
+                : null;
+            if (!File.Exists(graphConsolidationPath))
+                _logger.LogDebug("DreamService: graph consolidation directive not found at {Path}; using built-in", graphConsolidationPath);
+            else
+                _logger.LogDebug("DreamService: loaded graph consolidation directive from {Path}", graphConsolidationPath);
+        }
+
+        if (_skillStore is not null && _conversationLog is not null)
+        {
+            var skillGapDirectivePath = ResolvePath(_options.SkillGapDirectivePath, _profileOptions.BasePath);
+            _skillGapDirective = File.Exists(skillGapDirectivePath)
+                ? File.ReadAllText(skillGapDirectivePath)
+                : BuiltInSkillGapDirective;
+            if (!File.Exists(skillGapDirectivePath))
+                _logger.LogWarning("DreamService: skill gap directive not found at {Path}; using built-in fallback", skillGapDirectivePath);
+            else
+                _logger.LogDebug("DreamService: loaded skill gap directive from {Path}", skillGapDirectivePath);
+        }
+
+        if (_options.TierRoutingReviewEnabled)
+        {
+            var tierRoutingDirectivePath = ResolvePath(_options.TierRoutingDirectivePath, _profileOptions.BasePath);
+            _tierRoutingDirective = File.Exists(tierRoutingDirectivePath)
+                ? File.ReadAllText(tierRoutingDirectivePath)
+                : null;
+            if (!File.Exists(tierRoutingDirectivePath))
+                _logger.LogDebug("DreamService: tier routing directive not found at {Path}; using built-in", tierRoutingDirectivePath);
+            else
+                _logger.LogDebug("DreamService: loaded tier routing directive from {Path}", tierRoutingDirectivePath);
+
+            // Load the pricing table so the routing analyzer can compute USD cost.
+            // Optional — if the file is missing or malformed, the analyzer returns null
+            // cost fields and the LLM proceeds without that signal. Reloaded on every
+            // LoadDirectives call so operator edits to llm-pricing.json take effect at
+            // the next dream cycle without restarting the agent.
+            var pricingPath = ResolvePath("llm-pricing.json", _profileOptions.BasePath);
+            if (File.Exists(pricingPath))
+            {
+                try
+                {
+                    var pricingJson = File.ReadAllText(pricingPath);
+                    _pricingRows = JsonSerializer.Deserialize<List<LlmPricingRow>>(pricingJson, JsonOptions);
+                    if (initialLoad)
+                        _logger.LogInformation(
+                            "DreamService: loaded {Count} pricing rows from {Path}",
+                            _pricingRows?.Count ?? 0, pricingPath);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "DreamService: failed to parse pricing file {Path}; cost analysis will be skipped", pricingPath);
+                }
+            }
+        }
+
+        if (_options.SequenceSkillDetectionEnabled && _toolCallLog is not null && _skillStore is not null)
+        {
+            var sequenceSkillDirectivePath = ResolvePath(_options.SequenceSkillDirectivePath, _profileOptions.BasePath);
+            _sequenceSkillDirective = File.Exists(sequenceSkillDirectivePath)
+                ? File.ReadAllText(sequenceSkillDirectivePath)
+                : null;
+            if (!File.Exists(sequenceSkillDirectivePath))
+                _logger.LogDebug("DreamService: sequence skill directive not found at {Path}; using built-in", sequenceSkillDirectivePath);
+            else
+                _logger.LogDebug("DreamService: loaded sequence skill directive from {Path}", sequenceSkillDirectivePath);
+        }
+
+        if (_options.DlqReviewEnabled && _dlqSampler is not null)
+        {
+            var dlqDirectivePath = ResolvePath(_options.DlqDirectivePath, _profileOptions.BasePath);
+            _dlqDirective = File.Exists(dlqDirectivePath)
+                ? File.ReadAllText(dlqDirectivePath)
+                : null;
+            if (!File.Exists(dlqDirectivePath))
+                _logger.LogDebug("DreamService: DLQ directive not found at {Path}; using built-in", dlqDirectivePath);
+            else
+                _logger.LogDebug("DreamService: loaded DLQ directive from {Path}", dlqDirectivePath);
+        }
+
+        if (_options.IdentityReflectionEnabled)
+        {
+            var identityDirectivePath = ResolvePath(_options.IdentityDirectivePath, _profileOptions.BasePath);
+            _identityDirective = File.Exists(identityDirectivePath)
+                ? File.ReadAllText(identityDirectivePath)
+                : null;
+            if (!File.Exists(identityDirectivePath))
+                _logger.LogDebug("DreamService: identity directive not found at {Path}; using built-in", identityDirectivePath);
+            else
+                _logger.LogDebug("DreamService: loaded identity directive from {Path}", identityDirectivePath);
+        }
+
+        if (_options.WispFailureAnalysisEnabled && _wispExecutionLog is not null && _skillStore is not null)
+        {
+            var wispDirectivePath = ResolvePath(_options.WispFailureDirectivePath, _profileOptions.BasePath);
+            _wispFailureDirective = File.Exists(wispDirectivePath)
+                ? File.ReadAllText(wispDirectivePath)
+                : null;
+            if (!File.Exists(wispDirectivePath))
+                _logger.LogDebug("DreamService: wisp failure directive not found at {Path}; using built-in", wispDirectivePath);
+            else
+                _logger.LogDebug("DreamService: loaded wisp failure directive from {Path}", wispDirectivePath);
+        }
+
+        if (_options.WispSuccessAnalysisEnabled && _wispExecutionLog is not null && _skillStore is not null)
+        {
+            var wispSuccessPath = ResolvePath(_options.WispSuccessDirectivePath, _profileOptions.BasePath);
+            _wispSuccessDirective = File.Exists(wispSuccessPath)
+                ? File.ReadAllText(wispSuccessPath)
+                : null;
+            if (!File.Exists(wispSuccessPath))
+                _logger.LogDebug("DreamService: wisp success directive not found at {Path}; using built-in", wispSuccessPath);
+            else
+                _logger.LogDebug("DreamService: loaded wisp success directive from {Path}", wispSuccessPath);
+        }
+
+        if (_options.ToolSuccessLearningEnabled && _toolCallLog is not null)
+        {
+            var path = ResolvePath(_options.ToolSuccessLearningDirectivePath, _profileOptions.BasePath);
+            _toolSuccessLearningDirective = File.Exists(path)
+                ? File.ReadAllText(path)
+                : null;
+            if (!File.Exists(path))
+                _logger.LogDebug("DreamService: tool-success-learning directive not found at {Path}; using built-in", path);
+            else
+                _logger.LogDebug("DreamService: loaded tool-success-learning directive from {Path}", path);
+        }
+
+        if (_options.ContradictionSweepEnabled)
+        {
+            var path = ResolvePath(_options.ContradictionSweepDirectivePath, _profileOptions.BasePath);
+            _contradictionSweepDirective = File.Exists(path)
+                ? File.ReadAllText(path)
+                : null;
+            if (!File.Exists(path))
+                _logger.LogDebug("DreamService: contradiction sweep directive not found at {Path}; using built-in", path);
+            else
+                _logger.LogDebug("DreamService: loaded contradiction sweep directive from {Path}", path);
+        }
+
+        if (RepairLoopEnabled)
+        {
+            var path = ResolvePath(_repairOptions!.CreationDirectivePath, _profileOptions.BasePath);
+            _repairTicketCreationDirective = File.Exists(path)
+                ? File.ReadAllText(path)
+                : null;
+            if (!File.Exists(path))
+                _logger.LogDebug("DreamService: repair-ticket creation directive not found at {Path}; using built-in", path);
+            else
+                _logger.LogDebug("DreamService: loaded repair-ticket creation directive from {Path}", path);
+        }
+    }
 
     private async Task OnTimerTickAsync()
     {
@@ -450,6 +478,11 @@ internal sealed class DreamService : IHostedService, IDisposable
             _logger.LogInformation("DreamService: user loop active, skipping dream cycle");
             return;
         }
+
+        // Re-read directives from disk so live edits to /data/agent/*-dream.md and
+        // skill-optimize.md take effect without a pod restart. Cheap (~18 small file
+        // reads) and runs once per cycle.
+        LoadDirectives(initialLoad: false);
 
         _logger.LogInformation("DreamService: dream cycle starting");
 
@@ -760,6 +793,22 @@ internal sealed class DreamService : IHostedService, IDisposable
             return;
         }
 
+        // Capture attached resources from sources BEFORE deletion. By default the
+        // merge unions all attachments from the source skills onto the merged skill;
+        // the LLM can narrow this via dto.Resources (an allowlist of filenames).
+        // Without this capture step, merges into a new name silently destroy attached
+        // wisps and scripts since FileSkillStore's manifest-preserve only fires when
+        // the destination already exists on disk.
+        var capturedResourcesByDto = new Dictionary<string, IReadOnlyList<SkillResourceInput>>(StringComparer.OrdinalIgnoreCase);
+        foreach (var dto in result.ToSave ?? [])
+        {
+            if (string.IsNullOrWhiteSpace(dto.Name) || dto.SourceNames is null || dto.SourceNames.Count == 0)
+                continue;
+            var captured = await CaptureResourceInputsAsync(dto.SourceNames, dto.Resources, ct);
+            if (captured.Count > 0)
+                capturedResourcesByDto[dto.Name.Trim()] = captured;
+        }
+
         foreach (var name in allToDelete)
         {
             await _skillStore!.DeleteAsync(name);
@@ -812,10 +861,20 @@ internal sealed class DreamService : IHostedService, IDisposable
                 LastUsedAt: maxLastUsedAt,
                 SeeAlso: seeAlso is { Count: > 0 } ? seeAlso : null);
 
-            await _skillStore!.SaveAsync(skill);
+            if (capturedResourcesByDto.TryGetValue(skill.Name, out var carriedResources))
+            {
+                await _skillStore!.SaveAsync(skill, carriedResources.ToList());
+                _logger.LogDebug("DreamService: saved merged skill '{Name}' with {Count} carried resource(s) (seeAlso: {SeeAlso})",
+                    skill.Name, carriedResources.Count,
+                    skill.SeeAlso is { Count: > 0 } ? string.Join(", ", skill.SeeAlso) : "none");
+            }
+            else
+            {
+                await _skillStore!.SaveAsync(skill);
+                _logger.LogDebug("DreamService: saved merged skill '{Name}' (seeAlso: {SeeAlso})",
+                    skill.Name, skill.SeeAlso is { Count: > 0 } ? string.Join(", ", skill.SeeAlso) : "none");
+            }
             saved++;
-            _logger.LogDebug("DreamService: saved merged skill '{Name}' (seeAlso: {SeeAlso})",
-                skill.Name, skill.SeeAlso is { Count: > 0 } ? string.Join(", ", skill.SeeAlso) : "none");
         }
 
         await OptimizeSkillsAsync(ct);
@@ -932,7 +991,8 @@ internal sealed class DreamService : IHostedService, IDisposable
 
         foreach (var skill in atRiskSkills)
         {
-            userMessage.AppendLine($"## Skill: {skill.Name}");
+            var attachedAnnotation = FormatAttachedAnnotation(skill.Manifest);
+            userMessage.AppendLine($"## Skill: {skill.Name}{attachedAnnotation}");
             const int OptimizeCap = 800;
             var displayContent = skill.Content.Length > OptimizeCap
                 ? skill.Content[..OptimizeCap] + "\n[... truncated ...]"
@@ -989,7 +1049,8 @@ internal sealed class DreamService : IHostedService, IDisposable
             userMessage.AppendLine();
             foreach (var skill in sparseSkills)
             {
-                userMessage.AppendLine($"## Skill: {skill.Name} [SPARSE]");
+                var attachedAnnotation = FormatAttachedAnnotation(skill.Manifest);
+                userMessage.AppendLine($"## Skill: {skill.Name} [SPARSE]{attachedAnnotation}");
                 userMessage.AppendLine(skill.Content);
                 userMessage.AppendLine();
                 userMessage.AppendLine("### Review note: This skill has minimal content. Expand it with concrete steps, examples, and edge cases.");
@@ -1011,6 +1072,21 @@ internal sealed class DreamService : IHostedService, IDisposable
         foreach (var dto in result.ToSave ?? [])
             foreach (var srcName in dto.SourceNames ?? [])
                 allToDelete.Add(srcName);
+
+        // Capture attachments BEFORE deletion so the improved skill carries them
+        // forward. Optimize is the surgical-prose path — it rewrites content for
+        // the same name — but the source must be deleted first so the new save
+        // takes the slot. Without this capture the rewrite orphans every
+        // attached wisp and script.
+        var capturedResourcesByDto = new Dictionary<string, IReadOnlyList<SkillResourceInput>>(StringComparer.OrdinalIgnoreCase);
+        foreach (var dto in result.ToSave ?? [])
+        {
+            if (string.IsNullOrWhiteSpace(dto.Name) || dto.SourceNames is null || dto.SourceNames.Count == 0)
+                continue;
+            var captured = await CaptureResourceInputsAsync(dto.SourceNames, dto.Resources, ct);
+            if (captured.Count > 0)
+                capturedResourcesByDto[dto.Name.Trim()] = captured;
+        }
 
         foreach (var name in allToDelete)
         {
@@ -1044,9 +1120,18 @@ internal sealed class DreamService : IHostedService, IDisposable
                 UpdatedAt: DateTimeOffset.UtcNow,
                 LastUsedAt: null);
 
-            await _skillStore!.SaveAsync(skill);
+            if (capturedResourcesByDto.TryGetValue(skill.Name, out var carriedResources))
+            {
+                await _skillStore!.SaveAsync(skill, carriedResources.ToList());
+                _logger.LogDebug("DreamService: optimization saved improved skill '{Name}' with {Count} preserved resource(s)",
+                    skill.Name, carriedResources.Count);
+            }
+            else
+            {
+                await _skillStore!.SaveAsync(skill);
+                _logger.LogDebug("DreamService: optimization saved improved skill '{Name}'", skill.Name);
+            }
             saved++;
-            _logger.LogDebug("DreamService: optimization saved improved skill '{Name}'", skill.Name);
         }
 
         _logger.LogInformation(
@@ -2367,6 +2452,10 @@ internal sealed class DreamService : IHostedService, IDisposable
         if (_tierRoutingLogger is null || !_options.TierRoutingReviewEnabled)
             return;
 
+        // Pinned at 200 even though the cap is now configurable (default 1500). The analyzer's
+        // prompt cost is independent of entry count, so we could read more — but more entries
+        // also mean more file-IO and more cluster permutations, and 200 has been shown to
+        // surface every detection rule reliably. Bump if needed; do not silently widen.
         var entries = await _tierRoutingLogger.ReadRecentAsync(200);
         if (entries.Count < 10)
         {
@@ -2381,42 +2470,46 @@ internal sealed class DreamService : IHostedService, IDisposable
             entries.Count);
 
         var configPath = ResolvePath("tier-selector.json", _profileOptions.BasePath);
-
-        var userMessage = new StringBuilder();
-        userMessage.AppendLine("Recent tier-routing decisions to review:");
-        userMessage.AppendLine();
-        foreach (var e in entries)
+        TierSelectorConfig? currentConfig = null;
+        if (File.Exists(configPath))
         {
-            userMessage.Append(
-                $"[{e.Timestamp:O}] tier={e.Tier} score={e.ComplexityScore:F3} context={e.Context}");
-
-            if (e.MatchedHighKeywords.Count > 0)
-                userMessage.Append($" highKeywords=[{string.Join(",", e.MatchedHighKeywords)}]");
-            if (e.MatchedLowKeywords.Count > 0)
-                userMessage.Append($" lowKeywords=[{string.Join(",", e.MatchedLowKeywords)}]");
-            if (e.PostInjectionTokenEstimate.HasValue)
-                userMessage.Append($" postInjectionTokens={e.PostInjectionTokenEstimate}");
-            if (e.InputTokens.HasValue)
-                userMessage.Append($" inputTokens={e.InputTokens}");
-            if (e.OutputTokens.HasValue)
-                userMessage.Append($" outputTokens={e.OutputTokens}");
-            if (e.LatencyMs.HasValue)
-                userMessage.Append($" latencyMs={e.LatencyMs}");
-            if (e.ToolCallCount.HasValue)
-                userMessage.Append($" toolCalls={e.ToolCallCount}");
-            if (e.ToolsUsed is { Count: > 0 })
-                userMessage.Append($" tools=[{string.Join(",", e.ToolsUsed)}]");
-            if (e.IsFallbackTriggered)
-                userMessage.Append(" fallback=true");
-
-            userMessage.AppendLine($" prompt=\"{e.PromptPreview}\"");
+            try
+            {
+                var configJson = await File.ReadAllTextAsync(configPath);
+                currentConfig = JsonSerializer.Deserialize<TierSelectorConfig>(configJson, JsonOptions);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "DreamService: failed to parse tier-selector.json at {Path}", configPath);
+            }
         }
 
-        if (File.Exists(configPath))
+        // Pre-aggregate the raw entries into a structured analysis so the LLM
+        // works against deterministic statistics instead of recomputing them.
+        // This decouples prompt size from entry count — N entries collapse to ~M clusters.
+        var analysis = TierRoutingAnalyzer.Analyze(entries, currentConfig, _pricingRows);
+
+        var analysisJson = JsonSerializer.Serialize(analysis, new JsonSerializerOptions
+        {
+            PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+            WriteIndented = true,
+            Converters = { new System.Text.Json.Serialization.JsonStringEnumConverter() }
+        });
+
+        var userMessage = new StringBuilder();
+        userMessage.AppendLine("Pre-aggregated tier-routing analysis for review:");
+        userMessage.AppendLine();
+        userMessage.AppendLine(analysisJson);
+
+        if (currentConfig is not null)
         {
             userMessage.AppendLine();
             userMessage.AppendLine("Current tier-selector.json:");
-            userMessage.AppendLine(await File.ReadAllTextAsync(configPath));
+            userMessage.AppendLine(JsonSerializer.Serialize(currentConfig, new JsonSerializerOptions
+            {
+                PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+                WriteIndented = true
+            }));
         }
 
         var result = await InvokeDreamPassAsync<TierRoutingReviewResultDto>(
@@ -3796,7 +3889,8 @@ internal sealed class DreamService : IHostedService, IDisposable
                 : string.Empty;
             var isSparse = s.Content.Length < 200 && s.CreatedAt < sparseThreshold;
             var sparseAnnotation = isSparse ? " [sparse-content: may need examples or steps]" : string.Empty;
-            userMessage.AppendLine($"{i + 1}. [NAME:{s.Name}]{usageAnnotation}{coUsedAnnotation}{sparseAnnotation} summary: {s.Summary}");
+            var attachedAnnotation = FormatAttachedAnnotation(s.Manifest);
+            userMessage.AppendLine($"{i + 1}. [NAME:{s.Name}]{usageAnnotation}{coUsedAnnotation}{sparseAnnotation}{attachedAnnotation} summary: {s.Summary}");
             // Cap content at 800 chars so the LLM doesn't reproduce long markdown verbatim
             // (long content with inline double-quotes breaks JSON encoding in the response).
             const int ContentCap = 800;
@@ -3872,6 +3966,87 @@ internal sealed class DreamService : IHostedService, IDisposable
             }
         }
         return false;
+    }
+
+    /// <summary>
+    /// Captures resource manifest entries + bodies from the given source skills so they
+    /// can be re-attached to a saved/merged skill after the sources are deleted. Filters
+    /// by <paramref name="allowlist"/> (case-insensitive filename match) when provided;
+    /// when null/empty, all attachments from all sources are captured. Dedupes by
+    /// filename across sources (first occurrence wins) to avoid name collisions when
+    /// two sources happen to share a filename.
+    /// </summary>
+    /// <remarks>
+    /// This is the missing piece that lets skill-dream and skill-optimize rewrite skills
+    /// without orphaning their attached wisps/scripts. The FileSkillStore manifest-preserve
+    /// path only fires when a same-named skill already exists on disk; merges into a new
+    /// name or post-delete saves bypass it entirely.
+    /// </remarks>
+    private async Task<IReadOnlyList<SkillResourceInput>> CaptureResourceInputsAsync(
+        IReadOnlyList<string> sourceNames,
+        IReadOnlyList<string>? allowlist,
+        CancellationToken ct)
+    {
+        if (_skillStore is null)
+            return [];
+
+        var allowSet = allowlist is { Count: > 0 }
+            ? new HashSet<string>(allowlist, StringComparer.OrdinalIgnoreCase)
+            : null;
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var inputs = new List<SkillResourceInput>();
+
+        foreach (var name in sourceNames)
+        {
+            if (string.IsNullOrWhiteSpace(name))
+                continue;
+
+            var src = await _skillStore.GetAsync(name);
+            if (src?.Manifest is not { Count: > 0 } manifest)
+                continue;
+
+            foreach (var entry in manifest)
+            {
+                if (allowSet is not null && !allowSet.Contains(entry.Filename))
+                    continue;
+                if (!seen.Add(entry.Filename))
+                    continue;
+
+                var body = await _skillStore.GetResourceAsync(name, entry.Filename);
+                if (body is null)
+                {
+                    _logger.LogWarning(
+                        "DreamService: resource body missing for {Skill}/{Filename} during capture; entry will be dropped",
+                        name, entry.Filename);
+                    continue;
+                }
+
+                inputs.Add(new SkillResourceInput(
+                    entry.Filename, entry.Type, entry.Description, body,
+                    Provisional: entry.Provisional,
+                    VerifyHint: entry.VerifyHint));
+            }
+        }
+
+        return inputs;
+    }
+
+    /// <summary>
+    /// Renders an "[attached: filename.ext (Type) — description; ...]" tag for the input
+    /// to skill-dream / skill-optimize so the LLM can see what assets each skill carries
+    /// and reference them by filename when rewriting content. Empty string when none.
+    /// </summary>
+    internal static string FormatAttachedAnnotation(IReadOnlyList<SkillResource>? manifest)
+    {
+        if (manifest is null || manifest.Count == 0)
+            return string.Empty;
+
+        var entries = manifest.Select(r =>
+        {
+            var provisional = r.Provisional ? "*" : string.Empty;
+            return $"{r.Filename} ({r.Type}{provisional}) — {r.Description}";
+        });
+        return $" [attached: {string.Join("; ", entries)}]";
     }
 
     private static string ExtractJsonObject(string text)
@@ -4013,30 +4188,48 @@ internal sealed class DreamService : IHostedService, IDisposable
 
     private const string BuiltInTierRoutingDirective = """
         You are a tier-routing self-correction assistant for an LLM agent framework.
-        Review the routing decisions and telemetry provided. Each entry includes:
-        - tier: the selected model tier (Low / Balanced / High)
-        - score: the pre-injection complexity score [0,1] that drove the decision
-        - highKeywords / lowKeywords: signals matched in the raw user prompt (Option A classification)
-        - postInjectionTokens: estimated tokens after memory recall and tool guide injection
-        - inputTokens / outputTokens: actual LLM token usage
-        - toolCalls / tools: how many tool calls fired and which tools
-        - latencyMs: request latency
-        - fallback=true: model fallback was triggered by quota/API error — exclude from quality signals
-        - prompt: first 150 chars of the user prompt
+        The user message is a pre-aggregated JSON analysis (schemaVersion: 1) — NOT a stream
+        of raw routing entries. The analyzer has already done all the statistical heavy lifting;
+        your job is judgment.
 
-        Detection patterns to look for:
-        1. PANIC ESCALATION: A Low-tier session triggered many tool calls (toolCalls ≥ 3) — the model
-           likely struggled. Prompts of that shape should be routed Balanced.
-        2. TOKEN SURPRISE: postInjectionTokens >> complexity score (e.g., score < 0.20 but
-           postInjectionTokens > 2000). The pre-injection classification systematically underestimated
-           the actual context cost. Adjust thresholds or add keywords for that prompt shape.
-        3. CAPABILITY FINGERPRINTS: Recurring prompt shapes consistently mis-routed. Identify
-           keywords in those prompts that should be added to highSignalKeywords or lowSignalKeywords.
-        4. COST-AWARE CORRECTION: If a class of prompts routed Low produces many tool calls and high
-           token usage, routing them to Balanced upfront is more efficient.
+        Refuse to proceed if schemaVersion != 1.
 
-        IMPORTANT: Exclude sessions with fallback=true from all quality-signal reasoning — those
-        represent infrastructure errors, not genuine routing quality failures.
+        The analysis JSON contains:
+        - globalStats: per-tier counts, percentages, avg latency/tokens, fallback rate
+        - clusters: groups of similar routing decisions (same keyword signature + tier + tool-call bucket)
+        - flaggedClusters: clusters that tripped a deterministic detection rule
+          (panicEscalation | tokenSurprise | lowOutputAtHigh), each with a rationale and
+          projected cost at the current and alternate tier when pricing is available
+        - keywordCandidates: words appearing disproportionately in High- or Low-tier prompts
+          (frequencyRatio ≥ 3, count ≥ 5), already filtered to exclude words that are
+          currently matched keywords
+        - thresholdScans: "what if" projections showing how many entries would flip tier if
+          lowCeiling or balancedCeiling moved by ±0.05, with projected USD cost delta
+        - projectedCost: total USD spend across the window plus a per-tier breakdown
+        - fallbackExcludedCount: fallback-triggered entries are already excluded from
+          clusters/flagged/candidates — you don't need to filter them yourself
+
+        Your three jobs:
+
+        1. VALIDATE flagged clusters. For each flagged cluster, decide:
+           - Is this a true misroute, or noise? (samplePrompt + count + rationale guide this.)
+           - If true, the alternateTier field suggests the corrective direction.
+
+        2. FILTER keyword candidates. The analyzer surfaces statistical candidates; you apply
+           the cognitive-complexity-vs-topic rule. Apply this test BEFORE accepting any candidate:
+           "Would a prompt containing ONLY this word and a simple verb be complex?"
+           If "check my [keyword]" or "list the [keyword]" would be simple, the word is a TOPIC
+           indicator (calendar, email, todo, schedule, flight) and MUST NOT be added — topic
+           keyword pollution is the #1 cause of over-routing to High tier.
+           Good high-signal keywords describe REASONING DIFFICULTY: analyze, architect, trade-off,
+           compare and contrast, threat model, prove, optimize.
+
+        3. PICK threshold shifts from thresholdScans, if any. The scan tells you exactly how
+           many entries would flip and the projected cost delta. Apply a shift only when:
+           - At least ~5 entries would flip in the desired direction
+           - The cost delta is favorable (or you have an explicit quality reason)
+           Adjustments must be small (±0.05). Bounds: lowCeiling in [0.05, 0.30],
+           balancedCeiling in [lowCeiling+0.10, 0.70].
 
         Return ONLY a JSON object in this exact format:
         {
@@ -4105,7 +4298,12 @@ internal sealed class DreamService : IHostedService, IDisposable
         string? Summary,
         string Content,
         IReadOnlyList<string>? SourceNames,
-        IReadOnlyList<string>? SeeAlso);
+        IReadOnlyList<string>? SeeAlso,
+        // Optional allowlist of resource filenames to carry forward onto the saved skill.
+        // When null/omitted, the applier preserves all attachments from the source skills
+        // (union for merges, identity for optimize). When provided, only filenames listed
+        // here are kept — the LLM uses this to drop near-duplicate attachments when merging.
+        IReadOnlyList<string>? Resources = null);
 
     private sealed record PrefDreamResultDto(List<PrefEntryDto>? ToSave);
 

@@ -472,7 +472,10 @@ public sealed class AgentContextBuilder(
                 skillList.Count, sessionId);
         }
 
-        // Per-turn skill BM25 recall
+        // Per-turn skill BM25 recall: rank-1 full body, ranks 2+ summary-only.
+        // Why: production tool-call logs show ~1% of tool calls are get_skill while every
+        // non-short turn pushes ~5 full bodies — most are unread. Rank-1 is usually the
+        // genuinely-relevant skill; ranks 2+ are noise the agent can pull on demand.
         {
             var newSkills = recalledSkills
                 .Where(s => skillRecallTracker.TryMarkAsRecalled(sessionId, s.Name))
@@ -481,13 +484,30 @@ public sealed class AgentContextBuilder(
             if (newSkills.Count > 0)
             {
                 var skillNames = string.Join(", ", newSkills.Select(s => s.Name));
-                foreach (var skill in newSkills)
+
+                var topSkill = newSkills[0];
+                var topBody = $"Skill: {topSkill.Name}\n{topSkill.Content}";
+                var topManifest = SkillTools.FormatManifestBlock(topSkill.Name, topSkill.Manifest);
+                if (topManifest.Length > 0)
+                    topBody += "\n" + topManifest;
+                chatMessages.Add(new ChatMessage(ChatRole.System, topBody));
+
+                if (newSkills.Count > 1)
                 {
-                    var skillText = $"Skill: {skill.Name}\n{skill.Content}";
-                    chatMessages.Add(new ChatMessage(ChatRole.System, skillText));
+                    var summaryLines = newSkills.Skip(1).Select(s =>
+                    {
+                        var summary = string.IsNullOrWhiteSpace(s.Summary)
+                            ? "(summary pending)"
+                            : s.Summary;
+                        return $"- {s.Name}: {summary}";
+                    });
+                    chatMessages.Add(new ChatMessage(ChatRole.System,
+                        "Other potentially relevant skills (call get_skill to load full instructions):\n" +
+                        string.Join("\n", summaryLines)));
                 }
+
                 logger.LogInformation(
-                    "Injected {Count} relevant skill(s) (BM25 recall) for session {SessionId}: {Skills}",
+                    "Injected {Count} skill(s) (BM25 recall: rank-1 full, ranks 2+ summary) for session {SessionId}: {Skills}",
                     newSkills.Count, sessionId, skillNames);
 
                 var seeAlsoNames = newSkills
@@ -827,8 +847,17 @@ public sealed class AgentContextBuilder(
         var toEvict = new HashSet<string>(StringComparer.Ordinal);
         foreach (var (entry, refs) in candidates)
         {
+            // The call that wrote (or otherwise touched) this entry's own key
+            // cannot be evidence contradicting the entry — that's the
+            // self-eviction loop where a worker saves "blocked: nothing" to
+            // shared/patrol/... and then the very same SaveToWorkingMemory call
+            // is treated as a contradicting "successful tool call" on the
+            // (shared, patrol) pseudo-reference. Filter those out before the
+            // contradiction search.
             var matched = successes.FirstOrDefault(s =>
-                s.Timestamp > entry.StoredAt && CallMatchesAnyRef(s, refs));
+                s.Timestamp > entry.StoredAt
+                && !CallTouchesEntryKey(s, entry.Key)
+                && CallMatchesAnyRef(s, refs));
             if (matched is null) continue;
 
             try
@@ -862,23 +891,258 @@ public sealed class AgentContextBuilder(
         && entry.Tags.Any(t => string.Equals(t, ObservationLanguageDetector.ObservationTag, StringComparison.OrdinalIgnoreCase));
 
     /// <summary>
-    /// A successful tool call matches a (server, tool) reference when both names
-    /// appear in either the call's <see cref="ToolCallEvent.ToolName"/> or
-    /// <see cref="ToolCallEvent.ArgumentsSummary"/>. MCP calls are logged as
-    /// <c>mcp_invoke_tool</c> with the inner tool exposed via the args summary
-    /// (<c>server_name=X, tool_name=Y</c>), so both fields must be searched.
+    /// A successful tool call matches a (server, tool) reference only when:
+    /// <list type="bullet">
+    ///   <item>It is an <c>mcp_invoke_tool</c> call (the only call shape that
+    ///         actually invokes an MCP server tool), and</item>
+    ///   <item>The args summary contains the structured form
+    ///         <c>server_name=&lt;Server&gt;</c> AND
+    ///         <c>tool_name=&lt;Tool&gt;</c> matching the reference.</item>
+    /// </list>
+    /// <para>
+    /// Internal tools like <c>SaveToWorkingMemory</c>, <c>SearchMemory</c>,
+    /// etc. cannot contradict claims about external MCP capabilities — they
+    /// don't invoke MCP servers at all. Their args summaries do however
+    /// contain arbitrary JSON data that may mention server and tool names
+    /// (e.g. a patrol report mentioning <c>calendar-mcp</c> and
+    /// <c>get_emails</c>), so a substring-only match against them produces
+    /// false positives. The structured form below is precise about what
+    /// counts as a real MCP invocation.
+    /// </para>
     /// </summary>
     private static bool CallMatchesAnyRef(
         ToolCallEvent call, IReadOnlyList<(string Server, string Tool)> refs)
     {
-        var hay = $"{call.ToolName} {call.ArgumentsSummary ?? string.Empty}";
+        if (!string.Equals(call.ToolName, "mcp_invoke_tool", StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        var args = call.ArgumentsSummary;
+        if (string.IsNullOrEmpty(args)) return false;
+
         foreach (var r in refs)
         {
-            if (hay.Contains(r.Server, StringComparison.OrdinalIgnoreCase)
-                && hay.Contains(r.Tool, StringComparison.OrdinalIgnoreCase))
+            if (args.Contains($"server_name={r.Server}", StringComparison.OrdinalIgnoreCase)
+                && args.Contains($"tool_name={r.Tool}", StringComparison.OrdinalIgnoreCase))
                 return true;
         }
         return false;
+    }
+
+    /// <summary>
+    /// Returns true when the call's argument summary references the given
+    /// working-memory key. Used to filter out the writing call (or any
+    /// subsequent call that touches the same entry) from the contradiction
+    /// candidate set — a SaveToWorkingMemory call to key K cannot disprove an
+    /// observation that lives at key K.
+    /// </summary>
+    private static bool CallTouchesEntryKey(ToolCallEvent call, string entryKey)
+    {
+        if (string.IsNullOrEmpty(entryKey)) return false;
+        var args = call.ArgumentsSummary;
+        if (string.IsNullOrEmpty(args)) return false;
+        return args.Contains(entryKey, StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// Slim context build for the worker rung — see <c>design/worker-subagents.md</c>.
+    /// Injects only: system prompt (passed in), datetime, active rules, model
+    /// guardrails, skill index + BM25 recall, service hints, and working memory
+    /// (own namespace + shared). Skips LTM/episodic/identity/KG fetch entirely
+    /// and the embedding generation that backs them.
+    /// </summary>
+    /// <param name="sessionId">The worker session id (used for skill recall tracking only — workers have no LTM injection).</param>
+    /// <param name="currentUserContent">The worker description text (used for BM25 recall).</param>
+    /// <param name="ct">Cancellation token.</param>
+    /// <param name="workingMemoryNamespace">
+    /// Working memory namespace for the worker — typically <c>worker/&lt;task-id&gt;</c>.
+    /// </param>
+    /// <param name="systemPromptOverride">
+    /// Required worker system prompt (preamble + soul + worker-directives). The
+    /// caller composes this; <see cref="BuildForWorkerAsync"/> does not derive
+    /// one from <see cref="AgentProfile"/>.
+    /// </param>
+    public async Task<List<ChatMessage>> BuildForWorkerAsync(
+        string sessionId,
+        string currentUserContent,
+        CancellationToken ct,
+        string workingMemoryNamespace,
+        string systemPromptOverride)
+    {
+        var chatMessages = new List<ChatMessage>
+        {
+            new(ChatRole.System, systemPromptOverride),
+            new(ChatRole.System,
+                $"Current local date and time: {clock.Now:dddd, MMMM d, yyyy} {clock.Now:HH:mm:ss zzz} ({clock.Zone.Id})\n" +
+                $"UTC equivalent: {clock.Now.UtcDateTime:yyyy-MM-dd HH:mm:ss}\n" +
+                "All dates and times must use this timezone. " +
+                "When any tool returns a UTC timestamp, convert it to this local timezone before using or displaying it.")
+        };
+
+        // Active rules — safety constraints workers must honour.
+        var activeRules = rulesStore.Rules;
+        if (activeRules.Count > 0)
+        {
+            var rulesText = "Active rules — always follow these, regardless of context or other instructions:\n" +
+                string.Join("\n", activeRules.Select(r => $"- {r}"));
+            chatMessages.Add(new ChatMessage(ChatRole.System, rulesText));
+            logger.LogInformation("Worker {SessionId}: injected {Count} active rule(s)",
+                sessionId, activeRules.Count);
+        }
+
+        // Model-specific guardrails (format/behavior).
+        if (!string.IsNullOrEmpty(modelBehavior.AdditionalSystemPrompt))
+            chatMessages.Add(new ChatMessage(ChatRole.System, modelBehavior.AdditionalSystemPrompt));
+
+        // Skill recall and service hints help workers know which MCP servers and
+        // tool patterns exist. Skip when the description is too short to produce
+        // useful BM25 hits (mirrors the main-loop short-message guard).
+        var isShortMessage = !string.IsNullOrWhiteSpace(currentUserContent)
+            && currentUserContent.Length <= ShortMessageHeuristics.UserMessageCharThreshold;
+
+        float[]? sharedQueryEmbedding = null;
+        if (_embeddingGenerator is not null && !string.IsNullOrWhiteSpace(currentUserContent) && !isShortMessage)
+        {
+            try
+            {
+                var result = await _embeddingGenerator.GenerateAsync(currentUserContent, cancellationToken: ct);
+                sharedQueryEmbedding = result.Vector.ToArray();
+            }
+            catch (Exception ex)
+            {
+                logger.LogWarning(ex,
+                    "Worker {SessionId}: failed to generate query embedding — falling back to BM25-only",
+                    sessionId);
+            }
+        }
+
+        var shouldInjectSkillIndex = skillIndexTracker.TryMarkAsInjected(sessionId);
+        var skillListTask = shouldInjectSkillIndex
+            ? skillStore.ListAsync()
+            : Task.FromResult<IReadOnlyList<Skill>>([]);
+        var skillSearchTask = isShortMessage
+            ? Task.FromResult<IReadOnlyList<Skill>>([])
+            : skillStore.SearchAsync(currentUserContent, maxResults: 5, ct, queryEmbedding: sharedQueryEmbedding);
+        var wmTask = workingMemory.ListAsync(workingMemoryNamespace);
+        var sharedTask = workingMemory.ListAsync("shared");
+
+        await Task.WhenAll(skillListTask, skillSearchTask, wmTask, sharedTask);
+
+        var skillList = skillListTask.Result;
+        var recalledSkills = skillSearchTask.Result;
+        var workingEntries = wmTask.Result;
+        var sharedEntries = sharedTask.Result;
+
+        // Stale-observation eviction still applies (cheap; consistent with the
+        // primary builder so contradicted claims do not linger in worker context).
+        workingEntries = await FilterStaleObservationsAsync(workingEntries, ct);
+        sharedEntries = await FilterStaleObservationsAsync(sharedEntries, ct);
+
+        // Skill index (once per session).
+        if (shouldInjectSkillIndex && skillList.Count > 0)
+        {
+            var indexText =
+                "Available skills (use get_skill to load full instructions; " +
+                "bracketed tags like [Wisp, Python] list resource types saved on the skill):\n" +
+                string.Join("\n", skillList.Select(s =>
+                {
+                    var summary = string.IsNullOrWhiteSpace(s.Summary)
+                        ? "(summary pending)"
+                        : s.Summary;
+                    var resourceTag = SkillTools.FormatResourceTag(s.Manifest);
+                    return $"- {s.Name}{resourceTag}: {summary}";
+                }));
+            chatMessages.Add(new ChatMessage(ChatRole.System, indexText));
+        }
+
+        // Per-turn skill BM25 recall.
+        {
+            var newSkills = recalledSkills
+                .Where(s => skillRecallTracker.TryMarkAsRecalled(sessionId, s.Name))
+                .ToList();
+            if (newSkills.Count > 0)
+            {
+                foreach (var skill in newSkills)
+                {
+                    var body = $"Skill: {skill.Name}\n{skill.Content}";
+                    var manifestBlock = SkillTools.FormatManifestBlock(skill.Name, skill.Manifest);
+                    if (manifestBlock.Length > 0)
+                        body += "\n" + manifestBlock;
+                    chatMessages.Add(new ChatMessage(ChatRole.System, body));
+                }
+                logger.LogInformation(
+                    "Worker {SessionId}: injected {Count} skill(s) via BM25 recall",
+                    sessionId, newSkills.Count);
+            }
+        }
+
+        // Service hints.
+        if (_serviceSearchIndex is not null && !string.IsNullOrWhiteSpace(currentUserContent) && !isShortMessage)
+        {
+            var candidates = _serviceSearchIndex.Search(currentUserContent, maxResults: 2);
+            if (candidates.Count > 0)
+            {
+                var lines = candidates.Select(c =>
+                {
+                    var itemsLabel = c.Type == "a2a" ? "top skills" : "top tools";
+                    var items = c.TopItems.Count > 0
+                        ? $", {itemsLabel}: {string.Join(", ", c.TopItems)}"
+                        : string.Empty;
+                    return $"- {c.Id} ({c.Type}): {c.Summary}{items}";
+                });
+                chatMessages.Add(new ChatMessage(ChatRole.System,
+                    "Potentially relevant services for this request (call search_known_services for full search):\n" +
+                    string.Join("\n", lines)));
+            }
+        }
+
+        // Own-namespace working memory inventory.
+        if (workingEntries.Count > 0)
+        {
+            var now = DateTimeOffset.UtcNow;
+            var lines = workingEntries.Select(e =>
+            {
+                var remaining = e.ExpiresAt - now;
+                var remainingStr = remaining.TotalMinutes >= 1
+                    ? $"{(int)remaining.TotalMinutes}m{remaining.Seconds:D2}s"
+                    : $"{Math.Max(0, remaining.Seconds)}s";
+                var meta = new System.Text.StringBuilder($"- {e.Key}: expires in {remainingStr}");
+                if (e.Category is not null) meta.Append($", category: {e.Category}");
+                if (e.Tags is { Count: > 0 }) meta.Append($", tags: {string.Join(", ", e.Tags)}");
+                return meta.ToString();
+            });
+            chatMessages.Add(new ChatMessage(ChatRole.System,
+                "Working memory (scratch space — use search_working_memory or get_from_working_memory to retrieve):\n" +
+                string.Join("\n", lines)));
+        }
+
+        // Shared cross-session handoff namespace.
+        if (sharedEntries.Count > 0
+            && !workingMemoryNamespace.Equals("shared", StringComparison.OrdinalIgnoreCase))
+        {
+            var now = DateTimeOffset.UtcNow;
+            var lines = sharedEntries.Select(e =>
+            {
+                var remaining = e.ExpiresAt - now;
+                var remainingStr = remaining.TotalMinutes >= 1
+                    ? $"{(int)remaining.TotalMinutes}m{remaining.Seconds:D2}s"
+                    : $"{Math.Max(0, remaining.Seconds)}s";
+                var meta = new System.Text.StringBuilder($"- {e.Key}: expires in {remainingStr}");
+                if (e.Category is not null) meta.Append($", category: {e.Category}");
+                if (e.Tags is { Count: > 0 }) meta.Append($", tags: {string.Join(", ", e.Tags)}");
+                return meta.ToString();
+            });
+            chatMessages.Add(new ChatMessage(ChatRole.System,
+                "Shared working memory (cross-session handoff):\n" + string.Join("\n", lines)));
+        }
+
+        Activity.Current?.AddEvent(new ActivityEvent("worker_context_built",
+            tags: new ActivityTagsCollection
+            {
+                { "message_count", chatMessages.Count },
+                { "estimated_tokens", chatMessages.Sum(m => (m.Text?.Length ?? 0) / 4 + 1) }
+            }));
+
+        return chatMessages;
     }
 
     /// <summary>

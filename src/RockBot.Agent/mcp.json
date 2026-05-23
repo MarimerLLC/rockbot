@@ -3,10 +3,6 @@
     "introspection": {
       "type": "sse",
       "url": "http://mcp-introspection/"
-    },
-    "routing-stats": {
-      "type": "sse",
-      "url": "http://localhost:8080/"
     }
   }
 }

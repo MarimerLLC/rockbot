@@ -26,6 +26,7 @@ data:
 
   # ── Agent data paths (all under the PVC mount at /data/agent) ─────────────
   AgentProfile__BasePath: "/data/agent"
+  AgentProfile__TierRoutingLogMaxEntries: {{ .Values.agent.tierRoutingLogMaxEntries | default 1500 | quote }}
   Memory__BasePath: "/data/agent/memory"
   Skill__BasePath: "/data/agent/skills"
   McpBridge__ConfigPath: "/data/agent/mcp.json"
@@ -36,9 +37,6 @@ data:
   # at the same URL (under any name) — this prevents duplicates when a server has
   # also been registered manually. Duplicate entries (same URL + credentials, any
   # name) are deduplicated at startup regardless of how they were introduced.
-  {{- if .Values.routingStatsMcp.enabled }}
-  McpBridge__DefaultServers__routing-stats: "http://localhost:8080/"
-  {{- end }}
   {{- if (default dict .Values.introspectionMcp).enabled }}
   McpBridge__DefaultServers__introspection: "http://localhost:8081/"
   {{- end }}

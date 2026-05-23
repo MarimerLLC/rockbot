@@ -102,4 +102,52 @@ public class ObservationLanguageDetectorTests
     {
         Assert.AreEqual(0, ObservationLanguageDetector.TryExtractToolReferences(null).Count);
     }
+
+    [TestMethod]
+    [DataRow("shared/patrol/active-plans-latest")]
+    [DataRow("worker/abc123/result")]
+    [DataRow("subagent/xyz/output")]
+    [DataRow("patrol/heartbeat/findings")]
+    [DataRow("session/blazor-session/foo")]
+    [DataRow("user-preferences/family/spouse")]
+    [DataRow("agent-identity/self-model")]
+    [DataRow("agent-knowledge/conventions")]
+    [DataRow("project-context/rockbot-infrastructure")]
+    [DataRow("active-plans/talk-prep")]
+    [DataRow("active-tasks/email-followup")]
+    [DataRow("subagent-whiteboards/task-id")]
+    [DataRow("claim/capability/calendar")]
+    [DataRow("episodic/yesterday")]
+    [DataRow("mcp/calendar-mcp")]
+    [DataRow("skill/mcp-search-flow")]
+    [DataRow("skills/some-skill")]
+    [DataRow("http/example.com")]
+    [DataRow("https/example.com")]
+    [DataRow("file/foo")]
+    [DataRow("data/some-value")]
+    public void TryExtractToolReferences_ExcludesNamespacePrefixes(string content)
+    {
+        // Working-memory keys, long-term-memory category paths, and other
+        // path-shaped tokens follow the same shape as server/tool but are NOT
+        // MCP server references. The eviction filter relies on this exclusion
+        // to prevent false-positive contradictions.
+        var refs = ObservationLanguageDetector.TryExtractToolReferences(content);
+        Assert.AreEqual(0, refs.Count,
+            $"'{content}' should not produce a (server, tool) reference — its first segment is a namespace prefix.");
+    }
+
+    [TestMethod]
+    public void TryExtractToolReferences_NamespaceAlongsideRealRef_OnlyExtractsRealRef()
+    {
+        // Mixed content from a real worker finding: contains both a namespace
+        // path and a genuine MCP server/tool reference. Only the genuine
+        // reference should be extracted.
+        var refs = ObservationLanguageDetector.TryExtractToolReferences(
+            "Saved to shared/patrol/active-plans-latest. " +
+            "calendar-mcp/search_emails returned no results.");
+
+        Assert.AreEqual(1, refs.Count,
+            "Only the calendar-mcp/search_emails pair is a real tool reference.");
+        Assert.AreEqual(("calendar-mcp", "search_emails"), refs[0]);
+    }
 }

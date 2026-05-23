@@ -1,0 +1,91 @@
+using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
+using RockBot.Tools;
+
+namespace RockBot.Subagent.Worker;
+
+/// <summary>
+/// Hosted service that registers the <c>spawn_workers</c> tool with the tool registry.
+/// </summary>
+internal sealed class WorkerToolRegistrar(
+    IToolRegistry registry,
+    IWorkerManager manager,
+    ILogger<WorkerToolRegistrar> logger) : IHostedService
+{
+    private const string SpawnWorkersSchema = """
+        {
+          "type": "object",
+          "properties": {
+            "definitions": {
+              "type": "array",
+              "description": "One or more worker definitions to execute. Multiple workers run concurrently (up to MaxConcurrentWorkers).",
+              "minItems": 1,
+              "items": {
+                "type": "object",
+                "properties": {
+                  "description": {
+                    "type": "string",
+                    "description": "One-sentence imperative describing what the worker should do."
+                  },
+                  "context": {
+                    "type": "string",
+                    "description": "Optional pre-resolved facts the worker should treat as ground truth (active accounts, IDs, etc.)."
+                  },
+                  "result_key": {
+                    "type": "string",
+                    "description": "Optional override for the working-memory key the worker writes findings to. Defaults to worker/<task-id>/result."
+                  },
+                  "timeout_minutes": {
+                    "type": "integer",
+                    "description": "Soft wall-clock cap in minutes. Defaults to WorkerOptions.DefaultTimeoutMinutes (5)."
+                  },
+                  "tools_allow": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "Optional allowlist of tool names (exact match) or name prefixes (trailing asterisk, e.g. calendar-mcp.*) the worker may invoke."
+                  }
+                },
+                "required": ["description"]
+              }
+            }
+          },
+          "required": ["definitions"]
+        }
+        """;
+
+    public Task StartAsync(CancellationToken cancellationToken)
+    {
+        registry.Register(new ToolRegistration
+        {
+            Name = "spawn_workers",
+            Description = """
+                Spawn one or more lean worker subagents to execute focused gather tasks concurrently.
+                Workers are the LEAN rung between spawn_wisps (no LLM) and spawn_subagent (full LLM):
+                they run a slim LLM loop with no long-term-memory injection, a tighter tool surface,
+                Low-tier model, and a tight iteration cap. Use them for mechanical "list these
+                accounts and summarise each" or "scan email for X criteria" work where the LLM is
+                interpreting tool results but does not need persona or history.
+
+                Each worker writes its structured findings to a working-memory key (auto-assigned to
+                worker/<task-id>/result, or override via result_key). The returned receipt includes
+                each WorkerResult JSON (counts, blocked items, converged patterns, result_key) —
+                fetch the actual data with get_from_working_memory using the result_key.
+
+                Workers cannot spawn other workers, subagents, or A2A calls. They cannot save_memory
+                or promote_skill_asset — if a worker observes a tool-call pattern worth keeping, it
+                surfaces it in convergedPatterns and YOU promote it after the batch returns.
+
+                Do NOT use spawn_workers for deliberative tasks that need persona, identity, or
+                long-term memory — use spawn_subagent instead. Do NOT use it for deterministic
+                tool sequences with no branching — use spawn_wisps instead.
+                """,
+            ParametersSchema = SpawnWorkersSchema,
+            Source = "worker",
+        }, new SpawnWorkersExecutor(manager));
+
+        logger.LogInformation("Registered tool: spawn_workers");
+        return Task.CompletedTask;
+    }
+
+    public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+}

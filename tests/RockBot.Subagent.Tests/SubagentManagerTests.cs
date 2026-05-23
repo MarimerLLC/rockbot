@@ -48,6 +48,13 @@ public class SubagentManagerTests
         services.AddTransient<AgentLoopRunner>();
         services.AddTransient<SubagentRunner>();
 
+        // SubagentRunner now requires TieredChatClientRegistry to capture the
+        // configured model ID into routing telemetry. A stub registry backed by a
+        // no-op IChatClient is sufficient — GetModelId returns null when metadata
+        // is unavailable, which is the back-compat path for tests.
+        var stubChatClient = new NoopChatClient();
+        services.AddSingleton(new TieredChatClientRegistry(stubChatClient, stubChatClient, stubChatClient));
+
         // AgentProfile is required by SubagentRunner; provide a minimal stub.
         var stubDoc = new AgentProfileDocument("stub", null, [], "");
         var stubProfile = new AgentProfile(stubDoc, stubDoc);
@@ -251,6 +258,30 @@ public class SubagentManagerTests
             ChatOptions? options = null,
             CancellationToken cancellationToken = default) =>
             GetResponseAsync(messages, options, cancellationToken);
+    }
+
+    /// <summary>
+    /// Minimal IChatClient used to construct a TieredChatClientRegistry for SubagentRunner.
+    /// Never receives an actual call — exists only so DI can build the registry.
+    /// </summary>
+    private sealed class NoopChatClient : IChatClient
+    {
+        public Task<ChatResponse> GetResponseAsync(
+            IEnumerable<ChatMessage> messages, ChatOptions? options = null, CancellationToken cancellationToken = default) =>
+            Task.FromResult(new ChatResponse([new ChatMessage(ChatRole.Assistant, "")]));
+
+#pragma warning disable CS1998 // async without await is intentional for the yield-break empty stream
+        public async IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(
+            IEnumerable<ChatMessage> messages,
+            ChatOptions? options = null,
+            [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
+        {
+            yield break;
+        }
+#pragma warning restore CS1998
+
+        public object? GetService(Type serviceType, object? serviceKey = null) => null;
+        public void Dispose() { }
     }
 
     /// <summary>LLM client that blocks until the TCS is completed or the token is cancelled.</summary>

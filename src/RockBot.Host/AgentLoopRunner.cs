@@ -313,6 +313,7 @@ public sealed partial class AgentLoopRunner(
         Func<string, CancellationToken, Task>? onStageProgress = null,
         bool enableFollowUp = true,
         bool enableCompletionEval = true,
+        bool enableReasoningScaffolding = true,
         double? complexityScore = null,
         int? maxIterationsOverride = null,
         LoopDiagnostics? diagnostics = null,
@@ -332,18 +333,33 @@ public sealed partial class AgentLoopRunner(
         var stashState = new AgentLoopStashContext.State { SessionId = sessionId };
         using var ____ = AgentLoopStashContext.Set(stashState);
 
+        // Per-run skill-body aging state. AgentContextBuilder's BM25 rank-1 push
+        // injects up to one full skill body per turn as a system message; this state
+        // lets the FICC inner loop unload bodies the model isn't actively re-using.
+        var loadedSkillsState = new LoadedSkillsContext.State();
+        using var _____ = LoadedSkillsContext.Set(loadedSkillsState);
+
         // Ensure a current datetime context is always present.
         EnsureDateTimeContext(chatMessages);
 
         // Inject reasoning scaffolding so the model knows its iteration budget.
-        InjectReasoningScaffolding(chatMessages);
+        // Workers (the lean rung between wisps and subagents) skip this — they
+        // don't need step-by-step deliberation guidance and shave the system
+        // message out entirely.
+        if (enableReasoningScaffolding)
+            InjectReasoningScaffolding(chatMessages);
 
         // Per-run task list (issue #336): in-memory plan that survives context trimming
         // because RefreshTaskListContext rebuilds the system message from this state on
         // each iteration. Built fresh per RunAsync — not persisted, not shared.
+        // Workers skip the task-list tools too — a leaf gather task does not need a
+        // TODO list, and removing the tools shrinks the schema injection cost.
         var taskList = new AgentTaskList();
-        var taskListTools = new AgentTaskListTools(taskList, logger);
-        AppendTaskListTools(chatOptions, taskListTools);
+        if (enableReasoningScaffolding)
+        {
+            var taskListTools = new AgentTaskListTools(taskList, logger);
+            AppendTaskListTools(chatOptions, taskListTools);
+        }
 
         var originalUserRequest = ExtractOriginalUserRequest(chatMessages);
         var maxReprompts = modelBehavior.MaxCompletionRepromptsOverride
@@ -645,6 +661,9 @@ public sealed partial class AgentLoopRunner(
             logger.LogInformation("Added pre-fetched first response to context for native path");
         }
 
+        LogContextBreakdown(chatMessages, "native-entry", sessionId, logger);
+        RecordLlmCallContextSize(chatMessages, sessionId);
+
         ChatResponse response;
         try
         {
@@ -661,12 +680,31 @@ public sealed partial class AgentLoopRunner(
         // Append response messages to chatMessages so re-prompts have full tool-call history.
         chatMessages.AddRange(response.Messages);
 
+        LogContextBreakdown(chatMessages, "native-exit", sessionId, logger);
+        // native-exit size approximates the largest in-loop context: it includes the
+        // final assistant turn plus every tool call/result FICC appended internally.
+        RecordLlmCallContextSize(chatMessages, sessionId);
+
         var tierTag = new KeyValuePair<string, object?>("rockbot.llm.tier", tier.ToString());
-        HostDiagnostics.TurnTokensInput.Record(response.Usage?.InputTokenCount ?? 0, tierTag);
-        HostDiagnostics.TurnTokensOutput.Record(response.Usage?.OutputTokenCount ?? 0, tierTag);
+        var nativeInputTokens = response.Usage?.InputTokenCount ?? 0;
+        var nativeOutputTokens = response.Usage?.OutputTokenCount ?? 0;
+        var nativeCachedInputTokens = response.Usage is { } nativeUsage
+            ? UsageReader.GetCachedInputTokens(nativeUsage)
+            : 0;
+        HostDiagnostics.TurnTokensInput.Record(nativeInputTokens, tierTag);
+        HostDiagnostics.TurnTokensOutput.Record(nativeOutputTokens, tierTag);
+        HostDiagnostics.TurnTokensInputCached.Record(nativeCachedInputTokens, tierTag);
         HostDiagnostics.TurnToolCalls.Record(
             response.Messages.SelectMany(m => m.Contents.OfType<FunctionCallContent>()).Count(),
             tierTag);
+
+        if (nativeInputTokens > 0)
+        {
+            var cachePct = nativeCachedInputTokens * 100.0 / nativeInputTokens;
+            logger.LogInformation(
+                "Native loop usage: tier={Tier} input={InputTokens} cached={CachedTokens} ({CachePct:F1}%) output={OutputTokens}",
+                tier, nativeInputTokens, nativeCachedInputTokens, cachePct, nativeOutputTokens);
+        }
 
         var nativeFinalText = ExtractAssistantText(response);
         if (LoopDiagnosticsContext.Value is { } diagNative
@@ -680,27 +718,41 @@ public sealed partial class AgentLoopRunner(
 
     /// <summary>
     /// Ensures a current datetime system message is present in <paramref name="chatMessages"/>.
-    /// Replaces an existing one if found (keeps the time current for long-running loops),
-    /// or inserts one after the first system message if absent.
+    /// Placement and granularity are chosen to preserve the provider-side prompt cache
+    /// across consecutive turns: the string is rounded to the minute (sub-minute precision
+    /// is available to the model via <c>current_datetime</c> on demand) and inserted just
+    /// before the last user message rather than near the top of the message list. Inserting
+    /// near the top — the previous behavior — busted the prompt cache on every turn because
+    /// the datetime string sat in front of the otherwise-stable conversation history; the
+    /// new placement keeps the entire history prefix cacheable. Any pre-existing datetime
+    /// system message is removed first so re-running the loop migrates the position.
     /// </summary>
     private void EnsureDateTimeContext(List<ChatMessage> chatMessages)
     {
+        var now = clock.Now;
+        var nowMinute = new DateTimeOffset(now.Year, now.Month, now.Day, now.Hour, now.Minute, 0, now.Offset);
         var text =
-            $"The user's local date and time is: {clock.Now:dddd, MMMM d, yyyy} {clock.Now:HH:mm:ss zzz} ({clock.Zone.Id}). " +
+            $"The user's local date and time is: {nowMinute:dddd, MMMM d, yyyy} {nowMinute:HH:mm zzz} ({clock.Zone.Id}). " +
             "Always express dates and times to the user in this timezone. Never assume UTC or any other timezone.";
 
-        for (var i = 0; i < chatMessages.Count; i++)
+        for (var i = chatMessages.Count - 1; i >= 0; i--)
         {
-            if (chatMessages[i].Role == ChatRole.System &&
-                chatMessages[i].Text?.StartsWith("The user's local date and time is:") == true)
+            if (chatMessages[i].Role == ChatRole.System
+                && chatMessages[i].Text?.StartsWith("The user's local date and time is:") == true)
             {
-                chatMessages[i] = new ChatMessage(ChatRole.System, text);
-                return;
+                chatMessages.RemoveAt(i);
             }
         }
 
-        // Not already present — insert after the first system message (or at 0 if none)
-        var insertAt = chatMessages.Count > 0 && chatMessages[0].Role == ChatRole.System ? 1 : 0;
+        var insertAt = chatMessages.Count;
+        for (var i = chatMessages.Count - 1; i >= 0; i--)
+        {
+            if (chatMessages[i].Role == ChatRole.User)
+            {
+                insertAt = i;
+                break;
+            }
+        }
         chatMessages.Insert(insertAt, new ChatMessage(ChatRole.System, text));
     }
 
@@ -873,7 +925,21 @@ public sealed partial class AgentLoopRunner(
                 var stashState = AgentLoopStashContext.Value
                     ?? throw new InvalidOperationException("AgentLoopStashContext was not initialised — RunAsync must set it before invoking the loop.");
 
-                if (_knownContextLimit is int preLimit)
+                // Soft watermark: trim proactively when the running message list exceeds
+                // ToolResultStashWatermarkTokens, even if the provider hasn't yet returned
+                // a 400 overflow. Falls back to _knownContextLimit if the watermark is
+                // disabled or larger than the learned hard limit. Without this, long
+                // tool-heavy subagent loops climb to 100k+ tokens before any trim fires
+                // (issue: context-bloat investigation).
+                var watermark = hostOptions.Value.ToolResultStashWatermarkTokens;
+                int? effectiveLimit = (watermark, _knownContextLimit) switch
+                {
+                    (> 0, int hard) => Math.Min(watermark, hard),
+                    (> 0, null) => watermark,
+                    (_, int hard) => hard,
+                    _ => null
+                };
+                if (effectiveLimit is int preLimit)
                     await TrimLargeToolResultsAsync(chatMessages, preLimit, sessionId, stashState);
 
                 // Refresh the stash registry system message so the model sees the latest
@@ -881,6 +947,8 @@ public sealed partial class AgentLoopRunner(
                 // LLM call. Matches the RefreshTaskListContext pattern: rebuilt from
                 // in-memory state, idempotent.
                 RefreshStashRegistryContext(chatMessages, stashState.Registry);
+
+                LogContextBreakdown(chatMessages, $"text-iter-{iteration + 2}", sessionId, logger);
 
                 logger.LogInformation("Calling LLM — iteration {Iteration} ({MessageCount} messages in context)",
                     iteration + 2, chatMessages.Count);
@@ -1100,6 +1168,24 @@ public sealed partial class AgentLoopRunner(
                     }
 
                     // Chunking is handled by ChunkingAIFunction wrapper on the tool itself.
+                    // Per-tool-result cap: text-parsed calls have no callId so the cap falls
+                    // back to head-only truncation (legacy mode), but it still prevents one
+                    // bloated text-tool return from singlehandedly inflating the loop.
+                    var maxTextChars = hostOptions.Value.ToolResultMaxChars;
+                    if (maxTextChars > 0 && textResultStr.Length > maxTextChars)
+                    {
+                        var ttl = TimeSpan.FromMinutes(Math.Max(1, hostOptions.Value.ToolResultStashTtlMinutes));
+                        textResultStr = await CapToolResultAsync(
+                            textResultStr,
+                            callId: null,
+                            toolName: toolName,
+                            workingMemory: workingMemory,
+                            stashState: AgentLoopStashContext.Value,
+                            maxChars: maxTextChars,
+                            headRatio: hostOptions.Value.ToolResultStashHeadTailRatio,
+                            ttl: ttl,
+                            logger: logger);
+                    }
                     chatMessages.Add(new ChatMessage(ChatRole.User,
                         $"[Tool result for {toolName}]: {textResultStr}"));
 
@@ -1217,6 +1303,31 @@ public sealed partial class AgentLoopRunner(
                 ToolDiagnostics.Invocations.Add(1,
                     new KeyValuePair<string, object?>("rockbot.tool.name", fc.Name),
                     new KeyValuePair<string, object?>("rockbot.tool.status", toolStatus));
+
+                // Per-tool-result cap (text-loop native path). Same intent as the cap
+                // applied by RockBotFunctionInvokingChatClient on the FICC path: stash
+                // a single oversized result and inline-replace with head + elision + tail
+                // so the watermark trim doesn't have to absorb the bloat retroactively.
+                var maxNativeChars = hostOptions.Value.ToolResultMaxChars;
+                if (maxNativeChars > 0 && nativeResultStr.Length > maxNativeChars)
+                {
+                    var nativeTtl = TimeSpan.FromMinutes(Math.Max(1, hostOptions.Value.ToolResultStashTtlMinutes));
+                    nativeResultStr = await CapToolResultAsync(
+                        nativeResultStr,
+                        callId: fc.CallId,
+                        toolName: fc.Name,
+                        workingMemory: workingMemory,
+                        stashState: AgentLoopStashContext.Value,
+                        maxChars: maxNativeChars,
+                        headRatio: hostOptions.Value.ToolResultStashHeadTailRatio,
+                        ttl: nativeTtl,
+                        logger: logger);
+                    if (AgentLoopStashContext.Value is { } stashStateForRegistry)
+                    {
+                        RefreshStashRegistryContext(chatMessages, stashStateForRegistry.Registry);
+                    }
+                }
+
                 chatMessages.Add(new ChatMessage(ChatRole.Tool,
                     [new FunctionResultContent(fc.CallId, nativeResultStr)]));
 
@@ -1470,6 +1581,230 @@ public sealed partial class AgentLoopRunner(
     }
 
     /// <summary>
+    /// Prefix on the system message that <see cref="AgentContextBuilder"/> uses to inject
+    /// a BM25-recalled skill body. Matches the exact format at the rank-1 push site
+    /// (<c>$"Skill: {name}\n{content}"</c>) so this aging logic can find and remove
+    /// those messages without false-matching unrelated text.
+    /// </summary>
+    private const string SkillBodyMessagePrefix = "Skill: ";
+
+    /// <summary>
+    /// Tool name (case-insensitive) the model calls to (re-)fetch a skill body. A call
+    /// to this tool refreshes the named skill's last-use counter, keeping the body
+    /// resident even if it's already past the unload threshold.
+    /// </summary>
+    private const string GetSkillToolName = "get_skill";
+
+    /// <summary>
+    /// Extracts the skill name from a "Skill: {name}\n..." system message, returning
+    /// true only when the message looks exactly like the rank-1 BM25 push format. Other
+    /// system messages that happen to start with "Skill " (e.g. text inside a directive)
+    /// are filtered out by requiring the trailing newline that separates name from body.
+    /// </summary>
+    internal static bool TryExtractLoadedSkillName(ChatMessage message, out string skillName)
+    {
+        skillName = string.Empty;
+        if (message.Role != ChatRole.System) return false;
+
+        var text = message.Text;
+        if (text is null || text.Length <= SkillBodyMessagePrefix.Length) return false;
+        if (!text.StartsWith(SkillBodyMessagePrefix, StringComparison.Ordinal)) return false;
+
+        var nameStart = SkillBodyMessagePrefix.Length;
+        var newlineIdx = text.IndexOf('\n', nameStart);
+        if (newlineIdx <= nameStart) return false;
+
+        var candidate = text[nameStart..newlineIdx].Trim();
+        if (candidate.Length == 0) return false;
+
+        skillName = candidate;
+        return true;
+    }
+
+    /// <summary>
+    /// Pulls the skill name from <c>get_skill</c>'s arguments. The tool's signature
+    /// uses parameter name <c>name</c>; lookup is case-insensitive to tolerate provider
+    /// quirks. Returns null when the argument is missing or non-string.
+    /// </summary>
+    internal static string? TryGetSkillNameArgument(IDictionary<string, object?>? toolArgs)
+    {
+        if (toolArgs is null || toolArgs.Count == 0) return null;
+        foreach (var (key, value) in toolArgs)
+        {
+            if (string.Equals(key, "name", StringComparison.OrdinalIgnoreCase))
+                return value?.ToString();
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// Discovers any skill bodies in <paramref name="messages"/> that aren't yet
+    /// tracked, refreshes the last-use timestamp when the current tool call is a
+    /// <c>get_skill</c>, then removes any skill body whose last use is more than
+    /// <paramref name="unloadAfter"/> iterations behind <see cref="LoadedSkillsContext.State.CurrentIteration"/>.
+    /// Bumps the iteration counter on entry so the first tool call after a body is
+    /// loaded starts the aging clock at iteration 1, not 0.
+    ///
+    /// Returns the number of skill bodies unloaded (0 when nothing was aged out).
+    /// </summary>
+    internal static int RegisterAndAgeSkillBodies(
+        IList<ChatMessage> messages,
+        LoadedSkillsContext.State state,
+        string toolName,
+        IDictionary<string, object?>? toolArgs,
+        int unloadAfter,
+        ILogger logger)
+    {
+        state.CurrentIteration++;
+
+        // Discover bodies present in context but not yet tracked. We don't know the
+        // exact iteration they were injected at — be lenient and start their clock
+        // at the current iteration (i.e. give them a fresh budget on first sight).
+        for (var i = 0; i < messages.Count; i++)
+        {
+            if (TryExtractLoadedSkillName(messages[i], out var loadedName)
+                && !state.LastUseIteration.ContainsKey(loadedName))
+            {
+                state.LastUseIteration[loadedName] = state.CurrentIteration;
+            }
+        }
+
+        // Refresh the use clock if the current tool call is get_skill(name=X).
+        if (string.Equals(toolName, GetSkillToolName, StringComparison.OrdinalIgnoreCase))
+        {
+            var refreshedName = TryGetSkillNameArgument(toolArgs);
+            if (!string.IsNullOrEmpty(refreshedName))
+            {
+                state.LastUseIteration[refreshedName] = state.CurrentIteration;
+            }
+        }
+
+        if (unloadAfter <= 0) return 0;
+
+        // Build the unload list. We can't mutate LastUseIteration while iterating, so
+        // collect first.
+        List<string>? toUnload = null;
+        foreach (var (skill, lastUse) in state.LastUseIteration)
+        {
+            if (state.CurrentIteration - lastUse > unloadAfter)
+            {
+                (toUnload ??= []).Add(skill);
+            }
+        }
+        if (toUnload is null) return 0;
+
+        var removed = 0;
+        foreach (var skill in toUnload)
+        {
+            var ageAtUnload = state.CurrentIteration - state.LastUseIteration[skill];
+            state.LastUseIteration.Remove(skill);
+
+            // Walk back-to-front because the skill body is typically near the top
+            // (system messages cluster early) but removing back-to-front keeps the
+            // loop indices stable either way.
+            for (var i = messages.Count - 1; i >= 0; i--)
+            {
+                if (TryExtractLoadedSkillName(messages[i], out var msgSkill)
+                    && string.Equals(msgSkill, skill, StringComparison.Ordinal))
+                {
+                    messages.RemoveAt(i);
+                    removed++;
+                    logger.LogInformation(
+                        "Unloaded skill body for '{Skill}' after {Age} iteration(s) of non-use",
+                        skill, ageAtUnload);
+                    break;
+                }
+            }
+        }
+        return removed;
+    }
+
+    /// <summary>
+    /// Per-tool-result cap. When <paramref name="resultStr"/> exceeds
+    /// <paramref name="maxChars"/>, stashes the full original to working memory and
+    /// returns a head + elision marker + tail surface that fits the cap; otherwise
+    /// returns the original unchanged. This runs per-call (independent of the global
+    /// context watermark) so one oversized tool — e.g. an MCP schema dump — can't
+    /// singlehandedly bloat the inner loop before the watermark fires.
+    ///
+    /// Falls back to legacy head-only truncation (no stash, no registry entry) when
+    /// <paramref name="callId"/> is empty or <paramref name="stashState"/> is null,
+    /// matching the behaviour of <see cref="TrimLargeToolResultsAsync"/>.
+    /// </summary>
+    internal static async Task<string> CapToolResultAsync(
+        string resultStr,
+        string? callId,
+        string toolName,
+        IWorkingMemory workingMemory,
+        AgentLoopStashContext.State? stashState,
+        int maxChars,
+        double headRatio,
+        TimeSpan ttl,
+        ILogger logger)
+    {
+        if (maxChars <= 0 || resultStr.Length <= maxChars)
+            return resultStr;
+
+        // No callId or no stash state → head-only truncation. The model can't recover
+        // the elided content (nothing to register), so we don't promise it can.
+        if (string.IsNullOrEmpty(callId) || stashState is null)
+        {
+            var legacyHead = Math.Max(200, maxChars - 40);
+            if (legacyHead >= resultStr.Length) legacyHead = resultStr.Length - 1;
+            var legacyTrimmed = resultStr[..legacyHead] + "\n[truncated to fit context window]";
+            logger.LogInformation(
+                "Capped tool result for {Tool} (legacy mode, no callId): {Before:N0} → {After:N0} chars",
+                toolName, resultStr.Length, legacyTrimmed.Length);
+            return legacyTrimmed;
+        }
+
+        var marker = BuildElisionMarker(callId);
+        var clampedRatio = Math.Clamp(headRatio, 0.0, 1.0);
+        var surfaceBudget = Math.Max(200, maxChars - marker.Length - 60);
+        if (surfaceBudget >= resultStr.Length) surfaceBudget = resultStr.Length - 1;
+        var headLen = (int)Math.Round(surfaceBudget * clampedRatio);
+        var tailLen = surfaceBudget - headLen;
+        if (headLen < 0) headLen = 0;
+        if (tailLen < 0) tailLen = 0;
+        if (headLen + tailLen >= resultStr.Length) headLen = Math.Max(0, resultStr.Length - tailLen - 1);
+
+        var head = headLen > 0 ? resultStr[..headLen] : string.Empty;
+        var tail = tailLen > 0 ? resultStr[^tailLen..] : string.Empty;
+        var trimmed = string.Concat(head, "\n\n", marker, "\n\n", tail);
+
+        if (!stashState.Registry.Contains(callId))
+        {
+            var stashKey = BuildStashKey(stashState.SessionId, callId);
+            try
+            {
+                await workingMemory.SetAsync(
+                    stashKey, resultStr, ttl,
+                    category: "tool-result-stash",
+                    tags: ["stash", "tool-result"]);
+            }
+            catch (Exception ex)
+            {
+                logger.LogWarning(ex,
+                    "Failed to stash original tool result for call {CallId}; capping without stash",
+                    callId);
+            }
+
+            stashState.ArgsSummaries.TryGetValue(callId, out var argsSummary);
+            stashState.Registry.Add(new ToolResultStashRegistry.Entry(
+                CallId: callId,
+                ToolName: toolName,
+                ArgsSummary: argsSummary ?? "(args unavailable)",
+                Key: stashKey));
+        }
+
+        logger.LogInformation(
+            "Capped tool result for call {CallId} ({Tool}): {Before:N0} → {After:N0} chars (head {Head}, tail {Tail})",
+            callId, toolName, resultStr.Length, trimmed.Length, headLen, tailLen);
+
+        return trimmed;
+    }
+
+    /// <summary>
     /// Walks <paramref name="messages"/> looking for the assistant <see cref="FunctionCallContent"/>
     /// whose <see cref="FunctionCallContent.CallId"/> matches <paramref name="callId"/>, and
     /// returns its tool name. Falls back to <c>"(unknown)"</c> when no match is found —
@@ -1567,13 +1902,142 @@ public sealed partial class AgentLoopRunner(
         return summary is { Length: > MaxLen } ? summary[..MaxLen] + "…" : summary;
     }
 
-    private static int EstimateMessageChars(ChatMessage m) =>
+    internal static int EstimateMessageChars(ChatMessage m) =>
         m.Contents.Sum(static c => c switch
         {
             TextContent tc => tc.Text?.Length ?? 0,
             FunctionResultContent frc => frc.Result?.ToString()?.Length ?? 0,
             _ => 50
         });
+
+    /// <summary>
+    /// Classifies <paramref name="sessionId"/> into one of <c>session</c>, <c>patrol</c>,
+    /// <c>subagent</c>, <c>worker</c>, or <c>unknown</c> — the same buckets used by the
+    /// existing <c>ContextBreakdown</c> log gate. Used as a metric tag so Grafana can
+    /// split per-call context size by workload kind.
+    /// </summary>
+    internal static string ClassifySessionKind(string? sessionId) => sessionId switch
+    {
+        null => "unknown",
+        var s when s.StartsWith("patrol/", StringComparison.Ordinal) => "patrol",
+        var s when s.StartsWith("subagent-", StringComparison.Ordinal) => "subagent",
+        var s when s.StartsWith("worker-", StringComparison.Ordinal) => "worker",
+        _ => "session"
+    };
+
+    /// <summary>
+    /// Records the estimated token count of the message list about to be sent to the LLM.
+    /// Uses the same 4-chars-per-token estimate as the trim path so the metric is directly
+    /// comparable to the watermark and per-tool cap. Call this at every LLM call boundary
+    /// — native entry, native exit, and each FICC pre-invoke approximation.
+    /// </summary>
+    internal static void RecordLlmCallContextSize(
+        IList<ChatMessage> messages,
+        string? sessionId)
+    {
+        var tokens = messages.Sum(EstimateMessageChars) / 4;
+        HostDiagnostics.LlmCallContextTokens.Record(
+            tokens,
+            new KeyValuePair<string, object?>("rockbot.session.kind", ClassifySessionKind(sessionId)));
+    }
+
+    /// <summary>
+    /// Temporary diagnostic (issue: context-bloat investigation) — emits a per-LLM-call
+    /// breakdown of the current message list for scheduled-task sessions only. Categorises
+    /// by role, lists the top-15 largest messages with a short preview, and reports
+    /// estimated tokens. Gated on <paramref name="sessionId"/> starting with <c>patrol/</c>
+    /// so user-session logs are unaffected. Remove after the bloat root cause is identified.
+    /// </summary>
+    internal static void LogContextBreakdown(
+        IList<ChatMessage> messages,
+        string label,
+        string? sessionId,
+        ILogger logger)
+    {
+        if (sessionId is null
+            || !(sessionId.StartsWith("patrol/", StringComparison.Ordinal)
+                 || sessionId.StartsWith("subagent-", StringComparison.Ordinal)
+                 || sessionId.StartsWith("worker-", StringComparison.Ordinal)))
+            return;
+        if (!logger.IsEnabled(LogLevel.Information))
+            return;
+
+        var totalChars = 0;
+        var byRole = new Dictionary<string, (int Count, int Chars)>(StringComparer.Ordinal);
+        var entries = new List<(int Idx, string Role, int Chars, string Preview)>(messages.Count);
+
+        for (var i = 0; i < messages.Count; i++)
+        {
+            var m = messages[i];
+            var chars = EstimateMessageChars(m);
+            totalChars += chars;
+            var role = m.Role.Value;
+            if (!byRole.TryGetValue(role, out var agg)) agg = (0, 0);
+            byRole[role] = (agg.Count + 1, agg.Chars + chars);
+
+            string preview;
+            var fc = m.Contents.OfType<FunctionCallContent>().FirstOrDefault();
+            var fr = m.Contents.OfType<FunctionResultContent>().FirstOrDefault();
+            if (fc is not null)
+            {
+                preview = $"call:{fc.Name}({fc.CallId})";
+            }
+            else if (fr is not null)
+            {
+                preview = $"result:{fr.CallId}";
+            }
+            else
+            {
+                var text = (m.Text ?? string.Empty).Replace('\n', ' ').Replace('\r', ' ');
+                preview = text.Length > 100 ? text[..100] : text;
+            }
+            entries.Add((i, role, chars, preview));
+        }
+
+        logger.LogInformation(
+            "ContextBreakdown[{Label}] session={Session} msgs={Count} chars={Chars:N0} ~tokens={Tokens:N0}",
+            label, sessionId, messages.Count, totalChars, totalChars / 4);
+
+        foreach (var kv in byRole.OrderByDescending(static kv => kv.Value.Chars))
+        {
+            logger.LogInformation(
+                "  ByRole {Role,-10} {Count,3} msgs  {Chars,9:N0} chars  ~{Tokens,7:N0} tok  ({Pct,5:F1}%)",
+                kv.Key, kv.Value.Count, kv.Value.Chars, kv.Value.Chars / 4,
+                totalChars > 0 ? 100.0 * kv.Value.Chars / totalChars : 0);
+        }
+
+        foreach (var e in entries.OrderByDescending(static x => x.Chars).Take(15))
+        {
+            logger.LogInformation(
+                "  Msg[{Idx,3}] {Role,-10} {Chars,8:N0} chars  {Preview}",
+                e.Idx, e.Role, e.Chars, e.Preview);
+        }
+    }
+
+    /// <summary>
+    /// Temporary diagnostic — compact one-line size summary for use inside tight loops
+    /// where the full breakdown would be too verbose (e.g. between tool invocations
+    /// inside the native FICC loop). Gated like <see cref="LogContextBreakdown"/>.
+    /// </summary>
+    internal static void LogContextSize(
+        IList<ChatMessage> messages,
+        string label,
+        string? sessionId,
+        ILogger logger)
+    {
+        if (sessionId is null
+            || !(sessionId.StartsWith("patrol/", StringComparison.Ordinal)
+                 || sessionId.StartsWith("subagent-", StringComparison.Ordinal)
+                 || sessionId.StartsWith("worker-", StringComparison.Ordinal)))
+            return;
+        if (!logger.IsEnabled(LogLevel.Information))
+            return;
+
+        var totalChars = messages.Sum(EstimateMessageChars);
+        logger.LogInformation(
+            "ContextSize[{Label}] session={Session} msgs={Count} chars={Chars:N0} ~tokens={Tokens:N0}",
+            label, sessionId, messages.Count, totalChars, totalChars / 4);
+    }
 
     private static bool TryParseContextOverflow(string message, out int maxTokens, out int usedTokens)
     {

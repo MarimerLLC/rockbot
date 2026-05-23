@@ -19,6 +19,7 @@ using RockBot.Tools.Mcp;
 using RockBot.A2A;
 using RockBot.ServiceSearch;
 using RockBot.Subagent;
+using RockBot.Subagent.Worker;
 using RockBot.Wisp;
 using RockBot.Llm.Copilot;
 using GitHub.Copilot.SDK;
@@ -283,6 +284,7 @@ builder.Services.AddRockBotHost(agent =>
     agent.AddHeartbeatBootstrap(opts =>
         builder.Configuration.GetSection("HeartbeatPatrol").Bind(opts));
     agent.AddSubagents();
+    agent.AddWorkers();
     agent.AddWisps(opts =>
         opts.SharedVolumePath = builder.Configuration["FileSystem:BasePath"] ?? "/rockbot/shared");
     var a2aBasePath = builder.Configuration["AgentProfile:BasePath"]

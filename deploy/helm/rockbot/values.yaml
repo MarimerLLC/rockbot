@@ -15,6 +15,11 @@ agent:
   # e.g. "America/Chicago", "Europe/London", "Asia/Tokyo"
   # Defaults to UTC (the k8s node timezone) if unset.
   timezone: "America/Chicago"
+  # Retention cap for tier-routing-log.jsonl (the routing-decision telemetry log
+  # consumed by the dream self-correction pass and the introspection MCP server's
+  # get_routing_summary tool). Once the cap is reached the logger trims the oldest
+  # entries on every append. ~500 bytes per entry, so 1500 ≈ 750 KB on disk.
+  tierRoutingLogMaxEntries: 1500
   resources:
     requests:
       cpu: 500m
@@ -115,24 +120,6 @@ openrouterMcp:
       cpu: 200m
       memory: 256Mi
 
-# ── Routing Stats MCP server ──────────────────────────────────────────────────
-# Sidecar container in the agent pod that exposes two MCP tools:
-#   get_routing_stats — aggregate counts/percentages per tier, latency, and token stats
-#   get_routing_log   — recent raw routing decisions for spotting individual misroutes
-# Runs alongside the agent and reads tier-routing-log.jsonl from the shared agent PVC.
-routingStatsMcp:
-  enabled: true
-  image:
-    repository: rockylhotka/mcpserver-routingstats
-    tag: latest
-  resources:
-    requests:
-      cpu: 50m
-      memory: 64Mi
-    limits:
-      cpu: 200m
-      memory: 128Mi
-
 # ── Azure AI Foundry MCP server ───────────────────────────────────────────────
 # Standalone MCP server that exposes read-only Azure AI Foundry usage metrics
 # (prompt tokens, generated tokens, request counts) and deployment info to the agent.
@@ -194,12 +181,15 @@ shared:
   fsGroup: 2000
 
 # ── Introspection MCP server ──────────────────────────────────────────────────
-# Sidecar container in the agent pod that exposes core agent introspection tools:
+# Sidecar container in the agent pod that exposes all agent introspection tools:
 #   - get/set agent name (drives Blazor UI title and `agent-name.md` on the PVC)
 #   - GitHub Copilot quota/usage (only meaningful when LLM provider is Copilot)
 #   - LLM pricing table lookup (cost-estimation tools the agent calls)
+#   - get_routing_summary — pre-aggregated tier-routing analysis (clusters, flagged
+#     misroutes, keyword candidates, threshold scans, USD cost) over a time window
+#   - get_routing_log / get_routing_stats — raw entries and global stats
 # Runs alongside the agent and reads agent state from the shared PVC.
-# Reachable from the agent at http://localhost:8081/ (8080 is taken by routing-stats).
+# Reachable from the agent at http://localhost:8081/.
 introspectionMcp:
   enabled: true
   image:

@@ -190,6 +190,183 @@ public class AgentContextBuilderObservationEvictTests
     }
 
     [TestMethod]
+    public async Task BuildAsync_WritingCall_NotTreatedAsContradiction()
+    {
+        // Reproduces the self-eviction loop seen in the heartbeat patrol:
+        // worker saves to shared/patrol/active-plans-latest, content contains
+        // "blocked" (a legitimate status value), and the regex extracts
+        // "shared/patrol" as a pseudo-(server, tool). Before the fix, the
+        // worker's OWN SaveToWorkingMemory call was treated as the contradicting
+        // successful tool call, instantly evicting the just-saved entry.
+        // After the fix, calls whose args reference the entry's own key are
+        // excluded from the contradiction set.
+        var observedAt = DateTimeOffset.UtcNow.AddSeconds(-1);
+        var stale = ObservationEntry(
+            "shared/patrol/active-plans-latest",
+            "Active plans status: pending=2, in-progress=1, blocked=0. " +
+            "Cross-references: shared/patrol/heartbeat-active-plans-tasks-latest.",
+            observedAt);
+
+        var wm = new RecordingWorkingMemory(shared: [stale]);
+        var log = new StubToolCallLog(
+        [
+            // The writing call itself — args contain the entry's key.
+            new ToolCallEvent("s", "SaveToWorkingMemory",
+                "key=shared/patrol/active-plans-latest, category=patrol/heartbeat, ttl_minutes=300",
+                Succeeded: true, DurationMs: 19,
+                Timestamp: observedAt.AddMilliseconds(50)),
+        ]);
+        var builder = NewBuilder(wm, log);
+
+        await builder.BuildAsync("session-1", LongMessage, CancellationToken.None);
+
+        Assert.AreEqual(0, wm.DeletedKeys.Count,
+            "A SaveToWorkingMemory call to the entry's own key cannot count as " +
+            "contradicting evidence — it's the writing call, not external proof.");
+    }
+
+    [TestMethod]
+    public async Task BuildAsync_NamespacePrefixesInContent_NotExtractedAsRefs()
+    {
+        // Working-memory key paths like shared/patrol/... and long-term-memory
+        // category paths like user-preferences/family/... follow the same
+        // <segment>/<segment> shape that the tool-reference regex matches.
+        // After the fix, namespace prefixes are filtered out so they don't
+        // produce false (server, tool) pairs. Without a real reference, the
+        // observation has nothing to verify against and stays put.
+        var observedAt = DateTimeOffset.UtcNow.AddHours(-1);
+        var stale = ObservationEntry(
+            "patrol/email-triage-latest",
+            "Patrol findings blocked rendering. References: " +
+            "shared/patrol/heartbeat, user-preferences/family, agent-identity/self-model.",
+            observedAt);
+
+        var wm = new RecordingWorkingMemory(patrol: [stale]);
+        // Even a successful call that looks like it could match a path segment
+        // (e.g. "patrol" or "shared") must not trigger eviction.
+        var log = new StubToolCallLog(
+        [
+            new ToolCallEvent("s", "SaveToWorkingMemory",
+                "key=shared/patrol/something-else",
+                Succeeded: true, DurationMs: 1,
+                Timestamp: observedAt.AddMinutes(30)),
+        ]);
+        var builder = NewBuilder(wm, log);
+
+        await builder.BuildAsync("session-1", LongMessage, CancellationToken.None);
+
+        Assert.AreEqual(0, wm.DeletedKeys.Count,
+            "Namespace prefixes are not server names — without a real reference, " +
+            "no eviction should occur.");
+    }
+
+    [TestMethod]
+    public async Task BuildAsync_RealClaimAndDifferentKeyWritingCall_StillEvicted()
+    {
+        // Regression test: the writing-call filter must not be so broad that
+        // it stops legitimate eviction. A real claim about calendar-mcp/search_emails
+        // with a successful mcp_invoke_tool call to that server/tool — and a
+        // SaveToWorkingMemory writing call to a DIFFERENT key — must still evict.
+        var observedAt = DateTimeOffset.UtcNow.AddHours(-1);
+        var stale = ObservationEntry(
+            "patrol/email-triage-latest",
+            "calendar-mcp/search_emails wrapper cannot pass arguments",
+            observedAt);
+
+        var wm = new RecordingWorkingMemory(patrol: [stale]);
+        var log = new StubToolCallLog(
+        [
+            // The writing call to a different key — must not be treated as evidence.
+            new ToolCallEvent("s", "SaveToWorkingMemory",
+                "key=patrol/something-else",
+                Succeeded: true, DurationMs: 1,
+                Timestamp: observedAt.AddMinutes(10)),
+            // The real contradicting MCP call.
+            new ToolCallEvent("s", "mcp_invoke_tool",
+                "server_name=calendar-mcp, tool_name=search_emails",
+                Succeeded: true, DurationMs: 1,
+                Timestamp: observedAt.AddMinutes(30)),
+        ]);
+        var builder = NewBuilder(wm, log);
+
+        await builder.BuildAsync("session-1", LongMessage, CancellationToken.None);
+
+        CollectionAssert.Contains(wm.DeletedKeys, "patrol/email-triage-latest",
+            "Real capability claims must still be evicted when a genuine " +
+            "successful MCP call contradicts them.");
+    }
+
+    [TestMethod]
+    public async Task BuildAsync_SaveToWorkingMemoryWithMcpRefsInData_NotContradiction()
+    {
+        // Real-world case from the heartbeat patrol: the email worker saved
+        // findings containing a genuine MCP reference like calendar-mcp/get_emails.
+        // The reference extracts correctly. The calendar worker then saved its
+        // own findings to a different key, but its JSON data blob mentions
+        // "calendar-mcp" and "get_emails" as substrings. With the old loose
+        // substring match, that triggered a false eviction. After the fix,
+        // CallMatchesAnyRef only accepts mcp_invoke_tool calls with the
+        // structured server_name=X, tool_name=Y form, so the sibling
+        // SaveToWorkingMemory call is rejected.
+        var observedAt = DateTimeOffset.UtcNow.AddSeconds(-1);
+        var stale = ObservationEntry(
+            "shared/patrol/email-latest",
+            "Patrol blocked by no actionable items. Queried calendar-mcp/get_emails across all accounts.",
+            observedAt);
+
+        var wm = new RecordingWorkingMemory(shared: [stale]);
+        var log = new StubToolCallLog(
+        [
+            // A sibling worker's SaveToWorkingMemory call whose data blob
+            // happens to contain "calendar-mcp" and "get_emails" as substrings
+            // (a real MCP server name and a tool name mentioned in JSON data).
+            new ToolCallEvent("s", "SaveToWorkingMemory",
+                "key=shared/patrol/calendar-latest, data={" +
+                "\"source\":\"calendar-mcp scan\", \"used\":\"get_emails for reference\"}",
+                Succeeded: true, DurationMs: 21,
+                Timestamp: observedAt.AddMilliseconds(50)),
+        ]);
+        var builder = NewBuilder(wm, log);
+
+        await builder.BuildAsync("session-1", LongMessage, CancellationToken.None);
+
+        Assert.AreEqual(0, wm.DeletedKeys.Count,
+            "SaveToWorkingMemory is not an MCP invocation. Its data blob may " +
+            "mention server and tool names but that is not contradicting evidence.");
+    }
+
+    [TestMethod]
+    public async Task BuildAsync_McpCallWithSubstringButNoStructuredArgs_NotContradiction()
+    {
+        // Defense against future cases where ToolName happens to be mcp_invoke_tool
+        // but the args summary lacks the structured server_name=X, tool_name=Y
+        // form. Substring containment alone in a free-form args string must not
+        // count as evidence.
+        var observedAt = DateTimeOffset.UtcNow.AddHours(-1);
+        var stale = ObservationEntry(
+            "patrol/email-triage-latest",
+            "calendar-mcp/search_emails wrapper cannot pass arguments",
+            observedAt);
+
+        var wm = new RecordingWorkingMemory(patrol: [stale]);
+        var log = new StubToolCallLog(
+        [
+            // Looks like an MCP call but args don't carry the structured form.
+            new ToolCallEvent("s", "mcp_invoke_tool",
+                "the message mentioned calendar-mcp and search_emails but not as call args",
+                Succeeded: true, DurationMs: 1,
+                Timestamp: observedAt.AddMinutes(30)),
+        ]);
+        var builder = NewBuilder(wm, log);
+
+        await builder.BuildAsync("session-1", LongMessage, CancellationToken.None);
+
+        Assert.AreEqual(0, wm.DeletedKeys.Count,
+            "Without the structured server_name=/tool_name= form, an " +
+            "mcp_invoke_tool args summary is not evidence of invocation.");
+    }
+
+    [TestMethod]
     public async Task BuildAsync_SharedNamespace_AlsoFiltered()
     {
         // Observations under shared/ must be evicted on the same rules as patrol/

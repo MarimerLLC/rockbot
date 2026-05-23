@@ -70,4 +70,42 @@ public sealed class AgentHostOptions
     /// trimmer used to discard. Clamped to [0.0, 1.0] at use time.
     /// </summary>
     public double ToolResultStashHeadTailRatio { get; set; } = 0.6;
+
+    /// <summary>
+    /// Soft context-size watermark in tokens. When the running message list exceeds
+    /// this size before an LLM call, large tool results are trimmed into the WM stash
+    /// proactively — without waiting for a provider-side context-overflow error.
+    /// Default 30,000 tokens (≈108,000 chars at the 4-chars-per-token estimate, which
+    /// trims to a ~27k-token effective ceiling because the trimmer targets 90% of
+    /// the char budget). The per-tool-result cap (<see cref="ToolResultMaxChars"/>)
+    /// already prevents any single tool from singlehandedly bloating the loop, so the
+    /// watermark mostly catches cumulative bloat across many medium-sized results;
+    /// dropping it to 25k forced hyper-elision of recent results in live runs.
+    /// Set to 0 to disable proactive trimming and fall back to the legacy behaviour
+    /// (trim only after a 400 overflow has been observed).
+    /// </summary>
+    public int ToolResultStashWatermarkTokens { get; set; } = 30_000;
+
+    /// <summary>
+    /// Per-tool-result hard cap in characters. Any single tool result longer than this
+    /// is immediately stashed in working memory and replaced in-context with a
+    /// head + elision marker + tail surface (same mechanism as the watermark trimmer,
+    /// applied per-call instead of per-context). This catches the common case where one
+    /// tool — typically an MCP schema dump or a long search result — singlehandedly
+    /// bloats a subagent run without crossing the global watermark.
+    /// Default 8,000 chars (≈2,000 tokens). Set to 0 to disable per-call capping and
+    /// rely solely on the watermark.
+    /// </summary>
+    public int ToolResultMaxChars { get; set; } = 8_000;
+
+    /// <summary>
+    /// How many tool-call iterations a BM25-recalled skill body stays in context
+    /// without being referenced (via a follow-up <c>get_skill</c>) before it's unloaded.
+    /// Bodies are ~3,000 chars each and remain visible to the model for the entire inner
+    /// loop even when no longer relevant; unloading them after this many idle iterations
+    /// keeps the loop lean. Subagent character is unaffected — the model can re-fetch
+    /// the body at any time by calling <c>get_skill</c> again.
+    /// Default 5. Set to 0 to disable aging and leave all skill bodies in context.
+    /// </summary>
+    public int SkillBodyUnloadAfterIterations { get; set; } = 5;
 }

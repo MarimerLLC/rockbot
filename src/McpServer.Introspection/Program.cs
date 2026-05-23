@@ -7,7 +7,8 @@ builder.Services.AddMcpServer()
     .WithHttpTransport()
     .WithTools<AgentNameTools>()
     .WithTools<CopilotUsageTools>()
-    .WithTools<LlmPricingTools>();
+    .WithTools<LlmPricingTools>()
+    .WithTools<RoutingStatsTools>();
 
 var app = builder.Build();
 

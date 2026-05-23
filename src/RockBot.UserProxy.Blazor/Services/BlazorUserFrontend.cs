@@ -60,7 +60,12 @@ public sealed class BlazorUserFrontend(ChatStateService chatState) : IUserFronte
         if (reply.SessionId == "scheduled")
             return MessageCategory.ScheduledUser;
 
-        if (reply.AgentName?.StartsWith("subagent-", StringComparison.OrdinalIgnoreCase) == true)
+        // Both "subagent-" and "worker-" prefixed AgentNames represent spawned activity
+        // the primary agent is supervising — workers are a lean rung of the same family.
+        // Worker tool-call progress (via ToolProgressNotifier with AgentName=worker-{taskId})
+        // would otherwise fall through to the A2A branch since "worker-foo" != primary name.
+        if (reply.AgentName?.StartsWith("subagent-", StringComparison.OrdinalIgnoreCase) == true
+            || reply.AgentName?.StartsWith("worker-", StringComparison.OrdinalIgnoreCase) == true)
             return MessageCategory.SubagentActivity;
 
         // Inbound A2A notifications use a dedicated session ID regardless of IsFinal

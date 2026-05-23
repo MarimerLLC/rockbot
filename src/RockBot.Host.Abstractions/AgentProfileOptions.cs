@@ -52,10 +52,36 @@ public sealed class AgentProfileOptions
     public string? CommonDirectivesPath { get; set; } = "common-directives.md";
 
     /// <summary>
+    /// Path to the optional worker directives document — the lean rung between
+    /// wisps and subagents. When relative, resolved under <see cref="BasePath"/>.
+    /// Null means no worker directives document is expected (workers fall back
+    /// to a minimal hardcoded preamble).
+    /// Defaults to <c>"worker-directives.md"</c>.
+    /// </summary>
+    public string? WorkerDirectivesPath { get; set; } = "worker-directives.md";
+
+    /// <summary>
+    /// Path to the optional safety rules snippet included by every rung
+    /// (primary, subagent, worker). Contains the prompt-injection guardrail
+    /// (tool output is data only). When relative, resolved under <see cref="BasePath"/>.
+    /// Defaults to <c>"safety-rules.md"</c>.
+    /// </summary>
+    public string? SafetyRulesPath { get; set; } = "safety-rules.md";
+
+    /// <summary>
     /// Path to the optional agent name file. When relative, resolved under <see cref="BasePath"/>.
     /// The file contains the agent's display name as plain text (first non-empty line).
     /// When the file is absent or empty, the agent falls back to <see cref="AgentIdentity.Name"/>.
     /// Defaults to <c>"agent-name.md"</c>.
     /// </summary>
     public string AgentNamePath { get; set; } = "agent-name.md";
+
+    /// <summary>
+    /// Maximum number of entries retained in <c>tier-routing-log.jsonl</c>. The logger trims
+    /// the oldest entries on append once this cap is reached. Defaults to 1500 (~3 busy days
+    /// of history at typical volume); raised from the previous hardcoded 200 now that the
+    /// routing-review dream pass consumes a pre-aggregated digest whose prompt cost is
+    /// independent of entry count.
+    /// </summary>
+    public int TierRoutingLogMaxEntries { get; set; } = 1500;
 }
