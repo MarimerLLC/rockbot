@@ -131,6 +131,72 @@ public class WispAutoCorrectTests
     }
 
     [TestMethod]
+    public async Task ValidationFailure_EmptyParamsAndNoEnrichedContext_LlmNotCalled()
+    {
+        // When the wisp step has nothing to draw from (empty params, no enriched
+        // recovery context), asking the LLM to "correct" the params is pure
+        // invention — the cheap-tier model reliably ignores the NO_CORRECTION
+        // instruction and emits something like {"query":"*"} or {"query":""}.
+        // The executor must decline up-front and bubble the original validation
+        // error instead.
+        var llm = new ScriptedLlmClient("""{"accountId":"INVENTED","calendarId":"INVENTED","timeMin":"x","timeMax":"y"}""");
+        var (executor, registry, _) = CreateExecutor(llm, preflightRecovery: null);
+        RegisterCalendarMcp(registry, capturedArgs: null);
+
+        var definition = MakeCalendarWisp("{}");
+
+        var result = await executor.ExecuteAsync(definition, "wisp-empty-1", CancellationToken.None);
+
+        Assert.IsFalse(result.IsSuccess);
+        Assert.AreEqual(FailureCategory.Structural, result.FailedStep!.Error!.Category);
+        Assert.AreEqual(0, llm.CallCount,
+            "LLM auto-correct must not run when there is no source data to draw from.");
+    }
+
+    [TestMethod]
+    public async Task ValidationFailure_EmptyParamsButEnrichedContextPresent_LlmStillCalled()
+    {
+        // The "empty params" guard only fires when there is also no enriched
+        // context. When preflight recovery surfaces same-session info the LLM
+        // can honestly remap, the auto-correct LLM should still be invoked.
+        var llm = new CapturingScriptedLlmClient("""
+            {"accountId":"acct-from-context","calendarId":"primary","timeMin":"t1","timeMax":"t2"}
+            """);
+        var preflight = new StubPreflightRecovery(
+            filledDefaults: new Dictionary<string, object?>(),
+            unresolved: ["accountId", "calendarId", "timeMin", "timeMax"],
+            enrichedContext: "Recent successful calls in this session: list_accounts returned accountId 'acct-from-context'");
+
+        var (executor, registry, captured) = CreateExecutor(llm, preflight);
+        RegisterCalendarMcp(registry, captured);
+
+        var definition = MakeCalendarWisp("{}");
+
+        var result = await executor.ExecuteAsync(definition, "wisp-empty-2", CancellationToken.None);
+
+        Assert.IsTrue(result.IsSuccess,
+            "LLM auto-correct should run when enriched context names candidate values.");
+        Assert.AreEqual(1, llm.CallCount);
+        StringAssert.Contains(llm.LastPrompt!, "acct-from-context",
+            "Enriched context must be in the prompt the LLM sees.");
+    }
+
+    [TestMethod]
+    public void IsEffectivelyEmptyParams_RecognizesEmptyShapes()
+    {
+        Assert.IsTrue(WispExecutor.IsEffectivelyEmptyParams(null));
+        Assert.IsTrue(WispExecutor.IsEffectivelyEmptyParams(""));
+        Assert.IsTrue(WispExecutor.IsEffectivelyEmptyParams("  "));
+        Assert.IsTrue(WispExecutor.IsEffectivelyEmptyParams("{}"));
+        Assert.IsTrue(WispExecutor.IsEffectivelyEmptyParams("{ }"));
+        Assert.IsFalse(WispExecutor.IsEffectivelyEmptyParams("""{"a":1}"""));
+        Assert.IsFalse(WispExecutor.IsEffectivelyEmptyParams("[]"),
+            "Non-object params shouldn't be classified as empty — let the LLM see them.");
+        Assert.IsFalse(WispExecutor.IsEffectivelyEmptyParams("not json"),
+            "Malformed params shouldn't be classified as empty — let the LLM see them.");
+    }
+
+    [TestMethod]
     public async Task PreflightRecovery_FillsEnvDefault_NoLlmCallNeeded()
     {
         // When preflight recovery can silently fill every missing field from an
