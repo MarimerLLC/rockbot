@@ -1158,6 +1158,24 @@ public sealed partial class AgentLoopRunner(
                     }
 
                     // Chunking is handled by ChunkingAIFunction wrapper on the tool itself.
+                    // Per-tool-result cap: text-parsed calls have no callId so the cap falls
+                    // back to head-only truncation (legacy mode), but it still prevents one
+                    // bloated text-tool return from singlehandedly inflating the loop.
+                    var maxTextChars = hostOptions.Value.ToolResultMaxChars;
+                    if (maxTextChars > 0 && textResultStr.Length > maxTextChars)
+                    {
+                        var ttl = TimeSpan.FromMinutes(Math.Max(1, hostOptions.Value.ToolResultStashTtlMinutes));
+                        textResultStr = await CapToolResultAsync(
+                            textResultStr,
+                            callId: null,
+                            toolName: toolName,
+                            workingMemory: workingMemory,
+                            stashState: AgentLoopStashContext.Value,
+                            maxChars: maxTextChars,
+                            headRatio: hostOptions.Value.ToolResultStashHeadTailRatio,
+                            ttl: ttl,
+                            logger: logger);
+                    }
                     chatMessages.Add(new ChatMessage(ChatRole.User,
                         $"[Tool result for {toolName}]: {textResultStr}"));
 
@@ -1275,6 +1293,31 @@ public sealed partial class AgentLoopRunner(
                 ToolDiagnostics.Invocations.Add(1,
                     new KeyValuePair<string, object?>("rockbot.tool.name", fc.Name),
                     new KeyValuePair<string, object?>("rockbot.tool.status", toolStatus));
+
+                // Per-tool-result cap (text-loop native path). Same intent as the cap
+                // applied by RockBotFunctionInvokingChatClient on the FICC path: stash
+                // a single oversized result and inline-replace with head + elision + tail
+                // so the watermark trim doesn't have to absorb the bloat retroactively.
+                var maxNativeChars = hostOptions.Value.ToolResultMaxChars;
+                if (maxNativeChars > 0 && nativeResultStr.Length > maxNativeChars)
+                {
+                    var nativeTtl = TimeSpan.FromMinutes(Math.Max(1, hostOptions.Value.ToolResultStashTtlMinutes));
+                    nativeResultStr = await CapToolResultAsync(
+                        nativeResultStr,
+                        callId: fc.CallId,
+                        toolName: fc.Name,
+                        workingMemory: workingMemory,
+                        stashState: AgentLoopStashContext.Value,
+                        maxChars: maxNativeChars,
+                        headRatio: hostOptions.Value.ToolResultStashHeadTailRatio,
+                        ttl: nativeTtl,
+                        logger: logger);
+                    if (AgentLoopStashContext.Value is { } stashStateForRegistry)
+                    {
+                        RefreshStashRegistryContext(chatMessages, stashStateForRegistry.Registry);
+                    }
+                }
+
                 chatMessages.Add(new ChatMessage(ChatRole.Tool,
                     [new FunctionResultContent(fc.CallId, nativeResultStr)]));
 
@@ -1525,6 +1568,91 @@ public sealed partial class AgentLoopRunner(
     {
         var ns = string.IsNullOrEmpty(sessionId) ? "_" : sessionId;
         return $"stash/{ns}/{callId}";
+    }
+
+    /// <summary>
+    /// Per-tool-result cap. When <paramref name="resultStr"/> exceeds
+    /// <paramref name="maxChars"/>, stashes the full original to working memory and
+    /// returns a head + elision marker + tail surface that fits the cap; otherwise
+    /// returns the original unchanged. This runs per-call (independent of the global
+    /// context watermark) so one oversized tool — e.g. an MCP schema dump — can't
+    /// singlehandedly bloat the inner loop before the watermark fires.
+    ///
+    /// Falls back to legacy head-only truncation (no stash, no registry entry) when
+    /// <paramref name="callId"/> is empty or <paramref name="stashState"/> is null,
+    /// matching the behaviour of <see cref="TrimLargeToolResultsAsync"/>.
+    /// </summary>
+    internal static async Task<string> CapToolResultAsync(
+        string resultStr,
+        string? callId,
+        string toolName,
+        IWorkingMemory workingMemory,
+        AgentLoopStashContext.State? stashState,
+        int maxChars,
+        double headRatio,
+        TimeSpan ttl,
+        ILogger logger)
+    {
+        if (maxChars <= 0 || resultStr.Length <= maxChars)
+            return resultStr;
+
+        // No callId or no stash state → head-only truncation. The model can't recover
+        // the elided content (nothing to register), so we don't promise it can.
+        if (string.IsNullOrEmpty(callId) || stashState is null)
+        {
+            var legacyHead = Math.Max(200, maxChars - 40);
+            if (legacyHead >= resultStr.Length) legacyHead = resultStr.Length - 1;
+            var legacyTrimmed = resultStr[..legacyHead] + "\n[truncated to fit context window]";
+            logger.LogInformation(
+                "Capped tool result for {Tool} (legacy mode, no callId): {Before:N0} → {After:N0} chars",
+                toolName, resultStr.Length, legacyTrimmed.Length);
+            return legacyTrimmed;
+        }
+
+        var marker = BuildElisionMarker(callId);
+        var clampedRatio = Math.Clamp(headRatio, 0.0, 1.0);
+        var surfaceBudget = Math.Max(200, maxChars - marker.Length - 60);
+        if (surfaceBudget >= resultStr.Length) surfaceBudget = resultStr.Length - 1;
+        var headLen = (int)Math.Round(surfaceBudget * clampedRatio);
+        var tailLen = surfaceBudget - headLen;
+        if (headLen < 0) headLen = 0;
+        if (tailLen < 0) tailLen = 0;
+        if (headLen + tailLen >= resultStr.Length) headLen = Math.Max(0, resultStr.Length - tailLen - 1);
+
+        var head = headLen > 0 ? resultStr[..headLen] : string.Empty;
+        var tail = tailLen > 0 ? resultStr[^tailLen..] : string.Empty;
+        var trimmed = string.Concat(head, "\n\n", marker, "\n\n", tail);
+
+        if (!stashState.Registry.Contains(callId))
+        {
+            var stashKey = BuildStashKey(stashState.SessionId, callId);
+            try
+            {
+                await workingMemory.SetAsync(
+                    stashKey, resultStr, ttl,
+                    category: "tool-result-stash",
+                    tags: ["stash", "tool-result"]);
+            }
+            catch (Exception ex)
+            {
+                logger.LogWarning(ex,
+                    "Failed to stash original tool result for call {CallId}; capping without stash",
+                    callId);
+            }
+
+            stashState.ArgsSummaries.TryGetValue(callId, out var argsSummary);
+            stashState.Registry.Add(new ToolResultStashRegistry.Entry(
+                CallId: callId,
+                ToolName: toolName,
+                ArgsSummary: argsSummary ?? "(args unavailable)",
+                Key: stashKey));
+        }
+
+        logger.LogInformation(
+            "Capped tool result for call {CallId} ({Tool}): {Before:N0} → {After:N0} chars (head {Head}, tail {Tail})",
+            callId, toolName, resultStr.Length, trimmed.Length, headLen, tailLen);
+
+        return trimmed;
     }
 
     /// <summary>

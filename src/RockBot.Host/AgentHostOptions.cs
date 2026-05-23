@@ -81,4 +81,16 @@ public sealed class AgentHostOptions
     /// legacy behaviour (trim only after a 400 overflow has been observed).
     /// </summary>
     public int ToolResultStashWatermarkTokens { get; set; } = 40_000;
+
+    /// <summary>
+    /// Per-tool-result hard cap in characters. Any single tool result longer than this
+    /// is immediately stashed in working memory and replaced in-context with a
+    /// head + elision marker + tail surface (same mechanism as the watermark trimmer,
+    /// applied per-call instead of per-context). This catches the common case where one
+    /// tool — typically an MCP schema dump or a long search result — singlehandedly
+    /// bloats a subagent run without crossing the global watermark.
+    /// Default 8,000 chars (≈2,000 tokens). Set to 0 to disable per-call capping and
+    /// rely solely on the watermark.
+    /// </summary>
+    public int ToolResultMaxChars { get; set; } = 8_000;
 }

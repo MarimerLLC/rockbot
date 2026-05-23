@@ -223,6 +223,42 @@ public class RockBotFunctionInvokingChatClient : FunctionInvokingChatClient
                 $"{AgentLoopRunner.RepetitiveToolCallDetector.Threshold} times and received the same " +
                 "result each time. Please try a different approach.]";
             result = (resultStr ?? string.Empty) + nudge;
+            resultStr = (string?)result;
+        }
+
+        // Per-tool-result cap: if this single result is larger than ToolResultMaxChars,
+        // stash the original and replace inline with a head + elision marker + tail.
+        // The watermark trim (TrimLargeToolResultsAsync) only fires when total context
+        // crosses ~144k chars, which lets a single 36k-char schema dump bloat the loop
+        // unchecked. This per-call cap catches that case at the source.
+        var maxResultChars = _hostOptions.Value.ToolResultMaxChars;
+        if (maxResultChars > 0 && resultStr is { Length: > 0 } && resultStr.Length > maxResultChars)
+        {
+            var ttl = TimeSpan.FromMinutes(Math.Max(1, _hostOptions.Value.ToolResultStashTtlMinutes));
+            var capped = await AgentLoopRunner.CapToolResultAsync(
+                resultStr,
+                callContent.CallId,
+                callContent.Name,
+                _workingMemory,
+                AgentLoopStashContext.Value,
+                maxResultChars,
+                _hostOptions.Value.ToolResultStashHeadTailRatio,
+                ttl,
+                _logger);
+            if (!ReferenceEquals(capped, resultStr))
+            {
+                result = capped;
+                // Refresh the stash registry system message so the next LLM round-trip
+                // can see (and instruct the model to use) the new stash key. FICC won't
+                // re-enter our pre-invoke hook before posting the current tool result
+                // back to the model, so this is the right place to do it.
+                if (context.Messages is List<ChatMessage> registryMessages
+                    && AgentLoopStashContext.Value is { } stashStateForRegistry)
+                {
+                    AgentLoopRunner.RefreshStashRegistryContext(
+                        registryMessages, stashStateForRegistry.Registry);
+                }
+            }
         }
 
         ToolDiagnostics.InvokeDuration.Record(sw.Elapsed.TotalMilliseconds,
