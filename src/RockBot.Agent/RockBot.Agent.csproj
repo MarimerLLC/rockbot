@@ -57,6 +57,7 @@
     <ProjectReference Include="..\RockBot.Messaging.RabbitMQ\RockBot.Messaging.RabbitMQ.csproj" />
     <ProjectReference Include="..\RockBot.Scripts.Remote\RockBot.Scripts.Remote.csproj" />
     <ProjectReference Include="..\RockBot.UserProxy.Abstractions\RockBot.UserProxy.Abstractions.csproj" />
+    <ProjectReference Include="..\RockBot.UserProxy.WorkIqAuth\RockBot.UserProxy.WorkIqAuth.csproj" />
   </ItemGroup>
 
 </Project>

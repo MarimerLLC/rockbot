@@ -13,7 +13,10 @@ namespace RockBot.UserProxy.Cli;
 /// </summary>
 internal static class HostFactory
 {
-    public static IHost Build(CommonSettings settings, bool useRichFrontend)
+    public static IHost Build(
+        CommonSettings settings,
+        bool useRichFrontend,
+        Action<HostApplicationBuilder>? configure = null)
     {
         // Pass no args — CLI flags are already parsed by Spectre and applied
         // below as in-memory config; we don't want Microsoft's CommandLine
@@ -63,6 +66,8 @@ internal static class HostFactory
             builder.Services.AddSingleton<IUserFrontend, SpectreConsoleFrontend>();
         else
             builder.Services.AddSingleton<IUserFrontend, PlainConsoleFrontend>();
+
+        configure?.Invoke(builder);
 
         return builder.Build();
     }

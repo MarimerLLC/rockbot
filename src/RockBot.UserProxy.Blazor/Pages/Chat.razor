@@ -4,6 +4,7 @@
 @inject UserProxyService ProxyService
 @inject ChatStateService ChatState
 @inject IJSRuntime JSRuntime
+@inject WorkIqAuthUiService WorkIqAuth
 @implements IDisposable
 
 <PageTitle>@(ChatState.AgentName ?? "RockBot") Chat</PageTitle>
@@ -53,6 +54,9 @@
                     🔗
                 </span>
             }
+            <button class="btn btn-sm btn-outline-light" @onclick="ToggleWorkIqModal" title="Connect Microsoft 365">
+                M365
+            </button>
             <button class="btn btn-sm btn-outline-light" @onclick="ToggleSavedModal" title="Saved responses">
                 📋
             </button>
@@ -63,6 +67,8 @@
                   title="@(ProxyService.IsConnected ? "Connected to message bus" : "Disconnected from message bus")"></span>
         </div>
     </div>
+
+    <WorkIqReconnectBanner OnReconnectClicked="OpenWorkIqModalFromBanner" />
 
     <div class="chat-messages flex-grow-1 overflow-auto p-3" @ref="messagesContainer">
         @foreach (var message in ChatState.Messages)
@@ -236,6 +242,21 @@
         }
     </div>
 
+    @if (_showWorkIqModal)
+    {
+        <div class="modal-overlay" @onclick="ToggleWorkIqModal">
+            <div class="saved-modal" @onclick:stopPropagation="true">
+                <div class="saved-view-header d-flex justify-content-between align-items-center">
+                    <h5 class="mb-0">Connect Microsoft 365</h5>
+                    <button class="btn btn-sm btn-link" @onclick="ToggleWorkIqModal" title="Close">✕</button>
+                </div>
+                <div class="p-3">
+                    <WorkIqConnect />
+                </div>
+            </div>
+        </div>
+    }
+
     @if (_showSavedModal)
     {
         <div class="modal-overlay" @onclick="ToggleSavedModal">
@@ -339,6 +360,7 @@
     private string? _savingMessageId;
     private string _saveLabel = string.Empty;
     private bool _showSavedModal;
+    private bool _showWorkIqModal;
     private IReadOnlyList<SavedResponseSummary>? _savedItems;
     private GetSavedResponseResponse? _viewingItem;
 
@@ -626,6 +648,16 @@
     private void HandleSaveLabelKeyDown(KeyboardEventArgs e)
     {
         if (e.Key == "Escape") CancelSave();
+    }
+
+    private void ToggleWorkIqModal()
+    {
+        _showWorkIqModal = !_showWorkIqModal;
+    }
+
+    private void OpenWorkIqModalFromBanner()
+    {
+        _showWorkIqModal = true;
     }
 
     private async Task ToggleSavedModal()

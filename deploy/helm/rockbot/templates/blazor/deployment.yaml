@@ -55,6 +55,34 @@ spec:
                 secretKeyRef:
                   name: {{ include "rockbot.secretName" . }}
                   key: RabbitMq__Password
+            {{- if .Values.workiq.enabled }}
+            # WorkIQ device-code flow needs the same Entra app registration
+            # values the agent uses. Cache itself never lands on the Blazor pod.
+            - name: WorkIQ__TenantId
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ include "rockbot.configmapName" . }}
+                  key: WorkIQ__TenantId
+            - name: WorkIQ__ClientId
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ include "rockbot.configmapName" . }}
+                  key: WorkIQ__ClientId
+            {{- if .Values.workiq.scopes }}
+            - name: WorkIQ__Scopes
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ include "rockbot.configmapName" . }}
+                  key: WorkIQ__Scopes
+            {{- end }}
+            {{- if .Values.workiq.authority }}
+            - name: WorkIQ__Authority
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ include "rockbot.configmapName" . }}
+                  key: WorkIQ__Authority
+            {{- end }}
+            {{- end }}
           livenessProbe:
             httpGet:
               path: /
