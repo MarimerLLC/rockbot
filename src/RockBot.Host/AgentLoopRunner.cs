@@ -662,6 +662,7 @@ public sealed partial class AgentLoopRunner(
         }
 
         LogContextBreakdown(chatMessages, "native-entry", sessionId, logger);
+        RecordLlmCallContextSize(chatMessages, sessionId);
 
         ChatResponse response;
         try
@@ -680,6 +681,9 @@ public sealed partial class AgentLoopRunner(
         chatMessages.AddRange(response.Messages);
 
         LogContextBreakdown(chatMessages, "native-exit", sessionId, logger);
+        // native-exit size approximates the largest in-loop context: it includes the
+        // final assistant turn plus every tool call/result FICC appended internally.
+        RecordLlmCallContextSize(chatMessages, sessionId);
 
         var tierTag = new KeyValuePair<string, object?>("rockbot.llm.tier", tier.ToString());
         var nativeInputTokens = response.Usage?.InputTokenCount ?? 0;
@@ -1905,6 +1909,37 @@ public sealed partial class AgentLoopRunner(
             FunctionResultContent frc => frc.Result?.ToString()?.Length ?? 0,
             _ => 50
         });
+
+    /// <summary>
+    /// Classifies <paramref name="sessionId"/> into one of <c>session</c>, <c>patrol</c>,
+    /// <c>subagent</c>, <c>worker</c>, or <c>unknown</c> — the same buckets used by the
+    /// existing <c>ContextBreakdown</c> log gate. Used as a metric tag so Grafana can
+    /// split per-call context size by workload kind.
+    /// </summary>
+    internal static string ClassifySessionKind(string? sessionId) => sessionId switch
+    {
+        null => "unknown",
+        var s when s.StartsWith("patrol/", StringComparison.Ordinal) => "patrol",
+        var s when s.StartsWith("subagent-", StringComparison.Ordinal) => "subagent",
+        var s when s.StartsWith("worker-", StringComparison.Ordinal) => "worker",
+        _ => "session"
+    };
+
+    /// <summary>
+    /// Records the estimated token count of the message list about to be sent to the LLM.
+    /// Uses the same 4-chars-per-token estimate as the trim path so the metric is directly
+    /// comparable to the watermark and per-tool cap. Call this at every LLM call boundary
+    /// — native entry, native exit, and each FICC pre-invoke approximation.
+    /// </summary>
+    internal static void RecordLlmCallContextSize(
+        IList<ChatMessage> messages,
+        string? sessionId)
+    {
+        var tokens = messages.Sum(EstimateMessageChars) / 4;
+        HostDiagnostics.LlmCallContextTokens.Record(
+            tokens,
+            new KeyValuePair<string, object?>("rockbot.session.kind", ClassifySessionKind(sessionId)));
+    }
 
     /// <summary>
     /// Temporary diagnostic (issue: context-bloat investigation) — emits a per-LLM-call

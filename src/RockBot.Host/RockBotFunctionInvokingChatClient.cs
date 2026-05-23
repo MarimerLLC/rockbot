@@ -74,6 +74,13 @@ public class RockBotFunctionInvokingChatClient : FunctionInvokingChatClient
                 $"ficc-pre-{callContent.Name}",
                 ToolCallSessionContext.SessionId,
                 _logger);
+            // Per-LLM-call histogram. Pre-invoke approximates the size that produced the
+            // immediately-prior LLM response (minus that response's own assistant turn) —
+            // a faithful proxy for "context size at each internal FICC iteration" without
+            // having to override base.GetResponseAsync.
+            AgentLoopRunner.RecordLlmCallContextSize(
+                ficcMessages,
+                ToolCallSessionContext.SessionId);
         }
 
         // Age out BM25-recalled skill bodies the model hasn't referenced in N tool

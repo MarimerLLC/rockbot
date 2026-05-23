@@ -134,6 +134,19 @@ public static class HostDiagnostics
             unit: "{call}",
             description: "Tool calls executed per turn");
 
+    /// <summary>
+    /// Estimated context size (in tokens) sent at each LLM call boundary — per call,
+    /// not per turn. <see cref="TurnTokensInput"/> sums across every internal FICC
+    /// iteration in a turn and so doesn't reflect the size of any individual API call;
+    /// this histogram does. Tagged with <c>rockbot.session.kind</c>
+    /// (session/patrol/subagent/worker) so Grafana can split peak-per-call by workload.
+    /// </summary>
+    public static readonly Histogram<long> LlmCallContextTokens =
+        Meter.CreateHistogram<long>(
+            "rockbot.agent.llm.context.tokens",
+            unit: "{token}",
+            description: "Estimated context size at each LLM call boundary (per-call, not per-turn)");
+
     // ── Completion evaluator ────────────────────────────────────────────────
 
     /// <summary>Evaluator determined the task was complete.</summary>
