@@ -1,5 +1,7 @@
 # WorkIQ Integration
 
+Tracking issue: [#441](https://github.com/MarimerLLC/rockbot/issues/441)
+
 ## Why
 
 Microsoft's **Work IQ** (preview, May 2026) is the Agent 365 catalog of MCP servers that
@@ -288,6 +290,7 @@ boundary, same backup story, no new infrastructure.
 
 ## References
 
+- [#441](https://github.com/MarimerLLC/rockbot/issues/441) — tracking issue with phased implementation plan
 - [Work IQ MCP overview (Microsoft Learn)](https://learn.microsoft.com/en-us/microsoft-agent-365/tooling-servers-overview)
 - [microsoft/work-iq on GitHub](https://github.com/microsoft/work-iq)
 - [Using Work IQ from 3rd party apps (candede.com)](https://candede.com/articles/use-work-iq-mcp-servers-from-3rd-party-apps)
