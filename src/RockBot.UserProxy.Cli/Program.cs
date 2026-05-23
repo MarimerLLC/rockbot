@@ -1,4 +1,5 @@
 using RockBot.UserProxy.Cli;
+using RockBot.UserProxy.Cli.Auth;
 using Spectre.Console.Cli;
 
 var app = new CommandApp<ChatCommand>();
@@ -27,6 +28,13 @@ app.Configure(config =>
 
     config.AddCommand<CancelCommand>("cancel")
         .WithDescription("Ask the agent to cancel in-flight work for a session.");
+
+    config.AddBranch("auth", auth =>
+    {
+        auth.SetDescription("Authentication flows that connect the agent to external services.");
+        auth.AddCommand<WorkIqAuthCommand>("workiq")
+            .WithDescription("Sign in to Microsoft 365 (Work IQ) via device code and publish the cache to the agent.");
+    });
 });
 
 return await app.RunAsync(args);

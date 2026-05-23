@@ -3,6 +3,7 @@ using RockBot.Messaging.RabbitMQ;
 using RockBot.UserProxy;
 using RockBot.UserProxy.Blazor.Components;
 using RockBot.UserProxy.Blazor.Services;
+using RockBot.UserProxy.WorkIqAuth;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -18,6 +19,13 @@ builder.Services.AddUserProxy(opts =>
 });
 builder.Services.AddSingleton<IUserFrontend, BlazorUserFrontend>();
 builder.Services.AddSingleton<ChatStateService>();
+
+// WorkIQ device-code flow + expired-notification listener. Always registered;
+// the flow itself fails fast with a NotConfigured error if WorkIQ settings
+// are not present in configuration, so deployments without WorkIQ pay only
+// the cost of an idle bus subscription.
+builder.Services.AddWorkIqAuthClient(builder.Configuration);
+builder.Services.AddScoped<WorkIqAuthUiService>();
 
 var app = builder.Build();
 

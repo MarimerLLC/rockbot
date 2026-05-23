@@ -1,0 +1,138 @@
+@using Microsoft.JSInterop
+@using RockBot.UserProxy.Blazor.Services
+@using RockBot.UserProxy.WorkIqAuth
+@inject WorkIqDeviceCodeFlow Flow
+@inject WorkIqAuthUiService UiState
+@inject ILogger<WorkIqConnect> Logger
+@inject IJSRuntime JS
+@implements IDisposable
+
+<div class="workiq-connect">
+    @if (_state == ConnectState.NotStarted)
+    {
+        <button class="btn btn-primary" @onclick="StartFlow">Connect M365</button>
+        @if (_lastError is not null)
+        {
+            <div class="mt-2 alert alert-danger small" role="alert">
+                @_lastError
+            </div>
+        }
+    }
+    else if (_state == ConnectState.InProgress && _challenge is not null)
+    {
+        <div class="workiq-challenge">
+            <p class="mb-2">@_challenge.Message</p>
+            <div class="d-flex align-items-center gap-2 mb-2">
+                <code class="user-code">@_challenge.UserCode</code>
+                <button class="btn btn-sm btn-outline-secondary" @onclick="CopyCode"
+                        title="Copy code">📋</button>
+            </div>
+            <p class="small mb-2">
+                Open <a href="@_challenge.VerificationUrl" target="_blank" rel="noopener noreferrer">
+                    @_challenge.VerificationUrl
+                </a> and enter the code.
+            </p>
+            <p class="small text-muted mb-2">
+                Code expires at @_challenge.ExpiresOn.LocalDateTime.ToString("t").
+            </p>
+            <button class="btn btn-sm btn-outline-secondary" @onclick="Cancel">Cancel</button>
+        </div>
+    }
+    else if (_state == ConnectState.Success)
+    {
+        <div class="alert alert-success" role="alert">
+            Connected to Microsoft 365.
+        </div>
+    }
+    else if (_state == ConnectState.Failed)
+    {
+        <div class="alert alert-danger" role="alert">
+            <p class="mb-2"><strong>Sign-in failed.</strong></p>
+            <p class="mb-2 small">@_lastError</p>
+            <button class="btn btn-sm btn-secondary" @onclick="Reset">Try again</button>
+        </div>
+    }
+</div>
+
+@code {
+    private ConnectState _state = ConnectState.NotStarted;
+    private DeviceCodeChallenge? _challenge;
+    private string? _lastError;
+    private CancellationTokenSource? _cts;
+    private Task? _completionTask;
+
+    private async Task StartFlow()
+    {
+        _state = ConnectState.InProgress;
+        _lastError = null;
+        _cts = new CancellationTokenSource();
+        try
+        {
+            var (challenge, completion) = await Flow.BeginAsync(_cts.Token);
+            _challenge = challenge;
+            _completionTask = completion;
+            StateHasChanged();
+            await completion;
+
+            _state = ConnectState.Success;
+            UiState.MarkConnected();
+        }
+        catch (WorkIqAuthFlowException ex)
+        {
+            Logger.LogWarning(ex, "WorkIQ device-code flow failed ({Code})", ex.Code);
+            _lastError = ex.Message;
+            _state = ConnectState.Failed;
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Unexpected error during WorkIQ device-code flow");
+            _lastError = ex.Message;
+            _state = ConnectState.Failed;
+        }
+        finally
+        {
+            _cts?.Dispose();
+            _cts = null;
+        }
+    }
+
+    private void Cancel()
+    {
+        _cts?.Cancel();
+    }
+
+    private void Reset()
+    {
+        _state = ConnectState.NotStarted;
+        _lastError = null;
+        _challenge = null;
+        _completionTask = null;
+    }
+
+    private async Task CopyCode()
+    {
+        if (_challenge is null) return;
+        try
+        {
+            await JS.InvokeVoidAsync("navigator.clipboard.writeText", _challenge.UserCode);
+        }
+        catch (Exception ex)
+        {
+            Logger.LogDebug(ex, "Clipboard copy failed");
+        }
+    }
+
+    public void Dispose()
+    {
+        _cts?.Cancel();
+        _cts?.Dispose();
+    }
+
+    private enum ConnectState
+    {
+        NotStarted,
+        InProgress,
+        Success,
+        Failed
+    }
+}

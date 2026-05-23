@@ -1,0 +1,50 @@
+@using RockBot.UserProxy.Blazor.Services
+@inject WorkIqAuthUiService UiState
+@implements IDisposable
+
+@if (UiState.IsExpiredBannerVisible)
+{
+    <div class="alert alert-warning workiq-reconnect-banner d-flex justify-content-between align-items-center mb-0"
+         role="alert">
+        <div>
+            <strong>M365 connection expired.</strong>
+            @if (!string.IsNullOrWhiteSpace(UiState.CurrentReason))
+            {
+                <span class="ms-2 small text-muted">@UiState.CurrentReason</span>
+            }
+        </div>
+        <div class="d-flex gap-2">
+            <button class="btn btn-sm btn-warning" @onclick="OnReconnect">Reconnect</button>
+            <button class="btn btn-sm btn-link" @onclick="OnDismiss"
+                    title="Dismiss">✕</button>
+        </div>
+    </div>
+}
+
+@code {
+    /// <summary>
+    /// Invoked when the user clicks Reconnect. Parents should open their
+    /// connect dialog/modal in response.
+    /// </summary>
+    [Parameter] public EventCallback OnReconnectClicked { get; set; }
+
+    protected override void OnInitialized()
+    {
+        UiState.StateChanged += HandleStateChanged;
+    }
+
+    private void HandleStateChanged() => InvokeAsync(StateHasChanged);
+
+    private async Task OnReconnect()
+    {
+        if (OnReconnectClicked.HasDelegate)
+            await OnReconnectClicked.InvokeAsync();
+    }
+
+    private void OnDismiss() => UiState.DismissExpiredBanner();
+
+    public void Dispose()
+    {
+        UiState.StateChanged -= HandleStateChanged;
+    }
+}

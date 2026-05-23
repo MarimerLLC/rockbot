@@ -3,6 +3,7 @@ using Microsoft.Extensions.Options;
 using Microsoft.Identity.Client;
 using RockBot.Messaging;
 using RockBot.Tools.Mcp.Auth;
+using RockBot.UserProxy.WorkIqAuth;
 
 namespace RockBot.Agent.McpBridge.Auth;
 

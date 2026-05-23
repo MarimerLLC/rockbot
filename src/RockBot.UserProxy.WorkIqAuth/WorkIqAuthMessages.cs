@@ -1,4 +1,4 @@
-namespace RockBot.Agent.McpBridge.Auth;
+namespace RockBot.UserProxy.WorkIqAuth;
 
 /// <summary>
 /// Topic constants for Work IQ auth-related bus messages.
