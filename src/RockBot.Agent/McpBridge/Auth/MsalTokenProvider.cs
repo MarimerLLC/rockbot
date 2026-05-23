@@ -19,17 +19,20 @@ public sealed class MsalTokenProvider : ITokenProvider
     private readonly MsalTokenProviderOptions _options;
     private readonly IMessagePublisher _publisher;
     private readonly ILogger<MsalTokenProvider> _logger;
+    private readonly WorkIqHealthTracker? _healthTracker;
 
     public MsalTokenProvider(
         IPublicClientApplication msal,
         IOptions<MsalTokenProviderOptions> options,
         IMessagePublisher publisher,
-        ILogger<MsalTokenProvider> logger)
+        ILogger<MsalTokenProvider> logger,
+        WorkIqHealthTracker? healthTracker = null)
     {
         _msal = msal;
         _options = options.Value;
         _publisher = publisher;
         _logger = logger;
+        _healthTracker = healthTracker;
     }
 
     public async Task<string> GetAccessTokenAsync(bool forceRefresh, CancellationToken cancellationToken)
@@ -68,6 +71,7 @@ public sealed class MsalTokenProvider : ITokenProvider
                 "MSAL silent token acquisition for account {AccountId} requires interactive re-consent ({Classification})",
                 account.HomeAccountId?.Identifier, ex.Classification);
 
+            _healthTracker?.MarkUnhealthy($"refresh_revoked:{ex.Classification}");
             await PublishExpiredAsync(account, ex.Message, cancellationToken);
 
             throw new TokenAcquisitionException(
