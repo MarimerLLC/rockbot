@@ -998,6 +998,21 @@ internal sealed class WispExecutor(
             return null;
 
         var currentParams = step.ResolvedParams?.GetRawText() ?? "{}";
+
+        // Guard against pure invention: if the step has no params AND no enriched
+        // context naming candidate values, the LLM has nothing honest to draw on.
+        // It will reliably ignore the NO_CORRECTION instruction and fabricate a
+        // schema-clean but semantically empty value (e.g. {"query":"*"} or
+        // {"query":""} for a search tool). Decline up-front so the original
+        // validation error bubbles to the wisp caller, who can fix the dispatch.
+        if (IsEffectivelyEmptyParams(currentParams) && string.IsNullOrWhiteSpace(enrichedContext))
+        {
+            logger.LogInformation(
+                "Wisp {StepId}: auto-correction skipped (no params and no enriched context to draw from) for {Server}/{Tool}",
+                step.Id, step.Server, step.Tool);
+            return null;
+        }
+
         var contextSection = string.IsNullOrEmpty(enrichedContext)
             ? ""
             : $"Recovery context (schema, tool-description hints, recent session calls):\n{enrichedContext}\n\n";
@@ -1058,6 +1073,27 @@ internal sealed class WispExecutor(
                 "Wisp auto-correction attempt failed for step {StepId} on {Server}/{Tool}",
                 step.Id, step.Server, step.Tool);
             return null;
+        }
+    }
+
+    /// <summary>
+    /// Returns true when the params JSON is missing, empty, or an empty object —
+    /// in any of those cases the auto-corrector has no source data to remap from.
+    /// </summary>
+    internal static bool IsEffectivelyEmptyParams(string? paramsJson)
+    {
+        if (string.IsNullOrWhiteSpace(paramsJson)) return true;
+        try
+        {
+            using var doc = JsonDocument.Parse(paramsJson);
+            if (doc.RootElement.ValueKind != JsonValueKind.Object) return false;
+            // Empty object → no fields to draw from.
+            using var e = doc.RootElement.EnumerateObject();
+            return !e.MoveNext();
+        }
+        catch (JsonException)
+        {
+            return false;
         }
     }
 

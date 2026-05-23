@@ -215,7 +215,29 @@ public sealed class McpManagementExecutor : IToolExecutor, IAsyncDisposable
         {
             toolArgs = argsObj is JsonElement je ? je.GetRawText() : JsonSerializer.Serialize(argsObj, JsonOptions);
         }
-        else if (!HasNonReservedKeys(args))
+        else if (HasNonReservedKeys(args))
+        {
+            // The call carries inner-tool fields at the top level instead of nested
+            // under `arguments`. Some models drop the wrapper and inline the schema
+            // fields directly (e.g. `mcp_invoke_tool(server_name=…, tool_name=…,
+            // accountId=…, query=…)`). Without this branch the call dispatches with
+            // no inner args and the server rejects with "X is required" — recovery's
+            // SchemaErrorEnricher then surfaces a missing-field error to the LLM
+            // even though the LLM actually supplied the field, just one level up.
+            // Promote every non-reserved top-level key into a synthetic arguments
+            // object so the call still works.
+            var promoted = new Dictionary<string, object?>(StringComparer.Ordinal);
+            foreach (var (k, v) in args)
+            {
+                if (!ReservedTopLevelKeys.Contains(k))
+                    promoted[k] = v;
+            }
+            toolArgs = JsonSerializer.Serialize(promoted, JsonOptions);
+            _logger.LogInformation(
+                "mcp_invoke_tool: promoted {Count} flat top-level field(s) into 'arguments' for {Server}/{Tool}",
+                promoted.Count, serverName, toolName);
+        }
+        else
         {
             // The call carries only server_name + tool_name — no nested arguments wrapper
             // and no flattened inner-tool fields. Some models hit this when invoking a

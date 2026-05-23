@@ -299,6 +299,96 @@ public class McpManagementExecutorTests
     }
 
     [TestMethod]
+    public async Task InvokeTool_FlatTopLevelFields_PromotedIntoArguments()
+    {
+        // Some models drop the `arguments` wrapper and inline the inner-tool fields
+        // directly at the top level of mcp_invoke_tool (e.g. `accountId`, `query`,
+        // `count` sitting next to `server_name`/`tool_name`). Without promotion the
+        // call dispatches with no inner args and the MCP server rejects with
+        // "X is required" — even though the LLM did pass X, one level up.
+        var (executor, publisher, subscriber) = CreateExecutor();
+
+        var request = new ToolInvokeRequest
+        {
+            ToolCallId = "call-flat",
+            ToolName = "mcp_invoke_tool",
+            Arguments = """
+                {"server_name":"calendar-mcp","tool_name":"search_emails",
+                 "accountId":"rockbotagent","query":"VS Live Co-Chair","count":10}
+                """
+        };
+
+        var executeTask = executor.ExecuteAsync(request, CancellationToken.None);
+        await Task.Delay(100);
+
+        Assert.AreEqual(1, publisher.Published.Count, "Flat-args call must dispatch.");
+        var innerRequest = publisher.Published[0].Envelope.GetPayload<ToolInvokeRequest>();
+        Assert.IsNotNull(innerRequest);
+        Assert.IsNotNull(innerRequest.Arguments,
+            "Flat top-level fields must be promoted into 'arguments', not dropped.");
+        StringAssert.Contains(innerRequest.Arguments, "rockbotagent");
+        StringAssert.Contains(innerRequest.Arguments, "VS Live Co-Chair");
+        StringAssert.Contains(innerRequest.Arguments, "count");
+
+        // The wrapper keys must NOT have leaked into the inner args
+        Assert.IsFalse(innerRequest.Arguments.Contains("server_name"),
+            "Reserved wrapper key 'server_name' must not leak into inner tool args.");
+        Assert.IsFalse(innerRequest.Arguments.Contains("tool_name"),
+            "Reserved wrapper key 'tool_name' must not leak into inner tool args.");
+
+        var response = new ToolInvokeResponse
+        {
+            ToolCallId = "call-flat",
+            ToolName = "search_emails",
+            Content = "[]"
+        };
+        await subscriber.DeliverAsync($"tool.result.{_identity.Name}",
+            response.ToEnvelope("bridge", correlationId: publisher.Published[0].Envelope.CorrelationId));
+        await executeTask;
+    }
+
+    [TestMethod]
+    public async Task InvokeTool_NestedArgsTakePrecedenceOverFlatFields()
+    {
+        // When both shapes are present, the explicit `arguments` wrapper wins —
+        // anything stray at the top level is ignored (treating it as model noise
+        // is safer than mixing both into the inner call).
+        var (executor, publisher, subscriber) = CreateExecutor();
+
+        var request = new ToolInvokeRequest
+        {
+            ToolCallId = "call-both",
+            ToolName = "mcp_invoke_tool",
+            Arguments = """
+                {"server_name":"calendar-mcp","tool_name":"search_emails",
+                 "arguments":{"accountId":"good","query":"good"},
+                 "stray":"ignored"}
+                """
+        };
+
+        var executeTask = executor.ExecuteAsync(request, CancellationToken.None);
+        await Task.Delay(100);
+
+        Assert.AreEqual(1, publisher.Published.Count);
+        var innerRequest = publisher.Published[0].Envelope.GetPayload<ToolInvokeRequest>();
+        Assert.IsNotNull(innerRequest);
+        Assert.IsNotNull(innerRequest.Arguments);
+        StringAssert.Contains(innerRequest.Arguments, "good");
+        Assert.IsFalse(innerRequest.Arguments.Contains("stray"),
+            "Stray top-level field must not be merged when 'arguments' wrapper is present.");
+
+        var response = new ToolInvokeResponse
+        {
+            ToolCallId = "call-both",
+            ToolName = "search_emails",
+            Content = "[]"
+        };
+        await subscriber.DeliverAsync($"tool.result.{_identity.Name}",
+            response.ToEnvelope("bridge", correlationId: publisher.Published[0].Envelope.CorrelationId));
+        await executeTask;
+    }
+
+    [TestMethod]
     public async Task InvokeTool_MissingServerName_ReturnsError()
     {
         var (executor, _, _) = CreateExecutor();
