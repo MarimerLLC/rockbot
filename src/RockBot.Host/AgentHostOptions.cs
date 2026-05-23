@@ -93,4 +93,15 @@ public sealed class AgentHostOptions
     /// rely solely on the watermark.
     /// </summary>
     public int ToolResultMaxChars { get; set; } = 8_000;
+
+    /// <summary>
+    /// How many tool-call iterations a BM25-recalled skill body stays in context
+    /// without being referenced (via a follow-up <c>get_skill</c>) before it's unloaded.
+    /// Bodies are ~3,000 chars each and remain visible to the model for the entire inner
+    /// loop even when no longer relevant; unloading them after this many idle iterations
+    /// keeps the loop lean. Subagent character is unaffected — the model can re-fetch
+    /// the body at any time by calling <c>get_skill</c> again.
+    /// Default 5. Set to 0 to disable aging and leave all skill bodies in context.
+    /// </summary>
+    public int SkillBodyUnloadAfterIterations { get; set; } = 5;
 }

@@ -333,6 +333,12 @@ public sealed partial class AgentLoopRunner(
         var stashState = new AgentLoopStashContext.State { SessionId = sessionId };
         using var ____ = AgentLoopStashContext.Set(stashState);
 
+        // Per-run skill-body aging state. AgentContextBuilder's BM25 rank-1 push
+        // injects up to one full skill body per turn as a system message; this state
+        // lets the FICC inner loop unload bodies the model isn't actively re-using.
+        var loadedSkillsState = new LoadedSkillsContext.State();
+        using var _____ = LoadedSkillsContext.Set(loadedSkillsState);
+
         // Ensure a current datetime context is always present.
         EnsureDateTimeContext(chatMessages);
 
@@ -1568,6 +1574,145 @@ public sealed partial class AgentLoopRunner(
     {
         var ns = string.IsNullOrEmpty(sessionId) ? "_" : sessionId;
         return $"stash/{ns}/{callId}";
+    }
+
+    /// <summary>
+    /// Prefix on the system message that <see cref="AgentContextBuilder"/> uses to inject
+    /// a BM25-recalled skill body. Matches the exact format at the rank-1 push site
+    /// (<c>$"Skill: {name}\n{content}"</c>) so this aging logic can find and remove
+    /// those messages without false-matching unrelated text.
+    /// </summary>
+    private const string SkillBodyMessagePrefix = "Skill: ";
+
+    /// <summary>
+    /// Tool name (case-insensitive) the model calls to (re-)fetch a skill body. A call
+    /// to this tool refreshes the named skill's last-use counter, keeping the body
+    /// resident even if it's already past the unload threshold.
+    /// </summary>
+    private const string GetSkillToolName = "get_skill";
+
+    /// <summary>
+    /// Extracts the skill name from a "Skill: {name}\n..." system message, returning
+    /// true only when the message looks exactly like the rank-1 BM25 push format. Other
+    /// system messages that happen to start with "Skill " (e.g. text inside a directive)
+    /// are filtered out by requiring the trailing newline that separates name from body.
+    /// </summary>
+    internal static bool TryExtractLoadedSkillName(ChatMessage message, out string skillName)
+    {
+        skillName = string.Empty;
+        if (message.Role != ChatRole.System) return false;
+
+        var text = message.Text;
+        if (text is null || text.Length <= SkillBodyMessagePrefix.Length) return false;
+        if (!text.StartsWith(SkillBodyMessagePrefix, StringComparison.Ordinal)) return false;
+
+        var nameStart = SkillBodyMessagePrefix.Length;
+        var newlineIdx = text.IndexOf('\n', nameStart);
+        if (newlineIdx <= nameStart) return false;
+
+        var candidate = text[nameStart..newlineIdx].Trim();
+        if (candidate.Length == 0) return false;
+
+        skillName = candidate;
+        return true;
+    }
+
+    /// <summary>
+    /// Pulls the skill name from <c>get_skill</c>'s arguments. The tool's signature
+    /// uses parameter name <c>name</c>; lookup is case-insensitive to tolerate provider
+    /// quirks. Returns null when the argument is missing or non-string.
+    /// </summary>
+    internal static string? TryGetSkillNameArgument(IDictionary<string, object?>? toolArgs)
+    {
+        if (toolArgs is null || toolArgs.Count == 0) return null;
+        foreach (var (key, value) in toolArgs)
+        {
+            if (string.Equals(key, "name", StringComparison.OrdinalIgnoreCase))
+                return value?.ToString();
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// Discovers any skill bodies in <paramref name="messages"/> that aren't yet
+    /// tracked, refreshes the last-use timestamp when the current tool call is a
+    /// <c>get_skill</c>, then removes any skill body whose last use is more than
+    /// <paramref name="unloadAfter"/> iterations behind <see cref="LoadedSkillsContext.State.CurrentIteration"/>.
+    /// Bumps the iteration counter on entry so the first tool call after a body is
+    /// loaded starts the aging clock at iteration 1, not 0.
+    ///
+    /// Returns the number of skill bodies unloaded (0 when nothing was aged out).
+    /// </summary>
+    internal static int RegisterAndAgeSkillBodies(
+        IList<ChatMessage> messages,
+        LoadedSkillsContext.State state,
+        string toolName,
+        IDictionary<string, object?>? toolArgs,
+        int unloadAfter,
+        ILogger logger)
+    {
+        state.CurrentIteration++;
+
+        // Discover bodies present in context but not yet tracked. We don't know the
+        // exact iteration they were injected at — be lenient and start their clock
+        // at the current iteration (i.e. give them a fresh budget on first sight).
+        for (var i = 0; i < messages.Count; i++)
+        {
+            if (TryExtractLoadedSkillName(messages[i], out var loadedName)
+                && !state.LastUseIteration.ContainsKey(loadedName))
+            {
+                state.LastUseIteration[loadedName] = state.CurrentIteration;
+            }
+        }
+
+        // Refresh the use clock if the current tool call is get_skill(name=X).
+        if (string.Equals(toolName, GetSkillToolName, StringComparison.OrdinalIgnoreCase))
+        {
+            var refreshedName = TryGetSkillNameArgument(toolArgs);
+            if (!string.IsNullOrEmpty(refreshedName))
+            {
+                state.LastUseIteration[refreshedName] = state.CurrentIteration;
+            }
+        }
+
+        if (unloadAfter <= 0) return 0;
+
+        // Build the unload list. We can't mutate LastUseIteration while iterating, so
+        // collect first.
+        List<string>? toUnload = null;
+        foreach (var (skill, lastUse) in state.LastUseIteration)
+        {
+            if (state.CurrentIteration - lastUse > unloadAfter)
+            {
+                (toUnload ??= []).Add(skill);
+            }
+        }
+        if (toUnload is null) return 0;
+
+        var removed = 0;
+        foreach (var skill in toUnload)
+        {
+            var ageAtUnload = state.CurrentIteration - state.LastUseIteration[skill];
+            state.LastUseIteration.Remove(skill);
+
+            // Walk back-to-front because the skill body is typically near the top
+            // (system messages cluster early) but removing back-to-front keeps the
+            // loop indices stable either way.
+            for (var i = messages.Count - 1; i >= 0; i--)
+            {
+                if (TryExtractLoadedSkillName(messages[i], out var msgSkill)
+                    && string.Equals(msgSkill, skill, StringComparison.Ordinal))
+                {
+                    messages.RemoveAt(i);
+                    removed++;
+                    logger.LogInformation(
+                        "Unloaded skill body for '{Skill}' after {Age} iteration(s) of non-use",
+                        skill, ageAtUnload);
+                    break;
+                }
+            }
+        }
+        return removed;
     }
 
     /// <summary>

@@ -76,6 +76,23 @@ public class RockBotFunctionInvokingChatClient : FunctionInvokingChatClient
                 _logger);
         }
 
+        // Age out BM25-recalled skill bodies the model hasn't referenced in N tool
+        // calls. Runs before the watermark trim so it has the chance to shrink the
+        // message list enough to keep the watermark from firing at all.
+        if (context.Messages is IList<ChatMessage> skillAgingList
+            && LoadedSkillsContext.Value is { } loadedSkillsState
+            && _hostOptions.Value.SkillBodyUnloadAfterIterations is int unloadAfter
+            and > 0)
+        {
+            AgentLoopRunner.RegisterAndAgeSkillBodies(
+                skillAgingList,
+                loadedSkillsState,
+                callContent.Name,
+                callContent.Arguments,
+                unloadAfter,
+                _logger);
+        }
+
         // Soft watermark trim inside FICC's inner loop. Without this, long tool-heavy
         // subagent runs grow the message list from ~17k to 100k+ tokens entirely within
         // a single outer GetResponseAsync call, and the outer-boundary trim never fires.
