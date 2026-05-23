@@ -165,4 +165,61 @@ public class McpBridgeServerConfigTests
 
         Assert.AreEqual(a.CanonicalIdentity(), b.CanonicalIdentity());
     }
+
+    // ── Auth profile ──────────────────────────────────────────────────────────
+
+    [TestMethod]
+    public void CanonicalIdentity_AuthProfile_DifferentiatesFromUnauthenticated()
+    {
+        // Same URL, but one carries an auth profile — must not be deduped against
+        // the other, since they call as different identities even at the same endpoint.
+        var unauth = new McpBridgeServerConfig { Type = "streamable-http", Url = "https://srv/" };
+        var auth = new McpBridgeServerConfig
+        {
+            Type = "streamable-http",
+            Url = "https://srv/",
+            Auth = new McpServerAuthConfig { Profile = "workiq" }
+        };
+
+        Assert.AreNotEqual(unauth.CanonicalIdentity(), auth.CanonicalIdentity());
+    }
+
+    [TestMethod]
+    public void CanonicalIdentity_DifferentAuthProfiles_AreDifferent()
+    {
+        // Same URL, different identities. Both registrations must be kept.
+        var a = new McpBridgeServerConfig
+        {
+            Type = "streamable-http",
+            Url = "https://srv/",
+            Auth = new McpServerAuthConfig { Profile = "workiq" }
+        };
+        var b = new McpBridgeServerConfig
+        {
+            Type = "streamable-http",
+            Url = "https://srv/",
+            Auth = new McpServerAuthConfig { Profile = "github" }
+        };
+
+        Assert.AreNotEqual(a.CanonicalIdentity(), b.CanonicalIdentity());
+    }
+
+    [TestMethod]
+    public void CanonicalIdentity_SameAuthProfile_CaseInsensitive_AreEqual()
+    {
+        var a = new McpBridgeServerConfig
+        {
+            Type = "streamable-http",
+            Url = "https://srv/",
+            Auth = new McpServerAuthConfig { Profile = "WorkIQ" }
+        };
+        var b = new McpBridgeServerConfig
+        {
+            Type = "streamable-http",
+            Url = "https://srv/",
+            Auth = new McpServerAuthConfig { Profile = "workiq" }
+        };
+
+        Assert.AreEqual(a.CanonicalIdentity(), b.CanonicalIdentity());
+    }
 }

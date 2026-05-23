@@ -65,6 +65,14 @@ public sealed class McpBridgeServerConfig
     public AttachmentManifest? Attachments { get; set; }
 
     /// <summary>
+    /// Optional bearer-token authentication. When set, the bridge resolves
+    /// <see cref="McpServerAuthConfig.Profile"/> against the token provider
+    /// registry and wires a <c>BearerInjectionHandler</c> into the HTTP client
+    /// so every request carries a fresh access token.
+    /// </summary>
+    public McpServerAuthConfig? Auth { get; set; }
+
+    /// <summary>
     /// Whether this config uses HTTP-based transport (SSE or streamable HTTP).
     /// </summary>
     public bool IsSse => Type?.ToLowerInvariant() is "sse" or "http" or "streamable-http";
@@ -90,7 +98,10 @@ public sealed class McpBridgeServerConfig
             .Select(kvp => $"{kvp.Key.ToLowerInvariant()}={kvp.Value}"));
         var allowedTools = string.Join("", AllowedTools.OrderBy(s => s, StringComparer.OrdinalIgnoreCase));
         var deniedTools = string.Join("", DeniedTools.OrderBy(s => s, StringComparer.OrdinalIgnoreCase));
-        return string.Join("", type, url, transportMode, command, args, env, headers, allowedTools, deniedTools);
+        // Include the auth profile so an authenticated entry is never deduped
+        // against an unauthenticated one at the same URL.
+        var authProfile = Auth?.Profile?.Trim().ToLowerInvariant() ?? string.Empty;
+        return string.Join("", type, url, transportMode, command, args, env, headers, allowedTools, deniedTools, authProfile);
     }
 
     /// <summary>

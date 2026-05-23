@@ -51,6 +51,21 @@ data:
   {{- end }}
   ModelBehaviors__BasePath: "/data/agent/model-behaviors"
 
+  {{- if .Values.workiq.enabled }}
+  # ── Microsoft Work IQ auth (MSAL) ──────────────────────────────────────────
+  # When set, the agent registers the "workiq" token provider profile so
+  # mcp.json entries with auth.profile=workiq receive a bearer token on every
+  # request. Cache lives at /data/agent/secrets/workiq-cache.bin.
+  WorkIQ__TenantId: {{ required "workiq.tenantId is required when workiq.enabled=true" .Values.workiq.tenantId | quote }}
+  WorkIQ__ClientId: {{ required "workiq.clientId is required when workiq.enabled=true" .Values.workiq.clientId | quote }}
+  {{- if .Values.workiq.scopes }}
+  WorkIQ__Scopes: {{ join "," .Values.workiq.scopes | quote }}
+  {{- end }}
+  {{- if .Values.workiq.authority }}
+  WorkIQ__Authority: {{ .Values.workiq.authority | quote }}
+  {{- end }}
+  {{- end }}
+
   # ── Runtime ───────────────────────────────────────────────────────────────
   DOTNET_ENVIRONMENT: "Production"
 

@@ -37,5 +37,12 @@ public sealed record ToolError
         public const string ExecutionFailed = "execution_failed";
         public const string Timeout = "timeout";
         public const string InvalidArguments = "invalid_arguments";
+
+        /// <summary>
+        /// The MCP server rejected the request because the bearer token is missing,
+        /// invalid, or revoked. Indicates the user must complete an interactive
+        /// auth flow (e.g. re-consent in the UI) before retrying.
+        /// </summary>
+        public const string AuthRequired = "auth_required";
     }
 }

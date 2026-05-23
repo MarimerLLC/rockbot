@@ -9,6 +9,7 @@ using RockBot.Host;
 using RockBot.Llm;
 using RockBot.Messaging.RabbitMQ;
 using RockBot.Agent.McpBridge;
+using RockBot.Agent.McpBridge.Auth;
 using RockBot.Scripts.Remote;
 using RockBot.Agent;
 using RockBot.Memory;
@@ -375,6 +376,16 @@ builder.Services.Configure<LlmPricingOptions>(builder.Configuration.GetSection("
 // MCP bridge (replaces external RockBot.Tools.Mcp.Bridge process)
 builder.Services.Configure<McpBridgeOptions>(builder.Configuration.GetSection("McpBridge"));
 builder.Services.AddHostedService<McpBridgeService>();
+
+// WorkIQ auth (MSAL token provider + cache store) — registered only when
+// the host has been configured with an Entra tenant and client ID. Keeping
+// this conditional means deployments without WorkIQ never pull MSAL into
+// the runtime and never publish/subscribe on auth.workiq.* topics.
+if (!string.IsNullOrWhiteSpace(builder.Configuration["WorkIQ:TenantId"])
+    && !string.IsNullOrWhiteSpace(builder.Configuration["WorkIQ:ClientId"]))
+{
+    builder.Services.AddWorkIqAuth(builder.Configuration);
+}
 
 // Remote script runner — delegates script execution to the Script Manager pod via RabbitMQ
 builder.Services.AddRemoteScriptRunner("RockBot");
