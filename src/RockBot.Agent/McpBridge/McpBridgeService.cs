@@ -10,6 +10,7 @@ using RockBot.Host;
 using RockBot.Messaging;
 using RockBot.Tools;
 using RockBot.Tools.Mcp;
+using RockBot.Tools.Mcp.Auth;
 
 namespace RockBot.Agent.McpBridge;
 
@@ -26,6 +27,7 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
     private readonly string _configPath;
     private readonly ILogger<McpBridgeService> _logger;
     private readonly ILlmClient? _llmClient;
+    private readonly ITokenProviderRegistry? _tokenProviders;
 
     private readonly Dictionary<string, McpClient> _clients = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, McpBridgeServerConfig> _serverConfigs = new(StringComparer.OrdinalIgnoreCase);
@@ -62,7 +64,8 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
         AgentIdentity identity,
         IOptions<McpBridgeOptions> options,
         ILogger<McpBridgeService> logger,
-        ILlmClient? llmClient = null)
+        ILlmClient? llmClient = null,
+        ITokenProviderRegistry? tokenProviders = null)
     {
         _publisher = publisher;
         _subscriber = subscriber;
@@ -73,6 +76,7 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
             : Path.Combine(AppContext.BaseDirectory, _options.ConfigPath);
         _logger = logger;
         _llmClient = llmClient;
+        _tokenProviders = tokenProviders;
     }
 
     public async Task StartAsync(CancellationToken cancellationToken)
@@ -371,16 +375,10 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
                 };
 
                 HttpClientTransport transport;
-                if (config.Headers.Count > 0)
+                var customClient = TryBuildHttpClient(name, config);
+                if (customClient is not null)
                 {
-                    var httpClient = new HttpClient();
-                    foreach (var (key, rawValue) in config.Headers)
-                    {
-                        var expanded = ExpandEnvVars(rawValue);
-                        if (!string.IsNullOrEmpty(expanded))
-                            httpClient.DefaultRequestHeaders.TryAddWithoutValidation(key, expanded);
-                    }
-                    transport = new HttpClientTransport(transportOptions, httpClient, loggerFactory: null, ownsHttpClient: true);
+                    transport = new HttpClientTransport(transportOptions, customClient, loggerFactory: null, ownsHttpClient: true);
                 }
                 else
                 {
@@ -486,13 +484,9 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
         if (_attachmentGateways.TryGetValue(serverName, out var entry))
             return entry.Gateway;
 
-        var http = new HttpClient();
-        foreach (var (key, rawValue) in config.Headers)
-        {
-            var expanded = ExpandEnvVars(rawValue);
-            if (!string.IsNullOrEmpty(expanded))
-                http.DefaultRequestHeaders.TryAddWithoutValidation(key, expanded);
-        }
+        // Reuse the same client-construction logic so attachment uploads carry
+        // the same auth and headers as MCP tool calls.
+        var http = TryBuildHttpClient(serverName, config) ?? new HttpClient();
 
         var gateway = new AttachmentGateway(
             _attachmentStorage.Value,
@@ -503,6 +497,56 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
 
         _attachmentGateways[serverName] = new AttachmentGatewayEntry(gateway, http);
         return gateway;
+    }
+
+    /// <summary>
+    /// Builds an <see cref="HttpClient"/> for a server config that needs custom
+    /// headers, bearer auth, or both. Returns <c>null</c> when neither applies,
+    /// signalling that the caller can use the transport's default client.
+    /// </summary>
+    private HttpClient? TryBuildHttpClient(string serverName, McpBridgeServerConfig config)
+    {
+        var hasHeaders = config.Headers.Count > 0;
+        var hasAuth = config.Auth is not null;
+        if (!hasHeaders && !hasAuth) return null;
+
+        HttpClient httpClient;
+        if (hasAuth)
+        {
+            if (_tokenProviders is null)
+            {
+                throw new InvalidOperationException(
+                    $"MCP server '{serverName}' requires auth profile '{config.Auth!.Profile}' " +
+                    $"but no ITokenProviderRegistry is registered in DI. " +
+                    $"Add a token provider (e.g. services.AddWorkIqAuth(...)) before connecting.");
+            }
+
+            var provider = _tokenProviders.Get(config.Auth!.Profile);
+            var bearerHandler = new BearerInjectionHandler(provider, new SocketsHttpHandler());
+            httpClient = new HttpClient(bearerHandler);
+        }
+        else
+        {
+            httpClient = new HttpClient();
+        }
+
+        foreach (var (key, rawValue) in config.Headers)
+        {
+            // Never let static headers clobber the auth handler's bearer.
+            if (hasAuth && string.Equals(key, "Authorization", StringComparison.OrdinalIgnoreCase))
+            {
+                _logger.LogWarning(
+                    "MCP server '{Server}' has both static 'Authorization' header and auth profile '{Profile}'; ignoring the static header in favor of the bearer-injecting auth handler",
+                    serverName, config.Auth!.Profile);
+                continue;
+            }
+
+            var expanded = ExpandEnvVars(rawValue);
+            if (!string.IsNullOrEmpty(expanded))
+                httpClient.DefaultRequestHeaders.TryAddWithoutValidation(key, expanded);
+        }
+
+        return httpClient;
     }
 
     private void InvalidateAttachmentGateway(string serverName)
@@ -917,6 +961,27 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
             };
 
             await PublishResponseAsync(error, replyTo, envelope.CorrelationId, ct);
+        }
+        catch (Exception ex) when (FindAuthChallenge(ex) is { } authChallenge)
+        {
+            sw.Stop();
+            _logger.LogWarning(
+                "← MCP {Server}/{Tool} AUTH REQUIRED after {ElapsedMs}ms: {Detail}",
+                serverName, request.ToolName, sw.ElapsedMilliseconds, authChallenge.Message);
+
+            // The bearer token couldn't authenticate even after a forced refresh —
+            // reconnecting will not help; the user must re-consent interactively.
+            var error = new ToolError
+            {
+                ToolCallId = request.ToolCallId,
+                ToolName = request.ToolName,
+                Code = ToolError.Codes.AuthRequired,
+                Message = authChallenge.Message,
+                IsRetryable = false
+            };
+
+            await PublishResponseAsync(error, replyTo, envelope.CorrelationId, ct);
+            return MessageResult.Ack;
         }
         catch (Exception ex)
         {
@@ -1530,6 +1595,21 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
             catch { /* Best-effort cleanup */ }
         }
         _attachmentGateways.Clear();
+    }
+
+    /// <summary>
+    /// Walks the exception chain looking for an <see cref="McpAuthChallengeException"/>.
+    /// The MCP client library may wrap the bearer handler's exception inside a transport
+    /// or protocol exception, so we search inner exceptions rather than relying on the
+    /// outer type.
+    /// </summary>
+    private static McpAuthChallengeException? FindAuthChallenge(Exception? ex)
+    {
+        for (var current = ex; current is not null; current = current.InnerException)
+        {
+            if (current is McpAuthChallengeException auth) return auth;
+        }
+        return null;
     }
 
     /// <summary>

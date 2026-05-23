@@ -18,6 +18,7 @@
     <PackageReference Include="Microsoft.Extensions.AI.Abstractions" Version="10.*" />
     <PackageReference Include="Microsoft.Extensions.AI.OpenAI" Version="10.3.0" />
     <PackageReference Include="Microsoft.Extensions.Hosting" Version="10.0.*" />
+    <PackageReference Include="Microsoft.Identity.Client" Version="4.*" />
     <PackageReference Include="ModelContextProtocol" Version="0.8.0-preview.1" />
   </ItemGroup>
 

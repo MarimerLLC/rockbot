@@ -93,6 +93,24 @@ storage:
   # Holds soul.md, directives.md, mcp.json, memory/, skills/, and other agent data
   agentDataSize: 10Gi
 
+# ── Microsoft Work IQ (M365 MCP servers) auth ────────────────────────────────
+# When enabled, the agent registers an MSAL-backed token provider for the
+# "workiq" auth profile so mcp.json entries with auth.profile=workiq receive a
+# bearer token on every request. Token cache is populated by the UI tier
+# (Blazor/CLI) after the user completes interactive consent.
+workiq:
+  enabled: false
+  # Entra tenant ID (GUID). Required when workiq.enabled=true.
+  tenantId: ""
+  # Public client application ID registered in Entra. Shared between UI and agent.
+  clientId: ""
+  # Delegated scopes to request at silent acquisition. Typically per-server
+  # scopes like "WorkIQ-MailServer/.default", "WorkIQ-Calendar/.default", etc.
+  scopes: []
+  # Optional override of the OAuth authority URL (defaults to public cloud
+  # tenant URL). Set for sovereign clouds.
+  authority: ""
+
 # ── Telemetry (OpenTelemetry) ─────────────────────────────────────────────────
 telemetry:
   enabled: true

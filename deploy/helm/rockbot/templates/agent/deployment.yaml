@@ -95,6 +95,12 @@ spec:
               # Runtime directories
               mkdir -p /data/agent/memory /data/agent/skills
 
+              # Secrets directory (workiq token cache and any future per-user
+              # credential material). Mode 0700 keeps it private to the rockbot
+              # user even though the PVC is single-tenant.
+              mkdir -p /data/agent/secrets
+              chmod 700 /data/agent/secrets
+
               # Hand ownership to the rockbot user so the main container (non-root)
               # can read and write the volume. The user exists in the image.
               chown -R rockbot:rockbot /data/agent
