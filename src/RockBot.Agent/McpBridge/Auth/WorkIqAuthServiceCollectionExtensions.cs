@@ -52,6 +52,7 @@ public static class WorkIqAuthServiceCollectionExtensions
             return builder.Build();
         });
 
+        services.AddSingleton<WorkIqHealthTracker>();
         services.AddSingleton<MsalTokenProvider>();
         services.AddSingleton<TokenProviderRegistration>(sp =>
             new TokenProviderRegistration("workiq", sp.GetRequiredService<MsalTokenProvider>()));

@@ -10,7 +10,7 @@
 <div class="workiq-connect">
     @if (_state == ConnectState.NotStarted)
     {
-        <button class="btn btn-primary" @onclick="StartFlow">Connect M365</button>
+        <button class="btn btn-primary" @onclick="StartFlow" disabled="@_starting">Connect M365</button>
         @if (_lastError is not null)
         {
             <div class="mt-2 alert alert-danger small" role="alert">
@@ -60,9 +60,16 @@
     private string? _lastError;
     private CancellationTokenSource? _cts;
     private Task? _completionTask;
+    // Guard against a second click between the button render and the state
+    // transition into InProgress — without it, a fast double-click would start
+    // two device-code flows in parallel and the latter's failure would clobber
+    // the former's success.
+    private bool _starting;
 
     private async Task StartFlow()
     {
+        if (_starting || _state == ConnectState.InProgress) return;
+        _starting = true;
         _state = ConnectState.InProgress;
         _lastError = null;
         _cts = new CancellationTokenSource();
@@ -93,6 +100,7 @@
         {
             _cts?.Dispose();
             _cts = null;
+            _starting = false;
         }
     }
 

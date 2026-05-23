@@ -30,6 +30,7 @@ public sealed class TokenCacheStore : IHostedService
     private readonly IPublicClientApplication _msal;
     private readonly MsalTokenProviderOptions _options;
     private readonly ILogger<TokenCacheStore> _logger;
+    private readonly WorkIqHealthTracker? _healthTracker;
 
     private readonly SemaphoreSlim _fileLock = new(1, 1);
     private ISubscription? _subscription;
@@ -38,12 +39,14 @@ public sealed class TokenCacheStore : IHostedService
         IMessageSubscriber subscriber,
         IPublicClientApplication msal,
         IOptions<MsalTokenProviderOptions> options,
-        ILogger<TokenCacheStore> logger)
+        ILogger<TokenCacheStore> logger,
+        WorkIqHealthTracker? healthTracker = null)
     {
         _subscriber = subscriber;
         _msal = msal;
         _options = options.Value;
         _logger = logger;
+        _healthTracker = healthTracker;
     }
 
     public async Task StartAsync(CancellationToken cancellationToken)
@@ -88,6 +91,7 @@ public sealed class TokenCacheStore : IHostedService
             _logger.LogInformation(
                 "Persisted WorkIQ token cache for account {AccountId} ({Bytes} bytes, {Scopes} scope(s))",
                 message.AccountId, message.CacheBytes.Length, message.Scopes.Count);
+            _healthTracker?.MarkHealthy("cache_updated_from_ui");
         }
         catch (Exception ex)
         {
@@ -143,6 +147,7 @@ public sealed class TokenCacheStore : IHostedService
             }
             _logger.LogDebug(
                 "Persisted MSAL cache rotation ({Bytes} bytes)", bytes.Length);
+            _healthTracker?.MarkHealthy("msal_cache_rotated");
         }
         catch (Exception ex)
         {

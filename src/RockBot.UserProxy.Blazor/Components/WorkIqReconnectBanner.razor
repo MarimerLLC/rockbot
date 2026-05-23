@@ -14,7 +14,7 @@
             }
         </div>
         <div class="d-flex gap-2">
-            <button class="btn btn-sm btn-warning" @onclick="OnReconnect">Reconnect</button>
+            <button class="btn btn-sm btn-warning" @onclick="OnReconnect" disabled="@_reconnecting">Reconnect</button>
             <button class="btn btn-sm btn-link" @onclick="OnDismiss"
                     title="Dismiss">✕</button>
         </div>
@@ -28,6 +28,11 @@
     /// </summary>
     [Parameter] public EventCallback OnReconnectClicked { get; set; }
 
+    // Guard against rapid double-clicks while the parent's async handler
+    // (typically a modal open + flow start) is in flight. Without it, two
+    // OnReconnectClicked invocations would race the parent's flow state.
+    private bool _reconnecting;
+
     protected override void OnInitialized()
     {
         UiState.StateChanged += HandleStateChanged;
@@ -37,8 +42,17 @@
 
     private async Task OnReconnect()
     {
-        if (OnReconnectClicked.HasDelegate)
-            await OnReconnectClicked.InvokeAsync();
+        if (_reconnecting) return;
+        _reconnecting = true;
+        try
+        {
+            if (OnReconnectClicked.HasDelegate)
+                await OnReconnectClicked.InvokeAsync();
+        }
+        finally
+        {
+            _reconnecting = false;
+        }
     }
 
     private void OnDismiss() => UiState.DismissExpiredBanner();
