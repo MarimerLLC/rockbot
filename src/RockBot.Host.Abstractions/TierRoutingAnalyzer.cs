@@ -35,11 +35,20 @@ public static class TierRoutingAnalyzer
     /// Run the analyzer over a snapshot of entries. The caller is responsible for
     /// any time-window filtering before calling — this method aggregates whatever it gets.
     /// </summary>
+    /// <param name="highTierCostFloorMultiplier">
+    /// Routing cost floor. For threshold-scan and flagged-cluster cost projections, the High
+    /// tier is priced at no less than this multiple of the Balanced tier's real rate. Prevents
+    /// the dream from reading a Balanced→High shift as zero-cost — and ratcheting balancedCeiling
+    /// to its floor — when High currently shares Balanced's model. <c>Math.Max</c> means a
+    /// genuinely premium High model keeps its real (higher) price. 1.0 disables the floor.
+    /// Does NOT affect <see cref="TierRoutingProjectedCost"/>, which always reports real spend.
+    /// </param>
     public static TierRoutingAnalysis Analyze(
         IReadOnlyList<TierRoutingEntry> entries,
         TierSelectorConfig? currentConfig = null,
         IReadOnlyList<LlmPricingRow>? pricing = null,
-        IReadOnlyDictionary<ModelTier, string?>? tierModelMap = null)
+        IReadOnlyDictionary<ModelTier, string?>? tierModelMap = null,
+        double highTierCostFloorMultiplier = 1.0)
     {
         var lowCeiling = currentConfig?.LowCeiling ?? DefaultLowCeiling;
         var balancedCeiling = currentConfig?.BalancedCeiling ?? DefaultBalancedCeiling;
@@ -65,9 +74,9 @@ public static class TierRoutingAnalyzer
 
         var globalStats = BuildGlobalStats(entries, fallbackCount);
         var clusters = BuildClusters(quality);
-        var flagged = FlagClusters(clusters, pricing, tierModelMap);
+        var flagged = FlagClusters(clusters, pricing, tierModelMap, highTierCostFloorMultiplier);
         var keywordCandidates = BuildKeywordCandidates(quality);
-        var scans = BuildThresholdScans(quality, lowCeiling, balancedCeiling, pricing, tierModelMap);
+        var scans = BuildThresholdScans(quality, lowCeiling, balancedCeiling, pricing, tierModelMap, highTierCostFloorMultiplier);
         var projectedCost = BuildProjectedCost(entries, pricing);
 
         return new TierRoutingAnalysis(
@@ -183,7 +192,8 @@ public static class TierRoutingAnalyzer
     private static IReadOnlyList<TierRoutingFlaggedCluster> FlagClusters(
         IReadOnlyList<TierRoutingCluster> clusters,
         IReadOnlyList<LlmPricingRow>? pricing,
-        IReadOnlyDictionary<ModelTier, string?>? tierModelMap)
+        IReadOnlyDictionary<ModelTier, string?>? tierModelMap,
+        double highTierCostFloorMultiplier)
     {
         var flagged = new List<TierRoutingFlaggedCluster>();
 
@@ -195,7 +205,7 @@ public static class TierRoutingAnalyzer
             {
                 flagged.Add(BuildFlagged(c, "panicEscalation",
                     $"Low tier averaging {c.AvgToolCalls:F1} tool calls across {c.Count} entries — model likely struggling.",
-                    ModelTier.Balanced, pricing, tierModelMap));
+                    ModelTier.Balanced, pricing, tierModelMap, highTierCostFloorMultiplier));
                 continue;
             }
 
@@ -204,7 +214,7 @@ public static class TierRoutingAnalyzer
             {
                 flagged.Add(BuildFlagged(c, "tokenSurprise",
                     $"Score {c.AvgComplexityScore:F2} but post-injection tokens {p} — context inflation, not user complexity. Informational only.",
-                    alternateTier: null, pricing, tierModelMap));
+                    alternateTier: null, pricing, tierModelMap, highTierCostFloorMultiplier));
                 continue;
             }
 
@@ -213,7 +223,7 @@ public static class TierRoutingAnalyzer
             {
                 flagged.Add(BuildFlagged(c, "lowOutputAtHigh",
                     $"High tier producing only {o} avg output tokens across {c.Count} entries — possible over-routing.",
-                    ModelTier.Balanced, pricing, tierModelMap));
+                    ModelTier.Balanced, pricing, tierModelMap, highTierCostFloorMultiplier));
             }
         }
 
@@ -222,18 +232,19 @@ public static class TierRoutingAnalyzer
 
     private static TierRoutingFlaggedCluster BuildFlagged(
         TierRoutingCluster cluster, string flag, string rationale, ModelTier? alternateTier,
-        IReadOnlyList<LlmPricingRow>? pricing, IReadOnlyDictionary<ModelTier, string?>? tierModelMap)
+        IReadOnlyList<LlmPricingRow>? pricing, IReadOnlyDictionary<ModelTier, string?>? tierModelMap,
+        double highTierCostFloorMultiplier)
     {
         decimal? currentCost = null;
         decimal? alternateCost = null;
         if (pricing is not null && tierModelMap is not null
             && cluster.AvgInputTokens is long ai && cluster.AvgOutputTokens is long ao)
         {
-            var perCallCurrent = TryPriceCall(tierModelMap.GetValueOrDefault(cluster.Tier), ai, ao, pricing);
+            var perCallCurrent = TryPriceCallForTier(cluster.Tier, ai, ao, tierModelMap, pricing, highTierCostFloorMultiplier);
             currentCost = perCallCurrent * cluster.Count;
             if (alternateTier is ModelTier alt)
             {
-                var perCallAlt = TryPriceCall(tierModelMap.GetValueOrDefault(alt), ai, ao, pricing);
+                var perCallAlt = TryPriceCallForTier(alt, ai, ao, tierModelMap, pricing, highTierCostFloorMultiplier);
                 alternateCost = perCallAlt * cluster.Count;
             }
         }
@@ -325,14 +336,15 @@ public static class TierRoutingAnalyzer
         IReadOnlyList<TierRoutingEntry> entries,
         double lowCeiling, double balancedCeiling,
         IReadOnlyList<LlmPricingRow>? pricing,
-        IReadOnlyDictionary<ModelTier, string?>? tierModelMap)
+        IReadOnlyDictionary<ModelTier, string?>? tierModelMap,
+        double highTierCostFloorMultiplier)
     {
         return new[]
         {
-            BuildScan(entries, "lowCeiling", +ThresholdScanDelta, lowCeiling, balancedCeiling, pricing, tierModelMap),
-            BuildScan(entries, "lowCeiling", -ThresholdScanDelta, lowCeiling, balancedCeiling, pricing, tierModelMap),
-            BuildScan(entries, "balancedCeiling", +ThresholdScanDelta, lowCeiling, balancedCeiling, pricing, tierModelMap),
-            BuildScan(entries, "balancedCeiling", -ThresholdScanDelta, lowCeiling, balancedCeiling, pricing, tierModelMap)
+            BuildScan(entries, "lowCeiling", +ThresholdScanDelta, lowCeiling, balancedCeiling, pricing, tierModelMap, highTierCostFloorMultiplier),
+            BuildScan(entries, "lowCeiling", -ThresholdScanDelta, lowCeiling, balancedCeiling, pricing, tierModelMap, highTierCostFloorMultiplier),
+            BuildScan(entries, "balancedCeiling", +ThresholdScanDelta, lowCeiling, balancedCeiling, pricing, tierModelMap, highTierCostFloorMultiplier),
+            BuildScan(entries, "balancedCeiling", -ThresholdScanDelta, lowCeiling, balancedCeiling, pricing, tierModelMap, highTierCostFloorMultiplier)
         };
     }
 
@@ -341,7 +353,8 @@ public static class TierRoutingAnalyzer
         string threshold, double delta,
         double lowCeiling, double balancedCeiling,
         IReadOnlyList<LlmPricingRow>? pricing,
-        IReadOnlyDictionary<ModelTier, string?>? tierModelMap)
+        IReadOnlyDictionary<ModelTier, string?>? tierModelMap,
+        double highTierCostFloorMultiplier)
     {
         // Round shifted thresholds to 4 decimals — bare double subtraction yields
         // 0.15 - 0.05 = 0.09999999999999998, which makes boundary entries (score 0.10)
@@ -370,8 +383,8 @@ public static class TierRoutingAnalyzer
             foreach (var (e, from, to) in flips)
             {
                 if (e.InputTokens is not long it || e.OutputTokens is not long ot) continue;
-                var fromCost = TryPriceCall(tierModelMap.GetValueOrDefault(from), it, ot, pricing);
-                var toCost = TryPriceCall(tierModelMap.GetValueOrDefault(to), it, ot, pricing);
+                var fromCost = TryPriceCallForTier(from, it, ot, tierModelMap, pricing, highTierCostFloorMultiplier);
+                var toCost = TryPriceCallForTier(to, it, ot, tierModelMap, pricing, highTierCostFloorMultiplier);
                 if (fromCost is null || toCost is null) continue;
                 accum += toCost.Value - fromCost.Value;
                 any = true;
@@ -442,11 +455,67 @@ public static class TierRoutingAnalyzer
             EntriesUnpricedCount: unpriced);
     }
 
+    /// <summary>
+    /// Prices a call by raw model ID at real pricing — no cost floor. Used for
+    /// <see cref="BuildProjectedCost"/>, which reports actual spend.
+    /// </summary>
     private static decimal? TryPriceCall(string? modelId, long inputTokens, long outputTokens, IReadOnlyList<LlmPricingRow> pricing)
     {
-        if (string.IsNullOrEmpty(modelId)) return null;
-        var row = pricing.FirstOrDefault(p => modelId.Contains(p.Prefix, StringComparison.OrdinalIgnoreCase));
+        var row = MatchRow(modelId, pricing);
         if (row is null) return null;
         return (inputTokens * row.InputPerM + outputTokens * row.OutputPerM) / 1_000_000m;
+    }
+
+    /// <summary>
+    /// Prices a call for a specific <see cref="ModelTier"/> with the routing cost floor applied
+    /// (see <see cref="EffectiveTierRates"/>). Used by the threshold-scan and flagged-cluster
+    /// projections that drive tuning decisions — NOT by real-spend reporting.
+    /// </summary>
+    private static decimal? TryPriceCallForTier(
+        ModelTier tier, long inputTokens, long outputTokens,
+        IReadOnlyDictionary<ModelTier, string?> tierModelMap,
+        IReadOnlyList<LlmPricingRow> pricing,
+        double highTierCostFloorMultiplier)
+    {
+        var rates = EffectiveTierRates(tier, tierModelMap, pricing, highTierCostFloorMultiplier);
+        if (rates is null) return null;
+        var (inPerM, outPerM) = rates.Value;
+        return (inputTokens * inPerM + outputTokens * outPerM) / 1_000_000m;
+    }
+
+    /// <summary>
+    /// Effective per-million-token rates for a tier. For the High tier, rates are floored at
+    /// <paramref name="highTierCostFloorMultiplier"/> × the Balanced tier's real rates so a
+    /// Balanced→High shift never projects as zero-cost when High shares Balanced's model.
+    /// <c>Math.Max</c> keeps a genuinely premium High model at its real (higher) price.
+    /// Returns <c>null</c> when the tier's model has no pricing row.
+    /// </summary>
+    private static (decimal InputPerM, decimal OutputPerM)? EffectiveTierRates(
+        ModelTier tier,
+        IReadOnlyDictionary<ModelTier, string?> tierModelMap,
+        IReadOnlyList<LlmPricingRow> pricing,
+        double highTierCostFloorMultiplier)
+    {
+        var row = MatchRow(tierModelMap.GetValueOrDefault(tier), pricing);
+        if (row is null) return null;
+
+        if (tier == ModelTier.High && highTierCostFloorMultiplier > 1.0)
+        {
+            var balanced = MatchRow(tierModelMap.GetValueOrDefault(ModelTier.Balanced), pricing);
+            if (balanced is not null)
+            {
+                var m = (decimal)highTierCostFloorMultiplier;
+                return (Math.Max(row.InputPerM, balanced.InputPerM * m),
+                        Math.Max(row.OutputPerM, balanced.OutputPerM * m));
+            }
+        }
+
+        return (row.InputPerM, row.OutputPerM);
+    }
+
+    private static LlmPricingRow? MatchRow(string? modelId, IReadOnlyList<LlmPricingRow> pricing)
+    {
+        if (string.IsNullOrEmpty(modelId)) return null;
+        return pricing.FirstOrDefault(p => modelId.Contains(p.Prefix, StringComparison.OrdinalIgnoreCase));
     }
 }

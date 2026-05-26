@@ -78,6 +78,24 @@ public sealed class DreamOptions
     public bool TierRoutingReviewEnabled { get; set; } = true;
 
     /// <summary>
+    /// Routing cost floor for the tier-routing review pass. The High tier is priced at no less
+    /// than this multiple of the Balanced tier's real rate when projecting threshold-scan and
+    /// flagged-cluster costs. This stops the dream from reading a Balanced→High shift as
+    /// zero-cost — and ratcheting <c>balancedCeiling</c> to its floor — when High currently
+    /// shares Balanced's model. A genuinely premium High model keeps its real (higher) price.
+    /// Set to 1.0 to disable the floor. Default: 2.0.
+    /// </summary>
+    public double TierRoutingHighCostFloorMultiplier { get; set; } = 2.0;
+
+    /// <summary>
+    /// Target ceiling on the High-tier routing share (percent of routing decisions in the review
+    /// window). While the observed High share exceeds this, the review pass will NOT apply a
+    /// <c>balancedCeiling</c> decrease (which would push even more traffic to High) — a
+    /// deterministic backstop independent of the LLM's judgment. Default: 20 (%).
+    /// </summary>
+    public double TierRoutingHighTargetPct { get; set; } = 20.0;
+
+    /// <summary>
     /// Path to the routing dream directive file, relative to <see cref="AgentProfileOptions.BasePath"/>.
     /// When the file does not exist, a built-in fallback directive is used.
     /// </summary>

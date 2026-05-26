@@ -82,6 +82,14 @@ Apply a threshold shift only when **both** of these hold:
 - The cost delta is favorable, OR you have a clear quality reason (e.g., panic-escalation
   clusters dominating a tier)
 
+**Trust `projectedCostDelta`.** It now reflects a *routing cost floor*: the High tier is
+priced as a premium tier (≥ a fixed multiple of Balanced) even when High and Balanced
+currently share the same model. So a `balancedCeiling` **decrease** (which routes more
+traffic to High) will show a **positive (unfavorable)** delta, and an **increase** a
+**negative (favorable)** one. Do not read "same model today" as "free" — lowering
+`balancedCeiling` is treated as a real future cost. When High routing share is already
+high, prefer **raising** `balancedCeiling` to pull verbose-but-simple tasks back to Balanced.
+
 Adjustments must be **small (±0.05)**. Hard bounds the code clamps to:
 - `lowCeiling` ∈ [0.15, 0.40]
 - `balancedCeiling` ∈ [0.40, 0.80]
