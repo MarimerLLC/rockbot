@@ -128,6 +128,9 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
 
   scripts-manager:
+    build:
+      context: ../..
+      dockerfile: Dockerfile.scripts-manager
     image: rockylhotka/rockbot-scripts-manager:latest
     user: root   # Required for Docker socket access
     depends_on:
@@ -164,6 +167,9 @@ services:
     volumes:
       - ${AGENT_DATA_PATH:-agent-data}:/data/agent
   blazor:
+    build:
+      context: ../..
+      dockerfile: src/RockBot.UserProxy.Blazor/Dockerfile
     image: rockylhotka/rockbot-blazor:latest
     depends_on:
       rabbitmq:
