@@ -347,4 +347,95 @@ public class TierRoutingAnalyzerTests
         Assert.AreEqual(50.0, result.GlobalStats.FallbackPct);
         Assert.AreEqual(2, result.GlobalStats.FallbackCount);
     }
+
+    // ── Routing cost floor (High-tier over-routing guard) ──────────────────────
+
+    private static IReadOnlyDictionary<ModelTier, string?> ModelMap(string low, string balanced, string high) =>
+        new Dictionary<ModelTier, string?>
+        {
+            [ModelTier.Low] = low,
+            [ModelTier.Balanced] = balanced,
+            [ModelTier.High] = high,
+        };
+
+    [TestMethod]
+    public void CostFloor_SameModelHighAndBalanced_MakesShiftCostNonZeroWithCorrectSign()
+    {
+        // High and Balanced share a model, so real pricing shows a Balanced→High shift as
+        // zero-cost. The 2× floor must surface it as a POSITIVE (unfavorable) delta on the
+        // balancedCeiling-DOWN scan and a NEGATIVE (favorable) delta on the UP scan — the
+        // signal that stops the floor-ward ratchet and lets the dream climb back up.
+        var pricing = new[]
+        {
+            new LlmPricingRow("gpt-5.5", 5.00m, 30.00m),
+            new LlmPricingRow("mini", 0.75m, 4.50m),
+        };
+        var map = ModelMap(low: "mini", balanced: "gpt-5.5", high: "gpt-5.5");
+
+        var entries = new List<TierRoutingEntry>();
+        // scores in (0.41, 0.46] flip Balanced→High on the -0.05 scan
+        for (var i = 0; i < 3; i++)
+            entries.Add(MakeEntry(tier: ModelTier.Balanced, score: 0.44, promptPreview: $"balanced boundary {i}"));
+        // scores in (0.46, 0.51] flip High→Balanced on the +0.05 scan
+        for (var i = 0; i < 3; i++)
+            entries.Add(MakeEntry(tier: ModelTier.High, score: 0.49, promptPreview: $"high boundary {i}"));
+
+        var result = TierRoutingAnalyzer.Analyze(
+            entries, pricing: pricing, tierModelMap: map, highTierCostFloorMultiplier: 2.0);
+
+        var balDown = result.ThresholdScans.First(s => s.Threshold == "balancedCeiling" && s.Delta < 0);
+        var balUp = result.ThresholdScans.First(s => s.Threshold == "balancedCeiling" && s.Delta > 0);
+
+        Assert.IsNotNull(balDown.ProjectedCostDelta);
+        Assert.IsTrue(balDown.ProjectedCostDelta > 0m,
+            $"Balanced→High shift should project a positive (unfavorable) cost delta, was {balDown.ProjectedCostDelta}");
+        Assert.IsNotNull(balUp.ProjectedCostDelta);
+        Assert.IsTrue(balUp.ProjectedCostDelta < 0m,
+            $"High→Balanced shift should project a negative (favorable) cost delta, was {balUp.ProjectedCostDelta}");
+    }
+
+    [TestMethod]
+    public void CostFloor_Disabled_SameModelShiftProjectsZeroCost()
+    {
+        // Floor disabled (multiplier 1.0) + shared model → cost delta collapses to zero. This
+        // is exactly the "free ratchet" the floor exists to fix; pinned here as a regression.
+        var pricing = new[] { new LlmPricingRow("gpt-5.5", 5.00m, 30.00m) };
+        var map = ModelMap(low: "gpt-5.5", balanced: "gpt-5.5", high: "gpt-5.5");
+
+        var entries = Enumerable.Range(0, 3)
+            .Select(i => MakeEntry(tier: ModelTier.Balanced, score: 0.44, promptPreview: $"boundary {i}"))
+            .ToList();
+
+        var result = TierRoutingAnalyzer.Analyze(
+            entries, pricing: pricing, tierModelMap: map, highTierCostFloorMultiplier: 1.0);
+
+        var balDown = result.ThresholdScans.First(s => s.Threshold == "balancedCeiling" && s.Delta < 0);
+        Assert.AreEqual(0m, balDown.ProjectedCostDelta);
+    }
+
+    [TestMethod]
+    public void CostFloor_PremiumHighModel_UsesRealPriceNotDiscountedFloor()
+    {
+        // When High genuinely uses a model more expensive than 2× Balanced, Math.Max keeps the
+        // real (higher) price — the floor must never DISCOUNT a premium tier.
+        var pricing = new[]
+        {
+            new LlmPricingRow("gpt-5.5-pro", 30.00m, 180.00m),
+            new LlmPricingRow("gpt-5.5", 5.00m, 30.00m),
+        };
+        var map = ModelMap(low: "gpt-5.5", balanced: "gpt-5.5", high: "gpt-5.5-pro");
+
+        var entries = Enumerable.Range(0, 3)
+            .Select(i => MakeEntry(tier: ModelTier.Balanced, score: 0.44,
+                inputTokens: 1000, outputTokens: 500, promptPreview: $"boundary {i}"))
+            .ToList();
+
+        var result = TierRoutingAnalyzer.Analyze(
+            entries, pricing: pricing, tierModelMap: map, highTierCostFloorMultiplier: 2.0);
+
+        // Per call: High(pro)=(1000×30 + 500×180)/1e6 = 0.12 ; Balanced=(1000×5 + 500×30)/1e6 = 0.02.
+        // 3 entries flip Balanced→High on the -0.05 scan → delta = 3 × (0.12 - 0.02) = 0.30.
+        var balDown = result.ThresholdScans.First(s => s.Threshold == "balancedCeiling" && s.Delta < 0);
+        Assert.AreEqual(0.30m, balDown.ProjectedCostDelta);
+    }
 }

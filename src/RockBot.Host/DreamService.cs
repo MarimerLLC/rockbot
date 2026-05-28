@@ -34,6 +34,7 @@ internal sealed class DreamService : IHostedService, IDisposable
     private readonly IKnowledgeGraph? _knowledgeGraph;
     private readonly IWorkingMemory? _workingMemory;
     private readonly ILlmClient _llmClient;
+    private readonly TieredChatClientRegistry? _tieredRegistry;
     private readonly IAgentWorkSerializer _workSerializer;
     private readonly IUserActivityMonitor _userActivityMonitor;
     private readonly AgentClock _clock;
@@ -100,7 +101,8 @@ internal sealed class DreamService : IHostedService, IDisposable
         IEnumerable<IRepairTargetApplier>? repairAppliers = null,
         IRepairTicketVerifier? repairTicketVerifier = null,
         IOptions<RepairTicketOptions>? repairOptions = null,
-        IEnumerable<IToolSkillProvider>? toolSkillProviders = null)
+        IEnumerable<IToolSkillProvider>? toolSkillProviders = null,
+        TieredChatClientRegistry? tieredRegistry = null)
     {
         _memory = memory;
         _skillStore = skillStores.FirstOrDefault();
@@ -114,6 +116,7 @@ internal sealed class DreamService : IHostedService, IDisposable
         _wispExecutionLog = wispExecutionLog;
         _workingMemory = workingMemory;
         _llmClient = llmClient;
+        _tieredRegistry = tieredRegistry;
         _workSerializer = workSerializer;
         _userActivityMonitor = userActivityMonitor;
         _clock = clock;
@@ -2484,10 +2487,26 @@ internal sealed class DreamService : IHostedService, IDisposable
             }
         }
 
+        // Tier→model map lets the analyzer compute per-tier USD cost deltas on threshold scans
+        // and flagged clusters. Without it those deltas are null and the LLM has no cost signal
+        // to weigh against quality — which is how balancedCeiling drifted to its floor. The
+        // High cost floor (see DreamOptions) ensures a Balanced→High shift never projects as
+        // zero-cost when High currently shares Balanced's model.
+        IReadOnlyDictionary<ModelTier, string?>? tierModelMap = _tieredRegistry is null
+            ? null
+            : new Dictionary<ModelTier, string?>
+            {
+                [ModelTier.Low]      = _tieredRegistry.GetModelId(ModelTier.Low),
+                [ModelTier.Balanced] = _tieredRegistry.GetModelId(ModelTier.Balanced),
+                [ModelTier.High]     = _tieredRegistry.GetModelId(ModelTier.High),
+            };
+
         // Pre-aggregate the raw entries into a structured analysis so the LLM
         // works against deterministic statistics instead of recomputing them.
         // This decouples prompt size from entry count — N entries collapse to ~M clusters.
-        var analysis = TierRoutingAnalyzer.Analyze(entries, currentConfig, _pricingRows);
+        var analysis = TierRoutingAnalyzer.Analyze(
+            entries, currentConfig, _pricingRows, tierModelMap,
+            _options.TierRoutingHighCostFloorMultiplier);
 
         var analysisJson = JsonSerializer.Serialize(analysis, new JsonSerializerOptions
         {
@@ -2562,6 +2581,14 @@ internal sealed class DreamService : IHostedService, IDisposable
             return;
         }
 
+        // Deterministic ratchet-stop (nothing trusts the LLM): never apply a balancedCeiling
+        // DECREASE while the observed High-tier routing share already exceeds the target.
+        var highPct = analysis.GlobalStats.ByTier
+            .FirstOrDefault(t => t.Tier == ModelTier.High)?.Pct ?? 0.0;
+        result.Config.BalancedCeiling = GuardBalancedCeilingDecrease(
+            result.Config.BalancedCeiling, currentConfig?.BalancedCeiling,
+            highPct, _options.TierRoutingHighTargetPct, _logger);
+
         var writeOptions = new JsonSerializerOptions
         {
             PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
@@ -2572,6 +2599,30 @@ internal sealed class DreamService : IHostedService, IDisposable
         _logger.LogInformation(
             "DreamService: tier routing review updated tier-selector.json — notes: {Notes}",
             result.Config.Notes ?? "(none)");
+    }
+
+    /// <summary>
+    /// Deterministic ratchet-stop for the tier-routing review pass. Returns the balancedCeiling
+    /// that should actually be written: the LLM's <paramref name="proposed"/> value, EXCEPT a
+    /// DECREASE is rejected (held at <paramref name="current"/>) while the observed High-tier
+    /// routing share exceeds <paramref name="targetPct"/>. A lower balancedCeiling pushes more
+    /// traffic into High, so honoring such a proposal while already over budget is the exact
+    /// drift this guard prevents. The cost floor makes the LLM unlikely to propose it; this
+    /// enforces it in code regardless. Exposed as <c>internal static</c> for unit testing.
+    /// </summary>
+    internal static double? GuardBalancedCeilingDecrease(
+        double? proposed, double? current, double highPct, double targetPct, ILogger logger)
+    {
+        if (highPct > targetPct
+            && proposed is double p && current is double c && p < c)
+        {
+            logger.LogWarning(
+                "DreamService: tier routing review — rejecting balancedCeiling decrease {From}→{To}; " +
+                "High routing share {HighPct:F1}% exceeds target {Target:F1}% (held at current)",
+                c, p, highPct, targetPct);
+            return c;
+        }
+        return proposed;
     }
 
     // ── Built-in sequence skill directive ────────────────────────────────────
