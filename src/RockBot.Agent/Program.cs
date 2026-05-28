@@ -405,8 +405,20 @@ builder.Services.AddRemoteScriptRunner("RockBot");
         ? profileBasePath
         : Path.Combine(AppContext.BaseDirectory, profileBasePath);
 
-    builder.Services.AddRockBotObservation();
-    builder.Services.AddDefaultObservationTargets(resolvedProfileBasePath);
+    // The observation/theory pipeline clusters proposed observations by vector
+    // similarity, so it hard-requires an IEmbeddingGenerator. Register it only
+    // when embeddings are configured; otherwise DreamService's optional
+    // coordinator stays null and the observation pass is skipped — keeping the
+    // BM25-only path startable, as documented.
+    if (embeddingOptions.IsConfigured)
+    {
+        builder.Services.AddRockBotObservation();
+        builder.Services.AddDefaultObservationTargets(resolvedProfileBasePath);
+    }
+    else
+    {
+        Console.WriteLine("No embedding config — observation/theory dream pass disabled (BM25-only mode).");
+    }
 }
 
 var app = builder.Build();
