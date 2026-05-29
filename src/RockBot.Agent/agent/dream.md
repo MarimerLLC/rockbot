@@ -84,6 +84,7 @@ whether similar entries describe the same durable fact or distinct facts.
 - **Never delete without replacement**: Do not delete a unique fact that has no equivalent in your output. Ephemeral entries are the only exception.
 - **Do not hallucinate**: Only work with the content provided. Do not add facts that weren't in any source entry.
 - **Correct miscategorized entries** — the category in `toSave` is what the store uses; refer to the memory rules for the category vocabulary.
+- **Leave `active-plans/` entries untouched** — entries in the `active-plans/<n>` category are live, structured work artifacts the primary agent actively manages through its own plan lifecycle (create → resume → update → close). Do **not** merge, split, recategorize, rewrite, or delete them during consolidation, and do not fold their content into other entries. The primary agent deletes a plan when it completes; that is not your job.
 
 ## Output format
 

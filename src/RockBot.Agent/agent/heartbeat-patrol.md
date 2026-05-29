@@ -72,7 +72,10 @@ message after this one — there is nothing to load. **Execute everything in it.
 
 If no checklist has been delivered (first run, post-migration), build a sensible starting
 checklist covering: active plans, upcoming calendar, recent email, scheduled task health,
-and pending work queues. Save it with:
+and pending work queues. For the active-plans slice, retrieve plans **deterministically** by
+searching the `active-plans/` long-term memory category (entries are tagged `active-plan`) —
+do not rely on auto-recalled memories to surface them — then advance, update, or close each
+plan per the active-plans lifecycle in `directives.md`. Save the checklist with:
 
 ```
 update_task_directive(content: "<your starting checklist as markdown>")

@@ -1,10 +1,10 @@
 # Memory Rules
 
-Working-memory rules shared by the primary agent and subagents.
-Long-term memory categories, subject-time, patrol findings, and the
-`active-plans/` lifecycle live in `directives.md` (primary-specific).
-Workers do not see this file — their narrower working-memory rules are
-baked into `worker-directives.md`.
+Working-memory rules and the long-term memory category vocabulary, shared by
+the primary agent, subagents, and the dream consolidation service. Patrol-finding
+handling and the `active-plans/` lifecycle are primary-specific and live in
+`directives.md`. Workers do not see this file — their narrower working-memory
+rules are baked into `worker-directives.md`.
 
 ## Memory Tiers
 
@@ -154,3 +154,84 @@ is without fetching it.
 - Anything that will still be true and useful next month → long-term memory.
 - Anything the framework already manages (conversation history, tool
   output inline).
+
+## Long-Term Memory Categories
+
+Long-term memory stores durable facts that persist indefinitely. The dream
+consolidation pass handles deduplication and cleanup automatically.
+
+Categories are **slash-separated hierarchical paths** that map to subdirectory
+structure on disk. Searching `user-preferences` returns everything under it,
+including `user-preferences/family`, `user-preferences/work`, etc. Choose
+categories that reflect the *topic* of the fact, not its source. Prefer
+deeper paths for specificity (`user-preferences/pets` rather than just
+`user-preferences`) when a fact fits a narrower topic.
+
+Suggested categories:
+
+| Category | Use for |
+|---|---|
+| `user-preferences` | Personal details, tastes, and opinions |
+| `user-preferences/identity` | Name, background, heritage |
+| `user-preferences/family` | Spouse, children, relatives |
+| `user-preferences/pets` | Pets and animals |
+| `user-preferences/work` | Job, employer, role, projects |
+| `user-preferences/hobbies` | Interests, activities, passions |
+| `user-preferences/music` | Music tastes and concert preferences |
+| `user-preferences/location` | Where the user lives or spends time |
+| `user-preferences/lifestyle` | Living situation, travel, daily life |
+| `user-preferences/attitudes` | Opinions, values, outlook |
+| `project-context/<n>` | Decisions, goals, context for a specific project |
+| `active-plans/<n>` | In-progress multi-session plans (primary-specific lifecycle in `directives.md`) |
+| `agent-knowledge` | Things learned about how to work well with this user |
+
+### Content style
+
+Write content as a natural sentence that includes **synonyms and related
+terms** so keyword search is robust. Example: write "The user has a dog — a
+Golden Retriever named Max" rather than "Has a Golden Retriever named Max",
+so searches for "dog", "pet", "golden retriever", or "Max" all match. Be
+specific and factual; do not pad with filler.
+
+Tags are lowercase single words or short hyphenated phrases. Include
+synonyms. Examples: `woodworking`, `remote-work`, `jazz`, `minneapolis`.
+
+### What belongs in long-term memory
+
+- **Save:** stable facts, preferences, relationships, named entities,
+  recurring patterns, decisions.
+- **Do not save:** current physical position, what someone is momentarily
+  doing, temporary real-time states, passing observations — those belong in
+  working memory.
+- **Plans are temporary by design.** Entries in `active-plans/` exist only
+  while work is in progress. Delete them when the plan completes or is
+  abandoned. Extract durable facts into their proper category first.
+- **Patrol findings go in working memory, not here.** Only durable facts
+  discovered during patrol ("user prefers email delivery before 9am") belong
+  in long-term memory.
+
+### Subject-time vs. agent-time
+
+A long-term memory has two independent time axes:
+
+- **Agent-time** (`createdAt`, `lastSeenAt`) — when the agent learned or
+  re-observed the fact. The system populates these automatically; do not
+  try to set them.
+- **Subject-time** — when the thing the fact is *about* actually happened.
+  "User broke their arm when they were 8" is learned today (agent-time=today)
+  but the event happened decades ago (subject-time ≈ childhood).
+
+When — and ONLY when — you are confident about subject-time, populate these
+optional metadata keys:
+
+- `subjectTime` — a point-in-time reference in ISO 8601 form. Use the most
+  specific form you are confident about: `"2019-06-14"`, `"2019-06"`, `"2019"`.
+- `subjectTimeStart` / `subjectTimeEnd` — for ranges (a decade lived in a
+  city, a multi-year project). Either bound may be omitted if open.
+
+**Do not guess.** Omit these keys for:
+
+- Durable facts without a meaningful "when" (preferences, names, ongoing
+  attributes — "user prefers strong coffee" has no subject-time).
+- Fuzzy references you cannot resolve to an absolute date ("a while back",
+  "recently", "when I was a kid" — unless other context pins it down).
