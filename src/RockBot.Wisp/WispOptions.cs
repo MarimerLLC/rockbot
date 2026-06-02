@@ -43,4 +43,15 @@ public sealed class WispOptions
     /// <c>patrol/{taskName}</c>; if that convention changes, update this default.
     /// </summary>
     public string ScheduledTaskSessionPrefix { get; set; } = "patrol/";
+
+    /// <summary>
+    /// How long a Direct MCP step waits for the MCP management tools to register
+    /// (event-gated on the first <c>McpServersIndexed</c> message from the bridge)
+    /// before treating their absence as a transient/<c>External</c> failure rather
+    /// than <c>Structural</c>. A step that fires inside the startup/reconnect
+    /// readiness window briefly waits and then proceeds once the tools appear.
+    /// <see cref="TimeSpan.Zero"/> disables the wait (resolve once, then reclassify
+    /// immediately).
+    /// </summary>
+    public TimeSpan McpReadinessWait { get; set; } = TimeSpan.FromSeconds(5);
 }

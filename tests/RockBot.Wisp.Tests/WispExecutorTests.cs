@@ -125,6 +125,109 @@ public class WispExecutorTests
     }
 
     [TestMethod]
+    public async Task ExecuteAsync_McpManagementToolUnregistered_ClassifiesExternalNotStructural()
+    {
+        // mcp_invoke_tool is registered lazily on the first McpServersIndexed message.
+        // A Direct MCP step firing before that should be treated as a transient
+        // readiness race (External), not a wisp-authoring bug (Structural).
+        var (executor, _) = CreateExecutor(mcpReadinessWait: TimeSpan.Zero);
+
+        var definition = new WispDefinition
+        {
+            Description = "MCP before readiness",
+            Steps =
+            [
+                new WispStep
+                {
+                    Id = "mcp",
+                    Mode = StepMode.Direct,
+                    Gateway = GatewayType.Mcp,
+                    Server = "calendar",
+                    Tool = "list_events",
+                    Params = JsonDocument.Parse("""{"timeMin":"now"}""").RootElement
+                }
+            ]
+        };
+
+        var result = await executor.ExecuteAsync(definition, "wisp-mcp-race", CancellationToken.None);
+
+        Assert.IsFalse(result.IsSuccess);
+        Assert.AreEqual(1, result.StepResults.Count);
+        Assert.AreEqual(FailureCategory.External, result.StepResults[0].Error!.Category,
+            "An MCP management tool absent before the bridge index is transient, not Structural");
+        StringAssert.Contains(result.StepResults[0].Error!.Message, "not registered yet");
+    }
+
+    [TestMethod]
+    public async Task ExecuteAsync_McpManagementToolRegistersDuringWait_StepSucceeds()
+    {
+        // The readiness wait should let a step that fires just before the bridge
+        // index arrives proceed once mcp_invoke_tool registers, rather than failing.
+        var toolExecutor = new FakeToolExecutor(content: """{"events":[]}""");
+        var registry = new DelayedRegistrationToolRegistry(
+            "mcp_invoke_tool", toolExecutor, nullLookupsBeforeRegistered: 1);
+        var executor = CreateExecutorWith(registry, TimeSpan.FromSeconds(5));
+
+        var definition = new WispDefinition
+        {
+            Description = "MCP after readiness wait",
+            Steps =
+            [
+                new WispStep
+                {
+                    Id = "mcp",
+                    Mode = StepMode.Direct,
+                    Gateway = GatewayType.Mcp,
+                    Server = "calendar",
+                    Tool = "list_events",
+                    Params = JsonDocument.Parse("""{"timeMin":"now"}""").RootElement
+                }
+            ]
+        };
+
+        var result = await executor.ExecuteAsync(definition, "wisp-mcp-wait", CancellationToken.None);
+
+        Assert.IsTrue(result.IsSuccess, "Step should succeed once the tool registers during the wait");
+        Assert.AreEqual(1, result.StepResults.Count);
+        Assert.IsTrue(result.StepResults[0].IsSuccess);
+        Assert.IsTrue(registry.LookupCount >= 2, "The executor should have polled at least twice");
+    }
+
+    [TestMethod]
+    public async Task ExecuteAsync_NonMcpToolUnregistered_StaysStructuralWithoutWaiting()
+    {
+        // A genuinely-unknown non-MCP tool is an authoring bug. Even with the
+        // readiness wait enabled it must fail Structural immediately (no polling,
+        // no reclassification — the readiness path is scoped to MCP management tools).
+        var (executor, _) = CreateExecutor(mcpReadinessWait: TimeSpan.FromSeconds(30));
+
+        var definition = new WispDefinition
+        {
+            Description = "Unknown non-MCP tool",
+            Steps =
+            [
+                new WispStep
+                {
+                    Id = "search",
+                    Mode = StepMode.Direct,
+                    Gateway = GatewayType.Web,
+                    Tool = "web_search",
+                    Params = JsonDocument.Parse("""{"query": "test"}""").RootElement
+                }
+            ]
+        };
+
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        var result = await executor.ExecuteAsync(definition, "wisp-nonmcp", CancellationToken.None);
+        sw.Stop();
+
+        Assert.IsFalse(result.IsSuccess);
+        Assert.AreEqual(FailureCategory.Structural, result.StepResults[0].Error!.Category);
+        Assert.IsTrue(sw.Elapsed < TimeSpan.FromSeconds(5),
+            "A non-MCP tool must fail immediately without entering the readiness wait");
+    }
+
+    [TestMethod]
     public async Task ExecuteAsync_ToolReturnsError_AbortsAndClassifiesError()
     {
         var (executor, registry) = CreateExecutor();
@@ -902,17 +1005,33 @@ public class WispExecutorTests
 
     private static (WispExecutor Executor, FakeToolRegistry Registry) CreateExecutor(
         FakeWorkingMemory? memory = null,
-        string? sharedVolumePath = null)
+        string? sharedVolumePath = null,
+        TimeSpan? mcpReadinessWait = null)
     {
         var registry = new FakeToolRegistry();
         memory ??= new FakeWorkingMemory();
         var options = new WispOptions { SharedVolumePath = sharedVolumePath };
+        if (mcpReadinessWait is { } wait)
+            options.McpReadinessWait = wait;
         var logger = NullLogger<WispExecutor>.Instance;
 
         // WispExecutor needs AgentLoopRunner for LLM steps, but direct-mode tests
         // don't exercise that path. Pass null and rely on the test not calling LLM steps.
         var executor = new WispExecutor(registry, memory, agentLoopRunner: null!, options, logger);
         return (executor, registry);
+    }
+
+    /// <summary>
+    /// Builds an executor backed by an arbitrary <see cref="IToolRegistry"/> (e.g.
+    /// the delayed-registration double) with a specific MCP readiness wait.
+    /// </summary>
+    private static WispExecutor CreateExecutorWith(
+        IToolRegistry registry, TimeSpan mcpReadinessWait)
+    {
+        var options = new WispOptions { McpReadinessWait = mcpReadinessWait };
+        return new WispExecutor(
+            registry, new FakeWorkingMemory(), agentLoopRunner: null!, options,
+            NullLogger<WispExecutor>.Instance);
     }
 
     private static WispExecutor CreateExecutorWithCanceller(
@@ -1021,6 +1140,35 @@ internal sealed class FakeToolRegistry : IToolRegistry
 
     public bool Unregister(string toolName) =>
         _tools.Remove(toolName);
+}
+
+/// <summary>
+/// Registry double that simulates the MCP management-tool registration race:
+/// <see cref="GetExecutor"/> returns null for the first
+/// <see cref="_nullLookupsBeforeRegistered"/> lookups of the target tool, then the
+/// real executor — mimicking the first McpServersIndexed message arriving shortly
+/// after a wisp step begins. Count-based and deterministic (no wall-clock sleeps).
+/// </summary>
+internal sealed class DelayedRegistrationToolRegistry(
+    string toolName, IToolExecutor executor, int nullLookupsBeforeRegistered) : IToolRegistry
+{
+    private int _lookups;
+
+    public int LookupCount => _lookups;
+
+    public IReadOnlyList<ToolRegistration> GetTools() => [];
+
+    public IToolExecutor? GetExecutor(string name)
+    {
+        if (!string.Equals(name, toolName, StringComparison.Ordinal))
+            return null;
+        return _lookups++ < nullLookupsBeforeRegistered ? null : executor;
+    }
+
+    public void Register(ToolRegistration registration, IToolExecutor toolExecutor) =>
+        throw new NotSupportedException();
+
+    public bool Unregister(string name) => throw new NotSupportedException();
 }
 
 internal sealed class FakeWorkingMemory : IWorkingMemory

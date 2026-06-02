@@ -29,6 +29,26 @@ internal sealed class WispExecutor(
     private const int ChunkMaxLength = 20_000;
     private const string NoCorrectionSentinel = "NO_CORRECTION";
     private static readonly TimeSpan WispChunkTtl = TimeSpan.FromMinutes(30);
+    private static readonly TimeSpan McpReadinessPollInterval = TimeSpan.FromMilliseconds(100);
+
+    /// <summary>
+    /// The MCP management tool names. These are registered as a single batch by
+    /// <c>McpServersIndexedHandler.RegisterManagementTools</c> on the first
+    /// <c>McpServersIndexed</c> message, so the presence of any one implies all are
+    /// present. Their absence in the tool registry is a transient startup/reconnect
+    /// readiness condition rather than a wisp-authoring (Structural) bug.
+    /// Keep this list in sync with <c>McpServersIndexedHandler.RegisterManagementTools</c>
+    /// (the csproj boundary prevents sharing a single constant).
+    /// </summary>
+    private static readonly HashSet<string> McpManagementToolNames = new(StringComparer.Ordinal)
+    {
+        "mcp_list_services",
+        "mcp_get_service_details",
+        "mcp_invoke_tool",
+        "mcp_register_server",
+        "mcp_unregister_server",
+        "mcp_get_prompt",
+    };
 
     internal static readonly string WispDirectives =
         """
@@ -395,10 +415,36 @@ internal sealed class WispExecutor(
         }
 
     invoke:
-        // Resolve the executor from the registry
-        var executor = toolRegistry.GetExecutor(route.ToolName!);
+        // Resolve the executor from the registry. MCP management tools (e.g.
+        // mcp_invoke_tool) are registered lazily on the first McpServersIndexed
+        // message from the bridge, so a step firing in the startup/reconnect window
+        // may find them absent. Briefly wait for them to appear before failing.
+        var executor = await ResolveExecutorWithReadinessAsync(route.ToolName!, ct);
         if (executor is null)
         {
+            var isManagementTool = McpManagementToolNames.Contains(route.ToolName!);
+            if (isManagementTool)
+            {
+                // Transient readiness race, not an authoring bug — classify as
+                // External (retryable) so it doesn't pollute the Structural signal.
+                logger.LogWarning(
+                    "Wisp {WispId} step {StepId}: MCP management tool '{Tool}' not registered after waiting {Wait} — treating as transient (MCP bridge index not yet received)",
+                    wispId, step.Id, route.ToolName, options.McpReadinessWait);
+                return new WispStepResult
+                {
+                    StepId = step.Id,
+                    StepIndex = index,
+                    IsSuccess = false,
+                    Error = new WispStepError
+                    {
+                        Category = FailureCategory.External,
+                        Message = $"MCP management tool '{route.ToolName}' is not registered yet (MCP bridge index not yet received); treating as transient.",
+                        ToolName = route.ToolName
+                    },
+                    Duration = stepSw.Elapsed
+                };
+            }
+
             return new WispStepResult
             {
                 StepId = step.Id,
@@ -859,6 +905,47 @@ internal sealed class WispExecutor(
         {
             return null;
         }
+    }
+
+    /// <summary>
+    /// Resolves the executor for <paramref name="toolName"/> from the registry,
+    /// briefly waiting for MCP management tools to register if they are absent.
+    /// Returns the executor as soon as it is available, or <c>null</c> if it never
+    /// appears within <see cref="WispOptions.McpReadinessWait"/>. Non-MCP tools (and
+    /// any tool when the wait is disabled) resolve in a single lookup with no delay.
+    /// </summary>
+    private async Task<IToolExecutor?> ResolveExecutorWithReadinessAsync(string toolName, CancellationToken ct)
+    {
+        var executor = toolRegistry.GetExecutor(toolName);
+        if (executor is not null)
+            return executor;
+
+        if (options.McpReadinessWait <= TimeSpan.Zero || !McpManagementToolNames.Contains(toolName))
+            return null;
+
+        var waitSw = Stopwatch.StartNew();
+        var logged = false;
+        while (waitSw.Elapsed < options.McpReadinessWait)
+        {
+            await Task.Delay(McpReadinessPollInterval, ct);
+            executor = toolRegistry.GetExecutor(toolName);
+            if (executor is not null)
+            {
+                logger.LogInformation(
+                    "MCP management tool '{Tool}' became available after waiting {Elapsed}ms for the bridge index",
+                    toolName, (int)waitSw.ElapsedMilliseconds);
+                return executor;
+            }
+            if (!logged)
+            {
+                logger.LogInformation(
+                    "Waiting up to {Wait} for MCP management tool '{Tool}' to register (bridge index not yet received)",
+                    options.McpReadinessWait, toolName);
+                logged = true;
+            }
+        }
+
+        return null;
     }
 
     /// <summary>
