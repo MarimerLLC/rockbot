@@ -304,10 +304,13 @@ public sealed class DreamOptions
     public int LogRetentionMaxFilesPerDirectory { get; set; } = 1000;
 
     /// <summary>
-    /// Ceiling on the number of lines retained in each single-file append-only log
-    /// (skill-resource-usage.jsonl, wisp-executions.jsonl). When a file exceeds this,
-    /// the retention pass rewrites it keeping only the most recent lines. Set to zero
-    /// or negative to disable trimming. Default: 50,000.
+    /// Ceiling on the number of lines retained in any single JSONL log file. Applies to
+    /// the single-file append-only logs (skill-resource-usage.jsonl,
+    /// wisp-executions.jsonl) and to each individual per-session file (e.g. a persistent
+    /// UI/CLI session's <c>{sessionId}.jsonl</c> that age/count pruning never reaps
+    /// because it is continuously written). When a file exceeds this, the retention pass
+    /// rewrites it keeping only the most recent lines. Set to zero or negative to disable
+    /// trimming. Default: 50,000.
     /// </summary>
     public int LogRetentionMaxLinesPerFile { get; set; } = 50_000;
 }

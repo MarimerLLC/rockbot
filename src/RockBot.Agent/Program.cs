@@ -276,7 +276,7 @@ builder.Services.AddRockBotHost(agent =>
     agent.WithKnowledgeGraph();
     agent.WithFailureClusterStore();
     agent.WithRepairTickets();
-    agent.WithDreaming();
+    agent.WithDreaming(opts => builder.Configuration.GetSection("Dream").Bind(opts));
     agent.AddToolHandler();
     agent.AddMcpToolProxy();
     agent.AddFileSystemTools(opts => builder.Configuration.GetSection("FileSystem").Bind(opts));

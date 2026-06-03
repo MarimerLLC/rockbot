@@ -127,6 +127,68 @@ public static class JsonlLogRetention
         }
     }
 
+    /// <summary>
+    /// Line-trims every <paramref name="searchPattern"/> file directly under
+    /// <paramref name="directory"/> to its last <paramref name="maxLines"/> lines.
+    /// Where <see cref="PruneAgedFilesAsync"/> drops whole stale files, this bounds a
+    /// <em>persistent</em> session file (e.g. a long-lived UI or CLI session's
+    /// <c>{id}.jsonl</c>) that age/count pruning never touches because it is written
+    /// continuously — never aged out, never the oldest file. Each file is trimmed while
+    /// holding the writer's own per-session lock, obtained via <paramref name="lockFor"/>
+    /// keyed by the session id (the file name without extension), so a trim never races
+    /// an append. A non-positive <paramref name="maxLines"/> is a no-op. Returns the
+    /// total number of lines removed across all files.
+    /// </summary>
+    public static async Task<int> TrimSessionFilesAsync(
+        string directory,
+        int maxLines,
+        string searchPattern,
+        Func<string, SemaphoreSlim> lockFor,
+        ILogger logger,
+        CancellationToken ct = default)
+    {
+        if (maxLines <= 0 || !Directory.Exists(directory))
+            return 0;
+
+        var removed = 0;
+        try
+        {
+            foreach (var file in new DirectoryInfo(directory)
+                         .EnumerateFiles(searchPattern, SearchOption.TopDirectoryOnly))
+            {
+                ct.ThrowIfCancellationRequested();
+
+                // A file of N bytes can hold at most N+1 lines, so anything smaller than
+                // the line budget cannot exceed it — skip without opening (most session
+                // files are tiny; only the rare persistent file needs a read).
+                if (file.Length < maxLines)
+                    continue;
+
+                var sessionId = Path.GetFileNameWithoutExtension(file.Name);
+                var sem = lockFor(sessionId);
+                await sem.WaitAsync(ct);
+                try
+                {
+                    removed += await TrimToLastLinesAsync(file.FullName, maxLines, logger, ct);
+                }
+                finally
+                {
+                    sem.Release();
+                }
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "JSONL retention: failed to line-trim session files in {Directory}", directory);
+        }
+
+        return removed;
+    }
+
     private static bool TryDelete(FileInfo file, ILogger logger)
     {
         try

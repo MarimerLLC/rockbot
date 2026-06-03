@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 
@@ -208,6 +209,74 @@ public class JsonlLogRetentionTests
         Assert.AreEqual(15, removed);
         var path = Path.Combine(_tempDir, "skill-resource-usage.jsonl");
         Assert.AreEqual(10, (await File.ReadAllLinesAsync(path)).Length);
+    }
+
+    // ── TrimSessionFilesAsync ─────────────────────────────────────────────────
+
+    [TestMethod]
+    public async Task TrimSessionFiles_TrimsOverBudget_SkipsUnderBudget_AndLocksBySession()
+    {
+        var dir = Path.Combine(_tempDir, "sessions");
+        Directory.CreateDirectory(dir);
+
+        // Persistent session: over the line budget — must be trimmed.
+        var big = Path.Combine(dir, "blazor-session.jsonl");
+        await File.WriteAllLinesAsync(big, Enumerable.Range(0, 100).Select(i => $"{{\"n\":{i}}}").ToArray());
+
+        // Ephemeral session: under the byte gate — must be left untouched.
+        var small = Path.Combine(dir, "subagent-x.jsonl");
+        await File.WriteAllLinesAsync(small, new[] { "a", "b", "c" });
+
+        var locks = new ConcurrentDictionary<string, SemaphoreSlim>();
+        var removed = await JsonlLogRetention.TrimSessionFilesAsync(
+            dir, maxLines: 10, "*.jsonl",
+            id => locks.GetOrAdd(id, _ => new SemaphoreSlim(1, 1)),
+            NullLogger.Instance);
+
+        Assert.AreEqual(90, removed);
+        var keptBig = await File.ReadAllLinesAsync(big);
+        Assert.AreEqual(10, keptBig.Length);
+        Assert.AreEqual("{\"n\":90}", keptBig[0]);
+        Assert.AreEqual("{\"n\":99}", keptBig[^1]);
+        Assert.AreEqual(3, (await File.ReadAllLinesAsync(small)).Length);
+        // The trim acquired the writer's lock for the over-budget session, keyed by
+        // file name without extension — i.e. the exact SessionId the store writes under.
+        Assert.IsTrue(locks.ContainsKey("blazor-session"));
+    }
+
+    [TestMethod]
+    public async Task TrimSessionFiles_NonPositiveMaxLines_IsNoOp()
+    {
+        var dir = Path.Combine(_tempDir, "sessions");
+        Directory.CreateDirectory(dir);
+        var f = Path.Combine(dir, "s.jsonl");
+        await File.WriteAllLinesAsync(f, Enumerable.Range(0, 50).Select(i => i.ToString()).ToArray());
+
+        var removed = await JsonlLogRetention.TrimSessionFilesAsync(
+            dir, maxLines: 0, "*.jsonl", _ => new SemaphoreSlim(1, 1), NullLogger.Instance);
+
+        Assert.AreEqual(0, removed);
+        Assert.AreEqual(50, (await File.ReadAllLinesAsync(f)).Length);
+    }
+
+    [TestMethod]
+    public async Task PerSessionStore_PruneAsync_LineTrimsPersistentSessionFile()
+    {
+        var skillOptions = Options.Create(new SkillOptions { UsageBasePath = Path.Combine(_tempDir, "skill-usage") });
+        var profileOptions = Options.Create(new AgentProfileOptions { BasePath = _tempDir });
+        var store = new FileSkillUsageStore(skillOptions, profileOptions, NullLogger<FileSkillUsageStore>.Instance);
+
+        // A single, continuously-written session — age (fresh mtime) and count (only
+        // file) never reap it; only the per-file line trim bounds it.
+        for (var i = 0; i < 30; i++)
+            await store.AppendAsync(new SkillInvocationEvent(
+                Id: i.ToString(), SkillName: "x", SessionId: "blazor-session", Timestamp: DateTimeOffset.UtcNow));
+
+        var removed = await store.PruneAsync(new LogRetentionPolicy(
+            MaxFileAge: TimeSpan.FromDays(30), MaxFilesPerDirectory: 1000, MaxLinesPerFile: 10));
+
+        Assert.AreEqual(20, removed);
+        Assert.AreEqual(10, (await store.GetBySessionAsync("blazor-session")).Count);
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────

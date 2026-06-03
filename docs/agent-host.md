@@ -155,6 +155,11 @@ One JSON object per line. Per-session semaphores prevent concurrent write races.
 `QueryRecentAsync` scans all JSONL files to find entries since a given timestamp — used by the
 dream cycle to gather quality signals for memory consolidation and skill optimization.
 
+These per-session files (along with the skill-usage and tool-call logs) are append-only and are
+capped by the dream cycle's [log-retention pass](dream-service.md#pass-0--log-retention) — aged
+files are deleted, the directory is held under a file-count cap, and each surviving file is
+line-trimmed (so a persistent UI/CLI session that never ages out is still bounded).
+
 ### `SessionSummaryService`
 
 Background hosted service that evaluates completed sessions:

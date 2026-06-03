@@ -55,12 +55,21 @@ internal sealed class FileToolCallLog : IToolCallLog, IPrunableLog
 
     /// <summary>
     /// Per-session JSONL files accumulate one file per session forever. Retention
-    /// drops whole session files older than the configured window, then caps the
-    /// total file count.
+    /// drops whole session files older than the configured window, caps the total
+    /// file count, then line-trims any surviving file (e.g. a persistent UI/CLI
+    /// session that never ages out) to the per-file line budget under that session's
+    /// write lock so the trim can't race an append.
     /// </summary>
-    public Task<int> PruneAsync(LogRetentionPolicy policy, CancellationToken ct = default)
-        => JsonlLogRetention.PruneAgedFilesAsync(
+    public async Task<int> PruneAsync(LogRetentionPolicy policy, CancellationToken ct = default)
+    {
+        var removed = await JsonlLogRetention.PruneAgedFilesAsync(
             _basePath, policy.MaxFileAge, policy.MaxFilesPerDirectory, "*.jsonl", _logger, ct);
+        removed += await JsonlLogRetention.TrimSessionFilesAsync(
+            _basePath, policy.MaxLinesPerFile, "*.jsonl",
+            id => _writeLocks.GetOrAdd(id, _ => new SemaphoreSlim(1, 1)),
+            _logger, ct);
+        return removed;
+    }
 
     public async Task<IReadOnlyList<ToolCallEvent>> GetBySessionAsync(string sessionId, CancellationToken ct = default)
     {

@@ -33,9 +33,40 @@ Startup
 
 ## Passes
 
-Each dream cycle runs five passes in sequence. Passes that depend on optional services
-(`IConversationLog`, `IFeedbackStore`, `ISkillUsageStore`) are skipped when those services are
-not registered.
+Each dream cycle runs a log-retention pass followed by five knowledge passes in sequence.
+Passes that depend on optional services (`IConversationLog`, `IFeedbackStore`,
+`ISkillUsageStore`) are skipped when those services are not registered.
+
+### Pass 0 — Log retention
+
+Runs **first and unconditionally**, before the knowledge passes — and crucially before the
+"fewer than two memories → early return" guard, so the append-only logs are capped on every
+cycle even when there is nothing to consolidate.
+
+The agent's append-only JSONL telemetry logs (skill-usage, tool-call, feedback,
+skill-resource-usage, wisp-executions) have no rotation of their own, so without this pass
+they grow forever. The pass resolves every registered `IPrunableLog` and applies the
+configured `LogRetentionPolicy`. Each log knows its own on-disk shape and delegates the file
+work to the shared `JsonlLogRetention` helper:
+
+| Log | Shape | Retention applied |
+|---|---|---|
+| skill-usage, tool-call, feedback | per-session directory of `{sessionId}.jsonl` | delete files older than `LogRetentionMaxFileAge` (by last-write time); cap the directory at `LogRetentionMaxFilesPerDirectory` (oldest dropped first); then line-trim each surviving file to `LogRetentionMaxLinesPerFile` under that session's write lock |
+| skill-resource-usage, wisp-executions | single append-only file | trim to the last `LogRetentionMaxLinesPerFile` lines (atomic temp-file rewrite, serialized against the writer) |
+
+Retention is best-effort: a failure pruning one log is logged and does not abort the sweep or
+the rest of the dream cycle. A non-positive value disables the corresponding dimension.
+
+The per-session line-trim is what bounds a *persistent* session file — `blazor-session.jsonl`,
+`cli-session.jsonl` — that age/count pruning alone never reaps, because such a file is written
+continuously (never aged out by last-write time) and is never the oldest file (never
+count-pruned). On a long-running deployment the UI session's tool-call log is the largest single
+file; line-trimming holds it to `LogRetentionMaxLinesPerFile`. Trimming reuses the store's own
+per-session semaphore, so it can never race a concurrent append. (Scope matches age/count
+pruning — top-level `{sessionId}.jsonl` files only; namespaced session files in subdirectories
+are not swept.)
+
+**Enabled/disabled by:** `DreamOptions.LogRetentionEnabled` (default `true`).
 
 ### Pass 1 — Memory consolidation
 
@@ -269,8 +300,22 @@ public sealed class DreamOptions
     // Feature flags
     public bool PreferenceInferenceEnabled { get; set; } = true;
     public bool SkillGapEnabled { get; set; } = true;
+
+    // Append-only JSONL log retention (Pass 0)
+    public bool LogRetentionEnabled { get; set; } = true;
+    public TimeSpan LogRetentionMaxFileAge { get; set; } = TimeSpan.FromDays(30);  // per-session dirs
+    public int LogRetentionMaxFilesPerDirectory { get; set; } = 1000;              // per-session dirs
+    public int LogRetentionMaxLinesPerFile { get; set; } = 50_000;                 // single-file logs
 }
 ```
+
+In Kubernetes these are bound from the `Dream` configuration section via the agent ConfigMap
+(`Dream__LogRetentionEnabled`, `Dream__LogRetentionMaxFileAge`,
+`Dream__LogRetentionMaxFilesPerDirectory`, `Dream__LogRetentionMaxLinesPerFile`), driven by the
+`agent.logRetention.*` Helm values. The Helm chart ships tighter, traffic-sized values than the
+code defaults (`maxLinesPerFile: 10000` ≈ 11 MB for the wisp log at ~1.1 KB/line). Floor
+`maxFileAge` at the widest dream query window (skill usage looks back 30 days) so age pruning
+never starves a downstream pass.
 
 ---
 
