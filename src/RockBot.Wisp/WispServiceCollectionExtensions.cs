@@ -22,6 +22,7 @@ public static class WispServiceCollectionExtensions
 
         builder.Services.AddSingleton<WispExecutor>();
         builder.Services.AddSingleton<IWispExecutionLog, FileWispExecutionLog>();
+        builder.Services.AddSingleton<IPrunableLog>(sp => (IPrunableLog)sp.GetRequiredService<IWispExecutionLog>());
         builder.Services.AddHostedService<WispToolRegistrar>();
         builder.Services.AddSingleton<IToolSkillProvider, WispToolSkillProvider>();
 

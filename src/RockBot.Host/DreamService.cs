@@ -51,6 +51,7 @@ internal sealed class DreamService : IHostedService, IDisposable
     private readonly IRepairTicketVerifier? _repairTicketVerifier;
     private readonly RepairTicketOptions? _repairOptions;
     private readonly IReadOnlyList<IToolSkillProvider> _toolSkillProviders;
+    private readonly IReadOnlyList<IPrunableLog> _prunableLogs;
     private Timer? _timer;
     private CronExpression? _cron;
     private string? _dreamDirective;
@@ -102,7 +103,8 @@ internal sealed class DreamService : IHostedService, IDisposable
         IRepairTicketVerifier? repairTicketVerifier = null,
         IOptions<RepairTicketOptions>? repairOptions = null,
         IEnumerable<IToolSkillProvider>? toolSkillProviders = null,
-        TieredChatClientRegistry? tieredRegistry = null)
+        TieredChatClientRegistry? tieredRegistry = null,
+        IEnumerable<IPrunableLog>? prunableLogs = null)
     {
         _memory = memory;
         _skillStore = skillStores.FirstOrDefault();
@@ -139,6 +141,7 @@ internal sealed class DreamService : IHostedService, IDisposable
             _repairAppliers = map;
         }
         _toolSkillProviders = toolSkillProviders?.ToList() ?? (IReadOnlyList<IToolSkillProvider>)Array.Empty<IToolSkillProvider>();
+        _prunableLogs = prunableLogs?.ToList() ?? (IReadOnlyList<IPrunableLog>)Array.Empty<IPrunableLog>();
     }
 
     public Task StartAsync(CancellationToken cancellationToken)
@@ -492,6 +495,11 @@ internal sealed class DreamService : IHostedService, IDisposable
         try
         {
             var ct = slot.Token;
+
+            // Log retention runs first and unconditionally — append-only JSONL logs
+            // must be capped even on cycles where there's nothing to consolidate (the
+            // memory-count check below can early-return).
+            await RunLogRetentionPassAsync(ct);
 
             var all = await _memory.SearchAsync(new MemorySearchCriteria(MaxResults: 1000));
 
@@ -3804,6 +3812,47 @@ internal sealed class DreamService : IHostedService, IDisposable
     /// is rethrown so DreamAsync's outer handler can log a single
     /// "preempted by user request" line — see issue #333.
     /// </summary>
+    /// <summary>
+    /// Prunes every registered append-only JSONL log so they don't grow forever.
+    /// Each log knows its own on-disk shape and applies the policy via the shared
+    /// <see cref="JsonlLogRetention"/> helper; a failure in one log is logged and
+    /// does not abort the sweep. Gated by <see cref="DreamOptions.LogRetentionEnabled"/>.
+    /// </summary>
+    private async Task RunLogRetentionPassAsync(CancellationToken ct)
+    {
+        if (!_options.LogRetentionEnabled || _prunableLogs.Count == 0)
+            return;
+
+        await RunPassAsync("log retention", async () =>
+        {
+            var policy = new LogRetentionPolicy(
+                MaxFileAge: _options.LogRetentionMaxFileAge,
+                MaxFilesPerDirectory: _options.LogRetentionMaxFilesPerDirectory,
+                MaxLinesPerFile: _options.LogRetentionMaxLinesPerFile);
+
+            var total = 0;
+            foreach (var log in _prunableLogs)
+            {
+                ct.ThrowIfCancellationRequested();
+                try
+                {
+                    total += await log.PruneAsync(policy, ct);
+                }
+                catch (OperationCanceledException)
+                {
+                    throw;
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "DreamService: log retention failed for {Log}", log.GetType().Name);
+                }
+            }
+
+            if (total > 0)
+                _logger.LogInformation("DreamService: log retention removed {Total} stale log file(s)/line(s)", total);
+        });
+    }
+
     private async Task RunPassAsync(string passName, Func<Task> body)
     {
         try

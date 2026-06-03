@@ -106,9 +106,12 @@ public static class AgentMemoryExtensions
         builder.Services.TryAddSingleton<EmbeddingTextPreparer>();
         builder.Services.AddSingleton<ISkillStore, FileSkillStore>();
         builder.Services.AddSingleton<ISkillUsageStore, FileSkillUsageStore>();
+        builder.Services.AddSingleton<IPrunableLog>(sp => (IPrunableLog)sp.GetRequiredService<ISkillUsageStore>());
         builder.Services.AddSingleton<ISkillResourceUsageStore, FileSkillResourceUsageStore>();
+        builder.Services.AddSingleton<IPrunableLog>(sp => (IPrunableLog)sp.GetRequiredService<ISkillResourceUsageStore>());
         builder.Services.Configure<ToolCallLogOptions>(_ => { });
         builder.Services.AddSingleton<IToolCallLog, FileToolCallLog>();
+        builder.Services.AddSingleton<IPrunableLog>(sp => (IPrunableLog)sp.GetRequiredService<IToolCallLog>());
         builder.Services.AddSingleton<IHostedService, StarterSkillService>();
 
         return builder;
@@ -191,6 +194,7 @@ public static class AgentMemoryExtensions
             builder.Services.Configure<FeedbackOptions>(_ => { });
 
         builder.Services.AddSingleton<IFeedbackStore, FileFeedbackStore>();
+        builder.Services.AddSingleton<IPrunableLog>(sp => (IPrunableLog)sp.GetRequiredService<IFeedbackStore>());
         builder.Services.AddSingleton<SessionSummaryService>();
         builder.Services.AddSingleton<IHostedService>(sp => sp.GetRequiredService<SessionSummaryService>());
 

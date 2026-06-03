@@ -9,7 +9,7 @@ namespace RockBot.Host;
 /// File-based skill usage store. Each session's invocation events are appended to a separate JSONL file:
 /// <c>{basePath}/{sessionId}.jsonl</c>. One JSON object per line.
 /// </summary>
-internal sealed class FileSkillUsageStore : ISkillUsageStore
+internal sealed class FileSkillUsageStore : ISkillUsageStore, IPrunableLog
 {
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -52,6 +52,15 @@ internal sealed class FileSkillUsageStore : ISkillUsageStore
             sem.Release();
         }
     }
+
+    /// <summary>
+    /// Per-session JSONL files accumulate one file per session forever. Retention
+    /// drops whole session files older than the configured window, then caps the
+    /// total file count.
+    /// </summary>
+    public Task<int> PruneAsync(LogRetentionPolicy policy, CancellationToken ct = default)
+        => JsonlLogRetention.PruneAgedFilesAsync(
+            _basePath, policy.MaxFileAge, policy.MaxFilesPerDirectory, "*.jsonl", _logger, ct);
 
     public async Task<IReadOnlyList<SkillInvocationEvent>> GetBySessionAsync(string sessionId, CancellationToken ct = default)
     {

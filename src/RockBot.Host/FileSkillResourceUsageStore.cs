@@ -10,7 +10,7 @@ namespace RockBot.Host;
 /// Mirrors <c>FileWispExecutionLog</c>'s shape — append-only, single-writer
 /// semaphore, lazy reads.
 /// </summary>
-internal sealed class FileSkillResourceUsageStore : ISkillResourceUsageStore
+internal sealed class FileSkillResourceUsageStore : ISkillResourceUsageStore, IPrunableLog
 {
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -44,6 +44,24 @@ internal sealed class FileSkillResourceUsageStore : ISkillResourceUsageStore
         {
             var line = JsonSerializer.Serialize(evt, JsonOptions);
             await File.AppendAllTextAsync(_filePath, line + Environment.NewLine, ct);
+        }
+        finally
+        {
+            _writeLock.Release();
+        }
+    }
+
+    /// <summary>
+    /// Single append-only file shared across all sessions. Retention trims it to the
+    /// last <see cref="LogRetentionPolicy.MaxLinesPerFile"/> lines, serialized against
+    /// the append writer so a trim never races a checkout record.
+    /// </summary>
+    public async Task<int> PruneAsync(LogRetentionPolicy policy, CancellationToken ct = default)
+    {
+        await _writeLock.WaitAsync(ct);
+        try
+        {
+            return await JsonlLogRetention.TrimToLastLinesAsync(_filePath, policy.MaxLinesPerFile, _logger, ct);
         }
         finally
         {
