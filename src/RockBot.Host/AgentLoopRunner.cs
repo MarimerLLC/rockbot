@@ -1458,7 +1458,7 @@ public sealed partial class AgentLoopRunner(
     /// the corresponding working-memory key in the system stash registry, never in
     /// (untrusted) tool output.
     /// </summary>
-    private static string BuildElisionMarker(string callId) =>
+    internal static string BuildElisionMarker(string callId) =>
         $"[content elided to fit context window — id={callId}]";
 
     /// <summary>
@@ -1467,108 +1467,16 @@ public sealed partial class AgentLoopRunner(
     /// <c>stash/{sessionId}/{callId}</c> so the model can recover it via
     /// <c>GetFromWorkingMemory</c> using a key surfaced in the system stash registry.
     /// </summary>
-    internal async Task TrimLargeToolResultsAsync(
+    internal Task TrimLargeToolResultsAsync(
         List<ChatMessage> messages,
         int maxTokens,
         string? sessionId,
-        AgentLoopStashContext.State stashState)
-    {
-        const int CharsPerToken = 4;
-        var charBudget = (int)(maxTokens * CharsPerToken * 0.9);
-        var headRatio = Math.Clamp(hostOptions.Value.ToolResultStashHeadTailRatio, 0.0, 1.0);
-        var ttl = TimeSpan.FromMinutes(Math.Max(1, hostOptions.Value.ToolResultStashTtlMinutes));
-
-        while (true)
-        {
-            var totalChars = messages.Sum(EstimateMessageChars);
-            if (totalChars <= charBudget)
-                break;
-
-            int bestMsg = -1, bestContent = -1, bestLen = 0;
-            for (var i = 0; i < messages.Count; i++)
-            {
-                if (messages[i].Role != ChatRole.Tool) continue;
-                for (var j = 0; j < messages[i].Contents.Count; j++)
-                {
-                    if (messages[i].Contents[j] is FunctionResultContent frc)
-                    {
-                        var len = frc.Result?.ToString()?.Length ?? 0;
-                        if (len > bestLen) { bestMsg = i; bestContent = j; bestLen = len; }
-                    }
-                }
-            }
-
-            if (bestMsg < 0)
-                break;
-
-            var old = (FunctionResultContent)messages[bestMsg].Contents[bestContent];
-            var oldStr = old.Result?.ToString() ?? string.Empty;
-            var excess = totalChars - charBudget;
-
-            // No callId: fall back to the legacy head-only behaviour (no stash, no
-            // registry entry) — the model has no way to retrieve the elided content
-            // anyway, so the marker would only be misleading.
-            if (string.IsNullOrEmpty(old.CallId))
-            {
-                var legacyTarget = Math.Max(200, oldStr.Length - excess - 60);
-                var legacyTrimmed = oldStr[..legacyTarget] + "\n[truncated to fit context window]";
-                messages[bestMsg].Contents[bestContent] =
-                    new FunctionResultContent(old.CallId, legacyTrimmed);
-                logger.LogInformation(
-                    "Trimmed tool result (no callId, legacy mode): {Before:N0} → {After:N0} chars",
-                    bestLen, legacyTrimmed.Length);
-                continue;
-            }
-
-            var marker = BuildElisionMarker(old.CallId);
-            // Total surface = head + marker + tail. Budget the surface so the trimmed
-            // message ends up shorter than the original by at least the excess.
-            var surfaceBudget = Math.Max(200, oldStr.Length - excess - 60 - marker.Length);
-            if (surfaceBudget >= oldStr.Length) surfaceBudget = oldStr.Length - 1;
-            var headLen = (int)Math.Round(surfaceBudget * headRatio);
-            var tailLen = surfaceBudget - headLen;
-            if (headLen < 0) headLen = 0;
-            if (tailLen < 0) tailLen = 0;
-            if (headLen + tailLen >= oldStr.Length) headLen = Math.Max(0, oldStr.Length - tailLen - 1);
-
-            var head = headLen > 0 ? oldStr[..headLen] : string.Empty;
-            var tail = tailLen > 0 ? oldStr[^tailLen..] : string.Empty;
-            var trimmed = string.Concat(head, "\n\n", marker, "\n\n", tail);
-
-            // First trim of this callId: stash the full original and register the entry
-            // so the next RefreshStashRegistryContext call surfaces it.
-            if (!stashState.Registry.Contains(old.CallId))
-            {
-                var stashKey = BuildStashKey(sessionId, old.CallId);
-                try
-                {
-                    await workingMemory.SetAsync(
-                        stashKey, oldStr, ttl,
-                        category: "tool-result-stash",
-                        tags: ["stash", "tool-result"]);
-                }
-                catch (Exception ex)
-                {
-                    logger.LogWarning(ex,
-                        "Failed to stash original tool result for call {CallId}; trimming without stash",
-                        old.CallId);
-                }
-
-                stashState.ArgsSummaries.TryGetValue(old.CallId, out var argsSummary);
-                stashState.Registry.Add(new ToolResultStashRegistry.Entry(
-                    CallId: old.CallId,
-                    ToolName: ExtractToolNameForCallId(messages, old.CallId),
-                    ArgsSummary: argsSummary ?? "(args unavailable)",
-                    Key: stashKey));
-            }
-
-            messages[bestMsg].Contents[bestContent] = new FunctionResultContent(old.CallId, trimmed);
-
-            logger.LogInformation(
-                "Trimmed tool result for call {CallId}: {Before:N0} → {After:N0} chars (head {Head}, tail {Tail})",
-                old.CallId, bestLen, trimmed.Length, headLen, tailLen);
-        }
-    }
+        AgentLoopStashContext.State stashState) =>
+        ToolResultTrimmer.TrimAsync(
+            messages, maxTokens, sessionId, stashState, workingMemory,
+            hostOptions.Value.ToolResultStashHeadTailRatio,
+            hostOptions.Value.ToolResultStashTtlMinutes,
+            logger);
 
     /// <summary>
     /// Working-memory key under which a trimmed tool result's original content is
@@ -1802,29 +1710,6 @@ public sealed partial class AgentLoopRunner(
             callId, toolName, resultStr.Length, trimmed.Length, headLen, tailLen);
 
         return trimmed;
-    }
-
-    /// <summary>
-    /// Walks <paramref name="messages"/> looking for the assistant <see cref="FunctionCallContent"/>
-    /// whose <see cref="FunctionCallContent.CallId"/> matches <paramref name="callId"/>, and
-    /// returns its tool name. Falls back to <c>"(unknown)"</c> when no match is found —
-    /// trimmed results without a discoverable origin still get an entry, just with a less
-    /// helpful label.
-    /// </summary>
-    private static string ExtractToolNameForCallId(List<ChatMessage> messages, string callId)
-    {
-        foreach (var msg in messages)
-        {
-            foreach (var content in msg.Contents)
-            {
-                if (content is FunctionCallContent fcc &&
-                    string.Equals(fcc.CallId, callId, StringComparison.Ordinal))
-                {
-                    return fcc.Name;
-                }
-            }
-        }
-        return "(unknown)";
     }
 
     /// <summary>

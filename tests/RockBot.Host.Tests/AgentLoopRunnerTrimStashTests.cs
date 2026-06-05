@@ -124,6 +124,61 @@ public class AgentLoopRunnerTrimStashTests
     }
 
     [TestMethod]
+    [Timeout(10_000)]
+    public async Task Trim_NonToolContentExceedsBudget_TerminatesInsteadOfSpinning()
+    {
+        // Regression for the 2026-06-05 runaway: when the non-tool content (here a huge
+        // system message) alone exceeds the char budget and every tool result is small
+        // enough to sit at the elision floor, the old `while(true)` could never reach the
+        // budget and re-trimmed the same floor-sized results forever (400k+ "Trimmed tool
+        // result" log lines, CPU pegged). The [Timeout] makes a re-introduced infinite
+        // loop fail rather than hang the suite.
+        var wm = new TestWorkingMemory();
+        var runner = NewRunner(wm);
+        var stashState = new AgentLoopStashContext.State { SessionId = "sess-1" };
+
+        var messages = new List<ChatMessage>
+        {
+            // Non-trimmable: a system message far larger than any budget the trim targets.
+            new(ChatRole.System, new string('S', 50_000)),
+            new(ChatRole.User, "do the thing"),
+            BuildAssistantWithCall("fetch_url", "call-1"),
+            new(ChatRole.Tool, [new FunctionResultContent("call-1", new string('A', 2_000))]),
+        };
+
+        // Tiny budget (≈720 chars) that the system message alone blows past — unreachable
+        // by trimming tool results. The call must return rather than spin.
+        await runner.TrimLargeToolResultsAsync(messages, maxTokens: 200, "sess-1", stashState);
+
+        // The tool result should have been trimmed at least once (down toward the floor),
+        // and the message list must not have grown.
+        Assert.AreEqual(4, messages.Count, "Trim must not add or remove messages.");
+        var frc = (FunctionResultContent)messages[3].Contents[0];
+        Assert.IsTrue((frc.Result?.ToString()?.Length ?? 0) <= 2_000,
+            "The tool result must not have grown past its original size.");
+    }
+
+    [TestMethod]
+    [Timeout(10_000)]
+    public async Task Trim_NoToolResultsButOverBudget_TerminatesImmediately()
+    {
+        // Only non-tool content over budget and nothing to trim — must break out at once.
+        var wm = new TestWorkingMemory();
+        var runner = NewRunner(wm);
+        var stashState = new AgentLoopStashContext.State { SessionId = "sess-1" };
+
+        var messages = new List<ChatMessage>
+        {
+            new(ChatRole.System, new string('S', 50_000)),
+            new(ChatRole.User, "do the thing"),
+        };
+
+        await runner.TrimLargeToolResultsAsync(messages, maxTokens: 200, "sess-1", stashState);
+
+        Assert.AreEqual(2, messages.Count);
+    }
+
+    [TestMethod]
     public void RefreshStashRegistryContext_InsertsSystemMessageWithKey()
     {
         var registry = new ToolResultStashRegistry();
