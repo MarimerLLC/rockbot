@@ -45,6 +45,33 @@ public sealed class WispOptions
     public string ScheduledTaskSessionPrefix { get; set; } = "patrol/";
 
     /// <summary>
+    /// When true, the <see cref="WispDispatchCircuitBreaker"/> refuses to run a wisp
+    /// whose exact definition has been dispatched more than
+    /// <see cref="DispatchCircuitBreakerMaxPerWindow"/> times within
+    /// <see cref="DispatchCircuitBreakerWindow"/>. Guards against runaway re-dispatch
+    /// loops that the per-agent-loop repetitive-call detector cannot see (it is rebuilt
+    /// per RunAsync and dies with the loop, so it never spans reprompts, scheduled
+    /// re-fires, or message/A2A re-triggers).
+    /// </summary>
+    public bool DispatchCircuitBreakerEnabled { get; set; } = true;
+
+    /// <summary>
+    /// Rolling window over which identical wisp dispatches are counted by the
+    /// <see cref="WispDispatchCircuitBreaker"/>.
+    /// </summary>
+    public TimeSpan DispatchCircuitBreakerWindow { get; set; } = TimeSpan.FromMinutes(5);
+
+    /// <summary>
+    /// Maximum dispatches of the <em>same exact</em> wisp definition permitted within
+    /// <see cref="DispatchCircuitBreakerWindow"/> before the breaker trips for that
+    /// definition. Deliberately conservative: no legitimate workflow re-runs a byte-
+    /// identical wisp this many times in a few minutes, so the breaker only ever fires
+    /// on a genuine runaway. Keyed on the exact definition hash, so wisps that vary by
+    /// date/id (different definition hash) are unaffected.
+    /// </summary>
+    public int DispatchCircuitBreakerMaxPerWindow { get; set; } = 30;
+
+    /// <summary>
     /// How long a Direct MCP step waits for the MCP management tools to register
     /// (event-gated on the first <c>McpServersIndexed</c> message from the bridge)
     /// before treating their absence as a transient/<c>External</c> failure rather

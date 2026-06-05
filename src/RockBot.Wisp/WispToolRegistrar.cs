@@ -15,6 +15,7 @@ internal sealed class WispToolRegistrar(
     WispOptions options,
     ILoggerFactory loggerFactory,
     ILogger<WispToolRegistrar> logger,
+    WispDispatchCircuitBreaker circuitBreaker,
     IWispExecutionLog? executionLog = null,
     IFeedbackStore? feedbackStore = null,
     ISkillStore? skillStore = null,
@@ -118,7 +119,7 @@ internal sealed class WispToolRegistrar(
             ParametersSchema = SpawnWispsSchema,
             Source = "wisp"
         }, new SpawnWispsExecutor(wispExecutor, executionLog, feedbackStore, workingMemory, options,
-            loggerFactory.CreateLogger<SpawnWispsExecutor>(), skillStore, skillUsageStore));
+            loggerFactory.CreateLogger<SpawnWispsExecutor>(), circuitBreaker, skillStore, skillUsageStore));
         logger.LogInformation("Registered tool: spawn_wisps");
 
         return Task.CompletedTask;
