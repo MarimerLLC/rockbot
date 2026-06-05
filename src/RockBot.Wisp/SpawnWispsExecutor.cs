@@ -20,6 +20,7 @@ internal sealed class SpawnWispsExecutor(
     IWorkingMemory workingMemory,
     WispOptions options,
     ILogger<SpawnWispsExecutor> logger,
+    WispDispatchCircuitBreaker? circuitBreaker = null,
     ISkillStore? skillStore = null,
     ISkillUsageStore? skillUsageStore = null) : IToolExecutor
 {
@@ -98,6 +99,30 @@ internal sealed class SpawnWispsExecutor(
             var defJson = JsonSerializer.Serialize(definition, JsonOptions);
             var defHash = ComputeDefinitionHash(defJson);
             var shapeHash = ComputeShapeHash(definition);
+
+            // Circuit breaker: refuse to run a wisp whose exact definition has been
+            // dispatched too many times in the recent window. This is the only guard
+            // that spans agent-loop invocations / scheduled re-fires / message loops —
+            // the per-loop repetitive-call detector cannot see across them. A tripped
+            // dispatch does NO work (no LLM, no tool calls) and is NOT written to the
+            // execution log, so a runaway collapses into a cheap, self-limiting error
+            // instead of an unbounded spin. The refusal message is intentionally stable
+            // (no counts/ids) so the agent-loop's repetitive-result detector also sees
+            // it as identical and nudges the model off the loop.
+            if (circuitBreaker is not null)
+            {
+                var decision = circuitBreaker.Admit(defHash);
+                if (!decision.Allowed)
+                {
+                    logger.LogWarning(
+                        "Wisp dispatch circuit breaker tripped for definition {DefHash} ('{Description}'): " +
+                        "{Count} dispatches within {WindowMinutes:F0}m (limit {Limit}). Refusing to run; session={Session}.",
+                        defHash, definition.Description, decision.Count, decision.Window.TotalMinutes,
+                        options.DispatchCircuitBreakerMaxPerWindow, sessionId ?? "(none)");
+                    WispDiagnostics.CircuitBreakerTrips.Add(1);
+                    return BuildCircuitBreakerResult(wispId, definition);
+                }
+            }
 
             var result = await wispExecutor.ExecuteAsync(definition, wispId, parentSessionId: sessionId, ct);
 
@@ -355,6 +380,39 @@ internal sealed class SpawnWispsExecutor(
             logger.LogWarning(ex, "Failed to write batch summary to working memory for batch {BatchId}", batch.BatchId);
         }
     }
+
+    /// <summary>
+    /// Builds the synthetic failed result returned when the circuit breaker refuses a
+    /// dispatch. The error message is stable (no counts or ids) so identical refusals
+    /// look identical to the agent-loop's repetitive-result detector, which then nudges
+    /// the model to stop. Categorised <see cref="FailureCategory.External"/> — the wisp
+    /// definition itself isn't malformed; it's being dispatched too aggressively.
+    /// </summary>
+    private static WispExecutionResult BuildCircuitBreakerResult(string wispId, WispDefinition definition) =>
+        new()
+        {
+            WispId = wispId,
+            IsSuccess = false,
+            Duration = TimeSpan.Zero,
+            Definition = definition,
+            StepResults =
+            [
+                new WispStepResult
+                {
+                    StepId = "circuit-breaker",
+                    StepIndex = 0,
+                    IsSuccess = false,
+                    Duration = TimeSpan.Zero,
+                    Error = new WispStepError
+                    {
+                        Category = FailureCategory.External,
+                        Message = "Circuit breaker: this exact wisp definition has been dispatched too many " +
+                                  "times in a short window and is temporarily blocked. Stop re-running it — " +
+                                  "fix the underlying problem or take a different approach."
+                    }
+                }
+            ]
+        };
 
     private static IReadOnlyList<WispDefinition>? ParseDefinitions(
         Dictionary<string, JsonElement> args, out string? error)

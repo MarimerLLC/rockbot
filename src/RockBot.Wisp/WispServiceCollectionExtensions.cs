@@ -20,6 +20,7 @@ public static class WispServiceCollectionExtensions
         configure?.Invoke(options);
         builder.Services.AddSingleton(options);
 
+        builder.Services.AddSingleton<WispDispatchCircuitBreaker>();
         builder.Services.AddSingleton<WispExecutor>();
         builder.Services.AddSingleton<IWispExecutionLog, FileWispExecutionLog>();
         builder.Services.AddSingleton<IPrunableLog>(sp => (IPrunableLog)sp.GetRequiredService<IWispExecutionLog>());
