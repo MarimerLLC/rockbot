@@ -20,6 +20,28 @@ agent:
   # get_routing_summary tool). Once the cap is reached the logger trims the oldest
   # entries on every append. ~500 bytes per entry, so 1500 ≈ 750 KB on disk.
   tierRoutingLogMaxEntries: 1500
+  # Append-only JSONL log retention, applied once per dream cycle (see
+  # docs/dream-service.md → "Log retention"). Covers skill-usage, tool-call,
+  # feedback (per-session directories) and skill-resource-usage,
+  # wisp-executions (single files). Values below are sized from observed live
+  # traffic; raise them if you query these logs further back in time.
+  logRetention:
+    enabled: true
+    # Per-session directory logs: delete {sessionId}.jsonl files whose last-write
+    # time is older than this. Floor it at the widest dream query window (skill
+    # usage looks back 30 days) so pruning never starves a pass. TimeSpan format
+    # "d.hh:mm:ss". Set to "0" to disable age pruning.
+    maxFileAge: "30.00:00:00"
+    # Per-session directory logs: backstop cap on file count after age pruning
+    # (oldest dropped first). Age pruning is the primary control; this only bites
+    # during a session storm. Set to 0 to disable count pruning.
+    maxFilesPerDirectory: 1000
+    # Per-file line cap. Applies to the single-file logs (wisp-executions.jsonl,
+    # skill-resource-usage.jsonl) AND to each per-session file — this is what bounds
+    # a persistent UI/CLI session's {id}.jsonl, which age/count pruning never reaps.
+    # At ~1.1 KB/line for wisp records, 10000 ≈ 11 MB, well above the 14-day window
+    # the wisp dream pass reads. Set to 0 to disable line trimming.
+    maxLinesPerFile: 10000
   resources:
     requests:
       cpu: 500m

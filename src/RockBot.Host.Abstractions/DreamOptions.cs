@@ -278,4 +278,39 @@ public sealed class DreamOptions
     /// discoverable via keyword search.
     /// </summary>
     public float ImportanceDecayFloor { get; set; } = 0.10f;
+
+    /// <summary>
+    /// Whether the log-retention pass runs each dream cycle. When enabled, the dream
+    /// prunes the append-only JSONL logs (skill-usage, tool-call, feedback,
+    /// skill-resource-usage, wisp-executions) so they don't grow without bound.
+    /// Disable to retain every log line/file indefinitely. Default: true.
+    /// </summary>
+    public bool LogRetentionEnabled { get; set; } = true;
+
+    /// <summary>
+    /// Per-session JSONL log files (one <c>{sessionId}.jsonl</c> per session for the
+    /// skill-usage, tool-call, and feedback logs) older than this — by last-write
+    /// time — are deleted by the retention pass. Set to <see cref="TimeSpan.Zero"/>
+    /// or negative to disable age-based pruning. Default: 30 days.
+    /// </summary>
+    public TimeSpan LogRetentionMaxFileAge { get; set; } = TimeSpan.FromDays(30);
+
+    /// <summary>
+    /// Ceiling on the number of per-session JSONL files kept in each session-log
+    /// directory. After age pruning, if more remain, the oldest are deleted until the
+    /// count is within this cap. Set to zero or negative to disable count-based
+    /// pruning. Default: 1000.
+    /// </summary>
+    public int LogRetentionMaxFilesPerDirectory { get; set; } = 1000;
+
+    /// <summary>
+    /// Ceiling on the number of lines retained in any single JSONL log file. Applies to
+    /// the single-file append-only logs (skill-resource-usage.jsonl,
+    /// wisp-executions.jsonl) and to each individual per-session file (e.g. a persistent
+    /// UI/CLI session's <c>{sessionId}.jsonl</c> that age/count pruning never reaps
+    /// because it is continuously written). When a file exceeds this, the retention pass
+    /// rewrites it keeping only the most recent lines. Set to zero or negative to disable
+    /// trimming. Default: 50,000.
+    /// </summary>
+    public int LogRetentionMaxLinesPerFile { get; set; } = 50_000;
 }

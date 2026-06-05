@@ -28,6 +28,16 @@ data:
   AgentProfile__BasePath: "/data/agent"
   AgentProfile__TierRoutingLogMaxEntries: {{ .Values.agent.tierRoutingLogMaxEntries | default 1500 | quote }}
   Memory__BasePath: "/data/agent/memory"
+
+  # ── Append-only JSONL log retention (applied once per dream cycle) ─────────
+  # `dig` (not `default`) so an explicit false / 0 — which disable a dimension —
+  # are honoured rather than swallowed, while a wholly-absent block (e.g. a
+  # --reuse-values upgrade) still falls back to the chart defaults below.
+  {{- $logRetention := .Values.agent.logRetention | default dict }}
+  Dream__LogRetentionEnabled: {{ dig "enabled" true $logRetention | quote }}
+  Dream__LogRetentionMaxFileAge: {{ dig "maxFileAge" "30.00:00:00" $logRetention | quote }}
+  Dream__LogRetentionMaxFilesPerDirectory: {{ dig "maxFilesPerDirectory" 1000 $logRetention | quote }}
+  Dream__LogRetentionMaxLinesPerFile: {{ dig "maxLinesPerFile" 10000 $logRetention | quote }}
   Skill__BasePath: "/data/agent/skills"
   McpBridge__ConfigPath: "/data/agent/mcp.json"
   LlmPricing__ConfigPath: "/data/agent/llm-pricing.json"

@@ -8,7 +8,7 @@ namespace RockBot.Wisp;
 /// File-based wisp execution log. All records are appended to a single JSONL file:
 /// <c>{basePath}/wisp-executions.jsonl</c>. One JSON object per line.
 /// </summary>
-internal sealed class FileWispExecutionLog : IWispExecutionLog
+internal sealed class FileWispExecutionLog : IWispExecutionLog, IPrunableLog
 {
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -36,6 +36,24 @@ internal sealed class FileWispExecutionLog : IWispExecutionLog
             var line = JsonSerializer.Serialize(record, JsonOptions);
             await File.AppendAllTextAsync(_filePath, line + Environment.NewLine, ct);
             _logger.LogDebug("Wisp execution logged [{WispId}] success={Success}", record.WispId, record.Succeeded);
+        }
+        finally
+        {
+            _writeLock.Release();
+        }
+    }
+
+    /// <summary>
+    /// Single append-only file shared across all sessions. Retention trims it to the
+    /// last <see cref="LogRetentionPolicy.MaxLinesPerFile"/> lines, serialized against
+    /// the append writer so a trim never races an execution record.
+    /// </summary>
+    public async Task<int> PruneAsync(LogRetentionPolicy policy, CancellationToken ct = default)
+    {
+        await _writeLock.WaitAsync(ct);
+        try
+        {
+            return await JsonlLogRetention.TrimToLastLinesAsync(_filePath, policy.MaxLinesPerFile, _logger, ct);
         }
         finally
         {

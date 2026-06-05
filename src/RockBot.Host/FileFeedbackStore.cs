@@ -9,7 +9,7 @@ namespace RockBot.Host;
 /// File-based feedback store. Each session's entries are appended to a separate JSONL file:
 /// <c>{basePath}/{sessionId}.jsonl</c>. One JSON object per line.
 /// </summary>
-internal sealed class FileFeedbackStore : IFeedbackStore
+internal sealed class FileFeedbackStore : IFeedbackStore, IPrunableLog
 {
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -52,6 +52,24 @@ internal sealed class FileFeedbackStore : IFeedbackStore
         {
             sem.Release();
         }
+    }
+
+    /// <summary>
+    /// Per-session JSONL files accumulate one file per session forever. Retention
+    /// drops whole session files older than the configured window, caps the total
+    /// file count, then line-trims any surviving file (e.g. a persistent UI/CLI
+    /// session that never ages out) to the per-file line budget under that session's
+    /// write lock so the trim can't race an append.
+    /// </summary>
+    public async Task<int> PruneAsync(LogRetentionPolicy policy, CancellationToken ct = default)
+    {
+        var removed = await JsonlLogRetention.PruneAgedFilesAsync(
+            _basePath, policy.MaxFileAge, policy.MaxFilesPerDirectory, "*.jsonl", _logger, ct);
+        removed += await JsonlLogRetention.TrimSessionFilesAsync(
+            _basePath, policy.MaxLinesPerFile, "*.jsonl",
+            id => _writeLocks.GetOrAdd(id, _ => new SemaphoreSlim(1, 1)),
+            _logger, ct);
+        return removed;
     }
 
     public async Task<IReadOnlyList<FeedbackEntry>> GetBySessionAsync(string sessionId, CancellationToken cancellationToken = default)
