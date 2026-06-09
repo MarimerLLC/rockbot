@@ -707,10 +707,13 @@ public sealed partial class AgentLoopRunner(
         }
 
         var nativeFinalText = ExtractAssistantText(response);
-        if (LoopDiagnosticsContext.Value is { } diagNative
-            && !string.IsNullOrWhiteSpace(nativeFinalText))
+        if (LoopDiagnosticsContext.Value is { } diagNative)
         {
-            diagNative.LastAssistantText = nativeFinalText;
+            if (!string.IsNullOrWhiteSpace(nativeFinalText))
+                diagNative.LastAssistantText = nativeFinalText;
+            diagNative.InputTokens = nativeInputTokens;
+            diagNative.OutputTokens = nativeOutputTokens;
+            diagNative.ModelId = response.ModelId;
         }
 
         return new LoopResult(nativeFinalText, LoopExitReason.ModelStopped);
@@ -894,6 +897,7 @@ public sealed partial class AgentLoopRunner(
         long totalOutputTokens = firstResponse?.Usage?.OutputTokenCount ?? 0;
         long totalToolCalls = 0;
         var tierTag = new KeyValuePair<string, object?>("rockbot.llm.tier", tier.ToString());
+        string? lastModelId = firstResponse?.ModelId;
 
         ChatResponse? pendingResponse = firstResponse;
         var anyToolCalled = false;
@@ -984,6 +988,7 @@ public sealed partial class AgentLoopRunner(
 
                 totalInputTokens += response.Usage?.InputTokenCount ?? 0;
                 totalOutputTokens += response.Usage?.OutputTokenCount ?? 0;
+                lastModelId = response.ModelId ?? lastModelId;
             }
 
             LogResponseMessages(response, iterationLabel: (iteration + 2).ToString());
@@ -1441,6 +1446,12 @@ public sealed partial class AgentLoopRunner(
             HostDiagnostics.TurnTokensInput.Record(totalInputTokens, tierTag);
             HostDiagnostics.TurnTokensOutput.Record(totalOutputTokens, tierTag);
             HostDiagnostics.TurnToolCalls.Record(totalToolCalls, tierTag);
+            if (LoopDiagnosticsContext.Value is { } diagTextFinal)
+            {
+                diagTextFinal.InputTokens = totalInputTokens;
+                diagTextFinal.OutputTokens = totalOutputTokens;
+                diagTextFinal.ModelId ??= lastModelId;
+            }
         }
     }
 
