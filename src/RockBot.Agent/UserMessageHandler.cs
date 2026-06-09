@@ -425,10 +425,12 @@ internal sealed class UserMessageHandler(
             });
 
             var lastProgressAt = DateTimeOffset.UtcNow;
+            var nativeDiag = new LoopDiagnostics();
 
             var text = await agentLoopRunner.RunAsync(
                 chatMessages, chatOptions, sessionId, tier: classification.Tier,
                 complexityScore: classification.ComplexityScore,
+                diagnostics: nativeDiag,
                 onPreToolCall: async (desc, ct2) =>
                 {
                     await PublishReplyAsync($"Working on it — checking {desc}…", replyTo, correlationId, sessionId, isFinal: false, ct2);
@@ -470,7 +472,10 @@ internal sealed class UserMessageHandler(
                 MatchedHighKeywords = classification.MatchedHighKeywords,
                 MatchedLowKeywords = classification.MatchedLowKeywords,
                 PostInjectionTokenEstimate = postInjectionTokenEstimate,
-                ModelId = registry.GetModelId(classification.Tier),
+                ModelId = nativeDiag.ModelId ?? registry.GetModelId(classification.Tier),
+                InputTokens = nativeDiag.InputTokens > 0 ? nativeDiag.InputTokens : null,
+                OutputTokens = nativeDiag.OutputTokens > 0 ? nativeDiag.OutputTokens : null,
+                ToolCallCount = nativeDiag.ToolCalls > 0 ? nativeDiag.ToolCalls : null,
             });
 
             text = ResponseSanitizer.StripTrailingOffers(text);

@@ -36,4 +36,15 @@ public sealed class LoopDiagnostics
 
     /// <summary>When the most recently invoked tool completed; null if it never returned.</summary>
     public DateTimeOffset? LastToolCompletedAt { get; set; }
+
+    // ── Token usage (populated by AgentLoopRunner after the loop completes) ──
+
+    /// <summary>Total input tokens consumed across all loop iterations.</summary>
+    public long InputTokens { get; set; }
+
+    /// <summary>Total output tokens produced across all loop iterations.</summary>
+    public long OutputTokens { get; set; }
+
+    /// <summary>Model ID reported by the LLM for this loop run (last seen value when multiple responses occur).</summary>
+    public string? ModelId { get; set; }
 }
