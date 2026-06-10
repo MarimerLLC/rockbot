@@ -1664,6 +1664,14 @@ public sealed partial class AgentLoopRunner(
         if (maxChars <= 0 || resultStr.Length <= maxChars)
             return resultStr;
 
+        // Explicit working-memory retrievals (GetFromWorkingMemory and friends) must never
+        // be re-capped/re-stashed: doing so parks the retrieved content under the retrieval
+        // call's *new* id and tells the model to fetch that, producing a non-terminating
+        // retrieve→re-stash→retrieve loop. The agent asked for this content by name, so hand
+        // it back in full. See StashExemptTools.
+        if (StashExemptTools.Contains(toolName))
+            return resultStr;
+
         // No callId or no stash state → head-only truncation. The model can't recover
         // the elided content (nothing to register), so we don't promise it can.
         if (string.IsNullOrEmpty(callId) || stashState is null)

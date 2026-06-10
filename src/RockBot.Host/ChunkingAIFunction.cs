@@ -27,13 +27,6 @@ public sealed class ChunkingAIFunction(
     private readonly int _chunkMaxLength = Math.Max(chunkingThreshold, 20_000);
     private static readonly TimeSpan ToolResultChunkTtl = TimeSpan.FromMinutes(20);
 
-    private static readonly HashSet<string> ChunkingExemptTools = new(StringComparer.OrdinalIgnoreCase)
-    {
-        "GetFromWorkingMemory",
-        "SearchWorkingMemory",
-        "ListWorkingMemory",
-    };
-
     public override string Name => inner.Name;
     public override string Description => inner.Description;
     public override JsonElement JsonSchema => inner.JsonSchema;
@@ -45,7 +38,7 @@ public sealed class ChunkingAIFunction(
         var result = await inner.InvokeAsync(arguments, cancellationToken);
         var resultStr = result?.ToString() ?? string.Empty;
 
-        if (ChunkingExemptTools.Contains(inner.Name))
+        if (StashExemptTools.Contains(inner.Name))
             return result;
 
         if (resultStr.Length <= chunkingThreshold)
