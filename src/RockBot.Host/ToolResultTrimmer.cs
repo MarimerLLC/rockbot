@@ -74,7 +74,13 @@ internal static class ToolResultTrimmer
                     if (messages[i].Contents[j] is FunctionResultContent frc)
                     {
                         var len = frc.Result?.ToString()?.Length ?? 0;
-                        if (len > bestLen) { bestMsg = i; bestContent = j; bestLen = len; }
+                        if (len <= bestLen) continue;
+                        // Never re-stash an explicit working-memory retrieval — re-stashing
+                        // mints a fresh key on every pass and loops the model forever
+                        // re-fetching its own growing reference. See StashExemptTools.
+                        if (StashExemptTools.Contains(ExtractToolNameForCallId(messages, frc.CallId)))
+                            continue;
+                        bestMsg = i; bestContent = j; bestLen = len;
                     }
                 }
             }

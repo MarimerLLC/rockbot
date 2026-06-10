@@ -267,6 +267,112 @@ public class AgentLoopRunnerTrimStashTests
         Assert.AreEqual(s, AgentLoopRunner.TruncateArgsSummary(s));
     }
 
+    [TestMethod]
+    [Timeout(10_000)]
+    public async Task Trim_OversizeRetrievalResult_IsNotReStashedAndDoesNotSpin()
+    {
+        // Regression for the 2026-06-10 communications-briefing runaway: an explicit
+        // GetFromWorkingMemory retrieval returned an oversized result, which the trim
+        // re-stashed under the *retrieval* call's id and advertised back to the model.
+        // The model re-fetched the new key, got a larger reference, which was re-stashed
+        // again — a retrieve→re-stash→retrieve loop that burned the whole subagent budget.
+        // Explicit working-memory reads must be left intact.
+        var wm = new TestWorkingMemory();
+        var runner = NewRunner(wm);
+        var stashState = new AgentLoopStashContext.State { SessionId = "sess-1" };
+
+        var bigRetrieval = new string('R', 4000);
+        var messages = new List<ChatMessage>
+        {
+            new(ChatRole.System, "system prompt"),
+            new(ChatRole.User, "do the thing"),
+            BuildAssistantWithCall("GetFromWorkingMemory", "call-1"),
+            new(ChatRole.Tool, [new FunctionResultContent("call-1", bigRetrieval)]),
+        };
+
+        await runner.TrimLargeToolResultsAsync(messages, maxTokens: 200, "sess-1", stashState);
+
+        var frc = (FunctionResultContent)messages[3].Contents[0];
+        Assert.AreEqual(bigRetrieval, frc.Result?.ToString(),
+            "An explicit GetFromWorkingMemory retrieval must be left intact, not head+tail trimmed.");
+        Assert.IsTrue(stashState.Registry.IsEmpty,
+            "A retrieval result must never be re-stashed (that mints a fresh key and loops the model).");
+        Assert.AreEqual(0, wm.WriteCount, "Nothing should be written to working memory for a retrieval result.");
+    }
+
+    [TestMethod]
+    [Timeout(10_000)]
+    public async Task Trim_RetrievalAndNormalResult_TrimsNormalAndSkipsRetrieval()
+    {
+        // When both an exempt retrieval and a normal oversized result are over budget,
+        // the trim must skip the retrieval and reclaim space from the normal result.
+        var wm = new TestWorkingMemory();
+        var runner = NewRunner(wm);
+        var stashState = new AgentLoopStashContext.State { SessionId = "sess-1" };
+
+        var bigRetrieval = new string('R', 4000);
+        var biggerNormal = new string('N', 5000) + "NORMAL-TAIL";
+        var messages = new List<ChatMessage>
+        {
+            new(ChatRole.System, "system prompt"),
+            new(ChatRole.User, "do the thing"),
+            BuildAssistantWithCall("GetFromWorkingMemory", "call-ret"),
+            new(ChatRole.Tool, [new FunctionResultContent("call-ret", bigRetrieval)]),
+            BuildAssistantWithCall("fetch_url", "call-norm"),
+            new(ChatRole.Tool, [new FunctionResultContent("call-norm", biggerNormal)]),
+        };
+
+        await runner.TrimLargeToolResultsAsync(messages, maxTokens: 200, "sess-1", stashState);
+
+        var retrieval = (FunctionResultContent)messages[3].Contents[0];
+        Assert.AreEqual(bigRetrieval, retrieval.Result?.ToString(),
+            "The retrieval result must be untouched.");
+
+        var normal = (FunctionResultContent)messages[5].Contents[0];
+        StringAssert.Contains(normal.Result?.ToString() ?? string.Empty, ElisionMarkerPrefix,
+            "The normal result must be head+tail trimmed to reclaim space.");
+
+        Assert.AreEqual(1, stashState.Registry.Snapshot().Count,
+            "Only the normal result should be stashed.");
+        Assert.AreEqual("call-norm", stashState.Registry.Snapshot()[0].CallId);
+    }
+
+    [TestMethod]
+    public async Task CapToolResult_RetrievalTool_ReturnsUnchangedWithoutStashing()
+    {
+        var wm = new TestWorkingMemory();
+        var stashState = new AgentLoopStashContext.State { SessionId = "sess-1" };
+        var big = new string('R', 4000);
+
+        var capped = await AgentLoopRunner.CapToolResultAsync(
+            big, callId: "call-1", toolName: "GetFromWorkingMemory",
+            workingMemory: wm, stashState: stashState,
+            maxChars: 1000, headRatio: 0.6, ttl: TimeSpan.FromMinutes(60),
+            logger: NullLogger<AgentLoopRunner>.Instance);
+
+        Assert.AreEqual(big, capped, "An explicit retrieval must be returned in full, not capped.");
+        Assert.IsTrue(stashState.Registry.IsEmpty, "A retrieval result must not be stashed.");
+        Assert.AreEqual(0, wm.WriteCount, "A retrieval result must not be written back to working memory.");
+    }
+
+    [TestMethod]
+    public async Task CapToolResult_NormalTool_CapsAndStashes()
+    {
+        var wm = new TestWorkingMemory();
+        var stashState = new AgentLoopStashContext.State { SessionId = "sess-1" };
+        var big = new string('N', 4000);
+
+        var capped = await AgentLoopRunner.CapToolResultAsync(
+            big, callId: "call-1", toolName: "fetch_url",
+            workingMemory: wm, stashState: stashState,
+            maxChars: 1000, headRatio: 0.6, ttl: TimeSpan.FromMinutes(60),
+            logger: NullLogger<AgentLoopRunner>.Instance);
+
+        Assert.IsTrue(capped.Length < big.Length, "A normal oversized result must be capped.");
+        StringAssert.Contains(capped, ElisionMarkerPrefix);
+        Assert.AreEqual(1, stashState.Registry.Snapshot().Count, "A normal capped result must be stashed.");
+    }
+
     // ── Helpers ──────────────────────────────────────────────────────────────
 
     private static AgentLoopRunner NewRunner(IWorkingMemory workingMemory)
