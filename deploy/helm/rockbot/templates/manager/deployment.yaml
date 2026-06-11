@@ -82,6 +82,11 @@ spec:
                 configMapKeyRef:
                   name: {{ include "rockbot.configmapName" . }}
                   key: Scripts__Container__SharedVolumePath
+            - name: Scripts__Container__FsGroup
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ include "rockbot.configmapName" . }}
+                  key: Scripts__Container__FsGroup
             - name: DOTNET_ENVIRONMENT
               value: "Production"
           resources:
