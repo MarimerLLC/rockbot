@@ -9,6 +9,7 @@ using RockBot.Host;
 using RockBot.Llm;
 using RockBot.Messaging.RabbitMQ;
 using RockBot.Agent.McpBridge;
+using RockBot.Agent.McpBridge.ArgGuards;
 using RockBot.Agent.McpBridge.Auth;
 using RockBot.Scripts.Remote;
 using RockBot.Agent;
@@ -375,6 +376,9 @@ builder.Services.Configure<LlmPricingOptions>(builder.Configuration.GetSection("
 
 // MCP bridge (replaces external RockBot.Tools.Mcp.Bridge process)
 builder.Services.Configure<McpBridgeOptions>(builder.Configuration.GetSection("McpBridge"));
+builder.Services.AddSingleton(new McpArgGuardRegistration(
+    PathPrefixArgGuard.HandlerName, new PathPrefixArgGuard()));
+builder.Services.AddSingleton<IMcpArgGuardRegistry, McpArgGuardRegistry>();
 builder.Services.AddHostedService<McpBridgeService>();
 
 // WorkIQ auth (MSAL token provider + cache store) — registered only when

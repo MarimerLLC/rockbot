@@ -5,6 +5,7 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using ModelContextProtocol.Client;
 using ModelContextProtocol.Protocol;
+using RockBot.Agent.McpBridge.ArgGuards;
 using RockBot.Agent.McpBridge.Attachments;
 using RockBot.Host;
 using RockBot.Messaging;
@@ -30,6 +31,7 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
     private readonly ILlmClient? _llmClient;
     private readonly ITokenProviderRegistry? _tokenProviders;
     private readonly WorkIqHealthTracker? _healthTracker;
+    private readonly IMcpArgGuardRegistry? _argGuards;
 
     private readonly Dictionary<string, McpClient> _clients = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, McpBridgeServerConfig> _serverConfigs = new(StringComparer.OrdinalIgnoreCase);
@@ -69,7 +71,8 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
         ILogger<McpBridgeService> logger,
         ILlmClient? llmClient = null,
         ITokenProviderRegistry? tokenProviders = null,
-        WorkIqHealthTracker? healthTracker = null)
+        WorkIqHealthTracker? healthTracker = null,
+        IMcpArgGuardRegistry? argGuards = null)
     {
         _publisher = publisher;
         _subscriber = subscriber;
@@ -82,6 +85,7 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
         _llmClient = llmClient;
         _tokenProviders = tokenProviders;
         _healthTracker = healthTracker;
+        _argGuards = argGuards;
     }
 
     public async Task StartAsync(CancellationToken cancellationToken)
@@ -359,6 +363,19 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
         if (string.IsNullOrEmpty(config.Url))
         {
             _logger.LogError("SSE server {Name} missing URL", name);
+            return;
+        }
+
+        // Fail closed on invalid argGuards: connecting without the declared policy would
+        // silently weaken it. The server never lands in _serverConfigs, so tool invokes
+        // get server-not-found until the config is fixed. Outside the retry loop below —
+        // a config error is not transient.
+        var guardConfigError = McpArgGuardEvaluator.ValidateConfig(_argGuards, name, config);
+        if (guardConfigError is not null)
+        {
+            _logger.LogError(
+                "MCP server {Name} has invalid argGuards configuration — refusing to connect (fail closed): {Error}",
+                name, guardConfigError);
             return;
         }
 
@@ -881,6 +898,33 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
             }
         }
 
+        // Apply per-server argument guards on the LLM's original arguments, BEFORE the
+        // attachment gateway mutates them. Runs after the invoke_tool unwrap so guards
+        // see the effective inner arguments. Fail closed: unresolvable guard config rejects.
+        if (_serverConfigs.TryGetValue(serverName, out var invokeConfig) && invokeConfig.ArgGuards.Count > 0)
+        {
+            var rejection = await McpArgGuardEvaluator.EvaluateAsync(
+                _argGuards, serverName, invokeConfig, request.ToolName, arguments, ct);
+
+            if (rejection is not null)
+            {
+                _logger.LogWarning("Arg guard rejected {Server}/{Tool}: {Reason}",
+                    serverName, request.ToolName, rejection);
+
+                var guardError = new ToolError
+                {
+                    ToolCallId = request.ToolCallId,
+                    ToolName = request.ToolName,
+                    Code = ToolError.Codes.InvalidArguments,
+                    Message = rejection,
+                    IsRetryable = false
+                };
+
+                await PublishResponseAsync(guardError, replyTo, envelope.CorrelationId, ct);
+                return MessageResult.Ack;
+            }
+        }
+
         // Apply attachment-passthrough request rewrite (no-op when the server has no manifest).
         // We capture ShouldRewriteResponse BEFORE RewriteRequestAsync because the rewrite
         // mutates the gateway-only `mode: "save"` to `stash`/`inline`.
@@ -1187,6 +1231,27 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
                     Args = req.Args,
                     Env = req.Env
                 };
+
+                // register_mcp_server cannot express argGuards, and it is LLM-callable —
+                // re-registering an existing name must not strip operator-declared policy.
+                if (_serverConfigs.TryGetValue(req.ServerName, out var existingConfig))
+                    config.ArgGuards = existingConfig.ArgGuards;
+
+                // Validate guards before connecting so the caller gets a descriptive error
+                // instead of the generic "Connection failed" (ConnectServerAsync fails closed
+                // silently from the caller's perspective).
+                var guardError = McpArgGuardEvaluator.ValidateConfig(_argGuards, req.ServerName, config);
+                if (guardError is not null)
+                {
+                    var guardResponse = new McpRegisterServerResponse
+                    {
+                        ServerName = req.ServerName,
+                        Success = false,
+                        Error = $"Invalid argGuards configuration: {guardError}"
+                    };
+                    await PublishResponseAsync(guardResponse, replyTo, envelope.CorrelationId, ct);
+                    return MessageResult.Ack;
+                }
 
                 // Reject registrations that duplicate an existing server's URL and credentials
                 // under a different name. The name doesn't matter for dedup — URL + headers +

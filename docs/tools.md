@@ -328,6 +328,63 @@ guide instructs the model to pass `{ path: "/rockbot/shared/attachments/<file>" 
 base64 whenever a tool's parameter takes attachments — operators don't need to do anything more
 than enable the manifest.
 
+### Argument guards
+
+Some third-party MCP servers resolve path arguments inside their *own* pod: a
+`download_file` call with `save_directory: "/tmp"` succeeds — but the file lands in the
+server pod's local filesystem, invisible to the agent and script pods, while the tool
+reports success. Argument guards let an operator declare per-server validation that the
+bridge enforces before forwarding a tool call:
+
+```json
+{
+  "mcpServers": {
+    "onedrive-personal": {
+      "type": "sse",
+      "url": "http://onedrive-personal:3001/",
+      "argGuards": [
+        { "handler": "path-prefix",
+          "tools": ["download_file"],
+          "options": {
+            "args": ["save_directory"],
+            "allowedPrefixes": ["/rockbot/shared"],
+            "requireArgs": true } }
+      ]
+    }
+  }
+}
+```
+
+| Field | Meaning |
+|---|---|
+| `handler` | Registry name of the `IMcpArgGuard` implementation. Built-in: `path-prefix`. |
+| `tools` | Tool names the rule applies to (case-insensitive). Empty/omitted = all tools. |
+| `options` | Handler-specific; for `path-prefix`: `args` (argument names to validate), `allowedPrefixes` (absolute paths), `requireArgs` (reject when a listed argument is missing; default false). |
+
+Behavior:
+
+- Guards run on the model's **original** arguments, before attachment passthrough rewrites
+  them, and apply to every caller (primary agent, subagents, workers, wisps, A2A) — all MCP
+  invocations flow through the bridge's single invoke handler.
+- A rejection returns `ToolError` (`invalid_arguments`, not retryable); the message names the
+  offending argument, the allowed prefixes, and the reason, so the model can self-correct in
+  one turn.
+- **Fail closed**: an unknown `handler` name or invalid `options` refuses the server
+  connection entirely (logged as an error). A declared policy that cannot be enforced never
+  silently degrades.
+- `path-prefix` rejects relative paths and traversal that escapes the prefixes
+  (`/rockbot/shared/../../tmp`); comparison is `Ordinal` (Linux semantics) and
+  boundary-aware (`/rockbot/shared` does not match `/rockbot/shared-evil`). Missing
+  arguments pass unless `requireArgs` is set. Empty `allowedPrefixes` is a config error,
+  not allow-all.
+- Handlers are resolved from a DI registry by name — mcp.json never names CLR types
+  (`register_mcp_server` is model-callable, so config-driven type loading would be a code
+  execution channel). Re-registering an existing server name preserves its guards.
+- Guards are excluded from the canonical-identity dedup, like `attachments`: they describe
+  how the server is invoked, not which server it is.
+
+See `design/mcp-arg-guards.md` for the security rationale.
+
 ---
 
 ## Service search (`RockBot.ServiceSearch`)
