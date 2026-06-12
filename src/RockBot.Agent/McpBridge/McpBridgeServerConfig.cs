@@ -1,3 +1,4 @@
+using RockBot.Agent.McpBridge.ArgGuards;
 using RockBot.Agent.McpBridge.Attachments;
 
 namespace RockBot.Agent.McpBridge;
@@ -63,6 +64,14 @@ public sealed class McpBridgeServerConfig
     /// server is invoked, not which server is being talked to.
     /// </summary>
     public AttachmentManifest? Attachments { get; set; }
+
+    /// <summary>
+    /// Optional per-server argument guards applied by the bridge before forwarding a
+    /// tool call (see <c>design/mcp-arg-guards.md</c>). Excluded from
+    /// <see cref="CanonicalIdentity"/> for the same reason as <see cref="Attachments"/>:
+    /// guards are policy about how the server is invoked, not which server it is.
+    /// </summary>
+    public List<McpArgGuardConfig> ArgGuards { get; set; } = [];
 
     /// <summary>
     /// Optional bearer-token authentication. When set, the bridge resolves

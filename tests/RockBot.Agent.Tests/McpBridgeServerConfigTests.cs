@@ -1,4 +1,5 @@
 using RockBot.Agent.McpBridge;
+using RockBot.Agent.McpBridge.ArgGuards;
 
 namespace RockBot.Agent.Tests;
 
@@ -218,6 +219,26 @@ public class McpBridgeServerConfigTests
             Type = "streamable-http",
             Url = "https://srv/",
             Auth = new McpServerAuthConfig { Profile = "workiq" }
+        };
+
+        Assert.AreEqual(a.CanonicalIdentity(), b.CanonicalIdentity());
+    }
+
+    [TestMethod]
+    public void CanonicalIdentity_DiffersOnlyByArgGuards_AreEqual()
+    {
+        // Pins the exclusion: argGuards are policy about how the server is invoked,
+        // not which server it is (same rationale as Attachments). A guard-bearing
+        // entry and a guard-free clone of the same server must dedup together.
+        var a = new McpBridgeServerConfig { Type = "sse", Url = "https://srv/" };
+        var b = new McpBridgeServerConfig
+        {
+            Type = "sse",
+            Url = "https://srv/",
+            ArgGuards =
+            [
+                new McpArgGuardConfig { Handler = "path-prefix", Tools = ["download_file"] }
+            ]
         };
 
         Assert.AreEqual(a.CanonicalIdentity(), b.CanonicalIdentity());
