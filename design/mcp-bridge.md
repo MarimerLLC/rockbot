@@ -45,7 +45,7 @@ Agent publishes `McpMetadataRefreshRequest` to `tool.meta.mcp.refresh`. Bridge r
 
 ### Config File Changes
 
-Bridge watches `mcp.json` via `FileSystemWatcher`. On change, it disconnects removed servers, connects new ones, and publishes updated tool availability.
+Bridge watches `mcp.json` via `FileSystemWatcher` (including `Renamed`/`FileName` events so rename-into-place writes are seen) **and** a polling fallback that stats the file's last-write time + size every `ConfigPollIntervalSeconds` (default 5 s, 0 disables). The poll exists because `FileSystemWatcher`/inotify can miss changes entirely on some network/overlay filesystems such as Longhorn PVCs (issue #470). Both paths funnel through a single debounced reload that disconnects removed servers, connects new ones, and publishes updated tool availability. The on-disk stamp is recorded after each load so the bridge's own writes (seeding/dedup) don't trigger a redundant reload.
 
 ## Content Trust
 
