@@ -47,6 +47,14 @@ public sealed class McpBridgeOptions
     public int ReconnectSweepIntervalSeconds { get; set; } = 60;
 
     /// <summary>
+    /// How often the bridge polls the config file's last-write time and size as a
+    /// fallback to the <see cref="System.IO.FileSystemWatcher"/> (which can miss
+    /// rename-into-place writes and is unreliable on some network/overlay
+    /// filesystems such as Longhorn). Set to zero to disable polling. Default 5 s.
+    /// </summary>
+    public int ConfigPollIntervalSeconds { get; set; } = 5;
+
+    /// <summary>
     /// Default MCP servers seeded from infrastructure config (e.g. Helm chart).
     /// On startup, any server listed here that is NOT already in the config file
     /// is added automatically. Existing entries are never overwritten.

@@ -47,7 +47,12 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
     private ISubscription? _manageSubscription;
     private FileSystemWatcher? _configWatcher;
     private Task? _reconnectSweepTask;
+    private Task? _configPollTask;
     private CancellationTokenSource? _sweepCts;
+    private Timer? _reloadDebounce;
+    private int _reloadPending;
+    private readonly object _stampGate = new();
+    private ConfigStamp? _lastConfigStamp;
 
     /// <summary>
     /// Set after the initial MCP connections are established in <see cref="StartAsync"/>.
@@ -125,11 +130,17 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
         // Watch for config changes
         SetupConfigWatcher();
 
-        // Start periodic reconnect sweep for any servers that failed to connect
-        if (_options.ReconnectSweepIntervalSeconds > 0)
+        // Start periodic reconnect sweep for any servers that failed to connect,
+        // and the config-poll fallback (catches edits the FileSystemWatcher misses).
+        if (_options.ReconnectSweepIntervalSeconds > 0 || _options.ConfigPollIntervalSeconds > 0)
         {
             _sweepCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            _reconnectSweepTask = RunReconnectSweepAsync(_sweepCts.Token);
+
+            if (_options.ReconnectSweepIntervalSeconds > 0)
+                _reconnectSweepTask = RunReconnectSweepAsync(_sweepCts.Token);
+
+            if (_options.ConfigPollIntervalSeconds > 0)
+                _configPollTask = RunConfigPollAsync(_sweepCts.Token);
         }
     }
 
@@ -137,6 +148,9 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
     {
         _configWatcher?.Dispose();
         _configWatcher = null;
+
+        _reloadDebounce?.Dispose();
+        _reloadDebounce = null;
 
         if (_healthTracker is not null)
             _healthTracker.HealthChanged -= OnAuthHealthChanged;
@@ -146,6 +160,8 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
             await _sweepCts.CancelAsync();
             if (_reconnectSweepTask is not null)
                 await _reconnectSweepTask.ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
+            if (_configPollTask is not null)
+                await _configPollTask.ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
             _sweepCts.Dispose();
         }
 
@@ -162,6 +178,12 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
     private async Task LoadConfigAndConnectAsync(CancellationToken ct)
     {
         McpBridgeConfig config;
+
+        // Capture the on-disk stamp *before* reading so that an edit landing during the
+        // (potentially multi-second) connect loop below is still seen by the next poll:
+        // we record the stamp of what we actually loaded, not a re-read at the end. If we
+        // self-write (seed/dedup) the stamp is refreshed afterward instead. (issue #470)
+        var stampAtLoad = ReadConfigStamp(_configPath);
 
         if (!File.Exists(_configPath))
         {
@@ -269,6 +291,17 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
         foreach (var (name, serverConfig) in config.McpServers)
         {
             await ConnectServerAsync(name, serverConfig, ct);
+        }
+
+        // Mark this config as seen. If we self-wrote above (seeding/dedup) the on-disk
+        // file is newer than what we read, so re-read its stamp to avoid a redundant
+        // reload; otherwise record the pre-read stamp so any edit that landed mid-load is
+        // still detected by the next poll.
+        var didSelfWrite = seeded || removedDupes > 0;
+        var stampToRemember = didSelfWrite ? ReadConfigStamp(_configPath) : stampAtLoad;
+        lock (_stampGate)
+        {
+            _lastConfigStamp = stampToRemember;
         }
     }
 
@@ -1668,29 +1701,123 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
         var fileName = Path.GetFileName(_configPath);
         _configWatcher = new FileSystemWatcher(directory, fileName)
         {
-            NotifyFilter = NotifyFilters.LastWrite | NotifyFilters.CreationTime,
+            // Include Size + FileName and subscribe to Renamed so rename-into-place
+            // writes (editors, `kubectl cp`, our own File.Move persist path) are seen —
+            // these were silently missed before (issue #470). The config poll is the
+            // belt-and-suspenders fallback when inotify doesn't fire at all.
+            NotifyFilter = NotifyFilters.LastWrite | NotifyFilters.Size
+                | NotifyFilters.FileName | NotifyFilters.CreationTime,
             EnableRaisingEvents = true
         };
 
         _configWatcher.Changed += OnConfigFileChanged;
         _configWatcher.Created += OnConfigFileChanged;
+        _configWatcher.Renamed += OnConfigFileChanged;
     }
 
     private void OnConfigFileChanged(object sender, FileSystemEventArgs e)
-    {
-        _logger.LogInformation("MCP config file changed, reloading...");
+        => TriggerReload($"watcher:{e.ChangeType}");
 
-        Task.Delay(500).ContinueWith(async _ =>
+    /// <summary>
+    /// Coordinates config reloads from both the <see cref="FileSystemWatcher"/> and the
+    /// poll loop. Debounces bursts (a single save fires multiple events) to 500 ms and
+    /// guards against overlapping reloads via <see cref="_reloadPending"/>.
+    /// </summary>
+    private void TriggerReload(string reason)
+    {
+        if (Interlocked.Exchange(ref _reloadPending, 1) != 0)
+            return;
+
+        _logger.LogInformation("MCP config change detected ({Reason}), reloading...", reason);
+        _reloadDebounce?.Dispose();
+        _reloadDebounce = new Timer(
+            _ => _ = ReloadConfigAsync(),
+            null,
+            TimeSpan.FromMilliseconds(500),
+            Timeout.InfiniteTimeSpan);
+    }
+
+    private async Task ReloadConfigAsync()
+    {
+        try
         {
-            try
+            await LoadConfigAndConnectAsync(CancellationToken.None);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error reloading MCP config");
+        }
+        finally
+        {
+            Interlocked.Exchange(ref _reloadPending, 0);
+        }
+    }
+
+    /// <summary>
+    /// Polling fallback for config changes. The <see cref="FileSystemWatcher"/> can miss
+    /// changes entirely on some network/overlay filesystems (e.g. Longhorn PVCs), so we
+    /// also stat the file's last-write time and size on an interval and reload when it
+    /// differs from the last-seen stamp. See issue #470.
+    /// </summary>
+    private async Task RunConfigPollAsync(CancellationToken ct)
+    {
+        var interval = TimeSpan.FromSeconds(_options.ConfigPollIntervalSeconds);
+        using var timer = new PeriodicTimer(interval);
+
+        try
+        {
+            while (await timer.WaitForNextTickAsync(ct))
             {
-                await LoadConfigAndConnectAsync(CancellationToken.None);
+                if (ConfigChangedSinceLastSeen())
+                    TriggerReload("poll");
             }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Error reloading MCP config");
-            }
-        });
+        }
+        catch (OperationCanceledException)
+        {
+            // Normal shutdown
+        }
+    }
+
+    /// <summary>
+    /// Last-write time + length of the config file — cheap to read and sufficient to
+    /// detect operator edits. Stored after each load so the bridge's own writes don't
+    /// re-trigger a reload.
+    /// </summary>
+    internal readonly record struct ConfigStamp(DateTime LastWriteUtc, long Length);
+
+    /// <summary>Reads the current <see cref="ConfigStamp"/>, or null if the file is absent/unreadable.</summary>
+    internal static ConfigStamp? ReadConfigStamp(string path)
+    {
+        try
+        {
+            var info = new FileInfo(path);
+            return info.Exists ? new ConfigStamp(info.LastWriteTimeUtc, info.Length) : null;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// True when the config file's stamp differs from the last-seen value. Updates the
+    /// last-seen stamp as a side effect so a persistently-unreadable/corrupt file is only
+    /// retried when it actually changes again, not on every poll tick.
+    /// </summary>
+    private bool ConfigChangedSinceLastSeen()
+    {
+        var current = ReadConfigStamp(_configPath);
+        if (current is null)
+            return false;
+
+        lock (_stampGate)
+        {
+            if (_lastConfigStamp is { } last && current.Value == last)
+                return false;
+
+            _lastConfigStamp = current;
+            return true;
+        }
     }
 
     private async Task DisposeClientsAsync()
@@ -1861,6 +1988,7 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
     public async ValueTask DisposeAsync()
     {
         _configWatcher?.Dispose();
+        _reloadDebounce?.Dispose();
 
         if (_healthTracker is not null)
             _healthTracker.HealthChanged -= OnAuthHealthChanged;
@@ -1870,6 +1998,8 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
             await _sweepCts.CancelAsync();
             if (_reconnectSweepTask is not null)
                 await _reconnectSweepTask.ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
+            if (_configPollTask is not null)
+                await _configPollTask.ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
             _sweepCts.Dispose();
         }
 
