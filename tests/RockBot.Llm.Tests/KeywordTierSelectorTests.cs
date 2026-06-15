@@ -777,6 +777,89 @@ public class KeywordTierSelectorTests
             "Subagent baseline routing for trivial prompts stays at or below Balanced.");
     }
 
+    // ── Math-regex range false-positive (issue #471) ────────────────────────
+
+    [TestMethod]
+    [DataRow("7:00-10:00", DisplayName = "clock time range")]
+    [DataRow("the show runs 7:00-10:00 PM CT", DisplayName = "time range in a sentence")]
+    [DataRow("2025-01-01", DisplayName = "ISO date")]
+    [DataRow("events on 2026-07-11 and 2026-12-26", DisplayName = "ISO dates in a sentence")]
+    [DataRow("pick a number 7-10", DisplayName = "bare numeric range")]
+    public void Classify_HyphenatedRanges_DoNotCountAsMath(string prompt)
+    {
+        // A hyphen between digits with no surrounding whitespace is a range/date/time,
+        // not subtraction. It must not contribute the math structural bump that would
+        // otherwise inflate the score of verbose operational prompts.
+        var withRange = _selector.Classify(prompt);
+        var withoutRange = _selector.Classify(
+            new string(prompt.Where(c => !char.IsDigit(c) && c != '-' && c != ':').ToArray()));
+
+        Assert.AreEqual(withoutRange.ComplexityScore, withRange.ComplexityScore, 0.0001,
+            $"Hyphenated range \"{prompt}\" must not add a math structural bump");
+    }
+
+    [TestMethod]
+    public void Classify_GenuineSubtraction_StillCountsAsMath()
+    {
+        // Whitespace-flanked subtraction is real arithmetic and should still score
+        // higher than the same prompt with the math removed.
+        var withMath = _selector.Classify("compute the value when 50 - 8 changes");
+        var withoutMath = _selector.Classify("compute the value when the input changes");
+
+        Assert.IsTrue(withMath.ComplexityScore > withoutMath.ComplexityScore,
+            "Whitespace-flanked subtraction should still register as a math signal");
+    }
+
+    // ── High-tier gate: verbosity alone must not reach High (issue #471) ─────
+
+    [TestMethod]
+    public void Classify_LongOperationalBrief_NoComplexityKeywords_RoutesBalancedNotHigh()
+    {
+        // Reproducer modelled on the Red Fletcher patrol subagent brief that timed
+        // out: a long, well-specified PIM/tool-use task with a hyphenated time range
+        // and the word "then", but zero genuine complexity keywords. Previously
+        // scored 0.60 (length 0.40 + math 0.12 + multistep 0.08) → High. With both
+        // fixes it must stay at or below Balanced.
+        const string prompt =
+            "Search all email-capable calendar accounts for Red Fletcher concert " +
+            "announcements and add any missing upcoming shows to Rocky's calendars. " +
+            "A known confirmed show is at Amsterdam Bar and Hall on July 11 from " +
+            "7:00-10:00 PM CT; other dates include July 17, Oct 26, and Dec 26. " +
+            "Search the marimer-work, lhotka.net, rockyl, csla-store, xebia, and " +
+            "rockbotagent accounts for Red Fletcher and Bandsintown messages. " +
+            "Then check the rockyl and lhotka.net calendars for matching events " +
+            "before creating anything, avoid duplicates, use America/Chicago " +
+            "timezone, and read back each event after creating it to verify. " +
+            "Report which events were created or already existed.";
+
+        var result = _selector.Classify(prompt, new TierRoutingContext(Origin: "subagent"));
+
+        Assert.AreEqual(0, result.MatchedHighKeywords.Count,
+            "Test premise: this operational brief contains no high-signal complexity keywords");
+        Assert.IsTrue(result.Tier <= ModelTier.Balanced,
+            $"Verbose operational brief must not route High (got {result.Tier}, score {result.ComplexityScore:F3})");
+    }
+
+    [TestMethod]
+    public void Classify_LongBriefWithComplexityKeyword_StillRoutesHigh()
+    {
+        // The gate must not over-suppress: a long brief that DOES carry a genuine
+        // complexity keyword should still be allowed to reach High.
+        const string prompt =
+            "Analyze and design a comprehensive migration strategy for moving the " +
+            "scheduling subsystem to a distributed architecture. Evaluate the " +
+            "trade-offs between eventual and strong consistency, compare multiple " +
+            "approaches for coordination, and provide a thorough analysis with pros " +
+            "and cons including the security implications of each recommended path.";
+
+        var result = _selector.Classify(prompt);
+
+        Assert.IsTrue(result.MatchedHighKeywords.Count > 0,
+            "Test premise: this brief contains high-signal complexity keywords");
+        Assert.AreEqual(ModelTier.High, result.Tier,
+            "A long brief with genuine complexity keywords should still route High");
+    }
+
     [TestMethod]
     public void ActiveThreadOverride_MatchedHighKeyword_GateBlocksPromotion()
     {
