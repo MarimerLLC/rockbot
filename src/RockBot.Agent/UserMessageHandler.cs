@@ -244,22 +244,9 @@ internal sealed class UserMessageHandler(
                 // calls that still need to be executed by the manual loop.
                 var (hasToolCalls, ackText) = GetFirstIterationAck(firstResponse, chatOptions);
 
-                // Routing telemetry written here for the text-based path (first iteration complete)
-                _ = tierRoutingLogger.AppendAsync(new TierRoutingEntry
-                {
-                    Timestamp = DateTimeOffset.UtcNow,
-                    PromptPreview = message.Content.Length > 150 ? message.Content[..150] : message.Content,
-                    Tier = tier,
-                    Context = "user-message",
-                    ComplexityScore = classification.ComplexityScore,
-                    MatchedHighKeywords = classification.MatchedHighKeywords,
-                    MatchedLowKeywords = classification.MatchedLowKeywords,
-                    PostInjectionTokenEstimate = postInjectionTokenEstimate,
-                    ModelId = firstResponse.ModelId ?? registry.GetModelId(tier),
-                    InputTokens = firstResponse.Usage?.InputTokenCount,
-                    OutputTokens = firstResponse.Usage?.OutputTokenCount,
-                    LatencyMs = routingSw.ElapsedMilliseconds,
-                });
+                // Routing telemetry is written at a terminal point (BackgroundToolLoopAsync
+                // after the loop, or the single-response branch below) so the entry carries
+                // the multi-iteration aggregate token usage rather than just iteration 1.
 
                 if (hasToolCalls)
                 {
@@ -276,7 +263,7 @@ internal sealed class UserMessageHandler(
                     turnActivityHandedOff = true;
                     context.Items[WipConstants.DeferredKey] = true;
                     _ = BackgroundToolLoopAsync(
-                        chatMessages, chatOptions, firstResponse, tier, classification.ComplexityScore,
+                        chatMessages, chatOptions, firstResponse, classification, postInjectionTokenEstimate,
                         message.SessionId, replyTo, correlationId, sessionHandle.Generation, wipMessageId, turnActivity, sessionCt);
                 }
                 else
@@ -296,7 +283,7 @@ internal sealed class UserMessageHandler(
                         turnActivityHandedOff = true;
                         context.Items[WipConstants.DeferredKey] = true;
                         _ = BackgroundToolLoopAsync(
-                            chatMessages, chatOptions, firstResponse, tier, classification.ComplexityScore,
+                            chatMessages, chatOptions, firstResponse, classification, postInjectionTokenEstimate,
                             message.SessionId, replyTo, correlationId, sessionHandle.Generation, wipMessageId, turnActivity, sessionCt);
                     }
                     else if (modelBehavior.NudgeOnHallucinatedToolCalls
@@ -313,11 +300,29 @@ internal sealed class UserMessageHandler(
                         turnActivityHandedOff = true;
                         context.Items[WipConstants.DeferredKey] = true;
                         _ = BackgroundToolLoopAsync(
-                            chatMessages, chatOptions, firstResponse, tier, classification.ComplexityScore,
+                            chatMessages, chatOptions, firstResponse, classification, postInjectionTokenEstimate,
                             message.SessionId, replyTo, correlationId, sessionHandle.Generation, wipMessageId, turnActivity, sessionCt);
                     }
                     else
                     {
+                        // Single-response text path (no background loop): firstResponse IS
+                        // the complete response, so its usage is the full per-turn aggregate.
+                        _ = tierRoutingLogger.AppendAsync(new TierRoutingEntry
+                        {
+                            Timestamp = DateTimeOffset.UtcNow,
+                            PromptPreview = message.Content.Length > 150 ? message.Content[..150] : message.Content,
+                            Tier = tier,
+                            Context = "user-message",
+                            ComplexityScore = classification.ComplexityScore,
+                            MatchedHighKeywords = classification.MatchedHighKeywords,
+                            MatchedLowKeywords = classification.MatchedLowKeywords,
+                            PostInjectionTokenEstimate = postInjectionTokenEstimate,
+                            ModelId = firstResponse.ModelId ?? registry.GetModelId(tier),
+                            InputTokens = firstResponse.Usage?.InputTokenCount,
+                            OutputTokens = firstResponse.Usage?.OutputTokenCount,
+                            LatencyMs = routingSw.ElapsedMilliseconds,
+                        });
+
                         await conversationMemory.AddTurnAsync(
                             message.SessionId,
                             new ConversationTurn("assistant", text, DateTimeOffset.UtcNow)
@@ -531,8 +536,8 @@ internal sealed class UserMessageHandler(
         List<ChatMessage> chatMessages,
         ChatOptions chatOptions,
         ChatResponse firstResponse,
-        ModelTier tier,
-        double? complexityScore,
+        TierClassification classification,
+        int? postInjectionTokenEstimate,
         string sessionId,
         string replyTo,
         string? correlationId,
@@ -541,8 +546,10 @@ internal sealed class UserMessageHandler(
         System.Diagnostics.Activity? turnActivity,
         CancellationToken ct)
     {
+        var tier = classification.Tier;
         var loopSw = System.Diagnostics.Stopwatch.StartNew();
         var bgTierTag = new KeyValuePair<string, object?>("rockbot.llm.tier", tier.ToString());
+        var bgDiag = new LoopDiagnostics();
 
         // Subscribe to fallback events so the user sees model switches in the UI.
         var fallbackClient = registry.GetClient(tier)
@@ -574,7 +581,8 @@ internal sealed class UserMessageHandler(
 
             var finalContent = await agentLoopRunner.RunAsync(
                 chatMessages, chatOptions, sessionId, firstResponse: firstResponse, tier: tier,
-                complexityScore: complexityScore,
+                complexityScore: classification.ComplexityScore,
+                diagnostics: bgDiag,
                 onPreToolCall: async (desc, ct2) =>
                 {
                     await PublishReplyAsync($"Working on it — checking {desc}…", replyTo, correlationId, sessionId, isFinal: false, ct2);
@@ -600,6 +608,26 @@ internal sealed class UserMessageHandler(
                     lastProgressAt = DateTimeOffset.UtcNow;
                 },
                 cancellationToken: ct);
+
+            // Routing telemetry written here (terminal point) so the entry carries the
+            // multi-iteration aggregate token usage accumulated across the whole loop.
+            _ = tierRoutingLogger.AppendAsync(new TierRoutingEntry
+            {
+                Timestamp = DateTimeOffset.UtcNow,
+                PromptPreview = chatMessages.FirstOrDefault(m => m.Role == ChatRole.User)?.Text is { } p
+                    ? (p.Length > 150 ? p[..150] : p)
+                    : "",
+                Tier = tier,
+                Context = "user-message",
+                ComplexityScore = classification.ComplexityScore,
+                MatchedHighKeywords = classification.MatchedHighKeywords,
+                MatchedLowKeywords = classification.MatchedLowKeywords,
+                PostInjectionTokenEstimate = postInjectionTokenEstimate,
+                ModelId = bgDiag.ModelId ?? registry.GetModelId(tier),
+                InputTokens = bgDiag.InputTokens > 0 ? bgDiag.InputTokens : null,
+                OutputTokens = bgDiag.OutputTokens > 0 ? bgDiag.OutputTokens : null,
+                ToolCallCount = bgDiag.ToolCalls > 0 ? bgDiag.ToolCalls : null,
+            });
 
             await conversationMemory.AddTurnAsync(
                 sessionId,

@@ -318,7 +318,10 @@ internal sealed class SubagentRunner(
             MatchedHighKeywords = classification.MatchedHighKeywords,
             MatchedLowKeywords = classification.MatchedLowKeywords,
             PostInjectionTokenEstimate = postInjectionTokenEstimate,
-            ModelId = registry.GetModelId(classification.Tier),
+            ModelId = diagnostics.ModelId ?? registry.GetModelId(classification.Tier),
+            InputTokens = diagnostics.InputTokens > 0 ? diagnostics.InputTokens : null,
+            OutputTokens = diagnostics.OutputTokens > 0 ? diagnostics.OutputTokens : null,
+            ToolCallCount = diagnostics.ToolCalls > 0 ? diagnostics.ToolCalls : null,
             LatencyMs = subagentSw.ElapsedMilliseconds,
         });
 
