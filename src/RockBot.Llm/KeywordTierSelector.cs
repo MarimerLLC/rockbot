@@ -82,8 +82,15 @@ public sealed class KeywordTierSelector : ILlmTierSelector
         @"```|`[^`]+`|\bfunction\b|\bclass\b|\bdef\b|\bvoid\b|\bint\b",
         RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
+    // Arithmetic detection deliberately treats '-' differently from the other
+    // operators: a bare hyphen between digits is almost always a *range*, not
+    // subtraction — clock times ("7:00-10:00"), ISO dates ("2025-01-01"), and
+    // numeric ranges ("7-10") would otherwise score as "math" and inflate the
+    // structural component of verbose-but-simple prompts. So '+', '*', '/', '^',
+    // '=' match with optional surrounding space, but '-' only counts when it is
+    // whitespace-flanked ("5 - 3"), which is how genuine subtraction is written.
     private static readonly Regex MathRegex = new(
-        @"\d+\s*[\+\-\*\/\^=]\s*\d+|∑|∫|√|≤|≥|∈|∀|∃|\bequation\b|\bformula\b|\bprove\b|\bderive\b",
+        @"\d+\s*[\+\*\/\^=]\s*\d+|\d+\s+-\s+\d+|∑|∫|√|≤|≥|∈|∀|∃|\bequation\b|\bformula\b|\bprove\b|\bderive\b",
         RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
     private static readonly Regex MultiStepRegex = new(
@@ -146,7 +153,14 @@ public sealed class KeywordTierSelector : ILlmTierSelector
             .Where(k => ContainsWholePhrase(lower, k))
             .ToArray();
 
-        var score = ComputeScore(promptText, config, matchedHigh.Length, matchedLow.Length);
+        // Structural signals computed once here so the high-tier gate below can
+        // reuse them without a second regex pass.
+        var hasCode      = CodeBlockRegex.IsMatch(promptText);
+        var hasMath      = MathRegex.IsMatch(promptText);
+        var hasMultiStep = MultiStepRegex.IsMatch(promptText);
+
+        var score = ComputeScore(promptText, matchedHigh.Length, matchedLow.Length,
+            hasCode, hasMath, hasMultiStep);
 
         // Origin bias: user messages get a slight push toward lower tiers.
         // Subagent operational tasks stay neutral since they carry genuine complexity signals.
@@ -157,6 +171,23 @@ public sealed class KeywordTierSelector : ILlmTierSelector
         var tier = score <= config.LowCeiling      ? ModelTier.Low
                  : score <= config.BalancedCeiling ? ModelTier.Balanced
                  :                                   ModelTier.High;
+
+        // High-tier gate: a prompt must show a genuine complexity signal — a
+        // matched high-signal keyword, a code block, or real math — before it can
+        // route High. Length and incidental multi-step phrasing ("then ...") alone
+        // must not escalate past Balanced. This prevents long, well-specified but
+        // cognitively simple operational task descriptions (e.g. PIM/tool-use
+        // subagent briefs: "search email ... then check the calendar ... add the
+        // missing events") from routing High purely on verbosity. The keyword list
+        // is the only real complexity signal we have; absent any hit, Balanced is
+        // the safe ceiling. See issue #471.
+        if (tier == ModelTier.High
+            && matchedHigh.Length == 0
+            && !hasCode
+            && !hasMath)
+        {
+            tier = ModelTier.Balanced;
+        }
 
         // Trivial guard: force Low for objectively simple prompts regardless of
         // dream-tuned thresholds. This prevents threshold drift from absorbing
@@ -264,23 +295,10 @@ public sealed class KeywordTierSelector : ILlmTierSelector
 
     // ── Scoring ───────────────────────────────────────────────────────────────
 
-    private static double ComputeScore(string prompt, EffectiveConfig config,
-        int? complexSignalCount = null, int? simplexSignalCount = null)
+    private static double ComputeScore(string prompt, int complexSignals, int simplexSignals,
+        bool hasCode, bool hasMath, bool hasMultiStep)
     {
-        var wordCount     = CountWords(prompt);
-        var hasCode       = CodeBlockRegex.IsMatch(prompt);
-        var hasMath       = MathRegex.IsMatch(prompt);
-        var hasMultiStep  = MultiStepRegex.IsMatch(prompt);
-
-        // Use pre-computed counts when available (avoids a second scan over the keyword lists)
-        var lower = complexSignalCount is null || simplexSignalCount is null
-            ? prompt.ToLowerInvariant()
-            : string.Empty;
-
-        var complexSignals = complexSignalCount
-            ?? config.HighSignalKeywords.Count(k => ContainsWholePhrase(lower, k));
-        var simplexSignals = simplexSignalCount
-            ?? config.LowSignalKeywords.Count(k => ContainsWholePhrase(lower, k));
+        var wordCount = CountWords(prompt);
 
         // Length component (0 – 0.40): longer prompts tend to be more complex.
         // Fine-grained buckets in the 10-30 word range so concise-but-complex task
