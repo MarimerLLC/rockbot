@@ -146,12 +146,12 @@ internal sealed class SubagentRunner(
         // Allowed from source "mcp:management":
         //   mcp_invoke_tool, mcp_list_services, mcp_get_service_details — subagents need
         //   these to call MCP servers (calendar, email, openrouter, etc.)
+        // ToolProfiles.Subagent encodes the deny rules described in the comment above
+        // (no nested subagents, no scheduling, no async A2A, no MCP bridge reconfig).
+        // The inline .Select with SubagentRegistryToolFunction is preserved — only the
+        // predicate moves to the shared profile so the surface is drift-tested.
         var registryTools = toolRegistry.GetTools()
-            .Where(r => r.Source != "subagent"
-                     && r.Source != "scheduling"
-                     && r.Source != "a2a"
-                     && r.Name != "mcp_register_server"
-                     && r.Name != "mcp_unregister_server")
+            .Where(ToolProfiles.Subagent.Matches)
             .Select(r => (AIFunction)new SubagentRegistryToolFunction(
                 r, toolRegistry.GetExecutor(r.Name)!, subagentNamespace))
             .ToArray();

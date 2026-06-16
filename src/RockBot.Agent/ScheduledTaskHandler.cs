@@ -89,12 +89,13 @@ internal sealed class ScheduledTaskHandler(
         var batchId = Guid.NewGuid().ToString("N")[..12];
         var spawnedSubagent = false;
         var registryTools = toolRegistry.BuildAgentToolFunctions(
-            sessionId, batchId,
+            sessionId, batchId, ToolProfiles.Scheduled,
             onInvoke: name =>
             {
                 if (string.Equals(name, "spawn_subagent", StringComparison.OrdinalIgnoreCase))
                     spawnedSubagent = true;
-            });
+            },
+            logger: logger);
 
         var allTools = memoryTools.Tools
             .Concat(sessionWorkingMemoryTools.Tools)
