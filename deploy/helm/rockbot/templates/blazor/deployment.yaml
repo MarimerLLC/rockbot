@@ -20,6 +20,10 @@ spec:
         {{- include "rockbot.selectorLabels" . | nindent 8 }}
         app.kubernetes.io/component: blazor
     spec:
+      # Match the shared-data fsGroup so files the agent wrote (group rw via its own fsGroup)
+      # are readable here. The PVC is co-mounted read-only solely to serve attachments.
+      securityContext:
+        fsGroup: {{ .Values.shared.fsGroup }}
       containers:
         - name: blazor
           image: {{ .Values.blazor.image.repository }}:{{ .Values.blazor.image.tag }}
@@ -55,6 +59,10 @@ spec:
                 secretKeyRef:
                   name: {{ include "rockbot.secretName" . }}
                   key: RabbitMq__Password
+            # Where the shared attachments directory is mounted — the /attachments endpoint
+            # resolves AgentReply.Attachments file references under ${ROCKBOT_SHARED_PATH}/attachments.
+            - name: ROCKBOT_SHARED_PATH
+              value: "/rockbot/shared"
             {{- if .Values.workiq.enabled }}
             # WorkIQ device-code flow needs the same Entra app registration
             # values the agent uses. Cache itself never lands on the Blazor pod.
@@ -98,3 +106,12 @@ spec:
             periodSeconds: 5
           resources:
             {{- toYaml .Values.blazor.resources | nindent 12 }}
+          volumeMounts:
+            # Read-only: Blazor only serves attachment bytes; the agent owns writes.
+            - name: shared-data
+              mountPath: /rockbot/shared
+              readOnly: true
+      volumes:
+        - name: shared-data
+          persistentVolumeClaim:
+            claimName: {{ include "rockbot.sharedPvcName" . }}

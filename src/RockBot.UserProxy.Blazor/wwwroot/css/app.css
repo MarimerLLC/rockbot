@@ -84,6 +84,25 @@ body {
     margin-bottom: 0;
 }
 
+/* Native reply attachments — rendered outside the markdown sanitizer. */
+.message-attachments {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+}
+
+.message-attachments .attachment-image {
+    max-width: 100%;
+    height: auto;
+    border-radius: 6px;
+    border: 1px solid rgba(0, 0, 0, 0.1);
+}
+
+.message-attachments .attachment-link {
+    display: inline-block;
+    width: fit-content;
+}
+
 /* Links inside user bubbles (blue bg) must be white to stay visible */
 .user-message .message-bubble .message-content a {
     color: rgba(255, 255, 255, 0.9);

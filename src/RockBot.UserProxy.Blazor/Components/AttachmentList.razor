@@ -1,0 +1,27 @@
+@* Renders agent reply attachments natively, OUTSIDE the markdown sanitizer (which strips
+   <img> and data: URLs). Image MIME types render as <img> served from the /attachments
+   endpoint; anything else renders as a download link. Bytes are served by the endpoint —
+   only a path reference reaches the browser here. *@
+
+@if (Attachments is { Count: > 0 })
+{
+    <div class="message-attachments mt-2">
+        @foreach (var att in Attachments)
+        {
+            var label = string.IsNullOrWhiteSpace(att.FileName) ? att.Path : att.FileName;
+            var url = $"/attachments?file={Uri.EscapeDataString(att.Path)}";
+            @if (att.Mime.StartsWith("image/", StringComparison.OrdinalIgnoreCase))
+            {
+                <img class="attachment-image" src="@url" alt="@label" loading="lazy" />
+            }
+            else
+            {
+                <a class="attachment-link" href="@url" target="_blank" rel="noopener">📎 @label</a>
+            }
+        }
+    </div>
+}
+
+@code {
+    [Parameter] public IReadOnlyList<AgentAttachment>? Attachments { get; set; }
+}

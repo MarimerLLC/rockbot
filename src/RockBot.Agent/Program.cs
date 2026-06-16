@@ -374,6 +374,12 @@ builder.Services.Configure<AgentHostOptions>(builder.Configuration.GetSection("A
 // without rebuilding the image. LlmPricing__ConfigPath in the ConfigMap overrides the default.
 builder.Services.Configure<LlmPricingOptions>(builder.Configuration.GetSection("LlmPricing"));
 
+// Shared attachments storage — the filesystem facade over ${ROCKBOT_SHARED_PATH}/attachments.
+// Used by the attach_image reply tool to validate model-named files before referencing them.
+// McpBridgeService keeps its own Lazy instance; this registration limits blast radius.
+builder.Services.AddSingleton<RockBot.Agent.McpBridge.Attachments.IAttachmentStorage,
+    RockBot.Agent.McpBridge.Attachments.AttachmentStorage>();
+
 // MCP bridge (replaces external RockBot.Tools.Mcp.Bridge process)
 builder.Services.Configure<McpBridgeOptions>(builder.Configuration.GetSection("McpBridge"));
 builder.Services.AddSingleton(new McpArgGuardRegistration(

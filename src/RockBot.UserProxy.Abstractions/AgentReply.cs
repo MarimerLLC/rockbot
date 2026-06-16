@@ -28,4 +28,13 @@ public sealed record AgentReply
     /// or arrived in a different client.
     /// </summary>
     public ReplyOrigin? Origin { get; init; }
+
+    /// <summary>
+    /// Out-of-band binary payloads (images, etc.) the agent produced for this reply, carried
+    /// as shared-volume path references rather than inline bytes. Only set on final replies —
+    /// progress/non-final replies never carry attachments. Null when the reply is text-only.
+    /// Capable frontends render these natively (Blazor serves them from an HTTP endpoint);
+    /// others print a placeholder line. Serializes for free via the camelCase STJ path.
+    /// </summary>
+    public IReadOnlyList<AgentAttachment>? Attachments { get; init; }
 }

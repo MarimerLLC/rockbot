@@ -351,9 +351,19 @@ would need re-negotiation when the surface changes.
 
 These are deliberately out of scope for v1:
 
-- **`AgentReply.Attachments`** — needed for `ImageAttachment` capability to do
-  anything end-to-end. Real refactor (new field, proxy support for binary
-  payloads in each platform). Defer until a proxy that can use it ships.
+- **`AgentReply.Attachments`** — ✅ **implemented** (issue #416, first slice). A new
+  `IReadOnlyList<AgentAttachment>?` field on `AgentReply` carries out-of-band binaries as
+  shared-PVC **path references** (`{ mime, path, fileName? }`), reusing the MCP-attachment
+  scheme — bytes never ride the bus. Producing side: an `attach_image` LLM tool
+  (`AttachmentReplyTools`) validates a model-named file under the shared attachments dir and
+  stages it in a session-keyed `ReplyAttachmentBuffer`; `UserMessageHandler` drains the buffer
+  onto the final reply (the **user-message path** only in v1). Rendering side: Blazor
+  co-mounts the shared PVC read-only and serves bytes from a minimal `/attachments` endpoint,
+  rendering images as native `<img>` **outside** the markdown sanitizer (which strips `<img>`
+  and `data:` URLs); the CLI prints a placeholder line per attachment.
+  Still deferred: scheduled-task / subagent / A2A producing paths (the buffer generalizes
+  trivially), SVG→PNG rasterization, chat-platform proxies (none exist yet), and attachments in
+  conversation-history replay (replies are ephemeral; history stores text).
 - **Platform-native UI emission** — `DiscordEmbed` / `SlackBlockKit` /
   `TeamsAdaptiveCard` bits are reserved in the enum but no tooling produces
   them. Adding them is opportunistic upgrade work in each proxy (e.g., a
