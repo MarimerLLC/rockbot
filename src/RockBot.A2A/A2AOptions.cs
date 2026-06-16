@@ -16,6 +16,11 @@ public sealed class A2AOptions
     /// The full per-agent topic is "{CallerResultTopic}.{agentName}".</summary>
     public string CallerResultTopic { get; set; } = "agent.response";
 
+    /// <summary>Topic prefix where this agent receives late-A2A-reply fold-back
+    /// notifications (replies that arrived after the owning subagent exited).
+    /// The full per-agent topic is "{LateNotificationTopic}.{agentName}".</summary>
+    public string LateNotificationTopic { get; set; } = "agent.late-notification";
+
     /// <summary>
     /// Path to the file where the agent directory is persisted across restarts.
     /// Relative paths are resolved from <see cref="AppContext.BaseDirectory"/>.

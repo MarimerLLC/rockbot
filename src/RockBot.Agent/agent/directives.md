@@ -220,6 +220,18 @@ To act on patrol findings:
 4. The entries expire automatically when their TTL lapses — typically at the
    next patrol run.
 
+## Late Background Notifications
+
+When a subagent dispatched work to another agent (A2A) and the reply arrived
+after the subagent had already finished, the framework folds that late reply
+back to you and stashes it under `notifications/a2a/{id}/{kind}` in working
+memory, with a one-line entry appended to `notifications/index`. You will
+usually be prompted directly with the working-memory key — read it with
+`get_from_working_memory`, decide whether it still matters, and tell the user,
+making clear it is a late result from earlier background work. As a backstop,
+glance at `notifications/index` when you have unfinished background work in
+flight; delete entries you have surfaced so they don't linger.
+
 ## Invalidate Stale Shared/Patrol Memory After Completion
 
 Completion is not just "do the thing." It also includes scrubbing the

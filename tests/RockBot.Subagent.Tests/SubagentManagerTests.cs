@@ -237,6 +237,63 @@ public class SubagentManagerTests
         Assert.AreEqual(0, active.Count);
     }
 
+    // ── ISubagentSessionResolver ────────────────────────────────────────────────
+
+    [TestMethod]
+    public void Resolver_RecognizesSubagentSessionForms()
+    {
+        var manager = CreateManager();
+
+        Assert.IsTrue(manager.IsSubagentSession("subagent/abc123"));
+        Assert.IsTrue(manager.IsSubagentSession("session/subagent-abc123"));
+        Assert.IsTrue(manager.IsSubagentSession("subagent-abc123"));
+        Assert.IsFalse(manager.IsSubagentSession("session/blazor-session"));
+        Assert.IsFalse(manager.IsSubagentSession("wisp-xyz"));
+        Assert.IsFalse(manager.IsSubagentSession(""));
+    }
+
+    [TestMethod]
+    public async Task Resolver_ActiveSubagent_IsActiveAndResolvesPrimary()
+    {
+        var (manager, release) = CreateBlockingManager();
+        var taskId = await manager.SpawnAsync(
+            "Blocking task", context: null, timeoutMinutes: 10,
+            primarySessionId: "session/blazor-session", ct: CancellationToken.None);
+        await Task.Delay(100);
+
+        var sessionId = $"subagent/{taskId}";
+        Assert.IsTrue(manager.IsActive(sessionId));
+        Assert.AreEqual("session/blazor-session", manager.ResolvePrimarySession(sessionId));
+
+        release.SetResult(true);
+        await manager.CancelAsync(taskId);
+    }
+
+    [TestMethod]
+    public async Task Resolver_TerminatedSubagent_ResolvesPrimaryFromTombstone()
+    {
+        var (manager, release) = CreateBlockingManager();
+        var taskId = await manager.SpawnAsync(
+            "Blocking task", context: null, timeoutMinutes: 10,
+            primarySessionId: "session/blazor-session", ct: CancellationToken.None);
+        await Task.Delay(100);
+
+        await manager.CancelAsync(taskId); // removes from active, records tombstone
+
+        var sessionId = $"subagent/{taskId}";
+        Assert.IsFalse(manager.IsActive(sessionId));
+        // Tombstone still resolves the owning primary so a late A2A reply can fold back.
+        Assert.AreEqual("session/blazor-session", manager.ResolvePrimarySession(sessionId));
+    }
+
+    [TestMethod]
+    public void Resolver_UnknownSubagent_ResolvesNull()
+    {
+        var manager = CreateManager();
+        Assert.IsNull(manager.ResolvePrimarySession("subagent/never-existed"));
+        Assert.IsFalse(manager.IsActive("subagent/never-existed"));
+    }
+
     // ── Test doubles ───────────────────────────────────────────────────────────
 
     /// <summary>LLM client that immediately returns an empty response.</summary>

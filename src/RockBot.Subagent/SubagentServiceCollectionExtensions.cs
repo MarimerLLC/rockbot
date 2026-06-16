@@ -29,6 +29,10 @@ public static class SubagentServiceCollectionExtensions
 
         // Core infrastructure
         builder.Services.AddSingleton<ISubagentManager, SubagentManager>();
+        // Expose the same singleton as the A2A fold-back resolver seam (RockBot.A2A
+        // cannot reference RockBot.Subagent directly).
+        builder.Services.AddSingleton<ISubagentSessionResolver>(
+            sp => (SubagentManager)sp.GetRequiredService<ISubagentManager>());
         builder.Services.AddSingleton<SubagentResultGate>();
         builder.Services.AddTransient<SubagentRunner>();
 

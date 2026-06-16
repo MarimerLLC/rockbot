@@ -40,6 +40,7 @@ internal sealed class A2ATaskResultHandler(
     InputRequiredHandler inputRequiredHandler,
     A2AOptions a2aOptions,
     SessionClientCapabilityStore clientCapabilityStore,
+    A2ALateReplyFolder lateReplyFolder,
     ILogger<A2ATaskResultHandler> logger) : IMessageHandler<AgentTaskResult>
 {
     private string DisplayName => agentNameHolder.DisplayName ?? agent.Name;
@@ -279,6 +280,10 @@ internal sealed class A2ATaskResultHandler(
         // synthesis + publish entirely for those callers.
         if (!IsUserSession(pending.PrimarySessionId))
         {
+            // Normally the calling loop (still-running subagent) pulls the working-memory
+            // result. If the owning subagent has already exited, fold the result back to its
+            // primary session instead of dropping it silently.
+            await lateReplyFolder.TryFoldBackAsync(pending, result.TaskId, NotificationKind.Result, resultText, ct);
             logger.LogInformation(
                 "A2A task {TaskId} originated from non-user session {SessionId} — skipping " +
                 "synthesis and bubble publish (caller will consume the working-memory result)",
@@ -370,6 +375,9 @@ internal sealed class A2ATaskResultHandler(
         // rather than emitting our own bubble.
         if (!IsUserSession(pending.PrimarySessionId))
         {
+            // Fold back to the primary if the originating subagent has already exited;
+            // otherwise the caller surfaces the error in its own output.
+            await lateReplyFolder.TryFoldBackAsync(pending, taskId, NotificationKind.Error, errorMessage, ct);
             logger.LogInformation(
                 "Suppressing A2A error bubble for task {TaskId} — invocation came from non-user " +
                 "session {SessionId}; caller will surface the error in its own output",
