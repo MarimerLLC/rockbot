@@ -42,6 +42,7 @@ public static class ServiceCollectionExtensions
         services.AddScoped<AgentContextBuilder>();
         services.AddSingleton<SessionStartTracker>();
         services.AddSingleton<SessionClientCapabilityStore>();
+        services.AddSingleton<SessionOriginStore>();
         services.AddSingleton<IUserActivityMonitor, UserActivityMonitor>();
         services.AddSingleton<ISessionTracker, SessionBackgroundTaskTracker>();
         services.AddSingleton<IAgentWorkSerializer, AgentWorkSerializer>();

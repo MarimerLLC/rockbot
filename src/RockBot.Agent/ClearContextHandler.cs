@@ -13,6 +13,7 @@ internal sealed class ClearContextHandler(
     IConversationMemory conversationMemory,
     ISessionTracker sessionTracker,
     SessionClientCapabilityStore clientCapabilityStore,
+    SessionOriginStore originStore,
     IMessagePublisher publisher,
     AgentIdentity agent,
     ILogger<ClearContextHandler> logger) : IMessageHandler<ClearContextRequest>
@@ -31,6 +32,9 @@ internal sealed class ClearContextHandler(
         // Drop the cached client capabilities so the next inbound UserMessage re-establishes
         // them from scratch — important if the user returns on a different client.
         clientCapabilityStore.Clear(message.SessionId);
+
+        // Drop the cached origin so the next turn re-anchors fresh background work.
+        originStore.Clear(message.SessionId);
 
         logger.LogInformation("Cleared conversation context for session {SessionId}", message.SessionId);
 

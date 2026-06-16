@@ -40,6 +40,7 @@ internal sealed class A2ATaskResultHandler(
     InputRequiredHandler inputRequiredHandler,
     A2AOptions a2aOptions,
     SessionClientCapabilityStore clientCapabilityStore,
+    SessionOriginStore originStore,
     A2ALateReplyFolder lateReplyFolder,
     ILogger<A2ATaskResultHandler> logger) : IMessageHandler<AgentTaskResult>
 {
@@ -355,7 +356,8 @@ internal sealed class A2ATaskResultHandler(
                 Content = finalContent,
                 SessionId = rawSessionId,
                 AgentName = DisplayName,
-                IsFinal = true
+                IsFinal = true,
+                Origin = originStore.Get(rawSessionId)
             };
             var envelope = reply.ToEnvelope<AgentReply>(source: agent.Name);
             await publisher.PublishAsync($"{UserProxyTopics.UserResponse}.{agent.Name}", envelope, ct);
@@ -398,7 +400,8 @@ internal sealed class A2ATaskResultHandler(
                 Content = errorMessage,
                 SessionId = rawSessionId,
                 AgentName = DisplayName,
-                IsFinal = true
+                IsFinal = true,
+                Origin = originStore.Get(rawSessionId)
             };
             var envelope = reply.ToEnvelope<AgentReply>(source: agent.Name);
             await publisher.PublishAsync($"{UserProxyTopics.UserResponse}.{agent.Name}", envelope, ct);

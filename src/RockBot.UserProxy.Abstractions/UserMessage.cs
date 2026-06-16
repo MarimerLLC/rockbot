@@ -20,4 +20,12 @@ public sealed record UserMessage
     /// working unchanged.
     /// </summary>
     public ClientCapabilities ClientCapabilities { get; init; } = ClientCapabilities.None;
+
+    /// <summary>
+    /// Human-friendly channel name of the originating client ("cli", "blazor", "discord", …).
+    /// Cached per-session so unsolicited replies (subagent/A2A/scheduled) can show the user
+    /// where the originating request came from. Null for older proxies that don't set it —
+    /// the agent falls back to deriving the channel from the envelope source.
+    /// </summary>
+    public string? ChannelName { get; init; }
 }

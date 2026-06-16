@@ -24,6 +24,7 @@ internal sealed class SubagentProgressHandler(
     IToolRegistry toolRegistry,
     ToolGuideTools toolGuideTools,
     IConversationMemory conversationMemory,
+    SessionOriginStore originStore,
     ILogger<SubagentProgressHandler> logger) : IMessageHandler<SubagentProgressMessage>
 {
     public async Task HandleAsync(SubagentProgressMessage message, MessageHandlerContext context)
@@ -42,12 +43,17 @@ internal sealed class SubagentProgressHandler(
         // A2A Working status updates do.
         try
         {
+            const string SessionPrefix = "session/";
+            var rawSessionId = message.PrimarySessionId.StartsWith(SessionPrefix, StringComparison.OrdinalIgnoreCase)
+                ? message.PrimarySessionId[SessionPrefix.Length..]
+                : message.PrimarySessionId;
             var progressReply = new AgentReply
             {
                 Content = message.Message,
                 SessionId = message.PrimarySessionId,
                 AgentName = $"subagent-{message.TaskId}",
-                IsFinal = false
+                IsFinal = false,
+                Origin = originStore.Get(rawSessionId)
             };
             var envelope = progressReply.ToEnvelope<AgentReply>(source: agent.Name);
             await publisher.PublishAsync($"{UserProxyTopics.UserResponse}.{agent.Name}", envelope, ct);
