@@ -37,8 +37,11 @@ public static class A2AServiceCollectionExtensions
                 sp => sp.GetRequiredService<AgentDirectory>());
         }
 
-        // Identity verification — default to name-based; users can override via DI
-        builder.Services.TryAddSingleton<IAgentIdentityVerifier, NameBasedAgentIdentityVerifier>();
+        // Identity verification — default to the claims-forwarding verifier: it honors
+        // gateway-verified claims (rb-auth-claims) and falls back to name-based (self-asserted)
+        // when none are present. Users can override IAgentIdentityVerifier via DI.
+        builder.Services.TryAddSingleton<NameBasedAgentIdentityVerifier>();
+        builder.Services.TryAddSingleton<IAgentIdentityVerifier, ClaimsForwardingAgentIdentityVerifier>();
 
         // Trust store — default to file-backed; users can override via DI
         builder.Services.TryAddSingleton<IAgentTrustStore>(sp =>

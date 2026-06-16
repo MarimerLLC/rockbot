@@ -34,6 +34,49 @@ internal sealed class RockBotBridgeHandler(
         httpContextAccessor.HttpContext?.User.FindFirst(ClaimTypes.NameIdentifier)?.Value
         ?? "anonymous";
 
+    private IReadOnlyDictionary<string, string>? BuildAuthClaimsHeader() =>
+        BuildAuthClaimsHeader(httpContextAccessor.HttpContext?.User);
+
+    /// <summary>
+    /// Builds the envelope headers carrying gateway-verified caller claims for token-based
+    /// (Bearer/JWT) auth. Returns <c>null</c> for API-key callers — those remain name-based
+    /// (self-asserted) on the agent side. The claims are JSON-encoded under
+    /// <see cref="WellKnownHeaders.AuthClaims"/> so the agent's identity verifier can mark
+    /// the identity as not self-asserted and record the IdP issuer.
+    /// </summary>
+    internal static IReadOnlyDictionary<string, string>? BuildAuthClaimsHeader(ClaimsPrincipal? user)
+    {
+        if (user?.Identity?.IsAuthenticated != true)
+            return null;
+
+        // The API-key handler stamps a literal issuer=api-key claim; those callers are
+        // verified only by name, so don't forward a "verified claims" header for them.
+        if (string.Equals(user.FindFirst("issuer")?.Value, "api-key", StringComparison.Ordinal))
+            return null;
+
+        var claims = new Dictionary<string, string>(StringComparer.Ordinal);
+        void Add(string key, string? value)
+        {
+            if (!string.IsNullOrEmpty(value))
+                claims[key] = value;
+        }
+
+        Add("sub", user.FindFirst(ClaimTypes.NameIdentifier)?.Value ?? user.FindFirst("sub")?.Value);
+        Add("name", user.FindFirst(ClaimTypes.Name)?.Value ?? user.FindFirst("name")?.Value);
+        // JwtBearer surfaces the token issuer on each claim's Issuer property; fall back to an
+        // explicit "iss" claim when present.
+        Add("iss", user.FindFirst("iss")?.Value ?? user.FindFirst(ClaimTypes.NameIdentifier)?.Issuer);
+        Add("scope", user.FindFirst("scope")?.Value ?? user.FindFirst("scp")?.Value);
+
+        if (claims.Count == 0)
+            return null;
+
+        return new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            [WellKnownHeaders.AuthClaims] = JsonSerializer.Serialize(claims)
+        };
+    }
+
     private static string ReplyTopicFor(string callerId) =>
         $"agent.response.gateway.{callerId}";
 
@@ -148,7 +191,8 @@ internal sealed class RockBotBridgeHandler(
             var envelope = request.ToEnvelope<RbAgentTaskRequest>(
                 source: callerId,
                 correlationId: taskId,
-                replyTo: replyTopic);
+                replyTo: replyTopic,
+                headers: BuildAuthClaimsHeader());
 
             await publisher.PublishAsync($"agent.task.{gatewayOptions.Value.RoutingName}", envelope, cancellationToken);
 
@@ -222,7 +266,8 @@ internal sealed class RockBotBridgeHandler(
         var cancelRequest = new RbAgentTaskCancelRequest { TaskId = taskId };
         var envelope = cancelRequest.ToEnvelope<RbAgentTaskCancelRequest>(
             source: callerId,
-            correlationId: taskId);
+            correlationId: taskId,
+            headers: BuildAuthClaimsHeader());
 
         await publisher.PublishAsync($"agent.task.cancel.{gatewayOptions.Value.RoutingName}", envelope, cancellationToken);
     }

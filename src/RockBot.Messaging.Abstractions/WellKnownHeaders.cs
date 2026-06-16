@@ -21,6 +21,15 @@ public static class WellKnownHeaders
     public const string TimeoutMs = "rb-timeout-ms";
 
     /// <summary>
+    /// JSON-encoded dictionary of caller claims that an upstream gateway has already
+    /// verified (e.g. extracted from a validated JWT). Lets an inbound A2A message carry
+    /// a cryptographically-verified identity so the agent's <c>IAgentIdentityVerifier</c>
+    /// can mark the identity as not self-asserted, recording the IdP issuer and claims.
+    /// The <c>rb-</c> prefix ensures it round-trips through the RabbitMQ AMQP header mapping.
+    /// </summary>
+    public const string AuthClaims = "rb-auth-claims";
+
+    /// <summary>
     /// Known values for the <see cref="ContentTrust"/> header.
     /// </summary>
     public static class ContentTrustValues

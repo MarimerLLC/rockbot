@@ -1,5 +1,7 @@
 using A2A;
 using Microsoft.AspNetCore.Authentication;
+using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.Extensions.DependencyInjection;
 using RockBot.A2A.Gateway.Auth;
 
@@ -63,14 +65,59 @@ public static class ServiceCollectionExtensions
     /// Registers the <see cref="ApiKeyAuthenticationHandler"/> scheme and authorization
     /// services. Consumers still need to bind a <c>Dictionary&lt;string, ApiKeyEntry&gt;</c>
     /// from configuration (e.g. <c>Configure&lt;Dictionary&lt;string, ApiKeyEntry&gt;&gt;(cfg.GetSection("ApiKeys"))</c>).
+    /// Call <see cref="AddA2AJwtBearerAuthentication"/> on the returned builder to add JWT/Bearer
+    /// as a second accepted scheme.
     /// </summary>
     public static AuthenticationBuilder AddA2AApiKeyAuthentication(this IServiceCollection services)
     {
         ArgumentNullException.ThrowIfNull(services);
 
-        services.AddAuthorization();
+        // Default policy accepts the API-key scheme. AddA2AJwtBearerAuthentication widens this
+        // to also accept Bearer when JWT auth is enabled.
+        services.AddAuthorizationBuilder()
+            .SetDefaultPolicy(new AuthorizationPolicyBuilder(ApiKeyAuthenticationHandler.SchemeName)
+                .RequireAuthenticatedUser()
+                .Build());
+
         return services.AddAuthentication(ApiKeyAuthenticationHandler.SchemeName)
             .AddScheme<AuthenticationSchemeOptions, ApiKeyAuthenticationHandler>(
                 ApiKeyAuthenticationHandler.SchemeName, null);
+    }
+
+    /// <summary>
+    /// Adds JWT/Bearer authentication as a second accepted scheme using generic OIDC
+    /// (<see cref="JwtAuthOptions.Authority"/> + <see cref="JwtAuthOptions.Audience"/>,
+    /// with signing-key discovery via the authority's <c>/.well-known/openid-configuration</c>).
+    /// Widens the default authorization policy so the gateway accepts <em>either</em> API key
+    /// or a valid Bearer token. No-ops when <see cref="JwtAuthOptions.IsEnabled"/> is false.
+    /// </summary>
+    public static AuthenticationBuilder AddA2AJwtBearerAuthentication(
+        this AuthenticationBuilder builder, JwtAuthOptions jwtOptions)
+    {
+        ArgumentNullException.ThrowIfNull(builder);
+        ArgumentNullException.ThrowIfNull(jwtOptions);
+
+        if (!jwtOptions.IsEnabled)
+            return builder;
+
+        builder.AddJwtBearer(JwtBearerDefaults.AuthenticationScheme, options =>
+        {
+            options.Authority = jwtOptions.Authority;
+            options.RequireHttpsMetadata = jwtOptions.RequireHttpsMetadata;
+            if (!string.IsNullOrWhiteSpace(jwtOptions.Audience))
+                options.Audience = jwtOptions.Audience;
+            options.TokenValidationParameters.ValidateAudience =
+                !string.IsNullOrWhiteSpace(jwtOptions.Audience);
+        });
+
+        // Re-build the default policy so RequireAuthorization() on POST / accepts either scheme.
+        builder.Services.AddAuthorizationBuilder()
+            .SetDefaultPolicy(new AuthorizationPolicyBuilder(
+                    ApiKeyAuthenticationHandler.SchemeName,
+                    JwtBearerDefaults.AuthenticationScheme)
+                .RequireAuthenticatedUser()
+                .Build());
+
+        return builder;
     }
 }
