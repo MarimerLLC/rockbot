@@ -13,6 +13,42 @@ services:
       timeout: 3s
       retries: 15
 
+  # Mock OIDC identity provider — issues JWT access tokens (resource-owner password
+  # grant) so the gateway can validate real Bearer tokens against a discoverable JWKS.
+  # Issuer = http://oidc-server (the in-network hostname), used as the gateway Authority.
+  oidc-server:
+    image: ghcr.io/soluto/oidc-server-mock:0.9.0
+    hostname: oidc-server
+    environment:
+      ASPNETCORE_ENVIRONMENT: Development
+      ASPNETCORE_URLS: http://+:80
+      SERVER_OPTIONS_INLINE: |
+        {
+          "AccessTokenJwtType": "JWT",
+          "Discovery": { "ShowKeySet": true }
+        }
+      API_SCOPES_INLINE: |
+        [ { "Name": "rockbot.a2a" } ]
+      API_RESOURCES_INLINE: |
+        [ { "Name": "rockbot-a2a", "Scopes": ["rockbot.a2a"], "UserClaims": ["name"] } ]
+      USERS_CONFIGURATION_INLINE: |
+        [ {
+          "SubjectId": "a2a-caller-007",
+          "Username": "caller",
+          "Password": "pass",
+          "Claims": [ { "Type": "name", "Value": "JWT Test Caller" } ]
+        } ]
+      CLIENTS_CONFIGURATION_INLINE: |
+        [ {
+          "ClientId": "rockbot-test-client",
+          "ClientSecrets": [ "test-secret" ],
+          "Description": "RockBot A2A test client",
+          "AllowedGrantTypes": [ "password" ],
+          "AllowedScopes": [ "openid", "profile", "rockbot.a2a" ],
+          "AlwaysIncludeUserClaimsInIdToken": true,
+          "RequireClientSecret": true
+        } ]
+
   agent-init:
     build:
       context: ../..
@@ -96,6 +132,8 @@ services:
         condition: service_started
       rabbitmq:
         condition: service_healthy
+      oidc-server:
+        condition: service_started
     environment:
       ASPNETCORE_URLS: http://0.0.0.0:5200
       RabbitMq__HostName: rabbitmq
@@ -104,6 +142,11 @@ services:
       RabbitMq__Password: rockbot
       ApiKeys__test-key-001__AgentId: a2a-test-harness
       ApiKeys__test-key-001__DisplayName: A2A Test Harness
+      # JWT/Bearer (generic OIDC) — validate tokens from the mock issuer. Audience
+      # validation is left off (Jwt__Audience unset) to keep the test focused on
+      # signature/issuer validation + claims propagation.
+      Jwt__Authority: http://oidc-server
+      Jwt__RequireHttpsMetadata: "false"
     volumes:
       - gateway-data:/app/data
 
@@ -126,6 +169,16 @@ services:
       A2A_GATEWAY_URL: http://a2a-gateway:5200
       A2A_GATEWAY_API_KEY: test-key-001
       TRUST_STORE_PATH: /data/agent/agent-trust.json
+      # OIDC token endpoint + client/user creds for the JWT auth scenarios. Presence of
+      # OIDC_TOKEN_ENDPOINT enables those scenarios; absent → they are skipped.
+      OIDC_TOKEN_ENDPOINT: http://oidc-server/connect/token
+      OIDC_CLIENT_ID: rockbot-test-client
+      OIDC_CLIENT_SECRET: test-secret
+      OIDC_USERNAME: caller
+      OIDC_PASSWORD: pass
+      OIDC_SCOPE: openid profile rockbot.a2a
+      OIDC_EXPECTED_SUBJECT: a2a-caller-007
+      OIDC_EXPECTED_ISSUER: http://oidc-server
     volumes:
       - agent-data:/data/agent:ro
 

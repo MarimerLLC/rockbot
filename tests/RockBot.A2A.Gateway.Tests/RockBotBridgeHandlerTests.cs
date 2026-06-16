@@ -1,6 +1,9 @@
+using System.Security.Claims;
 using System.Text.Json;
 using A2A;
 using RockBot.A2A;
+using RockBot.A2A.Gateway.Auth;
+using RockBot.Messaging;
 
 namespace RockBot.A2A.Gateway.Tests;
 
@@ -193,5 +196,54 @@ public class RockBotBridgeHandlerTests
     {
         Assert.IsNull(RockBotBridgeHandler.ToJsonElementMetadata(null));
         Assert.IsNull(RockBotBridgeHandler.ToJsonElementMetadata(new Dictionary<string, string>()));
+    }
+
+    [TestMethod]
+    public void BuildAuthClaimsHeader_BearerPrincipal_EmitsVerifiedClaims()
+    {
+        var identity = new ClaimsIdentity(
+            new[]
+            {
+                new Claim(ClaimTypes.NameIdentifier, "caller-123", null, "https://idp.example.com"),
+                new Claim(ClaimTypes.Name, "Caller Agent"),
+                new Claim("scope", "a2a.invoke")
+            },
+            authenticationType: "Bearer");
+        var user = new ClaimsPrincipal(identity);
+
+        var headers = RockBotBridgeHandler.BuildAuthClaimsHeader(user);
+
+        Assert.IsNotNull(headers);
+        Assert.IsTrue(headers.ContainsKey(WellKnownHeaders.AuthClaims));
+        var claims = JsonSerializer.Deserialize<Dictionary<string, string>>(headers[WellKnownHeaders.AuthClaims])!;
+        Assert.AreEqual("caller-123", claims["sub"]);
+        Assert.AreEqual("Caller Agent", claims["name"]);
+        Assert.AreEqual("a2a.invoke", claims["scope"]);
+        // Falls back to the claim's Issuer property when no explicit "iss" claim is present.
+        Assert.AreEqual("https://idp.example.com", claims["iss"]);
+    }
+
+    [TestMethod]
+    public void BuildAuthClaimsHeader_ApiKeyPrincipal_ReturnsNull()
+    {
+        // Mirrors ApiKeyAuthenticationHandler's claims (issuer=api-key).
+        var identity = new ClaimsIdentity(
+            new[]
+            {
+                new Claim(ClaimTypes.NameIdentifier, "peer-agent"),
+                new Claim(ClaimTypes.Name, "Peer Agent"),
+                new Claim("issuer", "api-key")
+            },
+            authenticationType: ApiKeyAuthenticationHandler.SchemeName);
+        var user = new ClaimsPrincipal(identity);
+
+        Assert.IsNull(RockBotBridgeHandler.BuildAuthClaimsHeader(user));
+    }
+
+    [TestMethod]
+    public void BuildAuthClaimsHeader_Unauthenticated_ReturnsNull()
+    {
+        Assert.IsNull(RockBotBridgeHandler.BuildAuthClaimsHeader(null));
+        Assert.IsNull(RockBotBridgeHandler.BuildAuthClaimsHeader(new ClaimsPrincipal(new ClaimsIdentity())));
     }
 }

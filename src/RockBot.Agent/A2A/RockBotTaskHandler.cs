@@ -73,12 +73,15 @@ internal sealed class RockBotTaskHandler(
             "Inbound A2A task {TaskId} from {CallerId} (skill={Skill}, self-asserted={SelfAsserted})",
             request.TaskId, identity.AgentId, request.Skill, identity.IsSelfAsserted);
 
-        // Update trust tracking
+        // Update trust tracking — record the verification provenance so trust decisions
+        // and audits can distinguish independently-verified callers from self-asserted ones.
         var trust = await trustStore.GetOrCreateAsync(identity.AgentId, ct);
         trust = trust with
         {
             LastInteraction = DateTimeOffset.UtcNow,
-            InteractionCount = trust.InteractionCount + 1
+            InteractionCount = trust.InteractionCount + 1,
+            Issuer = identity.Issuer,
+            IsSelfAsserted = identity.IsSelfAsserted
         };
         await trustStore.UpdateAsync(trust, ct);
 

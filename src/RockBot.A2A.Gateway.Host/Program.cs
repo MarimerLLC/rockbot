@@ -7,10 +7,17 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Services.Configure<Dictionary<string, ApiKeyEntry>>(
     builder.Configuration.GetSection("ApiKeys"));
 
+// JWT/Bearer (generic OIDC) options — bound for the agent-card endpoint and the auth scheme.
+var jwtOptions = new JwtAuthOptions();
+builder.Configuration.GetSection("Jwt").Bind(jwtOptions);
+builder.Services.Configure<JwtAuthOptions>(builder.Configuration.GetSection("Jwt"));
+
 builder.Services.AddRockBotRabbitMq(opts =>
     builder.Configuration.GetSection("RabbitMq").Bind(opts));
 
-builder.Services.AddA2AApiKeyAuthentication();
+// API-key auth is always on; Bearer is added when an OIDC Authority is configured.
+builder.Services.AddA2AApiKeyAuthentication()
+    .AddA2AJwtBearerAuthentication(jwtOptions);
 
 builder.Services.AddA2AHttpGateway(opts =>
     builder.Configuration.GetSection("Gateway").Bind(opts));
