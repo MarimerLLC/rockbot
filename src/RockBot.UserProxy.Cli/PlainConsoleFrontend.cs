@@ -12,6 +12,10 @@ internal sealed class PlainConsoleFrontend : IUserFrontend
 {
     public Task DisplayReplyAsync(AgentReply reply, CancellationToken cancellationToken = default)
     {
+        var anchor = ReplyOriginFormatter.RenderAnchor(
+            reply.Origin, currentChannel: "cli", currentSessionId: reply.SessionId, DateTimeOffset.UtcNow);
+        if (anchor is not null)
+            Console.Out.WriteLine(anchor);
         Console.Out.WriteLine(HtmlPlainTextRenderer.StripHtml(reply.Content));
         return Task.CompletedTask;
     }

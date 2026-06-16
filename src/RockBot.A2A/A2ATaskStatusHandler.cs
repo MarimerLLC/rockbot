@@ -31,6 +31,7 @@ internal sealed class A2ATaskStatusHandler(
     A2ATaskTracker tracker,
     AgentNameHolder agentNameHolder,
     SessionClientCapabilityStore clientCapabilityStore,
+    SessionOriginStore originStore,
     ILogger<A2ATaskStatusHandler> logger) : IMessageHandler<AgentTaskStatusUpdate>
 {
     private string DisplayName => agentNameHolder.DisplayName ?? agent.Name;
@@ -65,7 +66,8 @@ internal sealed class A2ATaskStatusHandler(
                     Content = statusText,
                     SessionId = pending.PrimarySessionId,
                     AgentName = pending.TargetAgent,
-                    IsFinal = false
+                    IsFinal = false,
+                    Origin = originStore.Get(StripSessionPrefix(pending.PrimarySessionId))
                 };
                 var progressEnvelope = progressReply.ToEnvelope<AgentReply>(source: agent.Name);
                 await publisher.PublishAsync($"{UserProxyTopics.UserResponse}.{agent.Name}", progressEnvelope, ct);
@@ -133,7 +135,8 @@ internal sealed class A2ATaskStatusHandler(
                 Content = finalContent,
                 SessionId = rawSessionId,
                 AgentName = DisplayName,
-                IsFinal = false
+                IsFinal = false,
+                Origin = originStore.Get(rawSessionId)
             };
             var envelope = reply.ToEnvelope<AgentReply>(source: agent.Name);
             await publisher.PublishAsync($"{UserProxyTopics.UserResponse}.{agent.Name}", envelope, ct);
@@ -142,5 +145,13 @@ internal sealed class A2ATaskStatusHandler(
         {
             logger.LogError(ex, "Failed to handle A2A status update for task {TaskId}", update.TaskId);
         }
+    }
+
+    private static string StripSessionPrefix(string sessionId)
+    {
+        const string SessionPrefix = "session/";
+        return sessionId.StartsWith(SessionPrefix, StringComparison.OrdinalIgnoreCase)
+            ? sessionId[SessionPrefix.Length..]
+            : sessionId;
     }
 }

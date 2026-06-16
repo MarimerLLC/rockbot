@@ -30,6 +30,7 @@ internal sealed class A2ATaskErrorHandler(
     A2ATaskTracker tracker,
     AgentNameHolder agentNameHolder,
     SessionClientCapabilityStore clientCapabilityStore,
+    SessionOriginStore originStore,
     A2ALateReplyFolder lateReplyFolder,
     ILogger<A2ATaskErrorHandler> logger) : IMessageHandler<AgentTaskError>
 {
@@ -143,7 +144,8 @@ internal sealed class A2ATaskErrorHandler(
                 Content = finalContent,
                 SessionId = rawSessionId,
                 AgentName = DisplayName,
-                IsFinal = true
+                IsFinal = true,
+                Origin = originStore.Get(rawSessionId)
             };
             var envelope = reply.ToEnvelope<AgentReply>(source: agent.Name);
             await publisher.PublishAsync($"{UserProxyTopics.UserResponse}.{agent.Name}", envelope, ct);

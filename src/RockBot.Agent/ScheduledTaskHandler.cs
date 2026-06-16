@@ -180,7 +180,13 @@ internal sealed class ScheduledTaskHandler(
             Content = finalText,
             SessionId = replySessionId,
             AgentName = agent.Name,
-            IsFinal = true
+            IsFinal = true,
+            // Synthetic origin — scheduled tasks have no originating user session.
+            Origin = new ReplyOrigin(
+                Channel: "scheduled",
+                PromptSummary: message.TaskName,
+                StartedAt: DateTimeOffset.UtcNow,
+                SessionId: replySessionId)
         };
 
         var envelope = reply.ToEnvelope<AgentReply>(source: agent.Name);

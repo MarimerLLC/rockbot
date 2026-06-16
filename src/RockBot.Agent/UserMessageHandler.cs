@@ -49,6 +49,7 @@ internal sealed class UserMessageHandler(
     ISessionTracker sessionTracker,
     SessionStartTracker sessionStartTracker,
     SessionClientCapabilityStore clientCapabilityStore,
+    SessionOriginStore originStore,
     IOptions<AgentProfileOptions> profileOptions,
     IWipTracker wipTracker,
     AgentNameHolder agentNameHolder,
@@ -86,6 +87,19 @@ internal sealed class UserMessageHandler(
         // them without the originating UserMessage in scope. Last-writer-wins handles
         // a user switching clients mid-conversation.
         clientCapabilityStore.Set(message.SessionId, message.ClientCapabilities);
+
+        // Record the session origin (channel + first-prompt summary + start time) once, so
+        // unsolicited replies produced later for this session (subagent/A2A/scheduled
+        // completions) can anchor themselves to the request that started the work. First
+        // writer wins — set inside the store — so follow-up turns keep the original anchor.
+        var channel = !string.IsNullOrWhiteSpace(message.ChannelName)
+            ? message.ChannelName!
+            : ChannelFromSource(context.Envelope.Source);
+        originStore.Set(message.SessionId, new ReplyOrigin(
+            Channel: channel,
+            PromptSummary: SummarizePrompt(message.Content),
+            StartedAt: DateTimeOffset.UtcNow,
+            SessionId: message.SessionId));
 
         // Cancel any background loop still running for this session from a prior message.
         // This prevents stale tool calls (e.g. sending an email from a previous topic)
@@ -715,4 +729,23 @@ internal sealed class UserMessageHandler(
 
         return (false, text);
     }
+
+    /// <summary>
+    /// Truncates the user's prompt to a short single-line summary for the origin anchor.
+    /// Cheap and synchronous so it adds no latency at the message entry point.
+    /// </summary>
+    private static string SummarizePrompt(string content)
+    {
+        const int MaxLength = 80;
+        var trimmed = content.Trim().ReplaceLineEndings(" ");
+        return trimmed.Length <= MaxLength ? trimmed : trimmed[..MaxLength].TrimEnd() + "…";
+    }
+
+    /// <summary>
+    /// Derives a channel name from the envelope source (proxy id), used only when the inbound
+    /// message did not carry an explicit <see cref="UserMessage.ChannelName"/>. A proxy id like
+    /// "cli-rocky-abc123" yields "cli".
+    /// </summary>
+    private static string ChannelFromSource(string? source) =>
+        string.IsNullOrWhiteSpace(source) ? "unknown" : source.Split('-', 2)[0];
 }

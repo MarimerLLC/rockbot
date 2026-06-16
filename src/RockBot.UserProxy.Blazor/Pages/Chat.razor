@@ -507,7 +507,8 @@
             Content = effectiveContent,
             SessionId = SessionId,
             UserId = UserId,
-            ClientCapabilities = ClientCapabilityPresets.Blazor
+            ClientCapabilities = ClientCapabilityPresets.Blazor,
+            ChannelName = "blazor"
         };
 
         var progressTracker = new Progress<AgentReply>(reply =>

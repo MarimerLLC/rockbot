@@ -31,6 +31,7 @@ internal sealed class LateA2ANotificationHandler(
     IConversationMemory conversationMemory,
     AgentNameHolder agentNameHolder,
     SessionClientCapabilityStore clientCapabilityStore,
+    SessionOriginStore originStore,
     ILogger<LateA2ANotificationHandler> logger) : IMessageHandler<LateA2ANotificationMessage>
 {
     private string DisplayName => agentNameHolder.DisplayName ?? agent.Name;
@@ -101,7 +102,8 @@ internal sealed class LateA2ANotificationHandler(
                 Content = finalContent,
                 SessionId = rawSessionId,
                 AgentName = DisplayName,
-                IsFinal = true
+                IsFinal = true,
+                Origin = originStore.Get(rawSessionId)
             };
             var envelope = reply.ToEnvelope<AgentReply>(source: agent.Name);
             await publisher.PublishAsync($"{UserProxyTopics.UserResponse}.{agent.Name}", envelope, ct);

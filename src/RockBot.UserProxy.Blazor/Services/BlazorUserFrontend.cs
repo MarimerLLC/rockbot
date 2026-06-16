@@ -20,9 +20,22 @@ public sealed class BlazorUserFrontend(ChatStateService chatState) : IUserFronte
 
         var category = CategorizeReply(reply);
 
+        // Prepend an origin anchor (as a markdown blockquote) for unsolicited replies whose
+        // work started elsewhere, so the user can re-ground a message that arrived in this
+        // client after the originating session is gone. Suppressed for replies delivered on
+        // their own blazor session (origin channel + session match).
+        var displayReply = reply;
+        var anchor = ReplyOriginFormatter.RenderAnchor(
+            reply.Origin, currentChannel: "blazor", currentSessionId: reply.SessionId, DateTimeOffset.UtcNow);
+        if (anchor is not null)
+        {
+            var quoted = string.Join("\n", anchor.Split('\n').Select(l => "> " + l.TrimStart()));
+            displayReply = reply with { Content = quoted + "\n\n" + reply.Content };
+        }
+
         // Final result — add as a permanent chat bubble and clear the progress indicator
         chatState.SetThinkingMessage(null);
-        chatState.AddAgentReply(reply, category);
+        chatState.AddAgentReply(displayReply, category);
         return Task.CompletedTask;
     }
 

@@ -93,12 +93,25 @@ internal sealed class InboundNotificationService : IHostedService, IDisposable
 
             var content = FormatNotifications(notifications);
 
+            // Synthetic origin describing the calling agent(s)/skill and the earliest arrival.
+            var first = notifications[0];
+            var callers = notifications.Select(n => n.CallerName).Distinct().ToList();
+            var summary = callers.Count == 1
+                ? (first.SkillId is { Length: > 0 } skill ? $"{first.CallerName} · {skill}" : first.CallerName)
+                : $"{callers.Count} agents";
+            var startedAt = notifications.Min(n => n.ReceivedAt);
+
             var reply = new AgentReply
             {
                 Content = content,
                 SessionId = A2AInboundSessionId,
                 AgentName = A2AInboundAgentName,
-                IsFinal = true
+                IsFinal = true,
+                Origin = new ReplyOrigin(
+                    Channel: "a2a-inbound",
+                    PromptSummary: summary,
+                    StartedAt: startedAt,
+                    SessionId: A2AInboundSessionId)
             };
 
             var envelope = reply.ToEnvelope<AgentReply>(source: _agent.Name);

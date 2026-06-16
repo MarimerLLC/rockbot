@@ -31,6 +31,7 @@ internal sealed class SubagentResultHandler(
     SubagentResultGate gate,
     ISubagentManager subagentManager,
     ISessionTracker sessionTracker,
+    SessionOriginStore originStore,
     ILogger<SubagentResultHandler> logger) : IMessageHandler<SubagentResultMessage>
 {
     public async Task HandleAsync(SubagentResultMessage message, MessageHandlerContext context)
@@ -74,7 +75,8 @@ internal sealed class SubagentResultHandler(
                 SessionId = rawSessionId,
                 AgentName = $"subagent-{message.TaskId}",
                 IsFinal = false,
-                IsCompletion = true
+                IsCompletion = true,
+                Origin = originStore.Get(rawSessionId)
             };
             var completionEnvelope = completionReply.ToEnvelope<AgentReply>(
                 source: $"subagent-{message.TaskId}");
@@ -240,7 +242,8 @@ internal sealed class SubagentResultHandler(
                 Content = finalContent,
                 SessionId = rawSessionId,
                 AgentName = agent.Name,
-                IsFinal = true
+                IsFinal = true,
+                Origin = originStore.Get(rawSessionId)
             };
             var envelope = reply.ToEnvelope<AgentReply>(source: agent.Name);
             await publisher.PublishAsync($"{UserProxyTopics.UserResponse}.{agent.Name}", envelope, ct);
@@ -284,7 +287,8 @@ internal sealed class SubagentResultHandler(
                 Content = content,
                 SessionId = rawSessionId,
                 AgentName = agent.Name,
-                IsFinal = true
+                IsFinal = true,
+                Origin = originStore.Get(rawSessionId)
             };
             var envelope = reply.ToEnvelope<AgentReply>(source: agent.Name);
             await publisher.PublishAsync($"{UserProxyTopics.UserResponse}.{agent.Name}", envelope, ct);

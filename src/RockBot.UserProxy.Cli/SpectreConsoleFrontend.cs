@@ -10,6 +10,11 @@ internal sealed class SpectreConsoleFrontend : IUserFrontend
 {
     public Task DisplayReplyAsync(AgentReply reply, CancellationToken cancellationToken = default)
     {
+        var anchor = ReplyOriginFormatter.RenderAnchor(
+            reply.Origin, currentChannel: "cli", currentSessionId: reply.SessionId, DateTimeOffset.UtcNow);
+        if (anchor is not null)
+            AnsiConsole.MarkupLine($"[dim]{Markup.Escape(anchor)}[/]");
+
         var panel = new Panel(SpectreMarkupConverter.ToSpectreMarkup(reply.Content))
         {
             Header = new PanelHeader(Markup.Escape(reply.AgentName)),
