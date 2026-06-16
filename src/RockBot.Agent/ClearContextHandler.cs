@@ -13,6 +13,7 @@ internal sealed class ClearContextHandler(
     IConversationMemory conversationMemory,
     ISessionTracker sessionTracker,
     SessionClientCapabilityStore clientCapabilityStore,
+    ReplyAttachmentBuffer attachmentBuffer,
     SessionOriginStore originStore,
     IMessagePublisher publisher,
     AgentIdentity agent,
@@ -32,6 +33,10 @@ internal sealed class ClearContextHandler(
         // Drop the cached client capabilities so the next inbound UserMessage re-establishes
         // them from scratch — important if the user returns on a different client.
         clientCapabilityStore.Clear(message.SessionId);
+
+        // Drop any attachments staged but not yet drained for this session, so a cleared context
+        // can't replay an old turn's images onto a future reply.
+        attachmentBuffer.Clear(message.SessionId);
 
         // Drop the cached origin so the next turn re-anchors fresh background work.
         originStore.Clear(message.SessionId);

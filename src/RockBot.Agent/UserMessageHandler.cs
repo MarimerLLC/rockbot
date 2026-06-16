@@ -186,9 +186,9 @@ internal sealed class UserMessageHandler(
             var sessionNamespace = $"session/{message.SessionId}";
             var sessionWorkingMemoryTools = new WorkingMemoryTools(workingMemory, sessionNamespace, logger);
 
-            // Per-session attachment tool — attach_image stages files for this session's final reply.
+            // Per-turn attachment tool — attach_image stages files for this turn's final reply.
             var attachmentReplyTools = new AttachmentReplyTools(
-                attachmentStorage, attachmentBuffer, message.SessionId, logger);
+                attachmentStorage, attachmentBuffer, message.SessionId, turnId, logger);
 
             // Per-session skill tools with usage tracking
             var sessionSkillTools = new SkillTools(skillStore, llmClient, logger, message.SessionId, skillUsageStore);
@@ -234,11 +234,11 @@ internal sealed class UserMessageHandler(
                 // This prevents subagent re-spawn on pod restart (issue #122).
                 logger.LogInformation("Native path: launching background LLM loop for session {SessionId}", message.SessionId);
                 await PublishReplyAsync("I'm working on that — I'll follow up shortly.",
-                    replyTo, correlationId, message.SessionId, isFinal: false, ct);
+                    replyTo, correlationId, message.SessionId, turnId, isFinal: false, ct);
                 turnActivityHandedOff = true;
                 context.Items[WipConstants.DeferredKey] = true;
                 _ = NativeLlmLoopAsync(chatMessages, chatOptions, classification, postInjectionTokenEstimate,
-                    message.SessionId, replyTo, correlationId, sessionHandle.Generation, wipMessageId, turnActivity, sessionCt);
+                    message.SessionId, turnId, replyTo, correlationId, sessionHandle.Generation, wipMessageId, turnActivity, sessionCt);
             }
             else
             {
@@ -280,13 +280,13 @@ internal sealed class UserMessageHandler(
                         "Tool calls detected on iteration 1; sending ack ({AckLen} chars) and continuing in background",
                         effectiveAck.Length);
 
-                    await PublishReplyAsync(effectiveAck, replyTo, correlationId, message.SessionId, isFinal: false, ct);
+                    await PublishReplyAsync(effectiveAck, replyTo, correlationId, message.SessionId, turnId, isFinal: false, ct);
 
                     turnActivityHandedOff = true;
                     context.Items[WipConstants.DeferredKey] = true;
                     _ = BackgroundToolLoopAsync(
                         chatMessages, chatOptions, firstResponse, classification, postInjectionTokenEstimate,
-                        message.SessionId, replyTo, correlationId, sessionHandle.Generation, wipMessageId, turnActivity, sessionCt);
+                        message.SessionId, turnId, replyTo, correlationId, sessionHandle.Generation, wipMessageId, turnActivity, sessionCt);
                 }
                 else
                 {
@@ -300,13 +300,13 @@ internal sealed class UserMessageHandler(
 
                         await PublishReplyAsync(
                             "I'm working on that — I'll follow up shortly.",
-                            replyTo, correlationId, message.SessionId, isFinal: false, ct);
+                            replyTo, correlationId, message.SessionId, turnId, isFinal: false, ct);
 
                         turnActivityHandedOff = true;
                         context.Items[WipConstants.DeferredKey] = true;
                         _ = BackgroundToolLoopAsync(
                             chatMessages, chatOptions, firstResponse, classification, postInjectionTokenEstimate,
-                            message.SessionId, replyTo, correlationId, sessionHandle.Generation, wipMessageId, turnActivity, sessionCt);
+                            message.SessionId, turnId, replyTo, correlationId, sessionHandle.Generation, wipMessageId, turnActivity, sessionCt);
                     }
                     else if (modelBehavior.NudgeOnHallucinatedToolCalls
                         && (HallucinatedActionRegex.IsMatch(text) || AgentLoopRunner.CapabilityDenialRegex.IsMatch(text)))
@@ -317,13 +317,13 @@ internal sealed class UserMessageHandler(
 
                         await PublishReplyAsync(
                             "I'm working on that — I'll follow up shortly.",
-                            replyTo, correlationId, message.SessionId, isFinal: false, ct);
+                            replyTo, correlationId, message.SessionId, turnId, isFinal: false, ct);
 
                         turnActivityHandedOff = true;
                         context.Items[WipConstants.DeferredKey] = true;
                         _ = BackgroundToolLoopAsync(
                             chatMessages, chatOptions, firstResponse, classification, postInjectionTokenEstimate,
-                            message.SessionId, replyTo, correlationId, sessionHandle.Generation, wipMessageId, turnActivity, sessionCt);
+                            message.SessionId, turnId, replyTo, correlationId, sessionHandle.Generation, wipMessageId, turnActivity, sessionCt);
                     }
                     else
                     {
@@ -351,7 +351,7 @@ internal sealed class UserMessageHandler(
                             { AgentName = agent.Name },
                             ct);
 
-                        await PublishReplyAsync(text, replyTo, correlationId, message.SessionId, isFinal: true, ct);
+                        await PublishReplyAsync(text, replyTo, correlationId, message.SessionId, turnId, isFinal: true, ct);
                         sessionTracker.EndSession(message.SessionId, sessionHandle.Generation);
                         turnActivity?.SetTag("rockbot.turn.status", "ok");
                         turnActivity?.SetStatus(ActivityStatusCode.Ok);
@@ -393,7 +393,7 @@ internal sealed class UserMessageHandler(
                     message.SessionId);
             }
 
-            await PublishReplyAsync(errorText, replyTo, correlationId, message.SessionId, isFinal: true, ct);
+            await PublishReplyAsync(errorText, replyTo, correlationId, message.SessionId, turnId, isFinal: true, ct);
             sessionTracker.EndSession(message.SessionId, sessionHandle.Generation);
             turnActivity?.SetTag("rockbot.turn.status", "error");
             turnActivity?.SetStatus(ActivityStatusCode.Error, ex.Message);
@@ -408,7 +408,14 @@ internal sealed class UserMessageHandler(
             // Dispose the turn span only when this method owns it (sync paths).
             // Background paths pass it to the background task which disposes it.
             if (!turnActivityHandedOff)
+            {
+                // Clear any attachments staged this turn that were never drained onto a final
+                // reply (e.g. the turn threw before publishing). Idempotent: a no-op after a
+                // successful final drain. Skipped when handed off — the background method owns
+                // the turn's stage and clears it in its own finally.
+                attachmentBuffer.Clear(message.SessionId, turnId);
                 turnActivity?.Dispose();
+            }
         }
     }
 
@@ -418,6 +425,7 @@ internal sealed class UserMessageHandler(
         TierClassification classification,
         int? postInjectionTokenEstimate,
         string sessionId,
+        string turnId,
         string replyTo,
         string? correlationId,
         long sessionGeneration,
@@ -434,7 +442,7 @@ internal sealed class UserMessageHandler(
         void OnFallback(string from, string to, string reason) =>
             _ = PublishReplyAsync(
                 $"Switching models ({reason}) — retrying with {to}…",
-                replyTo, correlationId, sessionId, isFinal: false, ct);
+                replyTo, correlationId, sessionId, turnId, isFinal: false, ct);
         if (fallbackClient is not null) fallbackClient.OnFallback += OnFallback;
 
         try
@@ -460,26 +468,26 @@ internal sealed class UserMessageHandler(
                 diagnostics: nativeDiag,
                 onPreToolCall: async (desc, ct2) =>
                 {
-                    await PublishReplyAsync($"Working on it — checking {desc}…", replyTo, correlationId, sessionId, isFinal: false, ct2);
+                    await PublishReplyAsync($"Working on it — checking {desc}…", replyTo, correlationId, sessionId, turnId, isFinal: false, ct2);
                     lastProgressAt = DateTimeOffset.UtcNow;
                 },
                 onProgress: async (msg, ct2) =>
                 {
                     if (DateTimeOffset.UtcNow - lastProgressAt < ProgressMessageThreshold)
                         return;
-                    await PublishReplyAsync(msg, replyTo, correlationId, sessionId, isFinal: false, ct2);
+                    await PublishReplyAsync(msg, replyTo, correlationId, sessionId, turnId, isFinal: false, ct2);
                     lastProgressAt = DateTimeOffset.UtcNow;
                 },
                 onToolTimeout: async (desc, ct2) =>
                 {
                     await PublishReplyAsync(
                         $"The {desc} service is taking too long to respond — trying a different approach…",
-                        replyTo, correlationId, sessionId, isFinal: false, ct2);
+                        replyTo, correlationId, sessionId, turnId, isFinal: false, ct2);
                     lastProgressAt = DateTimeOffset.UtcNow;
                 },
                 onStageProgress: async (stage, ct2) =>
                 {
-                    await PublishReplyAsync(stage, replyTo, correlationId, sessionId, isFinal: false, ct2);
+                    await PublishReplyAsync(stage, replyTo, correlationId, sessionId, turnId, isFinal: false, ct2);
                     lastProgressAt = DateTimeOffset.UtcNow;
                 },
                 cancellationToken: ct);
@@ -517,7 +525,7 @@ internal sealed class UserMessageHandler(
             // and resolves the user-proxy SendAsync TCS. If the loop spawned consolidating
             // subagents, their Phase 2 synthesis will arrive later as a separate
             // unsolicited final bubble — that's the consolidated answer.
-            await PublishReplyAsync(text, replyTo, correlationId, sessionId, isFinal: true, ct);
+            await PublishReplyAsync(text, replyTo, correlationId, sessionId, turnId, isFinal: true, ct);
             loopSw.Stop();
             turnActivity?.SetTag("rockbot.turn.status", "ok");
             turnActivity?.SetStatus(ActivityStatusCode.Ok);
@@ -535,7 +543,7 @@ internal sealed class UserMessageHandler(
 
             await PublishReplyAsync(
                 $"Sorry, I ran into an error while working on your request: {ex.Message}",
-                replyTo, correlationId, sessionId, isFinal: true, ct);
+                replyTo, correlationId, sessionId, turnId, isFinal: true, ct);
             loopSw.Stop();
             turnActivity?.SetTag("rockbot.turn.status", "error");
             turnActivity?.SetStatus(ActivityStatusCode.Error, ex.Message);
@@ -547,6 +555,10 @@ internal sealed class UserMessageHandler(
         finally
         {
             if (fallbackClient is not null) fallbackClient.OnFallback -= OnFallback;
+            // Clear any attachments staged this turn that were never drained — on a clean final
+            // reply this is a no-op; on cancellation (user sent a new message mid-loop) it removes
+            // the orphaned stage so it can't land on a later turn's reply.
+            attachmentBuffer.Clear(sessionId, turnId);
             sessionTracker.EndSession(sessionId, sessionGeneration);
             if (wipMessageId is not null)
                 await wipTracker.CompleteAsync(wipMessageId, CancellationToken.None);
@@ -561,6 +573,7 @@ internal sealed class UserMessageHandler(
         TierClassification classification,
         int? postInjectionTokenEstimate,
         string sessionId,
+        string turnId,
         string replyTo,
         string? correlationId,
         long sessionGeneration,
@@ -579,7 +592,7 @@ internal sealed class UserMessageHandler(
         void OnFallback(string from, string to, string reason) =>
             _ = PublishReplyAsync(
                 $"Switching models ({reason}) — retrying with {to}…",
-                replyTo, correlationId, sessionId, isFinal: false, ct);
+                replyTo, correlationId, sessionId, turnId, isFinal: false, ct);
         if (fallbackClient is not null) fallbackClient.OnFallback += OnFallback;
 
         try
@@ -607,26 +620,26 @@ internal sealed class UserMessageHandler(
                 diagnostics: bgDiag,
                 onPreToolCall: async (desc, ct2) =>
                 {
-                    await PublishReplyAsync($"Working on it — checking {desc}…", replyTo, correlationId, sessionId, isFinal: false, ct2);
+                    await PublishReplyAsync($"Working on it — checking {desc}…", replyTo, correlationId, sessionId, turnId, isFinal: false, ct2);
                     lastProgressAt = DateTimeOffset.UtcNow;
                 },
                 onProgress: async (msg, ct2) =>
                 {
                     if (DateTimeOffset.UtcNow - lastProgressAt < ProgressMessageThreshold)
                         return;
-                    await PublishReplyAsync(msg, replyTo, correlationId, sessionId, isFinal: false, ct2);
+                    await PublishReplyAsync(msg, replyTo, correlationId, sessionId, turnId, isFinal: false, ct2);
                     lastProgressAt = DateTimeOffset.UtcNow;
                 },
                 onToolTimeout: async (desc, ct2) =>
                 {
                     await PublishReplyAsync(
                         $"The {desc} service is taking too long to respond — trying a different approach…",
-                        replyTo, correlationId, sessionId, isFinal: false, ct2);
+                        replyTo, correlationId, sessionId, turnId, isFinal: false, ct2);
                     lastProgressAt = DateTimeOffset.UtcNow;
                 },
                 onStageProgress: async (stage, ct2) =>
                 {
-                    await PublishReplyAsync(stage, replyTo, correlationId, sessionId, isFinal: false, ct2);
+                    await PublishReplyAsync(stage, replyTo, correlationId, sessionId, turnId, isFinal: false, ct2);
                     lastProgressAt = DateTimeOffset.UtcNow;
                 },
                 cancellationToken: ct);
@@ -657,7 +670,7 @@ internal sealed class UserMessageHandler(
                 { AgentName = agent.Name },
                 ct);
 
-            await PublishReplyAsync(finalContent, replyTo, correlationId, sessionId, isFinal: true, ct);
+            await PublishReplyAsync(finalContent, replyTo, correlationId, sessionId, turnId, isFinal: true, ct);
             loopSw.Stop();
             turnActivity?.SetTag("rockbot.turn.status", "ok");
             turnActivity?.SetStatus(ActivityStatusCode.Ok);
@@ -675,7 +688,7 @@ internal sealed class UserMessageHandler(
 
             await PublishReplyAsync(
                 $"Sorry, I ran into an error while working on your request: {ex.Message}",
-                replyTo, correlationId, sessionId, isFinal: true, ct);
+                replyTo, correlationId, sessionId, turnId, isFinal: true, ct);
             loopSw.Stop();
             turnActivity?.SetTag("rockbot.turn.status", "error");
             turnActivity?.SetStatus(ActivityStatusCode.Error, ex.Message);
@@ -687,6 +700,10 @@ internal sealed class UserMessageHandler(
         finally
         {
             if (fallbackClient is not null) fallbackClient.OnFallback -= OnFallback;
+            // Clear any attachments staged this turn that were never drained — on a clean final
+            // reply this is a no-op; on cancellation (user sent a new message mid-loop) it removes
+            // the orphaned stage so it can't land on a later turn's reply.
+            attachmentBuffer.Clear(sessionId, turnId);
             sessionTracker.EndSession(sessionId, sessionGeneration);
             if (wipMessageId is not null)
                 await wipTracker.CompleteAsync(wipMessageId, CancellationToken.None);
@@ -696,18 +713,12 @@ internal sealed class UserMessageHandler(
 
     private async Task PublishReplyAsync(
         string content, string replyTo, string? correlationId,
-        string sessionId, bool isFinal, CancellationToken ct)
+        string sessionId, string turnId, bool isFinal, CancellationToken ct)
     {
-        // Only final replies carry attachments — drain the per-session buffer so files staged
-        // by attach_image ride out with the answer and aren't replayed on a later turn.
-        // Progress/non-final replies never carry attachments.
-        IReadOnlyList<AgentAttachment>? attachments = null;
-        if (isFinal)
-        {
-            var drained = attachmentBuffer.Drain(sessionId);
-            if (drained.Count > 0)
-                attachments = drained;
-        }
+        // Only final replies carry attachments — drain this turn's stage so files staged by
+        // attach_image ride out with the answer and aren't replayed on a later turn. The shared
+        // helper returns null for non-final replies and when nothing is staged.
+        var attachments = attachmentBuffer.DrainForFinalReply(sessionId, turnId, isFinal);
 
         var reply = new AgentReply
         {
