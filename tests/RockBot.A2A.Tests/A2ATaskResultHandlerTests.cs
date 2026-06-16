@@ -47,6 +47,9 @@ public class A2ATaskResultHandlerTests
             inputRequiredHandler: null!,
             a2aOptions: _options,
             clientCapabilityStore: new SessionClientCapabilityStore(),
+            lateReplyFolder: new A2ALateReplyFolder(
+                _publisher, _memory, _agent, _options,
+                NullLogger<A2ALateReplyFolder>.Instance, resolver: null),
             logger: NullLogger<A2ATaskResultHandler>.Instance);
 
     private void TrackPending() =>

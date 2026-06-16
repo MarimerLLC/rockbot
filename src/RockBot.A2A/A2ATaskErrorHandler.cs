@@ -30,6 +30,7 @@ internal sealed class A2ATaskErrorHandler(
     A2ATaskTracker tracker,
     AgentNameHolder agentNameHolder,
     SessionClientCapabilityStore clientCapabilityStore,
+    A2ALateReplyFolder lateReplyFolder,
     ILogger<A2ATaskErrorHandler> logger) : IMessageHandler<AgentTaskError>
 {
     private string DisplayName => agentNameHolder.DisplayName ?? agent.Name;
@@ -74,6 +75,11 @@ internal sealed class A2ATaskErrorHandler(
         // agent and show transport-layer noise to the user.
         if (!IsUserSession(pending.PrimarySessionId))
         {
+            // Fold back to the primary if the originating subagent has already exited;
+            // otherwise the calling loop surfaces the failure in its own output.
+            var errorText = $"A2A peer '{pending.TargetAgent}' failed task {error.TaskId}: " +
+                            $"[{error.Code}] {error.Message}";
+            await lateReplyFolder.TryFoldBackAsync(pending, error.TaskId, NotificationKind.Error, errorText, ct);
             logger.LogInformation(
                 "A2A task error for {TaskId} originated from non-user session {SessionId} — " +
                 "skipping synthesis and bubble publish (caller will surface the error)",

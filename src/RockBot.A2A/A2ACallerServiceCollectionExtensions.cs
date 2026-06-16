@@ -72,17 +72,23 @@ public static class A2ACallerServiceCollectionExtensions
         // InputRequired handler for multi-turn follow-up (trust-gated LLM response generation)
         builder.Services.AddSingleton<InputRequiredHandler>();
 
-        // Message handlers for result/error/status
+        // Late-reply fold-back: recovers a terminated subagent's primary session so an A2A
+        // reply that arrives after the subagent exits is surfaced rather than dropped.
+        builder.Services.AddSingleton<A2ALateReplyFolder>();
+
+        // Message handlers for result/error/status + late-reply fold-back
         builder.HandleMessage<AgentTaskResult, A2ATaskResultHandler>();
         builder.HandleMessage<AgentTaskError, A2ATaskErrorHandler>();
         builder.HandleMessage<AgentTaskStatusUpdate, A2ATaskStatusHandler>();
+        builder.HandleMessage<LateA2ANotificationMessage, LateA2ANotificationHandler>();
 
-        // Subscribe to the per-agent result topic (agent.response.{agentName})
-        // and the shared status topic
+        // Subscribe to the per-agent result topic (agent.response.{agentName}), the shared
+        // status topic, and the per-agent late-notification topic
         var agentName = builder.Identity.Name;
         var resultTopic = $"{options.CallerResultTopic}.{agentName}";
         builder.SubscribeTo(resultTopic);
         builder.SubscribeTo(options.StatusTopic);
+        builder.SubscribeTo($"{options.LateNotificationTopic}.{agentName}");
 
         // Tool registration hosted service
         builder.Services.AddHostedService<A2ACallerToolRegistrar>();

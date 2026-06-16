@@ -15,9 +15,16 @@ public sealed class SubagentManager(
     IOptions<SubagentOptions> options,
     IMessagePublisher publisher,
     AgentIdentity agent,
-    ILogger<SubagentManager> logger) : ISubagentManager
+    ILogger<SubagentManager> logger) : ISubagentManager, ISubagentSessionResolver
 {
     private readonly ConcurrentDictionary<string, SubagentEntry> _active = new();
+
+    // Short-lived record of recently-removed subagents (taskId -> owning primary session).
+    // A late A2A reply can arrive after a subagent has exited and been pulled from _active;
+    // the tombstone lets ISubagentSessionResolver still recover the primary to fold into.
+    // Retention comfortably exceeds the A2A invocation timeout so late replies resolve.
+    private static readonly TimeSpan TombstoneRetention = TimeSpan.FromHours(2);
+    private readonly ConcurrentDictionary<string, (string PrimarySessionId, DateTimeOffset RemovedAt)> _tombstones = new();
 
     public async Task<string> SpawnAsync(
         string description,
@@ -33,7 +40,7 @@ public sealed class SubagentManager(
         foreach (var key in _active.Keys.ToList())
         {
             if (_active.TryGetValue(key, out var entry) && entry.Task.IsCompleted)
-                _active.TryRemove(key, out _);
+                RemoveActive(key);
         }
 
         var opts = options.Value;
@@ -89,7 +96,7 @@ public sealed class SubagentManager(
 
         await entry.CancellationTokenSource.CancelAsync();
         try { await entry.Task.WaitAsync(TimeSpan.FromSeconds(5)); } catch { /* ignore */ }
-        _active.TryRemove(taskId, out _);
+        RemoveActive(taskId);
         logger.LogInformation("Cancelled subagent {TaskId}", taskId);
         return true;
     }
@@ -100,7 +107,7 @@ public sealed class SubagentManager(
         foreach (var key in _active.Keys.ToList())
         {
             if (_active.TryGetValue(key, out var e) && e.Task.IsCompleted)
-                _active.TryRemove(key, out _);
+                RemoveActive(key);
         }
         return _active.Values.ToList();
     }
@@ -158,7 +165,68 @@ public sealed class SubagentManager(
         finally
         {
             SubagentDiagnostics.Active.Add(-1);
-            _active.TryRemove(taskId, out _);
+            RemoveActive(taskId);
         }
+    }
+
+    /// <summary>
+    /// Removes a subagent from the active set and records a tombstone of its owning primary
+    /// session so a late A2A reply can still be folded back after the subagent has exited.
+    /// </summary>
+    private void RemoveActive(string taskId)
+    {
+        if (_active.TryRemove(taskId, out var entry))
+            _tombstones[taskId] = (entry.PrimarySessionId, DateTimeOffset.UtcNow);
+        PruneTombstones();
+    }
+
+    private void PruneTombstones()
+    {
+        var cutoff = DateTimeOffset.UtcNow - TombstoneRetention;
+        foreach (var (key, value) in _tombstones)
+        {
+            if (value.RemovedAt < cutoff)
+                _tombstones.TryRemove(key, out _);
+        }
+    }
+
+    // ── ISubagentSessionResolver ──────────────────────────────────────────────
+    // A subagent's A2A session id is its working-memory namespace, "subagent/{taskId}"
+    // (see SubagentRunner). Defensively also accept "session/subagent-{taskId}" and the
+    // bare "subagent-{taskId}" form used elsewhere. _active is keyed by the raw taskId.
+
+    public bool IsSubagentSession(string sessionId) => TryExtractTaskId(sessionId, out _);
+
+    public bool IsActive(string sessionId) =>
+        TryExtractTaskId(sessionId, out var taskId)
+        && _active.TryGetValue(taskId, out var e)
+        && !e.Task.IsCompleted;
+
+    public string? ResolvePrimarySession(string sessionId)
+    {
+        if (!TryExtractTaskId(sessionId, out var taskId))
+            return null;
+        if (_active.TryGetValue(taskId, out var entry))
+            return entry.PrimarySessionId;
+        if (_tombstones.TryGetValue(taskId, out var tomb))
+            return tomb.PrimarySessionId;
+        return null;
+    }
+
+    private static bool TryExtractTaskId(string sessionId, out string taskId)
+    {
+        taskId = string.Empty;
+        if (string.IsNullOrEmpty(sessionId))
+            return false;
+
+        foreach (var prefix in new[] { "subagent/", "session/subagent-", "subagent-" })
+        {
+            if (sessionId.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+            {
+                taskId = sessionId[prefix.Length..];
+                return taskId.Length > 0;
+            }
+        }
+        return false;
     }
 }
