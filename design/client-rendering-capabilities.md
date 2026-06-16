@@ -356,14 +356,20 @@ These are deliberately out of scope for v1:
   shared-PVC **path references** (`{ mime, path, fileName? }`), reusing the MCP-attachment
   scheme — bytes never ride the bus. Producing side: an `attach_image` LLM tool
   (`AttachmentReplyTools`) validates a model-named file under the shared attachments dir and
-  stages it in a session-keyed `ReplyAttachmentBuffer`; `UserMessageHandler` drains the buffer
-  onto the final reply (the **user-message path** only in v1). Rendering side: Blazor
+  stages it in a **per-turn-keyed** `ReplyAttachmentBuffer` (`session → turn`, issue #482);
+  `UserMessageHandler` drains it via the shared `DrainForFinalReply` seam onto the final reply
+  (the **user-message path** only in v1). The buffer is hardened for the deferred multi-producer
+  paths below: per-turn keying means concurrent producers for one primary session each drain only
+  their own stage rather than scooping every staged attachment; staged turns are TTL-swept
+  (default 30 min) and cleared on turn cancel (`UserMessageHandler` finally blocks) and on
+  `ClearContext` (session-level `Clear`). Rendering side: Blazor
   co-mounts the shared PVC read-only and serves bytes from a minimal `/attachments` endpoint,
   rendering images as native `<img>` **outside** the markdown sanitizer (which strips `<img>`
   and `data:` URLs); the CLI prints a placeholder line per attachment.
-  Still deferred: scheduled-task / subagent / A2A producing paths (the buffer generalizes
-  trivially), SVG→PNG rasterization, chat-platform proxies (none exist yet), and attachments in
-  conversation-history replay (replies are ephemeral; history stores text).
+  Still deferred: wiring attachments into the scheduled-task / subagent / A2A producing paths
+  (the buffer is now keyed and swept to make that safe), SVG→PNG rasterization, chat-platform
+  proxies (none exist yet), and attachments in conversation-history replay (replies are
+  ephemeral; history stores text).
 - **Platform-native UI emission** — `DiscordEmbed` / `SlackBlockKit` /
   `TeamsAdaptiveCard` bits are reserved in the enum but no tooling produces
   them. Adding them is opportunistic upgrade work in each proxy (e.g., a

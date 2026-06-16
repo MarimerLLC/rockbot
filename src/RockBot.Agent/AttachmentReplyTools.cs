@@ -13,24 +13,27 @@ namespace RockBot.Agent;
 /// tool — so the agent never handles bytes itself (the "Nothing trusts the LLM" rule). The
 /// tool validates containment and existence, infers the MIME type from the extension when not
 /// given, and stages an <see cref="AgentAttachment"/> in the <see cref="ReplyAttachmentBuffer"/>
-/// keyed to this session. The reply-publishing path drains the buffer onto the final reply.
+/// keyed to this (session, turn). The reply-publishing path drains the buffer onto the final reply.
 /// </summary>
 public sealed class AttachmentReplyTools
 {
     private readonly IAttachmentStorage _storage;
     private readonly ReplyAttachmentBuffer _buffer;
     private readonly string _sessionId;
+    private readonly string _turnId;
     private readonly ILogger _logger;
 
     public AttachmentReplyTools(
         IAttachmentStorage storage,
         ReplyAttachmentBuffer buffer,
         string sessionId,
+        string turnId,
         ILogger logger)
     {
         _storage = storage;
         _buffer = buffer;
         _sessionId = sessionId;
+        _turnId = turnId;
         _logger = logger;
 
         Tools = [AIFunctionFactory.Create(AttachImage)];
@@ -74,7 +77,7 @@ public sealed class AttachmentReplyTools
         var leaf = Path.GetFileName(path);
         var displayName = string.IsNullOrWhiteSpace(fileName) ? leaf : fileName.Trim();
 
-        _buffer.Add(_sessionId, new AgentAttachment
+        _buffer.Add(_sessionId, _turnId, new AgentAttachment
         {
             Mime = resolvedMime,
             Path = leaf,

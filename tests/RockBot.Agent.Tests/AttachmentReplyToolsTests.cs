@@ -18,7 +18,7 @@ public sealed class AttachmentReplyToolsTests
         _baseDir = Path.Combine(Path.GetTempPath(), "rb-attach-tests", Guid.NewGuid().ToString("N"));
         _storage = new AttachmentStorage(_baseDir); // creates the directory
         _buffer = new ReplyAttachmentBuffer();
-        _tools = new AttachmentReplyTools(_storage, _buffer, "session-1", NullLogger.Instance);
+        _tools = new AttachmentReplyTools(_storage, _buffer, "session-1", "turn-1", NullLogger.Instance);
     }
 
     [TestCleanup]
@@ -38,7 +38,7 @@ public sealed class AttachmentReplyToolsTests
         var result = _tools.AttachImage("chart.png");
 
         StringAssert.Contains(result, "Attached");
-        var drained = _buffer.Drain("session-1");
+        var drained = _buffer.Drain("session-1", "turn-1");
         Assert.AreEqual(1, drained.Count);
         Assert.AreEqual("chart.png", drained[0].Path);
         Assert.AreEqual("image/png", drained[0].Mime);
@@ -52,7 +52,7 @@ public sealed class AttachmentReplyToolsTests
 
         _tools.AttachImage("photo.jpeg");
 
-        Assert.AreEqual("image/jpeg", _buffer.Drain("session-1")[0].Mime);
+        Assert.AreEqual("image/jpeg", _buffer.Drain("session-1", "turn-1")[0].Mime);
     }
 
     [TestMethod]
@@ -62,7 +62,7 @@ public sealed class AttachmentReplyToolsTests
 
         _tools.AttachImage("diagram.bin", mime: "image/svg+xml");
 
-        Assert.AreEqual("image/svg+xml", _buffer.Drain("session-1")[0].Mime);
+        Assert.AreEqual("image/svg+xml", _buffer.Drain("session-1", "turn-1")[0].Mime);
     }
 
     [TestMethod]
@@ -72,7 +72,7 @@ public sealed class AttachmentReplyToolsTests
 
         _tools.AttachImage("chart.png", fileName: "Quarterly results");
 
-        Assert.AreEqual("Quarterly results", _buffer.Drain("session-1")[0].FileName);
+        Assert.AreEqual("Quarterly results", _buffer.Drain("session-1", "turn-1")[0].FileName);
     }
 
     [TestMethod]
@@ -81,7 +81,7 @@ public sealed class AttachmentReplyToolsTests
         var result = _tools.AttachImage("missing.png");
 
         StringAssert.Contains(result, "no such file");
-        Assert.AreEqual(0, _buffer.Drain("session-1").Count);
+        Assert.AreEqual(0, _buffer.Drain("session-1", "turn-1").Count);
     }
 
     [TestMethod]
@@ -90,7 +90,7 @@ public sealed class AttachmentReplyToolsTests
         var result = _tools.AttachImage("../escape.png");
 
         StringAssert.Contains(result, "outside");
-        Assert.AreEqual(0, _buffer.Drain("session-1").Count);
+        Assert.AreEqual(0, _buffer.Drain("session-1", "turn-1").Count);
     }
 
     [TestMethod]
@@ -103,7 +103,7 @@ public sealed class AttachmentReplyToolsTests
             var result = _tools.AttachImage(outside);
 
             StringAssert.Contains(result, "outside");
-            Assert.AreEqual(0, _buffer.Drain("session-1").Count);
+            Assert.AreEqual(0, _buffer.Drain("session-1", "turn-1").Count);
         }
         finally
         {
@@ -117,7 +117,7 @@ public sealed class AttachmentReplyToolsTests
         var result = _tools.AttachImage("");
 
         StringAssert.Contains(result, "no path");
-        Assert.AreEqual(0, _buffer.Drain("session-1").Count);
+        Assert.AreEqual(0, _buffer.Drain("session-1", "turn-1").Count);
     }
 
     [TestMethod]
@@ -128,14 +128,14 @@ public sealed class AttachmentReplyToolsTests
         var dir = Path.Combine(Path.GetTempPath(), "rb-attach-leaf", Guid.NewGuid().ToString("N"), "attachments");
         var storage = new AttachmentStorage(dir);
         var buffer = new ReplyAttachmentBuffer();
-        var tools = new AttachmentReplyTools(storage, buffer, "s", NullLogger.Instance);
+        var tools = new AttachmentReplyTools(storage, buffer, "s", "t", NullLogger.Instance);
         File.WriteAllBytes(Path.Combine(dir, "chart.png"), [1, 2, 3]);
         try
         {
             var result = tools.AttachImage("attachments/chart.png");
 
             StringAssert.Contains(result, "Attached");
-            var drained = buffer.Drain("s");
+            var drained = buffer.Drain("s", "t");
             Assert.AreEqual(1, drained.Count);
             Assert.AreEqual("chart.png", drained[0].Path);
         }

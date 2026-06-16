@@ -77,6 +77,15 @@ internal sealed class ChatCommand : AsyncCommand<ChatCommand.Settings>
         }
 
         Console.Out.WriteLine(HtmlPlainTextRenderer.StripHtml(reply.Content));
+
+        // The one-shot form can't render binaries inline, so print a placeholder line per
+        // attachment — to stdout, alongside the reply content, matching PlainConsoleFrontend —
+        // so the caller knows an attachment was produced (and where).
+        if (reply.Attachments is { Count: > 0 })
+        {
+            foreach (var att in reply.Attachments)
+                Console.Out.WriteLine(AttachmentPlaceholder.Render(att));
+        }
         return 0;
     }
 
