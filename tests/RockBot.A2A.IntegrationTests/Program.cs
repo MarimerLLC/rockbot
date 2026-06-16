@@ -18,7 +18,15 @@ var config = new TestConfig
     RabbitMqPassword = Environment.GetEnvironmentVariable("RabbitMq__Password") ?? "rockbot",
     GatewayUrl = Environment.GetEnvironmentVariable("A2A_GATEWAY_URL") ?? "http://localhost:5200",
     GatewayApiKey = Environment.GetEnvironmentVariable("A2A_GATEWAY_API_KEY"),
-    TrustStorePath = Environment.GetEnvironmentVariable("TRUST_STORE_PATH") ?? "/data/agent/agent-trust.json"
+    TrustStorePath = Environment.GetEnvironmentVariable("TRUST_STORE_PATH") ?? "/data/agent/agent-trust.json",
+    OidcTokenEndpoint = Environment.GetEnvironmentVariable("OIDC_TOKEN_ENDPOINT"),
+    OidcClientId = Environment.GetEnvironmentVariable("OIDC_CLIENT_ID"),
+    OidcClientSecret = Environment.GetEnvironmentVariable("OIDC_CLIENT_SECRET"),
+    OidcUsername = Environment.GetEnvironmentVariable("OIDC_USERNAME"),
+    OidcPassword = Environment.GetEnvironmentVariable("OIDC_PASSWORD"),
+    OidcScope = Environment.GetEnvironmentVariable("OIDC_SCOPE"),
+    OidcExpectedSubject = Environment.GetEnvironmentVariable("OIDC_EXPECTED_SUBJECT"),
+    OidcExpectedIssuer = Environment.GetEnvironmentVariable("OIDC_EXPECTED_ISSUER")
 };
 
 AnsiConsole.MarkupLine($"  RabbitMQ: [cyan]{config.RabbitMqHost}:{config.RabbitMqPort}[/]");

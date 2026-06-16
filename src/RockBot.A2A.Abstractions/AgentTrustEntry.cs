@@ -23,4 +23,18 @@ public sealed record AgentTrustEntry
 
     /// <summary>Total number of inbound tasks received from this caller.</summary>
     public int InteractionCount { get; init; }
+
+    /// <summary>
+    /// Who vouched for this caller's identity on the most recent interaction
+    /// (from <see cref="VerifiedAgentIdentity.Issuer"/>) — e.g. "self", an IdP issuer URL.
+    /// </summary>
+    public string? Issuer { get; init; }
+
+    /// <summary>
+    /// True when the most recent interaction's identity was self-asserted (name-based) with
+    /// no cryptographic/registry verification; false when it was independently verified
+    /// (e.g. from gateway-forwarded JWT claims). Mirrors
+    /// <see cref="VerifiedAgentIdentity.IsSelfAsserted"/>. Defaults to true (conservative).
+    /// </summary>
+    public bool IsSelfAsserted { get; init; } = true;
 }

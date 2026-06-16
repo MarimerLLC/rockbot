@@ -12,6 +12,18 @@ internal sealed class TestConfig
     public required string GatewayUrl { get; init; }
     public required string TrustStorePath { get; init; }
     public string? GatewayApiKey { get; init; }
+
+    // OIDC / JWT auth (optional). When OidcTokenEndpoint is set, the JWT scenarios run.
+    public string? OidcTokenEndpoint { get; init; }
+    public string? OidcClientId { get; init; }
+    public string? OidcClientSecret { get; init; }
+    public string? OidcUsername { get; init; }
+    public string? OidcPassword { get; init; }
+    public string? OidcScope { get; init; }
+    public string? OidcExpectedSubject { get; init; }
+    public string? OidcExpectedIssuer { get; init; }
+
+    public bool JwtEnabled => !string.IsNullOrWhiteSpace(OidcTokenEndpoint);
 }
 
 internal sealed record TestResult(string Name, bool Passed, TimeSpan Elapsed, string? Error = null);
@@ -89,6 +101,26 @@ internal sealed class TestRunner(IServiceProvider services, TestConfig config)
         results.Add(await RunAsync("Identity: Empty Source Rejected",
             ct => Scenarios.InboundTaskScenarios.EmptySourceRejectedAsync(services, ct),
             timeout: TimeSpan.FromSeconds(15)));
+
+        // ── JWT / Bearer auth scenarios (only when an OIDC provider is configured) ──
+        if (config.JwtEnabled)
+        {
+            results.Add(await RunAsync("JWT: Agent Card Advertises Bearer",
+                ct => Scenarios.JwtAuthScenarios.AgentCardAdvertisesBearerAsync(config.GatewayUrl, services, ct),
+                timeout: TimeSpan.FromSeconds(30)));
+
+            results.Add(await RunAsync("JWT: Bearer Token Accepted",
+                ct => Scenarios.JwtAuthScenarios.BearerTokenAcceptedAsync(config, services, ct),
+                timeout: TimeSpan.FromSeconds(90)));
+
+            results.Add(await RunAsync("JWT: Invalid Token Rejected",
+                ct => Scenarios.JwtAuthScenarios.InvalidTokenRejectedAsync(config.GatewayUrl, services, ct),
+                timeout: TimeSpan.FromSeconds(30)));
+
+            results.Add(await RunAsync("JWT: Claims Propagated To Agent",
+                ct => Scenarios.JwtAuthScenarios.ClaimsPropagatedToAgentAsync(config, services, ct),
+                timeout: TimeSpan.FromSeconds(90)));
+        }
 
         return results;
     }

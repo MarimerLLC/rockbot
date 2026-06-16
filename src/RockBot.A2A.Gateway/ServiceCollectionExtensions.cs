@@ -1,7 +1,6 @@
 using A2A;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
-using Microsoft.AspNetCore.Authorization;
 using Microsoft.Extensions.DependencyInjection;
 using RockBot.A2A.Gateway.Auth;
 
@@ -72,24 +71,23 @@ public static class ServiceCollectionExtensions
     {
         ArgumentNullException.ThrowIfNull(services);
 
-        // Default policy accepts the API-key scheme. AddA2AJwtBearerAuthentication widens this
-        // to also accept Bearer when JWT auth is enabled.
-        services.AddAuthorizationBuilder()
-            .SetDefaultPolicy(new AuthorizationPolicyBuilder(ApiKeyAuthenticationHandler.SchemeName)
-                .RequireAuthenticatedUser()
-                .Build());
-
+        services.AddAuthorization();
         return services.AddAuthentication(ApiKeyAuthenticationHandler.SchemeName)
             .AddScheme<AuthenticationSchemeOptions, ApiKeyAuthenticationHandler>(
                 ApiKeyAuthenticationHandler.SchemeName, null);
     }
 
+    /// <summary>The forwarding policy scheme that routes each request to API key or Bearer.</summary>
+    internal const string CombinedSchemeName = "A2A";
+
     /// <summary>
     /// Adds JWT/Bearer authentication as a second accepted scheme using generic OIDC
     /// (<see cref="JwtAuthOptions.Authority"/> + <see cref="JwtAuthOptions.Audience"/>,
     /// with signing-key discovery via the authority's <c>/.well-known/openid-configuration</c>).
-    /// Widens the default authorization policy so the gateway accepts <em>either</em> API key
-    /// or a valid Bearer token. No-ops when <see cref="JwtAuthOptions.IsEnabled"/> is false.
+    /// Installs a forwarding policy scheme as the default so each request is handled by exactly
+    /// one scheme — Bearer when an <c>Authorization: Bearer</c> header is present, API key
+    /// otherwise. This lets the gateway accept <em>either</em> credential without double-issuing
+    /// the 401 challenge. No-ops when <see cref="JwtAuthOptions.IsEnabled"/> is false.
     /// </summary>
     public static AuthenticationBuilder AddA2AJwtBearerAuthentication(
         this AuthenticationBuilder builder, JwtAuthOptions jwtOptions)
@@ -110,13 +108,29 @@ public static class ServiceCollectionExtensions
                 !string.IsNullOrWhiteSpace(jwtOptions.Audience);
         });
 
-        // Re-build the default policy so RequireAuthorization() on POST / accepts either scheme.
-        builder.Services.AddAuthorizationBuilder()
-            .SetDefaultPolicy(new AuthorizationPolicyBuilder(
-                    ApiKeyAuthenticationHandler.SchemeName,
-                    JwtBearerDefaults.AuthenticationScheme)
-                .RequireAuthenticatedUser()
-                .Build());
+        // A policy scheme forwards each request to a single concrete scheme: Bearer when the
+        // caller presents a bearer token, API key otherwise. A single scheme authenticates and
+        // (on failure) challenges, avoiding the connection-resetting double-challenge that a
+        // multi-scheme authorization policy would produce.
+        builder.AddPolicyScheme(CombinedSchemeName, CombinedSchemeName, options =>
+        {
+            options.ForwardDefaultSelector = context =>
+            {
+                string authorization = context.Request.Headers.Authorization.ToString();
+                return authorization.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase)
+                    ? JwtBearerDefaults.AuthenticationScheme
+                    : ApiKeyAuthenticationHandler.SchemeName;
+            };
+        });
+
+        // Make the policy scheme the default so the (unchanged) RequireAuthenticatedUser policy
+        // authenticates and challenges through the forwarding selector.
+        builder.Services.Configure<AuthenticationOptions>(options =>
+        {
+            options.DefaultScheme = CombinedSchemeName;
+            options.DefaultAuthenticateScheme = CombinedSchemeName;
+            options.DefaultChallengeScheme = CombinedSchemeName;
+        });
 
         return builder;
     }
