@@ -174,7 +174,8 @@ internal sealed class UserMessageHandler(
             var sessionSkillTools = new SkillTools(skillStore, llmClient, logger, message.SessionId, skillUsageStore);
 
             var batchId = Guid.NewGuid().ToString("N")[..12];
-            var registryTools = toolRegistry.BuildAgentToolFunctions(sessionNamespace, batchId);
+            var registryTools = toolRegistry.BuildAgentToolFunctions(
+                sessionNamespace, batchId, ToolProfiles.Main, logger: logger);
 
             var allTools = memoryTools.Tools
                 .Concat(sessionWorkingMemoryTools.Tools)

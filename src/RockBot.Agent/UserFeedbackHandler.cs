@@ -132,7 +132,8 @@ internal sealed class UserFeedbackHandler(
                 var sessionWorkingMemoryTools = new WorkingMemoryTools(workingMemory, sessionNamespace, logger);
                 var sessionSkillTools = new SkillTools(skillStore, llmClient, logger, message.SessionId);
                 var batchId = Guid.NewGuid().ToString("N")[..12];
-                var registryTools = toolRegistry.BuildAgentToolFunctions(sessionNamespace, batchId);
+                var registryTools = toolRegistry.BuildAgentToolFunctions(
+                    sessionNamespace, batchId, ToolProfiles.Main, logger: logger);
 
                 var chatOptions = new ChatOptions
                 {
