@@ -159,6 +159,7 @@ public sealed class ChatStateService
                 AgentName = reply.AgentName,
                 SessionId = reply.SessionId,
                 ContentType = reply.ContentType,
+                Attachments = reply.Attachments,
                 IsInterim = !reply.IsFinal,
                 Category = category,
                 IsExpanded = category is MessageCategory.PrimaryFinal
@@ -429,6 +430,14 @@ public sealed class ChatMessage
     public string? UserId { get; init; }
     public string? SessionId { get; init; }
     public string? ContentType { get; init; }
+
+    /// <summary>
+    /// Out-of-band attachments (images, etc.) carried on a final agent reply. Rendered natively
+    /// (outside the markdown sanitizer) as &lt;img&gt; for image MIME types or a download link
+    /// otherwise. Null for text-only replies.
+    /// </summary>
+    public IReadOnlyList<AgentAttachment>? Attachments { get; init; }
+
     public bool IsError { get; init; }
 
     /// <summary>

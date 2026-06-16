@@ -49,6 +49,8 @@ internal sealed class UserMessageHandler(
     ISessionTracker sessionTracker,
     SessionStartTracker sessionStartTracker,
     SessionClientCapabilityStore clientCapabilityStore,
+    ReplyAttachmentBuffer attachmentBuffer,
+    McpBridge.Attachments.IAttachmentStorage attachmentStorage,
     SessionOriginStore originStore,
     IOptions<AgentProfileOptions> profileOptions,
     IWipTracker wipTracker,
@@ -184,6 +186,10 @@ internal sealed class UserMessageHandler(
             var sessionNamespace = $"session/{message.SessionId}";
             var sessionWorkingMemoryTools = new WorkingMemoryTools(workingMemory, sessionNamespace, logger);
 
+            // Per-session attachment tool — attach_image stages files for this session's final reply.
+            var attachmentReplyTools = new AttachmentReplyTools(
+                attachmentStorage, attachmentBuffer, message.SessionId, logger);
+
             // Per-session skill tools with usage tracking
             var sessionSkillTools = new SkillTools(skillStore, llmClient, logger, message.SessionId, skillUsageStore);
 
@@ -193,6 +199,7 @@ internal sealed class UserMessageHandler(
 
             var allTools = memoryTools.Tools
                 .Concat(sessionWorkingMemoryTools.Tools)
+                .Concat(attachmentReplyTools.Tools)
                 .Concat(sessionSkillTools.Tools)
                 .Concat(rulesTools.Tools)
                 .Concat(toolGuideTools.Tools)
@@ -691,12 +698,24 @@ internal sealed class UserMessageHandler(
         string content, string replyTo, string? correlationId,
         string sessionId, bool isFinal, CancellationToken ct)
     {
+        // Only final replies carry attachments — drain the per-session buffer so files staged
+        // by attach_image ride out with the answer and aren't replayed on a later turn.
+        // Progress/non-final replies never carry attachments.
+        IReadOnlyList<AgentAttachment>? attachments = null;
+        if (isFinal)
+        {
+            var drained = attachmentBuffer.Drain(sessionId);
+            if (drained.Count > 0)
+                attachments = drained;
+        }
+
         var reply = new AgentReply
         {
             Content = content,
             SessionId = sessionId,
             AgentName = agentNameHolder.DisplayName ?? agent.Name,
-            IsFinal = isFinal
+            IsFinal = isFinal,
+            Attachments = attachments
         };
         var envelope = reply.ToEnvelope<AgentReply>(source: agent.Name, correlationId: correlationId);
         await publisher.PublishAsync(replyTo, envelope, ct);

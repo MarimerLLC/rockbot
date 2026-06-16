@@ -40,6 +40,21 @@ app.UseHttpsRedirection();
 app.UseAntiforgery();
 
 app.MapStaticAssets();
+
+// Serves agent reply attachments from the shared PVC (co-mounted read-only). The agent
+// references files by name on AgentReply.Attachments; bytes never ride the bus. The resolver
+// enforces containment under the shared attachments directory so this endpoint can't be coaxed
+// into serving arbitrary files via traversal or absolute paths.
+var attachmentResolver = AttachmentPathResolver.FromEnvironment();
+app.MapGet("/attachments", (string? file) =>
+{
+    var resolved = attachmentResolver.Resolve(file);
+    if (resolved is null)
+        return Results.NotFound();
+
+    return Results.File(resolved, AttachmentPathResolver.GuessMime(resolved));
+});
+
 app.MapRazorComponents<App>()
     .AddInteractiveServerRenderMode();
 

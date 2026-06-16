@@ -23,6 +23,14 @@ internal sealed class SpectreConsoleFrontend : IUserFrontend
         };
 
         AnsiConsole.Write(panel);
+
+        // The terminal can't render binary attachments — show a dim placeholder line per
+        // attachment so the user knows one was produced (and its filename / type).
+        if (reply.Attachments is { Count: > 0 })
+        {
+            foreach (var att in reply.Attachments)
+                AnsiConsole.MarkupLine($"[dim]{Markup.Escape(AttachmentPlaceholder.Render(att))}[/]");
+        }
         return Task.CompletedTask;
     }
 

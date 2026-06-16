@@ -17,6 +17,14 @@ internal sealed class PlainConsoleFrontend : IUserFrontend
         if (anchor is not null)
             Console.Out.WriteLine(anchor);
         Console.Out.WriteLine(HtmlPlainTextRenderer.StripHtml(reply.Content));
+
+        // The plain console can't render binary attachments — print a placeholder line per
+        // attachment so the user knows one was produced (and where) without dumping bytes.
+        if (reply.Attachments is { Count: > 0 })
+        {
+            foreach (var att in reply.Attachments)
+                Console.Out.WriteLine(AttachmentPlaceholder.Render(att));
+        }
         return Task.CompletedTask;
     }
 
