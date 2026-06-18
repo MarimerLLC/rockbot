@@ -240,12 +240,13 @@ public class McpToolExecutorTests
     [TestMethod]
     public void MapContentBlocks_PreservesImageContent()
     {
+        var imageBytes = new byte[] { 0xDE, 0xAD, 0xBE, 0xEF };
         var result = new CallToolResult
         {
             Content =
             [
                 new TextContentBlock { Text = "Here is an image:" },
-                new ImageContentBlock { Data = "abc123", MimeType = "image/png" }
+                new ImageContentBlock { Data = imageBytes, MimeType = "image/png" }
             ]
         };
         var blocks = McpToolExecutor.MapContentBlocks(result);
@@ -253,7 +254,7 @@ public class McpToolExecutorTests
         Assert.AreEqual(2, blocks.Count);
         Assert.AreEqual("text", blocks[0].Type);
         Assert.AreEqual("image", blocks[1].Type);
-        Assert.AreEqual("abc123", blocks[1].Data);
+        Assert.AreEqual(Convert.ToBase64String(imageBytes), blocks[1].Data);
         Assert.AreEqual("image/png", blocks[1].MimeType);
         // TextFromBlocks only returns text parts
         Assert.AreEqual("Here is an image:", McpToolExecutor.TextFromBlocks(blocks));
