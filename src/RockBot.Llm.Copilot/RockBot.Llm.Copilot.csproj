@@ -17,6 +17,10 @@
     <PackageReference Include="GitHub.Copilot.SDK" Version="0.2.0" />
     <PackageReference Include="Microsoft.Extensions.AI.Abstractions" Version="10.*" />
     <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.*" />
+    <!-- Transitive pins: override GitHub.Copilot.SDK/StreamJsonRpc's vulnerable MessagePack/Nerdbank.MessagePack
+         (GHSA-hv8m-jj95-wg3x, GHSA-2cwq-pwfr-wcw3, GHSA-92vj-hp7m-gwcj, GHSA-qjvr-435c-5fjh). -->
+    <PackageReference Include="MessagePack" Version="2.5.302" />
+    <PackageReference Include="Nerdbank.MessagePack" Version="1.2.4" />
   </ItemGroup>
 
 </Project>
