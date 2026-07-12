@@ -54,6 +54,22 @@ public class WebSearchToolExecutorTests
     }
 
     [TestMethod]
+    public async Task ExecuteAsync_ReturnsError_WhenSearchNotConfigured()
+    {
+        var executor = new WebSearchToolExecutor(
+            new ThrowingSearchProvider(new WebSearchNotConfiguredException(
+                "Web search is unavailable because the Brave Search API key is not configured.")),
+            new WebToolOptions());
+
+        var response = await executor.ExecuteAsync(MakeRequest("""{"query": "test"}"""), CancellationToken.None);
+
+        Assert.IsTrue(response.IsError);
+        StringAssert.Contains(response.Content, "not configured");
+        // Distinct from the generic "Search failed" path so the agent can act on it.
+        StringAssert.Contains(response.Content, "Brave Search API key");
+    }
+
+    [TestMethod]
     public async Task ExecuteAsync_ReturnsError_WhenQueryMissing()
     {
         var executor = new WebSearchToolExecutor(new StubSearchProvider([]), new WebToolOptions());

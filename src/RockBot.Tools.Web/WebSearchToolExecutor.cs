@@ -62,6 +62,13 @@ internal sealed class WebSearchToolExecutor(
                 IsError = false
             };
         }
+        catch (WebSearchNotConfiguredException ex)
+        {
+            // Configuration gap (e.g. missing API key). Surface the actionable message
+            // directly so the agent can tell the user web search isn't set up, rather than
+            // reporting a generic search failure or a misleading "no results found".
+            return Error(request, ex.Message);
+        }
         catch (Exception ex)
         {
             return Error(request, $"Search failed: {ex.Message}");
