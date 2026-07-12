@@ -63,11 +63,16 @@ services:
           done
         done
         mkdir -p /data/agent/memory /data/agent/skills /data/agent/conversations /data/agent/feedback
+        # The shared volume (attachments, script file exchange) is also root-owned;
+        # the non-root agent creates /rockbot/shared/attachments on startup, so pre-make
+        # it and open permissions here.
+        mkdir -p /rockbot/shared/attachments
         # Docker volumes are owned by root, so the non-root agent user needs access
-        chmod -R 777 /data/agent
+        chmod -R 777 /data/agent /rockbot/shared
         echo "Agent data volume ready."
     volumes:
       - ${AGENT_DATA_PATH:-agent-data}:/data/agent
+      - shared:/rockbot/shared
 
   agent:
     build:
