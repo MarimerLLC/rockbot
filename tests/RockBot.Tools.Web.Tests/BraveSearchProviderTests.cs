@@ -82,7 +82,7 @@ public class BraveSearchProviderTests
     }
 
     [TestMethod]
-    public async Task SearchAsync_ReturnsEmpty_WhenApiKeyMissing()
+    public async Task SearchAsync_Throws_WhenApiKeyMissing()
     {
         var handler = new CaptureHandler(new HttpResponseMessage(HttpStatusCode.OK)
         {
@@ -91,9 +91,11 @@ public class BraveSearchProviderTests
         var options = new WebToolOptions { ApiKeyEnvVar = "ROCKBOT_TEST_BRAVE_KEY_NONEXISTENT_12345" };
         var provider = new BraveSearchProvider(new StubFactory(handler), options, NullLogger<BraveSearchProvider>.Instance);
 
-        var results = await provider.SearchAsync("test", 10, CancellationToken.None);
-
-        Assert.AreEqual(0, results.Count);
+        // A missing key is a configuration gap, not a search that returned nothing — the
+        // provider throws so the caller can surface an actionable error to the user.
+        var ex = await Assert.ThrowsExactlyAsync<WebSearchNotConfiguredException>(
+            () => provider.SearchAsync("test", 10, CancellationToken.None));
+        StringAssert.Contains(ex.Message, "not configured");
     }
 
     [TestMethod]

@@ -17,7 +17,11 @@ internal sealed class BraveSearchProvider(
         if (string.IsNullOrEmpty(apiKey))
         {
             logger.LogWarning("Brave API key not set. Configure WebTools:ApiKey in user secrets or set the {EnvVar} environment variable", options.ApiKeyEnvVar);
-            return [];
+            // Signal a configuration gap rather than returning an empty result set, which the
+            // caller can't distinguish from a search that genuinely found nothing.
+            throw new WebSearchNotConfiguredException(
+                $"Web search is unavailable because the Brave Search API key is not configured. " +
+                $"Set WebTools:ApiKey (config / user secrets) or the {options.ApiKeyEnvVar} environment variable.");
         }
 
         using var client = httpClientFactory.CreateClient("RockBot.Tools.Web.Brave");
