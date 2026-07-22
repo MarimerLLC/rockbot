@@ -31,6 +31,15 @@ public sealed class TierSelectorConfig
     public List<string>? LowSignalKeywords { get; set; }
 
     /// <summary>
+    /// Keywords that floor a user-message prompt at the Balanced tier when it would
+    /// otherwise route Low. Intended for tool/topic words (todo, calendar, ...) that
+    /// signal "this needs a tool" — the small Low model handles those unreliably.
+    /// Merged with compiled defaults (add-only). Escalates Low→Balanced only; never High.
+    /// Exempt from the high-signal TopicBlocklist. See issue #486.
+    /// </summary>
+    public List<string>? BalancedFloorKeywords { get; set; }
+
+    /// <summary>
     /// Score threshold below which the trivial guard forces Low tier, regardless of
     /// dream-tuned thresholds. Prevents simple prompts from drifting into Balanced
     /// when the dream loop adjusts <see cref="LowCeiling"/>. Default: 0.15.

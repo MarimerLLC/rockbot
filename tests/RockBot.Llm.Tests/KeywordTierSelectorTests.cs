@@ -860,6 +860,144 @@ public class KeywordTierSelectorTests
             "A long brief with genuine complexity keywords should still route High");
     }
 
+    // ── Balanced-floor override (issue #486) ─────────────────────────────────
+
+    [TestMethod]
+    public void BalancedFloor_UserOrigin_MatchEscalatesLowToBalanced()
+    {
+        var tempDir = Path.Combine(Path.GetTempPath(), "kts-floor-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempDir);
+        try
+        {
+            var config = """{"version":1,"balancedFloorKeywords":["todo"]}""";
+            File.WriteAllText(Path.Combine(tempDir, "tier-selector.json"), config);
+
+            var options = Options.Create(new AgentProfileOptions { BasePath = tempDir });
+            var selector = new KeywordTierSelector(options, NullLogger<KeywordTierSelector>.Instance);
+
+            // A trivial tool-intent query that would otherwise route Low.
+            var result = selector.Classify(
+                "what's on my todo list?",
+                new TierRoutingContext(Origin: "user-message"));
+
+            Assert.AreEqual(ModelTier.Balanced, result.Tier,
+                "A user-origin floor-keyword match should escalate Low to Balanced");
+        }
+        finally
+        {
+            Directory.Delete(tempDir, recursive: true);
+        }
+    }
+
+    [TestMethod]
+    public void BalancedFloor_SubagentOrigin_NoEffect()
+    {
+        var tempDir = Path.Combine(Path.GetTempPath(), "kts-floor-sub-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempDir);
+        try
+        {
+            var config = """{"version":1,"balancedFloorKeywords":["todo"]}""";
+            File.WriteAllText(Path.Combine(tempDir, "tier-selector.json"), config);
+
+            var options = Options.Create(new AgentProfileOptions { BasePath = tempDir });
+            var selector = new KeywordTierSelector(options, NullLogger<KeywordTierSelector>.Instance);
+
+            // Same prompt/floor, subagent origin — the floor override must not fire.
+            var result = selector.Classify(
+                "what's on my todo list?",
+                new TierRoutingContext(Origin: "subagent"));
+
+            Assert.AreEqual(ModelTier.Low, result.Tier,
+                "The balanced-floor override must not affect subagent traffic");
+        }
+        finally
+        {
+            Directory.Delete(tempDir, recursive: true);
+        }
+    }
+
+    [TestMethod]
+    public void BalancedFloor_NeverEscalatesToHigh()
+    {
+        var tempDir = Path.Combine(Path.GetTempPath(), "kts-floor-nohigh-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempDir);
+        try
+        {
+            var config = """{"version":1,"balancedFloorKeywords":["todo"]}""";
+            File.WriteAllText(Path.Combine(tempDir, "tier-selector.json"), config);
+
+            var options = Options.Create(new AgentProfileOptions { BasePath = tempDir });
+            var selector = new KeywordTierSelector(options, NullLogger<KeywordTierSelector>.Instance);
+
+            var result = selector.Classify(
+                "what's on my todo list?",
+                new TierRoutingContext(Origin: "user-message"));
+
+            Assert.AreNotEqual(ModelTier.High, result.Tier,
+                "The floor override only fires on Low and only sets Balanced — never High");
+        }
+        finally
+        {
+            Directory.Delete(tempDir, recursive: true);
+        }
+    }
+
+    [TestMethod]
+    public void BalancedFloor_NonMatchingTrivialChat_StaysLow()
+    {
+        var tempDir = Path.Combine(Path.GetTempPath(), "kts-floor-nomatch-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempDir);
+        try
+        {
+            var config = """{"version":1,"balancedFloorKeywords":["todo"]}""";
+            File.WriteAllText(Path.Combine(tempDir, "tier-selector.json"), config);
+
+            var options = Options.Create(new AgentProfileOptions { BasePath = tempDir });
+            var selector = new KeywordTierSelector(options, NullLogger<KeywordTierSelector>.Instance);
+
+            // Trivial user chat that does NOT name the floor keyword — must stay Low.
+            var result = selector.Classify(
+                "what's the weather?",
+                new TierRoutingContext(Origin: "user-message"));
+
+            Assert.AreEqual(ModelTier.Low, result.Tier,
+                "A trivial user prompt not matching any floor keyword must stay Low");
+        }
+        finally
+        {
+            Directory.Delete(tempDir, recursive: true);
+        }
+    }
+
+    [TestMethod]
+    public void BalancedFloor_TopicBlocklistExemption_FloorKeywordStillFires()
+    {
+        var tempDir = Path.Combine(Path.GetTempPath(), "kts-floor-exempt-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempDir);
+        try
+        {
+            // "todo" is a blocklisted topic word (stripped from high-signal). It must
+            // survive in the balanced-floor list and still fire the override, proving
+            // the floor list is exempt from the TopicBlocklist.
+            var config = """{"version":1,"balancedFloorKeywords":["todo"]}""";
+            File.WriteAllText(Path.Combine(tempDir, "tier-selector.json"), config);
+
+            var options = Options.Create(new AgentProfileOptions { BasePath = tempDir });
+            var selector = new KeywordTierSelector(options, NullLogger<KeywordTierSelector>.Instance);
+
+            var result = selector.Classify(
+                "what's on my todo list?",
+                new TierRoutingContext(Origin: "user-message"));
+
+            Assert.AreEqual(ModelTier.Balanced, result.Tier,
+                "Blocklisted topic word 'todo' must not be stripped from the floor list");
+        }
+        finally
+        {
+            Directory.Delete(tempDir, recursive: true);
+        }
+    }
+
     [TestMethod]
     public void ActiveThreadOverride_MatchedHighKeyword_GateBlocksPromotion()
     {

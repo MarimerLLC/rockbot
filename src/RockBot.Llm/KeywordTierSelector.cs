@@ -72,10 +72,16 @@ public sealed class KeywordTierSelector : ILlmTierSelector
         "tell me about", "show me", "look up",
     ];
 
+    // ── Balanced-floor signals → floor a Low-routed user query at Balanced ───
+    // Empty by default (add-only caveat): the dream owns this list and no
+    // un-retractable guesses are baked in. See issue #486.
+    private static readonly string[] DefaultBalancedFloorKeywords = [];
+
     private static readonly EffectiveConfig Defaults = new(
         DefaultLowCeiling, DefaultBalancedCeiling,
         DefaultTrivialGuardCeiling, DefaultUserOriginBias,
-        DefaultHighSignalKeywords, DefaultLowSignalKeywords);
+        DefaultHighSignalKeywords, DefaultLowSignalKeywords,
+        DefaultBalancedFloorKeywords);
 
     // ── Code / math / multi-step markers ────────────────────────────────────
     private static readonly Regex CodeBlockRegex = new(
@@ -215,6 +221,19 @@ public sealed class KeywordTierSelector : ILlmTierSelector
             tier = ModelTier.Balanced;
         }
 
+        // Balanced-floor override: a first-turn user query naming a known tool/topic
+        // (e.g. "what's on my todo list?") scores near-zero → Low, where the small model
+        // fails to select the right MCP tool. When the dream has learned such a floor
+        // keyword, escalate Low→Balanced (never High) so it lands on a cheap but
+        // tool-capable tier. Exempt from TopicBlocklist by design. See issue #486.
+        if (context?.Origin == "user-message"
+            && tier == ModelTier.Low
+            && config.BalancedFloorKeywords.Length > 0
+            && config.BalancedFloorKeywords.Any(k => ContainsWholePhrase(lower, k)))
+        {
+            tier = ModelTier.Balanced;
+        }
+
         return new TierClassification(tier, score, matchedHigh, matchedLow);
     }
 
@@ -258,6 +277,10 @@ public sealed class KeywordTierSelector : ILlmTierSelector
             // Merge dream keywords with compiled defaults (dream adds, never replaces).
             var highKeywords = MergeKeywords(DefaultHighSignalKeywords, dto.HighSignalKeywords, "highSignalKeywords");
             var lowKeywords  = MergeKeywords(DefaultLowSignalKeywords, dto.LowSignalKeywords, "lowSignalKeywords");
+            // Balanced-floor list is exempt from the TopicBlocklist: SanitizeKeywords only
+            // applies the blocklist when the list name contains "high", so "balancedFloorKeywords"
+            // passes topic/tool words (todo, calendar, ...) through unfiltered — by design.
+            var floorKeywords = MergeKeywords(DefaultBalancedFloorKeywords, dto.BalancedFloorKeywords, "balancedFloorKeywords");
 
             // Clamp dream-tuned thresholds to guardrail ranges.
             var lowCeiling = ClampThreshold(dto.LowCeiling, DefaultLowCeiling, MinLowCeiling, MaxLowCeiling, "lowCeiling");
@@ -271,16 +294,18 @@ public sealed class KeywordTierSelector : ILlmTierSelector
                 TrivialGuardCeiling: trivialGuard,
                 UserOriginBias:      originBias,
                 HighSignalKeywords:  highKeywords,
-                LowSignalKeywords:   lowKeywords);
+                LowSignalKeywords:   lowKeywords,
+                BalancedFloorKeywords: floorKeywords);
 
             _logger?.LogInformation(
                 "KeywordTierSelector: reloaded config from {Path} " +
                 "(lowCeiling={Low}, balancedCeiling={Balanced}, " +
                 "trivialGuard={TrivialGuard}, userOriginBias={OriginBias}, " +
-                "highSignals={HighCount}, lowSignals={LowCount})",
+                "highSignals={HighCount}, lowSignals={LowCount}, floorKeywords={FloorCount})",
                 _configPath, result.LowCeiling, result.BalancedCeiling,
                 result.TrivialGuardCeiling, result.UserOriginBias,
-                result.HighSignalKeywords.Length, result.LowSignalKeywords.Length);
+                result.HighSignalKeywords.Length, result.LowSignalKeywords.Length,
+                result.BalancedFloorKeywords.Length);
 
             return result;
         }
@@ -512,7 +537,8 @@ public sealed class KeywordTierSelector : ILlmTierSelector
         double TrivialGuardCeiling,
         double UserOriginBias,
         string[] HighSignalKeywords,
-        string[] LowSignalKeywords);
+        string[] LowSignalKeywords,
+        string[] BalancedFloorKeywords);
 
     private sealed record CachedConfig(EffectiveConfig Config, DateTime LoadedAt);
 }
