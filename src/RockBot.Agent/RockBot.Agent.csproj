@@ -19,7 +19,12 @@
     <PackageReference Include="Microsoft.Extensions.AI.OpenAI" Version="10.3.0" />
     <PackageReference Include="Microsoft.Extensions.Hosting" Version="10.0.*" />
     <PackageReference Include="Microsoft.Identity.Client" Version="4.*" />
-    <PackageReference Include="ModelContextProtocol" Version="0.8.0-preview.1" />
+    <PackageReference Include="ModelContextProtocol" Version="1.4.0" />
+    <!-- Transitive pins: override the vulnerable MessagePack/Nerdbank.MessagePack pulled in via
+         RockBot.Llm.Copilot -> GitHub.Copilot.SDK -> StreamJsonRpc
+         (GHSA-hv8m-jj95-wg3x, GHSA-2cwq-pwfr-wcw3, GHSA-92vj-hp7m-gwcj, GHSA-qjvr-435c-5fjh). -->
+    <PackageReference Include="MessagePack" Version="2.5.302" />
+    <PackageReference Include="Nerdbank.MessagePack" Version="1.2.4" />
   </ItemGroup>
 
   <ItemGroup>
