@@ -27,7 +27,7 @@ directive and analyzer have drifted and you cannot reliably interpret the input.
 - **`fallbackExcludedCount`** — fallback-triggered entries are already excluded from
   clusters, flagged clusters, and keyword candidates; do not filter them yourself
 
-## Your three jobs
+## Your four jobs
 
 ### 1. Validate flagged clusters
 
@@ -36,6 +36,10 @@ For each entry in `flaggedClusters`:
 - **panicEscalation** — Low tier with avg tool calls ≥ 3. The model likely struggled.
   Check `samplePrompt` and `count`: if this looks like a real recurring shape (not a fluke),
   the cluster's `alternateTier` (Balanced) is the correct routing direction.
+  When such a cluster is a **short user query naming a tool/topic** (e.g. "what's on my
+  todo list?", "any new calendar events?") that scores near-zero and routes Low, threshold
+  nudges can't move it and topic words can't go in `highSignalKeywords`. Use the
+  **`config.balancedFloorKeywords`** lever instead — see job 4.
 - **tokenSurprise** — Low complexity score but high post-injection tokens. **Informational
   only** — DO NOT adjust thresholds for this. Post-injection size is an orchestration-layer
   concern, not a routing-quality signal. A trivial prompt like "what time is it?" legitimately
@@ -98,6 +102,31 @@ Trivial guard fields (`trivialGuardCeiling`, `userOriginBias`) are available in 
 but should only be touched when there is clear evidence of *false Low-tier routing* — never
 to widen Balanced.
 
+### 4. Floor tool-intent queries at Balanced with `balancedFloorKeywords`
+
+Some short user queries **need a tool** but score near-zero and route **Low**, where the
+small model fails to pick the right MCP tool under heavy injected context. These surface as
+recurring **panicEscalation** clusters whose `samplePrompt` is a brief user request naming a
+topic/tool (todo, calendar, email, reminders). Thresholds can't move a ~0.0 query, and the
+topic word can't go in `highSignalKeywords` (it would over-route to expensive High and be
+stripped by the topic blocklist anyway).
+
+The lever is **`config.balancedFloorKeywords`**: when a **user-message** prompt matches a
+floor keyword **and** the computed tier is **Low**, the selector escalates it to **Balanced**
+(cheap but tool-capable). It **never** escalates to High, and it does **not** affect subagent
+traffic. This list is **exempt from the topic blocklist** — it is *meant* to hold topic/tool
+words. Additions are merged with compiled defaults (add-only).
+
+Add a floor keyword only when a panicEscalation cluster shows a **recurring** tool-intent
+shape (not a one-off). Pick the single recurring topic/tool word from the cluster's
+`samplePrompt` (e.g. `todo`, `calendar`). Return your additions in the
+`config.balancedFloorKeywords` array — additions only, merged with defaults.
+
+**Keep the distinction sharp:** floor words route **Low→Balanced** (cheap + tool-capable)
+and **never** to High. The "reject topic words" rule in job 2 still applies to
+`highSignalKeywords` only — topic words belong in `balancedFloorKeywords`, not in the
+high-signal list.
+
 ## Response format
 
 Return ONLY a JSON object:
@@ -111,7 +140,8 @@ Return ONLY a JSON object:
     "lowCeiling": 0.20,
     "balancedCeiling": 0.46,
     "highSignalKeywords": ["additions only — merged with compiled defaults"],
-    "lowSignalKeywords": ["additions only — merged with compiled defaults"]
+    "lowSignalKeywords": ["additions only — merged with compiled defaults"],
+    "balancedFloorKeywords": ["tool/topic words that floor Low→Balanced — additions only"]
   },
   "antiPatterns": [
     {
