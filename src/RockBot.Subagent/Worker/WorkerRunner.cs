@@ -71,23 +71,23 @@ internal sealed class WorkerRunner(
     };
 
     /// <summary>
-    /// MCP gateway data tools workers ALWAYS retain, regardless of a definition's
-    /// <c>tools_allow</c> allowlist. Every external MCP call routes through this
-    /// single gateway (there are no per-server tools in the registry), so a
-    /// server-scoped allowlist like <c>["calendar-mcp.*"]</c> matches none of these
-    /// literal names and would silently strip all MCP access — which is exactly the
-    /// job most workers are spawned to do. The allowlist still narrows non-MCP
-    /// registry tools (web_search, execute_python_script, spawn_wisps, …); the admin
-    /// gateway tools (mcp_register_server / mcp_unregister_server) stay blocked via
-    /// <see cref="ExcludedNames"/>.
+    /// Registry <see cref="ToolRegistration.Source"/> of the MCP gateway tools
+    /// (<c>mcp_list_services</c>, <c>mcp_get_service_details</c>,
+    /// <c>mcp_invoke_tool</c>, <c>mcp_get_prompt</c>, plus the two admin tools).
+    /// Workers ALWAYS retain gateway tools regardless of a definition's
+    /// <c>tools_allow</c> allowlist. Every external MCP call routes through the
+    /// single <c>mcp_invoke_tool</c> gateway (there are no per-server tools in the
+    /// registry), so a server-scoped allowlist like <c>["calendar-mcp.*"]</c> matches
+    /// none of the gateway's literal names and would silently strip all MCP access —
+    /// which is exactly the job most workers are spawned for. Keying off the source
+    /// (rather than a hard-coded name list) means any future gateway tool is covered
+    /// automatically, matching how the primary/subagent <c>ToolProfile</c> paths
+    /// treat the gateway. The allowlist still narrows non-MCP registry tools
+    /// (web_search, execute_python_script, spawn_wisps, …); the admin gateway tools
+    /// (mcp_register_server / mcp_unregister_server) stay blocked via
+    /// <see cref="ExcludedNames"/>, which is applied before this exemption.
     /// </summary>
-    private static readonly HashSet<string> AlwaysAllowedGatewayTools = new(StringComparer.OrdinalIgnoreCase)
-    {
-        "mcp_list_services",
-        "mcp_get_service_details",
-        "mcp_invoke_tool",
-        "mcp_get_prompt",
-    };
+    private const string McpGatewaySource = "mcp:management";
 
     public async Task<WorkerResult> RunAsync(
         string taskId,
@@ -287,8 +287,9 @@ internal sealed class WorkerRunner(
             .Where(r => !ExcludedSources.Contains(r.Source ?? string.Empty))
             .Where(r => !ExcludedNames.Contains(r.Name))
             // The MCP gateway is always available — the allowlist only narrows
-            // everything else. See AlwaysAllowedGatewayTools.
-            .Where(r => AlwaysAllowedGatewayTools.Contains(r.Name)
+            // everything else. See McpGatewaySource. (ExcludedNames above has
+            // already dropped the two admin gateway tools.)
+            .Where(r => IsMcpGatewayTool(r.Source)
                         || MatchesAllowlist(r.Name, toolsAllow))
             .ToList();
 
@@ -303,12 +304,13 @@ internal sealed class WorkerRunner(
     }
 
     /// <summary>
-    /// True when <paramref name="toolName"/> is an MCP gateway data tool that
-    /// workers always keep, bypassing the <c>tools_allow</c> allowlist. See
-    /// <see cref="AlwaysAllowedGatewayTools"/>.
+    /// True when a tool registered under <paramref name="source"/> is an MCP gateway
+    /// tool that workers always keep, bypassing the <c>tools_allow</c> allowlist. See
+    /// <see cref="McpGatewaySource"/>. Admin gateway tools share this source but are
+    /// dropped earlier by <see cref="ExcludedNames"/>.
     /// </summary>
-    internal static bool IsAlwaysAllowedGatewayTool(string toolName) =>
-        AlwaysAllowedGatewayTools.Contains(toolName);
+    internal static bool IsMcpGatewayTool(string? source) =>
+        string.Equals(source, McpGatewaySource, StringComparison.OrdinalIgnoreCase);
 
     internal static bool MatchesAllowlist(string toolName, IReadOnlyList<string>? toolsAllow)
     {
