@@ -56,6 +56,51 @@ public class WorkerRunnerHelpersTests
         Assert.IsTrue(WorkerRunner.MatchesAllowlist("anything", ["*"]));
     }
 
+    // ── IsAlwaysAllowedGatewayTool ───────────────────────────────────────────
+
+    [TestMethod]
+    [DataRow("mcp_invoke_tool")]
+    [DataRow("mcp_list_services")]
+    [DataRow("mcp_get_service_details")]
+    [DataRow("mcp_get_prompt")]
+    public void IsAlwaysAllowedGatewayTool_GatewayTools_AreAlwaysAllowed(string toolName)
+    {
+        Assert.IsTrue(WorkerRunner.IsAlwaysAllowedGatewayTool(toolName));
+    }
+
+    [TestMethod]
+    public void IsAlwaysAllowedGatewayTool_IsCaseInsensitive()
+    {
+        Assert.IsTrue(WorkerRunner.IsAlwaysAllowedGatewayTool("MCP_Invoke_Tool"));
+    }
+
+    [TestMethod]
+    [DataRow("mcp_register_server")]   // admin gateway tool — blocked via ExcludedNames
+    [DataRow("mcp_unregister_server")]
+    [DataRow("web_search")]
+    [DataRow("save_memory")]
+    public void IsAlwaysAllowedGatewayTool_NonGatewayOrAdminTools_AreNot(string toolName)
+    {
+        Assert.IsFalse(WorkerRunner.IsAlwaysAllowedGatewayTool(toolName));
+    }
+
+    [TestMethod]
+    public void GatewayTool_SurvivesServerScopedAllowlist_ThatMatchesNothing()
+    {
+        // Regression for the #431 bug: a server-scoped allowlist like
+        // ["calendar-mcp.*"] matches none of the gateway's literal tool names, so
+        // MatchesAllowlist alone would strip mcp_invoke_tool and leave the worker
+        // with no way to reach any MCP server. The gateway exemption must win.
+        string[] allowlist = ["calendar-mcp.*"];
+
+        Assert.IsFalse(WorkerRunner.MatchesAllowlist("mcp_invoke_tool", allowlist),
+            "precondition: the allowlist does not literally match the gateway name");
+        Assert.IsTrue(
+            WorkerRunner.IsAlwaysAllowedGatewayTool("mcp_invoke_tool")
+            || WorkerRunner.MatchesAllowlist("mcp_invoke_tool", allowlist),
+            "gateway must survive a server-scoped allowlist that matches nothing");
+    }
+
     // ── ParseWorkerSelfReport ────────────────────────────────────────────────
 
     [TestMethod]

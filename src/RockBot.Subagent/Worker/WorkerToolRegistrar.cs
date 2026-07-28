@@ -42,7 +42,7 @@ internal sealed class WorkerToolRegistrar(
                   "tools_allow": {
                     "type": "array",
                     "items": { "type": "string" },
-                    "description": "Optional allowlist of tool names (exact match) or name prefixes (trailing asterisk, e.g. calendar-mcp.*) the worker may invoke."
+                    "description": "Optional allowlist that narrows the NON-MCP registry tools (web_search, execute_python_script, spawn_wisps, etc.) the worker may invoke — exact tool names or name prefixes (trailing asterisk). The MCP gateway (mcp_list_services / mcp_get_service_details / mcp_invoke_tool / mcp_get_prompt) is ALWAYS available and is not gated by this list; a value like calendar-mcp.* has no effect on MCP access since all MCP calls go through the gateway."
                   }
                 },
                 "required": ["description"]

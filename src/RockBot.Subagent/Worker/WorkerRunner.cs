@@ -70,6 +70,25 @@ internal sealed class WorkerRunner(
         "invoke_agent",
     };
 
+    /// <summary>
+    /// MCP gateway data tools workers ALWAYS retain, regardless of a definition's
+    /// <c>tools_allow</c> allowlist. Every external MCP call routes through this
+    /// single gateway (there are no per-server tools in the registry), so a
+    /// server-scoped allowlist like <c>["calendar-mcp.*"]</c> matches none of these
+    /// literal names and would silently strip all MCP access — which is exactly the
+    /// job most workers are spawned to do. The allowlist still narrows non-MCP
+    /// registry tools (web_search, execute_python_script, spawn_wisps, …); the admin
+    /// gateway tools (mcp_register_server / mcp_unregister_server) stay blocked via
+    /// <see cref="ExcludedNames"/>.
+    /// </summary>
+    private static readonly HashSet<string> AlwaysAllowedGatewayTools = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "mcp_list_services",
+        "mcp_get_service_details",
+        "mcp_invoke_tool",
+        "mcp_get_prompt",
+    };
+
     public async Task<WorkerResult> RunAsync(
         string taskId,
         WorkerDefinition definition,
@@ -267,7 +286,10 @@ internal sealed class WorkerRunner(
         var allowedRegistrations = toolRegistry.GetTools()
             .Where(r => !ExcludedSources.Contains(r.Source ?? string.Empty))
             .Where(r => !ExcludedNames.Contains(r.Name))
-            .Where(r => MatchesAllowlist(r.Name, toolsAllow))
+            // The MCP gateway is always available — the allowlist only narrows
+            // everything else. See AlwaysAllowedGatewayTools.
+            .Where(r => AlwaysAllowedGatewayTools.Contains(r.Name)
+                        || MatchesAllowlist(r.Name, toolsAllow))
             .ToList();
 
         var tools = new List<AIFunction>(allowedRegistrations.Count);
@@ -279,6 +301,14 @@ internal sealed class WorkerRunner(
         }
         return tools;
     }
+
+    /// <summary>
+    /// True when <paramref name="toolName"/> is an MCP gateway data tool that
+    /// workers always keep, bypassing the <c>tools_allow</c> allowlist. See
+    /// <see cref="AlwaysAllowedGatewayTools"/>.
+    /// </summary>
+    internal static bool IsAlwaysAllowedGatewayTool(string toolName) =>
+        AlwaysAllowedGatewayTools.Contains(toolName);
 
     internal static bool MatchesAllowlist(string toolName, IReadOnlyList<string>? toolsAllow)
     {
