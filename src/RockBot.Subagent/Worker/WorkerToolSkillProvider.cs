@@ -38,9 +38,14 @@ public sealed class WorkerToolSkillProvider : IToolSkillProvider
           working-memory key. Use this when you want the worker to overwrite a known
           shared key directly (e.g. `shared/patrol/calendar-latest`).
         - `timeout_minutes` (optional) — soft wall-clock cap. Default 5.
-        - `tools_allow` (optional) — explicit allowlist of tool names or prefixes
-          (`calendar-mcp.*`) the worker may invoke. Use to bound the schema-injection
-          cost when you know the scope ahead of time.
+        - `tools_allow` (optional) — allowlist that narrows the **non-MCP** registry
+          tools (`web_search`, `execute_python_script`, `spawn_wisps`, …) the worker
+          may invoke — exact names or prefixes. Use it to bound schema-injection cost
+          when you know the scope ahead of time. The **MCP gateway is always
+          available** (`mcp_list_services`, `mcp_get_service_details`,
+          `mcp_invoke_tool`, `mcp_get_prompt`) and is never gated by this list — every
+          external MCP call routes through the gateway, so a value like `calendar-mcp.*`
+          does not restrict (or grant) MCP access.
 
         ## Consuming a worker batch
 

@@ -56,6 +56,51 @@ public class WorkerRunnerHelpersTests
         Assert.IsTrue(WorkerRunner.MatchesAllowlist("anything", ["*"]));
     }
 
+    // ── IsMcpGatewayTool ─────────────────────────────────────────────────────
+
+    // The gateway is keyed off the registry Source ("mcp:management"), so any
+    // future gateway tool is covered automatically — no per-name maintenance.
+
+    [TestMethod]
+    public void IsMcpGatewayTool_ManagementSource_IsGateway()
+    {
+        Assert.IsTrue(WorkerRunner.IsMcpGatewayTool("mcp:management"));
+    }
+
+    [TestMethod]
+    public void IsMcpGatewayTool_IsCaseInsensitive()
+    {
+        Assert.IsTrue(WorkerRunner.IsMcpGatewayTool("MCP:Management"));
+    }
+
+    [TestMethod]
+    [DataRow("mcp")]        // bridged per-server tools, not the management gateway
+    [DataRow("worker")]
+    [DataRow("memory")]
+    [DataRow("")]
+    [DataRow(null)]
+    public void IsMcpGatewayTool_OtherSources_AreNot(string? source)
+    {
+        Assert.IsFalse(WorkerRunner.IsMcpGatewayTool(source));
+    }
+
+    [TestMethod]
+    public void GatewayTool_SurvivesServerScopedAllowlist_ThatMatchesNothing()
+    {
+        // Regression for the #431 bug: a server-scoped allowlist like
+        // ["calendar-mcp.*"] matches none of the gateway's literal tool names, so
+        // MatchesAllowlist alone would strip mcp_invoke_tool and leave the worker
+        // with no way to reach any MCP server. The source-keyed exemption must win.
+        string[] allowlist = ["calendar-mcp.*"];
+
+        Assert.IsFalse(WorkerRunner.MatchesAllowlist("mcp_invoke_tool", allowlist),
+            "precondition: the allowlist does not literally match the gateway name");
+        Assert.IsTrue(
+            WorkerRunner.IsMcpGatewayTool("mcp:management")
+            || WorkerRunner.MatchesAllowlist("mcp_invoke_tool", allowlist),
+            "gateway must survive a server-scoped allowlist that matches nothing");
+    }
+
     // ── ParseWorkerSelfReport ────────────────────────────────────────────────
 
     [TestMethod]

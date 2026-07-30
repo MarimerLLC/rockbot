@@ -70,6 +70,25 @@ internal sealed class WorkerRunner(
         "invoke_agent",
     };
 
+    /// <summary>
+    /// Registry <see cref="ToolRegistration.Source"/> of the MCP gateway tools
+    /// (<c>mcp_list_services</c>, <c>mcp_get_service_details</c>,
+    /// <c>mcp_invoke_tool</c>, <c>mcp_get_prompt</c>, plus the two admin tools).
+    /// Workers ALWAYS retain gateway tools regardless of a definition's
+    /// <c>tools_allow</c> allowlist. Every external MCP call routes through the
+    /// single <c>mcp_invoke_tool</c> gateway (there are no per-server tools in the
+    /// registry), so a server-scoped allowlist like <c>["calendar-mcp.*"]</c> matches
+    /// none of the gateway's literal names and would silently strip all MCP access —
+    /// which is exactly the job most workers are spawned for. Keying off the source
+    /// (rather than a hard-coded name list) means any future gateway tool is covered
+    /// automatically, matching how the primary/subagent <c>ToolProfile</c> paths
+    /// treat the gateway. The allowlist still narrows non-MCP registry tools
+    /// (web_search, execute_python_script, spawn_wisps, …); the admin gateway tools
+    /// (mcp_register_server / mcp_unregister_server) stay blocked via
+    /// <see cref="ExcludedNames"/>, which is applied before this exemption.
+    /// </summary>
+    private const string McpGatewaySource = "mcp:management";
+
     public async Task<WorkerResult> RunAsync(
         string taskId,
         WorkerDefinition definition,
@@ -267,7 +286,11 @@ internal sealed class WorkerRunner(
         var allowedRegistrations = toolRegistry.GetTools()
             .Where(r => !ExcludedSources.Contains(r.Source ?? string.Empty))
             .Where(r => !ExcludedNames.Contains(r.Name))
-            .Where(r => MatchesAllowlist(r.Name, toolsAllow))
+            // The MCP gateway is always available — the allowlist only narrows
+            // everything else. See McpGatewaySource. (ExcludedNames above has
+            // already dropped the two admin gateway tools.)
+            .Where(r => IsMcpGatewayTool(r.Source)
+                        || MatchesAllowlist(r.Name, toolsAllow))
             .ToList();
 
         var tools = new List<AIFunction>(allowedRegistrations.Count);
@@ -279,6 +302,15 @@ internal sealed class WorkerRunner(
         }
         return tools;
     }
+
+    /// <summary>
+    /// True when a tool registered under <paramref name="source"/> is an MCP gateway
+    /// tool that workers always keep, bypassing the <c>tools_allow</c> allowlist. See
+    /// <see cref="McpGatewaySource"/>. Admin gateway tools share this source but are
+    /// dropped earlier by <see cref="ExcludedNames"/>.
+    /// </summary>
+    internal static bool IsMcpGatewayTool(string? source) =>
+        string.Equals(source, McpGatewaySource, StringComparison.OrdinalIgnoreCase);
 
     internal static bool MatchesAllowlist(string toolName, IReadOnlyList<string>? toolsAllow)
     {
