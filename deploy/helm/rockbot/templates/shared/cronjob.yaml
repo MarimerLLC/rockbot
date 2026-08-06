@@ -31,7 +31,15 @@ spec:
                   find /rockbot/shared/exports -mindepth 1 -mtime +{{ .Values.shared.exportsTtlDays }} -delete
                   # Catch-all: any remaining file anywhere on the shared volume older than
                   # globalTtlDays. Uses -type f so directory structure is preserved.
-                  find /rockbot/shared -mindepth 1 -type f -mtime +{{ .Values.shared.globalTtlDays }} -delete
+                  # Prefixes in shared.protectedPaths are exempt — this sweep keys on
+                  # mtime, so durable content that is legitimately not edited for a long
+                  # time is exactly what it would delete. `!` rather than `-not`: busybox
+                  # find does not reliably provide the GNU spelling.
+                  find /rockbot/shared -mindepth 1 -type f -mtime +{{ .Values.shared.globalTtlDays }} \
+                  {{- range .Values.shared.protectedPaths }}
+                    ! -path '/rockbot/shared/{{ . }}/*' \
+                  {{- end }}
+                    -delete
               volumeMounts:
                 - name: shared-data
                   mountPath: /rockbot/shared
