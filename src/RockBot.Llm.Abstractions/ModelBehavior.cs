@@ -73,6 +73,26 @@ public sealed class ModelBehavior
     public bool UseTextBasedToolCalling { get; init; }
 
     /// <summary>
+    /// When true, the tool schemas in <c>ChatOptions.Tools</c> are omitted from the request
+    /// sent to the provider. <c>AgentLoopRunner</c> still sees them and can dispatch a parsed
+    /// call, but the model never receives a <c>tools</c> array.
+    /// <para>
+    /// Only meaningful alongside <see cref="UseTextBasedToolCalling"/>, and only needed for
+    /// providers that <em>reject</em> a tools array outright rather than ignoring it —
+    /// OpenRouter returns <c>404 "No endpoints found that support tool use"</c> for models with
+    /// no tool-capable provider, which fails every request before the model is reached.
+    /// </para>
+    /// <para>
+    /// Default is <c>false</c>. Leave it off for models that accept tool schemas and return
+    /// real tool calls (e.g. DeepSeek) — those depend on the array being sent. Note that
+    /// enabling this leaves the model with no description of the available tools, so tool
+    /// use is effectively disabled unless the catalog is supplied some other way (e.g. via
+    /// <see cref="AdditionalSystemPrompt"/>).
+    /// </para>
+    /// </summary>
+    public bool SuppressToolSchemaInRequest { get; init; }
+
+    /// <summary>
     /// Controls how the model presents results at the end of a scheduled-task run.
     /// Defaults to <see cref="ScheduledTaskResultMode.Summarize"/> (current behaviour).
     /// Set to <see cref="ScheduledTaskResultMode.VerbatimOutput"/> for models that tend

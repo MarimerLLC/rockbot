@@ -1,4 +1,5 @@
 using System.ClientModel;
+using System.ClientModel.Primitives;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -124,15 +125,29 @@ async Task<CopilotClient> GetOrCreateCopilotClientAsync()
 
 IChatClient BuildOpenAIClient(LlmTierConfig config)
 {
-    return new OpenAIClient(
-        new ApiKeyCredential(config.ApiKey!),
-        new OpenAIClientOptions
-        {
-            Endpoint = new Uri(config.Endpoint!),
-            // Extend from the 100s default — subagents with large tool sets generate
-            // longer responses that can exceed the default before the body is fully read.
-            NetworkTimeout = TimeSpan.FromMinutes(5)
-        })
+    var clientOptions = new OpenAIClientOptions
+    {
+        Endpoint = new Uri(config.Endpoint!),
+        // Extend from the 100s default — subagents with large tool sets generate
+        // longer responses that can exceed the default before the body is fully read.
+        NetworkTimeout = TimeSpan.FromMinutes(5)
+    };
+
+    // repetition_penalty has no ChatOptions equivalent, so it is injected into the
+    // serialised body by a pipeline policy. Only registered when configured, so the
+    // request shape is byte-identical to before for everyone who leaves it unset.
+    var repetitionPenalty = builder.Configuration.GetValue<float?>("AgentHost:RepetitionPenalty");
+    if (repetitionPenalty is > 0f)
+    {
+        clientOptions.AddPolicy(new RepetitionPenaltyPolicy(repetitionPenalty.Value),
+            PipelinePosition.PerCall);
+        // Logged because the failure mode is silent: an unbound or mistyped setting looks
+        // exactly like a working one from the outside, and the symptom it treats (verbatim
+        // looping) takes several turns to reappear.
+        Console.WriteLine($"    repetition_penalty={repetitionPenalty.Value} (body-injected)");
+    }
+
+    return new OpenAIClient(new ApiKeyCredential(config.ApiKey!), clientOptions)
         .GetChatClient(config.ModelId!).AsIChatClient();
 }
 
@@ -217,7 +232,21 @@ if (anyConfigured)
     builder.Services.AddModelBehaviors(opts =>
         builder.Configuration.GetSection("ModelBehaviors").Bind(opts));
 
-    builder.Services.AddSingleton<ILlmTierSelector, KeywordTierSelector>();
+    // LLM:FixedTier pins every request to one tier, bypassing keyword classification.
+    // Useful when tiers hold genuinely different models rather than quality grades of the
+    // same one — e.g. a creative agent whose conversation must always use the model chosen
+    // for its voice, while a background service points at another tier for a different job.
+    var fixedTier = builder.Configuration["LLM:FixedTier"];
+    if (!string.IsNullOrWhiteSpace(fixedTier)
+        && Enum.TryParse<ModelTier>(fixedTier, ignoreCase: true, out var pinnedTier))
+    {
+        builder.Services.AddSingleton<ILlmTierSelector>(_ => new FixedTierSelector(pinnedTier));
+        Console.WriteLine($"LLM tier selection pinned to {pinnedTier} (LLM:FixedTier)");
+    }
+    else
+    {
+        builder.Services.AddSingleton<ILlmTierSelector, KeywordTierSelector>();
+    }
 }
 else
 {
@@ -272,7 +301,7 @@ builder.Services.AddRockBotHost(agent =>
     agent.WithRules();
     agent.WithMemory();
     agent.WithConversationLog();
-    agent.WithFeedback();
+    agent.WithFeedback(opts => builder.Configuration.GetSection("Feedback").Bind(opts));
     agent.WithSkills();
     agent.WithKnowledgeGraph();
     agent.WithFailureClusterStore();

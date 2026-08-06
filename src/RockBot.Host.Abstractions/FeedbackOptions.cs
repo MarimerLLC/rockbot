@@ -6,6 +6,18 @@ namespace RockBot.Host;
 public sealed class FeedbackOptions
 {
     /// <summary>
+    /// Whether the session-summary evaluator runs. Defaults to <c>true</c>.
+    /// <para>
+    /// Set to <c>false</c> for agents where per-session self-evaluation is not wanted. It is
+    /// a background LLM consumer that fires on every idle session independently of user
+    /// activity, so on a rate-limited or per-token-billed endpoint it can quietly dominate
+    /// spend — and on a single-provider model it can exhaust the quota the user needs to
+    /// hold a conversation.
+    /// </para>
+    /// </summary>
+    public bool Enabled { get; set; } = true;
+
+    /// <summary>
     /// Base directory for per-session feedback JSONL files.
     /// Relative paths are resolved under <see cref="AgentProfileOptions.BasePath"/>.
     /// </summary>

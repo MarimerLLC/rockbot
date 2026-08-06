@@ -64,6 +64,7 @@ internal sealed class DefaultModelBehaviorProvider(
                 entry?.ToolResultChunkingThreshold ?? ModelBehavior.Default.ToolResultChunkingThreshold,
 
             UseTextBasedToolCalling = entry?.UseTextBasedToolCalling ?? false,
+            SuppressToolSchemaInRequest = entry?.SuppressToolSchemaInRequest ?? false,
 
             NudgeOnLeakedToolSyntax = entry?.NudgeOnLeakedToolSyntax ?? false,
             NudgeOnUnexpectedCjkOutput = entry?.NudgeOnUnexpectedCjkOutput ?? false,

@@ -94,7 +94,12 @@ public static class LlmServiceCollectionExtensions
                 // assistant message before any RockBot post-processing.
                 var watched = new DiagnosticLoggingChatClient(raw, diagLogger, tierLabel);
                 return behavior.UseTextBasedToolCalling
-                    ? watched
+                    // Tools stay in ChatOptions for AgentLoopRunner to dispatch parsed calls.
+                    // Only suppress them on the wire when the provider rejects a tools array
+                    // outright — see ToolStrippingChatClient.
+                    ? behavior.SuppressToolSchemaInRequest
+                        ? new ToolStrippingChatClient(watched)
+                        : (IChatClient)watched
                     : new RockBotFunctionInvokingChatClient(watched, progressNotifier, toolCallLog, behavior,
                         costEstimator, workingMemory, sp.GetRequiredService<IOptions<AgentHostOptions>>(), logger);
             }

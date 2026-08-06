@@ -77,6 +77,16 @@ public sealed class AgentProfileOptions
     public string AgentNamePath { get; set; } = "agent-name.md";
 
     /// <summary>
+    /// How often the loader polls the profile directory's <c>*.md</c> last-write times and
+    /// sizes as a fallback to the <see cref="System.IO.FileSystemWatcher"/>. The watcher
+    /// misses changes entirely on filesystems that do not propagate inotify events —
+    /// network/overlay volumes such as Longhorn PVCs, and Docker Desktop bind mounts from a
+    /// Windows host, where an editor save on the host never reaches the container.
+    /// Set to zero to disable polling. Defaults to 5 s, matching the MCP bridge.
+    /// </summary>
+    public int PollIntervalSeconds { get; set; } = 5;
+
+    /// <summary>
     /// Maximum number of entries retained in <c>tier-routing-log.jsonl</c>. The logger trims
     /// the oldest entries on append once this cap is reached. Defaults to 1500 (~3 busy days
     /// of history at typical volume); raised from the previous hardcoded 200 now that the
