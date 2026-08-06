@@ -18,3 +18,7 @@ deploy/values.personal.yaml.live*
 
 # Docker Compose .env files contain API keys — never commit these
 deploy/docker-compose/.env
+# Local-only raw config overrides for the compose agent (optional env_file)
+deploy/docker-compose/agent.extra.env
+# Compose agent runtime data (profile, memory, transcripts) — local only, never commit
+deploy/docker-compose/agent-data/
