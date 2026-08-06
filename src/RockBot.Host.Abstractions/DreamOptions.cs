@@ -19,6 +19,18 @@ public sealed class DreamOptions
     public string CronSchedule { get; set; } = "0 */12 * * *";
 
     /// <summary>
+    /// Which LLM tier the dream passes run on. Defaults to <see cref="ModelTier.Balanced"/>,
+    /// matching the previous hardcoded behaviour.
+    /// <para>
+    /// Dream passes are structured-extraction work — read a transcript, return JSON — which is
+    /// a very different job from whatever the agent does conversationally. Pointing this at a
+    /// different tier lets an agent run its conversation on a model chosen for voice while
+    /// consolidating memory on one chosen for instruction-following and reliable JSON.
+    /// </para>
+    /// </summary>
+    public ModelTier ModelTier { get; set; } = ModelTier.Balanced;
+
+    /// <summary>
     /// Path to the memory consolidation directive file, relative to <see cref="AgentProfileOptions.BasePath"/>.
     /// </summary>
     public string DirectivePath { get; set; } = "dream.md";
@@ -64,6 +76,29 @@ public sealed class DreamOptions
     /// When the file does not exist, a built-in fallback directive is used.
     /// </summary>
     public string EpisodeDirectivePath { get; set; } = "episode-dream.md";
+
+    /// <summary>
+    /// Whether the memory consolidation pass is enabled — the pass that merges duplicate
+    /// long-term memory entries, re-scores importance, and prunes ephemeral ones.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Worth turning off when entry fidelity matters more than tidiness. Consolidation is the
+    /// one pass that <em>rewrites</em> stored memories rather than only adding or deleting
+    /// them, so it is also the only place a weaker or more creative dream model can introduce
+    /// detail that was never in any source entry. Mining, episode and entity extraction all
+    /// derive from the conversation log and can be checked against it; a consolidated entry
+    /// has no such anchor, and any embellishment it picks up is indistinguishable from a real
+    /// fact on the next pass — which then feeds it back in as its own input.
+    /// </para>
+    /// <para>
+    /// With this off, duplicate and near-duplicate entries accumulate instead of being merged.
+    /// Importance re-scoring and the decay pass both stop as well, since both run inside
+    /// consolidation. That is the trade: a larger, redundant store with static importance,
+    /// whose entries are all traceable to something that was actually said.
+    /// </para>
+    /// </remarks>
+    public bool MemoryConsolidationEnabled { get; set; } = true;
 
     /// <summary>Whether the memory mining pass (requires <see cref="IConversationLog"/>) is enabled.</summary>
     public bool MemoryMiningEnabled { get; set; } = true;

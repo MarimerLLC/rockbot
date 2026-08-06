@@ -496,143 +496,18 @@ internal sealed class DreamService : IHostedService, IDisposable
         {
             var ct = slot.Token;
 
-            // Log retention runs first and unconditionally — append-only JSONL logs
-            // must be capped even on cycles where there's nothing to consolidate (the
-            // memory-count check below can early-return).
+            // Log retention runs first — append-only JSONL logs must be capped even on
+            // cycles where there is nothing to consolidate.
             await RunLogRetentionPassAsync(ct);
 
-            var all = await _memory.SearchAsync(new MemorySearchCriteria(MaxResults: 1000));
-
-            if (all.Count < 2)
-            {
-                _logger.LogInformation(
-                    "DreamService: only {Count} memory entries — nothing to consolidate; skipping",
-                    all.Count);
-                return;
-            }
-
-            _logger.LogDebug("DreamService: fetched {Count} memory entries for consolidation", all.Count);
-
-            // Apply importance decay to unreferenced entries before consolidation
-            await RunImportanceDecayPassAsync(all);
-
-            // Build user message: numbered list with IDs, categories, tags, content
-            var userMessage = new StringBuilder();
-            userMessage.AppendLine($"The agent currently has {all.Count} memory entries. Consolidate them:");
-            userMessage.AppendLine();
-
-            // Append recent feedback signals so the dream LLM has quality context
-            if (_feedbackStore is not null)
-            {
-                var recentFeedback = await _feedbackStore.QueryRecentAsync(
-                    since: DateTimeOffset.UtcNow.AddDays(-7),
-                    maxResults: 50);
-
-                if (recentFeedback.Count > 0)
-                {
-                    userMessage.AppendLine();
-                    userMessage.AppendLine("Recent feedback signals (last 7 days):");
-                    foreach (var fb in recentFeedback)
-                    {
-                        var detail = string.IsNullOrWhiteSpace(fb.Detail) ? string.Empty : $" (\"{fb.Detail}\")";
-                        userMessage.AppendLine($"- [{fb.SignalType}] session {fb.SessionId}: {fb.Summary}{detail}");
-                    }
-                    userMessage.AppendLine();
-                    _logger.LogDebug("DreamService: injected {Count} feedback signal(s) into dream prompt", recentFeedback.Count);
-                }
-            }
-
-            for (var i = 0; i < all.Count; i++)
-            {
-                var e = all[i];
-                var tags = e.Tags.Count > 0 ? string.Join(", ", e.Tags) : "(none)";
-                var subjectTime = FormatSubjectTimeForPrompt(e.Metadata);
-                userMessage.AppendLine(
-                    $"{i + 1}. [ID:{e.Id}] category={e.Category ?? "uncategorized"} " +
-                    $"importance={e.ImportanceScore:F2} reinforced={e.ReinforcementCount}× " +
-                    $"first={e.CreatedAt:yyyy-MM-dd} last={e.LastSeenAt:yyyy-MM-dd}" +
-                    $"{subjectTime} tags=[{tags}]");
-                userMessage.AppendLine($"   {e.Content}");
-            }
-
-            var result = await InvokeDreamPassAsync<DreamResultDto>(
-                "memory dream",
-                _dreamDirective!,
-                userMessage.ToString(),
-                ct);
-            if (result is null) return;
-
-            var deleted = 0;
-            var saved = 0;
-
-            // Union of explicit toDelete IDs and all sourceIds referenced by saved entries.
-            // This enforces the exhaustive-deletion contract even when the LLM omits some IDs
-            // from toDelete while still listing them in sourceIds.
-            var allToDelete = new HashSet<string>(
-                result.ToDelete ?? [],
-                StringComparer.OrdinalIgnoreCase);
-
-            foreach (var dto in result.ToSave ?? [])
-                foreach (var srcId in dto.SourceIds ?? [])
-                    allToDelete.Add(srcId);
-
-            foreach (var id in allToDelete)
-            {
-                await _memory.DeleteAsync(id);
-                deleted++;
-                _logger.LogDebug("DreamService: deleted entry {Id}", id);
-            }
-
-            // Build source-entry lookup (case-insensitive on ID) for merge arithmetic
-            var byId = new Dictionary<string, MemoryEntry>(StringComparer.OrdinalIgnoreCase);
-            foreach (var e in all)
-                byId[e.Id] = e;
-
-            foreach (var dto in result.ToSave ?? [])
-            {
-                if (string.IsNullOrWhiteSpace(dto.Content))
-                    continue;
-
-                var sourceIds = dto.SourceIds ?? [];
-                var sources = sourceIds
-                    .Where(id => byId.ContainsKey(id))
-                    .Select(id => byId[id])
-                    .ToList();
-
-                // CreatedAt = earliest source (first-seen preserved); UpdatedAt = now (record rewritten)
-                var firstSeen = sources.Count > 0 ? sources.Min(s => s.CreatedAt) : DateTimeOffset.UtcNow;
-
-                // LastSeenAt = most recent source reinforcement; never "now" on dream housekeeping
-                var lastSeen = sources.Count > 0 ? sources.Max(s => s.LastSeenAt) : DateTimeOffset.UtcNow;
-
-                // ReinforcementCount = sum of source counts; singleton merge (1 source) preserves its count
-                var reinforcementCount = sources.Count > 0 ? sources.Sum(s => s.ReinforcementCount) : 1;
-
-                // LLM-provided importance wins; otherwise carry forward max from sources
-                var importance = dto.Importance
-                    ?? (sources.Count > 0 ? sources.Max(s => s.ImportanceScore) : 0.5f);
-
-                var mergedMetadata = MergeSubjectTimeMetadata(sources);
-
-                var entry = new MemoryEntry(
-                    Id: Guid.NewGuid().ToString("N")[..12],
-                    Content: dto.Content.Trim(),
-                    Category: string.IsNullOrWhiteSpace(dto.Category) ? null : dto.Category.Trim(),
-                    Tags: dto.Tags ?? [],
-                    CreatedAt: firstSeen,
-                    UpdatedAt: DateTimeOffset.UtcNow,
-                    Metadata: mergedMetadata,
-                    ImportanceScore: Math.Clamp(importance, 0f, 1f))
-                {
-                    LastSeenAt = lastSeen,
-                    ReinforcementCount = reinforcementCount
-                };
-
-                await _memory.SaveAsync(entry);
-                saved++;
-                _logger.LogDebug("DreamService: saved entry {Id} ({Category}, importance={Importance:F2}, reinforced={Count}×): {Content}",
-                    entry.Id, entry.Category ?? "(none)", entry.ImportanceScore, entry.ReinforcementCount, entry.Content);
-            }
+            // Consolidation is one pass among many and must not gate the rest of the
+            // cycle. It lives in its own method precisely so that its early exits (too
+            // few entries to merge, or a failed LLM call) return from *it* rather than
+            // aborting the cycle. Inlining it here previously deadlocked a fresh agent:
+            // consolidation needs >=2 memory entries, memory mining is what creates
+            // them, and mining runs after consolidation — so an empty store skipped the
+            // cycle at this point and memory could never become non-empty.
+            var (deleted, saved) = await RunMemoryConsolidationPassAsync(ct);
 
             if (_skillStore is not null)
             { ct.ThrowIfCancellationRequested(); await RunSkillGapDetectionPassAsync(ct); }
@@ -695,6 +570,161 @@ internal sealed class DreamService : IHostedService, IDisposable
         {
             await slot.DisposeAsync();
         }
+    }
+
+    /// <summary>
+    /// Merges and prunes long-term memory entries via the "memory dream" pass.
+    /// Returns the number of entries deleted and saved.
+    /// </summary>
+    /// <remarks>
+    /// Deliberately a separate method rather than inline in <c>DreamAsync</c>: both of
+    /// its early exits — fewer than two entries to merge, and a failed LLM call — used
+    /// to <c>return</c> straight out of the dream cycle, silently skipping every later
+    /// pass including memory mining. That deadlocked a fresh agent, whose memory store
+    /// only becomes non-empty once mining has run.
+    /// </remarks>
+    private async Task<(int Deleted, int Saved)> RunMemoryConsolidationPassAsync(CancellationToken ct)
+    {
+        if (!_options.MemoryConsolidationEnabled)
+        {
+            _logger.LogInformation("DreamService: memory consolidation disabled; skipping");
+            return (0, 0);
+        }
+
+        var all = await _memory.SearchAsync(new MemorySearchCriteria(MaxResults: 1000));
+
+        if (all.Count < 2)
+        {
+            _logger.LogInformation(
+                "DreamService: only {Count} memory entries — nothing to consolidate; skipping consolidation",
+                all.Count);
+            return (0, 0);
+        }
+
+        _logger.LogDebug("DreamService: fetched {Count} memory entries for consolidation", all.Count);
+
+        // Apply importance decay to unreferenced entries before consolidation
+        await RunImportanceDecayPassAsync(all);
+
+        // Build user message: numbered list with IDs, categories, tags, content
+        var userMessage = new StringBuilder();
+        userMessage.AppendLine($"The agent currently has {all.Count} memory entries. Consolidate them:");
+        userMessage.AppendLine();
+
+        // Append recent feedback signals so the dream LLM has quality context
+        if (_feedbackStore is not null)
+        {
+            var recentFeedback = await _feedbackStore.QueryRecentAsync(
+                since: DateTimeOffset.UtcNow.AddDays(-7),
+                maxResults: 50);
+
+            if (recentFeedback.Count > 0)
+            {
+                userMessage.AppendLine();
+                userMessage.AppendLine("Recent feedback signals (last 7 days):");
+                foreach (var fb in recentFeedback)
+                {
+                    var detail = string.IsNullOrWhiteSpace(fb.Detail) ? string.Empty : $" (\"{fb.Detail}\")";
+                    userMessage.AppendLine($"- [{fb.SignalType}] session {fb.SessionId}: {fb.Summary}{detail}");
+                }
+                userMessage.AppendLine();
+                _logger.LogDebug("DreamService: injected {Count} feedback signal(s) into dream prompt", recentFeedback.Count);
+            }
+        }
+
+        for (var i = 0; i < all.Count; i++)
+        {
+            var e = all[i];
+            var tags = e.Tags.Count > 0 ? string.Join(", ", e.Tags) : "(none)";
+            var subjectTime = FormatSubjectTimeForPrompt(e.Metadata);
+            userMessage.AppendLine(
+                $"{i + 1}. [ID:{e.Id}] category={e.Category ?? "uncategorized"} " +
+                $"importance={e.ImportanceScore:F2} reinforced={e.ReinforcementCount}× " +
+                $"first={e.CreatedAt:yyyy-MM-dd} last={e.LastSeenAt:yyyy-MM-dd}" +
+                $"{subjectTime} tags=[{tags}]");
+            userMessage.AppendLine($"   {e.Content}");
+        }
+
+        var result = await InvokeDreamPassAsync<DreamResultDto>(
+            "memory dream",
+            _dreamDirective!,
+            userMessage.ToString(),
+            ct);
+        if (result is null) return (0, 0);
+
+        var deleted = 0;
+        var saved = 0;
+
+        // Union of explicit toDelete IDs and all sourceIds referenced by saved entries.
+        // This enforces the exhaustive-deletion contract even when the LLM omits some IDs
+        // from toDelete while still listing them in sourceIds.
+        var allToDelete = new HashSet<string>(
+            result.ToDelete ?? [],
+            StringComparer.OrdinalIgnoreCase);
+
+        foreach (var dto in result.ToSave ?? [])
+            foreach (var srcId in dto.SourceIds ?? [])
+                allToDelete.Add(srcId);
+
+        foreach (var id in allToDelete)
+        {
+            await _memory.DeleteAsync(id);
+            deleted++;
+            _logger.LogDebug("DreamService: deleted entry {Id}", id);
+        }
+
+        // Build source-entry lookup (case-insensitive on ID) for merge arithmetic
+        var byId = new Dictionary<string, MemoryEntry>(StringComparer.OrdinalIgnoreCase);
+        foreach (var e in all)
+            byId[e.Id] = e;
+
+        foreach (var dto in result.ToSave ?? [])
+        {
+            if (string.IsNullOrWhiteSpace(dto.Content))
+                continue;
+
+            var sourceIds = dto.SourceIds ?? [];
+            var sources = sourceIds
+                .Where(id => byId.ContainsKey(id))
+                .Select(id => byId[id])
+                .ToList();
+
+            // CreatedAt = earliest source (first-seen preserved); UpdatedAt = now (record rewritten)
+            var firstSeen = sources.Count > 0 ? sources.Min(s => s.CreatedAt) : DateTimeOffset.UtcNow;
+
+            // LastSeenAt = most recent source reinforcement; never "now" on dream housekeeping
+            var lastSeen = sources.Count > 0 ? sources.Max(s => s.LastSeenAt) : DateTimeOffset.UtcNow;
+
+            // ReinforcementCount = sum of source counts; singleton merge (1 source) preserves its count
+            var reinforcementCount = sources.Count > 0 ? sources.Sum(s => s.ReinforcementCount) : 1;
+
+            // LLM-provided importance wins; otherwise carry forward max from sources
+            var importance = dto.Importance
+                ?? (sources.Count > 0 ? sources.Max(s => s.ImportanceScore) : 0.5f);
+
+            var mergedMetadata = MergeSubjectTimeMetadata(sources);
+
+            var entry = new MemoryEntry(
+                Id: Guid.NewGuid().ToString("N")[..12],
+                Content: dto.Content.Trim(),
+                Category: string.IsNullOrWhiteSpace(dto.Category) ? null : dto.Category.Trim(),
+                Tags: dto.Tags ?? [],
+                CreatedAt: firstSeen,
+                UpdatedAt: DateTimeOffset.UtcNow,
+                Metadata: mergedMetadata,
+                ImportanceScore: Math.Clamp(importance, 0f, 1f))
+            {
+                LastSeenAt = lastSeen,
+                ReinforcementCount = reinforcementCount
+            };
+
+            await _memory.SaveAsync(entry);
+            saved++;
+            _logger.LogDebug("DreamService: saved entry {Id} ({Category}, importance={Importance:F2}, reinforced={Count}×): {Content}",
+                entry.Id, entry.Category ?? "(none)", entry.ImportanceScore, entry.ReinforcementCount, entry.Content);
+        }
+
+        return (deleted, saved);
     }
 
     private async Task ConsolidateSkillsAsync(CancellationToken ct)
@@ -3894,7 +3924,7 @@ internal sealed class DreamService : IHostedService, IDisposable
 
         var response = await _llmClient.GetResponseAsync(
             messages,
-            ModelTier.Balanced,
+            _options.ModelTier,
             new ChatOptions { ResponseFormat = ChatResponseFormat.Json },
             ct);
 
