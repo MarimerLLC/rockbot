@@ -90,3 +90,13 @@ data:
   Telemetry__OtlpEndpoint: {{ required "telemetry.otlpEndpoint is required when telemetry.enabled=true" .Values.telemetry.otlpEndpoint | quote }}
   Telemetry__ServiceName: {{ .Values.telemetry.serviceName | quote }}
   {{- end }}
+
+  {{- with .Values.agent.extraEnv }}
+  # ── Operator-supplied raw config keys (agent.extraEnv) ─────────────────────
+  # Escape hatch for .NET configuration keys that have no dedicated value above.
+  # Rendered last, but ConfigMap data is a map — a key repeated here would collide
+  # with the templated one rather than override it, so use distinct keys only.
+  {{- range $key, $value := . }}
+  {{ $key }}: {{ $value | quote }}
+  {{- end }}
+  {{- end }}

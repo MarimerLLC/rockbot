@@ -9,6 +9,19 @@ agent:
   image:
     repository: rockylhotka/rockbot-agent
     tag: latest
+  # Escape hatch for raw .NET configuration keys that have no dedicated value in
+  # this file — e.g. AgentHost__*, Dream__*, ModelBehaviors__Models__<prefix>__*.
+  # Rendered verbatim into the agent ConfigMap, so use the environment-variable
+  # form with "__" as the section separator. Values are quoted for you.
+  #
+  #   extraEnv:
+  #     AgentHost__Temperature: "0.9"
+  #     Dream__MemoryConsolidationEnabled: "false"
+  #     ModelBehaviors__Models__somevendor__UseTextBasedToolCalling: "true"
+  #
+  # Non-secret keys only — anything sensitive belongs under `secrets` instead.
+  # This mirrors the optional agent.extra.env file in the docker-compose stack.
+  extraEnv: {}
   # Always Recreate — only one agent may run at a time (stateful)
   replicaCount: 1
   # IANA timezone ID injected into every LLM prompt as current date/time context.
