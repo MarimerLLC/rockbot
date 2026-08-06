@@ -33,9 +33,14 @@ public sealed class AgentContextBuilder(
     IEnumerable<IEmbeddingGenerator<string, Embedding<float>>> embeddingGenerators,
     ILogger<AgentContextBuilder> logger,
     ICapabilityClaimVerifier? capabilityClaimVerifier = null,
-    IToolCallLog? toolCallLog = null)
+    IToolCallLog? toolCallLog = null,
+    IOptions<AgentHostOptions>? agentHostOptions = null)
 {
     private const int MaxLlmContextTurns = 20;
+
+    /// <summary>Host options, defaulted when not supplied so existing callers and tests are unaffected.</summary>
+    private readonly AgentHostOptions _hostOptions = agentHostOptions?.Value ?? new AgentHostOptions();
+
     private readonly IServiceSearchIndex? _serviceSearchIndex = serviceSearchIndexProviders.FirstOrDefault();
     private readonly IKnowledgeGraph? _knowledgeGraph = knowledgeGraphProviders.FirstOrDefault();
     private readonly KnowledgeGraphOptions _graphOptions = knowledgeGraphOptions.Value;
@@ -454,7 +459,7 @@ public sealed class AgentContextBuilder(
         }
 
         // Skill index (once per session)
-        if (shouldInjectSkillIndex && skillList.Count > 0)
+        if (_hostOptions.EnableSkillInjection && shouldInjectSkillIndex && skillList.Count > 0)
         {
             var indexText =
                 "Available skills (use get_skill to load full instructions; " +
@@ -476,6 +481,7 @@ public sealed class AgentContextBuilder(
         // Why: production tool-call logs show ~1% of tool calls are get_skill while every
         // non-short turn pushes ~5 full bodies — most are unread. Rank-1 is usually the
         // genuinely-relevant skill; ranks 2+ are noise the agent can pull on demand.
+        if (_hostOptions.EnableSkillInjection)
         {
             var newSkills = recalledSkills
                 .Where(s => skillRecallTracker.TryMarkAsRecalled(sessionId, s.Name))
@@ -530,7 +536,8 @@ public sealed class AgentContextBuilder(
         // Per-turn service search hints (A2A agents + MCP servers).
         // Gated on isShortMessage to match the BM25-search injections above —
         // a 2-3-word query produces noisy hits regardless of which index runs it.
-        if (_serviceSearchIndex is not null && !string.IsNullOrWhiteSpace(currentUserContent) && !isShortMessage)
+        if (_hostOptions.EnableServiceHints
+            && _serviceSearchIndex is not null && !string.IsNullOrWhiteSpace(currentUserContent) && !isShortMessage)
         {
             var candidates = _serviceSearchIndex.Search(currentUserContent, maxResults: 2);
             if (candidates.Count > 0)
@@ -1076,7 +1083,8 @@ public sealed class AgentContextBuilder(
         }
 
         // Service hints.
-        if (_serviceSearchIndex is not null && !string.IsNullOrWhiteSpace(currentUserContent) && !isShortMessage)
+        if (_hostOptions.EnableServiceHints
+            && _serviceSearchIndex is not null && !string.IsNullOrWhiteSpace(currentUserContent) && !isShortMessage)
         {
             var candidates = _serviceSearchIndex.Search(currentUserContent, maxResults: 2);
             if (candidates.Count > 0)

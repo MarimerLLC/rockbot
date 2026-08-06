@@ -313,7 +313,9 @@ public sealed partial class AgentLoopRunner(
         Func<string, CancellationToken, Task>? onStageProgress = null,
         bool enableFollowUp = true,
         bool enableCompletionEval = true,
-        bool enableReasoningScaffolding = true,
+        // Null means "use AgentHostOptions.EnableReasoningScaffolding". Callers that pass
+        // an explicit value (e.g. WorkerRunner passing false) still override the config.
+        bool? enableReasoningScaffolding = null,
         double? complexityScore = null,
         int? maxIterationsOverride = null,
         LoopDiagnostics? diagnostics = null,
@@ -342,11 +344,21 @@ public sealed partial class AgentLoopRunner(
         // Ensure a current datetime context is always present.
         EnsureDateTimeContext(chatMessages);
 
+        // Apply configured sampling defaults. Every LLM path routes through RunAsync, so
+        // this is the one place that reaches all handlers. Only fills values the caller
+        // left unset, so a handler with deliberate settings keeps them.
+        ApplySamplingDefaults(chatOptions);
+
         // Inject reasoning scaffolding so the model knows its iteration budget.
         // Workers (the lean rung between wisps and subagents) skip this — they
         // don't need step-by-step deliberation guidance and shave the system
-        // message out entirely.
-        if (enableReasoningScaffolding)
+        // message out entirely. Conversational and creative agents opt out via
+        // AgentHost:EnableReasoningScaffolding, since "fully complete the request"
+        // framing pushes them to summarise instead of staying in the scene.
+        var useScaffolding = enableReasoningScaffolding
+            ?? hostOptions.Value.EnableReasoningScaffolding;
+
+        if (useScaffolding)
             InjectReasoningScaffolding(chatMessages);
 
         // Per-run task list (issue #336): in-memory plan that survives context trimming
@@ -355,7 +367,7 @@ public sealed partial class AgentLoopRunner(
         // Workers skip the task-list tools too — a leaf gather task does not need a
         // TODO list, and removing the tools shrinks the schema injection cost.
         var taskList = new AgentTaskList();
-        if (enableReasoningScaffolding)
+        if (useScaffolding)
         {
             var taskListTools = new AgentTaskListTools(taskList, logger);
             AppendTaskListTools(chatOptions, taskListTools);
@@ -757,6 +769,21 @@ public sealed partial class AgentLoopRunner(
             }
         }
         chatMessages.Insert(insertAt, new ChatMessage(ChatRole.System, text));
+    }
+
+    /// <summary>
+    /// Fills sampling parameters from <see cref="AgentHostOptions"/> where the caller has not
+    /// already set them. Left null by default so provider defaults apply unchanged; a caller
+    /// that sets a value explicitly always wins.
+    /// </summary>
+    internal void ApplySamplingDefaults(ChatOptions chatOptions)
+    {
+        var opts = hostOptions.Value;
+
+        chatOptions.Temperature ??= opts.Temperature;
+        chatOptions.FrequencyPenalty ??= opts.FrequencyPenalty;
+        chatOptions.PresencePenalty ??= opts.PresencePenalty;
+        chatOptions.MaxOutputTokens ??= opts.MaxOutputTokens;
     }
 
     private const string ReasoningScaffoldingMarker = "You have up to ";

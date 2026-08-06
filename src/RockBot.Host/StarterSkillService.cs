@@ -1,5 +1,6 @@
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using RockBot.Tools;
 
 namespace RockBot.Host;
@@ -20,20 +21,30 @@ internal sealed class StarterSkillService : IHostedService
 {
     private readonly ISkillStore? _skillStore;
     private readonly IReadOnlyList<IToolSkillProvider> _providers;
+    private readonly AgentHostOptions _hostOptions;
     private readonly ILogger<StarterSkillService> _logger;
 
     public StarterSkillService(
         IEnumerable<ISkillStore> skillStores,
         IEnumerable<IToolSkillProvider> providers,
-        ILogger<StarterSkillService> logger)
+        ILogger<StarterSkillService> logger,
+        IOptions<AgentHostOptions>? hostOptions = null)
     {
         _skillStore = skillStores.FirstOrDefault();
         _providers = providers.ToList();
+        _hostOptions = hostOptions?.Value ?? new AgentHostOptions();
         _logger = logger;
     }
 
     public async Task StartAsync(CancellationToken cancellationToken)
     {
+        if (!_hostOptions.EnableSkillInjection)
+        {
+            _logger.LogInformation(
+                "StarterSkillService: skill injection is disabled; skipping starter-skill seeding");
+            return;
+        }
+
         if (_skillStore is null || _providers.Count == 0)
             return;
 

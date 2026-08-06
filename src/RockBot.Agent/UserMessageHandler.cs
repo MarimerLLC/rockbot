@@ -53,6 +53,7 @@ internal sealed class UserMessageHandler(
     McpBridge.Attachments.IAttachmentStorage attachmentStorage,
     SessionOriginStore originStore,
     IOptions<AgentProfileOptions> profileOptions,
+    IOptions<AgentHostOptions> hostOptions,
     IWipTracker wipTracker,
     AgentNameHolder agentNameHolder,
     ILogger<UserMessageHandler> logger,
@@ -379,18 +380,21 @@ internal sealed class UserMessageHandler(
 
             var errorText = $"Sorry, I encountered an error: {ex.Message}";
 
-            try
+            if (hostOptions.Value.PersistErrorTurns)
             {
-                await conversationMemory.AddTurnAsync(
-                    message.SessionId,
-                    new ConversationTurn("assistant", errorText, DateTimeOffset.UtcNow)
-                    { AgentName = agent.Name },
-                    CancellationToken.None);
-            }
-            catch (Exception memEx)
-            {
-                logger.LogWarning(memEx, "Failed to record error assistant turn for session {SessionId}",
-                    message.SessionId);
+                try
+                {
+                    await conversationMemory.AddTurnAsync(
+                        message.SessionId,
+                        new ConversationTurn("assistant", errorText, DateTimeOffset.UtcNow)
+                        { AgentName = agent.Name },
+                        CancellationToken.None);
+                }
+                catch (Exception memEx)
+                {
+                    logger.LogWarning(memEx, "Failed to record error assistant turn for session {SessionId}",
+                        message.SessionId);
+                }
             }
 
             await PublishReplyAsync(errorText, replyTo, correlationId, message.SessionId, turnId, isFinal: true, ct);

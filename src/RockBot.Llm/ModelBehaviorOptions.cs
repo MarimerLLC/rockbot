@@ -51,6 +51,9 @@ public sealed class ModelBehaviorEntry
     /// <inheritdoc cref="ModelBehavior.UseTextBasedToolCalling"/>
     public bool UseTextBasedToolCalling { get; set; }
 
+    /// <inheritdoc cref="ModelBehavior.SuppressToolSchemaInRequest"/>
+    public bool SuppressToolSchemaInRequest { get; set; }
+
     /// <inheritdoc cref="ModelBehavior.NudgeOnLeakedToolSyntax"/>
     public bool NudgeOnLeakedToolSyntax { get; set; }
 

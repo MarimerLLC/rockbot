@@ -94,7 +94,12 @@ public static class ServiceCollectionExtensions
         {
             var behavior = sp.GetRequiredService<ModelBehavior>();
             if (behavior.UseTextBasedToolCalling)
-                return innerClient;
+                // Tools stay in ChatOptions for AgentLoopRunner to dispatch parsed calls.
+                // Only suppress them on the wire when the provider rejects a tools array
+                // outright — see ToolStrippingChatClient.
+                return behavior.SuppressToolSchemaInRequest
+                    ? new ToolStrippingChatClient(innerClient)
+                    : innerClient;
 
             return new RockBotFunctionInvokingChatClient(
                 innerClient,

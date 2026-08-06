@@ -58,6 +58,12 @@ internal sealed class SessionSummaryService : IHostedService, IDisposable
 
     public Task StartAsync(CancellationToken cancellationToken)
     {
+        if (!_options.Enabled)
+        {
+            _logger.LogInformation("SessionSummaryService is disabled; skipping session evaluation");
+            return Task.CompletedTask;
+        }
+
         var directivePath = ResolvePath(_options.EvaluatorDirectivePath, _profileOptions.BasePath);
         _evaluatorDirective = File.Exists(directivePath)
             ? File.ReadAllText(directivePath)

@@ -23,6 +23,15 @@ internal sealed class AgentProfileLoader : IHostedService, IDisposable
     private FileSystemWatcher? _watcher;
     private Timer? _debounce;
     private int _reloadPending;
+    private CancellationTokenSource? _pollCts;
+    private Task? _pollTask;
+    private string? _baseDir;
+
+    /// <summary>
+    /// Last-seen fingerprint of the profile directory, refreshed after every load.
+    /// Null until the first snapshot is taken.
+    /// </summary>
+    private string? _lastStamp;
 
     public AgentProfileLoader(
         IAgentProfileProvider provider,
@@ -53,10 +62,15 @@ internal sealed class AgentProfileLoader : IHostedService, IDisposable
         StartWatching();
     }
 
-    public Task StopAsync(CancellationToken cancellationToken)
+    public async Task StopAsync(CancellationToken cancellationToken)
     {
         StopWatching();
-        return Task.CompletedTask;
+
+        if (_pollCts is not null)
+            await _pollCts.CancelAsync();
+
+        if (_pollTask is not null)
+            await _pollTask.ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
     }
 
     private void StartWatching()
@@ -71,6 +85,9 @@ internal sealed class AgentProfileLoader : IHostedService, IDisposable
             return;
         }
 
+        _baseDir = baseDir;
+        _lastStamp = ReadDirectoryStamp(baseDir);
+
         _watcher = new FileSystemWatcher(baseDir, "*.md")
         {
             NotifyFilter = NotifyFilters.LastWrite | NotifyFilters.Size | NotifyFilters.FileName,
@@ -83,6 +100,15 @@ internal sealed class AgentProfileLoader : IHostedService, IDisposable
         _watcher.Renamed += OnFileChanged;
 
         _logger.LogInformation("Watching profile directory {Path} for changes", baseDir);
+
+        if (_options.PollIntervalSeconds > 0)
+        {
+            _pollCts = new CancellationTokenSource();
+            _pollTask = RunPollAsync(_pollCts.Token);
+            _logger.LogInformation(
+                "Polling profile directory every {Interval}s as a watcher fallback",
+                _options.PollIntervalSeconds);
+        }
     }
 
     private void StopWatching()
@@ -101,25 +127,58 @@ internal sealed class AgentProfileLoader : IHostedService, IDisposable
         _debounce = null;
     }
 
-    private void OnFileChanged(object sender, FileSystemEventArgs e)
+    private void OnFileChanged(object sender, FileSystemEventArgs e) => TriggerReload("watcher");
+
+    /// <summary>
+    /// Polling fallback for profile changes. <see cref="FileSystemWatcher"/> relies on
+    /// inotify, which is never delivered for host-side edits on a Docker Desktop bind mount
+    /// and is unreliable on network/overlay filesystems such as Longhorn PVCs. Stat the
+    /// directory's <c>*.md</c> files on an interval and reload when the fingerprint moves.
+    /// </summary>
+    private async Task RunPollAsync(CancellationToken ct)
     {
-        // FileSystemWatcher fires multiple events per save; debounce to 500ms
-        if (Interlocked.Exchange(ref _reloadPending, 1) == 0)
+        using var timer = new PeriodicTimer(TimeSpan.FromSeconds(_options.PollIntervalSeconds));
+
+        try
         {
-            _debounce?.Dispose();
-            _debounce = new Timer(
-                _ => _ = ReloadAsync(),
-                null,
-                TimeSpan.FromMilliseconds(500),
-                Timeout.InfiniteTimeSpan);
+            while (await timer.WaitForNextTickAsync(ct))
+            {
+                if (_baseDir is null) continue;
+
+                var current = ReadDirectoryStamp(_baseDir);
+                if (current is not null && current != _lastStamp)
+                    TriggerReload("poll");
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // Normal shutdown
         }
     }
 
-    private async Task ReloadAsync()
+    /// <summary>
+    /// Coordinates reloads from both the watcher and the poll loop. The watcher fires
+    /// several events per save, so collapse them into one reload 500 ms later; the
+    /// interlock also stops the poll loop from stacking a second reload on top.
+    /// </summary>
+    private void TriggerReload(string reason)
+    {
+        if (Interlocked.Exchange(ref _reloadPending, 1) != 0)
+            return;
+
+        _debounce?.Dispose();
+        _debounce = new Timer(
+            _ => _ = ReloadAsync(reason),
+            null,
+            TimeSpan.FromMilliseconds(500),
+            Timeout.InfiniteTimeSpan);
+    }
+
+    private async Task ReloadAsync(string reason)
     {
         try
         {
-            _logger.LogInformation("Profile file change detected, reloading...");
+            _logger.LogInformation("Profile file change detected via {Reason}, reloading...", reason);
             var profile = await _provider.LoadAsync(CancellationToken.None);
             _holder.Update(profile);
             LoadAgentName();
@@ -131,7 +190,35 @@ internal sealed class AgentProfileLoader : IHostedService, IDisposable
         }
         finally
         {
+            // Re-stamp after loading — including on failure — so a file that cannot be
+            // parsed does not re-trigger a reload on every poll tick.
+            if (_baseDir is not null)
+                _lastStamp = ReadDirectoryStamp(_baseDir);
+
             Interlocked.Exchange(ref _reloadPending, 0);
+        }
+    }
+
+    /// <summary>
+    /// Fingerprint of every <c>*.md</c> file directly in <paramref name="directory"/> —
+    /// name, last-write time and length. Cheap to read and enough to catch operator edits,
+    /// additions and deletions. Returns null when the directory cannot be listed, which the
+    /// caller treats as "no change" rather than risking a reload loop on a transient error.
+    /// </summary>
+    internal static string? ReadDirectoryStamp(string directory)
+    {
+        try
+        {
+            var entries = new DirectoryInfo(directory)
+                .GetFiles("*.md", SearchOption.TopDirectoryOnly)
+                .Select(f => $"{f.Name}:{f.LastWriteTimeUtc.Ticks}:{f.Length}")
+                .Order(StringComparer.Ordinal);
+
+            return string.Join('|', entries);
+        }
+        catch
+        {
+            return null;
         }
     }
 
@@ -199,6 +286,9 @@ internal sealed class AgentProfileLoader : IHostedService, IDisposable
     public void Dispose()
     {
         StopWatching();
+        _pollCts?.Cancel();
+        _pollCts?.Dispose();
+        _pollCts = null;
     }
 }
 
