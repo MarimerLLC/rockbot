@@ -1,5 +1,6 @@
 using Microsoft.Extensions.Logging;
 using RockBot.Host;
+using RockBot.Memory;
 using RockBot.Messaging;
 using RockBot.UserProxy;
 
@@ -15,6 +16,7 @@ internal sealed class ClearContextHandler(
     SessionClientCapabilityStore clientCapabilityStore,
     ReplyAttachmentBuffer attachmentBuffer,
     SessionOriginStore originStore,
+    InjectedMemoryTracker injectedMemoryTracker,
     IMessagePublisher publisher,
     AgentIdentity agent,
     ILogger<ClearContextHandler> logger) : IMessageHandler<ClearContextRequest>
@@ -29,6 +31,12 @@ internal sealed class ClearContextHandler(
 
         // Clear conversation memory (ephemeral turns only — logs are preserved)
         await conversationMemory.ClearAsync(message.SessionId, ct);
+
+        // Forget which memories have been injected. Recalled memories live in context for a
+        // single turn and are never persisted into history, so leaving this set behind would
+        // start the fresh session with no history AND every previously-recalled memory
+        // suppressed — the agent would be unable to recall anything it had already seen.
+        injectedMemoryTracker.Clear(message.SessionId);
 
         // Drop the cached client capabilities so the next inbound UserMessage re-establishes
         // them from scratch — important if the user returns on a different client.
