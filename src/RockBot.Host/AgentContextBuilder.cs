@@ -345,8 +345,11 @@ public sealed class AgentContextBuilder(
 
         // Long-term memory BM25 recall
         {
+            // history.Count is the turn index; MaxLlmContextTurns is how far back the model can
+            // still see. Past that, this entry is no longer in context and must be re-injected.
             var newEntries = recalled
-                .Where(e => injectedMemoryTracker.TryMarkAsInjected(sessionId, e.Id))
+                .Where(e => injectedMemoryTracker.TryMarkAsInjected(
+                    sessionId, e.Id, history.Count, MaxLlmContextTurns))
                 .ToList();
 
             if (newEntries.Count > 0)
@@ -368,7 +371,8 @@ public sealed class AgentContextBuilder(
         // Episodic memory recall
         {
             var newEpisodes = episodes
-                .Where(e => injectedMemoryTracker.TryMarkAsInjected(sessionId, e.Id))
+                .Where(e => injectedMemoryTracker.TryMarkAsInjected(
+                    sessionId, e.Id, history.Count, MaxLlmContextTurns))
                 .ToList();
 
             if (newEpisodes.Count > 0)

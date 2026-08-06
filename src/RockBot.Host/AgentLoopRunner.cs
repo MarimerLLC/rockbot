@@ -7,6 +7,7 @@ using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using RockBot.Llm;
+using RockBot.Memory;
 using RockBot.Tools;
 
 namespace RockBot.Host;
@@ -26,7 +27,8 @@ public sealed partial class AgentLoopRunner(
     ISkillStore skillStore,
     IEnumerable<IServiceSearchIndex> serviceSearchIndexProviders,
     IConversationMemory conversationMemory,
-    ILogger<AgentLoopRunner> logger)
+    ILogger<AgentLoopRunner> logger,
+    InjectedMemoryTracker? injectedMemoryTracker = null)
 {
     private readonly IServiceSearchIndex? _serviceSearchIndex = serviceSearchIndexProviders.FirstOrDefault();
     private const int MaxConsecutiveTimeoutIterations = 2;
@@ -2098,6 +2100,11 @@ public sealed partial class AgentLoopRunner(
             }
 
             await conversationMemory.ClearAsync(sessionId, ct);
+
+            // History just went to (at most) a single turn, so every memory injected against the
+            // discarded turns is gone from context. Drop the injection record too, or those
+            // memories stay suppressed for the rest of the process and can never be recalled.
+            injectedMemoryTracker?.Clear(sessionId);
 
             if (lastUserTurn is not null)
             {
