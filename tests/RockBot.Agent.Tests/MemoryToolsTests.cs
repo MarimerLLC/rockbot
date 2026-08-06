@@ -289,6 +289,135 @@ public class MemoryToolsTests
     }
 
     // -------------------------------------------------------------------------
+    // SearchMemory — folded-in list_categories taxonomy (issue #484)
+    // -------------------------------------------------------------------------
+
+    [TestMethod]
+    public void Tools_DoNotExposeListCategories()
+    {
+        var tools = MakeTools(new StubLongTermMemory());
+
+        var names = tools.Tools.OfType<AIFunction>().Select(f => f.Name).ToList();
+
+        CollectionAssert.DoesNotContain(names, "ListCategories",
+            "list_categories is folded into the query-less search_memory path and must not be a separate tool.");
+        CollectionAssert.Contains(names, "SearchMemory");
+    }
+
+    [TestMethod]
+    public async Task SearchMemory_NoQuery_AppendsCategoryTaxonomy()
+    {
+        var memory = new StubLongTermMemory();
+        memory.Add(Entry("id1", "Some fact", DateTimeOffset.UtcNow));
+        memory.Categories.AddRange(["project-context/rockbot", "user-preferences/style"]);
+        var tools = MakeTools(memory);
+
+        var result = await tools.SearchMemory();
+
+        StringAssert.Contains(result, "Some fact");
+        StringAssert.Contains(result, "Memory categories (2):");
+        StringAssert.Contains(result, "- project-context/rockbot");
+        StringAssert.Contains(result, "- user-preferences/style");
+    }
+
+    [TestMethod]
+    public async Task SearchMemory_NoQuery_TaxonomyIsWholeStore_NotJustMatchedCategories()
+    {
+        // list_categories showed every category, not only those present in the current page.
+        // Folding it in must not narrow that: a scoped browse still reveals sibling categories.
+        var memory = new StubLongTermMemory();
+        memory.Add(Entry("id1", "A preference", DateTimeOffset.UtcNow));
+        memory.Categories.AddRange(["user-preferences/style", "project-context/rockbot"]);
+        var tools = MakeTools(memory);
+
+        var result = await tools.SearchMemory(category: "user-preferences");
+
+        StringAssert.Contains(result, "- project-context/rockbot",
+            "Browsing one category must still surface the full taxonomy for discovery.");
+    }
+
+    [TestMethod]
+    public async Task SearchMemory_WithQuery_DoesNotAppendCategoryTaxonomy()
+    {
+        var memory = new StubLongTermMemory();
+        memory.Add(Entry("id1", "Some fact", DateTimeOffset.UtcNow));
+        memory.Categories.Add("project-context/rockbot");
+        var tools = MakeTools(memory);
+
+        var result = await tools.SearchMemory("fact");
+
+        Assert.IsFalse(result.Contains("Memory categories"),
+            "A keyword search is not a browse — the taxonomy would just be token noise.");
+        Assert.AreEqual(0, memory.ListCategoriesCallCount);
+    }
+
+    [TestMethod]
+    public async Task SearchMemory_NoQuery_NoResults_StillAppendsCategoryTaxonomy()
+    {
+        // A category filter that matches nothing is exactly when knowing the real
+        // category names is most useful.
+        var memory = new StubLongTermMemory { SearchOverride = _ => [] };
+        memory.Categories.Add("project-context/rockbot");
+        var tools = MakeTools(memory);
+
+        var result = await tools.SearchMemory(category: "no-such-category");
+
+        StringAssert.Contains(result, "No memories found");
+        StringAssert.Contains(result, "- project-context/rockbot");
+    }
+
+    [TestMethod]
+    public async Task SearchMemory_NoQuery_NoCategories_OmitsTaxonomySection()
+    {
+        var memory = new StubLongTermMemory();
+        memory.Add(Entry("id1", "Some fact", DateTimeOffset.UtcNow));
+        var tools = MakeTools(memory);
+
+        var result = await tools.SearchMemory();
+
+        Assert.IsFalse(result.Contains("Memory categories"));
+    }
+
+    [TestMethod]
+    public async Task SearchMemory_NoQuery_TaxonomyFailure_DoesNotFailTheSearch()
+    {
+        var memory = new StubLongTermMemory { FailListCategories = true };
+        memory.Add(Entry("id1", "Some fact", DateTimeOffset.UtcNow));
+        var tools = MakeTools(memory);
+
+        var result = await tools.SearchMemory();
+
+        StringAssert.Contains(result, "Some fact");
+        Assert.IsFalse(result.Contains("Memory categories"));
+    }
+
+    [TestMethod]
+    public async Task SearchMemory_Category_IsPassedToStoreAsFilter()
+    {
+        var memory = new StubLongTermMemory();
+        var tools = MakeTools(memory);
+
+        await tools.SearchMemory("timezone", category: "user-preferences");
+
+        Assert.AreEqual("user-preferences", memory.LastCriteria?.Category);
+        Assert.AreEqual("timezone", memory.LastCriteria?.Query);
+    }
+
+    [TestMethod]
+    public async Task SearchMemory_WhitespaceQuery_IsTreatedAsBrowse()
+    {
+        var memory = new StubLongTermMemory();
+        memory.Add(Entry("id1", "Some fact", DateTimeOffset.UtcNow));
+        memory.Categories.Add("project-context/rockbot");
+        var tools = MakeTools(memory);
+
+        var result = await tools.SearchMemory("   ");
+
+        Assert.IsNull(memory.LastCriteria?.Query);
+        StringAssert.Contains(result, "Memory categories");
+    }
+
+    // -------------------------------------------------------------------------
     // Helpers
     // -------------------------------------------------------------------------
 
@@ -484,6 +613,14 @@ internal sealed class StubLongTermMemory : ILongTermMemory
     public MemorySearchCriteria? LastCriteria { get; private set; }
     public Func<MemorySearchCriteria, IReadOnlyList<MemoryEntry>>? SearchOverride { get; set; }
 
+    /// <summary>Categories returned by <see cref="ListCategoriesAsync"/>; empty by default.</summary>
+    public List<string> Categories { get; } = [];
+
+    /// <summary>Set to throw from <see cref="ListCategoriesAsync"/>, exercising the taxonomy failure path.</summary>
+    public bool FailListCategories { get; set; }
+
+    public int ListCategoriesCallCount { get; private set; }
+
     public void Add(MemoryEntry entry) => _entries.Add(entry);
 
     public IReadOnlyList<MemoryEntry> SnapshotAll()
@@ -522,8 +659,13 @@ internal sealed class StubLongTermMemory : ILongTermMemory
     public Task<IReadOnlyList<string>> ListTagsAsync(CancellationToken cancellationToken = default) =>
         Task.FromResult<IReadOnlyList<string>>([]);
 
-    public Task<IReadOnlyList<string>> ListCategoriesAsync(CancellationToken cancellationToken = default) =>
-        Task.FromResult<IReadOnlyList<string>>([]);
+    public Task<IReadOnlyList<string>> ListCategoriesAsync(CancellationToken cancellationToken = default)
+    {
+        ListCategoriesCallCount++;
+        if (FailListCategories)
+            throw new InvalidOperationException("category index unavailable");
+        return Task.FromResult<IReadOnlyList<string>>([.. Categories]);
+    }
 }
 
 /// <summary>

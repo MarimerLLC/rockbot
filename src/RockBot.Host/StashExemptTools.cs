@@ -24,8 +24,9 @@ internal static class StashExemptTools
     private static readonly HashSet<string> Names = new(StringComparer.OrdinalIgnoreCase)
     {
         "GetFromWorkingMemory",
+        // Covers both the ranked-search and the query-less listing path, which absorbed the
+        // former ListWorkingMemory tool.
         "SearchWorkingMemory",
-        "ListWorkingMemory",
     };
 
     /// <summary>

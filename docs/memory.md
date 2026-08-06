@@ -230,9 +230,15 @@ acting as actionable constraints during inference.
 | Tool | Purpose |
 |---|---|
 | `save_memory(content, category?, tags?)` | Queue a memory for background enrichment and save |
-| `search_memory(query, category?, tags?)` | BM25 search with optional filters |
+| `search_memory(query?, category?, mode?)` | Hybrid/regex search with an optional category prefix filter; omit `query` to browse and get the category taxonomy |
 | `delete_memory(id)` | Remove a specific entry |
-| `list_memory_categories()` | Browse the category hierarchy |
+| `update_memory_importance(id, importance)` | Re-score an existing entry |
+
+There is no separate list-categories tool. Calling `search_memory` without a `query`
+returns the most recently reinforced entries in scope followed by the full category
+taxonomy, so `search_memory()` alone answers "how is knowledge organized here?". The
+taxonomy is appended even when the search matched nothing, so a `category` filter that
+misses still shows what categories do exist.
 
 When `save_memory` is called, a background task calls the LLM to expand the raw content into
 focused, well-formed memory entries (the expansion prompt is in `memory-rules.md`). The
@@ -265,7 +271,7 @@ automatically baked into `WorkingMemoryTools` at construction time:
 
 Writes always go to the caller's own namespace. Reads can cross namespaces — either by passing
 a full path key (e.g. `subagent/t1b2c3/research_results`) or by using the optional `namespace`
-parameter on `list_working_memory` and `search_working_memory`.
+parameter on `search_working_memory`.
 
 ### Data model
 
@@ -322,18 +328,28 @@ injects the patrol's own entries under the patrol namespace and skips the patrol
 |---|---|
 | `save_to_working_memory(key, data, ttl_minutes?, category?, tags?)` | Store an entry in own namespace |
 | `get_from_working_memory(key)` | Retrieve by plain key (own namespace) or full path (cross-namespace) |
-| `list_working_memory(namespace?)` | List keys in own namespace, or pass a prefix to browse another |
-| `search_working_memory(query?, category?, tags?, namespace?)` | BM25 search, optionally cross-namespace |
+| `search_working_memory(query?, category?, tags?, namespace?)` | Search or list, optionally cross-namespace |
+
+There is no separate `list_working_memory` tool — omitting `query` *is* the listing.
+`search_working_memory` has two rendering modes:
+
+| `query` | Ranking | Output |
+|---|---|---|
+| supplied | BM25 (+ vector when embeddings are configured), capped at `MaxResults` (20) | key, category, tags, expiry, and a 120-char content preview |
+| omitted | most-recently-stored first, capped at 500 | key, category, tags, expiry — no preview |
+
+The higher cap on the listing path preserves the unbounded enumeration the removed
+`list_working_memory` tool provided; a listing that hits the cap says so.
 
 **Cross-namespace access examples:**
 
 ```
 # See what a completed subagent stored
-list_working_memory(namespace: "subagent/t1b2c3")
+search_working_memory(namespace: "subagent/t1b2c3")
 get_from_working_memory("subagent/t1b2c3/research_results")
 
 # Browse all patrol outputs
-list_working_memory(namespace: "patrol")
+search_working_memory(namespace: "patrol")
 search_working_memory(query: "alert", namespace: "patrol/heartbeat")
 ```
 

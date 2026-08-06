@@ -29,11 +29,12 @@ RockBot agents support two tiers of memory:
 
 ### LLM Tool Integration
 
-The LLM manages its own long-term memory via three tools:
+The LLM manages its own long-term memory via two tools:
 
 - **`save_memory(content, category?, tags?)`** — saves a `MemoryEntry` with LLM-chosen category
-- **`search_memory(query?, category?)`** — keyword search with optional category prefix filter
-- **`list_categories()`** — returns the category tree for self-organization
+- **`search_memory(query?, category?, mode?)`** — keyword/semantic search with optional category
+  prefix filter. Omitting `query` browses the store and appends the category tree, which is how
+  the agent self-organizes; there is no separate `list_categories` tool.
 
 `FunctionInvokingChatClient` from `Microsoft.Extensions.AI` handles the tool-call loop automatically.
 

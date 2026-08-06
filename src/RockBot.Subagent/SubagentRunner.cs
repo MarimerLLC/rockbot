@@ -72,7 +72,7 @@ internal sealed class SubagentRunner(
             $"For large outputs (reports, document lists, structured data): use save_to_working_memory " +
             $"to store them (set ttl_minutes to 240 or more). Your working memory namespace is " +
             $"'{subagentNamespace}' and the primary agent can retrieve them using " +
-            $"list_working_memory(namespace: '{subagentNamespace}') or " +
+            $"search_working_memory(namespace: '{subagentNamespace}') or " +
             $"get_from_working_memory('{subagentNamespace}/your-key'). " +
             $"For long-term memory entries the primary agent should read after you complete, use " +
             $"the category '{whiteboardCategory}' when calling save_memory. This is a long-term " +

@@ -92,7 +92,6 @@ public sealed class MemoryTools
             AIFunctionFactory.Create(SaveMemory),
             AIFunctionFactory.Create(SearchMemory),
             AIFunctionFactory.Create(DeleteMemory),
-            AIFunctionFactory.Create(ListCategories),
             AIFunctionFactory.Create(UpdateMemoryImportance)
         ];
     }
@@ -111,7 +110,11 @@ public sealed class MemoryTools
     /// </summary>
     public IList<AITool> Tools => _tools;
 
-    [Description("Save an important fact, user preference, or learned pattern to long-term memory. " +
+    [Description("DURABLE store — saved facts survive restarts and are recalled in future sessions. " +
+                 "Use it for user preferences, learned patterns, and decisions worth remembering days " +
+                 "from now; for this-conversation payloads with a minutes-long TTL use " +
+                 "save_to_working_memory instead. " +
+                 "Save an important fact, user preference, or learned pattern to long-term memory. " +
                  "Returns immediately — the actual enrichment happens in the background. " +
                  "The system will automatically expand the content into focused, keyword-rich entries. " +
                  "Pass a natural-language description; no pre-structuring needed. " +
@@ -193,13 +196,19 @@ public sealed class MemoryTools
             ? null
             : tags.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
 
-    [Description("Search long-term memory for previously saved facts, preferences, or patterns. " +
-                 "Use query for keyword search and category for scoping to a knowledge area. " +
+    [Description("Search DURABLE cross-session knowledge — facts, preferences, and patterns saved with " +
+                 "save_memory, which survive restarts. " +
+                 "Use query for keyword search and category to scope to a knowledge area " +
+                 "(prefix match, so 'project-context' also matches 'project-context/rockbot'). " +
+                 "Omit query to browse: results are the most recently reinforced entries in scope, " +
+                 "followed by the full category taxonomy so you can discover what categories exist " +
+                 "before narrowing. " +
                  "Set mode='regex' when you know the literal token (file path, id, version, exact phrase); " +
-                 "otherwise leave mode='hybrid' (default) for semantic/keyword search.")]
+                 "otherwise leave mode='hybrid' (default) for semantic/keyword search. " +
+                 "For cached payloads from this session only, use search_working_memory instead.")]
     public async Task<string> SearchMemory(
-        [Description("Optional keyword (hybrid mode) or .NET regex pattern (regex mode) to search for")] string? query = null,
-        [Description("Optional category prefix to filter by (e.g. 'user-preferences')")] string? category = null,
+        [Description("Optional keyword (hybrid mode) or .NET regex pattern (regex mode) to search for. Omit to browse and see the category taxonomy.")] string? query = null,
+        [Description("Optional category prefix to filter by (e.g. 'user-preferences'). Matches the category and its children.")] string? category = null,
         [Description("Search backend: 'hybrid' (default, BM25 + optional vector) or 'regex' (case-insensitive .NET regex against memory path name and content)")] string? mode = null)
     {
         _logger.LogInformation("Tool call: SearchMemory(query={Query}, category={Category}, mode={Mode})", query, category, mode);
@@ -207,8 +216,10 @@ public sealed class MemoryTools
         if (!TryParseMode(mode, out var parsedMode))
             return $"Unknown search mode '{mode}'. Use 'hybrid' or 'regex'.";
 
+        var trimmedQuery = string.IsNullOrWhiteSpace(query) ? null : query.Trim();
+
         var criteria = new MemorySearchCriteria(
-            Query: string.IsNullOrWhiteSpace(query) ? null : query.Trim(),
+            Query: trimmedQuery,
             Category: string.IsNullOrWhiteSpace(category) ? null : category.Trim(),
             Mode: parsedMode);
 
@@ -225,8 +236,16 @@ public sealed class MemoryTools
 
         _logger.LogInformation("SearchMemory returned {Count} results", results.Count);
 
+        // A query-less call is a browse, which is what the folded-in list_categories tool served.
+        // Append the taxonomy so `search_memory()` with no arguments still answers "how is
+        // knowledge organised here?" — including when the category filter matched nothing.
+        var taxonomy = trimmedQuery is null ? await BuildCategorySummaryAsync() : null;
+
         if (results.Count == 0)
-            return "No memories found matching the search criteria.";
+        {
+            const string none = "No memories found matching the search criteria.";
+            return taxonomy is null ? none : $"{none}\n\n{taxonomy}";
+        }
 
         var sb = new StringBuilder();
         sb.AppendLine($"Found {results.Count} memory entries:");
@@ -241,7 +260,44 @@ public sealed class MemoryTools
                 sb.AppendLine($"  Tags: {string.Join(", ", entry.Tags)}");
         }
 
+        if (taxonomy is not null)
+        {
+            sb.AppendLine();
+            sb.AppendLine(taxonomy);
+        }
+
         return sb.ToString();
+    }
+
+    /// <summary>
+    /// Renders the full category taxonomy appended to query-less <see cref="SearchMemory"/> calls.
+    /// This is the surface the standalone <c>list_categories</c> tool used to provide; it is the
+    /// whole taxonomy, not just the categories present in the current result page, so the model can
+    /// still discover categories it did not match. Returns <c>null</c> when no categories exist.
+    /// </summary>
+    private async Task<string?> BuildCategorySummaryAsync()
+    {
+        IReadOnlyList<string> categories;
+        try
+        {
+            categories = await _memory.ListCategoriesAsync();
+        }
+        catch (Exception ex)
+        {
+            // The taxonomy is a convenience facet — never fail the search over it.
+            _logger.LogWarning(ex, "SearchMemory: failed to load category taxonomy");
+            return null;
+        }
+
+        if (categories.Count == 0)
+            return null;
+
+        var sb = new StringBuilder();
+        sb.Append("Memory categories (").Append(categories.Count).AppendLine("):");
+        foreach (var cat in categories)
+            sb.Append("- ").AppendLine(cat);
+
+        return sb.ToString().TrimEnd();
     }
 
     private static bool TryParseMode(string? mode, out MemorySearchMode parsed)
@@ -344,27 +400,6 @@ public sealed class MemoryTools
             id, existing.ImportanceScore, clamped, existing.Content);
 
         return $"Updated importance for '{id}' from {existing.ImportanceScore:F2} to {clamped:F2}: \"{existing.Content}\"";
-    }
-
-    [Description("List all memory categories to see how knowledge is organized. " +
-                 "Use this to discover what categories exist before searching.")]
-    public async Task<string> ListCategories()
-    {
-        _logger.LogInformation("Tool call: ListCategories()");
-
-        var categories = await _memory.ListCategoriesAsync();
-
-        _logger.LogInformation("ListCategories returned {Count} categories", categories.Count);
-
-        if (categories.Count == 0)
-            return "No categories yet. Save a memory with a category to create one.";
-
-        var sb = new StringBuilder();
-        sb.AppendLine("Memory categories:");
-        foreach (var cat in categories)
-            sb.AppendLine($"- {cat}");
-
-        return sb.ToString();
     }
 
     /// <summary>

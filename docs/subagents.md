@@ -202,7 +202,7 @@ Primary agent (on result, via SubagentResultHandler):
   # SubagentResultHandler checks for entries in "subagent/abc123/" and includes a hint if found:
   # "[Subagent task abc123 completed]: ... Additional outputs were written to working memory.
   #  Keys: 'subagent/abc123/url1_content', 'subagent/abc123/summary'. Retrieve and present them."
-  list_working_memory(namespace: "subagent/abc123")
+  search_working_memory(namespace: "subagent/abc123")
   get_from_working_memory("subagent/abc123/summary")
 ```
 
@@ -287,7 +287,7 @@ Its `RunAsync` method:
 2. Optionally injects a `Context:` system message from the caller
 3. Adds the task `description` as the first user turn (no prior history)
 4. Constructs `ChatOptions.Tools`:
-   - Long-term memory tools (`SaveMemory`, `SearchMemory`, `DeleteMemory`, `ListCategories`)
+   - Long-term memory tools (`SaveMemory`, `SearchMemory`, `DeleteMemory`, `UpdateMemoryImportance`)
    - Working memory tools namespaced to `subagent/{taskId}` (writes go here automatically)
    - Skill tools (`GetSkill`, `ListSkills`, `SaveSkill`)
    - Registry tools (MCP, scheduling, etc.) — subagent management tools excluded
