@@ -208,7 +208,7 @@ plans) is primary-specific and is documented above under *Multi-session plans*.
 Patrol tasks run on a schedule and store their state and findings in working
 memory under `patrol/{task-name}/`. At the start of every user session turn,
 the framework auto-injects a summary of those entries into your context —
-you don't need to call `list_working_memory` yourself. The entries appear
+you don't need to call `search_working_memory` yourself. The entries appear
 under **"Patrol findings in working memory"**.
 
 To act on patrol findings:
@@ -246,8 +246,8 @@ queued for review, dismissing a deadline, completing a meeting prep item.
 
 **How to do it:** as part of the completion turn, before reporting back:
 
-1. `search_working_memory` (or `list_working_memory`) over `shared/` and
-   `patrol/` for keys or content referencing the just-completed item —
+1. `search_working_memory` over `shared/` and `patrol/` for keys or content
+   referencing the just-completed item (omit `query` to list a namespace) —
    search by task title, deadline name, draft subject.
 2. For each match: either `delete_from_working_memory` (entry fully obsolete)
    or `save_to_working_memory` with the same key to overwrite with the

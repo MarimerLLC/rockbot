@@ -80,28 +80,28 @@ public sealed class MemoryToolSkillProvider : IToolSkillProvider
         IDs, categories, tags, and age.
 
         **Parameters**
-        - `query` (string, optional) — keyword search across content
-        - `category` (string, optional) — category prefix filter (e.g. `user-preferences`)
+        - `query` (string, optional) — keyword search across content. Omit to browse.
+        - `category` (string, optional) — category prefix filter (e.g. `user-preferences`).
+          Prefix match: `project-context` also matches `project-context/rockbot`.
+        - `mode` (string, optional) — `hybrid` (default) or `regex` for literal tokens
 
         ```
         search_memory(query: "timezone", category: "user-preferences")
+        search_memory(category: "user-preferences")   # browse a topic area
+        search_memory()                               # browse + see the category taxonomy
         ```
+
+        **Browsing and the category taxonomy.** Call `search_memory` with no `query` to
+        browse: you get the most recently reinforced entries in scope, followed by the
+        full list of categories that exist. There is no separate list-categories tool —
+        that taxonomy is this facet. Use it to discover how knowledge is organized, then
+        re-search with a `category` filter to narrow.
 
         **Tips**
         - Search is automatically run against each incoming message — you usually don't
           need to search manually unless looking for something specific mid-task
         - Use `category` alone (no query) to browse all entries in a topic area
         - IDs appear in brackets in results: `[abc123]` — you need the ID to delete an entry
-
-
-        ### list_categories
-
-        Lists all existing category prefixes so you can understand how memory is organized
-        before searching.
-
-        ```
-        list_categories()
-        ```
 
 
         ### delete_memory
@@ -125,13 +125,13 @@ public sealed class MemoryToolSkillProvider : IToolSkillProvider
         Working memory is a global, path-namespaced scratch space shared by all execution
         contexts — user sessions, patrol tasks, and subagents. Your entries are automatically
         stored under your session namespace. You can read from other namespaces (e.g. subagent
-        outputs, patrol findings) using `list_working_memory(namespace: ...)`. Entries expire
+        outputs, patrol findings) using `search_working_memory(namespace: ...)`. Entries expire
         automatically based on their TTL (default: 5 minutes).
 
         ### Namespaces auto-injected into your context
 
         At the start of every turn the framework lists entry keys from these namespaces in
-        your system context — you do not need to call `list_working_memory` to see them:
+        your system context — you do not need to call `search_working_memory` to see them:
 
         - **Your own namespace** — always.
         - **`patrol/`** — in user sessions only; lets you see patrol findings.
@@ -229,38 +229,35 @@ public sealed class MemoryToolSkillProvider : IToolSkillProvider
         call. See the wisp guide for full pipeline mechanics.
 
 
-        ### list_working_memory
-
-        Lists all active entries in the given namespace. Defaults to your own session namespace.
-        Pass a `namespace` parameter to browse other contexts (subagents, patrol tasks).
-        The system also shows a working memory summary in your context at the start
-        of each turn — check that first before calling this tool.
-
-        **Parameters**
-        - `namespace` (string, optional) — namespace to list (e.g. `subagent/task1`, `patrol`). Omit to list your own.
-
-        ```
-        list_working_memory()                                   # own namespace
-        list_working_memory(namespace: "subagent/task-abc123")  # subagent outputs
-        list_working_memory(namespace: "patrol")                # all patrol outputs
-        ```
-
-
         ### search_working_memory
 
-        Searches cached entries by keyword, category, and/or tags using BM25 relevance ranking.
-        Defaults to your own namespace. Pass `namespace` to search another context.
+        Searches *and* lists cached entries. Defaults to your own namespace; pass `namespace`
+        to browse or search another context. There is no separate list tool — omitting `query`
+        is the listing.
 
         **Parameters**
-        - `query` (string, optional) — keywords to search for in cached content
+        - `query` (string, optional) — keywords to search for in cached content. Omit to list.
         - `category` (string, optional) — category prefix filter
         - `tags` (string, optional) — comma-separated tags that entries must have
         - `namespace` (string, optional) — namespace to search (e.g. `subagent/task1`, `patrol`)
 
+        **Two modes, chosen by whether you pass `query`:**
+
+        - **With `query`** — entries are ranked by relevance and each line ends with a
+          120-character content preview.
+        - **Without `query`** — every entry in scope is listed with key, category, tags, and
+          expiry, and no content preview. This is the compact browse surface.
+
         ```
+        search_working_memory()                                     # list own namespace
+        search_working_memory(namespace: "subagent/task-abc123")    # list subagent outputs
+        search_working_memory(namespace: "patrol")                  # list all patrol outputs
         search_working_memory(query: "unread emails", category: "email")
         search_working_memory(query: "findings", namespace: "patrol/heartbeat")
         ```
+
+        The system also shows a working memory summary in your context at the start of each
+        turn — check that first before listing.
 
 
         ---
@@ -288,6 +285,9 @@ public sealed class MemoryToolSkillProvider : IToolSkillProvider
         - Confusing working memory scope — your writes go to your namespace only; cross-context
           reads require explicit `namespace` parameter or a full path key
         - Ignoring the working memory context shown at the start of each turn — always
-          check it before calling `list_working_memory`
+          check it before calling `search_working_memory`
+        - Reaching for the wrong search: `search_memory` is durable cross-session knowledge,
+          `search_working_memory` is this-session cached payloads. If the thing you want was
+          fetched or produced during this conversation, it is in working memory.
         """;
 }

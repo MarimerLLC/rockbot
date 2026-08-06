@@ -61,7 +61,7 @@ internal sealed class A2ALateReplyFolder(
             category: "a2a-late-notification",
             tags: [pending.TargetAgent, a2aTaskId, kindSlug]);
 
-        // Append to the primary's notifications index so list_working_memory surfaces it
+        // Append to the primary's notifications index so search_working_memory surfaces it
         // and the directive-driven per-turn check can find pending notifications.
         var indexKey = $"{primary}/notifications/index";
         var existing = await workingMemory.GetAsync(indexKey) ?? string.Empty;

@@ -123,7 +123,7 @@ internal sealed class WebToolSkillProvider : IToolSkillProvider
 
         - Start with the index chunk to find relevant sections by heading
         - Only load the chunks you actually need — don't retrieve all of them
-        - Use `ListWorkingMemory()` to see all cached chunks and their expiry times
+        - Use `SearchWorkingMemory()` with no query to see all cached chunks and their expiry times
         - Chunks expire after 20 minutes; re-browse the page if they are gone
 
 

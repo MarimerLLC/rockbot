@@ -1,3 +1,4 @@
+using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging.Abstractions;
 using RockBot.Host;
 using RockBot.Memory;
@@ -83,11 +84,139 @@ public class WorkingMemoryToolsTests
         Assert.IsFalse(_memory.Store.ContainsKey("patrol/heartbeat/alert"));
     }
 
+    // ── SearchWorkingMemory — folded-in list_working_memory (issue #484) ───
+
+    [TestMethod]
+    public void Tools_DoNotExposeListWorkingMemory()
+    {
+        var names = _tools.Tools.OfType<AIFunction>().Select(f => f.Name).ToList();
+
+        CollectionAssert.DoesNotContain(names, "ListWorkingMemory",
+            "list_working_memory is folded into the query-less search_working_memory path.");
+        CollectionAssert.Contains(names, "SearchWorkingMemory");
+    }
+
+    [TestMethod]
+    public async Task SearchWorkingMemory_NoQuery_UsesListingHeaderAndOmitsContentPreview()
+    {
+        _memory.SearchResults =
+        [
+            Entry("subagent/abc123/results", "PAYLOADBODY" + new string('z', 500), category: "research", tags: ["urgent"])
+        ];
+
+        var result = await _tools.SearchWorkingMemory();
+
+        StringAssert.Contains(result, "Working memory 'subagent/abc123' (1 entries):");
+        StringAssert.Contains(result, "- subagent/abc123/results (expires in ");
+        StringAssert.Contains(result, "category: research");
+        StringAssert.Contains(result, "tags: urgent");
+        Assert.IsFalse(result.Contains("PAYLOADBODY"),
+            "A listing must not include a content preview — that is the search rendering.");
+    }
+
+    [TestMethod]
+    public async Task SearchWorkingMemory_WithQuery_KeepsContentPreview()
+    {
+        _memory.SearchResults = [Entry("subagent/abc123/results", new string('z', 500))];
+
+        var result = await _tools.SearchWorkingMemory("results");
+
+        StringAssert.Contains(result, "Working memory search (query='results')");
+        StringAssert.Contains(result, new string('z', 120) + "…");
+    }
+
+    [TestMethod]
+    public async Task SearchWorkingMemory_NoQuery_RaisesResultCapAboveRankedSearchDefault()
+    {
+        // list_working_memory enumerated without a cap; the ranked-search default of 20 would
+        // have silently truncated a namespace listing after the fold-in.
+        await _tools.SearchWorkingMemory();
+
+        Assert.IsNotNull(_memory.LastCriteria);
+        Assert.IsTrue(_memory.LastCriteria!.MaxResults >= 500,
+            $"Listing cap should be well above the ranked-search default; was {_memory.LastCriteria.MaxResults}.");
+    }
+
+    [TestMethod]
+    public async Task SearchWorkingMemory_WithQuery_KeepsRankedSearchResultCap()
+    {
+        await _tools.SearchWorkingMemory("anything");
+
+        Assert.AreEqual(new MemorySearchCriteria().MaxResults, _memory.LastCriteria?.MaxResults);
+    }
+
+    [TestMethod]
+    public async Task SearchWorkingMemory_NoQuery_NamespaceParam_BrowsesThatPrefix()
+    {
+        await _tools.SearchWorkingMemory(@namespace: "patrol");
+
+        Assert.AreEqual("patrol", _memory.LastPrefix);
+        Assert.IsNull(_memory.LastCriteria?.Query);
+    }
+
+    [TestMethod]
+    public async Task SearchWorkingMemory_NoQuery_OwnNamespaceEmpty_ReturnsEmptyWording()
+    {
+        var result = await _tools.SearchWorkingMemory();
+
+        Assert.AreEqual("Working memory is empty.", result);
+    }
+
+    [TestMethod]
+    public async Task SearchWorkingMemory_NoQuery_OtherNamespaceEmpty_ReturnsNoEntriesWording()
+    {
+        var result = await _tools.SearchWorkingMemory(@namespace: "patrol");
+
+        Assert.AreEqual("No entries found in namespace 'patrol'.", result);
+    }
+
+    [TestMethod]
+    public async Task SearchWorkingMemory_NoQueryButFiltered_NoMatch_UsesSearchWording()
+    {
+        // Filters make it a search that found nothing, not an empty namespace.
+        var result = await _tools.SearchWorkingMemory(category: "research");
+
+        StringAssert.Contains(result, "No working memory entries matched (category='research')");
+    }
+
+    [TestMethod]
+    public async Task SearchWorkingMemory_WhitespaceQuery_IsTreatedAsListing()
+    {
+        _memory.SearchResults = [Entry("subagent/abc123/results", "PAYLOADBODY" + new string('z', 500))];
+
+        var result = await _tools.SearchWorkingMemory("   ");
+
+        Assert.IsNull(_memory.LastCriteria?.Query);
+        StringAssert.Contains(result, "Working memory 'subagent/abc123' (1 entries):");
+        Assert.IsFalse(result.Contains("PAYLOADBODY"));
+    }
+
+    [TestMethod]
+    public async Task SearchWorkingMemory_CategoryAndTags_ArePassedToStore()
+    {
+        await _tools.SearchWorkingMemory("alerts", category: "patrol-finding", tags: "urgent, inbox");
+
+        Assert.AreEqual("patrol-finding", _memory.LastCriteria?.Category);
+        CollectionAssert.AreEqual(new[] { "urgent", "inbox" }, _memory.LastCriteria?.Tags?.ToArray());
+    }
+
+    // ── Helpers ───────────────────────────────────────────────────────────
+
+    private static WorkingMemoryEntry Entry(
+        string key, string value, string? category = null, IReadOnlyList<string>? tags = null) =>
+        new(key, value, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow.AddMinutes(5), category, tags);
+
     // ── Stub ──────────────────────────────────────────────────────────────
 
     private sealed class StubWorkingMemory : IWorkingMemory
     {
         public Dictionary<string, string> Store { get; } = new();
+
+        /// <summary>Entries returned verbatim by <see cref="SearchAsync"/>, so tests exercise rendering.</summary>
+        public IReadOnlyList<WorkingMemoryEntry> SearchResults { get; set; } = [];
+
+        public MemorySearchCriteria? LastCriteria { get; private set; }
+        public string? LastPrefix { get; private set; }
 
         public Task SetAsync(string key, string value, TimeSpan? ttl = null,
             string? category = null, IReadOnlyList<string>? tags = null)
@@ -114,7 +243,11 @@ public class WorkingMemoryToolsTests
             return Task.CompletedTask;
         }
 
-        public Task<IReadOnlyList<WorkingMemoryEntry>> SearchAsync(MemorySearchCriteria criteria, string? prefix = null) =>
-            Task.FromResult<IReadOnlyList<WorkingMemoryEntry>>([]);
+        public Task<IReadOnlyList<WorkingMemoryEntry>> SearchAsync(MemorySearchCriteria criteria, string? prefix = null)
+        {
+            LastCriteria = criteria;
+            LastPrefix = prefix;
+            return Task.FromResult(SearchResults);
+        }
     }
 }

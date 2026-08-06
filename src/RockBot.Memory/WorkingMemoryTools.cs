@@ -31,14 +31,16 @@ public sealed class WorkingMemoryTools
             AIFunctionFactory.Create(SaveToWorkingMemory),
             AIFunctionFactory.Create(GetFromWorkingMemory),
             AIFunctionFactory.Create(DeleteFromWorkingMemory),
-            AIFunctionFactory.Create(ListWorkingMemory),
             AIFunctionFactory.Create(SearchWorkingMemory)
         ];
     }
 
     public IList<AITool> Tools { get; }
 
-    [Description("Cache data in working memory so it can be retrieved in follow-up questions without re-fetching. " +
+    [Description("EPHEMERAL cache for this conversation — entries expire on a TTL measured in minutes and " +
+                 "do NOT survive a restart. Use it for payloads (tool results, drafts, intermediate data), " +
+                 "not for facts or preferences worth keeping; for those use save_memory instead. " +
+                 "Cache data here so it can be retrieved in follow-up questions without re-fetching. " +
                  "Data is stored under your namespace automatically — just provide a descriptive key. " +
                  "Use this after receiving a large payload from any tool, or to store intermediate results " +
                  "that a subagent or patrol task should leave for the primary agent to pick up. " +
@@ -94,43 +96,24 @@ public sealed class WorkingMemoryTools
         return $"Working memory entry '{fullKey}' deleted.";
     }
 
-    [Description("List all keys currently in working memory with their category, tags, and expiry times. " +
-                 "Defaults to your own namespace. Pass a namespace prefix to browse another context — " +
-                 "for example 'subagent/task1' to see what a completed subagent stored, " +
-                 "'patrol' to see all patrol task outputs, or 'shared' to see the cross-session handoff namespace.")]
-    public async Task<string> ListWorkingMemory(
-        [Description("Optional namespace prefix to browse (e.g. 'subagent/task1', 'patrol'). Omit to list your own namespace.")] string? @namespace = null)
-    {
-        var prefix = string.IsNullOrWhiteSpace(@namespace) ? _namespace : @namespace.Trim();
-        _logger.LogInformation("Tool call: ListWorkingMemory(prefix={Prefix})", prefix);
-        var entries = await _workingMemory.ListAsync(prefix);
+    /// <summary>
+    /// Result cap for the no-query listing path. <see cref="MemorySearchCriteria"/> defaults to
+    /// 20 results, which is right for a ranked search but would silently truncate a namespace
+    /// listing — the behaviour the folded-in <c>list_working_memory</c> tool had to preserve.
+    /// High enough to be effectively unbounded for real namespaces, bounded so a runaway
+    /// namespace cannot blow the context window on its own.
+    /// </summary>
+    private const int ListingMaxResults = 500;
 
-        if (entries.Count == 0)
-            return prefix == _namespace
-                ? "Working memory is empty."
-                : $"No entries found in namespace '{prefix}'.";
-
-        var now = DateTimeOffset.UtcNow;
-        var sb = new StringBuilder();
-        sb.AppendLine($"Working memory '{prefix}' ({entries.Count} entries):");
-        foreach (var entry in entries)
-        {
-            var remaining = entry.ExpiresAt - now;
-            var remainingStr = remaining.TotalMinutes >= 1
-                ? $"{(int)remaining.TotalMinutes}m{remaining.Seconds:D2}s"
-                : $"{Math.Max(0, remaining.Seconds)}s";
-
-            sb.Append($"- {entry.Key} (expires in {remainingStr}");
-            if (entry.Category is not null) sb.Append($", category: {entry.Category}");
-            if (entry.Tags is { Count: > 0 }) sb.Append($", tags: {string.Join(", ", entry.Tags)}");
-            sb.AppendLine(")");
-        }
-        return sb.ToString().TrimEnd();
-    }
-
-    [Description("Search working memory by keyword, category, and/or tags. " +
-                 "Results are ranked by BM25 relevance. Defaults to your own namespace. " +
-                 "Pass a namespace prefix to search another context.")]
+    [Description("Search or list THIS SESSION'S ephemeral cached payloads — tool results, subagent " +
+                 "output, patrol findings, and cross-context handoffs under 'shared/'. Entries expire " +
+                 "on a TTL measured in minutes. " +
+                 "Omit query to LIST everything in scope (key, category, tags, expiry — no content preview). " +
+                 "Supply query to rank cached content by relevance. Filter with category and/or tags. " +
+                 "Defaults to your own namespace; pass a namespace prefix to browse another context — " +
+                 "'subagent/task1' for what a completed subagent stored, 'patrol' for all patrol task " +
+                 "outputs, 'shared' for the cross-session handoff namespace. " +
+                 "For durable facts and preferences that survive restarts, use search_memory instead.")]
     public async Task<string> SearchWorkingMemory(
         [Description("Keywords to search for in cached content. Omit to list all entries in the namespace/category/tag scope.")] string? query = null,
         [Description("Optional category prefix to filter by (e.g. 'research', 'email')")] string? category = null,
@@ -138,17 +121,37 @@ public sealed class WorkingMemoryTools
         [Description("Optional namespace prefix to search (e.g. 'subagent/task1', 'patrol'). Omit to search your own namespace.")] string? @namespace = null)
     {
         var prefix = string.IsNullOrWhiteSpace(@namespace) ? _namespace : @namespace.Trim();
-        _logger.LogInformation("Tool call: SearchWorkingMemory(query={Query}, category={Category}, prefix={Prefix})", query, category, prefix);
+        var trimmedQuery = string.IsNullOrWhiteSpace(query) ? null : query.Trim();
+
+        // No query means "browse this scope" rather than "rank by relevance" — the surface the
+        // folded-in list_working_memory tool used to provide. Listings render metadata only, and
+        // raise the result cap so browsing a namespace is not silently truncated at the ranked
+        // search default.
+        var isListing = trimmedQuery is null;
+
+        _logger.LogInformation(
+            "Tool call: SearchWorkingMemory(query={Query}, category={Category}, prefix={Prefix}, listing={Listing})",
+            query, category, prefix, isListing);
 
         var criteria = new MemorySearchCriteria(
-            Query: string.IsNullOrWhiteSpace(query) ? null : query.Trim(),
+            Query: trimmedQuery,
             Category: string.IsNullOrWhiteSpace(category) ? null : category.Trim(),
             Tags: ParseTags(tags));
+
+        if (isListing)
+            criteria = criteria with { MaxResults = ListingMaxResults };
 
         var entries = await _workingMemory.SearchAsync(criteria, prefix);
 
         if (entries.Count == 0)
         {
+            // An unfiltered listing over an empty scope isn't a failed search — keep the
+            // plain-language wording the list tool used.
+            if (isListing && criteria.Category is null && criteria.Tags is null)
+                return prefix == _namespace
+                    ? "Working memory is empty."
+                    : $"No entries found in namespace '{prefix}'.";
+
             var desc = BuildSearchDesc(query, category, tags);
             return $"No working memory entries matched {desc} in namespace '{prefix}'.";
         }
@@ -156,19 +159,35 @@ public sealed class WorkingMemoryTools
         var now = DateTimeOffset.UtcNow;
         var sb = new StringBuilder();
         var desc2 = BuildSearchDesc(query, category, tags);
-        sb.AppendLine($"Working memory search {desc2} in '{prefix}' — {entries.Count} result(s):");
+        sb.AppendLine(isListing
+            ? $"Working memory '{prefix}' ({entries.Count} entries):"
+            : $"Working memory search {desc2} in '{prefix}' — {entries.Count} result(s):");
         foreach (var entry in entries)
         {
             var remaining = entry.ExpiresAt - now;
             var remainingStr = remaining.TotalMinutes >= 1
                 ? $"{(int)remaining.TotalMinutes}m{remaining.Seconds:D2}s"
                 : $"{Math.Max(0, remaining.Seconds)}s";
-            var preview = entry.Value.Length > 120 ? entry.Value[..120] + "\u2026" : entry.Value;
             sb.Append($"- {entry.Key} (expires in {remainingStr}");
             if (entry.Category is not null) sb.Append($", category: {entry.Category}");
             if (entry.Tags is { Count: > 0 }) sb.Append($", tags: {string.Join(", ", entry.Tags)}");
-            sb.AppendLine($"): {preview}");
+
+            if (isListing)
+            {
+                // Listing mode reproduces the old list_working_memory surface: metadata only,
+                // no content preview, so browsing a namespace stays compact.
+                sb.AppendLine(")");
+            }
+            else
+            {
+                var preview = entry.Value.Length > 120 ? entry.Value[..120] + "\u2026" : entry.Value;
+                sb.AppendLine($"): {preview}");
+            }
         }
+
+        if (isListing && entries.Count >= ListingMaxResults)
+            sb.AppendLine($"(listing capped at {ListingMaxResults} entries \u2014 narrow the scope with namespace, category, or tags)");
+
         return sb.ToString().TrimEnd();
     }
 
