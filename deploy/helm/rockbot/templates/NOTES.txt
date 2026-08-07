@@ -44,6 +44,17 @@ NEXT STEPS
 
    The Blazor UI is exposed on your Tailscale network via the
    Tailscale Kubernetes Operator at:
+{{- if .Values.blazor.tailscale.ingress.enabled }}
+
+     https://{{ .Values.blazor.tailscale.hostname }}.<your-tailnet>.ts.net
+
+   The exact name appears in the ADDRESS field once the certificate is
+   issued (Let's Encrypt, provisioned by the operator — allow a minute):
+
+     kubectl -n {{ .Values.namespace }} get ingress {{ include "rockbot.fullname" . }}-blazor
+
+   Still private to your tailnet — Funnel is not enabled.
+{{- else }}
 
      http://{{ .Values.blazor.tailscale.hostname }}
 
@@ -51,6 +62,10 @@ NEXT STEPS
    device to register. Check operator status with:
 
      kubectl -n {{ .Values.namespace }} describe svc {{ include "rockbot.fullname" . }}-blazor
+
+   For HTTPS, set blazor.tailscale.ingress.enabled=true — read the
+   switchover note in values.yaml first, the device is replaced.
+{{- end }}
 
 
 4. LOGS IN GRAFANA / LOKI

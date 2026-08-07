@@ -6,14 +6,24 @@ metadata:
   labels:
     {{- include "rockbot.labels" . | nindent 4 }}
     app.kubernetes.io/component: blazor
+{{- if not .Values.blazor.tailscale.ingress.enabled }}
   annotations:
     # Tailscale Kubernetes Operator — exposes this service on your tailnet
     # at <hostname> (no Funnel, private to tailnet only).
     # Requires: https://tailscale.com/kb/1236/kubernetes-operator
     tailscale.com/hostname: {{ .Values.blazor.tailscale.hostname | quote }}
+{{- end }}
 spec:
+{{- if .Values.blazor.tailscale.ingress.enabled }}
+  # Layer-7 mode: the Ingress owns the Tailscale device and terminates TLS, so this
+  # Service is a plain in-cluster backend. It must NOT also be a tailscale
+  # LoadBalancer — two devices competing for <hostname> means the loser is renamed
+  # <hostname>-1 and the certificate follows the wrong name.
+  type: ClusterIP
+{{- else }}
   type: LoadBalancer
   loadBalancerClass: tailscale
+{{- end }}
   selector:
     app: rockbot-blazor
     {{- include "rockbot.selectorLabels" . | nindent 4 }}

@@ -152,13 +152,48 @@ Docker image (`rockylhotka/rockbot-blazor`). It requires only:
 
 It does **not** need access to the agent data PVC or any agent-internal configuration.
 
-The UI is exposed on the Tailscale network via the Tailscale Kubernetes Operator:
+The UI is exposed on the Tailscale network via the Tailscale Kubernetes Operator, in one
+of two modes.
+
+**Layer 3 (default)** — a `LoadBalancer` Service with `loadBalancerClass: tailscale`.
+Plain HTTP, no certificate:
 
 ```yaml
 blazor:
   tailscale:
     hostname: "rockbot"   # accessible at http://rockbot on your tailnet
 ```
+
+**Layer 7 (HTTPS)** — an `Ingress` with `ingressClassName: tailscale`. The operator
+provisions a Let's Encrypt certificate and the Service drops to `ClusterIP`:
+
+```yaml
+blazor:
+  tailscale:
+    hostname: "rockbot"
+    ingress:
+      enabled: true       # https://rockbot.<your-tailnet>.ts.net
+      proxyGroup: ""      # optional ProxyGroup name for HA ingress
+```
+
+Requires MagicDNS **and** the *HTTPS Certificates* toggle in the Tailscale admin console's
+DNS settings. Certificates are only ever issued for `<hostname>.<tailnet>.ts.net` — never
+for a bare hostname, and never for a custom domain.
+
+Both modes stay **private to your tailnet**: the name resolves to a CGNAT `100.x` address
+that is not routable from the internet. Publishing to the public internet would require the
+`tailscale.com/funnel` annotation, which this chart never emits.
+
+Two things to know before switching an existing deployment:
+
+- **The Tailscale device is replaced.** Deploy once with `ingress.enabled: false` so the
+  layer-3 device releases `<hostname>`, then flip it to `true`. Otherwise the new device is
+  named `<hostname>-1` and the certificate is issued for that name instead.
+- **Get it right on the first apply.** Let's Encrypt allows 5 certificates per week for the
+  same name, so a create/delete retry loop can lock you out of the name for days.
+
+Issuing a certificate publishes `<hostname>.<tailnet>.ts.net` to the public Certificate
+Transparency log permanently. The service stays private; the name does not.
 
 ---
 
