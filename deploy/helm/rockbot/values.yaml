@@ -81,6 +81,37 @@ blazor:
     # Requires the Tailscale Kubernetes Operator to be installed.
     hostname: rockbot
 
+    ingress:
+      # false (default) — expose over a layer-3 LoadBalancer Service. Plain HTTP
+      #   at http://<hostname>. No TLS certificate is issued.
+      # true — expose over a layer-7 Ingress instead. The operator provisions a
+      #   Let's Encrypt certificate and the UI is served at
+      #   https://<hostname>.<your-tailnet>.ts.net. The Service drops to ClusterIP
+      #   so only one Tailscale device ever claims <hostname>.
+      #
+      # Either way the endpoint stays PRIVATE to your tailnet — it resolves to a
+      # CGNAT 100.x address that is not routable from the internet. Public exposure
+      # would require Tailscale Funnel, which this chart never enables.
+      #
+      # Prerequisites (Tailscale admin console → DNS): MagicDNS enabled AND the
+      # "HTTPS Certificates" toggle enabled.
+      #
+      # NOTE: issuing a certificate publishes <hostname>.<tailnet>.ts.net to the
+      # public Certificate Transparency log, permanently. The service stays private;
+      # the name does not. Do not enable this for a host whose name is sensitive.
+      #
+      # NOTE: switching an existing deployment from LoadBalancer to Ingress replaces
+      # the Tailscale device. Apply with this false first so the old device is
+      # released, then flip it to true — otherwise the new device is named
+      # <hostname>-1 and the certificate is issued for that instead. Let's Encrypt
+      # allows only 5 certificates per week for the same name, so a retry loop can
+      # lock you out of the name for days.
+      enabled: false
+
+      # Optional ProxyGroup for HA ingress (see the tailscale.com/proxy-group
+      # annotation). Empty means a single standalone proxy Pod.
+      proxyGroup: ""
+
 # ── RabbitMQ ──────────────────────────────────────────────────────────────────
 rabbitmq:
   hostName: ""      # REQUIRED — hostname or k8s service name of your RabbitMQ instance

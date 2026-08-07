@@ -1,0 +1,35 @@
+{{- if .Values.blazor.tailscale.ingress.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "rockbot.fullname" . }}-blazor
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "rockbot.labels" . | nindent 4 }}
+    app.kubernetes.io/component: blazor
+  {{- if .Values.blazor.tailscale.ingress.proxyGroup }}
+  annotations:
+    tailscale.com/proxy-group: {{ .Values.blazor.tailscale.ingress.proxyGroup | quote }}
+  {{- end }}
+  # Deliberately absent: tailscale.com/funnel. That annotation — and only that
+  # annotation — would publish this endpoint to the public internet. Without it the
+  # Ingress is served by Tailscale Serve and stays private to the tailnet.
+spec:
+  ingressClassName: tailscale
+  tls:
+    # tls.hosts[0] sets the MagicDNS name; the operator resolves it to
+    # <hostname>.<your-tailnet>.ts.net and issues the certificate for that.
+    # The FQDN shows up in the Ingress ADDRESS field once provisioning completes.
+    - hosts:
+        - {{ .Values.blazor.tailscale.hostname | quote }}
+  rules:
+    - http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "rockbot.fullname" . }}-blazor
+                port:
+                  number: 80
+{{- end }}
