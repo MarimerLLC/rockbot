@@ -300,6 +300,7 @@ builder.Services.AddRockBotHost(agent =>
     agent.WithProfile();
     agent.WithRules();
     agent.WithMemory();
+    agent.WithConversationMemory(opts => builder.Configuration.GetSection("ConversationMemory").Bind(opts));
     agent.WithConversationLog();
     agent.WithFeedback(opts => builder.Configuration.GetSection("Feedback").Bind(opts));
     agent.WithSkills();
