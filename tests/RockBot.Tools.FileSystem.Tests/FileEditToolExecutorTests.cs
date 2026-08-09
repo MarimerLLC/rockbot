@@ -205,6 +205,121 @@ public class FileEditToolExecutorTests
     }
 
     [TestMethod]
+    public async Task ExecuteAsync_RejectsNullNewString_RatherThanDeleting()
+    {
+        const string original = "keep this text\n";
+        var full = WriteFile("doc.md", original);
+
+        var response = await ExecuteAsync(new
+        {
+            path = "doc.md",
+            old_string = "keep this text",
+            new_string = (string?)null
+        });
+
+        Assert.IsTrue(response.IsError);
+        StringAssert.Contains(response.Content!, "new_string must be a string");
+        Assert.AreEqual(original, File.ReadAllText(full),
+            "a null new_string must not be treated as an intentional deletion");
+    }
+
+    [TestMethod]
+    public async Task ExecuteAsync_RejectsNonStringArguments()
+    {
+        WriteFile("doc.md", "body");
+
+        var nullOld = await ExecuteAsync(new { path = "doc.md", old_string = (string?)null, new_string = "x" });
+        Assert.IsTrue(nullOld.IsError);
+        StringAssert.Contains(nullOld.Content!, "old_string must be a string");
+
+        var numericPath = await ExecuteAsync(new { path = 7, old_string = "body", new_string = "x" });
+        Assert.IsTrue(numericPath.IsError);
+        StringAssert.Contains(numericPath.Content!, "path must be a string");
+    }
+
+    [TestMethod]
+    public async Task ExecuteAsync_AcceptsStringSpellingOfReplaceAll()
+    {
+        // The text-based tool-calling path has no schema to coerce "true" to true.
+        var full = WriteFile("roster.md", "status: active\nstatus: active\n");
+
+        var response = await ExecuteAsync(new
+        {
+            path = "roster.md",
+            old_string = "status: active",
+            new_string = "status: retired",
+            replace_all = "true"
+        });
+
+        Assert.IsFalse(response.IsError, response.Content);
+        Assert.AreEqual("status: retired\nstatus: retired\n", File.ReadAllText(full));
+    }
+
+    [TestMethod]
+    public async Task ExecuteAsync_RejectsUnparseableReplaceAll()
+    {
+        const string original = "status: active\nstatus: active\n";
+        var full = WriteFile("roster.md", original);
+
+        var response = await ExecuteAsync(new
+        {
+            path = "roster.md",
+            old_string = "status: active",
+            new_string = "status: retired",
+            replace_all = "yes"
+        });
+
+        Assert.IsTrue(response.IsError);
+        StringAssert.Contains(response.Content!, "replace_all must be true or false");
+        Assert.AreEqual(original, File.ReadAllText(full));
+    }
+
+    [TestMethod]
+    public async Task ExecuteAsync_TreatsAbsentAndFalseReplaceAllAlike()
+    {
+        WriteFile("roster.md", "status: active\nstatus: active\n");
+
+        var explicitFalse = await ExecuteAsync(new
+        {
+            path = "roster.md",
+            old_string = "status: active",
+            new_string = "status: retired",
+            replace_all = false
+        });
+
+        Assert.IsTrue(explicitFalse.IsError);
+        StringAssert.Contains(explicitFalse.Content!, "2 times");
+    }
+
+    [TestMethod]
+    public async Task ExecuteAsync_AppliesBothEdits_WhenSameFileIsEditedConcurrently()
+    {
+        // Two subagents editing one document must not have the second read stale
+        // content and overwrite the first — both edits belong in the result.
+        var full = WriteFile("canon/NPCs.md", "**Georgie** — neutral\n**Wren** — neutral\n");
+
+        var georgie = ExecuteAsync(new
+        {
+            path = "canon/NPCs.md",
+            old_string = "**Georgie** — neutral",
+            new_string = "**Georgie** — allied"
+        });
+        var wren = ExecuteAsync(new
+        {
+            path = "canon/NPCs.md",
+            old_string = "**Wren** — neutral",
+            new_string = "**Wren** — hostile"
+        });
+
+        var responses = await Task.WhenAll(georgie, wren);
+
+        foreach (var response in responses)
+            Assert.IsFalse(response.IsError, response.Content);
+
+        Assert.AreEqual("**Georgie** — allied\n**Wren** — hostile\n", File.ReadAllText(full));
+    }
+
+    [TestMethod]
     public async Task ExecuteAsync_PreservesUnrelatedContentOfLargeFile()
     {
         var lines = Enumerable.Range(0, 500).Select(i => $"## Section {i}\nBody text for section {i}.\n");

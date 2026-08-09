@@ -120,6 +120,26 @@ internal sealed class FileSystemToolSkillProvider : IToolSkillProvider
         - `scripts/` — output from script executions
 
 
+        ## Everything Expires by Default
+
+        **Every file on the shared volume is deleted 30 days after it was last modified,
+        whatever directory it is in.** A path you invent yourself is not durable storage:
+        `canon/notes.md` will be swept 30 days after your last edit to it, exactly when it
+        has settled into being worth keeping.
+
+        The sweep keys on modification time, so the files most at risk are the ones you
+        read often and edit rarely — which is what long-lived reference content looks like.
+
+        Only paths an operator has added to the deployment's `shared.protectedPaths`
+        setting are exempt. You cannot set that yourself. So:
+
+        - For content that must outlive 30 days without an edit, ask the user to have the
+          prefix protected, and say plainly that it will be deleted otherwise.
+        - Do not assume a directory is protected because it sounds permanent, or because
+          content you wrote there is still present today.
+        - Prefer memory tools over files for things you need to remember indefinitely.
+
+
         ## Working with Scripts
 
         Scripts run in ephemeral containers with the shared volume mounted at the path

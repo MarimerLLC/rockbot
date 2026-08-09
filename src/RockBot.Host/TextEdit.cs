@@ -78,12 +78,18 @@ public static class TextEdit
     /// </param>
     /// <returns>A <see cref="TextEditResult"/> describing the outcome.</returns>
     /// <remarks>
-    /// When <paramref name="content"/> uses CRLF line endings and
-    /// <paramref name="oldText"/> does not match as supplied, the match is retried with
-    /// its bare LFs converted to CRLF. This lets a caller that emits Unix newlines edit
-    /// a Windows-authored document without having to know the file's line-ending style.
-    /// <paramref name="newText"/> is converted the same way so the file stays internally
-    /// consistent.
+    /// <para>
+    /// When <paramref name="oldText"/> does not match as supplied, the match is retried
+    /// with its line endings converted — bare LFs to CRLF, then CRLFs to bare LF. This
+    /// lets a caller edit a document without having to know its line-ending style, in
+    /// either direction.
+    /// </para>
+    /// <para>
+    /// <paramref name="newText"/> is converted to the line-ending style
+    /// <paramref name="content"/> already uses — on the exact-match path as well as the
+    /// retry path — so an edit cannot leave a single-style document with mixed endings.
+    /// Content that is already mixed is left alone, having no style to preserve.
+    /// </para>
     /// </remarks>
     public static TextEditResult Apply(
         string content,
@@ -115,24 +121,34 @@ public static class TextEdit
         }
 
         var effectiveOld = oldText;
-        var effectiveNew = newText;
+        var effectiveNew = MatchNewlineStyle(newText, content);
         var count = CountOccurrences(content, effectiveOld);
 
-        // The file is CRLF but the caller supplied bare LFs (or vice versa). Retry once
-        // with the caller's newlines converted to match the file, so line-ending style
-        // is not something the caller has to discover by trial and error.
-        if (count == 0 && content.Contains("\r\n", StringComparison.Ordinal))
+        // The caller's line endings do not match the file's. Retry with each conversion
+        // in turn — LF-supplied text against a CRLF file, and CRLF-supplied text against
+        // an LF file — so line-ending style is not something the caller has to discover
+        // by trial and error.
+        if (count == 0)
         {
-            var crlfOld = ToCrLf(oldText);
-            if (!string.Equals(crlfOld, oldText, StringComparison.Ordinal))
+            (string Old, string New)[] candidates =
+            [
+                (ToCrLf(oldText), ToCrLf(newText)),
+                (ToLf(oldText), ToLf(newText)),
+            ];
+
+            foreach (var candidate in candidates)
             {
-                var crlfCount = CountOccurrences(content, crlfOld);
-                if (crlfCount > 0)
-                {
-                    effectiveOld = crlfOld;
-                    effectiveNew = ToCrLf(newText);
-                    count = crlfCount;
-                }
+                if (string.Equals(candidate.Old, oldText, StringComparison.Ordinal))
+                    continue;
+
+                var candidateCount = CountOccurrences(content, candidate.Old);
+                if (candidateCount == 0)
+                    continue;
+
+                effectiveOld = candidate.Old;
+                effectiveNew = candidate.New;
+                count = candidateCount;
+                break;
             }
         }
 
@@ -144,6 +160,18 @@ public static class TextEdit
                 0,
                 "oldText was not found. It must match the content exactly, including " +
                 "whitespace and indentation. Read the current content and copy the text verbatim.");
+        }
+
+        // Newline normalization can collapse a difference that the raw arguments had —
+        // "a\r\nb" replaced by "a\nb" in a CRLF file asks for no change at all.
+        if (string.Equals(effectiveOld, effectiveNew, StringComparison.Ordinal))
+        {
+            return new TextEditResult(
+                TextEditStatus.NoChange,
+                null,
+                0,
+                "oldText and newText differ only in line endings, which are normalized to " +
+                "the style the content already uses — the edit would change nothing.");
         }
 
         if (count > 1 && !replaceAll)
@@ -189,9 +217,38 @@ public static class TextEdit
     }
 
     /// <summary>
+    /// Converts <paramref name="value"/> to the line-ending style
+    /// <paramref name="content"/> uses, or returns it unchanged when the content has no
+    /// single style to preserve.
+    /// </summary>
+    private static string MatchNewlineStyle(string value, string content)
+    {
+        if (!value.Contains('\n', StringComparison.Ordinal))
+            return value;
+
+        var crLf = CountOccurrences(content, "\r\n");
+        var bareLf = CountOccurrences(content, "\n") - crLf;
+
+        if (crLf > 0 && bareLf == 0)
+            return ToCrLf(value);
+
+        if (bareLf > 0 && crLf == 0)
+            return ToLf(value);
+
+        // Mixed endings, or none at all — no style to conform to.
+        return value;
+    }
+
+    /// <summary>
     /// Converts bare LF line endings to CRLF, leaving existing CRLF pairs intact.
     /// </summary>
     private static string ToCrLf(string value) =>
         value.Replace("\r\n", "\n", StringComparison.Ordinal)
              .Replace("\n", "\r\n", StringComparison.Ordinal);
+
+    /// <summary>
+    /// Converts CRLF line endings to bare LF.
+    /// </summary>
+    private static string ToLf(string value) =>
+        value.Replace("\r\n", "\n", StringComparison.Ordinal);
 }

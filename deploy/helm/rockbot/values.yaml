@@ -262,7 +262,10 @@ shared:
   # canon, or any document set the agent reads far more often than it edits. Anything
   # that must survive longer than globalTtlDays without an edit belongs here.
   # Matching is a glob on the full path, so nested content (including a `.git`
-  # directory) under a listed prefix is protected too.
+  # directory) under a listed prefix is protected too. A single file may be listed
+  # as well as a directory. Leading and trailing slashes are stripped, so `canon`,
+  # `/canon`, and `canon/` are equivalent. Entries are exempt from every sweep,
+  # the per-directory ones above included.
   #   protectedPaths:
   #     - canon
   protectedPaths: []
