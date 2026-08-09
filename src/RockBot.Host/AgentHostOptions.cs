@@ -146,6 +146,19 @@ public sealed class AgentHostOptions
     public bool PersistErrorTurns { get; set; } = true;
 
     /// <summary>
+    /// Number of the most recent conversation turns replayed into the LLM context on each
+    /// call. Defaults to 20.
+    /// <para>
+    /// Raise this for agents on large-context models where continuity matters more than
+    /// prompt cost — a creative or long-running conversational agent loses the thread when
+    /// the window is short. Values above
+    /// <see cref="ConversationMemoryOptions.MaxTurnsPerSession"/> have no effect, because
+    /// retention caps how many turns exist to replay.
+    /// </para>
+    /// </summary>
+    public int MaxLlmContextTurns { get; set; } = 20;
+
+    /// <summary>
     /// Maximum number of times the completion evaluator can re-prompt the agent when it
     /// determines the task is incomplete. Set to 0 to disable completion evaluation entirely.
     /// Individual models may override this via <c>ModelBehavior.MaxCompletionRepromptsOverride</c>.
