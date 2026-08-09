@@ -36,10 +36,12 @@ public sealed class AgentContextBuilder(
     IToolCallLog? toolCallLog = null,
     IOptions<AgentHostOptions>? agentHostOptions = null)
 {
-    private const int MaxLlmContextTurns = 20;
-
     /// <summary>Host options, defaulted when not supplied so existing callers and tests are unaffected.</summary>
     private readonly AgentHostOptions _hostOptions = agentHostOptions?.Value ?? new AgentHostOptions();
+
+    /// <summary>How many recent turns are replayed into the LLM context; see
+    /// <see cref="AgentHostOptions.MaxLlmContextTurns"/>.</summary>
+    private int MaxLlmContextTurns => _hostOptions.MaxLlmContextTurns;
 
     private readonly IServiceSearchIndex? _serviceSearchIndex = serviceSearchIndexProviders.FirstOrDefault();
     private readonly IKnowledgeGraph? _knowledgeGraph = knowledgeGraphProviders.FirstOrDefault();
