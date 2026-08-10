@@ -100,6 +100,100 @@ public sealed class DreamOptions
     /// </remarks>
     public bool MemoryConsolidationEnabled { get; set; } = true;
 
+    /// <summary>
+    /// How long entries archived by consolidation are kept before the purge pass hard-deletes
+    /// them. Archived entries are hidden from recall but stay on disk and remain retrievable
+    /// by id, so this is the window in which a bad merge or a wrong ephemeral call can still
+    /// be undone. Set to <see cref="TimeSpan.Zero"/> or negative to keep archived entries
+    /// forever. Default: 90 days.
+    /// </summary>
+    /// <remarks>
+    /// Requires the store to implement <see cref="IArchivedMemoryMaintenance"/>; with a store
+    /// that does not, <see cref="ILongTermMemory.ArchiveAsync"/> falls back to a hard delete
+    /// and this setting has nothing to purge.
+    /// </remarks>
+    public TimeSpan MemoryArchiveRetention { get; set; } = TimeSpan.FromDays(90);
+
+    /// <summary>
+    /// Similarity (0..1) at which two memory entries are treated as possible duplicates and
+    /// become eligible for the consolidation pass. Cosine over embeddings where the store has
+    /// them, a lexical measure otherwise. Default: 0.88.
+    /// </summary>
+    /// <remarks>
+    /// This is the main dial on how much consolidation is allowed to touch. Lower values feed
+    /// it more pairs and merge more aggressively; higher values restrict it to obvious
+    /// restatements. It does not affect entries that are new or changed since the last pass —
+    /// those are always eligible regardless of similarity.
+    /// </remarks>
+    public double ConsolidationSimilarityThreshold { get; set; } = 0.88;
+
+    /// <summary>
+    /// Ceiling on how many entries may appear in a single near-duplicate cluster. Larger
+    /// clusters are split into chunks rather than dropped. Default: 3.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// This bounds <em>eligibility</em>, not merge size. Clusters decide which entries the
+    /// model is shown; once shown, it may propose a merge over any subset of them, so a pass
+    /// can and does produce merges with more sources than this value. Observed in production:
+    /// a 13-source merge under the default of 3.
+    /// </para>
+    /// <para>
+    /// Large merges are constrained by the coverage check instead, which is the better tool
+    /// for the job — it judges whether detail actually survived rather than guessing from a
+    /// count. The same production cycle that produced the 13-source merge had it accepted
+    /// (every specific preserved) while rejecting a 6-source merge that dropped 28.
+    /// </para>
+    /// </remarks>
+    public int ConsolidationMaxClusterSize { get; set; } = 3;
+
+    /// <summary>
+    /// Importance at or above which an entry may not be pruned outright by consolidation.
+    /// Merging is still permitted, since a merge preserves the content. Default: 0.80.
+    /// </summary>
+    /// <remarks>
+    /// A deterministic floor rather than prompt guidance. The directive already told the model
+    /// that reinforcement signals importance, and it deleted 0.99-scored entries anyway.
+    /// </remarks>
+    public float PruningProtectionImportance { get; set; } = 0.80f;
+
+    /// <summary>
+    /// Reinforcement count at or above which an entry may not be pruned outright by
+    /// consolidation. Merging is still permitted. Default: 5.
+    /// </summary>
+    /// <remarks>
+    /// Repeated independent observation is the strongest evidence available that a fact
+    /// matters — it is exactly the signal that should have protected the entries a live corpus
+    /// lost at 214, 106 and 80 observations.
+    /// </remarks>
+    public int PruningProtectionReinforcementCount { get; set; } = 5;
+
+    /// <summary>
+    /// Path to the merge-coverage vocabulary file, relative to
+    /// <see cref="AgentProfileOptions.BasePath"/>. Re-read at the top of every dream cycle, so
+    /// edits take effect without a restart. When absent, a generic-English baseline is used.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Controls which capitalized words the coverage check treats as ordinary language rather
+    /// than as detail a merge must preserve. This is deployment-specific: the words an
+    /// operational assistant can safely ignore are not the words a storytelling agent can.
+    /// </para>
+    /// <para>
+    /// Shape — both fields optional:
+    /// <code>
+    /// {
+    ///   "extraCommonWords":    ["briefing", "triage"],
+    ///   "alwaysSpecificWords": ["May", "Will", "Rose"]
+    /// }
+    /// </code>
+    /// <c>alwaysSpecificWords</c> takes precedence, and matters most for agents whose characters
+    /// or people collide with ordinary English — without it, a character named May or Will is
+    /// silently stripped of coverage protection.
+    /// </para>
+    /// </remarks>
+    public string MergeCoverageVocabularyPath { get; set; } = "merge-coverage-vocabulary.json";
+
     /// <summary>Whether the memory mining pass (requires <see cref="IConversationLog"/>) is enabled.</summary>
     public bool MemoryMiningEnabled { get; set; } = true;
 

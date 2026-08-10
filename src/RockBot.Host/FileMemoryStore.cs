@@ -11,7 +11,7 @@ namespace RockBot.Host;
 /// File-based long-term memory store with category subdirectories and in-memory index.
 /// Thread safety via <see cref="SemaphoreSlim"/> for all file I/O.
 /// </summary>
-internal sealed partial class FileMemoryStore : ILongTermMemory
+internal sealed partial class FileMemoryStore : ILongTermMemory, IArchivedMemoryMaintenance, IMemoryDuplicateCandidates
 {
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -212,6 +212,231 @@ internal sealed partial class FileMemoryStore : ILongTermMemory
         }
     }
 
+    public async Task ArchiveAsync(string id, string reason, CancellationToken cancellationToken = default)
+    {
+        await _semaphore.WaitAsync(cancellationToken);
+        try
+        {
+            var index = await EnsureIndexAsync(cancellationToken);
+
+            if (!index.TryGetValue(id, out var entry) || entry.ArchivedAt is not null)
+                return;
+
+            var archived = entry with
+            {
+                ArchivedAt = DateTimeOffset.UtcNow,
+                ArchiveReason = reason
+            };
+
+            // Written in place: same file, same category, same embedding. Archiving changes
+            // visibility, not content, so there is nothing to re-vectorize.
+            var filePath = GetFilePath(id, entry.Category);
+            Directory.CreateDirectory(Path.GetDirectoryName(filePath)!);
+            await File.WriteAllTextAsync(filePath, JsonSerializer.Serialize(archived, JsonOptions), cancellationToken);
+
+            index[id] = archived;
+
+            // Logged at Information with the content inline: an archived entry is one an
+            // automated pass decided to stop surfacing, and the log is what makes that
+            // reviewable without restoring a volume backup.
+            _logger.LogInformation(
+                "Archived memory entry {Id} ({Category}, importance={Importance:F2}, reinforced={Count}x) — {Reason}: {Content}",
+                id, entry.Category ?? "(none)", entry.ImportanceScore, entry.ReinforcementCount, reason, entry.Content);
+        }
+        finally
+        {
+            _semaphore.Release();
+        }
+    }
+
+    /// <summary>
+    /// Restores an archived entry to normal visibility. No-op if not found or not archived.
+    /// </summary>
+    public async Task<bool> RestoreAsync(string id, CancellationToken cancellationToken = default)
+    {
+        await _semaphore.WaitAsync(cancellationToken);
+        try
+        {
+            var index = await EnsureIndexAsync(cancellationToken);
+
+            if (!index.TryGetValue(id, out var entry) || entry.ArchivedAt is null)
+                return false;
+
+            var restored = entry with { ArchivedAt = null, ArchiveReason = null };
+
+            var filePath = GetFilePath(id, entry.Category);
+            Directory.CreateDirectory(Path.GetDirectoryName(filePath)!);
+            await File.WriteAllTextAsync(filePath, JsonSerializer.Serialize(restored, JsonOptions), cancellationToken);
+
+            index[id] = restored;
+            _logger.LogInformation("Restored archived memory entry {Id}", id);
+            return true;
+        }
+        finally
+        {
+            _semaphore.Release();
+        }
+    }
+
+    /// <summary>
+    /// Hard-deletes archived entries whose <see cref="MemoryEntry.ArchivedAt"/> is older than
+    /// <paramref name="retention"/>. Returns the number purged. A non-positive retention
+    /// disables purging entirely, so archived entries are kept forever.
+    /// </summary>
+    public async Task<int> PurgeArchivedAsync(TimeSpan retention, CancellationToken cancellationToken = default)
+    {
+        if (retention <= TimeSpan.Zero)
+            return 0;
+
+        var cutoff = DateTimeOffset.UtcNow - retention;
+
+        List<string> expired;
+        await _semaphore.WaitAsync(cancellationToken);
+        try
+        {
+            var index = await EnsureIndexAsync(cancellationToken);
+            expired = index.Values
+                .Where(e => e.ArchivedAt is not null && e.ArchivedAt < cutoff)
+                .Select(e => e.Id)
+                .ToList();
+        }
+        finally
+        {
+            _semaphore.Release();
+        }
+
+        foreach (var id in expired)
+            await DeleteAsync(id, cancellationToken);
+
+        return expired.Count;
+    }
+
+    public async Task<IReadOnlyList<IReadOnlyList<string>>> FindNearDuplicateClustersAsync(
+        double similarityThreshold,
+        int maxClusterSize,
+        CancellationToken cancellationToken = default)
+    {
+        if (maxClusterSize < 2)
+            return [];
+
+        List<MemoryEntry> entries;
+        await _semaphore.WaitAsync(cancellationToken);
+        try
+        {
+            var index = await EnsureIndexAsync(cancellationToken);
+            entries = index.Values
+                .Where(e => e.ArchivedAt is null && e.SupersededBy is null)
+                .OrderBy(e => e.Id, StringComparer.Ordinal)
+                .ToList();
+        }
+        finally
+        {
+            _semaphore.Release();
+        }
+
+        if (entries.Count < 2)
+            return [];
+
+        var similarity = await BuildSimilarityFunctionAsync(entries, cancellationToken);
+
+        // Single-link agglomeration via union-find: any pair over the threshold joins the same
+        // cluster. Single-link can chain (a~b, b~c pulls in a and c), which is why callers cap
+        // cluster size — the cap splits sprawl instead of letting one cluster swallow a topic.
+        var parent = Enumerable.Range(0, entries.Count).ToArray();
+        int Find(int x)
+        {
+            while (parent[x] != x) { parent[x] = parent[parent[x]]; x = parent[x]; }
+            return x;
+        }
+
+        for (var i = 0; i < entries.Count; i++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            for (var j = i + 1; j < entries.Count; j++)
+            {
+                if (Find(i) == Find(j))
+                    continue;
+                if (similarity(i, j) >= similarityThreshold)
+                    parent[Find(i)] = Find(j);
+            }
+        }
+
+        var groups = new Dictionary<int, List<string>>();
+        for (var i = 0; i < entries.Count; i++)
+        {
+            if (!groups.TryGetValue(Find(i), out var members))
+                groups[Find(i)] = members = [];
+            members.Add(entries[i].Id);
+        }
+
+        var clusters = new List<IReadOnlyList<string>>();
+        foreach (var members in groups.Values)
+        {
+            if (members.Count < 2)
+                continue;
+
+            // Split oversized clusters into fixed-size chunks. A leftover chunk of one is
+            // dropped: a lone entry has nothing to merge with in this pass.
+            for (var offset = 0; offset < members.Count; offset += maxClusterSize)
+            {
+                var chunk = members.Skip(offset).Take(maxClusterSize).ToList();
+                if (chunk.Count >= 2)
+                    clusters.Add(chunk);
+            }
+        }
+
+        _logger.LogDebug(
+            "Near-duplicate scan: {Clusters} cluster(s) covering {Covered} of {Total} entries (threshold {Threshold:F2})",
+            clusters.Count, clusters.Sum(c => c.Count), entries.Count, similarityThreshold);
+
+        return clusters;
+    }
+
+    /// <summary>
+    /// Returns a pairwise similarity function over <paramref name="entries"/> by index —
+    /// cosine over embeddings when the store has them, Jaccard over content tokens otherwise.
+    /// </summary>
+    private async Task<Func<int, int, double>> BuildSimilarityFunctionAsync(
+        List<MemoryEntry> entries,
+        CancellationToken cancellationToken)
+    {
+        if (_embeddingCache is not null)
+        {
+            var batch = entries.Select(e => (e.Id, Text: GetDocumentText(e))).ToList();
+            var map = await _embeddingCache.GetOrCreateBatchAsync(batch, cancellationToken);
+            var vectors = entries.Select(e => map.GetValueOrDefault(e.Id)).ToArray();
+
+            // Entries whose embedding failed to generate fall through to the lexical path
+            // rather than being silently excluded from deduplication.
+            if (vectors.Any(v => v is not null))
+            {
+                var tokenSets = entries.Select(e => Tokenize(e.Content)).ToArray();
+                return (i, j) => vectors[i] is { } a && vectors[j] is { } b
+                    ? EmbeddingCache.CosineSimilarity(a, b)
+                    : Jaccard(tokenSets[i], tokenSets[j]);
+            }
+        }
+
+        var lexical = entries.Select(e => Tokenize(e.Content)).ToArray();
+        return (i, j) => Jaccard(lexical[i], lexical[j]);
+    }
+
+    private static HashSet<string> Tokenize(string? text) =>
+        text is null
+            ? []
+            : [.. Regex
+                .Matches(text.ToLowerInvariant(), @"[a-z0-9']+")
+                .Select(m => m.Value)
+                .Where(w => w.Length > 3)];
+
+    private static double Jaccard(HashSet<string> a, HashSet<string> b)
+    {
+        if (a.Count == 0 || b.Count == 0)
+            return 0;
+        var intersection = a.Count <= b.Count ? a.Count(b.Contains) : b.Count(a.Contains);
+        return (double)intersection / (a.Count + b.Count - intersection);
+    }
+
     public async Task<IReadOnlyList<string>> ListTagsAsync(CancellationToken cancellationToken = default)
     {
         await _semaphore.WaitAsync(cancellationToken);
@@ -219,6 +444,7 @@ internal sealed partial class FileMemoryStore : ILongTermMemory
         {
             var index = await EnsureIndexAsync(cancellationToken);
             return index.Values
+                .Where(e => e.ArchivedAt is null)
                 .SelectMany(e => e.Tags)
                 .Distinct(StringComparer.OrdinalIgnoreCase)
                 .OrderBy(t => t, StringComparer.OrdinalIgnoreCase)
@@ -237,6 +463,7 @@ internal sealed partial class FileMemoryStore : ILongTermMemory
         {
             var index = await EnsureIndexAsync(cancellationToken);
             return index.Values
+                .Where(e => e.ArchivedAt is null)
                 .Select(e => e.Category)
                 .Where(c => c is not null)
                 .Distinct(StringComparer.OrdinalIgnoreCase)
@@ -298,6 +525,11 @@ internal sealed partial class FileMemoryStore : ILongTermMemory
         // hidden from search/recall by default but remain on disk for audit.
         // Direct GetAsync still returns them; supersession traversal needs the by-id path.
         if (entry.SupersededBy is not null && !criteria.IncludeSuperseded)
+            return false;
+
+        // Archived entries (dream consolidation merges, ephemeral pruning) are hidden from
+        // recall but kept on disk until the retention purge. Recovery tooling opts back in.
+        if (entry.ArchivedAt is not null && !criteria.IncludeArchived)
             return false;
 
         if (criteria.Category is not null)

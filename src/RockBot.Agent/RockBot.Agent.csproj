@@ -38,6 +38,9 @@
     <None Include="agent\llm-pricing.json" CopyToOutputDirectory="PreserveNewest">
       <Link>agent\llm-pricing.json</Link>
     </None>
+    <None Include="agent\merge-coverage-vocabulary.json" CopyToOutputDirectory="PreserveNewest">
+      <Link>agent\merge-coverage-vocabulary.json</Link>
+    </None>
   </ItemGroup>
 
   <ItemGroup>

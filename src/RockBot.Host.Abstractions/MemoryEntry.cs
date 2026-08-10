@@ -54,4 +54,28 @@ public sealed record MemoryEntry(
     /// Always <c>null</c> for live entries.
     /// </summary>
     public string? SupersededBy { get; init; }
+
+    /// <summary>
+    /// When this entry was archived — removed from recall but kept on disk. Set by
+    /// <see cref="ILongTermMemory.ArchiveAsync"/>, which the dream consolidation pass uses
+    /// instead of deleting. Archived entries are excluded from
+    /// <see cref="ILongTermMemory.SearchAsync"/> unless
+    /// <see cref="MemorySearchCriteria.IncludeArchived"/> is set, and remain retrievable by id
+    /// via <see cref="ILongTermMemory.GetAsync"/>. A retention purge hard-deletes them once
+    /// they age out. Always <c>null</c> for live entries.
+    /// </summary>
+    /// <remarks>
+    /// Consolidation merges are lossy and irreversible in a way nothing else in the pipeline
+    /// is: a merged entry is LLM-regenerated prose with no anchor back to what the sources
+    /// actually said. Archiving rather than deleting means a bad merge costs recall until
+    /// someone notices, not the fact itself.
+    /// </remarks>
+    public DateTimeOffset? ArchivedAt { get; init; }
+
+    /// <summary>
+    /// Why this entry was archived (e.g. <c>"merged into abc123"</c>, <c>"ephemeral"</c>).
+    /// Free text, written for a human reading an audit trail. Null when
+    /// <see cref="ArchivedAt"/> is null.
+    /// </summary>
+    public string? ArchiveReason { get; init; }
 }

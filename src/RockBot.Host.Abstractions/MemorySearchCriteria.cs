@@ -31,6 +31,12 @@ namespace RockBot.Host;
 /// semantics. Used by audit tooling and the dream contradiction sweep that need to inspect
 /// the full corpus.
 /// </param>
+/// <param name="IncludeArchived">
+/// When <c>true</c>, entries with <see cref="MemoryEntry.ArchivedAt"/> set are included in
+/// search results. Default <c>false</c> hides them from recall. Archived entries are not
+/// deleted — they stay on disk until the retention purge reaps them — so audit tooling and
+/// recovery flows set this to inspect or restore them.
+/// </param>
 public sealed record MemorySearchCriteria(
     string? Query = null,
     string? Category = null,
@@ -41,4 +47,5 @@ public sealed record MemorySearchCriteria(
     float[]? QueryEmbedding = null,
     MemorySearchMode Mode = MemorySearchMode.Hybrid,
     bool RegexCaseSensitive = false,
-    bool IncludeSuperseded = false);
+    bool IncludeSuperseded = false,
+    bool IncludeArchived = false);
