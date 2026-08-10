@@ -168,6 +168,32 @@ public sealed class DreamOptions
     /// </remarks>
     public int PruningProtectionReinforcementCount { get; set; } = 5;
 
+    /// <summary>
+    /// Path to the merge-coverage vocabulary file, relative to
+    /// <see cref="AgentProfileOptions.BasePath"/>. Re-read at the top of every dream cycle, so
+    /// edits take effect without a restart. When absent, a generic-English baseline is used.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Controls which capitalized words the coverage check treats as ordinary language rather
+    /// than as detail a merge must preserve. This is deployment-specific: the words an
+    /// operational assistant can safely ignore are not the words a storytelling agent can.
+    /// </para>
+    /// <para>
+    /// Shape — both fields optional:
+    /// <code>
+    /// {
+    ///   "extraCommonWords":    ["briefing", "triage"],
+    ///   "alwaysSpecificWords": ["May", "Will", "Rose"]
+    /// }
+    /// </code>
+    /// <c>alwaysSpecificWords</c> takes precedence, and matters most for agents whose characters
+    /// or people collide with ordinary English — without it, a character named May or Will is
+    /// silently stripped of coverage protection.
+    /// </para>
+    /// </remarks>
+    public string MergeCoverageVocabularyPath { get; set; } = "merge-coverage-vocabulary.json";
+
     /// <summary>Whether the memory mining pass (requires <see cref="IConversationLog"/>) is enabled.</summary>
     public bool MemoryMiningEnabled { get; set; } = true;
 

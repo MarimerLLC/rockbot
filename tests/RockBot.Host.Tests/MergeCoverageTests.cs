@@ -235,6 +235,83 @@ public class MergeCoverageTests
             "a rejected merge's sources must survive the toDelete sweep");
     }
 
+    // ── Deployment-specific vocabulary ───────────────────────────────────────
+
+    [TestMethod]
+    public void ExtraCommonWords_SuppressDeploymentNoise()
+    {
+        var vocab = new MergeCoverageVocabulary(extraCommonWords: ["briefing", "triage"], alwaysSpecificWords: null);
+
+        Assert.AreEqual(0, MergeCoverage.ExtractSpecifics("Briefing and Triage completed", vocab).Count);
+        CollectionAssert.Contains(
+            MergeCoverage.ExtractSpecifics("Briefing and Triage completed").ToArray(), "Briefing");
+    }
+
+    [TestMethod]
+    public void AlwaysSpecificWords_ReclaimBuiltInWordsThatAreActuallyNames()
+    {
+        // The failure this exists to prevent. A storytelling agent's characters collide head-on
+        // with generic English: "may", "will" and "some" are all built-in common words, so
+        // characters named May, Will or Rose would silently carry no coverage protection and a
+        // merge could drop them — the exact population that must never be lost.
+        var storytelling = new MergeCoverageVocabulary(
+            extraCommonWords: null,
+            alwaysSpecificWords: ["May", "Will", "Rose"]);
+
+        var line = "May and Will found Rose in the garden";
+
+        var unprotected = MergeCoverage.ExtractSpecifics(line);
+        Assert.IsFalse(unprotected.Contains("May"), "precondition: the built-in list swallows May");
+        Assert.IsFalse(unprotected.Contains("Will"), "precondition: the built-in list swallows Will");
+
+        var protectedSpecifics = MergeCoverage.ExtractSpecifics(line, storytelling);
+        foreach (var name in new[] { "May", "Will", "Rose" })
+            CollectionAssert.Contains(protectedSpecifics.ToArray(), name);
+    }
+
+    [TestMethod]
+    public void AlwaysSpecific_WinsOverExtraCommon()
+    {
+        var vocab = new MergeCoverageVocabulary(extraCommonWords: ["rose"], alwaysSpecificWords: ["Rose"]);
+        CollectionAssert.Contains(MergeCoverage.ExtractSpecifics("Rose arrived", vocab).ToArray(), "Rose");
+    }
+
+    [TestMethod]
+    public void VocabularyRoundTripsFromJson()
+    {
+        var vocab = MergeCoverageVocabulary.Parse(
+            """
+            {
+              // comments and trailing commas are tolerated
+              "extraCommonWords": ["briefing"],
+              "alwaysSpecificWords": ["May"],
+            }
+            """, out var error);
+
+        Assert.IsNull(error);
+        Assert.IsTrue(vocab.IsCommon("briefing"));
+        Assert.IsFalse(vocab.IsCommon("May"));
+    }
+
+    [TestMethod]
+    public void MalformedVocabulary_FallsBackWithoutDisablingTheCheck()
+    {
+        // A broken override must never silently turn coverage checking off — that would
+        // reintroduce exactly the data loss this safeguard exists to stop.
+        var vocab = MergeCoverageVocabulary.Parse("{ not json", out var error);
+
+        Assert.IsNotNull(error);
+        CollectionAssert.Contains(MergeCoverage.ExtractSpecifics("Rockford filed", vocab).ToArray(), "Rockford");
+    }
+
+    [TestMethod]
+    public void AbsentVocabulary_UsesTheBuiltInBaseline()
+    {
+        Assert.AreEqual(MergeCoverageVocabulary.Default.CommonWordCount,
+            MergeCoverageVocabulary.Parse(null, out var error).CommonWordCount);
+        Assert.IsNull(error);
+    }
+
     // ── High-value pruning floor ─────────────────────────────────────────────
 
     [TestMethod]

@@ -44,51 +44,20 @@ internal static partial class MergeCoverage
     private static partial Regex Possessive();
 
     /// <summary>
-    /// Common words that show up capitalized purely because they start a sentence. Matching is
-    /// case-insensitive, so this also spares ordinary mid-sentence prose from being mistaken
-    /// for a proper noun.
-    /// </summary>
-    private static readonly HashSet<string> CommonWords = new(StringComparer.OrdinalIgnoreCase)
-    {
-        "the", "this", "that", "these", "those", "there", "then", "than", "and", "but", "not",
-        "are", "was", "were", "has", "have", "had", "its", "his", "her", "their", "they", "them",
-        "also", "only", "just", "such", "each", "both", "all", "any", "one", "two", "three",
-        "new", "now", "use", "uses", "used", "using", "should", "must", "may", "can", "will",
-        "would", "could", "note", "example", "include", "includes", "including", "prefer",
-        "prefers", "avoid", "does", "did", "set", "get", "save", "send", "read", "write", "run",
-        "when", "what", "where", "while", "with", "from", "for", "into", "over", "under",
-        "about", "after", "before", "during", "between", "because", "however", "instead",
-        "since", "until", "upon", "user", "agent", "detail", "details", "task", "tasks", "item",
-        "items", "entry", "entries", "memory", "working", "long", "term", "data", "time",
-        "date", "day", "days", "week", "weeks", "month", "months", "year", "years", "ago",
-        "per", "via", "context", "current", "currently", "still", "already", "always", "never",
-        "other", "another", "same", "different", "first", "second", "last", "next", "previous",
-        "some", "most", "many", "much", "more", "less", "very", "rather", "quite",
-        // Observed as false positives on a live corpus: ordinary words that happened to open
-        // a sentence or label a clause, flagged as proper nouns and rejecting a sound merge.
-        "adding", "candidate", "candidates", "flagged", "validated", "recurring", "repeated",
-        "correct", "corrected", "short", "long", "topic", "topics", "attempts", "attempted",
-        "recommend", "recommended", "confirmed", "verified", "known", "unknown", "successful",
-        "failed", "failing", "pending", "active", "inactive", "enabled", "disabled",
-        "created", "updated", "deleted", "removed", "added", "changed", "applied",
-        "review", "reviewed", "summary", "status", "result", "results", "reason", "reasons",
-        "issue", "issues", "error", "errors", "warning", "warnings", "notes", "given",
-        "based", "across", "within", "without", "however", "although", "though", "unless",
-        "overall", "specifically", "particularly", "typically", "generally", "likely",
-        // Second live-run false positives. Kept deliberately short: several other words from
-        // the same rejections — "Personal", "Power", "Social", "Code", "Class", "Benefit",
-        // "Extended" — read as generic but are load-bearing in this corpus ("OneDrive
-        // Personal", "Blazor Online Class", "MVP Azure Extended Benefit"), and stoplisting
-        // them would blunt a correct rejection. Only add a word when it cannot carry meaning.
-        "ids", "enjoys", "downloading",
-    };
-
-    /// <summary>
     /// Extracts the load-bearing specifics from a piece of memory content: proper nouns,
     /// acronyms, and numbers.
     /// </summary>
-    internal static HashSet<string> ExtractSpecifics(string? content)
+    /// <param name="content">Memory content to scan.</param>
+    /// <param name="vocabulary">
+    /// Which words count as ordinary language. Defaults to the generic-English baseline;
+    /// deployments override it via <c>merge-coverage-vocabulary.json</c>.
+    /// </param>
+    internal static HashSet<string> ExtractSpecifics(
+        string? content,
+        MergeCoverageVocabulary? vocabulary = null)
     {
+        var words = vocabulary ?? MergeCoverageVocabulary.Default;
+
         var specifics = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         if (string.IsNullOrWhiteSpace(content))
             return specifics;
@@ -96,12 +65,12 @@ internal static partial class MergeCoverage
         foreach (Match m in CapitalizedWord().Matches(content))
         {
             var word = Possessive().Replace(m.Value, string.Empty);
-            if (word.Length > 2 && !CommonWords.Contains(word))
+            if (word.Length > 2 && !words.IsCommon(word))
                 specifics.Add(word);
         }
 
         foreach (Match m in Acronym().Matches(content))
-            if (!CommonWords.Contains(m.Value))
+            if (!words.IsCommon(m.Value))
                 specifics.Add(m.Value);
 
         foreach (Match m in Numeric().Matches(content))
@@ -124,13 +93,14 @@ internal static partial class MergeCoverage
     /// </remarks>
     internal static IReadOnlyList<string> FindMissingSpecifics(
         IEnumerable<MemoryEntry> sources,
-        string? mergedContent)
+        string? mergedContent,
+        MergeCoverageVocabulary? vocabulary = null)
     {
         var merged = mergedContent ?? string.Empty;
 
         var required = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var source in sources)
-            required.UnionWith(ExtractSpecifics(source.Content));
+            required.UnionWith(ExtractSpecifics(source.Content, vocabulary));
 
         if (required.Count == 0)
             return [];

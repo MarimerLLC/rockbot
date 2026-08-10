@@ -1,0 +1,26 @@
+{
+  // Merge-coverage vocabulary — tunes the safeguard that stops dream consolidation from
+  // dropping details when it merges memories.
+  //
+  // The check requires every proper noun, acronym and multi-digit number in a merge's sources
+  // to survive into the merged text. Words listed as "common" are exempt from that requirement.
+  // A built-in generic-English list is always applied; this file layers on top of it.
+  //
+  // Re-read at the top of every dream cycle — no restart needed. If this file is malformed the
+  // built-in list is used and a warning is logged; coverage checking is never disabled.
+
+  // Words to ALSO ignore. Add domain noise that keeps triggering rejections you judge to be
+  // false. Be conservative: a false rejection only costs a duplicate surviving another cycle,
+  // whereas suppressing a real name lets it be deleted silently. Do not add a word that could
+  // ever name something — "Personal", "Class" and "Benefit" look generic but carry meaning in
+  // "OneDrive Personal", "Blazor Online Class" and "MVP Azure Extended Benefit".
+  "extraCommonWords": [],
+
+  // Words to ALWAYS treat as specifics, overriding the built-in list.
+  //
+  // This matters most for agents whose people or characters collide with ordinary English.
+  // The built-in list contains "may", "will", "some", "first", "last", "new" and similar, so a
+  // storytelling agent with a character named May, Will, Rose, Grace or Hope MUST list them
+  // here — otherwise those names carry no coverage protection and a merge can drop them.
+  "alwaysSpecificWords": []
+}

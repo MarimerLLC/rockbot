@@ -146,6 +146,25 @@ missing the merge is rejected outright: nothing is saved and the sources are lef
 is what catches the characteristic failure, a plausible-reading merge that keeps the
 machine-readable half of an entry and quietly drops a name or a date.
 
+**Vocabulary is per-deployment.** Which capitalized words count as ordinary language rather
+than as detail is not portable between agents, so it lives in
+`merge-coverage-vocabulary.json` on the agent profile volume (next to `tier-selector.json`),
+re-read at the top of every cycle:
+
+```json
+{
+  "extraCommonWords":    ["briefing", "triage"],
+  "alwaysSpecificWords": ["May", "Will", "Rose"]
+}
+```
+
+`extraCommonWords` suppresses domain noise. `alwaysSpecificWords` reclaims words from the
+built-in generic-English baseline and takes precedence over it — this matters most for agents
+whose people or characters collide with ordinary English. The baseline contains `may`, `will`,
+`some`, `first` and `last`, so a storytelling agent with a character named **May** or **Will**
+must list them here or those names carry no coverage protection at all. A malformed file falls
+back to the baseline with a warning; coverage checking is never disabled by bad config.
+
 The check is deliberately biased toward rejection, because the costs are asymmetric: a false
 rejection leaves a duplicate pair alive for another cycle, while a false acceptance destroys
 the only record of how a fact was worded. Measured against a real 148-entry corpus, it rejects

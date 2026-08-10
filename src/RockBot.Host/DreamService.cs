@@ -65,6 +65,7 @@ internal sealed class DreamService : IHostedService, IDisposable
     private string? _sequenceSkillDirective;
     private string? _entityExtractionDirective;
     private string? _graphConsolidationDirective;
+    private MergeCoverageVocabulary _mergeVocabulary = MergeCoverageVocabulary.Default;
     private string? _dlqDirective;
     private string? _identityDirective;
     private string? _wispFailureDirective;
@@ -214,6 +215,27 @@ internal sealed class DreamService : IHostedService, IDisposable
         var memoryRules = File.Exists(memoryRulesPath) ? File.ReadAllText(memoryRulesPath) : string.Empty;
         if (!string.IsNullOrEmpty(memoryRules))
             _logger.LogDebug("DreamService: loaded memory-rules from {Path}", memoryRulesPath);
+
+        // Merge-coverage vocabulary. Deployment-specific by nature: an operational assistant and
+        // a storytelling agent disagree about which capitalized words are ordinary language, and
+        // getting it wrong in the storytelling direction strips coverage from character names.
+        var vocabularyPath = ResolvePath(_options.MergeCoverageVocabularyPath, _profileOptions.BasePath);
+        if (File.Exists(vocabularyPath))
+        {
+            _mergeVocabulary = MergeCoverageVocabulary.Parse(File.ReadAllText(vocabularyPath), out var vocabError);
+            if (vocabError is not null)
+                _logger.LogWarning(
+                    "DreamService: {Path} is malformed ({Error}); using the built-in vocabulary",
+                    vocabularyPath, vocabError);
+            else
+                _logger.LogDebug(
+                    "DreamService: loaded merge-coverage vocabulary from {Path} ({Common} common words, {Specific} reclaimed as specifics)",
+                    vocabularyPath, _mergeVocabulary.CommonWordCount, _mergeVocabulary.AlwaysSpecificWords.Count);
+        }
+        else
+        {
+            _mergeVocabulary = MergeCoverageVocabulary.Default;
+        }
 
         var directivePath = ResolvePath(_options.DirectivePath, _profileOptions.BasePath);
         var dreamDirective = File.Exists(directivePath)
@@ -898,7 +920,7 @@ internal sealed class DreamService : IHostedService, IDisposable
             // A merge that drops a name, a date or a number is a failed merge, not a tidier
             // one — and once the sources are archived nobody can tell it happened. Reject it
             // and leave the sources alone; a surviving duplicate is the cheaper mistake.
-            var missing = MergeCoverage.FindMissingSpecifics(sources, dto.Content);
+            var missing = MergeCoverage.FindMissingSpecifics(sources, dto.Content, _mergeVocabulary);
             if (missing.Count > 0)
             {
                 // The directive requires every sourceId to also appear in toDelete, so these
