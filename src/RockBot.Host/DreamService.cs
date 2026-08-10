@@ -228,9 +228,17 @@ internal sealed class DreamService : IHostedService, IDisposable
                     "DreamService: {Path} is malformed ({Error}); using the built-in vocabulary",
                     vocabularyPath, vocabError);
             else
-                _logger.LogDebug(
-                    "DreamService: loaded merge-coverage vocabulary from {Path} ({Common} common words, {Specific} reclaimed as specifics)",
-                    vocabularyPath, _mergeVocabulary.CommonWordCount, _mergeVocabulary.AlwaysSpecificWords.Count);
+                // Information, matching the per-cycle directive reload above: this file decides
+                // what a merge is allowed to drop, and an operator tuning it needs to see that
+                // their edit was picked up without raising the whole namespace to Debug.
+                _logger.LogInformation(
+                    "DreamService: merge-coverage vocabulary from {Path} — {Common} common words, {Specific} reclaimed as specifics{Reclaimed}",
+                    vocabularyPath,
+                    _mergeVocabulary.CommonWordCount,
+                    _mergeVocabulary.AlwaysSpecificWords.Count,
+                    _mergeVocabulary.AlwaysSpecificWords.Count > 0
+                        ? " (" + string.Join(", ", _mergeVocabulary.AlwaysSpecificWords) + ")"
+                        : string.Empty);
         }
         else
         {
