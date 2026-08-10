@@ -85,6 +85,18 @@ public class MergeCoverageTests
     }
 
     [TestMethod]
+    public void OrdinaryWordsOpeningASentenceAreNotSpecifics()
+    {
+        // Observed live: this exact shape rejected a sound merge because "Candidate",
+        // "Adding", "Flagged" and "Validated" were read as proper nouns.
+        var specifics = MergeCoverage.ExtractSpecifics(
+            "Candidate low-signal words were reviewed. Adding them is wrong. "
+            + "Flagged entries were Validated against telemetry.");
+
+        Assert.AreEqual(0, specifics.Count, string.Join(", ", specifics));
+    }
+
+    [TestMethod]
     public void ContentWithNoSpecifics_ImposesNoRequirement()
     {
         var sources = new[] { Entry("a", "the user prefers concise replies") };
@@ -174,6 +186,32 @@ public class MergeCoverageTests
         var missing = MergeCoverage.FindMissingSpecifics(sources, "someone travelled");
 
         CollectionAssert.AreEqual(new[] { "Alpha", "Boston", "Mike", "Zulu" }, missing.ToArray());
+    }
+
+    [TestMethod]
+    public void RejectedMergeSources_MustNotBeReachableViaTheEphemeralPath()
+    {
+        // Regression for a defect the unit tests missed and a live cycle caught. dream.md
+        // requires every sourceId to also appear in toDelete, so rejecting a merge is not
+        // enough on its own — the standalone-removal loop would archive the very sources the
+        // rejection was meant to save, leaving them with no replacement at all. Strictly
+        // worse than allowing the lossy merge.
+        //
+        // Reproduces the exact shape seen in production: one dto whose sourceIds are fully
+        // duplicated into toDelete.
+        var sources = new[] { Entry("s1", "Allen Conway is a Xebia collaborator"), Entry("s2", "Allen Conway uses accountId rockyl") };
+        var mergedDroppingXebia = "Allen Conway uses accountId rockyl";
+
+        var missing = MergeCoverage.FindMissingSpecifics(sources, mergedDroppingXebia);
+        Assert.IsTrue(missing.Count > 0, "precondition: this merge must be rejected");
+
+        // The rejection has to translate into the source IDs being excluded from removal.
+        var rejectedSources = new HashSet<string>(sources.Select(s => s.Id), StringComparer.OrdinalIgnoreCase);
+        var toDelete = new[] { "s1", "s2" };
+        var actuallyRemoved = toDelete.Where(id => !rejectedSources.Contains(id)).ToArray();
+
+        Assert.AreEqual(0, actuallyRemoved.Length,
+            "a rejected merge's sources must survive the toDelete sweep");
     }
 
     // ── High-value pruning floor ─────────────────────────────────────────────

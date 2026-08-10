@@ -861,6 +861,10 @@ internal sealed class DreamService : IHostedService, IDisposable
         var rejectedMerges = 0;
         var protectedFromPruning = 0;
 
+        // Sources belonging to a merge the coverage check refused. They must survive the
+        // standalone-removal loop below.
+        var rejectedMergeSources = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
         // Source lookup for merge arithmetic, keyed only on entries that were actually shown.
         // This is what enforces the gate: an ID the LLM invents, remembers from a previous
         // cycle, or otherwise names without having been offered it is not in this map, so it
@@ -897,6 +901,13 @@ internal sealed class DreamService : IHostedService, IDisposable
             var missing = MergeCoverage.FindMissingSpecifics(sources, dto.Content);
             if (missing.Count > 0)
             {
+                // The directive requires every sourceId to also appear in toDelete, so these
+                // IDs are sitting in the standalone-removal list too. Without this the
+                // ephemeral path would archive them anyway and the rejection would achieve
+                // nothing — worse than merging, since nothing replaces them at all.
+                foreach (var srcId in sourceIds)
+                    rejectedMergeSources.Add(srcId);
+
                 rejectedMerges++;
                 _logger.LogWarning(
                     "DreamService: rejected merge of [{Sources}] — dropped {Count} specific(s): {Missing}. Sources kept. Merged text was: {Content}",
@@ -970,6 +981,9 @@ internal sealed class DreamService : IHostedService, IDisposable
         foreach (var id in result.ToDelete ?? [])
         {
             if (!byId.TryGetValue(id, out var candidate) || archiveReasons.ContainsKey(id))
+                continue;
+
+            if (rejectedMergeSources.Contains(id))
                 continue;
 
             if (IsProtectedFromPruning(candidate, _options))

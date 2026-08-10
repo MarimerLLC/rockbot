@@ -64,6 +64,17 @@ internal static partial class MergeCoverage
         "per", "via", "context", "current", "currently", "still", "already", "always", "never",
         "other", "another", "same", "different", "first", "second", "last", "next", "previous",
         "some", "most", "many", "much", "more", "less", "very", "rather", "quite",
+        // Observed as false positives on a live corpus: ordinary words that happened to open
+        // a sentence or label a clause, flagged as proper nouns and rejecting a sound merge.
+        "adding", "candidate", "candidates", "flagged", "validated", "recurring", "repeated",
+        "correct", "corrected", "short", "long", "topic", "topics", "attempts", "attempted",
+        "recommend", "recommended", "confirmed", "verified", "known", "unknown", "successful",
+        "failed", "failing", "pending", "active", "inactive", "enabled", "disabled",
+        "created", "updated", "deleted", "removed", "added", "changed", "applied",
+        "review", "reviewed", "summary", "status", "result", "results", "reason", "reasons",
+        "issue", "issues", "error", "errors", "warning", "warnings", "notes", "given",
+        "based", "across", "within", "without", "however", "although", "though", "unless",
+        "overall", "specifically", "particularly", "typically", "generally", "likely",
     };
 
     /// <summary>
