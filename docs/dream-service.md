@@ -103,7 +103,10 @@ Gating makes it roughly one decision per entry per content change.
 - Clustering comes from `IMemoryDuplicateCandidates` on the store: cosine over embeddings
   where available, Jaccard over content tokens otherwise, so BM25-only deployments still
   deduplicate. Controlled by `Dream:ConsolidationSimilarityThreshold` (default 0.88) and
-  `Dream:ConsolidationMaxClusterSize` (default 3, capping merge fan-in).
+  `Dream:ConsolidationMaxClusterSize` (default 3). The cluster cap bounds *eligibility*, not
+  merge size — the model may propose a merge over any subset of what it is shown, and in
+  practice does produce merges with more sources than this value. Large merges are constrained
+  by the coverage check below rather than by a count.
 - If the near-duplicate scan fails, the pass degrades to unreviewed-only rather than falling
   back to the whole corpus.
 

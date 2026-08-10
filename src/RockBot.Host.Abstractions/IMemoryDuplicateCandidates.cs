@@ -29,8 +29,9 @@ public interface IMemoryDuplicateCandidates
     /// is implementation-defined — cosine over embeddings, or a lexical measure as a fallback.
     /// </param>
     /// <param name="maxClusterSize">
-    /// Ceiling on entries per cluster. Oversized clusters are split rather than dropped, so a
-    /// single sprawling topic cannot be collapsed into one entry in one pass.
+    /// Ceiling on entries per cluster. Oversized clusters are split into chunks rather than
+    /// dropped, so single-link chaining cannot pull an entire topic into one group. Note this
+    /// bounds what a caller is offered, not what it subsequently does with it.
     /// </param>
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <returns>Clusters of entry IDs, each with at least two members.</returns>

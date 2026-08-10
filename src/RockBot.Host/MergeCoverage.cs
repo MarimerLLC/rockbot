@@ -75,6 +75,12 @@ internal static partial class MergeCoverage
         "issue", "issues", "error", "errors", "warning", "warnings", "notes", "given",
         "based", "across", "within", "without", "however", "although", "though", "unless",
         "overall", "specifically", "particularly", "typically", "generally", "likely",
+        // Second live-run false positives. Kept deliberately short: several other words from
+        // the same rejections — "Personal", "Power", "Social", "Code", "Class", "Benefit",
+        // "Extended" — read as generic but are load-bearing in this corpus ("OneDrive
+        // Personal", "Blazor Online Class", "MVP Azure Extended Benefit"), and stoplisting
+        // them would blunt a correct rejection. Only add a word when it cannot carry meaning.
+        "ids", "enjoys", "downloading",
     };
 
     /// <summary>

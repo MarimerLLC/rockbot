@@ -97,6 +97,27 @@ public class MergeCoverageTests
     }
 
     [TestMethod]
+    public void WordsThatCannotCarryMeaning_AreNotSpecifics()
+    {
+        Assert.AreEqual(
+            0,
+            MergeCoverage.ExtractSpecifics("IDs vary by mailbox. Downloading works. Enjoys music.").Count);
+    }
+
+    [TestMethod]
+    public void GenericLookingWordsThatAreLoadBearingHere_StaySpecifics()
+    {
+        // These read as ordinary English but name real things in this corpus — "OneDrive
+        // Personal", "Blazor Online Class", "MVP Azure Extended Benefit". Stoplisting them to
+        // quieten a false positive would blunt a correct rejection.
+        var specifics = MergeCoverage.ExtractSpecifics(
+            "Personal OneDrive holds the Blazor Online Class notes and the MVP Azure Extended Benefit task.");
+
+        foreach (var expected in new[] { "Personal", "Blazor", "Online", "Class", "Azure", "Extended", "Benefit" })
+            CollectionAssert.Contains(specifics.ToArray(), expected);
+    }
+
+    [TestMethod]
     public void ContentWithNoSpecifics_ImposesNoRequirement()
     {
         var sources = new[] { Entry("a", "the user prefers concise replies") };

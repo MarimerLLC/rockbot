@@ -191,8 +191,9 @@ public class ConsolidationCandidateGatingTests
     [TestMethod]
     public async Task ClustersAreSplitAtMaxClusterSize()
     {
-        // Caps merge fan-in: without it, single-link chaining lets one cluster swallow a whole
-        // topic and invites the model to collapse it into a single entry.
+        // Bounds eligibility, not merge size: without it, single-link chaining pulls a whole
+        // topic into one group. What the model then merges is constrained by the coverage
+        // check, not by this cap.
         var store = CreateStore();
         for (var i = 0; i < 5; i++)
             await store.SaveAsync(Entry($"dup{i}", "Rocky has a Sheltie dog named Milo"));

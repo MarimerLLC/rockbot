@@ -129,12 +129,21 @@ public sealed class DreamOptions
 
     /// <summary>
     /// Ceiling on how many entries may appear in a single near-duplicate cluster. Larger
-    /// clusters are split across passes rather than dropped. Default: 3.
+    /// clusters are split into chunks rather than dropped. Default: 3.
     /// </summary>
     /// <remarks>
-    /// Caps merge fan-in. Without a cap, single-link clustering can chain a whole topic into
-    /// one group and invite the model to collapse it into a single entry — which is how a
-    /// corpus loses detail fastest.
+    /// <para>
+    /// This bounds <em>eligibility</em>, not merge size. Clusters decide which entries the
+    /// model is shown; once shown, it may propose a merge over any subset of them, so a pass
+    /// can and does produce merges with more sources than this value. Observed in production:
+    /// a 13-source merge under the default of 3.
+    /// </para>
+    /// <para>
+    /// Large merges are constrained by the coverage check instead, which is the better tool
+    /// for the job — it judges whether detail actually survived rather than guessing from a
+    /// count. The same production cycle that produced the 13-source merge had it accepted
+    /// (every specific preserved) while rejecting a 6-source merge that dropped 28.
+    /// </para>
     /// </remarks>
     public int ConsolidationMaxClusterSize { get; set; } = 3;
 
