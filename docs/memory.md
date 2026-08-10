@@ -424,6 +424,17 @@ This split keeps the LLM focused on *what to merge* while the host guarantees co
 temporal arithmetic and prevents the dream cycle from inadvertently stamping every
 reprocessed entry as "just seen today."
 
+**Two safeguards constrain what a pass may do:**
+
+- *Merge coverage* — every proper noun, acronym and multi-digit number in a merge's sources
+  must survive into the merged text, or the merge is rejected and the sources are kept.
+- *High-value floor* — entries at or above `Dream:PruningProtectionImportance` (0.80) or
+  `Dream:PruningProtectionReinforcementCount` (5) may be merged but never pruned outright.
+
+Both are deterministic rather than prompt guidance, because the prompt-level versions were
+already present and did not hold. Merged entries record `mergedFrom` / `mergedAt` in metadata
+(metadata is not part of the search surface). See `dream-service.md` for measured behaviour.
+
 **Removals are archived, not deleted.** Consolidation calls `ArchiveAsync`, which hides an
 entry from search but keeps it on disk and retrievable by ID; a separate purge pass
 hard-deletes archived entries after `Dream:MemoryArchiveRetention` (default 90 days), and

@@ -137,6 +137,34 @@ rather than costing the fact. Every archive is logged at Information with the en
 inline, which is what makes a bad cycle reviewable without restoring a volume backup.
 `IArchivedMemoryMaintenance.RestoreAsync` puts an entry back.
 
+**Merge coverage check.** Before a merge is applied, the specifics in its sources — proper
+nouns, acronyms, and multi-digit numbers — must all appear in the merged text. If any is
+missing the merge is rejected outright: nothing is saved and the sources are left alone. This
+is what catches the characteristic failure, a plausible-reading merge that keeps the
+machine-readable half of an entry and quietly drops a name or a date.
+
+The check is deliberately biased toward rejection, because the costs are asymmetric: a false
+rejection leaves a duplicate pair alive for another cycle, while a false acceptance destroys
+the only record of how a fact was worded. Measured against a real 148-entry corpus, it rejects
+0% of merges that preserve all source content and catches 83% of merges that drop a source
+outright (the remainder being pairs where one source's specifics are a strict subset of the
+other's — genuinely redundant). Known conservative false positives include 12h→24h clock
+reformatting.
+
+**High-value pruning floor.** Entries at or above `Dream:PruningProtectionImportance`
+(default 0.80) or `Dream:PruningProtectionReinforcementCount` (default 5) can be merged, but
+are never archived as standalone ephemeral. Merging preserves content and is covered by the
+check above; ephemeral pruning discards a fact with nothing in its place, which is not
+something to do on one model's say-so to an entry the agent has re-observed dozens of times.
+This is a deterministic floor precisely because the prompt-level version did not hold —
+`dream.md` already said reinforcement signals importance, and a live corpus still lost entries
+reinforced 214, 106 and 80 times.
+
+**Provenance.** Merged entries carry `mergedFrom` (source IDs) and `mergedAt` in metadata.
+Source text is not duplicated: the sources are archived rather than deleted, so those IDs
+resolve via `GetAsync` for the retention window. Metadata is not part of the search surface,
+so this does not affect ranking. After the purge the IDs dangle by design.
+
 **Ordering — replacement first, then retirement.** Merged entries are saved *before* their
 sources are archived, and only sources belonging to a merge that actually persisted are
 retired. A `toSave` entry with blank content is skipped with a warning and its sources are

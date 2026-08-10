@@ -138,6 +138,27 @@ public sealed class DreamOptions
     /// </remarks>
     public int ConsolidationMaxClusterSize { get; set; } = 3;
 
+    /// <summary>
+    /// Importance at or above which an entry may not be pruned outright by consolidation.
+    /// Merging is still permitted, since a merge preserves the content. Default: 0.80.
+    /// </summary>
+    /// <remarks>
+    /// A deterministic floor rather than prompt guidance. The directive already told the model
+    /// that reinforcement signals importance, and it deleted 0.99-scored entries anyway.
+    /// </remarks>
+    public float PruningProtectionImportance { get; set; } = 0.80f;
+
+    /// <summary>
+    /// Reinforcement count at or above which an entry may not be pruned outright by
+    /// consolidation. Merging is still permitted. Default: 5.
+    /// </summary>
+    /// <remarks>
+    /// Repeated independent observation is the strongest evidence available that a fact
+    /// matters — it is exactly the signal that should have protected the entries a live corpus
+    /// lost at 214, 106 and 80 observations.
+    /// </remarks>
+    public int PruningProtectionReinforcementCount { get; set; } = 5;
+
     /// <summary>Whether the memory mining pass (requires <see cref="IConversationLog"/>) is enabled.</summary>
     public bool MemoryMiningEnabled { get; set; } = true;
 

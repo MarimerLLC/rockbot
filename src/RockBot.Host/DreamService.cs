@@ -600,6 +600,32 @@ internal sealed class DreamService : IHostedService, IDisposable
         });
     }
 
+    /// <summary>Metadata key listing the IDs a merged entry was built from (comma-separated).</summary>
+    /// <remarks>
+    /// Those sources are archived rather than deleted, so for the retention window these IDs
+    /// resolve via <see cref="ILongTermMemory.GetAsync"/> and the merge can be audited against
+    /// what it actually replaced. After the purge they dangle, by design — provenance is a
+    /// recovery aid, not a permanent record.
+    /// </remarks>
+    internal const string MergedFromKey = "mergedFrom";
+
+    /// <summary>Metadata key holding when a merged entry was produced.</summary>
+    internal const string MergedAtKey = "mergedAt";
+
+    /// <summary>
+    /// True when an entry is valuable enough that consolidation may not discard it outright.
+    /// Merging is still allowed — that preserves the content, subject to the coverage check.
+    /// </summary>
+    /// <remarks>
+    /// Added because importance and reinforcement demonstrably conferred no protection: a
+    /// corpus lost entries scored 0.99 and reinforced 214, 106 and 80 times in a single pass,
+    /// while the directive already told the model reinforcement signals importance. Guidance
+    /// the model can ignore is not a safeguard; this is a deterministic floor it cannot.
+    /// </remarks>
+    internal static bool IsProtectedFromPruning(MemoryEntry entry, DreamOptions options) =>
+        entry.ImportanceScore >= options.PruningProtectionImportance
+        || entry.ReinforcementCount >= options.PruningProtectionReinforcementCount;
+
     /// <summary>Metadata key holding the content hash as of the last consolidation review.</summary>
     internal const string ConsolidationReviewedHashKey = "consolidationReviewedHash";
 
@@ -832,6 +858,8 @@ internal sealed class DreamService : IHostedService, IDisposable
 
         var deleted = 0;
         var saved = 0;
+        var rejectedMerges = 0;
+        var protectedFromPruning = 0;
 
         // Source lookup for merge arithmetic, keyed only on entries that were actually shown.
         // This is what enforces the gate: an ID the LLM invents, remembers from a previous
@@ -863,6 +891,22 @@ internal sealed class DreamService : IHostedService, IDisposable
                 .Select(id => byId[id])
                 .ToList();
 
+            // A merge that drops a name, a date or a number is a failed merge, not a tidier
+            // one — and once the sources are archived nobody can tell it happened. Reject it
+            // and leave the sources alone; a surviving duplicate is the cheaper mistake.
+            var missing = MergeCoverage.FindMissingSpecifics(sources, dto.Content);
+            if (missing.Count > 0)
+            {
+                rejectedMerges++;
+                _logger.LogWarning(
+                    "DreamService: rejected merge of [{Sources}] — dropped {Count} specific(s): {Missing}. Sources kept. Merged text was: {Content}",
+                    string.Join(", ", sources.Select(s => s.Id)),
+                    missing.Count,
+                    string.Join(", ", missing),
+                    dto.Content.Trim());
+                continue;
+            }
+
             // CreatedAt = earliest source (first-seen preserved); UpdatedAt = now (record rewritten)
             var firstSeen = sources.Count > 0 ? sources.Min(s => s.CreatedAt) : DateTimeOffset.UtcNow;
 
@@ -877,6 +921,21 @@ internal sealed class DreamService : IHostedService, IDisposable
                 ?? (sources.Count > 0 ? sources.Max(s => s.ImportanceScore) : 0.5f);
 
             var mergedMetadata = MergeSubjectTimeMetadata(sources);
+
+            // Provenance. The source text is not copied here — the sources are archived rather
+            // than deleted, so they stay retrievable by these IDs for the retention window and
+            // duplicating their prose would only give a later pass more to re-embellish.
+            if (sources.Count > 0)
+            {
+                var withProvenance = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                if (mergedMetadata is not null)
+                    foreach (var (key, value) in mergedMetadata)
+                        withProvenance[key] = value;
+
+                withProvenance[MergedFromKey] = string.Join(",", sources.Select(s => s.Id));
+                withProvenance[MergedAtKey] = DateTimeOffset.UtcNow.ToString("O");
+                mergedMetadata = withProvenance;
+            }
 
             var entry = new MemoryEntry(
                 Id: Guid.NewGuid().ToString("N")[..12],
@@ -904,9 +963,27 @@ internal sealed class DreamService : IHostedService, IDisposable
         }
 
         // Standalone removals (ephemeral content the LLM flagged) that no merge accounted for.
+        // Unlike a merge, this discards a fact with nothing put in its place, so the
+        // high-value floor applies: an entry the agent has re-observed many times, or scored
+        // as core, is not something to drop on one model's say-so. Such entries can still be
+        // merged — their content survives that, and the coverage check enforces it.
         foreach (var id in result.ToDelete ?? [])
-            if (byId.ContainsKey(id) && !archiveReasons.ContainsKey(id))
-                archiveReasons[id] = "flagged ephemeral by consolidation";
+        {
+            if (!byId.TryGetValue(id, out var candidate) || archiveReasons.ContainsKey(id))
+                continue;
+
+            if (IsProtectedFromPruning(candidate, _options))
+            {
+                protectedFromPruning++;
+                _logger.LogInformation(
+                    "DreamService: refused to prune {Id} ({Category}, importance={Importance:F2}, reinforced={Count}×) — above the high-value floor: {Content}",
+                    candidate.Id, candidate.Category ?? "(none)", candidate.ImportanceScore,
+                    candidate.ReinforcementCount, candidate.Content);
+                continue;
+            }
+
+            archiveReasons[id] = "flagged ephemeral by consolidation";
+        }
 
         foreach (var (id, reason) in archiveReasons)
         {
@@ -923,6 +1000,11 @@ internal sealed class DreamService : IHostedService, IDisposable
         await StampReviewedAsync(
             eligible.Select(e => e.Id).Where(id => !archiveReasons.ContainsKey(id)),
             ct);
+
+        if (rejectedMerges > 0 || protectedFromPruning > 0)
+            _logger.LogInformation(
+                "DreamService: consolidation safeguards fired — {Rejected} merge(s) rejected for dropping specifics, {Protected} entry(s) protected from pruning",
+                rejectedMerges, protectedFromPruning);
 
         return (deleted, saved);
     }
