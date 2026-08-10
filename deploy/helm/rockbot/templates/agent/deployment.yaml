@@ -76,6 +76,13 @@ spec:
                 cp /app/agent/llm-pricing.json /data/agent/llm-pricing.json
               fi
 
+              # merge-coverage-vocabulary.json — per-deployment word list for the dream
+              # merge-coverage safeguard. Copy no-clobber so operator tuning survives upgrades.
+              if [ -f /app/agent/merge-coverage-vocabulary.json ] && [ ! -s /data/agent/merge-coverage-vocabulary.json ]; then
+                echo "  Copying default merge-coverage-vocabulary.json"
+                cp /app/agent/merge-coverage-vocabulary.json /data/agent/merge-coverage-vocabulary.json
+              fi
+
               # Per-model behavior prompt files — copy per-file so users can customise
               # individual prompts without losing others on upgrade
               for model_dir in /app/model-behaviors/*/; do

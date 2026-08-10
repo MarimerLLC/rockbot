@@ -387,20 +387,27 @@ The dream service runs two memory-related passes:
 
 ### Pass 1 — Memory consolidation
 
-Reviews all long-term memory entries for duplicates, near-duplicates, and outdated content.
+Reviews a gated subset of long-term memory entries for duplicates, near-duplicates, and
+outdated content.
 
 **Inputs provided to the LLM:**
-- All memory entries (up to 1000), numbered with ID, category, tags, content, and temporal
-  context (`first=`, `last=`, `reinforced=N×`, and `subject=...` when subject-time metadata
-  is present)
+- Only *eligible* entries — those new or changed since their last review, plus those in a
+  near-duplicate cluster — numbered with ID, category, tags, content, and temporal context
+  (`first=`, `last=`, `reinforced=N×`, and `subject=...` when subject-time metadata is
+  present). Everything else is withheld and cannot be touched this cycle.
 - Recent feedback signals (last 7 days, up to 50) for quality context
 
 **What the LLM can do:**
 1. Merge duplicate or near-duplicate entries — even when widely separated in time, treating
    them as reinforcement rather than novelty
 2. Refine categories and tags
-3. Delete noisy or redundant entries
+3. Flag noisy or redundant entries for archiving
 4. Write `anti-patterns/{domain}` entries from Correction feedback
+
+**Why gating exists:** without it, the whole corpus is re-offered for deletion on every cycle,
+so per-entry survival compounds against you — at twice a day, a one-in-a-thousand misjudgement
+per entry per cycle loses about half the corpus in a year. See `dream-service.md` for the
+eligibility rules and tuning knobs.
 
 **Temporal arithmetic on merge (computed by the host, not the LLM):**
 
@@ -417,8 +424,26 @@ This split keeps the LLM focused on *what to merge* while the host guarantees co
 temporal arithmetic and prevents the dream cycle from inadvertently stamping every
 reprocessed entry as "just seen today."
 
-**Exhaustive deletion contract:** The union of explicit `toDelete` IDs and all `sourceIds` from
-merged entries are deleted — preventing orphaned source entries even if the LLM omits some IDs.
+**Two safeguards constrain what a pass may do:**
+
+- *Merge coverage* — every proper noun, acronym and multi-digit number in a merge's sources
+  must survive into the merged text, or the merge is rejected and the sources are kept.
+- *High-value floor* — entries at or above `Dream:PruningProtectionImportance` (0.80) or
+  `Dream:PruningProtectionReinforcementCount` (5) may be merged but never pruned outright.
+
+Both are deterministic rather than prompt guidance, because the prompt-level versions were
+already present and did not hold. Merged entries record `mergedFrom` / `mergedAt` in metadata
+(metadata is not part of the search surface). See `dream-service.md` for measured behaviour.
+
+**Removals are archived, not deleted.** Consolidation calls `ArchiveAsync`, which hides an
+entry from search but keeps it on disk and retrievable by ID; a separate purge pass
+hard-deletes archived entries after `Dream:MemoryArchiveRetention` (default 90 days), and
+`IArchivedMemoryMaintenance.RestoreAsync` brings one back. Merged entries are saved before
+their sources are archived, and only sources whose replacement actually persisted are retired.
+
+**Exhaustive-removal contract:** The union of explicit `toDelete` IDs and all `sourceIds` from
+persisted merged entries is archived — preventing orphaned source entries even if the LLM
+omits some IDs. IDs outside the eligible set are ignored.
 
 ### Pass 2 — Preference inference
 
