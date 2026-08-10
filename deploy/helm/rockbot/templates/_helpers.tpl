@@ -72,3 +72,24 @@ Name of the shared volume PVC.
 {{- define "rockbot.sharedPvcName" -}}
 {{- include "rockbot.fullname" . }}-shared
 {{- end }}
+
+{{/*
+find(1) exclusion clauses for shared.protectedPaths, one pair of lines per entry.
+
+Each entry is stripped of surrounding slashes first: a trailing one would render
+'.../notes//*', which fnmatch cannot match against '.../notes/x.md', silently
+disabling the protection the operator asked for. Two clauses per entry so a
+protected leaf file is covered as well as a directory's contents.
+
+Emitted without indentation — callers apply `nindent` and must guard on the result
+being empty, since a blank continuation line would break the shell command.
+*/}}
+{{- define "rockbot.sharedProtectedFindClauses" -}}
+{{- range .Values.shared.protectedPaths }}
+{{- $prefix := . | trimPrefix "/" | trimSuffix "/" }}
+{{- if $prefix }}
+! -path '/rockbot/shared/{{ $prefix }}' \
+! -path '/rockbot/shared/{{ $prefix }}/*' \
+{{- end }}
+{{- end }}
+{{- end }}

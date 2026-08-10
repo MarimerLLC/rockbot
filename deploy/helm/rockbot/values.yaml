@@ -256,6 +256,19 @@ shared:
   # not touched, so empty structure is preserved. Safety net for ad-hoc paths
   # (e.g. patrol drafts, subagent artifacts) that don't have a dedicated TTL.
   globalTtlDays: 30
+  # Path prefixes (relative to the volume root) exempt from the catch-all sweep.
+  # The sweep keys on mtime, so a file is deleted for not having changed recently —
+  # which is the normal state of durable content such as reference corpora, campaign
+  # canon, or any document set the agent reads far more often than it edits. Anything
+  # that must survive longer than globalTtlDays without an edit belongs here.
+  # Matching is a glob on the full path, so nested content (including a `.git`
+  # directory) under a listed prefix is protected too. A single file may be listed
+  # as well as a directory. Leading and trailing slashes are stripped, so `canon`,
+  # `/canon`, and `canon/` are equivalent. Entries are exempt from every sweep,
+  # the per-directory ones above included.
+  #   protectedPaths:
+  #     - canon
+  protectedPaths: []
   # Shared POSIX group ID applied via pod-level securityContext.fsGroup on every
   # pod that mounts the rockbot-shared PVC (agent, shared-cleanup cronjob,
   # ephemeral script pods). kubelet chgrp's the volume root to this GID, sets

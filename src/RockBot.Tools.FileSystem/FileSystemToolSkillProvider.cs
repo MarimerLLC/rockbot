@@ -8,13 +8,13 @@ namespace RockBot.Tools.FileSystem;
 internal sealed class FileSystemToolSkillProvider : IToolSkillProvider
 {
     public string Name => "files";
-    public string Summary => "Shared-volume file tools (file_write, file_read, file_list, file_delete, file_get_path).";
+    public string Summary => "Shared-volume file tools (file_write, file_edit, file_read, file_list, file_delete, file_get_path).";
 
     public string GetDocument() =>
         """
         # Shared Volume File Tools Guide
 
-        Five tools provide direct access to files on the shared volume — a persistent
+        Six tools provide direct access to files on the shared volume — a persistent
         filesystem shared across the agent, script pods, and other RockBot services.
 
 
@@ -27,11 +27,52 @@ internal sealed class FileSystemToolSkillProvider : IToolSkillProvider
         - List or clean up files on the shared volume
 
 
+        ## Changing an Existing File: Edit, Don't Rewrite
+
+        `file_write` replaces the **entire** file. Any content you do not reproduce in
+        full is gone — and on a long document you will not reliably reproduce it in full.
+
+        So when a file already exists and you are changing part of it, use `file_edit`.
+        Reserve `file_write` for creating new files or deliberately replacing a whole
+        short one.
+
+        This matters most for durable content — reference documents, notes, and records
+        that accumulate over time. Losing a paragraph from those is often invisible until
+        long after the edit.
+
+
         ## Tool Reference
+
+        ### file_edit
+        Replace an exact piece of text in an existing file, leaving everything else
+        byte-for-byte untouched.
+
+        ```
+        file_edit(
+          path: "canon/NPCs.md",
+          old_string: "**Georgie** — dock foreman, neutral",
+          new_string: "**Georgie** — dock foreman, owes the crew a favour"
+        )
+        ```
+
+        Rules:
+        - `old_string` must match the file **exactly**, including whitespace and
+          indentation. Read the file first and copy the text verbatim rather than
+          reconstructing it from memory.
+        - `old_string` must match **exactly once**. If it appears more than once the edit
+          is refused — include more surrounding text to make the match unique, or pass
+          `replace_all: true` to change every occurrence.
+        - Use an empty `new_string` to delete the matched text.
+        - The file must already exist; use `file_write` to create it.
+
+        A refused edit is information, not an obstacle. "Not found" means your `old_string`
+        does not match the file — re-read it rather than retrying the same text. "Occurs N
+        times" means you must disambiguate; do not switch to `file_write` to work around it.
 
         ### file_write
         Write UTF-8 text to a file on the shared volume. Parent directories are created
-        automatically.
+        automatically. Replaces the whole file — see the section above before using it on
+        a file that already exists.
 
         ```
         file_write(path: "drafts/report.md", content: "# Weekly Report\n...")
@@ -77,6 +118,26 @@ internal sealed class FileSystemToolSkillProvider : IToolSkillProvider
         - `drafts/` — work-in-progress files, cleaned up after 14 days
         - `exports/` — final deliverables, cleaned up after 14 days
         - `scripts/` — output from script executions
+
+
+        ## Everything Expires by Default
+
+        **Every file on the shared volume is deleted 30 days after it was last modified,
+        whatever directory it is in.** A path you invent yourself is not durable storage:
+        `canon/notes.md` will be swept 30 days after your last edit to it, exactly when it
+        has settled into being worth keeping.
+
+        The sweep keys on modification time, so the files most at risk are the ones you
+        read often and edit rarely — which is what long-lived reference content looks like.
+
+        Only paths an operator has added to the deployment's `shared.protectedPaths`
+        setting are exempt. You cannot set that yourself. So:
+
+        - For content that must outlive 30 days without an edit, ask the user to have the
+          prefix protected, and say plainly that it will be deleted otherwise.
+        - Do not assume a directory is protected because it sounds permanent, or because
+          content you wrote there is still present today.
+        - Prefer memory tools over files for things you need to remember indefinitely.
 
 
         ## Working with Scripts

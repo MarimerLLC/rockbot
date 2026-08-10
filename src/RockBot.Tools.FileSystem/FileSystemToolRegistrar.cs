@@ -38,6 +38,31 @@ internal sealed class FileSystemToolRegistrar(
         }
         """;
 
+    private const string EditSchema = """
+        {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string",
+              "description": "Relative path within the shared volume (e.g. 'canon/NPCs.md')"
+            },
+            "old_string": {
+              "type": "string",
+              "description": "Exact text to replace, copied verbatim from the file including whitespace and indentation. Must match exactly once unless replace_all is true."
+            },
+            "new_string": {
+              "type": "string",
+              "description": "Text to replace it with. Use an empty string to delete the matched text."
+            },
+            "replace_all": {
+              "type": "boolean",
+              "description": "Replace every occurrence instead of requiring a unique match. Defaults to false."
+            }
+          },
+          "required": ["path", "old_string", "new_string"]
+        }
+        """;
+
     private const string ListSchema = """
         {
           "type": "object",
@@ -86,6 +111,21 @@ internal sealed class FileSystemToolRegistrar(
             Source = "filesystem"
         }, new FileWriteToolExecutor(options));
         logger.LogInformation("Registered file tool: file_write");
+
+        registry.Register(new ToolRegistration
+        {
+            Name = "file_edit",
+            Description = """
+                Replace an exact piece of text in an existing file on the shared volume,
+                leaving the rest of the file untouched. Prefer this over file_write when
+                changing part of a file — file_write replaces the entire file, so anything
+                not reproduced in full is lost. old_string must match exactly once unless
+                replace_all is set.
+                """,
+            ParametersSchema = EditSchema,
+            Source = "filesystem"
+        }, new FileEditToolExecutor(options));
+        logger.LogInformation("Registered file tool: file_edit");
 
         registry.Register(new ToolRegistration
         {

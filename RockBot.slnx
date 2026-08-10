@@ -59,6 +59,7 @@
     <Project Path="tests/RockBot.UserProxy.Tests/RockBot.UserProxy.Tests.csproj" />
     <Project Path="tests/RockBot.Cli.Tests/RockBot.Cli.Tests.csproj" />
     <Project Path="tests/RockBot.Agent.Tests/RockBot.Agent.Tests.csproj" />
+    <Project Path="tests/RockBot.Tools.FileSystem.Tests/RockBot.Tools.FileSystem.Tests.csproj" />
     <Project Path="tests/RockBot.Tools.Web.Tests/RockBot.Tools.Web.Tests.csproj" />
     <Project Path="tests/RockBot.Subagent.Tests/RockBot.Subagent.Tests.csproj" />
     <Project Path="tests/RockBot.Wisp.Tests/RockBot.Wisp.Tests.csproj" />

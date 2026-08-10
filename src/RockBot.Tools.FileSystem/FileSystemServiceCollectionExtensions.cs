@@ -11,7 +11,7 @@ namespace RockBot.Tools.FileSystem;
 public static class FileSystemServiceCollectionExtensions
 {
     /// <summary>
-    /// Registers file tools for reading, writing, listing, and deleting files on the shared volume.
+    /// Registers file tools for reading, writing, editing, listing, and deleting files on the shared volume.
     /// </summary>
     public static AgentHostBuilder AddFileSystemTools(
         this AgentHostBuilder builder,
