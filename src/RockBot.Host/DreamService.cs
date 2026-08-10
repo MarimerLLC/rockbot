@@ -500,6 +500,11 @@ internal sealed class DreamService : IHostedService, IDisposable
             // cycles where there is nothing to consolidate.
             await RunLogRetentionPassAsync(ct);
 
+            // Reap archived memory that has outlived the recovery window. Runs before
+            // consolidation so the window is measured from the archive event, not from
+            // whatever this cycle is about to archive.
+            await RunArchivePurgePassAsync(ct);
+
             // Consolidation is one pass among many and must not gate the rest of the
             // cycle. It lives in its own method precisely so that its early exits (too
             // few entries to merge, or a failed LLM call) return from *it* rather than
@@ -573,6 +578,157 @@ internal sealed class DreamService : IHostedService, IDisposable
     }
 
     /// <summary>
+    /// Hard-deletes memory entries archived longer ago than
+    /// <see cref="DreamOptions.MemoryArchiveRetention"/>. No-op when the store has no archive
+    /// tier or retention is disabled.
+    /// </summary>
+    private async Task RunArchivePurgePassAsync(CancellationToken ct)
+    {
+        if (_memory is not IArchivedMemoryMaintenance maintenance)
+            return;
+
+        if (_options.MemoryArchiveRetention <= TimeSpan.Zero)
+            return;
+
+        await RunPassAsync("archive purge", async () =>
+        {
+            var purged = await maintenance.PurgeArchivedAsync(_options.MemoryArchiveRetention, ct);
+            if (purged > 0)
+                _logger.LogInformation(
+                    "DreamService: archive purge — {Count} entries archived over {Days:F0} days ago permanently deleted",
+                    purged, _options.MemoryArchiveRetention.TotalDays);
+        });
+    }
+
+    /// <summary>Metadata key holding the content hash as of the last consolidation review.</summary>
+    internal const string ConsolidationReviewedHashKey = "consolidationReviewedHash";
+
+    /// <summary>Metadata key holding the timestamp of the last consolidation review (human-facing).</summary>
+    internal const string ConsolidationReviewedAtKey = "consolidationReviewedAt";
+
+    /// <summary>
+    /// Stable short hash of an entry's content, used to detect whether it has changed since
+    /// its last consolidation review. Any edit by any path — reinforcement, tool update, a
+    /// previous merge — changes the hash and makes the entry eligible again.
+    /// </summary>
+    internal static string ContentFingerprint(string? content)
+    {
+        var bytes = System.Security.Cryptography.SHA256.HashData(
+            Encoding.UTF8.GetBytes(content ?? string.Empty));
+        return Convert.ToHexString(bytes.AsSpan(0, 8));
+    }
+
+    /// <summary>
+    /// True when the entry was reviewed by an earlier consolidation pass and its content has
+    /// not changed since.
+    /// </summary>
+    internal static bool IsReviewedAndUnchanged(MemoryEntry entry) =>
+        entry.Metadata is { } m
+        && m.TryGetValue(ConsolidationReviewedHashKey, out var hash)
+        && string.Equals(hash, ContentFingerprint(entry.Content), StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Chooses which entries consolidation is allowed to act on this cycle. An entry qualifies
+    /// when it is new or changed since its last review, or when it sits in a near-duplicate
+    /// cluster (a fresh entry can duplicate an old one, so the old one has to be visible for
+    /// the merge to be possible).
+    /// </summary>
+    /// <remarks>
+    /// Everything else is withheld and therefore safe. That bound is the point: exposure to a
+    /// deletion decision becomes roughly once per entry per content change, instead of once
+    /// per entry per cycle forever.
+    /// </remarks>
+    internal static async Task<List<MemoryEntry>> SelectConsolidationCandidatesAsync(
+        ILongTermMemory memory,
+        DreamOptions options,
+        ILogger logger,
+        IReadOnlyList<MemoryEntry> all,
+        CancellationToken ct)
+    {
+        var eligibleIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var e in all)
+            if (!IsReviewedAndUnchanged(e))
+                eligibleIds.Add(e.Id);
+
+        var unreviewed = eligibleIds.Count;
+
+        if (memory is IMemoryDuplicateCandidates duplicates)
+        {
+            try
+            {
+                var clusters = await duplicates.FindNearDuplicateClustersAsync(
+                    options.ConsolidationSimilarityThreshold,
+                    options.ConsolidationMaxClusterSize,
+                    ct);
+
+                foreach (var cluster in clusters)
+                    foreach (var id in cluster)
+                        eligibleIds.Add(id);
+
+                logger.LogDebug(
+                    "DreamService: {Unreviewed} unreviewed + {Clustered} in {Clusters} duplicate cluster(s)",
+                    unreviewed, eligibleIds.Count - unreviewed, clusters.Count);
+            }
+            catch (OperationCanceledException) { throw; }
+            catch (Exception ex)
+            {
+                // Degrade to unreviewed-only rather than falling back to the whole corpus.
+                // A clustering failure must not silently re-expose everything to deletion.
+                logger.LogWarning(ex,
+                    "DreamService: near-duplicate scan failed; consolidating unreviewed entries only");
+            }
+        }
+
+        // Preserve the store's ordering so the prompt stays stable between cycles.
+        return [.. all.Where(e => eligibleIds.Contains(e.Id))];
+    }
+
+    /// <summary>
+    /// Records that an entry was shown to consolidation and survived, so later cycles skip it
+    /// until its content changes.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <see cref="MemoryEntry.UpdatedAt"/> is deliberately left alone. The importance decay
+    /// pass uses it as its "time since last decay applied" anchor, so bumping it once per
+    /// cycle for bookkeeping would stall decay entirely.
+    /// </para>
+    /// <para>
+    /// Entries are re-read rather than stamped from the caller's snapshot. That snapshot is
+    /// taken before the decay pass runs, so writing it back would revert the importance and
+    /// <c>UpdatedAt</c> decay just wrote.
+    /// </para>
+    /// </remarks>
+    private async Task StampReviewedAsync(IEnumerable<string> ids, CancellationToken ct)
+    {
+        var now = DateTimeOffset.UtcNow.ToString("O");
+        var stamped = 0;
+
+        foreach (var id in ids)
+        {
+            ct.ThrowIfCancellationRequested();
+
+            var entry = await _memory.GetAsync(id, ct);
+            if (entry is null || IsReviewedAndUnchanged(entry))
+                continue;
+
+            var metadata = entry.Metadata is null
+                ? []
+                : new Dictionary<string, string>(entry.Metadata, StringComparer.OrdinalIgnoreCase);
+
+            metadata[ConsolidationReviewedHashKey] = ContentFingerprint(entry.Content);
+            metadata[ConsolidationReviewedAtKey] = now;
+
+            await _memory.SaveAsync(entry with { Metadata = metadata }, ct);
+            stamped++;
+        }
+
+        if (stamped > 0)
+            _logger.LogDebug("DreamService: stamped {Count} entries as consolidation-reviewed", stamped);
+    }
+
+    /// <summary>
     /// Merges and prunes long-term memory entries via the "memory dream" pass.
     /// Returns the number of entries deleted and saved.
     /// </summary>
@@ -606,9 +762,31 @@ internal sealed class DreamService : IHostedService, IDisposable
         // Apply importance decay to unreferenced entries before consolidation
         await RunImportanceDecayPassAsync(all);
 
+        // Gate what the LLM is allowed to see. Anything withheld here cannot be archived this
+        // cycle, which is the whole point: an entry that has already been reviewed and left
+        // alone must not be re-tried for deletion twice a day forever.
+        var eligible = await SelectConsolidationCandidatesAsync(_memory, _options, _logger, all, ct);
+        var withheld = all.Count - eligible.Count;
+
+        if (eligible.Count < 2)
+        {
+            _logger.LogInformation(
+                "DreamService: {Withheld} of {Total} entries already reviewed and unchanged with no duplicate siblings — nothing eligible to consolidate",
+                withheld, all.Count);
+            return (0, 0);
+        }
+
+        _logger.LogInformation(
+            "DreamService: consolidation reviewing {Eligible} of {Total} entries ({Withheld} withheld as reviewed-and-unchanged)",
+            eligible.Count, all.Count, withheld);
+
         // Build user message: numbered list with IDs, categories, tags, content
         var userMessage = new StringBuilder();
-        userMessage.AppendLine($"The agent currently has {all.Count} memory entries. Consolidate them:");
+        userMessage.AppendLine(
+            $"The agent has {all.Count} memory entries. {eligible.Count} of them are shown below — " +
+            "either new or changed since the last pass, or near-duplicates of each other. " +
+            $"The other {withheld} were reviewed on an earlier pass, have not changed since, and are " +
+            "deliberately withheld. Consolidate only what is shown:");
         userMessage.AppendLine();
 
         // Append recent feedback signals so the dream LLM has quality context
@@ -632,9 +810,9 @@ internal sealed class DreamService : IHostedService, IDisposable
             }
         }
 
-        for (var i = 0; i < all.Count; i++)
+        for (var i = 0; i < eligible.Count; i++)
         {
-            var e = all[i];
+            var e = eligible[i];
             var tags = e.Tags.Count > 0 ? string.Join(", ", e.Tags) : "(none)";
             var subjectTime = FormatSubjectTimeForPrompt(e.Metadata);
             userMessage.AppendLine(
@@ -655,33 +833,29 @@ internal sealed class DreamService : IHostedService, IDisposable
         var deleted = 0;
         var saved = 0;
 
-        // Union of explicit toDelete IDs and all sourceIds referenced by saved entries.
-        // This enforces the exhaustive-deletion contract even when the LLM omits some IDs
-        // from toDelete while still listing them in sourceIds.
-        var allToDelete = new HashSet<string>(
-            result.ToDelete ?? [],
-            StringComparer.OrdinalIgnoreCase);
-
-        foreach (var dto in result.ToSave ?? [])
-            foreach (var srcId in dto.SourceIds ?? [])
-                allToDelete.Add(srcId);
-
-        foreach (var id in allToDelete)
-        {
-            await _memory.DeleteAsync(id);
-            deleted++;
-            _logger.LogDebug("DreamService: deleted entry {Id}", id);
-        }
-
-        // Build source-entry lookup (case-insensitive on ID) for merge arithmetic
+        // Source lookup for merge arithmetic, keyed only on entries that were actually shown.
+        // This is what enforces the gate: an ID the LLM invents, remembers from a previous
+        // cycle, or otherwise names without having been offered it is not in this map, so it
+        // can be neither merged from nor archived.
         var byId = new Dictionary<string, MemoryEntry>(StringComparer.OrdinalIgnoreCase);
-        foreach (var e in all)
+        foreach (var e in eligible)
             byId[e.Id] = e;
+
+        // Sources are retired only after their replacement is durably saved, and only for
+        // merges that actually produced one. The previous order — delete everything first,
+        // then save — lost the sources outright whenever a toSave entry was skipped for
+        // blank content or the pass threw between the two loops.
+        var archiveReasons = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 
         foreach (var dto in result.ToSave ?? [])
         {
             if (string.IsNullOrWhiteSpace(dto.Content))
+            {
+                _logger.LogWarning(
+                    "DreamService: dropping merge with blank content; its {Count} source(s) are kept",
+                    (dto.SourceIds ?? []).Count);
                 continue;
+            }
 
             var sourceIds = dto.SourceIds ?? [];
             var sources = sourceIds
@@ -722,7 +896,33 @@ internal sealed class DreamService : IHostedService, IDisposable
             saved++;
             _logger.LogDebug("DreamService: saved entry {Id} ({Category}, importance={Importance:F2}, reinforced={Count}×): {Content}",
                 entry.Id, entry.Category ?? "(none)", entry.ImportanceScore, entry.ReinforcementCount, entry.Content);
+
+            // Now that the replacement exists, its sources can be retired.
+            foreach (var srcId in sourceIds)
+                if (byId.ContainsKey(srcId))
+                    archiveReasons[srcId] = $"merged into {entry.Id}";
         }
+
+        // Standalone removals (ephemeral content the LLM flagged) that no merge accounted for.
+        foreach (var id in result.ToDelete ?? [])
+            if (byId.ContainsKey(id) && !archiveReasons.ContainsKey(id))
+                archiveReasons[id] = "flagged ephemeral by consolidation";
+
+        foreach (var (id, reason) in archiveReasons)
+        {
+            // Archive, never delete. Consolidation is automated judgment applied in bulk to
+            // content that has no other copy; a wrong call here should cost recall until
+            // someone notices, not the fact itself. The retention purge does the real
+            // deleting, on a delay long enough to notice.
+            await _memory.ArchiveAsync(id, reason, ct);
+            deleted++;
+        }
+
+        // Only survivors of a pass that actually ran get stamped. A failed LLM call returns
+        // earlier, so a bad cycle never marks the corpus reviewed.
+        await StampReviewedAsync(
+            eligible.Select(e => e.Id).Where(id => !archiveReasons.ContainsKey(id)),
+            ct);
 
         return (deleted, saved);
     }

@@ -100,6 +100,44 @@ public sealed class DreamOptions
     /// </remarks>
     public bool MemoryConsolidationEnabled { get; set; } = true;
 
+    /// <summary>
+    /// How long entries archived by consolidation are kept before the purge pass hard-deletes
+    /// them. Archived entries are hidden from recall but stay on disk and remain retrievable
+    /// by id, so this is the window in which a bad merge or a wrong ephemeral call can still
+    /// be undone. Set to <see cref="TimeSpan.Zero"/> or negative to keep archived entries
+    /// forever. Default: 90 days.
+    /// </summary>
+    /// <remarks>
+    /// Requires the store to implement <see cref="IArchivedMemoryMaintenance"/>; with a store
+    /// that does not, <see cref="ILongTermMemory.ArchiveAsync"/> falls back to a hard delete
+    /// and this setting has nothing to purge.
+    /// </remarks>
+    public TimeSpan MemoryArchiveRetention { get; set; } = TimeSpan.FromDays(90);
+
+    /// <summary>
+    /// Similarity (0..1) at which two memory entries are treated as possible duplicates and
+    /// become eligible for the consolidation pass. Cosine over embeddings where the store has
+    /// them, a lexical measure otherwise. Default: 0.88.
+    /// </summary>
+    /// <remarks>
+    /// This is the main dial on how much consolidation is allowed to touch. Lower values feed
+    /// it more pairs and merge more aggressively; higher values restrict it to obvious
+    /// restatements. It does not affect entries that are new or changed since the last pass —
+    /// those are always eligible regardless of similarity.
+    /// </remarks>
+    public double ConsolidationSimilarityThreshold { get; set; } = 0.88;
+
+    /// <summary>
+    /// Ceiling on how many entries may appear in a single near-duplicate cluster. Larger
+    /// clusters are split across passes rather than dropped. Default: 3.
+    /// </summary>
+    /// <remarks>
+    /// Caps merge fan-in. Without a cap, single-link clustering can chain a whole topic into
+    /// one group and invite the model to collapse it into a single entry — which is how a
+    /// corpus loses detail fastest.
+    /// </remarks>
+    public int ConsolidationMaxClusterSize { get; set; } = 3;
+
     /// <summary>Whether the memory mining pass (requires <see cref="IConversationLog"/>) is enabled.</summary>
     public bool MemoryMiningEnabled { get; set; } = true;
 

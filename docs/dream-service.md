@@ -68,13 +68,44 @@ are not swept.)
 
 **Enabled/disabled by:** `DreamOptions.LogRetentionEnabled` (default `true`).
 
+### Pass 0b — Archive purge
+
+Hard-deletes memory entries archived longer ago than `DreamOptions.MemoryArchiveRetention`
+(default 90 days). Runs before consolidation so the retention window is measured from the
+archive event rather than from whatever the current cycle is about to archive.
+
+Requires the store to implement `IArchivedMemoryMaintenance`; with a store that does not,
+`ArchiveAsync` falls back to a hard delete and there is nothing to purge. A non-positive
+retention keeps archived entries forever.
+
 ### Pass 1 — Memory consolidation
 
-**Input:** all long-term memory entries (up to 1000) + recent feedback signals (last 7 days,
-up to 50). Each entry is rendered with its temporal context — `first=` (CreatedAt),
+**Input:** a *gated subset* of long-term memory entries + recent feedback signals (last 7
+days, up to 50). Each entry is rendered with its temporal context — `first=` (CreatedAt),
 `last=` (LastSeenAt), `reinforced=N×` (ReinforcementCount), and `subject=...` when
 subject-time metadata is present — so the LLM can reason about whether similar-sounding
 entries describe the same durable fact or distinct moments.
+
+**Candidate gating — what the LLM is allowed to see.** An entry becomes eligible only if it
+is (a) new or changed since its last review, or (b) part of a near-duplicate cluster. Anything
+else is withheld and therefore cannot be archived this cycle. Enforcement is in code, not just
+in the prompt: the source lookup used for merge arithmetic is keyed on the eligible set, so an
+ID the model invents or remembers from a previous cycle resolves to nothing.
+
+This exists because exposure compounds. Handing over the whole corpus every cycle means every
+entry is re-tried for deletion every cycle; at the default twice-daily cadence, a
+one-in-a-thousand misjudgement per entry per cycle loses roughly half the corpus in a year.
+Gating makes it roughly one decision per entry per content change.
+
+- Review state is a content fingerprint (`consolidationReviewedHash` in entry metadata), so
+  any write path — reinforcement, a tool edit, a prior merge — re-opens an entry for review,
+  while importance decay (which changes score and `UpdatedAt`, not content) does not.
+- Clustering comes from `IMemoryDuplicateCandidates` on the store: cosine over embeddings
+  where available, Jaccard over content tokens otherwise, so BM25-only deployments still
+  deduplicate. Controlled by `Dream:ConsolidationSimilarityThreshold` (default 0.88) and
+  `Dream:ConsolidationMaxClusterSize` (default 3, capping merge fan-in).
+- If the near-duplicate scan fails, the pass degrades to unreviewed-only rather than falling
+  back to the whole corpus.
 
 **What the LLM does:**
 - Merges duplicate and near-duplicate entries into single improved entries, including
@@ -83,7 +114,7 @@ entries describe the same durable fact or distinct moments.
 - Preserves topically-similar entries that describe distinct real-world moments (different
   trips, meetings, incidents) — especially when subject-time differs sharply
 - Refines categories (e.g. promotes `general` entries to more specific categories)
-- Deletes noisy, low-value, or fully superseded entries
+- Flags noisy, low-value, or fully superseded entries for removal
 - Mines `Correction` feedback for anti-patterns and writes them to `anti-patterns/{domain}`
 
 **Temporal-field arithmetic on merge (computed by the host, not the LLM):**
@@ -98,9 +129,24 @@ This division keeps the LLM focused on *what to merge* and prevents dream housek
 stamping every reprocessed entry as "just observed." See `dream.md` for the Temporal merging
 rules the LLM is given.
 
-**Exhaustive deletion contract:** The union of explicit `toDelete` IDs and all `sourceIds`
-referenced in merged entries are deleted. This prevents orphaned source entries when the LLM
-omits IDs from `toDelete` but lists them in `sourceIds`.
+**Removals are archived, never deleted.** Consolidation calls `ILongTermMemory.ArchiveAsync`,
+which hides an entry from search while keeping it on disk and retrievable by ID. The archive
+purge pass hard-deletes entries archived longer ago than `Dream:MemoryArchiveRetention`
+(default 90 days), so a wrong merge or a wrong "ephemeral" call costs recall for a while
+rather than costing the fact. Every archive is logged at Information with the entry's content
+inline, which is what makes a bad cycle reviewable without restoring a volume backup.
+`IArchivedMemoryMaintenance.RestoreAsync` puts an entry back.
+
+**Ordering — replacement first, then retirement.** Merged entries are saved *before* their
+sources are archived, and only sources belonging to a merge that actually persisted are
+retired. A `toSave` entry with blank content is skipped with a warning and its sources are
+kept. (The previous order deleted everything up front and saved afterwards, so a skipped or
+failed save destroyed the sources outright.)
+
+**Exhaustive-removal contract:** The union of explicit `toDelete` IDs and all `sourceIds`
+referenced in *persisted* merged entries is archived. This prevents orphaned source entries
+when the LLM omits IDs from `toDelete` but lists them in `sourceIds`. IDs outside the eligible
+set are ignored.
 
 **Episode reinforcement:** When a new session revisits an existing episodic memory (found by
 the episode extraction pass), the existing entry is updated with `LastSeenAt = now` and
