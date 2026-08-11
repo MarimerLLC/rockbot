@@ -368,6 +368,13 @@
 
     private string? _lastRenderedAgentName;
 
+    /// <summary>
+    /// Cancels the local wait for the in-flight send. The agent publishes no correlated
+    /// final reply for a cancelled turn, so without this the pending request would sit
+    /// until the reply timeout and keep the input locked.
+    /// </summary>
+    private CancellationTokenSource? _sendCts;
+
     protected override void OnInitialized()
     {
         _stateChangedHandler = () => InvokeAsync(StateHasChanged);
@@ -452,6 +459,15 @@
 
     private async Task CancelSession()
     {
+        // Release the UI immediately — the agent stops the in-flight turn and never
+        // publishes a correlated final reply for it, so there is nothing left to wait
+        // for. A new user message cancels the prior session generation anyway, so the
+        // user is free to send again right away.
+        var cts = _sendCts;
+        _sendCts = null;
+        ChatState.SetProcessing(false);
+        cts?.Cancel();
+
         try
         {
             await ProxyService.CancelSessionAsync(SessionId);
@@ -460,6 +476,8 @@
         {
             ChatState.AddError($"Could not cancel: {ex.Message}");
         }
+
+        await messageInput.FocusAsync();
     }
 
     private async Task SendMessage()
@@ -518,9 +536,14 @@
             ChatState.AppendActivityLogEntry(reply.Content);
         });
 
+        var sendCts = new CancellationTokenSource();
+        _sendCts?.Dispose();
+        _sendCts = sendCts;
+
         try
         {
-            var reply = await ProxyService.SendAsync(message, progress: progressTracker);
+            var reply = await ProxyService.SendAsync(
+                message, progress: progressTracker, cancellationToken: sendCts.Token);
 
             // Clear any background status from the thinking indicator before showing result
             ChatState.SetThinkingMessage(null);
@@ -534,14 +557,26 @@
                 ChatState.AddAgentReply(reply);
             }
         }
+        catch (OperationCanceledException)
+        {
+            // Cancel button — CancelSession already released the UI and the agent
+            // publishes its own "Cancelled." bubble. Nothing to report here.
+        }
         catch (Exception ex)
         {
             ChatState.AddError($"Error: {ex.Message}");
         }
         finally
         {
-            ChatState.SetProcessing(false);
-            await messageInput.FocusAsync();
+            // Only release the UI if this is still the current send. A cancel (which
+            // nulls _sendCts) or a newer send owns the processing state otherwise.
+            if (ReferenceEquals(_sendCts, sendCts))
+            {
+                _sendCts = null;
+                sendCts.Dispose();
+                ChatState.SetProcessing(false);
+                await messageInput.FocusAsync();
+            }
         }
     }
 
@@ -749,5 +784,7 @@
     {
         ChatState.OnStateChanged -= _stateChangedHandler;
         ProxyService.OnConnectionChanged -= _connectionChangedHandler;
+        _sendCts?.Dispose();
+        _sendCts = null;
     }
 }
