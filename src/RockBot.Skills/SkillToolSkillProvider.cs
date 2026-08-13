@@ -146,11 +146,42 @@ public sealed class SkillToolSkillProvider : IToolSkillProvider
         - Keep it focused on one task type; create separate skills for related but distinct tasks
         - Move scripts, schemas, and other structured artifacts into `resources` instead of embedding them in markdown
 
-        **Updating an existing skill:**
-        - Load the current skill with `get_skill` first
-        - Add new steps, examples, or pitfall notes discovered during use
-        - If updating only the markdown, omit `resources` — existing resource files are preserved
-        - Save with the same name to overwrite
+        **Updating an existing skill:** use `edit_skill`, not `save_skill` — see below.
+        Reserve `save_skill` for creating a skill, replacing a short one outright, or changing
+        the `resources` bundle.
+
+
+        ### edit_skill
+
+        Replaces an exact piece of text in an existing skill's markdown, leaving the rest of
+        the document byte-for-byte untouched. This is the normal way to improve a skill:
+        adding the pitfall you just hit, correcting a step, updating an example.
+
+        **Parameters**
+        - `name` (string, required) — the skill to edit
+        - `old_string` (string, required) — exact text to find in the skill's markdown
+        - `new_string` (string, required) — replacement text; empty string deletes the match
+        - `replace_all` (boolean, optional, default false) — change every occurrence
+
+        ```
+        edit_skill(
+          name: "plan-meeting",
+          old_string: "3. Send the invite.",
+          new_string: "3. Send the invite.\n4. Check the room booking — it is not automatic."
+        )
+        ```
+
+        Why this rather than `save_skill`:
+        - `save_skill` replaces the **entire** body. Anything you do not reproduce verbatim is
+          gone, and on a long procedure you will not reproduce it verbatim.
+        - `save_skill` also clears the summary and regenerates it with a background LLM call,
+          so the skill index reads "(summary pending)" until it returns. An edit keeps it.
+
+        Rules:
+        - Call `get_skill` first and copy `old_string` from what it returns.
+        - `old_string` must match **exactly once**, or the edit is refused — add surrounding
+          text or pass `replace_all: true`. Do not switch to `save_skill` to work around a
+          refusal.
 
 
         ### delete_skill
@@ -206,6 +237,29 @@ public sealed class SkillToolSkillProvider : IToolSkillProvider
         - Confirm with the user before adding rules they haven't explicitly requested
 
 
+        ### edit_rule
+
+        Changes part of an existing rule in place — narrowing it, widening it, or correcting a
+        detail — without restating the whole rule.
+
+        **Parameters**
+        - `old_string` (string, required) — exact text to find within an active rule
+        - `new_string` (string, required) — replacement text; empty string deletes the match
+        - `replace_all` (boolean, optional, default false) — change every occurrence across all rules
+
+        ```
+        edit_rule(
+          old_string: "never use bullet points",
+          new_string: "never use bullet points in email drafts"
+        )
+        ```
+
+        Call `list_rules` first and copy `old_string` verbatim. If it appears in more than one
+        rule the edit is refused — include more of the rule text, or pass `replace_all: true`.
+        Prefer this to `remove_rule` + `add_rule`, which requires restating the rule in full and
+        moves it to the end of the list.
+
+
         ### list_rules
 
         Lists all currently active rules.
@@ -235,7 +289,8 @@ public sealed class SkillToolSkillProvider : IToolSkillProvider
         - **Check the skill index before starting a multi-step task** — if a relevant
           skill exists, load it immediately with `get_skill` rather than improvising
         - **Update skills after every real use** — add the pitfalls and examples you
-          discover; the skill document should get better each time you use it
+          discover with `edit_skill`; the skill document should get better each time you use
+          it, and an edit cannot drop the parts you were not thinking about
         - **Prefer updating over creating** — before saving a new skill, check whether
           an existing one covers the same ground and could be extended instead
         - **Use resources for structured artifacts** — move Python scripts, JSON schemas,

@@ -91,6 +91,7 @@ public sealed class MemoryTools
         [
             AIFunctionFactory.Create(SaveMemory),
             AIFunctionFactory.Create(SearchMemory),
+            AIFunctionFactory.Create(EditMemory),
             AIFunctionFactory.Create(DeleteMemory),
             AIFunctionFactory.Create(UpdateMemoryImportance)
         ];
@@ -348,9 +349,40 @@ public sealed class MemoryTools
         return string.Empty;
     }
 
+    [Description("Correct part of an existing memory entry in place, leaving the rest of it and all of its " +
+                 "history untouched. Find the ID first by calling SearchMemory — IDs appear in brackets, " +
+                 "e.g. [abc123]. Use this rather than delete_memory + save_memory whenever a fact is mostly " +
+                 "right: deleting and re-saving mints a new entry that has been seen once, discarding how long " +
+                 "the fact has been known and how many times it was reinforced. " +
+                 "old_string must match the entry's content exactly; if it appears more than once the edit is " +
+                 "refused, so include more surrounding text or set replace_all.")]
+    public async Task<string> EditMemory(
+        [Description("The ID of the memory entry to edit (from SearchMemory results, shown in brackets)")] string id,
+        [Description("Exact text to find inside the entry's content — copy it verbatim from the search result")] string old_string,
+        [Description("Replacement text. Pass an empty string to delete the matched text.")] string new_string,
+        [Description("Replace every occurrence instead of refusing an ambiguous match. Default false.")] bool replace_all = false)
+    {
+        _logger.LogInformation("Tool call: EditMemory(id={Id}, replaceAll={ReplaceAll})", id, replace_all);
+
+        var result = await _memory.EditAsync(id, old_string ?? string.Empty, new_string ?? string.Empty, replace_all);
+
+        if (!result.IsSuccess)
+        {
+            _logger.LogInformation("EditMemory refused for {Id}: {Error}", id, result.Error);
+            return $"Edit failed on memory entry '{id}': {result.Error}";
+        }
+
+        var plural = result.ReplacementCount == 1 ? "occurrence" : "occurrences";
+        return $"Edited memory entry '{id}' — replaced {result.ReplacementCount} {plural} " +
+               $"({result.OldLength} → {result.NewLength} characters). " +
+               "Its id, age, and reinforcement history are unchanged.";
+    }
+
     [Description("Delete a memory entry by its ID. Use this to remove facts that are wrong, outdated, or " +
-                 "superseded. Find the ID first by calling SearchMemory — IDs appear in brackets, e.g. [abc123]. " +
-                 "To correct a wrong fact: delete the old entry, then save the corrected version with SaveMemory.")]
+                 "superseded in full. Find the ID first by calling SearchMemory — IDs appear in brackets, " +
+                 "e.g. [abc123]. " +
+                 "To correct part of a fact, use EditMemory instead — deleting and re-saving destroys the " +
+                 "entry's age and reinforcement history.")]
     public async Task<string> DeleteMemory(
         [Description("The ID of the memory entry to delete (from SearchMemory results)")] string id)
     {

@@ -21,6 +21,28 @@ public interface ISkillStore
     /// <summary>Returns the skill by name, or <c>null</c> if not found.</summary>
     Task<Skill?> GetAsync(string name);
 
+    /// <summary>
+    /// Replaces an exact piece of text inside an existing skill's markdown body, leaving the
+    /// rest of the document and every other field untouched.
+    /// </summary>
+    /// <param name="name">Skill to edit.</param>
+    /// <param name="oldText">Exact text to find. Must be non-empty.</param>
+    /// <param name="newText">Replacement text. May be empty to delete the match.</param>
+    /// <param name="replaceAll">
+    /// When <c>true</c>, replaces every occurrence. When <c>false</c>, more than one
+    /// occurrence is refused rather than guessed at.
+    /// </param>
+    /// <remarks>
+    /// Distinct from <see cref="SaveAsync(Skill)"/> in more than granularity: the save path
+    /// clears the summary and regenerates it with a background LLM call, so adding one pitfall
+    /// note to a long procedure costs a model round-trip and leaves the skill index blank
+    /// until it returns. An edit keeps the summary, the manifest, and
+    /// <see cref="Skill.CreatedAt"/>, and moves only the body and
+    /// <see cref="Skill.UpdatedAt"/>.
+    /// </remarks>
+    Task<ContentEditResult> EditContentAsync(string name, string oldText, string newText, bool replaceAll = false)
+        => Task.FromResult(ContentEditResult.NotSupported);
+
     /// <summary>Returns all skills ordered by name.</summary>
     Task<IReadOnlyList<Skill>> ListAsync();
 

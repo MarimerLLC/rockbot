@@ -73,12 +73,8 @@ internal sealed partial class FileSkillStore : ISkillStore
                 ? skill with { Manifest = existing.Manifest }
                 : skill;
 
-            var filePath = GetFilePath(skill.Name);
-
-            Directory.CreateDirectory(Path.GetDirectoryName(filePath)!);
-
             var json = JsonSerializer.Serialize(skillToSave, JsonOptions);
-            await File.WriteAllTextAsync(filePath, json);
+            await AtomicFile.WriteAllTextAsync(GetFilePath(skill.Name), json);
 
             index[skill.Name] = skillToSave;
 
@@ -158,7 +154,7 @@ internal sealed partial class FileSkillStore : ISkillStore
             // Save skill JSON with updated manifest
             var skillWithManifest = skill with { Manifest = manifest };
             var json = JsonSerializer.Serialize(skillWithManifest, JsonOptions);
-            await File.WriteAllTextAsync(filePath, json);
+            await AtomicFile.WriteAllTextAsync(filePath, json);
 
             index[skill.Name] = skillWithManifest;
 
@@ -186,6 +182,67 @@ internal sealed partial class FileSkillStore : ISkillStore
         {
             _semaphore.Release();
         }
+    }
+
+    public async Task<ContentEditResult> EditContentAsync(
+        string name,
+        string oldText,
+        string newText,
+        bool replaceAll = false)
+    {
+        ArgumentNullException.ThrowIfNull(oldText);
+        ArgumentNullException.ThrowIfNull(newText);
+        ValidateName(name);
+
+        ContentEditResult result;
+        Skill saved;
+
+        await _semaphore.WaitAsync();
+        try
+        {
+            var index = await EnsureIndexAsync();
+
+            if (!index.TryGetValue(name, out var existing))
+            {
+                return ContentEditResult.Failed(
+                    $"Skill '{name}' not found. List skills to see what exists.");
+            }
+
+            var edit = TextEdit.Apply(existing.Content, oldText, newText, replaceAll);
+            if (!edit.IsSuccess)
+                return ContentEditResult.Failed(edit.Error!);
+
+            // Summary, Manifest, CreatedAt, LastUsedAt and SeeAlso all carry through — a body
+            // edit is not a reason to blank the index entry and pay for a regenerated summary.
+            saved = existing with
+            {
+                Content = edit.Content!,
+                UpdatedAt = DateTimeOffset.UtcNow
+            };
+
+            var json = JsonSerializer.Serialize(saved, JsonOptions);
+            await AtomicFile.WriteAllTextAsync(GetFilePath(name), json);
+            index[name] = saved;
+
+            result = ContentEditResult.Applied(
+                edit.ReplacementCount, existing.Content.Length, edit.Content!.Length);
+
+            _logger.LogInformation(
+                "Edited skill '{Name}' — {Replacements} replacement(s), {Old}→{New} chars",
+                name, edit.ReplacementCount, existing.Content.Length, edit.Content.Length);
+        }
+        finally
+        {
+            _semaphore.Release();
+        }
+
+        // The skill vector is built from name + summary, neither of which an edit touches, so
+        // this refresh is a no-op in substance. Kept for symmetry with the other write paths —
+        // the day the document text includes the body, forgetting it here would be a silent bug.
+        if (_embeddingCache is not null)
+            _ = _embeddingCache.UpdateAsync(saved.Name, GetDocumentText(saved));
+
+        return result;
     }
 
     public async Task<bool> AttachResourceAsync(
@@ -242,7 +299,7 @@ internal sealed partial class FileSkillStore : ISkillStore
 
             saved = existing with { Manifest = newManifest, UpdatedAt = DateTimeOffset.UtcNow };
             var json = JsonSerializer.Serialize(saved, JsonOptions);
-            await File.WriteAllTextAsync(GetFilePath(skillName), json);
+            await AtomicFile.WriteAllTextAsync(GetFilePath(skillName), json);
             index[skillName] = saved;
 
             _logger.LogDebug(
@@ -293,7 +350,7 @@ internal sealed partial class FileSkillStore : ISkillStore
                 UpdatedAt = DateTimeOffset.UtcNow
             };
             var json = JsonSerializer.Serialize(saved, JsonOptions);
-            await File.WriteAllTextAsync(GetFilePath(skillName), json);
+            await AtomicFile.WriteAllTextAsync(GetFilePath(skillName), json);
             index[skillName] = saved;
 
             _logger.LogDebug("Removed resource '{File}' from skill '{Name}'", filename, skillName);
@@ -343,7 +400,7 @@ internal sealed partial class FileSkillStore : ISkillStore
 
             saved = existing with { Manifest = newManifest, UpdatedAt = DateTimeOffset.UtcNow };
             var json = JsonSerializer.Serialize(saved, JsonOptions);
-            await File.WriteAllTextAsync(GetFilePath(skillName), json);
+            await AtomicFile.WriteAllTextAsync(GetFilePath(skillName), json);
             index[skillName] = saved;
         }
         finally

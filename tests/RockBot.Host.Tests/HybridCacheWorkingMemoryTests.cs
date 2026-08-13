@@ -75,6 +75,118 @@ public class HybridCacheWorkingMemoryTests
         Assert.AreEqual("session/s1/live", entries[0].Key);
     }
 
+    // ── Edit ───────────────────────────────────────────────────────────────
+
+    [TestMethod]
+    public async Task EditAsync_ReplacesTextInPlace()
+    {
+        await _memory.SetAsync("session/s1/draft", "Session length: 60 minutes");
+
+        var result = await _memory.EditAsync("session/s1/draft", "60 minutes", "75 minutes");
+
+        Assert.IsTrue(result.IsSuccess, result.Error);
+        Assert.AreEqual(1, result.ReplacementCount);
+        Assert.AreEqual("Session length: 75 minutes", await _memory.GetAsync("session/s1/draft"));
+    }
+
+    [TestMethod]
+    public async Task EditAsync_ResetsTtlUsingTheOriginalWindow()
+    {
+        // An entry someone is still amending is still in use, but a deliberately long-lived
+        // handoff entry must not silently drop to the default TTL.
+        await _memory.SetAsync("session/s1/draft", "before", TimeSpan.FromMinutes(240));
+        var original = (await _memory.ListAsync("session/s1")).Single();
+        await Task.Delay(20);
+
+        var editedAt = DateTimeOffset.UtcNow;
+        await _memory.EditAsync("session/s1/draft", "before", "after");
+
+        var updated = (await _memory.ListAsync("session/s1")).Single();
+        Assert.IsTrue(updated.StoredAt >= editedAt.AddMilliseconds(-5), "StoredAt should move to now.");
+        Assert.IsTrue(updated.ExpiresAt > original.ExpiresAt, "The TTL should restart from now.");
+        var window = updated.ExpiresAt - updated.StoredAt;
+        Assert.IsTrue(
+            Math.Abs((window - TimeSpan.FromMinutes(240)).TotalSeconds) < 1,
+            $"Expected the original 240-minute window to be reused, got {window}.");
+    }
+
+    [TestMethod]
+    public async Task EditAsync_PreservesCategoryAndTags()
+    {
+        await _memory.SetAsync("session/s1/draft", "before", TimeSpan.FromMinutes(30),
+            category: "research/pricing", tags: ["draft", "urgent"]);
+
+        await _memory.EditAsync("session/s1/draft", "before", "after");
+
+        var entry = (await _memory.ListAsync("session/s1")).Single();
+        Assert.AreEqual("research/pricing", entry.Category);
+        CollectionAssert.AreEquivalent(new[] { "draft", "urgent" }, entry.Tags!.ToArray());
+    }
+
+    [TestMethod]
+    public async Task EditAsync_UnknownKey_Refuses()
+    {
+        var result = await _memory.EditAsync("session/s1/missing", "a", "b");
+
+        Assert.IsFalse(result.IsSuccess);
+        StringAssert.Contains(result.Error, "session/s1/missing");
+    }
+
+    [TestMethod]
+    public async Task EditAsync_ExpiredEntry_Refuses()
+    {
+        await _memory.SetAsync("session/s1/gone", "data", TimeSpan.FromMilliseconds(1));
+        await Task.Delay(50);
+
+        var result = await _memory.EditAsync("session/s1/gone", "data", "other");
+
+        Assert.IsFalse(result.IsSuccess);
+        StringAssert.Contains(result.Error, "expired");
+    }
+
+    [TestMethod]
+    public async Task EditAsync_AmbiguousMatch_Refuses_AndLeavesValueUntouched()
+    {
+        await _memory.SetAsync("session/s1/draft", "todo todo");
+
+        var result = await _memory.EditAsync("session/s1/draft", "todo", "done");
+
+        Assert.IsFalse(result.IsSuccess);
+        StringAssert.Contains(result.Error, "occurs 2 times");
+        Assert.AreEqual("todo todo", await _memory.GetAsync("session/s1/draft"));
+    }
+
+    [TestMethod]
+    public async Task EditAsync_ReplaceAll_ReplacesEveryOccurrence()
+    {
+        await _memory.SetAsync("session/s1/draft", "todo todo");
+
+        var result = await _memory.EditAsync("session/s1/draft", "todo", "done", replaceAll: true);
+
+        Assert.IsTrue(result.IsSuccess, result.Error);
+        Assert.AreEqual(2, result.ReplacementCount);
+        Assert.AreEqual("done done", await _memory.GetAsync("session/s1/draft"));
+    }
+
+    [TestMethod]
+    public async Task EditAsync_ConcurrentEdits_AllLand()
+    {
+        // Zero-padded so no marker is a prefix of another, which would read as an ambiguous edit.
+        const int markers = 12;
+        await _memory.SetAsync("session/s1/draft",
+            string.Join(" ", Enumerable.Range(0, markers).Select(i => $"M{i:D2}")));
+
+        var results = await Task.WhenAll(
+            Enumerable.Range(0, markers).Select(i => _memory.EditAsync("session/s1/draft", $"M{i:D2}", $"X{i:D2}")));
+
+        Assert.IsTrue(
+            results.All(r => r.IsSuccess),
+            string.Join("; ", results.Where(r => !r.IsSuccess).Select(r => r.Error)));
+        var value = await _memory.GetAsync("session/s1/draft");
+        for (var i = 0; i < markers; i++)
+            StringAssert.Contains(value, $"X{i:D2}");
+    }
+
     // ── List ───────────────────────────────────────────────────────────────
 
     [TestMethod]

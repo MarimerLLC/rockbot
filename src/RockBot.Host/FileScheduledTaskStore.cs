@@ -147,6 +147,49 @@ internal sealed class FileScheduledTaskStore : IScheduledTaskStore
         }
     }
 
+    public async Task<ContentEditResult> EditDirectiveAsync(
+        string name,
+        string oldText,
+        string newText,
+        bool replaceAll = false)
+    {
+        ArgumentNullException.ThrowIfNull(oldText);
+        ArgumentNullException.ThrowIfNull(newText);
+
+        await _lock.WaitAsync();
+        try
+        {
+            var tasks = await ReadAllAsync();
+            if (!tasks.TryGetValue(name, out var existing))
+                return ContentEditResult.Failed($"No scheduled task named '{name}'.");
+
+            var current = existing.Directive ?? string.Empty;
+            if (current.Length == 0)
+            {
+                return ContentEditResult.Failed(
+                    $"Scheduled task '{name}' has no directive yet, so there is nothing to edit. " +
+                    "Write the first version with update_task_directive.");
+            }
+
+            var edit = TextEdit.Apply(current, oldText, newText, replaceAll);
+            if (!edit.IsSuccess)
+                return ContentEditResult.Failed(edit.Error!);
+
+            tasks[name] = existing with { Directive = edit.Content };
+            await WriteAllAsync(tasks);
+
+            _logger.LogInformation(
+                "Edited directive for scheduled task '{Name}' — {Replacements} replacement(s), {Old}→{New} chars",
+                name, edit.ReplacementCount, current.Length, edit.Content!.Length);
+
+            return ContentEditResult.Applied(edit.ReplacementCount, current.Length, edit.Content.Length);
+        }
+        finally
+        {
+            _lock.Release();
+        }
+    }
+
     // ── Internal ─────────────────────────────────────────────────────────────
 
     private async Task<Dictionary<string, ScheduledTask>> ReadAllAsync()
@@ -173,6 +216,6 @@ internal sealed class FileScheduledTaskStore : IScheduledTaskStore
             .OrderBy(t => t.Name, StringComparer.OrdinalIgnoreCase)
             .ToList();
         var json = JsonSerializer.Serialize(list, JsonOptions);
-        await File.WriteAllTextAsync(_filePath, json);
+        await AtomicFile.WriteAllTextAsync(_filePath, json);
     }
 }

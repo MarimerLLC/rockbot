@@ -58,24 +58,7 @@ internal sealed partial class FileMemoryStore : ILongTermMemory, IArchivedMemory
         try
         {
             var index = await EnsureIndexAsync(cancellationToken);
-            var filePath = GetFilePath(entry.Id, entry.Category);
-
-            Directory.CreateDirectory(Path.GetDirectoryName(filePath)!);
-
-            var json = JsonSerializer.Serialize(entry, JsonOptions);
-            await File.WriteAllTextAsync(filePath, json, cancellationToken);
-
-            // If overwriting, remove old file if category changed
-            if (index.TryGetValue(entry.Id, out var existing) && existing.Category != entry.Category)
-            {
-                var oldPath = GetFilePath(existing.Id, existing.Category);
-                if (File.Exists(oldPath))
-                    File.Delete(oldPath);
-            }
-
-            index[entry.Id] = entry;
-
-            _logger.LogDebug("Saved memory entry {Id} in category {Category}", entry.Id, entry.Category ?? "(none)");
+            await WriteEntryAsync(index, entry, cancellationToken);
         }
         finally
         {
@@ -85,6 +68,110 @@ internal sealed partial class FileMemoryStore : ILongTermMemory, IArchivedMemory
         // Generate embedding in the background — agent flow should not block on vectorization.
         if (_embeddingCache is not null)
             _ = _embeddingCache.UpdateAsync(entry.Id, GetDocumentText(entry), cancellationToken);
+    }
+
+    public async Task<ContentEditResult> EditAsync(
+        string id,
+        string oldText,
+        string newText,
+        bool replaceAll = false,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(oldText);
+        ArgumentNullException.ThrowIfNull(newText);
+
+        ContentEditResult result;
+        MemoryEntry updated;
+
+        // The whole read-modify-write cycle runs under the store's own lock. Doing the read
+        // in the caller and the write through SaveAsync would let a concurrent save land
+        // between the two and be erased by the edit, with both reporting success.
+        await _semaphore.WaitAsync(cancellationToken);
+        try
+        {
+            var index = await EnsureIndexAsync(cancellationToken);
+
+            if (!index.TryGetValue(id, out var existing))
+            {
+                return ContentEditResult.Failed(
+                    $"No memory entry found with id '{id}'. Search memory to find the id — it appears " +
+                    "in brackets in search results, e.g. [abc123].");
+            }
+
+            var edit = TextEdit.Apply(existing.Content, oldText, newText, replaceAll);
+            if (!edit.IsSuccess)
+                return ContentEditResult.Failed(edit.Error!);
+
+            // Only Content and UpdatedAt move. CreatedAt, LastSeenAt, ReinforcementCount,
+            // ImportanceScore, Metadata, SupersededBy, ArchivedAt, Category, and Tags all
+            // carry through — that provenance is the entire reason this path exists.
+            updated = existing with
+            {
+                Content = edit.Content!,
+                UpdatedAt = DateTimeOffset.UtcNow
+            };
+
+            await WriteEntryAsync(index, updated, cancellationToken);
+
+            result = ContentEditResult.Applied(
+                edit.ReplacementCount, existing.Content.Length, edit.Content!.Length);
+
+            _logger.LogInformation(
+                "Edited memory entry {Id} ({Category}, reinforced={Count}x) — {Replacements} replacement(s), {Old}→{New} chars",
+                id, existing.Category ?? "(none)", existing.ReinforcementCount,
+                edit.ReplacementCount, existing.Content.Length, edit.Content.Length);
+        }
+        finally
+        {
+            _semaphore.Release();
+        }
+
+        // Content is part of the BM25/vector document text, so the edit genuinely invalidates
+        // the entry's vector. Refreshed off the hot path, exactly as a save would.
+        if (_embeddingCache is not null)
+            _ = _embeddingCache.UpdateAsync(updated.Id, GetDocumentText(updated), cancellationToken);
+
+        return result;
+    }
+
+    /// <summary>
+    /// Persists <paramref name="entry"/> and updates <paramref name="index"/>. Callers must
+    /// already hold <see cref="_semaphore"/> — it is not reentrant, so this is the shared body
+    /// of every in-lock write rather than a call back into <see cref="SaveAsync"/>.
+    /// </summary>
+    private async Task WriteEntryAsync(
+        Dictionary<string, MemoryEntry> index,
+        MemoryEntry entry,
+        CancellationToken cancellationToken)
+    {
+        index.TryGetValue(entry.Id, out var existing);
+
+        // A write whose UpdatedAt predates what is on disk is a read-modify-write cycle that
+        // started before someone else's write finished — the dream passes do exactly this,
+        // with no compare-and-swap. The write still proceeds (refusing would strand those
+        // passes); the log is what makes the loss visible instead of silent.
+        if (existing?.UpdatedAt is { } stored && entry.UpdatedAt is { } incoming && incoming < stored)
+        {
+            _logger.LogWarning(
+                "Memory entry {Id} written with UpdatedAt {Incoming:o}, older than the stored {Stored:o} — " +
+                "a concurrent read-modify-write may have discarded an edit",
+                entry.Id, incoming, stored);
+        }
+
+        var filePath = GetFilePath(entry.Id, entry.Category);
+        await AtomicFile.WriteAllTextAsync(filePath, JsonSerializer.Serialize(entry, JsonOptions), cancellationToken);
+
+        // If overwriting, remove old file if category changed
+        if (existing is not null && existing.Category != entry.Category)
+        {
+            var oldPath = GetFilePath(existing.Id, existing.Category);
+            if (File.Exists(oldPath))
+                File.Delete(oldPath);
+        }
+
+        index[entry.Id] = entry;
+
+        _logger.LogDebug("Saved memory entry {Id} in category {Category}", entry.Id, entry.Category ?? "(none)");
     }
 
     public async Task<IReadOnlyList<MemoryEntry>> SearchAsync(MemorySearchCriteria criteria, CancellationToken cancellationToken = default)

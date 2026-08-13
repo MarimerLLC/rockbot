@@ -103,6 +103,56 @@ public class SkillToolsTests
         Assert.IsTrue(result.Contains("not found"));
     }
 
+    // ── EditSkill ─────────────────────────────────────────────────────────────
+
+    [TestMethod]
+    public void Tools_ExposeEditSkill()
+    {
+        var tools = new SkillTools(new StubSkillStore(), new StubChatClient(), NullLogger<SkillTools>.Instance);
+
+        var names = tools.Tools.OfType<AIFunction>().Select(f => f.Name).ToList();
+
+        CollectionAssert.Contains(names, "EditSkill");
+    }
+
+    [TestMethod]
+    public async Task EditSkill_AppliesTheEdit_AndKeepsTheSummary()
+    {
+        var store = new StubSkillStore();
+        store.Add(new Skill("plan-meeting", "Plans meetings", "1. Book the room.", DateTimeOffset.UtcNow));
+        var tools = new SkillTools(store, new StubChatClient(), NullLogger<SkillTools>.Instance);
+
+        var result = await tools.EditSkill("plan-meeting", "1. Book the room.", "1. Book the room.\n2. Send the invite.");
+
+        StringAssert.Contains(result, "replaced 1 occurrence");
+        var skill = await store.GetAsync("plan-meeting");
+        StringAssert.Contains(skill!.Content, "2. Send the invite.");
+        Assert.AreEqual("Plans meetings", skill.Summary,
+            "A body edit must not blank the summary the way save_skill does.");
+    }
+
+    [TestMethod]
+    public async Task EditSkill_Refusal_ReachesTheModelVerbatim()
+    {
+        const string refusal = "oldText was not found. It must match the content exactly.";
+        var store = new StubSkillStore { EditResult = ContentEditResult.Failed(refusal) };
+        var tools = new SkillTools(store, new StubChatClient(), NullLogger<SkillTools>.Instance);
+
+        var result = await tools.EditSkill("plan-meeting", "missing", "replacement");
+
+        StringAssert.Contains(result, refusal);
+    }
+
+    [TestMethod]
+    public async Task EditSkill_UnknownSkill_ReturnsNotFound()
+    {
+        var tools = new SkillTools(new StubSkillStore(), new StubChatClient(), NullLogger<SkillTools>.Instance);
+
+        var result = await tools.EditSkill("nonexistent", "a", "b");
+
+        StringAssert.Contains(result, "not found");
+    }
+
     // ── GetSkillResource ──────────────────────────────────────────────────────
 
     [TestMethod]
@@ -500,6 +550,26 @@ public class SkillToolsTests
             return Task.CompletedTask;
         }
         public Task<Skill?> GetAsync(string name) => Task.FromResult(_skills.GetValueOrDefault(name));
+
+        /// <summary>When set, <see cref="EditContentAsync"/> returns this instead of editing.</summary>
+        public ContentEditResult? EditResult { get; set; }
+
+        public Task<ContentEditResult> EditContentAsync(string name, string oldText, string newText, bool replaceAll = false)
+        {
+            if (EditResult is { } canned)
+                return Task.FromResult(canned);
+
+            if (!_skills.TryGetValue(name, out var existing))
+                return Task.FromResult(ContentEditResult.Failed($"Skill '{name}' not found."));
+
+            var edit = TextEdit.Apply(existing.Content, oldText, newText, replaceAll);
+            if (!edit.IsSuccess)
+                return Task.FromResult(ContentEditResult.Failed(edit.Error!));
+
+            _skills[name] = existing with { Content = edit.Content!, UpdatedAt = DateTimeOffset.UtcNow };
+            return Task.FromResult(ContentEditResult.Applied(
+                edit.ReplacementCount, existing.Content.Length, edit.Content!.Length));
+        }
         public Task<IReadOnlyList<Skill>> ListAsync() =>
             Task.FromResult<IReadOnlyList<Skill>>(_skills.Values.OrderBy(s => s.Name).ToList());
         public Task DeleteAsync(string name) { _skills.Remove(name); return Task.CompletedTask; }
