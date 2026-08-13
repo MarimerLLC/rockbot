@@ -832,6 +832,98 @@ public class FileSkillStoreTests
         Assert.IsNotNull(entry.CreatedAt);
     }
 
+    // ── EditContentAsync ──────────────────────────────────────────────────────
+
+    [TestMethod]
+    public async Task EditContentAsync_ReplacesTextInTheBody()
+    {
+        var store = CreateStore();
+        await store.SaveAsync(MakeSkill("plan-meeting", "Plans a meeting", "# Plan\n\n1. Book the room.\n2. Send the invite."));
+
+        var result = await store.EditContentAsync("plan-meeting", "2. Send the invite.", "2. Send the invite.\n3. Confirm attendance.");
+
+        Assert.IsTrue(result.IsSuccess, result.Error);
+        Assert.AreEqual(1, result.ReplacementCount);
+        var skill = await store.GetAsync("plan-meeting");
+        StringAssert.Contains(skill!.Content, "3. Confirm attendance.");
+        StringAssert.Contains(skill.Content, "1. Book the room.");
+    }
+
+    [TestMethod]
+    public async Task EditContentAsync_PreservesSummaryManifestAndCreatedAt()
+    {
+        // save_skill clears the summary and regenerates it with a background LLM call; a body
+        // edit must not pay that cost or leave the skill index blank in the meantime.
+        var store = CreateStore();
+        var created = DateTimeOffset.UtcNow.AddDays(-90);
+        var lastUsed = DateTimeOffset.UtcNow.AddDays(-2);
+        await store.SaveAsync(
+            new Skill("calendar/scan", "Scans the calendar for conflicts", "# Scan\n\nStep one.", created,
+                UpdatedAt: created, LastUsedAt: lastUsed, SeeAlso: ["plan-meeting"]),
+            [new SkillResourceInput("scan.json", SkillResourceType.Wisp, "Fan-out", "{\"v\":1}")]);
+
+        var before = DateTimeOffset.UtcNow;
+        var result = await store.EditContentAsync("calendar/scan", "Step one.", "Step one, then step two.");
+
+        Assert.IsTrue(result.IsSuccess, result.Error);
+        var skill = await store.GetAsync("calendar/scan");
+        Assert.AreEqual("Scans the calendar for conflicts", skill!.Summary);
+        Assert.AreEqual(created, skill.CreatedAt);
+        Assert.AreEqual(lastUsed, skill.LastUsedAt);
+        CollectionAssert.AreEqual(new[] { "plan-meeting" }, skill.SeeAlso!.ToArray());
+        Assert.AreEqual("scan.json", skill.Manifest!.Single().Filename);
+        Assert.IsTrue(skill.UpdatedAt >= before, "UpdatedAt should move to now.");
+    }
+
+    [TestMethod]
+    public async Task EditContentAsync_UnknownSkill_Refuses()
+    {
+        var store = CreateStore();
+
+        var result = await store.EditContentAsync("no-such-skill", "a", "b");
+
+        Assert.IsFalse(result.IsSuccess);
+        StringAssert.Contains(result.Error, "no-such-skill");
+    }
+
+    [TestMethod]
+    public async Task EditContentAsync_AmbiguousMatch_Refuses_AndWritesNothing()
+    {
+        var store = CreateStore();
+        await store.SaveAsync(MakeSkill("s", "sum", "step\nstep"));
+
+        var result = await store.EditContentAsync("s", "step", "stage");
+
+        Assert.IsFalse(result.IsSuccess);
+        StringAssert.Contains(result.Error, "occurs 2 times");
+        Assert.AreEqual("step\nstep", (await store.GetAsync("s"))!.Content);
+    }
+
+    [TestMethod]
+    public async Task EditContentAsync_ReplaceAll_ReplacesEveryOccurrence()
+    {
+        var store = CreateStore();
+        await store.SaveAsync(MakeSkill("s", "sum", "step\nstep"));
+
+        var result = await store.EditContentAsync("s", "step", "stage", replaceAll: true);
+
+        Assert.IsTrue(result.IsSuccess, result.Error);
+        Assert.AreEqual(2, result.ReplacementCount);
+        Assert.AreEqual("stage\nstage", (await store.GetAsync("s"))!.Content);
+    }
+
+    [TestMethod]
+    public async Task EditContentAsync_PersistsToDisk()
+    {
+        var store = CreateStore();
+        await store.SaveAsync(MakeSkill("s", "sum", "before"));
+
+        await store.EditContentAsync("s", "before", "after");
+
+        var json = await File.ReadAllTextAsync(Path.Combine(_tempDir, "s.json"));
+        StringAssert.Contains(json, "after");
+    }
+
     // ── Helpers ───────────────────────────────────────────────────────────────
 
     private FileSkillStore CreateStore() =>

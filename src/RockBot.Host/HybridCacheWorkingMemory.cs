@@ -26,6 +26,13 @@ internal sealed class HybridCacheWorkingMemory : IWorkingMemory
     // fullKey -> float[] (in-memory only, evicted with the entry)
     private readonly ConcurrentDictionary<string, float[]> _embeddings = new(StringComparer.OrdinalIgnoreCase);
 
+    /// <summary>
+    /// One lock per key, held across an <see cref="EditAsync"/> read-modify-write so two
+    /// concurrent edits to the same entry cannot both start from the pre-edit value. Entries
+    /// are never evicted — one small object per distinct key edited in the process lifetime.
+    /// </summary>
+    private readonly ConcurrentDictionary<string, SemaphoreSlim> _editLocks = new(StringComparer.OrdinalIgnoreCase);
+
     private sealed record EntryMeta(
         DateTimeOffset StoredAt,
         DateTimeOffset ExpiresAt,
@@ -145,6 +152,57 @@ internal sealed class HybridCacheWorkingMemory : IWorkingMemory
 
         _cache.TryGetValue<string>(CacheKey(key), out var value);
         return Task.FromResult(value);
+    }
+
+    public async Task<ContentEditResult> EditAsync(string key, string oldText, string newText, bool replaceAll = false)
+    {
+        ArgumentNullException.ThrowIfNull(oldText);
+        ArgumentNullException.ThrowIfNull(newText);
+
+        // Serializes edits to this key against each other. A concurrent full SetAsync still
+        // wins — working memory has no versioning to compare against — but two models
+        // amending the same cached payload no longer silently overwrite one another.
+        var gate = _editLocks.GetOrAdd(key, _ => new SemaphoreSlim(1, 1));
+        await gate.WaitAsync();
+        try
+        {
+            if (!_index.TryGetValue(key, out var meta) || meta.ExpiresAt <= DateTimeOffset.UtcNow)
+            {
+                return ContentEditResult.Failed(
+                    $"Working memory entry '{key}' was not found or has expired, so there is nothing to edit.");
+            }
+
+            if (!_cache.TryGetValue<string>(CacheKey(key), out var current) || current is null)
+            {
+                return ContentEditResult.Failed(
+                    $"Working memory entry '{key}' is no longer cached — it was evicted under memory pressure. " +
+                    "Re-save the value rather than editing it.");
+            }
+
+            var edit = TextEdit.Apply(current, oldText, newText, replaceAll);
+            if (!edit.IsSuccess)
+                return ContentEditResult.Failed(edit.Error!);
+
+            // Reuse the window the entry was stored with, restarting it from now. Going back
+            // through SetAsync is what re-arms the cache expiry and re-embeds the new value.
+            var window = meta.ExpiresAt - meta.StoredAt;
+            await SetAsync(
+                key,
+                edit.Content!,
+                window > TimeSpan.Zero ? window : null,
+                meta.Category,
+                meta.Tags);
+
+            _logger.LogDebug(
+                "Working memory edit: key={Key} replacements={Count} {Old}->{New} chars",
+                key, edit.ReplacementCount, current.Length, edit.Content!.Length);
+
+            return ContentEditResult.Applied(edit.ReplacementCount, current.Length, edit.Content.Length);
+        }
+        finally
+        {
+            gate.Release();
+        }
     }
 
     public Task<IReadOnlyList<WorkingMemoryEntry>> ListAsync(string? prefix = null)

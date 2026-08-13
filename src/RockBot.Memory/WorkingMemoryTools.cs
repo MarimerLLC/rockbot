@@ -30,6 +30,7 @@ public sealed class WorkingMemoryTools
         [
             AIFunctionFactory.Create(SaveToWorkingMemory),
             AIFunctionFactory.Create(GetFromWorkingMemory),
+            AIFunctionFactory.Create(EditWorkingMemory),
             AIFunctionFactory.Create(DeleteFromWorkingMemory),
             AIFunctionFactory.Create(SearchWorkingMemory)
         ];
@@ -82,6 +83,33 @@ public sealed class WorkingMemoryTools
         if (value is null)
             return $"Working memory entry '{fullKey}' not found or has expired.";
         return value;
+    }
+
+    [Description("Change part of a cached working memory entry without re-sending the whole payload. " +
+                 "Use this to amend a running draft, checklist, or handoff note in place — re-saving it with " +
+                 "save_to_working_memory means reproducing every character you want to keep, and anything you " +
+                 "do not reproduce is gone. " +
+                 "old_string must match the cached value exactly; if it appears more than once the edit is " +
+                 "refused, so include more surrounding text or set replace_all. " +
+                 "The entry keeps its category and tags, and its TTL restarts from now.")]
+    public async Task<string> EditWorkingMemory(
+        [Description("Key to edit — plain key for own namespace, full path for cross-namespace (e.g. 'shared/drafts/report')")] string key,
+        [Description("Exact text to find inside the cached value — copy it verbatim")] string old_string,
+        [Description("Replacement text. Pass an empty string to delete the matched text.")] string new_string,
+        [Description("Replace every occurrence instead of refusing an ambiguous match. Default false.")] bool replace_all = false)
+    {
+        var fullKey = key.Contains('/') ? key : $"{_namespace}/{key}";
+        _logger.LogInformation("Tool call: EditWorkingMemory(key={Key}, replaceAll={ReplaceAll})", fullKey, replace_all);
+
+        var result = await _workingMemory.EditAsync(
+            fullKey, old_string ?? string.Empty, new_string ?? string.Empty, replace_all);
+
+        if (!result.IsSuccess)
+            return $"Edit failed on working memory entry '{fullKey}': {result.Error}";
+
+        var plural = result.ReplacementCount == 1 ? "occurrence" : "occurrences";
+        return $"Edited working memory entry '{fullKey}' — replaced {result.ReplacementCount} {plural} " +
+               $"({result.OldLength} → {result.NewLength} characters). TTL restarted.";
     }
 
     [Description("Delete an entry from working memory by key. " +

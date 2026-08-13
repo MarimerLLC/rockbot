@@ -12,6 +12,35 @@ public interface ILongTermMemory
     Task SaveAsync(MemoryEntry entry, CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Replaces an exact piece of text inside an existing entry's content, leaving every
+    /// other field — including <see cref="MemoryEntry.CreatedAt"/>,
+    /// <see cref="MemoryEntry.LastSeenAt"/>, and
+    /// <see cref="MemoryEntry.ReinforcementCount"/> — untouched.
+    /// </summary>
+    /// <param name="id">Entry to edit.</param>
+    /// <param name="oldText">Exact text to find. Must be non-empty.</param>
+    /// <param name="newText">Replacement text. May be empty to delete the match.</param>
+    /// <param name="replaceAll">
+    /// When <c>true</c>, replaces every occurrence. When <c>false</c>, more than one
+    /// occurrence is refused rather than guessed at.
+    /// </param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <remarks>
+    /// The correction path that <see cref="DeleteAsync"/> plus <see cref="SaveAsync"/> cannot
+    /// be: that pair mints a new id and resets the entry's provenance, so fixing one word in a
+    /// fact reinforced two hundred times leaves a fact seen once. Implementations must apply
+    /// the whole read-modify-write cycle under whatever lock guards their other writes, so a
+    /// concurrent save cannot be silently discarded.
+    /// </remarks>
+    Task<ContentEditResult> EditAsync(
+        string id,
+        string oldText,
+        string newText,
+        bool replaceAll = false,
+        CancellationToken cancellationToken = default)
+        => Task.FromResult(ContentEditResult.NotSupported);
+
+    /// <summary>
     /// Searches memory entries matching the given criteria.
     /// </summary>
     Task<IReadOnlyList<MemoryEntry>> SearchAsync(MemorySearchCriteria criteria, CancellationToken cancellationToken = default);

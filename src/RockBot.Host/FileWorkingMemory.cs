@@ -151,6 +151,16 @@ internal sealed class FileWorkingMemory : IWorkingMemory, IHostedService
     public Task<string?> GetAsync(string key)
         => _inner.GetAsync(key);
 
+    public async Task<ContentEditResult> EditAsync(string key, string oldText, string newText, bool replaceAll = false)
+    {
+        // The inner store applies the edit through its own SetAsync, which does not know about
+        // persistence — so the group file is rewritten here, and only when something changed.
+        var result = await _inner.EditAsync(key, oldText, newText, replaceAll);
+        if (result.IsSuccess)
+            await PersistGroupAsync(GetGroup(key));
+        return result;
+    }
+
     public Task<IReadOnlyList<WorkingMemoryEntry>> ListAsync(string? prefix = null)
         => _inner.ListAsync(prefix);
 

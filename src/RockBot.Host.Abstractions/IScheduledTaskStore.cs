@@ -26,4 +26,26 @@ public interface IScheduledTaskStore
     /// system/runOnce flags) are left unchanged.
     /// </summary>
     Task UpdateDirectiveAsync(string name, string directive);
+
+    /// <summary>
+    /// Replaces an exact piece of text inside an existing task's
+    /// <see cref="ScheduledTask.Directive"/>, leaving the rest of it and every other field
+    /// untouched.
+    /// </summary>
+    /// <param name="name">Task whose directive to edit.</param>
+    /// <param name="oldText">Exact text to find. Must be non-empty.</param>
+    /// <param name="newText">Replacement text. May be empty to delete the match.</param>
+    /// <param name="replaceAll">
+    /// When <c>true</c>, replaces every occurrence. When <c>false</c>, more than one
+    /// occurrence is refused rather than guessed at.
+    /// </param>
+    /// <remarks>
+    /// A directive is a checklist a recurring task accumulates over many fires, and
+    /// <see cref="UpdateDirectiveAsync"/> replaces it wholesale — so a task that wants to add
+    /// one line has to restate every line it wants to keep. Unlike that method, an unknown
+    /// task name is reported rather than silently ignored: the caller asked to change specific
+    /// text and needs to know it did not happen.
+    /// </remarks>
+    Task<ContentEditResult> EditDirectiveAsync(string name, string oldText, string newText, bool replaceAll = false)
+        => Task.FromResult(ContentEditResult.NotSupported);
 }

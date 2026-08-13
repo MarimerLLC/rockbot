@@ -249,6 +249,92 @@ public sealed class FileScheduledTaskStoreTests
         Assert.IsNull(await store.GetAsync("nonexistent"));
     }
 
+    // ── EditDirectiveAsync ────────────────────────────────────────────────────
+
+    [TestMethod]
+    public async Task EditDirectiveAsync_ChangesOnlyTheMatchedText()
+    {
+        var store = CreateStore();
+        await store.SaveAsync(MakeTask("patrol"));
+        await store.UpdateDirectiveAsync("patrol", "## Checklist\n- check plans\n- check todos");
+
+        var result = await store.EditDirectiveAsync("patrol", "- check todos", "- check todos\n- check email");
+
+        Assert.IsTrue(result.IsSuccess, result.Error);
+        Assert.AreEqual(1, result.ReplacementCount);
+        var retrieved = await store.GetAsync("patrol");
+        Assert.AreEqual("## Checklist\n- check plans\n- check todos\n- check email", retrieved!.Directive);
+    }
+
+    [TestMethod]
+    public async Task EditDirectiveAsync_PreservesOtherFields()
+    {
+        var store = CreateStore();
+        var firedAt = new DateTimeOffset(2026, 2, 19, 8, 0, 0, TimeSpan.Zero);
+        await store.SaveAsync(MakeTask("patrol", cron: "0 8 * * *", description: "Patrol"));
+        await store.UpdateLastFiredAsync("patrol", firedAt);
+        await store.UpdateDirectiveAsync("patrol", "watch the queue");
+
+        await store.EditDirectiveAsync("patrol", "queue", "backlog");
+
+        var retrieved = await store.GetAsync("patrol");
+        Assert.AreEqual("watch the backlog", retrieved!.Directive);
+        Assert.AreEqual("0 8 * * *", retrieved.CronExpression);
+        Assert.AreEqual("Patrol", retrieved.Description);
+        Assert.AreEqual(firedAt, retrieved.LastFiredAt);
+    }
+
+    [TestMethod]
+    public async Task EditDirectiveAsync_UnknownTask_Refuses()
+    {
+        var store = CreateStore();
+
+        var result = await store.EditDirectiveAsync("nonexistent", "a", "b");
+
+        Assert.IsFalse(result.IsSuccess, "Unlike UpdateDirectiveAsync, an edit must report a missing task.");
+        StringAssert.Contains(result.Error, "nonexistent");
+    }
+
+    [TestMethod]
+    public async Task EditDirectiveAsync_TaskWithNoDirective_Refuses()
+    {
+        var store = CreateStore();
+        await store.SaveAsync(MakeTask("patrol"));
+
+        var result = await store.EditDirectiveAsync("patrol", "a", "b");
+
+        Assert.IsFalse(result.IsSuccess);
+        StringAssert.Contains(result.Error, "no directive yet");
+    }
+
+    [TestMethod]
+    public async Task EditDirectiveAsync_AmbiguousMatch_Refuses_AndWritesNothing()
+    {
+        var store = CreateStore();
+        await store.SaveAsync(MakeTask("patrol"));
+        await store.UpdateDirectiveAsync("patrol", "check\ncheck");
+
+        var result = await store.EditDirectiveAsync("patrol", "check", "verify");
+
+        Assert.IsFalse(result.IsSuccess);
+        StringAssert.Contains(result.Error, "occurs 2 times");
+        Assert.AreEqual("check\ncheck", (await store.GetAsync("patrol"))!.Directive);
+    }
+
+    [TestMethod]
+    public async Task EditDirectiveAsync_ReplaceAll_ReplacesEveryOccurrence()
+    {
+        var store = CreateStore();
+        await store.SaveAsync(MakeTask("patrol"));
+        await store.UpdateDirectiveAsync("patrol", "check\ncheck");
+
+        var result = await store.EditDirectiveAsync("patrol", "check", "verify", replaceAll: true);
+
+        Assert.IsTrue(result.IsSuccess, result.Error);
+        Assert.AreEqual(2, result.ReplacementCount);
+        Assert.AreEqual("verify\nverify", (await store.GetAsync("patrol"))!.Directive);
+    }
+
     // ── Persistence ───────────────────────────────────────────────────────────
 
     [TestMethod]

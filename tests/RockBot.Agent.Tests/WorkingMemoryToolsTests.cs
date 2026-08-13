@@ -40,6 +40,59 @@ public class WorkingMemoryToolsTests
             "Namespace must not be prepended twice");
     }
 
+    // ── EditWorkingMemory ─────────────────────────────────────────────────
+
+    [TestMethod]
+    public void Tools_ExposeEditWorkingMemory()
+    {
+        var names = _tools.Tools.OfType<AIFunction>().Select(f => f.Name).ToList();
+
+        CollectionAssert.Contains(names, "EditWorkingMemory");
+    }
+
+    [TestMethod]
+    public async Task EditWorkingMemory_PlainKey_PrependsNamespace()
+    {
+        _memory.Store["subagent/abc123/draft"] = "before";
+
+        await _tools.EditWorkingMemory("draft", "before", "after");
+
+        Assert.AreEqual("subagent/abc123/draft", _memory.LastEditKey);
+        Assert.AreEqual("after", _memory.Store["subagent/abc123/draft"]);
+    }
+
+    [TestMethod]
+    public async Task EditWorkingMemory_AbsoluteKey_UsesAsIs()
+    {
+        _memory.Store["shared/drafts/report"] = "before";
+
+        await _tools.EditWorkingMemory("shared/drafts/report", "before", "after");
+
+        Assert.AreEqual("shared/drafts/report", _memory.LastEditKey);
+    }
+
+    [TestMethod]
+    public async Task EditWorkingMemory_Success_ReportsReplacementCount()
+    {
+        _memory.Store["subagent/abc123/draft"] = "todo todo";
+
+        var result = await _tools.EditWorkingMemory("draft", "todo", "done", replace_all: true);
+
+        StringAssert.Contains(result, "replaced 2 occurrences");
+        Assert.AreEqual("done done", _memory.Store["subagent/abc123/draft"]);
+    }
+
+    [TestMethod]
+    public async Task EditWorkingMemory_Refusal_ReachesTheModelVerbatim()
+    {
+        const string refusal = "Working memory entry 'x' was not found or has expired.";
+        _memory.EditResult = ContentEditResult.Failed(refusal);
+
+        var result = await _tools.EditWorkingMemory("draft", "a", "b");
+
+        StringAssert.Contains(result, refusal);
+    }
+
     // ── GetFromWorkingMemory ──────────────────────────────────────────────
 
     [TestMethod]
@@ -227,6 +280,30 @@ public class WorkingMemoryToolsTests
 
         public Task<string?> GetAsync(string key) =>
             Task.FromResult(Store.TryGetValue(key, out var v) ? v : null);
+
+        /// <summary>When set, <see cref="EditAsync"/> returns this instead of applying the edit.</summary>
+        public ContentEditResult? EditResult { get; set; }
+
+        public string? LastEditKey { get; private set; }
+
+        public Task<ContentEditResult> EditAsync(string key, string oldText, string newText, bool replaceAll = false)
+        {
+            LastEditKey = key;
+
+            if (EditResult is { } canned)
+                return Task.FromResult(canned);
+
+            if (!Store.TryGetValue(key, out var current))
+                return Task.FromResult(ContentEditResult.Failed($"Working memory entry '{key}' was not found."));
+
+            var edit = TextEdit.Apply(current, oldText, newText, replaceAll);
+            if (!edit.IsSuccess)
+                return Task.FromResult(ContentEditResult.Failed(edit.Error!));
+
+            Store[key] = edit.Content!;
+            return Task.FromResult(ContentEditResult.Applied(
+                edit.ReplacementCount, current.Length, edit.Content!.Length));
+        }
 
         public Task<IReadOnlyList<WorkingMemoryEntry>> ListAsync(string? prefix = null) =>
             Task.FromResult<IReadOnlyList<WorkingMemoryEntry>>([]);

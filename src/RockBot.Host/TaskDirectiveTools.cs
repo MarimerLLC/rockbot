@@ -27,7 +27,8 @@ public sealed class TaskDirectiveTools
 
         Tools =
         [
-            AIFunctionFactory.Create(UpdateTaskDirective)
+            AIFunctionFactory.Create(UpdateTaskDirective),
+            AIFunctionFactory.Create(EditTaskDirective)
         ];
     }
 
@@ -37,7 +38,9 @@ public sealed class TaskDirectiveTools
         "Replace the entire body of the current scheduled task's evolving directive — the running " +
         "checklist or notes the agent maintains across runs of this task. The new content " +
         "becomes part of the system prompt on the next fire of this task. " +
-        "Use this to record what to look for, what was just learned, or what to watch next time. " +
+        "Use this to write the first version of a directive, or to deliberately start over. " +
+        "To change part of an existing directive, use edit_task_directive instead — this tool " +
+        "discards everything you do not restate. " +
         "This tool is only available inside a scheduled-task execution and only edits the " +
         "directive of the task that is currently running.")]
     public async Task<string> UpdateTaskDirective(
@@ -49,6 +52,34 @@ public sealed class TaskDirectiveTools
 
         await _store.UpdateDirectiveAsync(_taskName, content ?? string.Empty);
         return $"Directive for task '{_taskName}' updated ({(content ?? string.Empty).Length} chars). " +
+               "It will be part of the system prompt on the next fire.";
+    }
+
+    [Description(
+        "Change part of the current scheduled task's directive, leaving the rest of it exactly as it is. " +
+        "This is how a recurring task adds a checklist item, corrects a note, or records what to watch " +
+        "next time without restating the whole directive — which is what update_task_directive requires, " +
+        "and what quietly loses the lines you forget. " +
+        "The directive is shown to you in the system prompt on each fire; copy old_string from there " +
+        "verbatim. If it appears more than once the edit is refused — include more surrounding text or " +
+        "set replace_all.")]
+    public async Task<string> EditTaskDirective(
+        [Description("Exact text to find in the current directive — copy it verbatim")] string old_string,
+        [Description("Replacement text. Pass an empty string to delete the matched text.")] string new_string,
+        [Description("Replace every occurrence instead of refusing an ambiguous match. Default false.")] bool replace_all = false)
+    {
+        _logger.LogInformation(
+            "Tool call: EditTaskDirective(task={Task}, replaceAll={ReplaceAll})", _taskName, replace_all);
+
+        var result = await _store.EditDirectiveAsync(
+            _taskName, old_string ?? string.Empty, new_string ?? string.Empty, replace_all);
+
+        if (!result.IsSuccess)
+            return $"Edit failed on the directive for task '{_taskName}': {result.Error}";
+
+        var plural = result.ReplacementCount == 1 ? "occurrence" : "occurrences";
+        return $"Directive for task '{_taskName}' edited — replaced {result.ReplacementCount} {plural} " +
+               $"({result.OldLength} → {result.NewLength} chars). " +
                "It will be part of the system prompt on the next fire.";
     }
 }

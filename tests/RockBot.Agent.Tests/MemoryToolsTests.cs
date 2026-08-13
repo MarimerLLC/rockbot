@@ -98,6 +98,74 @@ public class MemoryToolsTests
     }
 
     // -------------------------------------------------------------------------
+    // EditMemory
+    // -------------------------------------------------------------------------
+
+    [TestMethod]
+    public void Tools_ExposeEditMemory()
+    {
+        var tools = MakeTools(new StubLongTermMemory());
+
+        var names = tools.Tools.OfType<AIFunction>().Select(f => f.Name).ToList();
+
+        CollectionAssert.Contains(names, "EditMemory");
+    }
+
+    [TestMethod]
+    public async Task EditMemory_AppliesTheEdit_AndReportsTheCount()
+    {
+        var memory = new StubLongTermMemory();
+        memory.Add(Entry("abc123", "User lives in Chicago", DateTimeOffset.UtcNow));
+        var tools = MakeTools(memory);
+
+        var result = await tools.EditMemory("abc123", "Chicago", "Minneapolis");
+
+        StringAssert.Contains(result, "abc123");
+        StringAssert.Contains(result, "replaced 1 occurrence");
+        Assert.AreEqual("User lives in Minneapolis", (await memory.GetAsync("abc123"))!.Content);
+    }
+
+    [TestMethod]
+    public async Task EditMemory_Refusal_ReachesTheModelVerbatim()
+    {
+        // The store's wording is the only explanation the model gets; paraphrasing it here
+        // would strip the part that says how to fix the call.
+        const string refusal = "oldText occurs 3 times — the edit target is ambiguous.";
+        var memory = new StubLongTermMemory { EditResult = ContentEditResult.Failed(refusal) };
+        var tools = MakeTools(memory);
+
+        var result = await tools.EditMemory("abc123", "dogs", "cats");
+
+        StringAssert.Contains(result, refusal);
+    }
+
+    [TestMethod]
+    public async Task EditMemory_PassesReplaceAllThrough()
+    {
+        var memory = new StubLongTermMemory();
+        memory.Add(Entry("abc123", "dog dog", DateTimeOffset.UtcNow));
+        var tools = MakeTools(memory);
+
+        var result = await tools.EditMemory("abc123", "dog", "cat", replace_all: true);
+
+        StringAssert.Contains(result, "replaced 2 occurrences");
+        Assert.AreEqual("cat cat", (await memory.GetAsync("abc123"))!.Content);
+    }
+
+    [TestMethod]
+    public async Task EditMemory_WithoutReplaceAll_AmbiguousMatchIsRefused()
+    {
+        var memory = new StubLongTermMemory();
+        memory.Add(Entry("abc123", "dog dog", DateTimeOffset.UtcNow));
+        var tools = MakeTools(memory);
+
+        var result = await tools.EditMemory("abc123", "dog", "cat");
+
+        StringAssert.Contains(result, "ambiguous");
+        Assert.AreEqual("dog dog", (await memory.GetAsync("abc123"))!.Content);
+    }
+
+    // -------------------------------------------------------------------------
     // DeleteMemory
     // -------------------------------------------------------------------------
 
@@ -649,6 +717,33 @@ internal sealed class StubLongTermMemory : ILongTermMemory
 
     public Task<MemoryEntry?> GetAsync(string id, CancellationToken cancellationToken = default) =>
         Task.FromResult(_entries.FirstOrDefault(e => e.Id == id));
+
+    /// <summary>When set, <see cref="EditAsync"/> returns this instead of applying the edit.</summary>
+    public ContentEditResult? EditResult { get; set; }
+
+    public Task<ContentEditResult> EditAsync(
+        string id, string oldText, string newText, bool replaceAll = false,
+        CancellationToken cancellationToken = default)
+    {
+        if (EditResult is { } canned)
+            return Task.FromResult(canned);
+
+        lock (_entries)
+        {
+            var index = _entries.FindIndex(e => e.Id == id);
+            if (index < 0)
+                return Task.FromResult(ContentEditResult.Failed($"No memory entry found with id '{id}'."));
+
+            var existing = _entries[index];
+            var edit = TextEdit.Apply(existing.Content, oldText, newText, replaceAll);
+            if (!edit.IsSuccess)
+                return Task.FromResult(ContentEditResult.Failed(edit.Error!));
+
+            _entries[index] = existing with { Content = edit.Content!, UpdatedAt = DateTimeOffset.UtcNow };
+            return Task.FromResult(ContentEditResult.Applied(
+                edit.ReplacementCount, existing.Content.Length, edit.Content!.Length));
+        }
+    }
 
     public Task DeleteAsync(string id, CancellationToken cancellationToken = default)
     {

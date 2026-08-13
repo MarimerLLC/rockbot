@@ -54,6 +54,7 @@ public sealed class SkillTools
             AIFunctionFactory.Create(GetSkillResource),
             AIFunctionFactory.Create(ListSkills),
             AIFunctionFactory.Create(SaveSkill),
+            AIFunctionFactory.Create(EditSkill),
             AIFunctionFactory.Create(DeleteSkill),
         };
 
@@ -192,6 +193,32 @@ public sealed class SkillTools
 
         var index = await _skillStore.ListAsync();
         return $"Skill '{name}' saved. Summary is being generated.\n\n{FormatIndex(index)}";
+    }
+
+    [Description("Change part of an existing skill's markdown without rewriting the whole document. " +
+                 "This is the right tool for the usual case — adding a pitfall you just hit, correcting a step, " +
+                 "updating an example. save_skill replaces the entire body, so anything you do not reproduce " +
+                 "verbatim is lost, and on a long procedure you will not reproduce it verbatim. " +
+                 "Editing also keeps the existing summary instead of regenerating it. " +
+                 "Call get_skill first and copy old_string from what it returns; it must match exactly, and if " +
+                 "it appears more than once the edit is refused — include more surrounding text or set replace_all.")]
+    public async Task<string> EditSkill(
+        [Description("The skill name to edit (e.g. 'plan-meeting')")] string name,
+        [Description("Exact text to find in the skill's markdown — copy it verbatim from get_skill")] string old_string,
+        [Description("Replacement text. Pass an empty string to delete the matched text.")] string new_string,
+        [Description("Replace every occurrence instead of refusing an ambiguous match. Default false.")] bool replace_all = false)
+    {
+        _logger.LogInformation("Tool call: EditSkill(name={Name}, replaceAll={ReplaceAll})", name, replace_all);
+
+        var result = await _skillStore.EditContentAsync(
+            name, old_string ?? string.Empty, new_string ?? string.Empty, replace_all);
+
+        if (!result.IsSuccess)
+            return $"Edit failed on skill '{name}': {result.Error}";
+
+        var plural = result.ReplacementCount == 1 ? "occurrence" : "occurrences";
+        return $"Skill '{name}' edited — replaced {result.ReplacementCount} {plural} " +
+               $"({result.OldLength} → {result.NewLength} characters). Summary and resources unchanged.";
     }
 
     [Description("Save a working asset (wisp definition, script, schema) you just verified " +

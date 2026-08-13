@@ -64,9 +64,12 @@ internal sealed class WorkerRunner(
         "mcp_register_server",
         "mcp_unregister_server",
         "save_memory",
+        "edit_memory",
         "save_skill",
+        "edit_skill",
         "promote_skill_asset",
         "update_task_directive",
+        "edit_task_directive",
         "invoke_agent",
     };
 

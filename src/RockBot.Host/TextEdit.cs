@@ -192,9 +192,10 @@ public static class TextEdit
     }
 
     /// <summary>
-    /// Counts non-overlapping ordinal occurrences of <paramref name="needle"/>.
+    /// Counts non-overlapping ordinal occurrences of <paramref name="needle"/>, which must
+    /// be non-empty.
     /// </summary>
-    private static int CountOccurrences(string haystack, string needle)
+    internal static int CountOccurrences(string haystack, string needle)
     {
         var count = 0;
         var index = 0;

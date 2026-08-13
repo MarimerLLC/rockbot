@@ -104,11 +104,57 @@ public sealed class MemoryToolSkillProvider : IToolSkillProvider
         - IDs appear in brackets in results: `[abc123]` — you need the ID to delete an entry
 
 
+        ### Editing existing content: edit, don't rewrite
+
+        `save_memory` creates new entries; it never amends one. `save_to_working_memory`
+        replaces the entire cached value. Anything you do not reproduce in full is gone —
+        and on a long entry you will not reliably reproduce it in full.
+
+        So when the content already exists and you are changing part of it, use `edit_memory`
+        or `edit_working_memory`. Reserve the save tools for new content and for deliberately
+        replacing a whole short payload.
+
+        For long-term memory this matters beyond the text. Every entry carries how long the
+        fact has been known and how many times it has been reinforced, and search ranks and
+        renders entries with it (`seen 12× from 2025-11 to today`). Delete-then-save throws all
+        of that away and leaves a fact that has been seen once — so the fix for a wrong detail
+        costs the agent everything it knew about how well-established the fact was.
+
+        ### edit_memory
+
+        Replaces an exact piece of text inside an existing entry's content, leaving the rest
+        of the entry — and its id, age, and reinforcement count — untouched.
+
+        **Parameters**
+        - `id` (string, required) — the ID from search results (e.g. `abc123`)
+        - `old_string` (string, required) — exact text to find in the entry's content
+        - `new_string` (string, required) — replacement text; empty string deletes the match
+        - `replace_all` (boolean, optional, default false) — change every occurrence
+
+        ```
+        edit_memory(
+          id: "abc123",
+          old_string: "prefers meetings in the morning",
+          new_string: "prefers meetings after 13:00"
+        )
+        ```
+
+        Rules:
+        - `old_string` must match the stored content **exactly**. Search first and copy the
+          text verbatim rather than reconstructing it.
+        - `old_string` must match **exactly once**, or the edit is refused — include more
+          surrounding text, or pass `replace_all: true`.
+        - A refused edit is information, not an obstacle. "Not found" means your `old_string`
+          does not match; re-read the entry rather than retrying the same text. Do not fall
+          back to delete + save to work around a refusal — that is the loss this tool avoids.
+
+
         ### delete_memory
 
-        Deletes a memory entry by its ID. Use this to remove entries that are wrong,
-        outdated, or superseded. To correct a fact: delete the old entry, then save the
-        corrected version.
+        Deletes a memory entry by its ID. Use this when the entry is wrong or obsolete *as a
+        whole* — a fact that turned out to be false, a duplicate, something the user asked you
+        to forget. When the entry is mostly right and one detail changed, use `edit_memory`
+        instead.
 
         **Parameters**
         - `id` (string, required) — the ID from search results (e.g. `abc123`)
@@ -229,6 +275,32 @@ public sealed class MemoryToolSkillProvider : IToolSkillProvider
         call. See the wisp guide for full pipeline mechanics.
 
 
+        ### edit_working_memory
+
+        Replaces an exact piece of text inside a cached entry, leaving the rest of the value
+        untouched. Use it to amend a running draft, checklist, or handoff note in place instead
+        of re-sending the whole payload through `save_to_working_memory`.
+
+        **Parameters**
+        - `key` (string, required) — plain key for your own namespace, or a full path
+        - `old_string` (string, required) — exact text to find in the cached value
+        - `new_string` (string, required) — replacement text; empty string deletes the match
+        - `replace_all` (boolean, optional, default false) — change every occurrence
+
+        ```
+        edit_working_memory(
+          key: "shared/drafts/tina-vslive",
+          old_string: "Session length: 60 minutes",
+          new_string: "Session length: 75 minutes"
+        )
+        ```
+
+        The entry keeps its category and tags, and its TTL restarts from now using the same
+        window it was stored with — an entry you are still amending is one still in use. Same
+        exact-match rules as `edit_memory`: verbatim `old_string`, one match unless
+        `replace_all`.
+
+
         ### search_working_memory
 
         Searches *and* lists cached entries. Defaults to your own namespace; pass `namespace`
@@ -272,8 +344,9 @@ public sealed class MemoryToolSkillProvider : IToolSkillProvider
           research sessions; keep it short to avoid stale data
         - **Use consistent category conventions** — `user-preferences/*`, `project/*`,
           `domain/*` for long-term; `email`, `calendar`, `research` for working memory
-        - **Delete wrong facts promptly** — stale or incorrect long-term memories
-          can silently degrade future responses
+        - **Correct wrong facts promptly** — stale or incorrect long-term memories can
+          silently degrade future responses. Fix the detail with `edit_memory`; reserve
+          `delete_memory` for entries that are wrong as a whole
 
 
         ## Common Pitfalls
