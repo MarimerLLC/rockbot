@@ -196,8 +196,8 @@ public sealed class MemoryTools
             ? null
             : tags.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
 
-    [Description("Search DURABLE cross-session knowledge — facts, preferences, and patterns saved with " +
-                 "save_memory, which survive restarts. " +
+    [Description($"{RecallTools.DurableHeadline} — DURABLE cross-session knowledge: facts, preferences, " +
+                 "and patterns saved with save_memory, which survive restarts. " +
                  "Use query for keyword search and category to scope to a knowledge area " +
                  "(prefix match, so 'project-context' also matches 'project-context/rockbot'). " +
                  "Omit query to browse: results are the most recently reinforced entries in scope, " +
@@ -206,9 +206,7 @@ public sealed class MemoryTools
                  "Set mode='regex' when you know the literal token (file path, id, version, exact phrase); " +
                  "otherwise leave mode='hybrid' (default) for semantic/keyword search. " +
                  "This searches what you CONCLUDED and chose to keep, not what was said. " +
-                 "For cached payloads from this session only, use search_working_memory instead; for the " +
-                 "verbatim text of conversation turns that have scrolled out of your context window, use " +
-                 "search_conversation_history instead.")]
+                 $"Sibling recall tools — {RecallTools.TryWorking}; {RecallTools.TryConversation}.")]
     public async Task<string> SearchMemory(
         [Description("Optional keyword (hybrid mode) or .NET regex pattern (regex mode) to search for. Omit to browse and see the category taxonomy.")] string? query = null,
         [Description("Optional category prefix to filter by (e.g. 'user-preferences'). Matches the category and its children.")] string? category = null,
@@ -246,7 +244,14 @@ public sealed class MemoryTools
 
         if (results.Count == 0)
         {
-            const string none = "No memories found matching the search criteria.";
+            // A query-less browse that comes back empty is "this store is empty", not a failed
+            // lookup, and the taxonomy already tells the model what exists — pointing it at the
+            // sibling stores there would be noise. A *query* that matches nothing is the
+            // mis-routed case worth recovering from.
+            var none = "No memories found matching the search criteria.";
+            if (trimmedQuery is not null)
+                none += $" {RecallTools.LookElsewhere(RecallTools.DurableMemory)}";
+
             return taxonomy is null ? none : $"{none}\n\n{taxonomy}";
         }
 

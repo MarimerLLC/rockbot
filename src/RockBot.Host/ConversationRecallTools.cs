@@ -83,14 +83,14 @@ public sealed class ConversationRecallTools
 
     /// <summary>
     /// Registered tool name. Referenced by the directives, the docs, and the descriptions of
-    /// the two sibling recall tools, so it must not drift.
+    /// the two sibling recall tools, so it must not drift — hence the shared constant.
     /// </summary>
-    public const string ToolName = "search_conversation_history";
+    public const string ToolName = RecallTools.ConversationHistory;
 
     public IList<AITool> Tools { get; }
 
-    [Description("Search what was actually SAID in conversation turns that have scrolled out of " +
-                 "your context window. Your context replays only the most recent turns; everything " +
+    [Description($"{RecallTools.ConversationHeadline} — search conversation turns that have scrolled " +
+                 "out of your context window. Your context replays only the most recent turns; everything " +
                  "older is still recorded but invisible to you, and nothing marks its absence. " +
                  "Use this when the user refers to something you cannot see, when you are about to " +
                  "re-ask something that may already have been answered, or before saying you do not " +
@@ -100,9 +100,8 @@ public sealed class ConversationRecallTools
                  "session_id='*' to list which sessions exist — note that sessions beginning 'patrol/' " +
                  "are scheduled-task runs and 'a2a-inbound/' are calls from other agents, not " +
                  "conversations with the user. " +
-                 "This searches conversation TRANSCRIPT only. For durable facts and preferences use " +
-                 "search_memory; for this session's cached tool-result payloads use " +
-                 "search_working_memory.")]
+                 "This searches conversation TRANSCRIPT only. " +
+                 $"Sibling recall tools — {RecallTools.TryDurable}; {RecallTools.TryWorking}.")]
     public async Task<string> SearchConversationHistory(
         [Description("Keywords to search for in past turns. Omit to list the out-of-window turns instead.")] string? query = null,
         [Description("Session to search. Omit for the current conversation. Pass '*' to list the available sessions.")] string? session_id = null,
@@ -125,7 +124,8 @@ public sealed class ConversationRecallTools
         if (merged.Count == 0)
         {
             return isCurrentSession
-                ? "No conversation history is recorded for this session yet."
+                ? "No conversation history is recorded for this session yet. " +
+                  RecallTools.LookElsewhere(ToolName)
                 : $"No conversation history is recorded for session '{target}'. " +
                   $"Call with session_id='{ListSessionsToken}' to see which sessions exist.";
         }
@@ -141,7 +141,8 @@ public sealed class ConversationRecallTools
             // "nothing to match against" mean very different things here, and the model must
             // not read the latter as evidence that it never knew something.
             return $"All {merged.Count} turn(s) of this session are already visible in your context — " +
-                   "there is no out-of-window history to search.";
+                   "there is no out-of-window history to search. " +
+                   RecallTools.LookElsewhere(ToolName);
         }
 
         // 1-based index over the full merged history, so a cited turn number means the same
@@ -258,7 +259,7 @@ public sealed class ConversationRecallTools
             .ToList();
 
         if (ranked.Count == 0)
-            return $"{header} — no turn matched.";
+            return $"{header} — no turn matched. {RecallTools.LookElsewhere(ToolName)}";
 
         // Selection runs in rank order so that when the total budget bites it is the
         // lowest-ranked hits that fall off; rendering is re-sorted by turn index afterwards

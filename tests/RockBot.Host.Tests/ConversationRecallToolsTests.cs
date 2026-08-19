@@ -218,6 +218,60 @@ public class ConversationRecallToolsTests
         StringAssert.Contains(result, "no turn matched");
     }
 
+    // ── Empty-result routing ──────────────────────────────────────────────
+    //
+    // Three sibling recall tools means a recall attempt can start at the wrong one. An empty
+    // result is where that either recovers or hardens into "I was never told this", so every
+    // empty path names the other two stores.
+
+    [TestMethod]
+    public async Task Search_NoMatch_PointsAtTheOtherRecallTools()
+    {
+        var memory = new StubConversationMemory();
+        memory.Sessions[CurrentSession] = Turns(10);
+
+        var result = await Build(memory).SearchConversationHistory("nonexistentsearchterm");
+
+        StringAssert.Contains(result, RecallTools.DurableMemory);
+        StringAssert.Contains(result, RecallTools.WorkingMemory);
+    }
+
+    [TestMethod]
+    public async Task Search_NoHistoryAtAll_PointsAtTheOtherRecallTools()
+    {
+        var result = await Build(new StubConversationMemory()).SearchConversationHistory("anything");
+
+        StringAssert.Contains(result, RecallTools.DurableMemory);
+        StringAssert.Contains(result, RecallTools.WorkingMemory);
+    }
+
+    [TestMethod]
+    public async Task Search_EverythingStillInWindow_PointsAtTheOtherRecallTools()
+    {
+        // Nothing is out of window, so this tool has nothing to offer — but the model asked
+        // because it was looking for something, and that something may be in another store.
+        var memory = new StubConversationMemory();
+        memory.Sessions[CurrentSession] = Turns(2);
+
+        var result = await Build(memory, options: Options(contextTurns: 20))
+            .SearchConversationHistory("anything");
+
+        StringAssert.Contains(result, RecallTools.DurableMemory);
+        StringAssert.Contains(result, RecallTools.WorkingMemory);
+    }
+
+    [TestMethod]
+    public async Task Search_NoMatch_DoesNotSuggestItself()
+    {
+        var memory = new StubConversationMemory();
+        memory.Sessions[CurrentSession] = Turns(10);
+
+        var result = await Build(memory).SearchConversationHistory("nonexistentsearchterm");
+
+        Assert.IsFalse(result.Contains($"use {ConversationRecallTools.ToolName}"),
+            "Re-suggesting the tool that just came back empty invites a retry loop.");
+    }
+
     [TestMethod]
     public async Task Search_HeaderStatesWhichTurnsWereSearched()
     {

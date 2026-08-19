@@ -202,6 +202,20 @@ public class WorkingMemoryToolsTests
     }
 
     [TestMethod]
+    public async Task SearchWorkingMemory_QueryMatchesNothing_PointsAtTheOtherRecallTools()
+    {
+        // Working memory is one of three recall stores, and it is the most likely wrong first
+        // guess for "what did the user say earlier" — cached tool output and conversation
+        // turns both feel like "things from earlier in this session".
+        var result = await _tools.SearchWorkingMemory("nonexistentsearchterm");
+
+        StringAssert.Contains(result, RecallTools.DurableMemory);
+        StringAssert.Contains(result, RecallTools.ConversationHistory);
+        Assert.IsFalse(result.Contains($"use {RecallTools.WorkingMemory}"),
+            "Re-suggesting the tool that just came back empty invites a retry loop.");
+    }
+
+    [TestMethod]
     public async Task SearchWorkingMemory_NoQuery_OtherNamespaceEmpty_ReturnsNoEntriesWording()
     {
         var result = await _tools.SearchWorkingMemory(@namespace: "patrol");

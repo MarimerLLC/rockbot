@@ -442,14 +442,34 @@ returns.
 
 ### The recall-search family
 
-Three adjacent searches, each description leading with its scope boundary and naming the
-other two:
+Three adjacent searches. They are discriminated by **what the caller is after**, not by which
+subsystem stored it — a model choosing between them knows what it wants to find and has no way
+to know which store holds it:
 
-| Tool | Scope |
-|---|---|
-| `search_memory` | Durable cross-session knowledge — what the agent concluded and chose to keep |
-| `search_working_memory` | This session's cached payloads, including `stash/` untrimmed tool results |
-| `search_conversation_history` | Conversation turns outside the LLM context window — what was actually said |
+| Tool | Headline | Scope |
+|---|---|---|
+| `search_memory` | RECALL WHAT YOU CONCLUDED | Durable cross-session knowledge the agent chose to keep |
+| `search_working_memory` | RECALL WHAT A TOOL RETURNED | This session's cached payloads, including `stash/` untrimmed tool results |
+| `search_conversation_history` | RECALL WHAT WAS SAID | Conversation turns outside the LLM context window |
+
+Two rules hold the family together, both enforced by `RecallToolFamilyTests`:
+
+1. **Every description leads with its headline and names the other two.** The headline is the
+   only part a model is guaranteed to read when scanning three similar tools.
+2. **Every empty result names the other two.** A query that matches nothing is where a
+   mis-routed lookup either recovers or hardens into "I was never told this" — so an empty
+   result says so explicitly ("not evidence it was never said or never known") and points at
+   the siblings. It never re-suggests the tool that just came back empty, which would be a
+   retry loop rather than a recovery.
+
+   Query-less *browses* are exempt. `search_memory()` with no query means "how is knowledge
+   organised here?" and answers itself with the category taxonomy; an empty namespace listing
+   in working memory is a fact about that namespace, not a failed lookup.
+
+The tool names, headlines, and scope phrases are `const`s on `RecallTools` in
+`RockBot.Host.Abstractions` — an assembly both `RockBot.Memory` (which owns two of the tools)
+and `RockBot.Host` (which owns the third) can see. Nothing else prevents a rename or a
+re-wording from silently desynchronising a family split across assemblies.
 
 ---
 
