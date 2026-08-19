@@ -159,6 +159,37 @@ public sealed class AgentHostOptions
     public int MaxLlmContextTurns { get; set; } = 20;
 
     /// <summary>
+    /// Maximum number of ranked hits <c>search_conversation_history</c> returns, before
+    /// adjacent-turn context is added. Defaults to 4.
+    /// <para>
+    /// Recall results are not exempt from the context-window rules: the tool is what keeps
+    /// turns that fell outside <see cref="MaxLlmContextTurns"/> reachable, so letting it
+    /// return an unbounded slice of them would just move the overflow rather than fix it.
+    /// </para>
+    /// </summary>
+    public int ConversationRecallMaxResults { get; set; } = 4;
+
+    /// <summary>
+    /// Per-turn character cap applied to each turn <c>search_conversation_history</c> renders.
+    /// Longer turns are truncated with an explicit marker. Defaults to 800.
+    /// </summary>
+    public int ConversationRecallMaxCharsPerTurn { get; set; } = 800;
+
+    /// <summary>
+    /// Total character cap on a single <c>search_conversation_history</c> result. Lowest-ranked
+    /// hits are dropped until the result fits, and the response reports how many were dropped.
+    /// Defaults to 6000.
+    /// </summary>
+    public int ConversationRecallMaxTotalChars { get; set; } = 6000;
+
+    /// <summary>
+    /// Maximum number of conversation-log entries pulled per <c>search_conversation_history</c>
+    /// call. Bounds the search corpus (and the log read) for sessions whose history has grown
+    /// large between dream cycles. Defaults to 500.
+    /// </summary>
+    public int ConversationRecallMaxLogEntries { get; set; } = 500;
+
+    /// <summary>
     /// Maximum number of times the completion evaluator can re-prompt the agent when it
     /// determines the task is incomplete. Set to 0 to disable completion evaluation entirely.
     /// Individual models may override this via <c>ModelBehavior.MaxCompletionRepromptsOverride</c>.

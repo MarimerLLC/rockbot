@@ -58,7 +58,8 @@ internal sealed class UserMessageHandler(
     AgentNameHolder agentNameHolder,
     ILogger<UserMessageHandler> logger,
     TierRoutingLogger tierRoutingLogger,
-    ISkillUsageStore? skillUsageStore = null) : IMessageHandler<UserMessage>
+    ISkillUsageStore? skillUsageStore = null,
+    IConversationLog? conversationLog = null) : IMessageHandler<UserMessage>
 {
     private static readonly TimeSpan ProgressMessageThreshold = TimeSpan.FromSeconds(5);
 
@@ -187,6 +188,12 @@ internal sealed class UserMessageHandler(
             var sessionNamespace = $"session/{message.SessionId}";
             var sessionWorkingMemoryTools = new WorkingMemoryTools(workingMemory, sessionNamespace, logger);
 
+            // Recall over turns that have scrolled outside MaxLlmContextTurns. Unlike a trimmed
+            // tool result, an out-of-window turn leaves no marker behind, so without this the
+            // model cannot tell the difference between "never said" and "no longer visible".
+            var conversationRecallTools = new ConversationRecallTools(
+                conversationMemory, conversationLog, message.SessionId, hostOptions.Value, logger);
+
             // Per-turn attachment tool — attach_image stages files for this turn's final reply.
             var attachmentReplyTools = new AttachmentReplyTools(
                 attachmentStorage, attachmentBuffer, message.SessionId, turnId, logger);
@@ -200,6 +207,7 @@ internal sealed class UserMessageHandler(
 
             var allTools = memoryTools.Tools
                 .Concat(sessionWorkingMemoryTools.Tools)
+                .Concat(conversationRecallTools.Tools)
                 .Concat(attachmentReplyTools.Tools)
                 .Concat(sessionSkillTools.Tools)
                 .Concat(rulesTools.Tools)

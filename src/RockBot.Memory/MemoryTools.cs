@@ -205,7 +205,10 @@ public sealed class MemoryTools
                  "before narrowing. " +
                  "Set mode='regex' when you know the literal token (file path, id, version, exact phrase); " +
                  "otherwise leave mode='hybrid' (default) for semantic/keyword search. " +
-                 "For cached payloads from this session only, use search_working_memory instead.")]
+                 "This searches what you CONCLUDED and chose to keep, not what was said. " +
+                 "For cached payloads from this session only, use search_working_memory instead; for the " +
+                 "verbatim text of conversation turns that have scrolled out of your context window, use " +
+                 "search_conversation_history instead.")]
     public async Task<string> SearchMemory(
         [Description("Optional keyword (hybrid mode) or .NET regex pattern (regex mode) to search for. Omit to browse and see the category taxonomy.")] string? query = null,
         [Description("Optional category prefix to filter by (e.g. 'user-preferences'). Matches the category and its children.")] string? category = null,

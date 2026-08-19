@@ -154,6 +154,45 @@ public class WorkingMemoryToolsTests
         Assert.IsNull(_memory.LastCriteria?.Query);
     }
 
+    // ── stash namespace alias ─────────────────────────────────────────────
+    //
+    // The model cannot learn its own namespace, so bare "stash" has to resolve to this
+    // context's stash (stash/{namespace}) or the only reachable prefix would be the shared
+    // "stash" root holding every context's elided tool results.
+
+    [TestMethod]
+    public async Task SearchWorkingMemory_BareStashNamespace_ExpandsToOwnStashPrefix()
+    {
+        await _tools.SearchWorkingMemory(query: "invoice", @namespace: "stash");
+
+        Assert.AreEqual("stash/subagent/abc123", _memory.LastPrefix);
+    }
+
+    [TestMethod]
+    public async Task SearchWorkingMemory_StashWithTrailingSlash_ExpandsToOwnStashPrefix()
+    {
+        await _tools.SearchWorkingMemory(query: "invoice", @namespace: "stash/");
+
+        Assert.AreEqual("stash/subagent/abc123", _memory.LastPrefix);
+    }
+
+    [TestMethod]
+    public async Task SearchWorkingMemory_BareStashNamespace_IsCaseInsensitive()
+    {
+        await _tools.SearchWorkingMemory(query: "invoice", @namespace: "STASH");
+
+        Assert.AreEqual("stash/subagent/abc123", _memory.LastPrefix);
+    }
+
+    [TestMethod]
+    public async Task SearchWorkingMemory_ExplicitStashPath_PassesThroughUnchanged()
+    {
+        await _tools.SearchWorkingMemory(query: "invoice", @namespace: "stash/session/other");
+
+        Assert.AreEqual("stash/session/other", _memory.LastPrefix,
+            "An explicit cross-context stash path must not be rewritten to the caller's own stash");
+    }
+
     [TestMethod]
     public async Task SearchWorkingMemory_NoQuery_OwnNamespaceEmpty_ReturnsEmptyWording()
     {
