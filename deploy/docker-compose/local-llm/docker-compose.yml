@@ -1,0 +1,206 @@
+name: rockbot-local
+
+services:
+  rabbitmq:
+    image: rabbitmq:4-management
+    hostname: rabbitmq
+    ports:
+      - "15673:15672"   # Management UI (optional, handy for debugging)
+      - "5673:5672"     # AMQP — lets `rockbot chat` run on the host against this stack
+    environment:
+      RABBITMQ_DEFAULT_USER: rockbot
+      RABBITMQ_DEFAULT_PASS: rockbot
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "check_port_connectivity"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  agent-init:
+    build:
+      context: ../../..
+      dockerfile: deploy/Dockerfile.agent
+    image: rockylhotka/rockbot-agent:latest
+    user: root
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        echo "Seeding agent data volume..."
+        # Profile and dream directives — live at /app/agent/*.md in the image.
+        # Copy every .md file no-clobber so operators can tune any directive
+        # (including dream passes) without a rebuild, and new directives added in
+        # future releases get seeded automatically. Matches the Helm chart's
+        # init-agent-data container; a hardcoded list here went stale and silently
+        # dropped 13 files, including safety-rules.md (the prompt-injection guardrail).
+        for src in /app/agent/*.md; do
+          [ -f "$$src" ] || continue
+          f=$$(basename "$$src")
+          dst="/data/agent/$$f"
+          if [ ! -s "$$dst" ]; then
+            echo "  Copying $$f"
+            cp "$$src" "$$dst"
+          fi
+        done
+        if [ -f /app/agent/well-known-agents.json ] && [ ! -s /data/agent/well-known-agents.json ]; then
+          cp /app/agent/well-known-agents.json /data/agent/well-known-agents.json
+        fi
+        # Seed mcp.json with compose-local MCP server URLs
+        # (overrides the image default which references cluster-internal URLs)
+        if [ ! -f /data/agent/mcp.json ]; then
+          cat > /data/agent/mcp.json <<'MCPEOF'
+        {"mcpServers":{"introspection":{"type":"sse","url":"http://introspection-mcp:8080/"}}}
+        MCPEOF
+        fi
+        # Per-model behavior files
+        for model_dir in /app/model-behaviors/*/; do
+          [ -d "$$model_dir" ] || continue
+          model_name=$$(basename "$$model_dir")
+          mkdir -p "/data/agent/model-behaviors/$$model_name"
+          for src in "$$model_dir"*; do
+            [ -f "$$src" ] || continue
+            dst="/data/agent/model-behaviors/$$model_name/$$(basename $$src)"
+            if [ ! -s "$$dst" ]; then
+              cp "$$src" "$$dst"
+            fi
+          done
+        done
+        mkdir -p /data/agent/memory /data/agent/skills /data/agent/conversations /data/agent/feedback
+        # The shared volume (attachments, script file exchange) is also root-owned;
+        # the non-root agent creates /rockbot/shared/attachments on startup, so pre-make
+        # it and open permissions here.
+        mkdir -p /rockbot/shared/attachments
+        # Docker volumes are owned by root, so the non-root agent user needs access
+        chmod -R 777 /data/agent /rockbot/shared
+        echo "Agent data volume ready."
+    volumes:
+      - ${AGENT_DATA_PATH:-agent-data}:/data/agent
+      - shared:/rockbot/shared
+
+  agent:
+    build:
+      context: ../../..
+      dockerfile: deploy/Dockerfile.agent
+    image: rockylhotka/rockbot-agent:latest
+    depends_on:
+      agent-init:
+        condition: service_completed_successfully
+      rabbitmq:
+        condition: service_healthy
+      introspection-mcp:
+        condition: service_started
+    environment:
+      # -- RabbitMQ --
+      RabbitMq__HostName: rabbitmq
+      RabbitMq__Port: "5672"
+      RabbitMq__UserName: rockbot
+      RabbitMq__Password: rockbot
+      RabbitMq__VirtualHost: /
+      # -- LLM provider --
+      # Set LLM_PROVIDER=Copilot and GITHUB_TOKEN in .env for Copilot SDK,
+      # or leave LLM_PROVIDER unset and configure LLM_ENDPOINT/LLM_API_KEY for OpenAI-compatible.
+      LLM__Provider: ${LLM_PROVIDER:-}
+      # Copilot path — GITHUB_TOKEN is read by the Copilot CLI subprocess
+      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+      # Per-tier model IDs (LLM_MODEL_ID sets Balanced; Low/High fall back to Balanced)
+      LLM__Balanced__ModelId: ${LLM_MODEL_ID:-anthropic/claude-haiku-4.5}
+      LLM__Low__ModelId: ${LLM_LOW_MODEL_ID:-}
+      LLM__High__ModelId: ${LLM_HIGH_MODEL_ID:-}
+      # OpenAI-compatible path (ignored when Provider=Copilot)
+      LLM__Balanced__Endpoint: ${LLM_ENDPOINT:-}
+      LLM__Balanced__ApiKey: ${LLM_API_KEY:-}
+      # -- Web search --
+      WebTools__ApiKey: ${BRAVE_API_KEY:-}
+      # -- Embedding (optional — enables hybrid vector search) --
+      # When set, memory/skills/working memory use cosine similarity alongside BM25.
+      # Falls back to BM25-only when not configured — no functionality is lost.
+      # Embedding__Endpoint: ${EMBEDDING_ENDPOINT:-}
+      # Embedding__Model: ${EMBEDDING_MODEL:-}
+      # Embedding__ApiKey: ${EMBEDDING_API_KEY:-}
+      # -- Agent data paths --
+      AgentProfile__BasePath: /data/agent
+      Memory__BasePath: /data/agent/memory
+      Skill__BasePath: /data/agent/skills
+      McpBridge__ConfigPath: /data/agent/mcp.json
+      ModelBehaviors__BasePath: /data/agent/model-behaviors
+      # -- Timezone (set to your IANA timezone) --
+      Agent__Timezone: ${AGENT_TIMEZONE:-America/Chicago}
+    # Optional escape hatch for raw .NET config keys that have no dedicated variable
+    # above (e.g. ModelBehaviors__Models__<prefix>__UseTextBasedToolCalling for a model
+    # without native tool calling). Absent by default — nothing changes if the file
+    # does not exist. Values in `environment:` above still win over this file.
+    env_file:
+      - path: ./agent.extra.env
+        required: false
+    volumes:
+      - ${AGENT_DATA_PATH:-agent-data}:/data/agent
+      - shared:/rockbot/shared
+
+  scripts-init:
+    image: docker:cli
+    entrypoint: ["docker", "image", "pull", "python:3.12-slim"]
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+
+  scripts-manager:
+    build:
+      context: ../../..
+      dockerfile: Dockerfile.scripts-manager
+    image: rockylhotka/rockbot-scripts-manager:latest
+    user: root   # Required for Docker socket access
+    depends_on:
+      scripts-init:
+        condition: service_completed_successfully
+      rabbitmq:
+        condition: service_healthy
+    environment:
+      RabbitMq__HostName: rabbitmq
+      RabbitMq__Port: "5672"
+      RabbitMq__UserName: rockbot
+      RabbitMq__Password: rockbot
+      RabbitMq__VirtualHost: /
+      Scripts__Provider: Docker
+      Scripts__Docker__Image: python:3.12-slim
+      Scripts__Docker__CpuLimit: "500m"
+      Scripts__Docker__MemoryLimit: 256Mi
+      Scripts__Docker__NetworkMode: bridge
+      Scripts__Docker__SharedVolumeName: rockbot-local_shared
+      Scripts__Docker__SharedVolumePath: /rockbot/shared
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+
+  introspection-mcp:
+    build:
+      context: ../../..
+      dockerfile: src/McpServer.Introspection/Dockerfile
+    image: rockylhotka/rockbot-introspection-mcp:latest
+    depends_on:
+      agent-init:
+        condition: service_completed_successfully
+    environment:
+      AgentName__Path: /data/agent/agent-name.md
+    volumes:
+      - ${AGENT_DATA_PATH:-agent-data}:/data/agent
+  blazor:
+    build:
+      context: ../../..
+      dockerfile: src/RockBot.UserProxy.Blazor/Dockerfile
+    image: rockylhotka/rockbot-blazor:latest
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    ports:
+      - "8090:8080"
+    environment:
+      RabbitMq__HostName: rabbitmq
+      RabbitMq__Port: "5672"
+      RabbitMq__UserName: rockbot
+      RabbitMq__Password: rockbot
+      RabbitMq__VirtualHost: /
+
+volumes:
+  rabbitmq-data:
+  agent-data:
+  shared:
