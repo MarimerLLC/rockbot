@@ -349,20 +349,29 @@ secrets:
       endpoint: ""          # REQUIRED for OpenAI-compatible — base URL of the API
       apiKey: ""            # REQUIRED for OpenAI-compatible — API key
       modelId: ""           # REQUIRED — model ID (e.g. anthropic/claude-haiku-4.5 or gpt-4.1)
+      # Reasoning-model thinking budget: minimal | low | medium | high | none.
+      # "" (default) sends no reasoning field and leaves the provider's default alone.
+      # Reasoning tokens bill as OUTPUT and count against AgentHost__MaxOutputTokens, so an
+      # uncapped reasoning model can spend most of its budget — and most of the wall-clock —
+      # thinking. Only honoured by OpenAI-compatible endpoints that accept OpenRouter's
+      # nested "reasoning" object.
+      reasoningEffort: ""
     # Ordered fallback chain for balanced tier. First entry is preferred; subsequent
     # entries are tried in order on failure. Takes precedence over single 'balanced'
-    # when populated. Each entry has: provider, endpoint, apiKey, modelId.
+    # when populated. Each entry has: provider, endpoint, apiKey, modelId, reasoningEffort.
     balancedModels: []
     low:                    # Optional — fast/cheap model for simple factual questions
       provider: ""
       endpoint: ""
       apiKey: ""
       modelId: ""
+      reasoningEffort: ""
     high:                   # Optional — powerful model for dream/research/complex tasks
       provider: ""
       endpoint: ""
       apiKey: ""
       modelId: ""           # leave empty to fall back to balanced
+      reasoningEffort: ""
 
     # Legacy flat keys — kept for backward compatibility; remove after all deployments migrated
     endpoint: ""

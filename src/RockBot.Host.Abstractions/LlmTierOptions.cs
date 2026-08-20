@@ -16,6 +16,21 @@ public sealed class LlmTierConfig
     public string? ModelId  { get; set; }
 
     /// <summary>
+    /// How hard a reasoning model may think before answering: <c>minimal</c>, <c>low</c>,
+    /// <c>medium</c>, <c>high</c>, or <c>none</c> to disable reasoning outright. Null (the
+    /// default) sends no reasoning field at all, leaving the provider's own default in place
+    /// and keeping the request byte-identical to before this setting existed.
+    /// </summary>
+    /// <remarks>
+    /// Only meaningful for OpenAI-compatible providers that accept OpenRouter's nested
+    /// <c>reasoning</c> object; see <c>ReasoningEffortPolicy</c> for why the OpenAI-standard
+    /// <c>reasoning_effort</c> field cannot be used instead. Reasoning tokens bill as output
+    /// and count against <c>MaxOutputTokens</c>, so an uncapped reasoning model can spend most
+    /// of its output budget thinking and leave too little for the answer.
+    /// </remarks>
+    public string? ReasoningEffort { get; set; }
+
+    /// <summary>
     /// Returns true when Endpoint, ApiKey, and ModelId are all non-empty
     /// (OpenAI-compatible provider fully configured).
     /// </summary>
