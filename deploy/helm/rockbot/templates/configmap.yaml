@@ -38,6 +38,16 @@ data:
   Dream__LogRetentionMaxFileAge: {{ dig "maxFileAge" "30.00:00:00" $logRetention | quote }}
   Dream__LogRetentionMaxFilesPerDirectory: {{ dig "maxFilesPerDirectory" 1000 $logRetention | quote }}
   Dream__LogRetentionMaxLinesPerFile: {{ dig "maxLinesPerFile" 10000 $logRetention | quote }}
+  # ── OpenRouter app attribution (non-secret) ───────────────────────────────
+  # Sent as the HTTP-Referer / X-Title headers on OpenRouter calls only, so the
+  # account's activity dashboard shows this release by name instead of "unknown".
+  # AppUrl is the grouping key on OpenRouter's side — changing it splits an app's
+  # history in two, so override appName per release and leave appUrl alone.
+  # `dig` so a --reuse-values upgrade with no llm block still gets the defaults.
+  {{- $llm := .Values.llm | default dict }}
+  LLM__AppName: {{ dig "appName" "rockbot" $llm | quote }}
+  LLM__AppUrl: {{ dig "appUrl" "https://rockbot.dev" $llm | quote }}
+
   Skill__BasePath: "/data/agent/skills"
   McpBridge__ConfigPath: "/data/agent/mcp.json"
   LlmPricing__ConfigPath: "/data/agent/llm-pricing.json"

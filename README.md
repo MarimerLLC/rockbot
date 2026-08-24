@@ -174,6 +174,8 @@ Each tier can use a different LLM **provider** — mix and match within the same
 
 Set a global default provider (`LLM:Provider`) and override per tier (`LLM:Low:Provider`, `LLM:Balanced:Provider`, `LLM:High:Provider`). For example: Low on Copilot, Balanced on Azure Foundry, High on OpenRouter.
 
+**OpenRouter app attribution.** OpenRouter identifies the calling app from two self-reported headers, and reports activity as "unknown" without them. `LLM:AppName` (default `rockbot`) sets `X-Title`, the display name; `LLM:AppUrl` (default `https://rockbot.dev`) sets `HTTP-Referer`, which is the key OpenRouter *groups* activity by — keep it stable, since changing it starts a fresh app with no history. Give each deployment sharing an OpenRouter account its own `LLM:AppName` to keep their spend separable. The headers are sent to OpenRouter endpoints only; every other OpenAI-compatible endpoint sees an unchanged request.
+
 Tier selection uses `KeywordTierSelector` — a lightweight keyword + prompt-length heuristic with no external calls. The thresholds and keyword lists are hot-reloadable from `tier-selector.json` on the PVC without a pod restart. A background dream pass (`TierRoutingReviewPass`) periodically reviews routing decisions logged in `tier-routing-log.jsonl` and rewrites `tier-selector.json` if it detects systematic mis-routing.
 
 ### Model-specific behaviors

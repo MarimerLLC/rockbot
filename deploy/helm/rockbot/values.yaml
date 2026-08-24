@@ -326,6 +326,19 @@ todoappMcp:
 # create: false → Provide existingSecretName pointing to a pre-existing Secret.
 #                  The Secret must contain all keys listed under stringData in
 #                  templates/secret.yaml.
+# ── OpenRouter app attribution (non-secret) ──────────────────────────────────
+# OpenRouter attributes activity purely from two self-reported headers. With them
+# unset, every call this agent makes lands under "unknown" on the account's
+# activity dashboard. The headers are sent to OpenRouter endpoints only.
+llm:
+  # Display name (X-Title). Override per release so two agents sharing one
+  # OpenRouter account report separately — e.g. appName: muse.
+  appName: rockbot
+  # Identity key (HTTP-Referer) and the link shown on openrouter.ai/rankings.
+  # OpenRouter groups by this value, so changing it starts a new app with no
+  # history. Keep it stable; distinguish releases with appName instead.
+  appUrl: https://rockbot.dev
+
 secrets:
   create: true
   existingSecretName: ""   # used only when create: false
