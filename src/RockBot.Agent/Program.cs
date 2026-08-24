@@ -147,6 +147,21 @@ IChatClient BuildOpenAIClient(LlmTierConfig config)
         Console.WriteLine($"    repetition_penalty={repetitionPenalty.Value} (body-injected)");
     }
 
+    // OpenRouter attributes spend to whatever app the client names in its headers; without
+    // them every call shows up as "unknown" on the activity dashboard. Registered only for
+    // OpenRouter endpoints so the app name is not disclosed to unrelated providers.
+    if (OpenRouterAttributionPolicy.IsOpenRouterEndpoint(config.Endpoint))
+    {
+        var appName = builder.Configuration["LLM:AppName"] is { Length: > 0 } n
+            ? n : OpenRouterAttributionPolicy.DefaultAppName;
+        var appUrl = builder.Configuration["LLM:AppUrl"] is { Length: > 0 } u
+            ? u : OpenRouterAttributionPolicy.DefaultAppUrl;
+
+        clientOptions.AddPolicy(
+            new OpenRouterAttributionPolicy(appName, appUrl), PipelinePosition.PerCall);
+        Console.WriteLine($"    OpenRouter attribution: {appName} <{appUrl}>");
+    }
+
     return new OpenAIClient(new ApiKeyCredential(config.ApiKey!), clientOptions)
         .GetChatClient(config.ModelId!).AsIChatClient();
 }
