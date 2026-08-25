@@ -184,6 +184,43 @@ Both modes stay **private to your tailnet**: the name resolves to a CGNAT `100.x
 that is not routable from the internet. Publishing to the public internet would require the
 `tailscale.com/funnel` annotation, which this chart never emits.
 
+### ACL tags
+
+By default the operator stamps every proxy device it creates with its own configured
+`PROXY_TAGS` value. That tag is shared by *every* service the operator exposes in the
+cluster, so a tailnet ACL cannot tell one endpoint from another — a rule granting access
+to the RockBot UI would equally grant access to any other operator-managed endpoint.
+
+Give a deployment its own tag when it needs an access rule of its own:
+
+```yaml
+blazor:
+  tailscale:
+    hostname: "trees"
+    tags: ["tag:trees"]   # every entry must start with "tag:"
+```
+
+The annotation lands on whichever resource owns the Tailscale device — the Service in
+layer-3 mode, the Ingress in layer-7 mode. A tailnet policy can then scope access to just
+this endpoint:
+
+```jsonc
+{ "action": "accept", "src": ["teresa@example.com"], "dst": ["tag:trees:443"] }
+```
+
+Two prerequisites, both in the tailnet policy file, and the proxy Pod will not register
+without them — it fails quietly, so the endpoint simply never appears:
+
+1. The tag must exist in `tagOwners`.
+2. The operator's OAuth client must own it, since a client may only apply tags it owns:
+   `"tagOwners": { "tag:trees": ["tag:k8s-operator"] }`.
+
+Add both **before** deploying with the tag set.
+
+> Changing `tags` on a live deployment changes that device's identity in the ACL. Grant
+> access under the new tag first, or you lock yourself out of the endpoint until the
+> policy catches up.
+
 Two things to know before switching an existing deployment:
 
 - **The Tailscale device is replaced.** Deploy once with `ingress.enabled: false` so the

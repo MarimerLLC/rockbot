@@ -93,3 +93,26 @@ being empty, since a blank continuation line would break the shell command.
 {{- end }}
 {{- end }}
 {{- end }}
+
+{{/*
+Comma-joined Tailscale tag list for the Blazor proxy device, or "" when unset.
+
+The operator reads tailscale.com/tags on both the layer-3 Service and the layer-7
+Ingress, and expects a comma-separated list. Tags are what the tailnet ACL matches
+on: with none set the operator falls back to its own PROXY_TAGS default, which every
+proxy it manages in the cluster shares — so no ACL rule can single out one endpoint.
+Set this when a deployment needs its own access rule.
+
+Validated here rather than at apply time because the operator rejects an unprefixed
+tag by leaving the proxy Pod unregistered, with nothing useful surfaced on the
+Kubernetes side.
+*/}}
+{{- define "rockbot.blazor.tailscaleTags" -}}
+{{- $tags := .Values.blazor.tailscale.tags | default list }}
+{{- range $t := $tags }}
+{{- if not (hasPrefix "tag:" $t) }}
+{{- fail (printf "blazor.tailscale.tags: %q is not a valid tag — every entry must start with 'tag:' (e.g. tag:trees)" $t) }}
+{{- end }}
+{{- end }}
+{{- join "," $tags }}
+{{- end }}

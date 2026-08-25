@@ -1,3 +1,4 @@
+{{- $tsTags := include "rockbot.blazor.tailscaleTags" . }}
 apiVersion: v1
 kind: Service
 metadata:
@@ -12,6 +13,10 @@ metadata:
     # at <hostname> (no Funnel, private to tailnet only).
     # Requires: https://tailscale.com/kb/1236/kubernetes-operator
     tailscale.com/hostname: {{ .Values.blazor.tailscale.hostname | quote }}
+    {{- if $tsTags }}
+    # ACL identity for this endpoint. See blazor.tailscale.tags in values.yaml.
+    tailscale.com/tags: {{ $tsTags | quote }}
+    {{- end }}
 {{- end }}
 spec:
 {{- if .Values.blazor.tailscale.ingress.enabled }}
@@ -19,6 +24,9 @@ spec:
   # Service is a plain in-cluster backend. It must NOT also be a tailscale
   # LoadBalancer — two devices competing for <hostname> means the loser is renamed
   # <hostname>-1 and the certificate follows the wrong name.
+  #
+  # The tags annotation lives on the Ingress in this mode, not here — the Ingress
+  # owns the device.
   type: ClusterIP
 {{- else }}
   type: LoadBalancer

@@ -81,6 +81,27 @@ blazor:
     # Requires the Tailscale Kubernetes Operator to be installed.
     hostname: rockbot
 
+    # Tailscale ACL tags for this endpoint's proxy device, e.g. ["tag:trees"].
+    # Every entry must start with "tag:" or the chart fails to render.
+    #
+    # Empty (default) means the operator applies its own PROXY_TAGS value, which is
+    # shared by EVERY proxy it manages in the cluster — so a tailnet ACL cannot tell
+    # this deployment apart from any other service the operator exposes. Set a tag
+    # when this instance needs an access rule of its own (e.g. one user who may reach
+    # this UI and nothing else).
+    #
+    # Two things must be true before the proxy can register:
+    #   1. The tag exists in the tailnet policy's tagOwners, AND
+    #   2. the operator's OAuth client is listed as an owner of it, because a client
+    #      may only apply tags it owns:
+    #          "tagOwners": { "tag:trees": ["tag:k8s-operator"] }
+    # Otherwise the proxy Pod never comes up and the endpoint simply never appears.
+    #
+    # NOTE: changing tags on a LIVE deployment changes the device's identity in the
+    # ACL. Grant access under the new tag before you apply, or you lock yourself out
+    # of the endpoint until the policy catches up.
+    tags: []
+
     ingress:
       # false (default) — expose over a layer-3 LoadBalancer Service. Plain HTTP
       #   at http://<hostname>. No TLS certificate is issued.
