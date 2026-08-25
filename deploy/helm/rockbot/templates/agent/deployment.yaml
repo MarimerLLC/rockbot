@@ -150,9 +150,14 @@ spec:
             - name: AgentName__Path
               value: /data/agent/agent-name.md
           volumeMounts:
+            # NOT readOnly. AgentName__Path above points the set_agent_name tool at
+            # /data/agent/agent-name.md, so a read-only mount makes that tool fail with
+            # "Read-only file system" every time — it was added after the agent-name
+            # feature and silently broke it. The sidecar's tool surface is fixed and
+            # only ever writes that one path, so this does not widen what the LLM can
+            # reach; the agent container in this same Pod already mounts the volume rw.
             - name: agent-data
               mountPath: /data/agent
-              readOnly: true
           livenessProbe:
             httpGet:
               path: /health
