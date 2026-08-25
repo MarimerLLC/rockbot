@@ -4,16 +4,31 @@
   //
   // The check requires every proper noun, acronym and multi-digit number in a merge's sources
   // to survive into the merged text. Words listed as "common" are exempt from that requirement.
-  // A built-in generic-English list is always applied; this file layers on top of it.
+  // A built-in generic-English list is layered under this file.
+  //
+  // POSITION MATTERS. Capitalization only signals a proper noun when it is not sentence-initial,
+  // so the built-in baseline is consulted ONLY at a sentence start. Mid-sentence, a capitalized
+  // word is a specific no matter what the baseline says -- which is why "OneDrive Personal" and
+  // "Blazor Online Class" are protected without listing anything here. "extraCommonWords" below
+  // is different: it is your explicit judgement about your own corpus, so it applies EVERYWHERE.
+  //
+  // Month names need no entry. "August 19, 2026" and "2026-08-19" are recognised as the same
+  // date, so a merge that only re-spells one is credited -- while a bare "August" outside a date
+  // expression stays fully protected.
   //
   // Re-read at the top of every dream cycle — no restart needed. If this file is malformed the
   // built-in list is used and a warning is logged; coverage checking is never disabled.
 
-  // Words to ALSO ignore. Add domain noise that keeps triggering rejections you judge to be
-  // false. Be conservative: a false rejection only costs a duplicate surviving another cycle,
-  // whereas suppressing a real name lets it be deleted silently. Do not add a word that could
-  // ever name something — "Personal", "Class" and "Benefit" look generic but carry meaning in
-  // "OneDrive Personal", "Blazor Online Class" and "MVP Azure Extended Benefit".
+  // Words to ALSO ignore, in EVERY position. Add domain noise that keeps triggering rejections
+  // you judge to be false. Be conservative: suppressing a real name lets it be deleted silently.
+  // Do not add a word that could ever name something — "Personal", "Class" and "Benefit" look
+  // generic but carry meaning in "OneDrive Personal", "Blazor Online Class" and "MVP Azure
+  // Extended Benefit". Those need no entry anyway: mid-sentence they are already protected.
+  //
+  // Words that are only noise when they OPEN a sentence ("Valid email-capable IDs include…")
+  // usually need no entry either — the generic-English baseline covers that position and now
+  // includes valid/direct/alternative/through/multiple/relevant/existing and similar. Add here
+  // only what is noise mid-phrase too, and prefer alwaysSpecificWords for anything load-bearing.
   "extraCommonWords": [],
 
   // Words to ALWAYS treat as specifics, overriding the built-in list.

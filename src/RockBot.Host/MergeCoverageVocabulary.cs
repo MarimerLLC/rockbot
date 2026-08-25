@@ -43,19 +43,21 @@ internal sealed class MergeCoverageVocabulary
 
     private static readonly Lazy<MergeCoverageVocabulary> LazyDefault = new(() => new(null, null));
 
-    private readonly HashSet<string> _common;
+    private readonly HashSet<string> _builtIn;
+    private readonly HashSet<string> _extraCommon;
     private readonly HashSet<string> _alwaysSpecific;
 
     public MergeCoverageVocabulary(
         IEnumerable<string>? extraCommonWords,
         IEnumerable<string>? alwaysSpecificWords)
     {
-        _common = new HashSet<string>(BuiltInCommonWords, StringComparer.OrdinalIgnoreCase);
+        _builtIn = new HashSet<string>(BuiltInCommonWords, StringComparer.OrdinalIgnoreCase);
+        _extraCommon = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         _alwaysSpecific = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
         foreach (var word in extraCommonWords ?? [])
             if (!string.IsNullOrWhiteSpace(word))
-                _common.Add(word.Trim());
+                _extraCommon.Add(word.Trim());
 
         foreach (var word in alwaysSpecificWords ?? [])
             if (!string.IsNullOrWhiteSpace(word))
@@ -64,17 +66,37 @@ internal sealed class MergeCoverageVocabulary
 
     /// <summary>
     /// True when <paramref name="word"/> should be ignored rather than required to survive a
-    /// merge. <see cref="AlwaysSpecificWords"/> wins over the common list, so a deployment can
+    /// merge. <see cref="AlwaysSpecificWords"/> wins over both lists, so a deployment can
     /// reclaim a built-in word it needs protected.
     /// </summary>
-    public bool IsCommon(string word) =>
-        !_alwaysSpecific.Contains(word) && _common.Contains(word);
+    /// <param name="applyBaseline">
+    /// Whether the generic-English baseline applies here. False for a capitalized word in
+    /// mid-sentence position, where the capitalization is evidence of a proper noun rather
+    /// than of grammar — see <see cref="SentencePosition"/>.
+    /// </param>
+    /// <remarks>
+    /// The two lists are deliberately scoped differently. The baseline is generic English that
+    /// no operator chose: it contains "may", "will", "some", "first" and "last", so applying it
+    /// mid-sentence is what would strip a character named May or Will of protection, and what
+    /// forced "Personal", "Class" and "Benefit" to be left out of it despite reading as noise.
+    /// <c>extraCommonWords</c> is the opposite — an explicit, corpus-specific judgement — so it
+    /// applies in every position. That is what lets a deployment suppress framing noise such as
+    /// "Rocky", which appears mid-sentence far more often than not.
+    /// </remarks>
+    public bool IsCommon(string word, bool applyBaseline = true)
+    {
+        if (_alwaysSpecific.Contains(word))
+            return false;
+
+        return _extraCommon.Contains(word)
+            || (applyBaseline && _builtIn.Contains(word));
+    }
 
     /// <summary>Words reclaimed as specifics regardless of the common list.</summary>
     public IReadOnlyCollection<string> AlwaysSpecificWords => _alwaysSpecific;
 
     /// <summary>Count of words treated as ordinary language.</summary>
-    public int CommonWordCount => _common.Count;
+    public int CommonWordCount => _builtIn.Count + _extraCommon.Count;
 
     /// <summary>
     /// Parses a vocabulary file. Returns <see cref="Default"/> when <paramref name="json"/> is
@@ -146,5 +168,15 @@ internal sealed class MergeCoverageVocabulary
         "based", "across", "within", "without", "although", "though", "unless",
         "overall", "specifically", "particularly", "typically", "generally", "likely",
         "ids", "enjoys", "downloading",
+
+        // Sentence openers observed rejecting sound merges on a live corpus. Adding these was
+        // previously unsafe because the list applied in every position; now that the baseline
+        // is consulted only at a sentence start, a word here still carries full protection
+        // mid-phrase. Deliberately not extended to "personal", "class", "benefit", "extended",
+        // "power", "social" or "code" — those are already protected where they are load-bearing
+        // ("OneDrive Personal", "Blazor Online Class"), so listing them buys nothing.
+        "valid", "invalid", "direct", "directly", "alternative", "alternatively",
+        "through", "throughout", "call", "calls", "multiple", "relevant", "existing",
+        "lowering", "raising", "several", "additional", "overdue", "upcoming",
     ];
 }

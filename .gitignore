@@ -26,3 +26,8 @@ deploy/docker-compose/.env
 deploy/docker-compose/agent.extra.env
 # Compose agent runtime data (profile, memory, transcripts) — local only, never commit
 deploy/docker-compose/agent-data/
+# Same three, for every per-stack compose subdirectory (local-llm, etc.). The patterns
+# above are anchored one level up and did not cover them.
+deploy/docker-compose/*/.env
+deploy/docker-compose/*/agent.extra.env
+deploy/docker-compose/*/agent-data/
