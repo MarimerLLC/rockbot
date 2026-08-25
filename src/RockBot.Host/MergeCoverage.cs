@@ -22,6 +22,32 @@ namespace RockBot.Host;
 /// surviving another cycle; the cost of a false acceptance is a fact nobody can recover the
 /// wording of. Those are not symmetric.
 /// </para>
+/// <para>
+/// That bias has a cost of its own, and it is not free the way it first looks. A rejected
+/// merge is re-proposed next cycle, so a false rejection is not one wasted merge — it is a
+/// duplicate cluster that never resolves and burns a slot on every future cycle. A live corpus
+/// showed one six-source merge rejected five times in eight cycles. Two classes of false
+/// rejection are addressed here, both by widening what counts as *covering* a specific rather
+/// than by dropping the requirement:
+/// </para>
+/// <list type="bullet">
+/// <item>
+/// Sentence position. A capitalized word is only evidence of a proper noun when it is not
+/// sentence-initial. Consulting the common-word list only in that position keeps "Personal"
+/// protected in "OneDrive Personal" while letting "Valid email-capable IDs …" pass.
+/// </item>
+/// <item>
+/// Date spelling. "August 19, 2026" and "2026-08-19" are the same fact. Crediting one for the
+/// other is guarded on the month appearing in a date expression in the source, so a bare
+/// "August" — or a person named August — stays required.
+/// </item>
+/// </list>
+/// <para>
+/// The distinction matters: adding a word to the common list unprotects it everywhere, in
+/// every context, permanently. Widening the coverage test leaves it required and can only be
+/// satisfied by an equivalent form actually being present, so a merge that drops both forms
+/// is still rejected.
+/// </para>
 /// </remarks>
 internal static partial class MergeCoverage
 {
@@ -65,10 +91,26 @@ internal static partial class MergeCoverage
         foreach (Match m in CapitalizedWord().Matches(content))
         {
             var word = Possessive().Replace(m.Value, string.Empty);
-            if (word.Length > 2 && !words.IsCommon(word))
-                specifics.Add(word);
+            if (word.Length <= 2)
+                continue;
+
+            // The generic-English baseline exists to absorb words capitalized only because they
+            // open a sentence, so it only applies there. Mid-sentence capitalization is evidence
+            // of a proper noun: "Personal", "Class" and "Benefit" are ordinary at a sentence
+            // start and load-bearing in "OneDrive Personal", "Blazor Online Class" and "MVP
+            // Azure Extended Benefit". A deployment's own extraCommonWords still applies in
+            // every position -- see MergeCoverageVocabulary.IsCommon.
+            var applyBaseline = SentencePosition.IsSentenceInitial(content, m.Index);
+            if (words.IsCommon(word, applyBaseline))
+                continue;
+
+            specifics.Add(word);
         }
 
+        // Deliberately not position-aware. An all-caps token is not capitalized by grammar, so
+        // opening a sentence tells us nothing about it -- and the live corpus showed acronym
+        // drops to be real losses ("LLC" went missing alongside Microsoft, Google, ICS and IMAP
+        // in a merge that discarded the whole account-provider map).
         foreach (Match m in Acronym().Matches(content))
             if (!words.IsCommon(m.Value))
                 specifics.Add(m.Value);
@@ -87,9 +129,10 @@ internal static partial class MergeCoverage
     /// <remarks>
     /// Matching is a case-insensitive substring test rather than a token test, so a merge is
     /// credited for reformatting — "Rockford Duane Lhotka" still covers the source token
-    /// "Rockford", and "2026-09-10" covers "2026". Reformatting that genuinely discards a
-    /// component (spelling out "September" as "09") is reported as missing, which is the
-    /// conservative direction.
+    /// "Rockford", and "2026-09-10" covers "2026". A specific that survives only as an
+    /// equivalent date spelling is credited by <see cref="DateEquivalence"/>; anything else
+    /// that fails the substring test is reported as missing, which is the conservative
+    /// direction.
     /// </remarks>
     internal static IReadOnlyList<string> FindMissingSpecifics(
         IEnumerable<MemoryEntry> sources,
@@ -98,15 +141,23 @@ internal static partial class MergeCoverage
     {
         var merged = mergedContent ?? string.Empty;
 
+        var materialized = sources as IReadOnlyCollection<MemoryEntry> ?? [.. sources];
+
         var required = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var source in sources)
+        foreach (var source in materialized)
             required.UnionWith(ExtractSpecifics(source.Content, vocabulary));
 
         if (required.Count == 0)
             return [];
 
+        var sourceText = string.Join("\n", materialized.Select(s => s.Content));
+
         return [.. required
-            .Where(s => merged.IndexOf(s, StringComparison.OrdinalIgnoreCase) < 0)
+            .Where(s => !IsCovered(s, sourceText, merged))
             .OrderBy(s => s, StringComparer.OrdinalIgnoreCase)];
     }
+
+    private static bool IsCovered(string specific, string sourceText, string merged) =>
+        merged.IndexOf(specific, StringComparison.OrdinalIgnoreCase) >= 0
+        || DateEquivalence.IsCoveredByEquivalentDate(specific, sourceText, merged);
 }

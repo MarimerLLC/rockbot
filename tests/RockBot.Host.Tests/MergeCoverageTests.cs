@@ -91,9 +91,26 @@ public class MergeCoverageTests
         // "Adding", "Flagged" and "Validated" were read as proper nouns.
         var specifics = MergeCoverage.ExtractSpecifics(
             "Candidate low-signal words were reviewed. Adding them is wrong. "
-            + "Flagged entries were Validated against telemetry.");
+            + "Flagged entries were checked against telemetry. Validated ones stayed.");
 
         Assert.AreEqual(0, specifics.Count, string.Join(", ", specifics));
+    }
+
+    [TestMethod]
+    public void OrdinaryWordsMidSentenceAreStillSpecifics()
+    {
+        // The baseline only absorbs words where capitalization is grammatical. Mid-sentence it
+        // carries signal, so "Validated" here is treated as a label worth preserving. A
+        // deployment that disagrees puts it in extraCommonWords, which applies everywhere.
+        var specifics = MergeCoverage.ExtractSpecifics("Flagged entries were Validated against telemetry.");
+
+        CollectionAssert.Contains(specifics.ToArray(), "Validated");
+
+        var suppressed = MergeCoverage.ExtractSpecifics(
+            "Flagged entries were Validated against telemetry.",
+            new MergeCoverageVocabulary(["Validated"], null));
+
+        Assert.AreEqual(0, suppressed.Count, string.Join(", ", suppressed));
     }
 
     [TestMethod]
@@ -258,7 +275,9 @@ public class MergeCoverageTests
             extraCommonWords: null,
             alwaysSpecificWords: ["May", "Will", "Rose"]);
 
-        var line = "May and Will found Rose in the garden";
+        // Sentence-initial, which is where the hazard now lives: mid-sentence these names are
+        // protected automatically by their position, so the list is only load-bearing here.
+        var line = "May left at dawn. Will followed her. Rose waited by the gate.";
 
         var unprotected = MergeCoverage.ExtractSpecifics(line);
         Assert.IsFalse(unprotected.Contains("May"), "precondition: the built-in list swallows May");
@@ -352,6 +371,150 @@ public class MergeCoverageTests
 
     private static bool MergeCoverage_IsProtected(MemoryEntry entry, DreamOptions options) =>
         DreamService.IsProtectedFromPruning(entry, options);
+
+
+    // ── Sentence position ────────────────────────────────────────────────────
+
+    [TestMethod]
+    public void CommonWordMidSentenceIsStillASpecific()
+    {
+        // The reason the baseline was dangerous to apply everywhere. "New" opening a sentence is
+        // ordinary English and is in the built-in list; inside "New Orleans" it names a real
+        // place, and a merge that drops it has lost which Orleans is meant.
+        var sources = new[] { Entry("a", "The venue moved to New Orleans last spring.") };
+
+        CollectionAssert.Contains(
+            MergeCoverage.FindMissingSpecifics(sources, "The venue moved to Orleans last spring.").ToArray(),
+            "New");
+    }
+
+    [TestMethod]
+    public void CommonWordOpeningASentenceIsIgnored()
+    {
+        var vocabulary = new MergeCoverageVocabulary(["Valid"], null);
+        var sources = new[] { Entry("a", "Valid email-capable account IDs include marimer-work and xebia.") };
+
+        Assert.AreEqual(
+            0,
+            MergeCoverage.FindMissingSpecifics(
+                sources,
+                "Email-capable account IDs are marimer-work and xebia.",
+                vocabulary).Count);
+    }
+
+    [TestMethod]
+    public void AbbreviationPeriodDoesNotStartASentence()
+    {
+        // "St. Paul" and "Dr. May" must not put the following word in the position where the
+        // common list applies -- that is precisely where a character named May would be lost.
+        var vocabulary = new MergeCoverageVocabulary(null, null);
+        var specifics = MergeCoverage.ExtractSpecifics("The show is in St. Paul with Dr. May attending.", vocabulary);
+
+        CollectionAssert.IsSubsetOf(new[] { "Paul", "May" }, specifics.ToArray());
+    }
+
+    [TestMethod]
+    public void CommonWordOpeningALineIsIgnored()
+    {
+        var vocabulary = new MergeCoverageVocabulary(["Direct"], null);
+        var specifics = MergeCoverage.ExtractSpecifics(
+            "Accounts:" + Environment.NewLine + "- Direct billing applies",
+            vocabulary);
+
+        CollectionAssert.DoesNotContain(specifics.ToArray(), "Direct");
+    }
+
+    [TestMethod]
+    public void AlwaysSpecificStillWinsAtSentenceStart()
+    {
+        // A storytelling agent's character named Rose must survive even where the position
+        // heuristic would otherwise hand her to the common list.
+        var vocabulary = new MergeCoverageVocabulary(["Rose"], ["Rose"]);
+        var sources = new[] { Entry("a", "Rose left the harbour before dawn.") };
+
+        CollectionAssert.Contains(
+            MergeCoverage.FindMissingSpecifics(sources, "She left the harbour before dawn.", vocabulary).ToArray(),
+            "Rose");
+    }
+
+    [TestMethod]
+    public void AcronymsAreNotPositionExempt()
+    {
+        // All-caps is not grammatical capitalization, so opening a sentence says nothing about
+        // it. A live merge dropped "LLC" alongside Microsoft, Google, ICS and IMAP.
+        var sources = new[] { Entry("a", "IMAP delivery is configured for the rockbotagent account.") };
+
+        CollectionAssert.Contains(
+            MergeCoverage.FindMissingSpecifics(sources, "Delivery is configured for the rockbotagent account.").ToArray(),
+            "IMAP");
+    }
+
+    // ── Date equivalence ─────────────────────────────────────────────────────
+
+    [TestMethod]
+    public void WrittenDateIsSatisfiedByIsoDate()
+    {
+        // 13 of 70 rejections on a live corpus were exactly this: the merge normalized the
+        // date and kept day and year intact, and was rejected for dropping "August".
+        var sources = new[] { Entry("a", "A Red Fletcher show at White Rock Lounge on August 19, 2026.") };
+
+        Assert.AreEqual(
+            0,
+            MergeCoverage.FindMissingSpecifics(
+                sources,
+                "A Red Fletcher show at White Rock Lounge on 2026-08-19.").Count);
+    }
+
+    [TestMethod]
+    public void IsoDateIsSatisfiedByWrittenDate()
+    {
+        var sources = new[] { Entry("a", "The summit ran on 2026-08-19.") };
+
+        Assert.AreEqual(0, MergeCoverage.FindMissingSpecifics(sources, "The summit ran on August 19, 2026.").Count);
+    }
+
+    [TestMethod]
+    public void MonthOutsideADateExpressionIsStillRequired()
+    {
+        // The guard that keeps this narrow. A person, product or release named August is not a
+        // date and gets no credit from an unrelated numeric date elsewhere in the text.
+        var sources = new[] { Entry("a", "August Wilson wrote the play; the ticket is dated 2026-08-19.") };
+
+        CollectionAssert.Contains(
+            MergeCoverage.FindMissingSpecifics(sources, "The ticket is dated 2026-08-19.").ToArray(),
+            "August");
+    }
+
+    [TestMethod]
+    public void DateDroppedEntirelyIsStillReported()
+    {
+        var sources = new[] { Entry("a", "The show is on August 19, 2026.") };
+
+        CollectionAssert.Contains(
+            MergeCoverage.FindMissingSpecifics(sources, "The show is scheduled for later this year.").ToArray(),
+            "August");
+    }
+
+    [TestMethod]
+    public void EquivalentDateMustMatchTheSourceYear()
+    {
+        // "August 2026" is not satisfied by an unrelated August in a different year.
+        var sources = new[] { Entry("a", "The contract was signed in August 2026.") };
+
+        CollectionAssert.Contains(
+            MergeCoverage.FindMissingSpecifics(sources, "The contract was signed on 2025-08-04.").ToArray(),
+            "August");
+    }
+
+    [TestMethod]
+    public void EquivalentDateMustMatchTheSourceMonth()
+    {
+        var sources = new[] { Entry("a", "The show is on October 3, 2026.") };
+
+        CollectionAssert.Contains(
+            MergeCoverage.FindMissingSpecifics(sources, "The show is on 2026-08-19.").ToArray(),
+            "October");
+    }
 
     private static MemoryEntry Entry(string id, string content) =>
         new(id, content, null, [], DateTimeOffset.UtcNow);

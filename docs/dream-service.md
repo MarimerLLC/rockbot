@@ -162,8 +162,45 @@ re-read at the top of every cycle:
 built-in generic-English baseline and takes precedence over it — this matters most for agents
 whose people or characters collide with ordinary English. The baseline contains `may`, `will`,
 `some`, `first` and `last`, so a storytelling agent with a character named **May** or **Will**
-must list them here or those names carry no coverage protection at all. A malformed file falls
-back to the baseline with a warning; coverage checking is never disabled by bad config.
+should list them here. A malformed file falls back to the baseline with a warning; coverage
+checking is never disabled by bad config.
+
+**The two lists are scoped differently, on purpose.** A capitalized word is only evidence of a
+proper noun when it is *not* sentence-initial, so:
+
+| | Sentence-initial | Mid-sentence |
+|---|---|---|
+| Built-in baseline | applies | **does not apply** |
+| `extraCommonWords` | applies | applies |
+| `alwaysSpecificWords` | wins over both | wins over both |
+
+The baseline is generic English that no operator chose, so applying it mid-phrase is what would
+strip a character named May of protection, and what made `Personal`, `Class`, `Benefit` and
+`Extended` too dangerous to add despite reading as noise — they name real things in *OneDrive
+Personal*, *Blazor Online Class* and *MVP Azure Extended Benefit*. Position-scoping the baseline
+protects those automatically and makes it safe to extend, which is why openers like `valid`,
+`direct`, `alternative` and `through` are now in it.
+
+`extraCommonWords` is the opposite: an explicit, corpus-specific judgement, so it applies in
+every position. That is what lets a deployment suppress framing noise such as `Rocky`, which
+appears mid-sentence (*"in Rocky's environment, calendar-mcp requires…"*) far more often than
+not. The tradeoff is real — a word added here loses protection everywhere — so the guidance to
+be conservative still stands. A name that must never be dropped goes in `alwaysSpecificWords`.
+
+**Equivalent date spellings.** A month name is credited when the merged text carries the same
+date numerically — source *"August 19, 2026"*, merge *"2026-08-19"* — and vice versa. This was
+the single largest source of false rejections on a live corpus: `August` alone accounted for 13
+of 70 rejections across eight cycles, every one a merge that normalized the date and kept the
+day and year intact. Two guards keep it narrow: the month must appear adjacent to a day or year
+*in the source* (so a person or release named August is never credited), and when the source's
+date carries a year the numeric date must carry the same one. A merge that drops the date in
+both spellings is still rejected.
+
+Note the shape of both fixes: they widen what counts as *covering* a specific rather than
+removing the requirement. Adding a word to a common list unprotects it everywhere, permanently;
+an equivalence can only be satisfied by an equivalent form actually being present. Prefer the
+latter — a false rejection is not one wasted merge but a duplicate cluster that re-proposes and
+re-fails every cycle, one of which was observed rejected five times in eight cycles.
 
 The check is deliberately biased toward rejection, because the costs are asymmetric: a false
 rejection leaves a duplicate pair alive for another cycle, while a false acceptance destroys
