@@ -355,6 +355,20 @@ helm upgrade --install rockbot deploy/helm/rockbot \
   --create-namespace
 ```
 
+The chart is also published to GHCR as an OCI artifact on every change to
+`deploy/helm/rockbot/**`, so GitOps tooling can consume it without vendoring a copy:
+
+```bash
+helm upgrade --install rockbot oci://ghcr.io/marimerllc/rockbot \
+  --version 0.10.19 \
+  -f deploy/values.personal.yaml \
+  --create-namespace
+```
+
+Published versions are treated as immutable — the workflow skips a version that already
+exists rather than replacing it, since consumers pin an exact version. Bump `version:` in
+`Chart.yaml` to publish a change.
+
 #### 3. Restart pods to pick up new images
 
 After pushing updated images (all tagged `latest`):
