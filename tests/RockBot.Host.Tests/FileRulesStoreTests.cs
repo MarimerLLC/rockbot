@@ -346,6 +346,104 @@ public sealed class FileRulesStoreTests
 
     // ── Helpers ───────────────────────────────────────────────────────────────
 
+    // ── Rules read-through ────────────────────────────────────────────────────
+    //
+    // Rules is consumed synchronously on every prompt build. Serving a startup snapshot meant
+    // a rules.md pushed to a running pod did nothing until the process restarted.
+
+    [TestMethod]
+    public async Task Rules_AfterTheFileIsEditedExternally_ServesTheNewRules()
+    {
+        await WriteRulesFileAsync("# Active Rules", string.Empty, "- Original rule");
+        var store = CreateStore();
+        CollectionAssert.AreEqual(new[] { "Original rule" }, store.Rules.ToArray());
+
+        await WriteRulesFileAsync("# Active Rules", string.Empty, "- Original rule", "- Pushed rule");
+        TouchRulesFile();
+
+        CollectionAssert.AreEqual(
+            new[] { "Original rule", "Pushed rule" },
+            store.Rules.ToArray(),
+            "a rules.md pushed to a running pod must reach the prompt without a restart");
+    }
+
+    [TestMethod]
+    public async Task Rules_WhenTheFileIsUnchanged_KeepsServingTheSameInstance()
+    {
+        await WriteRulesFileAsync("# Active Rules", string.Empty, "- Original rule");
+        var store = CreateStore();
+
+        var first = store.Rules;
+        var second = store.Rules;
+
+        Assert.AreSame(first, second, "an unchanged file should cost a stat, not a re-parse");
+    }
+
+    [TestMethod]
+    public async Task Rules_AfterTheFileIsDeleted_ReportsNoRules()
+    {
+        await WriteRulesFileAsync("# Active Rules", string.Empty, "- Original rule");
+        var store = CreateStore();
+        Assert.AreEqual(1, store.Rules.Count);
+
+        File.Delete(_rulesPath);
+
+        Assert.AreEqual(0, store.Rules.Count, "a deleted rules.md is a change, not a stat failure");
+    }
+
+    [TestMethod]
+    public async Task Rules_AfterAnExternalEditThenAnAdd_KeepsBothRules()
+    {
+        await WriteRulesFileAsync("# Active Rules", string.Empty, "- Original rule");
+        var store = CreateStore();
+        _ = store.Rules;
+
+        await WriteRulesFileAsync("# Active Rules", string.Empty, "- Original rule", "- Pushed rule");
+        TouchRulesFile();
+        _ = store.Rules;
+
+        await store.AddAsync("Added rule");
+
+        CollectionAssert.AreEqual(
+            new[] { "Original rule", "Pushed rule", "Added rule" },
+            store.Rules.ToArray(),
+            "the read-through must not resurrect a pre-push snapshot over the pushed file");
+    }
+
+    [TestMethod]
+    public async Task Rules_AfterAMutation_DoesNotReparse()
+    {
+        var store = CreateStore();
+        await store.AddAsync("Added rule");
+
+        var first = store.Rules;
+        var second = store.Rules;
+
+        Assert.AreSame(first, second, "the store's own write should be stamped, not re-read");
+    }
+
+    [TestMethod]
+    public async Task Rules_WhenNonRuleContentIsEditedExternally_LeavesTheRulesAlone()
+    {
+        await WriteRulesFileAsync("# Active Rules", string.Empty, "- Original rule");
+        var store = CreateStore();
+        _ = store.Rules;
+
+        await WriteRulesFileAsync(
+            "# Active Rules", string.Empty, "Some prose a human added.", string.Empty, "- Original rule");
+        TouchRulesFile();
+
+        CollectionAssert.AreEqual(new[] { "Original rule" }, store.Rules.ToArray());
+    }
+
+    /// <summary>
+    /// Forces a distinct last-write timestamp. Filesystem timestamp granularity is coarse
+    /// enough that two writes in the same test can land on the same tick, which would make
+    /// these tests pass or fail on timing rather than on behaviour.
+    /// </summary>
+    private void TouchRulesFile() =>
+        File.SetLastWriteTimeUtc(_rulesPath, DateTime.UtcNow.AddSeconds(1));
+
     private FileRulesStore CreateStore() =>
         new(Options.Create(new AgentProfileOptions { BasePath = _tempDir }),
             NullLogger<FileRulesStore>.Instance);

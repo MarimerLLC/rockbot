@@ -22,6 +22,21 @@ namespace RockBot.Host;
 /// pushed to a running pod would otherwise be overwritten by the next write from a list
 /// loaded at startup. The file is a handful of lines; re-reading it costs nothing.
 /// </para>
+/// <para>
+/// <see cref="Rules"/> is likewise a read-through, gated on the file's timestamp and length so
+/// an unchanged file costs one <c>stat</c> per prompt rather than a parse. Serving a startup
+/// snapshot there was the other half of the same bug: a <c>rules.md</c> pushed to a running pod
+/// reached the prompt only after a restart, while the profile documents beside it hot-reload in
+/// about half a second. A rule the operator can see on disk but the agent is not yet following
+/// is the worst of both.
+/// </para>
+/// <para>
+/// A watcher would be the obvious alternative and is deliberately not used: these files live on
+/// a Longhorn PVC, where watchers have been observed to miss the rename half of an atomic write
+/// while polling catches it. A stat on read has no such blind spot, needs no background loop,
+/// and cannot observe a half-written file — <see cref="AtomicFile"/> replaces content by rename,
+/// so a reader sees the old bytes or the new ones and never a mixture.
+/// </para>
 /// </remarks>
 internal sealed partial class FileRulesStore : IRulesStore
 {
@@ -36,6 +51,20 @@ internal sealed partial class FileRulesStore : IRulesStore
     /// </summary>
     private IReadOnlyList<string> _rules;
 
+    /// <summary>
+    /// Timestamp and length of the file as last parsed, or <see cref="Missing"/> when there was
+    /// no file. Compared on every <see cref="Rules"/> read to decide whether a re-parse is
+    /// needed. <c>null</c> only before the first successful stat.
+    /// </summary>
+    private (DateTime LastWriteUtc, long Length)? _stamp;
+
+    /// <summary>
+    /// Guards the read-through refresh. Separate from <see cref="_lock"/>, which is async and
+    /// held across writes; <see cref="Rules"/> is read synchronously while a prompt is being
+    /// assembled and cannot wait on a semaphore.
+    /// </summary>
+    private readonly object _refreshGate = new();
+
     public FileRulesStore(IOptions<AgentProfileOptions> options, ILogger<FileRulesStore> logger)
     {
         _logger = logger;
@@ -46,6 +75,7 @@ internal sealed partial class FileRulesStore : IRulesStore
             : Path.Combine(AppContext.BaseDirectory, opts.BasePath);
 
         _filePath = Path.Combine(baseDir, "rules.md");
+        _stamp = StampOf(_filePath);
         _rules = ExtractRules(ReadLines());
 
         _logger.LogInformation("Rules store initialised — {Count} rule(s) loaded from {Path}",
@@ -53,7 +83,7 @@ internal sealed partial class FileRulesStore : IRulesStore
     }
 
     /// <inheritdoc />
-    public IReadOnlyList<string> Rules => _rules;
+    public IReadOnlyList<string> Rules => RefreshIfChanged();
 
     /// <inheritdoc />
     public async Task<IReadOnlyList<string>> ListAsync()
@@ -63,7 +93,9 @@ internal sealed partial class FileRulesStore : IRulesStore
         {
             // Read-through rather than serving the cache: this is the surface behind
             // list_rules, and answering it from a startup snapshot would hide any rule
-            // added to the file since.
+            // added to the file since. Stamped so the next Rules read does not re-parse
+            // content this call has already loaded.
+            _stamp = StampOf(_filePath);
             _rules = ExtractRules(ReadLines());
             return _rules;
         }
@@ -218,6 +250,87 @@ internal sealed partial class FileRulesStore : IRulesStore
     /// <summary>A bullet line: where it is, the marker and indentation, and the rule text.</summary>
     private readonly record struct Bullet(int Index, string Prefix, string Text);
 
+    /// <summary>
+    /// Serves the cached rules, re-parsing first when <c>rules.md</c> has changed on disk since
+    /// the last parse. Any failure to read leaves the previous rules in place: a rule already
+    /// being followed is not dropped because of a transient filesystem error, and dropping one
+    /// silently is the direction that actually causes harm.
+    /// </summary>
+    /// <remarks>
+    /// Change detection is timestamp plus length, which shares one limitation with every other
+    /// stat-based check in the host: two writes inside the same filesystem timestamp tick that
+    /// leave the length identical are indistinguishable. For an operator-pushed file of a few
+    /// bullets that is not a case worth a hash; the mutation paths above re-read unconditionally
+    /// and are unaffected.
+    /// </remarks>
+    private IReadOnlyList<string> RefreshIfChanged()
+    {
+        var stamp = StampOf(_filePath);
+
+        // Stat failed outright — distinct from the file being absent, which has its own stamp.
+        // Keep serving what we have rather than reporting no rules on a transient error.
+        if (stamp is null)
+            return _rules;
+
+        if (stamp == _stamp)
+            return _rules;
+
+        lock (_refreshGate)
+        {
+            // Re-checked inside the gate: a concurrent reader may already have reloaded this
+            // same change, and parsing it twice would be pure waste.
+            if (stamp == _stamp)
+                return _rules;
+
+            try
+            {
+                var rules = ExtractRules(ReadLines());
+                var before = _rules.Count;
+                _rules = rules;
+                _stamp = stamp;
+
+                _logger.LogInformation(
+                    "rules.md changed on disk — reloaded {Count} rule(s) (was {Before})",
+                    rules.Count, before);
+
+                return rules;
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                // Deliberately not stamping: the next read retries rather than treating the
+                // failed parse as the current state of the file.
+                _logger.LogWarning(ex,
+                    "Could not reload rules.md; continuing with the {Count} rule(s) already loaded",
+                    _rules.Count);
+                return _rules;
+            }
+        }
+    }
+
+    /// <summary>
+    /// The stamp of a file that is not there. A distinct value rather than <c>null</c> so that
+    /// deleting <c>rules.md</c> registers as a change and clears the rules, while a stat that
+    /// throws stays unknown and changes nothing.
+    /// </summary>
+    private static readonly (DateTime LastWriteUtc, long Length) Missing = (DateTime.MinValue, -1);
+
+    /// <summary>
+    /// Timestamp and length of <paramref name="path"/>, <see cref="Missing"/> when it does not
+    /// exist, or <c>null</c> when it cannot be stat'd at all.
+    /// </summary>
+    private static (DateTime LastWriteUtc, long Length)? StampOf(string path)
+    {
+        try
+        {
+            var info = new FileInfo(path);
+            return info.Exists ? (info.LastWriteTimeUtc, info.Length) : Missing;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return null;
+        }
+    }
+
     private List<string> ReadLines() =>
         File.Exists(_filePath) ? [.. File.ReadAllLines(_filePath)] : [];
 
@@ -254,6 +367,9 @@ internal sealed partial class FileRulesStore : IRulesStore
             _filePath,
             lines.Count == 0 ? string.Empty : string.Join(Environment.NewLine, lines) + Environment.NewLine);
 
+        // Stamp after the rename, so this store's own write is not mistaken for an external
+        // edit and re-parsed on the next prompt.
+        _stamp = StampOf(_filePath);
         _rules = ExtractRules(lines);
     }
 
