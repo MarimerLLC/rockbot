@@ -330,6 +330,8 @@ secrets:
 blazor:
   tailscale:
     hostname: "rockbot"   # exposes the UI at http://rockbot on your tailnet
+    # tags: ["tag:rockbot"]  # optional — give this endpoint its own tailnet ACL
+                             # identity so access rules can single it out
 
 # Optional — enable the OpenRouter MCP server
 # openrouterMcp:

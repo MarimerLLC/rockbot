@@ -1,4 +1,5 @@
 {{- if .Values.blazor.tailscale.ingress.enabled }}
+{{- $tsTags := include "rockbot.blazor.tailscaleTags" . }}
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
@@ -7,9 +8,15 @@ metadata:
   labels:
     {{- include "rockbot.labels" . | nindent 4 }}
     app.kubernetes.io/component: blazor
-  {{- if .Values.blazor.tailscale.ingress.proxyGroup }}
+  {{- if or .Values.blazor.tailscale.ingress.proxyGroup $tsTags }}
   annotations:
+    {{- if .Values.blazor.tailscale.ingress.proxyGroup }}
     tailscale.com/proxy-group: {{ .Values.blazor.tailscale.ingress.proxyGroup | quote }}
+    {{- end }}
+    {{- if $tsTags }}
+    # ACL identity for this endpoint. See blazor.tailscale.tags in values.yaml.
+    tailscale.com/tags: {{ $tsTags | quote }}
+    {{- end }}
   {{- end }}
   # Deliberately absent: tailscale.com/funnel. That annotation — and only that
   # annotation — would publish this endpoint to the public internet. Without it the
