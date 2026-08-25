@@ -4,8 +4,8 @@ description: >
   RockBot — an event-driven autonomous agent framework built on .NET.
   Deploys the RockBot agent and the Blazor Server web UI.
 type: application
-version: 0.10.19
-appVersion: "0.10.19"
+version: 0.10.20
+appVersion: "0.10.20"
 home: https://github.com/rockylhotka/rockbot
 keywords:
   - ai
