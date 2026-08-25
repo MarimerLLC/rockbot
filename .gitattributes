@@ -1,0 +1,19 @@
+# Shell scripts MUST be checked out with LF endings.
+#
+# They are stored LF in the index, but with core.autocrlf=true (the Windows default)
+# git hands them to the working tree as CRLF. bash then reads the shebang as
+# "#!/usr/bin/env bash\r" and the script dies with "bad interpreter: ...^M" on Linux,
+# or "$'\r': command not found" line by line. This pins the checkout so a clone on any
+# platform produces a runnable script.
+*.sh text eol=lf
+
+# Same reasoning for anything else consumed by a POSIX shell or a Linux container.
+Dockerfile*    text eol=lf
+*.Dockerfile   text eol=lf
+.dockerignore  text eol=lf
+
+# Deliberately NOT normalising the rest of the tree. 486 tracked files are stored CRLF
+# (357 of them .cs); a blanket `* text=auto` would rewrite every one of them in a single
+# commit and bury real history under a whitespace diff in `git blame`. CRLF is harmless
+# in those files. If that cleanup is ever wanted it belongs in its own PR, paired with a
+# .git-blame-ignore-revs entry.
