@@ -25,10 +25,12 @@ spec:
         app.kubernetes.io/component: agent
     spec:
       serviceAccountName: {{ include "rockbot.agentServiceAccountName" . }}
-      # fsGroup applies to the shared-data PVC: kubelet chgrp's the volume to
-      # this GID, sets setgid on dirs, and OR's group rw into the mode. Lets
-      # the agent (UID 999), shared-cleanup (UID 0), and script pods (UID 1000)
-      # all read/write each other's files on /rockbot/shared.
+      # fsGroup applies to every volume in this Pod: kubelet chgrp's them to this
+      # GID, sets setgid on dirs, and OR's group rw into the mode. On
+      # /rockbot/shared it lets the agent (UID 999), shared-cleanup (UID 0), and
+      # script pods (UID 1000) read/write each other's files. On /data/agent it is
+      # what lets the introspection sidecar — a different uid — write agent-name.md,
+      # so the init container must preserve this group rather than chown over it.
       securityContext:
         fsGroup: {{ .Values.shared.fsGroup }}
 
@@ -110,7 +112,17 @@ spec:
 
               # Hand ownership to the rockbot user so the main container (non-root)
               # can read and write the volume. The user exists in the image.
-              chown -R rockbot:rockbot /data/agent
+              #
+              # The GROUP is deliberately the pod's fsGroup, not rockbot's own gid.
+              # kubelet already chgrp'd this volume to fsGroup at mount time; chowning
+              # to rockbot:rockbot would clobber that and leave the volume group-owned
+              # by gid 999. The introspection sidecar runs as a different uid (1654 in
+              # its image) and is only ever in the fsGroup, so it would then fall
+              # through to "others" and lose write — which is exactly what broke
+              # set_agent_name, whose target file lives in this directory.
+              # secrets/ stays 0700 above, so it remains private to the rockbot user
+              # regardless of the group.
+              chown -R rockbot:{{ .Values.shared.fsGroup }} /data/agent
               echo "Agent data volume ready."
           volumeMounts:
             - name: agent-data
