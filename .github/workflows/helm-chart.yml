@@ -6,9 +6,10 @@
 # time of writing) and far more often than releases are cut. Tying chart publishing
 # to release/v* branches would leave chart changes unpublished for months.
 #
-# ONE-TIME SETUP: the first push creates a PRIVATE GHCR package. Make it public at
-#   https://github.com/orgs/MarimerLLC/packages/container/rockbot/settings
-# or anonymous `helm pull` fails and every consumer needs a pull secret.
+# The published package is public (it inherits the repository's visibility), so consumers
+# pull anonymously with no image pull secret. If this workflow is ever reused from a
+# PRIVATE repo the package will be private too, and would need flipping at
+#   https://github.com/orgs/<org>/packages/container/rockbot/settings
 name: Publish Helm Chart
 
 on:
