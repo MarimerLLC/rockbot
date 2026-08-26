@@ -26,6 +26,13 @@ namespace RockBot.Host;
 /// the OpenAI SDK's own reasoning-effort property.
 /// </para>
 /// <para>
+/// <b><c>none</c> is not universally available.</b> Some endpoints refuse to run without
+/// reasoning and answer <c>400 Reasoning is mandatory for this endpoint and cannot be
+/// disabled.</c> — measured on <c>x-ai/grok-4.6</c> via OpenRouter. On such a model the
+/// setting is not a cheaper tier, it fails every call, so verify it against the target
+/// endpoint before configuring it. <c>minimal</c> is the safe floor there.
+/// </para>
+/// <para>
 /// Follows <see cref="RepetitionPenaltyPolicy"/>: the body is already serialised, so the
 /// policy parses it, adds one field, and re-serialises. Requests that are not chat
 /// completions (no <c>messages</c> array), bodies that already carry a <c>reasoning</c>
