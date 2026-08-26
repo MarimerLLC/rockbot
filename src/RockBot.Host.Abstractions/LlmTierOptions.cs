@@ -16,17 +16,18 @@ public sealed class LlmTierConfig
     public string? ModelId  { get; set; }
 
     /// <summary>
-    /// How much a reasoning-capable model should think before answering: "low", "medium" or
-    /// "high". Null or empty (the default) omits the field entirely, leaving provider
-    /// behaviour unchanged.
-    /// <para>
-    /// Per-tier rather than global because the tiers do different work — a tier writing prose
-    /// under several simultaneous constraints and a tier running batch extraction do not want
-    /// the same budget. Sent as OpenRouter's <c>reasoning</c> object by
-    /// <c>ReasoningEffortPolicy</c>, since it has no <c>ChatOptions</c> equivalent. Providers
-    /// whose models do not reason ignore it.
-    /// </para>
+    /// How hard a reasoning model may think before answering: <c>minimal</c>, <c>low</c>,
+    /// <c>medium</c>, <c>high</c>, or <c>none</c> to disable reasoning outright. Null (the
+    /// default) sends no reasoning field at all, leaving the provider's own default in place
+    /// and keeping the request byte-identical to before this setting existed.
     /// </summary>
+    /// <remarks>
+    /// Only meaningful for OpenAI-compatible providers that accept OpenRouter's nested
+    /// <c>reasoning</c> object; see <c>ReasoningEffortPolicy</c> for why the OpenAI-standard
+    /// <c>reasoning_effort</c> field cannot be used instead. Reasoning tokens bill as output
+    /// and count against <c>MaxOutputTokens</c>, so an uncapped reasoning model can spend most
+    /// of its output budget thinking and leave too little for the answer.
+    /// </remarks>
     public string? ReasoningEffort { get; set; }
 
     /// <summary>

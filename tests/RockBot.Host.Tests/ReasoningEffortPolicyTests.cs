@@ -4,87 +4,87 @@ using RockBot.Host;
 
 namespace RockBot.Host.Tests;
 
+/// <summary>
+/// Covers the body-rewrite helper. The wire-level behaviour is covered separately by
+/// <see cref="ReasoningEffortPipelineTests"/>.
+/// </summary>
 [TestClass]
 public sealed class ReasoningEffortPolicyTests
 {
-    private static string? Inject(string body, string effort = "medium")
-        => ReasoningEffortPolicy.InjectInto(Encoding.UTF8.GetBytes(body), effort);
+    private static string? Inject(string body, string effort) =>
+        ReasoningEffortPolicy.InjectInto(Encoding.UTF8.GetBytes(body), effort);
+
+    private const string ChatBody = """{"model":"x-ai/grok-4.6","messages":[{"role":"user","content":"hi"}]}""";
 
     [TestMethod]
-    public void InjectInto_AddsNestedReasoningObjectToChatCompletionBody()
+    public void InjectInto_AddsNestedReasoningObject_NotFlatReasoningEffort()
     {
-        var result = Inject("""{"model":"m","messages":[{"role":"user","content":"hi"}]}""");
+        // The whole reason this policy exists: OpenRouter accepts and ignores the flat
+        // reasoning_effort field, so emitting it instead would be a silent no-op.
+        var json = (JsonObject)JsonNode.Parse(Inject(ChatBody, "low")!)!;
 
-        Assert.IsNotNull(result);
-        var json = JsonNode.Parse(result)!.AsObject();
-        // The provider expects an object, not a bare string — a flat "reasoning":"medium"
-        // is rejected, so the shape matters as much as the value.
-        Assert.AreEqual("medium", (string?)json["reasoning"]!["effort"]);
+        Assert.IsFalse(json.ContainsKey("reasoning_effort"),
+            "flat reasoning_effort is ignored by OpenRouter and must not be sent");
+        Assert.AreEqual("low", json["reasoning"]!["effort"]!.GetValue<string>());
     }
 
     [TestMethod]
-    public void InjectInto_PreservesExistingFields()
+    public void InjectInto_None_DisablesReasoningRatherThanNamingALevel()
     {
-        var result = Inject("""
-            {"model":"m","temperature":0.95,"frequency_penalty":0.5,
-             "messages":[{"role":"user","content":"hi"}]}
-            """);
+        var json = (JsonObject)JsonNode.Parse(Inject(ChatBody, "none")!)!;
 
-        var json = JsonNode.Parse(result!)!.AsObject();
-        Assert.AreEqual("m", (string?)json["model"]);
-        Assert.AreEqual(0.95f, (float)json["temperature"]!);
-        Assert.AreEqual(0.5f, (float)json["frequency_penalty"]!);
+        Assert.IsFalse(json["reasoning"]!.AsObject().ContainsKey("effort"));
+        Assert.IsFalse(json["reasoning"]!["enabled"]!.GetValue<bool>());
+    }
+
+    [TestMethod]
+    public void InjectInto_PreservesExistingBodyFields()
+    {
+        var json = (JsonObject)JsonNode.Parse(Inject(ChatBody, "high")!)!;
+
+        Assert.AreEqual("x-ai/grok-4.6", json["model"]!.GetValue<string>());
         Assert.AreEqual(1, json["messages"]!.AsArray().Count);
     }
 
     [TestMethod]
-    public void InjectInto_ReturnsNullForNonChatRequests()
+    public void InjectInto_ReturnsNull_ForNonChatCompletionBody()
     {
-        // Embeddings and similar calls reject an unknown field.
-        Assert.IsNull(Inject("""{"model":"m","input":"some text"}"""));
+        // Embeddings and other calls share the pipeline and reject the field.
+        Assert.IsNull(Inject("""{"model":"nomic-embed-text","input":"hi"}""", "low"));
     }
 
     [TestMethod]
-    public void InjectInto_ReturnsNullWhenCallerAlreadySetTheField()
+    public void InjectInto_ReturnsNull_WhenCallerAlreadySetReasoning()
     {
         Assert.IsNull(Inject(
-            """{"messages":[{"role":"user","content":"hi"}],"reasoning":{"effort":"high"}}"""));
+            """{"messages":[],"reasoning":{"effort":"high"}}""", "low"));
     }
 
     [TestMethod]
-    public void InjectInto_ReturnsNullForNonObjectBody()
+    public void InjectInto_ReturnsNull_ForUnparseableOrNonObjectBody()
     {
-        Assert.IsNull(Inject("""[1,2,3]"""));
-    }
-
-    [TestMethod]
-    public void InjectInto_ThrowsOnMalformedJson_SoCallerCanFailOpen()
-    {
-        // The policy wraps this in try/catch and sends the original body unchanged;
-        // the contract here is simply that it does not silently corrupt the request.
-        Assert.Throws<System.Text.Json.JsonException>(() => Inject("{not json"));
+        Assert.IsNull(Inject("not json at all", "low"));
+        Assert.IsNull(Inject("[1,2,3]", "low"));
     }
 
     [TestMethod]
     [DataRow("low", "low")]
-    [DataRow("medium", "medium")]
-    [DataRow("high", "high")]
     [DataRow("  HIGH  ", "high")]
     [DataRow("Medium", "medium")]
-    public void Normalize_AcceptsTheValuesTheProviderUnderstands(string input, string expected)
-        => Assert.AreEqual(expected, ReasoningEffortPolicy.Normalize(input));
+    [DataRow("minimal", "minimal")]
+    [DataRow("none", "none")]
+    [DataRow("off", "none")]
+    [DataRow("Disabled", "none")]
+    public void Normalise_AcceptsKnownLevelsCaseAndWhitespaceInsensitively(string input, string expected)
+        => Assert.AreEqual(expected, ReasoningEffortPolicy.Normalise(input));
 
     [TestMethod]
     [DataRow(null)]
     [DataRow("")]
     [DataRow("   ")]
-    [DataRow("none")]
-    [DataRow("maximum")]
-    [DataRow("1")]
-    public void Normalize_RejectsAnythingElse(string? input)
-    {
-        // Rejected rather than forwarded: the provider drops an unrecognised effort silently,
-        // so a typo would be indistinguishable from a working setting.
-        Assert.IsNull(ReasoningEffortPolicy.Normalize(input));
-    }
+    [DataRow("lowest")]
+    [DataRow("verbose")]
+    [DataRow("2")]
+    public void Normalise_RejectsUnknownValues_SoTyposDoNot400EveryCall(string? input)
+        => Assert.IsNull(ReasoningEffortPolicy.Normalise(input));
 }

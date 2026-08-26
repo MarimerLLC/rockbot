@@ -52,20 +52,20 @@ public sealed class ReasoningEffortPipelineTests
     [TestMethod]
     public async Task Policy_RewritesTheBodyThatReachesTheTransport()
     {
-        var sent = await SendThroughAsync("medium",
-            """{"model":"m","temperature":0.95,"messages":[{"role":"user","content":"hi"}]}""");
+        var sent = await SendThroughAsync("low",
+            """{"model":"x-ai/grok-4.6","temperature":0.95,"messages":[{"role":"user","content":"hi"}]}""");
 
         var json = JsonNode.Parse(sent)!.AsObject();
         Assert.IsTrue(json.ContainsKey("reasoning"),
             $"reasoning missing from body actually sent: {sent}");
-        Assert.AreEqual("medium", (string?)json["reasoning"]!["effort"]);
+        Assert.AreEqual("low", json["reasoning"]!["effort"]!.GetValue<string>());
         Assert.AreEqual(0.95f, (float)json["temperature"]!);
     }
 
     [TestMethod]
     public async Task Policy_LeavesNonChatBodiesAlone()
     {
-        var sent = await SendThroughAsync("medium", """{"model":"m","input":"text"}""");
+        var sent = await SendThroughAsync("low", """{"model":"m","input":"text"}""");
 
         Assert.IsFalse(JsonNode.Parse(sent)!.AsObject().ContainsKey("reasoning"));
     }
@@ -73,26 +73,26 @@ public sealed class ReasoningEffortPipelineTests
     [TestMethod]
     public async Task Policy_CoexistsWithRepetitionPenalty()
     {
-        // Both policies rewrite the same body; registering one must not drop the other's field.
+        // Both policies rewrite the same body; the second must not drop the first's field.
         var handler = new CapturingHandler();
         var options = new ClientPipelineOptions
         {
             Transport = new HttpClientPipelineTransport(new HttpClient(handler))
         };
         options.AddPolicy(new RepetitionPenaltyPolicy(1.1f), PipelinePosition.PerCall);
-        options.AddPolicy(new ReasoningEffortPolicy("high"), PipelinePosition.PerCall);
+        options.AddPolicy(new ReasoningEffortPolicy("low"), PipelinePosition.PerCall);
 
         var pipeline = ClientPipeline.Create(options);
         var message = pipeline.CreateMessage();
         message.Request.Method = "POST";
         message.Request.Uri = new Uri("https://example.test/v1/chat/completions");
-        message.Request.Content = BinaryContent.Create(
-            BinaryData.FromString("""{"model":"m","messages":[{"role":"user","content":"hi"}]}"""));
+        message.Request.Content = BinaryContent.Create(BinaryData.FromString(
+            """{"model":"m","messages":[{"role":"user","content":"hi"}]}"""));
 
         await pipeline.SendAsync(message);
 
         var json = JsonNode.Parse(handler.CapturedBody!)!.AsObject();
         Assert.AreEqual(1.1f, (float)json["repetition_penalty"]!);
-        Assert.AreEqual("high", (string?)json["reasoning"]!["effort"]);
+        Assert.AreEqual("low", json["reasoning"]!["effort"]!.GetValue<string>());
     }
 }
