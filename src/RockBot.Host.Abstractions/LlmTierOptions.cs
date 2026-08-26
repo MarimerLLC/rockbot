@@ -16,6 +16,20 @@ public sealed class LlmTierConfig
     public string? ModelId  { get; set; }
 
     /// <summary>
+    /// How much a reasoning-capable model should think before answering: "low", "medium" or
+    /// "high". Null or empty (the default) omits the field entirely, leaving provider
+    /// behaviour unchanged.
+    /// <para>
+    /// Per-tier rather than global because the tiers do different work — a tier writing prose
+    /// under several simultaneous constraints and a tier running batch extraction do not want
+    /// the same budget. Sent as OpenRouter's <c>reasoning</c> object by
+    /// <c>ReasoningEffortPolicy</c>, since it has no <c>ChatOptions</c> equivalent. Providers
+    /// whose models do not reason ignore it.
+    /// </para>
+    /// </summary>
+    public string? ReasoningEffort { get; set; }
+
+    /// <summary>
     /// Returns true when Endpoint, ApiKey, and ModelId are all non-empty
     /// (OpenAI-compatible provider fully configured).
     /// </summary>
