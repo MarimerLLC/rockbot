@@ -203,6 +203,47 @@ public sealed class DreamOptions
     /// </summary>
     public string MemoryMiningDirectivePath { get; set; } = "memory-mining.md";
 
+    /// <summary>
+    /// Whether the cast voice enrichment pass is enabled. Off by default, and inert until
+    /// <see cref="CastVoiceCategory"/> is also configured: it is only meaningful for agents that
+    /// maintain a character corpus in a dedicated memory category.
+    /// </summary>
+    /// <remarks>
+    /// Unlike every other memory pass, this one reads <em>existing memory</em> rather than the
+    /// conversation log, because the gap it fills is in characters whose scenes have long since
+    /// scrolled out of the transcript. It is also the one pass permitted to <em>derive</em>
+    /// rather than only record — a voice is inferred from a character's recorded background when
+    /// no line of theirs survives. That licence is bounded by the directive: derive speech habits
+    /// from facts already on record, never invent new biography or history.
+    /// </remarks>
+    public bool CastVoiceEnrichmentEnabled { get; set; }
+
+    /// <summary>
+    /// Path to the cast voice enrichment directive file, relative to
+    /// <see cref="AgentProfileOptions.BasePath"/>. When the file does not exist, a built-in
+    /// fallback directive is used.
+    /// </summary>
+    public string CastVoiceDirectivePath { get; set; } = "cast-voice-dream.md";
+
+    /// <summary>
+    /// Memory category the cast voice enrichment pass reads and writes. Has no default — the
+    /// category name is deployment-specific, and the pass no-ops until one is configured.
+    /// </summary>
+    public string CastVoiceCategory { get; set; } = string.Empty;
+
+    /// <summary>
+    /// Marker text identifying an entry that already carries a voice card. A character with any
+    /// entry containing this marker is skipped, which is what makes the pass converge instead of
+    /// re-enriching the same cast every cycle.
+    /// </summary>
+    public string CastVoiceMarker { get; set; } = "VOICE CARD";
+
+    /// <summary>
+    /// Maximum number of characters enriched per dream cycle, so one cycle cannot rewrite an
+    /// entire cast corpus. Default: 12.
+    /// </summary>
+    public int CastVoiceMaxPerCycle { get; set; } = 12;
+
     /// <summary>Whether the tier routing self-correction review pass is enabled.</summary>
     public bool TierRoutingReviewEnabled { get; set; } = true;
 
