@@ -60,6 +60,7 @@ internal sealed class DreamService : IHostedService, IDisposable
     private string? _prefDreamDirective;
     private string? _skillGapDirective;
     private string? _memoryMiningDirective;
+    private string? _castVoiceDirective;
     private string? _episodeDirective;
     private string? _tierRoutingDirective;
     private string? _sequenceSkillDirective;
@@ -301,6 +302,11 @@ internal sealed class DreamService : IHostedService, IDisposable
                 _logger.LogDebug("DreamService: memory mining directive not found at {Path}; using built-in", memoryMiningDirectivePath);
             else
                 _logger.LogDebug("DreamService: loaded memory mining directive from {Path}", memoryMiningDirectivePath);
+
+            var castVoiceDirectivePath = ResolvePath(_options.CastVoiceDirectivePath, _profileOptions.BasePath);
+            _castVoiceDirective = File.Exists(castVoiceDirectivePath)
+                ? File.ReadAllText(castVoiceDirectivePath)
+                : null;
 
             var episodeDirectivePath = ResolvePath(_options.EpisodeDirectivePath, _profileOptions.BasePath);
             _episodeDirective = File.Exists(episodeDirectivePath)
@@ -557,6 +563,8 @@ internal sealed class DreamService : IHostedService, IDisposable
             ct.ThrowIfCancellationRequested(); await RunGraphConsolidationPassAsync(ct);
 
             ct.ThrowIfCancellationRequested(); await RunMemoryMiningPassAsync(ct);
+
+            ct.ThrowIfCancellationRequested(); await RunCastVoiceEnrichmentPassAsync(ct);
 
             // Observation framework reads the same conversation log used by
             // memory mining and preference inference, so it must run before
@@ -2179,6 +2187,190 @@ internal sealed class DreamService : IHostedService, IDisposable
     /// (which targets behavioral patterns) and skill gap detection (which targets procedures).
     /// Does NOT clear the log — that is deferred to <see cref="RunPreferenceInferencePassAsync"/>.
     /// </summary>
+    /// <summary>
+    /// Fills in missing character voices in the cast corpus.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The odd one out among the memory passes: it reads <em>existing memory</em> rather than the
+    /// conversation log. That is the whole point of it. A character's establishing dialogue scrolls
+    /// out of the context window within a session or two, and what the record keeps of them is a
+    /// face and a list of things they did — so a returning character is rebuilt from a physical
+    /// description and every one of them converges on the same neutral speaker. Mining cannot fix
+    /// that, because by the time the gap is visible the transcript that would close it is gone.
+    /// </para>
+    /// <para>
+    /// It is also the one pass allowed to <em>derive</em> rather than only record: where no line of
+    /// a character's survives, a voice is inferred from the background already on file. The licence
+    /// is bounded in the directive — speech habits derived from recorded facts, never new biography.
+    /// </para>
+    /// <para>
+    /// Updates land in place, on the character's existing entry. <see cref="MergeVoiceCard"/> is
+    /// append-only for exactly that reason: an in-place pass over a curated corpus must not be
+    /// capable of losing a recorded fact, whatever the model returns.
+    /// </para>
+    /// <para>
+    /// Convergence comes from the marker: a character carrying <see cref="DreamOptions.CastVoiceMarker"/>
+    /// on any of their entries is skipped, so a cast that has been fully enriched costs one LLM call
+    /// per cycle and writes nothing.
+    /// </para>
+    /// </remarks>
+    private async Task RunCastVoiceEnrichmentPassAsync(CancellationToken ct)
+    {
+        if (!_options.CastVoiceEnrichmentEnabled)
+            return;
+
+        var category = _options.CastVoiceCategory;
+        var marker = _options.CastVoiceMarker;
+
+        if (string.IsNullOrWhiteSpace(category) || string.IsNullOrWhiteSpace(marker))
+        {
+            _logger.LogWarning("DreamService: cast voice enrichment enabled but category or marker is empty; skipping");
+            return;
+        }
+
+        var cast = await _memory.SearchAsync(
+            new MemorySearchCriteria(Category: category, MaxResults: 1000), ct);
+
+        if (cast.Count == 0)
+        {
+            _logger.LogDebug("DreamService: cast voice enrichment — category {Category} is empty; skipping", category);
+            return;
+        }
+
+        var uncarded = cast.Count(e => !HasVoiceMarker(e.Content, marker));
+        if (uncarded == 0)
+        {
+            _logger.LogInformation(
+                "DreamService: cast voice enrichment — all {Count} entries in {Category} already carry a voice card; nothing to do",
+                cast.Count, category);
+            return;
+        }
+
+        _logger.LogInformation(
+            "DreamService: cast voice enrichment pass — {Total} entries in {Category}, {Uncarded} without a voice card",
+            cast.Count, category, uncarded);
+
+        await RunPassAsync("cast voice enrichment", async () =>
+        {
+            var userMessage = new StringBuilder();
+            userMessage.AppendLine($"Every entry currently in `{category}`, with its id.");
+            userMessage.AppendLine();
+            userMessage.AppendLine(
+                $"Entries already containing \"{marker}\" are shown so you can see which characters are " +
+                "finished and which voices already exist. Never propose an update to one of those, and " +
+                "never give a new character a voice that duplicates one already on the page.");
+            userMessage.AppendLine();
+
+            foreach (var e in cast)
+                userMessage.AppendLine($"[{e.Id}] {e.Content}");
+
+            userMessage.AppendLine();
+            userMessage.AppendLine(
+                $"Enrich at most {_options.CastVoiceMaxPerCycle} characters this cycle. Choose the ones " +
+                "with the most entries and the most recent activity first — they are the ones most likely " +
+                "to walk back on stage.");
+
+            var result = await InvokeDreamPassAsync<CastVoiceResultDto>(
+                "cast voice enrichment",
+                _castVoiceDirective ?? BuiltInCastVoiceDirective,
+                userMessage.ToString(),
+                ct);
+
+            if (result is null) return;
+
+            var updated = 0;
+            var skipped = 0;
+
+            foreach (var dto in result.Updates ?? [])
+            {
+                if (updated >= _options.CastVoiceMaxPerCycle)
+                {
+                    _logger.LogInformation(
+                        "DreamService: cast voice enrichment — per-cycle cap of {Cap} reached; remaining proposals deferred to the next cycle",
+                        _options.CastVoiceMaxPerCycle);
+                    break;
+                }
+
+                if (string.IsNullOrWhiteSpace(dto.Id) || string.IsNullOrWhiteSpace(dto.VoiceCard))
+                {
+                    skipped++;
+                    continue;
+                }
+
+                var existing = await _memory.GetAsync(dto.Id.Trim(), ct);
+                if (existing is null)
+                {
+                    // A hallucinated id is the expected failure here, so it is a skip and not a throw.
+                    _logger.LogWarning(
+                        "DreamService: cast voice enrichment proposed an update to unknown entry {Id}; skipping", dto.Id);
+                    skipped++;
+                    continue;
+                }
+
+                if (!string.Equals(existing.Category, category, StringComparison.OrdinalIgnoreCase))
+                {
+                    _logger.LogWarning(
+                        "DreamService: cast voice enrichment proposed an update to {Id} in category {Actual}, outside {Category}; skipping",
+                        existing.Id, existing.Category, category);
+                    skipped++;
+                    continue;
+                }
+
+                if (HasVoiceMarker(existing.Content, marker))
+                {
+                    skipped++;
+                    continue;
+                }
+
+                var tags = new List<string>(existing.Tags ?? []);
+                if (!tags.Contains("voice", StringComparer.OrdinalIgnoreCase))
+                    tags.Add("voice");
+
+                await _memory.SaveAsync(
+                    existing with
+                    {
+                        Content = MergeVoiceCard(existing.Content, marker, dto.CharacterKey, dto.VoiceCard),
+                        Tags = tags,
+                        UpdatedAt = DateTimeOffset.UtcNow
+                    },
+                    ct);
+
+                updated++;
+                _logger.LogDebug("DreamService: cast voice enrichment updated {Id} ({Key})", existing.Id, dto.CharacterKey);
+            }
+
+            _logger.LogInformation(
+                "DreamService: cast voice enrichment pass complete — {Updated} character(s) given a voice, {Skipped} proposal(s) skipped",
+                updated, skipped);
+        });
+    }
+
+    /// <summary>True when <paramref name="content"/> already carries a voice card marker.</summary>
+    internal static bool HasVoiceMarker(string? content, string marker) =>
+        !string.IsNullOrEmpty(content)
+        && !string.IsNullOrEmpty(marker)
+        && content.Contains(marker, StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Appends a voice card to an existing cast entry, preserving the original text verbatim.
+    /// </summary>
+    /// <remarks>
+    /// Deliberately append-only rather than a rewrite. The enrichment pass updates curated entries
+    /// in place, and the original content is the record of what actually happened in the story —
+    /// a model that returns a "merged" version of it can drop a detail without anyone noticing for
+    /// weeks. Keeping the original untouched means the worst case is a redundant card, not a lost
+    /// fact.
+    /// </remarks>
+    internal static string MergeVoiceCard(string? existingContent, string marker, string? characterKey, string voiceCard)
+    {
+        var original = (existingContent ?? string.Empty).TrimEnd();
+        var key = string.IsNullOrWhiteSpace(characterKey) ? string.Empty : $" - {characterKey.Trim()}";
+        var card = $"{marker}{key}. {voiceCard.Trim()}";
+
+        return original.Length == 0 ? card : $"{original}\n\n{card}";
+    }
+
     private async Task RunMemoryMiningPassAsync(CancellationToken ct)
     {
         if (_conversationLog is null || !_options.MemoryMiningEnabled)
@@ -4795,6 +4987,17 @@ internal sealed class DreamService : IHostedService, IDisposable
         IReadOnlyList<string>? Tags,
         float? Importance);
 
+    internal sealed record CastVoiceResultDto(List<CastVoiceUpdateDto>? Updates);
+
+    /// <param name="Id">Id of the existing cast entry the voice card is appended to.</param>
+    /// <param name="CharacterKey">Name plus the disambiguating tag that separates this character
+    /// from everyone sharing their first name.</param>
+    /// <param name="VoiceCard">The voice card body, without the marker prefix.</param>
+    internal sealed record CastVoiceUpdateDto(
+        string? Id,
+        string? CharacterKey,
+        string? VoiceCard);
+
     internal sealed record MemoryMiningResultDto(List<MemoryMiningEntryDto>? ToSave);
 
     internal sealed record MemoryMiningEntryDto(
@@ -5003,6 +5206,75 @@ internal sealed class DreamService : IHostedService, IDisposable
         "tool-knowledge/calendar", "tool-knowledge/email"). Default to "tool-knowledge".
 
         If none of the patterns prove a durable, useful fact, return: { "toSave": [] }
+        """;
+
+    /// <summary>
+    /// Fallback directive for the cast voice enrichment pass, used when
+    /// <see cref="DreamOptions.CastVoiceDirectivePath"/> does not resolve to a file.
+    /// Kept in sync with <c>src/RockBot.Agent/agent/cast-voice-dream.md</c>.
+    /// </summary>
+    private const string BuiltInCastVoiceDirective = """
+        You maintain the speech profiles in a character corpus.
+
+        You are given every entry in one memory category. Some entries already carry a speech profile;
+        most record only appearance and events. Your task is to add a profile to characters that lack
+        one, so that a character described weeks ago can be written consistently today.
+
+        This is a schema-filling task. Deployment-specific guidance on how a profile should read, if
+        any exists, is supplied separately by the operator.
+
+        ## Step 1 — resolve identities
+
+        Determine how many distinct characters the entries describe. **A first name is not an
+        identity**: two entries sharing a name are frequently different people, distinguished by role,
+        location, age, or who they appear alongside.
+
+        Assign each character a `characterKey`: the name plus the shortest tag that separates them from
+        anyone sharing that name.
+
+        If two entries cannot be confidently resolved as the same character, leave both alone. A wrong
+        merge is more damaging than a missing profile.
+
+        ## Step 2 — fill the profile
+
+        For each character without one, record the observable, repeatable properties of their speech:
+
+        - origin and background, to the extent the entries establish it
+        - typical utterance length
+        - whether they use contractions
+        - how they habitually break off or extend a sentence
+        - any consistent error or verbal tic
+        - the domain their figures of speech are drawn from
+        - how they address other characters
+        - **one sample utterance, in quotation marks**
+
+        The sample utterance carries the most information. If an entry records something the character
+        actually said, reproduce it exactly, without correcting grammar or wording. Otherwise construct
+        one consistent with the properties above; a constructed sample illustrates the profile and is
+        not a claim about events.
+
+        Make each profile distinguishable from the profiles already present. Do not reissue properties
+        that another character in the corpus already has.
+
+        ## Step 3 — constraints
+
+        **Derive only.** Properties may be inferred from facts the entries already establish. Do not
+        introduce new biography, relationships, events, or names. Where the entries are sparse, produce
+        a sparse profile.
+
+        **Select one target entry per character** — normally the most detailed or most recent — and
+        return its id. The profile is appended; existing text in that entry is left untouched.
+
+        **Skip** any character already carrying a profile, and any character you could not resolve.
+
+        ## Output
+
+        Return only a JSON object:
+
+            { "updates": [ { "id": "...", "characterKey": "...", "voiceCard": "..." } ] }
+
+        `voiceCard` contains the profile body alone — omit the marker and the character key. Return
+        `{ "updates": [] }` if there is nothing to add.
         """;
 
     private const string BuiltInMemoryMiningDirective = """
