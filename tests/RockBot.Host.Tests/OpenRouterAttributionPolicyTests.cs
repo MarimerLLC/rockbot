@@ -60,10 +60,10 @@ public sealed class OpenRouterAttributionPolicyTests
     public async Task Policy_StampsBothAttributionHeadersOnTheWire()
     {
         var sent = await SendThroughAsync(
-            new OpenRouterAttributionPolicy("muse", "https://example.test/muse"));
+            new OpenRouterAttributionPolicy("my-agent", "https://example.test/my-agent"));
 
-        Assert.AreEqual("https://example.test/muse", HeaderValue(sent, "HTTP-Referer"));
-        Assert.AreEqual("muse", HeaderValue(sent, "X-Title"));
+        Assert.AreEqual("https://example.test/my-agent", HeaderValue(sent, "HTTP-Referer"));
+        Assert.AreEqual("my-agent", HeaderValue(sent, "X-Title"));
     }
 
     [TestMethod]

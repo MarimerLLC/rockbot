@@ -353,7 +353,7 @@ todoappMcp:
 # activity dashboard. The headers are sent to OpenRouter endpoints only.
 llm:
   # Display name (X-Title). Override per release so two agents sharing one
-  # OpenRouter account report separately — e.g. appName: muse.
+  # OpenRouter account report separately — e.g. appName: my-agent.
   appName: rockbot
   # Identity key (HTTP-Referer) and the link shown on openrouter.ai/rankings.
   # OpenRouter groups by this value, so changing it starts a new app with no

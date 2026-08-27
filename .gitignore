@@ -15,7 +15,7 @@ nupkgs/
 deploy/values.personal.yaml
 deploy/values.*.personal.yaml
 deploy/values.personal.yaml.live*
-# Per-release live-values dumps (muse, etc.) — same, secrets inside.
+# Per-release live-values dumps — same, secrets inside.
 # Keep values.personal.example.yaml committed; it is the only safe one.
 deploy/values.*.yaml
 !deploy/values.personal.example.yaml

@@ -147,6 +147,25 @@ IChatClient BuildOpenAIClient(LlmTierConfig config)
         Console.WriteLine($"    repetition_penalty={repetitionPenalty.Value} (body-injected)");
     }
 
+    // Reasoning effort is per-tier: a cheap Low tier and a deliberating High tier want
+    // different budgets. Injected into the body for the same reason as repetition_penalty —
+    // ChatOptions cannot express OpenRouter's nested reasoning object, and the flat
+    // reasoning_effort field it *can* express is accepted and ignored by OpenRouter.
+    var reasoningEffort = ReasoningEffortPolicy.Normalise(config.ReasoningEffort);
+    if (reasoningEffort is not null)
+    {
+        clientOptions.AddPolicy(new ReasoningEffortPolicy(reasoningEffort),
+            PipelinePosition.PerCall);
+        Console.WriteLine($"    reasoning.effort={reasoningEffort} (body-injected)");
+    }
+    else if (!string.IsNullOrWhiteSpace(config.ReasoningEffort))
+    {
+        // Warned rather than thrown: the model still answers, it simply keeps its default
+        // reasoning budget and the only visible effect is a bill that never came down.
+        Console.WriteLine($"    WARNING: ignoring unrecognised ReasoningEffort " +
+                          $"'{config.ReasoningEffort}' (expected minimal/low/medium/high/none)");
+    }
+
     // OpenRouter attributes spend to whatever app the client names in its headers; without
     // them every call shows up as "unknown" on the activity dashboard. Registered only for
     // OpenRouter endpoints so the app name is not disclosed to unrelated providers.
