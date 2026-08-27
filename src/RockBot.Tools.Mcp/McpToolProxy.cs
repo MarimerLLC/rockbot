@@ -39,7 +39,22 @@ public sealed class McpToolProxy : IToolExecutor, IAsyncDisposable
         _identity = identity;
         _logger = logger;
         _requestTimeout = requestTimeout ?? TimeSpan.FromSeconds(60);
-        _responseTimeout = responseTimeout ?? _requestTimeout;
+
+        // A response wait shorter than the advertised request budget defeats the point of
+        // separating them: the bridge would still be within the time it was granted when the
+        // proxy gave up, turning an in-progress call into a transport failure. Clamped rather
+        // than thrown so a misconfiguration degrades to the old single-timeout behaviour.
+        var wait = responseTimeout ?? _requestTimeout;
+        if (wait < _requestTimeout)
+        {
+            _logger.LogWarning(
+                "McpToolProxy responseTimeout ({Response}ms) is shorter than requestTimeout " +
+                "({Request}ms); clamping to requestTimeout.",
+                wait.TotalMilliseconds, _requestTimeout.TotalMilliseconds);
+            wait = _requestTimeout;
+        }
+
+        _responseTimeout = wait;
     }
 
     /// <summary>

@@ -222,6 +222,49 @@ public class McpToolProxyTests
     }
 
     [TestMethod]
+    public async Task ExecuteAsync_ResponseTimeoutShorterThanRequestTimeout_IsClampedUp()
+    {
+        // A response wait below the advertised budget would abandon a call the bridge is
+        // still legitimately working on, reporting a transport failure for a request that
+        // had not yet run out of time. Clamped rather than rejected so a misconfiguration
+        // degrades to the old single-timeout behaviour instead of failing startup.
+        var proxy = CreateProxy(
+            timeout: TimeSpan.FromMilliseconds(400),
+            responseTimeout: TimeSpan.FromMilliseconds(50));
+
+        var request = new ToolInvokeRequest
+        {
+            ToolCallId = "call-clamped",
+            ToolName = "slow_tool",
+            Arguments = "{}"
+        };
+
+        var executeTask = proxy.ExecuteAsync(request, CancellationToken.None);
+
+        await Task.Delay(150);
+
+        Assert.IsFalse(
+            executeTask.IsCompleted,
+            "Proxy gave up at the shorter responseTimeout instead of clamping to requestTimeout.");
+
+        var envelope = _publisher.Published[0].Envelope;
+
+        await _subscriber.DeliverAsync(
+            $"tool.result.{_identity.Name}",
+            new ToolInvokeResponse
+            {
+                ToolCallId = "call-clamped",
+                ToolName = "slow_tool",
+                Content = "completed"
+            }.ToEnvelope("bridge", correlationId: envelope.CorrelationId!));
+
+        var result = await executeTask;
+
+        Assert.IsFalse(result.IsError);
+        Assert.AreEqual("completed", result.Content);
+    }
+
+    [TestMethod]
     public async Task ExecuteAsync_Timeout_ReturnsErrorResponse()
     {
         var proxy = CreateProxy(timeout: TimeSpan.FromMilliseconds(100));
