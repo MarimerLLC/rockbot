@@ -140,18 +140,15 @@ public sealed class WorkingMemoryTools
                  "Supply query to rank cached content by relevance. Filter with category and/or tags. " +
                  "Defaults to your own namespace; pass a namespace prefix to browse another context — " +
                  "'subagent/task1' for what a completed subagent stored, 'patrol' for all patrol task " +
-                 "outputs, 'shared' for the cross-session handoff namespace, and 'stash' for the full " +
-                 "untrimmed originals of tool results that were elided from your context earlier in this " +
-                 "session (the [stash-registry] message only lists elisions from the current run — 'stash' " +
-                 "reaches the earlier ones too). " +
+                 "outputs, 'shared' for the cross-session handoff namespace. " +
                  $"Sibling recall tool — {RecallTools.TryDurable}.")]
     public async Task<string> SearchWorkingMemory(
         [Description("Keywords to search for in cached content. Omit to list all entries in the namespace/category/tag scope.")] string? query = null,
         [Description("Optional category prefix to filter by (e.g. 'research', 'email')")] string? category = null,
         [Description("Optional comma-separated tags that entries must have (e.g. 'urgent,inbox')")] string? tags = null,
-        [Description("Optional namespace prefix to search (e.g. 'subagent/task1', 'patrol', 'stash'). Omit to search your own namespace.")] string? @namespace = null)
+        [Description("Optional namespace prefix to search (e.g. 'subagent/task1', 'patrol'). Omit to search your own namespace.")] string? @namespace = null)
     {
-        var prefix = ResolveNamespace(@namespace);
+        var prefix = string.IsNullOrWhiteSpace(@namespace) ? _namespace : @namespace.Trim();
         var trimmedQuery = string.IsNullOrWhiteSpace(query) ? null : query.Trim();
 
         // No query means "browse this scope" rather than "rank by relevance" — the surface the
@@ -221,31 +218,6 @@ public sealed class WorkingMemoryTools
             sb.AppendLine($"(listing capped at {ListingMaxResults} entries \u2014 narrow the scope with namespace, category, or tags)");
 
         return sb.ToString().TrimEnd();
-    }
-
-    /// <summary>
-    /// Resolves the caller-supplied namespace to a working-memory key prefix.
-    /// </summary>
-    /// <remarks>
-    /// Bare <c>stash</c> (or <c>stash/</c>) is an alias for <b>this context's own</b> stash,
-    /// which lives at <c>stash/{namespace}</c> — see <c>AgentLoopRunner.BuildStashKey</c>.
-    /// The alias exists because the model has no way to learn its own namespace, so without it
-    /// the only reachable stash prefix would be the bare <c>stash</c> root shared by every
-    /// context. Longer explicit paths (<c>stash/session/other</c>) pass through untouched so
-    /// deliberate cross-context reads still work.
-    /// </remarks>
-    private string ResolveNamespace(string? @namespace)
-    {
-        if (string.IsNullOrWhiteSpace(@namespace)) return _namespace;
-
-        var trimmed = @namespace.Trim();
-        if (trimmed.Equals("stash", StringComparison.OrdinalIgnoreCase) ||
-            trimmed.Equals("stash/", StringComparison.OrdinalIgnoreCase))
-        {
-            return $"stash/{_namespace}";
-        }
-
-        return trimmed;
     }
 
     private static IReadOnlyList<string>? ParseTags(string? tags) =>

@@ -352,21 +352,6 @@ get_from_working_memory("subagent/t1b2c3/research_results")
 search_working_memory(namespace: "patrol")
 search_working_memory(query: "alert", namespace: "patrol/heartbeat")
 
-# Search this context's own untrimmed tool results (see below)
-search_working_memory(query: "invoice total", namespace: "stash")
-```
-
-**The `stash` namespace alias.** `ToolResultTrimmer` parks the full original of every
-overflow-trimmed tool result at `stash/{sessionId}/{callId}` with category
-`tool-result-stash`. The `[stash-registry]` system message lists those keys — but only for
-the *current* `AgentLoopRunner.RunAsync` invocation, so stashes from earlier turns in the
-same session are otherwise unreachable.
-
-The model cannot learn its own namespace, so a bare `namespace: "stash"` (or `"stash/"`)
-resolves to `stash/{own namespace}` rather than the shared `stash` root. Longer explicit
-paths (`stash/session/other`) pass through unchanged, so deliberate cross-context reads
-still work.
-
 ### The recall-search family
 
 Two adjacent searches. They are discriminated by **what the caller is after**, not by which
@@ -376,7 +361,7 @@ to know which store holds it:
 | Tool | Headline | Scope |
 |---|---|---|
 | `search_memory` | RECALL WHAT YOU CONCLUDED | Durable cross-session knowledge the agent chose to keep |
-| `search_working_memory` | RECALL WHAT A TOOL RETURNED | This session's cached payloads, including `stash/` untrimmed tool results |
+| `search_working_memory` | RECALL WHAT A TOOL RETURNED | This session's cached payloads |
 
 Two rules hold the family together, both enforced by `RecallToolFamilyTests`:
 
