@@ -255,6 +255,20 @@ public class WorkingMemoryToolsTests
 
     // ── Helpers ───────────────────────────────────────────────────────────
 
+    // ── Recall-family empty results ───────────────────────────────────────
+
+    [TestMethod]
+    public async Task SearchWorkingMemory_QueryMatchesNothing_PointsAtTheSiblingRecallTool()
+    {
+        // Working memory is one of two recall stores. Nothing cached this session does not mean
+        // nothing known — the fact may have been concluded and saved durably instead.
+        var result = await _tools.SearchWorkingMemory(query: "nothing-matches-this");
+
+        StringAssert.Contains(result, RecallTools.DurableMemory);
+        Assert.IsFalse(result.Contains($"use {RecallTools.WorkingMemory}"),
+            "Re-suggesting the tool that just came back empty invites a retry loop.");
+    }
+
     private static WorkingMemoryEntry Entry(
         string key, string value, string? category = null, IReadOnlyList<string>? tags = null) =>
         new(key, value, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow.AddMinutes(5), category, tags);

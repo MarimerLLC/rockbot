@@ -133,15 +133,15 @@ public sealed class WorkingMemoryTools
     /// </summary>
     private const int ListingMaxResults = 500;
 
-    [Description("Search or list THIS SESSION'S ephemeral cached payloads — tool results, subagent " +
-                 "output, patrol findings, and cross-context handoffs under 'shared/'. Entries expire " +
-                 "on a TTL measured in minutes. " +
+    [Description($"{RecallTools.WorkingHeadline} — search or list THIS SESSION'S ephemeral cached " +
+                 "payloads: tool results, subagent output, patrol findings, and cross-context handoffs " +
+                 "under 'shared/'. Entries expire on a TTL measured in minutes. " +
                  "Omit query to LIST everything in scope (key, category, tags, expiry — no content preview). " +
                  "Supply query to rank cached content by relevance. Filter with category and/or tags. " +
                  "Defaults to your own namespace; pass a namespace prefix to browse another context — " +
                  "'subagent/task1' for what a completed subagent stored, 'patrol' for all patrol task " +
                  "outputs, 'shared' for the cross-session handoff namespace. " +
-                 "For durable facts and preferences that survive restarts, use search_memory instead.")]
+                 $"Sibling recall tool — {RecallTools.TryDurable}.")]
     public async Task<string> SearchWorkingMemory(
         [Description("Keywords to search for in cached content. Omit to list all entries in the namespace/category/tag scope.")] string? query = null,
         [Description("Optional category prefix to filter by (e.g. 'research', 'email')")] string? category = null,
@@ -181,7 +181,8 @@ public sealed class WorkingMemoryTools
                     : $"No entries found in namespace '{prefix}'.";
 
             var desc = BuildSearchDesc(query, category, tags);
-            return $"No working memory entries matched {desc} in namespace '{prefix}'.";
+            return $"No working memory entries matched {desc} in namespace '{prefix}'. " +
+                   RecallTools.LookElsewhere(RecallTools.WorkingMemory);
         }
 
         var now = DateTimeOffset.UtcNow;
