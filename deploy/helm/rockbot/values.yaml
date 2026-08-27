@@ -68,6 +68,11 @@ blazor:
   image:
     repository: rockylhotka/rockbot-blazor
     tag: latest
+  # Leave at 1. The UI holds conversation state in memory (ChatStateService), so a
+  # second replica would serve a different, empty conversation depending on which pod
+  # the browser landed on. The data-protection volume below is ReadWriteOnce as well,
+  # so raising this does not scale the UI — it deadlocks the rollout with the second
+  # pod stuck Pending on a volume the first one already holds.
   replicaCount: 1
   resources:
     requests:
@@ -76,6 +81,28 @@ blazor:
     limits:
       cpu: 500m
       memory: 512Mi
+
+  # Small ReadWriteOnce volume mounted read-write at /data/blazor, holding only the
+  # ASP.NET Core data-protection key ring.
+  #
+  # The key ring is what protects antiforgery tokens (and, later, sign-in cookies).
+  # Without a volume it is generated in memory and thrown away on exit, so every pod
+  # restart or rollout invalidates every token the previous process issued.
+  #
+  # Deliberately NOT a subPath on the shared PVC, for two independent reasons:
+  #   1. The shared volume is co-mounted into ephemeral script pods that run
+  #      LLM-authored code. The key ring can mint valid authenticated payloads;
+  #      nothing the LLM produces should be able to read it.
+  #   2. The shared-cleanup CronJob's catch-all sweep deletes anything under
+  #      /rockbot/shared older than shared.globalTtlDays (30). Key files are written
+  #      once and never touched again, and keys live ~90 days — active keys would be
+  #      reaped silently, looking exactly like a bug.
+  #
+  # Keys are stored as plaintext XML (no encryptor is configured on Linux); the
+  # protection is that only the Blazor pod ever mounts this volume.
+  storage:
+    size: 128Mi
+
   tailscale:
     # Tailscale hostname — the UI becomes accessible at <hostname> on your tailnet.
     # Requires the Tailscale Kubernetes Operator to be installed.

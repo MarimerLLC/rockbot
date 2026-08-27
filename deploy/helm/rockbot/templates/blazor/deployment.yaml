@@ -8,6 +8,12 @@ metadata:
     app.kubernetes.io/component: blazor
 spec:
   replicas: {{ .Values.blazor.replicaCount }}
+  # Recreate, not the default RollingUpdate: the data-protection volume is RWO, so a
+  # new Pod cannot mount it while the old one still holds it. With one replica a
+  # rolling update waits for the new Pod to become ready before terminating the old,
+  # and the rollout deadlocks with the new Pod Pending.
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app: rockbot-blazor
@@ -63,6 +69,10 @@ spec:
             # resolves AgentReply.Attachments file references under ${ROCKBOT_SHARED_PATH}/attachments.
             - name: ROCKBOT_SHARED_PATH
               value: "/rockbot/shared"
+            # Persistent ASP.NET Core data-protection key ring. Backs antiforgery tokens;
+            # in memory (the default) they are invalidated by every pod restart.
+            - name: DataProtection__KeyRingPath
+              value: "/data/blazor/keys"
             {{- if .Values.workiq.enabled }}
             # WorkIQ device-code flow needs the same Entra app registration
             # values the agent uses. Cache itself never lands on the Blazor pod.
@@ -111,7 +121,14 @@ spec:
             - name: shared-data
               mountPath: /rockbot/shared
               readOnly: true
+            # Read-write, and mounted by this Pod alone. fsGroup above applies pod-wide,
+            # so kubelet chgrp's this volume too and the non-root app user writes via group.
+            - name: blazor-data
+              mountPath: /data/blazor
       volumes:
         - name: shared-data
           persistentVolumeClaim:
             claimName: {{ include "rockbot.sharedPvcName" . }}
+        - name: blazor-data
+          persistentVolumeClaim:
+            claimName: {{ include "rockbot.blazorPvcName" . }}
