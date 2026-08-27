@@ -16,10 +16,10 @@ public sealed class McpBridgeOptions
     public int DefaultTimeoutMs { get; set; } = 60_000;
 
     /// <summary>
-    /// Maximum timeout in milliseconds that a caller may request via the TimeoutMs header.
-    /// Callers can exceed DefaultTimeoutMs up to this ceiling for large/slow operations.
+    /// Maximum tool-call timeout in milliseconds.
+    /// Caller-requested and per-server timeouts are capped at this value.
     /// </summary>
-    public int MaxTimeoutMs { get; set; } = 120_000;
+    public int MaxTimeoutMs { get; set; } = 900_000;
 
     /// <summary>
     /// When true, the bridge calls the LLM to generate a one-sentence summary of each

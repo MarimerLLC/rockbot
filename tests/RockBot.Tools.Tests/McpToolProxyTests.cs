@@ -12,14 +12,17 @@ public class McpToolProxyTests
     private readonly StubSubscriber _subscriber = new();
     private readonly AgentIdentity _identity = new("test-agent");
 
-    private McpToolProxy CreateProxy(TimeSpan? timeout = null)
+    private McpToolProxy CreateProxy(
+        TimeSpan? timeout = null,
+        TimeSpan? responseTimeout = null)
     {
         return new McpToolProxy(
             _publisher,
             _subscriber,
             _identity,
             NullLogger<McpToolProxy>.Instance,
-            timeout);
+            timeout,
+            responseTimeout);
     }
 
     [TestMethod]
@@ -161,6 +164,61 @@ public class McpToolProxyTests
             $"tool.result.{_identity.Name}",
             response.ToEnvelope("bridge", correlationId: correlationId));
         await executeTask;
+    }
+
+    [TestMethod]
+    public async Task ExecuteAsync_ResponseTimeoutCanExceedAdvertisedRequestTimeout()
+    {
+        var proxy = CreateProxy(
+            timeout: TimeSpan.FromMilliseconds(50),
+            responseTimeout: TimeSpan.FromMilliseconds(500));
+
+        var request = new ToolInvokeRequest
+        {
+            ToolCallId = "call-long-response",
+            ToolName = "slow_tool"
+        };
+
+        var executeTask = proxy.ExecuteAsync(
+            request,
+            CancellationToken.None);
+
+        // Existing tests use 100ms here as well.
+        // This is deliberately longer than the 50ms timeout advertised
+        // to the bridge, but shorter than the proxy's 500ms response wait.
+        await Task.Delay(100);
+
+        Assert.AreEqual(1, _publisher.Published.Count);
+
+        var envelope = _publisher.Published[0].Envelope;
+
+        // The downstream timeout remains 50ms.
+        Assert.AreEqual(
+            "50",
+            envelope.Headers[WellKnownHeaders.TimeoutMs]);
+
+        // But the proxy itself must still be waiting for the bridge response.
+        Assert.IsFalse(
+            executeTask.IsCompleted,
+            "Proxy stopped waiting at the advertised MCP request timeout.");
+
+        var response = new ToolInvokeResponse
+        {
+            ToolCallId = "call-long-response",
+            ToolName = "slow_tool",
+            Content = "completed"
+        };
+
+        await _subscriber.DeliverAsync(
+            $"tool.result.{_identity.Name}",
+            response.ToEnvelope(
+                "bridge",
+                correlationId: envelope.CorrelationId!));
+
+        var result = await executeTask;
+
+        Assert.IsFalse(result.IsError);
+        Assert.AreEqual("completed", result.Content);
     }
 
     [TestMethod]

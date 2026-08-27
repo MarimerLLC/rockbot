@@ -17,8 +17,8 @@ public sealed class McpToolProxy : IToolExecutor, IAsyncDisposable
     private readonly IMessageSubscriber _subscriber;
     private readonly AgentIdentity _identity;
     private readonly ILogger<McpToolProxy> _logger;
-    private readonly TimeSpan _timeout;
-
+    private readonly TimeSpan _requestTimeout;
+    private readonly TimeSpan _responseTimeout;
     private readonly ConcurrentDictionary<string, TaskCompletionSource<ToolInvokeResponse>> _pending = new();
     private ISubscription? _responseSubscription;
     private bool _initialized;
@@ -31,13 +31,15 @@ public sealed class McpToolProxy : IToolExecutor, IAsyncDisposable
         IMessageSubscriber subscriber,
         AgentIdentity identity,
         ILogger<McpToolProxy> logger,
-        TimeSpan? timeout = null)
+        TimeSpan? requestTimeout = null,
+        TimeSpan? responseTimeout = null)
     {
         _publisher = publisher;
         _subscriber = subscriber;
         _identity = identity;
         _logger = logger;
-        _timeout = timeout ?? TimeSpan.FromSeconds(60);
+        _requestTimeout = requestTimeout ?? TimeSpan.FromSeconds(60);
+        _responseTimeout = responseTimeout ?? _requestTimeout;
     }
 
     /// <summary>
@@ -70,7 +72,7 @@ public sealed class McpToolProxy : IToolExecutor, IAsyncDisposable
             {
                 [WellKnownHeaders.ContentTrust] = WellKnownHeaders.ContentTrustValues.ToolRequest,
                 [WellKnownHeaders.ToolProvider] = "mcp",
-                [WellKnownHeaders.TimeoutMs] = ((int)_timeout.TotalMilliseconds).ToString()
+                [WellKnownHeaders.TimeoutMs] = ((int)_requestTimeout.TotalMilliseconds).ToString()
             };
 
             if (extraHeaders is not null)
@@ -91,7 +93,7 @@ public sealed class McpToolProxy : IToolExecutor, IAsyncDisposable
                 request.ToolName, correlationId);
 
             using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-            timeoutCts.CancelAfter(_timeout);
+            timeoutCts.CancelAfter(_responseTimeout);
 
             try
             {
@@ -100,13 +102,13 @@ public sealed class McpToolProxy : IToolExecutor, IAsyncDisposable
             catch (OperationCanceledException) when (!ct.IsCancellationRequested)
             {
                 _logger.LogWarning("Tool invoke timed out for {ToolName} after {Timeout}ms",
-                    request.ToolName, _timeout.TotalMilliseconds);
+                    request.ToolName, _responseTimeout.TotalMilliseconds);
 
                 return new ToolInvokeResponse
                 {
                     ToolCallId = request.ToolCallId,
                     ToolName = request.ToolName,
-                    Content = $"MCP tool '{request.ToolName}' timed out after {_timeout.TotalSeconds}s — " +
+                    Content = $"MCP tool '{request.ToolName}' timed out after {_responseTimeout.TotalSeconds}s — " +
                               $"the MCP bridge did not respond. The underlying MCP server may be temporarily " +
                               $"unavailable. Call mcp_list_services to check which servers are registered, " +
                               $"or try an alternative approach.",

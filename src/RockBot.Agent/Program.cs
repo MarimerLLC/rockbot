@@ -343,7 +343,12 @@ builder.Services.AddRockBotHost(agent =>
     agent.WithRepairTickets();
     agent.WithDreaming(opts => builder.Configuration.GetSection("Dream").Bind(opts));
     agent.AddToolHandler();
-    agent.AddMcpToolProxy();
+    // The proxy must outwait the bridge: the bridge caps a tool call at MaxTimeoutMs
+    // (15 min) and answers with a timeout response of its own. If the proxy gave up
+    // first the caller would see a transport failure instead of that response.
+    agent.AddMcpToolProxy(
+        requestTimeout: TimeSpan.FromSeconds(60),
+        responseTimeout: TimeSpan.FromSeconds(930));
     agent.AddFileSystemTools(opts => builder.Configuration.GetSection("FileSystem").Bind(opts));
     agent.AddWebTools(opts => builder.Configuration.GetSection("WebTools").Bind(opts));
     agent.AddSchedulingTools();
