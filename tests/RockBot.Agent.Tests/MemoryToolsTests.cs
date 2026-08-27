@@ -489,6 +489,35 @@ public class MemoryToolsTests
     // Helpers
     // -------------------------------------------------------------------------
 
+    // ── Recall-family empty results ───────────────────────────────────────
+
+    [TestMethod]
+    public async Task SearchMemory_NoResults_PointsAtTheSiblingRecallTool()
+    {
+        // Durable memory is one of two recall stores. A query that finds nothing here is not
+        // evidence the fact was never known — it may have been returned by a tool earlier
+        // this session and cached in working memory.
+        var tools = MakeTools(new StubLongTermMemory());
+
+        var result = await tools.SearchMemory("anything");
+
+        StringAssert.Contains(result, RecallTools.WorkingMemory);
+        Assert.IsFalse(result.Contains($"use {RecallTools.DurableMemory}"),
+            "Re-suggesting the tool that just came back empty invites a retry loop.");
+    }
+
+    [TestMethod]
+    public async Task SearchMemory_EmptyBrowse_DoesNotPointElsewhere()
+    {
+        // A query-less call is "how is knowledge organised here?", not a failed lookup. It
+        // already answers itself with the category taxonomy; sibling pointers would be noise.
+        var tools = MakeTools(new StubLongTermMemory());
+
+        var result = await tools.SearchMemory();
+
+        Assert.IsFalse(result.Contains(RecallTools.WorkingMemory));
+    }
+
     private static MemoryTools MakeTools(StubLongTermMemory memory) =>
         new(memory, new StubChatClient(), Microsoft.Extensions.Options.Options.Create(new AgentProfileOptions()), NullLogger<MemoryTools>.Instance);
 

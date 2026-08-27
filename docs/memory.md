@@ -351,7 +351,55 @@ get_from_working_memory("subagent/t1b2c3/research_results")
 # Browse all patrol outputs
 search_working_memory(namespace: "patrol")
 search_working_memory(query: "alert", namespace: "patrol/heartbeat")
+
+# Search this context's own untrimmed tool results (see below)
+search_working_memory(query: "invoice total", namespace: "stash")
 ```
+
+**The `stash` namespace alias.** `ToolResultTrimmer` parks the full original of every
+overflow-trimmed tool result at `stash/{sessionId}/{callId}` with category
+`tool-result-stash`. The `[stash-registry]` system message lists those keys — but only for
+the *current* `AgentLoopRunner.RunAsync` invocation, so stashes from earlier turns in the
+same session are otherwise unreachable.
+
+The model cannot learn its own namespace, so a bare `namespace: "stash"` (or `"stash/"`)
+resolves to `stash/{own namespace}` rather than the shared `stash` root. Longer explicit
+paths (`stash/session/other`) pass through unchanged, so deliberate cross-context reads
+still work.
+
+### The recall-search family
+
+Two adjacent searches. They are discriminated by **what the caller is after**, not by which
+subsystem stored it — a model choosing between them knows what it wants to find and has no way
+to know which store holds it:
+
+| Tool | Headline | Scope |
+|---|---|---|
+| `search_memory` | RECALL WHAT YOU CONCLUDED | Durable cross-session knowledge the agent chose to keep |
+| `search_working_memory` | RECALL WHAT A TOOL RETURNED | This session's cached payloads, including `stash/` untrimmed tool results |
+
+Two rules hold the family together, both enforced by `RecallToolFamilyTests`:
+
+1. **Every description leads with its headline and names its siblings.** The headline is the
+   only part a model is guaranteed to read when scanning similar tools.
+2. **Every empty result names the siblings.** A query that matches nothing is where a
+   mis-routed lookup either recovers or hardens into "I was never told this" — so an empty
+   result says so explicitly ("not evidence it was never said or never known") and points
+   elsewhere. It never re-suggests the tool that just came back empty, which would be a retry
+   loop rather than a recovery.
+
+   Query-less *browses* are exempt. `search_memory()` with no query means "how is knowledge
+   organised here?" and answers itself with the category taxonomy; an empty namespace listing
+   in working memory is a fact about that namespace, not a failed lookup.
+
+The tool names, headlines, and scope phrases are `const`s on `RecallTools` in
+`RockBot.Host.Abstractions`, an assembly every registrar can see. Nothing else prevents a
+rename or a re-wording from silently desynchronising a family whose members are registered
+from assemblies that do not reference each other.
+
+A third member — `search_conversation_history`, for turns that have scrolled out of the
+context window — is tracked by [#509](https://github.com/MarimerLLC/rockbot/issues/509) and
+blocked on [#530](https://github.com/MarimerLLC/rockbot/issues/530).
 
 ---
 
