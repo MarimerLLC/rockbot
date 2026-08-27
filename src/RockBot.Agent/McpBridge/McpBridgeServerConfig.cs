@@ -51,6 +51,12 @@ public sealed class McpBridgeServerConfig
     public string TransportMode { get; set; } = "auto";
 
     /// <summary>
+    /// Optional timeout in milliseconds for tool calls to this server.
+    /// When omitted, the bridge's DefaultTimeoutMs applies.
+    /// </summary>
+    public int? ToolTimeoutMs { get; set; }
+
+    /// <summary>
     /// HTTP headers to include on every request to this server.
     /// Values may use <c>${ENV_VAR_NAME}</c> syntax for environment variable substitution.
     /// Example: <c>"X-Api-Key": "${MY_API_KEY}"</c>

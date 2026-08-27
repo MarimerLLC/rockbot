@@ -243,4 +243,28 @@ public class McpBridgeServerConfigTests
 
         Assert.AreEqual(a.CanonicalIdentity(), b.CanonicalIdentity());
     }
+
+    [TestMethod]
+    public void CanonicalIdentity_DiffersOnlyByToolTimeout_AreEqual()
+    {
+        // Tool timeout is invocation policy, not server identity.
+        // Different timeout budgets must not create duplicate registrations
+        // for the same underlying MCP server.
+        var a = new McpBridgeServerConfig
+        {
+            Type = "sse",
+            Url = "https://srv/"
+        };
+
+        var b = new McpBridgeServerConfig
+        {
+            Type = "sse",
+            Url = "https://srv/",
+            ToolTimeoutMs = 900_000
+        };
+
+        Assert.AreEqual(
+            a.CanonicalIdentity(),
+            b.CanonicalIdentity());
+    }
 }

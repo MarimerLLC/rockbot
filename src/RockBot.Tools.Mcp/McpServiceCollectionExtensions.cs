@@ -1,6 +1,8 @@
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
+using RockBot.Messaging;
 using RockBot.Host;
 using RockBot.Tools;
 using RockBot.Tools.Mcp.Recovery;
@@ -35,11 +37,24 @@ public static class McpServiceCollectionExtensions
     /// the handler registers exactly 5 management tools in <see cref="IToolRegistry"/>
     /// instead of one tool per schema.
     /// </summary>
-    public static AgentHostBuilder AddMcpToolProxy(this AgentHostBuilder builder)
+    public static AgentHostBuilder AddMcpToolProxy(
+        this AgentHostBuilder builder,
+        TimeSpan? requestTimeout = null,
+        TimeSpan? responseTimeout = null)
     {
         var agentName = builder.Identity.Name;
 
-        builder.Services.AddSingleton<McpToolProxy>();
+        var effectiveRequestTimeout = requestTimeout ?? TimeSpan.FromSeconds(60);
+        var effectiveResponseTimeout = responseTimeout ?? effectiveRequestTimeout;
+        builder.Services.AddSingleton(sp =>
+                new McpToolProxy(
+                    sp.GetRequiredService<IMessagePublisher>(),
+                    sp.GetRequiredService<IMessageSubscriber>(),
+                    sp.GetRequiredService<AgentIdentity>(),
+                    sp.GetRequiredService<ILogger<McpToolProxy>>(),
+                    effectiveRequestTimeout,
+                    effectiveResponseTimeout));
+
         builder.Services.AddSingleton<McpServerIndex>();
         builder.Services.AddSingleton<McpManagementExecutor>();
         builder.Services.AddHostedService<McpStartupProbeService>();

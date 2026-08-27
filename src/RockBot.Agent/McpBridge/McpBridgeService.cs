@@ -871,12 +871,35 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
         }
 
         // Parse timeout from headers — callers may request more time than the default (e.g. for
-        // large MCP operations), so allow header values up to MaxTimeoutMs (default 120s).
+        // large MCP operations), so allow header values up to MaxTimeoutMs.
         var timeoutMs = _options.DefaultTimeoutMs;
         if (envelope.Headers.TryGetValue(WellKnownHeaders.TimeoutMs, out var timeoutStr)
-            && int.TryParse(timeoutStr, out var parsedTimeout))
+            && int.TryParse(timeoutStr, out var parsedTimeout)
+            && parsedTimeout > 0)
         {
             timeoutMs = Math.Min(parsedTimeout, _options.MaxTimeoutMs);
+        }
+
+        // A per-server timeout is authoritative for that MCP server.
+        // This lets slow analytical MCPs opt into a larger budget while
+        // ordinary MCPs retain the normal caller/default timeout.
+        if (!string.IsNullOrWhiteSpace(serverName)
+            && _serverConfigs.TryGetValue(serverName, out var timeoutConfig)
+            && timeoutConfig.ToolTimeoutMs is int serverTimeoutMs)
+        {
+            if (serverTimeoutMs <= 0)
+            {
+                _logger.LogWarning(
+                    "Ignoring invalid ToolTimeoutMs={ToolTimeoutMs} for MCP server {Server}",
+                    serverTimeoutMs,
+                    serverName);
+            }
+            else
+            {
+                timeoutMs = Math.Min(
+                    serverTimeoutMs,
+                    _options.MaxTimeoutMs);
+            }
         }
 
         _logger.LogInformation("→ MCP {Server}/{Tool} args={Args}",
