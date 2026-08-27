@@ -1,4 +1,8 @@
 @page "/"
+@rendermode InteractiveServer
+@attribute [Authorize]
+@using Microsoft.AspNetCore.Authorization
+@using RockBot.UserProxy.Blazor.Auth
 @using RockBot.UserProxy.Blazor.Services
 @using Microsoft.JSInterop
 @inject UserProxyService ProxyService
@@ -63,6 +67,25 @@
             <button class="btn btn-sm btn-outline-light" @onclick="ToggleDarkMode" title="Toggle dark/light mode">
                 @(IsDarkMode ? "☀️" : "🌙")
             </button>
+            @* A real form POST rather than a link: signing out changes state, and the antiforgery
+               middleware is what keeps another site from doing it to you.
+               The explicit IsAuthenticated check is load-bearing: with Auth:Enabled=false the
+               default policy succeeds for everyone, so AuthorizeView alone would render a Sign out
+               button for an anonymous visitor, posting to an endpoint that is not even mapped. *@
+            <AuthorizeView>
+                <Authorized>
+                    @if (context.User.Identity?.IsAuthenticated == true)
+                    {
+                    <form method="post" action="/auth/logout" class="d-inline">
+                        <AntiforgeryToken />
+                        <button type="submit" class="btn btn-sm btn-outline-light"
+                                title="@($"Sign out {UserAllowlist.GetEmail(context.User)}")">
+                            Sign out
+                        </button>
+                    </form>
+                    }
+                </Authorized>
+            </AuthorizeView>
             <span class="connection-dot @(ProxyService.IsConnected ? "connected" : "disconnected")"
                   title="@(ProxyService.IsConnected ? "Connected to message bus" : "Disconnected from message bus")"></span>
         </div>

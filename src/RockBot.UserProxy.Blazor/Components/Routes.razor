@@ -1,6 +1,17 @@
+@using Microsoft.AspNetCore.Components.Authorization
+
 <Router AppAssembly="typeof(Program).Assembly">
     <Found Context="routeData">
-        <RouteView RouteData="routeData" />
+        @* AuthorizeRouteView honours [Authorize] on the page. When sign-in is disabled the default
+           policy succeeds for everyone, so Authorized is always taken and nothing changes. *@
+        <AuthorizeRouteView RouteData="routeData" DefaultLayout="null">
+            <NotAuthorized>
+                <RedirectToLogin />
+            </NotAuthorized>
+            <Authorizing>
+                <div class="login-shell"><div class="login-card"><p class="login-lede">Signing in…</p></div></div>
+            </Authorizing>
+        </AuthorizeRouteView>
         <FocusOnNavigate RouteData="routeData" Selector="h1" />
     </Found>
 </Router>

@@ -785,3 +785,100 @@ body.dark-mode .save-label-input {
         max-width: 90%;
     }
 }
+
+/* ── Sign-in pages (/login, /access-denied) ──────────────────────────────────
+   Static-SSR pages, so no circuit and no Blazor interactivity — these styles are
+   the whole presentation. Dark mode follows the same body.dark-mode convention as
+   the chat page; chat.js applies the class from localStorage on every page. */
+
+.login-shell {
+    min-height: 100vh;
+    min-height: 100dvh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 1.5rem;
+    background-color: var(--light-bg);
+}
+
+.login-card {
+    width: 100%;
+    max-width: 24rem;
+    padding: 2rem;
+    border-radius: 0.75rem;
+    background-color: white;
+    border: 1px solid var(--border-color);
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+    text-align: center;
+}
+
+.login-title {
+    margin: 0 0 0.5rem;
+    font-size: 1.5rem;
+    font-weight: 600;
+}
+
+.login-lede {
+    margin: 0 0 1.5rem;
+    color: var(--secondary-color);
+}
+
+.login-note {
+    margin: 0 0 1.5rem;
+    font-size: 0.875rem;
+    color: var(--secondary-color);
+}
+
+.login-providers {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+}
+
+.login-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.5rem;
+    width: 100%;
+    padding: 0.625rem 1rem;
+    border: 1px solid var(--border-color);
+    border-radius: 0.5rem;
+    background-color: white;
+    color: inherit;
+    font: inherit;
+    text-decoration: none;
+    cursor: pointer;
+}
+
+.login-btn:hover {
+    background-color: var(--light-bg);
+}
+
+.login-badge {
+    padding: 0.125rem 0.5rem;
+    border-radius: 1rem;
+    background-color: var(--agent-message-bg);
+    font-size: 0.75rem;
+    color: var(--secondary-color);
+}
+
+body.dark-mode .login-shell {
+    background-color: var(--dark-bg);
+}
+
+body.dark-mode .login-card,
+body.dark-mode .login-btn {
+    background-color: #2b3035;
+    border-color: #495057;
+    color: #dee2e6;
+}
+
+body.dark-mode .login-btn:hover {
+    background-color: #343a40;
+}
+
+body.dark-mode .login-badge {
+    background-color: #495057;
+    color: #dee2e6;
+}

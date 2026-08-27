@@ -103,6 +103,80 @@ blazor:
   storage:
     size: 128Mi
 
+  # ── OAuth sign-in ───────────────────────────────────────────────────────────
+  # An alternative to the tailnet gate below, not a companion to it. Turn this on
+  # when the UI is reachable over an ordinary HTTPS ingress and the network in
+  # front of it is not doing the gating.
+  #
+  # With enabled: false (the default) nothing changes: no login page, no cookie,
+  # and every route stays anonymous exactly as it is today.
+  auth:
+    enabled: false
+
+    # External address of this deployment, e.g. https://rockbot.example.com.
+    #
+    # Set it. Behind a TLS-terminating ingress the pod still sees plain http on
+    # :8080, so ASP.NET Core builds an http:// callback URL, and Google rejects it
+    # with "redirect_uri_mismatch" and no indication of why. This value overrides
+    # that guess and needs no trust in any header, which is why it is preferred over
+    # trustForwardedHeaders below.
+    publicBaseUrl: ""
+
+    # Trust X-Forwarded-Proto / X-Forwarded-Host from any source. Only needed when
+    # publicBaseUrl cannot be pinned (several hostnames on one deployment). Off by
+    # default because these headers are attacker-controlled unless the ingress is
+    # known to strip incoming copies.
+    trustForwardedHeaders: false
+
+    # Cookie lifetime, sliding. Survives pod restarts because the data-protection
+    # key ring is on the PVC above — both halves are needed to stay signed in.
+    sessionLifetime: "14.00:00:00"
+
+    # WHO GETS IN. At least one entry across the two lists is REQUIRED when
+    # enabled: true, and the app refuses to start without one.
+    #
+    # An empty allowlist does not mean "the people I expect". "Sign in with Google"
+    # with nothing listed means every Google account in existence can open a full
+    # agent session. That is a startup failure, never a default.
+    #
+    # allowedEmails matches the whole address, case-insensitively.
+    # allowedDomains matches the part after the final "@", exactly — a suffix match
+    # would let evil-example.com satisfy an example.com rule.
+    allowedEmails: []
+      # - someone@example.com
+    allowedDomains: []
+      # - example.com
+
+    # Google OAuth client ID. The client's "Authorized redirect URI" in the Google
+    # Cloud Console must be exactly {publicBaseUrl}/signin-google.
+    # See deploy/blazor-oauth-setup.md for the walkthrough.
+    # The matching client secret goes in secrets.auth.google.clientSecret.
+    google:
+      clientId: ""
+
+  # ── Generic HTTPS ingress (no Tailscale) ────────────────────────────────────
+  # The way in for a deployment that is not on a tailnet — which is the only kind
+  # that has any use for auth.enabled above. Mutually exclusive with
+  # tailscale.ingress.enabled; the chart fails to render if both are on, because
+  # two Ingresses pointing at one Service with different classes is a coin toss.
+  ingress:
+    enabled: false
+    className: nginx
+    host: ""            # REQUIRED when enabled — e.g. rockbot.example.com
+    # Guard rail: enabling this ingress without auth.enabled publishes a full agent
+    # chat session with nothing in front of it. The chart refuses to render that
+    # combination unless you say here that something outside the chart — an
+    # oauth2-proxy, an authenticating gateway — is doing the gating.
+    allowUnauthenticated: false
+    # Passed through verbatim. cert-manager users want something like:
+    #   cert-manager.io/cluster-issuer: letsencrypt-prod
+    annotations: {}
+    tls:
+      enabled: true
+      # Secret holding the certificate. With cert-manager, this is the name it
+      # writes to and need not exist beforehand.
+      secretName: rockbot-blazor-tls
+
   tailscale:
     # Tailscale hostname — the UI becomes accessible at <hostname> on your tailnet.
     # Requires the Tailscale Kubernetes Operator to be installed.
@@ -390,6 +464,13 @@ llm:
 secrets:
   create: true
   existingSecretName: ""   # used only when create: false
+
+  # ── Blazor UI OAuth (only used when blazor.auth.enabled=true) ──────────────
+  # The client ID is not secret and lives in values under blazor.auth.google;
+  # only the secret half belongs here.
+  auth:
+    google:
+      clientSecret: ""
 
   llm:
     # Three-tier LLM configuration. Balanced is REQUIRED.

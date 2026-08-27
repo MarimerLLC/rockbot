@@ -73,6 +73,54 @@ spec:
             # in memory (the default) they are invalidated by every pod restart.
             - name: DataProtection__KeyRingPath
               value: "/data/blazor/keys"
+            # OAuth sign-in. Auth__Enabled is always present so switching it off in
+            # values actually switches it off in the pod.
+            - name: Auth__Enabled
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ include "rockbot.configmapName" . }}
+                  key: Auth__Enabled
+            {{- if .Values.blazor.auth.enabled }}
+            - name: Auth__PublicBaseUrl
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ include "rockbot.configmapName" . }}
+                  key: Auth__PublicBaseUrl
+            - name: Auth__TrustForwardedHeaders
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ include "rockbot.configmapName" . }}
+                  key: Auth__TrustForwardedHeaders
+            - name: Auth__SessionLifetime
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ include "rockbot.configmapName" . }}
+                  key: Auth__SessionLifetime
+            - name: Auth__Providers__Google__ClientId
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ include "rockbot.configmapName" . }}
+                  key: Auth__Providers__Google__ClientId
+            - name: Auth__Providers__Google__ClientSecret
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "rockbot.secretName" . }}
+                  key: Auth__Providers__Google__ClientSecret
+            {{- range $i, $email := .Values.blazor.auth.allowedEmails }}
+            - name: Auth__AllowedEmails__{{ $i }}
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ include "rockbot.configmapName" $ }}
+                  key: Auth__AllowedEmails__{{ $i }}
+            {{- end }}
+            {{- range $i, $domain := .Values.blazor.auth.allowedDomains }}
+            - name: Auth__AllowedDomains__{{ $i }}
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ include "rockbot.configmapName" $ }}
+                  key: Auth__AllowedDomains__{{ $i }}
+            {{- end }}
+            {{- end }}
             {{- if .Values.workiq.enabled }}
             # WorkIQ device-code flow needs the same Entra app registration
             # values the agent uses. Cache itself never lands on the Blazor pod.
@@ -101,16 +149,19 @@ spec:
                   key: WorkIQ__Authority
             {{- end }}
             {{- end }}
+          # /healthz, not /. With sign-in on, / answers 302 to /login, which the
+          # kubelet scores as success — the probe would pass without asserting
+          # anything. /healthz is anonymous and answers 200 either way.
           livenessProbe:
             httpGet:
-              path: /
+              path: /healthz
               port: 8080
             initialDelaySeconds: 30
             periodSeconds: 15
             failureThreshold: 3
           readinessProbe:
             httpGet:
-              path: /
+              path: /healthz
               port: 8080
             initialDelaySeconds: 10
             periodSeconds: 5
