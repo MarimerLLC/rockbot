@@ -7,7 +7,7 @@ metadata:
   labels:
     {{- include "rockbot.labels" . | nindent 4 }}
     app.kubernetes.io/component: blazor
-{{- if not .Values.blazor.tailscale.ingress.enabled }}
+{{- if not (or .Values.blazor.tailscale.ingress.enabled .Values.blazor.ingress.enabled) }}
   annotations:
     # Tailscale Kubernetes Operator — exposes this service on your tailnet
     # at <hostname> (no Funnel, private to tailnet only).
@@ -19,14 +19,16 @@ metadata:
     {{- end }}
 {{- end }}
 spec:
-{{- if .Values.blazor.tailscale.ingress.enabled }}
-  # Layer-7 mode: the Ingress owns the Tailscale device and terminates TLS, so this
-  # Service is a plain in-cluster backend. It must NOT also be a tailscale
-  # LoadBalancer — two devices competing for <hostname> means the loser is renamed
-  # <hostname>-1 and the certificate follows the wrong name.
+{{- if or .Values.blazor.tailscale.ingress.enabled .Values.blazor.ingress.enabled }}
+  # Behind an Ingress, this Service is a plain in-cluster backend.
   #
-  # The tags annotation lives on the Ingress in this mode, not here — the Ingress
-  # owns the device.
+  # In tailnet layer-7 mode the Ingress owns the Tailscale device and terminates
+  # TLS. It must NOT also be a tailscale LoadBalancer — two devices competing for
+  # <hostname> means the loser is renamed <hostname>-1 and the certificate follows
+  # the wrong name. The tags annotation lives on the Ingress in that mode, not here.
+  #
+  # With the generic HTTPS ingress there may be no Tailscale operator installed at
+  # all, in which case a LoadBalancer of class tailscale would simply hang Pending.
   type: ClusterIP
 {{- else }}
   type: LoadBalancer

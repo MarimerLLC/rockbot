@@ -1,0 +1,50 @@
+@page "/access-denied"
+@using RockBot.UserProxy.Blazor.Auth
+
+@* Static SSR, like /login — and for the same reason. *@
+
+<PageTitle>Access denied</PageTitle>
+
+<div class="login-shell">
+    <div class="login-card">
+        <h1 class="login-title">Access denied</h1>
+
+        @* IsAuthenticated, not just the Authorized branch: with sign-in disabled the default
+           policy succeeds for anonymous visitors too, and this page would then claim they are
+           signed in as nobody. *@
+        <AuthorizeView>
+            <Authorized>
+                @if (context.User.Identity?.IsAuthenticated == true)
+                {
+                @* Naming the account is the whole point of this page. The overwhelmingly likely
+                   cause is "signed in with the wrong Google account", and a bare 403 leaves the
+                   user with no way to work out which one they used. *@
+                <p class="login-lede">
+                    You are signed in as <strong>@(UserAllowlist.GetEmail(context.User) ?? "an unknown account")</strong>,
+                    which is not on this instance's allowlist.
+                </p>
+                <p class="login-note">
+                    If that is the wrong account, sign out and try another. If it is the right one,
+                    ask whoever runs this instance to add it.
+                </p>
+
+                @* The session is deliberately left intact until this button is pressed — clearing it
+                   on the way in would leave nothing to name above. *@
+                <form method="post" action="/auth/logout">
+                    <AntiforgeryToken />
+                    <button type="submit" class="login-btn">Sign out and use another account</button>
+                </form>
+                }
+                else
+                {
+                    <p class="login-lede">You are not signed in.</p>
+                    <a class="login-btn" href="/login">Go to sign in</a>
+                }
+            </Authorized>
+            <NotAuthorized>
+                <p class="login-lede">You are not signed in.</p>
+                <a class="login-btn" href="/login">Go to sign in</a>
+            </NotAuthorized>
+        </AuthorizeView>
+    </div>
+</div>

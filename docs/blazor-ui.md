@@ -273,6 +273,128 @@ Transparency log permanently. The service stays private; the name does not.
 
 ---
 
+## Authentication
+
+There are two independent ways to decide who reaches this UI, and a deployment picks one.
+
+**The network decides.** The default. The UI is exposed only on your tailnet, and tailnet
+ACLs say who may reach it. Nothing in the app authenticates anybody; `blazor.auth.enabled`
+stays `false` and every route is anonymous. This is the right answer when you already run
+Tailscale.
+
+**The app decides.** OAuth sign-in, Google today. The UI sits behind an ordinary HTTPS
+ingress and an allowlist in the app says who gets in. This is for deployments that should
+not have to adopt Tailscale to be secured.
+
+Setup is a Google Cloud Console walkthrough plus a values block:
+[`deploy/blazor-oauth-setup.md`](../deploy/blazor-oauth-setup.md).
+
+### It is a doorman, not a tenancy model
+
+Everyone who signs in still shares one conversation with the agent — the chat page pins a
+single `SessionId` and `UserId`, and sign-in does not change that. You are deciding *who
+gets in*, not *whose conversation this is*. Per-user sessions would mean reworking
+agent-side history keying and working-memory namespacing.
+
+### The allowlist
+
+```yaml
+blazor:
+  auth:
+    enabled: true
+    publicBaseUrl: "https://rockbot.example.com"
+    allowedEmails: [someone@example.com]
+    allowedDomains: [example.com]
+    google:
+      clientId: "...apps.googleusercontent.com"
+```
+
+At least one entry across the two lists is **required**. The chart refuses to render
+without one and the app refuses to start.
+
+An empty allowlist does not mean "the people I expect". "Sign in with Google" with nothing
+listed means every Google account in existence can open a full agent session — so it is
+treated as a misconfiguration and fails loudly, rather than coming up wide open.
+
+- `allowedEmails` matches the whole address, case-insensitively.
+- `allowedDomains` matches the part after the final `@`, exactly. A suffix match would let
+  `evil-example.com` satisfy an `example.com` rule.
+- An address Google reports as unverified never matches, on either list.
+
+The allowlist is evaluated on every request, so removing someone takes effect immediately
+for new requests. An already-open browser tab holds a live SignalR circuit that no longer
+passes through the request pipeline, so a background revalidation re-checks the allowlist
+every 30 minutes and tears the circuit down. That window is the worst case for revocation.
+
+### Behind a reverse proxy
+
+The one failure this setup reliably produces if you skip it. The pod listens on plain http
+on `:8080`, so a callback URL built from the incoming request comes out as `http://…`, and
+Google — which permits http only for `http://localhost` — rejects it with
+`redirect_uri_mismatch` and no useful detail.
+
+Set `blazor.auth.publicBaseUrl` to the external address. Every absolute URL the app builds
+then comes from that value and no forwarded header needs to be trusted.
+`blazor.auth.trustForwardedHeaders` is the fallback for deployments serving several
+hostnames, and it trusts `X-Forwarded-Proto`/`X-Forwarded-Host` from any source — safe only
+if your ingress strips incoming copies.
+
+### Getting in without a tailnet
+
+`blazor.ingress` is a plain Kubernetes Ingress with a configurable class and pass-through
+annotations (cert-manager, typically). It is mutually exclusive with
+`blazor.tailscale.ingress` — two Ingresses on one Service with different classes is a coin
+toss, so the chart fails to render if both are on.
+
+Enabling it with `blazor.auth.enabled: false` also fails to render: that combination
+publishes a full agent chat session with nothing in front of it. Set
+`blazor.ingress.allowUnauthenticated: true` if something outside this chart is doing the
+gating.
+
+### What is protected
+
+`[Authorize]` and `.RequireAuthorization()` are applied explicitly, never as a global
+fallback policy. A fallback policy also covers the `MapStaticAssets()` endpoints, so
+anonymous visitors get 302s for the CSS and `blazor.web.js` and the login page renders
+broken.
+
+- **The chat page** carries `[Authorize]`.
+- **`/attachments`** carries `.RequireAuthorization()`. It serves bytes off the shared PVC;
+  left anonymous it is a side door around sign-in entirely, however well the chat page
+  itself is locked down.
+- **`/healthz`, `/login`, `/access-denied`, `/auth/challenge`** are anonymous. The probes
+  point at `/healthz` rather than `/`, because `/` answers a 302 to `/login` when sign-in is
+  on and a kubelet scores that as success — the probe would pass without asserting anything.
+
+With `blazor.auth.enabled: false` the default authorization policy succeeds for everyone,
+so the same attributes stay on the same endpoints and simply pass. There is no second
+arrangement of the pipeline that only runs when sign-in is off.
+
+### Staying signed in
+
+Two independent things, and either one alone gets you nothing:
+
+- **Server side** — the data-protection key ring on the PVC (see *Persistent storage*
+  above). Without it, every restart invalidates every cookie.
+- **Client side** — the sign-in challenge sets `IsPersistent`, so the cookie is not a
+  session cookie and closing the browser does not sign you out.
+  `blazor.auth.sessionLifetime` (14 days, sliding) sets the lifetime.
+
+### Sign-in pages
+
+`/login` and `/access-denied` are static SSR — deliberately not interactive, so an anonymous
+visitor never allocates a SignalR circuit. Each provider is a plain link, so the page works
+with JavaScript disabled; `wwwroot/js/login.js` only hoists the last-used provider to the
+top and labels it. It does **not** auto-redirect: bouncing straight into the remembered
+provider makes the page impossible to get past when you need to switch accounts, and turns a
+denied account into a loop you cannot escape from the UI.
+
+`/access-denied` names the account you signed in as, because the overwhelmingly likely cause
+is the wrong Google account and a bare 403 leaves you unable to tell which one you used. The
+session is left intact until you press sign out — there would be nothing to name otherwise.
+
+---
+
 ## Configuration
 
 ```csharp
