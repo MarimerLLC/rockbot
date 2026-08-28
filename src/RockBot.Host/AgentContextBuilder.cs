@@ -13,6 +13,10 @@ namespace RockBot.Host;
 /// Builds the LLM chat message context (system prompt, history, memories, skills, working memory)
 /// for a given session and user turn. Shared by UserMessageHandler, ScheduledTaskHandler, and SubagentRunner.
 /// </summary>
+// CS9113: <c>clock</c> is unread since datetime injection moved to AgentLoopRunner.EnsureDateTimeContext
+// (see the note in BuildAsync). The parameter is kept because this is a public constructor on a shipped
+// package; dropping it would be a source- and binary-breaking change for downstream consumers.
+#pragma warning disable CS9113
 public sealed class AgentContextBuilder(
     ProfileHolder profileHolder,
     AgentIdentity agent,
@@ -35,6 +39,7 @@ public sealed class AgentContextBuilder(
     ICapabilityClaimVerifier? capabilityClaimVerifier = null,
     IToolCallLog? toolCallLog = null,
     IOptions<AgentHostOptions>? agentHostOptions = null)
+#pragma warning restore CS9113
 {
     /// <summary>Host options, defaulted when not supplied so existing callers and tests are unaffected.</summary>
     private readonly AgentHostOptions _hostOptions = agentHostOptions?.Value ?? new AgentHostOptions();
@@ -86,14 +91,15 @@ public sealed class AgentContextBuilder(
         // /data/agent/prompt-hints/patrol.md is injected into patrol-task prompts only.
         var category = DerivePromptCategory(workingMemoryNamespace);
         var systemPrompt = systemPromptOverride ?? promptBuilder.Build(profile, agent, category);
+        // Datetime context is deliberately NOT injected here. AgentLoopRunner.EnsureDateTimeContext
+        // supplies it — rounded to the minute and inserted just before the last user message — so the
+        // system-prompt prefix stays byte-identical across turns and the provider prompt cache holds.
+        // A datetime string at this position diverges every request from the end of the persona onward:
+        // a few thousand tokens of needless recompute on cloud providers, and the entire prompt on
+        // llama.cpp with sliding-window attention, which cannot roll its cache back mid-sequence.
         var chatMessages = new List<ChatMessage>
         {
-            new(ChatRole.System, systemPrompt),
-            new(ChatRole.System,
-                $"Current local date and time: {clock.Now:dddd, MMMM d, yyyy} {clock.Now:HH:mm:ss zzz} ({clock.Zone.Id})\n" +
-                $"UTC equivalent: {clock.Now.UtcDateTime:yyyy-MM-dd HH:mm:ss}\n" +
-                "All dates and times must use this timezone. " +
-                "When any tool returns a UTC timestamp, convert it to this local timezone before using or displaying it.")
+            new(ChatRole.System, systemPrompt)
         };
 
         // Client rendering capabilities — only injected when the caller advertised at least
@@ -955,7 +961,7 @@ public sealed class AgentContextBuilder(
 
     /// <summary>
     /// Slim context build for the worker rung — see <c>design/worker-subagents.md</c>.
-    /// Injects only: system prompt (passed in), datetime, active rules, model
+    /// Injects only: system prompt (passed in), active rules, model
     /// guardrails, skill index + BM25 recall, service hints, and working memory
     /// (own namespace + shared). Skips LTM/episodic/identity/KG fetch entirely
     /// and the embedding generation that backs them.
@@ -978,14 +984,15 @@ public sealed class AgentContextBuilder(
         string workingMemoryNamespace,
         string systemPromptOverride)
     {
+        // Datetime context is deliberately NOT injected here. AgentLoopRunner.EnsureDateTimeContext
+        // supplies it — rounded to the minute and inserted just before the last user message — so the
+        // system-prompt prefix stays byte-identical across turns and the provider prompt cache holds.
+        // A datetime string at this position diverges every request from the end of the persona onward:
+        // a few thousand tokens of needless recompute on cloud providers, and the entire prompt on
+        // llama.cpp with sliding-window attention, which cannot roll its cache back mid-sequence.
         var chatMessages = new List<ChatMessage>
         {
-            new(ChatRole.System, systemPromptOverride),
-            new(ChatRole.System,
-                $"Current local date and time: {clock.Now:dddd, MMMM d, yyyy} {clock.Now:HH:mm:ss zzz} ({clock.Zone.Id})\n" +
-                $"UTC equivalent: {clock.Now.UtcDateTime:yyyy-MM-dd HH:mm:ss}\n" +
-                "All dates and times must use this timezone. " +
-                "When any tool returns a UTC timestamp, convert it to this local timezone before using or displaying it.")
+            new(ChatRole.System, systemPromptOverride)
         };
 
         // Active rules — safety constraints workers must honour.

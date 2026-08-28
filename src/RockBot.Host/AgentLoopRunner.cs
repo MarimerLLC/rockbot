@@ -743,6 +743,9 @@ public sealed partial class AgentLoopRunner(
     /// the datetime string sat in front of the otherwise-stable conversation history; the
     /// new placement keeps the entire history prefix cacheable. Any pre-existing datetime
     /// system message is removed first so re-running the loop migrates the position.
+    /// This is the only datetime injection site: <see cref="AgentContextBuilder"/> used to add a
+    /// second, seconds-precision copy right behind the system prompt, which diverged every request
+    /// from that point on and defeated the cache this placement exists to preserve.
     /// </summary>
     private void EnsureDateTimeContext(List<ChatMessage> chatMessages)
     {
@@ -750,7 +753,8 @@ public sealed partial class AgentLoopRunner(
         var nowMinute = new DateTimeOffset(now.Year, now.Month, now.Day, now.Hour, now.Minute, 0, now.Offset);
         var text =
             $"The user's local date and time is: {nowMinute:dddd, MMMM d, yyyy} {nowMinute:HH:mm zzz} ({clock.Zone.Id}). " +
-            "Always express dates and times to the user in this timezone. Never assume UTC or any other timezone.";
+            "Always express dates and times to the user in this timezone. Never assume UTC or any other timezone. " +
+            "When any tool returns a UTC timestamp, convert it to this local timezone before using or displaying it.";
 
         for (var i = chatMessages.Count - 1; i >= 0; i--)
         {
