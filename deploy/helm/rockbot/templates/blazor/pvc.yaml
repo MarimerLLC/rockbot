@@ -1,0 +1,20 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "rockbot.blazorPvcName" . }}
+  namespace: {{ .Values.namespace }}
+  annotations:
+    helm.sh/resource-policy: keep
+  labels:
+    {{- include "rockbot.labels" . | nindent 4 }}
+    app.kubernetes.io/component: blazor
+spec:
+  # ReadWriteOnce: exactly one Pod ever mounts this. Deliberately NOT the shared
+  # RWX volume — that one is co-mounted into ephemeral script Pods running
+  # LLM-authored code, and the key ring is what mints valid authenticated cookies.
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: {{ .Values.storage.storageClass }}
+  resources:
+    requests:
+      storage: {{ .Values.blazor.storage.size }}

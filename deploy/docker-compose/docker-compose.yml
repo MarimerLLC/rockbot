@@ -183,12 +183,21 @@ services:
       AgentName__Path: /data/agent/agent-name.md
     volumes:
       - ${AGENT_DATA_PATH:-agent-data}:/data/agent
+  blazor-init:
+    image: busybox:latest
+    user: root
+    command: ["/bin/sh", "-c", "mkdir -p /data/blazor/keys && chmod -R 777 /data/blazor"]
+    volumes:
+      - blazor-data:/data/blazor
+
   blazor:
     build:
       context: ../..
       dockerfile: src/RockBot.UserProxy.Blazor/Dockerfile
     image: rockylhotka/rockbot-blazor:latest
     depends_on:
+      blazor-init:
+        condition: service_completed_successfully
       rabbitmq:
         condition: service_healthy
     ports:
@@ -199,8 +208,17 @@ services:
       RabbitMq__UserName: rockbot
       RabbitMq__Password: rockbot
       RabbitMq__VirtualHost: /
+      # Persistent ASP.NET Core data-protection key ring — without it the ring is
+      # regenerated on every restart and antiforgery tokens minted before the restart
+      # are rejected. The app fails fast if this path is not writable, which is what
+      # blazor-init above exists to guarantee: Docker named volumes are root-owned and
+      # the image runs as a non-root user. Kubernetes gets this free from fsGroup.
+      DataProtection__KeyRingPath: /data/blazor/keys
+    volumes:
+      - blazor-data:/data/blazor
 
 volumes:
   rabbitmq-data:
   agent-data:
   shared:
+  blazor-data:

@@ -27,6 +27,11 @@ builder.Services.AddSingleton<ChatStateService>();
 builder.Services.AddWorkIqAuthClient(builder.Configuration);
 builder.Services.AddScoped<WorkIqAuthUiService>();
 
+// Persist the data-protection key ring when DataProtection:KeyRingPath is configured.
+// The ring backs antiforgery tokens (see UseAntiforgery below); left in memory it is
+// regenerated on every restart, so tokens minted by the previous process are rejected.
+builder.Services.AddRockBotDataProtection(builder.Configuration);
+
 var app = builder.Build();
 
 // Configure the HTTP request pipeline.

@@ -152,6 +152,45 @@ Docker image (`rockylhotka/rockbot-blazor`). It requires only:
 
 It does **not** need access to the agent data PVC or any agent-internal configuration.
 
+### Persistent storage
+
+The chart provisions one small `ReadWriteOnce` PVC, `rockbot-blazor-data` (128Mi, sized by
+`blazor.storage.size`), mounted read-write at `/data/blazor`. It holds exactly one thing: the
+ASP.NET Core **data-protection key ring**, at the path named by `DataProtection__KeyRingPath`.
+
+That ring is what protects antiforgery tokens — `Program.cs` calls `app.UseAntiforgery()`.
+Left in memory, which is the framework default when no persistent path is configured, it is
+regenerated from scratch every time the process starts, so every token the previous process
+issued is rejected after a restart or a rollout.
+
+Set `DataProtection:KeyRingPath` and the app persists the ring there, pinning the application
+name to `rockbot-blazor` so the purpose string does not drift with the container's working
+directory. Leave it empty and the ASP.NET Core defaults apply — on a developer machine those
+already resolve to a persistent per-user profile directory, so only container deployments need
+to set it. The path is probed for writability at startup and the app **fails to start** if it
+cannot be written; the alternative is silently falling back to in-memory keys, which looks
+like the feature simply not working.
+
+Two deliberate choices worth knowing:
+
+- **It is not a `subPath` on the shared PVC.** That volume is co-mounted into ephemeral script
+  pods running LLM-authored code, and it is swept by the `shared-cleanup` CronJob, whose
+  catch-all rule deletes anything older than `shared.globalTtlDays` (30 days). Key files are
+  written once and never touched again while keys live ~90 days, so active keys would be
+  reaped silently.
+- **The deployment uses `strategy: Recreate`.** An RWO volume cannot be mounted by a new pod
+  while the old one holds it, so a rolling update would deadlock with the new pod `Pending`.
+  This also means `blazor.replicaCount` must stay at 1 — which it already had to, since
+  conversation state lives in the in-memory `ChatStateService`.
+
+Keys are stored as plaintext XML (no encryptor is configured on Linux). The protection is that
+only the Blazor pod ever mounts the volume.
+
+In Kubernetes the pod's `securityContext.fsGroup` applies pod-wide, so kubelet chgrps the new
+volume and the non-root app user writes via group — no init container needed. The Docker
+Compose stack has no equivalent, so it runs a small `blazor-init` service that creates and
+chmods the directory before the app starts.
+
 The UI is exposed on the Tailscale network via the Tailscale Kubernetes Operator, in one
 of two modes.
 

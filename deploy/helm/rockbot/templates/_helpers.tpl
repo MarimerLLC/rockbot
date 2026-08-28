@@ -74,6 +74,13 @@ Name of the shared volume PVC.
 {{- end }}
 
 {{/*
+Name of the Blazor UI PVC (data-protection key ring).
+*/}}
+{{- define "rockbot.blazorPvcName" -}}
+{{- include "rockbot.fullname" . }}-blazor-data
+{{- end }}
+
+{{/*
 find(1) exclusion clauses for shared.protectedPaths, one pair of lines per entry.
 
 Each entry is stripped of surrounding slashes first: a trailing one would render
