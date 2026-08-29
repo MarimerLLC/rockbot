@@ -15,18 +15,84 @@ public static class HostDiagnostics
     public static readonly ActivitySource Source = new(ActivitySourceName);
     public static readonly Meter Meter = new(MeterName);
 
+    // ── Histogram bucket boundaries ───────────────────────────────────────────
+    // The OTel SDK's default boundaries stop at 10,000. That ceiling is one to
+    // two orders of magnitude below every token count recorded here, and it is
+    // 10 seconds for anything measured in milliseconds. With no explicit
+    // boundaries the observations pile into the +Inf bucket, and Prometheus's
+    // histogram_quantile then returns the highest FINITE bound — so p50/p95/p99
+    // all render as a flat 10,000 line in Grafana no matter what was measured.
+    //
+    // Measured over 7d on 2026-08-28 (share of observations above 10,000):
+    //   agent.context.tokens          100%   mean     19,755 tokens
+    //   agent.turn.tokens.input        99%   mean    296,268 tokens
+    //   agent.turn.tokens.input.cached 96%   mean    216,499 tokens
+    //   agent.llm.context.tokens       93%   mean     25,509 tokens
+    //   subagent.duration             100%   mean    422,590 ms
+    //   agent.turn.duration            41%   mean     11,394 ms
+    //   llm.request.duration           39%   mean     36,449 ms
+    //   embedding.duration             29%   mean      6,458 ms
+    //   pipeline.dispatch.duration     20%   mean     21,592 ms
+    //
+    // Instruments left on the SDK defaults (turn.tokens.output, turn.tools, and
+    // the sub-second duration metrics) measured fully in range, so they keep the
+    // defaults rather than churn a working metric.
+    //
+    // These must be declared BEFORE the instruments that reference them —
+    // static field initializers run in declaration order, so moving them down
+    // the file would hand CreateHistogram a null boundary list.
+
+    /// <summary>
+    /// Buckets for per-turn cumulative token counts. These sum across every
+    /// internal LLM call in a turn, so a long tool loop reaches the millions.
+    /// </summary>
+    private static readonly IReadOnlyList<long> TurnTokenBuckets =
+        [1_000, 5_000, 10_000, 25_000, 50_000, 100_000,
+         250_000, 500_000, 1_000_000, 2_500_000, 5_000_000];
+
+    /// <summary>
+    /// Buckets for single-payload context sizes. Bounded by the model's context
+    /// window rather than by loop length, hence a tighter top end than
+    /// <see cref="TurnTokenBuckets"/>.
+    /// </summary>
+    private static readonly IReadOnlyList<long> ContextTokenBuckets =
+        [1_000, 2_500, 5_000, 10_000, 25_000, 50_000,
+         100_000, 200_000, 400_000, 1_000_000];
+
+    /// <summary>
+    /// Buckets (ms) for request-scoped work: one call out to a model or embedding
+    /// endpoint, or a single pass through the dispatch pipeline. Spans 10ms to
+    /// 10 minutes — the top end covers slow generations, which do exceed a minute.
+    /// </summary>
+    public static readonly IReadOnlyList<double> RequestDurationBuckets =
+        [10, 25, 50, 100, 250, 500, 1_000, 2_500, 5_000,
+         10_000, 30_000, 60_000, 120_000, 300_000, 600_000];
+
+    /// <summary>
+    /// Buckets (ms) for whole-turn and subagent work, which drives an entire tool
+    /// loop and routinely runs for minutes. Shared with
+    /// <c>RockBot.Subagent.SubagentDiagnostics</c> so both read on one scale.
+    /// </summary>
+    public static readonly IReadOnlyList<double> LoopDurationBuckets =
+        [500, 1_000, 2_500, 5_000, 10_000, 30_000, 60_000,
+         120_000, 300_000, 600_000, 1_200_000, 1_800_000, 3_600_000];
+
     public static readonly Histogram<double> DispatchDuration =
         Meter.CreateHistogram<double>(
             "rockbot.pipeline.dispatch.duration",
             unit: "ms",
-            description: "Duration of message dispatch through the pipeline");
+            description: "Duration of message dispatch through the pipeline",
+            tags: null,
+            advice: new InstrumentAdvice<double> { HistogramBucketBoundaries = RequestDurationBuckets });
 
     // ── LLM metrics — recorded in LlmClient (the actual call path) ───────────
     public static readonly Histogram<double> LlmRequestDuration =
         Meter.CreateHistogram<double>(
             "rockbot.llm.request.duration",
             unit: "ms",
-            description: "Duration of LLM request operations");
+            description: "Duration of LLM request operations",
+            tags: null,
+            advice: new InstrumentAdvice<double> { HistogramBucketBoundaries = RequestDurationBuckets });
 
     public static readonly Counter<long> LlmRequests =
         Meter.CreateCounter<long>(
@@ -90,7 +156,9 @@ public static class HostDiagnostics
         Meter.CreateHistogram<double>(
             "rockbot.agent.turn.duration",
             unit: "ms",
-            description: "Duration of agent turns from message receipt to final reply");
+            description: "Duration of agent turns from message receipt to final reply",
+            tags: null,
+            advice: new InstrumentAdvice<double> { HistogramBucketBoundaries = LoopDurationBuckets });
 
     /// <summary>Total agent turns completed.</summary>
     public static readonly Counter<long> Turns =
@@ -104,14 +172,18 @@ public static class HostDiagnostics
         Meter.CreateHistogram<long>(
             "rockbot.agent.context.tokens",
             unit: "{token}",
-            description: "Estimated token count of context injected before LLM call");
+            description: "Estimated token count of context injected before LLM call",
+            tags: null,
+            advice: new InstrumentAdvice<long> { HistogramBucketBoundaries = ContextTokenBuckets });
 
     /// <summary>Total input tokens consumed per turn (aggregated across all LLM calls).</summary>
     public static readonly Histogram<long> TurnTokensInput =
         Meter.CreateHistogram<long>(
             "rockbot.agent.turn.tokens.input",
             unit: "{token}",
-            description: "Input tokens per turn, aggregated across all LLM calls in the loop");
+            description: "Input tokens per turn, aggregated across all LLM calls in the loop",
+            tags: null,
+            advice: new InstrumentAdvice<long> { HistogramBucketBoundaries = TurnTokenBuckets });
 
     /// <summary>Total output tokens produced per turn (aggregated across all LLM calls).</summary>
     public static readonly Histogram<long> TurnTokensOutput =
@@ -125,7 +197,9 @@ public static class HostDiagnostics
         Meter.CreateHistogram<long>(
             "rockbot.agent.turn.tokens.input.cached",
             unit: "{token}",
-            description: "Cached input tokens per turn (subset of TurnTokensInput) — indicates prompt-cache effectiveness");
+            description: "Cached input tokens per turn (subset of TurnTokensInput) — indicates prompt-cache effectiveness",
+            tags: null,
+            advice: new InstrumentAdvice<long> { HistogramBucketBoundaries = TurnTokenBuckets });
 
     /// <summary>Number of tool calls executed per turn.</summary>
     public static readonly Histogram<long> TurnToolCalls =
@@ -145,7 +219,9 @@ public static class HostDiagnostics
         Meter.CreateHistogram<long>(
             "rockbot.agent.llm.context.tokens",
             unit: "{token}",
-            description: "Estimated context size at each LLM call boundary (per-call, not per-turn)");
+            description: "Estimated context size at each LLM call boundary (per-call, not per-turn)",
+            tags: null,
+            advice: new InstrumentAdvice<long> { HistogramBucketBoundaries = ContextTokenBuckets });
 
     // ── Completion evaluator ────────────────────────────────────────────────
 
@@ -200,7 +276,9 @@ public static class HostDiagnostics
         Meter.CreateHistogram<double>(
             "rockbot.embedding.duration",
             unit: "ms",
-            description: "Duration of text-embedding generation calls");
+            description: "Duration of text-embedding generation calls",
+            tags: null,
+            advice: new InstrumentAdvice<double> { HistogramBucketBoundaries = RequestDurationBuckets });
 
     /// <summary>Total embedding generation calls.</summary>
     public static readonly Counter<long> EmbeddingCalls =
