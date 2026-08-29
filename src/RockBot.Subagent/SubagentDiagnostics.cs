@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Diagnostics.Metrics;
+using RockBot.Host;
 
 namespace RockBot.Subagent;
 
@@ -34,7 +35,16 @@ internal static class SubagentDiagnostics
         Meter.CreateHistogram<double>(
             "rockbot.subagent.duration",
             unit: "ms",
-            description: "Execution duration of subagent tasks");
+            description: "Execution duration of subagent tasks",
+            tags: null,
+            // Subagents run a full tool loop — measured mean is ~7 minutes, and
+            // every observation overflowed the SDK's default 10,000ms ceiling,
+            // pinning the Grafana quantiles to a flat 10s. Shares the host's
+            // loop scale so turn and subagent durations stay comparable.
+            advice: new InstrumentAdvice<double>
+            {
+                HistogramBucketBoundaries = HostDiagnostics.LoopDurationBuckets
+            });
 
     /// <summary>Total subagent task failures (exceptions or cancellations).</summary>
     public static readonly Counter<long> Failures =
