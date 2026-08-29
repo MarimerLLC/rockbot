@@ -58,6 +58,14 @@ public sealed class ChatStateService
         {
             _messages.Clear();
 
+            // The bubbles those entries point at were just discarded, so anything left
+            // here is a dangling reference to a message that no longer exists. This
+            // service is a singleton that outlives the circuit, so without the reset a
+            // reload mid-turn carries the previous circuit's spinner state into the
+            // restored transcript.
+            _activeActivityLogs.Clear();
+            _currentThinkingMessage = null;
+
             foreach (var turn in turns)
             {
                 // Skip system/consolidation turns — they are internal prompts not meant for the user
@@ -147,7 +155,16 @@ public sealed class ChatStateService
             // PrimaryFinal closes the PrimaryProgress log (different category names);
             // subagent / A2A / scheduled final replies close their own category's log.
             if (category == MessageCategory.PrimaryFinal)
+            {
                 _activeActivityLogs.Remove(ActivityLogKey(MessageCategory.PrimaryProgress, null));
+
+                // The primary agent's turn is over, whoever was waiting on it. The send
+                // loop clears this too, but only for the circuit that started the turn —
+                // if that circuit is gone (reload, SignalR reconnect) its continuation
+                // never runs and the busy state would stick on this singleton forever,
+                // leaving a spinner under the reply and a disabled input box.
+                _isProcessing = false;
+            }
             else
                 _activeActivityLogs.Remove(ActivityLogKey(category, reply.AgentName));
 
@@ -362,12 +379,16 @@ public sealed class ChatStateService
     /// Reconciles local activity-log state against the authoritative snapshot from
     /// the agent. Removes stale entries for subagents that are no longer running and
     /// seeds entries for subagents that are active but unknown to the UI (e.g. after
-    /// a page reload while subagents were in flight).
+    /// a page reload while subagents were in flight). The agent's own busy flag is
+    /// adopted as well, so a reload lands on the real state rather than on whatever
+    /// the previous circuit left behind.
     /// </summary>
     public void ReconcileActiveStatus(ActiveStatusResponse status)
     {
         lock (_lock)
         {
+            _isProcessing = status.IsProcessing;
+
             var activeAgentNames = status.Subagents
                 .Select(s => $"subagent-{s.TaskId}")
                 .ToHashSet(StringComparer.OrdinalIgnoreCase);
