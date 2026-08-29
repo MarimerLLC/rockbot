@@ -222,7 +222,10 @@
         }
 
         @{
-            var hasActiveActivityLog = ChatState.Messages.Any(m => m.IsActivityLog && !m.IsExpanded);
+            // Only a log that is still receiving entries carries its own spinner. Testing
+            // for a collapsed bubble instead would match every finished turn's leftover
+            // log and suppress this indicator for the rest of the conversation.
+            var hasActiveActivityLog = ChatState.Messages.Any(m => m.IsActivityLog && ChatState.IsActiveActivityLog(m.MessageId));
         }
         @if ((ChatState.IsProcessing && !hasActiveActivityLog) || (!ChatState.IsProcessing && !string.IsNullOrEmpty(ChatState.CurrentThinkingMessage)))
         {
