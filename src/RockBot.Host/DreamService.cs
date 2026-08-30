@@ -1471,7 +1471,13 @@ internal sealed class DreamService : IHostedService, IDisposable
             "skill optimization",
             _skillOptimizeDirective,
             userMessage.ToString(),
-            ct);
+            ct,
+            // Watermarked on the usage and feedback logs it reads, not on the at-risk set derived
+            // from them: that set is computed over a rolling 30-day window and drifts on its own.
+            CorpusFingerprint([
+                "usage:" + EventWatermarkFingerprint(usageEvents.Select(e => e.Timestamp)),
+                "feedback:" + EventWatermarkFingerprint(recentFeedback.Select(f => f.Timestamp)),
+            ]));
         if (result is null) return;
 
         var deleted = 0;
@@ -2874,6 +2880,12 @@ internal sealed class DreamService : IHostedService, IDisposable
             return;
         }
 
+        // Watermark the underlying log rather than the derived patterns: the patterns are computed
+        // over a rolling 7-day window, so their set drifts as old calls age out even when the agent
+        // has made no new tool call at all.
+        var toolCallWatermark = EventWatermarkFingerprint(
+            (await _toolCallLog.QueryRecentAsync(since, maxResults: 20000)).Select(e => e.Timestamp));
+
         var distinctPatterns = DedupeRetryPatterns(patterns, maxCount: 50);
 
         _logger.LogInformation(
@@ -2888,7 +2900,8 @@ internal sealed class DreamService : IHostedService, IDisposable
                 "tool-success-learning",
                 _toolSuccessLearningDirective ?? BuiltInToolSuccessLearningDirective,
                 userMessage,
-                ct);
+                ct,
+                toolCallWatermark);
             var entries = NormalizeToolSuccessLearningEntries(
                 result,
                 idFactory: () => Guid.NewGuid().ToString("N")[..12],
@@ -3392,7 +3405,8 @@ internal sealed class DreamService : IHostedService, IDisposable
                 "sequence skill detection",
                 _sequenceSkillDirective ?? BuiltInSequenceSkillDirective,
                 userMessage.ToString(),
-                ct);
+                ct,
+                EventWatermarkFingerprint(events.Select(e => e.Timestamp)));
             if (result is null) return;
             var created = 0;
 
@@ -3529,7 +3543,8 @@ internal sealed class DreamService : IHostedService, IDisposable
                 "wisp failure analysis",
                 _wispFailureDirective ?? BuiltInWispFailureDirective,
                 userMessage.ToString(),
-                ct);
+                ct,
+                EventWatermarkFingerprint(records.Select(r => r.Timestamp)));
             if (result is null) return;
             var updated = 0;
 
@@ -3729,7 +3744,8 @@ internal sealed class DreamService : IHostedService, IDisposable
                 "wisp success analysis",
                 _wispSuccessDirective ?? BuiltInWispSuccessDirective,
                 userMessage.ToString(),
-                ct);
+                ct,
+                EventWatermarkFingerprint(records.Select(r => r.Timestamp)));
             if (result is null) return;
 
             var attached = await ApplyWispSuccessPromotionsAsync(
@@ -4291,12 +4307,14 @@ internal sealed class DreamService : IHostedService, IDisposable
                 userMessage.AppendLine();
             }
 
-            // Unlike skill consolidation's usage tallies, the 14-day episode and feedback sets
-            // are this pass's actual subject matter rather than annotations on it, so they
-            // belong in the fingerprint. On an idle agent they stop changing once the windows
-            // drain, and the pass goes quiet with them.
+            // Inputs only. The identity entries are this pass's *output* — it rewrites them on
+            // essentially every run ("3 deleted, 3 saved" is a typical cycle) — so including them
+            // meant the fingerprint was guaranteed to differ from the one the pass had just
+            // stamped, and the gate could never fire. Hashing what the pass reads rather than what
+            // it writes is the difference between a gate and a no-op. The 14-day episode and
+            // feedback windows are the real subject matter; on an idle agent they drain and stop
+            // changing, and the pass goes quiet with them.
             var fingerprint = CorpusFingerprint([
-                "identity:" + MemoryCorpusFingerprint(identityEntries),
                 "episodes:" + MemoryCorpusFingerprint(recentEpisodes),
                 "prefs:" + MemoryCorpusFingerprint(recentPrefs),
                 "feedback:" + CorpusFingerprint(recentFeedback
@@ -4656,6 +4674,37 @@ internal sealed class DreamService : IHostedService, IDisposable
         var bytes = System.Security.Cryptography.SHA256.HashData(
             Encoding.UTF8.GetBytes(sb.ToString()));
         return Convert.ToHexString(bytes.AsSpan(0, 16));
+    }
+
+    /// <summary>
+    /// High-water mark over an append-only event log: the newest event's timestamp. Used as the
+    /// change-gate fingerprint for passes that mine a rolling window of a telemetry log.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Hashing the window's contents does not work for these passes. The window is relative to
+    /// now, so its membership changes on its own as old events age out of the far end, and the
+    /// pass re-runs on an agent that has generated no new events at all. Sequence skill detection
+    /// showed what that costs: mining the same unchanging 14-day tool-call window on every cycle,
+    /// it manufactured a fresh pair of near-duplicate skills each time, which skill consolidation
+    /// then merged away — a churn loop running twice a day on an idle agent, and one that also
+    /// kept skill consolidation's own fingerprint moving so that pass could never settle either.
+    /// </para>
+    /// <para>
+    /// The newest timestamp is immune to that: it only advances when the agent actually does
+    /// something. Retention pruning the newest entries would move it backwards, which costs one
+    /// extra run and then settles.
+    /// </para>
+    /// </remarks>
+    internal static string EventWatermarkFingerprint(IEnumerable<DateTimeOffset> timestamps)
+    {
+        DateTimeOffset? newest = null;
+        foreach (var t in timestamps)
+            if (newest is null || t > newest) newest = t;
+
+        return newest is null
+            ? "watermark:none"
+            : "watermark:" + newest.Value.ToUniversalTime().ToString("O", CultureInfo.InvariantCulture);
     }
 
     /// <summary>

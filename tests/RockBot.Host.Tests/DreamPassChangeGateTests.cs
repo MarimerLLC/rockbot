@@ -241,6 +241,74 @@ public class DreamPassChangeGateTests
             DreamService.CorpusFingerprint(["a", "bc"]));
     }
 
+    // -- Event watermarks -----------------------------------------------------
+
+    [TestMethod]
+    public void EventWatermark_IgnoresOldEventsAgingOutOfTheWindow()
+    {
+        // The load-bearing property. These passes mine a window relative to now, so hashing the
+        // window's contents makes them re-run on an agent that generated no new events -- which is
+        // how sequence skill detection came to manufacture a fresh pair of near-duplicate skills
+        // twice a day from an unchanging 14-day tool-call log.
+        var newest = Now;
+        var full = new[] { Now.AddDays(-13), Now.AddDays(-5), newest };
+        var drained = new[] { Now.AddDays(-5), newest };
+
+        Assert.AreEqual(
+            DreamService.EventWatermarkFingerprint(full),
+            DreamService.EventWatermarkFingerprint(drained),
+            "Losing the oldest event must not read as a change.");
+    }
+
+    [TestMethod]
+    public void EventWatermark_AdvancesOnANewEvent()
+    {
+        var before = new[] { Now.AddDays(-5), Now.AddHours(-1) };
+        var after = before.Append(Now).ToArray();
+
+        Assert.AreNotEqual(
+            DreamService.EventWatermarkFingerprint(before),
+            DreamService.EventWatermarkFingerprint(after),
+            "Real activity must re-open the pass.");
+    }
+
+    [TestMethod]
+    public void EventWatermark_IsOrderIndependentAndTimezoneStable()
+    {
+        var a = new[] { Now.AddDays(-2), Now, Now.AddDays(-9) };
+        var b = new[] { Now.ToOffset(TimeSpan.FromHours(9)), Now.AddDays(-9), Now.AddDays(-2) };
+
+        Assert.AreEqual(
+            DreamService.EventWatermarkFingerprint(a),
+            DreamService.EventWatermarkFingerprint(b));
+    }
+
+    [TestMethod]
+    public void EventWatermark_EmptyLogIsStable()
+    {
+        Assert.AreEqual(
+            DreamService.EventWatermarkFingerprint([]),
+            DreamService.EventWatermarkFingerprint([]));
+    }
+
+    // -- Fingerprints must cover inputs, never the pass's own output ----------
+
+    [TestMethod]
+    public void MemoryCorpusFingerprint_RewritingAnEntry_ChangesTheHash()
+    {
+        // Why identity reflection may not hash its own identity entries: it rewrites them on
+        // essentially every run, so a fingerprint covering them is guaranteed to differ from the
+        // one just stamped and the gate can never fire. Measured on a live agent: 5 gated passes,
+        // only 1 skipped, because 4 of them perturbed their own input.
+        var before = MakeEntry("i1", "I am a careful assistant.");
+        var after = before with { Content = "I am a careful, curious assistant." };
+
+        Assert.AreNotEqual(
+            DreamService.MemoryCorpusFingerprint([before]),
+            DreamService.MemoryCorpusFingerprint([after]),
+            "A rewritten entry is a changed corpus -- which is exactly why outputs stay out of the hash.");
+    }
+
     // ── Helpers ──────────────────────────────────────────────────────────────
 
     private static string NewTempDir()
