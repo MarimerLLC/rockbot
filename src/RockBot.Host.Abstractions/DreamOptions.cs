@@ -19,6 +19,44 @@ public sealed class DreamOptions
     public string CronSchedule { get; set; } = "0 */12 * * *";
 
     /// <summary>
+    /// Whether a dream cycle blocked by other agent work is retried with backoff instead of being
+    /// dropped until the next cron occurrence. Default: <c>true</c>.
+    /// </summary>
+    /// <remarks>
+    /// The work serializer is acquired non-blockingly, so a cycle that fires while a patrol,
+    /// scheduled task, or user turn holds the slot used to be abandoned outright — the next
+    /// attempt was a full <see cref="CronSchedule"/> period away. That is not a rare collision:
+    /// patrols run on their own schedule, and one that habitually overlaps a cron slot can cost
+    /// the same dream every day, indefinitely, with only an info line to show for it.
+    /// </remarks>
+    public bool DeferDreamOnContention { get; set; } = true;
+
+    /// <summary>
+    /// Delay before the first retry of a dream cycle that could not acquire the work slot.
+    /// Default: 5 minutes.
+    /// </summary>
+    public TimeSpan DreamContentionRetryInitialDelay { get; set; } = TimeSpan.FromMinutes(5);
+
+    /// <summary>
+    /// Growth factor applied to each successive contention retry delay. Default: 2.0.
+    /// </summary>
+    public double DreamContentionRetryMultiplier { get; set; } = 2.0;
+
+    /// <summary>
+    /// Ceiling on a single contention retry delay. Default: 1 hour — long enough that a busy
+    /// agent is not polled constantly, short enough that the cycle still lands the same day.
+    /// </summary>
+    public TimeSpan DreamContentionRetryMaxDelay { get; set; } = TimeSpan.FromHours(1);
+
+    /// <summary>
+    /// How many times a blocked cycle is retried before giving up and waiting for the next cron
+    /// occurrence. Default: 6, which with the default delays spans roughly three hours
+    /// (5m, 10m, 20m, 40m, 1h, 1h). A retry is also abandoned early if the next scheduled cycle
+    /// would arrive first, so this never delays the schedule.
+    /// </summary>
+    public int DreamContentionMaxRetries { get; set; } = 6;
+
+    /// <summary>
     /// Whether corpus-wide dream passes skip their LLM call when the input they would send has
     /// not changed since the last time they ran. Default: <c>true</c>.
     /// </summary>
