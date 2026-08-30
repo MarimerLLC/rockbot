@@ -152,4 +152,73 @@ public class DreamCastVoiceEnrichmentTests
         Assert.IsFalse(DreamService.HasVoiceMarker("", "VOICE CARD"));
         Assert.IsFalse(DreamService.HasVoiceMarker("anything at all", ""));
     }
+
+    // -- Activity gate ---------------------------------------------------------
+
+    [TestMethod]
+    public void RequiresRecentActivity_DefaultsOn_SoAnIdleAgentStopsPaying()
+    {
+        // "Some character still lacks a card" stays true for months, so on its own it kept the
+        // pass billing a full-corpus call twice a day to invent voices for a cast nobody had
+        // played with. Voices are worth writing for the characters who just walked on stage.
+        Assert.IsTrue(new DreamOptions().CastVoiceRequiresRecentActivity);
+    }
+
+    [TestMethod]
+    public void RequiresRecentActivity_CanBeTurnedOffFromConfiguration()
+    {
+        var opts = Bind(new Dictionary<string, string?>
+        {
+            ["Dream:CastVoiceRequiresRecentActivity"] = "false",
+        });
+
+        Assert.IsFalse(opts.CastVoiceRequiresRecentActivity);
+    }
+
+    // -- ExtractVoiceCardLine --------------------------------------------------
+
+    [TestMethod]
+    public void ExtractVoiceCardLine_ReturnsOnlyTheCard_NotTheWholeEntry()
+    {
+        // The prompt lists voices already in use so the model keeps them distinct. Shipping the
+        // finished entries instead is what invited proposals against characters already done.
+        var entry = DreamService.MergeVoiceCard(
+            "Brandt runs the kitchen and shouts at the pass.",
+            "VOICE CARD", "Brandt", "Flat and regional. Short sentences.");
+
+        var line = DreamService.ExtractVoiceCardLine(entry, "VOICE CARD");
+
+        StringAssert.StartsWith(line, "VOICE CARD - Brandt.");
+        Assert.IsFalse(line.Contains("shouts at the pass"), "The entry body must not leak into the voices list.");
+    }
+
+    [TestMethod]
+    public void ExtractVoiceCardLine_StopsAtABlankLine_ForHandEditedEntries()
+    {
+        var entry = string.Join('\n',
+            "Coyne tends bar.", "", "VOICE CARD - Coyne. Talks constantly.", "", "Added by hand later.");
+
+        var line = DreamService.ExtractVoiceCardLine(entry, "VOICE CARD");
+
+        Assert.AreEqual("VOICE CARD - Coyne. Talks constantly.", line);
+    }
+
+    [TestMethod]
+    public void ExtractVoiceCardLine_FlattensAMultiLineCardToOneLine()
+    {
+        var entry = string.Join('\n',
+            "Vance works the window.", "", "VOICE CARD - Vance. Calm.", "Never contracts.");
+
+        var line = DreamService.ExtractVoiceCardLine(entry, "VOICE CARD");
+
+        Assert.AreEqual("VOICE CARD - Vance. Calm. Never contracts.", line);
+    }
+
+    [TestMethod]
+    public void ExtractVoiceCardLine_EmptyForUncardedOrBlankEntries()
+    {
+        Assert.AreEqual(string.Empty, DreamService.ExtractVoiceCardLine("Vance wears a grey coat.", "VOICE CARD"));
+        Assert.AreEqual(string.Empty, DreamService.ExtractVoiceCardLine(null, "VOICE CARD"));
+        Assert.AreEqual(string.Empty, DreamService.ExtractVoiceCardLine("anything", ""));
+    }
 }

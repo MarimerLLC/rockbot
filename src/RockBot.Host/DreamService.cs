@@ -2282,29 +2282,82 @@ internal sealed class DreamService : IHostedService, IDisposable
             return;
         }
 
+        // A voice is worth writing for the cast that just walked on stage. "Some character still
+        // lacks a card" stays true for months, so on its own it is not a reason to spend a
+        // full-corpus call — it is what made this the one pass that kept billing an idle agent.
+        // Cast voice runs before preference inference clears the log, so an empty log here means
+        // nothing happened since the last cycle.
+        IReadOnlyList<ConversationLogEntry> recentTurns = [];
+        if (_options.CastVoiceRequiresRecentActivity && _conversationLog is not null)
+        {
+            recentTurns = await _conversationLog.ReadAllAsync(ct);
+            if (recentTurns.Count == 0)
+            {
+                _logger.LogInformation(
+                    "DreamService: cast voice enrichment — no conversation activity since the last cycle; " +
+                    "skipping ({Uncarded} character(s) still without a voice card)",
+                    uncarded);
+                return;
+            }
+        }
+
         _logger.LogInformation(
-            "DreamService: cast voice enrichment pass — {Total} entries in {Category}, {Uncarded} without a voice card",
-            cast.Count, category, uncarded);
+            "DreamService: cast voice enrichment pass — {Total} entries in {Category}, {Uncarded} without a voice card, " +
+            "{Turns} conversation turn(s) since the last cycle",
+            cast.Count, category, uncarded, recentTurns.Count);
 
         await RunPassAsync("cast voice enrichment", async () =>
         {
+            // Only uncarded entries are offered as candidates. Previously the whole corpus was
+            // listed and the model was told not to touch the finished ones — which it ignored,
+            // because the very next instruction told it to prefer the entries with the most
+            // content, and a finished entry is longer precisely because it has a card appended.
+            // The proposals then died silently against the HasVoiceMarker check: one cycle on a
+            // 160-entry corpus spent 24 proposals to land 1 update. Withholding them is a gate
+            // the model cannot talk its way past.
+            var candidates = cast.Where(e => !HasVoiceMarker(e.Content, marker)).ToList();
+            var takenVoices = cast
+                .Where(e => HasVoiceMarker(e.Content, marker))
+                .Select(e => ExtractVoiceCardLine(e.Content, marker))
+                .Where(v => !string.IsNullOrWhiteSpace(v))
+                .ToList();
+
             var userMessage = new StringBuilder();
-            userMessage.AppendLine($"Every entry currently in `{category}`, with its id.");
-            userMessage.AppendLine();
             userMessage.AppendLine(
-                $"Entries already containing \"{marker}\" are shown so you can see which characters are " +
-                "finished and which voices already exist. Never propose an update to one of those, and " +
-                "never give a new character a voice that duplicates one already on the page.");
+                $"Characters in `{category}` that do not yet have a voice. These are the only entries " +
+                "you may propose an update for — every id you return must come from this list.");
             userMessage.AppendLine();
 
-            foreach (var e in cast)
+            foreach (var e in candidates)
                 userMessage.AppendLine($"[{e.Id}] {e.Content}");
 
+            if (takenVoices.Count > 0)
+            {
+                // Voices only, not the entries themselves: the model needs to know what is already
+                // spoken for so it does not duplicate a voice, and nothing more. Shipping the full
+                // finished entries is what invited proposals against them.
+                userMessage.AppendLine();
+                userMessage.AppendLine(
+                    $"Voices already in use by other characters ({takenVoices.Count}). Do not reuse or " +
+                    "closely imitate any of these — every voice on the page must be tellable apart:");
+                foreach (var voice in takenVoices)
+                    userMessage.AppendLine($"- {voice}");
+            }
+
+            if (recentTurns.Count > 0)
+            {
+                userMessage.AppendLine();
+                userMessage.AppendLine(
+                    "The most recent play. Prefer characters who appear here — they are the ones " +
+                    "actually on stage, and the scene shows you how they already sound:");
+                foreach (var turn in recentTurns.TakeLast(40))
+                    userMessage.AppendLine($"[{turn.Role}] {Truncate(turn.Content, 600)}");
+            }
+
             userMessage.AppendLine();
             userMessage.AppendLine(
-                $"Enrich at most {_options.CastVoiceMaxPerCycle} characters this cycle. Choose the ones " +
-                "with the most entries and the most recent activity first — they are the ones most likely " +
-                "to walk back on stage.");
+                $"Enrich at most {_options.CastVoiceMaxPerCycle} characters this cycle, drawn from the " +
+                "candidate list above.");
 
             var result = await InvokeDreamPassAsync<CastVoiceResultDto>(
                 "cast voice enrichment",
@@ -2329,6 +2382,11 @@ internal sealed class DreamService : IHostedService, IDisposable
 
                 if (string.IsNullOrWhiteSpace(dto.Id) || string.IsNullOrWhiteSpace(dto.VoiceCard))
                 {
+                    // Logged, like every other skip below. A pass whose failures are silent
+                    // reports "1 given a voice, 23 skipped" and gives no way to find out why.
+                    _logger.LogWarning(
+                        "DreamService: cast voice enrichment returned a proposal with no {Missing}; skipping",
+                        string.IsNullOrWhiteSpace(dto.Id) ? "id" : "voice card");
                     skipped++;
                     continue;
                 }
@@ -2354,6 +2412,12 @@ internal sealed class DreamService : IHostedService, IDisposable
 
                 if (HasVoiceMarker(existing.Content, marker))
                 {
+                    // Still the backstop that guarantees convergence, but it should now be
+                    // unreachable: carded entries are no longer offered as candidates. If this
+                    // fires, the model is inventing ids outside the list it was given.
+                    _logger.LogWarning(
+                        "DreamService: cast voice enrichment proposed an update to {Id}, which already " +
+                        "carries a voice card and was not offered as a candidate; skipping", existing.Id);
                     skipped++;
                     continue;
                 }
@@ -2379,6 +2443,28 @@ internal sealed class DreamService : IHostedService, IDisposable
                 "DreamService: cast voice enrichment pass complete — {Updated} character(s) given a voice, {Skipped} proposal(s) skipped",
                 updated, skipped);
         });
+    }
+
+    /// <summary>
+    /// Returns just the voice-card line from an entry that carries one, so the enrichment prompt
+    /// can list the voices already spoken for without shipping the finished entries themselves.
+    /// Returns an empty string when the entry has no card.
+    /// </summary>
+    internal static string ExtractVoiceCardLine(string? content, string marker)
+    {
+        if (string.IsNullOrEmpty(content) || string.IsNullOrEmpty(marker))
+            return string.Empty;
+
+        var start = content.IndexOf(marker, StringComparison.OrdinalIgnoreCase);
+        if (start < 0) return string.Empty;
+
+        // MergeVoiceCard appends the card as the final block, but an entry hand-edited on the PVC
+        // may have text after it. Stop at the first blank line so only the card itself is taken.
+        var rest = content[start..];
+        var end = rest.IndexOf("\n\n", StringComparison.Ordinal);
+        if (end >= 0) rest = rest[..end];
+
+        return rest.Replace('\n', ' ').Trim();
     }
 
     /// <summary>True when <paramref name="content"/> already carries a voice card marker.</summary>
@@ -5432,9 +5518,11 @@ internal sealed class DreamService : IHostedService, IDisposable
     private const string BuiltInCastVoiceDirective = """
         You maintain the speech profiles in a character corpus.
 
-        You are given every entry in one memory category. Some entries already carry a speech profile;
-        most record only appearance and events. Your task is to add a profile to characters that lack
-        one, so that a character described weeks ago can be written consistently today.
+        You are given the entries in one memory category that do not yet carry a speech profile —
+        most record only appearance and events. Your task is to add a profile to them, so that a
+        character described weeks ago can be written consistently today. Profiles already assigned
+        to other characters are listed separately, as text only, so you can keep every voice
+        distinct; those characters are finished and are not yours to update.
 
         This is a schema-filling task. Deployment-specific guidance on how a profile should read, if
         any exists, is supplied separately by the operator.
@@ -5481,7 +5569,8 @@ internal sealed class DreamService : IHostedService, IDisposable
         **Select one target entry per character** — normally the most detailed or most recent — and
         return its id. The profile is appended; existing text in that entry is left untouched.
 
-        **Skip** any character already carrying a profile, and any character you could not resolve.
+        **Every id you return must come from the candidate list.** An id taken from the list of
+        voices already in use, or invented, is discarded. Skip any character you could not resolve.
 
         ## Output
 

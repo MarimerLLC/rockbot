@@ -281,6 +281,26 @@ public sealed class DreamOptions
     /// </summary>
     public int CastVoiceMaxPerCycle { get; set; } = 12;
 
+    /// <summary>
+    /// Whether cast voice enrichment requires conversation activity since the last cycle.
+    /// Default: <c>true</c>.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Without this the pass is gated only on "some character still lacks a voice card", which
+    /// stays true for months. On an idle agent it is then the one pass that keeps spending: it
+    /// ships the whole cast corpus on every cycle to invent voices for characters nobody has
+    /// played with since the last time it ran. Voices are worth writing for the cast that just
+    /// walked on stage, not for a corpus sitting untouched.
+    /// </para>
+    /// <para>
+    /// The pass runs before preference inference clears the conversation log, so an empty log at
+    /// that point means nothing happened this period. When no <see cref="IConversationLog"/> is
+    /// registered the gate cannot be evaluated and the pass runs as before.
+    /// </para>
+    /// </remarks>
+    public bool CastVoiceRequiresRecentActivity { get; set; } = true;
+
     /// <summary>Whether the tier routing self-correction review pass is enabled.</summary>
     public bool TierRoutingReviewEnabled { get; set; } = true;
 
