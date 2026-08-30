@@ -77,6 +77,7 @@ internal sealed class DreamService : IHostedService, IDisposable
     private string? _repairTicketCreationDirective;
     private IReadOnlyList<LlmPricingRow>? _pricingRows;
     private DreamPassLedger? _passLedger;
+    private int _contentionRetries;
 
     public DreamService(
         ILongTermMemory memory,
@@ -485,10 +486,82 @@ internal sealed class DreamService : IHostedService, IDisposable
         }
     }
 
+    /// <summary>How a cycle ended, which decides whether the next timer is a retry or the cron.</summary>
+    internal enum DreamCycleOutcome
+    {
+        /// <summary>The cycle ran to completion, or failed in a way retrying will not help.</summary>
+        Finished,
+
+        /// <summary>Another piece of agent work held the slot, or took it back mid-cycle.</summary>
+        Deferred,
+    }
+
     private async Task OnTimerTickAsync()
     {
-        await DreamAsync();
+        var outcome = await DreamAsync();
+
+        if (outcome == DreamCycleOutcome.Deferred && TryArmContentionRetry())
+            return;
+
+        _contentionRetries = 0;
         ArmNextCronTimer();
+    }
+
+    /// <summary>
+    /// Delay before contention retry number <paramref name="attempt"/> (0-based), growing
+    /// geometrically and capped. Computed in double space and clamped so a large attempt count or
+    /// an operator-supplied multiplier cannot overflow the <see cref="TimeSpan"/>.
+    /// </summary>
+    internal static TimeSpan ComputeContentionRetryDelay(
+        int attempt, TimeSpan initial, double multiplier, TimeSpan max)
+    {
+        if (initial <= TimeSpan.Zero) return TimeSpan.Zero;
+        if (max < initial) max = initial;
+        if (attempt <= 0 || multiplier <= 1.0) return initial;
+
+        var scaled = initial.TotalMilliseconds * Math.Pow(multiplier, attempt);
+        if (double.IsNaN(scaled) || double.IsInfinity(scaled) || scaled >= max.TotalMilliseconds)
+            return max;
+
+        return TimeSpan.FromMilliseconds(scaled);
+    }
+
+    /// <summary>
+    /// Arms a backoff retry for a cycle that could not run. Returns false when the cycle should
+    /// fall back to the ordinary cron instead — retries disabled, budget exhausted, or the next
+    /// scheduled cycle arriving sooner than the retry would.
+    /// </summary>
+    private bool TryArmContentionRetry()
+    {
+        if (!_options.DeferDreamOnContention || _timer is null)
+            return false;
+
+        if (_contentionRetries >= _options.DreamContentionMaxRetries)
+        {
+            _logger.LogWarning(
+                "DreamService: still blocked after {Count} retry attempt(s); waiting for the next scheduled cycle",
+                _contentionRetries);
+            return false;
+        }
+
+        var delay = ComputeContentionRetryDelay(
+            _contentionRetries,
+            _options.DreamContentionRetryInitialDelay,
+            _options.DreamContentionRetryMultiplier,
+            _options.DreamContentionRetryMaxDelay);
+
+        // Never let a retry push past the schedule it is standing in for. If the next cron slot
+        // lands first, that slot is the better attempt and the retry has nothing to add.
+        var next = _cron?.GetNextOccurrence(_clock.Now, _clock.Zone);
+        if (next is not null && next.Value <= _clock.Now + delay)
+            return false;
+
+        _contentionRetries++;
+        _timer.Change(delay, Timeout.InfiniteTimeSpan);
+        _logger.LogInformation(
+            "DreamService: cycle blocked by other agent work; retry {Attempt} of {Max} in {Delay:g}",
+            _contentionRetries, _options.DreamContentionMaxRetries, delay);
+        return true;
     }
 
     private void ArmNextCronTimer()
@@ -510,17 +583,17 @@ internal sealed class DreamService : IHostedService, IDisposable
         _logger.LogInformation("DreamService: next dream cycle at {Next} (in {Delay:g})", next.Value, delay);
     }
 
-    private async Task DreamAsync()
+    private async Task<DreamCycleOutcome> DreamAsync()
     {
         var sw = System.Diagnostics.Stopwatch.StartNew();
 
         // Acquire the work serializer slot so user messages can preempt the dream.
-        // TryAcquireForScheduledAsync is non-blocking: if a user loop holds the slot, skip.
+        // TryAcquireForScheduledAsync is non-blocking: if something else holds the slot, defer.
         var slot = await _workSerializer.TryAcquireForScheduledAsync(CancellationToken.None);
         if (slot is null)
         {
-            _logger.LogInformation("DreamService: user loop active, skipping dream cycle");
-            return;
+            _logger.LogInformation("DreamService: agent busy, deferring dream cycle");
+            return DreamCycleOutcome.Deferred;
         }
 
         // Re-read directives from disk so live edits to /data/agent/*-dream.md and
@@ -534,6 +607,8 @@ internal sealed class DreamService : IHostedService, IDisposable
             ResolvePath(DreamPassLedger.FileName, _profileOptions.BasePath), _logger);
 
         _logger.LogInformation("DreamService: dream cycle starting");
+
+        var outcome = DreamCycleOutcome.Finished;
 
         try
         {
@@ -610,10 +685,15 @@ internal sealed class DreamService : IHostedService, IDisposable
         }
         catch (OperationCanceledException)
         {
-            _logger.LogInformation("DreamService: dream cycle preempted by user request");
+            // Preemption is contention that arrived late. Retrying is worth it and cheap: passes
+            // that finished have already stamped the ledger, so the retry resumes rather than
+            // repeating the work.
+            _logger.LogInformation("DreamService: dream cycle preempted by other agent work");
+            outcome = DreamCycleOutcome.Deferred;
         }
         catch (Exception ex)
         {
+            // A genuine failure is not contention; retrying on a backoff would just repeat it.
             _logger.LogError(ex, "DreamService: dream cycle failed");
         }
         finally
@@ -626,6 +706,8 @@ internal sealed class DreamService : IHostedService, IDisposable
 
             await slot.DisposeAsync();
         }
+
+        return outcome;
     }
 
     /// <summary>
