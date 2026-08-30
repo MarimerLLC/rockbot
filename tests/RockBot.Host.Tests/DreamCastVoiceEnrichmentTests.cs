@@ -221,4 +221,93 @@ public class DreamCastVoiceEnrichmentTests
         Assert.AreEqual(string.Empty, DreamService.ExtractVoiceCardLine(null, "VOICE CARD"));
         Assert.AreEqual(string.Empty, DreamService.ExtractVoiceCardLine("anything", ""));
     }
+
+    // -- Card upgrades ---------------------------------------------------------
+
+    [TestMethod]
+    public void UpgradeMarkers_DefaultEmpty_SoAnyCardCountsAsFinished()
+    {
+        // Original behaviour: a deployment that has not described a current card format sees no
+        // change, and the pass still converges on "every character has a card".
+        Assert.AreEqual(0, new DreamOptions().CastVoiceUpgradeMarkers.Count);
+
+        var carded = DreamService.MergeVoiceCard("Coyne tends bar.", "VOICE CARD", "Coyne", "Talks constantly.");
+        Assert.IsFalse(DreamService.NeedsVoiceWork(carded, "VOICE CARD", []));
+    }
+
+    [TestMethod]
+    public void NeedsVoiceWork_UncardedEntry_AlwaysNeedsWork()
+    {
+        Assert.IsTrue(DreamService.NeedsVoiceWork("Vance wears a grey coat.", "VOICE CARD", ["Look:"]));
+        Assert.IsTrue(DreamService.NeedsVoiceWork("Vance wears a grey coat.", "VOICE CARD", []));
+    }
+
+    [TestMethod]
+    public void NeedsVoiceWork_CardWithoutAnyUpgradeMarker_IsOfferedForUpgrade()
+    {
+        // The regression this closes: the pass skipped anything carrying the marker, so a
+        // directive asking the model to bring older cards up to a newer shape produced proposals
+        // the apply loop discarded without a word.
+        var older = DreamService.MergeVoiceCard(
+            "Brandt runs the kitchen.", "VOICE CARD", "Brandt", "Flat and regional. Short sentences.");
+
+        Assert.IsTrue(DreamService.NeedsVoiceWork(older, "VOICE CARD", ["Look:", "To the others:"]));
+    }
+
+    [TestMethod]
+    public void NeedsVoiceWork_AnySingleUpgradeMarker_CountsAsCurrent()
+    {
+        // Sections are individually optional, so requiring all of them would classify a
+        // legitimately short card as stale and rewrite it on every cycle, forever.
+        var partial = DreamService.MergeVoiceCard(
+            "Brandt runs the kitchen.", "VOICE CARD", "Brandt", "Flat and regional. Look: heavy brows.");
+
+        Assert.IsFalse(DreamService.NeedsVoiceWork(partial, "VOICE CARD", ["Look:", "To the others:"]));
+    }
+
+    [TestMethod]
+    public void NeedsVoiceWork_UpgradeMarkerMatchIsCaseInsensitive()
+    {
+        var card = DreamService.MergeVoiceCard("Vance works the window.", "VOICE CARD", "Vance", "look: tired.");
+
+        Assert.IsFalse(DreamService.NeedsVoiceWork(card, "VOICE CARD", ["Look:"]));
+    }
+
+    [TestMethod]
+    public void NeedsVoiceWork_BlankUpgradeMarkersDegradeToUnconfigured()
+    {
+        // Blank entries are dropped, so a list of nothing but blanks behaves as if no format had
+        // been described: every card counts as finished. That is the safe direction to fail. The
+        // alternative — treating an empty marker set as "nothing matches, so everything is stale"
+        // — would put the whole cast back in the candidate list and rewrite it on every cycle.
+        var card = DreamService.MergeVoiceCard("Coyne tends bar.", "VOICE CARD", "Coyne", "Talks constantly.");
+
+        Assert.IsFalse(DreamService.NeedsVoiceWork(card, "VOICE CARD", ["", "   "]));
+    }
+
+    [TestMethod]
+    public void NeedsVoiceWork_BlanksAlongsideARealMarkerAreIgnored()
+    {
+        var older = DreamService.MergeVoiceCard("Coyne tends bar.", "VOICE CARD", "Coyne", "Talks constantly.");
+        var current = DreamService.MergeVoiceCard("Coyne tends bar.", "VOICE CARD", "Coyne", "Look: tired.");
+
+        Assert.IsTrue(DreamService.NeedsVoiceWork(older, "VOICE CARD", ["", "Look:"]));
+        Assert.IsFalse(DreamService.NeedsVoiceWork(current, "VOICE CARD", ["", "Look:"]));
+    }
+
+    [TestMethod]
+    public void UpgradedCard_IsAppendedSoTheOriginalCardSurvives()
+    {
+        // An upgrade adds to the record rather than replacing it: the existing card is what the
+        // character has sounded like, and losing it to a rewrite is unrecoverable.
+        var older = DreamService.MergeVoiceCard(
+            "Brandt runs the kitchen.", "VOICE CARD", "Brandt", "Flat and regional.");
+        var upgraded = DreamService.MergeVoiceCard(older, "VOICE CARD", "Brandt", "Look: heavy brows.");
+
+        StringAssert.Contains(upgraded, "Brandt runs the kitchen.");
+        StringAssert.Contains(upgraded, "Flat and regional.");
+        StringAssert.Contains(upgraded, "Look: heavy brows.");
+        Assert.IsFalse(DreamService.NeedsVoiceWork(upgraded, "VOICE CARD", ["Look:"]),
+            "Once upgraded, the character must stop being offered as a candidate.");
+    }
 }

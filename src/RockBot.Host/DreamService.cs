@@ -2279,11 +2279,15 @@ internal sealed class DreamService : IHostedService, IDisposable
             return;
         }
 
-        var uncarded = cast.Count(e => !HasVoiceMarker(e.Content, marker));
-        if (uncarded == 0)
+        var upgradeMarkers = _options.CastVoiceUpgradeMarkers;
+        var needsWork = cast.Where(e => NeedsVoiceWork(e.Content, marker, upgradeMarkers)).ToList();
+        var uncarded = needsWork.Count(e => !HasVoiceMarker(e.Content, marker));
+        var stale = needsWork.Count - uncarded;
+
+        if (needsWork.Count == 0)
         {
             _logger.LogInformation(
-                "DreamService: cast voice enrichment — all {Count} entries in {Category} already carry a voice card; nothing to do",
+                "DreamService: cast voice enrichment — all {Count} entries in {Category} carry a current voice card; nothing to do",
                 cast.Count, category);
             return;
         }
@@ -2301,16 +2305,16 @@ internal sealed class DreamService : IHostedService, IDisposable
             {
                 _logger.LogInformation(
                     "DreamService: cast voice enrichment — no conversation activity since the last cycle; " +
-                    "skipping ({Uncarded} character(s) still without a voice card)",
-                    uncarded);
+                    "skipping ({Uncarded} without a voice card, {Stale} with an older card)",
+                    uncarded, stale);
                 return;
             }
         }
 
         _logger.LogInformation(
             "DreamService: cast voice enrichment pass — {Total} entries in {Category}, {Uncarded} without a voice card, " +
-            "{Turns} conversation turn(s) since the last cycle",
-            cast.Count, category, uncarded, recentTurns.Count);
+            "{Stale} with an older card, {Turns} conversation turn(s) since the last cycle",
+            cast.Count, category, uncarded, stale, recentTurns.Count);
 
         await RunPassAsync("cast voice enrichment", async () =>
         {
@@ -2321,7 +2325,12 @@ internal sealed class DreamService : IHostedService, IDisposable
             // The proposals then died silently against the HasVoiceMarker check: one cycle on a
             // 160-entry corpus spent 24 proposals to land 1 update. Withholding them is a gate
             // the model cannot talk its way past.
-            var candidates = cast.Where(e => !HasVoiceMarker(e.Content, marker)).ToList();
+            var candidates = needsWork;
+            var newCharacters = candidates.Where(e => !HasVoiceMarker(e.Content, marker)).ToList();
+            var olderCards = candidates.Where(e => HasVoiceMarker(e.Content, marker)).ToList();
+
+            // Every card in the corpus counts as a voice in use, stale ones included — an older
+            // card is still how that character sounds, so a new character must not duplicate it.
             var takenVoices = cast
                 .Where(e => HasVoiceMarker(e.Content, marker))
                 .Select(e => ExtractVoiceCardLine(e.Content, marker))
@@ -2330,12 +2339,31 @@ internal sealed class DreamService : IHostedService, IDisposable
 
             var userMessage = new StringBuilder();
             userMessage.AppendLine(
-                $"Characters in `{category}` that do not yet have a voice. These are the only entries " +
-                "you may propose an update for — every id you return must come from this list.");
+                $"Characters in `{category}` that still need work. These are the only entries you may " +
+                "propose an update for — every id you return must come from the lists below.");
             userMessage.AppendLine();
 
-            foreach (var e in candidates)
-                userMessage.AppendLine($"[{e.Id}] {e.Content}");
+            if (newCharacters.Count > 0)
+            {
+                userMessage.AppendLine("## Characters with no voice yet — write a full card for these");
+                userMessage.AppendLine();
+                foreach (var e in newCharacters)
+                    userMessage.AppendLine($"[{e.Id}] {e.Content}");
+                userMessage.AppendLine();
+            }
+
+            if (olderCards.Count > 0)
+            {
+                // Shown with their existing card, unlike the taken-voices list: an upgrade is
+                // written against what the card already says, so the model has to see it.
+                userMessage.AppendLine(
+                    "## Characters whose card predates the current format — return only what the " +
+                    "current format adds, not the parts they already have");
+                userMessage.AppendLine();
+                foreach (var e in olderCards)
+                    userMessage.AppendLine($"[{e.Id}] {e.Content}");
+                userMessage.AppendLine();
+            }
 
             if (takenVoices.Count > 0)
             {
@@ -2416,14 +2444,19 @@ internal sealed class DreamService : IHostedService, IDisposable
                     continue;
                 }
 
-                if (HasVoiceMarker(existing.Content, marker))
+                if (!NeedsVoiceWork(existing.Content, marker, upgradeMarkers))
                 {
                     // Still the backstop that guarantees convergence, but it should now be
-                    // unreachable: carded entries are no longer offered as candidates. If this
-                    // fires, the model is inventing ids outside the list it was given.
+                    // unreachable: only entries needing work are offered as candidates. If this
+                    // fires, the model is inventing ids outside the lists it was given.
+                    //
+                    // This deliberately tests "needs work" rather than "has a marker". The marker
+                    // test rejected every upgrade to an older card, which is what made a directive
+                    // asking for those upgrades produce nothing, cycle after cycle, with no log
+                    // line to say why.
                     _logger.LogWarning(
                         "DreamService: cast voice enrichment proposed an update to {Id}, which already " +
-                        "carries a voice card and was not offered as a candidate; skipping", existing.Id);
+                        "carries a current voice card and was not offered as a candidate; skipping", existing.Id);
                     skipped++;
                     continue;
                 }
@@ -2471,6 +2504,30 @@ internal sealed class DreamService : IHostedService, IDisposable
         if (end >= 0) rest = rest[..end];
 
         return rest.Replace('\n', ' ').Trim();
+    }
+
+    /// <summary>
+    /// True when this entry is something the enrichment pass should still work on: it has no voice
+    /// card at all, or it has one written before <paramref name="upgradeMarkers"/> described the
+    /// current format.
+    /// </summary>
+    /// <remarks>
+    /// The presence of a marker used to be the whole test, which meant a deployment could never
+    /// bring already-written cards up to a newer shape — the pass skipped them, so a directive
+    /// asking for exactly that produced proposals the apply loop discarded without a word. Any one
+    /// of the upgrade markers is enough: card sections are individually optional, so demanding all
+    /// of them would classify a legitimately short card as stale and rewrite it on every cycle.
+    /// </remarks>
+    internal static bool NeedsVoiceWork(string? content, string marker, IEnumerable<string>? upgradeMarkers)
+    {
+        if (!HasVoiceMarker(content, marker))
+            return true;
+
+        var markers = upgradeMarkers?.Where(m => !string.IsNullOrWhiteSpace(m)).ToList();
+        if (markers is null || markers.Count == 0)
+            return false;
+
+        return !markers.Any(m => content!.Contains(m, StringComparison.OrdinalIgnoreCase));
     }
 
     /// <summary>True when <paramref name="content"/> already carries a voice card marker.</summary>

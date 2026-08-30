@@ -301,6 +301,28 @@ public sealed class DreamOptions
     /// </remarks>
     public bool CastVoiceRequiresRecentActivity { get; set; } = true;
 
+    /// <summary>
+    /// Substrings that mark a voice card as written in the current format. A character whose card
+    /// contains <see cref="CastVoiceMarker"/> but none of these is treated as an older card and is
+    /// offered back to the pass for an upgrade. Empty (the default) means any card counts as
+    /// finished, which is the original behaviour.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// A deployment that evolves what a voice card should contain otherwise has no way to bring
+    /// the cards it already wrote up to the new shape: the pass skipped anything carrying the
+    /// marker, so a directive asking the model to upgrade older cards produced proposals the
+    /// framework silently discarded. Listing one or more markers of the current format closes
+    /// that gap without the framework knowing anything about a particular card layout.
+    /// </para>
+    /// <para>
+    /// Matching is case-insensitive, and only one of the listed markers has to be present — card
+    /// sections are usually optional individually, so requiring all of them would treat a
+    /// legitimately short card as stale and rewrite it forever.
+    /// </para>
+    /// </remarks>
+    public IList<string> CastVoiceUpgradeMarkers { get; set; } = [];
+
     /// <summary>Whether the tier routing self-correction review pass is enabled.</summary>
     public bool TierRoutingReviewEnabled { get; set; } = true;
 
