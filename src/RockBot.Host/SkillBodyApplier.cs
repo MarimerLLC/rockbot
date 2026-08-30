@@ -36,13 +36,15 @@ internal sealed class SkillBodyApplier : IRepairTargetApplier
         var change = ticket.Change.Deserialize<SkillBodyChange>(JsonOptions)
             ?? throw new ArgumentException("SkillBody change is empty.", nameof(ticket));
 
-        if (string.IsNullOrWhiteSpace(change.Skill))
-            throw new ArgumentException("SkillBody change missing 'skill'.", nameof(ticket));
+        var skill = change.ResolvedSkill;
+        if (string.IsNullOrWhiteSpace(skill))
+            throw new ArgumentException(
+                "SkillBody change missing 'skill' (also accepted: 'skillName', 'name').", nameof(ticket));
         if (change.Ops is null || change.Ops.Count == 0)
             throw new ArgumentException("SkillBody change has no ops.", nameof(ticket));
 
-        var existing = await _skillStore.GetAsync(change.Skill)
-            ?? throw new InvalidOperationException($"Skill '{change.Skill}' not found.");
+        var existing = await _skillStore.GetAsync(skill)
+            ?? throw new InvalidOperationException($"Skill '{skill}' not found.");
 
         var preBody = existing.Content ?? string.Empty;
         var preHash = HashOf(preBody);
@@ -65,7 +67,7 @@ internal sealed class SkillBodyApplier : IRepairTargetApplier
 
         var diff = JsonSerializer.SerializeToElement(new
         {
-            skill = change.Skill,
+            skill = skill,
             preHash,
             postHash,
             ops = change.Ops,
@@ -73,14 +75,14 @@ internal sealed class SkillBodyApplier : IRepairTargetApplier
 
         _logger.LogInformation(
             "SkillBodyApplier: applied {OpCount} op(s) to skill {Skill} (pre={PreHash} post={PostHash})",
-            change.Ops.Count, change.Skill, preHash, postHash);
+            change.Ops.Count, skill, preHash, postHash);
 
         Func<CancellationToken, Task> revert = async ct =>
         {
-            var current = await _skillStore.GetAsync(change.Skill);
+            var current = await _skillStore.GetAsync(skill);
             if (current is null)
             {
-                _logger.LogWarning("SkillBodyApplier revert: skill {Skill} no longer exists", change.Skill);
+                _logger.LogWarning("SkillBodyApplier revert: skill {Skill} no longer exists", skill);
                 return;
             }
 
@@ -92,7 +94,7 @@ internal sealed class SkillBodyApplier : IRepairTargetApplier
             {
                 _logger.LogWarning(
                     "SkillBodyApplier revert: skill {Skill} updated by another writer (expected {Expected}, found {Actual}); skipping revert",
-                    change.Skill, updated.UpdatedAt, current.UpdatedAt);
+                    skill, updated.UpdatedAt, current.UpdatedAt);
                 return;
             }
 
@@ -102,7 +104,7 @@ internal sealed class SkillBodyApplier : IRepairTargetApplier
                 UpdatedAt = preUpdatedAt ?? DateTimeOffset.UtcNow,
             };
             await _skillStore.SaveAsync(reverted);
-            _logger.LogInformation("SkillBodyApplier reverted skill {Skill} to pre-apply body", change.Skill);
+            _logger.LogInformation("SkillBodyApplier reverted skill {Skill} to pre-apply body", skill);
         };
 
         return new RepairApplyOutcome(diff, revert);
@@ -233,7 +235,29 @@ internal sealed class SkillBodyApplier : IRepairTargetApplier
     internal sealed class SkillBodyChange
     {
         public string? Skill { get; set; }
+
+        /// <summary>Accepted spelling of <see cref="Skill"/>.</summary>
+        public string? SkillName { get; set; }
+
+        /// <summary>Accepted spelling of <see cref="Skill"/>.</summary>
+        public string? Name { get; set; }
+
         public List<SkillBodyOp>? Ops { get; set; }
+
+        /// <summary>
+        /// The skill this change targets, under whichever of the accepted spellings the ticket
+        /// used.
+        /// </summary>
+        /// <remarks>
+        /// The creation directive documents the <c>ops</c> array for this target but never named
+        /// the identifier field, while it spells the fields out for every other target. Models
+        /// filled the gap with the obvious synonyms, and every such ticket then failed validation
+        /// here — on one agent, the same ticket failed 117 times over two months. Accepting the
+        /// synonyms costs nothing: the change object carries only a skill and its ops, so there is
+        /// no other field these names could plausibly mean.
+        /// </remarks>
+        public string? ResolvedSkill =>
+            new[] { Skill, SkillName, Name }.FirstOrDefault(v => !string.IsNullOrWhiteSpace(v));
     }
 
     internal sealed class SkillBodyOp
