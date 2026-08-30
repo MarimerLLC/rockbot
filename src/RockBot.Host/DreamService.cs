@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text;
 using System.Text.Json;
 using Cronos;
@@ -75,6 +76,7 @@ internal sealed class DreamService : IHostedService, IDisposable
     private string? _contradictionSweepDirective;
     private string? _repairTicketCreationDirective;
     private IReadOnlyList<LlmPricingRow>? _pricingRows;
+    private DreamPassLedger? _passLedger;
 
     public DreamService(
         ILongTermMemory memory,
@@ -526,6 +528,11 @@ internal sealed class DreamService : IHostedService, IDisposable
         // reads) and runs once per cycle.
         LoadDirectives(initialLoad: false);
 
+        // Read the change-gate ledger once per cycle. Passes consult it before spending an LLM
+        // call on a corpus that has not moved since they last looked at it.
+        _passLedger = await DreamPassLedger.LoadAsync(
+            ResolvePath(DreamPassLedger.FileName, _profileOptions.BasePath), _logger);
+
         _logger.LogInformation("DreamService: dream cycle starting");
 
         try
@@ -611,6 +618,12 @@ internal sealed class DreamService : IHostedService, IDisposable
         }
         finally
         {
+            // Persist in the finally so a preempted or failed cycle still keeps the stamps of
+            // the passes that did complete — otherwise a cycle that dies late re-runs every
+            // gated pass next time.
+            if (_passLedger is not null)
+                await _passLedger.SaveAsync();
+
             await slot.DisposeAsync();
         }
     }
@@ -710,9 +723,12 @@ internal sealed class DreamService : IHostedService, IDisposable
         CancellationToken ct)
     {
         var eligibleIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var reviewedIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
         foreach (var e in all)
-            if (!IsReviewedAndUnchanged(e))
+            if (IsReviewedAndUnchanged(e))
+                reviewedIds.Add(e.Id);
+            else
                 eligibleIds.Add(e.Id);
 
         var unreviewed = eligibleIds.Count;
@@ -726,13 +742,30 @@ internal sealed class DreamService : IHostedService, IDisposable
                     options.ConsolidationMaxClusterSize,
                     ct);
 
+                var settled = 0;
                 foreach (var cluster in clusters)
+                {
+                    // A cluster in which every member is reviewed-and-unchanged was, by
+                    // construction, already shown to consolidation as a group: a cluster becomes
+                    // eligible the moment any member is new or edited, and every member shown
+                    // gets stamped on that cycle. Re-offering it now re-asks a question the model
+                    // has already answered — and keeps re-asking, twice a day, forever. That
+                    // undoes the reviewed-and-unchanged gate for exactly the entries most likely
+                    // to sit in a cluster. One new or edited member re-opens the whole cluster.
+                    if (cluster.Count > 0 && cluster.All(reviewedIds.Contains))
+                    {
+                        settled++;
+                        continue;
+                    }
+
                     foreach (var id in cluster)
                         eligibleIds.Add(id);
+                }
 
                 logger.LogDebug(
-                    "DreamService: {Unreviewed} unreviewed + {Clustered} in {Clusters} duplicate cluster(s)",
-                    unreviewed, eligibleIds.Count - unreviewed, clusters.Count);
+                    "DreamService: {Unreviewed} unreviewed + {Clustered} pulled in from {Clusters} duplicate cluster(s) " +
+                    "({Settled} cluster(s) skipped as already reviewed together)",
+                    unreviewed, eligibleIds.Count - unreviewed, clusters.Count, settled);
             }
             catch (OperationCanceledException) { throw; }
             catch (Exception ex)
@@ -1141,7 +1174,8 @@ internal sealed class DreamService : IHostedService, IDisposable
             "skill consolidation",
             _skillDreamDirective!,
             userMessage,
-            ct);
+            ct,
+            SkillCorpusFingerprint(all, singletonPrefixes));
         if (result is null) return;
 
         var deleted = 0;
@@ -2154,7 +2188,8 @@ internal sealed class DreamService : IHostedService, IDisposable
                 "graph consolidation",
                 _graphConsolidationDirective ?? BuiltInGraphConsolidationDirective,
                 userMessage.ToString(),
-                ct);
+                ct,
+                GraphFingerprint(entities, triples));
             if (result is null) return;
             var entitiesDeleted = 0;
             var triplesDeleted = 0;
@@ -3015,12 +3050,20 @@ internal sealed class DreamService : IHostedService, IDisposable
         // prompt cost is independent of entry count, so we could read more — but more entries
         // also mean more file-IO and more cluster permutations, and 200 has been shown to
         // surface every detection rule reliably. Bump if needed; do not silently widen.
-        var entries = await _tierRoutingLogger.ReadRecentAsync(200);
+        // The window matters as much as the cap. The log is append-only and this reads its tail,
+        // so an agent that has stopped routing anything still presented the same trailing
+        // entries every cycle — the pass had no way to run out of input. With a window the
+        // input drains and the ≥10 threshold below eventually stops the pass on its own.
+        var since = _options.TierRoutingReviewWindow > TimeSpan.Zero
+            ? _clock.Now - _options.TierRoutingReviewWindow
+            : (DateTimeOffset?)null;
+
+        var entries = await _tierRoutingLogger.ReadRecentAsync(200, since);
         if (entries.Count < 10)
         {
             _logger.LogDebug(
-                "DreamService: tier routing review — only {Count} entries; skipping (need ≥ 10)",
-                entries.Count);
+                "DreamService: tier routing review — only {Count} entries in the last {Days:F0}d; skipping (need ≥ 10)",
+                entries.Count, _options.TierRoutingReviewWindow.TotalDays);
             return;
         }
 
@@ -3091,7 +3134,10 @@ internal sealed class DreamService : IHostedService, IDisposable
             "tier routing review",
             _tierRoutingDirective ?? BuiltInTierRoutingDirective,
             userMessage.ToString(),
-            ct);
+            ct,
+            TierRoutingFingerprint(entries, currentConfig is null
+                ? null
+                : JsonSerializer.Serialize(currentConfig, JsonOptions)));
         if (result is null) return;
 
         // Save anti-pattern entries regardless of whether the config changed
@@ -4016,7 +4062,8 @@ internal sealed class DreamService : IHostedService, IDisposable
                 "DLQ review",
                 _dlqDirective ?? BuiltInDlqDirective,
                 userMessage.ToString(),
-                ct);
+                ct,
+                DlqFingerprint(samples));
             if (result is null) return;
 
             if (result.NoDlqIssues == true)
@@ -4158,11 +4205,26 @@ internal sealed class DreamService : IHostedService, IDisposable
                 userMessage.AppendLine();
             }
 
+            // Unlike skill consolidation's usage tallies, the 14-day episode and feedback sets
+            // are this pass's actual subject matter rather than annotations on it, so they
+            // belong in the fingerprint. On an idle agent they stop changing once the windows
+            // drain, and the pass goes quiet with them.
+            var fingerprint = CorpusFingerprint([
+                "identity:" + MemoryCorpusFingerprint(identityEntries),
+                "episodes:" + MemoryCorpusFingerprint(recentEpisodes),
+                "prefs:" + MemoryCorpusFingerprint(recentPrefs),
+                "feedback:" + CorpusFingerprint(recentFeedback
+                    .OrderBy(f => f.SessionId, StringComparer.Ordinal)
+                    .ThenBy(f => f.Summary, StringComparer.Ordinal)
+                    .Select(f => $"{f.SignalType}|{f.SessionId}|{ContentFingerprint(f.Summary + f.Detail)}"))
+            ]);
+
             var result = await InvokeDreamPassAsync<IdentityReflectionResultDto>(
                 "identity reflection",
                 _identityDirective ?? BuiltInIdentityDirective,
                 userMessage.ToString(),
-                ct);
+                ct,
+                fingerprint);
             if (result is null) return;
 
             if (result.NoChange == true)
@@ -4278,7 +4340,8 @@ internal sealed class DreamService : IHostedService, IDisposable
                 "contradiction sweep",
                 directive,
                 userMessage.ToString(),
-                ct);
+                ct,
+                MemoryCorpusFingerprint(corpus));
             if (result is null) return;
 
             var supersededCount = await ApplyContradictionSweepResultAsync(
@@ -4427,13 +4490,36 @@ internal sealed class DreamService : IHostedService, IDisposable
     /// (<see cref="IScheduledTaskSlot.Token"/>) so that user preemption interrupts
     /// the in-flight LLM call promptly — see issue #333.
     /// </summary>
+    /// <param name="inputFingerprint">
+    /// When supplied, enables the change gate for this pass: the LLM call is skipped entirely
+    /// (returning <c>null</c>, which every caller already treats as "do nothing this cycle")
+    /// while the fingerprint matches what the pass last ran on and the
+    /// <see cref="DreamOptions.DreamPassMaxSkipInterval"/> floor has not elapsed. The
+    /// fingerprint is recorded only after the model returns something usable, so a failed or
+    /// unparseable call is retried next cycle rather than being mistaken for a completed one.
+    /// Pass <c>null</c> for delta-driven passes, which already gate on having new input.
+    /// </param>
     private async Task<TResult?> InvokeDreamPassAsync<TResult>(
         string passName,
         string systemDirective,
         string userMessage,
-        CancellationToken ct)
+        CancellationToken ct,
+        string? inputFingerprint = null)
         where TResult : class
     {
+        var gated = inputFingerprint is not null
+            && _passLedger is not null
+            && _options.DreamPassChangeGateEnabled;
+
+        if (gated && _passLedger!.ShouldSkip(
+                passName, inputFingerprint!, _clock.Now, _options.DreamPassMaxSkipInterval))
+        {
+            _logger.LogInformation(
+                "DreamService: {Pass} skipped — inputs unchanged since {LastRun:u}; no LLM call",
+                passName, _passLedger.Get(passName)!.LastRunAt);
+            return null;
+        }
+
         var messages = new List<ChatMessage>
         {
             new(ChatRole.System, systemDirective),
@@ -4455,8 +4541,138 @@ internal sealed class DreamService : IHostedService, IDisposable
         }
 
         _logger.LogDebug("DreamService: {Pass} JSON ({Length} chars): {Json}", passName, json.Length, json);
-        return TryDeserializeJson<TResult>(json, passName);
+        var result = TryDeserializeJson<TResult>(json, passName);
+
+        if (gated && result is not null)
+            _passLedger!.Record(passName, inputFingerprint!, _clock.Now);
+
+        return result;
     }
+
+    // ── Change-gate fingerprints ──────────────────────────────────────────────
+    //
+    // Each corpus-wide pass hashes the corpus it is about to describe rather than the rendered
+    // prompt. The prompt carries wall-clock text ("Current date/time: …") and rolling-window
+    // statistics (usage counts over the last 30 days, co-occurrence tallies) that move on their
+    // own while the agent sits idle, so hashing it would defeat the gate it is meant to drive.
+
+    /// <summary>
+    /// Stable hash over an ordered sequence of per-item field strings. Callers are responsible
+    /// for ordering deterministically — store enumeration order is not guaranteed stable across
+    /// cycles, and an order-dependent hash would report phantom changes.
+    /// </summary>
+    internal static string CorpusFingerprint(IEnumerable<string> parts)
+    {
+        var sb = new StringBuilder();
+        foreach (var part in parts)
+            sb.Append(part).Append('\u001f');  // unit separator: cannot occur in the field text
+
+        var bytes = System.Security.Cryptography.SHA256.HashData(
+            Encoding.UTF8.GetBytes(sb.ToString()));
+        return Convert.ToHexString(bytes.AsSpan(0, 16));
+    }
+
+    /// <summary>
+    /// Fingerprint of the skill catalog as consolidation sees it: names, prose, cross-references
+    /// and attached resources. Usage counts and co-occurrence tallies are excluded — they are
+    /// 30-day rolling annotations that decay without anyone touching a skill, and re-running a
+    /// whole-catalog merge because a count went 5→4 is exactly the waste the gate exists to stop.
+    /// </summary>
+    internal static string SkillCorpusFingerprint(
+        IReadOnlyList<Skill> skills,
+        IReadOnlyCollection<string> singletonPrefixes) =>
+        CorpusFingerprint(
+            skills
+                .OrderBy(s => s.Name, StringComparer.OrdinalIgnoreCase)
+                .Select(s => string.Join('|',
+                    s.Name,
+                    ContentFingerprint(s.Summary),
+                    ContentFingerprint(s.Content),
+                    string.Join(',', (s.SeeAlso ?? [])
+                        .OrderBy(x => x, StringComparer.OrdinalIgnoreCase)),
+                    string.Join(',', (s.Manifest ?? [])
+                        .OrderBy(r => r.Filename, StringComparer.OrdinalIgnoreCase)
+                        .Select(r => $"{r.Filename}:{r.Type}:{(r.Provisional ? "prov" : "conf")}"))))
+                .Concat(singletonPrefixes
+                    .OrderBy(p => p, StringComparer.Ordinal)
+                    .Select(p => "singleton:" + p)));
+
+    /// <summary>
+    /// Fingerprint of the knowledge graph. <c>LastReferencedAt</c> is included at day granularity
+    /// — matching the precision the prompt renders it at — because a reference is real activity
+    /// and the directive prunes on staleness.
+    /// </summary>
+    internal static string GraphFingerprint(
+        IReadOnlyList<KnowledgeEntity> entities,
+        IReadOnlyList<KnowledgeTriple> triples) =>
+        CorpusFingerprint(
+            entities
+                .OrderBy(e => e.Id, StringComparer.Ordinal)
+                .Select(e => string.Join('|',
+                    "entity", e.Id, e.EntityType.ToString(), e.Name,
+                    string.Join(',', e.Aliases.OrderBy(a => a, StringComparer.OrdinalIgnoreCase)),
+                    string.Join(',', (e.Metadata ?? new Dictionary<string, string>())
+                        .OrderBy(kv => kv.Key, StringComparer.OrdinalIgnoreCase)
+                        .Select(kv => $"{kv.Key}={kv.Value}")),
+                    e.LastReferencedAt?.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture) ?? "never"))
+                .Concat(triples
+                    .OrderBy(t => t.Id, StringComparer.Ordinal)
+                    .Select(t => string.Join('|',
+                        "triple", t.Id, t.Subject, t.Predicate, t.Object,
+                        t.Confidence.ToString("F2", CultureInfo.InvariantCulture)))));
+
+    /// <summary>
+    /// Fingerprint of a set of memory entries by identity and content. Importance and
+    /// reinforcement counts are excluded: the decay pass rewrites importance every cycle by
+    /// design, so including it would mean nothing was ever unchanged.
+    /// </summary>
+    internal static string MemoryCorpusFingerprint(IEnumerable<MemoryEntry> entries) =>
+        CorpusFingerprint(
+            entries
+                .OrderBy(e => e.Id, StringComparer.Ordinal)
+                .Select(e => string.Join('|',
+                    e.Id,
+                    e.Category ?? string.Empty,
+                    ContentFingerprint(e.Content),
+                    string.Join(',', e.Tags.OrderBy(t => t, StringComparer.OrdinalIgnoreCase)))));
+
+    /// <summary>
+    /// Fingerprint of the routing decisions under review plus the config the pass would tune.
+    /// A config edited by hand between cycles re-opens the pass even on an unchanged log.
+    /// </summary>
+    internal static string TierRoutingFingerprint(
+        IReadOnlyList<TierRoutingEntry> entries,
+        string? configJson) =>
+        CorpusFingerprint(
+            entries
+                .Select(e => string.Join('|',
+                    e.Timestamp.ToString("O", CultureInfo.InvariantCulture),
+                    e.Tier.ToString(),
+                    e.Context,
+                    e.ComplexityScore.ToString("F4", CultureInfo.InvariantCulture),
+                    e.PostInjectionTokenEstimate?.ToString(CultureInfo.InvariantCulture) ?? string.Empty))
+                .Append("config:" + ContentFingerprint(configJson)));
+
+    /// <summary>
+    /// Fingerprint of the sampled dead-letter messages. Queue depth is included so a growing
+    /// backlog re-opens the pass even when the sampled head of the queue is unchanged; a queue
+    /// that is merely stuck at the same depth with the same messages is not re-analyzed.
+    /// </summary>
+    internal static string DlqFingerprint(
+        IEnumerable<(DlqQueueInfo Queue, IReadOnlyList<DlqMessage> Messages)> samples) =>
+        CorpusFingerprint(
+            samples
+                .OrderBy(s => s.Queue.Name, StringComparer.Ordinal)
+                .SelectMany(s => new[] { $"queue|{s.Queue.Name}|{s.Queue.MessageCount}" }
+                    .Concat(s.Messages
+                        .OrderBy(m => m.MessageId ?? string.Empty, StringComparer.Ordinal)
+                        .Select(m => string.Join('|',
+                            s.Queue.Name,
+                            m.MessageId ?? string.Empty,
+                            m.MessageType ?? string.Empty,
+                            m.DeathReason ?? string.Empty,
+                            m.DeathCount.ToString(CultureInfo.InvariantCulture),
+                            ContentFingerprint(m.BodyPreview))))));
 
     /// <summary>
     /// Extracts the outermost JSON object from <paramref name="text"/>, tolerating

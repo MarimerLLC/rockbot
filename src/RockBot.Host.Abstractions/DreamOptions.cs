@@ -19,6 +19,43 @@ public sealed class DreamOptions
     public string CronSchedule { get; set; } = "0 */12 * * *";
 
     /// <summary>
+    /// Whether corpus-wide dream passes skip their LLM call when the input they would send has
+    /// not changed since the last time they ran. Default: <c>true</c>.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Several passes are corpus-wide rather than delta-driven: skill consolidation ships the
+    /// whole skill catalog, graph consolidation the whole graph, the contradiction sweep the
+    /// whole claim/feedback corpus, identity reflection its full experiential context. Ungated,
+    /// each re-asks the model the same question about the same bytes on every cycle — twice a
+    /// day at the default <see cref="CronSchedule"/> — and the bill scales with corpus size
+    /// rather than with how much the agent actually did.
+    /// </para>
+    /// <para>
+    /// The fingerprint covers the corpus itself, not statistics derived from it. Skill usage
+    /// counts and co-occurrence tallies are 30-day rolling annotations that drift on their own
+    /// as old events age out; treating that drift as a change would keep an idle agent dreaming
+    /// for a month after its last conversation. Set to <c>false</c> to restore the previous
+    /// run-every-cycle behaviour.
+    /// </para>
+    /// </remarks>
+    public bool DreamPassChangeGateEnabled { get; set; } = true;
+
+    /// <summary>
+    /// Longest a gated dream pass may go without actually running, however unchanged its inputs
+    /// look. Default: 7 days. Set to <see cref="TimeSpan.Zero"/> or negative to make the change
+    /// gate absolute.
+    /// </summary>
+    /// <remarks>
+    /// Some directives are time-dependent in ways an input hash cannot see — graph consolidation
+    /// prunes entities by staleness, so an untouched graph still becomes prunable purely through
+    /// the passage of time. Without this floor, gating those passes on content would quietly
+    /// switch such behaviour off. With it, an idle agent runs them once a week instead of
+    /// fourteen times, and nothing stops firing altogether.
+    /// </remarks>
+    public TimeSpan DreamPassMaxSkipInterval { get; set; } = TimeSpan.FromDays(7);
+
+    /// <summary>
     /// Which LLM tier the dream passes run on. Defaults to <see cref="ModelTier.Balanced"/>,
     /// matching the previous hardcoded behaviour.
     /// <para>
@@ -246,6 +283,18 @@ public sealed class DreamOptions
 
     /// <summary>Whether the tier routing self-correction review pass is enabled.</summary>
     public bool TierRoutingReviewEnabled { get; set; } = true;
+
+    /// <summary>
+    /// How far back the tier routing review pass reads its routing log. Default: 14 days.
+    /// Set to <see cref="TimeSpan.Zero"/> or negative to read the whole log.
+    /// </summary>
+    /// <remarks>
+    /// The routing log is append-only and the pass reads the tail of it, so without a window an
+    /// agent that stopped making routing decisions still had the same trailing entries analyzed
+    /// on every cycle indefinitely. A window lets the input drain: once the newest entry ages
+    /// out, the pass falls below its minimum-entry threshold and stops on its own.
+    /// </remarks>
+    public TimeSpan TierRoutingReviewWindow { get; set; } = TimeSpan.FromDays(14);
 
     /// <summary>
     /// Routing cost floor for the tier-routing review pass. The High tier is priced at no less

@@ -37,6 +37,48 @@ Each dream cycle runs a log-retention pass followed by five knowledge passes in 
 Passes that depend on optional services (`IConversationLog`, `IFeedbackStore`,
 `ISkillUsageStore`) are skipped when those services are not registered.
 
+### The change gate
+
+Most passes are *delta-driven*: they read the conversation log, a time-windowed slice of a
+telemetry log, or a work queue, and return early when there is nothing new. An idle agent costs
+nothing for those — the conversation log is cleared at the end of every cycle, so after a quiet
+day it is empty and six passes no-op on the first line.
+
+A handful are *corpus-wide* instead. Skill consolidation ships the whole skill catalog, graph
+consolidation the whole graph, the contradiction sweep the whole claim/feedback corpus, identity
+reflection its full experiential context. Ungated, these re-ask the model the same question about
+the same bytes on every cycle forever, and the prompt scales with corpus size rather than with
+how much the agent actually did. `DreamPassLedger` gates them: each hashes the corpus it is about
+to describe and skips the LLM call when the hash matches what it last ran on.
+
+Three details make it safe rather than merely cheap:
+
+- **The fingerprint covers the corpus, not statistics derived from it.** Skill usage counts and
+  co-occurrence tallies are 30-day rolling annotations that drift on their own as old events age
+  out; importance scores are rewritten by the decay pass every cycle. Hashing those would mean
+  nothing was ever "unchanged" and the gate would never fire.
+- **`DreamPassMaxSkipInterval` (default 7 days) forces a run regardless.** Some directives are
+  time-dependent in ways a content hash cannot see — graph consolidation prunes entities by
+  staleness, so an untouched graph still becomes prunable through the passage of time. The floor
+  bounds cost without switching such behaviour off.
+- **The stamp is recorded only after the model returns usable JSON.** A failed or unparseable
+  call is retried next cycle rather than being mistaken for a completed one.
+
+The ledger lives at `{BasePath}/dream-pass-ledger.json` so the gate survives a restart. A missing
+or corrupt ledger degrades to "run everything once", never to "skip something forever". Set
+`DreamPassChangeGateEnabled: false` to restore the previous run-every-cycle behaviour.
+
+Two related bounds close the same kind of leak elsewhere:
+
+- **Tier routing review** reads its append-only log through a `TierRoutingReviewWindow` (default
+  14 days). Without a window the pass always saw the same trailing 200 entries and could never
+  run out of input.
+- **Memory consolidation's duplicate-cluster carve-out** now skips clusters in which every member
+  is already reviewed-and-unchanged. Such a cluster was, by construction, shown to the model
+  together on the cycle that stamped it; re-offering it re-asks an answered question and quietly
+  undid the reviewed-and-unchanged gate for exactly the entries most likely to sit in a cluster.
+  One new or edited member re-opens the whole cluster.
+
 ### Pass 0 — Log retention
 
 Runs **first and unconditionally**, before the knowledge passes — and crucially before the
@@ -433,6 +475,11 @@ public sealed class DreamOptions
     // Feature flags
     public bool PreferenceInferenceEnabled { get; set; } = true;
     public bool SkillGapEnabled { get; set; } = true;
+
+    // Change gate — skip a corpus-wide pass whose input has not moved
+    public bool DreamPassChangeGateEnabled { get; set; } = true;
+    public TimeSpan DreamPassMaxSkipInterval { get; set; } = TimeSpan.FromDays(7);
+    public TimeSpan TierRoutingReviewWindow { get; set; } = TimeSpan.FromDays(14);
 
     // Append-only JSONL log retention (Pass 0)
     public bool LogRetentionEnabled { get; set; } = true;

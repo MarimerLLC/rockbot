@@ -125,6 +125,53 @@ public class ConsolidationCandidateGatingTests
     }
 
     [TestMethod]
+    public async Task ClusterOfEntriesAllReviewedAndUnchanged_IsNotReoffered()
+    {
+        // The duplicate-cluster carve-out used to re-add every clustered id unconditionally,
+        // which quietly undid the reviewed-and-unchanged gate for exactly the entries most
+        // likely to sit in a cluster: a pair the model has already declined to merge — or
+        // whose merge the coverage check rejected — was handed back to it twice a day forever.
+        // A cluster only becomes eligible when one of its members is new or edited, and every
+        // member shown gets stamped on that cycle, so "all members reviewed and unchanged"
+        // means "already asked, and answered".
+        var store = CreateStore();
+        var a = Reviewed(
+            Entry("a", "Rocky has a dog named Milo the Sheltie"),
+            "Rocky has a dog named Milo the Sheltie");
+        var b = Reviewed(
+            Entry("b", "Rocky has a Sheltie dog named Milo"),
+            "Rocky has a Sheltie dog named Milo");
+        await store.SaveAsync(a);
+        await store.SaveAsync(b);
+
+        var eligible = await Select(store, [a, b], threshold: 0.5);
+
+        Assert.AreEqual(0, eligible.Count,
+            "A settled duplicate cluster must stay withheld until one of its members changes.");
+    }
+
+    [TestMethod]
+    public async Task SettledCluster_ReopensWhenOneMemberIsEdited()
+    {
+        var store = CreateStore();
+        var a = Reviewed(
+            Entry("a", "Rocky has a dog named Milo the Sheltie"),
+            "Rocky has a dog named Milo the Sheltie");
+        var b = Reviewed(
+            Entry("b", "Rocky has a Sheltie dog named Milo"),
+            "Rocky has a Sheltie dog named Milo");
+        // Stamped against the old text, so the edit shows up as a changed fingerprint.
+        var edited = b with { Content = "Rocky has a Sheltie dog named Milo, adopted in 2019" };
+        await store.SaveAsync(a);
+        await store.SaveAsync(edited);
+
+        var eligible = await Select(store, [a, edited], threshold: 0.5);
+
+        CollectionAssert.AreEquivalent(new[] { "a", "b" }, eligible.Select(e => e.Id).ToArray(),
+            "One edited member has to bring its whole cluster back so the merge is still possible.");
+    }
+
+    [TestMethod]
     public async Task SelectionPreservesStoreOrdering()
     {
         var store = CreateStore();

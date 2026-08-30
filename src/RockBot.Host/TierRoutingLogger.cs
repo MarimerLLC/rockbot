@@ -83,7 +83,17 @@ public sealed class TierRoutingLogger
     /// <summary>
     /// Reads recent routing entries, newest last. Returns an empty list if the file does not exist.
     /// </summary>
-    public async Task<IReadOnlyList<TierRoutingEntry>> ReadRecentAsync(int maxResults = 200)
+    /// <param name="maxResults">Cap on entries returned, taken from the tail of the log.</param>
+    /// <param name="since">
+    /// When supplied, entries older than this are excluded. The log is append-only, so without a
+    /// window a reader always sees the same trailing entries no matter how long ago they were
+    /// written — a consumer that treats "entries present" as "there is something to analyze"
+    /// never stops. Entries with a default (unset) timestamp are kept, so records written before
+    /// the field existed are not silently dropped.
+    /// </param>
+    public async Task<IReadOnlyList<TierRoutingEntry>> ReadRecentAsync(
+        int maxResults = 200,
+        DateTimeOffset? since = null)
     {
         if (!File.Exists(_filePath))
             return [];
@@ -98,8 +108,11 @@ public sealed class TierRoutingLogger
                 try
                 {
                     var entry = JsonSerializer.Deserialize<TierRoutingEntry>(line, JsonOptions);
-                    if (entry is not null)
-                        entries.Add(entry);
+                    if (entry is null) continue;
+                    if (since is { } cutoff
+                        && entry.Timestamp != default
+                        && entry.Timestamp < cutoff) continue;
+                    entries.Add(entry);
                 }
                 catch (JsonException) { /* skip malformed lines */ }
             }
