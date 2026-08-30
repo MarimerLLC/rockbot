@@ -6071,6 +6071,9 @@ internal sealed class DreamService : IHostedService, IDisposable
     /// Pure status-classification function: given the post-apply attempt history
     /// and the latest verify outcome, decide what status the ticket should land in.
     /// </summary>
+    /// <summary>Prefix on <see cref="VerifyResult.Detail"/> when the applier threw.</summary>
+    internal const string ApplyErrorPrefix = "apply error: ";
+
     internal static RepairStatus ComputeNextStatus(
         IReadOnlyList<RepairAttempt> attempts,
         VerifyOutcome lastOutcome,
@@ -6082,8 +6085,35 @@ internal sealed class DreamService : IHostedService, IDisposable
                 attempts.Count(a => a.Result.Outcome == VerifyOutcome.PredicateFailed) >= maxAttempts
                     ? RepairStatus.Escalated
                     : RepairStatus.Open,
-            _ => RepairStatus.Open, // Uncertain — don't count toward MaxAttempts
+            // Uncertain normally means the world was briefly unavailable — a gateway error, a
+            // missing executor — and burning an attempt on that would escalate tickets for
+            // reasons that have nothing to do with them. A malformed ticket is the opposite:
+            // the applier rejects it identically every cycle, forever, and Uncertain guarantees
+            // it is retried forever. Observed on a live agent: one ticket failed the same
+            // validation 117 times across two months, with MaxAttempts sitting at 3 the whole
+            // time. Repetition is what separates the two, and it is the same reasoning the
+            // verify-timeout backoff already uses to promote a stuck ticket.
+            _ => IsRepeatingApplyError(attempts, maxAttempts)
+                ? RepairStatus.Escalated
+                : RepairStatus.Open,
         };
+
+    /// <summary>
+    /// True when the newest attempt failed inside the applier and the identical failure has now
+    /// happened <paramref name="maxAttempts"/> times. Matching on the detail text keeps this
+    /// independent of which exception type an applier chose to throw.
+    /// </summary>
+    internal static bool IsRepeatingApplyError(IReadOnlyList<RepairAttempt> attempts, int maxAttempts)
+    {
+        if (maxAttempts <= 0 || attempts.Count == 0) return false;
+
+        var latest = attempts[^1].Result.Detail;
+        if (string.IsNullOrEmpty(latest) || !latest.StartsWith(ApplyErrorPrefix, StringComparison.Ordinal))
+            return false;
+
+        return attempts.Count(a => string.Equals(a.Result.Detail, latest, StringComparison.Ordinal))
+            >= maxAttempts;
+    }
 
     internal static async Task<TicketCycleResult> ApplyAndVerifyTicketAsync(
         IReadOnlyDictionary<RepairTarget, IRepairTargetApplier> appliers,
@@ -6119,7 +6149,7 @@ internal sealed class DreamService : IHostedService, IDisposable
                 Attempt: new RepairAttempt(
                     DateTimeOffset.UtcNow,
                     JsonSerializer.SerializeToElement(new { error = ex.Message, type = ex.GetType().Name }, JsonOptions),
-                    new VerifyResult(VerifyOutcome.Uncertain, $"apply error: {ex.GetType().Name}: {ex.Message}")));
+                    new VerifyResult(VerifyOutcome.Uncertain, $"{ApplyErrorPrefix}{ex.GetType().Name}: {ex.Message}")));
         }
 
         // Backoff schedule for slow verify shapes: each prior timeout doubles the budget
@@ -6360,8 +6390,10 @@ internal sealed class DreamService : IHostedService, IDisposable
         'unknown'), count, distinct sessions, and a few sample error messages.
 
         Choose at most one of these target types per ticket:
-          - SkillBody: edit a named skill's body. Use ops [{op:"append"|"replaceSection"|"deleteSection", header?, text?}].
-            Use this when a skill's instructions are misleading the agent into the failure.
+          - SkillBody: edit a named skill's body
+            ({skill, ops:[{op:"append"|"replaceSection"|"deleteSection", header?, text?}]}).
+            `skill` is required and must be the exact skill name. Use this when a skill's
+            instructions are misleading the agent into the failure.
           - WorkingMemoryEvict: delete working-memory entries by keyPrefix or keys.
             Use this when a stale belief in WM ("X is broken") needs purging so the
             next session re-evaluates from current evidence.

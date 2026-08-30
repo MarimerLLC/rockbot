@@ -383,4 +383,86 @@ public class RepairTicketApplyPassTests
             return Task.FromResult(new VerifyResult(outcome, $"stub verify → {outcome}"));
         }
     }
+
+    // -- Deterministic apply failures must escalate ----------------------------
+
+    private static RepairAttempt ApplyError(string detail) =>
+        new(DateTimeOffset.UtcNow,
+            System.Text.Json.JsonSerializer.SerializeToElement(new { error = detail }),
+            new VerifyResult(VerifyOutcome.Uncertain, DreamService.ApplyErrorPrefix + detail));
+
+    private static RepairAttempt TransientUncertain(string detail) =>
+        new(DateTimeOffset.UtcNow,
+            System.Text.Json.JsonSerializer.SerializeToElement(new { error = detail }),
+            new VerifyResult(VerifyOutcome.Uncertain, detail));
+
+    [TestMethod]
+    public void RepeatedIdenticalApplyError_Escalates()
+    {
+        // Uncertain deliberately does not count toward MaxAttempts, because a gateway blip is not
+        // the ticket's fault. A malformed ticket is the opposite: it fails identically forever,
+        // so without this the cap never engages and the ticket is retried indefinitely.
+        var attempts = new List<RepairAttempt>
+        {
+            ApplyError("ArgumentException: SkillBody change missing 'skill'."),
+            ApplyError("ArgumentException: SkillBody change missing 'skill'."),
+            ApplyError("ArgumentException: SkillBody change missing 'skill'."),
+        };
+
+        Assert.AreEqual(
+            RepairStatus.Escalated,
+            DreamService.ComputeNextStatus(attempts, VerifyOutcome.Uncertain, maxAttempts: 3));
+    }
+
+    [TestMethod]
+    public void ApplyErrorBelowTheCap_StaysOpen()
+    {
+        var attempts = new List<RepairAttempt>
+        {
+            ApplyError("ArgumentException: SkillBody change missing 'skill'."),
+            ApplyError("ArgumentException: SkillBody change missing 'skill'."),
+        };
+
+        Assert.AreEqual(
+            RepairStatus.Open,
+            DreamService.ComputeNextStatus(attempts, VerifyOutcome.Uncertain, maxAttempts: 3));
+    }
+
+    [TestMethod]
+    public void DifferingApplyErrors_DoNotAccumulate()
+    {
+        // Three different failures are not evidence of a permanently broken ticket; they may be
+        // three different transient conditions. Only the identical failure repeating is.
+        var attempts = new List<RepairAttempt>
+        {
+            ApplyError("ArgumentException: missing 'skill'."),
+            ApplyError("InvalidOperationException: Skill 'todo' not found."),
+            ApplyError("HttpRequestException: gateway unavailable."),
+        };
+
+        Assert.AreEqual(
+            RepairStatus.Open,
+            DreamService.ComputeNextStatus(attempts, VerifyOutcome.Uncertain, maxAttempts: 3));
+    }
+
+    [TestMethod]
+    public void TransientUncertainWithoutAnApplyError_NeverEscalates()
+    {
+        // The original guarantee has to survive: a verify that could not reach a conclusion must
+        // not burn attempts, however many times it happens.
+        var attempts = Enumerable.Range(0, 50)
+            .Select(_ => TransientUncertain("verify inconclusive: executor missing"))
+            .ToList();
+
+        Assert.AreEqual(
+            RepairStatus.Open,
+            DreamService.ComputeNextStatus(attempts, VerifyOutcome.Uncertain, maxAttempts: 3));
+    }
+
+    [TestMethod]
+    public void IsRepeatingApplyError_IgnoresAnEmptyHistoryOrDisabledCap()
+    {
+        Assert.IsFalse(DreamService.IsRepeatingApplyError([], 3));
+        Assert.IsFalse(DreamService.IsRepeatingApplyError([ApplyError("x")], 0));
+    }
 }

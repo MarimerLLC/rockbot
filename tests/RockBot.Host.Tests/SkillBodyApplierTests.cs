@@ -200,4 +200,25 @@ public class SkillBodyApplierTests
             CreatedAt: DateTimeOffset.UtcNow,
             UpdatedAt: DateTimeOffset.UtcNow);
     }
+
+    // -- Accepted spellings of the skill field ---------------------------------
+
+    [TestMethod]
+    public void ResolvedSkill_PrefersSkill_ThenSkillName_ThenName()
+    {
+        // The creation directive documented this target's ops array but never named the
+        // identifier field, while spelling it out for every other target. Models filled the gap
+        // with the obvious synonyms and every such ticket failed validation -- on a live agent,
+        // the same ticket failed 117 times across two months.
+        Assert.AreEqual("a", new SkillBodyApplier.SkillBodyChange { Skill = "a", SkillName = "b", Name = "c" }.ResolvedSkill);
+        Assert.AreEqual("b", new SkillBodyApplier.SkillBodyChange { SkillName = "b", Name = "c" }.ResolvedSkill);
+        Assert.AreEqual("c", new SkillBodyApplier.SkillBodyChange { Name = "c" }.ResolvedSkill);
+    }
+
+    [TestMethod]
+    public void ResolvedSkill_TreatsBlankAsAbsent()
+    {
+        Assert.AreEqual("real", new SkillBodyApplier.SkillBodyChange { Skill = "   ", SkillName = "real" }.ResolvedSkill);
+        Assert.IsNull(new SkillBodyApplier.SkillBodyChange { Skill = " ", SkillName = "", Name = null }.ResolvedSkill);
+    }
 }
