@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text;
 using System.Text.Json;
 using Cronos;
@@ -75,6 +76,7 @@ internal sealed class DreamService : IHostedService, IDisposable
     private string? _contradictionSweepDirective;
     private string? _repairTicketCreationDirective;
     private IReadOnlyList<LlmPricingRow>? _pricingRows;
+    private DreamPassLedger? _passLedger;
 
     public DreamService(
         ILongTermMemory memory,
@@ -526,6 +528,11 @@ internal sealed class DreamService : IHostedService, IDisposable
         // reads) and runs once per cycle.
         LoadDirectives(initialLoad: false);
 
+        // Read the change-gate ledger once per cycle. Passes consult it before spending an LLM
+        // call on a corpus that has not moved since they last looked at it.
+        _passLedger = await DreamPassLedger.LoadAsync(
+            ResolvePath(DreamPassLedger.FileName, _profileOptions.BasePath), _logger);
+
         _logger.LogInformation("DreamService: dream cycle starting");
 
         try
@@ -611,6 +618,12 @@ internal sealed class DreamService : IHostedService, IDisposable
         }
         finally
         {
+            // Persist in the finally so a preempted or failed cycle still keeps the stamps of
+            // the passes that did complete — otherwise a cycle that dies late re-runs every
+            // gated pass next time.
+            if (_passLedger is not null)
+                await _passLedger.SaveAsync();
+
             await slot.DisposeAsync();
         }
     }
@@ -710,9 +723,12 @@ internal sealed class DreamService : IHostedService, IDisposable
         CancellationToken ct)
     {
         var eligibleIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var reviewedIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
         foreach (var e in all)
-            if (!IsReviewedAndUnchanged(e))
+            if (IsReviewedAndUnchanged(e))
+                reviewedIds.Add(e.Id);
+            else
                 eligibleIds.Add(e.Id);
 
         var unreviewed = eligibleIds.Count;
@@ -726,13 +742,30 @@ internal sealed class DreamService : IHostedService, IDisposable
                     options.ConsolidationMaxClusterSize,
                     ct);
 
+                var settled = 0;
                 foreach (var cluster in clusters)
+                {
+                    // A cluster in which every member is reviewed-and-unchanged was, by
+                    // construction, already shown to consolidation as a group: a cluster becomes
+                    // eligible the moment any member is new or edited, and every member shown
+                    // gets stamped on that cycle. Re-offering it now re-asks a question the model
+                    // has already answered — and keeps re-asking, twice a day, forever. That
+                    // undoes the reviewed-and-unchanged gate for exactly the entries most likely
+                    // to sit in a cluster. One new or edited member re-opens the whole cluster.
+                    if (cluster.Count > 0 && cluster.All(reviewedIds.Contains))
+                    {
+                        settled++;
+                        continue;
+                    }
+
                     foreach (var id in cluster)
                         eligibleIds.Add(id);
+                }
 
                 logger.LogDebug(
-                    "DreamService: {Unreviewed} unreviewed + {Clustered} in {Clusters} duplicate cluster(s)",
-                    unreviewed, eligibleIds.Count - unreviewed, clusters.Count);
+                    "DreamService: {Unreviewed} unreviewed + {Clustered} pulled in from {Clusters} duplicate cluster(s) " +
+                    "({Settled} cluster(s) skipped as already reviewed together)",
+                    unreviewed, eligibleIds.Count - unreviewed, clusters.Count, settled);
             }
             catch (OperationCanceledException) { throw; }
             catch (Exception ex)
@@ -1141,7 +1174,8 @@ internal sealed class DreamService : IHostedService, IDisposable
             "skill consolidation",
             _skillDreamDirective!,
             userMessage,
-            ct);
+            ct,
+            SkillCorpusFingerprint(all, singletonPrefixes));
         if (result is null) return;
 
         var deleted = 0;
@@ -1437,7 +1471,13 @@ internal sealed class DreamService : IHostedService, IDisposable
             "skill optimization",
             _skillOptimizeDirective,
             userMessage.ToString(),
-            ct);
+            ct,
+            // Watermarked on the usage and feedback logs it reads, not on the at-risk set derived
+            // from them: that set is computed over a rolling 30-day window and drifts on its own.
+            CorpusFingerprint([
+                "usage:" + EventWatermarkFingerprint(usageEvents.Select(e => e.Timestamp)),
+                "feedback:" + EventWatermarkFingerprint(recentFeedback.Select(f => f.Timestamp)),
+            ]));
         if (result is null) return;
 
         var deleted = 0;
@@ -2154,7 +2194,8 @@ internal sealed class DreamService : IHostedService, IDisposable
                 "graph consolidation",
                 _graphConsolidationDirective ?? BuiltInGraphConsolidationDirective,
                 userMessage.ToString(),
-                ct);
+                ct,
+                GraphFingerprint(entities, triples));
             if (result is null) return;
             var entitiesDeleted = 0;
             var triplesDeleted = 0;
@@ -2238,38 +2279,119 @@ internal sealed class DreamService : IHostedService, IDisposable
             return;
         }
 
-        var uncarded = cast.Count(e => !HasVoiceMarker(e.Content, marker));
-        if (uncarded == 0)
+        var upgradeMarkers = _options.CastVoiceUpgradeMarkers;
+        var needsWork = cast.Where(e => NeedsVoiceWork(e.Content, marker, upgradeMarkers)).ToList();
+        var uncarded = needsWork.Count(e => !HasVoiceMarker(e.Content, marker));
+        var stale = needsWork.Count - uncarded;
+
+        if (needsWork.Count == 0)
         {
             _logger.LogInformation(
-                "DreamService: cast voice enrichment — all {Count} entries in {Category} already carry a voice card; nothing to do",
+                "DreamService: cast voice enrichment — all {Count} entries in {Category} carry a current voice card; nothing to do",
                 cast.Count, category);
             return;
         }
 
+        // A voice is worth writing for the cast that just walked on stage. "Some character still
+        // lacks a card" stays true for months, so on its own it is not a reason to spend a
+        // full-corpus call — it is what made this the one pass that kept billing an idle agent.
+        // Cast voice runs before preference inference clears the log, so an empty log here means
+        // nothing happened since the last cycle.
+        IReadOnlyList<ConversationLogEntry> recentTurns = [];
+        if (_options.CastVoiceRequiresRecentActivity && _conversationLog is not null)
+        {
+            recentTurns = await _conversationLog.ReadAllAsync(ct);
+            if (recentTurns.Count == 0)
+            {
+                _logger.LogInformation(
+                    "DreamService: cast voice enrichment — no conversation activity since the last cycle; " +
+                    "skipping ({Uncarded} without a voice card, {Stale} with an older card)",
+                    uncarded, stale);
+                return;
+            }
+        }
+
         _logger.LogInformation(
-            "DreamService: cast voice enrichment pass — {Total} entries in {Category}, {Uncarded} without a voice card",
-            cast.Count, category, uncarded);
+            "DreamService: cast voice enrichment pass — {Total} entries in {Category}, {Uncarded} without a voice card, " +
+            "{Stale} with an older card, {Turns} conversation turn(s) since the last cycle",
+            cast.Count, category, uncarded, stale, recentTurns.Count);
 
         await RunPassAsync("cast voice enrichment", async () =>
         {
+            // Only uncarded entries are offered as candidates. Previously the whole corpus was
+            // listed and the model was told not to touch the finished ones — which it ignored,
+            // because the very next instruction told it to prefer the entries with the most
+            // content, and a finished entry is longer precisely because it has a card appended.
+            // The proposals then died silently against the HasVoiceMarker check: one cycle on a
+            // 160-entry corpus spent 24 proposals to land 1 update. Withholding them is a gate
+            // the model cannot talk its way past.
+            var candidates = needsWork;
+            var newCharacters = candidates.Where(e => !HasVoiceMarker(e.Content, marker)).ToList();
+            var olderCards = candidates.Where(e => HasVoiceMarker(e.Content, marker)).ToList();
+
+            // Every card in the corpus counts as a voice in use, stale ones included — an older
+            // card is still how that character sounds, so a new character must not duplicate it.
+            var takenVoices = cast
+                .Where(e => HasVoiceMarker(e.Content, marker))
+                .Select(e => ExtractVoiceCardLine(e.Content, marker))
+                .Where(v => !string.IsNullOrWhiteSpace(v))
+                .ToList();
+
             var userMessage = new StringBuilder();
-            userMessage.AppendLine($"Every entry currently in `{category}`, with its id.");
-            userMessage.AppendLine();
             userMessage.AppendLine(
-                $"Entries already containing \"{marker}\" are shown so you can see which characters are " +
-                "finished and which voices already exist. Never propose an update to one of those, and " +
-                "never give a new character a voice that duplicates one already on the page.");
+                $"Characters in `{category}` that still need work. These are the only entries you may " +
+                "propose an update for — every id you return must come from the lists below.");
             userMessage.AppendLine();
 
-            foreach (var e in cast)
-                userMessage.AppendLine($"[{e.Id}] {e.Content}");
+            if (newCharacters.Count > 0)
+            {
+                userMessage.AppendLine("## Characters with no voice yet — write a full card for these");
+                userMessage.AppendLine();
+                foreach (var e in newCharacters)
+                    userMessage.AppendLine($"[{e.Id}] {e.Content}");
+                userMessage.AppendLine();
+            }
+
+            if (olderCards.Count > 0)
+            {
+                // Shown with their existing card, unlike the taken-voices list: an upgrade is
+                // written against what the card already says, so the model has to see it.
+                userMessage.AppendLine(
+                    "## Characters whose card predates the current format — return only what the " +
+                    "current format adds, not the parts they already have");
+                userMessage.AppendLine();
+                foreach (var e in olderCards)
+                    userMessage.AppendLine($"[{e.Id}] {e.Content}");
+                userMessage.AppendLine();
+            }
+
+            if (takenVoices.Count > 0)
+            {
+                // Voices only, not the entries themselves: the model needs to know what is already
+                // spoken for so it does not duplicate a voice, and nothing more. Shipping the full
+                // finished entries is what invited proposals against them.
+                userMessage.AppendLine();
+                userMessage.AppendLine(
+                    $"Voices already in use by other characters ({takenVoices.Count}). Do not reuse or " +
+                    "closely imitate any of these — every voice on the page must be tellable apart:");
+                foreach (var voice in takenVoices)
+                    userMessage.AppendLine($"- {voice}");
+            }
+
+            if (recentTurns.Count > 0)
+            {
+                userMessage.AppendLine();
+                userMessage.AppendLine(
+                    "The most recent play. Prefer characters who appear here — they are the ones " +
+                    "actually on stage, and the scene shows you how they already sound:");
+                foreach (var turn in recentTurns.TakeLast(40))
+                    userMessage.AppendLine($"[{turn.Role}] {Truncate(turn.Content, 600)}");
+            }
 
             userMessage.AppendLine();
             userMessage.AppendLine(
-                $"Enrich at most {_options.CastVoiceMaxPerCycle} characters this cycle. Choose the ones " +
-                "with the most entries and the most recent activity first — they are the ones most likely " +
-                "to walk back on stage.");
+                $"Enrich at most {_options.CastVoiceMaxPerCycle} characters this cycle, drawn from the " +
+                "candidate list above.");
 
             var result = await InvokeDreamPassAsync<CastVoiceResultDto>(
                 "cast voice enrichment",
@@ -2294,6 +2416,11 @@ internal sealed class DreamService : IHostedService, IDisposable
 
                 if (string.IsNullOrWhiteSpace(dto.Id) || string.IsNullOrWhiteSpace(dto.VoiceCard))
                 {
+                    // Logged, like every other skip below. A pass whose failures are silent
+                    // reports "1 given a voice, 23 skipped" and gives no way to find out why.
+                    _logger.LogWarning(
+                        "DreamService: cast voice enrichment returned a proposal with no {Missing}; skipping",
+                        string.IsNullOrWhiteSpace(dto.Id) ? "id" : "voice card");
                     skipped++;
                     continue;
                 }
@@ -2317,8 +2444,19 @@ internal sealed class DreamService : IHostedService, IDisposable
                     continue;
                 }
 
-                if (HasVoiceMarker(existing.Content, marker))
+                if (!NeedsVoiceWork(existing.Content, marker, upgradeMarkers))
                 {
+                    // Still the backstop that guarantees convergence, but it should now be
+                    // unreachable: only entries needing work are offered as candidates. If this
+                    // fires, the model is inventing ids outside the lists it was given.
+                    //
+                    // This deliberately tests "needs work" rather than "has a marker". The marker
+                    // test rejected every upgrade to an older card, which is what made a directive
+                    // asking for those upgrades produce nothing, cycle after cycle, with no log
+                    // line to say why.
+                    _logger.LogWarning(
+                        "DreamService: cast voice enrichment proposed an update to {Id}, which already " +
+                        "carries a current voice card and was not offered as a candidate; skipping", existing.Id);
                     skipped++;
                     continue;
                 }
@@ -2344,6 +2482,52 @@ internal sealed class DreamService : IHostedService, IDisposable
                 "DreamService: cast voice enrichment pass complete — {Updated} character(s) given a voice, {Skipped} proposal(s) skipped",
                 updated, skipped);
         });
+    }
+
+    /// <summary>
+    /// Returns just the voice-card line from an entry that carries one, so the enrichment prompt
+    /// can list the voices already spoken for without shipping the finished entries themselves.
+    /// Returns an empty string when the entry has no card.
+    /// </summary>
+    internal static string ExtractVoiceCardLine(string? content, string marker)
+    {
+        if (string.IsNullOrEmpty(content) || string.IsNullOrEmpty(marker))
+            return string.Empty;
+
+        var start = content.IndexOf(marker, StringComparison.OrdinalIgnoreCase);
+        if (start < 0) return string.Empty;
+
+        // MergeVoiceCard appends the card as the final block, but an entry hand-edited on the PVC
+        // may have text after it. Stop at the first blank line so only the card itself is taken.
+        var rest = content[start..];
+        var end = rest.IndexOf("\n\n", StringComparison.Ordinal);
+        if (end >= 0) rest = rest[..end];
+
+        return rest.Replace('\n', ' ').Trim();
+    }
+
+    /// <summary>
+    /// True when this entry is something the enrichment pass should still work on: it has no voice
+    /// card at all, or it has one written before <paramref name="upgradeMarkers"/> described the
+    /// current format.
+    /// </summary>
+    /// <remarks>
+    /// The presence of a marker used to be the whole test, which meant a deployment could never
+    /// bring already-written cards up to a newer shape — the pass skipped them, so a directive
+    /// asking for exactly that produced proposals the apply loop discarded without a word. Any one
+    /// of the upgrade markers is enough: card sections are individually optional, so demanding all
+    /// of them would classify a legitimately short card as stale and rewrite it on every cycle.
+    /// </remarks>
+    internal static bool NeedsVoiceWork(string? content, string marker, IEnumerable<string>? upgradeMarkers)
+    {
+        if (!HasVoiceMarker(content, marker))
+            return true;
+
+        var markers = upgradeMarkers?.Where(m => !string.IsNullOrWhiteSpace(m)).ToList();
+        if (markers is null || markers.Count == 0)
+            return false;
+
+        return !markers.Any(m => content!.Contains(m, StringComparison.OrdinalIgnoreCase));
     }
 
     /// <summary>True when <paramref name="content"/> already carries a voice card marker.</summary>
@@ -2753,6 +2937,12 @@ internal sealed class DreamService : IHostedService, IDisposable
             return;
         }
 
+        // Watermark the underlying log rather than the derived patterns: the patterns are computed
+        // over a rolling 7-day window, so their set drifts as old calls age out even when the agent
+        // has made no new tool call at all.
+        var toolCallWatermark = EventWatermarkFingerprint(
+            (await _toolCallLog.QueryRecentAsync(since, maxResults: 20000)).Select(e => e.Timestamp));
+
         var distinctPatterns = DedupeRetryPatterns(patterns, maxCount: 50);
 
         _logger.LogInformation(
@@ -2767,7 +2957,8 @@ internal sealed class DreamService : IHostedService, IDisposable
                 "tool-success-learning",
                 _toolSuccessLearningDirective ?? BuiltInToolSuccessLearningDirective,
                 userMessage,
-                ct);
+                ct,
+                toolCallWatermark);
             var entries = NormalizeToolSuccessLearningEntries(
                 result,
                 idFactory: () => Guid.NewGuid().ToString("N")[..12],
@@ -3015,12 +3206,20 @@ internal sealed class DreamService : IHostedService, IDisposable
         // prompt cost is independent of entry count, so we could read more — but more entries
         // also mean more file-IO and more cluster permutations, and 200 has been shown to
         // surface every detection rule reliably. Bump if needed; do not silently widen.
-        var entries = await _tierRoutingLogger.ReadRecentAsync(200);
+        // The window matters as much as the cap. The log is append-only and this reads its tail,
+        // so an agent that has stopped routing anything still presented the same trailing
+        // entries every cycle — the pass had no way to run out of input. With a window the
+        // input drains and the ≥10 threshold below eventually stops the pass on its own.
+        var since = _options.TierRoutingReviewWindow > TimeSpan.Zero
+            ? _clock.Now - _options.TierRoutingReviewWindow
+            : (DateTimeOffset?)null;
+
+        var entries = await _tierRoutingLogger.ReadRecentAsync(200, since);
         if (entries.Count < 10)
         {
             _logger.LogDebug(
-                "DreamService: tier routing review — only {Count} entries; skipping (need ≥ 10)",
-                entries.Count);
+                "DreamService: tier routing review — only {Count} entries in the last {Days:F0}d; skipping (need ≥ 10)",
+                entries.Count, _options.TierRoutingReviewWindow.TotalDays);
             return;
         }
 
@@ -3091,7 +3290,10 @@ internal sealed class DreamService : IHostedService, IDisposable
             "tier routing review",
             _tierRoutingDirective ?? BuiltInTierRoutingDirective,
             userMessage.ToString(),
-            ct);
+            ct,
+            TierRoutingFingerprint(entries, currentConfig is null
+                ? null
+                : JsonSerializer.Serialize(currentConfig, JsonOptions)));
         if (result is null) return;
 
         // Save anti-pattern entries regardless of whether the config changed
@@ -3260,7 +3462,8 @@ internal sealed class DreamService : IHostedService, IDisposable
                 "sequence skill detection",
                 _sequenceSkillDirective ?? BuiltInSequenceSkillDirective,
                 userMessage.ToString(),
-                ct);
+                ct,
+                EventWatermarkFingerprint(events.Select(e => e.Timestamp)));
             if (result is null) return;
             var created = 0;
 
@@ -3397,7 +3600,8 @@ internal sealed class DreamService : IHostedService, IDisposable
                 "wisp failure analysis",
                 _wispFailureDirective ?? BuiltInWispFailureDirective,
                 userMessage.ToString(),
-                ct);
+                ct,
+                EventWatermarkFingerprint(records.Select(r => r.Timestamp)));
             if (result is null) return;
             var updated = 0;
 
@@ -3597,7 +3801,8 @@ internal sealed class DreamService : IHostedService, IDisposable
                 "wisp success analysis",
                 _wispSuccessDirective ?? BuiltInWispSuccessDirective,
                 userMessage.ToString(),
-                ct);
+                ct,
+                EventWatermarkFingerprint(records.Select(r => r.Timestamp)));
             if (result is null) return;
 
             var attached = await ApplyWispSuccessPromotionsAsync(
@@ -4016,7 +4221,8 @@ internal sealed class DreamService : IHostedService, IDisposable
                 "DLQ review",
                 _dlqDirective ?? BuiltInDlqDirective,
                 userMessage.ToString(),
-                ct);
+                ct,
+                DlqFingerprint(samples));
             if (result is null) return;
 
             if (result.NoDlqIssues == true)
@@ -4158,11 +4364,28 @@ internal sealed class DreamService : IHostedService, IDisposable
                 userMessage.AppendLine();
             }
 
+            // Inputs only. The identity entries are this pass's *output* — it rewrites them on
+            // essentially every run ("3 deleted, 3 saved" is a typical cycle) — so including them
+            // meant the fingerprint was guaranteed to differ from the one the pass had just
+            // stamped, and the gate could never fire. Hashing what the pass reads rather than what
+            // it writes is the difference between a gate and a no-op. The 14-day episode and
+            // feedback windows are the real subject matter; on an idle agent they drain and stop
+            // changing, and the pass goes quiet with them.
+            var fingerprint = CorpusFingerprint([
+                "episodes:" + MemoryCorpusFingerprint(recentEpisodes),
+                "prefs:" + MemoryCorpusFingerprint(recentPrefs),
+                "feedback:" + CorpusFingerprint(recentFeedback
+                    .OrderBy(f => f.SessionId, StringComparer.Ordinal)
+                    .ThenBy(f => f.Summary, StringComparer.Ordinal)
+                    .Select(f => $"{f.SignalType}|{f.SessionId}|{ContentFingerprint(f.Summary + f.Detail)}"))
+            ]);
+
             var result = await InvokeDreamPassAsync<IdentityReflectionResultDto>(
                 "identity reflection",
                 _identityDirective ?? BuiltInIdentityDirective,
                 userMessage.ToString(),
-                ct);
+                ct,
+                fingerprint);
             if (result is null) return;
 
             if (result.NoChange == true)
@@ -4278,7 +4501,8 @@ internal sealed class DreamService : IHostedService, IDisposable
                 "contradiction sweep",
                 directive,
                 userMessage.ToString(),
-                ct);
+                ct,
+                MemoryCorpusFingerprint(corpus));
             if (result is null) return;
 
             var supersededCount = await ApplyContradictionSweepResultAsync(
@@ -4427,13 +4651,36 @@ internal sealed class DreamService : IHostedService, IDisposable
     /// (<see cref="IScheduledTaskSlot.Token"/>) so that user preemption interrupts
     /// the in-flight LLM call promptly — see issue #333.
     /// </summary>
+    /// <param name="inputFingerprint">
+    /// When supplied, enables the change gate for this pass: the LLM call is skipped entirely
+    /// (returning <c>null</c>, which every caller already treats as "do nothing this cycle")
+    /// while the fingerprint matches what the pass last ran on and the
+    /// <see cref="DreamOptions.DreamPassMaxSkipInterval"/> floor has not elapsed. The
+    /// fingerprint is recorded only after the model returns something usable, so a failed or
+    /// unparseable call is retried next cycle rather than being mistaken for a completed one.
+    /// Pass <c>null</c> for delta-driven passes, which already gate on having new input.
+    /// </param>
     private async Task<TResult?> InvokeDreamPassAsync<TResult>(
         string passName,
         string systemDirective,
         string userMessage,
-        CancellationToken ct)
+        CancellationToken ct,
+        string? inputFingerprint = null)
         where TResult : class
     {
+        var gated = inputFingerprint is not null
+            && _passLedger is not null
+            && _options.DreamPassChangeGateEnabled;
+
+        if (gated && _passLedger!.ShouldSkip(
+                passName, inputFingerprint!, _clock.Now, _options.DreamPassMaxSkipInterval))
+        {
+            _logger.LogInformation(
+                "DreamService: {Pass} skipped — inputs unchanged since {LastRun:u}; no LLM call",
+                passName, _passLedger.Get(passName)!.LastRunAt);
+            return null;
+        }
+
         var messages = new List<ChatMessage>
         {
             new(ChatRole.System, systemDirective),
@@ -4455,8 +4702,169 @@ internal sealed class DreamService : IHostedService, IDisposable
         }
 
         _logger.LogDebug("DreamService: {Pass} JSON ({Length} chars): {Json}", passName, json.Length, json);
-        return TryDeserializeJson<TResult>(json, passName);
+        var result = TryDeserializeJson<TResult>(json, passName);
+
+        if (gated && result is not null)
+            _passLedger!.Record(passName, inputFingerprint!, _clock.Now);
+
+        return result;
     }
+
+    // ── Change-gate fingerprints ──────────────────────────────────────────────
+    //
+    // Each corpus-wide pass hashes the corpus it is about to describe rather than the rendered
+    // prompt. The prompt carries wall-clock text ("Current date/time: …") and rolling-window
+    // statistics (usage counts over the last 30 days, co-occurrence tallies) that move on their
+    // own while the agent sits idle, so hashing it would defeat the gate it is meant to drive.
+
+    /// <summary>
+    /// Stable hash over an ordered sequence of per-item field strings. Callers are responsible
+    /// for ordering deterministically — store enumeration order is not guaranteed stable across
+    /// cycles, and an order-dependent hash would report phantom changes.
+    /// </summary>
+    internal static string CorpusFingerprint(IEnumerable<string> parts)
+    {
+        var sb = new StringBuilder();
+        foreach (var part in parts)
+            sb.Append(part).Append('\u001f');  // unit separator: cannot occur in the field text
+
+        var bytes = System.Security.Cryptography.SHA256.HashData(
+            Encoding.UTF8.GetBytes(sb.ToString()));
+        return Convert.ToHexString(bytes.AsSpan(0, 16));
+    }
+
+    /// <summary>
+    /// High-water mark over an append-only event log: the newest event's timestamp. Used as the
+    /// change-gate fingerprint for passes that mine a rolling window of a telemetry log.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Hashing the window's contents does not work for these passes. The window is relative to
+    /// now, so its membership changes on its own as old events age out of the far end, and the
+    /// pass re-runs on an agent that has generated no new events at all. Sequence skill detection
+    /// showed what that costs: mining the same unchanging 14-day tool-call window on every cycle,
+    /// it manufactured a fresh pair of near-duplicate skills each time, which skill consolidation
+    /// then merged away — a churn loop running twice a day on an idle agent, and one that also
+    /// kept skill consolidation's own fingerprint moving so that pass could never settle either.
+    /// </para>
+    /// <para>
+    /// The newest timestamp is immune to that: it only advances when the agent actually does
+    /// something. Retention pruning the newest entries would move it backwards, which costs one
+    /// extra run and then settles.
+    /// </para>
+    /// </remarks>
+    internal static string EventWatermarkFingerprint(IEnumerable<DateTimeOffset> timestamps)
+    {
+        DateTimeOffset? newest = null;
+        foreach (var t in timestamps)
+            if (newest is null || t > newest) newest = t;
+
+        return newest is null
+            ? "watermark:none"
+            : "watermark:" + newest.Value.ToUniversalTime().ToString("O", CultureInfo.InvariantCulture);
+    }
+
+    /// <summary>
+    /// Fingerprint of the skill catalog as consolidation sees it: names, prose, cross-references
+    /// and attached resources. Usage counts and co-occurrence tallies are excluded — they are
+    /// 30-day rolling annotations that decay without anyone touching a skill, and re-running a
+    /// whole-catalog merge because a count went 5→4 is exactly the waste the gate exists to stop.
+    /// </summary>
+    internal static string SkillCorpusFingerprint(
+        IReadOnlyList<Skill> skills,
+        IReadOnlyCollection<string> singletonPrefixes) =>
+        CorpusFingerprint(
+            skills
+                .OrderBy(s => s.Name, StringComparer.OrdinalIgnoreCase)
+                .Select(s => string.Join('|',
+                    s.Name,
+                    ContentFingerprint(s.Summary),
+                    ContentFingerprint(s.Content),
+                    string.Join(',', (s.SeeAlso ?? [])
+                        .OrderBy(x => x, StringComparer.OrdinalIgnoreCase)),
+                    string.Join(',', (s.Manifest ?? [])
+                        .OrderBy(r => r.Filename, StringComparer.OrdinalIgnoreCase)
+                        .Select(r => $"{r.Filename}:{r.Type}:{(r.Provisional ? "prov" : "conf")}"))))
+                .Concat(singletonPrefixes
+                    .OrderBy(p => p, StringComparer.Ordinal)
+                    .Select(p => "singleton:" + p)));
+
+    /// <summary>
+    /// Fingerprint of the knowledge graph. <c>LastReferencedAt</c> is included at day granularity
+    /// — matching the precision the prompt renders it at — because a reference is real activity
+    /// and the directive prunes on staleness.
+    /// </summary>
+    internal static string GraphFingerprint(
+        IReadOnlyList<KnowledgeEntity> entities,
+        IReadOnlyList<KnowledgeTriple> triples) =>
+        CorpusFingerprint(
+            entities
+                .OrderBy(e => e.Id, StringComparer.Ordinal)
+                .Select(e => string.Join('|',
+                    "entity", e.Id, e.EntityType.ToString(), e.Name,
+                    string.Join(',', e.Aliases.OrderBy(a => a, StringComparer.OrdinalIgnoreCase)),
+                    string.Join(',', (e.Metadata ?? new Dictionary<string, string>())
+                        .OrderBy(kv => kv.Key, StringComparer.OrdinalIgnoreCase)
+                        .Select(kv => $"{kv.Key}={kv.Value}")),
+                    e.LastReferencedAt?.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture) ?? "never"))
+                .Concat(triples
+                    .OrderBy(t => t.Id, StringComparer.Ordinal)
+                    .Select(t => string.Join('|',
+                        "triple", t.Id, t.Subject, t.Predicate, t.Object,
+                        t.Confidence.ToString("F2", CultureInfo.InvariantCulture)))));
+
+    /// <summary>
+    /// Fingerprint of a set of memory entries by identity and content. Importance and
+    /// reinforcement counts are excluded: the decay pass rewrites importance every cycle by
+    /// design, so including it would mean nothing was ever unchanged.
+    /// </summary>
+    internal static string MemoryCorpusFingerprint(IEnumerable<MemoryEntry> entries) =>
+        CorpusFingerprint(
+            entries
+                .OrderBy(e => e.Id, StringComparer.Ordinal)
+                .Select(e => string.Join('|',
+                    e.Id,
+                    e.Category ?? string.Empty,
+                    ContentFingerprint(e.Content),
+                    string.Join(',', e.Tags.OrderBy(t => t, StringComparer.OrdinalIgnoreCase)))));
+
+    /// <summary>
+    /// Fingerprint of the routing decisions under review plus the config the pass would tune.
+    /// A config edited by hand between cycles re-opens the pass even on an unchanged log.
+    /// </summary>
+    internal static string TierRoutingFingerprint(
+        IReadOnlyList<TierRoutingEntry> entries,
+        string? configJson) =>
+        CorpusFingerprint(
+            entries
+                .Select(e => string.Join('|',
+                    e.Timestamp.ToString("O", CultureInfo.InvariantCulture),
+                    e.Tier.ToString(),
+                    e.Context,
+                    e.ComplexityScore.ToString("F4", CultureInfo.InvariantCulture),
+                    e.PostInjectionTokenEstimate?.ToString(CultureInfo.InvariantCulture) ?? string.Empty))
+                .Append("config:" + ContentFingerprint(configJson)));
+
+    /// <summary>
+    /// Fingerprint of the sampled dead-letter messages. Queue depth is included so a growing
+    /// backlog re-opens the pass even when the sampled head of the queue is unchanged; a queue
+    /// that is merely stuck at the same depth with the same messages is not re-analyzed.
+    /// </summary>
+    internal static string DlqFingerprint(
+        IEnumerable<(DlqQueueInfo Queue, IReadOnlyList<DlqMessage> Messages)> samples) =>
+        CorpusFingerprint(
+            samples
+                .OrderBy(s => s.Queue.Name, StringComparer.Ordinal)
+                .SelectMany(s => new[] { $"queue|{s.Queue.Name}|{s.Queue.MessageCount}" }
+                    .Concat(s.Messages
+                        .OrderBy(m => m.MessageId ?? string.Empty, StringComparer.Ordinal)
+                        .Select(m => string.Join('|',
+                            s.Queue.Name,
+                            m.MessageId ?? string.Empty,
+                            m.MessageType ?? string.Empty,
+                            m.DeathReason ?? string.Empty,
+                            m.DeathCount.ToString(CultureInfo.InvariantCulture),
+                            ContentFingerprint(m.BodyPreview))))));
 
     /// <summary>
     /// Extracts the outermost JSON object from <paramref name="text"/>, tolerating
@@ -5216,9 +5624,11 @@ internal sealed class DreamService : IHostedService, IDisposable
     private const string BuiltInCastVoiceDirective = """
         You maintain the speech profiles in a character corpus.
 
-        You are given every entry in one memory category. Some entries already carry a speech profile;
-        most record only appearance and events. Your task is to add a profile to characters that lack
-        one, so that a character described weeks ago can be written consistently today.
+        You are given the entries in one memory category that do not yet carry a speech profile —
+        most record only appearance and events. Your task is to add a profile to them, so that a
+        character described weeks ago can be written consistently today. Profiles already assigned
+        to other characters are listed separately, as text only, so you can keep every voice
+        distinct; those characters are finished and are not yours to update.
 
         This is a schema-filling task. Deployment-specific guidance on how a profile should read, if
         any exists, is supplied separately by the operator.
@@ -5265,7 +5675,8 @@ internal sealed class DreamService : IHostedService, IDisposable
         **Select one target entry per character** — normally the most detailed or most recent — and
         return its id. The profile is appended; existing text in that entry is left untouched.
 
-        **Skip** any character already carrying a profile, and any character you could not resolve.
+        **Every id you return must come from the candidate list.** An id taken from the list of
+        voices already in use, or invented, is discarded. Skip any character you could not resolve.
 
         ## Output
 

@@ -19,6 +19,43 @@ public sealed class DreamOptions
     public string CronSchedule { get; set; } = "0 */12 * * *";
 
     /// <summary>
+    /// Whether corpus-wide dream passes skip their LLM call when the input they would send has
+    /// not changed since the last time they ran. Default: <c>true</c>.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Several passes are corpus-wide rather than delta-driven: skill consolidation ships the
+    /// whole skill catalog, graph consolidation the whole graph, the contradiction sweep the
+    /// whole claim/feedback corpus, identity reflection its full experiential context. Ungated,
+    /// each re-asks the model the same question about the same bytes on every cycle — twice a
+    /// day at the default <see cref="CronSchedule"/> — and the bill scales with corpus size
+    /// rather than with how much the agent actually did.
+    /// </para>
+    /// <para>
+    /// The fingerprint covers the corpus itself, not statistics derived from it. Skill usage
+    /// counts and co-occurrence tallies are 30-day rolling annotations that drift on their own
+    /// as old events age out; treating that drift as a change would keep an idle agent dreaming
+    /// for a month after its last conversation. Set to <c>false</c> to restore the previous
+    /// run-every-cycle behaviour.
+    /// </para>
+    /// </remarks>
+    public bool DreamPassChangeGateEnabled { get; set; } = true;
+
+    /// <summary>
+    /// Longest a gated dream pass may go without actually running, however unchanged its inputs
+    /// look. Default: 7 days. Set to <see cref="TimeSpan.Zero"/> or negative to make the change
+    /// gate absolute.
+    /// </summary>
+    /// <remarks>
+    /// Some directives are time-dependent in ways an input hash cannot see — graph consolidation
+    /// prunes entities by staleness, so an untouched graph still becomes prunable purely through
+    /// the passage of time. Without this floor, gating those passes on content would quietly
+    /// switch such behaviour off. With it, an idle agent runs them once a week instead of
+    /// fourteen times, and nothing stops firing altogether.
+    /// </remarks>
+    public TimeSpan DreamPassMaxSkipInterval { get; set; } = TimeSpan.FromDays(7);
+
+    /// <summary>
     /// Which LLM tier the dream passes run on. Defaults to <see cref="ModelTier.Balanced"/>,
     /// matching the previous hardcoded behaviour.
     /// <para>
@@ -244,8 +281,62 @@ public sealed class DreamOptions
     /// </summary>
     public int CastVoiceMaxPerCycle { get; set; } = 12;
 
+    /// <summary>
+    /// Whether cast voice enrichment requires conversation activity since the last cycle.
+    /// Default: <c>true</c>.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Without this the pass is gated only on "some character still lacks a voice card", which
+    /// stays true for months. On an idle agent it is then the one pass that keeps spending: it
+    /// ships the whole cast corpus on every cycle to invent voices for characters nobody has
+    /// played with since the last time it ran. Voices are worth writing for the cast that just
+    /// walked on stage, not for a corpus sitting untouched.
+    /// </para>
+    /// <para>
+    /// The pass runs before preference inference clears the conversation log, so an empty log at
+    /// that point means nothing happened this period. When no <see cref="IConversationLog"/> is
+    /// registered the gate cannot be evaluated and the pass runs as before.
+    /// </para>
+    /// </remarks>
+    public bool CastVoiceRequiresRecentActivity { get; set; } = true;
+
+    /// <summary>
+    /// Substrings that mark a voice card as written in the current format. A character whose card
+    /// contains <see cref="CastVoiceMarker"/> but none of these is treated as an older card and is
+    /// offered back to the pass for an upgrade. Empty (the default) means any card counts as
+    /// finished, which is the original behaviour.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// A deployment that evolves what a voice card should contain otherwise has no way to bring
+    /// the cards it already wrote up to the new shape: the pass skipped anything carrying the
+    /// marker, so a directive asking the model to upgrade older cards produced proposals the
+    /// framework silently discarded. Listing one or more markers of the current format closes
+    /// that gap without the framework knowing anything about a particular card layout.
+    /// </para>
+    /// <para>
+    /// Matching is case-insensitive, and only one of the listed markers has to be present — card
+    /// sections are usually optional individually, so requiring all of them would treat a
+    /// legitimately short card as stale and rewrite it forever.
+    /// </para>
+    /// </remarks>
+    public IList<string> CastVoiceUpgradeMarkers { get; set; } = [];
+
     /// <summary>Whether the tier routing self-correction review pass is enabled.</summary>
     public bool TierRoutingReviewEnabled { get; set; } = true;
+
+    /// <summary>
+    /// How far back the tier routing review pass reads its routing log. Default: 14 days.
+    /// Set to <see cref="TimeSpan.Zero"/> or negative to read the whole log.
+    /// </summary>
+    /// <remarks>
+    /// The routing log is append-only and the pass reads the tail of it, so without a window an
+    /// agent that stopped making routing decisions still had the same trailing entries analyzed
+    /// on every cycle indefinitely. A window lets the input drain: once the newest entry ages
+    /// out, the pass falls below its minimum-entry threshold and stops on its own.
+    /// </remarks>
+    public TimeSpan TierRoutingReviewWindow { get; set; } = TimeSpan.FromDays(14);
 
     /// <summary>
     /// Routing cost floor for the tier-routing review pass. The High tier is priced at no less

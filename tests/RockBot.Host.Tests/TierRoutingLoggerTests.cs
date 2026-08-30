@@ -20,6 +20,65 @@ public class TierRoutingLoggerTests
     }
 
     [TestMethod]
+    public async Task ReadRecent_WithSince_ExcludesEntriesOutsideTheWindow()
+    {
+        // The log is append-only and readers take its tail, so without a window an agent that
+        // has stopped routing anything still presents the same trailing entries on every dream
+        // cycle — the review pass could never run out of input and stop.
+        var (logger, dir) = CreateLogger();
+        try
+        {
+            var now = DateTimeOffset.UtcNow;
+            await logger.AppendAsync(Entry(now.AddDays(-40)));
+            await logger.AppendAsync(Entry(now.AddDays(-20)));
+            await logger.AppendAsync(Entry(now.AddDays(-2)));
+
+            var all = await logger.ReadRecentAsync();
+            var windowed = await logger.ReadRecentAsync(200, now.AddDays(-14));
+
+            Assert.AreEqual(3, all.Count, "No window should still return everything.");
+            Assert.AreEqual(1, windowed.Count);
+            Assert.IsTrue(windowed[0].Timestamp > now.AddDays(-14));
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    [TestMethod]
+    public async Task ReadRecent_WithSince_KeepsEntriesMissingATimestamp()
+    {
+        // Records written before Timestamp was populated deserialize to default(DateTimeOffset).
+        // Dropping them on a window would silently discard history rather than age it out.
+        var (logger, dir) = CreateLogger();
+        try
+        {
+            await File.WriteAllTextAsync(
+                Path.Combine(dir, "tier-routing-log.jsonl"),
+                """{"promptPreview":"legacy","tier":"Balanced","context":"user-message"}""" + "\n");
+
+            var windowed = await logger.ReadRecentAsync(200, DateTimeOffset.UtcNow.AddDays(-14));
+
+            Assert.AreEqual(1, windowed.Count);
+            Assert.AreEqual("legacy", windowed[0].PromptPreview);
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    private static TierRoutingEntry Entry(DateTimeOffset at) => new()
+    {
+        Timestamp = at,
+        PromptPreview = "test prompt",
+        Tier = ModelTier.Balanced,
+        Context = "user-message",
+        ComplexityScore = 0.42,
+    };
+
+    [TestMethod]
     public async Task AppendAndRead_RoundTripsModelId()
     {
         var (logger, dir) = CreateLogger();
