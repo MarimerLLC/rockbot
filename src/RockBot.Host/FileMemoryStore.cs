@@ -167,6 +167,9 @@ internal sealed partial class FileMemoryStore : ILongTermMemory, IArchivedMemory
             var oldPath = GetFilePath(existing.Id, existing.Category);
             if (File.Exists(oldPath))
                 File.Delete(oldPath);
+
+            // The entry may have been the last one in its old category.
+            DirectoryPruner.PruneUpward(_basePath, Path.GetDirectoryName(oldPath));
         }
 
         index[entry.Id] = entry;
@@ -287,6 +290,10 @@ internal sealed partial class FileMemoryStore : ILongTermMemory, IArchivedMemory
             var filePath = GetFilePath(id, entry.Category);
             if (File.Exists(filePath))
                 File.Delete(filePath);
+
+            // Categories are LLM-chosen and consolidation deletes on a schedule, so an
+            // emptied category directory would otherwise linger as a phantom category.
+            DirectoryPruner.PruneUpward(_basePath, Path.GetDirectoryName(filePath));
 
             index.Remove(id);
             _embeddingCache?.Remove(id);
@@ -672,6 +679,16 @@ internal sealed partial class FileMemoryStore : ILongTermMemory, IArchivedMemory
         }
 
         _logger.LogDebug("Loaded {Count} memory entries from {Path}", _index.Count, _basePath);
+
+        // One-off sweep: every earlier delete left its category directory behind, so an
+        // existing corpus carries phantom categories no future delete would ever clear.
+        // The embedding cache owns its own folder and sweeps it itself.
+        var pruned = DirectoryPruner.PruneEmptyBelow(
+            _basePath,
+            dir => string.Equals(Path.GetFileName(dir), EmbeddingCache.DirectoryName, StringComparison.Ordinal));
+        if (pruned > 0)
+            _logger.LogDebug("Pruned {Count} empty directories under {Path}", pruned, _basePath);
+
         return _index;
     }
 

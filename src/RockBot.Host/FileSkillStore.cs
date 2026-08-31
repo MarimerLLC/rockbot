@@ -344,6 +344,10 @@ internal sealed partial class FileSkillStore : ISkillStore
             if (File.Exists(resourcePath))
                 File.Delete(resourcePath);
 
+            // Removing the last resource leaves the folder behind; drop it so the
+            // directory listing never advertises a resource set that no longer exists.
+            DirectoryPruner.PruneUpward(_basePath, folderPath);
+
             saved = existing with
             {
                 Manifest = newManifest.Count == 0 ? null : newManifest,
@@ -468,13 +472,23 @@ internal sealed partial class FileSkillStore : ISkillStore
 
     public async Task DeleteAsync(string name)
     {
+        // Callers relay LLM-supplied names here (skill consolidation prunes by name), so a
+        // malformed name has to be a quiet no-op rather than a throw — and must be rejected
+        // before any path is built from it.
+        if (!IsSafeName(name))
+        {
+            _logger.LogDebug("Ignoring delete for invalid skill name '{Name}'", name);
+            return;
+        }
+
         await _semaphore.WaitAsync();
         try
         {
             var index = await EnsureIndexAsync();
 
-            if (!index.Remove(name, out var skill))
-                return;
+            // Clean disk whether or not the index knew about the skill: an index/disk
+            // disagreement should heal on delete instead of stranding the files forever.
+            var wasIndexed = index.Remove(name);
 
             var filePath = GetFilePath(name);
             if (File.Exists(filePath))
@@ -485,9 +499,14 @@ internal sealed partial class FileSkillStore : ISkillStore
             if (Directory.Exists(folderPath))
                 Directory.Delete(folderPath, recursive: true);
 
-            _embeddingCache?.Remove(name);
+            // Drop any subcategory directories the skill leaves empty behind it.
+            DirectoryPruner.PruneUpward(_basePath, Path.GetDirectoryName(filePath));
 
-            _logger.LogDebug("Deleted skill '{Name}'", skill.Name);
+            if (wasIndexed)
+            {
+                _embeddingCache?.Remove(name);
+                _logger.LogDebug("Deleted skill '{Name}'", name);
+            }
         }
         finally
         {
@@ -593,6 +612,16 @@ internal sealed partial class FileSkillStore : ISkillStore
         }
 
         _logger.LogDebug("Loaded {Count} skills from {Path}", _index.Count, _basePath);
+
+        // One-off sweep: older store versions (and out-of-band deletions) left empty
+        // directories behind, which make a listing of the store report skills that do not exist.
+        // The embedding cache owns its own folder and sweeps it itself.
+        var pruned = DirectoryPruner.PruneEmptyBelow(
+            _basePath,
+            dir => string.Equals(Path.GetFileName(dir), EmbeddingCache.DirectoryName, StringComparison.Ordinal));
+        if (pruned > 0)
+            _logger.LogDebug("Pruned {Count} empty directories under {Path}", pruned, _basePath);
+
         return _index;
     }
 
@@ -634,6 +663,23 @@ internal sealed partial class FileSkillStore : ISkillStore
             : Path.Combine(AppContext.BaseDirectory, profileBasePath);
 
         return Path.Combine(baseDir, skillBasePath);
+    }
+
+    /// <summary>
+    /// Non-throwing form of <see cref="ValidateName"/>, for the paths that must treat an
+    /// unusable (typically LLM-supplied) name as a no-op rather than an error.
+    /// </summary>
+    private static bool IsSafeName(string name)
+    {
+        try
+        {
+            ValidateName(name);
+            return true;
+        }
+        catch (ArgumentException)
+        {
+            return false;
+        }
     }
 
     internal static void ValidateName(string name)

@@ -13,6 +13,12 @@ namespace RockBot.Host;
 /// </summary>
 internal sealed class EmbeddingCache
 {
+    /// <summary>
+    /// Name of the cache folder created under the owning store's base path.
+    /// Exposed so stores that sweep their own directory tree can leave it alone.
+    /// </summary>
+    internal const string DirectoryName = ".embeddings";
+
     private readonly IEmbeddingGenerator<string, Embedding<float>> _generator;
     private readonly string _embeddingsPath;
     private readonly ILogger _logger;
@@ -32,11 +38,18 @@ internal sealed class EmbeddingCache
         EmbeddingTextPreparer preparer)
     {
         _generator = generator;
-        _embeddingsPath = Path.Combine(storePath, ".embeddings");
+        _embeddingsPath = Path.Combine(storePath, DirectoryName);
         _logger = logger;
         _preparer = preparer;
 
         Directory.CreateDirectory(_embeddingsPath);
+
+        // IDs may contain '/' (a namespaced skill or memory), so each one writes into a
+        // subdirectory that nothing used to clean up. Sweep the leftovers once at startup;
+        // Remove keeps the folder tidy from here on.
+        var pruned = DirectoryPruner.PruneEmptyBelow(_embeddingsPath);
+        if (pruned > 0)
+            logger.LogDebug("Pruned {Count} empty directories under {Path}", pruned, _embeddingsPath);
     }
 
     /// <summary>
@@ -204,6 +217,9 @@ internal sealed class EmbeddingCache
         var filePath = GetFilePath(id);
         if (File.Exists(filePath))
             File.Delete(filePath);
+
+        // A namespaced ID leaves its directory behind once its last entry goes.
+        DirectoryPruner.PruneUpward(_embeddingsPath, Path.GetDirectoryName(filePath));
     }
 
     /// <summary>
