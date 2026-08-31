@@ -1,0 +1,14 @@
+# Revisions git blame should walk straight past: whitespace-only, no authorship
+# in them worth attributing. Git picks this up via
+#
+#     git config blame.ignoreRevsFile .git-blame-ignore-revs
+#
+# and GitHub's blame view honours the file with no configuration at all.
+#
+# Add a commit here only if it is genuinely mechanical -- a reformat, a
+# renormalisation. A commit with real changes mixed in must never be listed,
+# because ignoring it hides the real changes too.
+
+# Normalise the whole tree to LF in the index (#545). 472 files, EOL only;
+# `git diff --ignore-cr-at-eol` across it is empty apart from .gitattributes.
+c8dd250ce7270d1820e5fd9b1da3c07f9b6e00e0
