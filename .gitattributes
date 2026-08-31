@@ -1,19 +1,40 @@
-# Shell scripts MUST be checked out with LF endings.
+# Line endings.
 #
-# They are stored LF in the index, but with core.autocrlf=true (the Windows default)
-# git hands them to the working tree as CRLF. bash then reads the shebang as
-# "#!/usr/bin/env bash\r" and the script dies with "bad interpreter: ...^M" on Linux,
-# or "$'\r': command not found" line by line. This pins the checkout so a clone on any
-# platform produces a runnable script.
-*.sh text eol=lf
+# `text=auto` stores every text file LF in the index and converts on checkout, so
+# the working tree follows core.autocrlf (CRLF on a Windows clone, LF elsewhere).
+# Before this, 488 tracked blobs held CRLF and any tool that rewrote a file whole
+# — a python patch script, sed -i — silently flipped it to LF. `git diff` hides
+# that (it normalises EOL) while the stored blob changes wholesale, so the next
+# commit swallowed the file's entire `git blame` history. Normalising once, in a
+# commit listed in .git-blame-ignore-revs, is the fix.
+* text=auto
 
-# Same reasoning for anything else consumed by a POSIX shell or a Linux container.
+# Must be LF in the working tree on every platform: a POSIX shell or a Linux
+# container reads these directly, and a CRLF shebang makes bash report
+# "bad interpreter: ...^M" (or "$'\r': command not found" line by line).
+*.sh           text eol=lf
 Dockerfile*    text eol=lf
 *.Dockerfile   text eol=lf
 .dockerignore  text eol=lf
 
-# Deliberately NOT normalising the rest of the tree. 486 tracked files are stored CRLF
-# (357 of them .cs); a blanket `* text=auto` would rewrite every one of them in a single
-# commit and bury real history under a whitespace diff in `git blame`. CRLF is harmless
-# in those files. If that cleanup is ever wanted it belongs in its own PR, paired with a
-# .git-blame-ignore-revs entry.
+# The mirror image: cmd.exe mis-parses a batch file that arrives LF-only.
+*.bat          text eol=crlf
+*.cmd          text eol=crlf
+
+# Explicitly binary. Git's own heuristic already spares most of these, but under
+# a blanket `text=auto` an explicit marker is worth more than a heuristic.
+*.png    binary
+*.jpg    binary
+*.jpeg   binary
+*.gif    binary
+*.ico    binary
+*.pdf    binary
+*.zip    binary
+*.gz     binary
+*.dll    binary
+*.exe    binary
+*.pfx    binary
+*.snk    binary
+*.woff   binary
+*.woff2  binary
+kubectl  binary
