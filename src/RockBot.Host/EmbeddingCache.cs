@@ -43,6 +43,13 @@ internal sealed class EmbeddingCache
         _preparer = preparer;
 
         Directory.CreateDirectory(_embeddingsPath);
+
+        // IDs may contain '/' (a namespaced skill or memory), so each one writes into a
+        // subdirectory that nothing used to clean up. Sweep the leftovers once at startup;
+        // Remove keeps the folder tidy from here on.
+        var pruned = DirectoryPruner.PruneEmptyBelow(_embeddingsPath);
+        if (pruned > 0)
+            logger.LogDebug("Pruned {Count} empty directories under {Path}", pruned, _embeddingsPath);
     }
 
     /// <summary>
@@ -210,6 +217,9 @@ internal sealed class EmbeddingCache
         var filePath = GetFilePath(id);
         if (File.Exists(filePath))
             File.Delete(filePath);
+
+        // A namespaced ID leaves its directory behind once its last entry goes.
+        DirectoryPruner.PruneUpward(_embeddingsPath, Path.GetDirectoryName(filePath));
     }
 
     /// <summary>

@@ -346,7 +346,7 @@ internal sealed partial class FileSkillStore : ISkillStore
 
             // Removing the last resource leaves the folder behind; drop it so the
             // directory listing never advertises a resource set that no longer exists.
-            PruneEmptyDirectories(folderPath);
+            DirectoryPruner.PruneUpward(_basePath, folderPath);
 
             saved = existing with
             {
@@ -500,7 +500,7 @@ internal sealed partial class FileSkillStore : ISkillStore
                 Directory.Delete(folderPath, recursive: true);
 
             // Drop any subcategory directories the skill leaves empty behind it.
-            PruneEmptyDirectories(Path.GetDirectoryName(filePath));
+            DirectoryPruner.PruneUpward(_basePath, Path.GetDirectoryName(filePath));
 
             if (wasIndexed)
             {
@@ -615,104 +615,14 @@ internal sealed partial class FileSkillStore : ISkillStore
 
         // One-off sweep: older store versions (and out-of-band deletions) left empty
         // directories behind, which make a listing of the store report skills that do not exist.
-        var pruned = PruneEmptyDirectoriesUnder(_basePath);
+        // The embedding cache owns its own folder and sweeps it itself.
+        var pruned = DirectoryPruner.PruneEmptyBelow(
+            _basePath,
+            dir => string.Equals(Path.GetFileName(dir), EmbeddingCache.DirectoryName, StringComparison.Ordinal));
         if (pruned > 0)
             _logger.LogDebug("Pruned {Count} empty directories under {Path}", pruned, _basePath);
 
         return _index;
-    }
-
-    /// <summary>
-    /// Deletes <paramref name="directory"/> and every ancestor left empty by it, stopping at
-    /// <see cref="_basePath"/> (never itself removed) or at the first level that still holds
-    /// something. Best-effort: a write racing the prune must not fail the caller's operation.
-    /// </summary>
-    private void PruneEmptyDirectories(string? directory)
-    {
-        if (string.IsNullOrEmpty(directory))
-            return;
-
-        var root = Path.TrimEndingDirectorySeparator(Path.GetFullPath(_basePath));
-        var current = Path.TrimEndingDirectorySeparator(Path.GetFullPath(directory));
-
-        // Containment guard: only ever touch paths strictly below the store root.
-        while (current.Length > root.Length
-            && current.StartsWith(root + Path.DirectorySeparatorChar, PathComparison))
-        {
-            try
-            {
-                if (Directory.Exists(current))
-                {
-                    if (Directory.EnumerateFileSystemEntries(current).Any())
-                        return;
-
-                    Directory.Delete(current);
-                }
-            }
-            catch (IOException)
-            {
-                return;
-            }
-            catch (UnauthorizedAccessException)
-            {
-                return;
-            }
-
-            var parent = Path.GetDirectoryName(current);
-            if (string.IsNullOrEmpty(parent))
-                return;
-
-            current = parent;
-        }
-    }
-
-    /// <summary>
-    /// Removes every empty directory below <paramref name="root"/>, deepest first, and returns
-    /// how many were removed. <see cref="EmbeddingCache.DirectoryName"/> is skipped — that
-    /// folder belongs to the cache, which creates it eagerly and may legitimately be empty.
-    /// Best-effort: IO errors are swallowed so a read-only volume never blocks store startup.
-    /// </summary>
-    private int PruneEmptyDirectoriesUnder(string root)
-    {
-        string[] children;
-        try
-        {
-            children = Directory.GetDirectories(root);
-        }
-        catch (IOException)
-        {
-            return 0;
-        }
-        catch (UnauthorizedAccessException)
-        {
-            return 0;
-        }
-
-        var removed = 0;
-        foreach (var child in children)
-        {
-            if (string.Equals(Path.GetFileName(child), EmbeddingCache.DirectoryName, PathComparison))
-                continue;
-
-            removed += PruneEmptyDirectoriesUnder(child);
-
-            try
-            {
-                if (!Directory.EnumerateFileSystemEntries(child).Any())
-                {
-                    Directory.Delete(child);
-                    removed++;
-                }
-            }
-            catch (IOException)
-            {
-            }
-            catch (UnauthorizedAccessException)
-            {
-            }
-        }
-
-        return removed;
     }
 
     /// <summary>
@@ -742,9 +652,6 @@ internal sealed partial class FileSkillStore : ISkillStore
         Path.Combine(_basePath, name.Replace('/', Path.DirectorySeparatorChar) + ResourceFolderSuffix);
 
     private const string ResourceFolderSuffix = ".resources";
-
-    private static readonly StringComparison PathComparison =
-        OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
 
     internal static string ResolvePath(string skillBasePath, string profileBasePath)
     {
