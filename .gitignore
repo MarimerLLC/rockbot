@@ -31,3 +31,6 @@ deploy/docker-compose/agent-data/
 deploy/docker-compose/*/.env
 deploy/docker-compose/*/agent.extra.env
 deploy/docker-compose/*/agent-data/
+
+# Stray 58 MB kubectl binary was committed by accident once (#96). Use the one on PATH.
+kubectl
