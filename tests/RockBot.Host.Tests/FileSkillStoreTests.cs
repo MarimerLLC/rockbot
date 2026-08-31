@@ -377,6 +377,127 @@ public class FileSkillStoreTests
         Assert.IsFalse(Directory.Exists(Path.Combine(_tempDir, "my-skill.resources")));
     }
 
+    // ── Empty-directory hygiene ──────────────────────────────────────
+
+    [TestMethod]
+    public async Task SaveAsync_WithoutResources_CreatesNoResourceFolder()
+    {
+        var store = CreateStore();
+        await store.SaveAsync(MakeSkill("my-skill", "summary", "content"));
+
+        Assert.IsFalse(Directory.Exists(Path.Combine(_tempDir, "my-skill.resources")));
+    }
+
+    [TestMethod]
+    public async Task DeleteAsync_LastSkillInNamespace_RemovesEmptyParentDirectory()
+    {
+        var store = CreateStore();
+        await store.SaveAsync(MakeSkill("research/summarize", "summary", "content"));
+        Assert.IsTrue(Directory.Exists(Path.Combine(_tempDir, "research")));
+
+        await store.DeleteAsync("research/summarize");
+
+        Assert.IsFalse(Directory.Exists(Path.Combine(_tempDir, "research")));
+        Assert.IsTrue(Directory.Exists(_tempDir), "the store root must survive the prune");
+    }
+
+    [TestMethod]
+    public async Task DeleteAsync_NamespaceWithRemainingSkill_KeepsParentDirectory()
+    {
+        var store = CreateStore();
+        await store.SaveAsync(MakeSkill("research/summarize", "summary", "content"));
+        await store.SaveAsync(MakeSkill("research/scan", "summary", "content"));
+
+        await store.DeleteAsync("research/summarize");
+
+        Assert.IsTrue(Directory.Exists(Path.Combine(_tempDir, "research")));
+        Assert.IsTrue(File.Exists(Path.Combine(_tempDir, "research", "scan.json")));
+    }
+
+    [TestMethod]
+    public async Task DeleteAsync_SkillMissingFromIndex_StillRemovesFilesFromDisk()
+    {
+        // Index the store first, then plant a skill file behind its back so the index
+        // and the disk disagree — the delete must still clean the disk.
+        var store = CreateStore();
+        await store.ListAsync();
+
+        Directory.CreateDirectory(Path.Combine(_tempDir, "orphan"));
+        var stray = Path.Combine(_tempDir, "orphan", "ghost.json");
+        await File.WriteAllTextAsync(stray, "{}");
+
+        await store.DeleteAsync("orphan/ghost");
+
+        Assert.IsFalse(File.Exists(stray));
+        Assert.IsFalse(Directory.Exists(Path.Combine(_tempDir, "orphan")));
+    }
+
+    [TestMethod]
+    public async Task DeleteAsync_InvalidName_IsNoOp()
+    {
+        var store = CreateStore();
+        await store.SaveAsync(MakeSkill("keeper", "summary", "content"));
+
+        await store.DeleteAsync("../escape");
+        await store.DeleteAsync("bad name!");
+        await store.DeleteAsync("   ");
+
+        Assert.IsTrue(File.Exists(Path.Combine(_tempDir, "keeper.json")));
+    }
+
+    [TestMethod]
+    public async Task RemoveResourceAsync_LastResource_RemovesEmptyResourceFolder()
+    {
+        var store = CreateStore();
+        await store.SaveAsync(MakeSkill("my-skill", "summary", "content"),
+            [new("script.py", SkillResourceType.Python, "desc", "code")]);
+
+        var folder = Path.Combine(_tempDir, "my-skill.resources");
+        Assert.IsTrue(Directory.Exists(folder));
+
+        var ok = await store.RemoveResourceAsync("my-skill", "script.py");
+
+        Assert.IsTrue(ok);
+        Assert.IsFalse(Directory.Exists(folder));
+        Assert.IsTrue(File.Exists(Path.Combine(_tempDir, "my-skill.json")));
+    }
+
+    [TestMethod]
+    public async Task RemoveResourceAsync_RemainingResource_KeepsResourceFolder()
+    {
+        var store = CreateStore();
+        await store.SaveAsync(MakeSkill("my-skill", "summary", "content"),
+            [new("a.py", SkillResourceType.Python, "desc", "code"),
+             new("b.py", SkillResourceType.Python, "desc", "code")]);
+
+        await store.RemoveResourceAsync("my-skill", "a.py");
+
+        var folder = Path.Combine(_tempDir, "my-skill.resources");
+        Assert.IsTrue(Directory.Exists(folder));
+        Assert.IsTrue(File.Exists(Path.Combine(folder, "b.py")));
+    }
+
+    [TestMethod]
+    public async Task EnsureIndexAsync_PrunesPreexistingEmptyDirectories()
+    {
+        // The live-cluster shape: leftover namespace folders with no skill in them,
+        // alongside a namespace folder that still holds one.
+        var store = CreateStore();
+        await store.SaveAsync(MakeSkill("todo/todo-add-and-verify-task", "summary", "content"));
+
+        Directory.CreateDirectory(Path.Combine(_tempDir, "calendar"));
+        Directory.CreateDirectory(Path.Combine(_tempDir, "people", "nested"));
+
+        // A fresh store indexes the directory from scratch and sweeps it.
+        var reloaded = CreateStore();
+        await reloaded.ListAsync();
+
+        Assert.IsFalse(Directory.Exists(Path.Combine(_tempDir, "calendar")));
+        Assert.IsFalse(Directory.Exists(Path.Combine(_tempDir, "people")));
+        Assert.IsTrue(Directory.Exists(Path.Combine(_tempDir, "todo")));
+        Assert.IsNotNull(await reloaded.GetAsync("todo/todo-add-and-verify-task"));
+    }
+
     [TestMethod]
     public async Task EnsureIndexAsync_SkipsResourceFolderJsonFiles()
     {

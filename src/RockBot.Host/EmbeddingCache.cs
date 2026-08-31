@@ -13,6 +13,12 @@ namespace RockBot.Host;
 /// </summary>
 internal sealed class EmbeddingCache
 {
+    /// <summary>
+    /// Name of the cache folder created under the owning store's base path.
+    /// Exposed so stores that sweep their own directory tree can leave it alone.
+    /// </summary>
+    internal const string DirectoryName = ".embeddings";
+
     private readonly IEmbeddingGenerator<string, Embedding<float>> _generator;
     private readonly string _embeddingsPath;
     private readonly ILogger _logger;
@@ -32,7 +38,7 @@ internal sealed class EmbeddingCache
         EmbeddingTextPreparer preparer)
     {
         _generator = generator;
-        _embeddingsPath = Path.Combine(storePath, ".embeddings");
+        _embeddingsPath = Path.Combine(storePath, DirectoryName);
         _logger = logger;
         _preparer = preparer;
 

@@ -344,6 +344,10 @@ internal sealed partial class FileSkillStore : ISkillStore
             if (File.Exists(resourcePath))
                 File.Delete(resourcePath);
 
+            // Removing the last resource leaves the folder behind; drop it so the
+            // directory listing never advertises a resource set that no longer exists.
+            PruneEmptyDirectories(folderPath);
+
             saved = existing with
             {
                 Manifest = newManifest.Count == 0 ? null : newManifest,
@@ -468,13 +472,23 @@ internal sealed partial class FileSkillStore : ISkillStore
 
     public async Task DeleteAsync(string name)
     {
+        // Callers relay LLM-supplied names here (skill consolidation prunes by name), so a
+        // malformed name has to be a quiet no-op rather than a throw — and must be rejected
+        // before any path is built from it.
+        if (!IsSafeName(name))
+        {
+            _logger.LogDebug("Ignoring delete for invalid skill name '{Name}'", name);
+            return;
+        }
+
         await _semaphore.WaitAsync();
         try
         {
             var index = await EnsureIndexAsync();
 
-            if (!index.Remove(name, out var skill))
-                return;
+            // Clean disk whether or not the index knew about the skill: an index/disk
+            // disagreement should heal on delete instead of stranding the files forever.
+            var wasIndexed = index.Remove(name);
 
             var filePath = GetFilePath(name);
             if (File.Exists(filePath))
@@ -485,9 +499,14 @@ internal sealed partial class FileSkillStore : ISkillStore
             if (Directory.Exists(folderPath))
                 Directory.Delete(folderPath, recursive: true);
 
-            _embeddingCache?.Remove(name);
+            // Drop any subcategory directories the skill leaves empty behind it.
+            PruneEmptyDirectories(Path.GetDirectoryName(filePath));
 
-            _logger.LogDebug("Deleted skill '{Name}'", skill.Name);
+            if (wasIndexed)
+            {
+                _embeddingCache?.Remove(name);
+                _logger.LogDebug("Deleted skill '{Name}'", name);
+            }
         }
         finally
         {
@@ -593,7 +612,107 @@ internal sealed partial class FileSkillStore : ISkillStore
         }
 
         _logger.LogDebug("Loaded {Count} skills from {Path}", _index.Count, _basePath);
+
+        // One-off sweep: older store versions (and out-of-band deletions) left empty
+        // directories behind, which make a listing of the store report skills that do not exist.
+        var pruned = PruneEmptyDirectoriesUnder(_basePath);
+        if (pruned > 0)
+            _logger.LogDebug("Pruned {Count} empty directories under {Path}", pruned, _basePath);
+
         return _index;
+    }
+
+    /// <summary>
+    /// Deletes <paramref name="directory"/> and every ancestor left empty by it, stopping at
+    /// <see cref="_basePath"/> (never itself removed) or at the first level that still holds
+    /// something. Best-effort: a write racing the prune must not fail the caller's operation.
+    /// </summary>
+    private void PruneEmptyDirectories(string? directory)
+    {
+        if (string.IsNullOrEmpty(directory))
+            return;
+
+        var root = Path.TrimEndingDirectorySeparator(Path.GetFullPath(_basePath));
+        var current = Path.TrimEndingDirectorySeparator(Path.GetFullPath(directory));
+
+        // Containment guard: only ever touch paths strictly below the store root.
+        while (current.Length > root.Length
+            && current.StartsWith(root + Path.DirectorySeparatorChar, PathComparison))
+        {
+            try
+            {
+                if (Directory.Exists(current))
+                {
+                    if (Directory.EnumerateFileSystemEntries(current).Any())
+                        return;
+
+                    Directory.Delete(current);
+                }
+            }
+            catch (IOException)
+            {
+                return;
+            }
+            catch (UnauthorizedAccessException)
+            {
+                return;
+            }
+
+            var parent = Path.GetDirectoryName(current);
+            if (string.IsNullOrEmpty(parent))
+                return;
+
+            current = parent;
+        }
+    }
+
+    /// <summary>
+    /// Removes every empty directory below <paramref name="root"/>, deepest first, and returns
+    /// how many were removed. <see cref="EmbeddingCache.DirectoryName"/> is skipped — that
+    /// folder belongs to the cache, which creates it eagerly and may legitimately be empty.
+    /// Best-effort: IO errors are swallowed so a read-only volume never blocks store startup.
+    /// </summary>
+    private int PruneEmptyDirectoriesUnder(string root)
+    {
+        string[] children;
+        try
+        {
+            children = Directory.GetDirectories(root);
+        }
+        catch (IOException)
+        {
+            return 0;
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return 0;
+        }
+
+        var removed = 0;
+        foreach (var child in children)
+        {
+            if (string.Equals(Path.GetFileName(child), EmbeddingCache.DirectoryName, PathComparison))
+                continue;
+
+            removed += PruneEmptyDirectoriesUnder(child);
+
+            try
+            {
+                if (!Directory.EnumerateFileSystemEntries(child).Any())
+                {
+                    Directory.Delete(child);
+                    removed++;
+                }
+            }
+            catch (IOException)
+            {
+            }
+            catch (UnauthorizedAccessException)
+            {
+            }
+        }
+
+        return removed;
     }
 
     /// <summary>
@@ -624,6 +743,9 @@ internal sealed partial class FileSkillStore : ISkillStore
 
     private const string ResourceFolderSuffix = ".resources";
 
+    private static readonly StringComparison PathComparison =
+        OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
+
     internal static string ResolvePath(string skillBasePath, string profileBasePath)
     {
         if (Path.IsPathRooted(skillBasePath))
@@ -634,6 +756,23 @@ internal sealed partial class FileSkillStore : ISkillStore
             : Path.Combine(AppContext.BaseDirectory, profileBasePath);
 
         return Path.Combine(baseDir, skillBasePath);
+    }
+
+    /// <summary>
+    /// Non-throwing form of <see cref="ValidateName"/>, for the paths that must treat an
+    /// unusable (typically LLM-supplied) name as a no-op rather than an error.
+    /// </summary>
+    private static bool IsSafeName(string name)
+    {
+        try
+        {
+            ValidateName(name);
+            return true;
+        }
+        catch (ArgumentException)
+        {
+            return false;
+        }
     }
 
     internal static void ValidateName(string name)
