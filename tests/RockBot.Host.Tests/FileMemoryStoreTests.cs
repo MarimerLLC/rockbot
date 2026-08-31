@@ -841,6 +841,67 @@ public class FileMemoryStoreTests
         Assert.AreEqual(0.5f, entry.ImportanceScore);
     }
 
+    // ── Empty-directory hygiene ────────────────────────────────
+
+    [TestMethod]
+    public async Task DeleteAsync_LastEntryInCategory_RemovesEmptyCategoryDirectory()
+    {
+        var store = CreateStore();
+        await store.SaveAsync(CreateEntry("test-1", "content", category: "project-context/rockbot"));
+
+        await store.DeleteAsync("test-1");
+
+        Assert.IsFalse(Directory.Exists(Path.Combine(_tempDir, "project-context", "rockbot")));
+        Assert.IsFalse(Directory.Exists(Path.Combine(_tempDir, "project-context")));
+        Assert.IsTrue(Directory.Exists(_tempDir), "the store root must survive the prune");
+    }
+
+    [TestMethod]
+    public async Task DeleteAsync_CategoryWithRemainingEntry_KeepsCategoryDirectory()
+    {
+        var store = CreateStore();
+        await store.SaveAsync(CreateEntry("test-1", "content", category: "user-preferences"));
+        await store.SaveAsync(CreateEntry("test-2", "other", category: "user-preferences"));
+
+        await store.DeleteAsync("test-1");
+
+        Assert.IsTrue(Directory.Exists(Path.Combine(_tempDir, "user-preferences")));
+        Assert.IsTrue(File.Exists(Path.Combine(_tempDir, "user-preferences", "test-2.json")));
+    }
+
+    [TestMethod]
+    public async Task SaveAsync_CategoryChange_RemovesEmptiedOldCategoryDirectory()
+    {
+        var store = CreateStore();
+        await store.SaveAsync(CreateEntry("test-1", "content", category: "scratch"));
+
+        await store.SaveAsync(CreateEntry("test-1", "content", category: "user-preferences"));
+
+        Assert.IsFalse(Directory.Exists(Path.Combine(_tempDir, "scratch")));
+        Assert.IsTrue(File.Exists(Path.Combine(_tempDir, "user-preferences", "test-1.json")));
+    }
+
+    [TestMethod]
+    public async Task EnsureIndexAsync_PrunesPreexistingEmptyCategoryDirectories()
+    {
+        // The live-cluster shape: category directories emptied by earlier deletes, which
+        // no future delete would ever clear.
+        var store = CreateStore();
+        await store.SaveAsync(CreateEntry("test-1", "content", category: "infrastructure"));
+
+        Directory.CreateDirectory(Path.Combine(_tempDir, "personal", "blog"));
+        Directory.CreateDirectory(Path.Combine(_tempDir, "system", "architecture"));
+
+        // A fresh store indexes the directory from scratch and sweeps it.
+        var reloaded = CreateStore();
+        var entry = await reloaded.GetAsync("test-1");
+
+        Assert.IsFalse(Directory.Exists(Path.Combine(_tempDir, "personal")));
+        Assert.IsFalse(Directory.Exists(Path.Combine(_tempDir, "system")));
+        Assert.IsTrue(Directory.Exists(Path.Combine(_tempDir, "infrastructure")));
+        Assert.IsNotNull(entry);
+    }
+
     private static MemoryEntry CreateEntry(
         string id,
         string content,
