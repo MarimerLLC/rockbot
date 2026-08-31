@@ -1,0 +1,40 @@
+{{- if .Values.blazor.ingress.enabled }}
+{{- if .Values.blazor.tailscale.ingress.enabled }}
+{{- fail "blazor.ingress.enabled and blazor.tailscale.ingress.enabled are mutually exclusive — two Ingresses pointing at one Service with different ingressClassNames is not a supported configuration. Pick the tailnet path or the public HTTPS path." }}
+{{- end }}
+{{- $host := required "blazor.ingress.host is required when blazor.ingress.enabled=true" .Values.blazor.ingress.host }}
+{{- if and (not .Values.blazor.auth.enabled) (not .Values.blazor.ingress.allowUnauthenticated) }}
+{{- fail "blazor.ingress.enabled=true with blazor.auth.enabled=false would publish the chat UI with no gate in front of it. Enable blazor.auth, or set blazor.ingress.allowUnauthenticated=true if something outside this chart (an oauth2-proxy, an authenticating gateway) is doing the gating." }}
+{{- end }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "rockbot.fullname" . }}-blazor-https
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "rockbot.labels" . | nindent 4 }}
+    app.kubernetes.io/component: blazor
+  {{- with .Values.blazor.ingress.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  ingressClassName: {{ .Values.blazor.ingress.className | quote }}
+  {{- if .Values.blazor.ingress.tls.enabled }}
+  tls:
+    - hosts:
+        - {{ $host | quote }}
+      secretName: {{ required "blazor.ingress.tls.secretName is required when blazor.ingress.tls.enabled=true" .Values.blazor.ingress.tls.secretName | quote }}
+  {{- end }}
+  rules:
+    - host: {{ $host | quote }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "rockbot.fullname" . }}-blazor
+                port:
+                  number: 80
+{{- end }}

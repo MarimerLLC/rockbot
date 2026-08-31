@@ -214,6 +214,23 @@ services:
       # blazor-init above exists to guarantee: Docker named volumes are root-owned and
       # the image runs as a non-root user. Kubernetes gets this free from fsGroup.
       DataProtection__KeyRingPath: /data/blazor/keys
+      # -- OAuth sign-in (optional) --
+      # Off unless BLAZOR_AUTH_ENABLED=true in .env. Google is the only provider today.
+      #
+      # http://localhost:8080 is the one origin Google accepts over plain http, so this
+      # stack can exercise the real flow with no TLS. In the Google Cloud Console create
+      # an OAuth 2.0 Web application client and set its authorized redirect URI to
+      # exactly:  http://localhost:8080/signin-google
+      # Full walkthrough: deploy/blazor-oauth-setup.md
+      #
+      # BLAZOR_AUTH_ALLOWED_EMAILS is a single address, which is all this local stack
+      # needs; the Helm chart takes full lists. An empty allowlist is a startup failure,
+      # never "allow everyone".
+      Auth__Enabled: ${BLAZOR_AUTH_ENABLED:-false}
+      Auth__PublicBaseUrl: ${BLAZOR_AUTH_PUBLIC_BASE_URL:-http://localhost:8080}
+      Auth__Providers__Google__ClientId: ${BLAZOR_AUTH_GOOGLE_CLIENT_ID:-}
+      Auth__Providers__Google__ClientSecret: ${BLAZOR_AUTH_GOOGLE_CLIENT_SECRET:-}
+      Auth__AllowedEmails__0: ${BLAZOR_AUTH_ALLOWED_EMAILS:-}
     volumes:
       - blazor-data:/data/blazor
 
