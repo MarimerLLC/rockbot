@@ -37,4 +37,3 @@ Dockerfile*    text eol=lf
 *.snk    binary
 *.woff   binary
 *.woff2  binary
-kubectl  binary
