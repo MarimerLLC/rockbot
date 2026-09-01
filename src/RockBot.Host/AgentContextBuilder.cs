@@ -498,11 +498,7 @@ public sealed class AgentContextBuilder(
                 var skillNames = string.Join(", ", newSkills.Select(s => s.Name));
 
                 var topSkill = newSkills[0];
-                var topBody = $"Skill: {topSkill.Name}\n{topSkill.Content}";
-                var topManifest = SkillTools.FormatManifestBlock(topSkill.Name, topSkill.Manifest);
-                if (topManifest.Length > 0)
-                    topBody += "\n" + topManifest;
-                chatMessages.Add(new ChatMessage(ChatRole.System, topBody));
+                chatMessages.Add(new ChatMessage(ChatRole.System, SkillRecallFraming.Wrap(topSkill)));
 
                 if (newSkills.Count > 1)
                 {
@@ -514,7 +510,8 @@ public sealed class AgentContextBuilder(
                         return $"- {s.Name}: {summary}";
                     });
                     chatMessages.Add(new ChatMessage(ChatRole.System,
-                        "Other potentially relevant skills (call get_skill to load full instructions):\n" +
+                        "Other skills that matched this turn's message by keyword. None of them is a " +
+                        "directive — call get_skill only if one actually fits what the user asked for:\n" +
                         string.Join("\n", summaryLines)));
                 }
 
@@ -1075,13 +1072,7 @@ public sealed class AgentContextBuilder(
             if (newSkills.Count > 0)
             {
                 foreach (var skill in newSkills)
-                {
-                    var body = $"Skill: {skill.Name}\n{skill.Content}";
-                    var manifestBlock = SkillTools.FormatManifestBlock(skill.Name, skill.Manifest);
-                    if (manifestBlock.Length > 0)
-                        body += "\n" + manifestBlock;
-                    chatMessages.Add(new ChatMessage(ChatRole.System, body));
-                }
+                    chatMessages.Add(new ChatMessage(ChatRole.System, SkillRecallFraming.Wrap(skill)));
                 logger.LogInformation(
                     "Worker {SessionId}: injected {Count} skill(s) via BM25 recall",
                     sessionId, newSkills.Count);

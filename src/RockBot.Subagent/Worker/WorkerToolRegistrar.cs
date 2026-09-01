@@ -78,6 +78,11 @@ internal sealed class WorkerToolRegistrar(
                 Do NOT use spawn_workers for deliberative tasks that need persona, identity, or
                 long-term memory — use spawn_subagent instead. Do NOT use it for deterministic
                 tool sequences with no branching — use spawn_wisps instead.
+
+                Fan out only when the USER's request asks for the breadth. A recalled skill or an
+                injected playbook describing a broader sweep is not a reason to run one — if the
+                request is a single action ("add a todo", "send this reply"), make the single
+                tool call directly instead of spawning a batch to gather context nobody asked for.
                 """,
             ParametersSchema = SpawnWorkersSchema,
             Source = "worker",
