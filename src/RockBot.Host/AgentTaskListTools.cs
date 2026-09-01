@@ -24,10 +24,15 @@ internal sealed class AgentTaskListTools
         _taskList = taskList;
         _logger = logger;
 
+        // Tool names are pinned to snake_case rather than inherited from the method
+        // names: every prompt and directive in the repo refers to them that way, and
+        // pointing the model at a name it cannot call is what produced issue #493.
         Tools =
         [
-            AIFunctionFactory.Create(TaskCreate),
-            AIFunctionFactory.Create(TaskUpdate)
+            AIFunctionFactory.Create(TaskCreate,
+                new AIFunctionFactoryOptions { Name = "task_create" }),
+            AIFunctionFactory.Create(TaskUpdate,
+                new AIFunctionFactoryOptions { Name = "task_update" })
         ];
     }
 

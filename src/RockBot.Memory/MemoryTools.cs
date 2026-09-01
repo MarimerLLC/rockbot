@@ -60,6 +60,22 @@ public sealed class MemoryTools
         If the content contains nothing worth saving as a durable memory, return: []
         """;
 
+    /// <summary>
+    /// Registered name of the save tool. A constant because code outside this class
+    /// matches <see cref="Microsoft.Extensions.AI.FunctionCallContent"/> against it —
+    /// <c>AgentLoopRunner.SavedMemoryThisTurn</c> backs the memory-summary guard (#383).
+    /// A rename that missed that site would silently disable the guard, so the two are
+    /// bound at compile time rather than by convention.
+    /// </summary>
+    public const string SaveMemoryToolName = "save_memory";
+
+    /// <summary>
+    /// Registered name of the search tool. A constant for the same reason as
+    /// <see cref="SaveMemoryToolName"/> — <c>InboundA2AToolSet</c> selects this tool by
+    /// name to expose read-only recall to inbound A2A tasks.
+    /// </summary>
+    public const string SearchMemoryToolName = "search_memory";
+
     private readonly ILongTermMemory _memory;
     private readonly ILlmClient _llmClient;
     private readonly IMemoryContradictionDetector? _contradictionDetector;
@@ -86,14 +102,22 @@ public sealed class MemoryTools
             ? ExtractionSpecificPrompt
             : memoryRules + "\n\n---\n\n" + ExtractionSpecificPrompt;
 
+        // Tool names are pinned to snake_case rather than inherited from the method
+        // names: every prompt and directive in the repo refers to them that way, and
+        // pointing the model at a name it cannot call is what produced issue #493.
         // Build AIFunction instances once at construction (singleton)
         _tools =
         [
-            AIFunctionFactory.Create(SaveMemory),
-            AIFunctionFactory.Create(SearchMemory),
-            AIFunctionFactory.Create(EditMemory),
-            AIFunctionFactory.Create(DeleteMemory),
-            AIFunctionFactory.Create(UpdateMemoryImportance)
+            AIFunctionFactory.Create(SaveMemory,
+                new AIFunctionFactoryOptions { Name = SaveMemoryToolName }),
+            AIFunctionFactory.Create(SearchMemory,
+                new AIFunctionFactoryOptions { Name = SearchMemoryToolName }),
+            AIFunctionFactory.Create(EditMemory,
+                new AIFunctionFactoryOptions { Name = "edit_memory" }),
+            AIFunctionFactory.Create(DeleteMemory,
+                new AIFunctionFactoryOptions { Name = "delete_memory" }),
+            AIFunctionFactory.Create(UpdateMemoryImportance,
+                new AIFunctionFactoryOptions { Name = "update_memory_importance" })
         ];
     }
 

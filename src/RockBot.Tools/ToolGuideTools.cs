@@ -29,10 +29,15 @@ public sealed class ToolGuideTools
         _providers = providers.ToDictionary(p => p.Name, p => p, StringComparer.OrdinalIgnoreCase);
         _logger = logger;
 
+        // Tool names are pinned to snake_case rather than inherited from the method
+        // names: every prompt and directive in the repo refers to them that way, and
+        // pointing the model at a name it cannot call is what produced issue #493.
         Tools =
         [
-            AIFunctionFactory.Create(ListToolGuides),
-            AIFunctionFactory.Create(GetToolGuide)
+            AIFunctionFactory.Create(ListToolGuides,
+                new AIFunctionFactoryOptions { Name = "list_tool_guides" }),
+            AIFunctionFactory.Create(GetToolGuide,
+                new AIFunctionFactoryOptions { Name = "get_tool_guide" })
         ];
     }
 

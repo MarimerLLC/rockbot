@@ -2633,7 +2633,7 @@ public sealed partial class AgentLoopRunner(
 
     /// <summary>
     /// True when any message in the current loop's chat history contains a
-    /// <see cref="FunctionCallContent"/> targeting the <c>SaveMemory</c> tool.
+    /// <see cref="FunctionCallContent"/> targeting the <c>save_memory</c> tool.
     /// Used by the memory-summary-reply guard (#383) to confirm that this turn
     /// actually wrote to long-term memory before re-prompting on the
     /// "Noted, I saved X" pattern. Internal so tests can exercise it directly.
@@ -2644,7 +2644,7 @@ public sealed partial class AgentLoopRunner(
         {
             foreach (var c in m.Contents.OfType<FunctionCallContent>())
             {
-                if (string.Equals(c.Name, "SaveMemory", StringComparison.Ordinal))
+                if (string.Equals(c.Name, MemoryTools.SaveMemoryToolName, StringComparison.Ordinal))
                     return true;
             }
         }

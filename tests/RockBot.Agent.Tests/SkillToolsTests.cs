@@ -112,7 +112,7 @@ public class SkillToolsTests
 
         var names = tools.Tools.OfType<AIFunction>().Select(f => f.Name).ToList();
 
-        CollectionAssert.Contains(names, "EditSkill");
+        CollectionAssert.Contains(names, "edit_skill");
     }
 
     [TestMethod]

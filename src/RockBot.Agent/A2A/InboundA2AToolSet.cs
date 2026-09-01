@@ -31,10 +31,10 @@ internal static class InboundA2AToolSet
         // From working memory tools: include all (read + write scoped to inbox namespace)
         var tools = new List<AITool>(wmTools.Tools);
 
-        // From long-term memory: include only SearchMemory (read-only)
+        // From long-term memory: include only search_memory (read-only)
         var searchMemory = memoryTools.Tools
             .OfType<AIFunction>()
-            .FirstOrDefault(f => f.Name == "SearchMemory");
+            .FirstOrDefault(f => f.Name == MemoryTools.SearchMemoryToolName);
         if (searchMemory is not null)
             tools.Add(searchMemory);
 

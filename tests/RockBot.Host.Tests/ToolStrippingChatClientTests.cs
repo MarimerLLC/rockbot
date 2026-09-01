@@ -38,7 +38,7 @@ public class ToolStrippingChatClientTests
 
     private static ChatOptions OptionsWithTools() => new()
     {
-        Tools = [AIFunctionFactory.Create(() => "result", "SaveMemory")],
+        Tools = [AIFunctionFactory.Create(() => "result", "save_memory")],
         ToolMode = ChatToolMode.Auto,
         Temperature = 0.5f,
     };

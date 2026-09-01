@@ -23,13 +23,21 @@ public sealed class RulesTools
         _clock = clock;
         _logger = logger;
 
+        // Tool names are pinned to snake_case rather than inherited from the method
+        // names: every prompt and directive in the repo refers to them that way, and
+        // pointing the model at a name it cannot call is what produced issue #493.
         _tools =
         [
-            AIFunctionFactory.Create(AddRule),
-            AIFunctionFactory.Create(EditRule),
-            AIFunctionFactory.Create(RemoveRule),
-            AIFunctionFactory.Create(ListRules),
-            AIFunctionFactory.Create(SetTimezone)
+            AIFunctionFactory.Create(AddRule,
+                new AIFunctionFactoryOptions { Name = "add_rule" }),
+            AIFunctionFactory.Create(EditRule,
+                new AIFunctionFactoryOptions { Name = "edit_rule" }),
+            AIFunctionFactory.Create(RemoveRule,
+                new AIFunctionFactoryOptions { Name = "remove_rule" }),
+            AIFunctionFactory.Create(ListRules,
+                new AIFunctionFactoryOptions { Name = "list_rules" }),
+            AIFunctionFactory.Create(SetTimezone,
+                new AIFunctionFactoryOptions { Name = "set_timezone" })
         ];
     }
 

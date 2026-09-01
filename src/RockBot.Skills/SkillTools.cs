@@ -48,14 +48,23 @@ public sealed class SkillTools
         _usageStore = usageStore;
         _resourceUsageStore = resourceUsageStore;
 
+        // Tool names are pinned to snake_case rather than inherited from the method
+        // names: every prompt and directive in the repo refers to them that way, and
+        // pointing the model at a name it cannot call is what produced issue #493.
         var tools = new List<AITool>
         {
-            AIFunctionFactory.Create(GetSkill),
-            AIFunctionFactory.Create(GetSkillResource),
-            AIFunctionFactory.Create(ListSkills),
-            AIFunctionFactory.Create(SaveSkill),
-            AIFunctionFactory.Create(EditSkill),
-            AIFunctionFactory.Create(DeleteSkill),
+            AIFunctionFactory.Create(GetSkill,
+                new AIFunctionFactoryOptions { Name = "get_skill" }),
+            AIFunctionFactory.Create(GetSkillResource,
+                new AIFunctionFactoryOptions { Name = "get_skill_resource" }),
+            AIFunctionFactory.Create(ListSkills,
+                new AIFunctionFactoryOptions { Name = "list_skills" }),
+            AIFunctionFactory.Create(SaveSkill,
+                new AIFunctionFactoryOptions { Name = "save_skill" }),
+            AIFunctionFactory.Create(EditSkill,
+                new AIFunctionFactoryOptions { Name = "edit_skill" }),
+            AIFunctionFactory.Create(DeleteSkill,
+                new AIFunctionFactoryOptions { Name = "delete_skill" }),
         };
 
         // Promotion is currently a subagent-only path. Subagents are the part of the
@@ -63,7 +72,8 @@ public sealed class SkillTools
         // worth capturing as a typed asset; the main agent reaches assets via skills
         // the dream pass has already promoted.
         if (enablePromote)
-            tools.Add(AIFunctionFactory.Create(PromoteSkillAsset));
+            tools.Add(AIFunctionFactory.Create(PromoteSkillAsset,
+                new AIFunctionFactoryOptions { Name = "promote_skill_asset" }));
 
         Tools = tools;
     }
