@@ -23,9 +23,16 @@ internal static class StashExemptTools
 {
     private static readonly HashSet<string> Names = new(StringComparer.OrdinalIgnoreCase)
     {
-        "GetFromWorkingMemory",
+        "get_from_working_memory",
         // Covers both the ranked-search and the query-less listing path, which absorbed the
         // former ListWorkingMemory tool.
+        "search_working_memory",
+
+        // The PascalCase method names these tools were registered under before issue #493
+        // pinned them to snake_case. Kept deliberately: this set is the guard against a
+        // non-terminating retrieve→re-stash loop (see above), so a stale name arriving from
+        // an in-flight request during a rolling deploy is the wrong place to be clever.
+        "GetFromWorkingMemory",
         "SearchWorkingMemory",
     };
 

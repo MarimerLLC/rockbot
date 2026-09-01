@@ -120,7 +120,7 @@ public class WebBrowseToolExecutorTests
         Assert.IsFalse(response.IsError);
         Assert.IsTrue(memory.Entries.Count > 0, "Expected chunks saved to working memory");
         StringAssert.Contains(response.Content, "chunk");
-        StringAssert.Contains(response.Content, "GetFromWorkingMemory");
+        StringAssert.Contains(response.Content, "get_from_working_memory");
         Assert.IsTrue(memory.Entries.All(e => e.Key.StartsWith("session/session-1/web-")), "Keys should be namespaced under 'session/session-1/web-'");
         Assert.IsTrue(memory.Entries.All(e => e.Category == "web"), "Category should be 'web'");
 

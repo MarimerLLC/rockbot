@@ -100,7 +100,7 @@ internal sealed class WebToolSkillProvider : IToolSkillProvider
         index chunk to rediscover the document structure:
 
         ```
-        GetFromWorkingMemory(key: "session/.../web-learn.microsoft.com_...-index")
+        get_from_working_memory(key: "session/.../web-learn.microsoft.com_...-index")
         ```
 
         The outline preserves heading hierarchy (H1/H2/H3 nesting) so you can
@@ -118,12 +118,12 @@ internal sealed class WebToolSkillProvider : IToolSkillProvider
 
         To read a specific chunk, call:
         ```
-        GetFromWorkingMemory(key: "session/.../web-...-chunk1")
+        get_from_working_memory(key: "session/.../web-...-chunk1")
         ```
 
         - Start with the index chunk to find relevant sections by heading
         - Only load the chunks you actually need — don't retrieve all of them
-        - Use `SearchWorkingMemory()` with no query to see all cached chunks and their expiry times
+        - Use `search_working_memory()` with no query to see all cached chunks and their expiry times
         - Chunks expire after 20 minutes; re-browse the page if they are gone
 
 
@@ -173,7 +173,7 @@ internal sealed class WebToolSkillProvider : IToolSkillProvider
           references over aggregators and summaries
         - **Large pages are chunked** — if `web_browse` returns a chunk index, retrieve
           the `-index` key first for the document outline, then load only the sections you need
-          with `GetFromWorkingMemory`
+          with `get_from_working_memory`
         - **Don't over-search** — two to three targeted searches are usually better than
           ten vague ones
 

@@ -200,7 +200,7 @@ public class AgentLoopRunnerTrimStashTests
         StringAssert.Contains(stashMsg!.Text!, "id=call-1");
         StringAssert.Contains(stashMsg!.Text!, "tool=fetch_url");
         StringAssert.Contains(stashMsg!.Text!, "key=stash/sess-1/call-1");
-        StringAssert.Contains(stashMsg!.Text!, "GetFromWorkingMemory",
+        StringAssert.Contains(stashMsg!.Text!, "get_from_working_memory",
             "Message must instruct the model how to retrieve the elided content.");
     }
 
@@ -286,7 +286,7 @@ public class AgentLoopRunnerTrimStashTests
         {
             new(ChatRole.System, "system prompt"),
             new(ChatRole.User, "do the thing"),
-            BuildAssistantWithCall("GetFromWorkingMemory", "call-1"),
+            BuildAssistantWithCall("get_from_working_memory", "call-1"),
             new(ChatRole.Tool, [new FunctionResultContent("call-1", bigRetrieval)]),
         };
 
@@ -316,7 +316,7 @@ public class AgentLoopRunnerTrimStashTests
         {
             new(ChatRole.System, "system prompt"),
             new(ChatRole.User, "do the thing"),
-            BuildAssistantWithCall("GetFromWorkingMemory", "call-ret"),
+            BuildAssistantWithCall("get_from_working_memory", "call-ret"),
             new(ChatRole.Tool, [new FunctionResultContent("call-ret", bigRetrieval)]),
             BuildAssistantWithCall("fetch_url", "call-norm"),
             new(ChatRole.Tool, [new FunctionResultContent("call-norm", biggerNormal)]),
@@ -345,7 +345,7 @@ public class AgentLoopRunnerTrimStashTests
         var big = new string('R', 4000);
 
         var capped = await AgentLoopRunner.CapToolResultAsync(
-            big, callId: "call-1", toolName: "GetFromWorkingMemory",
+            big, callId: "call-1", toolName: "get_from_working_memory",
             workingMemory: wm, stashState: stashState,
             maxChars: 1000, headRatio: 0.6, ttl: TimeSpan.FromMinutes(60),
             logger: NullLogger<AgentLoopRunner>.Instance);

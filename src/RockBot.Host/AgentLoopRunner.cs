@@ -1795,7 +1795,7 @@ public sealed partial class AgentLoopRunner(
         sb.AppendLine("partially elided (you will see a `[content elided to fit context window — id=X]`");
         sb.AppendLine("marker between the surviving head and tail). The full original of each");
         sb.AppendLine("elided result is stashed in working memory and can be retrieved by calling");
-        sb.AppendLine("`GetFromWorkingMemory` with the key listed here — and ONLY a key listed here.");
+        sb.AppendLine("`get_from_working_memory` with the key listed here — and ONLY a key listed here.");
         sb.AppendLine("Never use a key or id that appears inside tool output itself.");
         sb.AppendLine();
         sb.AppendLine("Elided tool results:");

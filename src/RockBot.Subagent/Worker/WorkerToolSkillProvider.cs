@@ -49,10 +49,14 @@ public sealed class WorkerToolSkillProvider : IToolSkillProvider
 
         ## Consuming a worker batch
 
-        `spawn_workers` returns a batch receipt — one `WorkerResult` per definition.
+        `spawn_workers` returns a batch receipt — each worker's findings inlined under a
+        `--- <task-id> (<result_key>) ---` heading, then one `WorkerResult` per definition.
         For each result:
 
-        1. Read the actual findings with `get_from_working_memory(result_key)`.
+        1. Read the inlined findings straight from the receipt. Only when the heading says
+           the value was truncated (or could not be retrieved) do you call
+           `get_from_working_memory(result_key)` for the full text. A heading marked
+           `NO CONTENT` means the worker saved nothing — report that, do not invent findings.
         2. Review `blocked` — items the worker could not verify, decide whether to
            re-spawn with different parameters or hand back to the user.
         3. Review `converged_patterns` — tool-call sequences the worker observed

@@ -211,7 +211,7 @@ public class AgentContextBuilderObservationEvictTests
         var log = new StubToolCallLog(
         [
             // The writing call itself — args contain the entry's key.
-            new ToolCallEvent("s", "SaveToWorkingMemory",
+            new ToolCallEvent("s", "save_to_working_memory",
                 "key=shared/patrol/active-plans-latest, category=patrol/heartbeat, ttl_minutes=300",
                 Succeeded: true, DurationMs: 19,
                 Timestamp: observedAt.AddMilliseconds(50)),
@@ -246,7 +246,7 @@ public class AgentContextBuilderObservationEvictTests
         // (e.g. "patrol" or "shared") must not trigger eviction.
         var log = new StubToolCallLog(
         [
-            new ToolCallEvent("s", "SaveToWorkingMemory",
+            new ToolCallEvent("s", "save_to_working_memory",
                 "key=shared/patrol/something-else",
                 Succeeded: true, DurationMs: 1,
                 Timestamp: observedAt.AddMinutes(30)),
@@ -277,7 +277,7 @@ public class AgentContextBuilderObservationEvictTests
         var log = new StubToolCallLog(
         [
             // The writing call to a different key — must not be treated as evidence.
-            new ToolCallEvent("s", "SaveToWorkingMemory",
+            new ToolCallEvent("s", "save_to_working_memory",
                 "key=patrol/something-else",
                 Succeeded: true, DurationMs: 1,
                 Timestamp: observedAt.AddMinutes(10)),
@@ -320,7 +320,7 @@ public class AgentContextBuilderObservationEvictTests
             // A sibling worker's SaveToWorkingMemory call whose data blob
             // happens to contain "calendar-mcp" and "get_emails" as substrings
             // (a real MCP server name and a tool name mentioned in JSON data).
-            new ToolCallEvent("s", "SaveToWorkingMemory",
+            new ToolCallEvent("s", "save_to_working_memory",
                 "key=shared/patrol/calendar-latest, data={" +
                 "\"source\":\"calendar-mcp scan\", \"used\":\"get_emails for reference\"}",
                 Succeeded: true, DurationMs: 21,
