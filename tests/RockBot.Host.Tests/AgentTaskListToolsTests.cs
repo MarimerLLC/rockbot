@@ -20,9 +20,9 @@ public class AgentTaskListToolsTests
         var names = tools.Tools.OfType<AIFunction>().Select(f => f.Name).ToHashSet();
 
         Assert.AreEqual(2, names.Count);
-        Assert.IsTrue(names.Contains("TaskCreate") || names.Contains("task_create"),
+        Assert.IsTrue(names.Contains("task_create"),
             $"Expected a task_create-style tool. Got: {string.Join(", ", names)}");
-        Assert.IsTrue(names.Contains("TaskUpdate") || names.Contains("task_update"),
+        Assert.IsTrue(names.Contains("task_update"),
             $"Expected a task_update-style tool. Got: {string.Join(", ", names)}");
     }
 

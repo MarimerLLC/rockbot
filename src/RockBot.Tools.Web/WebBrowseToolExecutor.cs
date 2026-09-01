@@ -98,8 +98,8 @@ internal sealed class WebBrowseToolExecutor(
         var index = new StringBuilder();
         index.AppendLine($"Page \"{page.Title}\" has been split into {chunks.Count} chunk(s) stored in working memory.");
         index.AppendLine($"A document outline is stored at key `{indexKey}` — retrieve it with " +
-            "GetFromWorkingMemory to navigate the content by section heading.");
-        index.AppendLine("Call GetFromWorkingMemory(key) for each relevant chunk BEFORE drawing any conclusions.");
+            "get_from_working_memory to navigate the content by section heading.");
+        index.AppendLine("Call get_from_working_memory(key) for each relevant chunk BEFORE drawing any conclusions.");
         index.AppendLine("Do not summarise or answer based on this index alone — retrieve the chunks first.");
         index.AppendLine();
         index.AppendLine("| # | Heading | Key |");

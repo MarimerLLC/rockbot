@@ -62,7 +62,7 @@ internal sealed class WebToolRegistrar(
                 Fetch a web page and return its content as Markdown.
                 Large pages are automatically split into chunks stored in working memory.
                 When that happens the tool returns a chunk index table (heading + key per chunk)
-                instead of the full content. You MUST then call GetFromWorkingMemory(key) for
+                instead of the full content. You MUST then call get_from_working_memory(key) for
                 each chunk you need — read the heading column first to identify relevant sections,
                 then retrieve only those before answering. Do not report on the page until you
                 have read the chunks that contain the answer.

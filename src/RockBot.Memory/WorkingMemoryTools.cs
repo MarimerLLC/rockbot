@@ -26,13 +26,22 @@ public sealed class WorkingMemoryTools
         _namespace = @namespace;
         _logger = logger;
 
+        // Names are pinned explicitly rather than inherited from the method names:
+        // AIFunctionFactory would register these as PascalCase, while every prompt and
+        // directive in the repo refers to them in snake_case. Pointing the model at a
+        // name it cannot call is what produced issue #493.
         Tools =
         [
-            AIFunctionFactory.Create(SaveToWorkingMemory),
-            AIFunctionFactory.Create(GetFromWorkingMemory),
-            AIFunctionFactory.Create(EditWorkingMemory),
-            AIFunctionFactory.Create(DeleteFromWorkingMemory),
-            AIFunctionFactory.Create(SearchWorkingMemory)
+            AIFunctionFactory.Create(SaveToWorkingMemory,
+                new AIFunctionFactoryOptions { Name = "save_to_working_memory" }),
+            AIFunctionFactory.Create(GetFromWorkingMemory,
+                new AIFunctionFactoryOptions { Name = "get_from_working_memory" }),
+            AIFunctionFactory.Create(EditWorkingMemory,
+                new AIFunctionFactoryOptions { Name = "edit_working_memory" }),
+            AIFunctionFactory.Create(DeleteFromWorkingMemory,
+                new AIFunctionFactoryOptions { Name = "delete_from_working_memory" }),
+            AIFunctionFactory.Create(SearchWorkingMemory,
+                new AIFunctionFactoryOptions { Name = "search_working_memory" })
         ];
     }
 

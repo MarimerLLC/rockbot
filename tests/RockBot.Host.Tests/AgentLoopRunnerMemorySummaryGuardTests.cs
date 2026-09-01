@@ -1,6 +1,7 @@
 using Microsoft.Extensions.AI;
 using RockBot.Host;
 using RockBot.Llm;
+using RockBot.Memory;
 
 namespace RockBot.Host.Tests;
 
@@ -57,12 +58,28 @@ public class AgentLoopRunnerMemorySummaryGuardTests
     // ── SavedMemoryThisTurn helper ───────────────────────────────────────────
 
     [TestMethod]
+    public void SavedMemoryThisTurn_MatchesTheNameMemoryToolsActuallyRegisters()
+    {
+        // The guard matched a hardcoded "SaveMemory" until issue #493 renamed the tool
+        // to snake_case, which would have silently disabled it — the old test passed
+        // because it built the call with the same stale literal on both sides. Assert
+        // against the registered name so a future rename fails here instead of in prod.
+        var messages = new List<ChatMessage>
+        {
+            BuildAssistantWithFunctionCall(MemoryTools.SaveMemoryToolName, "{\"content\":\"…\"}"),
+        };
+
+        Assert.IsTrue(AgentLoopRunner.SavedMemoryThisTurn(messages),
+            $"The guard must match the registered tool name '{MemoryTools.SaveMemoryToolName}'.");
+    }
+
+    [TestMethod]
     public void SavedMemoryThisTurn_TrueWhenSaveMemoryCallPresent()
     {
         var messages = new List<ChatMessage>
         {
             new(ChatRole.User, "I'll find out soon"),
-            BuildAssistantWithFunctionCall("SaveMemory", "{\"content\":\"…\"}"),
+            BuildAssistantWithFunctionCall("save_memory", "{\"content\":\"…\"}"),
             new(ChatRole.Assistant, "Noted. Stored in memory."),
         };
 
@@ -87,7 +104,7 @@ public class AgentLoopRunnerMemorySummaryGuardTests
         var messages = new List<ChatMessage>
         {
             new(ChatRole.User, "what's on the calendar?"),
-            BuildAssistantWithFunctionCall("SearchMemory", "{\"query\":\"calendar\"}"),
+            BuildAssistantWithFunctionCall("search_memory", "{\"query\":\"calendar\"}"),
             new(ChatRole.Assistant, "Nothing scheduled today."),
         };
 
@@ -97,7 +114,7 @@ public class AgentLoopRunnerMemorySummaryGuardTests
     [TestMethod]
     public void SavedMemoryThisTurn_CaseSensitive()
     {
-        // Match is strictly Ordinal — the canonical tool name is "SaveMemory".
+        // Match is strictly Ordinal — the canonical tool name is "save_memory".
         // A model emitting "savememory" or "save_memory" is a different code path
         // (text-based tool calling) and would not surface as a FunctionCallContent
         // with this name. Guard against accidental relaxation.

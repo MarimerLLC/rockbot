@@ -29,7 +29,7 @@ public class InboundA2AToolSetTests
 
         var tools = InboundA2AToolSet.Build(wm, memoryTools, "task-123", NullLogger.Instance);
 
-        var hasSearchMemory = tools.OfType<AIFunction>().Any(f => f.Name == "SearchMemory");
+        var hasSearchMemory = tools.OfType<AIFunction>().Any(f => f.Name == "search_memory");
         Assert.IsTrue(hasSearchMemory, "Expected SearchMemory tool from long-term memory tools");
     }
 
@@ -43,7 +43,7 @@ public class InboundA2AToolSetTests
 
         // Should only include SearchMemory from long-term memory, not SaveMemory
         var ltmTools = memoryTools.Tools.OfType<AIFunction>()
-            .Where(f => f.Name != "SearchMemory")
+            .Where(f => f.Name != "search_memory")
             .Select(f => f.Name)
             .ToList();
 

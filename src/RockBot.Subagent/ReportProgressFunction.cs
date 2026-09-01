@@ -40,9 +40,13 @@ internal sealed class ReportProgressFunctions
         _logger = logger;
         _onReport = onReport;
 
+        // Tool names are pinned to snake_case rather than inherited from the method
+        // names: every prompt and directive in the repo refers to them that way, and
+        // pointing the model at a name it cannot call is what produced issue #493.
         Tools =
         [
-            AIFunctionFactory.Create(ReportProgress)
+            AIFunctionFactory.Create(ReportProgress,
+                new AIFunctionFactoryOptions { Name = "report_progress" })
         ];
     }
 

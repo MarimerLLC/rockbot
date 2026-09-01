@@ -25,4 +25,17 @@ public sealed class WorkerOptions
     /// failure rather than an extended deliberation.
     /// </summary>
     public int DefaultMaxIterations { get; set; } = 12;
+
+    /// <summary>
+    /// Per-worker cap on how much of a worker's findings the <c>spawn_workers</c> receipt
+    /// inlines for the spawning agent. Results at or under the cap are handed back in full,
+    /// so consuming a batch costs no extra retrieval round-trip; anything larger is excerpted
+    /// with an instruction to fetch the rest by <c>result_key</c>.
+    /// </summary>
+    /// <remarks>
+    /// The cap is per worker, so a batch of three can add roughly three times this much to the
+    /// spawning agent's context. Lower it if worker payloads start crowding out the request.
+    /// Set to 0 or below to inline every result in full regardless of size.
+    /// </remarks>
+    public int MaxInlineResultChars { get; set; } = 4000;
 }

@@ -47,7 +47,7 @@ public class WorkingMemoryToolsTests
     {
         var names = _tools.Tools.OfType<AIFunction>().Select(f => f.Name).ToList();
 
-        CollectionAssert.Contains(names, "EditWorkingMemory");
+        CollectionAssert.Contains(names, "edit_working_memory");
     }
 
     [TestMethod]
@@ -146,7 +146,7 @@ public class WorkingMemoryToolsTests
 
         CollectionAssert.DoesNotContain(names, "ListWorkingMemory",
             "list_working_memory is folded into the query-less search_working_memory path.");
-        CollectionAssert.Contains(names, "SearchWorkingMemory");
+        CollectionAssert.Contains(names, "search_working_memory");
     }
 
     [TestMethod]

@@ -25,10 +25,15 @@ public sealed class TaskDirectiveTools
         _taskName = taskName;
         _logger = logger;
 
+        // Tool names are pinned to snake_case rather than inherited from the method
+        // names: every prompt and directive in the repo refers to them that way, and
+        // pointing the model at a name it cannot call is what produced issue #493.
         Tools =
         [
-            AIFunctionFactory.Create(UpdateTaskDirective),
-            AIFunctionFactory.Create(EditTaskDirective)
+            AIFunctionFactory.Create(UpdateTaskDirective,
+                new AIFunctionFactoryOptions { Name = "update_task_directive" }),
+            AIFunctionFactory.Create(EditTaskDirective,
+                new AIFunctionFactoryOptions { Name = "edit_task_directive" })
         ];
     }
 

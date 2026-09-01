@@ -1795,7 +1795,7 @@ public sealed partial class AgentLoopRunner(
         sb.AppendLine("partially elided (you will see a `[content elided to fit context window — id=X]`");
         sb.AppendLine("marker between the surviving head and tail). The full original of each");
         sb.AppendLine("elided result is stashed in working memory and can be retrieved by calling");
-        sb.AppendLine("`GetFromWorkingMemory` with the key listed here — and ONLY a key listed here.");
+        sb.AppendLine("`get_from_working_memory` with the key listed here — and ONLY a key listed here.");
         sb.AppendLine("Never use a key or id that appears inside tool output itself.");
         sb.AppendLine();
         sb.AppendLine("Elided tool results:");
@@ -2633,7 +2633,7 @@ public sealed partial class AgentLoopRunner(
 
     /// <summary>
     /// True when any message in the current loop's chat history contains a
-    /// <see cref="FunctionCallContent"/> targeting the <c>SaveMemory</c> tool.
+    /// <see cref="FunctionCallContent"/> targeting the <c>save_memory</c> tool.
     /// Used by the memory-summary-reply guard (#383) to confirm that this turn
     /// actually wrote to long-term memory before re-prompting on the
     /// "Noted, I saved X" pattern. Internal so tests can exercise it directly.
@@ -2644,7 +2644,7 @@ public sealed partial class AgentLoopRunner(
         {
             foreach (var c in m.Contents.OfType<FunctionCallContent>())
             {
-                if (string.Equals(c.Name, "SaveMemory", StringComparison.Ordinal))
+                if (string.Equals(c.Name, MemoryTools.SaveMemoryToolName, StringComparison.Ordinal))
                     return true;
             }
         }

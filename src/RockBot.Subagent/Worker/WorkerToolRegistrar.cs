@@ -1,5 +1,7 @@
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
+using RockBot.Host;
 using RockBot.Tools;
 
 namespace RockBot.Subagent.Worker;
@@ -10,6 +12,8 @@ namespace RockBot.Subagent.Worker;
 internal sealed class WorkerToolRegistrar(
     IToolRegistry registry,
     IWorkerManager manager,
+    IWorkingMemory workingMemory,
+    IOptions<WorkerOptions> options,
     ILogger<WorkerToolRegistrar> logger) : IHostedService
 {
     private const string SpawnWorkersSchema = """
@@ -67,9 +71,11 @@ internal sealed class WorkerToolRegistrar(
                 interpreting tool results but does not need persona or history.
 
                 Each worker writes its structured findings to a working-memory key (auto-assigned to
-                worker/<task-id>/result, or override via result_key). The returned receipt includes
-                each WorkerResult JSON (counts, blocked items, converged patterns, result_key) —
-                fetch the actual data with get_from_working_memory using the result_key.
+                worker/<task-id>/result, or override via result_key). The returned receipt INLINES
+                those findings under a per-worker heading, followed by each WorkerResult JSON
+                (counts, blocked items, converged patterns, result_key). Read the inlined findings
+                directly — only when the receipt says a result was truncated do you need to call
+                get_from_working_memory with the result_key to read the rest.
 
                 Workers cannot spawn other workers, subagents, or A2A calls. They cannot save_memory
                 or promote_skill_asset — if a worker observes a tool-call pattern worth keeping, it
@@ -86,7 +92,8 @@ internal sealed class WorkerToolRegistrar(
                 """,
             ParametersSchema = SpawnWorkersSchema,
             Source = "worker",
-        }, new SpawnWorkersExecutor(manager));
+        }, new SpawnWorkersExecutor(
+            manager, workingMemory, options.Value.MaxInlineResultChars, logger));
 
         logger.LogInformation("Registered tool: spawn_workers");
         return Task.CompletedTask;

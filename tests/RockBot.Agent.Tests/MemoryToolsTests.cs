@@ -108,7 +108,7 @@ public class MemoryToolsTests
 
         var names = tools.Tools.OfType<AIFunction>().Select(f => f.Name).ToList();
 
-        CollectionAssert.Contains(names, "EditMemory");
+        CollectionAssert.Contains(names, "edit_memory");
     }
 
     [TestMethod]
@@ -367,9 +367,9 @@ public class MemoryToolsTests
 
         var names = tools.Tools.OfType<AIFunction>().Select(f => f.Name).ToList();
 
-        CollectionAssert.DoesNotContain(names, "ListCategories",
+        CollectionAssert.DoesNotContain(names, "list_categories",
             "list_categories is folded into the query-less search_memory path and must not be a separate tool.");
-        CollectionAssert.Contains(names, "SearchMemory");
+        CollectionAssert.Contains(names, "search_memory");
     }
 
     [TestMethod]
