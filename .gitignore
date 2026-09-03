@@ -34,3 +34,4 @@ deploy/docker-compose/*/agent-data/
 
 # Stray 58 MB kubectl binary was committed by accident once (#96). Use the one on PATH.
 kubectl
+.claude/plans/
