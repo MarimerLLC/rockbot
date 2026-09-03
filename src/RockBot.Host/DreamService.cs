@@ -80,6 +80,15 @@ internal sealed class DreamService : IHostedService, IDisposable
     private DreamPassLedger? _passLedger;
     private int _contentionRetries;
 
+    // Fires at StopAsync so an in-flight cycle unwinds through its existing
+    // OperationCanceledException path instead of running on into a disposed host.
+    private readonly CancellationTokenSource _stopping = new();
+
+    // The timer callback's task, kept (rather than discarded) so StopAsync can wait
+    // on a cycle that is already running. Guarded by _cycleLock.
+    private readonly object _cycleLock = new();
+    private Task _cycleTask = Task.CompletedTask;
+
     public DreamService(
         ILongTermMemory memory,
         IEnumerable<ISkillStore> skillStores,
@@ -197,7 +206,13 @@ internal sealed class DreamService : IHostedService, IDisposable
         }
 
         _timer = new Timer(
-            state => { _ = OnTimerTickAsync(); },
+            state =>
+            {
+                // Keep the task so StopAsync can wait for a cycle already in flight.
+                // OnTimerTickAsync never throws, so this is not an unobserved fault.
+                lock (_cycleLock)
+                    _cycleTask = OnTimerTickAsync();
+            },
             null,
             _options.InitialDelay,
             Timeout.InfiniteTimeSpan);
@@ -209,13 +224,59 @@ internal sealed class DreamService : IHostedService, IDisposable
         return Task.CompletedTask;
     }
 
-    public Task StopAsync(CancellationToken cancellationToken)
+    public async Task StopAsync(CancellationToken cancellationToken)
     {
-        _timer?.Change(Timeout.InfiniteTimeSpan, Timeout.InfiniteTimeSpan);
-        return Task.CompletedTask;
+        // Disarm first so no new cycle starts while we are waiting for the current one.
+        try
+        {
+            _timer?.Change(Timeout.InfiniteTimeSpan, Timeout.InfiniteTimeSpan);
+        }
+        catch (ObjectDisposedException)
+        {
+            // Already torn down; nothing left to disarm.
+        }
+
+        _stopping.Cancel();
+
+        Task cycle;
+        lock (_cycleLock)
+            cycle = _cycleTask;
+
+        if (cycle.IsCompleted)
+            return;
+
+        _logger.LogInformation("DreamService: waiting for the in-flight dream cycle to unwind");
+
+        try
+        {
+            // Bounded by the host's shutdown token so a pass that ignores its own
+            // cancellation cannot hang shutdown indefinitely.
+            await cycle.WaitAsync(cancellationToken);
+        }
+        catch (OperationCanceledException)
+        {
+            _logger.LogWarning(
+                "DreamService: dream cycle did not finish within the shutdown timeout; abandoning the wait");
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "DreamService: dream cycle faulted during shutdown");
+        }
     }
 
-    public void Dispose() => _timer?.Dispose();
+    public void Dispose()
+    {
+        _timer?.Dispose();
+
+        Task cycle;
+        lock (_cycleLock)
+            cycle = _cycleTask;
+
+        // A cycle that outran the shutdown timeout still holds _stopping.Token.
+        // Leaking the CTS is cheaper than handing that cycle a disposed one.
+        if (cycle.IsCompleted)
+            _stopping.Dispose();
+    }
 
     /// <summary>
     /// Re-reads every dream-pass directive file from disk into the in-memory fields.
@@ -497,13 +558,22 @@ internal sealed class DreamService : IHostedService, IDisposable
 
     private async Task OnTimerTickAsync()
     {
-        var outcome = await DreamAsync();
+        // Nothing observes this task except StopAsync, so anything that escapes here
+        // would surface as an unhandled exception on the timer thread.
+        try
+        {
+            var outcome = await DreamAsync();
 
-        if (outcome == DreamCycleOutcome.Deferred && TryArmContentionRetry())
-            return;
+            if (outcome == DreamCycleOutcome.Deferred && TryArmContentionRetry())
+                return;
 
-        _contentionRetries = 0;
-        ArmNextCronTimer();
+            _contentionRetries = 0;
+            ArmNextCronTimer();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "DreamService: dream timer tick failed");
+        }
     }
 
     /// <summary>
@@ -535,6 +605,9 @@ internal sealed class DreamService : IHostedService, IDisposable
         if (!_options.DeferDreamOnContention || _timer is null)
             return false;
 
+        if (_stopping.IsCancellationRequested)
+            return false;
+
         if (_contentionRetries >= _options.DreamContentionMaxRetries)
         {
             _logger.LogWarning(
@@ -555,8 +628,17 @@ internal sealed class DreamService : IHostedService, IDisposable
         if (next is not null && next.Value <= _clock.Now + delay)
             return false;
 
+        try
+        {
+            _timer.Change(delay, Timeout.InfiniteTimeSpan);
+        }
+        catch (ObjectDisposedException)
+        {
+            // Host shut down between the check above and here.
+            return false;
+        }
+
         _contentionRetries++;
-        _timer.Change(delay, Timeout.InfiniteTimeSpan);
         _logger.LogInformation(
             "DreamService: cycle blocked by other agent work; retry {Attempt} of {Max} in {Delay:g}",
             _contentionRetries, _options.DreamContentionMaxRetries, delay);
@@ -566,6 +648,7 @@ internal sealed class DreamService : IHostedService, IDisposable
     private void ArmNextCronTimer()
     {
         if (_cron is null) return;
+        if (_stopping.IsCancellationRequested) return;
 
         var next = _cron.GetNextOccurrence(_clock.Now, _clock.Zone);
         if (next is null)
@@ -578,7 +661,16 @@ internal sealed class DreamService : IHostedService, IDisposable
         var delay = next.Value - _clock.Now;
         if (delay < TimeSpan.Zero) delay = TimeSpan.Zero;
 
-        _timer?.Change(delay, Timeout.InfiniteTimeSpan);
+        try
+        {
+            _timer?.Change(delay, Timeout.InfiniteTimeSpan);
+        }
+        catch (ObjectDisposedException)
+        {
+            // Host shut down between the check above and here.
+            return;
+        }
+
         _logger.LogInformation("DreamService: next dream cycle at {Next} (in {Delay:g})", next.Value, delay);
     }
 
@@ -588,29 +680,45 @@ internal sealed class DreamService : IHostedService, IDisposable
 
         // Acquire the work serializer slot so user messages can preempt the dream.
         // TryAcquireForScheduledAsync is non-blocking: if something else holds the slot, defer.
-        var slot = await _workSerializer.TryAcquireForScheduledAsync(CancellationToken.None);
+        // The token is _stopping rather than None so cancelling it unwinds the cycle.
+        IScheduledTaskSlot? slot;
+        try
+        {
+            slot = await _workSerializer.TryAcquireForScheduledAsync(_stopping.Token);
+        }
+        catch (Exception ex) when (ex is ObjectDisposedException or OperationCanceledException)
+        {
+            // The host tore down between the timer firing and this call.
+            _logger.LogInformation("DreamService: host shutting down, skipping dream cycle");
+            return DreamCycleOutcome.Deferred;
+        }
+
         if (slot is null)
         {
             _logger.LogInformation("DreamService: agent busy, deferring dream cycle");
             return DreamCycleOutcome.Deferred;
         }
 
-        // Re-read directives from disk so live edits to /data/agent/*-dream.md and
-        // skill-optimize.md take effect without a pod restart. Cheap (~18 small file
-        // reads) and runs once per cycle.
-        LoadDirectives(initialLoad: false);
-
-        // Read the change-gate ledger once per cycle. Passes consult it before spending an LLM
-        // call on a corpus that has not moved since they last looked at it.
-        _passLedger = await DreamPassLedger.LoadAsync(
-            ResolvePath(DreamPassLedger.FileName, _profileOptions.BasePath), _logger);
-
-        _logger.LogInformation("DreamService: dream cycle starting");
-
         var outcome = DreamCycleOutcome.Finished;
+
+        // Clear before loading so the finally below cannot re-save the previous cycle's
+        // ledger if the load itself throws.
+        _passLedger = null;
 
         try
         {
+            // Re-read directives from disk so live edits to /data/agent/*-dream.md and
+            // skill-optimize.md take effect without a pod restart. Cheap (~18 small file
+            // reads) and runs once per cycle.
+            LoadDirectives(initialLoad: false);
+
+            // Read the change-gate ledger once per cycle. Passes consult it before spending an
+            // LLM call on a corpus that has not moved since they last looked at it.
+            _passLedger = await DreamPassLedger.LoadAsync(
+                ResolvePath(DreamPassLedger.FileName, _profileOptions.BasePath), _logger);
+
+            _logger.LogInformation("DreamService: dream cycle starting");
+
             var ct = slot.Token;
 
             // Log retention runs first — append-only JSONL logs must be capped even on
