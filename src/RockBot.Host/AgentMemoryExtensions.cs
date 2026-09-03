@@ -57,6 +57,11 @@ public static class AgentMemoryExtensions
         builder.Services.TryAddSingleton<EmbeddingTextPreparer>();
         builder.Services.AddSingleton<ILongTermMemory, FileMemoryStore>();
 
+        // Save-time deduplication. Callers that want it take IMemoryDeduplicator optionally and
+        // fall back to SaveAsync, so registering it here changes behaviour without changing any
+        // signature a host or test has to satisfy.
+        builder.Services.AddSingleton<IMemoryDeduplicator, MemoryDeduplicator>();
+
         // Phase 2 self-repair: capability-claim writer and read-side verifier.
         // Both are internal services — not exposed as LLM tools.
         builder.Services.AddSingleton<ICapabilityClaimWriter, CapabilityClaimWriter>();

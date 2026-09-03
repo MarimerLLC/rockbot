@@ -120,6 +120,14 @@ Requires the store to implement `IArchivedMemoryMaintenance`; with a store that 
 `ArchiveAsync` falls back to a hard delete and there is nothing to purge. A non-positive
 retention keeps archived entries forever.
 
+**The high-value floor applies here too.** This is the only remaining path that destroys
+long-term memory, so an entry above `Dream:PruningProtectionImportance` or
+`Dream:PruningProtectionReinforcementCount` is kept past the retention window rather than
+purged, and the pass logs `{Purged} purged, {Kept} kept above the high-value floor`. Note that
+importance is frozen at archive time and never decays afterwards, so in practice it is the
+reinforcement half of the floor that bites — an entry observed dozens of times and then
+archived by a merge nobody reviewed is exactly what should outlive retention.
+
 ### Pass 1 — Memory consolidation
 
 **Input:** a *gated subset* of long-term memory entries + recent feedback signals (last 7
@@ -127,6 +135,25 @@ days, up to 50). Each entry is rendered with its temporal context — `first=` (
 `last=` (LastSeenAt), `reinforced=N×` (ReinforcementCount), and `subject=...` when
 subject-time metadata is present — so the LLM can reason about whether similar-sounding
 entries describe the same durable fact or distinct moments.
+
+**Minimum interval between passes.** A dream cycle fires `Dream:InitialDelay` after every
+process start as well as on the cron schedule, so consolidation cadence used to track the
+deploy schedule rather than the corpus — ten deploys over three days produced roughly fifteen
+cycles and 121 archives in one of those days, all of them re-asking the same questions about
+the same entries. A pass reached sooner than `Dream:ConsolidationMinInterval` (default 6 hours)
+after the last *completed* one logs `memory consolidation skipped — last completed …` and
+returns without calling the LLM. Completion is recorded in the dream pass ledger on the agent
+profile volume, so the interval survives the restarts it exists to absorb. Set it to zero to
+disable the floor.
+
+**Duplicates are avoided at save time, not just merged here.** `IMemoryDeduplicator` compares
+an incoming entry against the live corpus before writing it, and reinforces or extends the
+matching entry instead of creating a near-copy — see [memory.md](memory.md). Consolidation is
+still the backstop for duplicates that are worded too differently to match, but it is no longer
+the only thing standing between the corpus and unbounded growth. The save-time cosine threshold
+(`Memory:DedupeSimilarityThreshold`) is deliberately the same 0.88 as
+`Dream:ConsolidationSimilarityThreshold`: anything caught at save time would have been clustered
+as a near-duplicate here anyway. Keep them aligned when tuning either.
 
 **Candidate gating — what the LLM is allowed to see.** An entry becomes eligible only if it
 is (a) new or changed since its last review, or (b) part of a near-duplicate cluster. Anything
@@ -188,6 +215,17 @@ missing the merge is rejected outright: nothing is saved and the sources are lef
 is what catches the characteristic failure, a plausible-reading merge that keeps the
 machine-readable half of an entry and quietly drops a name or a date.
 
+**A rejected merge gets one repair attempt.** Rejection alone left the duplicate cluster in
+place, so the next cycle proposed the same merge and the check rejected it the same way — a live
+corpus rejected one six-source merge five times in eight cycles, and every one of those cycles
+spent a merge slot on it. When `Dream:MergeRepairEnabled` is set (default true), the pass makes a
+second, much narrower LLM call: here is the merged text, here are the sources, here are the exact
+strings you dropped, put them back. The revision faces the same coverage check, so a bad repair
+lands exactly where the rejection would have and the sources are still kept. Attempts are capped
+at `Dream:MergeRepairMaxPerCycle` (default 10) so a cycle that merges badly across the board
+cannot become an unbounded run of calls. Repairs are logged at Information
+(`repaired merge of [...] — restored N specific(s)`) and counted in the safeguards line.
+
 **Vocabulary is per-deployment.** Which capitalized words count as ordinary language rather
 than as detail is not portable between agents, so it lives in
 `merge-coverage-vocabulary.json` on the agent profile volume (next to `tier-selector.json`),
@@ -195,8 +233,9 @@ re-read at the top of every cycle:
 
 ```json
 {
-  "extraCommonWords":    ["briefing", "triage"],
-  "alwaysSpecificWords": ["May", "Will", "Rose"]
+  "extraCommonWords":        ["briefing", "triage"],
+  "alwaysSpecificWords":     ["May", "Will", "Rose"],
+  "numericExemptCategories": ["metrics/cost"]
 }
 ```
 
@@ -238,7 +277,26 @@ day and year intact. Two guards keep it narrow: the month must appear adjacent t
 date carries a year the numeric date must carry the same one. A merge that drops the date in
 both spellings is still rejected.
 
-Note the shape of both fixes: they widen what counts as *covering* a specific rather than
+**Corpus evidence beats position.** A word the merge's own sources also write in all-lowercase
+form is ordinary language wherever else it is capitalized. *"Marking a task complete"* reads as a
+proper noun mid-phrase, but a sibling source says *"marking"*; *"Contact IDs are account-scoped"*
+is followed by *"the contact ids"*. Both rejected the same clusters cycle after cycle. The
+evidence is the text itself rather than a curated list, so it cannot unprotect a name that never
+appears lowercase — Eventbrite, Xebia and Austin stay required — and `alwaysSpecificWords` still
+overrides it, which is the escape hatch for a character whose name is also an ordinary word in
+the same prose.
+
+**Numbers can be exempted by category.** Some entries restate figures the agent recomputes from
+telemetry every cycle — routing averages, cost ratios, call counts. By the time a merge is
+proposed the number has already moved, so demanding it verbatim rejects the same cluster forever
+to preserve a value nobody wants preserved. `numericExemptCategories` names the categories where
+numbers are not required to survive; `anti-patterns/routing` is built in and cannot be removed.
+Matching is segment-aware (`anti-patterns/routing` covers `anti-patterns/routing/high-tier` but
+not `anti-patterns/routing-notes`). The exemption skips the whole numeric check for those
+entries, **dates included** — a month-name date is still caught by the capitalized-word pass, a
+bare `2026-08-19` is not — so only list categories whose numbers are genuinely disposable.
+
+Note the shape of these fixes: they widen what counts as *covering* a specific rather than
 removing the requirement. Adding a word to a common list unprotects it everywhere, permanently;
 an equivalence can only be satisfied by an equivalent form actually being present. Prefer the
 latter — a false rejection is not one wasted merge but a duplicate cluster that re-proposes and
@@ -260,6 +318,19 @@ something to do on one model's say-so to an entry the agent has re-observed doze
 This is a deterministic floor precisely because the prompt-level version did not hold —
 `dream.md` already said reinforcement signals importance, and a live corpus still lost entries
 reinforced 214, 106 and 80 times.
+
+**Per-cycle summary line.** A completed pass logs one Information line carrying the numbers that
+say whether the corpus is converging or churning:
+
+```
+DreamService: consolidation summary — live 828, reviewed 61, created since last run 14,
+merged 3, repaired 1, rejected 2, ephemeral 5, protected 4
+```
+
+Before this, "828 live entries, 885 archived by merge over 24 days" had to be reconstructed off
+the volume after the fact. `created since last run` counts entries whose `CreatedAt` postdates
+the previous completed pass, which is the figure that shows whether save-time deduplication is
+working.
 
 **Provenance.** Merged entries carry `mergedFrom` (source IDs) and `mergedAt` in metadata.
 Source text is not duplicated: the sources are archived rather than deleted, so those IDs
@@ -480,6 +551,11 @@ public sealed class DreamOptions
     public bool DreamPassChangeGateEnabled { get; set; } = true;
     public TimeSpan DreamPassMaxSkipInterval { get; set; } = TimeSpan.FromDays(7);
     public TimeSpan TierRoutingReviewWindow { get; set; } = TimeSpan.FromDays(14);
+
+    // Memory consolidation (Pass 1)
+    public TimeSpan ConsolidationMinInterval { get; set; } = TimeSpan.FromHours(6);
+    public bool MergeRepairEnabled { get; set; } = true;
+    public int MergeRepairMaxPerCycle { get; set; } = 10;
 
     // Append-only JSONL log retention (Pass 0)
     public bool LogRetentionEnabled { get; set; } = true;

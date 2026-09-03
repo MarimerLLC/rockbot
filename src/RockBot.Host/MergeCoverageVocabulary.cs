@@ -46,14 +46,17 @@ internal sealed class MergeCoverageVocabulary
     private readonly HashSet<string> _builtIn;
     private readonly HashSet<string> _extraCommon;
     private readonly HashSet<string> _alwaysSpecific;
+    private readonly List<string> _numericExempt;
 
     public MergeCoverageVocabulary(
         IEnumerable<string>? extraCommonWords,
-        IEnumerable<string>? alwaysSpecificWords)
+        IEnumerable<string>? alwaysSpecificWords,
+        IEnumerable<string>? numericExemptCategories = null)
     {
         _builtIn = new HashSet<string>(BuiltInCommonWords, StringComparer.OrdinalIgnoreCase);
         _extraCommon = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         _alwaysSpecific = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        _numericExempt = [.. BuiltInNumericExemptCategories];
 
         foreach (var word in extraCommonWords ?? [])
             if (!string.IsNullOrWhiteSpace(word))
@@ -62,6 +65,14 @@ internal sealed class MergeCoverageVocabulary
         foreach (var word in alwaysSpecificWords ?? [])
             if (!string.IsNullOrWhiteSpace(word))
                 _alwaysSpecific.Add(word.Trim());
+
+        foreach (var category in numericExemptCategories ?? [])
+        {
+            var trimmed = category?.Trim().Trim('/');
+            if (!string.IsNullOrWhiteSpace(trimmed)
+                && !_numericExempt.Contains(trimmed, StringComparer.OrdinalIgnoreCase))
+                _numericExempt.Add(trimmed);
+        }
     }
 
     /// <summary>
@@ -92,8 +103,50 @@ internal sealed class MergeCoverageVocabulary
             || (applyBaseline && _builtIn.Contains(word));
     }
 
+    /// <summary>
+    /// True when <paramref name="word"/> is reclaimed as a specific regardless of every other
+    /// rule. Exposed separately from <see cref="IsCommon"/> because the corpus-evidence rule in
+    /// <see cref="MergeCoverage"/> has to be overridable too: a character named Brief in a story
+    /// whose prose also uses "brief" must still be protected.
+    /// </summary>
+    public bool IsAlwaysSpecific(string word) => _alwaysSpecific.Contains(word);
+
     /// <summary>Words reclaimed as specifics regardless of the common list.</summary>
     public IReadOnlyCollection<string> AlwaysSpecificWords => _alwaysSpecific;
+
+    /// <summary>Categories whose numbers are not required to survive a merge.</summary>
+    public IReadOnlyList<string> NumericExemptCategories => _numericExempt;
+
+    /// <summary>
+    /// True when entries in <paramref name="category"/> are exempt from the requirement that
+    /// their numbers survive a merge, because the category equals or sits under a listed prefix.
+    /// </summary>
+    /// <remarks>
+    /// Some categories hold figures the agent re-derives from telemetry on every cycle — routing
+    /// averages, cost ratios, call counts. Those numbers are already different by the time a
+    /// merge is proposed, so requiring them verbatim rejects the same cluster forever over a
+    /// value nobody wants preserved. Matching is segment-aware, so <c>anti-patterns/routing</c>
+    /// covers <c>anti-patterns/routing/high-tier</c> but never <c>anti-patterns/routing-notes</c>.
+    /// </remarks>
+    public bool IsNumericExempt(string? category)
+    {
+        if (string.IsNullOrWhiteSpace(category))
+            return false;
+
+        var trimmed = category.Trim().Trim('/');
+
+        foreach (var prefix in _numericExempt)
+        {
+            if (trimmed.Equals(prefix, StringComparison.OrdinalIgnoreCase))
+                return true;
+            if (trimmed.Length > prefix.Length
+                && trimmed[prefix.Length] == '/'
+                && trimmed.AsSpan(0, prefix.Length).Equals(prefix, StringComparison.OrdinalIgnoreCase))
+                return true;
+        }
+
+        return false;
+    }
 
     /// <summary>Count of words treated as ordinary language.</summary>
     public int CommonWordCount => _builtIn.Count + _extraCommon.Count;
@@ -117,7 +170,8 @@ internal sealed class MergeCoverageVocabulary
                 return Default;
             }
 
-            return new MergeCoverageVocabulary(dto.ExtraCommonWords, dto.AlwaysSpecificWords);
+            return new MergeCoverageVocabulary(
+                dto.ExtraCommonWords, dto.AlwaysSpecificWords, dto.NumericExemptCategories);
         }
         catch (JsonException ex)
         {
@@ -135,7 +189,18 @@ internal sealed class MergeCoverageVocabulary
 
     private sealed record VocabularyDto(
         [property: JsonPropertyName("extraCommonWords")] string[]? ExtraCommonWords,
-        [property: JsonPropertyName("alwaysSpecificWords")] string[]? AlwaysSpecificWords);
+        [property: JsonPropertyName("alwaysSpecificWords")] string[]? AlwaysSpecificWords,
+        [property: JsonPropertyName("numericExemptCategories")] string[]? NumericExemptCategories);
+
+    /// <summary>
+    /// Categories whose numbers are re-derived from telemetry rather than recorded, so a merge
+    /// that carries a different value is not a loss. Additive: a deployment can extend this list
+    /// through the vocabulary file but cannot remove an entry from it.
+    /// </summary>
+    private static readonly string[] BuiltInNumericExemptCategories =
+    [
+        "anti-patterns/routing",
+    ];
 
     /// <summary>
     /// Words that appear capitalized only by virtue of opening a sentence or labelling a
@@ -178,5 +243,12 @@ internal sealed class MergeCoverageVocabulary
         "valid", "invalid", "direct", "directly", "alternative", "alternatively",
         "through", "throughout", "call", "calls", "multiple", "relevant", "existing",
         "lowering", "raising", "several", "additional", "overdue", "upcoming",
+
+        // A second round of sentence openers, taken from merges the live corpus rejected on
+        // every cycle. Most of these also have a lowercase twin in the same sources, so the
+        // corpus-evidence rule would catch them on its own; listing them keeps the common case
+        // cheap and covers the sources that only ever write the word capitalized.
+        "marking", "browsing", "accessing", "together", "similar", "earlier", "later",
+        "immediately", "brief", "briefly", "web", "high", "low", "add",
     ];
 }

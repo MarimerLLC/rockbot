@@ -16,6 +16,13 @@
   // date, so a merge that only re-spells one is credited -- while a bare "August" outside a date
   // expression stays fully protected.
   //
+  // CORPUS EVIDENCE. A word the merge's own sources also write in all-lowercase form is treated
+  // as ordinary language wherever else it is capitalized -- "Marking a task complete" alongside
+  // a sibling saying "marking", "Contact IDs" alongside "the contact ids". The evidence is the
+  // text itself, so this can never unprotect a name that only ever appears capitalized
+  // (Eventbrite, Xebia, Austin). "alwaysSpecificWords" below still overrides it, which is the
+  // escape hatch for a person or character whose name is also an ordinary word in the same prose.
+  //
   // Re-read at the top of every dream cycle — no restart needed. If this file is malformed the
   // built-in list is used and a warning is logged; coverage checking is never disabled.
 
@@ -31,11 +38,28 @@
   // only what is noise mid-phrase too, and prefer alwaysSpecificWords for anything load-bearing.
   "extraCommonWords": [],
 
-  // Words to ALWAYS treat as specifics, overriding the built-in list.
+  // Words to ALWAYS treat as specifics, overriding the built-in list AND the corpus-evidence
+  // rule above.
   //
   // This matters most for agents whose people or characters collide with ordinary English.
   // The built-in list contains "may", "will", "some", "first", "last", "new" and similar, so a
   // storytelling agent with a character named May, Will, Rose, Grace or Hope MUST list them
   // here — otherwise those names carry no coverage protection and a merge can drop them.
-  "alwaysSpecificWords": []
+  "alwaysSpecificWords": [],
+
+  // Categories whose NUMBERS are not required to survive a merge.
+  //
+  // Some entries restate figures the agent recomputes from telemetry every cycle — routing
+  // averages, cost ratios, call counts. By the time a merge is proposed the number has already
+  // moved, so demanding it verbatim rejects the same cluster on every cycle to preserve a value
+  // nobody wants preserved. Matching is segment-aware: "anti-patterns/routing" also covers
+  // "anti-patterns/routing/high-tier" but not "anti-patterns/routing-notes".
+  //
+  // The exemption skips the whole numeric check for those entries, DATES INCLUDED. A date written
+  // with a month name is still picked up as a capitalized word; a bare "2026-08-19" in an exempt
+  // category is not. Only list categories whose numbers are genuinely disposable.
+  //
+  // "anti-patterns/routing" is built in and cannot be removed here; entries listed are added to
+  // it. Names are matched case-insensitively and leading/trailing slashes are ignored.
+  "numericExemptCategories": []
 }

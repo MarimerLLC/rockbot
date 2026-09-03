@@ -50,9 +50,9 @@ evolved, and they are used by the consolidation pass and by search-result format
 | Field | Meaning | When it advances |
 |---|---|---|
 | `CreatedAt` | First-seen agent-time | Set on entry creation; carried forward to `min(sources)` on merge |
-| `LastSeenAt` | Last reinforcement — last time a fresh save-event produced content that merged into this fact | Set to `max(sources.LastSeenAt)` on merge; bumped to `now` on episode reinforcement; **not** bumped on dream rephrasing, importance decay, or other record edits |
-| `UpdatedAt` | Record last rewritten | Bumped on any edit, including pure rephrasing |
-| `ReinforcementCount` | Count of distinct observations consolidated into this entry | Starts at 1; summed across sources on merge; incremented by 1 on episode reinforcement |
+| `LastSeenAt` | Last reinforcement — last time a fresh save-event produced content that merged into this fact | Set to `max(sources.LastSeenAt)` on merge; bumped to `now` on episode reinforcement **and on save-time reinforcement**; **not** bumped on dream rephrasing, importance decay, or other record edits |
+| `UpdatedAt` | Record last rewritten | Bumped on any edit, including pure rephrasing. Deliberately **not** bumped by a save-time reinforcement, which changes no text |
+| `ReinforcementCount` | Count of distinct observations consolidated into this entry | Starts at 1; summed across sources on merge; incremented by 1 on episode reinforcement **and on save-time reinforcement** |
 
 A 5×-reinforced-over-2-years entry is treated differently from a one-off — both by the
 dream LLM (see the "Temporal merging rules" section in `dream.md`) and by search
@@ -231,7 +231,7 @@ acting as actionable constraints during inference.
 |---|---|
 | `save_memory(content, category?, tags?)` | Queue a memory for background enrichment and save |
 | `search_memory(query?, category?, mode?)` | Hybrid/regex search with an optional category prefix filter; omit `query` to browse and get the category taxonomy |
-| `delete_memory(id)` | Remove a specific entry |
+| `delete_memory(id)` | Archive an entry (recoverable until purge) |
 | `update_memory_importance(id, importance)` | Re-score an existing entry |
 
 There is no separate list-categories tool. Calling `search_memory` without a `query`
@@ -240,9 +240,46 @@ taxonomy, so `search_memory()` alone answers "how is knowledge organized here?".
 taxonomy is appended even when the search matched nothing, so a `category` filter that
 misses still shows what categories do exist.
 
+`delete_memory` archives rather than hard-deletes. The model reaches it on its own judgement
+about a fact it usually cannot re-derive, so being wrong costs recall until someone notices
+rather than costing the fact; the dream archive purge does the real deleting, on a 90-day delay.
+The tool result says so, in the hope the model stops treating deletion as free.
+
 When `save_memory` is called, a background task calls the LLM to expand the raw content into
 focused, well-formed memory entries (the expansion prompt is in `memory-rules.md`). The
 original content is saved immediately; expansion never blocks the response.
+
+#### Save-time deduplication
+
+Nothing on the save path used to look for a near-duplicate before writing, so the same fact
+restated across sessions produced a fresh entry every time and `ReinforcementCount` was raised
+only by episode extraction and by merges summing their sources. An entry reading "reinforced
+243×" had in fact been saved fresh 243 times. The corpus grew from 290 to 828 live entries in 24
+days while consolidation archived 885 — churn, not convergence.
+
+`IMemoryDeduplicator` closes that. Before writing, it asks the store for the live entry the
+candidate most resembles (`IMemorySimilarityLookup` — cosine over embeddings where available,
+Jaccard over content tokens otherwise, scoped to the same top-level category) and then decides
+with the same coverage check dream consolidation uses for a merge:
+
+| Situation | Result |
+|---|---|
+| No match, or below the threshold | **Created** — saved as its own entry |
+| Match, and it already carries every specific the candidate does | **Reinforced** — `LastSeenAt`, `ReinforcementCount`, importance and tags move; the text does not |
+| Match, but the candidate carries new specifics | **Extended** — the new text is appended, `UpdatedAt` bumped |
+| Extending would exceed `DedupeMaxExtendedContentLength` | **Created** — so one busy topic cannot accrete into a hundred-paragraph entry |
+
+Reinforcement deliberately leaves `UpdatedAt` alone: it anchors importance decay and, through
+the content hash, the consolidation-reviewed stamp, so a write that changed no text must not
+stall decay or re-open a settled entry. An extend does change the text, and correctly re-opens it.
+
+Scoped categories bypass deduplication entirely — `feedback/*` is owned by the contradiction
+detector and `claim/capability/*` by the verifier, and both reason about individual ids.
+Consolidation still runs as the backstop for duplicates worded too differently to match here.
+
+Routed through it: the `save_memory` background path, dream memory mining, and dream
+tool-success learning — the three places that mint new facts. Merges, identity reflection and
+consolidation writes are not, because they carry their own ids and provenance.
 
 ---
 
@@ -506,6 +543,12 @@ The conversation log is cleared after this pass regardless of LLM success or fai
 public sealed class MemoryOptions
 {
     public string BasePath { get; set; } = "memory";   // Relative to agent data path
+
+    // Save-time deduplication
+    public bool DedupeEnabled { get; set; } = true;
+    public double DedupeSimilarityThreshold { get; set; } = 0.88;        // cosine; keep aligned with Dream:ConsolidationSimilarityThreshold
+    public double DedupeLexicalSimilarityThreshold { get; set; } = 0.6;  // Jaccard; a different scale, hence a different number
+    public int DedupeMaxExtendedContentLength { get; set; } = 2000;
 }
 
 // Working memory

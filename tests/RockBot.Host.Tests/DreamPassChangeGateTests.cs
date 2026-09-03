@@ -309,6 +309,51 @@ public class DreamPassChangeGateTests
             "A rewritten entry is a changed corpus -- which is exactly why outputs stay out of the hash.");
     }
 
+    // -- Consolidation minimum interval ---------------------------------------
+    //
+    // Consolidation reuses the ledger with a constant fingerprint. That collapses ShouldSkip to
+    // its time floor, which is exactly the semantics the pass wants — it is not gating on whether
+    // the corpus changed, it is refusing to run twice in one afternoon because the pod restarted
+    // twice. Reusing the ledger also means the interval survives those restarts.
+
+    [TestMethod]
+    public void ConsolidationSentinel_SkipsWhileTheLastRunIsYoungerThanTheInterval()
+    {
+        var record = new DreamPassLedger.PassRecord(DreamService.ConsolidationLedgerFingerprint, Now.AddHours(-2));
+
+        Assert.IsTrue(DreamPassLedger.ShouldSkip(
+            record, DreamService.ConsolidationLedgerFingerprint, Now, TimeSpan.FromHours(6)));
+    }
+
+    [TestMethod]
+    public void ConsolidationSentinel_RunsOnceTheIntervalHasElapsed()
+    {
+        var record = new DreamPassLedger.PassRecord(DreamService.ConsolidationLedgerFingerprint, Now.AddHours(-7));
+
+        Assert.IsFalse(DreamPassLedger.ShouldSkip(
+            record, DreamService.ConsolidationLedgerFingerprint, Now, TimeSpan.FromHours(6)));
+    }
+
+    [TestMethod]
+    public void ConsolidationSentinel_WithAZeroInterval_AlwaysRuns()
+    {
+        // Zero disables the floor. The ledger's own semantics for a non-positive interval are the
+        // opposite — skip forever on an unchanged fingerprint — so the pass checks the option
+        // before consulting the ledger at all. This asserts the shape the caller relies on.
+        var record = new DreamPassLedger.PassRecord(DreamService.ConsolidationLedgerFingerprint, Now.AddMinutes(-1));
+
+        Assert.IsTrue(DreamPassLedger.ShouldSkip(
+            record, DreamService.ConsolidationLedgerFingerprint, Now, TimeSpan.Zero),
+            "Guarding on ConsolidationMinInterval > Zero in the caller is what makes zero mean 'always run'.");
+    }
+
+    [TestMethod]
+    public void ConsolidationSentinel_NeverRun_DoesNotSkip()
+    {
+        Assert.IsFalse(DreamPassLedger.ShouldSkip(
+            null, DreamService.ConsolidationLedgerFingerprint, Now, TimeSpan.FromHours(6)));
+    }
+
     // ── Helpers ──────────────────────────────────────────────────────────────
 
     private static string NewTempDir()

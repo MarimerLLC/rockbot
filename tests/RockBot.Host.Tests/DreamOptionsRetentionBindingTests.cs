@@ -40,6 +40,31 @@ public class DreamOptionsRetentionBindingTests
     }
 
     [TestMethod]
+    public void Binds_ConsolidationMinInterval_FromTheConfigMapTimeSpanShape()
+    {
+        var opts = Bind(new Dictionary<string, string?>
+        {
+            ["Dream:ConsolidationMinInterval"] = "0.12:00:00",
+            ["Dream:MergeRepairEnabled"] = "false",
+            ["Dream:MergeRepairMaxPerCycle"] = "3",
+        });
+
+        Assert.AreEqual(TimeSpan.FromHours(12), opts.ConsolidationMinInterval);
+        Assert.IsFalse(opts.MergeRepairEnabled);
+        Assert.AreEqual(3, opts.MergeRepairMaxPerCycle);
+    }
+
+    [TestMethod]
+    public void ConsolidationMinInterval_DefaultsToSixHours()
+    {
+        var opts = Bind(new Dictionary<string, string?> { ["Other:Key"] = "x" });
+
+        Assert.AreEqual(TimeSpan.FromHours(6), opts.ConsolidationMinInterval);
+        Assert.IsTrue(opts.MergeRepairEnabled);
+        Assert.AreEqual(10, opts.MergeRepairMaxPerCycle);
+    }
+
+    [TestMethod]
     public void MissingSection_LeavesCodeDefaults()
     {
         var opts = Bind(new Dictionary<string, string?> { ["Other:Key"] = "x" });

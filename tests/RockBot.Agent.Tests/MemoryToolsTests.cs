@@ -183,15 +183,34 @@ public class MemoryToolsTests
     }
 
     [TestMethod]
-    public async Task DeleteMemory_KnownId_EntryIsRemoved()
+    public async Task DeleteMemory_ArchivesInsteadOfDeleting()
     {
+        // The model reaches this tool on its own judgement about a fact it cannot re-derive, and
+        // it is wrong often enough that being wrong should cost recall until someone notices,
+        // not the fact. Hard deletion is left to the retention purge.
         var memory = new StubLongTermMemory();
         memory.Add(Entry("id1", "To be deleted", DateTimeOffset.UtcNow));
         var tools = MakeTools(memory);
 
         await tools.DeleteMemory("id1");
 
-        Assert.IsNull(await memory.GetAsync("id1"));
+        Assert.AreEqual(0, memory.Deleted.Count, "DeleteMemory must not hard-delete.");
+        CollectionAssert.AreEqual(new[] { "id1" }, memory.Archived.Select(a => a.Id).ToArray());
+        Assert.AreEqual("deleted by agent tool", memory.Archived[0].Reason);
+        Assert.IsNotNull(await memory.GetAsync("id1"), "An archived entry stays retrievable by id.");
+    }
+
+    [TestMethod]
+    public async Task DeleteMemory_TellsTheModelTheEntryIsRecoverable()
+    {
+        var memory = new StubLongTermMemory();
+        memory.Add(Entry("id1", "To be deleted", DateTimeOffset.UtcNow));
+        var tools = MakeTools(memory);
+
+        var result = await tools.DeleteMemory("id1");
+
+        StringAssert.Contains(result, "Archived");
+        StringAssert.Contains(result, "recoverable");
     }
 
     [TestMethod]
@@ -668,16 +687,97 @@ public class MemoryToolsTests
             "Non-scoped categories should still go through the LLM extraction pass.");
     }
 
+    // -------------------------------------------------------------------------
+    // SaveMemory — save-time deduplication
+    // -------------------------------------------------------------------------
+
+    [TestMethod]
+    public async Task SaveMemory_NonScopedCategory_RoutesThroughTheDeduplicator()
+    {
+        // The single largest source of duplicate entries in a live corpus: the same fact restated
+        // across sessions, extracted afresh each time, and saved as a new entry for consolidation
+        // to merge back together later.
+        var memory = new StubLongTermMemory();
+        var deduplicator = new FakeDeduplicator();
+        var llm = new StubChatClient { Response = ExtractionResponse };
+        var tools = MakeToolsWith(memory, llm, deduplicator: deduplicator);
+
+        await tools.SaveMemory("Rocky has a Sheltie named Milo", category: "user-preferences/pets");
+
+        await WaitForAsync(() => deduplicator.Calls.Count == 1);
+        Assert.AreEqual(0, memory.SnapshotAll().Count,
+            "The fake deduplicator persisted nothing, so a direct SaveAsync would show up here.");
+    }
+
+    [TestMethod]
+    public async Task SaveMemory_ScopedCategory_BypassesTheDeduplicator()
+    {
+        // Scoped saves go down the direct path, which the contradiction detector owns.
+        var memory = new StubLongTermMemory();
+        var deduplicator = new FakeDeduplicator();
+        var tools = MakeToolsWith(memory, new StubChatClient(), deduplicator: deduplicator);
+
+        await tools.SaveMemory(
+            "Always include a TL;DR section at the top of status reports",
+            category: "feedback/from-agent/status-reports");
+
+        await WaitForSavedAsync(memory, expected: 1);
+        Assert.AreEqual(0, deduplicator.Calls.Count);
+    }
+
+    [TestMethod]
+    public async Task SaveMemory_WithoutADeduplicator_SavesDirectly()
+    {
+        var memory = new StubLongTermMemory();
+        var tools = MakeToolsWith(memory, new StubChatClient { Response = ExtractionResponse });
+
+        await tools.SaveMemory("Rocky has a Sheltie named Milo", category: "user-preferences/pets");
+
+        var saved = await WaitForSavedAsync(memory, expected: 1);
+        Assert.AreEqual("Rocky has a Sheltie named Milo", saved[0].Content);
+    }
+
+    /// <summary>One extracted entry, so the extraction path yields something to persist.</summary>
+    private const string ExtractionResponse =
+        """[{"content": "Rocky has a Sheltie named Milo", "category": "user-preferences/pets"}]""";
+
+    /// <summary>Records what it was handed and deliberately persists nothing.</summary>
+    private sealed class FakeDeduplicator : IMemoryDeduplicator
+    {
+        public List<MemoryEntry> Calls { get; } = [];
+
+        public Task<MemorySaveOutcome> SaveOrReinforceAsync(
+            MemoryEntry candidate, CancellationToken cancellationToken = default)
+        {
+            lock (Calls)
+                Calls.Add(candidate);
+            return Task.FromResult(new MemorySaveOutcome(MemorySaveAction.Reinforced, "existing", 0.95));
+        }
+    }
+
     private static MemoryTools MakeToolsWith(
         StubLongTermMemory memory,
         StubChatClient llm,
-        IMemoryContradictionDetector? detector = null) =>
+        IMemoryContradictionDetector? detector = null,
+        IMemoryDeduplicator? deduplicator = null) =>
         new(
             memory,
             llm,
             Microsoft.Extensions.Options.Options.Create(new AgentProfileOptions()),
             NullLogger<MemoryTools>.Instance,
-            detector);
+            detector,
+            deduplicator);
+
+    private static async Task WaitForAsync(Func<bool> condition, int timeoutMs = 2000)
+    {
+        var deadline = DateTime.UtcNow.AddMilliseconds(timeoutMs);
+        while (DateTime.UtcNow < deadline)
+        {
+            if (condition()) return;
+            await Task.Delay(20);
+        }
+        Assert.Fail("Timed out waiting for the expected condition.");
+    }
 
     private static async Task<IReadOnlyList<MemoryEntry>> WaitForSavedAsync(
         StubLongTermMemory memory, int expected, int timeoutMs = 2000)
@@ -774,9 +874,32 @@ internal sealed class StubLongTermMemory : ILongTermMemory
         }
     }
 
+    /// <summary>Ids passed to <see cref="DeleteAsync"/>, so tests can assert nothing hard-deletes.</summary>
+    public List<string> Deleted { get; } = [];
+
+    /// <summary>Ids and reasons passed to <see cref="ArchiveAsync"/>.</summary>
+    public List<(string Id, string Reason)> Archived { get; } = [];
+
     public Task DeleteAsync(string id, CancellationToken cancellationToken = default)
     {
+        Deleted.Add(id);
         _entries.RemoveAll(e => e.Id == id);
+        return Task.CompletedTask;
+    }
+
+    public Task ArchiveAsync(string id, string reason, CancellationToken cancellationToken = default)
+    {
+        Archived.Add((id, reason));
+        lock (_entries)
+        {
+            var index = _entries.FindIndex(e => e.Id == id);
+            if (index >= 0)
+                _entries[index] = _entries[index] with
+                {
+                    ArchivedAt = DateTimeOffset.UtcNow,
+                    ArchiveReason = reason,
+                };
+        }
         return Task.CompletedTask;
     }
 
@@ -804,13 +927,16 @@ internal sealed class StubChatClient : ILlmClient
     public bool IsIdle => true;
     public int CallCount => Volatile.Read(ref _callCount);
 
+    /// <summary>Raw assistant text to return. Defaults to an empty array so callers fall back to a direct save.</summary>
+    public string Response { get; set; } = "[]";
+
     public Task<ChatResponse> GetResponseAsync(
         IEnumerable<ChatMessage> messages,
         ChatOptions? options = null,
         CancellationToken cancellationToken = default)
     {
         Interlocked.Increment(ref _callCount);
-        return Task.FromResult(new ChatResponse(new ChatMessage(ChatRole.Assistant, "[]")));
+        return Task.FromResult(new ChatResponse(new ChatMessage(ChatRole.Assistant, Response)));
     }
 
     public Task<ChatResponse> GetResponseAsync(

@@ -776,7 +776,10 @@ public sealed class AgentContextBuilder(
                         entry.Id, entry.Category);
                     try
                     {
-                        await longTermMemory.DeleteAsync(entry.Id, ct);
+                        // Archive rather than delete: the verifier decides on one probe run at
+                        // context-build time, and a probe can fail for reasons that have nothing
+                        // to do with the claim being wrong.
+                        await longTermMemory.ArchiveAsync(entry.Id, "falsified by capability verifier", ct);
                     }
                     catch (Exception delEx)
                     {

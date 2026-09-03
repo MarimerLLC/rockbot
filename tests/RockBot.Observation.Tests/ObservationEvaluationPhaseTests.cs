@@ -420,6 +420,7 @@ public class ObservationEvaluationPhaseTests
     {
         public Dictionary<string, RockBot.Host.MemoryEntry> Saved { get; } = new(StringComparer.Ordinal);
         public List<string> Deleted { get; } = [];
+        public List<(string Id, string Reason)> Archived { get; } = [];
         public bool ThrowOnSave { get; set; }
         public bool ThrowOnDelete { get; set; }
 
@@ -436,6 +437,15 @@ public class ObservationEvaluationPhaseTests
             cancellationToken.ThrowIfCancellationRequested();
             if (ThrowOnDelete) throw new InvalidOperationException("simulated memory delete failure");
             Deleted.Add(id);
+            Saved.Remove(id);
+            return Task.CompletedTask;
+        }
+
+        public Task ArchiveAsync(string id, string reason, CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (ThrowOnDelete) throw new InvalidOperationException("simulated memory archive failure");
+            Archived.Add((id, reason));
             Saved.Remove(id);
             return Task.CompletedTask;
         }
@@ -489,7 +499,7 @@ public class ObservationEvaluationPhaseTests
     }
 
     [TestMethod]
-    public async Task ExecuteAsync_AgedTheoryRemovedFromMemory()
+    public async Task ExecuteAsync_AgedTheoryArchivedNotDeleted()
     {
         var target = MakeTarget(theoryAgingDays: 30);
         var now = DateTimeOffset.UtcNow;
@@ -513,8 +523,13 @@ public class ObservationEvaluationPhaseTests
 
         await MakePhase(new StubEvaluator(), stubMemory).ExecuteAsync(target, CancellationToken.None);
 
-        CollectionAssert.AreEqual(new[] { "obs_existing_stale" }, stubMemory.Deleted.ToArray(),
-            "Aged theory's memory entry should be deleted; fresh theory's preserved");
+        // Archived rather than deleted: a theory ages out because it stopped being re-observed in
+        // a window, which is weak evidence that it was wrong — the behaviour may simply not have
+        // come up.
+        Assert.AreEqual(0, stubMemory.Deleted.Count, "Ageing out must not hard-delete.");
+        CollectionAssert.AreEqual(new[] { "obs_existing_stale" }, stubMemory.Archived.Select(a => a.Id).ToArray(),
+            "Aged theory's memory entry should be archived; fresh theory's preserved");
+        Assert.AreEqual("observation theory aged out", stubMemory.Archived[0].Reason);
         Assert.IsTrue(stubMemory.Saved.ContainsKey("obs_existing_fresh"));
     }
 

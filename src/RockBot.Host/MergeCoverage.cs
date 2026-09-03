@@ -41,6 +41,14 @@ namespace RockBot.Host;
 /// other is guarded on the month appearing in a date expression in the source, so a bare
 /// "August" — or a person named August — stays required.
 /// </item>
+/// <item>
+/// Corpus evidence. A word the same corpus also writes in all-lowercase form is ordinary
+/// language, whatever position it was capitalized in. "Marking a task complete" reads as a
+/// proper noun mid-phrase, but a sibling source says "marking"; "Contact IDs are account-scoped"
+/// is followed by "the contact ids". The evidence comes from the text itself rather than from a
+/// curated list, so it cannot unprotect a name that never appears lowercase — Eventbrite, Xebia
+/// and Austin stay required, and <c>alwaysSpecificWords</c> still overrides it.
+/// </item>
 /// </list>
 /// <para>
 /// The distinction matters: adding a word to the common list unprotects it everywhere, in
@@ -78,9 +86,20 @@ internal static partial class MergeCoverage
     /// Which words count as ordinary language. Defaults to the generic-English baseline;
     /// deployments override it via <c>merge-coverage-vocabulary.json</c>.
     /// </param>
+    /// <param name="evidenceText">
+    /// Text consulted for the lowercase-twin rule. Defaults to <paramref name="content"/>; the
+    /// merge check passes the whole cluster, so a word one source capitalizes and a sibling
+    /// writes lowercase counts as ordinary language for that merge.
+    /// </param>
+    /// <param name="category">
+    /// Category of the entry the content came from, used only to decide whether numbers in it
+    /// are exempt — see <see cref="MergeCoverageVocabulary.IsNumericExempt"/>.
+    /// </param>
     internal static HashSet<string> ExtractSpecifics(
         string? content,
-        MergeCoverageVocabulary? vocabulary = null)
+        MergeCoverageVocabulary? vocabulary = null,
+        string? evidenceText = null,
+        string? category = null)
     {
         var words = vocabulary ?? MergeCoverageVocabulary.Default;
 
@@ -88,21 +107,32 @@ internal static partial class MergeCoverage
         if (string.IsNullOrWhiteSpace(content))
             return specifics;
 
+        var lowercaseTwins = LowercaseWords(evidenceText ?? content);
+
         foreach (Match m in CapitalizedWord().Matches(content))
         {
             var word = Possessive().Replace(m.Value, string.Empty);
             if (word.Length <= 2)
                 continue;
 
-            // The generic-English baseline exists to absorb words capitalized only because they
-            // open a sentence, so it only applies there. Mid-sentence capitalization is evidence
-            // of a proper noun: "Personal", "Class" and "Benefit" are ordinary at a sentence
-            // start and load-bearing in "OneDrive Personal", "Blazor Online Class" and "MVP
-            // Azure Extended Benefit". A deployment's own extraCommonWords still applies in
-            // every position -- see MergeCoverageVocabulary.IsCommon.
-            var applyBaseline = SentencePosition.IsSentenceInitial(content, m.Index);
-            if (words.IsCommon(word, applyBaseline))
-                continue;
+            if (!words.IsAlwaysSpecific(word))
+            {
+                // The generic-English baseline exists to absorb words capitalized only because
+                // they open a sentence, so it only applies there. Mid-sentence capitalization is
+                // evidence of a proper noun: "Personal", "Class" and "Benefit" are ordinary at a
+                // sentence start and load-bearing in "OneDrive Personal", "Blazor Online Class"
+                // and "MVP Azure Extended Benefit". A deployment's own extraCommonWords still
+                // applies in every position -- see MergeCoverageVocabulary.IsCommon.
+                var applyBaseline = SentencePosition.IsSentenceInitial(content, m.Index);
+                if (words.IsCommon(word, applyBaseline))
+                    continue;
+
+                // Corpus evidence beats position. A word this corpus also writes in lowercase is
+                // ordinary language wherever it happens to be capitalized, and no curated list
+                // has to grow for the check to know it.
+                if (lowercaseTwins.Contains(word.ToLowerInvariant()))
+                    continue;
+            }
 
             specifics.Add(word);
         }
@@ -115,10 +145,38 @@ internal static partial class MergeCoverage
             if (!words.IsCommon(m.Value))
                 specifics.Add(m.Value);
 
-        foreach (Match m in Numeric().Matches(content))
-            specifics.Add(m.Value);
+        // Categories whose entries are re-derived from telemetry every cycle carry decimals
+        // ("avg 8.33 tool calls") that are recomputed rather than recorded. Requiring them to
+        // survive verbatim rejects the same merge on every cycle over a number that has already
+        // moved on. The exemption skips the whole numeric loop, dates included; month-name dates
+        // are still picked up by the capitalized-word pass.
+        if (!words.IsNumericExempt(category))
+            foreach (Match m in Numeric().Matches(content))
+                specifics.Add(m.Value);
 
         return specifics;
+    }
+
+    /// <summary>Any run of letters and apostrophes, used to harvest lowercase twins.</summary>
+    [GeneratedRegex(@"[\p{L}'’]+")]
+    private static partial Regex WordToken();
+
+    /// <summary>
+    /// Words written entirely in lowercase somewhere in <paramref name="text"/>. Membership is
+    /// the evidence that a capitalized occurrence elsewhere is ordinary language rather than a
+    /// name.
+    /// </summary>
+    private static HashSet<string> LowercaseWords(string? text)
+    {
+        var found = new HashSet<string>(StringComparer.Ordinal);
+        if (string.IsNullOrEmpty(text))
+            return found;
+
+        foreach (Match m in WordToken().Matches(text))
+            if (!m.Value.Any(char.IsUpper))
+                found.Add(m.Value);
+
+        return found;
     }
 
     /// <summary>
@@ -143,14 +201,19 @@ internal static partial class MergeCoverage
 
         var materialized = sources as IReadOnlyCollection<MemoryEntry> ?? [.. sources];
 
+        var sourceText = string.Join("\n", materialized.Select(s => s.Content));
+
+        // Evidence for the lowercase-twin rule is the whole cluster, not one entry: these
+        // sources are being merged as a group, so a word one of them capitalizes and another
+        // writes lowercase is ordinary language for this merge.
+        var evidenceText = sourceText + "\n" + merged;
+
         var required = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var source in materialized)
-            required.UnionWith(ExtractSpecifics(source.Content, vocabulary));
+            required.UnionWith(ExtractSpecifics(source.Content, vocabulary, evidenceText, source.Category));
 
         if (required.Count == 0)
             return [];
-
-        var sourceText = string.Join("\n", materialized.Select(s => s.Content));
 
         return [.. required
             .Where(s => !IsCovered(s, sourceText, merged))

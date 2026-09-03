@@ -124,6 +124,35 @@ public class DreamServicePromptBuilderTests
             "mcp/* cluster must NOT appear in the abstract-parent-guide section.");
     }
 
+    // ── Merge repair prompt ──────────────────────────────────────────────────
+
+    [TestMethod]
+    public void BuildMergeRepairPrompt_NamesTheRejectedText_TheSources_AndEveryMissingSpecific()
+    {
+        // The repair call is deliberately not "try merging again". It is handed the exact strings
+        // the coverage check found missing, because that is a task a model can complete reliably
+        // where re-merging demonstrably was not — a live corpus re-proposed and re-rejected the
+        // same six-source merge five times in eight cycles.
+        var sources = new[]
+        {
+            new MemoryEntry("s1", "Rockford Duane Lhotka, timezone America/Chicago.", null, [], Now),
+            new MemoryEntry("s2", "Accounts span Microsoft, Google and Marimer LLC.", null, [], Now),
+        };
+
+        var prompt = DreamService.BuildMergeRepairPrompt(
+            sources,
+            "The user has several accounts and a default timezone.",
+            ["America/Chicago", "LLC", "Rockford"]);
+
+        StringAssert.Contains(prompt, "The user has several accounts and a default timezone.");
+        StringAssert.Contains(prompt, "1. Rockford Duane Lhotka, timezone America/Chicago.");
+        StringAssert.Contains(prompt, "2. Accounts span Microsoft, Google and Marimer LLC.");
+        StringAssert.Contains(prompt, "- America/Chicago");
+        StringAssert.Contains(prompt, "- LLC");
+        StringAssert.Contains(prompt, "- Rockford");
+        StringAssert.Contains(prompt, "verbatim");
+    }
+
     private static Skill MakeSkill(string name) => new(
         Name: name,
         Summary: $"summary for {name}",

@@ -141,12 +141,42 @@ public class MemoryArchiveTests
         var old = (await store.GetAsync("old"))!;
         await store.SaveAsync(old with { ArchivedAt = DateTimeOffset.UtcNow.AddDays(-120) });
 
-        var purged = await store.PurgeArchivedAsync(TimeSpan.FromDays(90));
+        var result = await store.PurgeArchivedAsync(TimeSpan.FromDays(90));
 
-        Assert.AreEqual(1, purged);
+        Assert.AreEqual(1, result.Purged);
+        Assert.AreEqual(0, result.Kept);
         Assert.IsNull(await store.GetAsync("old"));
         Assert.IsNotNull(await store.GetAsync("recent"));
         Assert.IsNotNull(await store.GetAsync("live"));
+    }
+
+    [TestMethod]
+    public async Task PurgeArchivedAsync_KeepsEntriesAboveTheFloor()
+    {
+        // The purge is the last place that destroys memory, so the floor that stops consolidation
+        // pruning a high-value entry applies here too. Importance is frozen at archive time and
+        // never decays afterwards, so in practice it is the reinforcement half that bites.
+        var store = CreateStore();
+        await store.SaveAsync(Entry("valuable", "seen over and over") with { ReinforcementCount = 5 });
+        await store.SaveAsync(Entry("ordinary", "seen once") with { ReinforcementCount = 1 });
+
+        await store.ArchiveAsync("valuable", "merged");
+        await store.ArchiveAsync("ordinary", "merged");
+
+        foreach (var id in new[] { "valuable", "ordinary" })
+        {
+            var archived = (await store.GetAsync(id))!;
+            await store.SaveAsync(archived with { ArchivedAt = DateTimeOffset.UtcNow.AddDays(-120) });
+        }
+
+        var options = new DreamOptions();
+        var result = await store.PurgeArchivedAsync(
+            TimeSpan.FromDays(90), e => DreamService.IsProtectedFromPruning(e, options));
+
+        Assert.AreEqual(1, result.Purged);
+        Assert.AreEqual(1, result.Kept);
+        Assert.IsNotNull(await store.GetAsync("valuable"));
+        Assert.IsNull(await store.GetAsync("ordinary"));
     }
 
     [TestMethod]
@@ -158,7 +188,7 @@ public class MemoryArchiveTests
         var old = (await store.GetAsync("old"))!;
         await store.SaveAsync(old with { ArchivedAt = DateTimeOffset.UtcNow.AddYears(-5) });
 
-        Assert.AreEqual(0, await store.PurgeArchivedAsync(TimeSpan.Zero));
+        Assert.AreEqual(0, (await store.PurgeArchivedAsync(TimeSpan.Zero)).Purged);
         Assert.IsNotNull(await store.GetAsync("old"));
     }
 

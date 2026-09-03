@@ -53,6 +53,7 @@ internal sealed class DreamService : IHostedService, IDisposable
     private readonly RepairTicketOptions? _repairOptions;
     private readonly IReadOnlyList<IToolSkillProvider> _toolSkillProviders;
     private readonly IReadOnlyList<IPrunableLog> _prunableLogs;
+    private readonly IMemoryDeduplicator? _memoryDeduplicator;
     private Timer? _timer;
     private CronExpression? _cron;
     private string? _dreamDirective;
@@ -109,7 +110,8 @@ internal sealed class DreamService : IHostedService, IDisposable
         IOptions<RepairTicketOptions>? repairOptions = null,
         IEnumerable<IToolSkillProvider>? toolSkillProviders = null,
         TieredChatClientRegistry? tieredRegistry = null,
-        IEnumerable<IPrunableLog>? prunableLogs = null)
+        IEnumerable<IPrunableLog>? prunableLogs = null,
+        IMemoryDeduplicator? memoryDeduplicator = null)
     {
         _memory = memory;
         _skillStore = skillStores.FirstOrDefault();
@@ -147,6 +149,26 @@ internal sealed class DreamService : IHostedService, IDisposable
         }
         _toolSkillProviders = toolSkillProviders?.ToList() ?? (IReadOnlyList<IToolSkillProvider>)Array.Empty<IToolSkillProvider>();
         _prunableLogs = prunableLogs?.ToList() ?? (IReadOnlyList<IPrunableLog>)Array.Empty<IPrunableLog>();
+        _memoryDeduplicator = memoryDeduplicator;
+    }
+
+    /// <summary>
+    /// Saves through the deduplicator when one is registered, so a mined fact the corpus already
+    /// holds reinforces that entry instead of adding a near-copy for the next consolidation pass
+    /// to merge away.
+    /// </summary>
+    /// <remarks>
+    /// Only the passes that mint genuinely new facts route through here. Merges, identity
+    /// reflection and consolidation writes carry their own ids and provenance and must land
+    /// exactly as written.
+    /// </remarks>
+    private async Task<MemorySaveOutcome> SaveOrReinforceAsync(MemoryEntry entry, CancellationToken ct)
+    {
+        if (_memoryDeduplicator is not null)
+            return await _memoryDeduplicator.SaveOrReinforceAsync(entry, ct);
+
+        await _memory.SaveAsync(entry, ct);
+        return new MemorySaveOutcome(MemorySaveAction.Created, entry.Id);
     }
 
     public Task StartAsync(CancellationToken cancellationToken)
@@ -224,30 +246,7 @@ internal sealed class DreamService : IHostedService, IDisposable
         // a storytelling agent disagree about which capitalized words are ordinary language, and
         // getting it wrong in the storytelling direction strips coverage from character names.
         var vocabularyPath = ResolvePath(_options.MergeCoverageVocabularyPath, _profileOptions.BasePath);
-        if (File.Exists(vocabularyPath))
-        {
-            _mergeVocabulary = MergeCoverageVocabulary.Parse(File.ReadAllText(vocabularyPath), out var vocabError);
-            if (vocabError is not null)
-                _logger.LogWarning(
-                    "DreamService: {Path} is malformed ({Error}); using the built-in vocabulary",
-                    vocabularyPath, vocabError);
-            else
-                // Information, matching the per-cycle directive reload above: this file decides
-                // what a merge is allowed to drop, and an operator tuning it needs to see that
-                // their edit was picked up without raising the whole namespace to Debug.
-                _logger.LogInformation(
-                    "DreamService: merge-coverage vocabulary from {Path} — {Common} common words, {Specific} reclaimed as specifics{Reclaimed}",
-                    vocabularyPath,
-                    _mergeVocabulary.CommonWordCount,
-                    _mergeVocabulary.AlwaysSpecificWords.Count,
-                    _mergeVocabulary.AlwaysSpecificWords.Count > 0
-                        ? " (" + string.Join(", ", _mergeVocabulary.AlwaysSpecificWords) + ")"
-                        : string.Empty);
-        }
-        else
-        {
-            _mergeVocabulary = MergeCoverageVocabulary.Default;
-        }
+        _mergeVocabulary = MergeCoverageVocabularyFile.Load(vocabularyPath, _logger);
 
         var directivePath = ResolvePath(_options.DirectivePath, _profileOptions.BasePath);
         var dreamDirective = File.Exists(directivePath)
@@ -712,9 +711,16 @@ internal sealed class DreamService : IHostedService, IDisposable
 
     /// <summary>
     /// Hard-deletes memory entries archived longer ago than
-    /// <see cref="DreamOptions.MemoryArchiveRetention"/>. No-op when the store has no archive
-    /// tier or retention is disabled.
+    /// <see cref="DreamOptions.MemoryArchiveRetention"/>, except those above the high-value
+    /// floor. No-op when the store has no archive tier or retention is disabled.
     /// </summary>
+    /// <remarks>
+    /// This is the only remaining path that destroys long-term memory, so the same floor that
+    /// stops consolidation pruning a high-value entry outright applies here too. Note that
+    /// importance is frozen at archive time and never decays afterwards, so in practice it is the
+    /// reinforcement half of the floor that does the work — an entry observed dozens of times and
+    /// then archived by an unreviewed merge is exactly what should outlive the retention window.
+    /// </remarks>
     private async Task RunArchivePurgePassAsync(CancellationToken ct)
     {
         if (_memory is not IArchivedMemoryMaintenance maintenance)
@@ -725,11 +731,16 @@ internal sealed class DreamService : IHostedService, IDisposable
 
         await RunPassAsync("archive purge", async () =>
         {
-            var purged = await maintenance.PurgeArchivedAsync(_options.MemoryArchiveRetention, ct);
-            if (purged > 0)
+            var result = await maintenance.PurgeArchivedAsync(
+                _options.MemoryArchiveRetention,
+                e => IsProtectedFromPruning(e, _options),
+                ct);
+
+            if (result.Purged > 0 || result.Kept > 0)
                 _logger.LogInformation(
-                    "DreamService: archive purge — {Count} entries archived over {Days:F0} days ago permanently deleted",
-                    purged, _options.MemoryArchiveRetention.TotalDays);
+                    "DreamService: archive purge — {Purged} purged, {Kept} kept above the high-value floor " +
+                    "(archived over {Days:F0} days ago)",
+                    result.Purged, result.Kept, _options.MemoryArchiveRetention.TotalDays);
         });
     }
 
@@ -918,7 +929,7 @@ internal sealed class DreamService : IHostedService, IDisposable
     /// pass including memory mining. That deadlocked a fresh agent, whose memory store
     /// only becomes non-empty once mining has run.
     /// </remarks>
-    private async Task<(int Deleted, int Saved)> RunMemoryConsolidationPassAsync(CancellationToken ct)
+    internal async Task<(int Deleted, int Saved)> RunMemoryConsolidationPassAsync(CancellationToken ct)
     {
         if (!_options.MemoryConsolidationEnabled)
         {
@@ -954,6 +965,28 @@ internal sealed class DreamService : IHostedService, IDisposable
                 withheld, all.Count);
             return (0, 0);
         }
+
+        // A dream cycle fires five minutes after every process start, so a day of deploys is a
+        // day of consolidation passes — ten restarts across three days produced roughly fifteen
+        // cycles and 121 archives in a single day. Nothing about the corpus justified that
+        // cadence; the deploy schedule did. The ledger already knows when this pass last
+        // completed, so the fix is to consult it.
+        if (_passLedger is not null && _options.ConsolidationMinInterval > TimeSpan.Zero)
+        {
+            var record = _passLedger.Get(ConsolidationLedgerPassName);
+            if (DreamPassLedger.ShouldSkip(
+                    record, ConsolidationLedgerFingerprint, _clock.Now, _options.ConsolidationMinInterval))
+            {
+                _logger.LogInformation(
+                    "DreamService: memory consolidation skipped — last completed {Age:g} ago, minimum interval {Interval:g}",
+                    _clock.Now - record!.LastRunAt, _options.ConsolidationMinInterval);
+                return (0, 0);
+            }
+        }
+
+        // Read before the pass records its own completion below, so "created since last run" is
+        // measured against the previous run rather than against this one.
+        var previousRunAt = _passLedger?.Get(ConsolidationLedgerPassName)?.LastRunAt;
 
         _logger.LogInformation(
             "DreamService: consolidation reviewing {Eligible} of {Total} entries ({Withheld} withheld as reviewed-and-unchanged)",
@@ -1012,6 +1045,8 @@ internal sealed class DreamService : IHostedService, IDisposable
         var deleted = 0;
         var saved = 0;
         var rejectedMerges = 0;
+        var repairedMerges = 0;
+        var repairsAttempted = 0;
         var protectedFromPruning = 0;
 
         // Sources belonging to a merge the coverage check refused. They must survive the
@@ -1052,23 +1087,56 @@ internal sealed class DreamService : IHostedService, IDisposable
             // one — and once the sources are archived nobody can tell it happened. Reject it
             // and leave the sources alone; a surviving duplicate is the cheaper mistake.
             var missing = MergeCoverage.FindMissingSpecifics(sources, dto.Content, _mergeVocabulary);
+            var applied = dto;
+
             if (missing.Count > 0)
             {
-                // The directive requires every sourceId to also appear in toDelete, so these
-                // IDs are sitting in the standalone-removal list too. Without this the
-                // ephemeral path would archive them anyway and the rejection would achieve
-                // nothing — worse than merging, since nothing replaces them at all.
-                foreach (var srcId in sourceIds)
-                    rejectedMergeSources.Add(srcId);
+                // A rejection used to be terminal, and the same cluster came back next cycle to
+                // be rejected the same way — a live corpus rejected one six-source merge five
+                // times in eight cycles. The model is not being asked to think again; it is
+                // being told exactly which strings it dropped and asked to put them back, which
+                // is a far narrower task than the merge itself.
+                string? repaired = null;
+                if (_options.MergeRepairEnabled && repairsAttempted < _options.MergeRepairMaxPerCycle)
+                {
+                    repairsAttempted++;
+                    repaired = await TryRepairMergeAsync(sources, dto.Content, missing, ct);
+                }
 
-                rejectedMerges++;
-                _logger.LogWarning(
-                    "DreamService: rejected merge of [{Sources}] — dropped {Count} specific(s): {Missing}. Sources kept. Merged text was: {Content}",
-                    string.Join(", ", sources.Select(s => s.Id)),
-                    missing.Count,
-                    string.Join(", ", missing),
-                    dto.Content.Trim());
-                continue;
+                var stillMissing = repaired is null
+                    ? missing
+                    : MergeCoverage.FindMissingSpecifics(sources, repaired, _mergeVocabulary);
+
+                if (repaired is not null && stillMissing.Count == 0)
+                {
+                    repairedMerges++;
+                    _logger.LogInformation(
+                        "DreamService: repaired merge of [{Sources}] — restored {Count} specific(s): {Missing}",
+                        string.Join(", ", sources.Select(s => s.Id)),
+                        missing.Count,
+                        string.Join(", ", missing));
+
+                    applied = dto with { Content = repaired };
+                }
+                else
+                {
+                    // The directive requires every sourceId to also appear in toDelete, so these
+                    // IDs are sitting in the standalone-removal list too. Without this the
+                    // ephemeral path would archive them anyway and the rejection would achieve
+                    // nothing — worse than merging, since nothing replaces them at all.
+                    foreach (var srcId in sourceIds)
+                        rejectedMergeSources.Add(srcId);
+
+                    rejectedMerges++;
+                    _logger.LogWarning(
+                        "DreamService: rejected merge of [{Sources}]{AfterRepair} — dropped {Count} specific(s): {Missing}. Sources kept. Merged text was: {Content}",
+                        string.Join(", ", sources.Select(s => s.Id)),
+                        repaired is null ? string.Empty : " after repair",
+                        stillMissing.Count,
+                        string.Join(", ", stillMissing),
+                        (repaired ?? dto.Content).Trim());
+                    continue;
+                }
             }
 
             // CreatedAt = earliest source (first-seen preserved); UpdatedAt = now (record rewritten)
@@ -1081,7 +1149,7 @@ internal sealed class DreamService : IHostedService, IDisposable
             var reinforcementCount = sources.Count > 0 ? sources.Sum(s => s.ReinforcementCount) : 1;
 
             // LLM-provided importance wins; otherwise carry forward max from sources
-            var importance = dto.Importance
+            var importance = applied.Importance
                 ?? (sources.Count > 0 ? sources.Max(s => s.ImportanceScore) : 0.5f);
 
             var mergedMetadata = MergeSubjectTimeMetadata(sources);
@@ -1103,9 +1171,9 @@ internal sealed class DreamService : IHostedService, IDisposable
 
             var entry = new MemoryEntry(
                 Id: Guid.NewGuid().ToString("N")[..12],
-                Content: dto.Content.Trim(),
-                Category: string.IsNullOrWhiteSpace(dto.Category) ? null : dto.Category.Trim(),
-                Tags: dto.Tags ?? [],
+                Content: applied.Content.Trim(),
+                Category: string.IsNullOrWhiteSpace(applied.Category) ? null : applied.Category.Trim(),
+                Tags: applied.Tags ?? [],
                 CreatedAt: firstSeen,
                 UpdatedAt: DateTimeOffset.UtcNow,
                 Metadata: mergedMetadata,
@@ -1149,7 +1217,7 @@ internal sealed class DreamService : IHostedService, IDisposable
                 continue;
             }
 
-            archiveReasons[id] = "flagged ephemeral by consolidation";
+            archiveReasons[id] = EphemeralArchiveReason;
         }
 
         foreach (var (id, reason) in archiveReasons)
@@ -1168,13 +1236,117 @@ internal sealed class DreamService : IHostedService, IDisposable
             eligible.Select(e => e.Id).Where(id => !archiveReasons.ContainsKey(id)),
             ct);
 
-        if (rejectedMerges > 0 || protectedFromPruning > 0)
+        if (rejectedMerges > 0 || protectedFromPruning > 0 || repairedMerges > 0)
             _logger.LogInformation(
-                "DreamService: consolidation safeguards fired — {Rejected} merge(s) rejected for dropping specifics, {Protected} entry(s) protected from pruning",
-                rejectedMerges, protectedFromPruning);
+                "DreamService: consolidation safeguards fired — {Rejected} merge(s) rejected for dropping specifics, " +
+                "{Repaired} merge(s) repaired, {Protected} entry(s) protected from pruning",
+                rejectedMerges, repairedMerges, protectedFromPruning);
+
+        // Recorded only on a pass that actually reviewed something. A disabled pass, an empty
+        // corpus, nothing eligible or a failed LLM call all return earlier, so the minimum
+        // interval measures time between real consolidations rather than between cycles.
+        _passLedger?.Record(ConsolidationLedgerPassName, ConsolidationLedgerFingerprint, _clock.Now);
+
+        var createdSinceLastRun = previousRunAt is { } since
+            ? all.Count(e => e.CreatedAt > since)
+            : 0;
+
+        // One line per completed pass, carrying the numbers that say whether the corpus is
+        // converging or churning. Before this, "828 live entries" and "885 archived by merge"
+        // had to be reconstructed off the volume after the fact.
+        _logger.LogInformation(
+            "DreamService: consolidation summary — live {Live}, reviewed {Reviewed}, created since last run {Created}, " +
+            "merged {Merged}, repaired {Repaired}, rejected {Rejected}, ephemeral {Ephemeral}, protected {Protected}",
+            all.Count, eligible.Count, createdSinceLastRun, saved, repairedMerges, rejectedMerges,
+            archiveReasons.Count(r => r.Value == EphemeralArchiveReason),
+            protectedFromPruning);
 
         return (deleted, saved);
     }
+
+    /// <summary>
+    /// Archive reason for an entry consolidation dropped outright rather than merging. A constant
+    /// because the summary line counts these apart from merge sources.
+    /// </summary>
+    internal const string EphemeralArchiveReason = "flagged ephemeral by consolidation";
+
+    /// <summary>Ledger pass name for the consolidation minimum-interval gate.</summary>
+    internal const string ConsolidationLedgerPassName = "memory consolidation";
+
+    /// <summary>
+    /// Sentinel fingerprint for the consolidation ledger entry. The ledger's gate compares a
+    /// fingerprint and then a time floor; feeding it a constant collapses it to the pure time
+    /// gate this pass wants, without a second mechanism that would then need its own persistence
+    /// and its own restart behaviour.
+    /// </summary>
+    internal const string ConsolidationLedgerFingerprint = "completed";
+
+    /// <summary>
+    /// Asks the model to restore the specifics a merge dropped, keeping everything else. Returns
+    /// the revised text, or <c>null</c> when the pass produced nothing usable.
+    /// </summary>
+    /// <remarks>
+    /// Deliberately ungated by the change-gate ledger: the input is one rejected merge, which is
+    /// different every time it is asked about, and a gate keyed on it would never fire anyway
+    /// while adding a way for a repair to be silently skipped.
+    /// </remarks>
+    private async Task<string?> TryRepairMergeAsync(
+        List<MemoryEntry> sources,
+        string rejectedContent,
+        IReadOnlyList<string> missing,
+        CancellationToken ct)
+    {
+        var result = await InvokeDreamPassAsync<MergeRepairResultDto>(
+            "memory merge repair",
+            BuiltInMergeRepairDirective,
+            BuildMergeRepairPrompt(sources, rejectedContent, missing),
+            ct);
+
+        var content = result?.Content?.Trim();
+        return string.IsNullOrWhiteSpace(content) ? null : content;
+    }
+
+    /// <summary>
+    /// Builds the merge-repair user message: the rejected text, the sources it was built from,
+    /// and the exact strings it dropped. Pure so the prompt can be asserted without an LLM.
+    /// </summary>
+    internal static string BuildMergeRepairPrompt(
+        IReadOnlyList<MemoryEntry> sources,
+        string rejectedContent,
+        IReadOnlyList<string> missing)
+    {
+        var sb = new StringBuilder();
+        sb.AppendLine("A proposed merged memory entry dropped details its sources carried. Restore them.");
+        sb.AppendLine();
+        sb.AppendLine("## Proposed merged text");
+        sb.AppendLine(rejectedContent.Trim());
+        sb.AppendLine();
+        sb.AppendLine("## Source entries it was built from");
+        for (var i = 0; i < sources.Count; i++)
+            sb.AppendLine($"{i + 1}. {sources[i].Content}");
+        sb.AppendLine();
+        sb.AppendLine("## Missing — each must appear verbatim in your revision");
+        foreach (var specific in missing)
+            sb.AppendLine($"- {specific}");
+
+        return sb.ToString();
+    }
+
+    private sealed record MergeRepairResultDto(string? Content);
+
+    private const string BuiltInMergeRepairDirective = """
+        You are repairing a merged memory entry that dropped specific details its sources carried.
+
+        Rules:
+        - Every string in the "Missing" list MUST appear verbatim in your revision.
+        - Keep everything the proposed merged text already says. You are adding back what it lost,
+          not rewriting it.
+        - Do not add any fact that is not in the proposed text or in the source entries.
+        - Keep it a single coherent memory entry, as concise as restoring the details allows.
+
+        Return ONLY valid JSON in this shape and nothing else:
+        { "content": "the repaired merged entry" }
+        """;
 
     private async Task ConsolidateSkillsAsync(CancellationToken ct)
     {
@@ -2677,7 +2849,7 @@ internal sealed class DreamService : IHostedService, IDisposable
                 userMessage.ToString(),
                 ct);
             if (result is null) return;
-            var saved = 0;
+            var tally = new MemorySaveTally();
 
             foreach (var dto in result?.ToSave ?? [])
             {
@@ -2696,13 +2868,17 @@ internal sealed class DreamService : IHostedService, IDisposable
                     CreatedAt: DateTimeOffset.UtcNow,
                     UpdatedAt: DateTimeOffset.UtcNow);
 
-                await _memory.SaveAsync(entry);
-                saved++;
-                _logger.LogDebug("DreamService: memory mining saved {Id} ({Category}): {Content}",
-                    entry.Id, entry.Category, entry.Content);
+                // Mining re-reads a rolling window of the conversation log, so a fact mentioned
+                // across several sessions is mined again on every cycle it stays in the window.
+                var outcome = await SaveOrReinforceAsync(entry, ct);
+                tally.Record(outcome);
+                _logger.LogDebug("DreamService: memory mining {Action} {Id} ({Category}): {Content}",
+                    outcome.Action.ToString().ToLowerInvariant(), outcome.Id, entry.Category, entry.Content);
             }
 
-            _logger.LogInformation("DreamService: memory mining pass complete — {Saved} entry(ies) saved", saved);
+            _logger.LogInformation(
+                "DreamService: memory mining pass complete — {Saved} saved, {Reinforced} reinforced, {Extended} extended",
+                tally.Saved, tally.Reinforced, tally.Extended);
         });
     }
 
@@ -3046,15 +3222,22 @@ internal sealed class DreamService : IHostedService, IDisposable
                 idFactory: () => Guid.NewGuid().ToString("N")[..12],
                 nowFactory: () => DateTimeOffset.UtcNow);
 
+            var tally = new MemorySaveTally();
+
             foreach (var entry in entries)
             {
-                await _memory.SaveAsync(entry);
-                _logger.LogDebug("DreamService: tool-success-learning saved {Id} ({Category}): {Content}",
-                    entry.Id, entry.Category, entry.Content);
+                // The same retry-until-success pattern is re-detected for as long as its tool
+                // calls stay inside the 7-day window, so this pass re-proposes facts it already
+                // stored on the previous cycle.
+                var outcome = await SaveOrReinforceAsync(entry, ct);
+                tally.Record(outcome);
+                _logger.LogDebug("DreamService: tool-success-learning {Action} {Id} ({Category}): {Content}",
+                    outcome.Action.ToString().ToLowerInvariant(), outcome.Id, entry.Category, entry.Content);
             }
 
             _logger.LogInformation(
-                "DreamService: tool-success-learning pass complete — {Saved} entry(ies) saved", entries.Count);
+                "DreamService: tool-success-learning pass complete — {Saved} saved, {Reinforced} reinforced, {Extended} extended",
+                tally.Saved, tally.Reinforced, tally.Extended);
         });
     }
 
@@ -4476,53 +4659,73 @@ internal sealed class DreamService : IHostedService, IDisposable
                 return;
             }
 
-            // Delete entries the LLM wants to replace
-            var deleted = 0;
-            foreach (var id in result.ToDelete ?? [])
-            {
-                await _memory.DeleteAsync(id);
-                deleted++;
-                _logger.LogDebug("DreamService: identity reflection deleted entry {Id}", id);
-            }
-
-            // Save new/updated identity entries
-            var saved = 0;
-            foreach (var dto in result.ToSave ?? [])
-            {
-                if (string.IsNullOrWhiteSpace(dto.Content))
-                    continue;
-
-                // Ensure category is under agent-identity/
-                var category = string.IsNullOrWhiteSpace(dto.Category)
-                    ? AgentIdentityCategories.SelfModel
-                    : dto.Category.Trim();
-
-                if (!category.StartsWith(AgentIdentityCategories.Prefix, StringComparison.OrdinalIgnoreCase))
-                    category = $"{AgentIdentityCategories.Prefix}/{category}";
-
-                var tags = new List<string>(dto.Tags ?? []);
-                if (!tags.Contains("identity", StringComparer.OrdinalIgnoreCase))
-                    tags.Insert(0, "identity");
-
-                var entry = new MemoryEntry(
-                    Id: Guid.NewGuid().ToString("N")[..12],
-                    Content: dto.Content.Trim(),
-                    Category: category,
-                    Tags: tags,
-                    CreatedAt: DateTimeOffset.UtcNow,
-                    UpdatedAt: DateTimeOffset.UtcNow,
-                    ImportanceScore: Math.Clamp(dto.Importance ?? 0.7f, 0f, 1f));
-
-                await _memory.SaveAsync(entry);
-                saved++;
-                _logger.LogDebug("DreamService: identity reflection saved {Id} ({Category}): {Content}",
-                    entry.Id, entry.Category, entry.Content);
-            }
+            var (archived, saved) = await ApplyIdentityReflectionResultAsync(_memory, result, _logger, ct);
 
             _logger.LogInformation(
-                "DreamService: identity reflection pass complete — {Deleted} deleted, {Saved} saved",
-                deleted, saved);
+                "DreamService: identity reflection pass complete — {Archived} archived, {Saved} saved",
+                archived, saved);
         });
+    }
+
+    /// <summary>
+    /// Applies an identity reflection result: archives the entries the model replaced and saves
+    /// the ones it rewrote. Internal so the archive-not-delete behaviour can be tested without a
+    /// real LLM call.
+    /// </summary>
+    /// <remarks>
+    /// This pass rewrites essentially all of its own entries on essentially every run, so a hard
+    /// delete here means the agent's previous self-description is gone the moment the model
+    /// produces a new one — with no way to see what changed or to put it back if the new one is
+    /// worse. Archiving costs nothing and makes the rewrite reviewable.
+    /// </remarks>
+    internal static async Task<(int Archived, int Saved)> ApplyIdentityReflectionResultAsync(
+        ILongTermMemory memory,
+        IdentityReflectionResultDto result,
+        ILogger logger,
+        CancellationToken ct)
+    {
+        var archived = 0;
+        foreach (var id in result.ToDelete ?? [])
+        {
+            await memory.ArchiveAsync(id, "replaced by identity reflection", ct);
+            archived++;
+            logger.LogDebug("DreamService: identity reflection archived entry {Id}", id);
+        }
+
+        var saved = 0;
+        foreach (var dto in result.ToSave ?? [])
+        {
+            if (string.IsNullOrWhiteSpace(dto.Content))
+                continue;
+
+            // Ensure category is under agent-identity/
+            var category = string.IsNullOrWhiteSpace(dto.Category)
+                ? AgentIdentityCategories.SelfModel
+                : dto.Category.Trim();
+
+            if (!category.StartsWith(AgentIdentityCategories.Prefix, StringComparison.OrdinalIgnoreCase))
+                category = $"{AgentIdentityCategories.Prefix}/{category}";
+
+            var tags = new List<string>(dto.Tags ?? []);
+            if (!tags.Contains("identity", StringComparer.OrdinalIgnoreCase))
+                tags.Insert(0, "identity");
+
+            var entry = new MemoryEntry(
+                Id: Guid.NewGuid().ToString("N")[..12],
+                Content: dto.Content.Trim(),
+                Category: category,
+                Tags: tags,
+                CreatedAt: DateTimeOffset.UtcNow,
+                UpdatedAt: DateTimeOffset.UtcNow,
+                ImportanceScore: Math.Clamp(dto.Importance ?? 0.7f, 0f, 1f));
+
+            await memory.SaveAsync(entry, ct);
+            saved++;
+            logger.LogDebug("DreamService: identity reflection saved {Id} ({Category}): {Content}",
+                entry.Id, entry.Category, entry.Content);
+        }
+
+        return (archived, saved);
     }
 
     /// <summary>
@@ -5466,12 +5669,12 @@ internal sealed class DreamService : IHostedService, IDisposable
 
     private sealed record DlqPatternDto(string Content, string? Detail, IReadOnlyList<string>? Queues);
 
-    private sealed record IdentityReflectionResultDto(
+    internal sealed record IdentityReflectionResultDto(
         bool? NoChange,
         List<string>? ToDelete,
         List<IdentityEntryDto>? ToSave);
 
-    private sealed record IdentityEntryDto(
+    internal sealed record IdentityEntryDto(
         string Content,
         string? Category,
         IReadOnlyList<string>? Tags,

@@ -516,6 +516,153 @@ public class MergeCoverageTests
             "October");
     }
 
+    // ── Corpus-evidence rule ─────────────────────────────────────────────────
+
+    [TestMethod]
+    public void WordWithALowercaseTwinInTheSources_IsOrdinaryLanguage()
+    {
+        // Live rejection: "Marking" opens a clause mid-sentence, so position alone protected it,
+        // and the same cluster was re-proposed and re-rejected every cycle. A sibling source
+        // writes "marking" in lowercase — that is the corpus saying it is an ordinary verb.
+        var sources = new[]
+        {
+            Entry("a", "Todo items are not accepted for updates. Marking a task complete needs the id."),
+            Entry("b", "The agent keeps marking finished todos so the list stays short."),
+        };
+
+        Assert.AreEqual(
+            0,
+            MergeCoverage.FindMissingSpecifics(
+                sources,
+                "Todo items are not accepted for updates; completing one needs the id, and the agent "
+                + "keeps finished todos off the list.").Count);
+    }
+
+    [TestMethod]
+    public void MidSentenceIdsWithLowercaseTwin_IsNotASpecific()
+    {
+        // "IDs" is not an acronym match (the trailing lowercase s breaks the all-caps regex), so
+        // it arrived through the capitalized-word pass and outlived every merge proposal.
+        var sources = new[]
+        {
+            Entry("a", "Contact IDs are account-scoped, so the contact ids differ per mailbox."),
+        };
+
+        CollectionAssert.DoesNotContain(
+            MergeCoverage.FindMissingSpecifics(
+                sources, "Contacts are account-scoped and differ per mailbox.").ToArray(),
+            "IDs");
+    }
+
+    [TestMethod]
+    public void ProperNounWithoutLowercaseTwin_StaysProtected()
+    {
+        // The whole point of sourcing the evidence from the text: a real name never appears
+        // lowercase, so nothing about this rule can unprotect it.
+        var sources = new[]
+        {
+            Entry("a", "The Eventbrite listing was set up by Xebia for the Austin workshop."),
+        };
+
+        var missing = MergeCoverage.FindMissingSpecifics(sources, "The listing was set up for a workshop.");
+
+        CollectionAssert.Contains(missing.ToArray(), "Eventbrite");
+        CollectionAssert.Contains(missing.ToArray(), "Xebia");
+        CollectionAssert.Contains(missing.ToArray(), "Austin");
+    }
+
+    [TestMethod]
+    public void AlwaysSpecific_BeatsTheCorpusEvidenceRule()
+    {
+        // A storytelling corpus writes "may" constantly and also has a character named May.
+        // alwaysSpecificWords is the documented override, and it has to outrank corpus evidence
+        // exactly as it outranks the baseline.
+        var vocabulary = new MergeCoverageVocabulary(null, ["May"]);
+        var sources = new[] { Entry("a", "May said the crossing may take three days.") };
+
+        CollectionAssert.Contains(
+            MergeCoverage.FindMissingSpecifics(
+                sources, "The crossing takes three days.", vocabulary).ToArray(),
+            "May");
+    }
+
+    // ── Numeric category exemption ───────────────────────────────────────────
+
+    [TestMethod]
+    public void RoutingTelemetryDecimals_AreExemptByCategory()
+    {
+        // Routing anti-patterns restate figures recomputed from the routing log every cycle, so
+        // "8.33" is already stale when the merge is proposed. Requiring it verbatim rejected the
+        // same cluster indefinitely.
+        var sources = new[]
+        {
+            Categorized("a", "Balanced sessions average 8.33 tool calls before escalating.", "anti-patterns/routing"),
+        };
+
+        Assert.AreEqual(
+            0,
+            MergeCoverage.FindMissingSpecifics(
+                sources, "Balanced sessions make many tool calls before escalating.").Count);
+    }
+
+    [TestMethod]
+    public void SameTextOutsideAnExemptCategory_StillRequiresTheNumber()
+    {
+        var sources = new[]
+        {
+            Categorized("a", "Balanced sessions average 8.33 tool calls before escalating.", "agent-knowledge/infrastructure"),
+        };
+
+        CollectionAssert.Contains(
+            MergeCoverage.FindMissingSpecifics(
+                sources, "Balanced sessions make many tool calls before escalating.").ToArray(),
+            "8.33");
+    }
+
+    [TestMethod]
+    public void NumericExemptCategories_MatchNestedCategoriesButNotSiblingPrefixes()
+    {
+        var vocabulary = MergeCoverageVocabulary.Default;
+
+        Assert.IsTrue(vocabulary.IsNumericExempt("anti-patterns/routing"));
+        Assert.IsTrue(vocabulary.IsNumericExempt("anti-patterns/routing/high-tier"));
+        Assert.IsFalse(vocabulary.IsNumericExempt("anti-patterns/routing-notes"));
+        Assert.IsFalse(vocabulary.IsNumericExempt("anti-patterns"));
+        Assert.IsFalse(vocabulary.IsNumericExempt(null));
+    }
+
+    [TestMethod]
+    public void NumericExemptCategories_RoundTripFromJson()
+    {
+        var vocabulary = MergeCoverageVocabulary.Parse(
+            """{ "numericExemptCategories": ["metrics/cost"] }""", out var error);
+
+        Assert.IsNull(error);
+        Assert.IsTrue(vocabulary.IsNumericExempt("metrics/cost"));
+
+        // Additive: the built-in entry survives a file that names its own categories.
+        Assert.IsTrue(vocabulary.IsNumericExempt("anti-patterns/routing"));
+    }
+
+    [TestMethod]
+    public void DateInAnExemptCategory_IsStillRequiredWhenSpelledWithAMonthName()
+    {
+        // The exemption skips the numeric loop wholesale, so "2026-08-19" in an exempt category
+        // is droppable. A month-name date still comes through the capitalized-word pass, which is
+        // the documented boundary of the exemption.
+        var sources = new[]
+        {
+            Categorized("a", "The routing review ran on August 19, 2026.", "anti-patterns/routing"),
+        };
+
+        CollectionAssert.Contains(
+            MergeCoverage.FindMissingSpecifics(sources, "The routing review ran recently.").ToArray(),
+            "August");
+    }
+
     private static MemoryEntry Entry(string id, string content) =>
         new(id, content, null, [], DateTimeOffset.UtcNow);
+
+    private static MemoryEntry Categorized(string id, string content, string category) =>
+        new(id, content, category, [], DateTimeOffset.UtcNow);
 }
