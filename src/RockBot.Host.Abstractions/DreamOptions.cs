@@ -244,6 +244,45 @@ public sealed class DreamOptions
     public int PruningProtectionReinforcementCount { get; set; } = 5;
 
     /// <summary>
+    /// Shortest time between two consolidation passes that actually review the corpus. A pass
+    /// reached sooner than this logs and returns without calling the LLM. Set to
+    /// <see cref="TimeSpan.Zero"/> to disable the floor. Default: 6 hours.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// A dream cycle fires <see cref="InitialDelay"/> after every process start as well as on
+    /// <see cref="CronSchedule"/>, so consolidation cadence tracks the deploy schedule rather
+    /// than the corpus: ten deploys over three days produced about fifteen cycles, and 121
+    /// archives in one of those days. Every one of those passes re-asked the same questions
+    /// about the same entries.
+    /// </para>
+    /// <para>
+    /// Measured from the last <em>completed</em> pass, recorded in the dream pass ledger on the
+    /// agent profile volume, so it survives the restarts it exists to absorb.
+    /// </para>
+    /// </remarks>
+    public TimeSpan ConsolidationMinInterval { get; set; } = TimeSpan.FromHours(6);
+
+    /// <summary>
+    /// Whether a merge rejected by the coverage check gets one repair attempt — a second LLM
+    /// call naming the exact specifics it dropped. Default: <c>true</c>.
+    /// </summary>
+    /// <remarks>
+    /// Without it a rejection is terminal and the cluster is re-proposed, re-merged and
+    /// re-rejected on every subsequent cycle: a live corpus rejected one six-source merge five
+    /// times in eight cycles. The repair call is a narrow, mechanical task — put these strings
+    /// back — and its output faces the same coverage check, so a failed repair costs one call
+    /// and lands exactly where the rejection would have.
+    /// </remarks>
+    public bool MergeRepairEnabled { get; set; } = true;
+
+    /// <summary>
+    /// Ceiling on repair attempts per consolidation pass, so a cycle that rejects everything
+    /// cannot turn into an unbounded run of LLM calls. Default: 10.
+    /// </summary>
+    public int MergeRepairMaxPerCycle { get; set; } = 10;
+
+    /// <summary>
     /// Path to the merge-coverage vocabulary file, relative to
     /// <see cref="AgentProfileOptions.BasePath"/>. Re-read at the top of every dream cycle, so
     /// edits take effect without a restart. When absent, a generic-English baseline is used.
@@ -255,16 +294,18 @@ public sealed class DreamOptions
     /// operational assistant can safely ignore are not the words a storytelling agent can.
     /// </para>
     /// <para>
-    /// Shape — both fields optional:
+    /// Shape — all fields optional:
     /// <code>
     /// {
-    ///   "extraCommonWords":    ["briefing", "triage"],
-    ///   "alwaysSpecificWords": ["May", "Will", "Rose"]
+    ///   "extraCommonWords":        ["briefing", "triage"],
+    ///   "alwaysSpecificWords":     ["May", "Will", "Rose"],
+    ///   "numericExemptCategories": ["metrics/cost"]
     /// }
     /// </code>
     /// <c>alwaysSpecificWords</c> takes precedence, and matters most for agents whose characters
     /// or people collide with ordinary English — without it, a character named May or Will is
-    /// silently stripped of coverage protection.
+    /// silently stripped of coverage protection. <c>numericExemptCategories</c> names categories
+    /// whose numbers are re-derived from telemetry each cycle and so need not survive a merge.
     /// </para>
     /// </remarks>
     public string MergeCoverageVocabularyPath { get; set; } = "merge-coverage-vocabulary.json";

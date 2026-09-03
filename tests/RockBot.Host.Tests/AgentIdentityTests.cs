@@ -90,7 +90,7 @@ public class AgentIdentityTests
         }
         """;
 
-        var result = JsonSerializer.Deserialize<IdentityReflectionResultDto>(json, JsonOptions);
+        var result = JsonSerializer.Deserialize<DreamService.IdentityReflectionResultDto>(json, JsonOptions);
 
         Assert.IsNotNull(result);
         Assert.IsFalse(result.NoChange);
@@ -109,12 +109,72 @@ public class AgentIdentityTests
     {
         var json = """{"noChange": true, "toDelete": [], "toSave": []}""";
 
-        var result = JsonSerializer.Deserialize<IdentityReflectionResultDto>(json, JsonOptions);
+        var result = JsonSerializer.Deserialize<DreamService.IdentityReflectionResultDto>(json, JsonOptions);
 
         Assert.IsNotNull(result);
         Assert.IsTrue(result.NoChange);
         Assert.AreEqual(0, result.ToSave?.Count);
         Assert.AreEqual(0, result.ToDelete?.Count);
+    }
+
+    // ── Applying a reflection result ────────────────────────────────────────
+
+    [TestMethod]
+    public async Task ApplyIdentityReflectionResult_ArchivesTheEntriesItReplaces()
+    {
+        // This pass rewrites essentially all of its own entries on essentially every run, so a
+        // hard delete meant the agent's previous self-description vanished the moment the model
+        // produced a new one — with nothing to compare against and no way to put it back.
+        var memory = new FakeLongTermMemory();
+        var result = new DreamService.IdentityReflectionResultDto(
+            NoChange: false,
+            ToDelete: ["old-self"],
+            ToSave: [new DreamService.IdentityEntryDto(
+                "I have become primarily a communication manager.", null, null, 0.8f)]);
+
+        var (archived, saved) = await DreamService.ApplyIdentityReflectionResultAsync(
+            memory, result, NullLogger.Instance, CancellationToken.None);
+
+        Assert.AreEqual(1, archived);
+        Assert.AreEqual(1, saved);
+        Assert.AreEqual(0, memory.Deleted.Count, "Identity reflection must not hard-delete.");
+        CollectionAssert.AreEqual(new[] { "old-self" }, memory.Archived.Select(a => a.Id).ToArray());
+        Assert.AreEqual("replaced by identity reflection", memory.Archived[0].Reason);
+
+        var written = memory.Saved.Single();
+        Assert.AreEqual(AgentIdentityCategories.SelfModel, written.Category);
+        CollectionAssert.Contains(written.Tags.ToArray(), "identity");
+    }
+
+    [TestMethod]
+    public async Task ApplyIdentityReflectionResult_ForcesTheCategoryUnderTheIdentityPrefix()
+    {
+        var memory = new FakeLongTermMemory();
+        var result = new DreamService.IdentityReflectionResultDto(
+            NoChange: false,
+            ToDelete: null,
+            ToSave: [new DreamService.IdentityEntryDto("I am careful.", "values", ["identity"], null)]);
+
+        await DreamService.ApplyIdentityReflectionResultAsync(
+            memory, result, NullLogger.Instance, CancellationToken.None);
+
+        Assert.AreEqual($"{AgentIdentityCategories.Prefix}/values", memory.Saved.Single().Category);
+    }
+
+    [TestMethod]
+    public async Task ApplyIdentityReflectionResult_SkipsBlankContent()
+    {
+        var memory = new FakeLongTermMemory();
+        var result = new DreamService.IdentityReflectionResultDto(
+            NoChange: false,
+            ToDelete: null,
+            ToSave: [new DreamService.IdentityEntryDto("   ", null, null, null)]);
+
+        var (_, saved) = await DreamService.ApplyIdentityReflectionResultAsync(
+            memory, result, NullLogger.Instance, CancellationToken.None);
+
+        Assert.AreEqual(0, saved);
+        Assert.AreEqual(0, memory.Saved.Count);
     }
 
     // ── AgentContextBuilder: identity injection ─────────────────────────────
@@ -233,8 +293,15 @@ public class AgentIdentityTests
     /// </summary>
     private sealed class FakeLongTermMemory(params MemoryEntry[] identityEntries) : ILongTermMemory
     {
+        public List<MemoryEntry> Saved { get; } = [];
+        public List<string> Deleted { get; } = [];
+        public List<(string Id, string Reason)> Archived { get; } = [];
+
         public Task SaveAsync(MemoryEntry entry, CancellationToken cancellationToken = default)
-            => Task.CompletedTask;
+        {
+            Saved.Add(entry);
+            return Task.CompletedTask;
+        }
 
         public Task<IReadOnlyList<MemoryEntry>> SearchAsync(MemorySearchCriteria criteria, CancellationToken cancellationToken = default)
         {
@@ -250,7 +317,16 @@ public class AgentIdentityTests
             => Task.FromResult<MemoryEntry?>(null);
 
         public Task DeleteAsync(string id, CancellationToken cancellationToken = default)
-            => Task.CompletedTask;
+        {
+            Deleted.Add(id);
+            return Task.CompletedTask;
+        }
+
+        public Task ArchiveAsync(string id, string reason, CancellationToken cancellationToken = default)
+        {
+            Archived.Add((id, reason));
+            return Task.CompletedTask;
+        }
 
         public Task<IReadOnlyList<string>> ListTagsAsync(CancellationToken cancellationToken = default)
             => Task.FromResult<IReadOnlyList<string>>([]);
@@ -306,17 +382,4 @@ public class AgentIdentityTests
         public Task<IReadOnlyList<Skill>> SearchAsync(string query, int maxResults, CancellationToken cancellationToken = default, float[]? queryEmbedding = null)
             => Task.FromResult<IReadOnlyList<Skill>>([]);
     }
-
-    // ── DTOs (mirrors DreamService private records for deserialization testing) ──
-
-    internal sealed record IdentityReflectionResultDto(
-        bool? NoChange,
-        List<string>? ToDelete,
-        List<IdentityEntryDto>? ToSave);
-
-    internal sealed record IdentityEntryDto(
-        string Content,
-        string? Category,
-        IReadOnlyList<string>? Tags,
-        float? Importance);
 }

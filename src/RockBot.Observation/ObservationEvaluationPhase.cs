@@ -116,13 +116,17 @@ internal sealed class ObservationEvaluationPhase(
     {
         try
         {
-            await longTermMemory.DeleteAsync(memoryEntryId, ct).ConfigureAwait(false);
+            // Archive rather than delete. A theory ages out because it stopped being re-observed
+            // in a window, which is weak evidence that it was wrong — the behaviour it described
+            // may simply not have come up.
+            await longTermMemory.ArchiveAsync(memoryEntryId, "observation theory aged out", ct)
+                .ConfigureAwait(false);
         }
         catch (OperationCanceledException) { throw; }
         catch (Exception ex)
         {
             logger.LogWarning(ex,
-                "Observation: failed to delete memory entry {MemoryEntryId} for aged theory in target {Target}",
+                "Observation: failed to archive memory entry {MemoryEntryId} for aged theory in target {Target}",
                 memoryEntryId, target.Name);
         }
     }

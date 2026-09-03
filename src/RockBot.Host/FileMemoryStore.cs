@@ -11,7 +11,8 @@ namespace RockBot.Host;
 /// File-based long-term memory store with category subdirectories and in-memory index.
 /// Thread safety via <see cref="SemaphoreSlim"/> for all file I/O.
 /// </summary>
-internal sealed partial class FileMemoryStore : ILongTermMemory, IArchivedMemoryMaintenance, IMemoryDuplicateCandidates
+internal sealed partial class FileMemoryStore
+    : ILongTermMemory, IArchivedMemoryMaintenance, IMemoryDuplicateCandidates, IMemorySimilarityLookup
 {
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -374,25 +375,38 @@ internal sealed partial class FileMemoryStore : ILongTermMemory, IArchivedMemory
 
     /// <summary>
     /// Hard-deletes archived entries whose <see cref="MemoryEntry.ArchivedAt"/> is older than
-    /// <paramref name="retention"/>. Returns the number purged. A non-positive retention
-    /// disables purging entirely, so archived entries are kept forever.
+    /// <paramref name="retention"/> and that <paramref name="keep"/> does not hold back. A
+    /// non-positive retention disables purging entirely, so archived entries are kept forever.
     /// </summary>
-    public async Task<int> PurgeArchivedAsync(TimeSpan retention, CancellationToken cancellationToken = default)
+    public async Task<ArchivePurgeResult> PurgeArchivedAsync(
+        TimeSpan retention,
+        Func<MemoryEntry, bool>? keep = null,
+        CancellationToken cancellationToken = default)
     {
         if (retention <= TimeSpan.Zero)
-            return 0;
+            return new ArchivePurgeResult(0, 0);
 
         var cutoff = DateTimeOffset.UtcNow - retention;
 
         List<string> expired;
+        var kept = 0;
+
         await _semaphore.WaitAsync(cancellationToken);
         try
         {
             var index = await EnsureIndexAsync(cancellationToken);
-            expired = index.Values
+            var due = index.Values
                 .Where(e => e.ArchivedAt is not null && e.ArchivedAt < cutoff)
-                .Select(e => e.Id)
                 .ToList();
+
+            expired = [];
+            foreach (var entry in due)
+            {
+                if (keep is not null && keep(entry))
+                    kept++;
+                else
+                    expired.Add(entry.Id);
+            }
         }
         finally
         {
@@ -402,7 +416,7 @@ internal sealed partial class FileMemoryStore : ILongTermMemory, IArchivedMemory
         foreach (var id in expired)
             await DeleteAsync(id, cancellationToken);
 
-        return expired.Count;
+        return new ArchivePurgeResult(expired.Count, kept);
     }
 
     public async Task<IReadOnlyList<IReadOnlyList<string>>> FindNearDuplicateClustersAsync(
@@ -484,6 +498,110 @@ internal sealed partial class FileMemoryStore : ILongTermMemory, IArchivedMemory
             clusters.Count, clusters.Sum(c => c.Count), entries.Count, similarityThreshold);
 
         return clusters;
+    }
+
+    /// <summary>
+    /// Top-level segment of a category path — the part before the first slash — used to bound
+    /// what a save-time similarity lookup will compare against.
+    /// </summary>
+    /// <remarks>
+    /// A lexical fallback scores on shared vocabulary alone, and operational memory shares a
+    /// great deal of it across subjects: a user preference about email and an infrastructure
+    /// note about an email connector overlap heavily without describing the same fact. Scoping
+    /// to the top level is coarse enough to still catch the same fact filed under sibling
+    /// subcategories, which is the common case for a duplicate.
+    /// </remarks>
+    internal static string? TopLevelCategory(string? category)
+    {
+        if (category is null)
+            return null;
+
+        var slash = category.IndexOf('/');
+        return slash < 0 ? category : category[..slash];
+    }
+
+    public async Task<MemorySimilarityMatch?> FindMostSimilarAsync(
+        MemoryEntry candidate,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(candidate.Content))
+            return null;
+
+        var scope = TopLevelCategory(candidate.Category);
+
+        List<MemoryEntry> entries;
+        await _semaphore.WaitAsync(cancellationToken);
+        try
+        {
+            var index = await EnsureIndexAsync(cancellationToken);
+            entries = index.Values
+                .Where(e => e.ArchivedAt is null && e.SupersededBy is null)
+                .Where(e => !string.Equals(e.Id, candidate.Id, StringComparison.OrdinalIgnoreCase))
+                .Where(e => string.Equals(
+                    TopLevelCategory(e.Category), scope, StringComparison.OrdinalIgnoreCase))
+                .OrderBy(e => e.Id, StringComparer.Ordinal)
+                .ToList();
+        }
+        finally
+        {
+            _semaphore.Release();
+        }
+
+        if (entries.Count == 0)
+            return null;
+
+        if (_embeddingCache is not null)
+        {
+            var queryVector = await _embeddingCache.GenerateQueryEmbeddingAsync(
+                GetDocumentText(candidate), cancellationToken);
+
+            if (queryVector is not null)
+            {
+                var batch = entries.Select(e => (e.Id, Text: GetDocumentText(e))).ToList();
+                var map = await _embeddingCache.GetOrCreateBatchAsync(batch, cancellationToken);
+
+                MemoryEntry? best = null;
+                var bestScore = double.NegativeInfinity;
+
+                foreach (var entry in entries)
+                {
+                    if (map.GetValueOrDefault(entry.Id) is not { } vector)
+                        continue;
+
+                    var score = EmbeddingCache.CosineSimilarity(queryVector, vector);
+                    if (score > bestScore)
+                    {
+                        bestScore = score;
+                        best = entry;
+                    }
+                }
+
+                // Only when every vector is missing does this fall through to the lexical scan.
+                // Mixing a cosine score and a Jaccard score in one argmax would compare two
+                // different scales and hand the caller a number its threshold cannot interpret.
+                if (best is not null)
+                    return new MemorySimilarityMatch(best, bestScore, MemorySimilarityMeasure.Embedding);
+            }
+        }
+
+        var candidateTokens = Tokenize(candidate.Content);
+
+        MemoryEntry? lexicalBest = null;
+        var lexicalBestScore = double.NegativeInfinity;
+
+        foreach (var entry in entries)
+        {
+            var score = Jaccard(candidateTokens, Tokenize(entry.Content));
+            if (score > lexicalBestScore)
+            {
+                lexicalBestScore = score;
+                lexicalBest = entry;
+            }
+        }
+
+        return lexicalBest is null
+            ? null
+            : new MemorySimilarityMatch(lexicalBest, lexicalBestScore, MemorySimilarityMeasure.Lexical);
     }
 
     /// <summary>

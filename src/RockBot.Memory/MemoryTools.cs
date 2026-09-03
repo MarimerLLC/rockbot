@@ -79,6 +79,7 @@ public sealed class MemoryTools
     private readonly ILongTermMemory _memory;
     private readonly ILlmClient _llmClient;
     private readonly IMemoryContradictionDetector? _contradictionDetector;
+    private readonly IMemoryDeduplicator? _deduplicator;
     private readonly ILogger<MemoryTools> _logger;
     private readonly IList<AITool> _tools;
     private readonly string _extractionSystemPrompt;
@@ -88,11 +89,13 @@ public sealed class MemoryTools
         ILlmClient llmClient,
         IOptions<AgentProfileOptions> profileOptions,
         ILogger<MemoryTools> logger,
-        IMemoryContradictionDetector? contradictionDetector = null)
+        IMemoryContradictionDetector? contradictionDetector = null,
+        IMemoryDeduplicator? deduplicator = null)
     {
         _memory = memory;
         _llmClient = llmClient;
         _contradictionDetector = contradictionDetector;
+        _deduplicator = deduplicator;
         _logger = logger;
 
         // Load shared memory rules and prepend to the extraction prompt
@@ -413,6 +416,7 @@ public sealed class MemoryTools
     [Description("Delete a memory entry by its ID. Use this to remove facts that are wrong, outdated, or " +
                  "superseded in full. Find the ID first by calling SearchMemory — IDs appear in brackets, " +
                  "e.g. [abc123]. " +
+                 "This removes it from recall; the entry is archived, not destroyed. " +
                  "To correct part of a fact, use EditMemory instead — deleting and re-saving destroys the " +
                  "entry's age and reinforcement history.")]
     public async Task<string> DeleteMemory(
@@ -427,12 +431,17 @@ public sealed class MemoryTools
             return $"No memory entry found with id '{id}'. Use SearchMemory to find the correct ID.";
         }
 
-        await _memory.DeleteAsync(id);
+        // Archive rather than delete. The model reaches this tool on its own judgement about a
+        // fact it cannot re-derive, and it is wrong often enough that the cost of being wrong
+        // should be lost recall until someone notices, not the fact itself. Hard deletion is
+        // left to the retention purge, which runs on a delay long enough to catch it.
+        await _memory.ArchiveAsync(id, "deleted by agent tool");
 
-        _logger.LogInformation("Deleted memory entry {Id} ({Category}): {Content}",
+        _logger.LogInformation("Archived memory entry {Id} ({Category}) via DeleteMemory: {Content}",
             id, existing.Category ?? "(none)", existing.Content);
 
-        return $"Deleted memory entry '{id}': \"{existing.Content}\"";
+        return $"Archived memory entry '{id}' (recoverable by an operator until the retention purge): " +
+               $"\"{existing.Content}\"";
     }
 
     [Description("Adjust the importance score of an existing memory entry. Use this when user feedback " +
@@ -475,17 +484,41 @@ public sealed class MemoryTools
         try
         {
             var entries = await ExpandToMemoryEntriesAsync(content, category, tags);
+            var tally = new MemorySaveTally();
 
             foreach (var entry in entries)
             {
                 var resolved = await ApplyContradictionResolutionAsync(entry);
-                await _memory.SaveAsync(resolved);
-                _logger.LogInformation("Background save: {Id} ({Category}): {Content}",
-                    resolved.Id, resolved.Category ?? "(none)", resolved.Content);
+
+                // The single largest source of duplicate entries in a live corpus: the same fact
+                // restated across sessions, extracted afresh each time, and saved as a new entry
+                // for consolidation to merge back together later. Reinforcing what is already
+                // there is both cheaper and truer — the reinforcement count finally means what
+                // it says.
+                if (_deduplicator is not null)
+                {
+                    var outcome = await _deduplicator.SaveOrReinforceAsync(resolved);
+                    tally.Record(outcome);
+
+                    if (outcome.Action == MemorySaveAction.Created)
+                        _logger.LogInformation("Background save: {Id} ({Category}): {Content}",
+                            resolved.Id, resolved.Category ?? "(none)", resolved.Content);
+                    else
+                        _logger.LogInformation("Background save {Action} existing entry {Id}: {Content}",
+                            outcome.Action.ToString().ToLowerInvariant(), outcome.Id, resolved.Content);
+                }
+                else
+                {
+                    await _memory.SaveAsync(resolved);
+                    tally.Record(new MemorySaveOutcome(MemorySaveAction.Created, resolved.Id));
+                    _logger.LogInformation("Background save: {Id} ({Category}): {Content}",
+                        resolved.Id, resolved.Category ?? "(none)", resolved.Content);
+                }
             }
 
-            _logger.LogInformation("Background SaveMemory complete: {Count} new entries saved for content '{Content}'",
-                entries.Count, content);
+            _logger.LogInformation(
+                "Background SaveMemory complete: {Saved} saved, {Reinforced} reinforced, {Extended} extended for content '{Content}'",
+                tally.Saved, tally.Reinforced, tally.Extended, content);
         }
         catch (Exception ex)
         {

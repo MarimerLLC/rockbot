@@ -54,9 +54,11 @@ public interface ILongTermMemory
     /// Deletes a memory entry by ID. No-op if not found.
     /// </summary>
     /// <remarks>
-    /// This is a hard delete with no recovery path. Automated housekeeping should call
-    /// <see cref="ArchiveAsync"/> instead and leave hard deletion to the retention purge
-    /// and to explicit user-driven removal.
+    /// This is a hard delete with no recovery path. Only the retention purge should call it.
+    /// Every other removal — consolidation, identity reflection, the agent's own delete tool,
+    /// capability-claim eviction, aged observation theories — goes through
+    /// <see cref="ArchiveAsync"/>, so a wrong automated judgement costs recall until someone
+    /// notices rather than costing the fact.
     /// </remarks>
     Task DeleteAsync(string id, CancellationToken cancellationToken = default);
 

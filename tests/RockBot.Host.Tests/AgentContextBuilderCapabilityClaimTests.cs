@@ -34,8 +34,12 @@ public class AgentContextBuilderCapabilityClaimTests
 
         var messages = await builder.BuildAsync("session-1", LongMessage, CancellationToken.None);
 
-        Assert.AreEqual(1, ltm.DeletedIds.Count, "Falsified claim must be evicted from LTM.");
-        Assert.AreEqual("claim-a", ltm.DeletedIds[0]);
+        // Archived, not deleted: the verifier decides on a single probe run at context-build time,
+        // and a probe can fail for reasons that have nothing to do with the claim being wrong.
+        Assert.AreEqual(0, ltm.DeletedIds.Count, "Eviction must not hard-delete.");
+        Assert.AreEqual(1, ltm.ArchivedIds.Count, "Falsified claim must be evicted from LTM.");
+        Assert.AreEqual("claim-a", ltm.ArchivedIds[0].Id);
+        Assert.AreEqual("falsified by capability verifier", ltm.ArchivedIds[0].Reason);
         Assert.IsFalse(messages.Any(m => m.Text?.Contains("claim-a") == true),
             "Evicted claim must not appear in any injected context.");
     }
@@ -51,6 +55,7 @@ public class AgentContextBuilderCapabilityClaimTests
         var messages = await builder.BuildAsync("session-1", LongMessage, CancellationToken.None);
 
         Assert.AreEqual(0, ltm.DeletedIds.Count, "Predicate-failed claim must NOT be evicted.");
+        Assert.AreEqual(0, ltm.ArchivedIds.Count, "Predicate-failed claim must NOT be evicted.");
         var injected = messages.FirstOrDefault(m => m.Text?.Contains("claim-b") == true);
         Assert.IsNotNull(injected, "Predicate-failed claim must be injected as before.");
         Assert.IsFalse(injected!.Text!.Contains("verifier-uncertain"),
@@ -68,6 +73,7 @@ public class AgentContextBuilderCapabilityClaimTests
         var messages = await builder.BuildAsync("session-1", LongMessage, CancellationToken.None);
 
         Assert.AreEqual(0, ltm.DeletedIds.Count, "Uncertain claim must NOT be evicted.");
+        Assert.AreEqual(0, ltm.ArchivedIds.Count, "Uncertain claim must NOT be evicted.");
         var injected = messages.FirstOrDefault(m => m.Text?.Contains("claim-c") == true);
         Assert.IsNotNull(injected, "Uncertain claim must be injected.");
         StringAssert.Contains(injected!.Text!, "verifier-uncertain");
@@ -85,6 +91,7 @@ public class AgentContextBuilderCapabilityClaimTests
         var messages = await builder.BuildAsync("session-1", LongMessage, CancellationToken.None);
 
         Assert.AreEqual(0, ltm.DeletedIds.Count, "Non-claim entries must not be evicted.");
+        Assert.AreEqual(0, ltm.ArchivedIds.Count, "Non-claim entries must not be evicted.");
         Assert.AreEqual(0, verifier.CallCount, "Verifier must not be invoked for non-claim entries.");
         Assert.IsTrue(messages.Any(m => m.Text?.Contains("regular-1") == true),
             "Regular entry must be injected as before.");
@@ -100,6 +107,7 @@ public class AgentContextBuilderCapabilityClaimTests
         var messages = await builder.BuildAsync("session-1", LongMessage, CancellationToken.None);
 
         Assert.AreEqual(0, ltm.DeletedIds.Count);
+        Assert.AreEqual(0, ltm.ArchivedIds.Count);
         Assert.IsTrue(messages.Any(m => m.Text?.Contains("claim-d") == true),
             "Without a verifier, claim entries fall through to the existing injection path.");
     }
@@ -118,6 +126,7 @@ public class AgentContextBuilderCapabilityClaimTests
         var messages = await builder.BuildAsync("session-1", LongMessage, CancellationToken.None);
 
         Assert.AreEqual(0, ltm.DeletedIds.Count, "Verifier exceptions must not cause eviction.");
+        Assert.AreEqual(0, ltm.ArchivedIds.Count, "Verifier exceptions must not cause eviction.");
         var injected = messages.FirstOrDefault(m => m.Text?.Contains("claim-e") == true);
         Assert.IsNotNull(injected);
         StringAssert.Contains(injected!.Text!, "verifier-error");
@@ -209,6 +218,7 @@ public class AgentContextBuilderCapabilityClaimTests
     {
         private readonly List<MemoryEntry> _entries;
         public List<string> DeletedIds { get; } = new();
+        public List<(string Id, string Reason)> ArchivedIds { get; } = new();
 
         public RecordingMemory(IReadOnlyList<MemoryEntry> seed) => _entries = [.. seed];
 
@@ -234,6 +244,13 @@ public class AgentContextBuilderCapabilityClaimTests
         public Task DeleteAsync(string id, CancellationToken cancellationToken = default)
         {
             DeletedIds.Add(id);
+            _entries.RemoveAll(e => e.Id == id);
+            return Task.CompletedTask;
+        }
+
+        public Task ArchiveAsync(string id, string reason, CancellationToken cancellationToken = default)
+        {
+            ArchivedIds.Add((id, reason));
             _entries.RemoveAll(e => e.Id == id);
             return Task.CompletedTask;
         }
