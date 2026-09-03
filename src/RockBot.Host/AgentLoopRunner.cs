@@ -168,7 +168,7 @@ public sealed partial class AgentLoopRunner(
     /// times in a row the detector signals that the agent should try a different approach.
     /// Internal and sealed so it can be unit-tested directly.
     /// </summary>
-    internal sealed class RepetitiveToolCallDetector
+    internal sealed partial class RepetitiveToolCallDetector
     {
         public const int Threshold = 3;
 
@@ -182,8 +182,12 @@ public sealed partial class AgentLoopRunner(
         /// </summary>
         public bool Track(string toolName, string argsKey, string result)
         {
+            // Normalize before truncating — normalizing after the cut would leave a
+            // partial ID straddling the boundary, which still varies per call.
+            var normalized = NormalizeForKey(result);
+
             // Truncate large results so the key stays manageable.
-            var resultTrunc = result is { Length: > 500 } ? result[..500] : result;
+            var resultTrunc = normalized is { Length: > 500 } ? normalized[..500] : normalized;
             var key = $"{toolName}|{argsKey}|{resultTrunc}";
 
             if (key == _lastKey)
@@ -211,6 +215,44 @@ public sealed partial class AgentLoopRunner(
             _lastKey = null;
             _count = 0;
         }
+
+        /// <summary>
+        /// Replaces per-call entropy — generated IDs, timestamps and durations — with
+        /// placeholders so two runs of the same futile call compare equal. Without this
+        /// the detector is blind to tools like <c>spawn_wisps</c> whose result embeds a
+        /// fresh batch/wisp ID and elapsed time on every invocation.
+        /// </summary>
+        internal static string NormalizeForKey(string result)
+        {
+            if (string.IsNullOrEmpty(result)) return result;
+
+            var text = TimestampRegex().Replace(result, "<ts>");
+            text = GuidRegex().Replace(text, "<id>");
+            text = LongHexRegex().Replace(text, "<id>");
+            text = DurationRegex().Replace(text, "<dur>");
+            return text;
+        }
+
+        // ISO-8601 timestamps, with or without fractional seconds and offset.
+        [GeneratedRegex(
+            @"\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?",
+            RegexOptions.CultureInvariant)]
+        private static partial Regex TimestampRegex();
+
+        // Dashed GUIDs (8-4-4-4-12).
+        [GeneratedRegex(
+            @"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b",
+            RegexOptions.CultureInvariant)]
+        private static partial Regex GuidRegex();
+
+        // Bare hex runs of 8+ chars — catches truncated "N"-format GUIDs such as
+        // batch-{Guid:N}[..18] and wisp-{Guid:N}[..16], which are not well-formed GUIDs.
+        [GeneratedRegex(@"\b[0-9a-fA-F]{8,}\b", RegexOptions.CultureInvariant)]
+        private static partial Regex LongHexRegex();
+
+        // Elapsed times: "1234ms", "1.2s", "1.5 s".
+        [GeneratedRegex(@"\b\d+(?:\.\d+)?\s*(?:ms|s)\b", RegexOptions.CultureInvariant)]
+        private static partial Regex DurationRegex();
     }
 
     private sealed record CompletionEvalDto(bool Complete, string? Reason);
