@@ -117,7 +117,7 @@ internal sealed class ScheduledTaskHandler(
         // starting during execution will fire that token so the LLM loop stops
         // cleanly. If preemption happens, re-throw so the scheduler can retry.
 
-        var replySessionId = message.IsSystemTask ? "scheduled-system" : "scheduled";
+        var replySessionId = message.IsSystemTask ? WellKnownSessions.ScheduledSystem : "scheduled";
 
         string finalText;
         bool succeeded;

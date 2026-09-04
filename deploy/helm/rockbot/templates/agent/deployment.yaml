@@ -102,7 +102,15 @@ spec:
               done
 
               # Runtime directories
-              mkdir -p /data/agent/memory /data/agent/skills
+              mkdir -p /data/agent/memory /data/agent/skills /data/agent/memory-audit
+
+              # The memory audit's directory is group-writable because the introspection
+              # sidecar deletes a file inside it — resume_memory_consolidation removes the
+              # pause marker, and unlinking needs write on the DIRECTORY, not the file. The
+              # sidecar runs as a different uid and reaches this volume only through the
+              # fsGroup, so a default 0755 would leave it able to read the marker and unable
+              # to clear it.
+              chmod 775 /data/agent/memory-audit
 
               # Secrets directory (workiq token cache and any future per-user
               # credential material). Mode 0700 keeps it private to the rockbot

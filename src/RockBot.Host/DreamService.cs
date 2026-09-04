@@ -54,6 +54,10 @@ internal sealed class DreamService : IHostedService, IDisposable
     private readonly IReadOnlyList<IToolSkillProvider> _toolSkillProviders;
     private readonly IReadOnlyList<IPrunableLog> _prunableLogs;
     private readonly IMemoryDeduplicator? _memoryDeduplicator;
+
+    // Presence of this file stops consolidation. Resolved once: the audit writes it, and the
+    // path must not move underneath a running dream cycle.
+    private readonly string _consolidationPausePath;
     private Timer? _timer;
     private CronExpression? _cron;
     private string? _dreamDirective;
@@ -120,7 +124,8 @@ internal sealed class DreamService : IHostedService, IDisposable
         IEnumerable<IToolSkillProvider>? toolSkillProviders = null,
         TieredChatClientRegistry? tieredRegistry = null,
         IEnumerable<IPrunableLog>? prunableLogs = null,
-        IMemoryDeduplicator? memoryDeduplicator = null)
+        IMemoryDeduplicator? memoryDeduplicator = null,
+        IOptions<MemoryAuditOptions>? memoryAuditOptions = null)
     {
         _memory = memory;
         _skillStore = skillStores.FirstOrDefault();
@@ -159,6 +164,11 @@ internal sealed class DreamService : IHostedService, IDisposable
         _toolSkillProviders = toolSkillProviders?.ToList() ?? (IReadOnlyList<IToolSkillProvider>)Array.Empty<IToolSkillProvider>();
         _prunableLogs = prunableLogs?.ToList() ?? (IReadOnlyList<IPrunableLog>)Array.Empty<IPrunableLog>();
         _memoryDeduplicator = memoryDeduplicator;
+        _consolidationPausePath = ResolvePath(
+            Path.Combine(
+                (memoryAuditOptions?.Value.BasePath ?? MemoryAuditFiles.DefaultBasePath),
+                MemoryAuditFiles.ConsolidationPausedFile),
+            _profileOptions.BasePath);
     }
 
     /// <summary>
@@ -865,6 +875,42 @@ internal sealed class DreamService : IHostedService, IDisposable
     internal const string MergedAtKey = "mergedAt";
 
     /// <summary>
+    /// Archive reason prefix for a source that a merge replaced; the replacement's id follows.
+    /// </summary>
+    /// <remarks>
+    /// A constant because the memory audit reads it back: a source archived "merged into X"
+    /// where X exists nowhere means the fact has no surviving copy, which is the shape issue
+    /// #506 found and the one thing a reader of the archive tier cannot recover from.
+    /// </remarks>
+    internal const string MergedIntoReasonPrefix = "merged into ";
+
+    /// <summary>
+    /// Metadata key holding the cluster identity of a merge the coverage check refused —
+    /// a short hash of the sorted source ids.
+    /// </summary>
+    /// <remarks>
+    /// A rejection used to exist only as a log line, which meant "the same cluster is rejected
+    /// every cycle forever" was invisible to anything but a human grepping Loki inside its
+    /// retention window. Stamping the sources makes the treadmill observable on disk, at the
+    /// cost of one metadata write per rejected source.
+    /// </remarks>
+    internal const string ConsolidationRejectedClusterKey = "consolidationRejectedCluster";
+
+    /// <summary>Metadata key holding when this entry was last a rejected merge's source.</summary>
+    internal const string ConsolidationRejectedAtKey = "consolidationRejectedAt";
+
+    /// <summary>
+    /// Stable short identity for a merge cluster, order-independent so the same set of sources
+    /// hashes the same however the model happens to list them.
+    /// </summary>
+    internal static string RejectedClusterHash(IEnumerable<string> sourceIds)
+    {
+        var ordered = string.Join(",", sourceIds.OrderBy(id => id, StringComparer.Ordinal));
+        var bytes = System.Security.Cryptography.SHA256.HashData(Encoding.UTF8.GetBytes(ordered));
+        return Convert.ToHexString(bytes.AsSpan(0, 8));
+    }
+
+    /// <summary>
     /// True when an entry is valuable enough that consolidation may not discard it outright.
     /// Merging is still allowed — that preserves the content, subject to the coverage check.
     /// </summary>
@@ -1027,6 +1073,38 @@ internal sealed class DreamService : IHostedService, IDisposable
     }
 
     /// <summary>
+    /// Records on each source of a refused merge which cluster it belonged to and when. Purely
+    /// observational: nothing in consolidation reads these back, and an entry is neither
+    /// protected nor penalised by carrying them.
+    /// </summary>
+    /// <remarks>
+    /// Written by the dream rather than by the auditor because only the dream knows which
+    /// entries it proposed together. An auditor re-deriving clusters would be guessing at a
+    /// decision an LLM already made, and would report a different set.
+    /// </remarks>
+    private async Task StampRejectedAsync(
+        IReadOnlyList<MemoryEntry> sources, string clusterHash, CancellationToken ct)
+    {
+        var now = DateTimeOffset.UtcNow.ToString("O");
+
+        foreach (var source in sources)
+        {
+            ct.ThrowIfCancellationRequested();
+
+            var metadata = source.Metadata is null
+                ? []
+                : new Dictionary<string, string>(source.Metadata, StringComparer.OrdinalIgnoreCase);
+
+            metadata[ConsolidationRejectedClusterKey] = clusterHash;
+            metadata[ConsolidationRejectedAtKey] = now;
+
+            // Metadata only — content is untouched, so the entry's review fingerprint still
+            // matches and this write does not make it eligible for consolidation all over again.
+            await _memory.SaveAsync(source with { Metadata = metadata }, ct);
+        }
+    }
+
+    /// <summary>
     /// Merges and prunes long-term memory entries via the "memory dream" pass.
     /// Returns the number of entries deleted and saved.
     /// </summary>
@@ -1042,6 +1120,18 @@ internal sealed class DreamService : IHostedService, IDisposable
         if (!_options.MemoryConsolidationEnabled)
         {
             _logger.LogInformation("DreamService: memory consolidation disabled; skipping");
+            return (0, 0);
+        }
+
+        // The memory audit's circuit breaker. Checked here rather than at the top of the cycle
+        // so a pause stops only the pass that destroys things — mining, extraction and the
+        // retention sweeps keep running while a human works out what happened.
+        if (File.Exists(_consolidationPausePath))
+        {
+            _logger.LogWarning(
+                "DreamService: memory consolidation is PAUSED by the memory audit — {Path} exists. " +
+                "Delete it, or call resume_memory_consolidation, to resume.",
+                _consolidationPausePath);
             return (0, 0);
         }
 
@@ -1235,6 +1325,8 @@ internal sealed class DreamService : IHostedService, IDisposable
                     foreach (var srcId in sourceIds)
                         rejectedMergeSources.Add(srcId);
 
+                    await StampRejectedAsync(sources, RejectedClusterHash(sourceIds), ct);
+
                     rejectedMerges++;
                     _logger.LogWarning(
                         "DreamService: rejected merge of [{Sources}]{AfterRepair} — dropped {Count} specific(s): {Missing}. Sources kept. Merged text was: {Content}",
@@ -1299,7 +1391,7 @@ internal sealed class DreamService : IHostedService, IDisposable
             // Now that the replacement exists, its sources can be retired.
             foreach (var srcId in sourceIds)
                 if (byId.ContainsKey(srcId))
-                    archiveReasons[srcId] = $"merged into {entry.Id}";
+                    archiveReasons[srcId] = $"{MergedIntoReasonPrefix}{entry.Id}";
         }
 
         // Standalone removals (ephemeral content the LLM flagged) that no merge accounted for.
@@ -5498,7 +5590,12 @@ internal sealed class DreamService : IHostedService, IDisposable
         return $" [attached: {string.Join("; ", entries)}]";
     }
 
-    private static string ExtractJsonObject(string text)
+    /// <summary>
+    /// Outermost JSON object in a model reply, tolerating a reasoning preamble and surrounding
+    /// prose. Internal rather than private because the memory audit's judge parses replies of
+    /// exactly this shape, and two copies of this leniency would drift.
+    /// </summary>
+    internal static string ExtractJsonObject(string text)
     {
         // Strip <think>...</think> blocks first (DeepSeek reasoning preamble)
         var thinkStart = text.IndexOf("<think>", StringComparison.OrdinalIgnoreCase);

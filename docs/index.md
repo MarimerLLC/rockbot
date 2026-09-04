@@ -39,6 +39,7 @@ Each agent is an isolated process that reacts to messages, invokes tools, calls 
 - [A2A](a2a) — agent-to-agent task delegation
 - [Wisps](wisps) — short-lived worker pattern
 - [Dream service](dream-service) — offline self-optimization
+- [Memory audit](memory-audit) — scheduled read-only health check of long-term memory
 - [Knowledge graph](knowledge-graph)
 - [Blazor UI](blazor-ui)
 - [NuGet release](nuget-release)

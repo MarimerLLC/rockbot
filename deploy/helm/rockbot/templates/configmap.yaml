@@ -38,6 +38,21 @@ data:
   Dream__LogRetentionMaxFileAge: {{ dig "maxFileAge" "30.00:00:00" $logRetention | quote }}
   Dream__LogRetentionMaxFilesPerDirectory: {{ dig "maxFilesPerDirectory" 1000 $logRetention | quote }}
   Dream__LogRetentionMaxLinesPerFile: {{ dig "maxLinesPerFile" 10000 $logRetention | quote }}
+  # ── Memory audit (read-only measurement of the long-term memory store) ────
+  # `dig` for the same reason as the retention block above: an explicit false must
+  # survive, and a --reuse-values upgrade with no block must still get the defaults.
+  {{- $memoryAudit := .Values.agent.memoryAudit | default dict }}
+  MemoryAudit__Enabled: {{ dig "enabled" true $memoryAudit | quote }}
+  MemoryAudit__CronSchedule: {{ dig "cronSchedule" "0 4 * * *" $memoryAudit | quote }}
+  MemoryAudit__BasePath: "/data/agent/memory-audit"
+  MemoryAudit__SharedReportDirectory: "/rockbot/shared/exports/memory-audit"
+  MemoryAudit__PauseConsolidationOnAlert: {{ dig "pauseConsolidationOnAlert" false $memoryAudit | quote }}
+  {{- $evalCron := dig "evalCronSchedule" "0 5 * * 0" $memoryAudit }}
+  MemoryAudit__EvalEnabled: {{ if $evalCron }}"true"{{ else }}"false"{{ end }}
+  {{- if $evalCron }}
+  MemoryAudit__EvalCronSchedule: {{ $evalCron | quote }}
+  {{- end }}
+
   # ── OpenRouter app attribution (non-secret) ───────────────────────────────
   # Sent as the HTTP-Referer / X-Title headers on OpenRouter calls only, so the
   # account's activity dashboard shows this release by name instead of "unknown".

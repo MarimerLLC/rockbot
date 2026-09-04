@@ -55,6 +55,25 @@ agent:
     # At ~1.1 KB/line for wisp records, 10000 ≈ 11 MB, well above the 14-day window
     # the wisp dream pass reads. Set to 0 to disable line trimming.
     maxLinesPerFile: 10000
+  # Read-only memory audit (see docs/memory-audit.md). Walks the memory store on its
+  # own cron, keeps a long-lived trend file at /data/agent/memory-audit/, checks
+  # invariants, and pushes a message to the scheduled-system session only when
+  # something needs attention. Model-free apart from the weekly sample eval.
+  memoryAudit:
+    enabled: true
+    # Measurement run. Kept well clear of the 12-hourly dream cycle so the two do not
+    # queue behind each other on the agent's single work slot.
+    cronSchedule: "0 4 * * *"
+    # Weekly LLM-judged sample eval — four Balanced-tier JSON calls, skipped entirely
+    # on weeks where the memory corpus has not changed. Set to "" to disable.
+    evalCronSchedule: "0 5 * * 0"
+    # Circuit breaker. When true, a run that finds entries hard-deleted outside the
+    # retention purge writes a marker file that stops dream memory consolidation until
+    # a human (or resume_memory_consolidation) clears it. Off by default: a false
+    # positive stops the only thing keeping the corpus from growing without bound.
+    pauseConsolidationOnAlert: false
+  # Every other MemoryAudit__* knob (thresholds, sample size, shared-copy directory)
+  # is available through agent.extraEnv — see MemoryAuditOptions for the full list.
   resources:
     requests:
       cpu: 500m

@@ -86,6 +86,12 @@ internal sealed class DreamPassLedger
         return new DreamPassLedger(path, records, logger);
     }
 
+    /// <summary>
+    /// Every pass record currently held. Read-only: the memory audit reports how many passes ran
+    /// since its last snapshot, which needs the whole set rather than one pass at a time.
+    /// </summary>
+    public IReadOnlyDictionary<string, PassRecord> Records => _records;
+
     /// <summary>The record for <paramref name="passName"/>, or <c>null</c> if it has never run.</summary>
     public PassRecord? Get(string passName) =>
         _records.TryGetValue(passName, out var record) ? record : null;
