@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -112,7 +113,7 @@ internal sealed class MemoryAuditEvaluator(ILlmClient llm, ILogger logger)
             samples.Add(new Sample(
                 NearDuplicateCategory,
                 [a.Id, b.Id],
-                $"Two entries both live in memory (lexical overlap {pair.Score:P0}):\n" +
+                $"Two entries both live in memory (lexical overlap {Pct(pair.Score)}):\n" +
                 $"  - [{a.Id}] {Truncate(a.Content)}\n" +
                 $"  - [{b.Id}] {Truncate(b.Content)}"));
         }
@@ -127,7 +128,7 @@ internal sealed class MemoryAuditEvaluator(ILlmClient llm, ILogger logger)
             samples.Add(new Sample(
                 HighReinforcementCategory,
                 [entry.Id],
-                $"Reinforced {entry.ReinforcementCount}x, importance {entry.ImportanceScore:F2}, " +
+                $"Reinforced {entry.ReinforcementCount}x, importance {Score(entry.ImportanceScore)}, " +
                 $"category {entry.Category ?? "(none)"}:\n  [{entry.Id}] {Truncate(entry.Content)}"));
 
         // Facts consolidation discarded outright, with nothing put in their place.
@@ -143,7 +144,7 @@ internal sealed class MemoryAuditEvaluator(ILlmClient llm, ILogger logger)
                 EphemeralArchiveCategory,
                 [entry.Id],
                 $"Dropped as ephemeral on {entry.ArchivedAt:yyyy-MM-dd} " +
-                $"(reinforced {entry.ReinforcementCount}x, importance {entry.ImportanceScore:F2}):\n" +
+                $"(reinforced {entry.ReinforcementCount}x, importance {Score(entry.ImportanceScore)}):\n" +
                 $"  [{entry.Id}] {Truncate(entry.Content)}"));
 
         return samples;
@@ -295,6 +296,17 @@ internal sealed class MemoryAuditEvaluator(ILlmClient llm, ILogger logger)
             "commitment or identity detail rather than a passing detail.",
         _ => "Was this the right outcome?"
     };
+
+    /// <summary>
+    /// Percentage and score formatting pinned to the invariant culture. See
+    /// <c>MemoryAuditReportWriter.Percent</c> — "P0" renders as "75 %" under the culture the
+    /// container runs with, and an importance score of "0,97" reads as a different number.
+    /// </summary>
+    private static string Pct(double fraction) =>
+        (fraction * 100).ToString("F0", CultureInfo.InvariantCulture) + "%";
+
+    private static string Score(float value) =>
+        value.ToString("F2", CultureInfo.InvariantCulture);
 
     private static string Truncate(string? text)
     {

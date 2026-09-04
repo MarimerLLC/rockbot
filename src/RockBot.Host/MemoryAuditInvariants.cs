@@ -1,3 +1,4 @@
+using System.Globalization;
 namespace RockBot.Host;
 
 /// <summary>
@@ -159,9 +160,9 @@ internal static class MemoryAuditInvariants
             if (lossPercent > auditOptions.MaxLossPercentBetweenSnapshots)
                 violations.Add(new MemoryAuditInvariantViolation(
                     LossPercentThreshold,
-                    $"Live entries fell {lossPercent:F1}% since the previous snapshot " +
+                    $"Live entries fell {Num(lossPercent, 1)}% since the previous snapshot " +
                     $"({previousLive.Value} → {snapshot.Live}); the limit is " +
-                    $"{auditOptions.MaxLossPercentBetweenSnapshots:F0}%.",
+                    $"{Num(auditOptions.MaxLossPercentBetweenSnapshots, 0)}%.",
                     []));
         }
 
@@ -180,8 +181,8 @@ internal static class MemoryAuditInvariants
         if (snapshot.NetGrowthPerDay is { } growth && growth > auditOptions.MaxNetGrowthPerDay)
             violations.Add(new MemoryAuditInvariantViolation(
                 NetGrowthThreshold,
-                $"The corpus is growing {growth:F1} entries/day, above the " +
-                $"{auditOptions.MaxNetGrowthPerDay:F0}/day you set — saves are outpacing consolidation.",
+                $"The corpus is growing {Num(growth, 1)} entries/day, above the " +
+                $"{Num(auditOptions.MaxNetGrowthPerDay, 0)}/day you set — saves are outpacing consolidation.",
                 []));
 
         if (snapshot.MaxChainDepth > auditOptions.MaxMergeChainDepth)
@@ -197,7 +198,7 @@ internal static class MemoryAuditInvariants
             if (rejectedPerWeek > auditOptions.MaxRejectedMergesPerWeek)
                 violations.Add(new MemoryAuditInvariantViolation(
                     RejectedMergesThreshold,
-                    $"Merge rejections are running at {rejectedPerWeek:F1}/week, above the " +
+                    $"Merge rejections are running at {Num(rejectedPerWeek, 1)}/week, above the " +
                     $"{auditOptions.MaxRejectedMergesPerWeek}/week you set.",
                     []));
         }
@@ -216,6 +217,14 @@ internal static class MemoryAuditInvariants
             ? MemoryAuditStatuses.Alert
             : MemoryAuditStatuses.Warning;
     }
+
+    /// <summary>
+    /// A fixed-point number with a dot, whatever the host's locale. These strings are stored in
+    /// the JSON trend rows and read back by the sidecar, so a decimal comma would change the
+    /// on-disk record.
+    /// </summary>
+    private static string Num(double value, int decimals) =>
+        value.ToString(decimals == 0 ? "F0" : "F1", CultureInfo.InvariantCulture);
 
     /// <summary>When a merge was produced, per its own provenance stamp.</summary>
     private static DateTimeOffset? MergedAt(MemoryEntry entry)

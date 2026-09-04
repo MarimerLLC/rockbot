@@ -32,7 +32,7 @@ internal static class MemoryAuditReportWriter
         sb.AppendLine();
         sb.AppendLine(
             $"**{StatusLabel(snapshot.Status)}** — {snapshot.Live} live entries, {snapshot.Archived} archived, " +
-            $"measured {snapshot.TakenAt:yyyy-MM-dd HH:mm} (`{snapshot.SnapshotId}`).");
+            $"measured {Timestamp(snapshot.TakenAt)} (`{snapshot.SnapshotId}`).");
         sb.AppendLine();
 
         // ── What changed ──────────────────────────────────────────────────────
@@ -47,13 +47,13 @@ internal static class MemoryAuditReportWriter
         }
         else
         {
-            sb.AppendLine($"Since {snapshot.PreviousTakenAt:yyyy-MM-dd HH:mm}:");
+            sb.AppendLine($"Since {Timestamp(snapshot.PreviousTakenAt!.Value)}:");
             sb.AppendLine();
             sb.AppendLine($"- {snapshot.CreatedSinceLast} new, {snapshot.ArchivedSinceLast} archived, " +
                           $"{snapshot.HardDeletedSinceLast} gone from disk " +
                           $"({snapshot.PurgedSinceLast} explained by the retention purge).");
             sb.AppendLine(snapshot.NetGrowthPerDay is { } rate
-                ? $"- Net growth {rate:+0.0;-0.0;0} entries/day."
+                ? $"- Net growth {FormatRate(rate)} entries/day."
                 : "- Net growth: not measurable — the gap between these two runs was too short " +
                   "to read a daily rate from (usually a restart).");
             sb.AppendLine($"- {snapshot.ReinforcedWithoutMergeSinceLast} entries genuinely re-observed " +
@@ -85,7 +85,7 @@ internal static class MemoryAuditReportWriter
             sb.AppendLine("Categories that moved most:");
             sb.AppendLine();
             foreach (var category in snapshot.TopCategoriesByGrowth)
-                sb.AppendLine($"- `{category.Category}` — {category.Net:+0;-0;0} " +
+                sb.AppendLine($"- `{category.Category}` — {Signed(category.Net)} " +
                               $"({category.Created} new, {category.Archived} archived)");
         }
 
@@ -119,7 +119,7 @@ internal static class MemoryAuditReportWriter
             sb.AppendLine("| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |");
             foreach (var row in rows)
                 sb.AppendLine(
-                    $"| {row.TakenAt:yyyy-MM-dd} | {row.Live} | {row.Archived} | {row.CreatedSinceLast} | " +
+                    $"| {Date(row.TakenAt)} | {row.Live} | {row.Archived} | {row.CreatedSinceLast} | " +
                     $"{row.ArchivedSinceLast} | {row.HardDeletedSinceLast} | " +
                     $"{FormatRate(row.NetGrowthPerDay)} | {row.Status} |");
         }
@@ -132,14 +132,14 @@ internal static class MemoryAuditReportWriter
             sb.AppendLine("## Sample eval");
             sb.AppendLine();
             sb.AppendLine(
-                $"On {summary.EvaluatedAt:yyyy-MM-dd} a judge reviewed {summary.Sampled} sampled outcome(s) and " +
-                $"agreed with {summary.Sound} of them ({summary.SoundRate:P0}).");
+                $"On {Date(summary.EvaluatedAt)} a judge reviewed {summary.Sampled} sampled outcome(s) and " +
+                $"agreed with {summary.Sound} of them ({Percent(summary.SoundRate)}).");
 
             if (summary.RateByCategory.Count > 0)
             {
                 sb.AppendLine();
                 foreach (var (category, rate) in summary.RateByCategory.OrderBy(kv => kv.Key, StringComparer.Ordinal))
-                    sb.AppendLine($"- {category}: {rate:P0} sound");
+                    sb.AppendLine($"- {category}: {Percent(rate)} sound");
             }
 
             var unsound = eval?.Verdicts.Where(v => !v.Sound).Take(5).ToList() ?? [];
@@ -156,6 +156,29 @@ internal static class MemoryAuditReportWriter
 
         return sb.ToString();
     }
+
+    /// <summary>
+    /// A percentage built by hand rather than with the "P0" specifier.
+    /// </summary>
+    /// <remarks>
+    /// Under the invariant culture the agent container actually runs with, ICU renders "P0" as
+    /// <c>75 %</c> — with a space — while a developer machine on en-US renders <c>75%</c>. The
+    /// report is a generated document; its bytes must not depend on the host's locale.
+    /// </remarks>
+    private static string Percent(double fraction) =>
+        (fraction * 100).ToString("F0", CultureInfo.InvariantCulture) + "%";
+
+    /// <summary>A signed count, with the ASCII sign rather than a locale's own.</summary>
+    private static string Signed(int value) =>
+        value.ToString("+0;-0;0", CultureInfo.InvariantCulture);
+
+    /// <summary>A date on the Gregorian calendar regardless of the host's default.</summary>
+    private static string Date(DateTimeOffset value) =>
+        value.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+
+    /// <summary>A date and time on the Gregorian calendar regardless of the host's default.</summary>
+    private static string Timestamp(DateTimeOffset value) =>
+        value.ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture);
 
     /// <summary>An unmeasurable rate reads as a dash, never as zero.</summary>
     private static string FormatRate(double? rate) =>

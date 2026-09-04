@@ -468,8 +468,12 @@ internal sealed class MemoryAuditService : IHostedService, IDisposable, IPrunabl
                 }).SaveAsync(StatePath, token);
 
             _logger.LogInformation(
-                "memory audit eval — {Sampled} sample(s) judged, {Sound} sound ({Rate:P0})",
-                result.Summary.Sampled, result.Summary.Sound, result.Summary.SoundRate);
+                "memory audit eval — {Sampled} sample(s) judged, {Sound} sound ({Rate})",
+                result.Summary.Sampled,
+                result.Summary.Sound,
+                // Pre-formatted: a logger renders "P0" with the ambient culture too, and this
+                // line is meant to be parsed by a dashboard.
+                (result.Summary.SoundRate * 100).ToString("F0", System.Globalization.CultureInfo.InvariantCulture) + "%");
 
             return result;
         }
@@ -637,7 +641,7 @@ internal sealed class MemoryAuditService : IHostedService, IDisposable, IPrunabl
 
         var reason = lostOutsidePurge
             ? $"{snapshot.HardDeletedOutsidePurge} entry(s) were hard-deleted outside the retention purge"
-            : $"live entries dropped more than {_options.MaxLossPercentBetweenSnapshots:F0}% since the previous snapshot";
+            : $"live entries dropped more than {_options.MaxLossPercentBetweenSnapshots.ToString("F0", System.Globalization.CultureInfo.InvariantCulture)}% since the previous snapshot";
 
         try
         {
