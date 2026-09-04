@@ -10,4 +10,11 @@ public static class WellKnownSessions
     /// availability checks to determine whether the user is actively engaged.
     /// </summary>
     public const string Primary = "blazor-session";
+
+    /// <summary>
+    /// Session carrying unsolicited output from system-owned scheduled work — system scheduled
+    /// tasks and the memory audit's attention alerts. Frontends categorize this separately from
+    /// user-requested scheduled tasks so housekeeping does not read as a reply.
+    /// </summary>
+    public const string ScheduledSystem = "scheduled-system";
 }

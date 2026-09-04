@@ -595,6 +595,26 @@ gracefully — passes that need a missing service are simply skipped.
 
 ---
 
+## Is any of this working?
+
+The dream service's own log lines report what each pass *did* — "12 merged, 8 archived" — and
+they report exactly that whether the merges were good or catastrophic. Nothing in this document
+tells you whether the corpus is converging, whether provenance still resolves, or whether
+anything was destroyed that should not have been.
+
+The [memory audit](memory-audit) answers those questions. It runs on its own schedule, walks the
+memory files rather than asking the store, and keeps a trend file with a 400-day retention so a
+slow loss is visible long after the logs that carried it have aged out. Two hooks in this service
+exist for it:
+
+- A merge the coverage check refuses now stamps its sources with `consolidationRejectedCluster`
+  and `consolidationRejectedAt`, so "the same cluster is rejected every cycle forever" is
+  observable on disk rather than only in a log line inside Loki's retention window.
+- `RunMemoryConsolidationPassAsync` skips entirely while
+  `memory-audit/consolidation-paused.json` exists. The audit writes that file, opt-in, when it
+  finds entries hard-deleted outside the retention purge. Only consolidation stops; mining,
+  extraction and the retention sweeps keep running.
+
 ## LLM response format
 
 All passes use a JSON response contract. The dream service extracts the outermost JSON object

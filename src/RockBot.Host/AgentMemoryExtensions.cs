@@ -143,6 +143,39 @@ public static class AgentMemoryExtensions
     }
 
     /// <summary>
+    /// Registers the read-only memory audit: a scheduled measurement of the long-term memory
+    /// store that writes a long-lived trend file, checks invariants, and speaks up when
+    /// something needs attention.
+    /// </summary>
+    /// <remarks>
+    /// Independent of <see cref="WithDreaming"/>. The audit measures whatever the store does,
+    /// including doing nothing, and a deployment that has turned dreaming off still wants to
+    /// know whether its corpus is growing without bound.
+    /// </remarks>
+    public static AgentHostBuilder WithMemoryAudit(
+        this AgentHostBuilder builder,
+        Action<MemoryAuditOptions>? configure = null)
+    {
+        if (configure is not null)
+            builder.Services.Configure(configure);
+        else
+            builder.Services.Configure<MemoryAuditOptions>(_ => { });
+
+        builder.Services.AddSingleton<MemoryAuditService>();
+        builder.Services.AddSingleton<IHostedService>(sp => sp.GetRequiredService<MemoryAuditService>());
+
+        // The audit owns its own snapshot retention but reuses the dream cycle's shared file-age
+        // policy for the dated reports and evals it leaves behind.
+        builder.Services.AddSingleton<IPrunableLog>(sp => sp.GetRequiredService<MemoryAuditService>());
+
+        // Published through get_tool_guide, so it costs nothing until the agent is actually
+        // asked how memory health works. Guides are never injected into the system prompt.
+        builder.Services.AddSingleton<RockBot.Tools.IToolSkillProvider, MemoryAuditSkillProvider>();
+
+        return builder;
+    }
+
+    /// <summary>
     /// Registers the file-based conversation log, enabling the preference-inference dream pass.
     /// Call after <see cref="WithConversationMemory"/> and before <see cref="WithDreaming"/>.
     /// <see cref="WithMemory"/> does NOT call this — callers opt in explicitly.

@@ -342,6 +342,7 @@ builder.Services.AddRockBotHost(agent =>
     agent.WithFailureClusterStore();
     agent.WithRepairTickets();
     agent.WithDreaming(opts => builder.Configuration.GetSection("Dream").Bind(opts));
+    agent.WithMemoryAudit(opts => builder.Configuration.GetSection("MemoryAudit").Bind(opts));
     agent.AddToolHandler();
     // The proxy must outwait the bridge: the bridge caps a tool call at MaxTimeoutMs
     // (15 min) and answers with a timeout response of its own. If the proxy gave up

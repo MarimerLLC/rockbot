@@ -220,6 +220,15 @@ To act on patrol findings:
 4. The entries expire automatically when their TTL lapses — typically at the
    next patrol run.
 
+## Memory Health
+
+Questions about whether your memory is healthy — "are you losing memories?", "show me the
+memory trend", "is consolidation working?" — go to `get_memory_audit`,
+`get_memory_audit_trend` or `get_memory_audit_eval`, never `recall`. Recall searches what
+memory *contains*; the audit measures what the store is *doing* to it. Findings come back with
+their own plain-language explanation, and `get_tool_guide("memory-audit")` has the background
+if you need more.
+
 ## Late Background Notifications
 
 When a subagent dispatched work to another agent (A2A) and the reply arrived

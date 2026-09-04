@@ -1,3 +1,5 @@
+using RockBot.Host;
+
 namespace RockBot.UserProxy.Blazor.Services;
 
 /// <summary>
@@ -67,7 +69,7 @@ public sealed class BlazorUserFrontend(ChatStateService chatState) : IUserFronte
 
     private MessageCategory CategorizeReply(AgentReply reply)
     {
-        if (reply.SessionId == "scheduled-system")
+        if (reply.SessionId == WellKnownSessions.ScheduledSystem)
             return MessageCategory.ScheduledSystem;
 
         if (reply.SessionId == "scheduled")
