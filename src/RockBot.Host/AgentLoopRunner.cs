@@ -153,6 +153,35 @@ public sealed partial class AgentLoopRunner(
         "conversational thread. Do not narrate your memory-write activity.";
 
     /// <summary>
+    /// Detects a reply whose whole body is memory-write narration, in the phrasings that
+    /// do not open with "Noted" and so slip past <see cref="MemorySummaryReplyRegex"/> —
+    /// "I've marked it as a winter trip goal…", "I've got that on the travel list."
+    /// Requires a first-person write verb, a pronoun object, and memory vocabulary, so a
+    /// reply reporting a genuine non-memory outcome does not match. Used by the guard
+    /// only for whole-response narration; the trailing-paragraph form is removed without
+    /// a re-prompt by <see cref="ResponseSanitizer.StripTrailingMemoryNarration"/>.
+    /// See issue #397.
+    /// </summary>
+    public static readonly Regex MemoryNarrationReplyRegex = new(
+        @"^\s*(?:Noted[.,!]?\s+|Done[.,!]?\s+|Okay[.,!]?\s+|Sure[.,!]?\s+)?" +
+        @"I(?:'ve|\s+have|'m|\s+am)?\s*(?:also\s+)?" +
+        @"(?:marked|logged|noted|saved|stored|got|added|put|recorded|captured|filed|keeping|kept)\s+" +
+        @"(?:it|that|this|them|(?-i:[A-Z])[\w'’-]*(?:\s+[\w'’-]+){0,3})\b" +
+        @"(?![^\n]*\b(?:todo|to-do|task list|calendar|reminder|shopping list|invite|email|draft|file)\b)" +
+        @"[^\n]*\b(?:memor(?:y|ies)|ledger|board|wishlist|list|notes?|record|on file|in mind|for later|down|goal|picture|profile)\b",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+    /// <summary>
+    /// Matches a user message that explicitly asks the agent to remember something.
+    /// When the user commanded the write, confirming it is the correct reply — the
+    /// memory-narration guard and the trailing-narration strip both stand down.
+    /// </summary>
+    public static readonly Regex ExplicitMemoryCommandRegex = new(
+        @"\b(?:remember|memorize|memorise|don'?t forget|keep track|make a note|note that|" +
+        @"save (?:that|this|it)|store (?:that|this|it)|write (?:that|this|it) down|add (?:that|this|it) to (?:my )?memory)\b",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+    /// <summary>
     /// Context window limit in tokens, learned from the first overflow error (text-based path only).
     /// </summary>
     private int? _knownContextLimit;
@@ -449,7 +478,7 @@ public sealed partial class AgentLoopRunner(
             {
                 HostDiagnostics.CompletionCheckSkipped.Add(1);
                 logger.LogInformation("Completion evaluator: SKIPPED (consecutive timeouts)");
-                return result.Response;
+                return FinalizeResponse(result.Response, chatMessages, originalUserRequest);
             }
 
             // Model-specific sanity checks on the output. Each is independently gated by
@@ -518,15 +547,24 @@ public sealed partial class AgentLoopRunner(
                 continue;
             }
 
-            // Memory-summary reply guard (#383). Fires when a short user message
-            // produced a turn that invoked SaveMemory AND closed with the
-            // "Noted, I saved X" pattern — the production signature for a model
-            // summarising injected long-term memory instead of replying to the
-            // actual follow-up. Logs every match for telemetry on false positives,
-            // and re-prompts at most once per RunAsync.
+            // Memory-summary reply guard (#383, widened by #397). Fires when a
+            // conversational follow-up produced a turn that invoked SaveMemory AND the
+            // whole reply is memory-write narration — either the "Noted, I saved X"
+            // opener from #383 or the "I've marked it as X" form from #397, which does
+            // not start with "Noted" and so needs its own pattern. The trailing-narration
+            // variant (a real answer followed by a narration paragraph) is handled
+            // without a re-prompt in FinalizeResponse.
+            //
+            // The length gate is FollowUpMessageCharThreshold (120), not the 30-char
+            // UserMessageCharThreshold used by the BM25 and routing defenses — the #397
+            // reproducer is 66 chars. The extra conditions (memory write happened, reply
+            // is narration-shaped, user did not ask for the write) carry the precision.
+            var userAskedToRemember = ExplicitMemoryCommandRegex.IsMatch(originalUserRequest);
             if (modelBehavior.NudgeOnMemorySummaryReply
-                && originalUserRequest.Length <= ShortMessageHeuristics.UserMessageCharThreshold
-                && MemorySummaryReplyRegex.IsMatch(result.Response)
+                && originalUserRequest.Length <= ShortMessageHeuristics.FollowUpMessageCharThreshold
+                && !userAskedToRemember
+                && (MemorySummaryReplyRegex.IsMatch(result.Response)
+                    || MemoryNarrationReplyRegex.IsMatch(result.Response))
                 && SavedMemoryThisTurn(chatMessages))
             {
                 var preview = result.Response.Length > 80
@@ -550,7 +588,7 @@ public sealed partial class AgentLoopRunner(
 
             // Skip evaluation when disabled or on the final re-prompt.
             if (!enableCompletionEval || maxReprompts == 0 || reprompt == maxReprompts)
-                return result.Response;
+                return FinalizeResponse(result.Response, chatMessages, originalUserRequest);
 
             // Skip evaluation when the agent delegated to a subagent. Spawning a
             // subagent is intentional delegation — the SubagentResultHandler will
@@ -561,7 +599,7 @@ public sealed partial class AgentLoopRunner(
             {
                 HostDiagnostics.CompletionCheckSkipped.Add(1);
                 logger.LogInformation("Completion evaluator: SKIPPED (delegated to subagent/agent)");
-                return result.Response;
+                return FinalizeResponse(result.Response, chatMessages, originalUserRequest);
             }
 
             // Heuristic short-circuit: if the model stopped naturally and the response
@@ -581,7 +619,7 @@ public sealed partial class AgentLoopRunner(
                 if (!enableFollowUp || reprompt > 0)
                 {
                     HostDiagnostics.FollowUpSkipped.Add(1);
-                    return result.Response;
+                    return FinalizeResponse(result.Response, chatMessages, originalUserRequest);
                 }
 
                 try
@@ -598,7 +636,7 @@ public sealed partial class AgentLoopRunner(
                 {
                     logger.LogWarning(ex,
                         "Follow-up pass failed; returning completed response instead of propagating error");
-                    return result.Response;
+                    return FinalizeResponse(result.Response, chatMessages, originalUserRequest);
                 }
             }
 
@@ -625,7 +663,7 @@ public sealed partial class AgentLoopRunner(
                 if (!enableFollowUp || reprompt > 0)
                 {
                     HostDiagnostics.FollowUpSkipped.Add(1);
-                    return result.Response;
+                    return FinalizeResponse(result.Response, chatMessages, originalUserRequest);
                 }
 
                 try
@@ -642,7 +680,7 @@ public sealed partial class AgentLoopRunner(
                 {
                     logger.LogWarning(ex,
                         "Follow-up pass failed; returning completed response instead of propagating error");
-                    return result.Response;
+                    return FinalizeResponse(result.Response, chatMessages, originalUserRequest);
                 }
             }
 
@@ -2684,6 +2722,36 @@ public sealed partial class AgentLoopRunner(
     /// actually wrote to long-term memory before re-prompting on the
     /// "Noted, I saved X" pattern. Internal so tests can exercise it directly.
     /// </summary>
+    /// <summary>
+    /// Final post-processing applied to every response leaving <see cref="RunAsync"/>.
+    /// Removes a trailing memory-write narration paragraph ("…\n\nI've marked it as a
+    /// winter trip goal…") when this turn actually wrote to long-term memory and the
+    /// user did not ask for the write. Issue #397: the model answers the user correctly
+    /// and then appends a sentence narrating what it stored, which reads as a
+    /// non-sequitur closing. Stripping is deterministic and costs no extra LLM turn;
+    /// replies that are *entirely* narration are left alone here and handled by the
+    /// memory-summary re-prompt guard instead.
+    /// </summary>
+    private string FinalizeResponse(string response, List<ChatMessage> chatMessages, string originalUserRequest)
+    {
+        if (string.IsNullOrEmpty(response)
+            || !modelBehavior.NudgeOnMemorySummaryReply
+            || !SavedMemoryThisTurn(chatMessages)
+            || ExplicitMemoryCommandRegex.IsMatch(originalUserRequest))
+            return response;
+
+        var stripped = ResponseSanitizer.StripTrailingMemoryNarration(response);
+        if (ReferenceEquals(stripped, response) || stripped.Length == response.Length)
+            return response;
+
+        logger.LogInformation(
+            "Stripped trailing memory narration from response ({Before} → {After} chars); " +
+            "removed=\"{Removed}\"",
+            response.Length, stripped.Length, response[stripped.Length..].Trim());
+
+        return stripped;
+    }
+
     internal static bool SavedMemoryThisTurn(List<ChatMessage> chatMessages)
     {
         foreach (var m in chatMessages)
