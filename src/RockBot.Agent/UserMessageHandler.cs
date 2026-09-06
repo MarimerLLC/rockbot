@@ -240,7 +240,7 @@ internal sealed class UserMessageHandler(
                     replyTo, correlationId, message.SessionId, turnId, isFinal: false, ct);
                 turnActivityHandedOff = true;
                 context.Items[WipConstants.DeferredKey] = true;
-                _ = NativeLlmLoopAsync(chatMessages, chatOptions, classification, postInjectionTokenEstimate,
+                _ = NativeLlmLoopAsync(chatMessages, chatOptions, classification, message.Content, postInjectionTokenEstimate,
                     message.SessionId, turnId, replyTo, correlationId, sessionHandle.Generation, wipMessageId, turnActivity, sessionCt);
             }
             else
@@ -288,7 +288,7 @@ internal sealed class UserMessageHandler(
                     turnActivityHandedOff = true;
                     context.Items[WipConstants.DeferredKey] = true;
                     _ = BackgroundToolLoopAsync(
-                        chatMessages, chatOptions, firstResponse, classification, postInjectionTokenEstimate,
+                        chatMessages, chatOptions, firstResponse, classification, message.Content, postInjectionTokenEstimate,
                         message.SessionId, turnId, replyTo, correlationId, sessionHandle.Generation, wipMessageId, turnActivity, sessionCt);
                 }
                 else
@@ -308,7 +308,7 @@ internal sealed class UserMessageHandler(
                         turnActivityHandedOff = true;
                         context.Items[WipConstants.DeferredKey] = true;
                         _ = BackgroundToolLoopAsync(
-                            chatMessages, chatOptions, firstResponse, classification, postInjectionTokenEstimate,
+                            chatMessages, chatOptions, firstResponse, classification, message.Content, postInjectionTokenEstimate,
                             message.SessionId, turnId, replyTo, correlationId, sessionHandle.Generation, wipMessageId, turnActivity, sessionCt);
                     }
                     else if (modelBehavior.NudgeOnHallucinatedToolCalls
@@ -325,7 +325,7 @@ internal sealed class UserMessageHandler(
                         turnActivityHandedOff = true;
                         context.Items[WipConstants.DeferredKey] = true;
                         _ = BackgroundToolLoopAsync(
-                            chatMessages, chatOptions, firstResponse, classification, postInjectionTokenEstimate,
+                            chatMessages, chatOptions, firstResponse, classification, message.Content, postInjectionTokenEstimate,
                             message.SessionId, turnId, replyTo, correlationId, sessionHandle.Generation, wipMessageId, turnActivity, sessionCt);
                     }
                     else
@@ -335,7 +335,7 @@ internal sealed class UserMessageHandler(
                         _ = tierRoutingLogger.AppendAsync(new TierRoutingEntry
                         {
                             Timestamp = DateTimeOffset.UtcNow,
-                            PromptPreview = message.Content.Length > 150 ? message.Content[..150] : message.Content,
+                            PromptPreview = ToPromptPreview(message.Content),
                             Tier = tier,
                             Context = "user-message",
                             ComplexityScore = classification.ComplexityScore,
@@ -429,6 +429,7 @@ internal sealed class UserMessageHandler(
         List<ChatMessage> chatMessages,
         ChatOptions chatOptions,
         TierClassification classification,
+        string userPrompt,
         int? postInjectionTokenEstimate,
         string sessionId,
         string turnId,
@@ -504,9 +505,7 @@ internal sealed class UserMessageHandler(
             _ = tierRoutingLogger.AppendAsync(new TierRoutingEntry
             {
                 Timestamp = DateTimeOffset.UtcNow,
-                PromptPreview = chatMessages.FirstOrDefault(m => m.Role == ChatRole.User)?.Text is { } p
-                    ? (p.Length > 150 ? p[..150] : p)
-                    : "",
+                PromptPreview = ToPromptPreview(userPrompt),
                 Tier = classification.Tier,
                 Context = "user-message",
                 ComplexityScore = classification.ComplexityScore,
@@ -577,6 +576,7 @@ internal sealed class UserMessageHandler(
         ChatOptions chatOptions,
         ChatResponse firstResponse,
         TierClassification classification,
+        string userPrompt,
         int? postInjectionTokenEstimate,
         string sessionId,
         string turnId,
@@ -655,9 +655,7 @@ internal sealed class UserMessageHandler(
             _ = tierRoutingLogger.AppendAsync(new TierRoutingEntry
             {
                 Timestamp = DateTimeOffset.UtcNow,
-                PromptPreview = chatMessages.FirstOrDefault(m => m.Role == ChatRole.User)?.Text is { } p
-                    ? (p.Length > 150 ? p[..150] : p)
-                    : "",
+                PromptPreview = ToPromptPreview(userPrompt),
                 Tier = tier,
                 Context = "user-message",
                 ComplexityScore = classification.ComplexityScore,
@@ -765,6 +763,14 @@ internal sealed class UserMessageHandler(
 
         return (false, text);
     }
+
+    /// <summary>
+    /// Truncates the raw user prompt for the routing log's <c>PromptPreview</c> field.
+    /// Must be given the prompt for the current turn — deriving it from the assembled
+    /// <c>chatMessages</c> yields the oldest user turn in the window instead (issue #556).
+    /// </summary>
+    internal static string ToPromptPreview(string content) =>
+        content.Length > 150 ? content[..150] : content;
 
     /// <summary>
     /// Truncates the user's prompt to a short single-line summary for the origin anchor.
