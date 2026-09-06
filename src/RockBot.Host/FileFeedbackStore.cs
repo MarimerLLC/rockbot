@@ -133,7 +133,7 @@ internal sealed class FileFeedbackStore : IFeedbackStore, IPrunableLog
         return entries;
     }
 
-    private static string ResolvePath(string path, string basePath)
+    internal static string ResolvePath(string path, string basePath)
     {
         if (Path.IsPathRooted(path))
             return path;

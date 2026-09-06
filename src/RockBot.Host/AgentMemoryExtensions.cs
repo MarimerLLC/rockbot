@@ -2,6 +2,7 @@ using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Options;
 
 namespace RockBot.Host;
 
@@ -10,6 +11,21 @@ namespace RockBot.Host;
 /// </summary>
 public static class AgentMemoryExtensions
 {
+    /// <summary>Schema store name for the long-term memory store.</summary>
+    public const string MemoryStoreSchemaName = "memory";
+
+    /// <summary>Schema store name for the skill store.</summary>
+    public const string SkillStoreSchemaName = "skills";
+
+    /// <summary>Schema store name for the feedback store.</summary>
+    public const string FeedbackStoreSchemaName = "feedback";
+
+    // Bump alongside a migration that changes the store's on-disk shape. Additive changes —
+    // a new optional property with a default — leave these alone. See design/schema-migrations.md.
+    private const int MemoryStoreSchemaVersion = 1;
+    private const int SkillStoreSchemaVersion = 1;
+    private const int FeedbackStoreSchemaVersion = 1;
+
     /// <summary>
     /// Registers conversation memory, long-term memory, and working memory with default options.
     /// </summary>
@@ -56,6 +72,10 @@ public static class AgentMemoryExtensions
 
         builder.Services.TryAddSingleton<EmbeddingTextPreparer>();
         builder.Services.AddSingleton<ILongTermMemory, FileMemoryStore>();
+
+        builder.AddStoreSchema(MemoryStoreSchemaName, MemoryStoreSchemaVersion, sp => FileMemoryStore.ResolvePath(
+            sp.GetRequiredService<IOptions<MemoryOptions>>().Value.BasePath,
+            sp.GetRequiredService<IOptions<AgentProfileOptions>>().Value.BasePath));
 
         // Save-time deduplication. Callers that want it take IMemoryDeduplicator optionally and
         // fall back to SaveAsync, so registering it here changes behaviour without changing any
@@ -110,6 +130,11 @@ public static class AgentMemoryExtensions
 
         builder.Services.TryAddSingleton<EmbeddingTextPreparer>();
         builder.Services.AddSingleton<ISkillStore, FileSkillStore>();
+
+        builder.AddStoreSchema(SkillStoreSchemaName, SkillStoreSchemaVersion, sp => FileSkillStore.ResolvePath(
+            sp.GetRequiredService<IOptions<SkillOptions>>().Value.BasePath,
+            sp.GetRequiredService<IOptions<AgentProfileOptions>>().Value.BasePath));
+
         builder.Services.AddSingleton<ISkillUsageStore, FileSkillUsageStore>();
         builder.Services.AddSingleton<IPrunableLog>(sp => (IPrunableLog)sp.GetRequiredService<ISkillUsageStore>());
         builder.Services.AddSingleton<ISkillResourceUsageStore, FileSkillResourceUsageStore>();
@@ -232,6 +257,11 @@ public static class AgentMemoryExtensions
             builder.Services.Configure<FeedbackOptions>(_ => { });
 
         builder.Services.AddSingleton<IFeedbackStore, FileFeedbackStore>();
+
+        builder.AddStoreSchema(FeedbackStoreSchemaName, FeedbackStoreSchemaVersion, sp => FileFeedbackStore.ResolvePath(
+            sp.GetRequiredService<IOptions<FeedbackOptions>>().Value.BasePath,
+            sp.GetRequiredService<IOptions<AgentProfileOptions>>().Value.BasePath));
+
         builder.Services.AddSingleton<IPrunableLog>(sp => (IPrunableLog)sp.GetRequiredService<IFeedbackStore>());
         builder.Services.AddSingleton<SessionSummaryService>();
         builder.Services.AddSingleton<IHostedService>(sp => sp.GetRequiredService<SessionSummaryService>());

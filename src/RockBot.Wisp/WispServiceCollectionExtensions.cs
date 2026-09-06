@@ -9,6 +9,13 @@ namespace RockBot.Wisp;
 /// </summary>
 public static class WispServiceCollectionExtensions
 {
+    /// <summary>Schema store name for the wisp execution log.</summary>
+    public const string WispStoreSchemaName = "wisp";
+
+    // Bump alongside a migration that changes the log's on-disk shape. Additive changes —
+    // a new optional property with a default — leave this alone. See design/schema-migrations.md.
+    private const int WispStoreSchemaVersion = 1;
+
     /// <summary>
     /// Adds wisp executor support and the <c>spawn_wisps</c> tool.
     /// </summary>
@@ -23,6 +30,14 @@ public static class WispServiceCollectionExtensions
         builder.Services.AddSingleton<WispDispatchCircuitBreaker>();
         builder.Services.AddSingleton<WispExecutor>();
         builder.Services.AddSingleton<IWispExecutionLog, FileWispExecutionLog>();
+
+        // The log shares its directory with whatever else uses the shared volume, so the marker
+        // carries the store name and the runner skips on a mismatch rather than migrating blind.
+        builder.AddStoreSchema(
+            WispStoreSchemaName,
+            WispStoreSchemaVersion,
+            sp => FileWispExecutionLog.ResolvePath(sp.GetRequiredService<WispOptions>()));
+
         builder.Services.AddSingleton<IPrunableLog>(sp => (IPrunableLog)sp.GetRequiredService<IWispExecutionLog>());
         builder.Services.AddHostedService<WispToolRegistrar>();
         builder.Services.AddSingleton<IToolSkillProvider, WispToolSkillProvider>();

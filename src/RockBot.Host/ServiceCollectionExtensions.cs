@@ -23,6 +23,13 @@ public static class ServiceCollectionExtensions
     {
         var builder = new AgentHostBuilder(services);
 
+        // Registered before anything the caller configures so it is the first IHostedService in
+        // the collection, and therefore the first to start: no store gets to read its data until
+        // the schema check has brought that data up to the version this build expects.
+        services.Configure<SchemaMigrationOptions>(_ => { });
+        services.AddSingleton<SchemaMigrationRunner>();
+        services.AddSingleton<IHostedService, SchemaMigrationService>();
+
         // Register TracingMiddleware first so it's the outermost wrapper
         builder.UseMiddleware<TracingMiddleware>();
         // WIP tracking sits just inside tracing — persists the envelope to disk
