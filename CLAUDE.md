@@ -72,3 +72,4 @@ Topics use hierarchical dot-separated naming: `agent.task.*`, `llm.request`, `to
 - Integration tests use unique exchange names per run to avoid cross-contamination
 - **Configuration** — Use the standard .NET 10 configuration stack: `appsettings.json`, environment variables, `dotnet user-secrets` for local dev, Kubernetes Secrets for deployment. No custom config mechanisms.
 - **Console apps** — Use `Spectre.Console` for argument parsing, prompts, and CLI output in any console applications
+- **Persisted store schemas** — Adding an optional property with a default is additive and needs nothing; the tolerant deserializer absorbs it. Anything it can't absorb (renamed/removed required field, changed layout or file format) bumps the store's version constant *and* ships an `ISchemaMigration` in the same PR. See `design/schema-migrations.md`.

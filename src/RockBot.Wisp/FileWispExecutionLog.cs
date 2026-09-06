@@ -22,11 +22,18 @@ internal sealed class FileWispExecutionLog : IWispExecutionLog, IPrunableLog
 
     public FileWispExecutionLog(WispOptions options, ILogger<FileWispExecutionLog> logger)
     {
-        var basePath = options.SharedVolumePath ?? Path.Combine(AppContext.BaseDirectory, "wisp-log");
+        var basePath = ResolvePath(options);
         Directory.CreateDirectory(basePath);
         _filePath = Path.Combine(basePath, "wisp-executions.jsonl");
         _logger = logger;
     }
+
+    /// <summary>
+    /// The directory the execution log lives in. Shared with the schema-migration descriptor so
+    /// the marker lands beside the log rather than in a second guess at the same location.
+    /// </summary>
+    internal static string ResolvePath(WispOptions options) =>
+        options.SharedVolumePath ?? Path.Combine(AppContext.BaseDirectory, "wisp-log");
 
     public async Task AppendAsync(WispExecutionRecord record, CancellationToken ct = default)
     {
