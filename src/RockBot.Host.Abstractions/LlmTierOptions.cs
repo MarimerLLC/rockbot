@@ -31,6 +31,19 @@ public sealed class LlmTierConfig
     public string? ReasoningEffort { get; set; }
 
     /// <summary>
+    /// Whether this tier's model accepts images as input alongside text. Defaults to
+    /// <c>false</c>: a model that cannot see rejects a request carrying image content with an
+    /// opaque provider error deep in the stack, so the capability is opt-in per tier rather
+    /// than guessed from the model id (which changes far more often than the capability does).
+    /// </summary>
+    /// <remarks>
+    /// Read by tools that hand bytes to a model — <c>analyze_file</c> today. When no tier sets
+    /// it, those tools are not registered at all rather than registered and failing on use.
+    /// See <c>design/multimodal-input.md</c>.
+    /// </remarks>
+    public bool SupportsImageInput { get; set; }
+
+    /// <summary>
     /// Returns true when Endpoint, ApiKey, and ModelId are all non-empty
     /// (OpenAI-compatible provider fully configured).
     /// </summary>

@@ -387,6 +387,71 @@ See `design/mcp-arg-guards.md` for the security rationale.
 
 ---
 
+## Multimodal input: `analyze_file`
+
+Attachment passthrough gets a file *onto the shared volume*. `analyze_file` is the other half:
+it gets that file *in front of a model* as real image content.
+
+```
+analyze_file({ path: "attachments/architecture.png",
+               prompt: "Describe the components and how they connect.",
+               tier: "high" })
+    │
+    ▼
+AnalyzeFileToolExecutor  (RockBot.Tools.FileSystem)
+    │   SafeResolvePath containment under FileSystemOptions.BasePath
+    │   extension → MIME, checked against AnalyzeFileMimeTypes
+    │   size checked against AnalyzeFileMaxBytes
+    │
+    ▼
+ILlmClient.GetResponseAsync(
+    [ ChatMessage(User, [ TextContent(prompt), DataContent(bytes, mime) ]) ], tier, …)
+    │
+    ▼
+ToolInvokeResponse { Content = "Three services arranged left to right. …" }
+```
+
+The analysis runs as its own LLM call rather than as content in the agent's own loop. That is
+not an implementation shortcut — on OpenAI-compatible APIs, which is every provider RockBot
+talks to, tool-role messages accept text only, so bytes can enter a conversation solely as
+content parts on a user message. Running the look-up as a side call sidesteps that and keeps
+the agent's context free of bytes: a path goes in, prose comes out. The full reasoning, and the
+sequencing of the remaining multimodal work, is in `design/multimodal-input.md`.
+
+### Enabling it
+
+`analyze_file` is registered only when a configured tier declares that its model accepts image
+input:
+
+```json
+{
+  "LLM": {
+    "High": {
+      "ModelId": "openai/gpt-5.5",
+      "SupportsImageInput": true
+    }
+  }
+}
+```
+
+Or `LLM__High__SupportsImageInput=true` as an environment variable. With no such tier the tool
+is not registered and the file-tools skill guide omits it — an agent is never taught a
+capability its deployment does not have.
+
+When the requested `tier` is not one that can see, the executor substitutes the nearest tier
+that can (High → Balanced → Low). This matters because `ILlmClient` retries a failed Low/High
+call on Balanced: sending a vision request to a blind tier would fail twice and report the
+second, less informative error.
+
+### Limits
+
+| Option | Default | Purpose |
+|---|---|---|
+| `FileSystemOptions.AnalyzeFileMaxBytes` | 8 MiB | Refused above this, before any bytes are read. Providers cap the encoded request well above it; the limit keeps a mistake cheap. |
+| `FileSystemOptions.AnalyzeFileMimeTypes` | PNG, JPEG, GIF, WebP | The formats every vision-capable provider accepts. Adding `application/pdf` or an audio type is a deployment decision — whether it works depends on the provider behind the tier. |
+
+---
+
 ## Service search (`RockBot.ServiceSearch`)
 
 `search_known_services` is a unified BM25 keyword search over all known A2A agents **and**
