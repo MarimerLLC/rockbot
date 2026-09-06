@@ -58,6 +58,21 @@ public class ResponseSanitizerMemoryNarrationTests
         StringAssert.StartsWith(result, "The post-holiday dip is real");
     }
 
+    [TestMethod]
+    public void StripsTrailingNarration_SubjectlessParticipleForm()
+    {
+        // Captured live on 2026-09-06: the model drops the subject entirely.
+        const string response =
+            "February works — that keeps the whole trip inside the good stretch of weather.\n\n" +
+            "Added to the ledger: your sister might drive out for a few days too.";
+
+        var result = ResponseSanitizer.StripTrailingMemoryNarration(response);
+
+        Assert.AreEqual(
+            "February works — that keeps the whole trip inside the good stretch of weather.",
+            result);
+    }
+
     // ── Negative cases: real outcomes the user needs to hear ────────────────
 
     [TestMethod]
@@ -66,6 +81,8 @@ public class ResponseSanitizerMemoryNarrationTests
     [DataRow("Thursday at 2pm works for everyone.\n\nI've put it on your calendar.")]
     [DataRow("The build is green.\n\nI've noted the flaky test in the issue.")]
     [DataRow("Here's the summary you asked for.\n\nLet me know if you want more detail.")]
+    [DataRow("The upload finished.\n\nAdded the notes to the shared drive.")]
+    [DataRow("Access is working again.\n\nLogged in to the portal without trouble.")]
     public void DoesNotStripGenuineOutcomeReports(string response)
     {
         Assert.AreEqual(response, ResponseSanitizer.StripTrailingMemoryNarration(response),

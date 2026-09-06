@@ -151,6 +151,10 @@ public class AgentLoopRunnerMemorySummaryGuardTests
     [DataRow("I have stored that in your profile.")]
     [DataRow("Done. I've noted it down for later.")]
     [DataRow("I've also added it to the wishlist.")]
+    // Subjectless participle form, captured live on 2026-09-06.
+    [DataRow("Added to the ledger: your sister might drive out for a few days too.")]
+    [DataRow("Saved to your travel list.")]
+    [DataRow("Logged in memory.")]
     public void MemoryNarrationReplyRegex_MatchesWholeResponseNarration(string response)
     {
         Assert.IsTrue(AgentLoopRunner.MemoryNarrationReplyRegex.IsMatch(response),
@@ -164,6 +168,9 @@ public class AgentLoopRunnerMemorySummaryGuardTests
     [DataRow("That's the right window — mid-January is cheapest.")]
     [DataRow("The dry air is doing real work there.")]
     [DataRow("I've booked the flight.")]
+    [DataRow("Added the notes to the shared drive.")]   // real file action, not narration
+    [DataRow("Logged in to the portal.")]
+    [DataRow("Added it to your todo list for Thursday.")]
     public void MemoryNarrationReplyRegex_DoesNotMatchGenuineOutcomes(string response)
     {
         Assert.IsFalse(AgentLoopRunner.MemoryNarrationReplyRegex.IsMatch(response),

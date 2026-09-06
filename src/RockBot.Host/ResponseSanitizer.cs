@@ -87,15 +87,26 @@ public static partial class ResponseSanitizer
     [GeneratedRegex(
         @"(\r?\n){1,}" +                                        // one or more newlines
         @"(?:Also,?\s|And\s|Noted[.,]?\s)?" +                   // optional lead-in
-        @"I(?:'ve|\s+have|\s+am|'m)?\s*" +                      // "I", "I've", "I have", "I'm"
-        @"(?:also\s+)?" +
-        @"(?:marked|logged|noted|saved|stored|got|added|put|recorded|captured|filed|" +
-            @"keeping|kept|holding|held)\s+" +                  // memory-write verb
-        @"(?:it|that|this|them|(?-i:[A-Z])[\w'’-]*(?:\s+[\w'’-]+){0,3})\b" +  // object (see note 2)
-        @"(?![^\n]*\b(?:todo|to-do|task list|calendar|reminder|shopping list|" +
-            @"invite|email|draft|file|repo|branch|issue|pull request)\b)" +  // real-action exclusions
-        @"[^\n]*\b(?:memor(?:y|ies)|ledger|board|wishlist|list|notes?|record|" +
-            @"on file|in mind|for later|down|goal|picture|profile)\b" +      // memory vocabulary
+        @"(?:" +
+            @"I(?:'ve|\s+have|\s+am|'m)?\s*" +                  // "I", "I've", "I have", "I'm"
+            @"(?:also\s+)?" +
+            @"(?:marked|logged|noted|saved|stored|got|added|put|recorded|captured|filed|" +
+                @"keeping|kept|holding|held)\s+" +              // memory-write verb
+            @"(?:it|that|this|them|(?-i:[A-Z])[\w'’-]*(?:\s+[\w'’-]+){0,3})\b" +  // object (see note 2)
+            @"(?![^\n]*\b(?:todo|to-do|task list|calendar|reminder|shopping list|" +
+                @"invite|email|draft|file|repo|branch|issue|pull request)\b)" +   // real-action exclusions
+            @"[^\n]*\b(?:memor(?:y|ies)|ledger|board|wishlist|list|notes?|record|" +
+                @"on file|in mind|for later|down|goal|picture|profile)\b" +       // memory vocabulary
+        @"|" +
+            // Subjectless participle form observed live: "Added to the ledger: …".
+            // The preposition is required so "Added the notes to the shared drive"
+            // — a real file action — does not match.
+            @"(?:Added|Logged|Noted|Saved|Stored|Recorded|Captured|Filed)\s+" +
+            @"(?:it\s+|that\s+|this\s+|them\s+)?(?:to|in|on|onto|under)\s+" +
+            @"(?![^\n]*\b(?:todo|to-do|task list|calendar|reminder|shopping list|" +
+                @"invite|email|draft|file|repo|branch|issue|pull request)\b)" +
+            @"[^\n]{0,40}?\b(?:memor(?:y|ies)|ledger|board|wishlist|list|notes?|record|profile)\b" +
+        @")" +
         @"[^\n]*(?:\r?\n[^\n]+)*$",                             // consume the trailing paragraph
         RegexOptions.IgnoreCase | RegexOptions.Compiled)]
     private static partial Regex TrailingMemoryNarrationPattern();

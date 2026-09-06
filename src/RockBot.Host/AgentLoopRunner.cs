@@ -164,11 +164,22 @@ public sealed partial class AgentLoopRunner(
     /// </summary>
     public static readonly Regex MemoryNarrationReplyRegex = new(
         @"^\s*(?:Noted[.,!]?\s+|Done[.,!]?\s+|Okay[.,!]?\s+|Sure[.,!]?\s+)?" +
-        @"I(?:'ve|\s+have|'m|\s+am)?\s*(?:also\s+)?" +
-        @"(?:marked|logged|noted|saved|stored|got|added|put|recorded|captured|filed|keeping|kept)\s+" +
-        @"(?:it|that|this|them|(?-i:[A-Z])[\w'’-]*(?:\s+[\w'’-]+){0,3})\b" +
-        @"(?![^\n]*\b(?:todo|to-do|task list|calendar|reminder|shopping list|invite|email|draft|file)\b)" +
-        @"[^\n]*\b(?:memor(?:y|ies)|ledger|board|wishlist|list|notes?|record|on file|in mind|for later|down|goal|picture|profile)\b",
+        @"(?:" +
+            // "I've marked it as a winter trip goal…"
+            @"I(?:'ve|\s+have|'m|\s+am)?\s*(?:also\s+)?" +
+            @"(?:marked|logged|noted|saved|stored|got|added|put|recorded|captured|filed|keeping|kept)\s+" +
+            @"(?:it|that|this|them|(?-i:[A-Z])[\w'’-]*(?:\s+[\w'’-]+){0,3})\b" +
+            @"(?![^\n]*\b(?:todo|to-do|task list|calendar|reminder|shopping list|invite|email|draft|file)\b)" +
+            @"[^\n]*\b(?:memor(?:y|ies)|ledger|board|wishlist|list|notes?|record|on file|in mind|for later|down|goal|picture|profile)\b" +
+        @"|" +
+            // Subjectless participle form observed live: "Added to the ledger: …".
+            // The preposition is required so "Added the notes to the shared drive"
+            // — a real file action — does not match.
+            @"(?:Added|Logged|Noted|Saved|Stored|Recorded|Captured|Filed)\s+" +
+            @"(?:it\s+|that\s+|this\s+|them\s+)?(?:to|in|on|onto|under)\s+" +
+            @"(?![^\n]*\b(?:todo|to-do|task list|calendar|reminder|shopping list|invite|email|draft|file)\b)" +
+            @"[^\n]{0,40}?\b(?:memor(?:y|ies)|ledger|board|wishlist|list|notes?|record|profile)\b" +
+        @")",
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
     /// <summary>
