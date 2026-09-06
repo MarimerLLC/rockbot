@@ -61,4 +61,80 @@ public static partial class ResponseSanitizer
 
         return result;
     }
+
+    // Matches a trailing paragraph that narrates a memory write — the production
+    // signature from issue #397, where the model answers the user properly and then
+    // appends a sentence reporting what it stored:
+    //
+    //   "I've marked it as a winter trip goal tied to your joints and the dry air."
+    //   "I've got Cathedral City in the travel picture now, ..."
+    //   "Noted it in memory."
+    //
+    // Three parts must all be present, which is what keeps legitimate outcome reports
+    // out of the pattern:
+    //
+    //   1. a first-person memory-write verb,
+    //   2. a pronoun or proper-noun object. "I've saved the file to /tmp/x" reports a
+    //      real outcome the user needs to hear; the lowercase determiner keeps it out,
+    //      while "I've got Cathedral City in the travel picture" — the same narration
+    //      with a named subject — stays in. The proper-noun branch is matched
+    //      case-sensitively via (?-i:…) since the pattern as a whole ignores case.
+    //   3. memory-storage vocabulary, with todo/calendar/reminder targets excluded
+    //      because those describe genuine tool actions rather than memory narration.
+    //
+    // Anchored to a trailing paragraph the same way TrailingOfferPattern is; a reply
+    // that is *entirely* narration is left to the AgentLoopRunner re-prompt guard.
+    [GeneratedRegex(
+        @"(\r?\n){1,}" +                                        // one or more newlines
+        @"(?:Also,?\s|And\s|Noted[.,]?\s)?" +                   // optional lead-in
+        @"(?:" +
+            @"I(?:'ve|\s+have|\s+am|'m)?\s*" +                  // "I", "I've", "I have", "I'm"
+            @"(?:also\s+)?" +
+            @"(?:marked|logged|noted|saved|stored|got|added|put|recorded|captured|filed|" +
+                @"keeping|kept|holding|held)\s+" +              // memory-write verb
+            @"(?:it|that|this|them|(?-i:[A-Z])[\w'’-]*(?:\s+[\w'’-]+){0,3})\b" +  // object (see note 2)
+            @"(?![^\n]*\b(?:todo|to-do|task list|calendar|reminder|shopping list|" +
+                @"invite|email|draft|file|repo|branch|issue|pull request)\b)" +   // real-action exclusions
+            @"[^\n]*\b(?:memor(?:y|ies)|ledger|board|wishlist|list|notes?|record|" +
+                @"on file|in mind|for later|down|goal|picture|profile)\b" +       // memory vocabulary
+        @"|" +
+            // Subjectless participle form observed live: "Added to the ledger: …".
+            // The preposition is required so "Added the notes to the shared drive"
+            // — a real file action — does not match.
+            @"(?:Added|Logged|Noted|Saved|Stored|Recorded|Captured|Filed)\s+" +
+            @"(?:it\s+|that\s+|this\s+|them\s+)?(?:to|in|on|onto|under)\s+" +
+            @"(?![^\n]*\b(?:todo|to-do|task list|calendar|reminder|shopping list|" +
+                @"invite|email|draft|file|repo|branch|issue|pull request)\b)" +
+            @"[^\n]{0,40}?\b(?:memor(?:y|ies)|ledger|board|wishlist|list|notes?|record|profile)\b" +
+        @")" +
+        @"[^\n]*(?:\r?\n[^\n]+)*$",                             // consume the trailing paragraph
+        RegexOptions.IgnoreCase | RegexOptions.Compiled)]
+    private static partial Regex TrailingMemoryNarrationPattern();
+
+    /// <summary>
+    /// Strips a trailing paragraph that narrates a memory write ("I've marked it as a
+    /// winter trip goal…") while leaving the substantive reply intact. Returns the
+    /// original text when nothing matches, or when stripping would remove most of the
+    /// content — a reply that is *only* narration is not silently emptied; the
+    /// AgentLoopRunner memory-summary guard re-prompts for that case instead.
+    /// </summary>
+    /// <remarks>
+    /// Callers must only apply this when a memory write actually happened this turn
+    /// (see <c>AgentLoopRunner.SavedMemoryThisTurn</c>). Without that gate a reply
+    /// legitimately reporting some other stored outcome could be trimmed. See issue #397.
+    /// </remarks>
+    public static string StripTrailingMemoryNarration(string text)
+    {
+        if (string.IsNullOrEmpty(text))
+            return text;
+
+        var result = TrailingMemoryNarrationPattern().Replace(text, string.Empty).TrimEnd();
+
+        // Same substance guard as StripTrailingOffers: only trailing narration goes,
+        // never the answer itself.
+        if (result.Length < text.Length * 0.3)
+            return text;
+
+        return result;
+    }
 }

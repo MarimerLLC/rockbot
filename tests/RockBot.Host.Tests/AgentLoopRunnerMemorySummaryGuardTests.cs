@@ -138,6 +138,95 @@ public class AgentLoopRunnerMemorySummaryGuardTests
             "ModelBehavior.Default should enable NudgeOnMemorySummaryReply.");
     }
 
+    // ── MemoryNarrationReplyRegex (#397) ─────────────────────────────────────
+    //
+    // The #383 pattern is anchored on a "Noted" opener. The variant tracked by #397
+    // does not open with "Noted" — it states the memory write directly — so the guard
+    // needs a second pattern to reach whole-response narration above the 30-char gate.
+
+    [TestMethod]
+    [DataRow("I've marked it as a winter trip goal tied to your joints and the dry air.")]
+    [DataRow("I've got that on the travel list now.")]
+    [DataRow("I've logged it in memory.")]
+    [DataRow("I have stored that in your profile.")]
+    [DataRow("Done. I've noted it down for later.")]
+    [DataRow("I've also added it to the wishlist.")]
+    // Subjectless participle form, captured live on 2026-09-06.
+    [DataRow("Added to the ledger: your sister might drive out for a few days too.")]
+    [DataRow("Saved to your travel list.")]
+    [DataRow("Logged in memory.")]
+    public void MemoryNarrationReplyRegex_MatchesWholeResponseNarration(string response)
+    {
+        Assert.IsTrue(AgentLoopRunner.MemoryNarrationReplyRegex.IsMatch(response),
+            $"Expected match for: \"{response}\"");
+    }
+
+    [TestMethod]
+    [DataRow("I've saved the file to /tmp/report.csv.")]      // concrete object, real outcome
+    [DataRow("I've added it to your todo list for Thursday.")] // real tool action
+    [DataRow("I've put it on your calendar.")]                 // real tool action
+    [DataRow("That's the right window — mid-January is cheapest.")]
+    [DataRow("The dry air is doing real work there.")]
+    [DataRow("I've booked the flight.")]
+    [DataRow("Added the notes to the shared drive.")]   // real file action, not narration
+    [DataRow("Logged in to the portal.")]
+    [DataRow("Added it to your todo list for Thursday.")]
+    public void MemoryNarrationReplyRegex_DoesNotMatchGenuineOutcomes(string response)
+    {
+        Assert.IsFalse(AgentLoopRunner.MemoryNarrationReplyRegex.IsMatch(response),
+            $"Expected no match for: \"{response}\"");
+    }
+
+    // ── ExplicitMemoryCommandRegex (#397) ────────────────────────────────────
+    //
+    // When the user asked for the write, confirming it is the correct reply — both
+    // the guard and the trailing-narration strip stand down.
+
+    [TestMethod]
+    [DataRow("Remember that my birthday is March 12.")]
+    [DataRow("Please save that for later.")]
+    [DataRow("Don't forget the gate code is 4417.")]
+    [DataRow("Make a note that Allen prefers Tuesdays.")]
+    [DataRow("Keep track of how often this fails.")]
+    public void ExplicitMemoryCommandRegex_MatchesUserMemoryCommands(string userMessage)
+    {
+        Assert.IsTrue(AgentLoopRunner.ExplicitMemoryCommandRegex.IsMatch(userMessage),
+            $"Expected match for: \"{userMessage}\"");
+    }
+
+    [TestMethod]
+    [DataRow("Hopefully we can go this coming winter. My health seems better now")]
+    [DataRow("The dry desert air there helps my joints more than anything else has.")]
+    [DataRow("What's on the calendar for Thursday?")]
+    public void ExplicitMemoryCommandRegex_DoesNotMatchOrdinaryFollowUps(string userMessage)
+    {
+        Assert.IsFalse(AgentLoopRunner.ExplicitMemoryCommandRegex.IsMatch(userMessage),
+            $"Expected no match for: \"{userMessage}\"");
+    }
+
+    // ── Length gates ─────────────────────────────────────────────────────────
+
+    [TestMethod]
+    public void ReproducerSitsAboveShortGateAndInsideFollowUpGate()
+    {
+        // The whole point of #397: the reproducer clears the 30-char band that gates
+        // the BM25 and routing defenses, but must fall inside the guard's wider band.
+        const string reproducer = "Hopefully we can go this coming winter. My health seems better now";
+
+        Assert.IsTrue(reproducer.Length > ShortMessageHeuristics.UserMessageCharThreshold,
+            "Reproducer must sit above the 30-char short-message gate.");
+        Assert.IsTrue(reproducer.Length <= ShortMessageHeuristics.FollowUpMessageCharThreshold,
+            "Reproducer must sit inside the follow-up gate the guard now uses.");
+    }
+
+    [TestMethod]
+    public void ShortMessageThresholdIsUnchanged()
+    {
+        // #397 is explicitly a non-goal for the #384/#395 defenses — the 30-char
+        // constant they share must not drift.
+        Assert.AreEqual(30, ShortMessageHeuristics.UserMessageCharThreshold);
+    }
+
     // ── Helpers ──────────────────────────────────────────────────────────────
 
     private static ChatMessage BuildAssistantWithFunctionCall(string name, string argumentsJson)

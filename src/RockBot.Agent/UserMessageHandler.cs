@@ -65,8 +65,10 @@ internal sealed class UserMessageHandler(
     // Heuristic for "thread is currently active" — controls whether the tier selector
     // applies the short-message-on-active-thread override. Conservative enough to leave
     // first-turn and stale-session messages on the existing routing path. See #383.
-    private const int ThreadEstablishedMinTurns = 3;
-    private static readonly TimeSpan ThreadEstablishedRecency = TimeSpan.FromMinutes(30);
+    // Shared with AgentContextBuilder's recent-window query enrichment (#397) so both
+    // read "the thread is live" the same way.
+    private const int ThreadEstablishedMinTurns = ShortMessageHeuristics.ThreadEstablishedMinTurns;
+    private static readonly TimeSpan ThreadEstablishedRecency = ShortMessageHeuristics.ThreadEstablishedRecency;
 
     // Shared with AgentLoopRunner — single source of truth for hallucinated-action detection.
     private static readonly Regex HallucinatedActionRegex = AgentLoopRunner.HallucinatedActionRegex;

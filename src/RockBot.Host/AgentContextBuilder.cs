@@ -53,6 +53,60 @@ public sealed class AgentContextBuilder(
     private readonly KnowledgeGraphOptions _graphOptions = knowledgeGraphOptions.Value;
     private readonly IEmbeddingGenerator<string, Embedding<float>>? _embeddingGenerator = embeddingGenerators.FirstOrDefault();
 
+    /// <summary>How many prior turns are folded into the enriched search query.</summary>
+    private const int RecentWindowTurns = 2;
+
+    /// <summary>Per-turn character cap when building the enriched search query.</summary>
+    private const int RecentWindowTurnChars = 200;
+
+    /// <summary>
+    /// Anchors the per-turn search query on the active conversation thread by appending
+    /// the last <see cref="RecentWindowTurns"/> turns to the incoming message. Returns the
+    /// raw message unchanged for short messages (already fully gated), on the first turns
+    /// of a session, and on a stale thread — the cases where there is no thread to anchor
+    /// to, or where the raw message is all the signal there is. See issue #397.
+    /// </summary>
+    private string BuildSearchQuery(
+        string currentUserContent,
+        IReadOnlyList<ConversationTurn> history,
+        bool isShortMessage,
+        string sessionId)
+    {
+        if (isShortMessage || string.IsNullOrWhiteSpace(currentUserContent) || history.Count == 0)
+            return currentUserContent;
+
+        // Callers add the incoming user turn to conversation memory before building
+        // context (UserMessageHandler), so drop it to leave only prior turns.
+        var prior = history;
+        if (string.Equals(history[^1].Role, "user", StringComparison.OrdinalIgnoreCase)
+            && string.Equals(history[^1].Content, currentUserContent, StringComparison.Ordinal))
+        {
+            prior = history.Take(history.Count - 1).ToList();
+        }
+
+        var threadEstablished = prior.Count >= ShortMessageHeuristics.ThreadEstablishedMinTurns
+            && (DateTimeOffset.UtcNow - prior[^1].Timestamp) <= ShortMessageHeuristics.ThreadEstablishedRecency;
+
+        if (!threadEstablished)
+            return currentUserContent;
+
+        var window = prior
+            .Skip(Math.Max(0, prior.Count - RecentWindowTurns))
+            .Select(t => t.Content.Length > RecentWindowTurnChars
+                ? t.Content[..RecentWindowTurnChars]
+                : t.Content)
+            .Where(c => !string.IsNullOrWhiteSpace(c));
+
+        var enriched = currentUserContent + "\n" + string.Join("\n", window);
+
+        logger.LogInformation(
+            "Recent-window query enrichment applied for session {SessionId} " +
+            "({Turns} prior turns folded in, query {Before} → {After} chars)",
+            sessionId, Math.Min(RecentWindowTurns, prior.Count), currentUserContent.Length, enriched.Length);
+
+        return enriched;
+    }
+
     /// <summary>
     /// Builds the full chat message list for one LLM call: system prompt, rules, history,
     /// long-term memory recall, skill index + BM25 recall, and working memory inventory.
@@ -147,6 +201,21 @@ public sealed class AgentContextBuilder(
                 "Short user message ({Len} chars ≤ {Threshold}) — skipping per-turn topic search injection",
                 currentUserContent.Length, ShortMessageHeuristics.UserMessageCharThreshold);
 
+        // ── Conversation history, read ahead of the search wave ──────────────
+        // Awaited before the other stores (rather than alongside them) so the recent
+        // window is available to anchor the per-turn search query below. This is a
+        // local store read; the remaining lookups still run concurrently.
+        var history = await conversationMemory.GetTurnsAsync(sessionId, ct);
+
+        // Recent-window query enrichment (#397). A fact-introducing follow-up on a live
+        // thread ("Hopefully we can go this coming winter. My health seems better now")
+        // carries too few distinctive terms to retrieve the memories the conversation is
+        // actually about, so BM25 answers with whatever else those words touch. Appending
+        // the last couple of turns keeps the query anchored on the thread. The raw message
+        // still leads, and the window is deliberately small so a genuine topic change is
+        // not drowned out by what came before.
+        var searchQuery = BuildSearchQuery(currentUserContent, history, isShortMessage, sessionId);
+
         // ── Wave 0: generate the query embedding once, shared across all searches ──
         // Avoids redundant calls to the embedding endpoint — each store would otherwise
         // generate its own query embedding for the same user message text. Skipped
@@ -157,7 +226,7 @@ public sealed class AgentContextBuilder(
         {
             try
             {
-                var result = await _embeddingGenerator.GenerateAsync(currentUserContent, cancellationToken: ct);
+                var result = await _embeddingGenerator.GenerateAsync(searchQuery, cancellationToken: ct);
                 sharedQueryEmbedding = result.Vector.ToArray();
                 logger.LogInformation("Shared query embedding generated ({Dimensions} dimensions)", sharedQueryEmbedding.Length);
             }
@@ -179,15 +248,14 @@ public sealed class AgentContextBuilder(
         // Evaluate skill index gate synchronously (has side effects — marks session).
         var shouldInjectSkillIndex = skillIndexTracker.TryMarkAsInjected(sessionId);
 
-        var historyTask = conversationMemory.GetTurnsAsync(sessionId, ct);
         var ltmTask = isShortMessage
             ? Task.FromResult<IReadOnlyList<MemoryEntry>>([])
             : longTermMemory.SearchAsync(
-                new MemorySearchCriteria(Query: currentUserContent, MaxResults: 8, QueryEmbedding: sharedQueryEmbedding));
+                new MemorySearchCriteria(Query: searchQuery, MaxResults: 8, QueryEmbedding: sharedQueryEmbedding));
         var episodicTask = isShortMessage
             ? Task.FromResult<IReadOnlyList<MemoryEntry>>([])
             : longTermMemory.SearchAsync(
-                new MemorySearchCriteria(Query: currentUserContent, Category: "episodic", MaxResults: 5, QueryEmbedding: sharedQueryEmbedding));
+                new MemorySearchCriteria(Query: searchQuery, Category: "episodic", MaxResults: 5, QueryEmbedding: sharedQueryEmbedding));
         var identityTask = longTermMemory.SearchAsync(
             new MemorySearchCriteria(Category: AgentIdentityCategories.Prefix, MaxResults: 20));
         var skillListTask = shouldInjectSkillIndex
@@ -195,8 +263,10 @@ public sealed class AgentContextBuilder(
             : Task.FromResult<IReadOnlyList<Skill>>([]);
         var skillSearchTask = isShortMessage
             ? Task.FromResult<IReadOnlyList<Skill>>([])
-            : skillStore.SearchAsync(currentUserContent, maxResults: 5, ct, queryEmbedding: sharedQueryEmbedding);
+            : skillStore.SearchAsync(searchQuery, maxResults: 5, ct, queryEmbedding: sharedQueryEmbedding);
         var wmTask = workingMemory.ListAsync(wmNamespace);
+        // Entity extraction wants the literal message, not the enriched window — seeding
+        // the graph from prior turns would re-traverse entities already in context.
         var graphTask = _knowledgeGraph?.FindEntitiesByNameAsync(currentUserContent);
         var patrolTask = isUserSession
             ? workingMemory.ListAsync("patrol")
@@ -211,13 +281,12 @@ public sealed class AgentContextBuilder(
 
         // Await all wave-1 tasks. graphTask may be null when no knowledge graph is configured.
         if (graphTask is not null)
-            await Task.WhenAll(historyTask, ltmTask, episodicTask, identityTask,
+            await Task.WhenAll(ltmTask, episodicTask, identityTask,
                 skillListTask, skillSearchTask, wmTask, graphTask, patrolTask, subagentTask, sharedTask);
         else
-            await Task.WhenAll(historyTask, ltmTask, episodicTask, identityTask,
+            await Task.WhenAll(ltmTask, episodicTask, identityTask,
                 skillListTask, skillSearchTask, wmTask, patrolTask, subagentTask, sharedTask);
 
-        var history = historyTask.Result;
         var recalled = ltmTask.Result;
         var episodes = episodicTask.Result;
         var identityEntries = identityTask.Result;
