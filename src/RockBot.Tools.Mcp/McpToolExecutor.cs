@@ -78,8 +78,8 @@ internal sealed class McpToolExecutor(CallToolDelegate callTool) : IToolExecutor
             blocks.Add(block switch
             {
                 TextContentBlock text => new ToolContentBlock { Type = "text", Text = text.Text },
-                ImageContentBlock img => new ToolContentBlock { Type = "image", Data = Convert.ToBase64String(img.Data.Span), MimeType = img.MimeType },
-                AudioContentBlock audio => new ToolContentBlock { Type = "audio", Data = Convert.ToBase64String(audio.Data.Span), MimeType = audio.MimeType },
+                ImageContentBlock img => new ToolContentBlock { Type = "image", Data = McpBinaryPayload.ToBase64(img.Data), MimeType = img.MimeType },
+                AudioContentBlock audio => new ToolContentBlock { Type = "audio", Data = McpBinaryPayload.ToBase64(audio.Data), MimeType = audio.MimeType },
                 _ => new ToolContentBlock { Type = block.Type ?? "unknown", Text = $"[{block.Type ?? "unknown"} content block]" }
             });
         }

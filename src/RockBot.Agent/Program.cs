@@ -90,6 +90,11 @@ if (!tierOptions.Balanced.IsConfigured)
 if (!tierOptions.Balanced.IsConfigured && tierOptions.BalancedModels.Count > 0)
     tierOptions.Balanced = tierOptions.BalancedModels[0];
 
+// Published to DI after all the compat fixups above, so anything reading it sees the same
+// resolved tiers the chat clients were built from. Tools that hand bytes to a model consult
+// SupportsImageInput here to find a tier that can actually see — see design/multimodal-input.md.
+builder.Services.AddSingleton(tierOptions);
+
 // ── Per-tier client builder — each tier can use a different provider ─────────
 // Global provider default: LLM__Provider (Copilot | empty = OpenAI-compatible)
 // Per-tier override: LLM__Low__Provider, LLM__Balanced__Provider, LLM__High__Provider

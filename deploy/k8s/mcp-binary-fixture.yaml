@@ -1,0 +1,60 @@
+# Fixture MCP server for exercising the bridge's binary-content paths against a live agent.
+#
+# NOT part of a normal deployment. It is deliberately outside the Helm chart: it exists to be
+# applied when someone is testing binary capture or analyze_file, and deleted afterwards.
+#
+#   kubectl apply -f deploy/k8s/mcp-binary-fixture.yaml
+#   # register it in the agent's mcp.json (see src/McpServer.BinaryFixture/README.md)
+#   kubectl delete -f deploy/k8s/mcp-binary-fixture.yaml
+#
+# It serves generated fixtures only — no credentials, no external calls, no state.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mcp-binary-fixture
+  namespace: rockbot
+  labels:
+    app: mcp-binary-fixture
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mcp-binary-fixture
+  template:
+    metadata:
+      labels:
+        app: mcp-binary-fixture
+    spec:
+      containers:
+        - name: fixture
+          image: rockylhotka/rockbot-binary-fixture-mcp:0.15.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8080
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 10m
+              memory: 64Mi
+            limits:
+              memory: 192Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mcp-binary-fixture
+  namespace: rockbot
+  labels:
+    app: mcp-binary-fixture
+spec:
+  selector:
+    app: mcp-binary-fixture
+  ports:
+    - port: 80
+      targetPort: 8080
+      name: http

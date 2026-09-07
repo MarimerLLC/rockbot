@@ -1,3 +1,5 @@
+using Microsoft.Extensions.DependencyInjection;
+using RockBot.Host;
 using RockBot.Tools;
 
 namespace RockBot.Tools.FileSystem;
@@ -5,16 +7,31 @@ namespace RockBot.Tools.FileSystem;
 /// <summary>
 /// Provides the agent with a usage guide for the shared-volume file tools.
 /// </summary>
-internal sealed class FileSystemToolSkillProvider : IToolSkillProvider
+/// <remarks>
+/// The <c>analyze_file</c> section is conditional on the same predicate the registrar uses, so
+/// the guide never documents a tool this deployment does not offer — and never omits one it does,
+/// whichever of the two hosted services starts first.
+/// </remarks>
+internal sealed class FileSystemToolSkillProvider(IServiceProvider services) : IToolSkillProvider
 {
-    public string Name => "files";
-    public string Summary => "Shared-volume file tools (file_write, file_edit, file_read, file_list, file_delete, file_get_path).";
+    private bool HasVision => VisionTiers.From(services.GetService<LlmTierOptions>()).Length > 0
+                              && services.GetService<ILlmClient>() is not null;
 
-    public string GetDocument() =>
+    public string Name => "files";
+
+    public string Summary => HasVision
+        ? "Shared-volume file tools (file_write, file_edit, file_read, file_list, file_delete, file_get_path, analyze_file)."
+        : "Shared-volume file tools (file_write, file_edit, file_read, file_list, file_delete, file_get_path).";
+
+    public string GetDocument() => HasVision
+        ? BaseDocument + AnalyzeFileSection
+        : BaseDocument;
+
+    private const string BaseDocument =
         """
         # Shared Volume File Tools Guide
 
-        Six tools provide direct access to files on the shared volume — a persistent
+        These tools provide direct access to files on the shared volume — a persistent
         filesystem shared across the agent, script pods, and other RockBot services.
 
 
@@ -159,7 +176,51 @@ internal sealed class FileSystemToolSkillProvider : IToolSkillProvider
         - Path traversal outside the shared volume is blocked for security
         - Files in `tmp/` are automatically cleaned up daily — use `drafts/` or
           `exports/` for files that need to persist longer
-        - These tools handle UTF-8 text; for binary files, use scripts to create them
-          and `file_get_path` to pass them to other tools
+        - `file_read` and `file_write` handle UTF-8 text only. To create a binary file, use
+          a script; to pass one to another tool, use `file_get_path`
+        """;
+
+    /// <summary>
+    /// Appended only when a configured tier accepts image input. Leads with the failure it
+    /// replaces: reading an image with <c>file_read</c> is the mistake this tool exists to
+    /// prevent, and it is expensive — a single image can fill working memory with chunked
+    /// mojibake before the agent notices anything is wrong.
+    /// </summary>
+    private const string AnalyzeFileSection =
+        """
+
+
+        ## Looking at Images: analyze_file
+
+        `file_read` cannot read an image. It will return thousands of characters of unusable
+        text, chunk them into working memory, and leave you no closer to knowing what the image
+        shows. Use `analyze_file` instead — for diagrams, screenshots, charts, scans, photos,
+        and anything else you cannot read as text.
+
+        ```
+        analyze_file(
+          path: "attachments/architecture.png",
+          prompt: "Describe the components and how they connect.",
+          tier: "high"
+        )
+        // → "Three services arranged left to right. The gateway on the left ..."
+        ```
+
+        The file is shown to a vision-capable model as an actual image. What comes back is that
+        model's answer to your prompt — not the file's bytes, which never enter your context.
+
+        Because of that, **the answer is all you get**. The model that looked at the image is
+        not in this conversation and cannot be asked a follow-up; a second question means a
+        second call and a second look. So ask for everything you need in one prompt: "list every
+        label and the arrows between them" rather than "what is this diagram of". Specific
+        prompts also produce specific answers — an open-ended prompt gets an open-ended summary
+        that often omits the one detail you needed.
+
+        The `tier` parameter is optional and defaults to balanced. Use `high` for dense diagrams,
+        small text, or fine visual detail.
+
+        Not every deployment can do this. When this section is absent from the guide, no
+        configured model accepts images and there is no way to look at one — say so plainly
+        rather than reading the file as text and guessing at what it contains.
         """;
 }

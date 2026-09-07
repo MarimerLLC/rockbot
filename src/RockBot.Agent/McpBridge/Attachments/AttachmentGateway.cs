@@ -490,25 +490,9 @@ public sealed class AttachmentGateway
         }
     }
 
-    private static string GuessMime(string fileName)
-    {
-        var ext = Path.GetExtension(fileName).ToLowerInvariant();
-        return ext switch
-        {
-            ".pdf" => "application/pdf",
-            ".png" => "image/png",
-            ".jpg" or ".jpeg" => "image/jpeg",
-            ".gif" => "image/gif",
-            ".txt" or ".log" => "text/plain",
-            ".json" => "application/json",
-            ".csv" => "text/csv",
-            ".html" or ".htm" => "text/html",
-            ".xml" => "application/xml",
-            ".zip" => "application/zip",
-            ".docx" => "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-            ".xlsx" => "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            ".pptx" => "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-            _ => "application/octet-stream"
-        };
-    }
+    /// <summary>
+    /// Content type for an uploaded file. Shared with binary capture so the two halves of
+    /// the gateway cannot disagree about what a <c>.png</c> is.
+    /// </summary>
+    private static string GuessMime(string fileName) => AttachmentMime.FromFileName(fileName);
 }

@@ -328,6 +328,54 @@ guide instructs the model to pass `{ path: "/rockbot/shared/attachments/<file>" 
 base64 whenever a tool's parameter takes attachments — operators don't need to do anything more
 than enable the manifest.
 
+### Binary capture (response side, no manifest required)
+
+Passthrough needs a cooperating server. Capture handles the ones that don't: every MCP response
+passes through `BinaryResponseCapture` on its way back to the agent.
+
+**Typed `image`/`audio` content blocks are captured with no configuration** — MCP already
+labels them, so the bytes are written to the attachments directory and the block is replaced
+with `{path, name, size, mime, note}`. Other blocks in the response are untouched.
+
+**Base64 inside an ordinary JSON response needs a declared rule**, because sniffing for
+"a field that looks like base64" is the fragile heuristic the manifest design avoids:
+
+```json
+{
+  "attachments": {
+    "capture": {
+      "rules": [
+        {
+          "tools": ["get_file_contents"],
+          "contentField": "content",
+          "nameField": "name",
+          "encodingField": "encoding"
+        }
+      ]
+    }
+  }
+}
+```
+
+That is the shape of the official Gitea server's file tool, and it needs no change on the
+server side — only a description of the response it already sends.
+
+A rule only fires when the payload really is binary: the name or MIME field decides when there
+is one (`image/*`, `audio/*`, `video/*`, PDF, zip, Office — but not SVG, which is text the model
+can read), and otherwise the bytes do, via a NUL byte or a strict UTF-8 decode failure. A README
+returned through the same base64 field as a PNG stays in the response as content.
+
+Some servers don't base64 their binary at all — they decode the bytes as UTF-8 first, which
+destroys them at the source. Under a declared rule, a content field that fails base64 decoding is
+checked for that signature (eight or more U+FFFD in at least a kilobyte) and dropped with a note
+explaining that the bytes are unrecoverable and that retrying returns the same corrupted text.
+The response's `name`, `sha`, `size` and `html_url` survive. On the reference deployment this
+took one such call from 1,366,356 characters and 22 working-memory chunks to 588 characters and
+none.
+
+Set `capture.enabled: false` to disable it for a server. Capture never fails a tool call — any
+error logs and passes the server's original response through untouched.
+
 ### Argument guards
 
 Some third-party MCP servers resolve path arguments inside their *own* pod: a
@@ -384,6 +432,71 @@ Behavior:
   how the server is invoked, not which server it is.
 
 See `design/mcp-arg-guards.md` for the security rationale.
+
+---
+
+## Multimodal input: `analyze_file`
+
+Attachment passthrough gets a file *onto the shared volume*. `analyze_file` is the other half:
+it gets that file *in front of a model* as real image content.
+
+```
+analyze_file({ path: "attachments/architecture.png",
+               prompt: "Describe the components and how they connect.",
+               tier: "high" })
+    │
+    ▼
+AnalyzeFileToolExecutor  (RockBot.Tools.FileSystem)
+    │   SafeResolvePath containment under FileSystemOptions.BasePath
+    │   extension → MIME, checked against AnalyzeFileMimeTypes
+    │   size checked against AnalyzeFileMaxBytes
+    │
+    ▼
+ILlmClient.GetResponseAsync(
+    [ ChatMessage(User, [ TextContent(prompt), DataContent(bytes, mime) ]) ], tier, …)
+    │
+    ▼
+ToolInvokeResponse { Content = "Three services arranged left to right. …" }
+```
+
+The analysis runs as its own LLM call rather than as content in the agent's own loop. That is
+not an implementation shortcut — on OpenAI-compatible APIs, which is every provider RockBot
+talks to, tool-role messages accept text only, so bytes can enter a conversation solely as
+content parts on a user message. Running the look-up as a side call sidesteps that and keeps
+the agent's context free of bytes: a path goes in, prose comes out. The full reasoning, and the
+sequencing of the remaining multimodal work, is in `design/multimodal-input.md`.
+
+### Enabling it
+
+`analyze_file` is registered only when a configured tier declares that its model accepts image
+input:
+
+```json
+{
+  "LLM": {
+    "High": {
+      "ModelId": "openai/gpt-5.5",
+      "SupportsImageInput": true
+    }
+  }
+}
+```
+
+Or `LLM__High__SupportsImageInput=true` as an environment variable. With no such tier the tool
+is not registered and the file-tools skill guide omits it — an agent is never taught a
+capability its deployment does not have.
+
+When the requested `tier` is not one that can see, the executor substitutes the nearest tier
+that can (High → Balanced → Low). This matters because `ILlmClient` retries a failed Low/High
+call on Balanced: sending a vision request to a blind tier would fail twice and report the
+second, less informative error.
+
+### Limits
+
+| Option | Default | Purpose |
+|---|---|---|
+| `FileSystemOptions.AnalyzeFileMaxBytes` | 8 MiB | Refused above this, before any bytes are read. Providers cap the encoded request well above it; the limit keeps a mistake cheap. |
+| `FileSystemOptions.AnalyzeFileMimeTypes` | PNG, JPEG, GIF, WebP | The formats every vision-capable provider accepts. Adding `application/pdf` or an audio type is a deployment decision — whether it works depends on the provider behind the tier. |
 
 ---
 

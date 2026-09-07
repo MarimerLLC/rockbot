@@ -39,6 +39,15 @@ public sealed class AttachmentManifest
     /// argument that triggers response-side rewriting into <c>{path, name, size, mime}</c>.
     /// </summary>
     public AttachmentInboundConfig? Inbound { get; set; }
+
+    /// <summary>
+    /// Binary capture configuration — how the bridge handles binary content a server returns
+    /// without being asked to stash it. Unlike the rest of this manifest, capture of typed
+    /// (image/audio) content blocks is on by default and needs no manifest at all; this block
+    /// exists to turn it off, or to declare the response fields of servers that hand back
+    /// base64 inside ordinary JSON.
+    /// </summary>
+    public AttachmentCaptureConfig? Capture { get; set; }
 }
 
 /// <summary>
@@ -65,4 +74,62 @@ public sealed class AttachmentInboundConfig
     /// underlying call, then transforms the result into <c>{path, name, size, mime}</c>.
     /// </summary>
     public List<string> Tools { get; set; } = [];
+}
+
+/// <summary>
+/// Binary capture configuration. Capture is the fallback for servers that never heard of
+/// RockBot's attachment protocol: rather than letting binary content reach the model as text,
+/// the bridge writes it to the shared attachments directory and hands back a path.
+/// </summary>
+public sealed class AttachmentCaptureConfig
+{
+    /// <summary>
+    /// Whether to capture binary content from this server's responses. Defaults to <c>true</c>,
+    /// and applies even to servers with no <c>attachments</c> block at all — a base64 image in
+    /// the model's context is never the outcome anyone wanted, so this needs no opt-in. Set
+    /// <c>false</c> to send binary content through untouched.
+    /// </summary>
+    public bool Enabled { get; set; } = true;
+
+    /// <summary>
+    /// Declarative response-field rules for servers that return file bytes as base64 inside an
+    /// ordinary JSON response rather than as a typed content block — Gitea's
+    /// <c>get_file_contents</c> shape. Typed image and audio blocks need no rule; MCP already
+    /// labels them.
+    /// </summary>
+    public List<AttachmentCaptureRule> Rules { get; set; } = [];
+}
+
+/// <summary>
+/// One declarative capture rule: which tools it applies to, and which response fields carry the
+/// content, its name, and its type.
+/// </summary>
+/// <remarks>
+/// Fields are read from the top level of the response's JSON object, matching the deliberately
+/// simple <c>arrayKey[*]</c> shape supported by <see cref="AttachmentOutboundConfig.ParamPaths"/>.
+/// Nested pointers can follow when a real server needs them.
+/// </remarks>
+public sealed class AttachmentCaptureRule
+{
+    /// <summary>Tool names this rule applies to. A rule with no tools never matches.</summary>
+    public List<string> Tools { get; set; } = [];
+
+    /// <summary>Response field holding the base64 payload. Defaults to <c>content</c>.</summary>
+    public string ContentField { get; set; } = "content";
+
+    /// <summary>
+    /// Response field holding the file name, used for the saved file and to infer its type.
+    /// When unset the gateway looks at <c>name</c> and <c>path</c> before falling back to a
+    /// generated name.
+    /// </summary>
+    public string? NameField { get; set; }
+
+    /// <summary>Response field holding the MIME type, when the server sends one.</summary>
+    public string? MimeField { get; set; }
+
+    /// <summary>
+    /// Response field naming the payload's encoding (e.g. Gitea's <c>encoding</c>). When set and
+    /// its value is not <c>base64</c>, the rule declines rather than decoding garbage.
+    /// </summary>
+    public string? EncodingField { get; set; }
 }
