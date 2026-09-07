@@ -5,12 +5,12 @@ namespace RockBot.Host;
 /// <summary>
 /// Estimates what an image costs in an LLM request, in tokens, from its pixel dimensions.
 ///
-/// <para>Providers do not bill an image by its byte count. The OpenAI-compatible APIs RockBot
-/// speaks scale the image down to a bounded box, tile it, and charge a flat base plus a fixed
-/// number of tokens per tile — so a 4 MB photo and a 400 KB screenshot of the same dimensions
-/// cost exactly the same, and a 5 KB icon costs a small fraction of either. Any byte-derived
-/// proxy therefore gets the ordering wrong as often as the magnitude: it over-charges small
-/// images and, once capped, charges every real photo the same ceiling.</para>
+/// <para>Providers do not bill an image by its byte count. They price its <i>pixels</i> — by
+/// patches or by tiles, depending on the model family (see <see cref="ImageCostMode"/>) — so a
+/// 4 MB photo and a 400 KB screenshot of the same dimensions cost exactly the same, and a 5 KB
+/// icon costs a small fraction of either. Any byte-derived proxy therefore gets the ordering
+/// wrong as often as the magnitude: it over-charges small images and, once capped, charges
+/// every real photo the same ceiling.</para>
 ///
 /// <para>Dimensions come from the image header, which for every format below sits in the first
 /// few dozen bytes. Nothing here decodes pixels.</para>
@@ -25,15 +25,22 @@ internal static class ImageTokenEstimator
     internal static readonly ImageCostOptions DefaultCost = new();
 
     /// <summary>
-    /// Cost of the largest image <paramref name="cost"/>'s scaling rules permit — 1,445 tokens
-    /// on the defaults, since no image can reduce to more than an 8-tile grid. Callers charge
-    /// this to an image they cannot measure.
+    /// Cost of the largest image <paramref name="cost"/>'s rules permit — 1,536 tokens on the
+    /// patched defaults, 1,445 on the tiled ones, since both models bound how far cost can
+    /// rise with size. Callers charge this to an image they cannot measure.
     /// </summary>
     public static int MaxTokens(ImageCostOptions? cost = null)
     {
-        var (baseTokens, tokensPerTile, tileSize, maxDimension, shortestSide) = Clamp(cost);
-        var maxTiles = Tiles(shortestSide, tileSize) * Tiles(maxDimension, tileSize);
-        return baseTokens + (tokensPerTile * maxTiles);
+        cost ??= DefaultCost;
+
+        if (cost.Mode == ImageCostMode.Tiled)
+        {
+            var (baseTokens, tokensPerTile, tileSize, maxDimension, shortestSide) = ClampTiled(cost);
+            return baseTokens + (tokensPerTile * (Cells(shortestSide, tileSize) * Cells(maxDimension, tileSize)));
+        }
+
+        var (_, maxPatches, multiplier) = ClampPatched(cost);
+        return Scale(maxPatches, multiplier);
     }
 
     /// <summary>
@@ -54,12 +61,43 @@ internal static class ImageTokenEstimator
     }
 
     /// <summary>
-    /// Applies the scale-then-tile cost model to a pixel size. Scaling is down-only: an image
-    /// smaller than one tile costs one tile, not a scaled-up grid of them.
+    /// Prices a pixel size under the configured cost model. The two modes are different shapes,
+    /// not different constants — see <see cref="ImageCostMode"/>.
     /// </summary>
     public static int EstimateTokens(int width, int height, ImageCostOptions? cost = null)
     {
-        var (baseTokens, tokensPerTile, tileSize, maxDimension, shortestSide) = Clamp(cost);
+        cost ??= DefaultCost;
+
+        return cost.Mode == ImageCostMode.Tiled
+            ? EstimateTiled(width, height, cost)
+            : EstimatePatched(width, height, cost);
+    }
+
+    /// <summary>
+    /// Patch model (GPT-5 family): cost tracks the image's area in fixed-size patches, capped at
+    /// a patch budget — beyond it the provider scales the image down to fit rather than charging
+    /// more — then scaled by a per-model factor.
+    /// </summary>
+    private static int EstimatePatched(int width, int height, ImageCostOptions cost)
+    {
+        var (patchSize, maxPatches, multiplier) = ClampPatched(cost);
+
+        if (width <= 0 || height <= 0)
+            return Scale(1, multiplier);
+
+        // long, because a very large image overflows int before the cap is applied.
+        var patches = (long)Cells(width, patchSize) * Cells(height, patchSize);
+        return Scale((int)Math.Clamp(patches, 1, maxPatches), multiplier);
+    }
+
+    /// <summary>
+    /// Tile model (GPT-4o family): scale the image into a bounded box, divide it into tiles, and
+    /// charge a flat base plus a fixed cost per tile. Scaling is down-only: an image smaller than
+    /// one tile costs one tile, not a scaled-up grid of them.
+    /// </summary>
+    private static int EstimateTiled(int width, int height, ImageCostOptions cost)
+    {
+        var (baseTokens, tokensPerTile, tileSize, maxDimension, shortestSide) = ClampTiled(cost);
 
         if (width <= 0 || height <= 0)
             return baseTokens + tokensPerTile;
@@ -88,24 +126,33 @@ internal static class ImageTokenEstimator
         // Clamp rather than trust the arithmetic: a rounding artefact that produced an extra
         // tile would over-charge silently, which is the failure mode this whole estimate exists
         // to avoid.
-        var maxTiles = Tiles(shortestSide, tileSize) * Tiles(maxDimension, tileSize);
+        var maxTiles = Cells(shortestSide, tileSize) * Cells(maxDimension, tileSize);
         tiles = Math.Clamp(tiles, 1, maxTiles);
 
         return baseTokens + (tokensPerTile * tiles);
     }
 
-    /// <summary>Tiles needed to cover <paramref name="pixels"/> at <paramref name="tileSize"/>.</summary>
-    private static int Tiles(int pixels, int tileSize) => (pixels + tileSize - 1) / tileSize;
+    /// <summary>Cells of <paramref name="size"/> pixels needed to cover <paramref name="pixels"/>.</summary>
+    private static int Cells(int pixels, int size) => (pixels + size - 1) / size;
+
+    /// <summary>Applies the per-model factor, rounding up — a partial token still costs one.</summary>
+    private static int Scale(int patches, double multiplier) =>
+        (int)Math.Min(int.MaxValue, Math.Ceiling(patches * multiplier));
 
     /// <summary>
-    /// Reads the configured cost model, clamped to values the arithmetic can actually use. A
-    /// mistyped setting should degrade the estimate, not divide by zero inside the trim loop.
+    /// Reads the patched cost model, clamped to values the arithmetic can use. A mistyped
+    /// setting should degrade the estimate, not divide by zero inside the trim loop.
     /// </summary>
-    private static (int BaseTokens, int TokensPerTile, int TileSize, int MaxDimension, int ShortestSide)
-        Clamp(ImageCostOptions? cost)
+    private static (int PatchSize, int MaxPatches, double Multiplier) ClampPatched(ImageCostOptions cost)
     {
-        cost ??= DefaultCost;
+        var multiplier = double.IsFinite(cost.Multiplier) ? Math.Max(0, cost.Multiplier) : 1.0;
+        return (Math.Max(1, cost.PatchSize), Math.Max(1, cost.MaxPatches), multiplier);
+    }
 
+    /// <summary>Reads the tiled cost model, clamped the same way.</summary>
+    private static (int BaseTokens, int TokensPerTile, int TileSize, int MaxDimension, int ShortestSide)
+        ClampTiled(ImageCostOptions cost)
+    {
         var tileSize = Math.Max(1, cost.TileSize);
         var maxDimension = Math.Max(tileSize, cost.MaxDimension);
         var shortestSide = Math.Clamp(cost.ShortestSide, 1, maxDimension);

@@ -12,77 +12,165 @@ namespace RockBot.Host.Tests;
 [TestClass]
 public class ImageTokenEstimatorTests
 {
-    // ── The cost model ───────────────────────────────────────────────────────
+    // ── The patch model (the default: GPT-5 family) ──────────────────────────
 
     [TestMethod]
-    public void EstimateTokens_1024Square_Costs765()
+    public void EstimateTokens_Patched_CostsOneTokenPerPatch()
     {
-        // The provider's own worked example. Shortest side 1024 scales to 768, giving a 768×768
-        // image, which is a 2×2 tile grid: 85 + 4 × 170.
-        Assert.AreEqual(765, ImageTokenEstimator.EstimateTokens(1024, 1024));
+        // 1024×1024 is a 32×32 grid of 32px patches.
+        Assert.AreEqual(1024, ImageTokenEstimator.EstimateTokens(1024, 1024));
+        // 512×512 is 16×16.
+        Assert.AreEqual(256, ImageTokenEstimator.EstimateTokens(512, 512));
     }
 
     [TestMethod]
-    public void EstimateTokens_2048By4096_Costs1105()
+    public void EstimateTokens_Patched_IsCappedAtThePatchBudget()
+    {
+        // 2048×1536 would be 64×48 = 3,072 patches; the provider scales it down to the 1,536
+        // budget rather than charging beyond it.
+        Assert.AreEqual(1536, ImageTokenEstimator.EstimateTokens(2048, 1536));
+        Assert.AreEqual(1536, ImageTokenEstimator.EstimateTokens(8000, 24_000));
+        Assert.AreEqual(1536, ImageTokenEstimator.MaxTokens());
+    }
+
+    [TestMethod]
+    public void EstimateTokens_Patched_HugeImageDoesNotOverflow()
+    {
+        // A patch count for an image this size overflows int before the cap is applied, which
+        // is why the intermediate is a long.
+        Assert.AreEqual(1536, ImageTokenEstimator.EstimateTokens(2_000_000, 2_000_000));
+    }
+
+    [TestMethod]
+    public void EstimateTokens_Patched_SmallImageCostsAFewTokens()
+    {
+        // The patch model has no flat base: an icon is genuinely cheap.
+        Assert.AreEqual(4, ImageTokenEstimator.EstimateTokens(64, 64));
+        Assert.AreEqual(1, ImageTokenEstimator.EstimateTokens(16, 16));
+    }
+
+    [TestMethod]
+    public void EstimateTokens_Patched_MultiplierScalesAndRoundsUp()
+    {
+        // A -mini tier charges 1.62x per patch; a partial token still costs one.
+        var mini = new ImageCostOptions { Multiplier = 1.62 };
+
+        Assert.AreEqual((int)Math.Ceiling(1024 * 1.62), ImageTokenEstimator.EstimateTokens(1024, 1024, mini));
+        Assert.AreEqual((int)Math.Ceiling(1536 * 1.62), ImageTokenEstimator.MaxTokens(mini));
+        Assert.AreEqual(7, ImageTokenEstimator.EstimateTokens(64, 64, mini), "4 patches × 1.62 = 6.48 → 7.");
+    }
+
+    [TestMethod]
+    public void EstimateTokens_Patched_DegenerateDimensionsCostOnePatch()
+    {
+        Assert.AreEqual(1, ImageTokenEstimator.EstimateTokens(0, 0));
+        Assert.AreEqual(1, ImageTokenEstimator.EstimateTokens(-10, 40));
+    }
+
+    // ── The tile model (GPT-4o family, opt-in) ───────────────────────────────
+
+    private static ImageCostOptions Tiled => new() { Mode = ImageCostMode.Tiled };
+
+    [TestMethod]
+    public void EstimateTokens_Tiled_1024Square_Costs765()
+    {
+        // That family's own worked example. Shortest side 1024 scales to 768, giving a 768×768
+        // image, which is a 2×2 tile grid: 85 + 4 × 170.
+        Assert.AreEqual(765, ImageTokenEstimator.EstimateTokens(1024, 1024, Tiled));
+    }
+
+    [TestMethod]
+    public void EstimateTokens_Tiled_2048By4096_Costs1105()
     {
         // Second worked example, exercising both scaling steps: fit to 2048 → 1024×2048, then
         // shortest side to 768 → 768×1536, a 2×3 grid.
-        Assert.AreEqual(1105, ImageTokenEstimator.EstimateTokens(2048, 4096));
+        Assert.AreEqual(1105, ImageTokenEstimator.EstimateTokens(2048, 4096, Tiled));
     }
 
     [TestMethod]
-    public void EstimateTokens_SmallImage_CostsOneTileAndIsNotUpscaled()
+    public void EstimateTokens_Tiled_SmallImage_CostsOneTileAndIsNotUpscaled()
     {
         // Scaling is down-only. An icon occupies one tile; scaling it *up* to the 768px
         // shortest-side target would charge it four.
-        Assert.AreEqual(255, ImageTokenEstimator.EstimateTokens(64, 64));
-        Assert.AreEqual(255, ImageTokenEstimator.EstimateTokens(150, 150));
-        Assert.AreEqual(255, ImageTokenEstimator.EstimateTokens(512, 512));
+        Assert.AreEqual(255, ImageTokenEstimator.EstimateTokens(64, 64, Tiled));
+        Assert.AreEqual(255, ImageTokenEstimator.EstimateTokens(150, 150, Tiled));
+        Assert.AreEqual(255, ImageTokenEstimator.EstimateTokens(512, 512, Tiled));
     }
 
     [TestMethod]
-    public void EstimateTokens_HugeImage_IsBoundedByTheTileCeiling()
+    public void EstimateTokens_Tiled_HugeImage_IsBoundedByTheTileCeiling()
     {
         // However large the source, the scaling rules bound it at 768×2048 — an 8-tile grid.
-        Assert.AreEqual(ImageTokenEstimator.MaxTokens(), ImageTokenEstimator.EstimateTokens(8000, 24000));
-        Assert.AreEqual(1445, ImageTokenEstimator.MaxTokens());
+        Assert.AreEqual(ImageTokenEstimator.MaxTokens(Tiled), ImageTokenEstimator.EstimateTokens(8000, 24000, Tiled));
+        Assert.AreEqual(1445, ImageTokenEstimator.MaxTokens(Tiled));
 
         for (var edge = 600; edge <= 20_000; edge += 373)
         {
-            Assert.IsTrue(ImageTokenEstimator.EstimateTokens(edge, edge * 3) <= ImageTokenEstimator.MaxTokens(),
+            Assert.IsTrue(
+                ImageTokenEstimator.EstimateTokens(edge, edge * 3, Tiled) <= ImageTokenEstimator.MaxTokens(Tiled),
                 $"{edge}×{edge * 3} must not exceed the tile ceiling.");
         }
     }
 
     [TestMethod]
-    public void EstimateTokens_DegenerateDimensions_CostOneTile()
+    public void EstimateTokens_Tiled_DegenerateDimensions_CostOneTile()
     {
-        Assert.AreEqual(255, ImageTokenEstimator.EstimateTokens(0, 0));
-        Assert.AreEqual(255, ImageTokenEstimator.EstimateTokens(-10, 40));
+        Assert.AreEqual(255, ImageTokenEstimator.EstimateTokens(0, 0, Tiled));
+        Assert.AreEqual(255, ImageTokenEstimator.EstimateTokens(-10, 40, Tiled));
     }
+
+    // ── Properties both models must hold ─────────────────────────────────────
 
     [TestMethod]
     public void EstimateTokens_IsMonotonicInArea()
     {
         // A larger image never costs less than a smaller one — the property that made byte
         // count unusable (a heavily compressed large photo can be smaller than a small PNG).
-        var previous = 0;
-        foreach (var edge in new[] { 32, 128, 512, 640, 1024, 1536, 2048, 4096 })
+        foreach (var cost in new[] { new ImageCostOptions(), Tiled })
         {
-            var tokens = ImageTokenEstimator.EstimateTokens(edge, edge);
-            Assert.IsTrue(tokens >= previous, $"{edge}² cost {tokens}, less than the smaller image's {previous}.");
-            previous = tokens;
+            var previous = 0;
+            foreach (var edge in new[] { 32, 128, 512, 640, 1024, 1536, 2048, 4096 })
+            {
+                var tokens = ImageTokenEstimator.EstimateTokens(edge, edge, cost);
+                Assert.IsTrue(tokens >= previous,
+                    $"{cost.Mode}: {edge}² cost {tokens}, less than the smaller image's {previous}.");
+                previous = tokens;
+            }
+        }
+    }
+
+    [TestMethod]
+    public void EstimateTokens_NeverExceedsMaxTokens()
+    {
+        foreach (var cost in new[] { new ImageCostOptions(), Tiled, new ImageCostOptions { Multiplier = 2.46 } })
+        {
+            foreach (var (w, h) in new[] { (1, 1), (64, 64), (1024, 1024), (4096, 2160), (30_000, 100) })
+            {
+                Assert.IsTrue(ImageTokenEstimator.EstimateTokens(w, h, cost) <= ImageTokenEstimator.MaxTokens(cost),
+                    $"{cost.Mode}: {w}×{h} exceeded the ceiling the unreadable-header fallback charges.");
+            }
         }
     }
 
     // ── The cost model comes from config ─────────────────────────────────────
 
     [TestMethod]
-    public void EstimateTokens_ConfiguredCostModel_ReplacesTheDefaultConstants()
+    public void EstimateTokens_ConfiguredPatchModel_ReplacesTheDefaults()
+    {
+        var cost = new ImageCostOptions { PatchSize = 16, MaxPatches = 400, Multiplier = 2.0 };
+
+        // 320×320 is a 20×20 grid of 16px patches = 400, exactly the budget.
+        Assert.AreEqual(800, ImageTokenEstimator.EstimateTokens(320, 320, cost));
+        Assert.AreEqual(800, ImageTokenEstimator.MaxTokens(cost));
+    }
+
+    [TestMethod]
+    public void EstimateTokens_ConfiguredTileModel_ReplacesTheDefaults()
     {
         // A provider that tiles differently is a config change, not a code change.
         var cost = new ImageCostOptions
         {
+            Mode = ImageCostMode.Tiled,
             BaseTokens = 100,
             TokensPerTile = 200,
             TileSize = 256,
@@ -103,33 +191,39 @@ public class ImageTokenEstimatorTests
         Assert.AreEqual(
             ImageTokenEstimator.EstimateTokens(1024, 1024, new ImageCostOptions()),
             ImageTokenEstimator.EstimateTokens(1024, 1024));
-        Assert.AreEqual(765, ImageTokenEstimator.EstimateTokens(1024, 1024, cost: null));
+        Assert.AreEqual(1024, ImageTokenEstimator.EstimateTokens(1024, 1024, cost: null),
+            "The default model is the patch model the deployed GPT-5-family tiers use.");
     }
 
     [TestMethod]
     public void EstimateTokens_NonsenseConfiguration_IsClampedRatherThanThrowing()
     {
         // A mistyped setting must degrade the estimate, not divide by zero inside the trim loop.
-        var cost = new ImageCostOptions
+        foreach (var cost in new[]
+                 {
+                     new ImageCostOptions { PatchSize = 0, MaxPatches = -1, Multiplier = double.NaN },
+                     new ImageCostOptions
+                     {
+                         Mode = ImageCostMode.Tiled,
+                         BaseTokens = -50, TokensPerTile = -10,
+                         TileSize = 0, MaxDimension = -1, ShortestSide = -1,
+                     },
+                 })
         {
-            BaseTokens = -50,
-            TokensPerTile = -10,
-            TileSize = 0,
-            MaxDimension = -1,
-            ShortestSide = -1,
-        };
-
-        var tokens = ImageTokenEstimator.EstimateTokens(1024, 1024, cost);
-
-        Assert.IsTrue(tokens >= 0, $"A clamped cost model must not produce a negative size (got {tokens}).");
-        Assert.AreEqual(tokens, ImageTokenEstimator.MaxTokens(cost),
-            "With zero-valued token costs every image prices the same; the point is that it returns.");
+            var tokens = ImageTokenEstimator.EstimateTokens(1024, 1024, cost);
+            Assert.IsTrue(tokens >= 0, $"{cost.Mode}: clamped model produced a negative size ({tokens}).");
+            Assert.IsTrue(tokens <= ImageTokenEstimator.MaxTokens(cost),
+                $"{cost.Mode}: clamped model exceeded its own ceiling.");
+        }
     }
 
     [TestMethod]
     public void EstimateTokens_TileSizeLargerThanTheBox_StillCostsOneTile()
     {
-        var cost = new ImageCostOptions { TileSize = 4096, MaxDimension = 2048, ShortestSide = 768 };
+        var cost = new ImageCostOptions
+        {
+            Mode = ImageCostMode.Tiled, TileSize = 4096, MaxDimension = 2048, ShortestSide = 768,
+        };
 
         Assert.AreEqual(85 + 170, ImageTokenEstimator.EstimateTokens(2048, 2048, cost));
         Assert.AreEqual(85 + 170, ImageTokenEstimator.MaxTokens(cost));
@@ -207,7 +301,7 @@ public class ImageTokenEstimatorTests
 
         Assert.IsTrue(ImageTokenEstimator.TryEstimateTokens(png, out var tokens));
         Assert.AreEqual(ImageTokenEstimator.EstimateTokens(2048, 1536), tokens);
-        Assert.AreEqual(765, tokens);
+        Assert.AreEqual(1536, tokens, "64×48 = 3,072 patches, capped at the 1,536 budget.");
     }
 
     // ── Fixtures ─────────────────────────────────────────────────────────────

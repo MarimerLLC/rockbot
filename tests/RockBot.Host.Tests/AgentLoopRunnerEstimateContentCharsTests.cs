@@ -29,8 +29,8 @@ public class AgentLoopRunnerEstimateContentCharsTests
 
         var chars = AgentLoopRunner.EstimateContentChars(image);
 
-        Assert.AreEqual(765 * AgentLoopRunner.CharsPerToken, chars,
-            "A 2048×1536 image scales to a 2×2 tile grid: 85 + 4 × 170 = 765 tokens.");
+        Assert.AreEqual(1536 * AgentLoopRunner.CharsPerToken, chars,
+            "A 2048×1536 image is 64×48 = 3,072 patches, capped at the 1,536-patch budget.");
         Assert.AreNotEqual(AgentLoopRunner.UnknownContentChars, chars,
             "An image must no longer fall through to the unknown-content placeholder.");
     }
@@ -46,8 +46,8 @@ public class AgentLoopRunnerEstimateContentCharsTests
         var iconChars = AgentLoopRunner.EstimateContentChars(icon);
         var screenshotChars = AgentLoopRunner.EstimateContentChars(screenshot);
 
-        Assert.AreEqual(255 * AgentLoopRunner.CharsPerToken, iconChars,
-            "An icon occupies one tile: 85 + 170 = 255 tokens.");
+        Assert.AreEqual(4 * AgentLoopRunner.CharsPerToken, iconChars,
+            "A 64×64 icon is a 2×2 grid of 32px patches: 4 tokens.");
         Assert.IsTrue(screenshotChars > iconChars * 2,
             $"A screenshot ({screenshotChars} chars) must cost materially more than an icon " +
             $"({iconChars} chars) — byte count could not tell them apart.");
@@ -189,7 +189,7 @@ public class AgentLoopRunnerEstimateContentCharsTests
         ]);
 
         Assert.AreEqual(
-            100 + (765 * AgentLoopRunner.CharsPerToken),
+            100 + (1536 * AgentLoopRunner.CharsPerToken),
             AgentLoopRunner.EstimateMessageChars(m));
     }
 
@@ -247,7 +247,7 @@ public class AgentLoopRunnerEstimateContentCharsTests
     public void Estimate_ConfiguredImageCost_ChangesWhatAnImageIsCharged()
     {
         var image = new DataContent(PaddedPng(2048, 1536, 1_800_000), "image/png");
-        var cost = new ImageCostOptions { BaseTokens = 100, TokensPerTile = 200, TileSize = 256 };
+        var cost = new ImageCostOptions { PatchSize = 16, MaxPatches = 8_000, Multiplier = 1.62 };
 
         var configured = AgentLoopRunner.EstimateContentChars(image, cost);
         var defaulted = AgentLoopRunner.EstimateContentChars(image);
@@ -263,7 +263,7 @@ public class AgentLoopRunnerEstimateContentCharsTests
     public void MaxImageChars_TracksTheConfiguredCostModel()
     {
         // The unreadable-header ceiling is derived from the cost model, so it moves with it.
-        var cost = new ImageCostOptions { BaseTokens = 100, TokensPerTile = 200, TileSize = 256 };
+        var cost = new ImageCostOptions { PatchSize = 16, MaxPatches = 8_000, Multiplier = 1.62 };
         var unreadable = new DataContent(new byte[1_800_000], "image/tiff");
 
         Assert.AreEqual(
@@ -281,7 +281,7 @@ public class AgentLoopRunnerEstimateContentCharsTests
         // Every call site passes a logger today, but the parameter is optional and the estimate
         // must not depend on it.
         Assert.AreEqual(
-            765 * AgentLoopRunner.CharsPerToken,
+            1536 * AgentLoopRunner.CharsPerToken,
             AgentLoopRunner.EstimateContentChars(
                 new DataContent(PaddedPng(2048, 1536, 100_000), "image/png"), logger: null));
     }

@@ -173,35 +173,46 @@ photo and screenshot pins to that same ceiling — which makes the proxy inert p
 was meant to help.
 
 So `ImageTokenEstimator` reads width and height from the image header — PNG, JPEG, GIF, WebP and
-BMP, all of which carry it in the first few dozen bytes; nothing decodes pixels — and applies
-the scale-then-tile cost model: fit inside 2048×2048, bring the shortest side down to 768
-(down-only, never upscaled), tile at 512px, charge `85 + 170 × tiles`. That reproduces the
-provider's own worked examples (1024×1024 → 765 tokens; 2048×4096 → 1,105) and is bounded at
-`MaxTokens` = 1,445, since the scaling rules cannot yield more than eight tiles.
+BMP, all of which carry it in the first few dozen bytes; nothing decodes pixels — and prices the
+pixels under the model the configured tier actually uses. There are two, and they are different
+shapes rather than different constants:
 
-Those five numbers are `AgentHost:ImageCost` (`ImageCostOptions`), not constants — a provider
-that tiles to different sizes or charges a different base is a config change:
+- **Patched** (the default, and what the deployed GPT-5-family tiers use): the image is divided
+  into 32-pixel patches, the count is capped at 1,536 — beyond that the provider scales the
+  image down to fit rather than charging more — and the result is multiplied by a per-model
+  factor (1.0 for a full model, 1.62 for a `-mini`, 2.46 for a `-nano`). A 2048×1536 screenshot
+  is 64×48 = 3,072 patches, so it costs the 1,536-token ceiling; a 64×64 icon costs 4 tokens.
+- **Tiled** (`Mode: Tiled`, for a GPT-4o-family model): the image is scaled to fit inside
+  2048×2048, its shortest side brought down to 768 (down-only, never upscaled), divided into
+  512px tiles, and charged `85 + 170 × tiles`. Those defaults reproduce that family's published
+  worked examples — 1024×1024 → 765 tokens, 2048×4096 → 1,105 — and bound at 1,445.
+
+Getting the *family* right matters as much as getting off byte count did. The tile model applied
+to a GPT-5 tier under-counts a full-page screenshot by 2× (765 against 1,536), and by 3.2× on a
+`-mini`, which is the same failure class as the flat 50 this replaced — just smaller.
+
+The whole model is `AgentHost:ImageCost` (`ImageCostOptions`), not constants:
 
 ```json
 "AgentHost": {
   "ImageCost": {
-    "BaseTokens": 85, "TokensPerTile": 170,
-    "TileSize": 512, "MaxDimension": 2048, "ShortestSide": 768
+    "Mode": "Patched",
+    "PatchSize": 32, "MaxPatches": 1536, "Multiplier": 1.0
   }
 }
 ```
 
-(env: `AgentHost__ImageCost__TileSize` and friends). The bound options are threaded from each
+(env: `AgentHost__ImageCost__Mode`, `AgentHost__ImageCost__Multiplier` and friends; only the
+properties belonging to the selected mode are read). The bound options are threaded from each
 caller into the estimate the same way the trim ratio and stash TTL already are, rather than read
 from a static — the trim path deliberately has no ambient configuration. Values are clamped to
-workable minimums at use time, so a mistyped `TileSize` of 0 degrades the estimate instead of
-dividing by zero inside the trim loop. What is *not* expressible is a provider whose image
-pricing differs in shape rather than in constants — per-pixel, or a flat charge; that needs a
-different cost model, not different numbers.
+workable minimums at use time, so a mistyped `PatchSize` of 0 degrades the estimate instead of
+dividing by zero inside the trim loop. What is *not* expressible is a third shape — a provider
+that prices per-pixel, or charges flat; that needs a new `ImageCostMode`, not new numbers.
 
-`MaxImageChars` is derived from that bound rather than guessed: an image whose header will not
-parse is charged what the *largest* possible image would cost, because an image we cannot
-measure could be that large. Three smaller consequences worth knowing: an image part with no
+`MaxImageChars` is derived from the selected model's own ceiling rather than guessed: an image
+whose header will not parse is charged what the *largest* possible image would cost under that
+model, because an image we cannot measure could be that large. Three smaller consequences worth knowing: an image part with no
 readable payload is charged the ceiling rather than zero — a degenerate image is a malformed
 request, not a free one; an unparseable header is logged once per media type at debug; and the
 unknown-content fallback increments `rockbot.agent.context.unknown_content_part`, tagged with
