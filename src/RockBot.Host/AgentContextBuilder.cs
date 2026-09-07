@@ -417,7 +417,12 @@ public sealed class AgentContextBuilder(
         {
             var turn = history[i];
             var role = turn.Role == "user" ? ChatRole.User : ChatRole.Assistant;
-            chatMessages.Add(new ChatMessage(role, turn.Content));
+            // A turn that carried files keeps a note of where they went. The bytes are only
+            // materialised for the turn being answered, so without this the path leaves the
+            // conversation entirely the moment the next turn starts and "look at that image
+            // again" becomes unanswerable — the model cannot even name the file to analyse.
+            chatMessages.Add(new ChatMessage(
+                role, turn.Content + InboundAttachmentInjector.DescribeAttachments(turn.Attachments)));
         }
 
         // Long-term memory BM25 recall

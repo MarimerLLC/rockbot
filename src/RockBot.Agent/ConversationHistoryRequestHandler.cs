@@ -39,7 +39,15 @@ internal sealed class ConversationHistoryRequestHandler(
                     Role = t.Role,
                     Content = t.Content,
                     Timestamp = t.Timestamp,
-                    AgentName = t.AgentName
+                    AgentName = t.AgentName,
+                    Attachments = t.Attachments is { Count: > 0 }
+                        ? [.. t.Attachments.Select(a => new AgentAttachment
+                        {
+                            Mime = a.Mime,
+                            Path = a.Path,
+                            FileName = a.FileName,
+                        })]
+                        : null,
                 })
                 .ToList()
         };

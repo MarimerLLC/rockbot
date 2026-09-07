@@ -14,4 +14,10 @@ public sealed record ConversationHistoryTurn
     /// Used by the UI to restore proper message categorization on history reload.
     /// </summary>
     public string? AgentName { get; init; }
+
+    /// <summary>
+    /// Files attached to this turn, as path references. Lets a reloaded session render the
+    /// image the user sent three turns ago instead of silently dropping it.
+    /// </summary>
+    public IReadOnlyList<AgentAttachment>? Attachments { get; init; }
 }

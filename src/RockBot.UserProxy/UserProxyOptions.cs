@@ -30,6 +30,16 @@ public sealed class UserProxyOptions
     public TimeSpan DefaultReplyTimeout { get; set; } = TimeSpan.FromMinutes(3);
 
     /// <summary>
+    /// Base URL of the agent's attachment upload endpoint (e.g.
+    /// <c>http://rockbot-agent:8082</c>). When set, file uploads go over HTTP so their bytes
+    /// never touch the broker; when unset — or when the endpoint cannot be reached — uploads
+    /// fall back to the message bus, which works from anywhere the client already talks to the
+    /// agent. Null by default, so a client with no route to the agent's HTTP port keeps working
+    /// with no configuration at all.
+    /// </summary>
+    public string? AttachmentUploadUrl { get; set; }
+
+    /// <summary>
     /// Maximum number of retry attempts for the initial <c>user.response</c> subscription
     /// when the message bus is unavailable at startup. Use <c>0</c> to disable retries.
     /// With the default base delay of 2 s and 30 s cap, 15 attempts covers roughly 5 minutes.

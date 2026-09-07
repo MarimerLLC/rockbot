@@ -132,6 +132,13 @@ spec:
               # regardless of the group.
               chown -R rockbot:{{ .Values.shared.fsGroup }} /data/agent
               echo "Agent data volume ready."
+          ports:
+            # Attachment uploads. Bytes for a screenshot-sized file go here instead of through
+            # RabbitMQ, which holds message bodies in memory until they are acked. Clients with
+            # no route to this port fall back to the bus. Pod-network only — no auth of its own,
+            # same posture as the introspection sidecar below.
+            - name: http-upload
+              containerPort: {{ .Values.agent.attachmentUpload.port | default 8082 }}
           volumeMounts:
             - name: agent-data
               mountPath: /data/agent
@@ -140,6 +147,12 @@ spec:
         - name: agent
           image: {{ .Values.agent.image.repository }}:{{ .Values.agent.image.tag }}
           imagePullPolicy: {{ .Values.imagePullPolicy }}
+          env:
+            # Attachment upload endpoint. Off means every upload falls back to the bus.
+            - name: AttachmentUpload__Enabled
+              value: {{ .Values.agent.attachmentUpload.enabled | quote }}
+            - name: AttachmentUpload__Port
+              value: {{ .Values.agent.attachmentUpload.port | default 8082 | quote }}
           envFrom:
             - configMapRef:
                 name: {{ include "rockbot.configmapName" . }}

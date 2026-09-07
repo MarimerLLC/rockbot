@@ -16,6 +16,9 @@ builder.Services.AddRockBotRabbitMq(opts => builder.Configuration.GetSection("Ra
 builder.Services.AddUserProxy(opts =>
 {
     opts.AgentName = builder.Configuration["Agent:Name"] ?? "RockBot";
+    // Upload attachments to the agent over HTTP when it is reachable, so a screenshot's bytes
+    // never enter the broker. Unset means uploads fall back to the bus, which still works.
+    opts.AttachmentUploadUrl = builder.Configuration["UserProxy:AttachmentUploadUrl"];
 });
 builder.Services.AddSingleton<IUserFrontend, BlazorUserFrontend>();
 builder.Services.AddSingleton<ChatStateService>();

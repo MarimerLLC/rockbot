@@ -69,6 +69,12 @@ spec:
             # resolves AgentReply.Attachments file references under ${ROCKBOT_SHARED_PATH}/attachments.
             - name: ROCKBOT_SHARED_PATH
               value: "/rockbot/shared"
+            {{- if .Values.agent.attachmentUpload.enabled }}
+            # Upload attachments to the agent over HTTP rather than putting their bytes through
+            # RabbitMQ. Unset this and uploads still work — they just fall back to the bus.
+            - name: UserProxy__AttachmentUploadUrl
+              value: "http://{{ include "rockbot.fullname" . }}-agent:{{ .Values.agent.attachmentUpload.port | default 8082 }}"
+            {{- end }}
             # Persistent ASP.NET Core data-protection key ring. Backs antiforgery tokens;
             # in memory (the default) they are invalidated by every pod restart.
             - name: DataProtection__KeyRingPath

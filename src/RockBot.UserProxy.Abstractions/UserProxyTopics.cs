@@ -26,4 +26,9 @@ public static class UserProxyTopics
     public const string GetSavedResponseResponse = "user.saved.get.response";
     public const string DeleteSavedResponseRequest = "user.saved.delete.request";
     public const string DeleteSavedResponseAck = "user.saved.delete.ack";
+
+    // Inbound attachments — a client hands the agent bytes, the agent writes them to the
+    // shared volume and hands back a path reference. The only topic that carries bytes.
+    public const string AttachmentUploadRequest = "user.attachment.upload.request";
+    public const string AttachmentUploadResponse = "user.attachment.upload.response";
 }

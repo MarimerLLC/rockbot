@@ -58,7 +58,8 @@ internal sealed class UserMessageHandler(
     AgentNameHolder agentNameHolder,
     ILogger<UserMessageHandler> logger,
     TierRoutingLogger tierRoutingLogger,
-    ISkillUsageStore? skillUsageStore = null) : IMessageHandler<UserMessage>
+    ISkillUsageStore? skillUsageStore = null,
+    LlmTierOptions? llmTierOptions = null) : IMessageHandler<UserMessage>
 {
     private static readonly TimeSpan ProgressMessageThreshold = TimeSpan.FromSeconds(5);
 
@@ -149,9 +150,14 @@ internal sealed class UserMessageHandler(
 
         try
         {
+            var turnAttachments = ToTurnAttachments(message.Attachments);
+
             await conversationMemory.AddTurnAsync(
                 message.SessionId,
-                new ConversationTurn("user", message.Content, DateTimeOffset.UtcNow),
+                new ConversationTurn("user", message.Content, DateTimeOffset.UtcNow)
+                {
+                    Attachments = turnAttachments,
+                },
                 ct);
 
             if (CorrectionRegex.IsMatch(message.Content))
@@ -169,6 +175,20 @@ internal sealed class UserMessageHandler(
             var chatMessages = await agentContextBuilder.BuildAsync(
                 message.SessionId, message.Content, ct,
                 clientCapabilities: message.ClientCapabilities);
+
+            // Attachments the user sent with this turn. Injected before the token estimate
+            // below so an image is counted against the context budget it actually occupies.
+            if (turnAttachments is { Count: > 0 })
+            {
+                await InboundAttachmentInjector.InjectAsync(
+                    chatMessages,
+                    turnAttachments,
+                    tierCanSee: llmTierOptions?.Resolve(tier).SupportsImageInput ?? false,
+                    readBytesAsync: attachmentStorage.ReadAsync,
+                    logger,
+                    ct);
+            }
+
             var postInjectionTokenEstimate = EstimateContextTokens(chatMessages);
             HostDiagnostics.TurnContextTokens.Record(postInjectionTokenEstimate, tierTag);
 
@@ -790,4 +810,15 @@ internal sealed class UserMessageHandler(
     /// </summary>
     private static string ChannelFromSource(string? source) =>
         string.IsNullOrWhiteSpace(source) ? "unknown" : source.Split('-', 2)[0];
+
+    /// <summary>
+    /// Maps the user-proxy attachment shape onto the host's. The two are deliberately separate
+    /// records — <c>RockBot.Host.Abstractions</c> does not reference the proxy contracts — so
+    /// this is the one place they meet.
+    /// </summary>
+    private static IReadOnlyList<ConversationTurnAttachment>? ToTurnAttachments(
+        IReadOnlyList<AgentAttachment>? attachments) =>
+        attachments is { Count: > 0 }
+            ? [.. attachments.Select(a => new ConversationTurnAttachment(a.Mime, a.Path, a.FileName))]
+            : null;
 }

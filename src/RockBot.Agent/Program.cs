@@ -432,6 +432,7 @@ builder.Services.AddRockBotHost(agent =>
     agent.HandleMessage<ListSavedResponsesRequest, ListSavedResponsesRequestHandler>();
     agent.HandleMessage<GetSavedResponseRequest, GetSavedResponseRequestHandler>();
     agent.HandleMessage<DeleteSavedResponseRequest, DeleteSavedResponseRequestHandler>();
+    agent.HandleMessage<AttachmentUploadRequest, AttachmentUploadHandler>();
     agent.SubscribeTo($"{UserProxyTopics.UserMessage}.{agentName}");
     agent.SubscribeTo($"{UserProxyTopics.UserFeedback}.{agentName}");
     agent.SubscribeTo($"{UserProxyTopics.CancelSession}.{agentName}");
@@ -443,6 +444,7 @@ builder.Services.AddRockBotHost(agent =>
     agent.SubscribeTo($"{UserProxyTopics.ListSavedResponsesRequest}.{agentName}");
     agent.SubscribeTo($"{UserProxyTopics.GetSavedResponseRequest}.{agentName}");
     agent.SubscribeTo($"{UserProxyTopics.DeleteSavedResponseRequest}.{agentName}");
+    agent.SubscribeTo($"{UserProxyTopics.AttachmentUploadRequest}.{agentName}");
 });
 
 // Bind AgentProfileOptions from the AgentProfile config section so AgentProfile__BasePath
@@ -461,6 +463,18 @@ builder.Services.Configure<LlmPricingOptions>(builder.Configuration.GetSection("
 // McpBridgeService keeps its own Lazy instance; this registration limits blast radius.
 builder.Services.AddSingleton<RockBot.Agent.McpBridge.Attachments.IAttachmentStorage,
     RockBot.Agent.McpBridge.Attachments.AttachmentStorage>();
+
+// Inbound attachments — the single validate-and-write door for files a person sends, shared by
+// the bus handler and the HTTP endpoint so the two transports cannot drift apart.
+builder.Services.AddSingleton<InboundAttachmentService>();
+
+// HTTP upload endpoint. Preferred over the bus for anything screenshot-sized: RabbitMQ holds
+// message bodies in memory until they are acked, and a file being moved to a volume the agent
+// already mounts is not a message. Clients without a route to it fall back to the bus.
+var attachmentUploadOptions = new AttachmentUploadEndpointOptions();
+builder.Configuration.GetSection("AttachmentUpload").Bind(attachmentUploadOptions);
+builder.Services.AddSingleton(attachmentUploadOptions);
+builder.Services.AddHostedService<AttachmentUploadEndpoint>();
 
 // MCP bridge (replaces external RockBot.Tools.Mcp.Bridge process)
 builder.Services.Configure<McpBridgeOptions>(builder.Configuration.GetSection("McpBridge"));

@@ -25,11 +25,24 @@ internal sealed class ChatCommand : AsyncCommand<ChatCommand.Settings>
         [CommandOption("--target <AGENT>")]
         [Description("Optional TargetAgent name on the message envelope (defaults to broadcast)")]
         public string? TargetAgent { get; init; }
+
+        [CommandOption("--attach <PATH>")]
+        [Description("Attach a file to the message (repeatable). Requires --message.")]
+        public string[]? Attach { get; init; }
     }
 
     public override async Task<int> ExecuteAsync(CommandContext context, Settings settings)
     {
         var oneShot = settings.Message is not null;
+
+        // Attaching per-message in an interactive session needs an affordance the REPL does not
+        // have; rather than quietly attaching to whichever message happens to go first, say so.
+        if (settings.Attach is { Length: > 0 } && !oneShot)
+        {
+            Console.Error.WriteLine("error: --attach requires --message (one-shot mode).");
+            return 1;
+        }
+
         using var host = HostFactory.Build(settings, useRichFrontend: !oneShot);
 
         await host.StartAsync();
@@ -47,20 +60,84 @@ internal sealed class ChatCommand : AsyncCommand<ChatCommand.Settings>
         }
     }
 
+    /// <summary>
+    /// Sends each file to the agent, which writes it to the shared volume and returns a path
+    /// reference. The CLI has no access to that volume — it may not even be on the same machine —
+    /// so the bytes go over the bus and only the reference rides on the message.
+    /// </summary>
+    /// <returns>The staged references, and a process exit code (non-zero if any file failed).</returns>
+    internal static async Task<(IReadOnlyList<AgentAttachment> Attachments, int ExitCode)>
+        UploadAttachmentsAsync(UserProxyService proxy, string[] paths, string sessionId, string userId)
+    {
+        var staged = new List<AgentAttachment>(paths.Length);
+
+        foreach (var path in paths)
+        {
+            if (!File.Exists(path))
+            {
+                Console.Error.WriteLine($"error: no such file: {path}");
+                return (staged, 1);
+            }
+
+            var data = await File.ReadAllBytesAsync(path);
+            var fileName = Path.GetFileName(path);
+
+            var response = await proxy.UploadAttachmentAsync(new AttachmentUploadRequest
+            {
+                FileName = fileName,
+                Mime = AttachmentMimeGuess.FromFileName(fileName),
+                Data = data,
+                SessionId = sessionId,
+                UserId = userId
+            });
+
+            if (response is null)
+            {
+                Console.Error.WriteLine($"error: {fileName} could not be sent — the agent did not respond.");
+                return (staged, 2);
+            }
+
+            if (!response.Success || response.Attachment is null)
+            {
+                Console.Error.WriteLine($"error: {fileName} was not accepted — {response.Error}");
+                return (staged, 1);
+            }
+
+            staged.Add(response.Attachment);
+            Console.Error.WriteLine($"sent {AttachmentPlaceholder.Render(response.Attachment)}");
+        }
+
+        return (staged, 0);
+    }
+
     private static async Task<int> RunOneShotAsync(UserProxyService proxy, Settings settings)
     {
         var content = settings.Message == "-"
             ? await Console.In.ReadToEndAsync()
             : settings.Message!;
 
+        var sessionId = settings.SessionId ?? "cli-session";
+        var userId = settings.UserId ?? "cli-user";
+
+        IReadOnlyList<AgentAttachment>? attachments = null;
+        if (settings.Attach is { Length: > 0 })
+        {
+            var (uploaded, exitCode) = await UploadAttachmentsAsync(
+                proxy, settings.Attach, sessionId, userId);
+            if (exitCode != 0)
+                return exitCode;
+            attachments = uploaded;
+        }
+
         var message = new UserMessage
         {
             Content = content,
-            SessionId = settings.SessionId ?? "cli-session",
-            UserId = settings.UserId ?? "cli-user",
+            SessionId = sessionId,
+            UserId = userId,
             TargetAgent = settings.TargetAgent,
             ClientCapabilities = ClientCapabilityPresets.Cli,
-            ChannelName = "cli"
+            ChannelName = "cli",
+            Attachments = attachments
         };
 
         // Mirror intermediate progress to stderr so callers piping stdout get

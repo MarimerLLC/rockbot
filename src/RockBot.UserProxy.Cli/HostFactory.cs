@@ -58,6 +58,9 @@ internal static class HostFactory
         {
             opts.AgentName = builder.Configuration["Agent:Name"] ?? "RockBot";
             opts.ProxyId = proxyId;
+            // Only set where the agent's HTTP port is reachable — a CLI on a laptop generally
+            // cannot see it, and leaving this unset falls back to the bus rather than failing.
+            opts.AttachmentUploadUrl = builder.Configuration["UserProxy:AttachmentUploadUrl"];
             if (settings.TimeoutSeconds is { } t)
                 opts.DefaultReplyTimeout = TimeSpan.FromSeconds(t);
         });

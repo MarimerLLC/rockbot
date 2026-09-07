@@ -1,6 +1,7 @@
 @page "/"
 @using RockBot.UserProxy.Blazor.Services
 @using Microsoft.JSInterop
+@using Microsoft.AspNetCore.Components.Forms
 @inject UserProxyService ProxyService
 @inject ChatStateService ChatState
 @inject IJSRuntime JSRuntime
@@ -314,7 +315,34 @@
     }
 
     <div class="chat-input bg-light p-3 border-top">
+        @if (_stagedAttachments.Count > 0 || _attachmentError is not null)
+        {
+            <div class="d-flex flex-wrap gap-2 mb-2 align-items-center">
+                @foreach (var staged in _stagedAttachments)
+                {
+                    <span class="badge bg-secondary d-inline-flex align-items-center gap-1">
+                        @(staged.FileName ?? staged.Path)
+                        <button type="button" class="btn-close btn-close-white btn-sm"
+                                aria-label="@($"Remove {staged.FileName ?? staged.Path}")"
+                                @onclick="() => RemoveAttachment(staged)"></button>
+                    </span>
+                }
+                @if (_isUploading)
+                {
+                    <span class="small text-muted">Uploading…</span>
+                }
+                @if (_attachmentError is not null)
+                {
+                    <span class="small text-danger">@_attachmentError</span>
+                }
+            </div>
+        }
         <form @onsubmit="SendMessage" @onsubmit:preventDefault="true" class="d-flex gap-2">
+            <label class="btn btn-outline-secondary d-flex align-items-center" title="Attach a file">
+                📎
+                <InputFile OnChange="StageAttachmentsAsync" multiple class="d-none"
+                           accept="@AcceptedFileTypes" disabled="@ChatState.IsProcessing" />
+            </label>
             <textarea
                 class="form-control"
                 placeholder="Type your message..."
@@ -328,7 +356,7 @@
             <button
                 type="submit"
                 class="btn btn-primary"
-                disabled="@(string.IsNullOrWhiteSpace(currentMessage) || ChatState.IsProcessing || !ProxyService.IsConnected)"
+                disabled="@((string.IsNullOrWhiteSpace(currentMessage) && _stagedAttachments.Count == 0) || ChatState.IsProcessing || _isUploading || !ProxyService.IsConnected)"
                 aria-label="Send message">
                 Send
             </button>
@@ -353,6 +381,24 @@
     private static readonly string UiVersion = AssemblyVersion.Current;
 
     private string currentMessage = string.Empty;
+
+    // Files the user has picked for the next message. Each was uploaded to the agent as soon
+    // as it was picked, so these are path references, not bytes.
+    private readonly List<AgentAttachment> _stagedAttachments = [];
+    private bool _isUploading;
+    private string? _attachmentError;
+
+    /// <summary>
+    /// What the picker offers. Mirrors the agent's own allowlist — the agent re-checks and is
+    /// the authority; this only spares the user a round trip to be told no.
+    /// </summary>
+    private const string AcceptedFileTypes = ".png,.jpg,.jpeg,.gif,.webp,.bmp,.pdf";
+
+    /// <summary>
+    /// Matches the agent's cap. Blazor's OpenReadStream defaults to 512 KB and throws past it,
+    /// so this has to be passed explicitly or every real screenshot fails.
+    /// </summary>
+    private const long MaxAttachmentBytes = 8L * 1024 * 1024;
     private ElementReference messagesContainer;
     private ElementReference messageInput;
     private bool IsDarkMode = false;
@@ -483,9 +529,82 @@
         await messageInput.FocusAsync();
     }
 
+    /// <summary>
+    /// Uploads each picked file to the agent and stages the path reference it returns. The agent
+    /// owns every write to the shared volume — this pod mounts it read-only — so the bytes go
+    /// over the bus once, here, and the message itself carries only the reference.
+    /// </summary>
+    private async Task StageAttachmentsAsync(InputFileChangeEventArgs e)
+    {
+        _attachmentError = null;
+        _isUploading = true;
+
+        try
+        {
+            foreach (var file in e.GetMultipleFiles(maximumFileCount: 10))
+            {
+                if (file.Size > MaxAttachmentBytes)
+                {
+                    _attachmentError =
+                        $"{file.Name} is {file.Size / 1024 / 1024.0:F1} MB, over the " +
+                        $"{MaxAttachmentBytes / 1024 / 1024} MB limit.";
+                    continue;
+                }
+
+                byte[] data;
+                using (var stream = file.OpenReadStream(MaxAttachmentBytes))
+                {
+                    using var buffer = new MemoryStream();
+                    await stream.CopyToAsync(buffer);
+                    data = buffer.ToArray();
+                }
+
+                var response = await ProxyService.UploadAttachmentAsync(new AttachmentUploadRequest
+                {
+                    FileName = file.Name,
+                    Mime = string.IsNullOrWhiteSpace(file.ContentType)
+                        ? AttachmentPathResolver.GuessMime(file.Name)
+                        : file.ContentType,
+                    Data = data,
+                    SessionId = SessionId,
+                    UserId = UserId
+                });
+
+                if (response is null)
+                {
+                    _attachmentError = $"{file.Name} could not be sent — the agent did not respond.";
+                }
+                else if (!response.Success || response.Attachment is null)
+                {
+                    _attachmentError = response.Error ?? $"{file.Name} was not accepted.";
+                }
+                else
+                {
+                    _stagedAttachments.Add(response.Attachment);
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            _attachmentError = $"Could not attach: {ex.Message}";
+        }
+        finally
+        {
+            _isUploading = false;
+        }
+    }
+
+    private void RemoveAttachment(AgentAttachment attachment)
+    {
+        // Drops it from this message only. The file stays on the shared volume — the agent
+        // owns its lifetime, and nothing here has authority to delete it.
+        _stagedAttachments.Remove(attachment);
+        _attachmentError = null;
+    }
+
     private async Task SendMessage()
     {
-        if (string.IsNullOrWhiteSpace(currentMessage))
+        if (string.IsNullOrWhiteSpace(currentMessage) && _stagedAttachments.Count == 0)
             return;
 
         var messageContent = currentMessage.Trim();
@@ -507,7 +626,11 @@
             return;
         }
 
-        ChatState.AddUserMessage(messageContent, UserId, SessionId);
+        var attachments = _stagedAttachments.Count > 0 ? _stagedAttachments.ToList() : null;
+        _stagedAttachments.Clear();
+        _attachmentError = null;
+
+        ChatState.AddUserMessage(messageContent, UserId, SessionId, attachments);
         ChatState.SetProcessing(true);
 
         // If a saved reference is active, prepend it as context for the agent
@@ -531,7 +654,8 @@
             SessionId = SessionId,
             UserId = UserId,
             ClientCapabilities = ClientCapabilityPresets.Blazor,
-            ChannelName = "blazor"
+            ChannelName = "blazor",
+            Attachments = attachments
         };
 
         var progressTracker = new Progress<AgentReply>(reply =>

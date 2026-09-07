@@ -37,6 +37,13 @@ agent:
   # image by a few hundred tokens is cheap, and under-counting is the context
   # overflow the estimate exists to see coming.
   extraEnv: {}
+  # HTTP endpoint the frontends upload attachments to. Bytes for a screenshot-sized file go
+  # here rather than through RabbitMQ, which holds message bodies in memory until they are
+  # acked. Disabling it is safe — clients fall back to the bus, which works from anywhere but
+  # charges the broker for moving a file onto a volume the agent already mounts.
+  attachmentUpload:
+    enabled: true
+    port: 8082
   # Always Recreate — only one agent may run at a time (stateful)
   replicaCount: 1
   # IANA timezone ID injected into every LLM prompt as current date/time context.

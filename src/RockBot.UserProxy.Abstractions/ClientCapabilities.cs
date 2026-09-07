@@ -48,7 +48,7 @@ public static class ClientCapabilityPresets
         ClientCapabilities.Text | ClientCapabilities.MarkdownBasic | ClientCapabilities.MarkdownHeadings |
         ClientCapabilities.MarkdownTables | ClientCapabilities.MarkdownCode | ClientCapabilities.LinkInline |
         ClientCapabilities.MarkdownStrikethrough | ClientCapabilities.MarkdownTaskList |
-        ClientCapabilities.HtmlInline | ClientCapabilities.SvgInline;
+        ClientCapabilities.HtmlInline | ClientCapabilities.SvgInline | ClientCapabilities.ImageAttachment;
 
     // Documented in advance so capability-vocabulary decisions stay coherent —
     // not used by code until those proxies ship.

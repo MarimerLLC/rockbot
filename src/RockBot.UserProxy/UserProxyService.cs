@@ -1,4 +1,6 @@
 using System.Collections.Concurrent;
+using System.Net.Http.Headers;
+using System.Net.Http.Json;
 using System.Diagnostics;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -15,7 +17,8 @@ public sealed class UserProxyService(
     IMessageSubscriber subscriber,
     IUserFrontend frontend,
     UserProxyOptions options,
-    ILogger<UserProxyService> logger) : IHostedService
+    ILogger<UserProxyService> logger,
+    Func<HttpClient>? httpClientFactory = null) : IHostedService
 {
     private readonly ConcurrentDictionary<string, (TaskCompletionSource<AgentReply> Tcs, IProgress<AgentReply>? Progress)> _pending = new();
     private readonly ConcurrentDictionary<string, TaskCompletionSource<ConversationHistoryResponse>> _pendingHistory = new();
@@ -25,6 +28,7 @@ public sealed class UserProxyService(
     private readonly ConcurrentDictionary<string, TaskCompletionSource<GetSavedResponseResponse>> _pendingGetSaved = new();
     private readonly ConcurrentDictionary<string, TaskCompletionSource<DeleteSavedResponseAck>> _pendingDeleteSaved = new();
     private readonly ConcurrentDictionary<string, TaskCompletionSource<ActiveStatusResponse>> _pendingActiveStatus = new();
+    private readonly ConcurrentDictionary<string, TaskCompletionSource<AttachmentUploadResponse>> _pendingUpload = new();
     private ISubscription? _subscription;
     private ISubscription? _p2pSubscription;
     private ISubscription? _historySubscription;
@@ -34,6 +38,7 @@ public sealed class UserProxyService(
     private ISubscription? _listSavedSubscription;
     private ISubscription? _getSavedSubscription;
     private ISubscription? _deleteSavedSubscription;
+    private ISubscription? _uploadSubscription;
     private bool _historyInitialized;
     private bool _agentInfoInitialized;
     private bool _saveResponseInitialized;
@@ -41,6 +46,7 @@ public sealed class UserProxyService(
     private bool _getSavedInitialized;
     private bool _deleteSavedInitialized;
     private bool _activeStatusInitialized;
+    private bool _uploadInitialized;
     private readonly SemaphoreSlim _historyInitLock = new(1, 1);
     private readonly SemaphoreSlim _agentInfoInitLock = new(1, 1);
     private readonly SemaphoreSlim _activeStatusInitLock = new(1, 1);
@@ -48,6 +54,7 @@ public sealed class UserProxyService(
     private readonly SemaphoreSlim _listSavedInitLock = new(1, 1);
     private readonly SemaphoreSlim _getSavedInitLock = new(1, 1);
     private readonly SemaphoreSlim _deleteSavedInitLock = new(1, 1);
+    private readonly SemaphoreSlim _uploadInitLock = new(1, 1);
     private CancellationTokenSource? _cts;
 
     public bool IsConnected { get; private set; }
@@ -212,6 +219,12 @@ public sealed class UserProxyService(
                 tcs.TrySetCanceled();
         }
 
+        foreach (var kvp in _pendingUpload)
+        {
+            if (_pendingUpload.TryRemove(kvp.Key, out var tcs))
+                tcs.TrySetCanceled();
+        }
+
         foreach (var kvp in _pendingAgentInfo)
         {
             if (_pendingAgentInfo.TryRemove(kvp.Key, out var tcs))
@@ -275,12 +288,16 @@ public sealed class UserProxyService(
         if (_deleteSavedSubscription is not null)
             await _deleteSavedSubscription.DisposeAsync();
 
+        if (_uploadSubscription is not null)
+            await _uploadSubscription.DisposeAsync();
+
         _historyInitLock.Dispose();
         _agentInfoInitLock.Dispose();
         _saveResponseInitLock.Dispose();
         _listSavedInitLock.Dispose();
         _getSavedInitLock.Dispose();
         _deleteSavedInitLock.Dispose();
+        _uploadInitLock.Dispose();
         _cts?.Dispose();
     }
 
@@ -1258,6 +1275,195 @@ public sealed class UserProxyService(
 
         logger.LogDebug("History response correlated for {CorrelationId} with {TurnCount} turns",
             envelope.CorrelationId, response.Turns.Count);
+
+        return Task.FromResult(MessageResult.Ack);
+    }
+
+    /// <summary>
+    /// Hands a file's bytes to the agent, which writes them to the shared attachments directory
+    /// and returns a path reference to put on <see cref="UserMessage.Attachments"/>.
+    /// </summary>
+    /// <remarks>
+    /// Frontends co-mount the shared volume read-only and the CLI does not mount it at all, so
+    /// the agent is the only process that can perform the write. Routing uploads through it also
+    /// keeps the allowlist, size cap and containment check in one place. This is the one call
+    /// that puts bytes on the bus; everything downstream carries the path reference instead.
+    ///
+    /// <para>Returns a response with <c>Success = false</c> and an <c>Error</c> the caller can
+    /// show, or null when the agent did not answer in time.</para>
+    /// </remarks>
+    public async Task<AttachmentUploadResponse?> UploadAttachmentAsync(
+        AttachmentUploadRequest request,
+        TimeSpan? timeout = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+
+        // Preferred path: hand the bytes to the agent over HTTP so they never enter the broker.
+        // Falls through to the bus when no endpoint is configured or the attempt fails, because a
+        // client that cannot reach the agent's HTTP port must still be able to attach a file.
+        if (!string.IsNullOrWhiteSpace(options.AttachmentUploadUrl))
+        {
+            var viaHttp = await TryUploadOverHttpAsync(request, cancellationToken);
+            if (viaHttp is not null)
+                return viaHttp;
+        }
+
+        var effectiveTimeout = timeout ?? options.DefaultReplyTimeout;
+        var correlationId = Guid.NewGuid().ToString("N");
+        var tcs = new TaskCompletionSource<AttachmentUploadResponse>(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        _pendingUpload[correlationId] = tcs;
+
+        try
+        {
+            await EnsureUploadSubscribedAsync(cancellationToken);
+
+            var envelope = request.ToEnvelope<AttachmentUploadRequest>(
+                source: options.ProxyId,
+                correlationId: correlationId,
+                replyTo: UploadResponseTopic);
+
+            await publisher.PublishAsync(
+                $"{UserProxyTopics.AttachmentUploadRequest}.{options.AgentName}", envelope, cancellationToken);
+
+            logger.LogDebug(
+                "Published AttachmentUploadRequest {CorrelationId} for {FileName} ({Bytes:N0} bytes)",
+                correlationId, request.FileName, request.Data.Length);
+
+            using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            timeoutCts.CancelAfter(effectiveTimeout);
+
+            try
+            {
+                return await tcs.Task.WaitAsync(timeoutCts.Token);
+            }
+            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+            {
+                logger.LogWarning("Attachment upload timeout for correlation {CorrelationId} after {Timeout}",
+                    correlationId, effectiveTimeout);
+                return null;
+            }
+        }
+        finally
+        {
+            _pendingUpload.TryRemove(correlationId, out _);
+        }
+    }
+
+
+    /// <summary>
+    /// Posts the file to the agent's upload endpoint. Returns null when the attempt could not be
+    /// completed — no endpoint, transport failure, an unreadable answer — which is the caller's
+    /// signal to fall back to the bus. A response the agent actually produced is returned as-is,
+    /// rejection included: a file the agent refused over HTTP would be refused over the bus too,
+    /// and retrying it there would only make the user wait twice for the same answer.
+    /// </summary>
+    private async Task<AttachmentUploadResponse?> TryUploadOverHttpAsync(
+        AttachmentUploadRequest request, CancellationToken cancellationToken)
+    {
+        try
+        {
+            var client = httpClientFactory?.Invoke() ?? new HttpClient();
+            try
+            {
+                using var content = new MultipartFormDataContent();
+                var file = new ByteArrayContent(request.Data);
+                file.Headers.ContentType = new MediaTypeHeaderValue(request.Mime);
+                content.Add(file, "file", request.FileName);
+                content.Add(new StringContent(request.SessionId), "sessionId");
+
+                var url = options.AttachmentUploadUrl!.TrimEnd('/') + "/attachments";
+                using var httpResponse = await client.PostAsync(url, content, cancellationToken);
+
+                var body = await httpResponse.Content.ReadFromJsonAsync<AttachmentUploadResponse>(
+                    cancellationToken: cancellationToken);
+
+                if (body is null)
+                {
+                    logger.LogWarning(
+                        "Attachment upload endpoint returned {Status} with no readable body; falling back to the bus.",
+                        (int)httpResponse.StatusCode);
+                    return null;
+                }
+
+                logger.LogDebug("Uploaded {FileName} ({Bytes:N0} bytes) over HTTP (success={Success})",
+                    request.FileName, request.Data.Length, body.Success);
+                return body;
+            }
+            finally
+            {
+                if (httpClientFactory is null)
+                    client.Dispose();
+            }
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            logger.LogWarning(ex,
+                "Attachment upload over HTTP failed ({Url}); falling back to the message bus.",
+                options.AttachmentUploadUrl);
+            return null;
+        }
+    }
+
+    private string UploadResponseTopic => $"{UserProxyTopics.AttachmentUploadResponse}.{options.ProxyId}";
+
+    private async Task EnsureUploadSubscribedAsync(CancellationToken ct)
+    {
+        if (_uploadInitialized) return;
+
+        await _uploadInitLock.WaitAsync(ct);
+        try
+        {
+            if (_uploadInitialized) return;
+
+            _uploadSubscription = await subscriber.SubscribeAsync(
+                UploadResponseTopic,
+                $"user-proxy.{options.ProxyId}.upload",
+                HandleUploadResponseAsync,
+                ct);
+
+            _uploadInitialized = true;
+        }
+        finally
+        {
+            _uploadInitLock.Release();
+        }
+    }
+
+    internal Task<MessageResult> HandleUploadResponseAsync(MessageEnvelope envelope, CancellationToken ct)
+    {
+        if (envelope.CorrelationId is null ||
+            !_pendingUpload.TryGetValue(envelope.CorrelationId, out var tcs))
+        {
+            logger.LogWarning("Received attachment upload response with unknown correlation ID: {CorrelationId}",
+                envelope.CorrelationId);
+            return Task.FromResult(MessageResult.Ack);
+        }
+
+        AttachmentUploadResponse? response;
+        try
+        {
+            response = envelope.GetPayload<AttachmentUploadResponse>();
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "Failed to deserialize AttachmentUploadResponse");
+            tcs.TrySetException(ex);
+            return Task.FromResult(MessageResult.DeadLetter);
+        }
+
+        if (response is null)
+        {
+            logger.LogWarning("Received null AttachmentUploadResponse");
+            return Task.FromResult(MessageResult.DeadLetter);
+        }
+
+        _pendingUpload.TryRemove(envelope.CorrelationId, out _);
+        tcs.TrySetResult(response);
+
+        logger.LogDebug("Attachment upload response correlated for {CorrelationId} (success={Success})",
+            envelope.CorrelationId, response.Success);
 
         return Task.FromResult(MessageResult.Ack);
     }
