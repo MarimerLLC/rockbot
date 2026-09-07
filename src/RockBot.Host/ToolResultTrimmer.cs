@@ -61,7 +61,7 @@ internal static class ToolResultTrimmer
                 break;
             }
 
-            var totalChars = messages.Sum(AgentLoopRunner.EstimateMessageChars);
+            var totalChars = messages.Sum(m => AgentLoopRunner.EstimateMessageChars(m, logger));
             if (totalChars <= charBudget)
                 break;
 

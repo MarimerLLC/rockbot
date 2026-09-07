@@ -36,7 +36,7 @@ Five separate things, verified in the tree before any of this was written:
    `TextContent` and `FunctionResultContent` by length and everything else at a flat 50 —
    so a `DataContent` carrying a 1.8 MB image counts as 50 characters, roughly 35,000× under.
    Images are effectively invisible to the watermark trim and to every stash decision.~~
-   **Closed (issue #564).** See [below](#sizing-an-image-a-capped-proxy-not-its-byte-count).
+   **Closed (issue #564).** See [below](#sizing-an-image-pixel-dimensions-not-byte-count).
 
 ## The constraint: images cannot ride in a tool result
 
@@ -157,27 +157,36 @@ instance as a singleton. Consumers that do not register it get an `analyze_file`
 registers — the dependency is optional, and its absence reads the same as "no tier declares
 vision".
 
-### Sizing an image: a capped proxy, not its byte count
+### Sizing an image: pixel dimensions, not byte count
 
 `AgentLoopRunner.EstimateContentChars` now models `DataContent`, `FunctionCallContent`,
 `TextReasoningContent`, `UriContent` and `ErrorContent` instead of charging them a flat 50.
-Binary content is sized by its base64 wire cost (4 chars per 3 bytes) — but for images that
-proxy is capped at `MaxImageChars` (8,000 chars ≈ 2,000 tokens).
+Non-image binary content (audio, PDF) is sized by its base64 wire cost, 4 chars per 3 bytes.
+Images are sized from their **pixel dimensions**, by `ImageTokenEstimator`.
 
-The cap is the whole decision. Providers do not bill an image by its byte count: they downscale
-it to a tile or patch grid and charge a bounded number of image tokens, ~1–2k at the top end
-for the OpenAI-compatible tiers RockBot targets. Uncapped base64 length would replace a 35,000×
-under-count with a ~300× over-count, and every turn carrying an image would look like a context
-overflow — trimming and stashing tool results that never needed it. Capping mirrors the
-provider's own downscale ceiling. Dimension-parsing image token maths is the upgrade path if
-the approximation ever proves too coarse; it needs the image decoded far enough to read its
-header, which is why it is not the first move.
+Bytes are the wrong unit for an image, in both magnitude and ordering. The provider scales the
+image into a bounded tile grid and charges a flat base plus a fixed cost per tile — so a 4 MB
+photo and a 400 KB screenshot of the same dimensions cost exactly the same, and a 5 KB icon
+costs a fraction of either. A byte proxy over-charges the icon by more than an order of
+magnitude, and once capped (the ceiling has to be low enough not to blow the budget) every real
+photo and screenshot pins to that same ceiling — which makes the proxy inert precisely where it
+was meant to help.
 
-Two smaller consequences worth knowing: an image part with no readable payload is charged the
-ceiling rather than zero — a degenerate image is a malformed request, not a free one — and the
-unknown-content fallback
-now increments `rockbot.agent.context.unknown_content_part`, tagged with the CLR type name — a
-wrong-but-quiet default is what made this gap easy to miss for so long.
+So `ImageTokenEstimator` reads width and height from the image header — PNG, JPEG, GIF, WebP and
+BMP, all of which carry it in the first few dozen bytes; nothing decodes pixels — and applies
+the scale-then-tile cost model: fit inside 2048×2048, bring the shortest side down to 768
+(down-only, never upscaled), tile at 512px, charge `85 + 170 × tiles`. That reproduces the
+provider's own worked examples (1024×1024 → 765 tokens; 2048×4096 → 1,105) and is bounded at
+`MaxTokens` = 1,445, since the scaling rules cannot yield more than eight tiles.
+
+`MaxImageChars` is derived from that bound rather than guessed: an image whose header will not
+parse is charged what the *largest* possible image would cost, because an image we cannot
+measure could be that large. Three smaller consequences worth knowing: an image part with no
+readable payload is charged the ceiling rather than zero — a degenerate image is a malformed
+request, not a free one; an unparseable header is logged once per media type at debug; and the
+unknown-content fallback increments `rockbot.agent.context.unknown_content_part`, tagged with
+the CLR type name, and logs once per type. A wrong-but-quiet default is what made this gap easy
+to miss for so long, so neither approximation is silent any more.
 
 ## Configuration
 

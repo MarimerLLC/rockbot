@@ -1,4 +1,5 @@
 using Microsoft.Extensions.AI;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using RockBot.Host;
@@ -20,32 +21,50 @@ public class AgentLoopRunnerEstimateContentCharsTests
     // ── Per-content sizing ───────────────────────────────────────────────────
 
     [TestMethod]
-    public void Estimate_LargeImage_IsCappedNotCountedAsFifty()
+    public void Estimate_LargeImage_IsSizedFromItsDimensionsNotItsBytes()
     {
         // The regression this issue is titled for: 1.8 MB of image bytes used to count as 50.
-        var image = new DataContent(new byte[1_800_000], "image/png");
+        // It is now sized the way the provider bills it — from the pixel grid.
+        var image = new DataContent(PaddedPng(2048, 1536, 1_800_000), "image/png");
 
         var chars = AgentLoopRunner.EstimateContentChars(image);
 
-        Assert.AreEqual(AgentLoopRunner.MaxImageChars, chars,
-            "A large image must be charged the image ceiling — providers downscale to a fixed " +
-            "tile budget, so neither 50 chars nor the raw 2.4M base64 chars is honest.");
+        Assert.AreEqual(765 * AgentLoopRunner.CharsPerToken, chars,
+            "A 2048×1536 image scales to a 2×2 tile grid: 85 + 4 × 170 = 765 tokens.");
         Assert.AreNotEqual(AgentLoopRunner.UnknownContentChars, chars,
             "An image must no longer fall through to the unknown-content placeholder.");
     }
 
     [TestMethod]
-    public void Estimate_SmallImage_IsSizedByBase64LengthBelowTheCap()
+    public void Estimate_SmallIcon_CostsFarLessThanALargeImage()
     {
-        const int Bytes = 3_000;
-        var image = new DataContent(new byte[Bytes], "image/jpeg");
+        // The byte-proxy's other failure: a 5 KB icon padded with metadata used to be charged
+        // within a rounding error of a full-page screenshot.
+        var icon = new DataContent(PaddedPng(64, 64, 5_000), "image/png");
+        var screenshot = new DataContent(PaddedPng(2560, 1440, 400_000), "image/png");
 
-        var chars = AgentLoopRunner.EstimateContentChars(image);
+        var iconChars = AgentLoopRunner.EstimateContentChars(icon);
+        var screenshotChars = AgentLoopRunner.EstimateContentChars(screenshot);
 
-        Assert.AreEqual(Bytes / 3 * 4, chars,
-            "Under the ceiling an image is charged its base64 wire cost (4 chars per 3 bytes).");
-        Assert.IsTrue(chars < AgentLoopRunner.MaxImageChars,
-            "This fixture is only meaningful if it stays below the cap.");
+        Assert.AreEqual(255 * AgentLoopRunner.CharsPerToken, iconChars,
+            "An icon occupies one tile: 85 + 170 = 255 tokens.");
+        Assert.IsTrue(screenshotChars > iconChars * 2,
+            $"A screenshot ({screenshotChars} chars) must cost materially more than an icon " +
+            $"({iconChars} chars) — byte count could not tell them apart.");
+    }
+
+    [TestMethod]
+    public void Estimate_SameDimensionsDifferentByteCounts_CostTheSame()
+    {
+        // The property that makes dimensions the right unit: compression does not change what
+        // the provider charges.
+        var compressed = new DataContent(PaddedPng(1024, 1024, 40_000), "image/png");
+        var uncompressed = new DataContent(PaddedPng(1024, 1024, 3_000_000), "image/png");
+
+        Assert.AreEqual(
+            AgentLoopRunner.EstimateContentChars(compressed),
+            AgentLoopRunner.EstimateContentChars(uncompressed),
+            "Two images of the same pixel size cost the same however differently they compress.");
     }
 
     [TestMethod]
@@ -57,10 +76,24 @@ public class AgentLoopRunnerEstimateContentCharsTests
         var chars = AgentLoopRunner.EstimateContentChars(pdf);
 
         Assert.AreEqual(Bytes / 3 * 4, chars,
-            "Only images get the tile-budget ceiling; other media ride as base64 and cost " +
-            "proportionally to their encoded length.");
+            "Only images have a pixel cost model; other media ride the wire base64-encoded and " +
+            "cost proportionally to their encoded length.");
         Assert.IsTrue(chars > AgentLoopRunner.MaxImageChars,
-            "The image cap must not be applied to non-image media.");
+            "The image ceiling must not be applied to non-image media.");
+    }
+
+    [TestMethod]
+    public void Estimate_ImageWithUnreadableHeader_FallsBackToTheCappedProxy()
+    {
+        // An exotic or corrupt format still has to cost something defensible: the smaller of
+        // its encoded length and what the largest possible image would cost.
+        var image = new DataContent(new byte[1_800_000], "image/tiff");
+
+        var chars = AgentLoopRunner.EstimateContentChars(image);
+
+        Assert.AreEqual(AgentLoopRunner.MaxImageChars, chars,
+            "An image we cannot measure could be the largest one the provider permits, so it " +
+            "is charged that ceiling rather than something reassuringly small.");
     }
 
     [TestMethod]
@@ -152,10 +185,70 @@ public class AgentLoopRunnerEstimateContentCharsTests
         var m = new ChatMessage(ChatRole.User,
         [
             new TextContent(new string('t', 100)),
-            new DataContent(new byte[1_800_000], "image/png"),
+            new DataContent(PaddedPng(2048, 1536, 1_800_000), "image/png"),
         ]);
 
-        Assert.AreEqual(100 + AgentLoopRunner.MaxImageChars, AgentLoopRunner.EstimateMessageChars(m));
+        Assert.AreEqual(
+            100 + (765 * AgentLoopRunner.CharsPerToken),
+            AgentLoopRunner.EstimateMessageChars(m));
+    }
+
+    // ── Logging ──────────────────────────────────────────────────────────────
+
+    [TestMethod]
+    public void Estimate_UnknownContentType_IsLoggedOncePerType()
+    {
+        // The estimate is approximating rather than measuring here, and it used to say so
+        // nowhere at all. Once per type, not once per message per LLM call — this runs inside
+        // the trim loop.
+        var logger = new CapturingLogger();
+        var content = new UnloggedContentTypeProbe();
+
+        AgentLoopRunner.EstimateContentChars(content, logger);
+        AgentLoopRunner.EstimateContentChars(content, logger);
+        AgentLoopRunner.EstimateContentChars(new UnloggedContentTypeProbe(), logger);
+
+        var matching = logger.Debugs.Where(m => m.Contains(nameof(UnloggedContentTypeProbe))).ToList();
+        Assert.AreEqual(1, matching.Count,
+            $"Expected exactly one debug line for the type; got {matching.Count}.");
+        StringAssert.Contains(matching[0], "does not model content type");
+    }
+
+    [TestMethod]
+    public void Estimate_UnreadableImageHeader_IsLoggedOncePerMediaType()
+    {
+        var logger = new CapturingLogger();
+        var image = new DataContent(new byte[4_000], "image/x-probe-unreadable");
+
+        AgentLoopRunner.EstimateContentChars(image, logger);
+        AgentLoopRunner.EstimateContentChars(image, logger);
+
+        var matching = logger.Debugs.Where(m => m.Contains("image/x-probe-unreadable")).ToList();
+        Assert.AreEqual(1, matching.Count,
+            $"Expected exactly one debug line for the media type; got {matching.Count}.");
+        StringAssert.Contains(matching[0], "could not read image dimensions");
+    }
+
+    [TestMethod]
+    public void Estimate_ReadableImage_LogsNothing()
+    {
+        var logger = new CapturingLogger();
+
+        AgentLoopRunner.EstimateContentChars(new DataContent(PaddedPng(800, 600, 9_000), "image/png"), logger);
+
+        Assert.AreEqual(0, logger.Debugs.Count,
+            "An image the estimate can measure is not an approximation and must not log.");
+    }
+
+    [TestMethod]
+    public void Estimate_WithoutALogger_StillSizesContent()
+    {
+        // Every call site passes a logger today, but the parameter is optional and the estimate
+        // must not depend on it.
+        Assert.AreEqual(
+            765 * AgentLoopRunner.CharsPerToken,
+            AgentLoopRunner.EstimateContentChars(
+                new DataContent(PaddedPng(2048, 1536, 100_000), "image/png"), logger: null));
     }
 
     // ── Trim-path coverage ───────────────────────────────────────────────────
@@ -211,11 +304,19 @@ public class AgentLoopRunnerEstimateContentCharsTests
 
     // ── Helpers ──────────────────────────────────────────────────────────────
 
+    /// <summary>A valid PNG header of the given size, padded out to <paramref name="bytes"/>.</summary>
+    private static byte[] PaddedPng(int width, int height, int bytes)
+    {
+        var buffer = new byte[bytes];
+        ImageTokenEstimatorTests.Png(width, height).CopyTo(buffer.AsSpan());
+        return buffer;
+    }
+
     private static List<ChatMessage> BuildConversation(string toolResult, bool withImage)
     {
         var userParts = new List<AIContent> { new TextContent("what is in this picture?") };
         if (withImage)
-            userParts.Add(new DataContent(new byte[1_800_000], "image/png"));
+            userParts.Add(new DataContent(PaddedPng(2048, 1536, 1_800_000), "image/png"));
 
         return
         [
@@ -252,6 +353,34 @@ public class AgentLoopRunnerEstimateContentCharsTests
 
     /// <summary>An AIContent subclass the estimate deliberately does not model.</summary>
     private sealed class UnmodelledContent : AIContent;
+
+    /// <summary>
+    /// A second unmodelled type, used only by the logging test. The once-per-type dedupe is
+    /// process-wide, so a type shared with another test would make the assertion order-dependent.
+    /// </summary>
+    private sealed class UnloggedContentTypeProbe : AIContent;
+
+    private sealed class CapturingLogger : ILogger
+    {
+        private readonly List<string> _debugs = [];
+
+        public IReadOnlyList<string> Debugs
+        {
+            get { lock (_debugs) return _debugs.ToList(); }
+        }
+
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(
+            LogLevel logLevel, EventId eventId, TState state, Exception? exception,
+            Func<TState, Exception?, string> formatter)
+        {
+            if (logLevel != LogLevel.Debug) return;
+            lock (_debugs) _debugs.Add(formatter(state, exception));
+        }
+    }
 
     private sealed class TestWorkingMemory : IWorkingMemory
     {
