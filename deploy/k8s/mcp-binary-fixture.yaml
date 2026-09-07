@@ -27,7 +27,7 @@ spec:
     spec:
       containers:
         - name: fixture
-          image: rockylhotka/rockbot-binary-fixture-mcp:0.14.47
+          image: rockylhotka/rockbot-binary-fixture-mcp:0.15.0
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 8080
