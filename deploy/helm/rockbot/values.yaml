@@ -21,6 +21,21 @@ agent:
   #
   # Non-secret keys only — anything sensitive belongs under `secrets` instead.
   # This mirrors the optional agent.extra.env file in the docker-compose stack.
+  #
+  # Image cost model (AgentHost__ImageCost__*) — how the context-size estimate
+  # prices an image. It defaults to the GPT-5 patch model (Mode Patched, 32px
+  # patches, a 1,536-patch cap, factor 1.0), so a deployment on gpt-5.x full
+  # models needs nothing here. Two cases do need a line:
+  #
+  #   * a -mini or -nano tier, which charges more per patch:
+  #       AgentHost__ImageCost__Multiplier: "1.62"   # -mini  (2.46 for -nano)
+  #   * a GPT-4o-family model, which prices in tiles rather than patches:
+  #       AgentHost__ImageCost__Mode: "Tiled"
+  #
+  # The setting is per-process, not per-tier, so a deployment whose tiers mix
+  # model families should set the highest factor among them — over-counting an
+  # image by a few hundred tokens is cheap, and under-counting is the context
+  # overflow the estimate exists to see coming.
   extraEnv: {}
   # Always Recreate — only one agent may run at a time (stateful)
   replicaCount: 1
