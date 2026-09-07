@@ -183,12 +183,14 @@ Or as an environment variable: `LLM__High__SupportsImageInput=true`.
 
 - **(A) `analyze_file` + (B) the modality flag** — this PR. Unblocks #513's actual use case
   with no persisted-schema churn.
-- **(C) Generic binary capture in the MCP bridge** — next. Any non-text MCP content block is
-  stashed to the attachments directory and replaced with `{path, name, size, mime}`; the
-  per-server `attachments` manifest gains declarative *response* extraction (which field holds
-  the base64, which holds the name) so a server returning `{content, encoding: "base64"}` —
-  Gitea's shape — is adapted without server cooperation. This is the direct fix for the
-  167K-character chunk storm, and it feeds (A).
+- **(C) Generic binary capture in the MCP bridge** — done, as `BinaryResponseCapture`. Typed
+  image and audio content blocks are stashed to the attachments directory and replaced with
+  `{path, name, size, mime}` with no configuration at all; the per-server `attachments`
+  manifest gained declarative *response* extraction (which field holds the base64, which holds
+  the name) so a server returning `{content, encoding: "base64"}` — Gitea's shape — is adapted
+  without server cooperation. A binary test keeps text files from being captured out of the
+  response. This was the direct fix for the 167K-character chunk storm, and it feeds (A). See
+  [`mcp-attachments.md`](mcp-attachments.md#binary-capture--the-fallback-for-servers-that-never-heard-of-us).
 - **(D) Inbound user attachments** — `UserMessage.Attachments` as path references mirroring
   `AgentAttachment`, a Blazor upload writing into the shared directory, `ConversationTurn`
   extended, and the loop injecting `DataContent` onto the user message. This one touches bus

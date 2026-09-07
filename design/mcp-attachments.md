@@ -123,6 +123,77 @@ gateway GETs → gateway DELETEs.
 Configurable per-server response shapes are a small follow-up if a server insists on a
 different envelope. v1 keeps it simple.
 
+## Binary capture — the fallback for servers that never heard of us
+
+Everything above requires a cooperating server. Most don't cooperate. Issue #513 arrived
+with the consequence: the official Gitea MCP server returns a repository PNG through its
+ordinary `get_file_contents` tool, as base64 inside a JSON response. That lands in context as
+~167K characters of unusable text, gets chunked into working memory, and still never reaches
+the model as an image.
+
+Capture is the response-side answer. It runs on **every** MCP response, for every server,
+manifest or not — `BinaryResponseCapture`, wired at the same
+`McpBridgeService.HandleToolInvokeAsync` seam as the gateway, just after it.
+
+### Two rules, deliberately unequal in what they ask of an operator
+
+**Typed content blocks need no configuration.** An `ImageContentBlock` or `AudioContentBlock`
+is already labelled by MCP itself, so there is nothing to guess: the bytes are written to the
+attachments directory and the block is replaced by `{path, name, size, mime, note}`. Other
+blocks in the same response are left alone.
+
+**Base64 inside JSON needs a declared rule.** Sniffing for "a field that looks like base64" is
+exactly the fragile heuristic the manifest design rejected, so this half stays declarative:
+
+```json
+{
+  "attachments": {
+    "capture": {
+      "rules": [
+        {
+          "tools": ["get_file_contents"],
+          "contentField": "content",
+          "nameField": "name",
+          "encodingField": "encoding"
+        }
+      ]
+    }
+  }
+}
+```
+
+No server change is needed — only a description of the response the server already sends.
+`capture.enabled: false` turns the whole thing off for a server, typed blocks included.
+
+### Deciding what is actually binary
+
+A repository server returns a README and a PNG through the same tool and the same field.
+Capturing the README to disk would take away content the model could simply have read, so the
+rule only fires when the payload really is binary:
+
+1. If a name or MIME field identifies the type, that decides it (`image/*`, `audio/*`,
+   `video/*`, PDF, zip, Office formats). SVG is explicitly *not* binary — it is an image by
+   MIME and text by nature, and the model can read and edit it.
+2. With no usable name, the bytes decide: a NUL byte in the first 8 KB, or a strict UTF-8
+   decode failure.
+
+The response object survives the rewrite. Only the content field is removed; `sha`, `url`, and
+whatever else the server sent stay, with `path`, `name`, `size`, `mime`, and a short note added.
+
+### Capture never fails a call
+
+A bad rule, an unwritable volume, or a payload that isn't what the rule claimed logs a warning
+and returns the server's original response. A tool that worked before capture existed still
+works. This is the opposite of the outbound gateway's stance, and deliberately so: outbound, a
+failure means the model's file never got attached and silence would be a lie; inbound, capture
+is an optimisation on top of a response that is already complete.
+
+### Why this and `analyze_file` are separate
+
+Capture puts bytes on the volume. It does not show them to a model — on OpenAI-compatible
+APIs a tool result cannot carry an image at all. `analyze_file` is the other half of that
+story; see [`multimodal-input.md`](multimodal-input.md).
+
 ## Verified calendar-mcp REST shape
 
 - `POST /attachments` (multipart, field `file` by default) → **201 Created** with

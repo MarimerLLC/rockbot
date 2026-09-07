@@ -328,6 +328,46 @@ guide instructs the model to pass `{ path: "/rockbot/shared/attachments/<file>" 
 base64 whenever a tool's parameter takes attachments — operators don't need to do anything more
 than enable the manifest.
 
+### Binary capture (response side, no manifest required)
+
+Passthrough needs a cooperating server. Capture handles the ones that don't: every MCP response
+passes through `BinaryResponseCapture` on its way back to the agent.
+
+**Typed `image`/`audio` content blocks are captured with no configuration** — MCP already
+labels them, so the bytes are written to the attachments directory and the block is replaced
+with `{path, name, size, mime, note}`. Other blocks in the response are untouched.
+
+**Base64 inside an ordinary JSON response needs a declared rule**, because sniffing for
+"a field that looks like base64" is the fragile heuristic the manifest design avoids:
+
+```json
+{
+  "attachments": {
+    "capture": {
+      "rules": [
+        {
+          "tools": ["get_file_contents"],
+          "contentField": "content",
+          "nameField": "name",
+          "encodingField": "encoding"
+        }
+      ]
+    }
+  }
+}
+```
+
+That is the shape of the official Gitea server's file tool, and it needs no change on the
+server side — only a description of the response it already sends.
+
+A rule only fires when the payload really is binary: the name or MIME field decides when there
+is one (`image/*`, `audio/*`, `video/*`, PDF, zip, Office — but not SVG, which is text the model
+can read), and otherwise the bytes do, via a NUL byte or a strict UTF-8 decode failure. A README
+returned through the same base64 field as a PNG stays in the response as content.
+
+Set `capture.enabled: false` to disable it for a server. Capture never fails a tool call — any
+error logs and passes the server's original response through untouched.
+
 ### Argument guards
 
 Some third-party MCP servers resolve path arguments inside their *own* pod: a

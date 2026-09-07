@@ -41,6 +41,13 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
     private readonly Dictionary<string, McpServerSummary> _serverSummaries = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, AttachmentGatewayEntry> _attachmentGateways = new(StringComparer.OrdinalIgnoreCase);
     private readonly Lazy<IAttachmentStorage> _attachmentStorage = new(() => new AttachmentStorage());
+
+    /// <summary>
+    /// Response-side binary capture. Unlike <see cref="AttachmentGateway"/> this needs no
+    /// manifest and no HTTP client, so a single instance serves every server — including the
+    /// ones with no <c>attachments</c> block, which are exactly the ones it exists for.
+    /// </summary>
+    private readonly Lazy<BinaryResponseCapture> _binaryCapture;
     private readonly SemaphoreSlim _configPersistLock = new(1, 1);
     private ISubscription? _invokeSubscription;
     private ISubscription? _refreshSubscription;
@@ -91,6 +98,8 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
         _tokenProviders = tokenProviders;
         _healthTracker = healthTracker;
         _argGuards = argGuards;
+        _binaryCapture = new Lazy<BinaryResponseCapture>(
+            () => new BinaryResponseCapture(_attachmentStorage.Value, _logger));
     }
 
     public async Task StartAsync(CancellationToken cancellationToken)
@@ -629,6 +638,22 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
         return httpClient;
     }
 
+    /// <summary>
+    /// Runs response-side binary capture for any server. Capture applies whether or not the
+    /// server has an attachment manifest — a manifest only supplies the declarative field rules
+    /// and the switch to turn capture off.
+    /// </summary>
+    private Task<CallToolResult> CaptureBinaryContentAsync(
+        string serverName,
+        string toolName,
+        CallToolResult result,
+        CancellationToken ct)
+    {
+        _serverConfigs.TryGetValue(serverName, out var config);
+        return _binaryCapture.Value.CaptureAsync(
+            serverName, toolName, result, config?.Attachments?.Capture, ct);
+    }
+
     private void InvalidateAttachmentGateway(string serverName)
     {
         if (_attachmentGateways.Remove(serverName, out var entry))
@@ -1029,6 +1054,8 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
                     request.ToolName, arguments, result, ct);
             }
 
+            result = await CaptureBinaryContentAsync(serverName, request.ToolName, result, ct);
+
             sw.Stop();
             var blocks = McpToolExecutor.MapContentBlocks(result);
             var content = blocks is not null ? McpToolExecutor.TextFromBlocks(blocks) : null;
@@ -1171,6 +1198,9 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
                                     request.ToolName, arguments, retryResult, ct);
                             }
                         }
+
+                        retryResult = await CaptureBinaryContentAsync(
+                            serverName, request.ToolName, retryResult, ct);
 
                         sw.Stop();
                         var retryBlocks = McpToolExecutor.MapContentBlocks(retryResult);
