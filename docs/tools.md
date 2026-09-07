@@ -365,6 +365,14 @@ is one (`image/*`, `audio/*`, `video/*`, PDF, zip, Office — but not SVG, which
 can read), and otherwise the bytes do, via a NUL byte or a strict UTF-8 decode failure. A README
 returned through the same base64 field as a PNG stays in the response as content.
 
+Some servers don't base64 their binary at all — they decode the bytes as UTF-8 first, which
+destroys them at the source. Under a declared rule, a content field that fails base64 decoding is
+checked for that signature (eight or more U+FFFD in at least a kilobyte) and dropped with a note
+explaining that the bytes are unrecoverable and that retrying returns the same corrupted text.
+The response's `name`, `sha`, `size` and `html_url` survive. On the reference deployment this
+took one such call from 1,366,356 characters and 22 working-memory chunks to 588 characters and
+none.
+
 Set `capture.enabled: false` to disable it for a server. Capture never fails a tool call — any
 error logs and passes the server's original response through untouched.
 

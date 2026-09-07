@@ -180,6 +180,27 @@ rule only fires when the payload really is binary:
 The response object survives the rewrite. Only the content field is removed; `sha`, `url`, and
 whatever else the server sent stay, with `path`, `name`, `size`, `mime`, and a short note added.
 
+### When the bytes were already destroyed
+
+Not every server base64s its binary. One repository server in the reference deployment decodes
+file bytes as UTF-8 before returning them, so a 345 KB PNG arrives with its leading `0x89`
+replaced by U+FFFD and the rest studded with the same — 1,366,356 characters that chunk into 22
+working-memory entries and 22 embedding calls, for content no consumer can recover.
+
+Capture declines to save those bytes, correctly: they are not base64 and there is nothing to
+write. But declining used to mean passing the whole payload through, so the flood happened
+anyway and the agent, reading mojibake, would often retry the same call.
+
+So a content field that fails base64 decoding is checked for the signature of lossy
+binary-to-text decoding — eight or more U+FFFD in at least a kilobyte, thresholds set so a
+document with a couple of encoding glitches is still a document. On a match the field is dropped
+and replaced with a note saying the bytes were corrupted, that retrying returns the same
+corrupted text, and to fetch the file by a route that preserves bytes. `name`, `sha`, `size` and
+`html_url` survive, which is usually enough to do exactly that.
+
+Measured on the same call before and after: **1,366,356 characters and 22 chunks → 588
+characters and none.**
+
 ### Capture never fails a call
 
 A bad rule, an unwritable volume, or a payload that isn't what the rule claimed logs a warning
