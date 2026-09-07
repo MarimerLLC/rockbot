@@ -94,6 +94,32 @@ public static class InboundAttachmentInjector
     }
 
     /// <summary>
+    /// A compact note naming where a turn's files live, appended to that turn's text when history
+    /// is replayed. Returns an empty string when there are none, so callers can concatenate
+    /// unconditionally.
+    /// </summary>
+    /// <remarks>
+    /// Only the turn being answered has its images materialised as content parts, so this is the
+    /// only thing that survives into later turns. Without it a follow-up like "look at the top
+    /// left again" is unanswerable: the model has neither the image nor the filename, and
+    /// <c>analyze_file</c> has nothing to open. Proven the hard way — the agent replied "I don't
+    /// have the image in this chat" and called <c>file_list</c> looking for it.
+    /// </remarks>
+    public static string DescribeAttachments(IReadOnlyList<ConversationTurnAttachment>? attachments)
+    {
+        if (attachments is null || attachments.Count == 0)
+            return string.Empty;
+
+        var lines = attachments.Select(a =>
+        {
+            var display = string.IsNullOrWhiteSpace(a.FileName) ? a.Path : a.FileName;
+            return $"[attached: {display} ({a.Mime}) at attachments/{a.Path}]";
+        });
+
+        return "\n" + string.Join("\n", lines);
+    }
+
+    /// <summary>
     /// The line shown to the model for an attachment it cannot be handed directly. Names the
     /// path and the tool, because a model told only that "a file was attached" reliably either
     /// ignores it or invents its contents.

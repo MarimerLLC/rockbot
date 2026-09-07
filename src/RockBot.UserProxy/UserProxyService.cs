@@ -1,4 +1,6 @@
 using System.Collections.Concurrent;
+using System.Net.Http.Headers;
+using System.Net.Http.Json;
 using System.Diagnostics;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -15,7 +17,8 @@ public sealed class UserProxyService(
     IMessageSubscriber subscriber,
     IUserFrontend frontend,
     UserProxyOptions options,
-    ILogger<UserProxyService> logger) : IHostedService
+    ILogger<UserProxyService> logger,
+    Func<HttpClient>? httpClientFactory = null) : IHostedService
 {
     private readonly ConcurrentDictionary<string, (TaskCompletionSource<AgentReply> Tcs, IProgress<AgentReply>? Progress)> _pending = new();
     private readonly ConcurrentDictionary<string, TaskCompletionSource<ConversationHistoryResponse>> _pendingHistory = new();
@@ -1296,6 +1299,16 @@ public sealed class UserProxyService(
     {
         ArgumentNullException.ThrowIfNull(request);
 
+        // Preferred path: hand the bytes to the agent over HTTP so they never enter the broker.
+        // Falls through to the bus when no endpoint is configured or the attempt fails, because a
+        // client that cannot reach the agent's HTTP port must still be able to attach a file.
+        if (!string.IsNullOrWhiteSpace(options.AttachmentUploadUrl))
+        {
+            var viaHttp = await TryUploadOverHttpAsync(request, cancellationToken);
+            if (viaHttp is not null)
+                return viaHttp;
+        }
+
         var effectiveTimeout = timeout ?? options.DefaultReplyTimeout;
         var correlationId = Guid.NewGuid().ToString("N");
         var tcs = new TaskCompletionSource<AttachmentUploadResponse>(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -1335,6 +1348,61 @@ public sealed class UserProxyService(
         finally
         {
             _pendingUpload.TryRemove(correlationId, out _);
+        }
+    }
+
+
+    /// <summary>
+    /// Posts the file to the agent's upload endpoint. Returns null when the attempt could not be
+    /// completed — no endpoint, transport failure, an unreadable answer — which is the caller's
+    /// signal to fall back to the bus. A response the agent actually produced is returned as-is,
+    /// rejection included: a file the agent refused over HTTP would be refused over the bus too,
+    /// and retrying it there would only make the user wait twice for the same answer.
+    /// </summary>
+    private async Task<AttachmentUploadResponse?> TryUploadOverHttpAsync(
+        AttachmentUploadRequest request, CancellationToken cancellationToken)
+    {
+        try
+        {
+            var client = httpClientFactory?.Invoke() ?? new HttpClient();
+            try
+            {
+                using var content = new MultipartFormDataContent();
+                var file = new ByteArrayContent(request.Data);
+                file.Headers.ContentType = new MediaTypeHeaderValue(request.Mime);
+                content.Add(file, "file", request.FileName);
+                content.Add(new StringContent(request.SessionId), "sessionId");
+
+                var url = options.AttachmentUploadUrl!.TrimEnd('/') + "/attachments";
+                using var httpResponse = await client.PostAsync(url, content, cancellationToken);
+
+                var body = await httpResponse.Content.ReadFromJsonAsync<AttachmentUploadResponse>(
+                    cancellationToken: cancellationToken);
+
+                if (body is null)
+                {
+                    logger.LogWarning(
+                        "Attachment upload endpoint returned {Status} with no readable body; falling back to the bus.",
+                        (int)httpResponse.StatusCode);
+                    return null;
+                }
+
+                logger.LogDebug("Uploaded {FileName} ({Bytes:N0} bytes) over HTTP (success={Success})",
+                    request.FileName, request.Data.Length, body.Success);
+                return body;
+            }
+            finally
+            {
+                if (httpClientFactory is null)
+                    client.Dispose();
+            }
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            logger.LogWarning(ex,
+                "Attachment upload over HTTP failed ({Url}); falling back to the message bus.",
+                options.AttachmentUploadUrl);
+            return null;
         }
     }
 

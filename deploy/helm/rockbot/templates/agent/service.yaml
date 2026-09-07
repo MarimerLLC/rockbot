@@ -1,0 +1,28 @@
+{{- if .Values.agent.attachmentUpload.enabled }}
+# Cluster-internal Service for the agent's attachment upload endpoint. Exists so the frontends
+# can POST a file to the agent rather than putting its bytes through RabbitMQ, which holds
+# message bodies in memory until they are acked.
+#
+# ClusterIP only, and deliberately so: the endpoint carries no authentication of its own (the
+# same posture as the introspection MCP sidecar in the same Pod), so anything that can reach it
+# can write into the shared attachments directory, subject to the MIME allowlist and size cap
+# the agent enforces. Do not put an Ingress in front of this without adding auth first.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "rockbot.fullname" . }}-agent
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "rockbot.labels" . | nindent 4 }}
+    app.kubernetes.io/component: agent
+spec:
+  type: ClusterIP
+  selector:
+    app: rockbot-agent
+    {{- include "rockbot.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: http-upload
+      port: {{ .Values.agent.attachmentUpload.port | default 8082 }}
+      targetPort: http-upload
+      protocol: TCP
+{{- end }}

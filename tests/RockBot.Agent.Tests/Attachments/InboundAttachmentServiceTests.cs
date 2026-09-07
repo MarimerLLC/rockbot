@@ -6,25 +6,27 @@ namespace RockBot.Agent.Tests.Attachments;
 
 /// <summary>
 /// Rules for the inbound half of the attachment story (issue #565). A person's upload reaches
-/// the agent as bytes and the agent writes it to the shared volume on their behalf — frontends
-/// mount that volume read-only and the CLI does not mount it at all. That makes this the single
-/// door every user-supplied file comes through, so the allowlist, the size cap and the
-/// extension/type agreement are pinned here rather than trusted to each client.
+/// the agent as bytes — over HTTP, or over the bus when the client cannot reach the endpoint —
+/// and the agent writes it to the shared volume on their behalf, because frontends mount that
+/// volume read-only and the CLI does not mount it at all.
 /// </summary>
+/// <remarks>
+/// These rules live in one service precisely so the two transports cannot drift: an allowlist
+/// enforced on the HTTP path but not the bus path would be no allowlist at all.
+/// </remarks>
 [TestClass]
-public class AttachmentUploadHandlerTests
+public class InboundAttachmentServiceTests
 {
     private string _root = null!;
-    private AttachmentUploadHandler _handler = null!;
+    private InboundAttachmentService _service = null!;
 
     [TestInitialize]
     public void Init()
     {
         _root = Path.Combine(Path.GetTempPath(), "rockbot-upload-tests", Guid.NewGuid().ToString("N"));
-        _handler = new AttachmentUploadHandler(
+        _service = new InboundAttachmentService(
             new AttachmentStorage(_root),
-            publisher: null!,   // StoreAsync never publishes; the bus half is exercised end-to-end elsewhere
-            NullLogger<AttachmentUploadHandler>.Instance);
+            NullLogger<InboundAttachmentService>.Instance);
     }
 
     [TestCleanup]
@@ -37,7 +39,7 @@ public class AttachmentUploadHandlerTests
     [TestMethod]
     public async Task Store_ValidPng_WritesFileAndReturnsRelativePathReference()
     {
-        var result = await _handler.StoreAsync(Request("shot.png", "image/png", [1, 2, 3, 4]), default);
+        var result = await Store("shot.png", "image/png", [1, 2, 3, 4]);
 
         Assert.IsTrue(result.Success, result.Error);
         Assert.IsNotNull(result.Attachment);
@@ -52,8 +54,8 @@ public class AttachmentUploadHandlerTests
     [TestMethod]
     public async Task Store_SecondFileWithTheSameName_DoesNotOverwriteTheFirst()
     {
-        await _handler.StoreAsync(Request("shot.png", "image/png", [1]), default);
-        var second = await _handler.StoreAsync(Request("shot.png", "image/png", [2]), default);
+        await Store("shot.png", "image/png", [1]);
+        var second = await Store("shot.png", "image/png", [2]);
 
         Assert.IsTrue(second.Success);
         Assert.AreNotEqual("shot.png", second.Attachment!.Path,
@@ -66,7 +68,7 @@ public class AttachmentUploadHandlerTests
     [TestMethod]
     public async Task Store_DisallowedType_IsRejectedWithAnActionableMessage()
     {
-        var result = await _handler.StoreAsync(Request("payload.exe", "application/x-msdownload", [1]), default);
+        var result = await Store("payload.exe", "application/x-msdownload", [1]);
 
         Assert.IsFalse(result.Success);
         Assert.IsNull(result.Attachment);
@@ -81,7 +83,7 @@ public class AttachmentUploadHandlerTests
     {
         // Storing this would leave a file whose name says one thing and whose contents say
         // another — the next reader (analyze_file, the vision call) resolves it by extension.
-        var result = await _handler.StoreAsync(Request("invoice.png", "application/pdf", [1]), default);
+        var result = await Store("invoice.png", "application/pdf", [1]);
 
         Assert.IsFalse(result.Success);
         StringAssert.Contains(result.Error!, "does not look like");
@@ -91,16 +93,16 @@ public class AttachmentUploadHandlerTests
     [TestMethod]
     public async Task Store_JpegAcceptsBothExtensions()
     {
-        Assert.IsTrue((await _handler.StoreAsync(Request("a.jpg", "image/jpeg", [1]), default)).Success);
-        Assert.IsTrue((await _handler.StoreAsync(Request("b.jpeg", "image/jpeg", [1]), default)).Success);
+        Assert.IsTrue((await Store("a.jpg", "image/jpeg", [1])).Success);
+        Assert.IsTrue((await Store("b.jpeg", "image/jpeg", [1])).Success);
     }
 
     [TestMethod]
     public async Task Store_OverTheSizeCap_IsRejectedBeforeTouchingDisk()
     {
-        var oversized = new byte[AttachmentUploadHandler.MaxBytes + 1];
+        var oversized = new byte[InboundAttachmentService.MaxBytes + 1];
 
-        var result = await _handler.StoreAsync(Request("huge.png", "image/png", oversized), default);
+        var result = await Store("huge.png", "image/png", oversized);
 
         Assert.IsFalse(result.Success);
         StringAssert.Contains(result.Error!, "limit");
@@ -110,7 +112,7 @@ public class AttachmentUploadHandlerTests
     [TestMethod]
     public async Task Store_EmptyFile_IsRejected()
     {
-        var result = await _handler.StoreAsync(Request("empty.png", "image/png", []), default);
+        var result = await Store("empty.png", "image/png", []);
 
         Assert.IsFalse(result.Success);
         Assert.AreEqual(0, Directory.GetFiles(_root).Length);
@@ -121,8 +123,7 @@ public class AttachmentUploadHandlerTests
     {
         // The client supplies a name, never a path. AttachmentStorage sanitises to the leaf, and
         // this pins that the upload door inherits that property rather than bypassing it.
-        var result = await _handler.StoreAsync(
-            Request("../../escaped.png", "image/png", [1]), default);
+        var result = await Store("../../escaped.png", "image/png", [1]);
 
         Assert.IsTrue(result.Success, result.Error);
         var written = Directory.GetFiles(_root, "*", SearchOption.AllDirectories);
@@ -131,13 +132,6 @@ public class AttachmentUploadHandlerTests
             "A traversal in the supplied name must not place the file outside the base directory.");
     }
 
-    private static AttachmentUploadRequest Request(string fileName, string mime, byte[] data) =>
-        new()
-        {
-            FileName = fileName,
-            Mime = mime,
-            Data = data,
-            SessionId = "sess-1",
-            UserId = "user-1",
-        };
+    private Task<AttachmentUploadResponse> Store(string fileName, string mime, byte[] data) =>
+        _service.StoreAsync(fileName, mime, data, "sess-1", default);
 }

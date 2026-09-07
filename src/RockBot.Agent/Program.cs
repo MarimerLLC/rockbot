@@ -464,6 +464,18 @@ builder.Services.Configure<LlmPricingOptions>(builder.Configuration.GetSection("
 builder.Services.AddSingleton<RockBot.Agent.McpBridge.Attachments.IAttachmentStorage,
     RockBot.Agent.McpBridge.Attachments.AttachmentStorage>();
 
+// Inbound attachments — the single validate-and-write door for files a person sends, shared by
+// the bus handler and the HTTP endpoint so the two transports cannot drift apart.
+builder.Services.AddSingleton<InboundAttachmentService>();
+
+// HTTP upload endpoint. Preferred over the bus for anything screenshot-sized: RabbitMQ holds
+// message bodies in memory until they are acked, and a file being moved to a volume the agent
+// already mounts is not a message. Clients without a route to it fall back to the bus.
+var attachmentUploadOptions = new AttachmentUploadEndpointOptions();
+builder.Configuration.GetSection("AttachmentUpload").Bind(attachmentUploadOptions);
+builder.Services.AddSingleton(attachmentUploadOptions);
+builder.Services.AddHostedService<AttachmentUploadEndpoint>();
+
 // MCP bridge (replaces external RockBot.Tools.Mcp.Bridge process)
 builder.Services.Configure<McpBridgeOptions>(builder.Configuration.GetSection("McpBridge"));
 builder.Services.AddSingleton(new McpArgGuardRegistration(

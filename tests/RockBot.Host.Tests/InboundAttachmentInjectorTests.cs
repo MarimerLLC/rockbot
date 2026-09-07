@@ -158,4 +158,38 @@ public class InboundAttachmentInjectorTests
         new(ChatRole.User, "an earlier question"),
         new(ChatRole.User, "what is in this picture?"),
     ];
+
+    // ── What survives into later turns ───────────────────────────────────────
+
+    [TestMethod]
+    public void DescribeAttachments_NamesThePathSoALaterTurnCanStillReachTheFile()
+    {
+        // Regression for a defect a live Blazor session found: on a seeing tier the image is
+        // injected and no marker is added, so the path never entered the persisted turn. On the
+        // next turn the agent answered "I don't have the image in this chat to re-check" and
+        // called file_list looking for it — it had neither the image nor the filename.
+        var described = InboundAttachmentInjector.DescribeAttachments([Png]);
+
+        StringAssert.Contains(described, "attachments/shot.png",
+            "The path is the only handle a later turn has; analyze_file needs it by name.");
+        StringAssert.Contains(described, "screenshot.png");
+        StringAssert.Contains(described, "image/png");
+    }
+
+    [TestMethod]
+    public void DescribeAttachments_NoAttachments_IsEmptySoCallersCanConcatenateBlindly()
+    {
+        Assert.AreEqual(string.Empty, InboundAttachmentInjector.DescribeAttachments(null));
+        Assert.AreEqual(string.Empty, InboundAttachmentInjector.DescribeAttachments([]));
+    }
+
+    [TestMethod]
+    public void DescribeAttachments_SeveralFiles_NamesEachOnItsOwnLine()
+    {
+        var described = InboundAttachmentInjector.DescribeAttachments(
+            [Png, new ConversationTurnAttachment("application/pdf", "invoice.pdf", null)]);
+
+        Assert.AreEqual(2, described.Split('\n', StringSplitOptions.RemoveEmptyEntries).Length);
+        StringAssert.Contains(described, "attachments/invoice.pdf");
+    }
 }
