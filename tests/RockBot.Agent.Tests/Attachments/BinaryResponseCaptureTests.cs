@@ -18,6 +18,13 @@ public class BinaryResponseCaptureTests
     private static readonly byte[] PngBytes = Convert.FromBase64String(
         "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==");
 
+    /// <summary>
+    /// A content block's payload as it actually arrives: base64 text, despite the property being
+    /// typed as bytes. Capture has to decode it, or a .png on disk contains "iVBORw0KGgo…".
+    /// </summary>
+    private static byte[] WireShape(byte[] payload) =>
+        System.Text.Encoding.ASCII.GetBytes(Convert.ToBase64String(payload));
+
     [TestInitialize]
     public void Init()
     {
@@ -62,7 +69,7 @@ public class BinaryResponseCaptureTests
     {
         var result = new CallToolResult
         {
-            Content = [new ImageContentBlock { Data = PngBytes, MimeType = "image/png" }]
+            Content = [new ImageContentBlock { Data = WireShape(PngBytes), MimeType = "image/png" }]
         };
 
         var captured = await _capture.CaptureAsync(Server, "read_image", result, null, default);
@@ -81,7 +88,7 @@ public class BinaryResponseCaptureTests
         var bytes = new byte[] { 0x49, 0x44, 0x33, 0x00, 0x01 };
         var result = new CallToolResult
         {
-            Content = [new AudioContentBlock { Data = bytes, MimeType = "audio/mpeg" }]
+            Content = [new AudioContentBlock { Data = WireShape(bytes), MimeType = "audio/mpeg" }]
         };
 
         var captured = await _capture.CaptureAsync(Server, "read_audio", result, null, default);
@@ -97,7 +104,7 @@ public class BinaryResponseCaptureTests
             Content =
             [
                 new TextContentBlock { Text = "Here is the diagram:" },
-                new ImageContentBlock { Data = PngBytes, MimeType = "image/png" }
+                new ImageContentBlock { Data = WireShape(PngBytes), MimeType = "image/png" }
             ]
         };
 
@@ -124,7 +131,7 @@ public class BinaryResponseCaptureTests
     {
         var result = new CallToolResult
         {
-            Content = [new ImageContentBlock { Data = PngBytes, MimeType = "image/png" }]
+            Content = [new ImageContentBlock { Data = WireShape(PngBytes), MimeType = "image/png" }]
         };
 
         var captured = await _capture.CaptureAsync(
@@ -140,7 +147,7 @@ public class BinaryResponseCaptureTests
         var result = new CallToolResult
         {
             IsError = true,
-            Content = [new ImageContentBlock { Data = PngBytes, MimeType = "image/png" }]
+            Content = [new ImageContentBlock { Data = WireShape(PngBytes), MimeType = "image/png" }]
         };
 
         Assert.AreSame(result, await _capture.CaptureAsync(Server, "read_image", result, null, default));
@@ -329,7 +336,7 @@ public class BinaryResponseCaptureTests
         var capture = new BinaryResponseCapture(new ThrowingStorage());
         var result = new CallToolResult
         {
-            Content = [new ImageContentBlock { Data = PngBytes, MimeType = "image/png" }]
+            Content = [new ImageContentBlock { Data = WireShape(PngBytes), MimeType = "image/png" }]
         };
 
         Assert.AreSame(result, await capture.CaptureAsync(Server, "read_image", result, null, default));

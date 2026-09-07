@@ -2,6 +2,7 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using Microsoft.Extensions.Logging;
 using ModelContextProtocol.Protocol;
+using RockBot.Tools.Mcp;
 
 namespace RockBot.Agent.McpBridge.Attachments;
 
@@ -100,10 +101,13 @@ public sealed class BinaryResponseCapture(IAttachmentStorage storage, ILogger? l
 
         foreach (var block in result.Content)
         {
+            // Data is base64 text on the wire despite its byte-typed property — see
+            // McpBinaryPayload. Writing it raw puts "iVBORw0KGgo…" on disk under a .png name,
+            // which every downstream reader then rejects as a corrupt image.
             var payload = block switch
             {
-                ImageContentBlock img => (Bytes: img.Data.ToArray(), Mime: img.MimeType),
-                AudioContentBlock audio => (Bytes: audio.Data.ToArray(), Mime: audio.MimeType),
+                ImageContentBlock img => (Bytes: McpBinaryPayload.Decode(img.Data), Mime: img.MimeType),
+                AudioContentBlock audio => (Bytes: McpBinaryPayload.Decode(audio.Data), Mime: audio.MimeType),
                 _ => default
             };
 
