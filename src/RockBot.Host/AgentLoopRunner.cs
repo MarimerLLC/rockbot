@@ -1930,13 +1930,94 @@ public sealed partial class AgentLoopRunner(
         return summary is { Length: > MaxLen } ? summary[..MaxLen] + "…" : summary;
     }
 
+    /// <summary>
+    /// Ceiling charged for a single image content part. Providers do not bill images by byte
+    /// count — they downscale to a tile/patch grid and charge a bounded number of image tokens
+    /// (~1–2k at the top end for the OpenAI-compatible tiers RockBot targets). Base64 length is
+    /// a fair proxy for a small image, but for a 1.8 MB one it over-counts by roughly 300× in
+    /// token terms, which would make every image turn look like a context overflow and stash
+    /// tool results that never needed trimming. Capping the proxy mirrors the provider's own
+    /// downscale ceiling: 2,000 tokens × 4 chars/token. Dimension-parsing image token maths is
+    /// the upgrade path if this ever needs to be more precise.
+    /// </summary>
+    internal const int MaxImageChars = 8_000;
+
+    /// <summary>
+    /// Chars charged for a content part whose type this estimate does not know. Deliberately
+    /// small — it is a placeholder, not a measurement — and every use is counted on
+    /// <see cref="HostDiagnostics.ContextUnknownContentParts"/> so a new content type showing
+    /// up in the message list is visible rather than silently under-counted.
+    /// </summary>
+    internal const int UnknownContentChars = 50;
+
     internal static int EstimateMessageChars(ChatMessage m) =>
-        m.Contents.Sum(static c => c switch
+        m.Contents.Sum(EstimateContentChars);
+
+    /// <summary>
+    /// Estimates the character cost of a single content part. This feeds every context-pressure
+    /// decision in the loop — the per-call token metric, which message the trimmer picks, and
+    /// whether the watermark trim fires at all — so an under-count here is a context overflow
+    /// the loop cannot see coming.
+    /// </summary>
+    internal static int EstimateContentChars(AIContent content) => content switch
+    {
+        TextContent tc => tc.Text?.Length ?? 0,
+        // TextReasoningContent does not derive from TextContent; it needs its own arm.
+        TextReasoningContent trc => trc.Text?.Length ?? 0,
+        FunctionResultContent frc => frc.Result?.ToString()?.Length ?? 0,
+        FunctionCallContent fcc => EstimateFunctionCallChars(fcc),
+        DataContent dc => EstimateDataChars(dc),
+        UriContent uc => uc.Uri?.OriginalString.Length ?? 0,
+        ErrorContent ec =>
+            (ec.Message?.Length ?? 0) + (ec.ErrorCode?.Length ?? 0) + (ec.Details?.Length ?? 0),
+        _ => CountUnknownContent(content)
+    };
+
+    /// <summary>
+    /// Sizes an assistant tool call by its serialised shape: the tool name plus each argument's
+    /// key and value. A flat constant here under-counts badly — a single <c>wisp</c> script or
+    /// a long file body arrives as one argument value.
+    /// </summary>
+    private static int EstimateFunctionCallChars(FunctionCallContent content)
+    {
+        var chars = content.Name?.Length ?? 0;
+        if (content.Arguments is { Count: > 0 } args)
         {
-            TextContent tc => tc.Text?.Length ?? 0,
-            FunctionResultContent frc => frc.Result?.ToString()?.Length ?? 0,
-            _ => 50
-        });
+            foreach (var kvp in args)
+            {
+                // + 4 for the `"":,` punctuation each argument carries on the wire.
+                chars += (kvp.Key?.Length ?? 0) + (kvp.Value?.ToString()?.Length ?? 0) + 4;
+            }
+        }
+        return chars;
+    }
+
+    /// <summary>
+    /// Sizes binary content by its base64 wire cost (4 chars per 3 bytes), capped at
+    /// <see cref="MaxImageChars"/> for images — see that constant for why images are capped and
+    /// other media are not. An image part with no readable payload is charged the ceiling rather
+    /// than zero: a degenerate image is a malformed request, not a free one, and a silent zero
+    /// is the same class of bug this estimate exists to close.
+    /// </summary>
+    private static int EstimateDataChars(DataContent content)
+    {
+        var encoded = (int)Math.Min(int.MaxValue, ((long)content.Data.Length + 2) / 3 * 4);
+        if (!content.HasTopLevelMediaType("image"))
+            return encoded;
+        return encoded == 0 ? MaxImageChars : Math.Min(encoded, MaxImageChars);
+    }
+
+    /// <summary>
+    /// Records that a content type the estimate does not model appeared in the message list and
+    /// returns the placeholder size. The counter is what makes the fallback loud: a wrong-but-
+    /// quiet default is exactly what let <see cref="DataContent"/> count as 50 chars unnoticed.
+    /// </summary>
+    private static int CountUnknownContent(AIContent content)
+    {
+        HostDiagnostics.ContextUnknownContentParts.Add(
+            1, new KeyValuePair<string, object?>("rockbot.content.type", content.GetType().Name));
+        return UnknownContentChars;
+    }
 
     /// <summary>
     /// Classifies <paramref name="sessionId"/> into one of <c>session</c>, <c>patrol</c>,

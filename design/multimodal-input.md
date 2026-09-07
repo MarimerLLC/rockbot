@@ -32,10 +32,11 @@ Five separate things, verified in the tree before any of this was written:
 4. **No model capability declaration.** `ModelBehavior` carries a dozen behavioural flags and
    not one modality flag, so nothing could tell a seeing tier from a blind one.
 
-5. **The context-budget machinery is blind to bytes.** `EstimateMessageChars` counts
+5. **The context-budget machinery is blind to bytes.** ~~`EstimateMessageChars` counts
    `TextContent` and `FunctionResultContent` by length and everything else at a flat 50 —
    so a `DataContent` carrying a 1.8 MB image counts as 50 characters, roughly 35,000× under.
-   Images are effectively invisible to the watermark trim and to every stash decision.
+   Images are effectively invisible to the watermark trim and to every stash decision.~~
+   **Closed (issue #564).** See [below](#sizing-an-image-a-capped-proxy-not-its-byte-count).
 
 ## The constraint: images cannot ride in a tool result
 
@@ -155,6 +156,28 @@ factories. The executor needs to know which tiers can see, so the agent register
 instance as a singleton. Consumers that do not register it get an `analyze_file` that never
 registers — the dependency is optional, and its absence reads the same as "no tier declares
 vision".
+
+### Sizing an image: a capped proxy, not its byte count
+
+`AgentLoopRunner.EstimateContentChars` now models `DataContent`, `FunctionCallContent`,
+`TextReasoningContent`, `UriContent` and `ErrorContent` instead of charging them a flat 50.
+Binary content is sized by its base64 wire cost (4 chars per 3 bytes) — but for images that
+proxy is capped at `MaxImageChars` (8,000 chars ≈ 2,000 tokens).
+
+The cap is the whole decision. Providers do not bill an image by its byte count: they downscale
+it to a tile or patch grid and charge a bounded number of image tokens, ~1–2k at the top end
+for the OpenAI-compatible tiers RockBot targets. Uncapped base64 length would replace a 35,000×
+under-count with a ~300× over-count, and every turn carrying an image would look like a context
+overflow — trimming and stashing tool results that never needed it. Capping mirrors the
+provider's own downscale ceiling. Dimension-parsing image token maths is the upgrade path if
+the approximation ever proves too coarse; it needs the image decoded far enough to read its
+header, which is why it is not the first move.
+
+Two smaller consequences worth knowing: an image part with no readable payload is charged the
+ceiling rather than zero — a degenerate image is a malformed request, not a free one — and the
+unknown-content fallback
+now increments `rockbot.agent.context.unknown_content_part`, tagged with the CLR type name — a
+wrong-but-quiet default is what made this gap easy to miss for so long.
 
 ## Configuration
 
