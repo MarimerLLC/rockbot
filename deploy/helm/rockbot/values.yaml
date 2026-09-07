@@ -424,25 +424,37 @@ secrets:
     # GitHub token for Copilot provider (needs copilot scope):
     gitHubToken: ""
 
+    # supportsImageInput declares that a tier's model accepts images alongside text.
+    # It gates the analyze_file tool: with no tier set to true the tool is not registered
+    # at all, and a call that needs eyes is routed to a tier that has them. A vision request
+    # reaching a blind model fails with an opaque provider error, so this is declared rather
+    # than guessed from the model id. See design/multimodal-input.md.
     balanced:
       provider: ""          # Per-tier override: "" inherits global, "Copilot" or "OpenAI"
       endpoint: ""          # REQUIRED for OpenAI-compatible — base URL of the API
       apiKey: ""            # REQUIRED for OpenAI-compatible — API key
       modelId: ""           # REQUIRED — model ID (e.g. anthropic/claude-haiku-4.5 or gpt-4.1)
+      supportsImageInput: false   # true only if this model reads images
     # Ordered fallback chain for balanced tier. First entry is preferred; subsequent
     # entries are tried in order on failure. Takes precedence over single 'balanced'
     # when populated. Each entry has: provider, endpoint, apiKey, modelId.
+    #
+    # Entries take no supportsImageInput of their own — the flag is read per tier, not per
+    # fallback model. So if balanced.supportsImageInput is true, every model in this chain
+    # must read images: a fallback that cannot would be handed one and fail.
     balancedModels: []
     low:                    # Optional — fast/cheap model for simple factual questions
       provider: ""
       endpoint: ""
       apiKey: ""
       modelId: ""
+      supportsImageInput: false
     high:                   # Optional — powerful model for dream/research/complex tasks
       provider: ""
       endpoint: ""
       apiKey: ""
       modelId: ""           # leave empty to fall back to balanced
+      supportsImageInput: false
 
     # Legacy flat keys — kept for backward compatibility; remove after all deployments migrated
     endpoint: ""
