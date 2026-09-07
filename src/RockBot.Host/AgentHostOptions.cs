@@ -11,6 +11,90 @@ namespace RockBot.Host;
 public sealed record TopicSubscription(string Topic, int DispatchConcurrency = 1);
 
 /// <summary>
+/// Which shape of image pricing a provider uses. These are genuinely different models, not
+/// different constants, which is why the estimate selects between them rather than trying to
+/// express one in the other's numbers.
+/// </summary>
+public enum ImageCostMode
+{
+    /// <summary>
+    /// Cost is proportional to the image's area in fixed-size patches, capped at a patch
+    /// budget and multiplied by a per-model factor. The GPT-5 family (and the 4.1-mini/nano
+    /// and o-series models) price this way. This is the default.
+    /// </summary>
+    Patched,
+
+    /// <summary>
+    /// The image is scaled into a bounded box, divided into tiles, and charged a flat base
+    /// plus a fixed cost per tile. The GPT-4o and GPT-4.1 families price this way.
+    /// </summary>
+    Tiled,
+}
+
+/// <summary>
+/// How the context-size estimate prices an image, in provider tokens.
+///
+/// <para>The defaults describe the <see cref="ImageCostMode.Patched"/> model the deployed
+/// GPT-5-family tiers use: divide the image into 32-pixel patches, cap the count at 1,536
+/// (the provider scales the image down to fit rather than charging beyond it), and multiply
+/// by a per-model factor — 1.0 for a full model, 1.62 for a <c>-mini</c>, 2.46 for a
+/// <c>-nano</c>. A deployment on a GPT-4o-family model sets <see cref="Mode"/> to
+/// <see cref="ImageCostMode.Tiled"/> and gets the tile constants below, whose defaults
+/// reproduce that family's published worked examples (1024×1024 → 765 tokens;
+/// 2048×4096 → 1,105).</para>
+///
+/// <para>Only the properties belonging to the selected <see cref="Mode"/> are read. Values are
+/// clamped to workable minimums at use time, so a mistyped setting degrades the estimate
+/// rather than dividing by zero inside the trim loop.</para>
+/// </summary>
+public sealed class ImageCostOptions
+{
+    /// <summary>
+    /// Which pricing shape to apply. Defaults to <see cref="ImageCostMode.Patched"/>, matching
+    /// the GPT-5-family tiers. Set to <see cref="ImageCostMode.Tiled"/> for a GPT-4o-family
+    /// model, which prices images in a different shape entirely.
+    /// </summary>
+    public ImageCostMode Mode { get; set; } = ImageCostMode.Patched;
+
+    // ── Patched mode ────────────────────────────────────────────────────────
+
+    /// <summary>Edge length of one patch, in pixels. Defaults to 32.</summary>
+    public int PatchSize { get; set; } = 32;
+
+    /// <summary>
+    /// Most patches an image can be charged. Beyond this the provider scales the image down to
+    /// fit, so the cost stops rising. Defaults to 1,536.
+    /// </summary>
+    public int MaxPatches { get; set; } = 1_536;
+
+    /// <summary>
+    /// Per-model factor applied to the patch count. Defaults to 1.0 (a full model). Set 1.62
+    /// for a <c>-mini</c> tier or 2.46 for a <c>-nano</c>, which charge more per patch.
+    /// </summary>
+    public double Multiplier { get; set; } = 1.0;
+
+    // ── Tiled mode ──────────────────────────────────────────────────────────
+
+    /// <summary>Flat cost charged for an image whatever its size. Defaults to 85.</summary>
+    public int BaseTokens { get; set; } = 85;
+
+    /// <summary>Cost of each tile the scaled image divides into. Defaults to 170.</summary>
+    public int TokensPerTile { get; set; } = 170;
+
+    /// <summary>Edge length of one tile, in pixels. Defaults to 512.</summary>
+    public int TileSize { get; set; } = 512;
+
+    /// <summary>The image is first scaled down to fit inside this square. Defaults to 2048.</summary>
+    public int MaxDimension { get; set; } = 2048;
+
+    /// <summary>
+    /// It is then scaled down until its shortest side is at most this. Scaling is down-only —
+    /// an image smaller than a single tile costs one tile, not a scaled-up grid. Defaults to 768.
+    /// </summary>
+    public int ShortestSide { get; set; } = 768;
+}
+
+/// <summary>
 /// Configuration options for the agent host.
 /// </summary>
 public sealed class AgentHostOptions
@@ -228,6 +312,15 @@ public sealed class AgentHostOptions
     /// rely solely on the watermark.
     /// </summary>
     public int ToolResultMaxChars { get; set; } = 8_000;
+
+    /// <summary>
+    /// How the context-size estimate prices an image, in provider tokens. Defaults to the
+    /// patch model the deployed GPT-5-family tiers use; override under
+    /// <c>AgentHost:ImageCost</c> (env: <c>AgentHost__ImageCost__Mode</c>,
+    /// <c>AgentHost__ImageCost__Multiplier</c> and friends) for a provider that prices images
+    /// differently. See <see cref="ImageCostOptions"/>.
+    /// </summary>
+    public ImageCostOptions ImageCost { get; } = new();
 
     /// <summary>
     /// How many tool-call iterations a BM25-recalled skill body stays in context

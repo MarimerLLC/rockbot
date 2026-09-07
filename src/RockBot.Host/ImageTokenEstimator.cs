@@ -1,0 +1,318 @@
+using System.Buffers.Binary;
+
+namespace RockBot.Host;
+
+/// <summary>
+/// Estimates what an image costs in an LLM request, in tokens, from its pixel dimensions.
+///
+/// <para>Providers do not bill an image by its byte count. They price its <i>pixels</i> — by
+/// patches or by tiles, depending on the model family (see <see cref="ImageCostMode"/>) — so a
+/// 4 MB photo and a 400 KB screenshot of the same dimensions cost exactly the same, and a 5 KB
+/// icon costs a small fraction of either. Any byte-derived proxy therefore gets the ordering
+/// wrong as often as the magnitude: it over-charges small images and, once capped, charges
+/// every real photo the same ceiling.</para>
+///
+/// <para>Dimensions come from the image header, which for every format below sits in the first
+/// few dozen bytes. Nothing here decodes pixels.</para>
+/// </summary>
+internal static class ImageTokenEstimator
+{
+    /// <summary>
+    /// The cost model applied when a caller has no configured one — the same defaults
+    /// <see cref="ImageCostOptions"/> declares. Every production path passes the bound options
+    /// through instead; this exists so the estimate never depends on having them.
+    /// </summary>
+    internal static readonly ImageCostOptions DefaultCost = new();
+
+    /// <summary>
+    /// Cost of the largest image <paramref name="cost"/>'s rules permit — 1,536 tokens on the
+    /// patched defaults, 1,445 on the tiled ones, since both models bound how far cost can
+    /// rise with size. Callers charge this to an image they cannot measure.
+    /// </summary>
+    public static int MaxTokens(ImageCostOptions? cost = null)
+    {
+        cost ??= DefaultCost;
+
+        if (cost.Mode == ImageCostMode.Tiled)
+        {
+            var (baseTokens, tokensPerTile, tileSize, maxDimension, shortestSide) = ClampTiled(cost);
+            return baseTokens + (tokensPerTile * (Cells(shortestSide, tileSize) * Cells(maxDimension, tileSize)));
+        }
+
+        var (_, maxPatches, multiplier) = ClampPatched(cost);
+        return Scale(maxPatches, multiplier);
+    }
+
+    /// <summary>
+    /// Reads <paramref name="data"/>'s image header and estimates its token cost. Returns
+    /// <c>false</c> when the bytes are not a format this understands (or are truncated), which
+    /// is the caller's signal to fall back to a byte-derived proxy.
+    /// </summary>
+    public static bool TryEstimateTokens(ReadOnlySpan<byte> data, out int tokens, ImageCostOptions? cost = null)
+    {
+        if (TryReadDimensions(data, out var width, out var height))
+        {
+            tokens = EstimateTokens(width, height, cost);
+            return true;
+        }
+
+        tokens = 0;
+        return false;
+    }
+
+    /// <summary>
+    /// Prices a pixel size under the configured cost model. The two modes are different shapes,
+    /// not different constants — see <see cref="ImageCostMode"/>.
+    /// </summary>
+    public static int EstimateTokens(int width, int height, ImageCostOptions? cost = null)
+    {
+        cost ??= DefaultCost;
+
+        return cost.Mode == ImageCostMode.Tiled
+            ? EstimateTiled(width, height, cost)
+            : EstimatePatched(width, height, cost);
+    }
+
+    /// <summary>
+    /// Patch model (GPT-5 family): cost tracks the image's area in fixed-size patches, capped at
+    /// a patch budget — beyond it the provider scales the image down to fit rather than charging
+    /// more — then scaled by a per-model factor.
+    /// </summary>
+    private static int EstimatePatched(int width, int height, ImageCostOptions cost)
+    {
+        var (patchSize, maxPatches, multiplier) = ClampPatched(cost);
+
+        if (width <= 0 || height <= 0)
+            return Scale(1, multiplier);
+
+        // long, because a very large image overflows int before the cap is applied.
+        var patches = (long)Cells(width, patchSize) * Cells(height, patchSize);
+        return Scale((int)Math.Clamp(patches, 1, maxPatches), multiplier);
+    }
+
+    /// <summary>
+    /// Tile model (GPT-4o family): scale the image into a bounded box, divide it into tiles, and
+    /// charge a flat base plus a fixed cost per tile. Scaling is down-only: an image smaller than
+    /// one tile costs one tile, not a scaled-up grid of them.
+    /// </summary>
+    private static int EstimateTiled(int width, int height, ImageCostOptions cost)
+    {
+        var (baseTokens, tokensPerTile, tileSize, maxDimension, shortestSide) = ClampTiled(cost);
+
+        if (width <= 0 || height <= 0)
+            return baseTokens + tokensPerTile;
+
+        double w = width, h = height;
+
+        // Fit inside maxDimension x maxDimension.
+        var longest = Math.Max(w, h);
+        if (longest > maxDimension)
+        {
+            var scale = maxDimension / longest;
+            w *= scale;
+            h *= scale;
+        }
+
+        // Then bring the shortest side down to shortestSide.
+        var shortest = Math.Min(w, h);
+        if (shortest > shortestSide)
+        {
+            var scale = shortestSide / shortest;
+            w *= scale;
+            h *= scale;
+        }
+
+        var tiles = (int)Math.Ceiling(w / tileSize) * (int)Math.Ceiling(h / tileSize);
+        // Clamp rather than trust the arithmetic: a rounding artefact that produced an extra
+        // tile would over-charge silently, which is the failure mode this whole estimate exists
+        // to avoid.
+        var maxTiles = Cells(shortestSide, tileSize) * Cells(maxDimension, tileSize);
+        tiles = Math.Clamp(tiles, 1, maxTiles);
+
+        return baseTokens + (tokensPerTile * tiles);
+    }
+
+    /// <summary>Cells of <paramref name="size"/> pixels needed to cover <paramref name="pixels"/>.</summary>
+    private static int Cells(int pixels, int size) => (pixels + size - 1) / size;
+
+    /// <summary>Applies the per-model factor, rounding up — a partial token still costs one.</summary>
+    private static int Scale(int patches, double multiplier) =>
+        (int)Math.Min(int.MaxValue, Math.Ceiling(patches * multiplier));
+
+    /// <summary>
+    /// Reads the patched cost model, clamped to values the arithmetic can use. A mistyped
+    /// setting should degrade the estimate, not divide by zero inside the trim loop.
+    /// </summary>
+    private static (int PatchSize, int MaxPatches, double Multiplier) ClampPatched(ImageCostOptions cost)
+    {
+        var multiplier = double.IsFinite(cost.Multiplier) ? Math.Max(0, cost.Multiplier) : 1.0;
+        return (Math.Max(1, cost.PatchSize), Math.Max(1, cost.MaxPatches), multiplier);
+    }
+
+    /// <summary>Reads the tiled cost model, clamped the same way.</summary>
+    private static (int BaseTokens, int TokensPerTile, int TileSize, int MaxDimension, int ShortestSide)
+        ClampTiled(ImageCostOptions cost)
+    {
+        var tileSize = Math.Max(1, cost.TileSize);
+        var maxDimension = Math.Max(tileSize, cost.MaxDimension);
+        var shortestSide = Math.Clamp(cost.ShortestSide, 1, maxDimension);
+
+        return (Math.Max(0, cost.BaseTokens), Math.Max(0, cost.TokensPerTile),
+                tileSize, maxDimension, shortestSide);
+    }
+
+    /// <summary>
+    /// Reads pixel dimensions from a PNG, JPEG, GIF, WebP or BMP header. Returns <c>false</c>
+    /// for anything else, including a truncated or corrupt header — the caller decides what an
+    /// unreadable image costs; guessing a size here would be the same silent under-count this
+    /// class replaced.
+    /// </summary>
+    public static bool TryReadDimensions(ReadOnlySpan<byte> data, out int width, out int height)
+    {
+        width = 0;
+        height = 0;
+
+        if (TryReadPng(data, out width, out height)) return true;
+        if (TryReadJpeg(data, out width, out height)) return true;
+        if (TryReadGif(data, out width, out height)) return true;
+        if (TryReadWebP(data, out width, out height)) return true;
+        if (TryReadBmp(data, out width, out height)) return true;
+
+        width = 0;
+        height = 0;
+        return false;
+    }
+
+    private static ReadOnlySpan<byte> PngSignature => [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
+
+    private static bool TryReadPng(ReadOnlySpan<byte> data, out int width, out int height)
+    {
+        width = 0;
+        height = 0;
+
+        // 8-byte signature, then a chunk length and the "IHDR" tag, then width and height as
+        // big-endian 32-bit values.
+        if (data.Length < 24 || !data[..8].SequenceEqual(PngSignature)) return false;
+        if (data[12] != (byte)'I' || data[13] != (byte)'H' || data[14] != (byte)'D' || data[15] != (byte)'R')
+            return false;
+
+        width = BinaryPrimitives.ReadInt32BigEndian(data[16..20]);
+        height = BinaryPrimitives.ReadInt32BigEndian(data[20..24]);
+        return width > 0 && height > 0;
+    }
+
+    private static bool TryReadJpeg(ReadOnlySpan<byte> data, out int width, out int height)
+    {
+        width = 0;
+        height = 0;
+
+        if (data.Length < 4 || data[0] != 0xFF || data[1] != 0xD8) return false;
+
+        // Walk the segment chain to the start-of-frame marker, which carries the dimensions.
+        // Everything before it (JFIF/Exif/quantisation/Huffman tables) is skipped by length.
+        var i = 2;
+        while (i + 3 < data.Length)
+        {
+            if (data[i] != 0xFF) { i++; continue; }
+
+            var marker = data[i + 1];
+
+            // 0xFF used as padding, and the standalone markers that carry no length.
+            if (marker == 0xFF) { i++; continue; }
+            if (marker == 0x01 || (marker >= 0xD0 && marker <= 0xD9)) { i += 2; continue; }
+
+            var segmentLength = BinaryPrimitives.ReadUInt16BigEndian(data[(i + 2)..(i + 4)]);
+            if (segmentLength < 2) return false;
+
+            // SOF0–SOF15 hold the frame size. C4/C8/CC are Huffman, JPG-extension and
+            // arithmetic-coding tables sharing the same marker range.
+            if (marker is >= 0xC0 and <= 0xCF && marker != 0xC4 && marker != 0xC8 && marker != 0xCC)
+            {
+                if (i + 9 >= data.Length) return false;
+                height = BinaryPrimitives.ReadUInt16BigEndian(data[(i + 5)..(i + 7)]);
+                width = BinaryPrimitives.ReadUInt16BigEndian(data[(i + 7)..(i + 9)]);
+                return width > 0 && height > 0;
+            }
+
+            // Start of compressed scan data — no frame header was found before it.
+            if (marker == 0xDA) return false;
+
+            i += 2 + segmentLength;
+        }
+
+        return false;
+    }
+
+    private static bool TryReadGif(ReadOnlySpan<byte> data, out int width, out int height)
+    {
+        width = 0;
+        height = 0;
+
+        // "GIF87a" or "GIF89a", then the logical screen size as little-endian 16-bit values.
+        if (data.Length < 10) return false;
+        if (data[0] != (byte)'G' || data[1] != (byte)'I' || data[2] != (byte)'F' || data[3] != (byte)'8')
+            return false;
+        if (data[4] is not ((byte)'7' or (byte)'9') || data[5] != (byte)'a') return false;
+
+        width = BinaryPrimitives.ReadUInt16LittleEndian(data[6..8]);
+        height = BinaryPrimitives.ReadUInt16LittleEndian(data[8..10]);
+        return width > 0 && height > 0;
+    }
+
+    private static bool TryReadWebP(ReadOnlySpan<byte> data, out int width, out int height)
+    {
+        width = 0;
+        height = 0;
+
+        // "RIFF" ... "WEBP", then one of three chunk layouts.
+        if (data.Length < 30) return false;
+        if (data[0] != (byte)'R' || data[1] != (byte)'I' || data[2] != (byte)'F' || data[3] != (byte)'F')
+            return false;
+        if (data[8] != (byte)'W' || data[9] != (byte)'E' || data[10] != (byte)'B' || data[11] != (byte)'P')
+            return false;
+
+        var chunk = data[12..16];
+
+        // Lossy: a VP8 keyframe header, dimensions as 14-bit values after the start code.
+        if (chunk[0] == (byte)'V' && chunk[1] == (byte)'P' && chunk[2] == (byte)'8' && chunk[3] == (byte)' ')
+        {
+            if (data[23] != 0x9D || data[24] != 0x01 || data[25] != 0x2A) return false;
+            width = BinaryPrimitives.ReadUInt16LittleEndian(data[26..28]) & 0x3FFF;
+            height = BinaryPrimitives.ReadUInt16LittleEndian(data[28..30]) & 0x3FFF;
+            return width > 0 && height > 0;
+        }
+
+        // Lossless: 14-bit dimensions minus one, bit-packed across four bytes.
+        if (chunk[0] == (byte)'V' && chunk[1] == (byte)'P' && chunk[2] == (byte)'8' && chunk[3] == (byte)'L')
+        {
+            if (data[20] != 0x2F) return false;
+            var bits = BinaryPrimitives.ReadUInt32LittleEndian(data[21..25]);
+            width = (int)(bits & 0x3FFF) + 1;
+            height = (int)((bits >> 14) & 0x3FFF) + 1;
+            return width > 0 && height > 0;
+        }
+
+        // Extended: canvas size as 24-bit values minus one.
+        if (chunk[0] == (byte)'V' && chunk[1] == (byte)'P' && chunk[2] == (byte)'8' && chunk[3] == (byte)'X')
+        {
+            width = (data[24] | (data[25] << 8) | (data[26] << 16)) + 1;
+            height = (data[27] | (data[28] << 8) | (data[29] << 16)) + 1;
+            return width > 0 && height > 0;
+        }
+
+        return false;
+    }
+
+    private static bool TryReadBmp(ReadOnlySpan<byte> data, out int width, out int height)
+    {
+        width = 0;
+        height = 0;
+
+        // "BM", then a BITMAPINFOHEADER whose height is negative for top-down bitmaps.
+        if (data.Length < 26 || data[0] != (byte)'B' || data[1] != (byte)'M') return false;
+
+        width = Math.Abs(BinaryPrimitives.ReadInt32LittleEndian(data[18..22]));
+        height = Math.Abs(BinaryPrimitives.ReadInt32LittleEndian(data[22..26]));
+        return width > 0 && height > 0;
+    }
+}

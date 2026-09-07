@@ -32,10 +32,11 @@ Five separate things, verified in the tree before any of this was written:
 4. **No model capability declaration.** `ModelBehavior` carries a dozen behavioural flags and
    not one modality flag, so nothing could tell a seeing tier from a blind one.
 
-5. **The context-budget machinery is blind to bytes.** `EstimateMessageChars` counts
+5. **The context-budget machinery is blind to bytes.** ~~`EstimateMessageChars` counts
    `TextContent` and `FunctionResultContent` by length and everything else at a flat 50 —
    so a `DataContent` carrying a 1.8 MB image counts as 50 characters, roughly 35,000× under.
-   Images are effectively invisible to the watermark trim and to every stash decision.
+   Images are effectively invisible to the watermark trim and to every stash decision.~~
+   **Closed (issue #564).** See [below](#sizing-an-image-pixel-dimensions-not-byte-count).
 
 ## The constraint: images cannot ride in a tool result
 
@@ -155,6 +156,68 @@ factories. The executor needs to know which tiers can see, so the agent register
 instance as a singleton. Consumers that do not register it get an `analyze_file` that never
 registers — the dependency is optional, and its absence reads the same as "no tier declares
 vision".
+
+### Sizing an image: pixel dimensions, not byte count
+
+`AgentLoopRunner.EstimateContentChars` now models `DataContent`, `FunctionCallContent`,
+`TextReasoningContent`, `UriContent` and `ErrorContent` instead of charging them a flat 50.
+Non-image binary content (audio, PDF) is sized by its base64 wire cost, 4 chars per 3 bytes.
+Images are sized from their **pixel dimensions**, by `ImageTokenEstimator`.
+
+Bytes are the wrong unit for an image, in both magnitude and ordering. The provider scales the
+image into a bounded tile grid and charges a flat base plus a fixed cost per tile — so a 4 MB
+photo and a 400 KB screenshot of the same dimensions cost exactly the same, and a 5 KB icon
+costs a fraction of either. A byte proxy over-charges the icon by more than an order of
+magnitude, and once capped (the ceiling has to be low enough not to blow the budget) every real
+photo and screenshot pins to that same ceiling — which makes the proxy inert precisely where it
+was meant to help.
+
+So `ImageTokenEstimator` reads width and height from the image header — PNG, JPEG, GIF, WebP and
+BMP, all of which carry it in the first few dozen bytes; nothing decodes pixels — and prices the
+pixels under the model the configured tier actually uses. There are two, and they are different
+shapes rather than different constants:
+
+- **Patched** (the default, and what the deployed GPT-5-family tiers use): the image is divided
+  into 32-pixel patches, the count is capped at 1,536 — beyond that the provider scales the
+  image down to fit rather than charging more — and the result is multiplied by a per-model
+  factor (1.0 for a full model, 1.62 for a `-mini`, 2.46 for a `-nano`). A 2048×1536 screenshot
+  is 64×48 = 3,072 patches, so it costs the 1,536-token ceiling; a 64×64 icon costs 4 tokens.
+- **Tiled** (`Mode: Tiled`, for a GPT-4o-family model): the image is scaled to fit inside
+  2048×2048, its shortest side brought down to 768 (down-only, never upscaled), divided into
+  512px tiles, and charged `85 + 170 × tiles`. Those defaults reproduce that family's published
+  worked examples — 1024×1024 → 765 tokens, 2048×4096 → 1,105 — and bound at 1,445.
+
+Getting the *family* right matters as much as getting off byte count did. The tile model applied
+to a GPT-5 tier under-counts a full-page screenshot by 2× (765 against 1,536), and by 3.2× on a
+`-mini`, which is the same failure class as the flat 50 this replaced — just smaller.
+
+The whole model is `AgentHost:ImageCost` (`ImageCostOptions`), not constants:
+
+```json
+"AgentHost": {
+  "ImageCost": {
+    "Mode": "Patched",
+    "PatchSize": 32, "MaxPatches": 1536, "Multiplier": 1.0
+  }
+}
+```
+
+(env: `AgentHost__ImageCost__Mode`, `AgentHost__ImageCost__Multiplier` and friends; only the
+properties belonging to the selected mode are read). The bound options are threaded from each
+caller into the estimate the same way the trim ratio and stash TTL already are, rather than read
+from a static — the trim path deliberately has no ambient configuration. Values are clamped to
+workable minimums at use time, so a mistyped `PatchSize` of 0 degrades the estimate instead of
+dividing by zero inside the trim loop. What is *not* expressible is a third shape — a provider
+that prices per-pixel, or charges flat; that needs a new `ImageCostMode`, not new numbers.
+
+`MaxImageChars` is derived from the selected model's own ceiling rather than guessed: an image
+whose header will not parse is charged what the *largest* possible image would cost under that
+model, because an image we cannot measure could be that large. Three smaller consequences worth knowing: an image part with no
+readable payload is charged the ceiling rather than zero — a degenerate image is a malformed
+request, not a free one; an unparseable header is logged once per media type at debug; and the
+unknown-content fallback increments `rockbot.agent.context.unknown_content_part`, tagged with
+the CLR type name, and logs once per type. A wrong-but-quiet default is what made this gap easy
+to miss for so long, so neither approximation is silent any more.
 
 ## Configuration
 

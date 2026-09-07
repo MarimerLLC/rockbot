@@ -40,7 +40,8 @@ internal static class ToolResultTrimmer
         IWorkingMemory workingMemory,
         double headTailRatio,
         int stashTtlMinutes,
-        ILogger logger)
+        ILogger logger,
+        ImageCostOptions? imageCost = null)
     {
         var charBudget = (int)(maxTokens * CharsPerToken * 0.9);
         var headRatio = Math.Clamp(headTailRatio, 0.0, 1.0);
@@ -61,7 +62,7 @@ internal static class ToolResultTrimmer
                 break;
             }
 
-            var totalChars = messages.Sum(AgentLoopRunner.EstimateMessageChars);
+            var totalChars = messages.Sum(m => AgentLoopRunner.EstimateMessageChars(m, imageCost, logger));
             if (totalChars <= charBudget)
                 break;
 

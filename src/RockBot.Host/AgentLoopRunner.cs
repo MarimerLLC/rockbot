@@ -1,4 +1,5 @@
 using System.ClientModel;
+using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
@@ -766,8 +767,8 @@ public sealed partial class AgentLoopRunner(
             logger.LogInformation("Added pre-fetched first response to context for native path");
         }
 
-        LogContextBreakdown(chatMessages, "native-entry", sessionId, logger);
-        RecordLlmCallContextSize(chatMessages, sessionId);
+        LogContextBreakdown(chatMessages, "native-entry", sessionId, logger, hostOptions.Value.ImageCost);
+        RecordLlmCallContextSize(chatMessages, sessionId, hostOptions.Value.ImageCost, logger);
 
         ChatResponse response;
         try
@@ -785,10 +786,10 @@ public sealed partial class AgentLoopRunner(
         // Append response messages to chatMessages so re-prompts have full tool-call history.
         chatMessages.AddRange(response.Messages);
 
-        LogContextBreakdown(chatMessages, "native-exit", sessionId, logger);
+        LogContextBreakdown(chatMessages, "native-exit", sessionId, logger, hostOptions.Value.ImageCost);
         // native-exit size approximates the largest in-loop context: it includes the
         // final assistant turn plus every tool call/result FICC appended internally.
-        RecordLlmCallContextSize(chatMessages, sessionId);
+        RecordLlmCallContextSize(chatMessages, sessionId, hostOptions.Value.ImageCost, logger);
 
         var tierTag = new KeyValuePair<string, object?>("rockbot.llm.tier", tier.ToString());
         var nativeInputTokens = response.Usage?.InputTokenCount ?? 0;
@@ -1611,7 +1612,8 @@ public sealed partial class AgentLoopRunner(
             messages, maxTokens, sessionId, stashState, workingMemory,
             hostOptions.Value.ToolResultStashHeadTailRatio,
             hostOptions.Value.ToolResultStashTtlMinutes,
-            logger);
+            logger,
+            hostOptions.Value.ImageCost);
 
     /// <summary>
     /// Working-memory key under which a trimmed tool result's original content is
@@ -1930,13 +1932,172 @@ public sealed partial class AgentLoopRunner(
         return summary is { Length: > MaxLen } ? summary[..MaxLen] + "…" : summary;
     }
 
-    internal static int EstimateMessageChars(ChatMessage m) =>
-        m.Contents.Sum(static c => c switch
+    /// <summary>
+    /// Chars per token used throughout the context estimate — the same ratio the watermark trim
+    /// and the per-tool cap budget against.
+    /// </summary>
+    internal const int CharsPerToken = 4;
+
+    /// <summary>
+    /// Ceiling charged for an image whose header could not be read. Sized as the cost of the
+    /// largest image the configured scaling rules permit (<see cref="ImageTokenEstimator.MaxTokens"/>),
+    /// because an image we cannot measure could be that large — and charging less would be the
+    /// same silent under-count this estimate exists to close. Images we *can* measure are sized
+    /// from their pixel dimensions instead; see <see cref="ImageTokenEstimator"/> for why bytes
+    /// are the wrong unit.
+    /// </summary>
+    internal static int MaxImageChars(ImageCostOptions? imageCost = null) =>
+        ImageTokenEstimator.MaxTokens(imageCost) * CharsPerToken;
+
+    /// <summary>
+    /// Chars charged for a content part whose type this estimate does not know. Deliberately
+    /// small — it is a placeholder, not a measurement — and every use is counted on
+    /// <see cref="HostDiagnostics.ContextUnknownContentParts"/> and logged once per type, so a
+    /// new content type showing up in the message list is visible rather than silently
+    /// under-counted.
+    /// </summary>
+    internal const int UnknownContentChars = 50;
+
+    /// <summary>
+    /// Content types already reported by <see cref="CountUnknownContent"/>, so the warning is
+    /// one line per type per process rather than one per message per LLM call. A type is only
+    /// recorded here once it has actually been logged — otherwise a first sighting on a
+    /// logger-less path would suppress the log for the whole process.
+    /// </summary>
+    private static readonly ConcurrentDictionary<string, byte> LoggedUnknownContentTypes =
+        new(StringComparer.Ordinal);
+
+    /// <summary>Media types whose image header could not be read, deduplicated as above.</summary>
+    private static readonly ConcurrentDictionary<string, byte> LoggedUnreadableImageTypes =
+        new(StringComparer.Ordinal);
+
+    internal static int EstimateMessageChars(
+        ChatMessage m, ImageCostOptions? imageCost = null, ILogger? logger = null) =>
+        m.Contents.Sum(c => EstimateContentChars(c, imageCost, logger));
+
+    /// <summary>
+    /// Estimates the character cost of a single content part. This feeds every context-pressure
+    /// decision in the loop — the per-call token metric, which message the trimmer picks, and
+    /// whether the watermark trim fires at all — so an under-count here is a context overflow
+    /// the loop cannot see coming.
+    /// </summary>
+    /// <param name="content">The content part to size.</param>
+    /// <param name="imageCost">
+    /// Optional. The configured image cost model (<c>AgentHost:ImageCost</c>). Falls back to the
+    /// tile model the deployed tiers use when a caller has none to hand.
+    /// </param>
+    /// <param name="logger">
+    /// Optional. When supplied, the two cases where this estimate is approximating rather than
+    /// measuring — an unmodelled content type, an image whose header will not parse — are
+    /// reported once per type. Callers that have a logger in scope should pass it.
+    /// </param>
+    internal static int EstimateContentChars(
+        AIContent content, ImageCostOptions? imageCost = null, ILogger? logger = null) => content switch
+    {
+        TextContent tc => tc.Text?.Length ?? 0,
+        // TextReasoningContent does not derive from TextContent; it needs its own arm.
+        TextReasoningContent trc => trc.Text?.Length ?? 0,
+        FunctionResultContent frc => frc.Result?.ToString()?.Length ?? 0,
+        FunctionCallContent fcc => EstimateFunctionCallChars(fcc),
+        DataContent dc => EstimateDataChars(dc, imageCost, logger),
+        UriContent uc => uc.Uri?.OriginalString.Length ?? 0,
+        ErrorContent ec =>
+            (ec.Message?.Length ?? 0) + (ec.ErrorCode?.Length ?? 0) + (ec.Details?.Length ?? 0),
+        _ => CountUnknownContent(content, logger)
+    };
+
+    /// <summary>
+    /// Sizes an assistant tool call by its serialised shape: the tool name plus each argument's
+    /// key and value. A flat constant here under-counts badly — a single <c>wisp</c> script or
+    /// a long file body arrives as one argument value.
+    /// </summary>
+    private static int EstimateFunctionCallChars(FunctionCallContent content)
+    {
+        var chars = content.Name?.Length ?? 0;
+        if (content.Arguments is { Count: > 0 } args)
         {
-            TextContent tc => tc.Text?.Length ?? 0,
-            FunctionResultContent frc => frc.Result?.ToString()?.Length ?? 0,
-            _ => 50
-        });
+            foreach (var kvp in args)
+            {
+                // + 4 for the `"":,` punctuation each argument carries on the wire.
+                chars += (kvp.Key?.Length ?? 0) + (kvp.Value?.ToString()?.Length ?? 0) + 4;
+            }
+        }
+        return chars;
+    }
+
+    /// <summary>
+    /// Sizes binary content. Images are sized from their pixel dimensions, because that — not
+    /// byte count — is what the provider charges for; see <see cref="ImageTokenEstimator"/>.
+    /// Other media (audio, PDF) ride the wire base64-encoded and are sized by that encoded
+    /// length, 4 chars per 3 bytes.
+    ///
+    /// <para>An image whose header will not parse falls back to the smaller of its encoded
+    /// length and <see cref="MaxImageChars"/>, and an image part with no readable payload at all
+    /// is charged the ceiling rather than zero: a degenerate image is a malformed request, not a
+    /// free one, and a silent zero is the same class of bug this estimate exists to close.</para>
+    /// </summary>
+    private static int EstimateDataChars(DataContent content, ImageCostOptions? imageCost, ILogger? logger)
+    {
+        var encoded = (int)Math.Min(int.MaxValue, ((long)content.Data.Length + 2) / 3 * 4);
+
+        if (!content.HasTopLevelMediaType("image"))
+            return encoded;
+
+        if (ImageTokenEstimator.TryEstimateTokens(content.Data.Span, out var tokens, imageCost))
+            return tokens * CharsPerToken;
+
+        var ceiling = MaxImageChars(imageCost);
+        var charged = encoded == 0 ? ceiling : Math.Min(encoded, ceiling);
+        LogUnreadableImageHeader(content, charged, logger);
+        return charged;
+    }
+
+    /// <summary>
+    /// Reports an image whose dimensions could not be read, once per media type. A format this
+    /// does not parse is charged a worst-case ceiling, which is safe but coarse — knowing which
+    /// format it was is what turns "the estimate is approximate here" into a fixable gap.
+    /// </summary>
+    private static void LogUnreadableImageHeader(DataContent content, int charged, ILogger? logger)
+    {
+        var mediaType = content.MediaType ?? "(unspecified)";
+        if (logger is null
+            || !logger.IsEnabled(LogLevel.Debug)
+            || !LoggedUnreadableImageTypes.TryAdd(mediaType, 0))
+            return;
+
+        logger.LogDebug(
+            "Context estimate could not read image dimensions for media type {MediaType} " +
+            "({Bytes:N0} bytes); charging {Chars:N0} chars from the encoded-length fallback " +
+            "instead of pixel dimensions. Logged once per media type.",
+            mediaType, content.Data.Length, charged);
+    }
+
+    /// <summary>
+    /// Records that a content type the estimate does not model appeared in the message list and
+    /// returns the placeholder size. The counter and the once-per-type log are what make the
+    /// fallback loud: a wrong-but-quiet default is exactly what let <see cref="DataContent"/>
+    /// count as 50 chars unnoticed.
+    /// </summary>
+    private static int CountUnknownContent(AIContent content, ILogger? logger)
+    {
+        var typeName = content.GetType().Name;
+
+        HostDiagnostics.ContextUnknownContentParts.Add(
+            1, new KeyValuePair<string, object?>("rockbot.content.type", typeName));
+
+        if (logger is not null
+            && logger.IsEnabled(LogLevel.Debug)
+            && LoggedUnknownContentTypes.TryAdd(typeName, 0))
+        {
+            logger.LogDebug(
+                "Context estimate does not model content type {ContentType}; charging the " +
+                "{Chars}-char placeholder. Every context-pressure decision under-counts this " +
+                "part until it is given a size. Logged once per type.",
+                typeName, UnknownContentChars);
+        }
+
+        return UnknownContentChars;
+    }
 
     /// <summary>
     /// Classifies <paramref name="sessionId"/> into one of <c>session</c>, <c>patrol</c>,
@@ -1961,9 +2122,11 @@ public sealed partial class AgentLoopRunner(
     /// </summary>
     internal static void RecordLlmCallContextSize(
         IList<ChatMessage> messages,
-        string? sessionId)
+        string? sessionId,
+        ImageCostOptions? imageCost = null,
+        ILogger? logger = null)
     {
-        var tokens = messages.Sum(EstimateMessageChars) / 4;
+        var tokens = messages.Sum(m => EstimateMessageChars(m, imageCost, logger)) / CharsPerToken;
         HostDiagnostics.LlmCallContextTokens.Record(
             tokens,
             new KeyValuePair<string, object?>("rockbot.session.kind", ClassifySessionKind(sessionId)));
@@ -1980,7 +2143,8 @@ public sealed partial class AgentLoopRunner(
         IList<ChatMessage> messages,
         string label,
         string? sessionId,
-        ILogger logger)
+        ILogger logger,
+        ImageCostOptions? imageCost = null)
     {
         if (sessionId is null
             || !(sessionId.StartsWith("patrol/", StringComparison.Ordinal)
@@ -1997,7 +2161,7 @@ public sealed partial class AgentLoopRunner(
         for (var i = 0; i < messages.Count; i++)
         {
             var m = messages[i];
-            var chars = EstimateMessageChars(m);
+            var chars = EstimateMessageChars(m, imageCost, logger);
             totalChars += chars;
             var role = m.Role.Value;
             if (!byRole.TryGetValue(role, out var agg)) agg = (0, 0);
@@ -2051,7 +2215,8 @@ public sealed partial class AgentLoopRunner(
         IList<ChatMessage> messages,
         string label,
         string? sessionId,
-        ILogger logger)
+        ILogger logger,
+        ImageCostOptions? imageCost = null)
     {
         if (sessionId is null
             || !(sessionId.StartsWith("patrol/", StringComparison.Ordinal)
@@ -2061,7 +2226,7 @@ public sealed partial class AgentLoopRunner(
         if (!logger.IsEnabled(LogLevel.Information))
             return;
 
-        var totalChars = messages.Sum(EstimateMessageChars);
+        var totalChars = messages.Sum(m => EstimateMessageChars(m, imageCost, logger));
         logger.LogInformation(
             "ContextSize[{Label}] session={Session} msgs={Count} chars={Chars:N0} ~tokens={Tokens:N0}",
             label, sessionId, messages.Count, totalChars, totalChars / 4);
