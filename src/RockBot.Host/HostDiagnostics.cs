@@ -223,6 +223,19 @@ public static class HostDiagnostics
             tags: null,
             advice: new InstrumentAdvice<long> { HistogramBucketBoundaries = ContextTokenBuckets });
 
+    /// <summary>
+    /// A content part whose type <c>AgentLoopRunner.EstimateContentChars</c> does not model
+    /// appeared in the message list and was charged the flat placeholder size. Tagged with
+    /// <c>rockbot.content.type</c> (the CLR type name) so the specific gap is identifiable.
+    /// Non-zero means the context estimate is under-counting something — for a while
+    /// <c>DataContent</c> was that something, and a 1.8 MB image counted as 50 chars.
+    /// </summary>
+    public static readonly Counter<long> ContextUnknownContentParts =
+        Meter.CreateCounter<long>(
+            "rockbot.agent.context.unknown_content_part",
+            unit: "{part}",
+            description: "Content parts the context-size estimate does not model, by CLR type");
+
     // ── Completion evaluator ────────────────────────────────────────────────
 
     /// <summary>Evaluator determined the task was complete.</summary>

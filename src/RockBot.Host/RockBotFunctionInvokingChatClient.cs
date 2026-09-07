@@ -80,7 +80,8 @@ public class RockBotFunctionInvokingChatClient : FunctionInvokingChatClient
             // having to override base.GetResponseAsync.
             AgentLoopRunner.RecordLlmCallContextSize(
                 ficcMessages,
-                ToolCallSessionContext.SessionId);
+                ToolCallSessionContext.SessionId,
+                _logger);
         }
 
         // Age out BM25-recalled skill bodies the model hasn't referenced in N tool
