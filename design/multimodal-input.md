@@ -157,6 +157,45 @@ instance as a singleton. Consumers that do not register it get an `analyze_file`
 registers — the dependency is optional, and its absence reads the same as "no tier declares
 vision".
 
+### The upload goes through the agent
+
+A client cannot stage a file on the shared volume itself. The frontends co-mount it read-only —
+*"Blazor only serves attachment bytes; the agent owns writes"* — and the CLI does not mount it at
+all, since it usually runs on someone's laptop against a remote cluster. So an upload is an
+`AttachmentUploadRequest` on the bus: the client sends the bytes, the agent writes them through
+its existing `IAttachmentStorage`, and an `AgentAttachment` path reference comes back. The
+message the user then sends carries only that reference.
+
+The alternative — flipping the Blazor mount to read-write and letting each client write
+directly — was rejected. It would have put the containment check, the filename sanitisation, the
+MIME allowlist and the size cap in every client rather than in one place, widened what a
+compromised frontend can write to a volume the agent also reads, and still left the CLI unable to
+attach anything.
+
+This is the one place bytes cross the bus, and it is deliberately its own request/reply rather
+than a field on `UserMessage`: the conversation message, the persisted turn and every history
+replay stay byte-free, so nothing downstream has to care. The `AgentAttachment` doc's *"bytes
+never ride the bus"* is about the outbound direction, where the frontend already has the volume
+mounted and shipping bytes would be pure waste; inbound is the opposite case.
+
+Validation is authoritative agent-side — allowlist (`image/*` plus PDF), an 8 MB cap matching
+`AnalyzeFileMaxBytes`, and a check that the declared type agrees with the extension, so a file
+cannot be stored under a name the next reader resolves differently. Clients pre-check the same
+rules only to spare a pointless round trip.
+
+### Only the current turn's images are materialised
+
+`InboundAttachmentInjector` appends content parts to the last user message: a `DataContent` when
+the attachment is an image *and* the turn's tier declares `SupportsImageInput`, and otherwise a
+line naming the path and pointing at `analyze_file`. A file a person deliberately attached is
+never silently dropped — not when the model cannot see, not when it is a PDF, not when the file
+has gone missing.
+
+Replayed history turns keep only the marker line. Re-materialising every image still inside the
+context window would mean a disk read per image per request and several thousand image tokens
+standing in context on an image-heavy session; the model can still reach an older image
+deliberately by calling `analyze_file` on the path the marker names.
+
 ### Sizing an image: pixel dimensions, not byte count
 
 `AgentLoopRunner.EstimateContentChars` now models `DataContent`, `FunctionCallContent`,
@@ -255,14 +294,13 @@ Or as an environment variable: `LLM__High__SupportsImageInput=true`.
   without server cooperation. A binary test keeps text files from being captured out of the
   response. This was the direct fix for the 167K-character chunk storm, and it feeds (A). See
   [`mcp-attachments.md`](mcp-attachments.md#binary-capture--the-fallback-for-servers-that-never-heard-of-us).
-- **(D) Inbound user attachments** (issue #565, blocked on #564) — `UserMessage.Attachments` as path references mirroring
-  `AgentAttachment`, a Blazor upload writing into the shared directory, `ConversationTurn`
-  extended, and the loop injecting `DataContent` onto the user message. This one touches bus
-  contracts, the UI, and the conversation store. Adding an optional `Attachments` property to
-  `ConversationTurn` is additive, so by the policy in `schema-migrations.md` it needs no
-  migration — and the conversation store is not enrolled in schema migrations at all, unlike
-  memory, skills, feedback and wisp. What it does need is gap (5) — issue #564 — fixed
-  first, or the trim logic silently miscounts every image.
+- **(D) Inbound user attachments** (issue #565) — **landed.** `UserMessage.Attachments` carries
+  path references reusing `AgentAttachment` outright, `ConversationTurn` remembers them, and the
+  loop injects `DataContent` onto the user message. Adding the optional `Attachments` property is
+  additive, so by the policy in `schema-migrations.md` it needed no migration — and the
+  conversation store is not enrolled in schema migrations at all, unlike memory, skills, feedback
+  and wisp. It was gated on gap (5) — issue #564 — because the trim logic would otherwise
+  miscount every attached image. See [below](#the-upload-goes-through-the-agent).
 
 Video is out of scope. Only Gemini-family models accept it natively and RockBot is
 OpenAI-compatible end to end. Audio and PDF are not separate features — they are entries in

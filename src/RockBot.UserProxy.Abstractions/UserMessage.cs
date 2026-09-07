@@ -28,4 +28,12 @@ public sealed record UserMessage
     /// the agent falls back to deriving the channel from the envelope source.
     /// </summary>
     public string? ChannelName { get; init; }
+
+    /// <summary>
+    /// Files the user attached to this message, as shared-volume path references rather than
+    /// inline bytes — the same <see cref="AgentAttachment"/> shape the outbound half uses. The
+    /// bytes reached the volume through <see cref="AttachmentUploadRequest"/> before this
+    /// message was sent, so nothing here is large. Null for text-only messages.
+    /// </summary>
+    public IReadOnlyList<AgentAttachment>? Attachments { get; init; }
 }

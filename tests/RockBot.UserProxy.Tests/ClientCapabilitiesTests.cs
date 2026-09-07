@@ -51,8 +51,10 @@ public sealed class ClientCapabilitiesTests
         Assert.IsTrue(preset.HasFlag(ClientCapabilities.MarkdownTaskList));
         Assert.IsTrue(preset.HasFlag(ClientCapabilities.HtmlInline));
         Assert.IsTrue(preset.HasFlag(ClientCapabilities.SvgInline));
-        Assert.IsFalse(preset.HasFlag(ClientCapabilities.ImageAttachment),
-            "Blazor preset should not declare ImageAttachment until AgentReply.Attachments lands");
+        Assert.IsTrue(preset.HasFlag(ClientCapabilities.ImageAttachment),
+            "AgentReply.Attachments has landed and AttachmentList.razor renders images, so the " +
+            "preset must declare it — the flag drives whether the agent is ever told it may " +
+            "attach one, and without it charts get described in prose instead of shown.");
     }
 
     [TestMethod]

@@ -88,6 +88,7 @@ public sealed class ChatStateService
                     SessionId = sessionId,
                     AgentName = effectiveName,
                     Category = category,
+                    Attachments = turn.Attachments,
                     IsExpanded = category is MessageCategory.PrimaryFinal
                         or MessageCategory.ScheduledUser
                         or MessageCategory.UserInput
@@ -125,7 +126,9 @@ public sealed class ChatStateService
         return (MessageCategory.PrimaryFinal, false);
     }
 
-    public void AddUserMessage(string content, string userId, string sessionId)
+    public void AddUserMessage(
+        string content, string userId, string sessionId,
+        IReadOnlyList<AgentAttachment>? attachments = null)
     {
         lock (_lock)
             _messages.Add(new ChatMessage
@@ -135,7 +138,8 @@ public sealed class ChatStateService
                 Timestamp = DateTime.UtcNow,
                 UserId = userId,
                 SessionId = sessionId,
-                Category = MessageCategory.UserInput
+                Category = MessageCategory.UserInput,
+                Attachments = attachments
             });
         NotifyStateChanged();
     }

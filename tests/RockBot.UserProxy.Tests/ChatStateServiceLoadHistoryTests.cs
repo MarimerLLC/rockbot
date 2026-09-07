@@ -177,4 +177,54 @@ public sealed class ChatStateServiceLoadHistoryTests
         Assert.AreEqual(MessageCategory.A2AActivity, _sut.Messages[5].Category);
         Assert.AreEqual(MessageCategory.PrimaryFinal, _sut.Messages[6].Category);
     }
+
+    [TestMethod]
+    public void LoadHistory_UserTurnWithAttachments_KeepsThemOnTheRestoredBubble()
+    {
+        // Without this the screenshot a user sent three turns ago vanishes on reload, and the
+        // transcript no longer shows what the agent was actually answering about.
+        var turns = new List<ConversationHistoryTurn>
+        {
+            new()
+            {
+                Role = "user",
+                Content = "what is in this picture?",
+                Timestamp = DateTimeOffset.UtcNow,
+                Attachments =
+                [
+                    new AgentAttachment { Mime = "image/png", Path = "shot.png", FileName = "screenshot.png" }
+                ]
+            }
+        };
+
+        _sut.LoadHistory(turns, "session-1");
+
+        var message = _sut.Messages.Single();
+        Assert.IsTrue(message.IsFromUser);
+        Assert.IsNotNull(message.Attachments);
+        Assert.AreEqual("shot.png", message.Attachments!.Single().Path);
+    }
+
+    [TestMethod]
+    public void LoadHistory_TurnWithoutAttachments_LeavesThemNull()
+    {
+        var turns = new List<ConversationHistoryTurn>
+        {
+            new() { Role = "user", Content = "plain text", Timestamp = DateTimeOffset.UtcNow }
+        };
+
+        _sut.LoadHistory(turns, "session-1");
+
+        Assert.IsNull(_sut.Messages.Single().Attachments);
+    }
+
+    [TestMethod]
+    public void AddUserMessage_WithAttachments_ShowsThemImmediately()
+    {
+        // The bubble must show the attachment on send, not only after a reload.
+        _sut.AddUserMessage("look at this", "user-1", "session-1",
+            [new AgentAttachment { Mime = "image/png", Path = "shot.png" }]);
+
+        Assert.AreEqual("shot.png", _sut.Messages.Single().Attachments!.Single().Path);
+    }
 }

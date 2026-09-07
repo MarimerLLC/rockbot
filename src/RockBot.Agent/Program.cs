@@ -432,6 +432,7 @@ builder.Services.AddRockBotHost(agent =>
     agent.HandleMessage<ListSavedResponsesRequest, ListSavedResponsesRequestHandler>();
     agent.HandleMessage<GetSavedResponseRequest, GetSavedResponseRequestHandler>();
     agent.HandleMessage<DeleteSavedResponseRequest, DeleteSavedResponseRequestHandler>();
+    agent.HandleMessage<AttachmentUploadRequest, AttachmentUploadHandler>();
     agent.SubscribeTo($"{UserProxyTopics.UserMessage}.{agentName}");
     agent.SubscribeTo($"{UserProxyTopics.UserFeedback}.{agentName}");
     agent.SubscribeTo($"{UserProxyTopics.CancelSession}.{agentName}");
@@ -443,6 +444,7 @@ builder.Services.AddRockBotHost(agent =>
     agent.SubscribeTo($"{UserProxyTopics.ListSavedResponsesRequest}.{agentName}");
     agent.SubscribeTo($"{UserProxyTopics.GetSavedResponseRequest}.{agentName}");
     agent.SubscribeTo($"{UserProxyTopics.DeleteSavedResponseRequest}.{agentName}");
+    agent.SubscribeTo($"{UserProxyTopics.AttachmentUploadRequest}.{agentName}");
 });
 
 // Bind AgentProfileOptions from the AgentProfile config section so AgentProfile__BasePath
