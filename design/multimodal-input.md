@@ -33,8 +33,9 @@ Five separate things, verified in the tree before any of this was written:
    not one modality flag, so nothing could tell a seeing tier from a blind one.
 
 5. **The context-budget machinery is blind to bytes.** `EstimateMessageChars` counts
-   `TextContent` and `FunctionResultContent`; a `DataContent` scores zero. Images are
-   invisible to the watermark trim and to every stash decision.
+   `TextContent` and `FunctionResultContent` by length and everything else at a flat 50 —
+   so a `DataContent` carrying a 1.8 MB image counts as 50 characters, roughly 35,000× under.
+   Images are effectively invisible to the watermark trim and to every stash decision.
 
 ## The constraint: images cannot ride in a tool result
 
@@ -191,12 +192,14 @@ Or as an environment variable: `LLM__High__SupportsImageInput=true`.
   without server cooperation. A binary test keeps text files from being captured out of the
   response. This was the direct fix for the 167K-character chunk storm, and it feeds (A). See
   [`mcp-attachments.md`](mcp-attachments.md#binary-capture--the-fallback-for-servers-that-never-heard-of-us).
-- **(D) Inbound user attachments** — `UserMessage.Attachments` as path references mirroring
+- **(D) Inbound user attachments** (issue #565, blocked on #564) — `UserMessage.Attachments` as path references mirroring
   `AgentAttachment`, a Blazor upload writing into the shared directory, `ConversationTurn`
   extended, and the loop injecting `DataContent` onto the user message. This one touches bus
-  contracts, the UI, and a persisted store, so it ships with a store version bump and an
-  `ISchemaMigration` (see `schema-migrations.md`), and it needs gap (5) fixed first or the
-  trim logic silently miscounts every image.
+  contracts, the UI, and the conversation store. Adding an optional `Attachments` property to
+  `ConversationTurn` is additive, so by the policy in `schema-migrations.md` it needs no
+  migration — and the conversation store is not enrolled in schema migrations at all, unlike
+  memory, skills, feedback and wisp. What it does need is gap (5) — issue #564 — fixed
+  first, or the trim logic silently miscounts every image.
 
 Video is out of scope. Only Gemini-family models accept it natively and RockBot is
 OpenAI-compatible end to end. Audio and PDF are not separate features — they are entries in
