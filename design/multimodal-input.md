@@ -179,6 +179,26 @@ the scale-then-tile cost model: fit inside 2048×2048, bring the shortest side d
 provider's own worked examples (1024×1024 → 765 tokens; 2048×4096 → 1,105) and is bounded at
 `MaxTokens` = 1,445, since the scaling rules cannot yield more than eight tiles.
 
+Those five numbers are `AgentHost:ImageCost` (`ImageCostOptions`), not constants — a provider
+that tiles to different sizes or charges a different base is a config change:
+
+```json
+"AgentHost": {
+  "ImageCost": {
+    "BaseTokens": 85, "TokensPerTile": 170,
+    "TileSize": 512, "MaxDimension": 2048, "ShortestSide": 768
+  }
+}
+```
+
+(env: `AgentHost__ImageCost__TileSize` and friends). The bound options are threaded from each
+caller into the estimate the same way the trim ratio and stash TTL already are, rather than read
+from a static — the trim path deliberately has no ambient configuration. Values are clamped to
+workable minimums at use time, so a mistyped `TileSize` of 0 degrades the estimate instead of
+dividing by zero inside the trim loop. What is *not* expressible is a provider whose image
+pricing differs in shape rather than in constants — per-pixel, or a flat charge; that needs a
+different cost model, not different numbers.
+
 `MaxImageChars` is derived from that bound rather than guessed: an image whose header will not
 parse is charged what the *largest* possible image would cost, because an image we cannot
 measure could be that large. Three smaller consequences worth knowing: an image part with no

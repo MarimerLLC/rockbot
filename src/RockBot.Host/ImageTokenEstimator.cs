@@ -17,40 +17,35 @@ namespace RockBot.Host;
 /// </summary>
 internal static class ImageTokenEstimator
 {
-    /// <summary>Flat cost charged for an image regardless of size.</summary>
-    internal const int BaseTokens = 85;
-
-    /// <summary>Cost of each tile the scaled image is divided into.</summary>
-    internal const int TokensPerTile = 170;
-
-    /// <summary>Edge length of one tile, in pixels.</summary>
-    internal const int TileSize = 512;
-
-    /// <summary>The image is first scaled down to fit inside this square.</summary>
-    internal const int MaxDimension = 2048;
-
-    /// <summary>It is then scaled down until its shortest side is at most this. Never upscaled.</summary>
-    internal const int ShortestSide = 768;
+    /// <summary>
+    /// The cost model applied when a caller has no configured one — the same defaults
+    /// <see cref="ImageCostOptions"/> declares. Every production path passes the bound options
+    /// through instead; this exists so the estimate never depends on having them.
+    /// </summary>
+    internal static readonly ImageCostOptions DefaultCost = new();
 
     /// <summary>
-    /// Most tiles any image can reduce to: after both scalings the shortest side is at most
-    /// 768px (2 tiles) and the longest at most 2048px (4 tiles).
+    /// Cost of the largest image <paramref name="cost"/>'s scaling rules permit — 1,445 tokens
+    /// on the defaults, since no image can reduce to more than an 8-tile grid. Callers charge
+    /// this to an image they cannot measure.
     /// </summary>
-    internal const int MaxTiles = 8;
-
-    /// <summary>Cost of the largest image the scaling rules permit — 1,445 tokens.</summary>
-    internal const int MaxTokens = BaseTokens + (TokensPerTile * MaxTiles);
+    public static int MaxTokens(ImageCostOptions? cost = null)
+    {
+        var (baseTokens, tokensPerTile, tileSize, maxDimension, shortestSide) = Clamp(cost);
+        var maxTiles = Tiles(shortestSide, tileSize) * Tiles(maxDimension, tileSize);
+        return baseTokens + (tokensPerTile * maxTiles);
+    }
 
     /// <summary>
     /// Reads <paramref name="data"/>'s image header and estimates its token cost. Returns
     /// <c>false</c> when the bytes are not a format this understands (or are truncated), which
     /// is the caller's signal to fall back to a byte-derived proxy.
     /// </summary>
-    public static bool TryEstimateTokens(ReadOnlySpan<byte> data, out int tokens)
+    public static bool TryEstimateTokens(ReadOnlySpan<byte> data, out int tokens, ImageCostOptions? cost = null)
     {
         if (TryReadDimensions(data, out var width, out var height))
         {
-            tokens = EstimateTokens(width, height);
+            tokens = EstimateTokens(width, height, cost);
             return true;
         }
 
@@ -59,41 +54,64 @@ internal static class ImageTokenEstimator
     }
 
     /// <summary>
-    /// Applies the provider's scale-then-tile cost model to a pixel size. Scaling is
-    /// down-only: an image smaller than one tile costs one tile, not a scaled-up grid of them.
+    /// Applies the scale-then-tile cost model to a pixel size. Scaling is down-only: an image
+    /// smaller than one tile costs one tile, not a scaled-up grid of them.
     /// </summary>
-    public static int EstimateTokens(int width, int height)
+    public static int EstimateTokens(int width, int height, ImageCostOptions? cost = null)
     {
+        var (baseTokens, tokensPerTile, tileSize, maxDimension, shortestSide) = Clamp(cost);
+
         if (width <= 0 || height <= 0)
-            return BaseTokens + TokensPerTile;
+            return baseTokens + tokensPerTile;
 
         double w = width, h = height;
 
-        // Fit inside MaxDimension × MaxDimension.
+        // Fit inside maxDimension x maxDimension.
         var longest = Math.Max(w, h);
-        if (longest > MaxDimension)
+        if (longest > maxDimension)
         {
-            var scale = MaxDimension / longest;
+            var scale = maxDimension / longest;
             w *= scale;
             h *= scale;
         }
 
-        // Then bring the shortest side down to ShortestSide.
+        // Then bring the shortest side down to shortestSide.
         var shortest = Math.Min(w, h);
-        if (shortest > ShortestSide)
+        if (shortest > shortestSide)
         {
-            var scale = ShortestSide / shortest;
+            var scale = shortestSide / shortest;
             w *= scale;
             h *= scale;
         }
 
-        var tiles = (int)Math.Ceiling(w / TileSize) * (int)Math.Ceiling(h / TileSize);
-        // Clamp rather than trust the arithmetic: a rounding artefact that produced a 9th tile
-        // would over-charge silently, which is the failure mode this whole estimate exists to
-        // avoid.
-        tiles = Math.Clamp(tiles, 1, MaxTiles);
+        var tiles = (int)Math.Ceiling(w / tileSize) * (int)Math.Ceiling(h / tileSize);
+        // Clamp rather than trust the arithmetic: a rounding artefact that produced an extra
+        // tile would over-charge silently, which is the failure mode this whole estimate exists
+        // to avoid.
+        var maxTiles = Tiles(shortestSide, tileSize) * Tiles(maxDimension, tileSize);
+        tiles = Math.Clamp(tiles, 1, maxTiles);
 
-        return BaseTokens + (TokensPerTile * tiles);
+        return baseTokens + (tokensPerTile * tiles);
+    }
+
+    /// <summary>Tiles needed to cover <paramref name="pixels"/> at <paramref name="tileSize"/>.</summary>
+    private static int Tiles(int pixels, int tileSize) => (pixels + tileSize - 1) / tileSize;
+
+    /// <summary>
+    /// Reads the configured cost model, clamped to values the arithmetic can actually use. A
+    /// mistyped setting should degrade the estimate, not divide by zero inside the trim loop.
+    /// </summary>
+    private static (int BaseTokens, int TokensPerTile, int TileSize, int MaxDimension, int ShortestSide)
+        Clamp(ImageCostOptions? cost)
+    {
+        cost ??= DefaultCost;
+
+        var tileSize = Math.Max(1, cost.TileSize);
+        var maxDimension = Math.Max(tileSize, cost.MaxDimension);
+        var shortestSide = Math.Clamp(cost.ShortestSide, 1, maxDimension);
+
+        return (Math.Max(0, cost.BaseTokens), Math.Max(0, cost.TokensPerTile),
+                tileSize, maxDimension, shortestSide);
     }
 
     /// <summary>

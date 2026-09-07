@@ -73,7 +73,8 @@ public class RockBotFunctionInvokingChatClient : FunctionInvokingChatClient
                 ficcMessages,
                 $"ficc-pre-{callContent.Name}",
                 ToolCallSessionContext.SessionId,
-                _logger);
+                _logger,
+                _hostOptions.Value.ImageCost);
             // Per-LLM-call histogram. Pre-invoke approximates the size that produced the
             // immediately-prior LLM response (minus that response's own assistant turn) —
             // a faithful proxy for "context size at each internal FICC iteration" without
@@ -81,6 +82,7 @@ public class RockBotFunctionInvokingChatClient : FunctionInvokingChatClient
             AgentLoopRunner.RecordLlmCallContextSize(
                 ficcMessages,
                 ToolCallSessionContext.SessionId,
+                _hostOptions.Value.ImageCost,
                 _logger);
         }
 
@@ -486,7 +488,8 @@ public class RockBotFunctionInvokingChatClient : FunctionInvokingChatClient
             messages, maxTokens, stashState?.SessionId, stashState, _workingMemory,
             _hostOptions.Value.ToolResultStashHeadTailRatio,
             _hostOptions.Value.ToolResultStashTtlMinutes,
-            _logger);
+            _logger,
+            _hostOptions.Value.ImageCost);
     }
 
     /// <summary>

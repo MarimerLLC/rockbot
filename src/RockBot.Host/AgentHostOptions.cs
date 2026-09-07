@@ -11,6 +11,42 @@ namespace RockBot.Host;
 public sealed record TopicSubscription(string Topic, int DispatchConcurrency = 1);
 
 /// <summary>
+/// How the context-size estimate prices an image, in provider tokens.
+///
+/// <para>The defaults are the OpenAI-compatible tile model the deployed tiers use: scale the
+/// image to fit inside <see cref="MaxDimension"/>², bring its shortest side down to
+/// <see cref="ShortestSide"/> (never upscaling), divide it into <see cref="TileSize"/>-pixel
+/// tiles, and charge <see cref="BaseTokens"/> plus <see cref="TokensPerTile"/> per tile. They
+/// reproduce that provider's published worked examples — 1024×1024 costs 765 tokens,
+/// 2048×4096 costs 1,105.</para>
+///
+/// <para>A provider whose image pricing differs in shape rather than in constants (per-pixel,
+/// say, or a flat charge) is not expressible here and would need a different cost model, not
+/// different numbers. Values are clamped to workable minimums at use time, so a mistyped
+/// setting degrades the estimate rather than dividing by zero.</para>
+/// </summary>
+public sealed class ImageCostOptions
+{
+    /// <summary>Flat cost charged for an image whatever its size. Defaults to 85.</summary>
+    public int BaseTokens { get; set; } = 85;
+
+    /// <summary>Cost of each tile the scaled image divides into. Defaults to 170.</summary>
+    public int TokensPerTile { get; set; } = 170;
+
+    /// <summary>Edge length of one tile, in pixels. Defaults to 512.</summary>
+    public int TileSize { get; set; } = 512;
+
+    /// <summary>The image is first scaled down to fit inside this square. Defaults to 2048.</summary>
+    public int MaxDimension { get; set; } = 2048;
+
+    /// <summary>
+    /// It is then scaled down until its shortest side is at most this. Scaling is down-only —
+    /// an image smaller than a single tile costs one tile, not a scaled-up grid. Defaults to 768.
+    /// </summary>
+    public int ShortestSide { get; set; } = 768;
+}
+
+/// <summary>
 /// Configuration options for the agent host.
 /// </summary>
 public sealed class AgentHostOptions
@@ -228,6 +264,14 @@ public sealed class AgentHostOptions
     /// rely solely on the watermark.
     /// </summary>
     public int ToolResultMaxChars { get; set; } = 8_000;
+
+    /// <summary>
+    /// How the context-size estimate prices an image, in provider tokens. Defaults to the tile
+    /// model the deployed OpenAI-compatible tiers use; override under <c>AgentHost:ImageCost</c>
+    /// (env: <c>AgentHost__ImageCost__TileSize</c> and friends) for a provider that tiles
+    /// differently. See <see cref="ImageCostOptions"/>.
+    /// </summary>
+    public ImageCostOptions ImageCost { get; } = new();
 
     /// <summary>
     /// How many tool-call iterations a BM25-recalled skill body stays in context

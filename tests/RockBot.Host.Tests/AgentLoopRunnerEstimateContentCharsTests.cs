@@ -78,7 +78,7 @@ public class AgentLoopRunnerEstimateContentCharsTests
         Assert.AreEqual(Bytes / 3 * 4, chars,
             "Only images have a pixel cost model; other media ride the wire base64-encoded and " +
             "cost proportionally to their encoded length.");
-        Assert.IsTrue(chars > AgentLoopRunner.MaxImageChars,
+        Assert.IsTrue(chars > AgentLoopRunner.MaxImageChars(),
             "The image ceiling must not be applied to non-image media.");
     }
 
@@ -91,7 +91,7 @@ public class AgentLoopRunnerEstimateContentCharsTests
 
         var chars = AgentLoopRunner.EstimateContentChars(image);
 
-        Assert.AreEqual(AgentLoopRunner.MaxImageChars, chars,
+        Assert.AreEqual(AgentLoopRunner.MaxImageChars(), chars,
             "An image we cannot measure could be the largest one the provider permits, so it " +
             "is charged that ceiling rather than something reassuringly small.");
     }
@@ -105,7 +105,7 @@ public class AgentLoopRunnerEstimateContentCharsTests
 
         var chars = AgentLoopRunner.EstimateContentChars(image);
 
-        Assert.AreEqual(AgentLoopRunner.MaxImageChars, chars);
+        Assert.AreEqual(AgentLoopRunner.MaxImageChars(), chars);
     }
 
     [TestMethod]
@@ -204,9 +204,9 @@ public class AgentLoopRunnerEstimateContentCharsTests
         var logger = new CapturingLogger();
         var content = new UnloggedContentTypeProbe();
 
-        AgentLoopRunner.EstimateContentChars(content, logger);
-        AgentLoopRunner.EstimateContentChars(content, logger);
-        AgentLoopRunner.EstimateContentChars(new UnloggedContentTypeProbe(), logger);
+        AgentLoopRunner.EstimateContentChars(content, logger: logger);
+        AgentLoopRunner.EstimateContentChars(content, logger: logger);
+        AgentLoopRunner.EstimateContentChars(new UnloggedContentTypeProbe(), logger: logger);
 
         var matching = logger.Debugs.Where(m => m.Contains(nameof(UnloggedContentTypeProbe))).ToList();
         Assert.AreEqual(1, matching.Count,
@@ -220,8 +220,8 @@ public class AgentLoopRunnerEstimateContentCharsTests
         var logger = new CapturingLogger();
         var image = new DataContent(new byte[4_000], "image/x-probe-unreadable");
 
-        AgentLoopRunner.EstimateContentChars(image, logger);
-        AgentLoopRunner.EstimateContentChars(image, logger);
+        AgentLoopRunner.EstimateContentChars(image, logger: logger);
+        AgentLoopRunner.EstimateContentChars(image, logger: logger);
 
         var matching = logger.Debugs.Where(m => m.Contains("image/x-probe-unreadable")).ToList();
         Assert.AreEqual(1, matching.Count,
@@ -234,10 +234,45 @@ public class AgentLoopRunnerEstimateContentCharsTests
     {
         var logger = new CapturingLogger();
 
-        AgentLoopRunner.EstimateContentChars(new DataContent(PaddedPng(800, 600, 9_000), "image/png"), logger);
+        AgentLoopRunner.EstimateContentChars(
+            new DataContent(PaddedPng(800, 600, 9_000), "image/png"), logger: logger);
 
         Assert.AreEqual(0, logger.Debugs.Count,
             "An image the estimate can measure is not an approximation and must not log.");
+    }
+
+    // ── The cost model comes from config ─────────────────────────────────────
+
+    [TestMethod]
+    public void Estimate_ConfiguredImageCost_ChangesWhatAnImageIsCharged()
+    {
+        var image = new DataContent(PaddedPng(2048, 1536, 1_800_000), "image/png");
+        var cost = new ImageCostOptions { BaseTokens = 100, TokensPerTile = 200, TileSize = 256 };
+
+        var configured = AgentLoopRunner.EstimateContentChars(image, cost);
+        var defaulted = AgentLoopRunner.EstimateContentChars(image);
+
+        Assert.AreEqual(
+            ImageTokenEstimator.EstimateTokens(2048, 1536, cost) * AgentLoopRunner.CharsPerToken,
+            configured);
+        Assert.AreNotEqual(defaulted, configured,
+            "A configured cost model must actually reach the estimate, not be quietly ignored.");
+    }
+
+    [TestMethod]
+    public void MaxImageChars_TracksTheConfiguredCostModel()
+    {
+        // The unreadable-header ceiling is derived from the cost model, so it moves with it.
+        var cost = new ImageCostOptions { BaseTokens = 100, TokensPerTile = 200, TileSize = 256 };
+        var unreadable = new DataContent(new byte[1_800_000], "image/tiff");
+
+        Assert.AreEqual(
+            ImageTokenEstimator.MaxTokens(cost) * AgentLoopRunner.CharsPerToken,
+            AgentLoopRunner.MaxImageChars(cost));
+        Assert.AreEqual(
+            AgentLoopRunner.MaxImageChars(cost),
+            AgentLoopRunner.EstimateContentChars(unreadable, cost),
+            "An image whose header will not parse is charged the configured ceiling.");
     }
 
     [TestMethod]

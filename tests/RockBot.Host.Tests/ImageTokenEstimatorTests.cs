@@ -44,12 +44,12 @@ public class ImageTokenEstimatorTests
     public void EstimateTokens_HugeImage_IsBoundedByTheTileCeiling()
     {
         // However large the source, the scaling rules bound it at 768×2048 — an 8-tile grid.
-        Assert.AreEqual(ImageTokenEstimator.MaxTokens, ImageTokenEstimator.EstimateTokens(8000, 24000));
-        Assert.AreEqual(1445, ImageTokenEstimator.MaxTokens);
+        Assert.AreEqual(ImageTokenEstimator.MaxTokens(), ImageTokenEstimator.EstimateTokens(8000, 24000));
+        Assert.AreEqual(1445, ImageTokenEstimator.MaxTokens());
 
         for (var edge = 600; edge <= 20_000; edge += 373)
         {
-            Assert.IsTrue(ImageTokenEstimator.EstimateTokens(edge, edge * 3) <= ImageTokenEstimator.MaxTokens,
+            Assert.IsTrue(ImageTokenEstimator.EstimateTokens(edge, edge * 3) <= ImageTokenEstimator.MaxTokens(),
                 $"{edge}×{edge * 3} must not exceed the tile ceiling.");
         }
     }
@@ -73,6 +73,66 @@ public class ImageTokenEstimatorTests
             Assert.IsTrue(tokens >= previous, $"{edge}² cost {tokens}, less than the smaller image's {previous}.");
             previous = tokens;
         }
+    }
+
+    // ── The cost model comes from config ─────────────────────────────────────
+
+    [TestMethod]
+    public void EstimateTokens_ConfiguredCostModel_ReplacesTheDefaultConstants()
+    {
+        // A provider that tiles differently is a config change, not a code change.
+        var cost = new ImageCostOptions
+        {
+            BaseTokens = 100,
+            TokensPerTile = 200,
+            TileSize = 256,
+            MaxDimension = 1024,
+            ShortestSide = 512,
+        };
+
+        // 2048×2048 → fits to 1024², shortest side to 512 → 512×512 → a 2×2 grid of 256px tiles.
+        Assert.AreEqual(100 + (4 * 200), ImageTokenEstimator.EstimateTokens(2048, 2048, cost));
+
+        // The ceiling moves with it: 2 tiles across the shortest side × 4 across the longest.
+        Assert.AreEqual(100 + (8 * 200), ImageTokenEstimator.MaxTokens(cost));
+    }
+
+    [TestMethod]
+    public void EstimateTokens_NoConfiguredModel_UsesTheDocumentedDefaults()
+    {
+        Assert.AreEqual(
+            ImageTokenEstimator.EstimateTokens(1024, 1024, new ImageCostOptions()),
+            ImageTokenEstimator.EstimateTokens(1024, 1024));
+        Assert.AreEqual(765, ImageTokenEstimator.EstimateTokens(1024, 1024, cost: null));
+    }
+
+    [TestMethod]
+    public void EstimateTokens_NonsenseConfiguration_IsClampedRatherThanThrowing()
+    {
+        // A mistyped setting must degrade the estimate, not divide by zero inside the trim loop.
+        var cost = new ImageCostOptions
+        {
+            BaseTokens = -50,
+            TokensPerTile = -10,
+            TileSize = 0,
+            MaxDimension = -1,
+            ShortestSide = -1,
+        };
+
+        var tokens = ImageTokenEstimator.EstimateTokens(1024, 1024, cost);
+
+        Assert.IsTrue(tokens >= 0, $"A clamped cost model must not produce a negative size (got {tokens}).");
+        Assert.AreEqual(tokens, ImageTokenEstimator.MaxTokens(cost),
+            "With zero-valued token costs every image prices the same; the point is that it returns.");
+    }
+
+    [TestMethod]
+    public void EstimateTokens_TileSizeLargerThanTheBox_StillCostsOneTile()
+    {
+        var cost = new ImageCostOptions { TileSize = 4096, MaxDimension = 2048, ShortestSide = 768 };
+
+        Assert.AreEqual(85 + 170, ImageTokenEstimator.EstimateTokens(2048, 2048, cost));
+        Assert.AreEqual(85 + 170, ImageTokenEstimator.MaxTokens(cost));
     }
 
     // ── Header parsing ───────────────────────────────────────────────────────
