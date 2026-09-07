@@ -230,6 +230,50 @@ public class BinaryResponseCaptureTests
     }
 
     [TestMethod]
+    public async Task Capture_BinaryMangledIntoText_DropsTheFieldAndExplains()
+    {
+        // Measured on a live deployment: a repository server returns a PNG through its file tool
+        // as UTF-8-decoded text. The bytes are already destroyed; the only question is whether
+        // 1.37M characters of mojibake also get to flood context.
+        var mangled = new string('�', 40) + new string('x', 2000);
+        var result = TextResult(new
+        {
+            name = "rockbot.png",
+            sha = "511bdfe",
+            size = 345864,
+            content = mangled
+        });
+
+        var captured = await _capture.CaptureAsync(Server, Tool, result, RuleConfig(encodingField: null), default);
+
+        var payload = ParseSingleText(captured);
+        Assert.IsFalse(payload.TryGetProperty("content", out _));
+        Assert.AreEqual("511bdfe", payload.GetProperty("sha").GetString(), "metadata is what's left worth having");
+        StringAssert.Contains(payload.GetProperty("note").GetString()!, "corrupted");
+        Assert.AreEqual(0, _storage.Written.Count, "there are no bytes to save");
+    }
+
+    [TestMethod]
+    public async Task Capture_TextWithAFewEncodingGlitches_IsNotTreatedAsMangled()
+    {
+        // A document with a couple of bad characters is still a document.
+        var text = "# Report\n\nThe caf� served cr�me br�l�e.\n" + new string('x', 2000);
+        var result = TextResult(new { name = "notes.md", content = text });
+
+        var captured = await _capture.CaptureAsync(Server, Tool, result, RuleConfig(encodingField: null), default);
+
+        Assert.AreSame(result, captured);
+    }
+
+    [TestMethod]
+    public async Task Capture_ShortNonBase64Content_IsLeftAlone()
+    {
+        var result = TextResult(new { name = "notes.md", content = "not base64 ���������" });
+
+        Assert.AreSame(result, await _capture.CaptureAsync(Server, Tool, result, RuleConfig(encodingField: null), default));
+    }
+
+    [TestMethod]
     public async Task Capture_RuleForAnotherTool_DoesNotMatch()
     {
         var result = TextResult(new

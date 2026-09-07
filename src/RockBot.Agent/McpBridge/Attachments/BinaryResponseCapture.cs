@@ -198,6 +198,13 @@ public sealed class BinaryResponseCapture(IAttachmentStorage storage, ILogger? l
         }
         catch (FormatException)
         {
+            // Not base64. Before declining, check for the worse case: a server that decoded
+            // binary as text and destroyed it on the way out. Nothing can recover those bytes,
+            // but the response should not be allowed to flood context on its way to being
+            // useless. See ReplaceMangledBinary.
+            if (LooksMangled(base64))
+                return ReplaceMangledBinary(serverName, toolName, payload, rule, base64.Length);
+
             logger?.LogDebug(
                 "Binary capture: {Server}/{Tool} field '{Field}' is not valid base64; leaving the response alone",
                 serverName, toolName, rule.ContentField);
@@ -235,6 +242,68 @@ public sealed class BinaryResponseCapture(IAttachmentStorage storage, ILogger? l
         rewritten["size"] = bytes.LongLength;
         rewritten["mime"] = mime;
         rewritten["note"] = CapturedNote;
+        return rewritten;
+    }
+
+    /// <summary>
+    /// Whether a string is binary that some server decoded as text and wrecked in the process.
+    /// </summary>
+    /// <remarks>
+    /// U+FFFD is the giveaway: it is what a UTF-8 decoder substitutes for a byte sequence it
+    /// cannot represent, so a PNG run through <c>Encoding.UTF8.GetString</c> comes out studded
+    /// with them. The thresholds keep an ordinary document that happens to carry a couple of
+    /// encoding glitches out of scope — at eight or more in a kilobyte the file is not text
+    /// anyone can use.
+    /// </remarks>
+    private static bool LooksMangled(string value)
+    {
+        const int MinLength = 1024;
+        const int MinReplacementChars = 8;
+
+        if (value.Length < MinLength) return false;
+
+        var count = 0;
+        foreach (var c in value)
+        {
+            if (c != '�') continue;
+            if (++count >= MinReplacementChars) return true;
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// Replaces irrecoverable binary with an explanation of why it is irrecoverable.
+    /// </summary>
+    /// <remarks>
+    /// Measured on a live deployment: one repository MCP server returns a 345 KB PNG through its
+    /// file tool as UTF-8-decoded text, arriving as 1.37 million characters that chunk into 22
+    /// working-memory entries and 22 embedding calls — for bytes that were already destroyed at
+    /// the source, since the decode is lossy and no consumer can undo it. The response is worth
+    /// nothing and costs a great deal, and an agent that reads the mojibake tends to retry the
+    /// same call. So the field is dropped and the reason is stated, which is the only honest
+    /// thing left to say about it. The rest of the response — name, sha, url, size — survives,
+    /// and is usually enough to fetch the file another way.
+    /// </remarks>
+    private JsonObject ReplaceMangledBinary(
+        string serverName,
+        string toolName,
+        JsonObject payload,
+        AttachmentCaptureRule rule,
+        int mangledLength)
+    {
+        logger?.LogWarning(
+            "Binary capture: {Server}/{Tool} returned binary as text in '{Field}' ({Chars} chars, " +
+            "unrecoverable); dropping the field rather than letting it into context",
+            serverName, toolName, rule.ContentField, mangledLength);
+
+        var rewritten = payload.DeepClone().AsObject();
+        RemoveProperty(rewritten, rule.ContentField);
+        rewritten["note"] =
+            $"This server returned the file's bytes as text, which corrupted them beyond recovery " +
+            $"({mangledLength:N0} characters of unusable content, dropped here rather than loaded " +
+            "into context). Calling the same tool again returns the same corrupted text. To work " +
+            "with this file, fetch it by a route that preserves bytes — a raw download URL, or a " +
+            "copy on the shared volume.";
         return rewritten;
     }
 
