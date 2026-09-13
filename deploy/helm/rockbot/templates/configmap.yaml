@@ -15,6 +15,26 @@ data:
   RabbitMq__ManagementApiBaseUrl: {{ .Values.rabbitmq.managementApiBaseUrl | quote }}
   {{- end }}
 
+  # ── Blazor UI OAuth sign-in (non-secret half) ──────────────────────────────
+  # Always emitted so a helm upgrade that turns auth off actually turns it off,
+  # rather than leaving a stale "true" in the pod's environment.
+  Auth__Enabled: {{ .Values.blazor.auth.enabled | quote }}
+  {{- if .Values.blazor.auth.enabled }}
+  {{- if and (not .Values.blazor.auth.allowedEmails) (not .Values.blazor.auth.allowedDomains) }}
+  {{- fail "blazor.auth.enabled=true with both blazor.auth.allowedEmails and blazor.auth.allowedDomains empty. An empty allowlist means every account at the configured provider can open a full agent session — set at least one entry. (The app also refuses to start in this state; failing here saves you a CrashLoopBackOff.)" }}
+  {{- end }}
+  Auth__PublicBaseUrl: {{ .Values.blazor.auth.publicBaseUrl | quote }}
+  Auth__TrustForwardedHeaders: {{ .Values.blazor.auth.trustForwardedHeaders | quote }}
+  Auth__SessionLifetime: {{ .Values.blazor.auth.sessionLifetime | quote }}
+  Auth__Providers__Google__ClientId: {{ required "blazor.auth.google.clientId is required when blazor.auth.enabled=true" .Values.blazor.auth.google.clientId | quote }}
+  {{- range $i, $email := .Values.blazor.auth.allowedEmails }}
+  Auth__AllowedEmails__{{ $i }}: {{ $email | quote }}
+  {{- end }}
+  {{- range $i, $domain := .Values.blazor.auth.allowedDomains }}
+  Auth__AllowedDomains__{{ $i }}: {{ $domain | quote }}
+  {{- end }}
+  {{- end }}
+
   # ── Ephemeral script runner ────────────────────────────────────────────────
   Scripts__Container__Namespace: {{ .Values.namespace | quote }}
   Scripts__Container__Image: {{ .Values.scripts.image | quote }}

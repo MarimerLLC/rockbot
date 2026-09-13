@@ -1,0 +1,58 @@
+@page "/login"
+@using RockBot.UserProxy.Blazor.Auth
+@inject AuthProviderRegistry Providers
+@inject AuthOptions Auth
+
+@* Deliberately NOT interactive. An anonymous visitor hitting /login should not cause a SignalR
+   circuit to be allocated — this page is static SSR, which also means no IJSRuntime, which is fine:
+   the remembered-provider behaviour is a few lines of plain script in wwwroot/js/login.js. *@
+
+<PageTitle>Sign in</PageTitle>
+
+<div class="login-shell">
+    <div class="login-card">
+        <h1 class="login-title">RockBot</h1>
+
+        @if (!Auth.Enabled)
+        {
+            <p class="login-lede">Sign-in is not enabled for this deployment.</p>
+            <a class="login-btn" href="/">Continue</a>
+        }
+        else if (Providers.Enabled.Count == 0)
+        {
+            <p class="login-lede">No identity provider is configured. Contact whoever runs this instance.</p>
+        }
+        else
+        {
+            <p class="login-lede">Sign in to continue.</p>
+
+            @* Plain links, so the page works with JavaScript disabled. login.js only reorders them
+               and labels the last-used one — it never redirects on its own. *@
+            <div class="login-providers" data-login-providers>
+                @foreach (var provider in Providers.Enabled)
+                {
+                    <a class="login-btn"
+                       data-provider="@provider.Key"
+                       href="@ChallengeUrl(provider.Key)">
+                        Continue with @provider.DisplayName
+                    </a>
+                }
+            </div>
+        }
+    </div>
+</div>
+
+<script src="@Assets["js/login.js"]"></script>
+
+@code {
+    private string ChallengeUrl(string providerKey)
+    {
+        var returnUrl = LocalReturnUrl.Sanitize(ReturnUrl);
+        return $"/auth/challenge?provider={Uri.EscapeDataString(providerKey)}&returnUrl={Uri.EscapeDataString(returnUrl)}";
+    }
+
+    // Named to match CookieAuthenticationOptions.ReturnUrlParameter, so a challenge redirect issued
+    // by the cookie handler round-trips the caller back to where they were headed.
+    [SupplyParameterFromQuery(Name = "returnUrl")]
+    private string? ReturnUrl { get; set; }
+}

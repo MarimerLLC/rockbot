@@ -18,7 +18,9 @@
     <HeadOutlet />
 </head>
 <body>
-    <Routes @rendermode="InteractiveServer" />
+    @* No render mode here on purpose: it would make every routed page interactive, and /login
+       must not allocate a SignalR circuit for an anonymous visitor. Chat.razor opts itself in. *@
+    <Routes />
     <script src="@Assets["js/chat.js"]"></script>
     <script src="@Assets["_framework/blazor.web.js"]"></script>
 </body>
