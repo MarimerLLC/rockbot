@@ -176,6 +176,26 @@ public sealed class DreamOptions
     public bool MemoryConsolidationEnabled { get; set; } = true;
 
     /// <summary>
+    /// Whether the dream folds live memory entries whose content is identical into one, without
+    /// an LLM call. Default: <c>true</c>.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Entries fold only when they share a category and their content matches exactly once
+    /// whitespace is collapsed. The oldest copy survives with its text untouched; the others'
+    /// tags, reinforcement, importance and metadata are folded into it and they are archived
+    /// <c>"merged into"</c> the survivor, so they stay recoverable for
+    /// <see cref="MemoryArchiveRetention"/>.
+    /// </para>
+    /// <para>
+    /// Independent of <see cref="MemoryConsolidationEnabled"/>. That toggle exists because an LLM
+    /// rewrite can introduce detail no source contained; a fold writes no new text, so it carries
+    /// none of that risk. The audit's pause marker still stops it, since it archives.
+    /// </para>
+    /// </remarks>
+    public bool MemoryExactDuplicateFoldEnabled { get; set; } = true;
+
+    /// <summary>
     /// How long entries archived by consolidation are kept before the purge pass hard-deletes
     /// them. Archived entries are hidden from recall but stay on disk and remain retrievable
     /// by id, so this is the window in which a bad merge or a wrong ephemeral call can still
