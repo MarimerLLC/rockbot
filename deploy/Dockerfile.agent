@@ -15,8 +15,10 @@ RUN --mount=type=cache,target=/root/.nuget/packages \
     dotnet publish src/RockBot.Agent/RockBot.Agent.csproj \
     -c Release -o /app/publish
 
-# Runtime stage — console app only, no ASP.NET Core needed
-FROM mcr.microsoft.com/dotnet/runtime:10.0@sha256:3de49150e48790fa845547e14bff5add0e4194a8901e727cf88f83423bcbe2b0 AS runtime
+# Runtime stage — aspnet, not runtime: the agent hosts a Kestrel listener for attachment
+# uploads (AttachmentUploadEndpoint), so it needs the Microsoft.AspNetCore.App framework.
+# On the plain runtime image the process exits at launch with "No frameworks were found".
+FROM mcr.microsoft.com/dotnet/aspnet:10.0@sha256:6a94333d37514e385650a3c81a55e5350b67253dbe136e9cf17e499c35606a8c AS runtime
 WORKDIR /app
 
 # Non-root user (--create-home needed for Copilot CLI which extracts bundled packages into $HOME)
