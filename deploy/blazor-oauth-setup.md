@@ -22,30 +22,54 @@ This exists for deployments that want an ordinary HTTPS ingress instead.
 Total time: ~5 minutes. You need a Google Cloud project; a new empty one is fine,
 since nothing here calls a Google API.
 
-### Configure the consent screen
+Google moved OAuth configuration into a section called **Google Auth Platform**, with
+**Branding**, **Audience**, **Clients**, and **Data Access** pages. Older guides (and
+older screenshots) say "OAuth consent screen" and "Credentials"; the old menu entries
+still exist and redirect there.
+
+### Configure the app
 
 1. Sign in to <https://console.cloud.google.com> and select (or create) a project.
-2. Navigate to **APIs & Services** → **OAuth consent screen**.
-3. **User type**:
+2. Navigate to **APIs & Services** → **OAuth consent screen**. This opens **Google
+   Auth Platform**; click **Get started** if the project has never had one.
+3. **App information**: an app name and a user support email. The app name is what
+   users see on Google's sign-in screen.
+4. **Audience**:
    - **Internal** if everyone signing in is in your Google Workspace organization.
      This is the better choice when it is available — an internal app needs no
      verification and no test-user list.
    - **External** otherwise (personal `@gmail.com` accounts, mixed organizations).
-     Leave it in **Testing** status and add each person as a **Test user**; an
-     external app in testing is capped at 100 test users, which is far more than a
-     RockBot instance needs. You do not need to submit it for verification, because
-     the app requests no sensitive scopes.
-4. Fill in the app name, a support email, and a developer contact email. The app
-   name is what users see on the Google consent screen.
-5. **Scopes**: add none. The default `openid`, `email`, and `profile` are all this
-   needs, and they are granted without any scope configuration.
+     Leave it in **Testing** status. You do not need to submit it for verification,
+     because the app requests no sensitive scopes.
+5. **Contact information**: a developer contact email. Agree to the policy and
+   **Create**.
+6. **Data Access** (scopes): add none. The default `openid`, `email`, and `profile`
+   are all this needs, and they are granted without any scope configuration.
+
+### Add test users (External apps only)
+
+**Audience** → **Test users** → **Add users**, and add every account that should be
+able to sign in. An external app in testing is capped at 100 test users, which is far
+more than a RockBot instance needs. Google shows these users an "app hasn't been
+verified" warning they can click through; that is expected in testing.
+
+Google enforces this list **before** RockBot ever sees the sign-in. An account that is
+not a test user is stopped on Google's own "Access blocked" page, so it never reaches
+RockBot's allowlist or `/access-denied`. Two consequences:
+
+- An account must be on **both** lists — Google's test users and RockBot's
+  `allowedEmails`/`allowedDomains` — to get in.
+- To exercise `/access-denied` (verification, below), the account you test with must
+  be a Google test user that is deliberately **not** on the RockBot allowlist.
 
 ### Create the client
 
-1. **APIs & Services** → **Credentials** → **Create credentials** → **OAuth client ID**.
+1. **Google Auth Platform** → **Clients** → **Create client**.
 2. **Application type**: **Web application**.
 3. **Name**: anything; it is only visible in the console.
-4. **Authorized redirect URIs** — this is the field that matters, and the one that
+4. **Authorized JavaScript origins**: leave empty. The sign-in is a server-side
+   redirect flow; nothing runs Google's JavaScript.
+5. **Authorized redirect URIs** — this is the field that matters, and the one that
    causes essentially every failure of this setup. Add exactly:
 
    ```
@@ -61,8 +85,15 @@ since nothing here calls a Google API.
      name.
 
    You can list several URIs on one client (a staging host and a production host,
-   say). Adding one later takes effect within minutes.
-5. **Create**, then copy the **Client ID** and **Client secret**.
+   say). A new or changed URI can take a few minutes to take effect, so a
+   `redirect_uri_mismatch` in the first minutes after saving is worth one retry
+   before debugging.
+6. **Create**, then copy the **Client ID** and **Client secret** — or **Download
+   JSON**, which carries both along with the registered redirect URIs.
+
+   **The secret is shown in full only now.** Google no longer lets you view a client
+   secret after creation. If you lose it, open the client and **Add secret** to mint
+   a new one (then disable the old one); there is no way to recover the original.
 
 ## 2. Wire it into Helm
 
@@ -170,7 +201,7 @@ docker compose -f deploy/docker-compose/docker-compose.yml up -d --build blazor
 |---|---|
 | Visit `/` signed out | Redirected to `/login` |
 | Sign in with an allowlisted account | Chat page loads, "Sign out" appears in the header |
-| Sign in with an account that is not allowlisted | `/access-denied`, naming the account, with a sign-out button |
+| Sign in with an account that is not allowlisted (but is a Google test user) | `/access-denied`, naming the account, with a sign-out button |
 | `GET /attachments?file=x` signed out | Not 200 — redirected to `/login` |
 | `GET /healthz` | 200, signed in or not |
 | Restart the container, reload | Still signed in |
@@ -185,6 +216,11 @@ respectively; either one alone gets you neither.
 is printed in the error page's detail on Google's side — compare it character for
 character with the console entry. Almost always: `http` instead of `https` (set
 `publicBaseUrl`), a trailing slash, or an internal hostname leaking through.
+
+**"Access blocked: … has not completed the Google verification process".** Google
+stopped the sign-in before it reached RockBot: the app is External in Testing status
+and the account is not on its test-user list. Add it under **Audience** → **Test
+users**. Nothing in the RockBot logs will mention this attempt.
 
 **Signed straight back out after a restart.** The data-protection key ring is not
 persisting. Confirm `/data/blazor/keys` is mounted read-write and contains
