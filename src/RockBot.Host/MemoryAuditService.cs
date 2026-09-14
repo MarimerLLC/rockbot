@@ -442,7 +442,9 @@ internal sealed class MemoryAuditService : IHostedService, IDisposable, IPrunabl
             var pairs = ShingleSimilarity.FindNearDuplicatePairs(
                 live, _options.ShingleSize, _options.NearDuplicateThreshold, token);
 
-            var samples = MemoryAuditEvaluator.SelectSamples(walk.Entries, pairs, _options, now);
+            var vocabulary = MergeCoverageVocabularyFile.Load(
+                ResolveUnderProfile(_dreamOptions.MergeCoverageVocabularyPath), _logger, nameof(MemoryAuditService));
+            var samples = MemoryAuditEvaluator.SelectSamples(walk.Entries, pairs, _options, now, vocabulary);
             if (samples.Count == 0)
             {
                 _logger.LogInformation("MemoryAuditService: sample eval found nothing to judge");

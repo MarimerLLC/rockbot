@@ -27,6 +27,11 @@ irreversible; a surviving duplicate is a nuisance that any later pass can still 
   accreted it into a vague blob, a wall of unrelated specifics, or a self-contradiction —
   even though nothing was formally lost.
 
+Content cut for length ends in a `[truncated]` marker. A detail you cannot see past that point is
+not a detail that was lost — do not report it as missing. A merge's "Coverage check" line is a
+verbatim string comparison over the full, uncut text: treat it as evidence, not a verdict. A
+specific it lists that the replacement reworded without changing its meaning was still kept.
+
 Do not reward confidence or fluency. An entry that reads well and says less than its sources
 did is exactly the failure this audit exists to catch.
 
