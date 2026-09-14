@@ -73,11 +73,24 @@ Two related bounds close the same kind of leak elsewhere:
 - **Tier routing review** reads its append-only log through a `TierRoutingReviewWindow` (default
   14 days). Without a window the pass always saw the same trailing 200 entries and could never
   run out of input.
-- **Memory consolidation's duplicate-cluster carve-out** now skips clusters in which every member
+- **Memory consolidation's duplicate-cluster carve-out** skips clusters in which every member
   is already reviewed-and-unchanged. Such a cluster was, by construction, shown to the model
-  together on the cycle that stamped it; re-offering it re-asks an answered question and quietly
-  undid the reviewed-and-unchanged gate for exactly the entries most likely to sit in a cluster.
-  One new or edited member re-opens the whole cluster.
+  together on the cycle that stamped it; re-offering it every cycle re-asks an answered question
+  and quietly undid the reviewed-and-unchanged gate for exactly the entries most likely to sit in
+  a cluster. One new or edited member re-opens the whole cluster.
+- **A settled cluster is not settled forever.** Skipping it permanently made one "leave them
+  separate" answer final, and reworded duplicates of the same fact stayed live for weeks. Every
+  member of a cluster the pass shows and leaves entirely intact is stamped
+  `consolidationDeclinedCluster` / `consolidationDeclinedAt` / `consolidationDeclinedCount`
+  (metadata only, so the review fingerprint still matches). The cluster is offered again once
+  `Dream:SettledClusterReopenInterval` (default 7 days) × 2^(declines − 1) has passed since the
+  last decline, capped at `Dream:SettledClusterReopenMaxInterval` (default 56 days). A cluster
+  with no matching stamp (settled before stamps existed, or since reshaped) waits one interval
+  from its latest review. At most `Dream:SettledClusterReopenMaxPerCycle` (default 10) clusters
+  reopen per pass, longest-overdue first. Reopened members are **merge-only**: a standalone prune
+  of one is ignored, so re-asking the duplicate question does not re-expose them to deletion.
+  The memory audit reports `declinedDuplicateClustersLive` and the highest decline count.
+  Set the interval to `0` to restore never-reopen.
 
 ### Pass 0 — Log retention
 
@@ -157,7 +170,8 @@ capability-claim entries, are left for consolidation.
 
 This closes a gap the reviewed-and-unchanged gate opened. Once the model had seen a cluster of
 byte-identical copies and declined to merge them, every member carried a matching stamp, the
-cluster read as settled, and the copies stayed live for good. The fold is controlled by
+cluster read as settled, and the copies stayed live for good. (Settled clusters now reopen on a
+cooldown, but identical text needs no model judgement at all.) The fold is controlled by
 `Dream:MemoryExactDuplicateFoldEnabled` (default `true`) independently of
 `Dream:MemoryConsolidationEnabled`, since that toggle guards against LLM rewrites and a fold
 rewrites nothing. The audit's pause marker still stops it.

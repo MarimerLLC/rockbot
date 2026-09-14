@@ -901,12 +901,13 @@ internal sealed class DreamService : IHostedService, IDisposable
     internal const string ConsolidationRejectedAtKey = "consolidationRejectedAt";
 
     /// <summary>
-    /// Stable short identity for a merge cluster, order-independent so the same set of sources
-    /// hashes the same however the model happens to list them.
+    /// Stable short identity for a set of entries — a rejected merge's sources or a declined
+    /// duplicate cluster's members — order-independent so the same set hashes the same however
+    /// it happens to be listed.
     /// </summary>
-    internal static string RejectedClusterHash(IEnumerable<string> sourceIds)
+    internal static string ClusterHash(IEnumerable<string> ids)
     {
-        var ordered = string.Join(",", sourceIds.OrderBy(id => id, StringComparer.Ordinal));
+        var ordered = string.Join(",", ids.OrderBy(id => id, StringComparer.Ordinal));
         var bytes = System.Security.Cryptography.SHA256.HashData(Encoding.UTF8.GetBytes(ordered));
         return Convert.ToHexString(bytes.AsSpan(0, 8));
     }
@@ -953,31 +954,75 @@ internal sealed class DreamService : IHostedService, IDisposable
         && string.Equals(hash, ContentFingerprint(entry.Content), StringComparison.OrdinalIgnoreCase);
 
     /// <summary>
+    /// Metadata key holding the identity (<see cref="ClusterHash"/> of its member ids) of the
+    /// near-duplicate cluster this entry was last offered in and left unmerged.
+    /// </summary>
+    /// <remarks>
+    /// Read back by <see cref="SettledClusterReopenAt"/> to schedule the next offer, and by the
+    /// memory audit to count declined clusters that are still live rather than inferring them
+    /// from a near-duplicate sample that happens not to move.
+    /// </remarks>
+    internal const string ConsolidationDeclinedClusterKey = "consolidationDeclinedCluster";
+
+    /// <summary>Metadata key holding when this entry's cluster was last left unmerged.</summary>
+    internal const string ConsolidationDeclinedAtKey = "consolidationDeclinedAt";
+
+    /// <summary>Metadata key holding how many consecutive passes left this entry's cluster unmerged.</summary>
+    internal const string ConsolidationDeclinedCountKey = "consolidationDeclinedCount";
+
+    /// <summary>What <see cref="SelectConsolidationCandidatesAsync"/> lets one consolidation pass see.</summary>
+    /// <param name="Eligible">Entries shown to the model, in store order.</param>
+    /// <param name="OfferedClusters">
+    /// Near-duplicate clusters shown whole this pass — reopened ones and ones opened by a new or
+    /// edited member. A cluster the pass leaves entirely intact is stamped as declined.
+    /// </param>
+    /// <param name="MergeOnlyIds">
+    /// Members of reopened settled clusters. They are shown so a merge is possible, and may not
+    /// be pruned on their own.
+    /// </param>
+    /// <param name="ReopenedClusters">How many settled clusters were reopened.</param>
+    internal sealed record ConsolidationCandidates(
+        List<MemoryEntry> Eligible,
+        IReadOnlyList<IReadOnlyList<string>> OfferedClusters,
+        IReadOnlySet<string> MergeOnlyIds,
+        int ReopenedClusters);
+
+    /// <summary>
     /// Chooses which entries consolidation is allowed to act on this cycle. An entry qualifies
-    /// when it is new or changed since its last review, or when it sits in a near-duplicate
-    /// cluster (a fresh entry can duplicate an old one, so the old one has to be visible for
-    /// the merge to be possible).
+    /// when it is new or changed since its last review, when it sits in a near-duplicate
+    /// cluster with such an entry (a fresh entry can duplicate an old one, so the old one has to
+    /// be visible for the merge to be possible), or when it sits in a settled cluster whose
+    /// reopen interval has elapsed.
     /// </summary>
     /// <remarks>
     /// Everything else is withheld and therefore safe. That bound is the point: exposure to a
     /// deletion decision becomes roughly once per entry per content change, instead of once
-    /// per entry per cycle forever.
+    /// per entry per cycle forever. Reopened clusters do not loosen it — their members come back
+    /// merge-only.
     /// </remarks>
-    internal static async Task<List<MemoryEntry>> SelectConsolidationCandidatesAsync(
+    internal static async Task<ConsolidationCandidates> SelectConsolidationCandidatesAsync(
         ILongTermMemory memory,
         DreamOptions options,
         ILogger logger,
         IReadOnlyList<MemoryEntry> all,
+        DateTimeOffset now,
         CancellationToken ct)
     {
         var eligibleIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var reviewedIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var byId = new Dictionary<string, MemoryEntry>(StringComparer.OrdinalIgnoreCase);
+        var offered = new List<IReadOnlyList<string>>();
+        var mergeOnly = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var reopened = 0;
 
         foreach (var e in all)
+        {
+            byId[e.Id] = e;
             if (IsReviewedAndUnchanged(e))
                 reviewedIds.Add(e.Id);
             else
                 eligibleIds.Add(e.Id);
+        }
 
         var unreviewed = eligibleIds.Count;
 
@@ -991,29 +1036,51 @@ internal sealed class DreamService : IHostedService, IDisposable
                     ct);
 
                 var settled = 0;
+                var due = new List<(IReadOnlyList<string> Cluster, DateTimeOffset At)>();
+
                 foreach (var cluster in clusters)
                 {
                     // A cluster in which every member is reviewed-and-unchanged was, by
                     // construction, already shown to consolidation as a group: a cluster becomes
                     // eligible the moment any member is new or edited, and every member shown
-                    // gets stamped on that cycle. Re-offering it now re-asks a question the model
-                    // has already answered — and keeps re-asking, twice a day, forever. That
-                    // undoes the reviewed-and-unchanged gate for exactly the entries most likely
-                    // to sit in a cluster. One new or edited member re-opens the whole cluster.
+                    // gets stamped on that cycle. Re-offering it every cycle re-asks a question
+                    // the model has already answered, twice a day, forever — which undoes the
+                    // reviewed-and-unchanged gate for exactly the entries most likely to sit in a
+                    // cluster. But never re-asking made one "leave them separate" answer
+                    // permanent, and reworded duplicates of one fact stayed live for good. So a
+                    // settled cluster comes back after a cooldown that doubles per decline.
                     if (cluster.Count > 0 && cluster.All(reviewedIds.Contains))
                     {
-                        settled++;
+                        if (SettledClusterReopenAt([.. cluster.Select(id => byId[id])], options) is { } at
+                            && at <= now)
+                            due.Add((cluster, at));
+                        else
+                            settled++;
                         continue;
                     }
 
                     foreach (var id in cluster)
                         eligibleIds.Add(id);
+                    offered.Add(cluster);
                 }
+
+                foreach (var (cluster, _) in due
+                             .OrderBy(d => d.At)
+                             .Take(Math.Max(0, options.SettledClusterReopenMaxPerCycle)))
+                {
+                    foreach (var id in cluster)
+                        if (eligibleIds.Add(id))
+                            mergeOnly.Add(id);
+                    offered.Add(cluster);
+                    reopened++;
+                }
+
+                settled += due.Count - reopened;
 
                 logger.LogDebug(
                     "DreamService: {Unreviewed} unreviewed + {Clustered} pulled in from {Clusters} duplicate cluster(s) " +
-                    "({Settled} cluster(s) skipped as already reviewed together)",
-                    unreviewed, eligibleIds.Count - unreviewed, clusters.Count, settled);
+                    "({Reopened} settled cluster(s) reopened merge-only, {Settled} skipped as already reviewed together)",
+                    unreviewed, eligibleIds.Count - unreviewed, clusters.Count, reopened, settled);
             }
             catch (OperationCanceledException) { throw; }
             catch (Exception ex)
@@ -1026,8 +1093,78 @@ internal sealed class DreamService : IHostedService, IDisposable
         }
 
         // Preserve the store's ordering so the prompt stays stable between cycles.
-        return [.. all.Where(e => eligibleIds.Contains(e.Id))];
+        return new ConsolidationCandidates(
+            [.. all.Where(e => eligibleIds.Contains(e.Id))], offered, mergeOnly, reopened);
     }
+
+    /// <summary>
+    /// When a settled near-duplicate cluster — every member reviewed and unchanged — may next be
+    /// offered to consolidation, or <c>null</c> when reopening is disabled.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// When every member carries a decline stamp for exactly this membership, the wait runs from
+    /// the latest decline and doubles with each one: interval × 2^(declines − 1), capped at
+    /// <see cref="DreamOptions.SettledClusterReopenMaxInterval"/>. A genuine "these are different"
+    /// answer soon stops costing anything, while a model miss still gets retried.
+    /// </para>
+    /// <para>
+    /// Otherwise — a cluster settled before decline stamps existed, or one whose membership has
+    /// shifted since — the wait is one interval from the members' latest review.
+    /// </para>
+    /// </remarks>
+    internal static DateTimeOffset? SettledClusterReopenAt(IReadOnlyList<MemoryEntry> members, DreamOptions options)
+    {
+        if (options.SettledClusterReopenInterval <= TimeSpan.Zero || members.Count == 0)
+            return null;
+
+        var hash = ClusterHash(members.Select(m => m.Id));
+        var declines = members.Select(ReadDecline).ToList();
+
+        if (declines.All(d => d is { } x && string.Equals(x.Cluster, hash, StringComparison.OrdinalIgnoreCase)))
+            return declines.Max(d => d!.Value.At) + SettledClusterReopenWait(declines.Max(d => d!.Value.Count), options);
+
+        var reviewedAt = members.Max(m => ReadTimestamp(m, ConsolidationReviewedAtKey) ?? DateTimeOffset.MinValue);
+        return reviewedAt == DateTimeOffset.MinValue
+            ? DateTimeOffset.MinValue
+            : reviewedAt + options.SettledClusterReopenInterval;
+    }
+
+    /// <summary>
+    /// The cooldown after <paramref name="declines"/> consecutive declines of one cluster:
+    /// the reopen interval doubled per decline after the first, capped.
+    /// </summary>
+    internal static TimeSpan SettledClusterReopenWait(int declines, DreamOptions options)
+    {
+        var interval = options.SettledClusterReopenInterval;
+        var cap = options.SettledClusterReopenMaxInterval > interval
+            ? options.SettledClusterReopenMaxInterval
+            : interval;
+
+        var ticks = interval.Ticks * Math.Pow(2, Math.Clamp(declines - 1, 0, 32));
+        return ticks >= cap.Ticks ? cap : TimeSpan.FromTicks((long)ticks);
+    }
+
+    private static (string Cluster, DateTimeOffset At, int Count)? ReadDecline(MemoryEntry entry)
+    {
+        if (entry.Metadata is not { } m
+            || !m.TryGetValue(ConsolidationDeclinedClusterKey, out var cluster)
+            || string.IsNullOrWhiteSpace(cluster)
+            || ReadTimestamp(entry, ConsolidationDeclinedAtKey) is not { } at
+            || !m.TryGetValue(ConsolidationDeclinedCountKey, out var rawCount)
+            || !int.TryParse(rawCount, NumberStyles.Integer, CultureInfo.InvariantCulture, out var count)
+            || count < 1)
+            return null;
+
+        return (cluster, at, count);
+    }
+
+    private static DateTimeOffset? ReadTimestamp(MemoryEntry entry, string key) =>
+        entry.Metadata is { } m
+        && m.TryGetValue(key, out var raw)
+        && DateTimeOffset.TryParse(raw, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out var at)
+            ? at
+            : null;
 
     /// <summary>
     /// Records that an entry was shown to consolidation and survived, so later cycles skip it
@@ -1105,6 +1242,72 @@ internal sealed class DreamService : IHostedService, IDisposable
         }
     }
 
+    /// <summary>
+    /// Stamps every member of each offered near-duplicate cluster the pass left entirely intact
+    /// — nothing merged away, folded into or pruned — as a decline of that cluster.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// A merge the coverage check rejected counts as a decline too: its sources are just as live,
+    /// and the backoff should govern that treadmill as well.
+    /// </para>
+    /// <para>
+    /// Metadata only, so the review fingerprint still matches. Entries are re-read for the same
+    /// reason <see cref="StampReviewedAsync"/> re-reads them: the caller's snapshot predates decay.
+    /// </para>
+    /// </remarks>
+    private async Task<int> StampDeclinedAsync(
+        IReadOnlyList<IReadOnlyList<string>> offeredClusters,
+        IReadOnlyDictionary<string, string> archiveReasons,
+        IReadOnlySet<string> actedOn,
+        CancellationToken ct)
+    {
+        var now = DateTimeOffset.UtcNow.ToString("O");
+        var declined = 0;
+
+        foreach (var cluster in offeredClusters)
+        {
+            ct.ThrowIfCancellationRequested();
+
+            if (cluster.Count < 2 || cluster.Any(id => archiveReasons.ContainsKey(id) || actedOn.Contains(id)))
+                continue;
+
+            var members = new List<MemoryEntry>(cluster.Count);
+            foreach (var id in cluster)
+                if (await _memory.GetAsync(id, ct) is { ArchivedAt: null } entry)
+                    members.Add(entry);
+
+            if (members.Count != cluster.Count)
+                continue;
+
+            var hash = ClusterHash(cluster);
+            var previous = members.Select(ReadDecline).ToList();
+            var count = previous.All(d => d is { } x && string.Equals(x.Cluster, hash, StringComparison.OrdinalIgnoreCase))
+                ? previous.Max(d => d!.Value.Count) + 1
+                : 1;
+
+            foreach (var member in members)
+            {
+                var metadata = member.Metadata is null
+                    ? []
+                    : new Dictionary<string, string>(member.Metadata, StringComparer.OrdinalIgnoreCase);
+
+                metadata[ConsolidationDeclinedClusterKey] = hash;
+                metadata[ConsolidationDeclinedAtKey] = now;
+                metadata[ConsolidationDeclinedCountKey] = count.ToString(CultureInfo.InvariantCulture);
+
+                await _memory.SaveAsync(member with { Metadata = metadata }, ct);
+            }
+
+            declined++;
+        }
+
+        if (declined > 0)
+            _logger.LogDebug("DreamService: stamped {Count} near-duplicate cluster(s) as declined", declined);
+
+        return declined;
+    }
+
     /// <summary>Metadata key listing the IDs of exact duplicates folded into an entry (comma-separated).</summary>
     /// <remarks>
     /// Kept apart from <see cref="MergedFromKey"/> on purpose. The audit reads that key as "this
@@ -1130,6 +1333,9 @@ internal sealed class DreamService : IHostedService, IDisposable
         ConsolidationReviewedAtKey,
         ConsolidationRejectedClusterKey,
         ConsolidationRejectedAtKey,
+        ConsolidationDeclinedClusterKey,
+        ConsolidationDeclinedAtKey,
+        ConsolidationDeclinedCountKey,
     };
 
     /// <summary>
@@ -1483,7 +1689,8 @@ internal sealed class DreamService : IHostedService, IDisposable
         // Gate what the LLM is allowed to see. Anything withheld here cannot be archived this
         // cycle, which is the whole point: an entry that has already been reviewed and left
         // alone must not be re-tried for deletion twice a day forever.
-        var eligible = await SelectConsolidationCandidatesAsync(_memory, _options, _logger, all, ct);
+        var candidates = await SelectConsolidationCandidatesAsync(_memory, _options, _logger, all, _clock.Now, ct);
+        var eligible = candidates.Eligible;
         var withheld = all.Count - eligible.Count;
 
         if (eligible.Count < 2)
@@ -1527,6 +1734,10 @@ internal sealed class DreamService : IHostedService, IDisposable
             "either new or changed since the last pass, or near-duplicates of each other. " +
             $"The other {withheld} were reviewed on an earlier pass, have not changed since, and are " +
             "deliberately withheld. Consolidate only what is shown:");
+        if (candidates.ReopenedClusters > 0)
+            userMessage.AppendLine(
+                "Some of the near-duplicates below were left separate on an earlier pass and are offered " +
+                "again. Merge them if they state the same fact; leave them if they genuinely differ.");
         userMessage.AppendLine();
 
         // Append recent feedback signals so the dream LLM has quality context
@@ -1576,6 +1787,7 @@ internal sealed class DreamService : IHostedService, IDisposable
         var repairedMerges = 0;
         var repairsAttempted = 0;
         var protectedFromPruning = 0;
+        var mergeOnlyRefused = 0;
 
         // Sources belonging to a merge the coverage check refused. They must survive the
         // standalone-removal loop below.
@@ -1659,7 +1871,7 @@ internal sealed class DreamService : IHostedService, IDisposable
                     foreach (var srcId in sourceIds)
                         rejectedMergeSources.Add(srcId);
 
-                    await StampRejectedAsync(sources, RejectedClusterHash(sourceIds), ct);
+                    await StampRejectedAsync(sources, ClusterHash(sourceIds), ct);
 
                     rejectedMerges++;
                     _logger.LogWarning(
@@ -1781,6 +1993,17 @@ internal sealed class DreamService : IHostedService, IDisposable
                 continue;
             }
 
+            // A reopened settled cluster is back to re-ask one question — are these the same
+            // fact? — not to put its members in front of a deletion decision again.
+            if (candidates.MergeOnlyIds.Contains(id))
+            {
+                mergeOnlyRefused++;
+                _logger.LogInformation(
+                    "DreamService: ignored prune of {Id} — reopened duplicate cluster is merge-only: {Content}",
+                    candidate.Id, candidate.Content);
+                continue;
+            }
+
             if (IsProtectedFromPruning(candidate, _options))
             {
                 protectedFromPruning++;
@@ -1810,11 +2033,15 @@ internal sealed class DreamService : IHostedService, IDisposable
             eligible.Select(e => e.Id).Where(id => !archiveReasons.ContainsKey(id)),
             ct);
 
-        if (rejectedMerges > 0 || protectedFromPruning > 0 || repairedMerges > 0)
+        var declinedClusters = await StampDeclinedAsync(
+            candidates.OfferedClusters, archiveReasons, foldTargets, ct);
+
+        if (rejectedMerges > 0 || protectedFromPruning > 0 || repairedMerges > 0 || mergeOnlyRefused > 0)
             _logger.LogInformation(
                 "DreamService: consolidation safeguards fired — {Rejected} merge(s) rejected for dropping specifics, " +
-                "{Repaired} merge(s) repaired, {Protected} entry(s) protected from pruning",
-                rejectedMerges, repairedMerges, protectedFromPruning);
+                "{Repaired} merge(s) repaired, {Protected} entry(s) protected from pruning, " +
+                "{MergeOnly} prune(s) of reopened duplicates ignored",
+                rejectedMerges, repairedMerges, protectedFromPruning, mergeOnlyRefused);
 
         // Recorded only on a pass that actually reviewed something. A disabled pass, an empty
         // corpus, nothing eligible or a failed LLM call all return earlier, so the minimum
@@ -1830,10 +2057,11 @@ internal sealed class DreamService : IHostedService, IDisposable
         // had to be reconstructed off the volume after the fact.
         _logger.LogInformation(
             "DreamService: consolidation summary — live {Live}, reviewed {Reviewed}, created since last run {Created}, " +
-            "merged {Merged}, repaired {Repaired}, rejected {Rejected}, ephemeral {Ephemeral}, protected {Protected}",
+            "merged {Merged}, repaired {Repaired}, rejected {Rejected}, ephemeral {Ephemeral}, protected {Protected}, " +
+            "duplicate clusters reopened {Reopened}, declined {Declined}",
             all.Count, eligible.Count, createdSinceLastRun, saved, repairedMerges, rejectedMerges,
             archiveReasons.Count(r => r.Value == EphemeralArchiveReason),
-            protectedFromPruning);
+            protectedFromPruning, candidates.ReopenedClusters, declinedClusters);
 
         return (deleted, saved);
     }

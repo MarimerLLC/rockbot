@@ -252,6 +252,42 @@ public sealed class DreamOptions
     public int ConsolidationMaxClusterSize { get; set; } = 3;
 
     /// <summary>
+    /// How long a near-duplicate cluster the model left unmerged stays withheld before it is
+    /// offered to consolidation again. Each further decline of the same cluster doubles the wait,
+    /// up to <see cref="SettledClusterReopenMaxInterval"/>. Set to <see cref="TimeSpan.Zero"/> to
+    /// never reopen a settled cluster. Default: 7 days.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Without it, a cluster whose members were all reviewed and left unchanged was settled for
+    /// good: one "these are different" answer became permanent, and reworded duplicates of the
+    /// same fact stayed live indefinitely. The memory audit's near-duplicate sample was
+    /// identical a week apart, with pairs live for three weeks.
+    /// </para>
+    /// <para>
+    /// Members of a reopened cluster are offered for merging only — a standalone prune of one is
+    /// ignored — so reopening re-asks the duplicate question without re-exposing the entries to
+    /// deletion the reviewed-and-unchanged gate exists to bound.
+    /// </para>
+    /// </remarks>
+    public TimeSpan SettledClusterReopenInterval { get; set; } = TimeSpan.FromDays(7);
+
+    /// <summary>
+    /// Ceiling on the doubled wait before a repeatedly declined cluster is reopened.
+    /// Default: 56 days.
+    /// </summary>
+    public TimeSpan SettledClusterReopenMaxInterval { get; set; } = TimeSpan.FromDays(56);
+
+    /// <summary>
+    /// Most settled clusters a single consolidation pass may reopen, oldest first. Default: 10.
+    /// </summary>
+    /// <remarks>
+    /// The first pass after this setting ships finds every long-settled cluster overdue at once;
+    /// the cap spreads that backlog over several passes instead of one oversized prompt.
+    /// </remarks>
+    public int SettledClusterReopenMaxPerCycle { get; set; } = 10;
+
+    /// <summary>
     /// Importance at or above which an entry may not be pruned outright by consolidation.
     /// Merging is still permitted, since a merge preserves the content. Default: 0.80.
     /// </summary>

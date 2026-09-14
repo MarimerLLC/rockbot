@@ -214,6 +214,21 @@ public sealed record MemoryAuditSnapshot
     /// </summary>
     public int RejectedMergeClustersRepeated { get; init; }
 
+    /// <summary>
+    /// Near-duplicate clusters consolidation was shown and left unmerged whose members are still
+    /// live — at least two live entries carrying the same decline stamp.
+    /// </summary>
+    /// <remarks>
+    /// Counts decisions directly rather than inferring them from a near-duplicate sample that does
+    /// not move. A settled cluster is re-offered on a doubling cooldown, so a steady value here
+    /// with <see cref="DeclinedDuplicateClustersMaxCount"/> climbing means the model keeps judging
+    /// the same pairs distinct.
+    /// </remarks>
+    public int DeclinedDuplicateClustersLive { get; init; }
+
+    /// <summary>Highest consecutive-decline count among <see cref="DeclinedDuplicateClustersLive"/>.</summary>
+    public int DeclinedDuplicateClustersMaxCount { get; init; }
+
     /// <summary>Dream passes whose ledger stamp moved since the previous run.</summary>
     public int DreamPassesRunSinceLast { get; init; }
 

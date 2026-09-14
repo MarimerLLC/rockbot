@@ -74,12 +74,12 @@ public class DreamConsolidationAuditHooksTests
     public void TheClusterHashIsOrderIndependent()
     {
         Assert.AreEqual(
-            DreamService.RejectedClusterHash(["b", "a", "c"]),
-            DreamService.RejectedClusterHash(["a", "c", "b"]));
+            DreamService.ClusterHash(["b", "a", "c"]),
+            DreamService.ClusterHash(["a", "c", "b"]));
 
         Assert.AreNotEqual(
-            DreamService.RejectedClusterHash(["a", "b"]),
-            DreamService.RejectedClusterHash(["a", "b", "c"]));
+            DreamService.ClusterHash(["a", "b"]),
+            DreamService.ClusterHash(["a", "b", "c"]));
     }
 
     [TestMethod]
