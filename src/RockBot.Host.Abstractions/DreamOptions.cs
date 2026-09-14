@@ -188,6 +188,15 @@ public sealed class DreamOptions
     /// <see cref="MemoryArchiveRetention"/>.
     /// </para>
     /// <para>
+    /// The same rule also applies when dream passes write. Episode extraction, preference inference,
+    /// tier-routing anti-patterns and DLQ patterns reinforce an identical live entry rather than
+    /// saving a copy. A consolidation merge whose text matches a live entry outside its own
+    /// sources is folded into that entry, and the sources are archived <c>"merged into"</c> it.
+    /// Turning this off disables the fold and both save-time checks together. Feedback,
+    /// capability-claim and observation-theory entries are never matched, because their own
+    /// passes act on them by id.
+    /// </para>
+    /// <para>
     /// Independent of <see cref="MemoryConsolidationEnabled"/>. That toggle exists because an LLM
     /// rewrite can introduce detail no source contained; a fold writes no new text, so it carries
     /// none of that risk. The audit's pause marker still stops it, since it archives.

@@ -119,6 +119,20 @@ public class DreamExactDuplicateFoldTests
             "Only one live, unscoped copy remains, so nothing forms a group.");
     }
 
+    [TestMethod]
+    public void ObservationTheoryEntriesAreSkipped()
+    {
+        // The theory state owns these by id: aging archives the entry and refinement upserts it.
+        // Folding one into a twin would leave the state pointing at an archived id.
+        var groups = DreamService.FindExactDuplicateGroups(
+        [
+            Entry("t1", Fact, "observation/theory/backups"),
+            Entry("t2", Fact, "observation/theory/backups"),
+        ]);
+
+        Assert.AreEqual(0, groups.Count);
+    }
+
     // ── Folding ──────────────────────────────────────────────────────────────
 
     [TestMethod]
