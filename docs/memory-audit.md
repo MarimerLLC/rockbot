@@ -91,7 +91,10 @@ Sunday 05:00 — a Balanced-tier judge is shown a handful of decisions memory ma
 made and asked whether each was correct:
 
 - **merges** made in the last 14 days, alongside the sources they replaced;
-- **near-duplicate pairs** still both live — deduplication that did not happen;
+- **near-duplicate pairs** still both live — deduplication that did not happen. One pair per
+  cluster, clusters the previous eval judged sampled last, so the budget rotates across the corpus
+  instead of re-judging the top-scoring pairs every week. Exact copies the dream's fold will
+  collapse are left out; they need no judgement. Not windowed: an old duplicate is still a miss;
 - **heavily reinforced entries**, checked for having accreted into a vague blob;
 - **facts dropped as ephemeral**, checked for having been durable after all.
 

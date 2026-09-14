@@ -121,6 +121,135 @@ public class MemoryAuditEvaluatorTests
         Assert.AreEqual(1, samples.Count(s => s.Category == MemoryAuditEvaluator.EphemeralArchiveCategory));
     }
 
+    // ── Near-duplicate sampling ──────────────────────────────────────────────
+    //
+    // Taking the top pairs by score re-judged the same pairs every week: identical text always
+    // scored first and one cluster's n(n−1)/2 pairs filled the budget.
+
+    [TestMethod]
+    public void AClusterContributesOnePair()
+    {
+        string[] cluster = ["c1", "c2", "c3", "c4"];
+        var pairs = new List<ShingleSimilarity.Pair>();
+        for (var i = 0; i < cluster.Length; i++)
+            for (var j = i + 1; j < cluster.Length; j++)
+                pairs.Add(new ShingleSimilarity.Pair(
+                    cluster[i], cluster[j], (cluster[i], cluster[j]) == ("c2", "c3") ? 0.95 : 0.7));
+        pairs.Add(new ShingleSimilarity.Pair("x", "y", 0.6));
+
+        var samples = NearDuplicates(
+            [.. cluster.Select(Entry), Entry("x"), Entry("y")], pairs, Options());
+
+        Assert.AreEqual(2, samples.Count);
+        CollectionAssert.AreEqual(new[] { "c2", "c3" }, samples[0].Ids.ToArray());
+        CollectionAssert.AreEqual(new[] { "x", "y" }, samples[1].Ids.ToArray());
+    }
+
+    [TestMethod]
+    public void ClustersJudgedInThePreviousEvalAreSampledLast()
+    {
+        var samples = NearDuplicates(
+            [Entry("a1"), Entry("a2"), Entry("b1"), Entry("b2"), Entry("c1"), Entry("c2")],
+            [
+                new ShingleSimilarity.Pair("a1", "a2", 0.9),
+                new ShingleSimilarity.Pair("b1", "b2", 0.8),
+                new ShingleSimilarity.Pair("c1", "c2", 0.7)
+            ],
+            new MemoryAuditOptions { EvalSampleSize = 2 },
+            previouslyJudgedIds: new HashSet<string> { "a2" });
+
+        CollectionAssert.AreEqual(
+            new[] { "b1", "c1" },
+            samples.Select(s => s.Ids[0]).ToArray());
+    }
+
+    [TestMethod]
+    public void PreviouslyJudgedClustersStillFillLeftoverBudget()
+    {
+        var samples = NearDuplicates(
+            [Entry("a1"), Entry("a2"), Entry("b1"), Entry("b2")],
+            [
+                new ShingleSimilarity.Pair("a1", "a2", 0.9),
+                new ShingleSimilarity.Pair("b1", "b2", 0.8)
+            ],
+            Options(),
+            previouslyJudgedIds: new HashSet<string> { "a1", "b1" });
+
+        Assert.AreEqual(2, samples.Count);
+    }
+
+    [TestMethod]
+    public void ExactCopiesTheDreamFoldsAreNotSampled()
+    {
+        var a = Entry("a") with { Content = "The same fact.", Category = "facts" };
+        var b = Entry("b") with { Content = "The  same fact. ", Category = "facts" };
+
+        var samples = NearDuplicates([a, b], [new ShingleSimilarity.Pair("a", "b", 1.0)], Options());
+
+        Assert.AreEqual(0, samples.Count);
+    }
+
+    [TestMethod]
+    public void IdenticalTextInDifferentCategoriesIsStillSampled()
+    {
+        // The fold requires a matching category, so these stay live and are still a question.
+        var a = Entry("a") with { Content = "The same fact.", Category = "facts" };
+        var b = Entry("b") with { Content = "The same fact.", Category = "preferences" };
+
+        var samples = NearDuplicates([a, b], [new ShingleSimilarity.Pair("a", "b", 1.0)], Options());
+
+        Assert.AreEqual(1, samples.Count);
+    }
+
+    [TestMethod]
+    public void AnExactPairLinkedToADistinctEntryStillSamplesTheCluster()
+    {
+        var a = Entry("a") with { Content = "The same fact.", Category = "facts" };
+        var b = Entry("b") with { Content = "The same fact.", Category = "facts" };
+        var c = Entry("c") with { Content = "The same fact, restated.", Category = "facts" };
+
+        var samples = NearDuplicates(
+            [a, b, c],
+            [
+                new ShingleSimilarity.Pair("a", "b", 1.0),
+                new ShingleSimilarity.Pair("a", "c", 0.8),
+                new ShingleSimilarity.Pair("b", "c", 0.8)
+            ],
+            Options());
+
+        Assert.AreEqual(1, samples.Count);
+        CollectionAssert.Contains(samples[0].Ids.ToArray(), "c");
+    }
+
+    [TestMethod]
+    public void NearDuplicateSelectionIsDeterministic()
+    {
+        var entries = new[] { "a1", "a2", "b1", "b2", "c1", "c2" }.Select(Entry).ToList();
+        var pairs = new List<ShingleSimilarity.Pair>
+        {
+            new("a1", "a2", 0.8),
+            new("b1", "b2", 0.8),
+            new("c1", "c2", 0.8)
+        };
+        var options = new MemoryAuditOptions { EvalSampleSize = 2 };
+
+        var forward = NearDuplicates(entries, pairs, options);
+        var reversed = NearDuplicates([.. entries.AsEnumerable().Reverse()], [.. pairs.AsEnumerable().Reverse()], options);
+
+        CollectionAssert.AreEqual(
+            forward.SelectMany(s => s.Ids).ToArray(),
+            reversed.SelectMany(s => s.Ids).ToArray());
+        CollectionAssert.AreEqual(new[] { "a1", "a2", "b1", "b2" }, forward.SelectMany(s => s.Ids).ToArray());
+    }
+
+    private static List<MemoryAuditEvaluator.Sample> NearDuplicates(
+        IReadOnlyList<MemoryEntry> entries,
+        IReadOnlyList<ShingleSimilarity.Pair> pairs,
+        MemoryAuditOptions options,
+        IReadOnlySet<string>? previouslyJudgedIds = null) =>
+        [.. MemoryAuditEvaluator.SelectSamples(entries, pairs, options, Now, previouslyJudgedIds: previouslyJudgedIds)
+            .Where(s => s.Category == MemoryAuditEvaluator.NearDuplicateCategory)];
+
     [TestMethod]
     public void EachFamilyIsCappedAtTheSampleSize()
     {
