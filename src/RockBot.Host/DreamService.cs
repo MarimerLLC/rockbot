@@ -1149,13 +1149,8 @@ internal sealed class DreamService : IHostedService, IDisposable
         IReadOnlyList<MemoryEntry> entries)
     {
         return [.. entries
-            .Where(e => e.ArchivedAt is null && e.SupersededBy is null)
-            .Where(e => !string.IsNullOrWhiteSpace(e.Content))
-            .Where(e => !FeedbackMemoryCategories.IsFeedbackMemory(e.Category)
-                        && !CapabilityClaimCategories.IsCapabilityClaim(e.Category))
-            .GroupBy(e => (
-                Category: e.Category?.Trim().ToLowerInvariant() ?? string.Empty,
-                Content: CollapseWhitespace(e.Content)))
+            .Where(IsExactDuplicateEligible)
+            .GroupBy(ExactDuplicateKey)
             .Where(g => g.Count() > 1)
             .Select(g => (IReadOnlyList<MemoryEntry>)[.. g
                 .OrderBy(e => e.CreatedAt)
@@ -1163,8 +1158,105 @@ internal sealed class DreamService : IHostedService, IDisposable
             .OrderBy(g => g[0].Id, StringComparer.Ordinal)];
     }
 
+    /// <summary>
+    /// Category prefix of observation theories. The theory state owns those entries by id — aging
+    /// archives them and refinement upserts them — so neither the fold nor the save-time check may
+    /// fold one into another entry.
+    /// </summary>
+    private const string ObservationTheoryCategoryPrefix = "observation/theory/";
+
+    /// <summary>
+    /// Whether an entry takes part in exact-duplicate detection at all: live, non-blank, and not in
+    /// a category whose own pass acts on its entries by id.
+    /// </summary>
+    /// <remarks>
+    /// Shared by the dream's fold and its save-time check so the two can never disagree about
+    /// what "identical" covers.
+    /// </remarks>
+    internal static bool IsExactDuplicateEligible(MemoryEntry entry) =>
+        entry.ArchivedAt is null
+        && entry.SupersededBy is null
+        && !string.IsNullOrWhiteSpace(entry.Content)
+        && !FeedbackMemoryCategories.IsFeedbackMemory(entry.Category)
+        && !CapabilityClaimCategories.IsCapabilityClaim(entry.Category)
+        && !(entry.Category?.Trim().StartsWith(ObservationTheoryCategoryPrefix, StringComparison.OrdinalIgnoreCase) ?? false);
+
+    /// <summary>
+    /// The identity two exact duplicates share: category trimmed and lower-cased, content with its
+    /// whitespace runs collapsed. Content case is kept — see <see cref="FindExactDuplicateGroups"/>.
+    /// </summary>
+    internal static (string Category, string Content) ExactDuplicateKey(MemoryEntry entry) => (
+        Category: entry.Category?.Trim().ToLowerInvariant() ?? string.Empty,
+        Content: CollapseWhitespace(entry.Content));
+
     private static string CollapseWhitespace(string text) =>
         Regex.Replace(text, @"\s+", " ").Trim();
+
+    /// <summary>
+    /// The oldest live entry that is an exact duplicate of <paramref name="candidate"/>, or
+    /// <see langword="null"/> when there is none, the candidate isn't eligible, or
+    /// <see cref="DreamOptions.MemoryExactDuplicateFoldEnabled"/> is off.
+    /// </summary>
+    /// <param name="candidate">The entry about to be written.</param>
+    /// <param name="excludeIds">Ids that must not be matched, besides the candidate's own.</param>
+    /// <param name="ct">Cancellation.</param>
+    /// <remarks>
+    /// A query-less category search is an in-memory index filter on the file store, so this costs
+    /// no ranking and no embedding. The category criterion is a prefix match, hence the exact key
+    /// comparison after it; an uncategorized candidate searches the whole corpus and keeps only
+    /// uncategorized entries. The oldest match wins, the same survivor the fold would pick.
+    /// </remarks>
+    private async Task<MemoryEntry?> FindExactDuplicateAsync(
+        MemoryEntry candidate, ISet<string>? excludeIds, CancellationToken ct)
+    {
+        if (!_options.MemoryExactDuplicateFoldEnabled || !IsExactDuplicateEligible(candidate))
+            return null;
+
+        var category = string.IsNullOrWhiteSpace(candidate.Category) ? null : candidate.Category.Trim();
+        var matches = await _memory.SearchAsync(
+            new MemorySearchCriteria(Category: category, MaxResults: int.MaxValue), ct);
+
+        var key = ExactDuplicateKey(candidate);
+
+        return matches
+            .Where(e => !string.Equals(e.Id, candidate.Id, StringComparison.OrdinalIgnoreCase))
+            .Where(e => excludeIds is null || !excludeIds.Contains(e.Id))
+            .Where(IsExactDuplicateEligible)
+            .Where(e => ExactDuplicateKey(e) == key)
+            .OrderBy(e => e.CreatedAt)
+            .ThenBy(e => e.Id, StringComparer.Ordinal)
+            .FirstOrDefault();
+    }
+
+    /// <summary>
+    /// Saves <paramref name="entry"/>, or reinforces the live entry that already holds exactly the
+    /// same text in the same category.
+    /// </summary>
+    /// <remarks>
+    /// For dream passes that write new entries without any duplicate check. When a pass restates a
+    /// fact it stored on an earlier cycle, the old write produced a byte-identical copy for the fold
+    /// to clean up afterwards. Only identical text is matched: anything looser would need the
+    /// fuzzy deduplicator, whose extend step appends text, and these passes must not rewrite what
+    /// is already stored.
+    /// </remarks>
+    internal async Task<MemorySaveOutcome> SaveOrReinforceExactAsync(MemoryEntry entry, CancellationToken ct)
+    {
+        var existing = await FindExactDuplicateAsync(entry, excludeIds: null, ct);
+        if (existing is null)
+        {
+            await _memory.SaveAsync(entry, ct);
+            return new MemorySaveOutcome(MemorySaveAction.Created, entry.Id);
+        }
+
+        var reinforced = MemoryDeduplicator.Reinforce(existing, entry, DateTimeOffset.UtcNow);
+        await _memory.SaveAsync(reinforced, ct);
+
+        _logger.LogInformation(
+            "DreamService: reinforced {Id} instead of creating an identical copy ({Category}, reinforced={Count}×): {Content}",
+            existing.Id, existing.Category ?? "(none)", reinforced.ReinforcementCount, existing.Content);
+
+        return new MemorySaveOutcome(MemorySaveAction.Reinforced, existing.Id);
+    }
 
     /// <summary>
     /// The survivor of an exact-duplicate group with every other copy's evidence folded in.
@@ -1214,6 +1306,61 @@ internal sealed class DreamService : IHostedService, IDisposable
             ImportanceScore = copies.Select(c => c.ImportanceScore).Append(survivor.ImportanceScore).Max(),
             LastSeenAt = copies.Select(c => c.LastSeenAt).Append(survivor.LastSeenAt).Max(),
             ReinforcementCount = survivor.ReinforcementCount + copies.Sum(c => c.ReinforcementCount),
+        };
+    }
+
+    /// <summary>
+    /// An existing live entry with a consolidation merge folded in, for a merge whose text
+    /// turned out to be exactly what that entry already says.
+    /// </summary>
+    /// <param name="existing">The live entry the merge text duplicates.</param>
+    /// <param name="merged">The merge entry as it would have been saved; its counters already sum its sources.</param>
+    /// <param name="sources">The merge's sources, which will be archived into <paramref name="existing"/>.</param>
+    /// <param name="now">Stamp for <see cref="MergedAtKey"/>.</param>
+    /// <remarks>
+    /// Same arithmetic as <see cref="FoldExactDuplicates"/>, and the text and
+    /// <see cref="MemoryEntry.UpdatedAt"/> stay untouched for the same reasons. The difference is
+    /// provenance: the sources were genuinely merged into this text, so their ids go on
+    /// <see cref="MergedFromKey"/>, appended to any the entry already carries, and the audit's
+    /// merge-chain check can follow their <c>"merged into"</c> archive reason to a live entry.
+    /// </remarks>
+    internal static MemoryEntry FoldMergeIntoExisting(
+        MemoryEntry existing, MemoryEntry merged, IReadOnlyList<MemoryEntry> sources, DateTimeOffset now)
+    {
+        var tags = new List<string>(existing.Tags);
+        foreach (var tag in merged.Tags)
+            if (!tags.Contains(tag, StringComparer.OrdinalIgnoreCase))
+                tags.Add(tag);
+
+        var metadata = existing.Metadata is null
+            ? new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+            : new Dictionary<string, string>(existing.Metadata, StringComparer.OrdinalIgnoreCase);
+
+        foreach (var (key, value) in merged.Metadata ?? new Dictionary<string, string>())
+            if (!NonFoldableMetadataKeys.Contains(key) && !metadata.ContainsKey(key))
+                metadata[key] = value;
+
+        var mergedFrom = metadata.TryGetValue(MergedFromKey, out var prior) && !string.IsNullOrWhiteSpace(prior)
+            ? prior.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToList()
+            : [];
+        foreach (var source in sources)
+            if (!mergedFrom.Contains(source.Id, StringComparer.OrdinalIgnoreCase))
+                mergedFrom.Add(source.Id);
+
+        if (mergedFrom.Count > 0)
+        {
+            metadata[MergedFromKey] = string.Join(",", mergedFrom);
+            metadata[MergedAtKey] = now.ToString("O");
+        }
+
+        return existing with
+        {
+            Tags = tags,
+            Metadata = metadata,
+            CreatedAt = merged.CreatedAt < existing.CreatedAt ? merged.CreatedAt : existing.CreatedAt,
+            ImportanceScore = Math.Max(existing.ImportanceScore, merged.ImportanceScore),
+            LastSeenAt = merged.LastSeenAt > existing.LastSeenAt ? merged.LastSeenAt : existing.LastSeenAt,
+            ReinforcementCount = existing.ReinforcementCount + merged.ReinforcementCount,
         };
     }
 
@@ -1448,6 +1595,10 @@ internal sealed class DreamService : IHostedService, IDisposable
         // blank content or the pass threw between the two loops.
         var archiveReasons = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 
+        // Live entries a merge was folded into. They just absorbed their sources, so the model
+        // pruning one in the same response would discard the merge with nothing in its place.
+        var foldTargets = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
         foreach (var dto in result.ToSave ?? [])
         {
             if (string.IsNullOrWhiteSpace(dto.Content))
@@ -1566,6 +1717,39 @@ internal sealed class DreamService : IHostedService, IDisposable
                 ReinforcementCount = reinforcementCount
             };
 
+            // A merge that restates a live entry verbatim would otherwise leave two identical
+            // copies for the next cycle's fold. Its own sources are excluded, so a merge that
+            // keeps one source's text still lands as a new entry, and so is anything already
+            // due to be archived — folding into an entry about to be retired would orphan it.
+            var foldTarget = await FindExactDuplicateAsync(
+                entry,
+                new HashSet<string>(sourceIds.Concat(archiveReasons.Keys), StringComparer.OrdinalIgnoreCase),
+                ct);
+
+            if (foldTarget is not null)
+            {
+                var absorbed = FoldMergeIntoExisting(foldTarget, entry, sources, DateTimeOffset.UtcNow);
+                await _memory.SaveAsync(absorbed, ct);
+                saved++;
+                foldTargets.Add(foldTarget.Id);
+
+                // A later merge in this pass may name the target as a source; its arithmetic
+                // must start from the folded counters, not the pre-fold snapshot.
+                if (byId.ContainsKey(foldTarget.Id))
+                    byId[foldTarget.Id] = absorbed;
+
+                _logger.LogInformation(
+                    "DreamService: merge of [{Sources}] folded into existing {Id} — identical text ({Category}, reinforced={Count}×): {Content}",
+                    string.Join(", ", sources.Select(s => s.Id)), foldTarget.Id,
+                    foldTarget.Category ?? "(none)", absorbed.ReinforcementCount, foldTarget.Content);
+
+                foreach (var srcId in sourceIds)
+                    if (byId.ContainsKey(srcId))
+                        archiveReasons[srcId] = $"{MergedIntoReasonPrefix}{foldTarget.Id}";
+
+                continue;
+            }
+
             await _memory.SaveAsync(entry);
             saved++;
             _logger.LogDebug("DreamService: saved entry {Id} ({Category}, importance={Importance:F2}, reinforced={Count}×): {Content}",
@@ -1589,6 +1773,13 @@ internal sealed class DreamService : IHostedService, IDisposable
 
             if (rejectedMergeSources.Contains(id))
                 continue;
+
+            if (foldTargets.Contains(id))
+            {
+                _logger.LogInformation(
+                    "DreamService: ignored prune of {Id} — a merge in this pass was folded into it", id);
+                continue;
+            }
 
             if (IsProtectedFromPruning(candidate, _options))
             {
@@ -2644,7 +2835,14 @@ internal sealed class DreamService : IHostedService, IDisposable
                     Metadata: metadata,
                     ImportanceScore: Math.Clamp(dto.Importance ?? 0.5f, 0f, 1f));
 
-                await _memory.SaveAsync(entry);
+                // The episode list shown to the model is capped, so it can restate an episode it
+                // wasn't shown rather than reinforcing it by id.
+                if ((await SaveOrReinforceExactAsync(entry, ct)).Action == MemorySaveAction.Reinforced)
+                {
+                    reinforced++;
+                    continue;
+                }
+
                 created++;
                 _logger.LogDebug("DreamService: created episode {Id} ({Category}, importance={Importance}): {Content}",
                     entry.Id, entry.Category, metadata["importance"], entry.Content);
@@ -3796,6 +3994,7 @@ internal sealed class DreamService : IHostedService, IDisposable
             if (result is not null)
             {
                 var saved = 0;
+                var reinforced = 0;
 
                 foreach (var dto in result.ToSave ?? [])
                 {
@@ -3824,12 +4023,19 @@ internal sealed class DreamService : IHostedService, IDisposable
                         UpdatedAt: DateTimeOffset.UtcNow,
                         Metadata: metadata);
 
-                    await _memory.SaveAsync(entry);
+                    if ((await SaveOrReinforceExactAsync(entry, ct)).Action == MemorySaveAction.Reinforced)
+                    {
+                        reinforced++;
+                        continue;
+                    }
+
                     saved++;
                     _logger.LogDebug("DreamService: saved inferred preference {Id}: {Content}", entry.Id, entry.Content);
                 }
 
-                _logger.LogInformation("DreamService: preference inference pass complete — {Saved} preference(s) inferred", saved);
+                _logger.LogInformation(
+                    "DreamService: preference inference pass complete — {Saved} preference(s) inferred, {Reinforced} reinforced",
+                    saved, reinforced);
             }
             });
         }
@@ -3948,6 +4154,7 @@ internal sealed class DreamService : IHostedService, IDisposable
         if (result.AntiPatterns is { Count: > 0 })
         {
             var savedAntiPatterns = 0;
+            var reinforcedAntiPatterns = 0;
             foreach (var ap in result.AntiPatterns)
             {
                 if (string.IsNullOrWhiteSpace(ap.Content)) continue;
@@ -3964,15 +4171,20 @@ internal sealed class DreamService : IHostedService, IDisposable
                     CreatedAt: DateTimeOffset.UtcNow,
                     UpdatedAt: DateTimeOffset.UtcNow);
 
-                await _memory.SaveAsync(entry);
+                if ((await SaveOrReinforceExactAsync(entry, ct)).Action == MemorySaveAction.Reinforced)
+                {
+                    reinforcedAntiPatterns++;
+                    continue;
+                }
+
                 savedAntiPatterns++;
                 _logger.LogInformation(
                     "DreamService: tier routing review saved anti-pattern entry: {Content}",
                     ap.Content);
             }
             _logger.LogInformation(
-                "DreamService: tier routing review — {Count} anti-pattern entry(ies) saved",
-                savedAntiPatterns);
+                "DreamService: tier routing review — {Count} anti-pattern entry(ies) saved, {Reinforced} reinforced",
+                savedAntiPatterns, reinforcedAntiPatterns);
         }
 
         if (result.NoChangeNeeded == true)
@@ -4880,6 +5092,7 @@ internal sealed class DreamService : IHostedService, IDisposable
             }
 
             var savedPatterns = 0;
+            var reinforcedPatterns = 0;
             foreach (var pattern in result.Patterns ?? [])
             {
                 if (string.IsNullOrWhiteSpace(pattern.Content)) continue;
@@ -4896,7 +5109,12 @@ internal sealed class DreamService : IHostedService, IDisposable
                     CreatedAt: DateTimeOffset.UtcNow,
                     UpdatedAt: DateTimeOffset.UtcNow);
 
-                await _memory.SaveAsync(entry);
+                if ((await SaveOrReinforceExactAsync(entry, ct)).Action == MemorySaveAction.Reinforced)
+                {
+                    reinforcedPatterns++;
+                    continue;
+                }
+
                 savedPatterns++;
                 _logger.LogInformation(
                     "DreamService: DLQ review saved pattern: {Content}", pattern.Content);
@@ -4921,8 +5139,8 @@ internal sealed class DreamService : IHostedService, IDisposable
             }
 
             _logger.LogInformation(
-                "DreamService: DLQ review complete — {Patterns} pattern(s) saved, {Purged} queue(s) purged",
-                savedPatterns, purged);
+                "DreamService: DLQ review complete — {Patterns} pattern(s) saved, {Reinforced} reinforced, {Purged} queue(s) purged",
+                savedPatterns, reinforcedPatterns, purged);
         });
     }
 
