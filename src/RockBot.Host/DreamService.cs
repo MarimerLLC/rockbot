@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using Cronos;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Hosting;
@@ -1104,6 +1105,172 @@ internal sealed class DreamService : IHostedService, IDisposable
         }
     }
 
+    /// <summary>Metadata key listing the IDs of exact duplicates folded into an entry (comma-separated).</summary>
+    /// <remarks>
+    /// Kept apart from <see cref="MergedFromKey"/> on purpose. The audit reads that key as "this
+    /// text is model prose built from these sources" — it drives merge-chain depth and the eval's
+    /// merge sample — and a fold wrote no new text at all.
+    /// </remarks>
+    internal const string FoldedFromKey = "foldedFrom";
+
+    /// <summary>Metadata key holding when exact duplicates were last folded into an entry.</summary>
+    internal const string FoldedAtKey = "foldedAt";
+
+    /// <summary>
+    /// Metadata a folded copy never contributes to its survivor: per-entry bookkeeping that
+    /// describes that copy's own history rather than the fact both copies state.
+    /// </summary>
+    private static readonly HashSet<string> NonFoldableMetadataKeys = new(StringComparer.OrdinalIgnoreCase)
+    {
+        MergedFromKey,
+        MergedAtKey,
+        FoldedFromKey,
+        FoldedAtKey,
+        ConsolidationReviewedHashKey,
+        ConsolidationReviewedAtKey,
+        ConsolidationRejectedClusterKey,
+        ConsolidationRejectedAtKey,
+    };
+
+    /// <summary>
+    /// Groups live entries that are exact duplicates: same category, same content once
+    /// whitespace runs are collapsed. Each group is ordered survivor first — the earliest
+    /// created, ties broken by id — and only groups of two or more are returned.
+    /// </summary>
+    /// <remarks>
+    /// Comparison is ordinal and case-sensitive on purpose. Anything looser is a judgement about
+    /// whether two texts mean the same thing, and that judgement belongs to consolidation.
+    /// Category must match too: it decides where an entry surfaces (an <c>active-plans/</c>
+    /// entry is read by the patrol, a preference is not), so identical text filed in two places
+    /// is not provably one fact. Feedback and capability-claim entries are skipped for the same
+    /// reason <see cref="MemoryDeduplicator"/> skips them — their own passes act on them by id.
+    /// </remarks>
+    internal static IReadOnlyList<IReadOnlyList<MemoryEntry>> FindExactDuplicateGroups(
+        IReadOnlyList<MemoryEntry> entries)
+    {
+        return [.. entries
+            .Where(e => e.ArchivedAt is null && e.SupersededBy is null)
+            .Where(e => !string.IsNullOrWhiteSpace(e.Content))
+            .Where(e => !FeedbackMemoryCategories.IsFeedbackMemory(e.Category)
+                        && !CapabilityClaimCategories.IsCapabilityClaim(e.Category))
+            .GroupBy(e => (
+                Category: e.Category?.Trim().ToLowerInvariant() ?? string.Empty,
+                Content: CollapseWhitespace(e.Content)))
+            .Where(g => g.Count() > 1)
+            .Select(g => (IReadOnlyList<MemoryEntry>)[.. g
+                .OrderBy(e => e.CreatedAt)
+                .ThenBy(e => e.Id, StringComparer.Ordinal)])
+            .OrderBy(g => g[0].Id, StringComparer.Ordinal)];
+    }
+
+    private static string CollapseWhitespace(string text) =>
+        Regex.Replace(text, @"\s+", " ").Trim();
+
+    /// <summary>
+    /// The survivor of an exact-duplicate group with every other copy's evidence folded in.
+    /// Its content is untouched, so its consolidation-reviewed stamp stays valid.
+    /// </summary>
+    /// <remarks>
+    /// Counters follow the merge arithmetic: reinforcement sums, importance and last-seen take
+    /// the maximum, first-seen the minimum. <see cref="MemoryEntry.UpdatedAt"/> is left alone
+    /// for the reason <see cref="MemoryDeduplicator.Reinforce"/> gives — it anchors importance
+    /// decay, and no text changed. Metadata the survivor lacks is copied from the others, first
+    /// value wins, except bookkeeping that belongs to one copy's own history.
+    /// </remarks>
+    internal static MemoryEntry FoldExactDuplicates(
+        MemoryEntry survivor, IReadOnlyList<MemoryEntry> copies, DateTimeOffset now)
+    {
+        var tags = new List<string>(survivor.Tags);
+        var metadata = survivor.Metadata is null
+            ? new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+            : new Dictionary<string, string>(survivor.Metadata, StringComparer.OrdinalIgnoreCase);
+
+        foreach (var copy in copies)
+        {
+            foreach (var tag in copy.Tags)
+                if (!tags.Contains(tag, StringComparer.OrdinalIgnoreCase))
+                    tags.Add(tag);
+
+            foreach (var (key, value) in copy.Metadata ?? new Dictionary<string, string>())
+                if (!NonFoldableMetadataKeys.Contains(key) && !metadata.ContainsKey(key))
+                    metadata[key] = value;
+        }
+
+        var foldedFrom = metadata.TryGetValue(FoldedFromKey, out var existing) && !string.IsNullOrWhiteSpace(existing)
+            ? existing.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToList()
+            : [];
+        foreach (var copy in copies)
+            if (!foldedFrom.Contains(copy.Id, StringComparer.OrdinalIgnoreCase))
+                foldedFrom.Add(copy.Id);
+
+        metadata[FoldedFromKey] = string.Join(",", foldedFrom);
+        metadata[FoldedAtKey] = now.ToString("O");
+
+        return survivor with
+        {
+            Tags = tags,
+            Metadata = metadata,
+            CreatedAt = copies.Select(c => c.CreatedAt).Append(survivor.CreatedAt).Min(),
+            ImportanceScore = copies.Select(c => c.ImportanceScore).Append(survivor.ImportanceScore).Max(),
+            LastSeenAt = copies.Select(c => c.LastSeenAt).Append(survivor.LastSeenAt).Max(),
+            ReinforcementCount = survivor.ReinforcementCount + copies.Sum(c => c.ReinforcementCount),
+        };
+    }
+
+    /// <summary>
+    /// Folds exact-duplicate live entries into one without an LLM call. Returns how many copies
+    /// were archived.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Identical text needs no judgement to merge, and leaving it to the model has a measured
+    /// failure: once every member of a duplicate cluster carries a matching reviewed stamp,
+    /// <see cref="SelectConsolidationCandidatesAsync"/> treats the cluster as settled and never
+    /// offers it again, so a pass that declined to merge byte-identical copies once left them
+    /// live for good. A live corpus held 14 such groups, several a month old.
+    /// </para>
+    /// <para>
+    /// Same ordering as a merge: the survivor is saved before any copy is archived, and copies
+    /// are archived <c>"merged into"</c> it rather than deleted, which keeps them recoverable and
+    /// keeps the audit's <c>merge-chain-unbroken</c> check meaningful.
+    /// </para>
+    /// </remarks>
+    private async Task<int> FoldExactDuplicatesAsync(IReadOnlyList<MemoryEntry> all, CancellationToken ct)
+    {
+        var groups = FindExactDuplicateGroups(all);
+        if (groups.Count == 0) return 0;
+
+        var now = DateTimeOffset.UtcNow;
+        var archived = 0;
+
+        foreach (var group in groups)
+        {
+            ct.ThrowIfCancellationRequested();
+
+            var survivor = group[0];
+            var copies = group.Skip(1).ToList();
+
+            await _memory.SaveAsync(FoldExactDuplicates(survivor, copies, now), ct);
+
+            foreach (var copy in copies)
+            {
+                await _memory.ArchiveAsync(copy.Id, $"{MergedIntoReasonPrefix}{survivor.Id}", ct);
+                archived++;
+            }
+
+            _logger.LogInformation(
+                "DreamService: folded {Count} exact duplicate(s) [{Copies}] into {Survivor} ({Category}): {Content}",
+                copies.Count, string.Join(", ", copies.Select(c => c.Id)), survivor.Id,
+                survivor.Category ?? "(none)", survivor.Content);
+        }
+
+        _logger.LogInformation(
+            "DreamService: exact-duplicate fold — {Archived} copy(s) folded across {Groups} group(s)",
+            archived, groups.Count);
+
+        return archived;
+    }
+
     /// <summary>
     /// Merges and prunes long-term memory entries via the "memory dream" pass.
     /// Returns the number of entries deleted and saved.
@@ -1117,7 +1284,7 @@ internal sealed class DreamService : IHostedService, IDisposable
     /// </remarks>
     internal async Task<(int Deleted, int Saved)> RunMemoryConsolidationPassAsync(CancellationToken ct)
     {
-        if (!_options.MemoryConsolidationEnabled)
+        if (!_options.MemoryConsolidationEnabled && !_options.MemoryExactDuplicateFoldEnabled)
         {
             _logger.LogInformation("DreamService: memory consolidation disabled; skipping");
             return (0, 0);
@@ -1137,12 +1304,28 @@ internal sealed class DreamService : IHostedService, IDisposable
 
         var all = await _memory.SearchAsync(new MemorySearchCriteria(MaxResults: 1000));
 
+        // Before anything else reads the snapshot: the decay pass below writes entries back from
+        // it, and would revert a survivor's folded counters if it ran on the pre-fold copy.
+        var folded = 0;
+        if (_options.MemoryExactDuplicateFoldEnabled && all.Count >= 2)
+        {
+            folded = await FoldExactDuplicatesAsync(all, ct);
+            if (folded > 0)
+                all = await _memory.SearchAsync(new MemorySearchCriteria(MaxResults: 1000));
+        }
+
+        if (!_options.MemoryConsolidationEnabled)
+        {
+            _logger.LogInformation("DreamService: memory consolidation disabled; skipping");
+            return (folded, 0);
+        }
+
         if (all.Count < 2)
         {
             _logger.LogInformation(
                 "DreamService: only {Count} memory entries — nothing to consolidate; skipping consolidation",
                 all.Count);
-            return (0, 0);
+            return (folded, 0);
         }
 
         _logger.LogDebug("DreamService: fetched {Count} memory entries for consolidation", all.Count);
@@ -1161,7 +1344,7 @@ internal sealed class DreamService : IHostedService, IDisposable
             _logger.LogInformation(
                 "DreamService: {Withheld} of {Total} entries already reviewed and unchanged with no duplicate siblings — nothing eligible to consolidate",
                 withheld, all.Count);
-            return (0, 0);
+            return (folded, 0);
         }
 
         // A dream cycle fires five minutes after every process start, so a day of deploys is a
@@ -1178,7 +1361,7 @@ internal sealed class DreamService : IHostedService, IDisposable
                 _logger.LogInformation(
                     "DreamService: memory consolidation skipped — last completed {Age:g} ago, minimum interval {Interval:g}",
                     _clock.Now - record!.LastRunAt, _options.ConsolidationMinInterval);
-                return (0, 0);
+                return (folded, 0);
             }
         }
 
@@ -1238,9 +1421,9 @@ internal sealed class DreamService : IHostedService, IDisposable
             _dreamDirective!,
             userMessage.ToString(),
             ct);
-        if (result is null) return (0, 0);
+        if (result is null) return (folded, 0);
 
-        var deleted = 0;
+        var deleted = folded;
         var saved = 0;
         var rejectedMerges = 0;
         var repairedMerges = 0;

@@ -146,6 +146,22 @@ returns without calling the LLM. Completion is recorded in the dream pass ledger
 profile volume, so the interval survives the restarts it exists to absorb. Set it to zero to
 disable the floor.
 
+**Exact duplicates are folded first, without the LLM.** Before decay, gating or any model call,
+the pass groups live entries that share a category and whose content is identical once
+whitespace is collapsed. The oldest copy survives with its text unchanged. The other copies'
+tags, reinforcement count (summed), importance and last-seen (maximum) and any metadata the
+survivor lacks are folded into it, and the copies are archived `merged into <survivor>`. The
+survivor lists them under `foldedFrom`, not `mergedFrom`, because the audit reads `mergedFrom`
+as model-written prose and a fold writes none. Copies in different categories, and feedback or
+capability-claim entries, are left for consolidation.
+
+This closes a gap the reviewed-and-unchanged gate opened. Once the model had seen a cluster of
+byte-identical copies and declined to merge them, every member carried a matching stamp, the
+cluster read as settled, and the copies stayed live for good. The fold is controlled by
+`Dream:MemoryExactDuplicateFoldEnabled` (default `true`) independently of
+`Dream:MemoryConsolidationEnabled`, since that toggle guards against LLM rewrites and a fold
+rewrites nothing. The audit's pause marker still stops it.
+
 **Duplicates are avoided at save time, not just merged here.** `IMemoryDeduplicator` compares
 an incoming entry against the live corpus before writing it, and reinforces or extends the
 matching entry instead of creating a near-copy — see [memory.md](memory.md). Consolidation is
@@ -553,6 +569,7 @@ public sealed class DreamOptions
     public TimeSpan TierRoutingReviewWindow { get; set; } = TimeSpan.FromDays(14);
 
     // Memory consolidation (Pass 1)
+    public bool MemoryExactDuplicateFoldEnabled { get; set; } = true;
     public TimeSpan ConsolidationMinInterval { get; set; } = TimeSpan.FromHours(6);
     public bool MergeRepairEnabled { get; set; } = true;
     public int MergeRepairMaxPerCycle { get; set; } = 10;
