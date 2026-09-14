@@ -446,8 +446,9 @@ internal sealed class MemoryAuditService : IHostedService, IDisposable, IPrunabl
                 ResolveUnderProfile(_dreamOptions.MergeCoverageVocabularyPath), _logger, nameof(MemoryAuditService));
             // Read before this run overwrites eval-latest.json.
             var previouslyJudged = await ReadPreviousNearDuplicateIdsAsync(token);
+            var liveNeighbours = await FindEphemeralNeighboursAsync(walk.Entries, now, token);
             var samples = MemoryAuditEvaluator.SelectSamples(
-                walk.Entries, pairs, _options, now, vocabulary, previouslyJudged);
+                walk.Entries, pairs, _options, now, vocabulary, previouslyJudged, liveNeighbours);
             if (samples.Count == 0)
             {
                 _logger.LogInformation("MemoryAuditService: sample eval found nothing to judge");
@@ -765,6 +766,46 @@ internal sealed class MemoryAuditService : IHostedService, IDisposable, IPrunabl
 
     private async Task<MemoryAuditEvalSummary?> ReadEvalSummaryAsync(CancellationToken ct) =>
         (await ReadEvalLatestAsync(ct))?.Summary;
+
+    /// <summary>
+    /// The live entries most similar to each ephemeral discard the eval will judge, searched
+    /// across every category. <see langword="null"/> when the store cannot rank similarity or the
+    /// lookup is turned off, so the samples say live memory was not searched.
+    /// </summary>
+    /// <remarks>
+    /// Reads through the store rather than the file walk because only the store holds the
+    /// embeddings; it still writes nothing. A discard whose lookup fails is left out of the map
+    /// and its sample says the search failed, rather than costing the whole eval.
+    /// </remarks>
+    private async Task<IReadOnlyDictionary<string, IReadOnlyList<MemorySimilarityMatch>>?> FindEphemeralNeighboursAsync(
+        IReadOnlyList<MemoryEntry> entries,
+        DateTimeOffset now,
+        CancellationToken ct)
+    {
+        if (_memory is not IMemorySimilarityLookup lookup || _options.EvalEphemeralContextCount <= 0)
+            return null;
+
+        var neighbours = new Dictionary<string, IReadOnlyList<MemorySimilarityMatch>>(StringComparer.OrdinalIgnoreCase);
+        foreach (var discard in MemoryAuditEvaluator.SelectEphemeralDiscards(entries, _options, now))
+        {
+            try
+            {
+                neighbours[discard.Id] = await lookup.FindSimilarAsync(
+                    discard, _options.EvalEphemeralContextCount, acrossCategories: true, ct);
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex,
+                    "MemoryAuditService: could not search live memory for entries like discard {Id}", discard.Id);
+            }
+        }
+
+        return neighbours;
+    }
 
     /// <summary>
     /// Entry ids the previous eval judged as near-duplicates, so this run's sample can rotate to

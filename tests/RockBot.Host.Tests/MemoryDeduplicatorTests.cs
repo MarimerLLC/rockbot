@@ -346,6 +346,10 @@ public class MemoryDeduplicatorTests
             LookupCalls++;
             return Task.FromResult(LookupOverride is not null ? LookupOverride(candidate) : NextMatch);
         }
+
+        public Task<IReadOnlyList<MemorySimilarityMatch>> FindSimilarAsync(
+            MemoryEntry candidate, int count, bool acrossCategories, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException("The save path decides on the single closest match only.");
     }
 }
 

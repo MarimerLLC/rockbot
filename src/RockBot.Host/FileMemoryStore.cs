@@ -524,8 +524,43 @@ internal sealed partial class FileMemoryStore
         MemoryEntry candidate,
         CancellationToken cancellationToken = default)
     {
+        var scored = await ScoreLiveEntriesAsync(candidate, acrossCategories: false, cancellationToken);
+
+        // Entries arrive in id order and MaxBy keeps the first of a tie, so the winner is stable.
+        return scored.MaxBy(m => m.Score);
+    }
+
+    public async Task<IReadOnlyList<MemorySimilarityMatch>> FindSimilarAsync(
+        MemoryEntry candidate,
+        int count,
+        bool acrossCategories,
+        CancellationToken cancellationToken = default)
+    {
+        if (count <= 0)
+            return [];
+
+        var scored = await ScoreLiveEntriesAsync(candidate, acrossCategories, cancellationToken);
+
+        // A lexical score of zero shares no token with the candidate: listing it tells the caller
+        // nothing, and across categories the store is full of them.
+        return [.. scored
+            .Where(m => m.Measure != MemorySimilarityMeasure.Lexical || m.Score > 0)
+            .OrderByDescending(m => m.Score)
+            .ThenBy(m => m.Entry.Id, StringComparer.Ordinal)
+            .Take(count)];
+    }
+
+    /// <summary>
+    /// Scores every live entry comparable to <paramref name="candidate"/>, in id order, all on one
+    /// measure: cosine when the store has vectors, Jaccard over content tokens otherwise.
+    /// </summary>
+    private async Task<List<MemorySimilarityMatch>> ScoreLiveEntriesAsync(
+        MemoryEntry candidate,
+        bool acrossCategories,
+        CancellationToken cancellationToken)
+    {
         if (string.IsNullOrWhiteSpace(candidate.Content))
-            return null;
+            return [];
 
         var scope = TopLevelCategory(candidate.Category);
 
@@ -537,7 +572,7 @@ internal sealed partial class FileMemoryStore
             entries = index.Values
                 .Where(e => e.ArchivedAt is null && e.SupersededBy is null)
                 .Where(e => !string.Equals(e.Id, candidate.Id, StringComparison.OrdinalIgnoreCase))
-                .Where(e => string.Equals(
+                .Where(e => acrossCategories || string.Equals(
                     TopLevelCategory(e.Category), scope, StringComparison.OrdinalIgnoreCase))
                 .OrderBy(e => e.Id, StringComparer.Ordinal)
                 .ToList();
@@ -548,7 +583,7 @@ internal sealed partial class FileMemoryStore
         }
 
         if (entries.Count == 0)
-            return null;
+            return [];
 
         if (_embeddingCache is not null)
         {
@@ -560,48 +595,28 @@ internal sealed partial class FileMemoryStore
                 var batch = entries.Select(e => (e.Id, Text: GetDocumentText(e))).ToList();
                 var map = await _embeddingCache.GetOrCreateBatchAsync(batch, cancellationToken);
 
-                MemoryEntry? best = null;
-                var bestScore = double.NegativeInfinity;
-
+                var embedded = new List<MemorySimilarityMatch>();
                 foreach (var entry in entries)
                 {
                     if (map.GetValueOrDefault(entry.Id) is not { } vector)
                         continue;
 
-                    var score = EmbeddingCache.CosineSimilarity(queryVector, vector);
-                    if (score > bestScore)
-                    {
-                        bestScore = score;
-                        best = entry;
-                    }
+                    embedded.Add(new MemorySimilarityMatch(
+                        entry, EmbeddingCache.CosineSimilarity(queryVector, vector), MemorySimilarityMeasure.Embedding));
                 }
 
                 // Only when every vector is missing does this fall through to the lexical scan.
-                // Mixing a cosine score and a Jaccard score in one argmax would compare two
+                // Mixing a cosine score and a Jaccard score in one ranking would compare two
                 // different scales and hand the caller a number its threshold cannot interpret.
-                if (best is not null)
-                    return new MemorySimilarityMatch(best, bestScore, MemorySimilarityMeasure.Embedding);
+                if (embedded.Count > 0)
+                    return embedded;
             }
         }
 
         var candidateTokens = Tokenize(candidate.Content);
 
-        MemoryEntry? lexicalBest = null;
-        var lexicalBestScore = double.NegativeInfinity;
-
-        foreach (var entry in entries)
-        {
-            var score = Jaccard(candidateTokens, Tokenize(entry.Content));
-            if (score > lexicalBestScore)
-            {
-                lexicalBestScore = score;
-                lexicalBest = entry;
-            }
-        }
-
-        return lexicalBest is null
-            ? null
-            : new MemorySimilarityMatch(lexicalBest, lexicalBestScore, MemorySimilarityMeasure.Lexical);
+        return [.. entries.Select(entry => new MemorySimilarityMatch(
+            entry, Jaccard(candidateTokens, Tokenize(entry.Content)), MemorySimilarityMeasure.Lexical))];
     }
 
     /// <summary>

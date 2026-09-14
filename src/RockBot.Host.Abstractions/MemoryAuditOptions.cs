@@ -163,6 +163,18 @@ public sealed class MemoryAuditOptions
     public TimeSpan EvalWindow { get; set; } = TimeSpan.FromDays(14);
 
     /// <summary>
+    /// How many of the most similar live entries are shown to the judge beside each discarded
+    /// ephemeral-archive sample. Defaults to 5; 0 turns the lookup off.
+    /// </summary>
+    /// <remarks>
+    /// A discard only loses a fact if nothing live still carries it. Judged alone, a discard that
+    /// restated a fact kept elsewhere reads as a loss, and the family once scored 50% on
+    /// decisions that were almost all right. The lookup spans every category, because the
+    /// survivor is routinely filed under a different one.
+    /// </remarks>
+    public int EvalEphemeralContextCount { get; set; } = 5;
+
+    /// <summary>
     /// Judge directive file. When relative, resolved under
     /// <see cref="AgentProfileOptions.BasePath"/>. Defaults to <c>"memory-audit.md"</c>.
     /// </summary>

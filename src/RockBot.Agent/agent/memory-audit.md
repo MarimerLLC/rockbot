@@ -12,8 +12,11 @@ irreversible; a surviving duplicate is a nuisance that any later pass can still 
   is NOT sound, however much tidier the result reads. "The user has accounts across providers"
   is not a sound replacement for two entries that named the providers. A merge that preserved
   every specific but changed what the fact *means* is also not sound.
-- **Discarded facts.** An entry dropped as ephemeral is NOT sound to discard if it named a
-  durable fact, a preference, a commitment, a relationship, or an identity detail. Genuinely
+- **Discarded facts.** Each entry dropped as ephemeral is shown with the live entries most
+  similar to it. A discard is a loss only if nothing still holds it: a discarded fact that a live
+  entry shown beside it still carries was NOT lost (sound=true), whatever category that entry is
+  filed under. A discard is NOT sound if it named a durable fact, a preference, a commitment, a
+  relationship, or an identity detail that appears in none of the live entries shown. Genuinely
   passing details — a one-off status, a transient scheduling note, a superseded number — are
   sound to discard.
 - **Near-duplicates left in place.** Two entries state the same fact if a reader would learn
