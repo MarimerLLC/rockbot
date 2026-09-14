@@ -277,6 +277,31 @@ public class MemoryAuditServiceTests
         StringAssert.Contains(llm.UserMessages.Single(), "Live memory was not searched");
     }
 
+    [TestMethod]
+    public async Task RunEval_CarriesTheVerdictOfAnEntryThatHasNotChangedSinceTheLastEval()
+    {
+        var heavy = Entry("heavy") with { ReinforcementCount = 40 };
+        WriteEntry(heavy);
+
+        var firstJudge = new RecordingLlmClient("""{"verdicts":[{"index":1,"sound":true,"reason":"One subject."}]}""");
+        var first = await CreateService(llmClient: firstJudge).RunEvalAsync(CancellationToken.None);
+        Assert.AreEqual(1, firstJudge.UserMessages.Count);
+
+        // The corpus moves, so the eval runs; the reinforced entry is re-observed but its text is untouched.
+        WriteEntry(heavy with { ReinforcementCount = 47 });
+        WriteEntry(Entry("unrelated"));
+
+        var secondJudge = new RecordingLlmClient("""{"verdicts":[{"index":1,"sound":false,"reason":"Flipped.","evidence":"durable fact"}]}""");
+        var second = await CreateService(llmClient: secondJudge).RunEvalAsync(CancellationToken.None);
+
+        Assert.AreEqual(0, secondJudge.UserMessages.Count, "An unchanged entry must not be judged again.");
+        var verdict = second!.Verdicts.Single();
+        Assert.IsTrue(verdict.Sound);
+        Assert.IsTrue(verdict.Carried);
+        Assert.AreEqual(first!.Verdicts.Single().JudgedAt, verdict.JudgedAt);
+        Assert.AreEqual(1, second.Summary.Carried);
+    }
+
     // ── Helpers ──────────────────────────────────────────────────────────────
 
     private static string Line(DateTimeOffset takenAt) =>

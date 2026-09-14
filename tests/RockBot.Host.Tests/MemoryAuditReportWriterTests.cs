@@ -109,6 +109,44 @@ public class MemoryAuditReportWriterTests
     }
 
     [TestMethod]
+    public void AFindingShowsItsQuoteAndWhetherItWasCarried()
+    {
+        var eval = new MemoryAuditEvalResult(
+            new MemoryAuditEvalSummary(
+                Now, 3, 1, 1.0 / 3,
+                new Dictionary<string, double> { ["high-reinforcement"] = 1.0 / 3 },
+                Carried: 2),
+            [
+                new MemoryAuditEvalVerdict("high-reinforcement", ["h1"], false, "Contradicts itself.",
+                    Evidence: "it runs daily", JudgedAt: new DateTimeOffset(2026, 8, 30, 5, 0, 0, TimeSpan.Zero),
+                    Carried: true),
+                new MemoryAuditEvalVerdict("high-reinforcement", ["h2"], false, "Two subjects.",
+                    Evidence: "the weather is mild", JudgedAt: Now),
+                new MemoryAuditEvalVerdict("high-reinforcement", ["h3"], true, "One subject.", Carried: true)
+            ],
+            "FINGERPRINT");
+
+        var report = MemoryAuditReportWriter.Render(Snapshot(), [Snapshot()], eval);
+
+        StringAssert.Contains(report, "2 verdict(s) were carried forward");
+        StringAssert.Contains(report, "`h1` (carried from 2026-08-30) — Contradicts itself. Quoted: \"it runs daily\"");
+        StringAssert.Contains(report, "`h2` — Two subjects. Quoted: \"the weather is mild\"");
+    }
+
+    [TestMethod]
+    public void NoCarriedSentenceAppearsWhenNothingWasCarried()
+    {
+        var eval = new MemoryAuditEvalResult(
+            new MemoryAuditEvalSummary(Now, 1, 1, 1.0, new Dictionary<string, double> { ["merge"] = 1.0 }),
+            [new MemoryAuditEvalVerdict("merge", ["m1"], true, "Kept.")],
+            "FINGERPRINT");
+
+        var report = MemoryAuditReportWriter.Render(Snapshot(), [Snapshot()], eval);
+
+        Assert.IsFalse(report.Contains("carried forward", StringComparison.Ordinal));
+    }
+
+    [TestMethod]
     public void NoEvalSectionAppearsBeforeTheFirstEvalHasRun()
     {
         var report = MemoryAuditReportWriter.Render(Snapshot(), [Snapshot()]);

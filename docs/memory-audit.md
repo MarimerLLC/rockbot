@@ -95,7 +95,13 @@ made and asked whether each was correct:
   cluster, clusters the previous eval judged sampled last, so the budget rotates across the corpus
   instead of re-judging the top-scoring pairs every week. Exact copies the dream's fold will
   collapse are left out; they need no judgement. Not windowed: an old duplicate is still a miss;
-- **heavily reinforced entries**, checked for having accreted into a vague blob;
+- **heavily reinforced entries**, checked for having accreted into something other than one
+  coherent fact. The test is concrete: every detail about one tool, system, person, project or
+  topic counts as one subject, and an entry is unsound only if it makes claims about unrelated
+  subjects, contradicts itself, says the same thing twice, or names no checkable specific. The
+  judge must quote the words that meet the test; an unsound verdict whose quote is missing or does
+  not appear in the entry is dropped and asked again next time. Asked only whether an entry was
+  "a vague blob", the same judge passed and then failed unchanged entries on consecutive weeks;
 - **facts dropped as ephemeral**, checked for having been durable after all. Each is shown with
   the `EvalEphemeralContextCount` live entries most similar to it, searched across every category
   (embedding similarity where the store has vectors, lexical otherwise). A discard is only a loss
@@ -106,12 +112,23 @@ In every family `sound=true` means memory management made the right call. For ne
 pairs that means `sound=false` is a genuine duplicate left live, and `sound=true` is two distinct
 facts that only look alike. For ephemeral discards, a fact a live entry shown beside it still
 carries was not lost. The per-family question, the built-in directive and the shipped
-`memory-audit.md` all state both rules, and a test fails if they drift apart. Because deployed
+`memory-audit.md` all state both rules, as well as what counts as one subject for a reinforced
+entry, and a test fails if they drift apart. Because deployed
 profile volumes keep their `memory-audit.md` across upgrades, the per-family question alone is
 enough to apply a rule change; refresh the file to keep the directive consistent with it.
 
 An ephemeral verdict records the live entries it was checked against as `contextIds`, separate
 from the `ids` the decision concerned, and the report lists them beside any unsound finding.
+An unsound verdict records the words the judge quoted as `evidence`.
+
+A verdict is only asked for once per unchanged question. Each verdict stores a `key` hashing the
+family's question, the directive, and the content judged — entry ids and text, a merge's sources
+and coverage line, an ephemeral discard's live neighbours — but not display fields that move on
+their own, such as a reinforcement count, an importance score or a similarity score. A later
+sample with the same key reuses that verdict, marked `carried` and keeping its original
+`judgedAt`, and `eval.carried` counts them. A family's trend therefore moves only when its
+entries do. Editing a per-family question or `memory-audit.md` changes every key, so a rubric
+change is always judged afresh. Verdicts are carried from `eval-latest.json` only.
 
 The judge's directive lives at `/data/agent/memory-audit.md` on the profile volume, with a
 built-in fallback. Results go to `memory-audit/eval-latest.json` and the summary is embedded in
