@@ -280,14 +280,29 @@ internal sealed class MemoryAuditEvaluator(ILlmClient llm, ILogger logger)
         return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(sb.ToString())).AsSpan(0, 16));
     }
 
-    private static string Question(string category) => category switch
+    /// <summary>
+    /// The one statement of which way <c>sound</c> points for the near-duplicate family. The
+    /// per-family question, <see cref="BuiltInDirective"/> and the shipped <c>memory-audit.md</c>
+    /// must all contain it.
+    /// </summary>
+    /// <remarks>
+    /// They once disagreed: the question said a duplicate was sound=false and the directive said
+    /// sound=true, so the family's sound rate meant whichever instruction the judge happened to
+    /// weigh more. Every family reads <c>sound</c> as "memory management made the right call",
+    /// and leaving a genuine duplicate live is the wrong one.
+    /// </remarks>
+    internal const string NearDuplicatePolarity =
+        "genuine duplicates that should have been folded together are NOT sound";
+
+    internal static string Question(string category) => category switch
     {
         MergeCategory =>
             "Did the replacement preserve everything the sources said that a reader would need? " +
             "Answer sound=false if any name, date, number, qualifier or distinction was lost or altered.",
         NearDuplicateCategory =>
             "Do these two entries state the same fact, such that keeping both is redundant? " +
-            "Answer sound=false if they are genuinely duplicates that should have been folded together.",
+            $"Leaving both live was the wrong call, so {NearDuplicatePolarity}: answer sound=false " +
+            "for a genuine duplicate, and sound=true for distinct facts that merely look similar.",
         HighReinforcementCategory =>
             "Is this entry still a coherent, specific, useful fact? Answer sound=false if repeated " +
             "reinforcement has turned it into a vague or self-contradictory blob.",
@@ -320,7 +335,7 @@ internal sealed class MemoryAuditEvaluator(ILlmClient llm, ILogger logger)
     /// volume. Every other dream pass carries one for the same reason: a missing file must
     /// degrade to the built-in behaviour, never to silence.
     /// </summary>
-    internal const string BuiltInDirective = """
+    internal const string BuiltInDirective = $$"""
         You are auditing an AI agent's long-term memory. You are shown decisions the memory
         system already made — merges it performed, duplicates it left in place, facts it
         discarded, entries it has reinforced many times — and asked whether each was correct.
@@ -335,7 +350,9 @@ internal sealed class MemoryAuditEvaluator(ILlmClient llm, ILogger logger)
           detail is NOT sound. Genuinely passing details (a one-off status, a transient
           scheduling note) are sound to discard.
         - Two entries stating the same fact in different words ARE duplicates, even if the
-          wording shares few tokens.
+          wording shares few tokens. Leaving both live was the wrong call, so
+          {{NearDuplicatePolarity}} (sound=false). Distinct facts that merely look similar are
+          sound (sound=true).
         - An entry reinforced many times that has become vague, generic, or self-contradictory
           is NOT sound, even though nothing was formally lost.
 

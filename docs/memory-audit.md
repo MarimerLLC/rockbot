@@ -95,6 +95,11 @@ made and asked whether each was correct:
 - **heavily reinforced entries**, checked for having accreted into a vague blob;
 - **facts dropped as ephemeral**, checked for having been durable after all.
 
+In every family `sound=true` means memory management made the right call. For near-duplicate
+pairs that means `sound=false` is a genuine duplicate left live, and `sound=true` is two distinct
+facts that only look alike. The per-family question, the built-in directive and the shipped
+`memory-audit.md` all state this, and a test fails if they drift apart.
+
 The judge's directive lives at `/data/agent/memory-audit.md` on the profile volume, with a
 built-in fallback. Results go to `memory-audit/eval-latest.json` and the summary is embedded in
 every later snapshot row.

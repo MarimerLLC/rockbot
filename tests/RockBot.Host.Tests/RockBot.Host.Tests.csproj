@@ -27,4 +27,9 @@
     <ProjectReference Include="..\..\src\RockBot.Tools.Abstractions\RockBot.Tools.Abstractions.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- The judge directive the agent image ships, so tests can check it against the code. -->
+    <None Include="..\..\src\RockBot.Agent\agent\memory-audit.md" Link="Fixtures\memory-audit.md" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
 </Project>
