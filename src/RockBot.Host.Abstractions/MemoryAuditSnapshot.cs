@@ -68,14 +68,19 @@ public sealed record MemoryAuditCategoryGrowth(string Category, int Created, int
 
 /// <summary>One judged sample from the weekly eval.</summary>
 /// <param name="Category">Which sampling family it came from — merge, near-duplicate, high-reinforcement, ephemeral-archive.</param>
-/// <param name="Ids">Entry ids the judge was shown.</param>
+/// <param name="Ids">Entry ids the judged decision concerned.</param>
 /// <param name="Sound">Whether the judge thought the stored outcome was right.</param>
 /// <param name="Reason">The judge's one-line justification.</param>
+/// <param name="ContextIds">
+/// Live entries shown beside the decision as evidence rather than as part of it — the entries
+/// most similar to an ephemeral discard. Not affected by the verdict. Absent when none were shown.
+/// </param>
 public sealed record MemoryAuditEvalVerdict(
     string Category,
     IReadOnlyList<string> Ids,
     bool Sound,
-    string? Reason);
+    string? Reason,
+    IReadOnlyList<string>? ContextIds = null);
 
 /// <summary>Rolled-up eval rates, small enough to embed in every snapshot row.</summary>
 /// <param name="EvaluatedAt">When the eval ran.</param>

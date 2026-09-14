@@ -81,6 +81,14 @@ public class MemoryAuditOptionsBindingTests
     }
 
     [TestMethod]
+    public void BindsTheEphemeralContextCountIncludingTheZeroThatTurnsItOff()
+    {
+        Assert.AreEqual(5, new MemoryAuditOptions().EvalEphemeralContextCount);
+        Assert.AreEqual(3, Bind(new() { ["MemoryAudit:EvalEphemeralContextCount"] = "3" }).EvalEphemeralContextCount);
+        Assert.AreEqual(0, Bind(new() { ["MemoryAudit:EvalEphemeralContextCount"] = "0" }).EvalEphemeralContextCount);
+    }
+
+    [TestMethod]
     public void BindsTheModelTierByName()
     {
         var opts = Bind(new Dictionary<string, string?> { ["MemoryAudit:EvalModelTier"] = "Low" });

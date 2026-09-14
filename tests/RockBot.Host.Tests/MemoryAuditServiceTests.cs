@@ -225,6 +225,58 @@ public class MemoryAuditServiceTests
         Assert.AreEqual(1, Directory.GetFiles(shared, "memory-audit-*.md").Length);
     }
 
+    [TestMethod]
+    public async Task RunEval_ShowsTheJudgeTheLiveEntriesMostLikeEachEphemeralDiscard()
+    {
+        // The survivor sits under a different top-level category, which is the case the save-time
+        // lookup's scope would have hidden.
+        var dropped = new MemoryEntry("dropped", "working hours follow the example standard time zone",
+            "episodic/decision", [], Now(-30))
+        {
+            ArchivedAt = Now(-2),
+            ArchiveReason = DreamService.EphemeralArchiveReason
+        };
+        var survivor = new MemoryEntry("survivor", "the agent schedules in the example standard time zone",
+            "agent-knowledge/infrastructure", [], Now(-30));
+        WriteEntry(dropped);
+        WriteEntry(survivor);
+
+        var memory = new SimilarityLookupMemory(survivor);
+        var llm = new RecordingLlmClient("""{"verdicts":[{"index":1,"sound":true,"reason":"Survives."}]}""");
+        var service = CreateService(memory: memory, llmClient: llm);
+
+        var result = await service.RunEvalAsync(CancellationToken.None);
+
+        Assert.IsNotNull(result);
+        CollectionAssert.AreEqual(new[] { "dropped" }, memory.Searched);
+        Assert.IsTrue(memory.AcrossCategories, "The eval must search every category.");
+
+        var prompt = llm.UserMessages.Single(m => m.Contains(MemoryAuditEvaluator.EphemeralArchiveCategory));
+        StringAssert.Contains(prompt, "[survivor]");
+        StringAssert.Contains(prompt, "the agent schedules in the example standard time zone");
+
+        var verdict = result.Verdicts.Single(v => v.Category == MemoryAuditEvaluator.EphemeralArchiveCategory);
+        CollectionAssert.AreEqual(new[] { "dropped" }, verdict.Ids.ToArray());
+        CollectionAssert.AreEqual(new[] { "survivor" }, verdict.ContextIds!.ToArray());
+    }
+
+    [TestMethod]
+    public async Task RunEval_WithAStoreThatCannotRankSimilarity_SaysLiveMemoryWasNotSearched()
+    {
+        WriteEntry(new MemoryEntry("dropped", "a passing status note", null, [], Now(-30))
+        {
+            ArchivedAt = Now(-2),
+            ArchiveReason = DreamService.EphemeralArchiveReason
+        });
+
+        var llm = new RecordingLlmClient("""{"verdicts":[{"index":1,"sound":true}]}""");
+        var service = CreateService(llmClient: llm);
+
+        await service.RunEvalAsync(CancellationToken.None);
+
+        StringAssert.Contains(llm.UserMessages.Single(), "Live memory was not searched");
+    }
+
     // ── Helpers ──────────────────────────────────────────────────────────────
 
     private static string Line(DateTimeOffset takenAt) =>
@@ -244,8 +296,10 @@ public class MemoryAuditServiceTests
     private MemoryAuditService CreateService(
         MemoryAuditOptions? options = null,
         IAgentWorkSerializer? serializer = null,
-        IMessagePublisher? publisher = null) =>
-        new(new ThrowingWriteMemory(),
+        IMessagePublisher? publisher = null,
+        ThrowingWriteMemory? memory = null,
+        ILlmClient? llmClient = null) =>
+        new(memory ?? new ThrowingWriteMemory(),
             serializer ?? new AgentWorkSerializer(),
             new AgentClock(
                 new ConfigurationBuilder().Build(),
@@ -256,7 +310,7 @@ public class MemoryAuditServiceTests
             Options.Create(new MemoryOptions { BasePath = "memory" }),
             Options.Create(new AgentProfileOptions { BasePath = _profileRoot }),
             NullLogger<MemoryAuditService>.Instance,
-            llmClient: null,
+            llmClient: llmClient,
             publisher: publisher,
             agent: publisher is null ? null : new AgentIdentity("TestBot", "inst"));
 
@@ -264,7 +318,7 @@ public class MemoryAuditServiceTests
     /// A store whose every write path throws. The audit holds <see cref="ILongTermMemory"/> only
     /// for the optional duplicate probe; if it ever reaches for a writer, these tests fail loudly.
     /// </summary>
-    private sealed class ThrowingWriteMemory : ILongTermMemory
+    private class ThrowingWriteMemory : ILongTermMemory
     {
         public Task SaveAsync(MemoryEntry entry, CancellationToken cancellationToken = default) =>
             throw new InvalidOperationException("The memory audit must never write to the store.");
@@ -292,6 +346,43 @@ public class MemoryAuditServiceTests
 
         public Task<IReadOnlyList<string>> ListCategoriesAsync(CancellationToken cancellationToken = default) =>
             Task.FromResult<IReadOnlyList<string>>([]);
+    }
+
+    /// <summary>A write-throwing store that ranks one scripted entry as most similar to anything.</summary>
+    private sealed class SimilarityLookupMemory(MemoryEntry match) : ThrowingWriteMemory, IMemorySimilarityLookup
+    {
+        public List<string> Searched { get; } = [];
+        public bool AcrossCategories { get; private set; }
+
+        public Task<MemorySimilarityMatch?> FindMostSimilarAsync(
+            MemoryEntry candidate, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException("The audit ranks neighbours, it never picks one to reinforce.");
+
+        public Task<IReadOnlyList<MemorySimilarityMatch>> FindSimilarAsync(
+            MemoryEntry candidate, int count, bool acrossCategories, CancellationToken cancellationToken = default)
+        {
+            Searched.Add(candidate.Id);
+            AcrossCategories = acrossCategories;
+            return Task.FromResult<IReadOnlyList<MemorySimilarityMatch>>(
+                [new MemorySimilarityMatch(match, 0.9, MemorySimilarityMeasure.Embedding)]);
+        }
+    }
+
+    private sealed class RecordingLlmClient(string response) : ILlmClient
+    {
+        public List<string> UserMessages { get; } = [];
+
+        public Task<ChatResponse> GetResponseAsync(
+            IEnumerable<ChatMessage> messages, ChatOptions? options, CancellationToken cancellationToken)
+        {
+            UserMessages.AddRange(messages.Where(m => m.Role == ChatRole.User).Select(m => m.Text));
+            return Task.FromResult(new ChatResponse(new ChatMessage(ChatRole.Assistant, response)));
+        }
+
+        public Task<ChatResponse> GetResponseAsync(
+            IEnumerable<ChatMessage> messages, ModelTier tier, ChatOptions? options,
+            CancellationToken cancellationToken) =>
+            GetResponseAsync(messages, options, cancellationToken);
     }
 
     private sealed class BusySerializer : IAgentWorkSerializer

@@ -47,9 +47,26 @@ public class MemoryAuditEvaluatorTests
             $"The {source} ties sound=true to a genuine duplicate: {string.Join(" | ", offending)}");
     }
 
-    private static string JudgeText(string source) => source switch
+    // ── Ephemeral survival rule ──────────────────────────────────────────────
+    //
+    // A discard was once judged alone, so one restating a fact a live entry still carried was
+    // reported as lost. Every judge text must say a surviving fact is not a loss.
+
+    [TestMethod]
+    [DataRow("question")]
+    [DataRow("built-in directive")]
+    [DataRow("memory-audit.md")]
+    public void EveryJudgeTextStatesTheEphemeralSurvivalRule(string source)
     {
-        "question" => MemoryAuditEvaluator.Question(MemoryAuditEvaluator.NearDuplicateCategory),
+        StringAssert.Contains(
+            Normalize(JudgeText(source, MemoryAuditEvaluator.EphemeralArchiveCategory)),
+            Normalize(MemoryAuditEvaluator.EphemeralSurvivalRule),
+            $"The {source} must say that a discarded fact a live entry still carries was not lost.");
+    }
+
+    private static string JudgeText(string source, string category = MemoryAuditEvaluator.NearDuplicateCategory) => source switch
+    {
+        "question" => MemoryAuditEvaluator.Question(category),
         "built-in directive" => MemoryAuditEvaluator.BuiltInDirective,
         "memory-audit.md" => File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "Fixtures", "memory-audit.md")),
         _ => throw new ArgumentOutOfRangeException(nameof(source))
@@ -119,6 +136,120 @@ public class MemoryAuditEvaluatorTests
         Assert.AreEqual(1, samples.Count(s => s.Category == MemoryAuditEvaluator.NearDuplicateCategory));
         Assert.AreEqual(1, samples.Count(s => s.Category == MemoryAuditEvaluator.HighReinforcementCategory));
         Assert.AreEqual(1, samples.Count(s => s.Category == MemoryAuditEvaluator.EphemeralArchiveCategory));
+    }
+
+    // ── Ephemeral discards in context ────────────────────────────────────────
+    //
+    // A discard is only a loss if nothing live still carries it, and the survivor is routinely
+    // filed under a different category, so the judge is shown the closest live entries.
+
+    [TestMethod]
+    public void AnEphemeralSampleShowsTheLiveEntriesMostLikeIt()
+    {
+        var dropped = Archived("dropped", DreamService.EphemeralArchiveReason, Now.AddDays(-1)) with
+        {
+            Content = "Working hours are set to the Example Standard time zone.",
+            Category = "episodic/decision"
+        };
+        var survivor = Entry("survivor") with
+        {
+            Content = "The agent schedules in the Example Standard time zone.",
+            Category = "agent-knowledge/infrastructure"
+        };
+        var weaker = Entry("weaker") with { Content = "Another fact about time.", Category = "general" };
+
+        var neighbours = new Dictionary<string, IReadOnlyList<MemorySimilarityMatch>>
+        {
+            ["dropped"] =
+            [
+                new(survivor, 0.83, MemorySimilarityMeasure.Embedding),
+                new(weaker, 0.41, MemorySimilarityMeasure.Embedding)
+            ]
+        };
+
+        var sample = MemoryAuditEvaluator.SelectSamples(
+                [dropped, survivor, weaker], [], Options(), Now, liveNeighbours: neighbours)
+            .Single(s => s.Category == MemoryAuditEvaluator.EphemeralArchiveCategory);
+
+        CollectionAssert.AreEqual(new[] { "dropped" }, sample.Ids.ToArray(),
+            "Live context is evidence, not part of the decision.");
+        CollectionAssert.AreEqual(new[] { "survivor", "weaker" }, sample.ContextIds!.ToArray());
+        StringAssert.Contains(sample.Text, "Most similar live entries (embedding similarity):");
+        StringAssert.Contains(sample.Text,
+            "[survivor] (0.83, category agent-knowledge/infrastructure) The agent schedules in the Example Standard time zone.");
+        Assert.IsTrue(sample.Text.IndexOf("[survivor]", StringComparison.Ordinal)
+                      < sample.Text.IndexOf("[weaker]", StringComparison.Ordinal));
+    }
+
+    [TestMethod]
+    public void AnEphemeralSampleWithNoSimilarLiveEntriesSaysSo()
+    {
+        var dropped = Archived("dropped", DreamService.EphemeralArchiveReason, Now.AddDays(-1));
+
+        var sample = MemoryAuditEvaluator.SelectSamples(
+                [dropped], [], Options(), Now,
+                liveNeighbours: new Dictionary<string, IReadOnlyList<MemorySimilarityMatch>> { ["dropped"] = [] })
+            .Single(s => s.Category == MemoryAuditEvaluator.EphemeralArchiveCategory);
+
+        StringAssert.Contains(sample.Text, "Most similar live entries: none found.");
+        Assert.IsNull(sample.ContextIds);
+    }
+
+    [TestMethod]
+    public void AnUnsearchedEphemeralSampleIsNotPresentedAsHavingNoSurvivor()
+    {
+        // "Not searched" and "searched, found nothing" must never read the same: only the second
+        // is evidence that the fact is gone.
+        var dropped = Archived("dropped", DreamService.EphemeralArchiveReason, Now.AddDays(-1));
+
+        var unsearched = MemoryAuditEvaluator.SelectSamples([dropped], [], Options(), Now)
+            .Single(s => s.Category == MemoryAuditEvaluator.EphemeralArchiveCategory);
+        var failed = MemoryAuditEvaluator.SelectSamples(
+                [dropped], [], Options(), Now,
+                liveNeighbours: new Dictionary<string, IReadOnlyList<MemorySimilarityMatch>>())
+            .Single(s => s.Category == MemoryAuditEvaluator.EphemeralArchiveCategory);
+
+        StringAssert.Contains(unsearched.Text, "Live memory was not searched");
+        StringAssert.Contains(failed.Text, "search of live memory for entries like this one failed");
+        Assert.IsFalse(unsearched.Text.Contains("none found", StringComparison.Ordinal));
+        Assert.IsFalse(failed.Text.Contains("none found", StringComparison.Ordinal));
+    }
+
+    [TestMethod]
+    public void SelectEphemeralDiscardsPicksExactlyWhatIsSampled()
+    {
+        var entries = Enumerable.Range(0, 8)
+            .Select(i => Archived($"d{i}", DreamService.EphemeralArchiveReason, Now.AddDays(-i)))
+            .Append(Archived("old", DreamService.EphemeralArchiveReason, Now.AddDays(-90)))
+            .Append(Archived("merged", "merged into m1", Now.AddDays(-1)))
+            .ToList();
+        var options = new MemoryAuditOptions { EvalSampleSize = 3 };
+
+        var discards = MemoryAuditEvaluator.SelectEphemeralDiscards(entries, options, Now);
+        var sampled = MemoryAuditEvaluator.SelectSamples(entries, [], options, Now)
+            .Where(s => s.Category == MemoryAuditEvaluator.EphemeralArchiveCategory)
+            .Select(s => s.Ids[0]);
+
+        CollectionAssert.AreEqual(new[] { "d0", "d1", "d2" }, discards.Select(e => e.Id).ToArray());
+        CollectionAssert.AreEqual(discards.Select(e => e.Id).ToArray(), sampled.ToArray());
+    }
+
+    [TestMethod]
+    public async Task ContextIdsAreCarriedOntoTheVerdict()
+    {
+        var samples = new List<MemoryAuditEvaluator.Sample>
+        {
+            new(MemoryAuditEvaluator.EphemeralArchiveCategory, ["dropped"], "text", ContextIds: ["survivor"])
+        };
+
+        var llm = new StubLlmClient("""{"verdicts":[{"index":1,"sound":true,"reason":"Survives."}]}""");
+
+        var result = await new MemoryAuditEvaluator(llm, NullLogger.Instance)
+            .EvaluateAsync(samples, "directive", ModelTier.Balanced, "FP", CancellationToken.None);
+
+        var verdict = result!.Verdicts.Single();
+        CollectionAssert.AreEqual(new[] { "dropped" }, verdict.Ids.ToArray());
+        CollectionAssert.AreEqual(new[] { "survivor" }, verdict.ContextIds!.ToArray());
     }
 
     // ── Near-duplicate sampling ──────────────────────────────────────────────

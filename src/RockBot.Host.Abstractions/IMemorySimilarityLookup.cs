@@ -59,4 +59,29 @@ public interface IMemorySimilarityLookup
     Task<MemorySimilarityMatch?> FindMostSimilarAsync(
         MemoryEntry candidate,
         CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Returns up to <paramref name="count"/> live entries most similar to
+    /// <paramref name="candidate"/>, most similar first. Empty when there is nothing comparable.
+    /// </summary>
+    /// <param name="candidate">The entry to compare against, passed whole for the same reason as
+    /// <see cref="FindMostSimilarAsync"/>.</param>
+    /// <param name="count">Maximum matches to return.</param>
+    /// <param name="acrossCategories">
+    /// Whether to compare against every live entry rather than only the candidate's broad subject
+    /// area. The save path must never set this: a lexical match across subjects is noise when
+    /// deciding what to reinforce. The memory audit does, because a discarded fact that survives
+    /// under a different category is still not lost, and there the matches are only context for
+    /// a judge rather than something acted on.
+    /// </param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <remarks>
+    /// Every match in one result is on the same <see cref="MemorySimilarityMeasure"/>, so scores
+    /// within it are comparable.
+    /// </remarks>
+    Task<IReadOnlyList<MemorySimilarityMatch>> FindSimilarAsync(
+        MemoryEntry candidate,
+        int count,
+        bool acrossCategories,
+        CancellationToken cancellationToken = default);
 }

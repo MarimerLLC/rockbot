@@ -96,12 +96,22 @@ made and asked whether each was correct:
   instead of re-judging the top-scoring pairs every week. Exact copies the dream's fold will
   collapse are left out; they need no judgement. Not windowed: an old duplicate is still a miss;
 - **heavily reinforced entries**, checked for having accreted into a vague blob;
-- **facts dropped as ephemeral**, checked for having been durable after all.
+- **facts dropped as ephemeral**, checked for having been durable after all. Each is shown with
+  the `EvalEphemeralContextCount` live entries most similar to it, searched across every category
+  (embedding similarity where the store has vectors, lexical otherwise). A discard is only a loss
+  if none of those still carry the fact; judged alone, discards that restated a fact kept under
+  another category read as losses.
 
 In every family `sound=true` means memory management made the right call. For near-duplicate
 pairs that means `sound=false` is a genuine duplicate left live, and `sound=true` is two distinct
-facts that only look alike. The per-family question, the built-in directive and the shipped
-`memory-audit.md` all state this, and a test fails if they drift apart.
+facts that only look alike. For ephemeral discards, a fact a live entry shown beside it still
+carries was not lost. The per-family question, the built-in directive and the shipped
+`memory-audit.md` all state both rules, and a test fails if they drift apart. Because deployed
+profile volumes keep their `memory-audit.md` across upgrades, the per-family question alone is
+enough to apply a rule change; refresh the file to keep the directive consistent with it.
+
+An ephemeral verdict records the live entries it was checked against as `contextIds`, separate
+from the `ids` the decision concerned, and the report lists them beside any unsound finding.
 
 The judge's directive lives at `/data/agent/memory-audit.md` on the profile volume, with a
 built-in fallback. Results go to `memory-audit/eval-latest.json` and the summary is embedded in
@@ -213,6 +223,7 @@ evalCronSchedule, pauseConsolidationOnAlert}`; everything else is available thro
 | `EvalModelTier` | `Balanced` | |
 | `EvalSampleSize` | `10` | Per family, per run. |
 | `EvalWindow` | `14d` | |
+| `EvalEphemeralContextCount` | `5` | Live entries shown beside each ephemeral discard; `0` turns the lookup off. |
 | `EvalDirectivePath` | `memory-audit.md` | |
 | `AlertOnAttention` | `true` | |
 | `DigestCronSchedule` | `null` | Null means alerts only. |

@@ -149,8 +149,14 @@ internal static class MemoryAuditReportWriter
                 sb.AppendLine("The judge disagreed with:");
                 sb.AppendLine();
                 foreach (var verdict in unsound)
-                    sb.AppendLine($"- [{verdict.Category}] {string.Join(", ", verdict.Ids.Select(id => $"`{id}`"))} — " +
+                {
+                    // What the judge checked a discard against, so a "lost" finding can be verified.
+                    var context = verdict.ContextIds is { Count: > 0 } ids
+                        ? $" (checked against {string.Join(", ", ids.Select(id => $"`{id}`"))})"
+                        : string.Empty;
+                    sb.AppendLine($"- [{verdict.Category}] {string.Join(", ", verdict.Ids.Select(id => $"`{id}`"))}{context} — " +
                                   $"{verdict.Reason ?? "no reason given"}");
+                }
             }
         }
 

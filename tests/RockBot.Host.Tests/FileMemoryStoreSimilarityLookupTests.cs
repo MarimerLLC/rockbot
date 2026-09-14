@@ -134,6 +134,82 @@ public class FileMemoryStoreSimilarityLookupTests
         Assert.IsNull(await store.FindMostSimilarAsync(Entry("candidate", "   ")));
     }
 
+    // ── Ranked lookup ────────────────────────────────────────────────────────
+    //
+    // The memory audit shows its judge the live entries most like a discarded one, to tell a lost
+    // fact from one memory still holds elsewhere — often under a different category.
+
+    [TestMethod]
+    public async Task FindSimilarAsync_ReturnsUpToCountMatches_MostSimilarFirst()
+    {
+        var store = CreateStore();
+        await store.SaveAsync(Entry("close", "Rocky prefers concise status updates"));
+        await store.SaveAsync(Entry("closer", "Rocky prefers concise status"));
+        await store.SaveAsync(Entry("distant", "Rocky reads status weekly"));
+        await store.SaveAsync(Entry("far", "prefers concise status updates weekly always"));
+
+        var matches = await store.FindSimilarAsync(
+            Entry("candidate", "Rocky prefers concise status"), count: 2, acrossCategories: false);
+
+        CollectionAssert.AreEqual(new[] { "closer", "close" }, matches.Select(m => m.Entry.Id).ToArray());
+        Assert.IsTrue(matches[0].Score >= matches[1].Score);
+        Assert.IsTrue(matches.All(m => m.Measure == MemorySimilarityMeasure.Lexical));
+    }
+
+    [TestMethod]
+    public async Task FindSimilarAsync_AcrossCategories_FindsASurvivorUnderAnotherTopLevelCategory()
+    {
+        var store = CreateStore();
+        await store.SaveAsync(Entry("infra", "Rocky prefers concise status", category: "agent-knowledge/infrastructure"));
+        var candidate = Entry("candidate", "Rocky prefers concise", category: "user-preferences/reporting");
+
+        var scoped = await store.FindSimilarAsync(candidate, count: 5, acrossCategories: false);
+        var unscoped = await store.FindSimilarAsync(candidate, count: 5, acrossCategories: true);
+
+        Assert.AreEqual(0, scoped.Count);
+        CollectionAssert.AreEqual(new[] { "infra" }, unscoped.Select(m => m.Entry.Id).ToArray());
+    }
+
+    [TestMethod]
+    public async Task FindSimilarAsync_LeavesOutEntriesThatShareNoWordWithTheCandidate()
+    {
+        var store = CreateStore();
+        await store.SaveAsync(Entry("related", "Rocky prefers concise status"));
+        await store.SaveAsync(Entry("unrelated", "Longhorn backup retention spans roughly four days"));
+
+        var matches = await store.FindSimilarAsync(
+            Entry("candidate", "Rocky prefers concise"), count: 5, acrossCategories: true);
+
+        CollectionAssert.AreEqual(new[] { "related" }, matches.Select(m => m.Entry.Id).ToArray());
+    }
+
+    [TestMethod]
+    public async Task FindSimilarAsync_IgnoresArchivedSupersededAndTheCandidateItself()
+    {
+        var store = CreateStore();
+        await store.SaveAsync(Entry("archived", "Rocky prefers concise status"));
+        await store.SaveAsync(Entry("superseded", "Rocky prefers concise status"));
+        await store.SaveAsync(Entry("candidate", "Rocky prefers concise status"));
+        await store.ArchiveAsync("archived", "merged");
+        var superseded = (await store.GetAsync("superseded"))!;
+        await store.SaveAsync(superseded with { SupersededBy = "somewhere-else" });
+
+        var matches = await store.FindSimilarAsync(
+            Entry("candidate", "Rocky prefers concise status"), count: 5, acrossCategories: true);
+
+        Assert.AreEqual(0, matches.Count);
+    }
+
+    [TestMethod]
+    public async Task FindSimilarAsync_WithANonPositiveCount_ReturnsNothing()
+    {
+        var store = CreateStore();
+        await store.SaveAsync(Entry("existing", "Rocky prefers concise status"));
+
+        Assert.AreEqual(0, (await store.FindSimilarAsync(
+            Entry("candidate", "Rocky prefers concise"), count: 0, acrossCategories: true)).Count);
+    }
+
     [TestMethod]
     public void TopLevelCategory_SplitsOnTheFirstSlash()
     {

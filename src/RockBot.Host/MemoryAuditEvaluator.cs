@@ -64,7 +64,16 @@ internal sealed class MemoryAuditEvaluator(ILlmClient llm, ILogger logger)
     /// <param name="Truncated">
     /// Whether any entry in <paramref name="Text"/> was cut at <see cref="MaxContentChars"/>.
     /// </param>
-    internal sealed record Sample(string Category, IReadOnlyList<string> Ids, string Text, bool Truncated = false);
+    /// <param name="ContextIds">
+    /// Live entries rendered beside the decision as evidence, kept apart from
+    /// <paramref name="Ids"/> so nothing downstream reports them as affected.
+    /// </param>
+    internal sealed record Sample(
+        string Category,
+        IReadOnlyList<string> Ids,
+        string Text,
+        bool Truncated = false,
+        IReadOnlyList<string>? ContextIds = null);
 
     private sealed record VerdictDto(int Index, bool Sound, string? Reason);
 
@@ -95,13 +104,20 @@ internal sealed class MemoryAuditEvaluator(ILlmClient llm, ILogger logger)
     /// them are sampled only once every other cluster has been. <see langword="null"/> means no
     /// previous eval.
     /// </param>
+    /// <param name="liveNeighbours">
+    /// The live entries most similar to each discard <see cref="SelectEphemeralDiscards"/> picks,
+    /// keyed by discard id. <see langword="null"/> means live memory was not searched at all; a
+    /// discard missing from a non-null map means its search failed. Either way the sample says
+    /// so, rather than reading as a search that found nothing.
+    /// </param>
     internal static IReadOnlyList<Sample> SelectSamples(
         IReadOnlyList<MemoryEntry> entries,
         IReadOnlyList<ShingleSimilarity.Pair> nearDupPairs,
         MemoryAuditOptions options,
         DateTimeOffset now,
         MergeCoverageVocabulary? vocabulary = null,
-        IReadOnlySet<string>? previouslyJudgedIds = null)
+        IReadOnlySet<string>? previouslyJudgedIds = null,
+        IReadOnlyDictionary<string, IReadOnlyList<MemorySimilarityMatch>>? liveNeighbours = null)
     {
         var byId = new Dictionary<string, MemoryEntry>(StringComparer.OrdinalIgnoreCase);
         foreach (var entry in entries)
@@ -181,28 +197,69 @@ internal sealed class MemoryAuditEvaluator(ILlmClient llm, ILogger logger)
                 truncated));
         }
 
-        // Facts consolidation discarded outright, with nothing put in their place.
-        var ephemeral = entries
-            .Where(e => e.ArchivedAt >= cutoff
-                        && string.Equals(e.ArchiveReason, DreamService.EphemeralArchiveReason,
-                            StringComparison.OrdinalIgnoreCase))
-            .OrderByDescending(e => e.ArchivedAt)
-            .Take(options.EvalSampleSize);
-
-        foreach (var entry in ephemeral)
+        // Facts consolidation discarded outright, with nothing put in their place — shown with the
+        // live entries most like them, since a discard is only a loss if none of those carry it.
+        foreach (var entry in SelectEphemeralDiscards(entries, options, now))
         {
             var truncated = false;
+            var text = new StringBuilder();
+            text.AppendLine(
+                $"Dropped as ephemeral on {entry.ArchivedAt:yyyy-MM-dd} " +
+                $"(reinforced {entry.ReinforcementCount}x, importance {Score(entry.ImportanceScore)}):");
+            text.AppendLine($"  [{entry.Id}] {Render(entry.Content, ref truncated)}");
+
+            IReadOnlyList<MemorySimilarityMatch>? neighbours = null;
+            if (liveNeighbours is null)
+                text.AppendLine("Live memory was not searched for entries like this one.");
+            else if (!liveNeighbours.TryGetValue(entry.Id, out neighbours))
+                text.AppendLine("The search of live memory for entries like this one failed.");
+            else if (neighbours.Count == 0)
+                text.AppendLine("Most similar live entries: none found.");
+            else
+            {
+                text.AppendLine($"Most similar live entries ({MeasureName(neighbours[0].Measure)} similarity):");
+                foreach (var match in neighbours)
+                    text.AppendLine(
+                        $"  - [{match.Entry.Id}] ({Score((float)match.Score)}, " +
+                        $"category {match.Entry.Category ?? "(none)"}) {Render(match.Entry.Content, ref truncated)}");
+            }
+
             samples.Add(new Sample(
                 EphemeralArchiveCategory,
                 [entry.Id],
-                $"Dropped as ephemeral on {entry.ArchivedAt:yyyy-MM-dd} " +
-                $"(reinforced {entry.ReinforcementCount}x, importance {Score(entry.ImportanceScore)}):\n" +
-                $"  [{entry.Id}] {Render(entry.Content, ref truncated)}",
-                truncated));
+                text.ToString().TrimEnd(),
+                truncated,
+                neighbours is { Count: > 0 } ? [.. neighbours.Select(m => m.Entry.Id)] : null));
         }
 
         return samples;
     }
+
+    /// <summary>
+    /// The ephemeral discards the eval judges: archived as ephemeral inside the window, newest
+    /// first, capped at <see cref="MemoryAuditOptions.EvalSampleSize"/>. The service searches live
+    /// memory for exactly these, so it and <see cref="SelectSamples"/> cannot disagree.
+    /// </summary>
+    internal static IReadOnlyList<MemoryEntry> SelectEphemeralDiscards(
+        IReadOnlyList<MemoryEntry> entries,
+        MemoryAuditOptions options,
+        DateTimeOffset now)
+    {
+        var cutoff = now - options.EvalWindow;
+        return [.. entries
+            .Where(e => e.ArchivedAt >= cutoff
+                        && string.Equals(e.ArchiveReason, DreamService.EphemeralArchiveReason,
+                            StringComparison.OrdinalIgnoreCase))
+            .OrderByDescending(e => e.ArchivedAt)
+            .ThenBy(e => e.Id, StringComparer.Ordinal)
+            .Take(options.EvalSampleSize)];
+    }
+
+    private static string MeasureName(MemorySimilarityMeasure measure) => measure switch
+    {
+        MemorySimilarityMeasure.Embedding => "embedding",
+        _ => "lexical"
+    };
 
     /// <summary>
     /// Picks which near-duplicate pairs to judge: one per cluster, clusters the previous eval did
@@ -391,7 +448,7 @@ internal sealed class MemoryAuditEvaluator(ILlmClient llm, ILogger logger)
                 if (verdict.Index < 1 || verdict.Index > items.Count) continue;
                 var sample = items[verdict.Index - 1];
                 results.Add(new MemoryAuditEvalVerdict(
-                    sample.Category, sample.Ids, verdict.Sound, verdict.Reason?.Trim()));
+                    sample.Category, sample.Ids, verdict.Sound, verdict.Reason?.Trim(), sample.ContextIds));
             }
 
             return results.Count > 0 ? results : null;
@@ -438,6 +495,18 @@ internal sealed class MemoryAuditEvaluator(ILlmClient llm, ILogger logger)
     internal const string NearDuplicatePolarity =
         "genuine duplicates that should have been folded together are NOT sound";
 
+    /// <summary>
+    /// The one statement of when an ephemeral discard counts as a loss. The per-family question,
+    /// <see cref="BuiltInDirective"/> and the shipped <c>memory-audit.md</c> must all contain it.
+    /// </summary>
+    /// <remarks>
+    /// The judge once saw each discard alone and was asked only whether it named a durable fact,
+    /// so a discard restating a fact still held by a live entry under another category was
+    /// reported as lost. The family scored 50% on decisions that were almost all right.
+    /// </remarks>
+    internal const string EphemeralSurvivalRule =
+        "a discarded fact that a live entry shown beside it still carries was NOT lost";
+
     internal static string Question(string category) => category switch
     {
         MergeCategory =>
@@ -451,8 +520,11 @@ internal sealed class MemoryAuditEvaluator(ILlmClient llm, ILogger logger)
             "Is this entry still a coherent, specific, useful fact? Answer sound=false if repeated " +
             "reinforcement has turned it into a vague or self-contradictory blob.",
         EphemeralArchiveCategory =>
-            "Was this safe to discard? Answer sound=false if it names a durable fact, preference, " +
-            "commitment or identity detail rather than a passing detail.",
+            "Was this safe to discard, given the live entries shown beside it? " +
+            $"Nothing is lost while memory still holds it elsewhere, so {EphemeralSurvivalRule}. " +
+            "Answer sound=false only if it names a durable fact, preference, commitment or identity " +
+            "detail that appears in none of the live entries shown; a passing detail is always sound " +
+            "to discard. Where live memory was not searched, judge the entry on its own.",
         _ => "Was this the right outcome?"
     };
 
@@ -510,7 +582,9 @@ internal sealed class MemoryAuditEvaluator(ILlmClient llm, ILogger logger)
         - A merge that dropped a name, date, number, or distinction is NOT sound, however
           tidier the result reads.
         - A discarded entry that named a durable fact, preference, commitment, or identity
-          detail is NOT sound. Genuinely passing details (a one-off status, a transient
+          detail is NOT sound, unless memory still holds that fact: {{EphemeralSurvivalRule}}
+          (sound=true). Check the most similar live entries shown with each discard before
+          calling it a loss. Genuinely passing details (a one-off status, a transient
           scheduling note) are sound to discard.
         - Two entries stating the same fact in different words ARE duplicates, even if the
           wording shares few tokens. Leaving both live was the wrong call, so
