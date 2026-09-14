@@ -16,7 +16,7 @@ namespace RockBot.Host.Tests;
 [TestClass]
 public class DreamExactDuplicateFoldTests
 {
-    private const string Fact = "Rocky has a Red Fletcher show at White Rock Lounge on 2026-10-26.";
+    private const string Fact = "The staging cluster runs a nightly backup at 02:30 and keeps 14 snapshots.";
 
     private string _profileRoot = null!;
 
@@ -41,9 +41,9 @@ public class DreamExactDuplicateFoldTests
     {
         var groups = DreamService.FindExactDuplicateGroups(
         [
-            Entry("new", Fact, "personal/events", daysAgo: 1),
-            Entry("old", Fact, "personal/events", daysAgo: 20),
-            Entry("mid", Fact, "personal/events", daysAgo: 5),
+            Entry("new", Fact, "project/infrastructure", daysAgo: 1),
+            Entry("old", Fact, "project/infrastructure", daysAgo: 20),
+            Entry("mid", Fact, "project/infrastructure", daysAgo: 5),
         ]);
 
         Assert.AreEqual(1, groups.Count);
@@ -55,8 +55,8 @@ public class DreamExactDuplicateFoldTests
     {
         var groups = DreamService.FindExactDuplicateGroups(
         [
-            Entry("a", Fact, "personal/events"),
-            Entry("b", "  Rocky has a Red Fletcher show\nat White Rock Lounge on 2026-10-26.\r\n", "personal/events"),
+            Entry("a", Fact, "project/infrastructure"),
+            Entry("b", "  The staging cluster runs a nightly backup\nat 02:30 and keeps 14 snapshots.\r\n", "project/infrastructure"),
         ]);
 
         Assert.AreEqual(1, groups.Count);
@@ -69,9 +69,9 @@ public class DreamExactDuplicateFoldTests
         // consolidation.
         var groups = DreamService.FindExactDuplicateGroups(
         [
-            Entry("a", Fact, "personal/events"),
-            Entry("b", Fact.ToUpperInvariant(), "personal/events"),
-            Entry("c", "A verified calendar event shows a Red Fletcher show at White Rock Lounge on 2026-10-26.", "personal/events"),
+            Entry("a", Fact, "project/infrastructure"),
+            Entry("b", Fact.ToUpperInvariant(), "project/infrastructure"),
+            Entry("c", "A nightly backup of the staging cluster runs at 02:30, keeping 14 snapshots.", "project/infrastructure"),
         ]);
 
         Assert.AreEqual(0, groups.Count);
@@ -82,8 +82,8 @@ public class DreamExactDuplicateFoldTests
     {
         var groups = DreamService.FindExactDuplicateGroups(
         [
-            Entry("a", Fact, "user-preferences/work"),
-            Entry("b", Fact, "work/business"),
+            Entry("a", Fact, "project/infrastructure"),
+            Entry("b", Fact, "agent-knowledge/infrastructure"),
         ]);
 
         Assert.AreEqual(0, groups.Count);
@@ -94,8 +94,8 @@ public class DreamExactDuplicateFoldTests
     {
         var groups = DreamService.FindExactDuplicateGroups(
         [
-            Entry("a", Fact, "Personal/Events"),
-            Entry("b", Fact, "personal/events"),
+            Entry("a", Fact, "Project/Infrastructure"),
+            Entry("b", Fact, "project/infrastructure"),
         ]);
 
         Assert.AreEqual(1, groups.Count);
@@ -106,9 +106,9 @@ public class DreamExactDuplicateFoldTests
     {
         var groups = DreamService.FindExactDuplicateGroups(
         [
-            Entry("live", Fact, "personal/events"),
-            Entry("archived", Fact, "personal/events") with { ArchivedAt = DateTimeOffset.UtcNow },
-            Entry("superseded", Fact, "personal/events") with { SupersededBy = "live" },
+            Entry("live", Fact, "project/infrastructure"),
+            Entry("archived", Fact, "project/infrastructure") with { ArchivedAt = DateTimeOffset.UtcNow },
+            Entry("superseded", Fact, "project/infrastructure") with { SupersededBy = "live" },
             Entry("fb1", Fact, FeedbackMemoryCategories.UserCorrectionPrefix),
             Entry("fb2", Fact, FeedbackMemoryCategories.UserCorrectionPrefix),
             Entry("cap1", Fact, CapabilityClaimCategories.For("todo", "add_task")),
@@ -125,14 +125,14 @@ public class DreamExactDuplicateFoldTests
     public void FoldCombinesEvidenceAndKeepsTheSurvivorsText()
     {
         var now = DateTimeOffset.UtcNow;
-        var survivor = Entry("old", Fact, "personal/events", daysAgo: 20, tags: ["music", "calendar"]) with
+        var survivor = Entry("old", Fact, "project/infrastructure", daysAgo: 20, tags: ["ops", "backup"]) with
         {
             ImportanceScore = 0.6f,
             ReinforcementCount = 6,
             LastSeenAt = now.AddDays(-10),
             UpdatedAt = now.AddDays(-15),
         };
-        var copy = Entry("new", Fact + "\n", "personal/events", daysAgo: 2, tags: ["Calendar", "live-show"]) with
+        var copy = Entry("new", Fact + "\n", "project/infrastructure", daysAgo: 2, tags: ["Backup", "staging"]) with
         {
             ImportanceScore = 0.88f,
             ReinforcementCount = 1,
@@ -143,7 +143,7 @@ public class DreamExactDuplicateFoldTests
 
         Assert.AreEqual("old", folded.Id);
         Assert.AreEqual(Fact, folded.Content);
-        CollectionAssert.AreEqual(new[] { "music", "calendar", "live-show" }, folded.Tags.ToArray());
+        CollectionAssert.AreEqual(new[] { "ops", "backup", "staging" }, folded.Tags.ToArray());
         Assert.AreEqual(0.88f, folded.ImportanceScore);
         Assert.AreEqual(7, folded.ReinforcementCount);
         Assert.AreEqual(now.AddDays(-2), folded.LastSeenAt);
@@ -156,19 +156,19 @@ public class DreamExactDuplicateFoldTests
     [TestMethod]
     public void FoldCopiesMissingMetadataButNotPerCopyBookkeeping()
     {
-        var survivor = Entry("old", Fact, "personal/events", daysAgo: 20) with
+        var survivor = Entry("old", Fact, "project/infrastructure", daysAgo: 20) with
         {
             Metadata = new Dictionary<string, string>
             {
-                ["subjectTime"] = "2026-10-26",
+                ["subjectTime"] = "2026-01-15",
                 [DreamService.FoldedFromKey] = "earlier",
             },
         };
-        var copy = Entry("new", Fact, "personal/events") with
+        var copy = Entry("new", Fact, "project/infrastructure") with
         {
             Metadata = new Dictionary<string, string>
             {
-                ["subjectTime"] = "2026-10-27",
+                ["subjectTime"] = "2026-01-16",
                 ["source"] = "inferred",
                 [DreamService.MergedFromKey] = "x,y",
                 [DreamService.MergedAtKey] = "2026-09-01T00:00:00Z",
@@ -181,7 +181,7 @@ public class DreamExactDuplicateFoldTests
 
         var metadata = DreamService.FoldExactDuplicates(survivor, [copy], DateTimeOffset.UtcNow).Metadata!;
 
-        Assert.AreEqual("2026-10-26", metadata["subjectTime"], "The survivor's own values win.");
+        Assert.AreEqual("2026-01-15", metadata["subjectTime"], "The survivor's own values win.");
         Assert.AreEqual("inferred", metadata["source"]);
         Assert.AreEqual("earlier,new", metadata[DreamService.FoldedFromKey]);
         Assert.IsFalse(metadata.ContainsKey(DreamService.MergedFromKey),
@@ -199,9 +199,9 @@ public class DreamExactDuplicateFoldTests
     public async Task ThePassFoldsDuplicatesWithoutAnLlmCallAndArchivesCopiesMergedIntoTheSurvivor()
     {
         var memory = new ArchivingStore();
-        await memory.SaveAsync(Entry("old", Fact, "personal/events", daysAgo: 20));
-        await memory.SaveAsync(Entry("mid", Fact, "personal/events", daysAgo: 10));
-        await memory.SaveAsync(Entry("new", Fact, "personal/events", daysAgo: 1));
+        await memory.SaveAsync(Entry("old", Fact, "project/infrastructure", daysAgo: 20));
+        await memory.SaveAsync(Entry("mid", Fact, "project/infrastructure", daysAgo: 10));
+        await memory.SaveAsync(Entry("new", Fact, "project/infrastructure", daysAgo: 1));
 
         var llm = new ScriptedLlmClient("""{ "toDelete": [], "toSave": [] }""");
         var service = CreateService(memory, new DreamOptions { Enabled = false }, llm);
@@ -224,8 +224,8 @@ public class DreamExactDuplicateFoldTests
     public async Task TheFoldRunsEvenWhenLlmConsolidationIsDisabled()
     {
         var memory = new ArchivingStore();
-        await memory.SaveAsync(Entry("old", Fact, "personal/events", daysAgo: 20));
-        await memory.SaveAsync(Entry("new", Fact, "personal/events", daysAgo: 1));
+        await memory.SaveAsync(Entry("old", Fact, "project/infrastructure", daysAgo: 20));
+        await memory.SaveAsync(Entry("new", Fact, "project/infrastructure", daysAgo: 1));
 
         var llm = new ScriptedLlmClient("""{ "toDelete": [], "toSave": [] }""");
         var service = CreateService(
@@ -241,8 +241,8 @@ public class DreamExactDuplicateFoldTests
     public async Task TheFoldCanBeTurnedOff()
     {
         var memory = new ArchivingStore();
-        await memory.SaveAsync(Entry("old", Fact, "personal/events", daysAgo: 20));
-        await memory.SaveAsync(Entry("new", Fact, "personal/events", daysAgo: 1));
+        await memory.SaveAsync(Entry("old", Fact, "project/infrastructure", daysAgo: 20));
+        await memory.SaveAsync(Entry("new", Fact, "project/infrastructure", daysAgo: 1));
 
         var service = CreateService(
             memory,
@@ -258,8 +258,8 @@ public class DreamExactDuplicateFoldTests
     public async Task ThePauseMarkerStopsTheFold()
     {
         var memory = new ArchivingStore();
-        await memory.SaveAsync(Entry("old", Fact, "personal/events", daysAgo: 20));
-        await memory.SaveAsync(Entry("new", Fact, "personal/events", daysAgo: 1));
+        await memory.SaveAsync(Entry("old", Fact, "project/infrastructure", daysAgo: 20));
+        await memory.SaveAsync(Entry("new", Fact, "project/infrastructure", daysAgo: 1));
 
         var auditDir = Path.Combine(_profileRoot, MemoryAuditFiles.DefaultBasePath);
         Directory.CreateDirectory(auditDir);
@@ -278,9 +278,9 @@ public class DreamExactDuplicateFoldTests
     public async Task TheLlmPassSeesTheFoldedCorpus()
     {
         var memory = new ArchivingStore();
-        await memory.SaveAsync(Entry("old", Fact, "personal/events", daysAgo: 20));
-        await memory.SaveAsync(Entry("new", Fact, "personal/events", daysAgo: 1));
-        await memory.SaveAsync(Entry("other", "The user prefers Central time for scheduling.", "user-preferences", daysAgo: 3));
+        await memory.SaveAsync(Entry("old", Fact, "project/infrastructure", daysAgo: 20));
+        await memory.SaveAsync(Entry("new", Fact, "project/infrastructure", daysAgo: 1));
+        await memory.SaveAsync(Entry("other", "Deploys to production require a green CI run.", "project/release", daysAgo: 3));
 
         var llm = new ScriptedLlmClient("""{ "toDelete": [], "toSave": [] }""");
         var service = CreateService(memory, new DreamOptions { Enabled = false }, llm);
