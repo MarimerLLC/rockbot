@@ -444,7 +444,10 @@ internal sealed class MemoryAuditService : IHostedService, IDisposable, IPrunabl
 
             var vocabulary = MergeCoverageVocabularyFile.Load(
                 ResolveUnderProfile(_dreamOptions.MergeCoverageVocabularyPath), _logger, nameof(MemoryAuditService));
-            var samples = MemoryAuditEvaluator.SelectSamples(walk.Entries, pairs, _options, now, vocabulary);
+            // Read before this run overwrites eval-latest.json.
+            var previouslyJudged = await ReadPreviousNearDuplicateIdsAsync(token);
+            var samples = MemoryAuditEvaluator.SelectSamples(
+                walk.Entries, pairs, _options, now, vocabulary, previouslyJudged);
             if (samples.Count == 0)
             {
                 _logger.LogInformation("MemoryAuditService: sample eval found nothing to judge");
@@ -760,14 +763,30 @@ internal sealed class MemoryAuditService : IHostedService, IDisposable, IPrunabl
         }
     }
 
-    private async Task<MemoryAuditEvalSummary?> ReadEvalSummaryAsync(CancellationToken ct)
+    private async Task<MemoryAuditEvalSummary?> ReadEvalSummaryAsync(CancellationToken ct) =>
+        (await ReadEvalLatestAsync(ct))?.Summary;
+
+    /// <summary>
+    /// Entry ids the previous eval judged as near-duplicates, so this run's sample can rotate to
+    /// clusters it has not seen. Empty when there is no readable previous eval.
+    /// </summary>
+    private async Task<IReadOnlySet<string>> ReadPreviousNearDuplicateIdsAsync(CancellationToken ct)
+    {
+        var previous = await ReadEvalLatestAsync(ct);
+        return (previous?.Verdicts ?? [])
+            .Where(v => string.Equals(v.Category, MemoryAuditEvaluator.NearDuplicateCategory, StringComparison.OrdinalIgnoreCase))
+            .SelectMany(v => v.Ids ?? [])
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+    }
+
+    private async Task<MemoryAuditEvalResult?> ReadEvalLatestAsync(CancellationToken ct)
     {
         if (!File.Exists(EvalLatestPath)) return null;
 
         try
         {
             var json = await File.ReadAllTextAsync(EvalLatestPath, ct);
-            return JsonSerializer.Deserialize<MemoryAuditEvalResult>(json, JsonOptions)?.Summary;
+            return JsonSerializer.Deserialize<MemoryAuditEvalResult>(json, JsonOptions);
         }
         catch (OperationCanceledException)
         {

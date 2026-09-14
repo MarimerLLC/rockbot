@@ -75,20 +75,33 @@ internal sealed class MemoryAuditEvaluator(ILlmClient llm, ILogger logger)
     /// each family, capped at <see cref="MemoryAuditOptions.EvalSampleSize"/>.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// Recency rather than randomness because the question being asked is "is memory management
     /// working <em>now</em>" — a random sample across a year would keep re-judging decisions
     /// made by code that has since been fixed.
+    /// </para>
+    /// <para>
+    /// Near-duplicates are the exception: a pair left live is a failure however old it is, so they
+    /// are not windowed. They are sampled one pair per cluster instead, rotating away from the
+    /// clusters the previous eval judged — see <see cref="SelectNearDuplicatePairs"/>.
+    /// </para>
     /// </remarks>
     /// <param name="vocabulary">
     /// Merge-coverage vocabulary, so the coverage line each merge sample carries reports what the
     /// dream's own coverage check would. <see langword="null"/> uses the built-in default.
+    /// </param>
+    /// <param name="previouslyJudgedIds">
+    /// Entry ids the previous eval showed the judge as near-duplicates. Clusters touching any of
+    /// them are sampled only once every other cluster has been. <see langword="null"/> means no
+    /// previous eval.
     /// </param>
     internal static IReadOnlyList<Sample> SelectSamples(
         IReadOnlyList<MemoryEntry> entries,
         IReadOnlyList<ShingleSimilarity.Pair> nearDupPairs,
         MemoryAuditOptions options,
         DateTimeOffset now,
-        MergeCoverageVocabulary? vocabulary = null)
+        MergeCoverageVocabulary? vocabulary = null,
+        IReadOnlySet<string>? previouslyJudgedIds = null)
     {
         var byId = new Dictionary<string, MemoryEntry>(StringComparer.OrdinalIgnoreCase);
         foreach (var entry in entries)
@@ -136,10 +149,10 @@ internal sealed class MemoryAuditEvaluator(ILlmClient llm, ILogger logger)
         }
 
         // Near-duplicate pairs still both live — deduplication that did not happen.
-        foreach (var pair in nearDupPairs.OrderByDescending(p => p.Score).Take(options.EvalSampleSize))
+        foreach (var pair in SelectNearDuplicatePairs(nearDupPairs, byId, previouslyJudgedIds, options.EvalSampleSize))
         {
-            if (!byId.TryGetValue(pair.IdA, out var a) || !byId.TryGetValue(pair.IdB, out var b))
-                continue;
+            var a = byId[pair.IdA];
+            var b = byId[pair.IdB];
 
             var truncated = false;
             samples.Add(new Sample(
@@ -190,6 +203,92 @@ internal sealed class MemoryAuditEvaluator(ILlmClient llm, ILogger logger)
 
         return samples;
     }
+
+    /// <summary>
+    /// Picks which near-duplicate pairs to judge: one per cluster, clusters the previous eval did
+    /// not see first, capped at <paramref name="sampleSize"/>.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Taking the top pairs by score once re-judged the same ten pairs every week. Identical text
+    /// scores 1.0 and always sorted first, and a cluster of <em>n</em> entries contributes
+    /// n(n−1)/2 pairs, so four clusters filled the whole budget and nothing else in the corpus
+    /// was ever looked at. Collapsing to clusters spreads the budget; deprioritising last week's
+    /// clusters rotates it. They are deprioritised rather than excluded, so a small corpus still
+    /// fills the budget instead of alternating between halves.
+    /// </para>
+    /// <para>
+    /// Pairs the dream's exact-duplicate fold will collapse are dropped before clustering, using
+    /// the fold's own predicates so the two can never disagree: judging them measures nothing.
+    /// Identical text filed under different categories is not folded, so it stays sampleable.
+    /// </para>
+    /// </remarks>
+    internal static IReadOnlyList<ShingleSimilarity.Pair> SelectNearDuplicatePairs(
+        IReadOnlyList<ShingleSimilarity.Pair> pairs,
+        IReadOnlyDictionary<string, MemoryEntry> byId,
+        IReadOnlySet<string>? previouslyJudgedIds,
+        int sampleSize)
+    {
+        var candidates = new List<(ShingleSimilarity.Pair Pair, MemoryEntry A, MemoryEntry B)>();
+        foreach (var pair in pairs)
+        {
+            if (!byId.TryGetValue(pair.IdA, out var a) || !byId.TryGetValue(pair.IdB, out var b))
+                continue;
+            if (WillBeFolded(a, b))
+                continue;
+
+            candidates.Add((pair, a, b));
+        }
+
+        // Union-find over canonical entry ids.
+        var parent = new Dictionary<string, string>(StringComparer.Ordinal);
+        string Find(string id)
+        {
+            parent.TryAdd(id, id);
+            while (parent[id] != id)
+            {
+                parent[id] = parent[parent[id]];
+                id = parent[id];
+            }
+            return id;
+        }
+
+        foreach (var (_, a, b) in candidates)
+        {
+            var rootA = Find(a.Id);
+            var rootB = Find(b.Id);
+            if (rootA != rootB)
+                parent[rootA] = rootB;
+        }
+
+        var judged = previouslyJudgedIds ?? new HashSet<string>();
+
+        return [.. candidates
+            .GroupBy(c => Find(c.A.Id), StringComparer.Ordinal)
+            .Select(cluster =>
+            {
+                var best = cluster
+                    .OrderByDescending(c => c.Pair.Score)
+                    .ThenBy(c => c.A.Id, StringComparer.Ordinal)
+                    .ThenBy(c => c.B.Id, StringComparer.Ordinal)
+                    .First();
+                var seen = cluster.Any(c => judged.Contains(c.A.Id) || judged.Contains(c.B.Id));
+                return (best.Pair, Seen: seen, Key: MinOrdinal(best.A.Id, best.B.Id));
+            })
+            .OrderBy(c => c.Seen)
+            .ThenByDescending(c => c.Pair.Score)
+            .ThenBy(c => c.Key, StringComparer.Ordinal)
+            .Take(sampleSize)
+            .Select(c => c.Pair)];
+    }
+
+    private static bool WillBeFolded(MemoryEntry a, MemoryEntry b) =>
+        DreamService.IsExactDuplicateEligible(a)
+        && DreamService.IsExactDuplicateEligible(b)
+        && DreamService.ExactDuplicateKey(a) == DreamService.ExactDuplicateKey(b);
+
+    private static string MinOrdinal(string x, string y) =>
+        string.CompareOrdinal(x, y) <= 0 ? x : y;
 
     /// <summary>
     /// Judges <paramref name="samples"/>, one LLM call per category. A category whose call fails
