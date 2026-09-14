@@ -133,7 +133,10 @@ internal static class MemoryAuditReportWriter
             sb.AppendLine();
             sb.AppendLine(
                 $"On {Date(summary.EvaluatedAt)} a judge reviewed {summary.Sampled} sampled outcome(s) and " +
-                $"agreed with {summary.Sound} of them ({Percent(summary.SoundRate)}).");
+                $"agreed with {summary.Sound} of them ({Percent(summary.SoundRate)})." +
+                (summary.Carried > 0
+                    ? $" {summary.Carried} verdict(s) were carried forward because the content judged had not changed."
+                    : string.Empty));
 
             if (summary.RateByCategory.Count > 0)
             {
@@ -154,8 +157,14 @@ internal static class MemoryAuditReportWriter
                     var context = verdict.ContextIds is { Count: > 0 } ids
                         ? $" (checked against {string.Join(", ", ids.Select(id => $"`{id}`"))})"
                         : string.Empty;
-                    sb.AppendLine($"- [{verdict.Category}] {string.Join(", ", verdict.Ids.Select(id => $"`{id}`"))}{context} — " +
-                                  $"{verdict.Reason ?? "no reason given"}");
+                    var carried = verdict is { Carried: true, JudgedAt: { } judgedAt }
+                        ? $" (carried from {Date(judgedAt)})"
+                        : string.Empty;
+                    var evidence = string.IsNullOrWhiteSpace(verdict.Evidence)
+                        ? string.Empty
+                        : $" Quoted: \"{Clip(verdict.Evidence.ReplaceLineEndings(" "), EvidenceChars)}\"";
+                    sb.AppendLine($"- [{verdict.Category}] {string.Join(", ", verdict.Ids.Select(id => $"`{id}`"))}{context}{carried} — " +
+                                  $"{verdict.Reason ?? "no reason given"}{evidence}");
                 }
             }
         }
@@ -181,6 +190,12 @@ internal static class MemoryAuditReportWriter
     /// <summary>A date on the Gregorian calendar regardless of the host's default.</summary>
     private static string Date(DateTimeOffset value) =>
         value.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+
+    /// <summary>Longest quoted evidence shown in a finding; the full quote is in the eval file.</summary>
+    private const int EvidenceChars = 200;
+
+    private static string Clip(string text, int max) =>
+        text.Length <= max ? text : text[..max] + "…";
 
     /// <summary>A date and time on the Gregorian calendar regardless of the host's default.</summary>
     private static string Timestamp(DateTimeOffset value) =>

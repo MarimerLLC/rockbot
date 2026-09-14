@@ -26,9 +26,16 @@ irreversible; a surviving duplicate is a nuisance that any later pass can still 
   per-project version of the same setting, two people with similar roles, the same event on
   different dates.
 - **Heavily reinforced entries.** An entry the agent has re-observed many times should still
-  read as one coherent, specific, useful fact. It is NOT sound if repeated reinforcement has
-  accreted it into a vague blob, a wall of unrelated specifics, or a self-contradiction —
-  even though nothing was formally lost.
+  read as one coherent, specific, useful fact. Length and detail are not faults: every detail
+  about one tool, system, person, project or topic is one subject, including where it lives, how
+  to reach or discover it, and its names, paths and rules. The entry is NOT sound only if at least
+  one of these holds, and you must quote the words that meet it:
+  - it makes claims about two or more unrelated subjects;
+  - one statement in it contradicts another;
+  - it says the same thing twice, a later statement repeating an earlier one and adding nothing;
+  - it names no checkable specific at all.
+
+  Otherwise it is sound, even when it is long.
 
 Content cut for length ends in a `[truncated]` marker. A detail you cannot see past that point is
 not a detail that was lost — do not report it as missing. A merge's "Coverage check" line is a
@@ -41,8 +48,9 @@ did is exactly the failure this audit exists to catch.
 Reply with JSON only:
 
 ```json
-{"verdicts":[{"index":1,"sound":true,"reason":"one short sentence"}]}
+{"verdicts":[{"index":1,"sound":true,"reason":"one short sentence","evidence":""}]}
 ```
 
 One object per numbered item, in any order. Keep each reason to one short sentence naming the
-specific thing that was kept or lost.
+specific thing that was kept or lost. When `sound` is false, `evidence` quotes the exact words of
+the item that show the problem, copied verbatim; leave it empty when `sound` is true.

@@ -445,10 +445,10 @@ internal sealed class MemoryAuditService : IHostedService, IDisposable, IPrunabl
             var vocabulary = MergeCoverageVocabularyFile.Load(
                 ResolveUnderProfile(_dreamOptions.MergeCoverageVocabularyPath), _logger, nameof(MemoryAuditService));
             // Read before this run overwrites eval-latest.json.
-            var previouslyJudged = await ReadPreviousNearDuplicateIdsAsync(token);
+            var previous = await ReadEvalLatestAsync(token);
             var liveNeighbours = await FindEphemeralNeighboursAsync(walk.Entries, now, token);
             var samples = MemoryAuditEvaluator.SelectSamples(
-                walk.Entries, pairs, _options, now, vocabulary, previouslyJudged, liveNeighbours);
+                walk.Entries, pairs, _options, now, vocabulary, PreviousNearDuplicateIds(previous), liveNeighbours);
             if (samples.Count == 0)
             {
                 _logger.LogInformation("MemoryAuditService: sample eval found nothing to judge");
@@ -457,7 +457,7 @@ internal sealed class MemoryAuditService : IHostedService, IDisposable, IPrunabl
 
             var evaluator = new MemoryAuditEvaluator(_llmClient, _logger);
             var result = await evaluator.EvaluateAsync(
-                samples, LoadEvalDirective(), _options.EvalModelTier, fingerprint, token);
+                samples, LoadEvalDirective(), _options.EvalModelTier, fingerprint, previous?.Verdicts, token);
 
             if (result is null) return null;
 
@@ -474,12 +474,13 @@ internal sealed class MemoryAuditService : IHostedService, IDisposable, IPrunabl
                 }).SaveAsync(StatePath, token);
 
             _logger.LogInformation(
-                "memory audit eval — {Sampled} sample(s) judged, {Sound} sound ({Rate})",
+                "memory audit eval — {Sampled} sample(s) judged, {Sound} sound ({Rate}), {Carried} carried forward",
                 result.Summary.Sampled,
                 result.Summary.Sound,
                 // Pre-formatted: a logger renders "P0" with the ambient culture too, and this
                 // line is meant to be parsed by a dashboard.
-                (result.Summary.SoundRate * 100).ToString("F0", System.Globalization.CultureInfo.InvariantCulture) + "%");
+                (result.Summary.SoundRate * 100).ToString("F0", System.Globalization.CultureInfo.InvariantCulture) + "%",
+                result.Summary.Carried);
 
             return result;
         }
@@ -811,14 +812,11 @@ internal sealed class MemoryAuditService : IHostedService, IDisposable, IPrunabl
     /// Entry ids the previous eval judged as near-duplicates, so this run's sample can rotate to
     /// clusters it has not seen. Empty when there is no readable previous eval.
     /// </summary>
-    private async Task<IReadOnlySet<string>> ReadPreviousNearDuplicateIdsAsync(CancellationToken ct)
-    {
-        var previous = await ReadEvalLatestAsync(ct);
-        return (previous?.Verdicts ?? [])
+    private static IReadOnlySet<string> PreviousNearDuplicateIds(MemoryAuditEvalResult? previous) =>
+        (previous?.Verdicts ?? [])
             .Where(v => string.Equals(v.Category, MemoryAuditEvaluator.NearDuplicateCategory, StringComparison.OrdinalIgnoreCase))
             .SelectMany(v => v.Ids ?? [])
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
-    }
 
     private async Task<MemoryAuditEvalResult?> ReadEvalLatestAsync(CancellationToken ct)
     {

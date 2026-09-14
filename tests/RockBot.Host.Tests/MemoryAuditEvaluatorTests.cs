@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging.Abstractions;
 
@@ -62,6 +63,23 @@ public class MemoryAuditEvaluatorTests
             Normalize(JudgeText(source, MemoryAuditEvaluator.EphemeralArchiveCategory)),
             Normalize(MemoryAuditEvaluator.EphemeralSurvivalRule),
             $"The {source} must say that a discarded fact a live entry still carries was not lost.");
+    }
+
+    // ── Reinforced-entry subject rule ────────────────────────────────────────
+    //
+    // Asked only whether an entry was a "vague blob", the judge passed and then failed the same
+    // unchanged entries. Every judge text must give the same concrete definition of one subject.
+
+    [TestMethod]
+    [DataRow("question")]
+    [DataRow("built-in directive")]
+    [DataRow("memory-audit.md")]
+    public void EveryJudgeTextStatesTheReinforcementSubjectRule(string source)
+    {
+        StringAssert.Contains(
+            Normalize(JudgeText(source, MemoryAuditEvaluator.HighReinforcementCategory)),
+            Normalize(MemoryAuditEvaluator.ReinforcementSubjectRule),
+            $"The {source} must say what counts as one subject for a reinforced entry.");
     }
 
     private static string JudgeText(string source, string category = MemoryAuditEvaluator.NearDuplicateCategory) => source switch
@@ -245,7 +263,7 @@ public class MemoryAuditEvaluatorTests
         var llm = new StubLlmClient("""{"verdicts":[{"index":1,"sound":true,"reason":"Survives."}]}""");
 
         var result = await new MemoryAuditEvaluator(llm, NullLogger.Instance)
-            .EvaluateAsync(samples, "directive", ModelTier.Balanced, "FP", CancellationToken.None);
+            .EvaluateAsync(samples, "directive", ModelTier.Balanced, "FP", null, CancellationToken.None);
 
         var verdict = result!.Verdicts.Single();
         CollectionAssert.AreEqual(new[] { "dropped" }, verdict.Ids.ToArray());
@@ -412,7 +430,7 @@ public class MemoryAuditEvaluatorTests
             """);
 
         var result = await new MemoryAuditEvaluator(llm, NullLogger.Instance)
-            .EvaluateAsync(samples, "directive", ModelTier.Balanced, "FP", CancellationToken.None);
+            .EvaluateAsync(samples, "directive", ModelTier.Balanced, "FP", null, CancellationToken.None);
 
         Assert.IsNotNull(result);
         Assert.AreEqual(2, result.Summary.Sampled);
@@ -437,7 +455,7 @@ public class MemoryAuditEvaluatorTests
             """{"verdicts":[{"index":1,"sound":true},{"index":7,"sound":false,"reason":"nonsense"}]}""");
 
         var result = await new MemoryAuditEvaluator(llm, NullLogger.Instance)
-            .EvaluateAsync(samples, "directive", ModelTier.Balanced, "FP", CancellationToken.None);
+            .EvaluateAsync(samples, "directive", ModelTier.Balanced, "FP", null, CancellationToken.None);
 
         Assert.IsNotNull(result);
         Assert.AreEqual(1, result.Verdicts.Count);
@@ -454,7 +472,7 @@ public class MemoryAuditEvaluatorTests
         var llm = new StubLlmClient("the model rambled and produced no JSON");
 
         var result = await new MemoryAuditEvaluator(llm, NullLogger.Instance)
-            .EvaluateAsync(samples, "directive", ModelTier.Balanced, "FP", CancellationToken.None);
+            .EvaluateAsync(samples, "directive", ModelTier.Balanced, "FP", null, CancellationToken.None);
 
         Assert.IsNull(result);
     }
@@ -533,7 +551,7 @@ public class MemoryAuditEvaluatorTests
         var llm = new StubLlmClient("""{"verdicts":[{"index":1,"sound":true}]}""");
 
         await new MemoryAuditEvaluator(llm, NullLogger.Instance)
-            .EvaluateAsync(samples, "directive", ModelTier.Balanced, "FP", CancellationToken.None);
+            .EvaluateAsync(samples, "directive", ModelTier.Balanced, "FP", null, CancellationToken.None);
 
         var prompts = llm.UserMessages;
         Assert.AreEqual(2, prompts.Count);
@@ -631,6 +649,212 @@ public class MemoryAuditEvaluatorTests
         Assert.AreNotEqual(baseline, MemoryAuditEvaluator.StoreFingerprint(
             [a, b, Archived("z", "ephemeral", Now)]));
     }
+
+    // ── Carrying verdicts forward ────────────────────────────────────────────
+    //
+    // The judge reached opposite verdicts on identical input, so a family's trend moved when no
+    // entry had. A sample whose question, directive and content are unchanged keeps its verdict.
+
+    [TestMethod]
+    public void AReinforcedEntrysEvidenceKeyIgnoresItsCountsButNotItsContent()
+    {
+        var heavy = Entry("heavy") with { ReinforcementCount = 40, ImportanceScore = 0.5f };
+
+        var baseline = ReinforcedSample(heavy);
+        var reinforcedAgain = ReinforcedSample(heavy with { ReinforcementCount = 41, ImportanceScore = 0.9f });
+        var edited = ReinforcedSample(heavy with { Content = "a different fact" });
+
+        Assert.AreNotEqual(baseline.Text, reinforcedAgain.Text, "The judge still sees the new count.");
+        Assert.AreEqual(baseline.EvidenceKey, reinforcedAgain.EvidenceKey);
+        Assert.AreNotEqual(baseline.EvidenceKey, edited.EvidenceKey);
+    }
+
+    [TestMethod]
+    public void AnEphemeralEvidenceKeyTracksItsLiveNeighboursButNotTheirScores()
+    {
+        var dropped = Archived("dropped", DreamService.EphemeralArchiveReason, Now.AddDays(-1));
+        var survivor = Entry("survivor");
+
+        string? KeyWith(MemoryEntry neighbour, double score) =>
+            MemoryAuditEvaluator.SelectSamples(
+                    [dropped, neighbour], [], Options(), Now,
+                    liveNeighbours: new Dictionary<string, IReadOnlyList<MemorySimilarityMatch>>
+                    {
+                        ["dropped"] = [new(neighbour, score, MemorySimilarityMeasure.Lexical)]
+                    })
+                .Single(s => s.Category == MemoryAuditEvaluator.EphemeralArchiveCategory)
+                .EvidenceKey;
+
+        var baseline = KeyWith(survivor, 0.61);
+
+        Assert.AreEqual(baseline, KeyWith(survivor, 0.74));
+        Assert.AreNotEqual(baseline, KeyWith(survivor with { Content = "a changed survivor" }, 0.61));
+        Assert.AreNotEqual(baseline, MemoryAuditEvaluator.SelectSamples([dropped], [], Options(), Now)
+            .Single(s => s.Category == MemoryAuditEvaluator.EphemeralArchiveCategory)
+            .EvidenceKey, "An unsearched discard is not the same evidence as one with a neighbour.");
+    }
+
+    [TestMethod]
+    public void AMergeEvidenceKeyTracksItsSources()
+    {
+        var source = Archived("src", "merged into m1", Now.AddDays(-2));
+        var merged = Entry("m1") with { UpdatedAt = Now.AddDays(-2), Metadata = MergedFrom("src") };
+
+        string? KeyOf(MemoryEntry s) =>
+            MemoryAuditEvaluator.SelectSamples([s, merged], [], Options(), Now)
+                .Single(x => x.Category == MemoryAuditEvaluator.MergeCategory)
+                .EvidenceKey;
+
+        Assert.AreEqual(KeyOf(source), KeyOf(source));
+        Assert.AreNotEqual(KeyOf(source), KeyOf(source with { Content = "a source that said more" }));
+    }
+
+    [TestMethod]
+    public async Task AnUnchangedSampleCarriesItsVerdictWithoutAskingTheJudge()
+    {
+        List<MemoryAuditEvaluator.Sample> samples = [ReinforcedSample(Entry("heavy") with { ReinforcementCount = 40 })];
+
+        var first = await new MemoryAuditEvaluator(
+                new StubLlmClient("""{"verdicts":[{"index":1,"sound":true,"reason":"One subject."}]}"""),
+                NullLogger.Instance)
+            .EvaluateAsync(samples, "directive", ModelTier.Balanced, "FP1", null, CancellationToken.None);
+
+        var laterSamples = new List<MemoryAuditEvaluator.Sample>
+        {
+            ReinforcedSample(Entry("heavy") with { ReinforcementCount = 55 })
+        };
+        var judge = new StubLlmClient("""{"verdicts":[{"index":1,"sound":false,"reason":"Flipped.","evidence":"a fact"}]}""");
+
+        var second = await new MemoryAuditEvaluator(judge, NullLogger.Instance)
+            .EvaluateAsync(laterSamples, "directive", ModelTier.Balanced, "FP2", first!.Verdicts, CancellationToken.None);
+
+        Assert.AreEqual(0, judge.UserMessages.Count, "An unchanged sample must not be judged again.");
+        var verdict = second!.Verdicts.Single();
+        Assert.IsTrue(verdict.Sound);
+        Assert.IsTrue(verdict.Carried);
+        Assert.AreEqual("One subject.", verdict.Reason);
+        Assert.AreEqual(first.Verdicts.Single().JudgedAt, verdict.JudgedAt);
+        Assert.AreEqual(1, second.Summary.Carried);
+        Assert.IsFalse(first.Verdicts.Single().Carried);
+        Assert.AreEqual(0, first.Summary.Carried);
+    }
+
+    [TestMethod]
+    public async Task AChangedDirectiveIsJudgedAfresh()
+    {
+        List<MemoryAuditEvaluator.Sample> samples = [ReinforcedSample(Entry("heavy") with { ReinforcementCount = 40 })];
+        var previous = new[] { CarriableVerdict(samples[0], "old directive") };
+        var judge = new StubLlmClient("""{"verdicts":[{"index":1,"sound":true}]}""");
+
+        var result = await new MemoryAuditEvaluator(judge, NullLogger.Instance)
+            .EvaluateAsync(samples, "new directive", ModelTier.Balanced, "FP", previous, CancellationToken.None);
+
+        Assert.AreEqual(1, judge.UserMessages.Count);
+        Assert.IsFalse(result!.Verdicts.Single().Carried);
+    }
+
+    [TestMethod]
+    public async Task OnlyChangedSamplesAreSentToTheJudge()
+    {
+        var unchanged = ReinforcedSample(Entry("same") with { Content = "unchanged-entry-text", ReinforcementCount = 50 });
+        var changed = ReinforcedSample(Entry("new") with { Content = "changed-entry-text", ReinforcementCount = 40 });
+        var judge = new StubLlmClient("""{"verdicts":[{"index":1,"sound":true,"reason":"Fresh."}]}""");
+
+        var result = await new MemoryAuditEvaluator(judge, NullLogger.Instance)
+            .EvaluateAsync(
+                [unchanged, changed], "directive", ModelTier.Balanced, "FP",
+                [CarriableVerdict(unchanged, "directive")], CancellationToken.None);
+
+        var prompt = judge.UserMessages.Single();
+        StringAssert.Contains(prompt, "changed-entry-text");
+        Assert.IsFalse(prompt.Contains("unchanged-entry-text", StringComparison.Ordinal));
+        Assert.IsTrue(System.Text.RegularExpressions.Regex.IsMatch(prompt, @"^1\.\r?$", System.Text.RegularExpressions.RegexOptions.Multiline));
+        Assert.IsFalse(System.Text.RegularExpressions.Regex.IsMatch(prompt, @"^2\.\r?$", System.Text.RegularExpressions.RegexOptions.Multiline),
+            "The one item sent is numbered 1.");
+
+        var fresh = result!.Verdicts.Single(v => !v.Carried);
+        CollectionAssert.AreEqual(new[] { "new" }, fresh.Ids.ToArray());
+        Assert.AreEqual("Fresh.", fresh.Reason);
+        CollectionAssert.AreEqual(new[] { "same" }, result.Verdicts.Single(v => v.Carried).Ids.ToArray());
+    }
+
+    [TestMethod]
+    public async Task CarriedVerdictsSurviveAFailedCallForTheirFamily()
+    {
+        var unchanged = ReinforcedSample(Entry("same") with { ReinforcementCount = 50 });
+        var changed = ReinforcedSample(Entry("new") with { ReinforcementCount = 40 });
+        var judge = new StubLlmClient("the model rambled and produced no JSON");
+
+        var result = await new MemoryAuditEvaluator(judge, NullLogger.Instance)
+            .EvaluateAsync(
+                [unchanged, changed], "directive", ModelTier.Balanced, "FP",
+                [CarriableVerdict(unchanged, "directive")], CancellationToken.None);
+
+        CollectionAssert.AreEqual(new[] { "same" }, result!.Verdicts.Single().Ids.ToArray());
+    }
+
+    // ── Quoted evidence ──────────────────────────────────────────────────────
+
+    [TestMethod]
+    [DataRow(null, false)]
+    [DataRow("", false)]
+    [DataRow("it bundles several topics", false)]
+    [DataRow("server alpha hosts the files", true)]
+    [DataRow("  \"SERVER ALPHA\n  hosts the files\"  ", true)]
+    public async Task AnUnsoundReinforcedVerdictCountsOnlyWhenItQuotesTheEntry(string? evidence, bool counted)
+    {
+        var sample = ReinforcedSample(Entry("heavy") with
+        {
+            Content = "Server alpha hosts the files. The weather is mild.",
+            ReinforcementCount = 40
+        });
+        var reply = JsonSerializer.Serialize(new
+        {
+            verdicts = new[] { new { index = 1, sound = false, reason = "Two subjects.", evidence } }
+        });
+
+        var result = await new MemoryAuditEvaluator(new StubLlmClient(reply), NullLogger.Instance)
+            .EvaluateAsync([sample], "directive", ModelTier.Balanced, "FP", null, CancellationToken.None);
+
+        if (counted)
+            Assert.AreEqual(evidence!.Trim(), result!.Verdicts.Single().Evidence);
+        else
+            Assert.IsNull(result, "An unquoted finding must not be scored.");
+    }
+
+    [TestMethod]
+    public async Task AnUnsoundMergeVerdictIsKeptWithoutAQuote()
+    {
+        var samples = new List<MemoryAuditEvaluator.Sample>
+        {
+            new(MemoryAuditEvaluator.MergeCategory, ["m1", "s1"], "merge text")
+        };
+        var llm = new StubLlmClient("""{"verdicts":[{"index":1,"sound":false,"reason":"Dropped a date."}]}""");
+
+        var result = await new MemoryAuditEvaluator(llm, NullLogger.Instance)
+            .EvaluateAsync(samples, "directive", ModelTier.Balanced, "FP", null, CancellationToken.None);
+
+        var verdict = result!.Verdicts.Single();
+        Assert.IsFalse(verdict.Sound);
+        Assert.IsNull(verdict.Evidence);
+    }
+
+    [TestMethod]
+    public void EveryPromptAsksForQuotedEvidence()
+    {
+        StringAssert.Contains(MemoryAuditEvaluator.AnswerFormat, "\"evidence\"");
+        StringAssert.Contains(MemoryAuditEvaluator.BuiltInDirective, "\"evidence\"");
+        StringAssert.Contains(JudgeText("memory-audit.md"), "\"evidence\"");
+    }
+
+    private static MemoryAuditEvaluator.Sample ReinforcedSample(MemoryEntry entry) =>
+        MemoryAuditEvaluator.SelectSamples([entry], [], Options(), Now)
+            .Single(s => s.Category == MemoryAuditEvaluator.HighReinforcementCategory);
+
+    private static MemoryAuditEvalVerdict CarriableVerdict(MemoryAuditEvaluator.Sample sample, string directive) =>
+        new(sample.Category, sample.Ids, true, "Judged before.",
+            Key: MemoryAuditEvaluator.JudgeKey(sample, directive),
+            JudgedAt: Now.AddDays(-7));
 
     // ── Helpers ──────────────────────────────────────────────────────────────
 

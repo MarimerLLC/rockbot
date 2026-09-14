@@ -68,14 +68,20 @@ internal sealed class MemoryAuditEvaluator(ILlmClient llm, ILogger logger)
     /// Live entries rendered beside the decision as evidence, kept apart from
     /// <paramref name="Ids"/> so nothing downstream reports them as affected.
     /// </param>
+    /// <param name="EvidenceKey">
+    /// Hash of the content the verdict is about, leaving out display fields that move without the
+    /// content moving. <see langword="null"/> falls back to <paramref name="Text"/>. See
+    /// <see cref="EvaluateAsync"/> for how it carries a verdict forward.
+    /// </param>
     internal sealed record Sample(
         string Category,
         IReadOnlyList<string> Ids,
         string Text,
         bool Truncated = false,
-        IReadOnlyList<string>? ContextIds = null);
+        IReadOnlyList<string>? ContextIds = null,
+        string? EvidenceKey = null);
 
-    private sealed record VerdictDto(int Index, bool Sound, string? Reason);
+    private sealed record VerdictDto(int Index, bool Sound, string? Reason, string? Evidence);
 
     private sealed record VerdictsDto(List<VerdictDto>? Verdicts);
 
@@ -155,13 +161,19 @@ internal sealed class MemoryAuditEvaluator(ILlmClient llm, ILogger logger)
 
             // Run over the full content, not the rendered text: the check is the one thing in the
             // prompt that can see past a cut.
-            text.AppendLine(CoverageLine(MergeCoverage.FindMissingSpecifics(sources, merge.Content, vocabulary)));
+            var coverage = CoverageLine(MergeCoverage.FindMissingSpecifics(sources, merge.Content, vocabulary));
+            text.AppendLine(coverage);
 
             samples.Add(new Sample(
                 MergeCategory,
                 [merge.Id, .. sources.Select(s => s.Id)],
                 text.ToString().TrimEnd(),
-                truncated));
+                truncated,
+                EvidenceKey: Hash([
+                    merge.Id, merge.Content,
+                    .. sources.SelectMany(s => new[] { s.Id, s.Content }),
+                    // The vocabulary can change what the coverage line reports without any entry changing.
+                    coverage])));
         }
 
         // Near-duplicate pairs still both live — deduplication that did not happen.
@@ -177,7 +189,8 @@ internal sealed class MemoryAuditEvaluator(ILlmClient llm, ILogger logger)
                 $"Two entries both live in memory (lexical overlap {Pct(pair.Score)}):\n" +
                 $"  - [{a.Id}] {Render(a.Content, ref truncated)}\n" +
                 $"  - [{b.Id}] {Render(b.Content, ref truncated)}",
-                truncated));
+                truncated,
+                EvidenceKey: Hash([a.Id, a.Content, b.Id, b.Content])));
         }
 
         // Heavily reinforced entries — the corpus's load-bearing facts.
@@ -194,7 +207,10 @@ internal sealed class MemoryAuditEvaluator(ILlmClient llm, ILogger logger)
                 [entry.Id],
                 $"Reinforced {entry.ReinforcementCount}x, importance {Score(entry.ImportanceScore)}, " +
                 $"category {entry.Category ?? "(none)"}:\n  [{entry.Id}] {Render(entry.Content, ref truncated)}",
-                truncated));
+                truncated,
+                // Not the reinforcement count or importance: both move week to week, and neither
+                // changes whether the text is still one coherent fact.
+                EvidenceKey: Hash([entry.Id, entry.Category, entry.Content])));
         }
 
         // Facts consolidation discarded outright, with nothing put in their place — shown with the
@@ -208,20 +224,36 @@ internal sealed class MemoryAuditEvaluator(ILlmClient llm, ILogger logger)
                 $"(reinforced {entry.ReinforcementCount}x, importance {Score(entry.ImportanceScore)}):");
             text.AppendLine($"  [{entry.Id}] {Render(entry.Content, ref truncated)}");
 
+            // Scores stay out of the key: a lexical score shifts as the rest of the corpus grows.
+            List<string?> evidence = [entry.Id, entry.Content];
             IReadOnlyList<MemorySimilarityMatch>? neighbours = null;
             if (liveNeighbours is null)
+            {
                 text.AppendLine("Live memory was not searched for entries like this one.");
+                evidence.Add("unsearched");
+            }
             else if (!liveNeighbours.TryGetValue(entry.Id, out neighbours))
+            {
                 text.AppendLine("The search of live memory for entries like this one failed.");
+                evidence.Add("failed");
+            }
             else if (neighbours.Count == 0)
+            {
                 text.AppendLine("Most similar live entries: none found.");
+                evidence.Add("none");
+            }
             else
             {
-                text.AppendLine($"Most similar live entries ({MeasureName(neighbours[0].Measure)} similarity):");
+                var measure = MeasureName(neighbours[0].Measure);
+                text.AppendLine($"Most similar live entries ({measure} similarity):");
+                evidence.Add(measure);
                 foreach (var match in neighbours)
+                {
                     text.AppendLine(
                         $"  - [{match.Entry.Id}] ({Score((float)match.Score)}, " +
                         $"category {match.Entry.Category ?? "(none)"}) {Render(match.Entry.Content, ref truncated)}");
+                    evidence.AddRange([match.Entry.Id, match.Entry.Category, match.Entry.Content]);
+                }
             }
 
             samples.Add(new Sample(
@@ -229,7 +261,8 @@ internal sealed class MemoryAuditEvaluator(ILlmClient llm, ILogger logger)
                 [entry.Id],
                 text.ToString().TrimEnd(),
                 truncated,
-                neighbours is { Count: > 0 } ? [.. neighbours.Select(m => m.Entry.Id)] : null));
+                neighbours is { Count: > 0 } ? [.. neighbours.Select(m => m.Entry.Id)] : null,
+                Hash(evidence)));
         }
 
         return samples;
@@ -352,14 +385,34 @@ internal sealed class MemoryAuditEvaluator(ILlmClient llm, ILogger logger)
     /// or returns unparseable JSON is left out of the result rather than defaulting to sound —
     /// an eval that scores itself in the absence of an answer is worse than no eval.
     /// </summary>
+    /// <remarks>
+    /// <para>
+    /// A sample is judged only if nothing it would be judged on has changed since a verdict in
+    /// <paramref name="previous"/>: the family's question, <paramref name="directive"/>, and the
+    /// sample's <see cref="Sample.EvidenceKey"/>. Otherwise that verdict is carried forward. The
+    /// same judge once passed and then failed entries whose text had not changed, so a family's
+    /// trend moved with the model's mood rather than with memory. Editing a question or the
+    /// directive changes every key, so a rubric change is always re-judged.
+    /// </para>
+    /// </remarks>
+    /// <param name="previous">
+    /// The last eval's verdicts. <see langword="null"/> or empty judges everything.
+    /// </param>
     internal async Task<MemoryAuditEvalResult?> EvaluateAsync(
         IReadOnlyList<Sample> samples,
         string directive,
         ModelTier tier,
         string storeFingerprint,
+        IReadOnlyList<MemoryAuditEvalVerdict>? previous,
         CancellationToken ct)
     {
         if (samples.Count == 0) return null;
+
+        var now = DateTimeOffset.UtcNow;
+        var carriedByKey = new Dictionary<string, MemoryAuditEvalVerdict>(StringComparer.Ordinal);
+        foreach (var verdict in previous ?? [])
+            if (verdict.Key is { } key)
+                carriedByKey.TryAdd(key, verdict);
 
         var verdicts = new List<MemoryAuditEvalVerdict>();
 
@@ -367,8 +420,25 @@ internal sealed class MemoryAuditEvaluator(ILlmClient llm, ILogger logger)
         {
             ct.ThrowIfCancellationRequested();
 
-            var items = group.ToList();
-            var judged = await JudgeAsync(group.Key, items, directive, tier, ct).ConfigureAwait(false);
+            var toJudge = new List<(Sample Sample, string Key)>();
+            foreach (var sample in group)
+            {
+                var key = JudgeKey(sample, directive);
+                if (carriedByKey.TryGetValue(key, out var earlier))
+                    verdicts.Add(earlier with
+                    {
+                        Ids = sample.Ids,
+                        ContextIds = sample.ContextIds,
+                        JudgedAt = earlier.JudgedAt ?? now,
+                        Carried = true
+                    });
+                else
+                    toJudge.Add((sample, key));
+            }
+
+            if (toJudge.Count == 0) continue;
+
+            var judged = await JudgeAsync(group.Key, toJudge, directive, tier, now, ct).ConfigureAwait(false);
             if (judged is null) continue;
 
             verdicts.AddRange(judged);
@@ -383,20 +453,29 @@ internal sealed class MemoryAuditEvaluator(ILlmClient llm, ILogger logger)
         var sound = verdicts.Count(v => v.Sound);
 
         var summary = new MemoryAuditEvalSummary(
-            DateTimeOffset.UtcNow,
+            now,
             verdicts.Count,
             sound,
             (double)sound / verdicts.Count,
-            rateByCategory);
+            rateByCategory,
+            verdicts.Count(v => v.Carried));
 
         return new MemoryAuditEvalResult(summary, verdicts, storeFingerprint);
     }
 
+    /// <summary>
+    /// Everything a verdict on <paramref name="sample"/> rests on. Equal keys mean the judge would
+    /// be asked exactly the same question about exactly the same content.
+    /// </summary>
+    internal static string JudgeKey(Sample sample, string directive) =>
+        Hash([sample.Category, Question(sample.Category), directive, sample.EvidenceKey ?? sample.Text]);
+
     private async Task<List<MemoryAuditEvalVerdict>?> JudgeAsync(
         string category,
-        List<Sample> items,
+        List<(Sample Sample, string Key)> items,
         string directive,
         ModelTier tier,
+        DateTimeOffset now,
         CancellationToken ct)
     {
         var userMessage = new StringBuilder();
@@ -404,18 +483,16 @@ internal sealed class MemoryAuditEvaluator(ILlmClient llm, ILogger logger)
         userMessage.AppendLine($"{Question(category)}");
         // Carried in the user message rather than only the directive: memory-audit.md on a
         // deployed profile volume is never overwritten by an image upgrade.
-        if (items.Any(i => i.Truncated))
+        if (items.Any(i => i.Sample.Truncated))
             userMessage.AppendLine(TruncationNotice);
         userMessage.AppendLine();
         for (var i = 0; i < items.Count; i++)
         {
             userMessage.AppendLine($"{i + 1}.");
-            userMessage.AppendLine(items[i].Text);
+            userMessage.AppendLine(items[i].Sample.Text);
             userMessage.AppendLine();
         }
-        userMessage.AppendLine(
-            "Answer with JSON: {\"verdicts\":[{\"index\":1,\"sound\":true,\"reason\":\"one short sentence\"}]}. " +
-            "Include one object per numbered item.");
+        userMessage.AppendLine(AnswerFormat);
 
         try
         {
@@ -446,9 +523,25 @@ internal sealed class MemoryAuditEvaluator(ILlmClient llm, ILogger logger)
                 // The index is the model's only handle on which item it is talking about, so an
                 // out-of-range one is dropped rather than attributed to the wrong entries.
                 if (verdict.Index < 1 || verdict.Index > items.Count) continue;
-                var sample = items[verdict.Index - 1];
+                var (sample, key) = items[verdict.Index - 1];
+                var evidence = string.IsNullOrWhiteSpace(verdict.Evidence) ? null : verdict.Evidence.Trim();
+
+                // The rubric for this family is only checkable if the judge points at the words
+                // that fail it. A finding it cannot quote is not counted, and not carried, so the
+                // entry is asked about again next time.
+                if (category == HighReinforcementCategory && !verdict.Sound && !IsQuotedFrom(evidence, sample.Text))
+                {
+                    logger.LogWarning(
+                        "Memory audit: eval judge found {Ids} unsound without quoting the entry, verdict dropped",
+                        string.Join(",", sample.Ids));
+                    continue;
+                }
+
                 results.Add(new MemoryAuditEvalVerdict(
-                    sample.Category, sample.Ids, verdict.Sound, verdict.Reason?.Trim(), sample.ContextIds));
+                    sample.Category, sample.Ids, verdict.Sound, verdict.Reason?.Trim(), sample.ContextIds,
+                    verdict.Sound ? null : evidence,
+                    key,
+                    now));
             }
 
             return results.Count > 0 ? results : null;
@@ -481,6 +574,33 @@ internal sealed class MemoryAuditEvaluator(ILlmClient llm, ILogger logger)
         return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(sb.ToString())).AsSpan(0, 16));
     }
 
+    /// <summary>Hash of <paramref name="parts"/> in order, with a null distinct from an empty string.</summary>
+    internal static string Hash(IReadOnlyList<string?> parts)
+    {
+        var sb = new StringBuilder();
+        foreach (var part in parts)
+            sb.Append(part ?? "\u0000").Append('\u001f');  // unit separator, as in StoreFingerprint
+
+        return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(sb.ToString())).AsSpan(0, 16));
+    }
+
+    /// <summary>
+    /// Whether <paramref name="evidence"/> is words actually present in <paramref name="text"/>.
+    /// Case, whitespace and wrapping quotes are ignored, since rendering flattens line breaks and
+    /// a judge routinely quotes a quote; anything else — a paraphrase, an elision — is not a quote.
+    /// </summary>
+    internal static bool IsQuotedFrom(string? evidence, string text)
+    {
+        if (string.IsNullOrWhiteSpace(evidence)) return false;
+
+        var quote = CollapseWhitespace(evidence.Trim().Trim('"', '\'', '“', '”', '‘', '’', '`').Trim());
+        return quote.Length > 0
+               && CollapseWhitespace(text).Contains(quote, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string CollapseWhitespace(string text) =>
+        System.Text.RegularExpressions.Regex.Replace(text, @"\s+", " ").Trim();
+
     /// <summary>
     /// The one statement of which way <c>sound</c> points for the near-duplicate family. The
     /// per-family question, <see cref="BuiltInDirective"/> and the shipped <c>memory-audit.md</c>
@@ -507,6 +627,27 @@ internal sealed class MemoryAuditEvaluator(ILlmClient llm, ILogger logger)
     internal const string EphemeralSurvivalRule =
         "a discarded fact that a live entry shown beside it still carries was NOT lost";
 
+    /// <summary>
+    /// The one statement of what counts as a single subject for a heavily reinforced entry. The
+    /// per-family question, <see cref="BuiltInDirective"/> and the shipped <c>memory-audit.md</c>
+    /// must all contain it.
+    /// </summary>
+    /// <remarks>
+    /// The family was once asked only whether an entry had become "a vague blob or a wall of
+    /// unrelated specifics". Nothing in that is checkable: the same judge passed entries of
+    /// tool-routing rules as focused one week and failed them, unchanged, as bundling too much the
+    /// next, taking the family from 70% sound to 0%.
+    /// </remarks>
+    internal const string ReinforcementSubjectRule =
+        "every detail about one tool, system, person, project or topic is one subject, including " +
+        "where it lives, how to reach or discover it, and its names, paths and rules";
+
+    /// <summary>The reply shape asked for in every judge call.</summary>
+    internal const string AnswerFormat =
+        "Answer with JSON: {\"verdicts\":[{\"index\":1,\"sound\":true,\"reason\":\"one short sentence\",\"evidence\":\"\"}]}. " +
+        "Include one object per numbered item. When sound is false, set evidence to the exact words from " +
+        "the item that show the problem, copied verbatim; leave it empty when sound is true.";
+
     internal static string Question(string category) => category switch
     {
         MergeCategory =>
@@ -517,8 +658,13 @@ internal sealed class MemoryAuditEvaluator(ILlmClient llm, ILogger logger)
             $"Leaving both live was the wrong call, so {NearDuplicatePolarity}: answer sound=false " +
             "for a genuine duplicate, and sound=true for distinct facts that merely look similar.",
         HighReinforcementCategory =>
-            "Is this entry still a coherent, specific, useful fact? Answer sound=false if repeated " +
-            "reinforcement has turned it into a vague or self-contradictory blob.",
+            "Has repeated reinforcement left this entry one coherent, specific, useful fact? " +
+            $"Length and detail are not faults: {ReinforcementSubjectRule}. " +
+            "Answer sound=false only if at least one of these holds: (a) it makes claims about two or " +
+            "more unrelated subjects; (b) one statement in it contradicts another; (c) it says the same " +
+            "thing twice, a later statement repeating an earlier one and adding nothing; (d) it names " +
+            "no checkable specific at all. Otherwise answer sound=true. For sound=false, the evidence " +
+            "must quote the words of the entry that meet the test.",
         EphemeralArchiveCategory =>
             "Was this safe to discard, given the live entries shown beside it? " +
             $"Nothing is lost while memory still holds it elsewhere, so {EphemeralSurvivalRule}. " +
@@ -590,15 +736,18 @@ internal sealed class MemoryAuditEvaluator(ILlmClient llm, ILogger logger)
           wording shares few tokens. Leaving both live was the wrong call, so
           {{NearDuplicatePolarity}} (sound=false). Distinct facts that merely look similar are
           sound (sound=true).
-        - An entry reinforced many times that has become vague, generic, or self-contradictory
-          is NOT sound, even though nothing was formally lost.
+        - An entry reinforced many times should still be one coherent fact. Length and detail are
+          not faults: {{ReinforcementSubjectRule}}. It is NOT sound only if it makes claims about
+          two or more unrelated subjects, contradicts itself, says the same thing twice, or names
+          no checkable specific at all.
 
         Content cut for length ends in a [truncated] marker. A detail you cannot see past that
         point is not a detail that was lost. A merge's "Coverage check" line is a verbatim string
         comparison over the full text: use it as evidence, but a specific the replacement
         reworded without losing its meaning is still kept.
 
-        Reply with JSON only: {"verdicts":[{"index":1,"sound":true,"reason":"..."}]}
-        One object per numbered item, in any order. Keep each reason to one short sentence.
+        Reply with JSON only: {"verdicts":[{"index":1,"sound":true,"reason":"...","evidence":""}]}
+        One object per numbered item, in any order. Keep each reason to one short sentence. When
+        sound is false, evidence quotes the exact words of the item that show the problem.
         """;
 }

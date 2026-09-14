@@ -75,12 +75,29 @@ public sealed record MemoryAuditCategoryGrowth(string Category, int Created, int
 /// Live entries shown beside the decision as evidence rather than as part of it — the entries
 /// most similar to an ephemeral discard. Not affected by the verdict. Absent when none were shown.
 /// </param>
+/// <param name="Evidence">
+/// The span of the judged item the judge quoted as showing the problem. Present on unsound
+/// verdicts whose judge supplied one.
+/// </param>
+/// <param name="Key">
+/// Hash of everything the verdict was reached on — the family's question, the directive, and the
+/// content judged. A later eval whose sample has the same key reuses this verdict instead of asking
+/// again. Absent on verdicts written before carry-forward existed.
+/// </param>
+/// <param name="JudgedAt">When the judge actually reached this verdict, which a carried verdict keeps.</param>
+/// <param name="Carried">
+/// Whether this verdict was reused from an earlier eval because nothing it was reached on had changed.
+/// </param>
 public sealed record MemoryAuditEvalVerdict(
     string Category,
     IReadOnlyList<string> Ids,
     bool Sound,
     string? Reason,
-    IReadOnlyList<string>? ContextIds = null);
+    IReadOnlyList<string>? ContextIds = null,
+    string? Evidence = null,
+    string? Key = null,
+    DateTimeOffset? JudgedAt = null,
+    bool Carried = false);
 
 /// <summary>Rolled-up eval rates, small enough to embed in every snapshot row.</summary>
 /// <param name="EvaluatedAt">When the eval ran.</param>
@@ -88,12 +105,17 @@ public sealed record MemoryAuditEvalVerdict(
 /// <param name="Sound">How many the judge approved.</param>
 /// <param name="SoundRate">Approved over sampled, 0..1.</param>
 /// <param name="RateByCategory">Per-family approval rate, 0..1.</param>
+/// <param name="Carried">
+/// How many of <paramref name="Sampled"/> reused an earlier verdict because the content judged had
+/// not changed. Carried verdicts cannot flip, so any movement in the rates came from the rest.
+/// </param>
 public sealed record MemoryAuditEvalSummary(
     DateTimeOffset EvaluatedAt,
     int Sampled,
     int Sound,
     double SoundRate,
-    IReadOnlyDictionary<string, double> RateByCategory);
+    IReadOnlyDictionary<string, double> RateByCategory,
+    int Carried = 0);
 
 /// <summary>
 /// Full eval output, written to its own file. The snapshot carries only
