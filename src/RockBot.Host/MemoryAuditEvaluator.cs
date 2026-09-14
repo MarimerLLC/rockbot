@@ -32,7 +32,24 @@ internal sealed class MemoryAuditEvaluator(ILlmClient llm, ILogger logger)
     internal const string EphemeralArchiveCategory = "ephemeral-archive";
 
     /// <summary>Longest entry content rendered into a judge prompt.</summary>
-    private const int MaxContentChars = 600;
+    /// <remarks>
+    /// This was once 600, which hid exactly what the judge was asked about: merged replacements
+    /// are the longest entries in the store, and a 2,700-character merge was judged to have
+    /// dropped details that sat past the cut. Real entries run to a few thousand characters and
+    /// fit whole; the cap exists only so one runaway entry cannot swamp the call. The worst case
+    /// is <see cref="MemoryAuditOptions.EvalSampleSize"/> merges, each a replacement plus a
+    /// cluster of sources, at this size — bounded, and far above anything a healthy store holds.
+    /// Anything cut is marked, and the prompt says so (see <see cref="TruncationNotice"/>).
+    /// </remarks>
+    internal const int MaxContentChars = 8_000;
+
+    /// <summary>
+    /// Told to the judge whenever an item in its call was cut, so content it cannot see is not
+    /// read as content that was lost.
+    /// </summary>
+    internal static readonly string TruncationNotice =
+        $"Some content below was cut at {MaxContentChars} characters and is marked [truncated]. " +
+        "Do not report a detail as missing or lost merely because it is not visible past that point.";
 
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -44,7 +61,10 @@ internal sealed class MemoryAuditEvaluator(ILlmClient llm, ILogger logger)
     /// <param name="Category">Which sampling family it came from.</param>
     /// <param name="Ids">Entry ids involved, carried through to the verdict so a finding is chaseable.</param>
     /// <param name="Text">Rendered prompt fragment describing the decision.</param>
-    internal sealed record Sample(string Category, IReadOnlyList<string> Ids, string Text);
+    /// <param name="Truncated">
+    /// Whether any entry in <paramref name="Text"/> was cut at <see cref="MaxContentChars"/>.
+    /// </param>
+    internal sealed record Sample(string Category, IReadOnlyList<string> Ids, string Text, bool Truncated = false);
 
     private sealed record VerdictDto(int Index, bool Sound, string? Reason);
 
@@ -59,11 +79,16 @@ internal sealed class MemoryAuditEvaluator(ILlmClient llm, ILogger logger)
     /// working <em>now</em>" — a random sample across a year would keep re-judging decisions
     /// made by code that has since been fixed.
     /// </remarks>
+    /// <param name="vocabulary">
+    /// Merge-coverage vocabulary, so the coverage line each merge sample carries reports what the
+    /// dream's own coverage check would. <see langword="null"/> uses the built-in default.
+    /// </param>
     internal static IReadOnlyList<Sample> SelectSamples(
         IReadOnlyList<MemoryEntry> entries,
         IReadOnlyList<ShingleSimilarity.Pair> nearDupPairs,
         MemoryAuditOptions options,
-        DateTimeOffset now)
+        DateTimeOffset now,
+        MergeCoverageVocabulary? vocabulary = null)
     {
         var byId = new Dictionary<string, MemoryEntry>(StringComparer.OrdinalIgnoreCase);
         foreach (var entry in entries)
@@ -92,16 +117,22 @@ internal sealed class MemoryAuditEvaluator(ILlmClient llm, ILogger logger)
             // rather than deleted.
             if (sources.Count == 0) continue;
 
+            var truncated = false;
             var text = new StringBuilder();
             text.AppendLine("Sources that were merged away:");
             foreach (var source in sources)
-                text.AppendLine($"  - [{source.Id}] {Truncate(source.Content)}");
-            text.AppendLine($"Replacement kept in memory: {Truncate(merge.Content)}");
+                text.AppendLine($"  - [{source.Id}] {Render(source.Content, ref truncated)}");
+            text.AppendLine($"Replacement kept in memory: {Render(merge.Content, ref truncated)}");
+
+            // Run over the full content, not the rendered text: the check is the one thing in the
+            // prompt that can see past a cut.
+            text.AppendLine(CoverageLine(MergeCoverage.FindMissingSpecifics(sources, merge.Content, vocabulary)));
 
             samples.Add(new Sample(
                 MergeCategory,
                 [merge.Id, .. sources.Select(s => s.Id)],
-                text.ToString().TrimEnd()));
+                text.ToString().TrimEnd(),
+                truncated));
         }
 
         // Near-duplicate pairs still both live — deduplication that did not happen.
@@ -110,12 +141,14 @@ internal sealed class MemoryAuditEvaluator(ILlmClient llm, ILogger logger)
             if (!byId.TryGetValue(pair.IdA, out var a) || !byId.TryGetValue(pair.IdB, out var b))
                 continue;
 
+            var truncated = false;
             samples.Add(new Sample(
                 NearDuplicateCategory,
                 [a.Id, b.Id],
                 $"Two entries both live in memory (lexical overlap {Pct(pair.Score)}):\n" +
-                $"  - [{a.Id}] {Truncate(a.Content)}\n" +
-                $"  - [{b.Id}] {Truncate(b.Content)}"));
+                $"  - [{a.Id}] {Render(a.Content, ref truncated)}\n" +
+                $"  - [{b.Id}] {Render(b.Content, ref truncated)}",
+                truncated));
         }
 
         // Heavily reinforced entries — the corpus's load-bearing facts.
@@ -125,11 +158,15 @@ internal sealed class MemoryAuditEvaluator(ILlmClient llm, ILogger logger)
             .Take(options.EvalSampleSize);
 
         foreach (var entry in reinforced)
+        {
+            var truncated = false;
             samples.Add(new Sample(
                 HighReinforcementCategory,
                 [entry.Id],
                 $"Reinforced {entry.ReinforcementCount}x, importance {Score(entry.ImportanceScore)}, " +
-                $"category {entry.Category ?? "(none)"}:\n  [{entry.Id}] {Truncate(entry.Content)}"));
+                $"category {entry.Category ?? "(none)"}:\n  [{entry.Id}] {Render(entry.Content, ref truncated)}",
+                truncated));
+        }
 
         // Facts consolidation discarded outright, with nothing put in their place.
         var ephemeral = entries
@@ -140,12 +177,16 @@ internal sealed class MemoryAuditEvaluator(ILlmClient llm, ILogger logger)
             .Take(options.EvalSampleSize);
 
         foreach (var entry in ephemeral)
+        {
+            var truncated = false;
             samples.Add(new Sample(
                 EphemeralArchiveCategory,
                 [entry.Id],
                 $"Dropped as ephemeral on {entry.ArchivedAt:yyyy-MM-dd} " +
                 $"(reinforced {entry.ReinforcementCount}x, importance {Score(entry.ImportanceScore)}):\n" +
-                $"  [{entry.Id}] {Truncate(entry.Content)}"));
+                $"  [{entry.Id}] {Render(entry.Content, ref truncated)}",
+                truncated));
+        }
 
         return samples;
     }
@@ -205,6 +246,10 @@ internal sealed class MemoryAuditEvaluator(ILlmClient llm, ILogger logger)
         var userMessage = new StringBuilder();
         userMessage.AppendLine($"Decision family: {category}");
         userMessage.AppendLine($"{Question(category)}");
+        // Carried in the user message rather than only the directive: memory-audit.md on a
+        // deployed profile volume is never overwritten by an image upgrade.
+        if (items.Any(i => i.Truncated))
+            userMessage.AppendLine(TruncationNotice);
         userMessage.AppendLine();
         for (var i = 0; i < items.Count; i++)
         {
@@ -323,12 +368,31 @@ internal sealed class MemoryAuditEvaluator(ILlmClient llm, ILogger logger)
     private static string Score(float value) =>
         value.ToString("F2", CultureInfo.InvariantCulture);
 
-    private static string Truncate(string? text)
+    /// <summary>
+    /// Flattens <paramref name="text"/> to one line and cuts it at <see cref="MaxContentChars"/>,
+    /// marking the cut with how much was shown. Sets <paramref name="truncated"/> when it cuts,
+    /// and never clears it, so one flag can cover every entry in a sample.
+    /// </summary>
+    private static string Render(string? text, ref bool truncated)
     {
         if (string.IsNullOrEmpty(text)) return "(empty)";
         var flat = text.ReplaceLineEndings(" ").Trim();
-        return flat.Length <= MaxContentChars ? flat : flat[..MaxContentChars] + "…";
+        if (flat.Length <= MaxContentChars) return flat;
+
+        truncated = true;
+        return $"{flat[..MaxContentChars]}… [truncated: showed {MaxContentChars} of {flat.Length} chars]";
     }
+
+    /// <summary>
+    /// The merge sample's report of <see cref="MergeCoverage.FindMissingSpecifics"/>. Worded as
+    /// a verbatim string check rather than a ruling: the check is conservative, so a specific the
+    /// replacement reworded is listed too, and whether the meaning survived is the judge's call.
+    /// </summary>
+    internal static string CoverageLine(IReadOnlyList<string> missing) =>
+        missing.Count == 0
+            ? "Coverage check: every name, number and date in the sources appears verbatim in the replacement."
+            : "Coverage check: these source specifics do not appear verbatim in the replacement: " +
+              string.Join(", ", missing);
 
     /// <summary>
     /// Fallback judge directive, used when <c>memory-audit.md</c> is absent from the profile
@@ -355,6 +419,11 @@ internal sealed class MemoryAuditEvaluator(ILlmClient llm, ILogger logger)
           sound (sound=true).
         - An entry reinforced many times that has become vague, generic, or self-contradictory
           is NOT sound, even though nothing was formally lost.
+
+        Content cut for length ends in a [truncated] marker. A detail you cannot see past that
+        point is not a detail that was lost. A merge's "Coverage check" line is a verbatim string
+        comparison over the full text: use it as evidence, but a specific the replacement
+        reworded without losing its meaning is still kept.
 
         Reply with JSON only: {"verdicts":[{"index":1,"sound":true,"reason":"..."}]}
         One object per numbered item, in any order. Keep each reason to one short sentence.

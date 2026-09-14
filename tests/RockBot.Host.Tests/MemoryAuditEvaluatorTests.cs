@@ -199,6 +199,164 @@ public class MemoryAuditEvaluatorTests
         Assert.IsNull(result);
     }
 
+    // ── Content visibility ───────────────────────────────────────────────────
+    //
+    // Entries were once cut at 600 characters. Merged replacements are the longest entries in
+    // the store, so the judge flagged a merge as having dropped details that sat past the cut —
+    // and could equally have passed one that really had.
+
+    [TestMethod]
+    public void ALongMergeReplacementIsShownWhole()
+    {
+        var source = Archived("src", "merged into m1", Now.AddDays(-2)) with
+        {
+            Content = "Routing note about tokensurprise inflation."
+        };
+        var merged = Entry("m1") with
+        {
+            Content = Padding(2_700) + " the tokensurprise guidance survives here",
+            UpdatedAt = Now.AddDays(-2),
+            Metadata = MergedFrom("src")
+        };
+
+        var sample = MemoryAuditEvaluator.SelectSamples([source, merged], [], Options(), Now)
+            .Single(s => s.Category == MemoryAuditEvaluator.MergeCategory);
+
+        StringAssert.Contains(sample.Text, "the tokensurprise guidance survives here");
+        Assert.IsFalse(sample.Truncated);
+        Assert.IsFalse(sample.Text.Contains("[truncated", StringComparison.Ordinal));
+    }
+
+    [TestMethod]
+    public void LongReinforcedAndNearDuplicateEntriesAreShownWhole()
+    {
+        var heavy = Entry("heavy") with { Content = Padding(4_000) + " heavy-tail", ReinforcementCount = 40 };
+        var a = Entry("a") with { Content = Padding(4_000) + " a-tail" };
+        var b = Entry("b") with { Content = Padding(4_000) + " b-tail" };
+
+        var samples = MemoryAuditEvaluator.SelectSamples(
+            [heavy, a, b], [new ShingleSimilarity.Pair("a", "b", 0.9)], Options(), Now);
+
+        var reinforced = samples.Single(s => s.Category == MemoryAuditEvaluator.HighReinforcementCategory);
+        StringAssert.Contains(reinforced.Text, "heavy-tail");
+        Assert.IsFalse(reinforced.Truncated);
+
+        var pair = samples.Single(s => s.Category == MemoryAuditEvaluator.NearDuplicateCategory);
+        StringAssert.Contains(pair.Text, "a-tail");
+        StringAssert.Contains(pair.Text, "b-tail");
+        Assert.IsFalse(pair.Truncated);
+    }
+
+    [TestMethod]
+    public void ContentOverTheCapIsMarkedWithHowMuchWasShown()
+    {
+        var total = MemoryAuditEvaluator.MaxContentChars + 1_000;
+        var heavy = Entry("heavy") with { Content = Padding(total), ReinforcementCount = 40 };
+
+        var sample = MemoryAuditEvaluator.SelectSamples([heavy], [], Options(), Now)
+            .Single(s => s.Category == MemoryAuditEvaluator.HighReinforcementCategory);
+
+        Assert.IsTrue(sample.Truncated);
+        StringAssert.Contains(sample.Text,
+            $"[truncated: showed {MemoryAuditEvaluator.MaxContentChars} of {total} chars]");
+    }
+
+    [TestMethod]
+    public async Task TheJudgeIsToldAboutTruncationOnlyWhenSomethingWasCut()
+    {
+        var samples = new List<MemoryAuditEvaluator.Sample>
+        {
+            new(MemoryAuditEvaluator.HighReinforcementCategory, ["heavy"], "cut", Truncated: true),
+            new(MemoryAuditEvaluator.EphemeralArchiveCategory, ["dropped"], "whole")
+        };
+
+        var llm = new StubLlmClient("""{"verdicts":[{"index":1,"sound":true}]}""");
+
+        await new MemoryAuditEvaluator(llm, NullLogger.Instance)
+            .EvaluateAsync(samples, "directive", ModelTier.Balanced, "FP", CancellationToken.None);
+
+        var prompts = llm.UserMessages;
+        Assert.AreEqual(2, prompts.Count);
+        StringAssert.Contains(prompts.Single(p => p.Contains(MemoryAuditEvaluator.HighReinforcementCategory)),
+            MemoryAuditEvaluator.TruncationNotice);
+        Assert.IsFalse(prompts.Single(p => p.Contains(MemoryAuditEvaluator.EphemeralArchiveCategory))
+            .Contains(MemoryAuditEvaluator.TruncationNotice, StringComparison.Ordinal));
+    }
+
+    [TestMethod]
+    public void AMergeSampleReportsSpecificsMissingFromTheReplacement()
+    {
+        var source = Archived("src", "merged into m1", Now.AddDays(-2)) with
+        {
+            Content = "The invoice from Contoso was paid on 2026-03-14."
+        };
+        var merged = Entry("m1") with
+        {
+            Content = "An invoice was paid on 2026-03-14.",
+            UpdatedAt = Now.AddDays(-2),
+            Metadata = MergedFrom("src")
+        };
+
+        var sample = MemoryAuditEvaluator.SelectSamples([source, merged], [], Options(), Now)
+            .Single(s => s.Category == MemoryAuditEvaluator.MergeCategory);
+
+        var coverage = CoverageLineOf(sample);
+        StringAssert.Contains(coverage, "do not appear verbatim");
+        StringAssert.Contains(coverage, "Contoso");
+        Assert.IsFalse(coverage.Contains("2026", StringComparison.Ordinal),
+            "A date the replacement kept must not be reported as missing.");
+    }
+
+    [TestMethod]
+    public void AMergeSampleSaysSoWhenNothingIsMissing()
+    {
+        var source = Archived("src", "merged into m1", Now.AddDays(-2)) with
+        {
+            Content = "The invoice from Contoso was paid on 2026-03-14."
+        };
+        var merged = Entry("m1") with
+        {
+            Content = "Contoso's invoice was paid on 2026-03-14.",
+            UpdatedAt = Now.AddDays(-2),
+            Metadata = MergedFrom("src")
+        };
+
+        var sample = MemoryAuditEvaluator.SelectSamples([source, merged], [], Options(), Now)
+            .Single(s => s.Category == MemoryAuditEvaluator.MergeCategory);
+
+        Assert.AreEqual(MemoryAuditEvaluator.CoverageLine([]), CoverageLineOf(sample));
+    }
+
+    [TestMethod]
+    public void TheCoverageCheckSeesPastTheCap()
+    {
+        // The rendered replacement is cut, but the check runs over the full content — so a
+        // specific kept only past the cut is still credited.
+        var source = Archived("src", "merged into m1", Now.AddDays(-2)) with
+        {
+            Content = "The invoice from Contoso was paid."
+        };
+        var merged = Entry("m1") with
+        {
+            Content = Padding(MemoryAuditEvaluator.MaxContentChars + 500) + " Contoso",
+            UpdatedAt = Now.AddDays(-2),
+            Metadata = MergedFrom("src")
+        };
+
+        var sample = MemoryAuditEvaluator.SelectSamples([source, merged], [], Options(), Now)
+            .Single(s => s.Category == MemoryAuditEvaluator.MergeCategory);
+
+        Assert.IsTrue(sample.Truncated);
+        Assert.AreEqual(MemoryAuditEvaluator.CoverageLine([]), CoverageLineOf(sample));
+    }
+
+    private static string CoverageLineOf(MemoryAuditEvaluator.Sample sample) =>
+        sample.Text.Split('\n').Select(l => l.TrimEnd('\r')).Single(l => l.StartsWith("Coverage check:", StringComparison.Ordinal));
+
+    // Lowercase, so it contributes no specifics to the coverage check, and no whitespace, so
+    // the renderer's trim cannot change its length.
+    private static string Padding(int length) => new('x', length);
+
     [TestMethod]
     public void TheFingerprintTracksLiveIdsAndTheArchiveSize()
     {
@@ -232,9 +390,15 @@ public class MemoryAuditEvaluatorTests
 
     private sealed class StubLlmClient(string response) : ILlmClient
     {
+        /// <summary>The user message of every call, in order.</summary>
+        public List<string> UserMessages { get; } = [];
+
         public Task<ChatResponse> GetResponseAsync(
-            IEnumerable<ChatMessage> messages, ChatOptions? options, CancellationToken cancellationToken) =>
-            Task.FromResult(new ChatResponse(new ChatMessage(ChatRole.Assistant, response)));
+            IEnumerable<ChatMessage> messages, ChatOptions? options, CancellationToken cancellationToken)
+        {
+            UserMessages.AddRange(messages.Where(m => m.Role == ChatRole.User).Select(m => m.Text));
+            return Task.FromResult(new ChatResponse(new ChatMessage(ChatRole.Assistant, response)));
+        }
 
         public Task<ChatResponse> GetResponseAsync(
             IEnumerable<ChatMessage> messages, ModelTier tier, ChatOptions? options,
