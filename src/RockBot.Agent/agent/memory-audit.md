@@ -17,10 +17,11 @@ irreversible; a surviving duplicate is a nuisance that any later pass can still 
   passing details — a one-off status, a transient scheduling note, a superseded number — are
   sound to discard.
 - **Near-duplicates left in place.** Two entries state the same fact if a reader would learn
-  nothing from the second having read the first, even when the wording shares few words. Say
-  sound=true when they are genuinely duplicates that should have been folded together, and
-  sound=false when they are distinct facts that merely look similar — a per-project version of
-  the same setting, two people with similar roles, the same event on different dates.
+  nothing from the second having read the first, even when the wording shares few words. Leaving
+  both live was the wrong call, so genuine duplicates that should have been folded together are
+  NOT sound (sound=false). Distinct facts that merely look similar are sound (sound=true) — a
+  per-project version of the same setting, two people with similar roles, the same event on
+  different dates.
 - **Heavily reinforced entries.** An entry the agent has re-observed many times should still
   read as one coherent, specific, useful fact. It is NOT sound if repeated reinforcement has
   accreted it into a vague blob, a wall of unrelated specifics, or a self-contradiction —

@@ -13,6 +13,56 @@ public class MemoryAuditEvaluatorTests
 {
     private static readonly DateTimeOffset Now = new(2026, 9, 4, 5, 0, 0, TimeSpan.Zero);
 
+    // ── Near-duplicate polarity ──────────────────────────────────────────────
+    //
+    // The question and the directive once told the judge opposite things about which way
+    // `sound` points for a duplicate, so the family's sound rate depended on which instruction
+    // the model weighed more. All three texts the judge can see must say the same thing.
+
+    [TestMethod]
+    [DataRow("question")]
+    [DataRow("built-in directive")]
+    [DataRow("memory-audit.md")]
+    public void EveryJudgeTextStatesTheNearDuplicatePolarity(string source)
+    {
+        StringAssert.Contains(
+            Normalize(JudgeText(source)),
+            Normalize(MemoryAuditEvaluator.NearDuplicatePolarity),
+            $"The {source} must say that a genuine duplicate left live is not sound.");
+    }
+
+    [TestMethod]
+    [DataRow("question")]
+    [DataRow("built-in directive")]
+    [DataRow("memory-audit.md")]
+    public void NoJudgeTextCallsAGenuineDuplicateSound(string source)
+    {
+        var offending = Sentences(JudgeText(source))
+            .Where(s => s.Contains("sound=true", StringComparison.OrdinalIgnoreCase)
+                && (s.Contains("genuinely duplicates", StringComparison.OrdinalIgnoreCase)
+                    || s.Contains("should have been folded", StringComparison.OrdinalIgnoreCase)))
+            .ToList();
+
+        Assert.AreEqual(0, offending.Count,
+            $"The {source} ties sound=true to a genuine duplicate: {string.Join(" | ", offending)}");
+    }
+
+    private static string JudgeText(string source) => source switch
+    {
+        "question" => MemoryAuditEvaluator.Question(MemoryAuditEvaluator.NearDuplicateCategory),
+        "built-in directive" => MemoryAuditEvaluator.BuiltInDirective,
+        "memory-audit.md" => File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "Fixtures", "memory-audit.md")),
+        _ => throw new ArgumentOutOfRangeException(nameof(source))
+    };
+
+    private static string Normalize(string text) =>
+        System.Text.RegularExpressions.Regex.Replace(text, @"\s+", " ").Trim().ToLowerInvariant();
+
+    // Splits on sentence ends and markdown bullets, so one bullet's wording cannot vouch for
+    // another's. `sound=true` has no spaces, so the dot-space split never cuts through it.
+    private static IEnumerable<string> Sentences(string text) =>
+        System.Text.RegularExpressions.Regex.Split(Normalize(text), @"(?<=[.:;])\s|\s-\s|—");
+
     [TestMethod]
     public void SamplesMergesWithTheirSurvivingSources()
     {
