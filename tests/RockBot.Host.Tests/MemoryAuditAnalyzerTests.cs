@@ -299,6 +299,34 @@ public class MemoryAuditAnalyzerTests
     }
 
     [TestMethod]
+    public void DeclinedDuplicateClustersAreCountedOnlyWhileTwoMembersAreLive()
+    {
+        MemoryEntry Declined(MemoryEntry entry, string cluster, int count) => entry with
+        {
+            Metadata = new Dictionary<string, string>
+            {
+                [DreamService.ConsolidationDeclinedClusterKey] = cluster,
+                [DreamService.ConsolidationDeclinedAtKey] = Now.AddDays(-1).ToString("O"),
+                [DreamService.ConsolidationDeclinedCountKey] = count.ToString()
+            }
+        };
+
+        var (snapshot, _) = Analyze(
+        [
+            // Still live together: one declined cluster, refused three times running.
+            Declined(Entry("a"), "LIVE", 3),
+            Declined(Entry("b"), "LIVE", 3),
+            // Broken up since — a merge archived one member — so it no longer counts.
+            Declined(Entry("c"), "BROKEN", 5),
+            Declined(Archived("d", "merged into x"), "BROKEN", 5),
+            Entry("e")
+        ], previous: null);
+
+        Assert.AreEqual(1, snapshot.DeclinedDuplicateClustersLive);
+        Assert.AreEqual(3, snapshot.DeclinedDuplicateClustersMaxCount);
+    }
+
+    [TestMethod]
     public void AClusterThatStopsBeingRejectedDropsOutRatherThanDecaying()
     {
         var previous = PreviousState([Row("a")]) with

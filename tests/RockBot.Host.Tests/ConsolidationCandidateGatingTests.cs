@@ -171,6 +171,155 @@ public class ConsolidationCandidateGatingTests
             "One edited member has to bring its whole cluster back so the merge is still possible.");
     }
 
+    // ── Settled-cluster reopen ───────────────────────────────────────────────
+
+    [TestMethod]
+    public async Task SettledCluster_ReviewedLongAgo_IsReopenedMergeOnly()
+    {
+        // Never re-asking made a single "leave them separate" answer permanent: reworded
+        // duplicates of one fact stayed live for weeks with matching review stamps. Once the
+        // cooldown has passed the cluster comes back — for merging, not for pruning.
+        var store = CreateStore();
+        var a = Reviewed(Entry("a", MiloA), MiloA, DateTimeOffset.UtcNow.AddDays(-8));
+        var b = Reviewed(Entry("b", MiloB), MiloB, DateTimeOffset.UtcNow.AddDays(-8));
+        await store.SaveAsync(a);
+        await store.SaveAsync(b);
+
+        var result = await SelectCandidates(store, [a, b], Lexical());
+
+        CollectionAssert.AreEquivalent(new[] { "a", "b" }, result.Eligible.Select(e => e.Id).ToArray());
+        CollectionAssert.AreEquivalent(new[] { "a", "b" }, result.MergeOnlyIds.ToArray());
+        Assert.AreEqual(1, result.ReopenedClusters);
+        Assert.AreEqual(1, result.OfferedClusters.Count);
+    }
+
+    [TestMethod]
+    public async Task SettledCluster_WithReopenDisabled_StaysWithheld()
+    {
+        var store = CreateStore();
+        var a = Reviewed(Entry("a", MiloA), MiloA, DateTimeOffset.UtcNow.AddDays(-60));
+        var b = Reviewed(Entry("b", MiloB), MiloB, DateTimeOffset.UtcNow.AddDays(-60));
+        await store.SaveAsync(a);
+        await store.SaveAsync(b);
+
+        var result = await SelectCandidates(
+            store, [a, b], Lexical(o => o.SettledClusterReopenInterval = TimeSpan.Zero));
+
+        Assert.AreEqual(0, result.Eligible.Count);
+        Assert.AreEqual(0, result.ReopenedClusters);
+    }
+
+    [TestMethod]
+    public async Task ClusterOpenedByANewMember_IsOfferedButNotMergeOnly()
+    {
+        // The existing carve-out already exposed such a cluster fully; reopen must not narrow it.
+        var store = CreateStore();
+        var old = Reviewed(Entry("old", MiloA), MiloA, DateTimeOffset.UtcNow.AddDays(-30));
+        var fresh = Entry("new", MiloB);
+        await store.SaveAsync(old);
+        await store.SaveAsync(fresh);
+
+        var result = await SelectCandidates(store, [old, fresh], Lexical());
+
+        CollectionAssert.AreEquivalent(new[] { "old", "new" }, result.Eligible.Select(e => e.Id).ToArray());
+        Assert.AreEqual(0, result.MergeOnlyIds.Count);
+        Assert.AreEqual(0, result.ReopenedClusters);
+        Assert.AreEqual(1, result.OfferedClusters.Count);
+    }
+
+    [TestMethod]
+    public async Task ReopenedClustersAreCappedPerCycle_OldestFirst()
+    {
+        var store = CreateStore();
+        var all = new List<MemoryEntry>();
+        // No word shared across topics, so single-link clustering cannot chain them together.
+        string[][] topics =
+        [
+            ["alpha", "bravo", "charlie", "delta"],
+            ["echo", "foxtrot", "golf", "hotel"],
+            ["india", "juliet", "kilo", "lima"],
+            ["mike", "november", "oscar", "papa"],
+        ];
+        for (var i = 0; i < topics.Length; i++)
+        {
+            var reviewedAt = DateTimeOffset.UtcNow.AddDays(-10 - i);
+            var x = string.Join(" ", topics[i]);
+            var y = string.Join(" ", topics[i].Reverse());
+            all.Add(Reviewed(Entry($"x{i}", x), x, reviewedAt));
+            all.Add(Reviewed(Entry($"y{i}", y), y, reviewedAt));
+        }
+        foreach (var e in all) await store.SaveAsync(e);
+
+        var result = await SelectCandidates(
+            store, all, Lexical(o => o.SettledClusterReopenMaxPerCycle = 2), DateTimeOffset.UtcNow);
+
+        Assert.AreEqual(2, result.ReopenedClusters);
+        CollectionAssert.AreEquivalent(
+            new[] { "x2", "y2", "x3", "y3" }, result.Eligible.Select(e => e.Id).ToArray(),
+            "The longest-overdue clusters go first.");
+    }
+
+    [TestMethod]
+    public void ReopenAt_WithoutDeclineStamps_IsOneIntervalAfterTheLatestReview()
+    {
+        var older = DateTimeOffset.UtcNow.AddDays(-20);
+        var newer = DateTimeOffset.UtcNow.AddDays(-3);
+        var members = new[]
+        {
+            Reviewed(Entry("a", MiloA), MiloA, older),
+            Reviewed(Entry("b", MiloB), MiloB, newer),
+        };
+
+        var at = DreamService.SettledClusterReopenAt(members, new DreamOptions());
+
+        Assert.AreEqual(newer + TimeSpan.FromDays(7), at);
+    }
+
+    [TestMethod]
+    public void ReopenAt_BacksOffWithEachDecline()
+    {
+        var declinedAt = DateTimeOffset.UtcNow.AddDays(-10);
+        var options = new DreamOptions();
+
+        var twice = Declined(["a", "b"], declinedAt, count: 2);
+        Assert.AreEqual(declinedAt + TimeSpan.FromDays(14), DreamService.SettledClusterReopenAt(twice, options));
+
+        var once = Declined(["a", "b"], declinedAt, count: 1);
+        Assert.AreEqual(declinedAt + TimeSpan.FromDays(7), DreamService.SettledClusterReopenAt(once, options));
+
+        var many = Declined(["a", "b"], declinedAt, count: 40);
+        Assert.AreEqual(declinedAt + TimeSpan.FromDays(56), DreamService.SettledClusterReopenAt(many, options),
+            "The doubling is capped at the maximum interval.");
+    }
+
+    [TestMethod]
+    public void ReopenAt_DeclineStampForOtherMembership_FallsBackToReviewAnchor()
+    {
+        // The stamp names a different set of ids — the cluster has been reshaped since — so its
+        // count says nothing about this cluster.
+        var reviewedAt = DateTimeOffset.UtcNow.AddDays(-2);
+        var members = Declined(["a", "b"], DateTimeOffset.UtcNow.AddDays(-1), count: 3, reviewedAt: reviewedAt)
+            .Select(m => m with
+            {
+                Metadata = new Dictionary<string, string>(m.Metadata!)
+                {
+                    [DreamService.ConsolidationDeclinedClusterKey] = DreamService.ClusterHash(["a", "b", "c"]),
+                },
+            })
+            .ToArray();
+
+        Assert.AreEqual(reviewedAt + TimeSpan.FromDays(7), DreamService.SettledClusterReopenAt(members, new DreamOptions()));
+    }
+
+    [TestMethod]
+    public void ReopenAt_ReturnsNullWhenDisabled()
+    {
+        var members = Declined(["a", "b"], DateTimeOffset.UtcNow.AddDays(-100), count: 1);
+
+        Assert.IsNull(DreamService.SettledClusterReopenAt(
+            members, new DreamOptions { SettledClusterReopenInterval = TimeSpan.Zero }));
+    }
+
     [TestMethod]
     public async Task SelectionPreservesStoreOrdering()
     {
@@ -274,15 +423,23 @@ public class ConsolidationCandidateGatingTests
 
     // ── Helpers ──────────────────────────────────────────────────────────────
 
-    private static Task<List<MemoryEntry>> Select(
+    private static async Task<List<MemoryEntry>> Select(
         FileMemoryStore store,
         IReadOnlyList<MemoryEntry> all,
         double threshold = 0.88) =>
+        (await SelectCandidates(store, all, new DreamOptions { ConsolidationSimilarityThreshold = threshold })).Eligible;
+
+    private static Task<DreamService.ConsolidationCandidates> SelectCandidates(
+        FileMemoryStore store,
+        IReadOnlyList<MemoryEntry> all,
+        DreamOptions options,
+        DateTimeOffset? now = null) =>
         DreamService.SelectConsolidationCandidatesAsync(
             store,
-            new DreamOptions { ConsolidationSimilarityThreshold = threshold },
+            options,
             NullLogger.Instance,
             all,
+            now ?? DateTimeOffset.UtcNow,
             CancellationToken.None);
 
     private FileMemoryStore CreateStore() =>
@@ -295,13 +452,40 @@ public class ConsolidationCandidateGatingTests
     private static MemoryEntry Entry(string id, string content) =>
         new(id, content, null, [], DateTimeOffset.UtcNow);
 
-    private static MemoryEntry Reviewed(MemoryEntry entry, string contentAtReview) =>
+    private static MemoryEntry Reviewed(MemoryEntry entry, string contentAtReview, DateTimeOffset? reviewedAt = null) =>
         entry with
         {
             Metadata = new Dictionary<string, string>
             {
                 [DreamService.ConsolidationReviewedHashKey] = DreamService.ContentFingerprint(contentAtReview),
-                [DreamService.ConsolidationReviewedAtKey] = DateTimeOffset.UtcNow.ToString("O"),
+                [DreamService.ConsolidationReviewedAtKey] = (reviewedAt ?? DateTimeOffset.UtcNow).ToString("O"),
             },
         };
+
+    private const string MiloA = "Rocky has a dog named Milo the Sheltie";
+    private const string MiloB = "Rocky has a Sheltie dog named Milo";
+
+    // Lexical fallback (no embedding generator in tests), so the threshold is Jaccard-scale.
+    private static DreamOptions Lexical(Action<DreamOptions>? configure = null)
+    {
+        var options = new DreamOptions { ConsolidationSimilarityThreshold = 0.5 };
+        configure?.Invoke(options);
+        return options;
+    }
+
+    private static MemoryEntry[] Declined(
+        string[] ids, DateTimeOffset declinedAt, int count, DateTimeOffset? reviewedAt = null) =>
+        [.. ids.Select(id =>
+        {
+            var reviewed = Reviewed(Entry(id, $"fact {id}"), $"fact {id}", reviewedAt);
+            return reviewed with
+            {
+                Metadata = new Dictionary<string, string>(reviewed.Metadata!)
+                {
+                    [DreamService.ConsolidationDeclinedClusterKey] = DreamService.ClusterHash(ids),
+                    [DreamService.ConsolidationDeclinedAtKey] = declinedAt.ToString("O"),
+                    [DreamService.ConsolidationDeclinedCountKey] = count.ToString(),
+                },
+            };
+        })];
 }

@@ -197,6 +197,26 @@ internal static class MemoryAuditAnalyzer
 
         var repeatedClusters = clusterRuns.Count(kv => kv.Value >= auditOptions.RepeatedRejectionRuns);
 
+        // ── Declined duplicate clusters ───────────────────────────────────────
+        //
+        // Read straight off the dream's decline stamps. A cluster counts only while at least two
+        // of its members are still live — once a merge or an edit breaks it up, the stamp left on
+        // a survivor describes a decision that no longer stands.
+        var declinedClusters = live
+            .Select(e => (Entry: e, Cluster: e.Metadata?.GetValueOrDefault(DreamService.ConsolidationDeclinedClusterKey)))
+            .Where(x => !string.IsNullOrWhiteSpace(x.Cluster))
+            .GroupBy(x => x.Cluster!, StringComparer.OrdinalIgnoreCase)
+            .Where(g => g.Count() >= 2)
+            .ToList();
+
+        var declinedMaxCount = declinedClusters
+            .SelectMany(g => g)
+            .Select(x => int.TryParse(
+                x.Entry.Metadata!.GetValueOrDefault(DreamService.ConsolidationDeclinedCountKey),
+                NumberStyles.Integer, CultureInfo.InvariantCulture, out var n) ? n : 0)
+            .DefaultIfEmpty(0)
+            .Max();
+
         // ── Dream cadence ─────────────────────────────────────────────────────
         var dreamPassesRun = previous is { } p
             ? passLastRunAt.Count(kv => kv.Value > p.TakenAt)
@@ -278,6 +298,8 @@ internal static class MemoryAuditAnalyzer
             ReinforcedWithoutMergeSinceLast = reinforcedWithoutMerge,
             RejectedMergeSourcesSinceLast = rejectedSourceIds.Count,
             RejectedMergeClustersRepeated = repeatedClusters,
+            DeclinedDuplicateClustersLive = declinedClusters.Count,
+            DeclinedDuplicateClustersMaxCount = declinedMaxCount,
             DreamPassesRunSinceLast = dreamPassesRun,
             ConsolidationLastRunAt = consolidationLastRun == default ? null : consolidationLastRun,
             RestartsSinceLast = restarts,
