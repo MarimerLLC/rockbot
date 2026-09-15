@@ -136,11 +136,11 @@ public class MemoryAuditInvariantsTests
             ["shallow"] = 1, ["at-limit"] = 2, ["d3"] = 3, ["d5"] = 5, ["also-d3"] = 3, ["retired"] = 9
         };
 
-        var violation = Check(entries, Snapshot(), chainDepths: depths)
+        var violation = Check(entries, Snapshot(), chainDepths: depths, previousChainDepthOverLimit: 0)
             .Single(v => v.Name == MemoryAuditInvariants.ChainDepthThreshold);
 
         CollectionAssert.AreEqual(new[] { "d5", "also-d3", "d3" }, violation.Ids.ToArray());
-        StringAssert.Contains(violation.Message, "3 live entries exceed the merge-chain limit of 2");
+        StringAssert.Contains(violation.Message, "3 live entries exceed the merge-chain limit of 2, up from 0");
         StringAssert.Contains(violation.Message, "the deepest is 5 (`d5`)");
     }
 
@@ -149,7 +149,8 @@ public class MemoryAuditInvariantsTests
     {
         var depths = new Dictionary<string, int> { ["a"] = 2, ["b"] = 1 };
 
-        var violations = Check([Entry("a"), Entry("b")], Snapshot(), chainDepths: depths);
+        var violations = Check([Entry("a"), Entry("b")], Snapshot(), chainDepths: depths,
+            previousChainDepthOverLimit: 0);
 
         Assert.IsFalse(violations.Any(v => v.Name == MemoryAuditInvariants.ChainDepthThreshold));
     }
@@ -160,11 +161,39 @@ public class MemoryAuditInvariantsTests
         var entries = Enumerable.Range(0, 30).Select(i => Entry($"e{i:D2}")).ToList();
         var depths = entries.ToDictionary(e => e.Id, _ => 3);
 
-        var violation = Check(entries, Snapshot(), chainDepths: depths)
+        var violation = Check(entries, Snapshot(), chainDepths: depths, previousChainDepthOverLimit: 0)
             .Single(v => v.Name == MemoryAuditInvariants.ChainDepthThreshold);
 
         Assert.AreEqual(MemoryAuditAnalyzer.MaxIdsPerViolation, violation.Ids.Count);
         StringAssert.Contains(violation.Message, "30 live entries");
+    }
+
+    [TestMethod]
+    [DataRow(null, DisplayName = "no baseline")]
+    [DataRow(3, DisplayName = "same count as last run")]
+    [DataRow(5, DisplayName = "fewer than last run")]
+    public void ChainDepthThreshold_IsQuietUnlessTheDeepTailGrew(int? previous)
+    {
+        // A mature corpus always has a deep tail and nothing shortens a chain; its mere existence
+        // fired on every run of a live deployment and never cleared.
+        var entries = Enumerable.Range(0, 3).Select(i => Entry($"e{i}")).ToList();
+        var depths = entries.ToDictionary(e => e.Id, _ => 4);
+
+        var violations = Check(entries, Snapshot(), chainDepths: depths, previousChainDepthOverLimit: previous);
+
+        Assert.IsFalse(violations.Any(v => v.Name == MemoryAuditInvariants.ChainDepthThreshold));
+    }
+
+    [TestMethod]
+    public void ChainDepthThreshold_FiresWhenMoreEntriesCrossTheLimitThanLastRun()
+    {
+        var entries = Enumerable.Range(0, 27).Select(i => Entry($"e{i:D2}")).ToList();
+        var depths = entries.ToDictionary(e => e.Id, _ => 3);
+
+        var violation = Check(entries, Snapshot(), chainDepths: depths, previousChainDepthOverLimit: 26)
+            .Single(v => v.Name == MemoryAuditInvariants.ChainDepthThreshold);
+
+        StringAssert.Contains(violation.Message, "27 live entries exceed the merge-chain limit of 2, up from 26");
     }
 
     [TestMethod]
@@ -226,10 +255,11 @@ public class MemoryAuditInvariantsTests
         double elapsedDays = 1,
         int? previousLive = null,
         IReadOnlyDictionary<string, int>? chainDepths = null,
-        IReadOnlyList<string>? rejectedSourceIds = null) =>
+        IReadOnlyList<string>? rejectedSourceIds = null,
+        int? previousChainDepthOverLimit = null) =>
         MemoryAuditInvariants.Check(
             entries, snapshot, new DreamOptions(), new MemoryAuditOptions(), Now, elapsedDays, previousLive,
-            chainDepths ?? new Dictionary<string, int>(), rejectedSourceIds ?? []);
+            chainDepths ?? new Dictionary<string, int>(), rejectedSourceIds ?? [], previousChainDepthOverLimit);
 
     private static MemoryAuditSnapshot Snapshot() => new()
     {

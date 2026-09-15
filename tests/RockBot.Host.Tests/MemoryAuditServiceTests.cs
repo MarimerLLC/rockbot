@@ -130,6 +130,40 @@ public class MemoryAuditServiceTests
     }
 
     [TestMethod]
+    public async Task AnUnchangedWarningIsNotRepublished_ButOneThatReturnsAfterRecoveryIs()
+    {
+        WriteEntry(Entry("a"));
+        var malformedPath = Path.Combine(_memoryRoot, "broken.json");
+        await File.WriteAllTextAsync(malformedPath, "{ this is not json");
+
+        var publisher = new RecordingPublisher();
+        var service = CreateService(publisher: publisher);
+
+        var first = await service.RunAuditAsync(CancellationToken.None);
+        Assert.AreEqual(MemoryAuditStatuses.Warning, first?.Status);
+        Assert.AreEqual(1, publisher.Published.Count, "A first warning is news.");
+
+        await service.RunAuditAsync(CancellationToken.None);
+        Assert.AreEqual(1, publisher.Published.Count, "The same warning a run later is not.");
+        Assert.IsTrue(File.Exists(Path.Combine(_auditRoot, MemoryAuditFiles.LatestReport)),
+            "The report is still written on a run that says nothing.");
+
+        File.Delete(malformedPath);
+        var healthy = await service.RunAuditAsync(CancellationToken.None);
+        Assert.AreEqual(MemoryAuditStatuses.Healthy, healthy?.Status);
+        Assert.AreEqual(1, publisher.Published.Count, "Recovery is silent.");
+
+        using (var state = JsonDocument.Parse(
+                   await File.ReadAllTextAsync(Path.Combine(_auditRoot, MemoryAuditFiles.StateFile))))
+            Assert.AreEqual(0, state.RootElement.GetProperty("lastAlertedInvariants").GetArrayLength(),
+                "A healthy run forgets what was last reported.");
+
+        await File.WriteAllTextAsync(malformedPath, "{ still not json");
+        await service.RunAuditAsync(CancellationToken.None);
+        Assert.AreEqual(2, publisher.Published.Count, "A warning that comes back is news again.");
+    }
+
+    [TestMethod]
     public async Task NoAlertIsPublishedWhenAlertingIsTurnedOff()
     {
         WriteEntry(Entry("a"));

@@ -90,17 +90,88 @@ public class MemoryAuditAnalyzerTests
         var srcA = Archived("srcA", "merged into flat");
         var flat = Entry("flat") with { Metadata = MergedFrom("srcA") };
 
-        var (snapshot, _) = Analyze([raw, merge1, merge2, merge3, srcA, flat], previous: null);
+        List<MemoryEntry> entries = [raw, merge1, merge2, merge3, srcA, flat];
+
+        // The previous run saw the same corpus with nothing past the limit, so merge3 is growth.
+        var previous = PreviousState([.. entries.Select(e => Row(e.Id, archived: e.ArchivedAt is not null, archivedAt: e.ArchivedAt))]) with
+        {
+            ChainDepthOverLimit = 0,
+            ChainDepthLimit = 2
+        };
+
+        var (snapshot, _) = Analyze(entries, previous);
 
         Assert.AreEqual(3, snapshot.MaxChainDepth);
         Assert.AreEqual(1, snapshot.MergeChainDepth["1"], "flat");
         Assert.AreEqual(1, snapshot.MergeChainDepth["3"], "merge3");
         Assert.IsFalse(snapshot.MergeChainDepth.ContainsKey("2"),
             "merge2 is archived, so it does not appear in the live histogram.");
+        Assert.AreEqual(1, snapshot.ChainDepthOverLimit);
 
         var violation = snapshot.Invariants.Single(v => v.Name == MemoryAuditInvariants.ChainDepthThreshold);
         CollectionAssert.AreEqual(new[] { "merge3" }, violation.Ids.ToArray(),
             "Only the live entry past the default limit of 2 is named; flat is depth 1, merge2 is archived.");
+    }
+
+    [TestMethod]
+    public void TheChainDepthBaselineIsWrittenToStateAndUsedByTheNextRun()
+    {
+        var src = Archived("src", "merged into m1");
+        var m1 = Archived("m1", "merged into m2") with { Metadata = MergedFrom("src") };
+        var m2 = Archived("m2", "merged into m3") with { Metadata = MergedFrom("m1") };
+        var m3 = Entry("m3") with { Metadata = MergedFrom("m2") };
+        List<MemoryEntry> entries = [src, m1, m2, m3];
+
+        var (first, state) = Analyze(entries, previous: null);
+
+        Assert.AreEqual(1, state.ChainDepthOverLimit);
+        Assert.AreEqual(2, state.ChainDepthLimit);
+        Assert.IsFalse(first.Invariants.Any(v => v.Name == MemoryAuditInvariants.ChainDepthThreshold),
+            "With no baseline a first run cannot say the tail grew.");
+
+        var (second, _) = Analyze(entries, state with { TakenAt = Yesterday });
+
+        Assert.IsFalse(second.Invariants.Any(v => v.Name == MemoryAuditInvariants.ChainDepthThreshold),
+            "The same deep tail as last run is not news.");
+    }
+
+    [TestMethod]
+    public void AChainDepthBaselineTakenAtADifferentLimitIsIgnored()
+    {
+        var src = Archived("src", "merged into m1");
+        var m1 = Archived("m1", "merged into m2") with { Metadata = MergedFrom("src") };
+        var m2 = Entry("m2") with { Metadata = MergedFrom("m1") };
+        List<MemoryEntry> entries = [src, m1, m2];
+
+        // Counted against a limit of 5, nothing was deep; against 1, m2 is. That is a changed
+        // ruler, not a grown tail.
+        var previous = PreviousState([.. entries.Select(e => Row(e.Id, archived: e.ArchivedAt is not null, archivedAt: e.ArchivedAt))]) with
+        {
+            ChainDepthOverLimit = 0,
+            ChainDepthLimit = 5
+        };
+
+        var (snapshot, state) = Analyze(entries, previous, options: new MemoryAuditOptions { MaxMergeChainDepth = 1 });
+
+        Assert.AreEqual(1, snapshot.ChainDepthOverLimit);
+        Assert.IsFalse(snapshot.Invariants.Any(v => v.Name == MemoryAuditInvariants.ChainDepthThreshold));
+        Assert.AreEqual(1, state.ChainDepthLimit, "The new baseline is recorded at the new limit.");
+    }
+
+    [TestMethod]
+    public void TheLastAlertedInvariantsAreCarriedForward()
+    {
+        var alertedAt = Now.AddDays(-3);
+        var previous = PreviousState([Row("a")]) with
+        {
+            LastAlertedInvariants = [MemoryAuditInvariants.NoMalformedFiles],
+            LastAlertedAt = alertedAt
+        };
+
+        var (_, state) = Analyze([Entry("a")], previous);
+
+        CollectionAssert.AreEqual(new[] { MemoryAuditInvariants.NoMalformedFiles }, state.LastAlertedInvariants.ToArray());
+        Assert.AreEqual(alertedAt, state.LastAlertedAt);
     }
 
     [TestMethod]

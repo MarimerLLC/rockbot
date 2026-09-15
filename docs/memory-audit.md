@@ -77,7 +77,7 @@ that merely share boilerplate.
 | `live-not-merge-source` | warning | An entry that was merged away is still in recall, so both copies surface. |
 | `no-repeated-rejection` | warning | The same merge cluster has been rejected on `RepeatedRejectionRuns` consecutive runs — consolidation is retrying work it cannot complete. |
 | `net-growth-threshold` | warning | Saves are outpacing consolidation. |
-| `chain-depth-threshold` | warning | Live entries are model prose generated from model prose, more deeply than you allowed. Ids are every live entry past `MaxMergeChainDepth`, deepest first. |
+| `chain-depth-threshold` | warning | More live entries are past `MaxMergeChainDepth` than at the previous run — model prose generated from model prose, and the deep tail is growing. Fires on growth, not existence: nothing shortens a chain, so a mature corpus always has some. Quiet on a first run and on the run after the limit changes. Ids are every live entry past the limit, deepest first. |
 | `rejected-merges-threshold` | warning | Merge rejections per week are above the limit. Ids are the refused sources since the previous run, newest first. |
 | `no-malformed-files` | warning | Files under the memory root would not deserialize. |
 
@@ -148,7 +148,7 @@ chart.
 | `latest.md` | The most recent report, in markdown. |
 | `report-YYYY-MM-DD.md` | Dated copies, pruned by the dream cycle's shared file-age policy. |
 | `eval-latest.json`, `eval-YYYY-MM-DD.json` | Sample-eval verdicts. |
-| `state.json` | Private carry-over: the previous run's entry ids, rejection cluster counters, process starts. Not a public surface; losing it costs one run's deltas. |
+| `state.json` | Private carry-over: the previous run's entry ids, rejection cluster counters, process starts, the chain-depth baseline, and the invariants last reported in a message. Not a public surface; losing it costs one run's deltas and one repeat of the current warning. |
 | `consolidation-paused.json` | Present only when the circuit breaker has fired. |
 
 When `CopyReportToShared` is on, the report is also written to
@@ -158,9 +158,20 @@ its TTL.
 
 ## How you find out
 
-**The agent tells you.** A run whose status is not `healthy` publishes an unsolicited message on
+**The agent tells you.** When a run's findings are news, it publishes an unsolicited message on
 the `scheduled-system` session with the status and the failed invariants. A healthy run is
-silent — a channel that reports "all clear" daily stops being read before the day it matters. Set
+silent — a channel that reports "all clear" daily stops being read before the day it matters, and
+one that reports the same warning daily wears out the same way. So:
+
+- An **alert-severity** finding is pushed on every run it fails.
+- A **warning** is pushed when the set of failing invariant names differs from the last one
+  pushed — something new failed, or something cleared while another still fails. The message
+  says what changed.
+- An **unchanged warning** is repeated once every `AlertRepeatInterval` (7 days by default) so it
+  is not forgotten; `0` never repeats it.
+- A **healthy** run forgets what was last pushed, so a finding that comes back is announced again.
+
+Every run still writes its report and trend row whether or not a message goes out. Set
 `DigestCronSchedule` if you want the full report pushed on a schedule regardless of status.
 
 **You ask.** Four MCP tools on the introspection sidecar read these files directly:
@@ -230,7 +241,7 @@ evalCronSchedule, pauseConsolidationOnAlert}`; everything else is available thro
 | `PurgeWarningDays` | `7` | Look-ahead for the purge outlook. |
 | `MinRateWindow` | `12h` | Shortest gap between runs over which a per-day/per-week rate is measurable. Below it the rate reports as unmeasurable and the rate-based invariants are skipped — a restart otherwise annualizes a handful of saves into the thousands. |
 | `MaxNetGrowthPerDay` | `5` | Only evaluated over windows of at least `MinRateWindow`. |
-| `MaxMergeChainDepth` | `2` | |
+| `MaxMergeChainDepth` | `2` | Defines "deep"; the finding fires when the count past it rises. Changing it resets the baseline. |
 | `MaxRejectedMergesPerWeek` | `5` | |
 | `MaxHardDeletesOutsidePurge` | `0` | Any occurrence is an alert. |
 | `MaxLossPercentBetweenSnapshots` | `10` | |
@@ -243,6 +254,7 @@ evalCronSchedule, pauseConsolidationOnAlert}`; everything else is available thro
 | `EvalEphemeralContextCount` | `5` | Live entries shown beside each ephemeral discard; `0` turns the lookup off. |
 | `EvalDirectivePath` | `memory-audit.md` | |
 | `AlertOnAttention` | `true` | |
+| `AlertRepeatInterval` | `7d` | How long an unchanged warning stays quiet before it is repeated; `0` never repeats. Alerts ignore it. |
 | `DigestCronSchedule` | `null` | Null means alerts only. |
 | `CopyReportToShared` | `true` | |
 | `SharedReportDirectory` | `/rockbot/shared/exports/memory-audit` | |

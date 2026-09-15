@@ -75,6 +75,27 @@ internal sealed record MemoryAuditState
     /// <summary>When the full-report digest was last pushed.</summary>
     public DateTimeOffset? LastDigestAt { get; init; }
 
+    /// <summary>
+    /// Failing invariant names the last pushed message reported. Empty after a healthy run, so a
+    /// finding that returns is announced again.
+    /// </summary>
+    public IReadOnlyList<string> LastAlertedInvariants { get; init; } = [];
+
+    /// <summary>When a message about failing invariants was last pushed.</summary>
+    public DateTimeOffset? LastAlertedAt { get; init; }
+
+    /// <summary>
+    /// Live entries past the merge-chain limit at this run — the baseline the next run's
+    /// <c>chain-depth-threshold</c> compares against.
+    /// </summary>
+    public int? ChainDepthOverLimit { get; init; }
+
+    /// <summary>
+    /// The <see cref="MemoryAuditOptions.MaxMergeChainDepth"/> <see cref="ChainDepthOverLimit"/>
+    /// was counted against. A count taken at a different limit is not a baseline.
+    /// </summary>
+    public int? ChainDepthLimit { get; init; }
+
     /// <summary>How long process-start timestamps are kept.</summary>
     internal static readonly TimeSpan ProcessStartRetention = TimeSpan.FromDays(60);
 

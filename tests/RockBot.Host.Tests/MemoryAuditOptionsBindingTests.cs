@@ -89,6 +89,14 @@ public class MemoryAuditOptionsBindingTests
     }
 
     [TestMethod]
+    public void BindsTheAlertRepeatIntervalIncludingTheZeroThatNeverRepeats()
+    {
+        Assert.AreEqual(TimeSpan.FromDays(7), new MemoryAuditOptions().AlertRepeatInterval);
+        Assert.AreEqual(TimeSpan.FromDays(3), Bind(new() { ["MemoryAudit:AlertRepeatInterval"] = "3.00:00:00" }).AlertRepeatInterval);
+        Assert.AreEqual(TimeSpan.Zero, Bind(new() { ["MemoryAudit:AlertRepeatInterval"] = "00:00:00" }).AlertRepeatInterval);
+    }
+
+    [TestMethod]
     public void BindsTheModelTierByName()
     {
         var opts = Bind(new Dictionary<string, string?> { ["MemoryAudit:EvalModelTier"] = "Low" });

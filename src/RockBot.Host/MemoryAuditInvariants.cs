@@ -62,6 +62,10 @@ internal static class MemoryAuditInvariants
     /// <param name="rejectedSourceIds">
     /// Entries stamped as the source of a refused merge since the previous run, newest first.
     /// </param>
+    /// <param name="previousChainDepthOverLimit">
+    /// Live entries past <see cref="MemoryAuditOptions.MaxMergeChainDepth"/> at the previous run,
+    /// or null when there is no comparable baseline — a first run, or a limit changed since.
+    /// </param>
     internal static IReadOnlyList<MemoryAuditInvariantViolation> Check(
         IReadOnlyList<MemoryEntry> entries,
         MemoryAuditSnapshot snapshot,
@@ -71,7 +75,8 @@ internal static class MemoryAuditInvariants
         double elapsedDays,
         int? previousLive,
         IReadOnlyDictionary<string, int> chainDepths,
-        IReadOnlyList<string> rejectedSourceIds)
+        IReadOnlyList<string> rejectedSourceIds,
+        int? previousChainDepthOverLimit)
     {
         var violations = new List<MemoryAuditInvariantViolation>();
 
@@ -203,12 +208,16 @@ internal static class MemoryAuditInvariants
             .ThenBy(x => x.Id, StringComparer.Ordinal)
             .ToList();
 
-        if (tooDeep.Count > 0)
+        // Fires on growth, not existence. Nothing in the dream shortens a merge chain, so a deep
+        // tail that exists once exists forever — a finding about its existence would repeat every
+        // run and never clear. More entries crossing the limit than last time is the news.
+        if (previousChainDepthOverLimit is { } previousDeep && tooDeep.Count > previousDeep)
             violations.Add(new MemoryAuditInvariantViolation(
                 ChainDepthThreshold,
                 $"{tooDeep.Count} live {(tooDeep.Count == 1 ? "entry exceeds" : "entries exceed")} the " +
-                $"merge-chain limit of {auditOptions.MaxMergeChainDepth}; the deepest is " +
-                $"{tooDeep[0].Depth} (`{tooDeep[0].Id}`). Each is model prose generated from model prose.",
+                $"merge-chain limit of {auditOptions.MaxMergeChainDepth}, up from {previousDeep} at the " +
+                $"previous run; the deepest is {tooDeep[0].Depth} (`{tooDeep[0].Id}`). Each is model " +
+                "prose generated from model prose.",
                 Cap([.. tooDeep.Select(x => x.Id)])));
 
         if (elapsedDays > 0)
@@ -233,10 +242,13 @@ internal static class MemoryAuditInvariants
     internal static string ComputeStatus(IReadOnlyList<MemoryAuditInvariantViolation> violations)
     {
         if (violations.Count == 0) return MemoryAuditStatuses.Healthy;
-        return violations.Any(v => AlertInvariants.Contains(v.Name))
+        return violations.Any(v => IsAlertSeverity(v.Name))
             ? MemoryAuditStatuses.Alert
             : MemoryAuditStatuses.Warning;
     }
+
+    /// <summary>Whether the named invariant is one of the alert-severity findings.</summary>
+    internal static bool IsAlertSeverity(string name) => AlertInvariants.Contains(name);
 
     /// <summary>
     /// A fixed-point number with a dot, whatever the host's locale. These strings are stored in

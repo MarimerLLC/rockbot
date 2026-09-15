@@ -70,13 +70,15 @@ public static class MemoryAuditGlossary
             MemoryAuditStatuses.Alert),
 
         ["chain-depth-threshold"] = new(
-            "Memories have been rewritten too many times",
+            "More memories have been rewritten too many times",
             "Memories that say similar things get combined into one. That combined memory can later " +
-            "be combined again, and again. This finding means some memories are now several generations " +
-            "deep — a summary of a summary of a summary. Nothing has been lost that the checks can " +
-            "detect, but each rewrite is another chance for a detail or a nuance to quietly drift.",
+            "be combined again, and again, so some memories end up several generations deep — a " +
+            "summary of a summary of a summary. Nothing ever makes a memory shallower again, so some " +
+            "deep ones are normal; this finding means more of them crossed the limit since the last " +
+            "check. Nothing has been lost that the checks can detect, but each rewrite is another " +
+            "chance for a detail or a nuance to quietly drift.",
             "Not urgent. The affected ids are listed deepest first; worth spot-checking the first few " +
-            "against what they originally said — the originals are kept. If the depth keeps climbing, " +
+            "against what they originally said — the originals are kept. If this keeps coming back, " +
             "memories are being merged more often than the information really changes.",
             MemoryAuditStatuses.Warning),
 
