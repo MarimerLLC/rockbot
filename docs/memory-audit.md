@@ -77,8 +77,8 @@ that merely share boilerplate.
 | `live-not-merge-source` | warning | An entry that was merged away is still in recall, so both copies surface. |
 | `no-repeated-rejection` | warning | The same merge cluster has been rejected on `RepeatedRejectionRuns` consecutive runs — consolidation is retrying work it cannot complete. |
 | `net-growth-threshold` | warning | Saves are outpacing consolidation. |
-| `chain-depth-threshold` | warning | A live entry is model prose generated from model prose, more deeply than you allowed. |
-| `rejected-merges-threshold` | warning | Merge rejections per week are above the limit. |
+| `chain-depth-threshold` | warning | Live entries are model prose generated from model prose, more deeply than you allowed. Ids are every live entry past `MaxMergeChainDepth`, deepest first. |
+| `rejected-merges-threshold` | warning | Merge rejections per week are above the limit. Ids are the refused sources since the previous run, newest first. |
 | `no-malformed-files` | warning | Files under the memory root would not deserialize. |
 
 Status is the worst finding: `alert` if any alert-severity invariant fired, `warning` if any

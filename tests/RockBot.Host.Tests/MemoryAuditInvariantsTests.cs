@@ -123,22 +123,64 @@ public class MemoryAuditInvariantsTests
     }
 
     [TestMethod]
-    public void ChainDepthThreshold_FiresPastTheConfiguredDepth()
+    public void ChainDepthThreshold_NamesEveryLiveEntryPastTheLimitDeepestFirst()
     {
-        var violations = Check([], Snapshot() with { MaxChainDepth = 3 });
+        // Default limit is 2. The archived depth-9 entry is out of recall and must not be named.
+        var entries = new[]
+        {
+            Entry("shallow"), Entry("at-limit"), Entry("d3"), Entry("d5"), Entry("also-d3"),
+            Archived("retired", "ephemeral")
+        };
+        var depths = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["shallow"] = 1, ["at-limit"] = 2, ["d3"] = 3, ["d5"] = 5, ["also-d3"] = 3, ["retired"] = 9
+        };
 
-        Assert.IsTrue(violations.Any(v => v.Name == MemoryAuditInvariants.ChainDepthThreshold));
+        var violation = Check(entries, Snapshot(), chainDepths: depths)
+            .Single(v => v.Name == MemoryAuditInvariants.ChainDepthThreshold);
+
+        CollectionAssert.AreEqual(new[] { "d5", "also-d3", "d3" }, violation.Ids.ToArray());
+        StringAssert.Contains(violation.Message, "3 live entries exceed the merge-chain limit of 2");
+        StringAssert.Contains(violation.Message, "the deepest is 5 (`d5`)");
+    }
+
+    [TestMethod]
+    public void ChainDepthThreshold_IsQuietWhenEveryLiveEntryIsWithinTheLimit()
+    {
+        var depths = new Dictionary<string, int> { ["a"] = 2, ["b"] = 1 };
+
+        var violations = Check([Entry("a"), Entry("b")], Snapshot(), chainDepths: depths);
+
+        Assert.IsFalse(violations.Any(v => v.Name == MemoryAuditInvariants.ChainDepthThreshold));
+    }
+
+    [TestMethod]
+    public void ChainDepthThreshold_CapsItsIdsButReportsTheTrueCount()
+    {
+        var entries = Enumerable.Range(0, 30).Select(i => Entry($"e{i:D2}")).ToList();
+        var depths = entries.ToDictionary(e => e.Id, _ => 3);
+
+        var violation = Check(entries, Snapshot(), chainDepths: depths)
+            .Single(v => v.Name == MemoryAuditInvariants.ChainDepthThreshold);
+
+        Assert.AreEqual(MemoryAuditAnalyzer.MaxIdsPerViolation, violation.Ids.Count);
+        StringAssert.Contains(violation.Message, "30 live entries");
     }
 
     [TestMethod]
     public void RejectedMergesThreshold_IsMeasuredPerWeekNotPerRun()
     {
         // Four rejections in one day is 28/week, well past the default of 5.
-        var violations = Check([], Snapshot() with { RejectedMergeSourcesSinceLast = 4 }, elapsedDays: 1);
-        Assert.IsTrue(violations.Any(v => v.Name == MemoryAuditInvariants.RejectedMergesThreshold));
+        string[] rejected = ["r4", "r3", "r2", "r1"];
+        var violation = Check([], Snapshot() with { RejectedMergeSourcesSinceLast = 4 }, elapsedDays: 1,
+                rejectedSourceIds: rejected)
+            .Single(v => v.Name == MemoryAuditInvariants.RejectedMergesThreshold);
+        CollectionAssert.AreEqual(rejected, violation.Ids.ToArray(), "The refused sources, in the order given.");
+        StringAssert.Contains(violation.Message, "4 merge source(s)");
 
         // The same four spread over a month is not.
-        var calm = Check([], Snapshot() with { RejectedMergeSourcesSinceLast = 4 }, elapsedDays: 30);
+        var calm = Check([], Snapshot() with { RejectedMergeSourcesSinceLast = 4 }, elapsedDays: 30,
+            rejectedSourceIds: rejected);
         Assert.IsFalse(calm.Any(v => v.Name == MemoryAuditInvariants.RejectedMergesThreshold));
     }
 
@@ -182,9 +224,12 @@ public class MemoryAuditInvariantsTests
         IReadOnlyList<MemoryEntry> entries,
         MemoryAuditSnapshot snapshot,
         double elapsedDays = 1,
-        int? previousLive = null) =>
+        int? previousLive = null,
+        IReadOnlyDictionary<string, int>? chainDepths = null,
+        IReadOnlyList<string>? rejectedSourceIds = null) =>
         MemoryAuditInvariants.Check(
-            entries, snapshot, new DreamOptions(), new MemoryAuditOptions(), Now, elapsedDays, previousLive);
+            entries, snapshot, new DreamOptions(), new MemoryAuditOptions(), Now, elapsedDays, previousLive,
+            chainDepths ?? new Dictionary<string, int>(), rejectedSourceIds ?? []);
 
     private static MemoryAuditSnapshot Snapshot() => new()
     {

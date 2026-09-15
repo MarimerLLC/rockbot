@@ -170,7 +170,7 @@ internal static class MemoryAuditAnalyzer
         // Only rejections stamped since the previous run count. A stamp that has not moved
         // describes a rejection an earlier run already reported.
         var rejectionCutoff = previous?.TakenAt;
-        var rejectedSourceIds = new List<string>();
+        var rejections = new List<(string Id, DateTimeOffset At)>();
         var clustersThisRun = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
         foreach (var entry in entries)
@@ -182,11 +182,20 @@ internal static class MemoryAuditAnalyzer
                 continue;
             if (rejectionCutoff is { } cutoff && rejectedAt <= cutoff) continue;
 
-            rejectedSourceIds.Add(entry.Id);
+            rejections.Add((entry.Id, rejectedAt));
             if (meta.TryGetValue(DreamService.ConsolidationRejectedClusterKey, out var cluster)
                 && !string.IsNullOrWhiteSpace(cluster))
                 clustersThisRun.Add(cluster);
         }
+
+        // Newest first, so a finding capped to a handful of ids names the refusals still in play.
+        List<string> rejectedSourceIds =
+        [
+            .. rejections
+                .OrderByDescending(r => r.At)
+                .ThenBy(r => r.Id, StringComparer.Ordinal)
+                .Select(r => r.Id)
+        ];
 
         var clusterRuns = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
         foreach (var cluster in clustersThisRun)
@@ -313,7 +322,8 @@ internal static class MemoryAuditAnalyzer
         var violations = MemoryAuditInvariants.Check(
             entries, snapshot, dreamOptions, auditOptions, now,
             rateWindowMet ? elapsedDays : 0,
-            previous is null ? null : previousLive);
+            previous is null ? null : previousLive,
+            depths, rejectedSourceIds);
         snapshot = snapshot with
         {
             Invariants = violations,

@@ -70,14 +70,14 @@ public static class MemoryAuditGlossary
             MemoryAuditStatuses.Alert),
 
         ["chain-depth-threshold"] = new(
-            "A memory has been rewritten too many times",
+            "Memories have been rewritten too many times",
             "Memories that say similar things get combined into one. That combined memory can later " +
-            "be combined again, and again. This finding means some memory is now several generations " +
+            "be combined again, and again. This finding means some memories are now several generations " +
             "deep — a summary of a summary of a summary. Nothing has been lost that the checks can " +
             "detect, but each rewrite is another chance for a detail or a nuance to quietly drift.",
-            "Not urgent. Worth spot-checking the deepest memory against what it originally said — the " +
-            "originals are kept. If the depth keeps climbing, memories are being merged more often " +
-            "than the information really changes.",
+            "Not urgent. The affected ids are listed deepest first; worth spot-checking the first few " +
+            "against what they originally said — the originals are kept. If the depth keeps climbing, " +
+            "memories are being merged more often than the information really changes.",
             MemoryAuditStatuses.Warning),
 
         ["net-growth-threshold"] = new(
@@ -103,8 +103,8 @@ public static class MemoryAuditGlossary
             "The safety check that stops a merge from dropping specifics is firing more often than " +
             "expected. It means merges are being attempted that would have lost information — and " +
             "that they were caught.",
-            "Not urgent. A sustained rise suggests memories are being grouped for merging too " +
-            "loosely.",
+            "Not urgent. The refused memories are listed, newest first. A sustained rise suggests " +
+            "memories are being grouped for merging too loosely.",
             MemoryAuditStatuses.Warning),
 
         ["merged-from-resolves"] = new(
