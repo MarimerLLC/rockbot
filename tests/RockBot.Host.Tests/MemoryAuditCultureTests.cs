@@ -70,7 +70,8 @@ public class MemoryAuditCultureTests
             MemoryAuditInvariants.Check(
                 [], snapshot, new DreamOptions(), new MemoryAuditOptions(),
                 Now, elapsedDays: 1, previousLive: 100,
-                chainDepths: new Dictionary<string, int>(), rejectedSourceIds: []));
+                chainDepths: new Dictionary<string, int>(), rejectedSourceIds: [],
+                previousChainDepthOverLimit: null));
 
         var growth = violations.Single(v => v.Name == MemoryAuditInvariants.NetGrowthThreshold);
         StringAssert.Contains(growth.Message, "12.5");

@@ -106,12 +106,20 @@ public sealed class MemoryAuditOptions
     public double MaxNetGrowthPerDay { get; set; } = 5;
 
     /// <summary>
-    /// Longest merge-provenance chain a live entry may sit at the end of. Defaults to 2.
+    /// Merge-provenance chain depth past which a live entry counts as deep. Defaults to 2.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// A merge of merges is LLM prose generated from LLM prose. Each hop is another chance to
     /// drop a specific with nothing left to compare against, so depth is the metric that
     /// distinguishes healthy deduplication from a consolidation treadmill.
+    /// </para>
+    /// <para>
+    /// The finding fires when the number of deep live entries <em>rises</em> between runs, not
+    /// whenever any exist. Nothing shortens a chain, so a mature corpus always has a deep tail;
+    /// what is worth hearing about is that tail growing. Changing this value resets the baseline,
+    /// so the run after a change stays quiet.
+    /// </para>
     /// </remarks>
     public int MaxMergeChainDepth { get; set; } = 2;
 
@@ -187,11 +195,24 @@ public sealed class MemoryAuditOptions
     /// <see cref="WellKnownSessions.ScheduledSystem"/> session. Defaults to <c>true</c>.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// A healthy run is silent. The audit is worth having precisely because nobody reads a
     /// daily "all clear", and a channel that speaks only when something is wrong stays worth
     /// reading.
+    /// </para>
+    /// <para>
+    /// The same holds for a daily "still warning". A warning is pushed when the set of failing
+    /// invariants differs from the last one pushed, and repeated unchanged only every
+    /// <see cref="AlertRepeatInterval"/>. Alert-severity findings are pushed on every run.
+    /// </para>
     /// </remarks>
     public bool AlertOnAttention { get; set; } = true;
+
+    /// <summary>
+    /// How long an unchanged warning stays quiet before it is pushed again. Defaults to 7 days;
+    /// <see cref="TimeSpan.Zero"/> means an unchanged warning is never repeated.
+    /// </summary>
+    public TimeSpan AlertRepeatInterval { get; set; } = TimeSpan.FromDays(7);
 
     /// <summary>
     /// Optional cron schedule for pushing the full report regardless of status. Null (the

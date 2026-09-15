@@ -568,8 +568,9 @@ internal sealed class MemoryAuditService : IHostedService, IDisposable, IPrunabl
     // ── Surfacing ─────────────────────────────────────────────────────────────
 
     /// <summary>
-    /// Pushes an unsolicited message when the run needs attention, and the full report on the
-    /// digest schedule. A healthy run with no digest due says nothing at all.
+    /// Pushes an unsolicited message when the run's findings are news (see
+    /// <see cref="MemoryAuditAlertPolicy"/>), and the full report on the digest schedule. A
+    /// healthy run, or an unchanged warning not yet due a repeat, says nothing at all.
     /// </summary>
     private async Task SurfaceAsync(
         MemoryAuditSnapshot snapshot,
@@ -585,15 +586,31 @@ internal sealed class MemoryAuditService : IHostedService, IDisposable, IPrunabl
                    state.LastDigestAt ?? now - TimeSpan.FromDays(365), _clock.Zone) is { } due
             && due <= now;
 
-        var needsAttention = _options.AlertOnAttention
-            && !string.Equals(snapshot.Status, MemoryAuditStatuses.Healthy, StringComparison.Ordinal);
+        var decision = MemoryAuditAlertPolicy.Decide(
+            snapshot, state.LastAlertedInvariants, state.LastAlertedAt, _options, now);
 
-        if (!needsAttention && !digestDue) return;
+        if (!decision.Send && !digestDue)
+        {
+            if (decision.Current.Count == 0)
+            {
+                // Healthy: forget what was last reported, so a finding that comes back is news.
+                if (state.LastAlertedInvariants.Count > 0)
+                    await SaveStateQuietlyAsync(state with { LastAlertedInvariants = [] }, ct);
+            }
+            else if (_options.AlertOnAttention)
+            {
+                _logger.LogInformation(
+                    "MemoryAuditService: {Status} unchanged since {LastAlertedAt:u} ({Invariants}); not re-alerting",
+                    snapshot.Status, state.LastAlertedAt, string.Join(", ", decision.Current));
+            }
+            return;
+        }
 
         var content = digestDue
             ? report
             : $"**Memory audit — {snapshot.Status}**\n\n" +
               $"{snapshot.Live} live entries, {snapshot.Archived} archived.\n\n" +
+              ChangeLine(decision, state.LastAlertedAt) +
               string.Join("\n", snapshot.Invariants.Select(v => $"- **`{v.Name}`** — {v.Message}")) +
               $"\n\nFull report: `{LatestReportPath}` (or call `get_memory_audit`).";
 
@@ -616,9 +633,6 @@ internal sealed class MemoryAuditService : IHostedService, IDisposable, IPrunabl
                 $"{UserProxyTopics.UserResponse}.{_agent.Name}",
                 reply.ToEnvelope<AgentReply>(source: _agent.Name),
                 ct);
-
-            if (digestDue)
-                await (state with { LastDigestAt = now }).SaveAsync(StatePath, ct);
         }
         catch (OperationCanceledException)
         {
@@ -627,7 +641,61 @@ internal sealed class MemoryAuditService : IHostedService, IDisposable, IPrunabl
         catch (Exception ex)
         {
             // Failing to announce a finding must not lose the finding — it is already on disk.
+            // Nothing is recorded as reported, so the next run tries again.
             _logger.LogWarning(ex, "MemoryAuditService: could not publish the audit message");
+            return;
+        }
+
+        // A digest carries the findings too, so it counts as having reported them.
+        await SaveStateQuietlyAsync(state with
+        {
+            LastDigestAt = digestDue ? now : state.LastDigestAt,
+            LastAlertedInvariants = decision.Current,
+            LastAlertedAt = decision.Current.Count > 0 ? now : state.LastAlertedAt
+        }, ct);
+    }
+
+    /// <summary>
+    /// One line saying why this message is being sent, when that is not obvious from the
+    /// findings themselves: what changed since the last message, or that this one is a repeat.
+    /// Empty when nothing was reported before or the findings are the same as last time.
+    /// </summary>
+    private static string ChangeLine(MemoryAuditAlertDecision decision, DateTimeOffset? lastAlertedAt)
+    {
+        static string Names(IEnumerable<string> names) => string.Join(", ", names.Select(n => $"`{n}`"));
+
+        return decision.Reason switch
+        {
+            MemoryAuditAlertReason.Repeat when lastAlertedAt is { } at =>
+                $"Unchanged since {at:yyyy-MM-dd} — repeated so it isn't forgotten.\n\n",
+            MemoryAuditAlertReason.Changed or MemoryAuditAlertReason.Alert
+                when lastAlertedAt is not null && (decision.Added.Count > 0 || decision.Cleared.Count > 0) =>
+                "Since the last alert: " +
+                string.Join("; ",
+                    new[]
+                    {
+                        decision.Added.Count > 0 ? $"new {Names(decision.Added)}" : null,
+                        decision.Cleared.Count > 0 ? $"cleared {Names(decision.Cleared)}" : null
+                    }.Where(s => s is not null)) +
+                ".\n\n",
+            _ => string.Empty
+        };
+    }
+
+    /// <summary>Saves state, logging rather than failing the run if the write does not land.</summary>
+    private async Task SaveStateQuietlyAsync(MemoryAuditState state, CancellationToken ct)
+    {
+        try
+        {
+            await state.SaveAsync(StatePath, ct);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "MemoryAuditService: could not update {Path}", StatePath);
         }
     }
 

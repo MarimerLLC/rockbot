@@ -139,13 +139,21 @@ internal static class MemoryAuditAnalyzer
         var depths = ComputeChainDepths(byId, ct);
         var byDepth = new Dictionary<int, int>();
         var maxDepth = 0;
+        var overLimit = 0;
         foreach (var entry in live)
         {
             var depth = depths.GetValueOrDefault(entry.Id);
             if (depth <= 0) continue;
             byDepth[depth] = byDepth.GetValueOrDefault(depth) + 1;
             if (depth > maxDepth) maxDepth = depth;
+            if (depth > auditOptions.MaxMergeChainDepth) overLimit++;
         }
+
+        // A count taken against a different limit measures a different tail, so it cannot say
+        // whether this one grew.
+        var previousOverLimit = previous is { } baseline && baseline.ChainDepthLimit == auditOptions.MaxMergeChainDepth
+            ? baseline.ChainDepthOverLimit
+            : null;
 
         // Keyed by depth but ordered numerically. The keys are strings so the row serializes as
         // a JSON object, and insertion order is what both the report and the raw row show — a
@@ -300,6 +308,7 @@ internal static class MemoryAuditAnalyzer
             NetGrowthPerDay = netGrowthPerDay,
             MergeChainDepth = histogram,
             MaxChainDepth = maxDepth,
+            ChainDepthOverLimit = overLimit,
             NearDupPairs = pairs.Count,
             NearDupEntries = nearDupEntries.Count,
             EmbeddingDupClusters = embeddingDupClusters,
@@ -323,7 +332,7 @@ internal static class MemoryAuditAnalyzer
             entries, snapshot, dreamOptions, auditOptions, now,
             rateWindowMet ? elapsedDays : 0,
             previous is null ? null : previousLive,
-            depths, rejectedSourceIds);
+            depths, rejectedSourceIds, previousOverLimit);
         snapshot = snapshot with
         {
             Invariants = violations,
@@ -346,7 +355,11 @@ internal static class MemoryAuditAnalyzer
             ProcessStarts = [.. processStarts.Where(t => t >= now - MemoryAuditState.ProcessStartRetention)],
             LastEvalAt = previous?.LastEvalAt,
             LastEvalFingerprint = previous?.LastEvalFingerprint,
-            LastDigestAt = previous?.LastDigestAt
+            LastDigestAt = previous?.LastDigestAt,
+            LastAlertedInvariants = previous?.LastAlertedInvariants ?? [],
+            LastAlertedAt = previous?.LastAlertedAt,
+            ChainDepthOverLimit = overLimit,
+            ChainDepthLimit = auditOptions.MaxMergeChainDepth
         };
 
         return (snapshot, state);

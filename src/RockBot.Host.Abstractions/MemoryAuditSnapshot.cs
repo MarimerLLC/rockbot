@@ -208,6 +208,12 @@ public sealed record MemoryAuditSnapshot
     /// <summary>Deepest merge chain any live entry sits at the end of.</summary>
     public int MaxChainDepth { get; init; }
 
+    /// <summary>
+    /// Live entries deeper than <see cref="MemoryAuditOptions.MaxMergeChainDepth"/>. The
+    /// <c>chain-depth-threshold</c> finding fires when this rises between runs.
+    /// </summary>
+    public int ChainDepthOverLimit { get; init; }
+
     /// <summary>Live entry pairs above <see cref="MemoryAuditOptions.NearDuplicateThreshold"/>.</summary>
     public int NearDupPairs { get; init; }
 
