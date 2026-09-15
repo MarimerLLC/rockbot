@@ -55,6 +55,13 @@ internal static class MemoryAuditInvariants
     /// over. Zero disables the rate-based invariants rather than dividing by it.
     /// </param>
     /// <param name="previousLive">Live count at the previous run, or null on a first run.</param>
+    /// <param name="chainDepths">
+    /// Merge-chain depth per entry id, as <see cref="MemoryAuditAnalyzer.ComputeChainDepths"/>
+    /// produced it. Ids missing from it are depth 0.
+    /// </param>
+    /// <param name="rejectedSourceIds">
+    /// Entries stamped as the source of a refused merge since the previous run, newest first.
+    /// </param>
     internal static IReadOnlyList<MemoryAuditInvariantViolation> Check(
         IReadOnlyList<MemoryEntry> entries,
         MemoryAuditSnapshot snapshot,
@@ -62,7 +69,9 @@ internal static class MemoryAuditInvariants
         MemoryAuditOptions auditOptions,
         DateTimeOffset now,
         double elapsedDays,
-        int? previousLive)
+        int? previousLive,
+        IReadOnlyDictionary<string, int> chainDepths,
+        IReadOnlyList<string> rejectedSourceIds)
     {
         var violations = new List<MemoryAuditInvariantViolation>();
 
@@ -185,12 +194,22 @@ internal static class MemoryAuditInvariants
                 $"{Num(auditOptions.MaxNetGrowthPerDay, 0)}/day you set — saves are outpacing consolidation.",
                 []));
 
-        if (snapshot.MaxChainDepth > auditOptions.MaxMergeChainDepth)
+        // Deepest first, so the capped id list keeps the entries furthest from anything observed.
+        var tooDeep = entries
+            .Where(e => e.ArchivedAt is null)
+            .Select(e => (e.Id, Depth: chainDepths.GetValueOrDefault(e.Id)))
+            .Where(x => x.Depth > auditOptions.MaxMergeChainDepth)
+            .OrderByDescending(x => x.Depth)
+            .ThenBy(x => x.Id, StringComparer.Ordinal)
+            .ToList();
+
+        if (tooDeep.Count > 0)
             violations.Add(new MemoryAuditInvariantViolation(
                 ChainDepthThreshold,
-                $"A live entry sits at the end of a {snapshot.MaxChainDepth}-deep merge chain " +
-                $"(limit {auditOptions.MaxMergeChainDepth}); it is model prose generated from model prose.",
-                []));
+                $"{tooDeep.Count} live {(tooDeep.Count == 1 ? "entry exceeds" : "entries exceed")} the " +
+                $"merge-chain limit of {auditOptions.MaxMergeChainDepth}; the deepest is " +
+                $"{tooDeep[0].Depth} (`{tooDeep[0].Id}`). Each is model prose generated from model prose.",
+                Cap([.. tooDeep.Select(x => x.Id)])));
 
         if (elapsedDays > 0)
         {
@@ -198,9 +217,10 @@ internal static class MemoryAuditInvariants
             if (rejectedPerWeek > auditOptions.MaxRejectedMergesPerWeek)
                 violations.Add(new MemoryAuditInvariantViolation(
                     RejectedMergesThreshold,
-                    $"Merge rejections are running at {Num(rejectedPerWeek, 1)}/week, above the " +
+                    $"{snapshot.RejectedMergeSourcesSinceLast} merge source(s) were refused since the " +
+                    $"previous snapshot — {Num(rejectedPerWeek, 1)}/week, above the " +
                     $"{auditOptions.MaxRejectedMergesPerWeek}/week you set.",
-                    []));
+                    Cap([.. rejectedSourceIds])));
         }
 
         return violations;

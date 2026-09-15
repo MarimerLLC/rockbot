@@ -98,7 +98,34 @@ public class MemoryAuditAnalyzerTests
         Assert.IsFalse(snapshot.MergeChainDepth.ContainsKey("2"),
             "merge2 is archived, so it does not appear in the live histogram.");
 
-        Assert.IsTrue(snapshot.Invariants.Any(v => v.Name == MemoryAuditInvariants.ChainDepthThreshold));
+        var violation = snapshot.Invariants.Single(v => v.Name == MemoryAuditInvariants.ChainDepthThreshold);
+        CollectionAssert.AreEqual(new[] { "merge3" }, violation.Ids.ToArray(),
+            "Only the live entry past the default limit of 2 is named; flat is depth 1, merge2 is archived.");
+    }
+
+    [TestMethod]
+    public void RejectedMergeFindingNamesTheSourcesRefusedSinceTheLastRunNewestFirst()
+    {
+        MemoryEntry Rejected(string id, DateTimeOffset at) => Entry(id) with
+        {
+            Metadata = new Dictionary<string, string>
+            {
+                [DreamService.ConsolidationRejectedClusterKey] = $"CLUSTER-{id}",
+                [DreamService.ConsolidationRejectedAtKey] = at.ToString("O")
+            }
+        };
+
+        // Six refusals in the day since the previous run: 42/week against the default of 5.
+        var entries = Enumerable.Range(1, 6)
+            .Select(i => Rejected($"r{i}", Now.AddHours(-i)))
+            .Append(Rejected("stale", Now.AddDays(-5)))
+            .ToList();
+
+        var (snapshot, _) = Analyze(entries, PreviousState([.. entries.Select(e => Row(e.Id))]));
+
+        var violation = snapshot.Invariants.Single(v => v.Name == MemoryAuditInvariants.RejectedMergesThreshold);
+        CollectionAssert.AreEqual(new[] { "r1", "r2", "r3", "r4", "r5", "r6" }, violation.Ids.ToArray(),
+            "Newest refusal first; the stamp from before the previous run was already reported.");
     }
 
     [TestMethod]
