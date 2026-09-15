@@ -336,6 +336,77 @@ public class MemoryAuditServiceTests
         Assert.AreEqual(1, second.Summary.Carried);
     }
 
+    [TestMethod]
+    public async Task RunEval_AfterAnAudit_RefreshesTheReportsWithoutAppendingASnapshotRow()
+    {
+        WriteEntry(Entry("heavy") with { ReinforcementCount = 40 });
+
+        var shared = Path.Combine(_profileRoot, "shared-exports");
+        var options = new MemoryAuditOptions { CopyReportToShared = true, SharedReportDirectory = shared };
+
+        await CreateService(options: options).RunAuditAsync(CancellationToken.None);
+        Assert.IsFalse(
+            (await File.ReadAllTextAsync(Path.Combine(_auditRoot, MemoryAuditFiles.LatestReport))).Contains("## Sample eval"),
+            "No eval has run yet.");
+
+        var judge = new RecordingLlmClient("""{"verdicts":[{"index":1,"sound":false,"reason":"Two subjects tangled together.","evidence":"durable fact"}]}""");
+        var result = await CreateService(options: options, llmClient: judge).RunEvalAsync(CancellationToken.None);
+
+        Assert.IsNotNull(result);
+        Assert.AreEqual(1, File.ReadAllLines(Path.Combine(_auditRoot, MemoryAuditFiles.SnapshotsFile))
+            .Count(line => !string.IsNullOrWhiteSpace(line)), "Refreshing the report must not add a trend row.");
+
+        var reports = new[]
+        {
+            Path.Combine(_auditRoot, MemoryAuditFiles.LatestReport),
+            Directory.GetFiles(_auditRoot, "report-*.md").Single(),
+            Directory.GetFiles(shared, "memory-audit-*.md").Single()
+        };
+        foreach (var path in reports)
+        {
+            var report = await File.ReadAllTextAsync(path);
+            StringAssert.Contains(report, "(after this snapshot was measured) a judge reviewed 1 sampled outcome(s)");
+            StringAssert.Contains(report, "Two subjects tangled together.");
+        }
+    }
+
+    [TestMethod]
+    public async Task RunEval_WithNoSnapshotYet_WritesNoReport()
+    {
+        WriteEntry(Entry("heavy") with { ReinforcementCount = 40 });
+
+        var judge = new RecordingLlmClient("""{"verdicts":[{"index":1,"sound":true,"reason":"One subject."}]}""");
+        var result = await CreateService(llmClient: judge).RunEvalAsync(CancellationToken.None);
+
+        Assert.IsNotNull(result);
+        Assert.IsTrue(File.Exists(Path.Combine(_auditRoot, MemoryAuditFiles.EvalLatest)));
+        Assert.IsFalse(File.Exists(Path.Combine(_auditRoot, MemoryAuditFiles.LatestReport)),
+            "With nothing measured yet there is no report to refresh; the next audit carries the eval.");
+    }
+
+    [TestMethod]
+    public async Task RunAudit_ReportListsTheLatestEvalsDisagreements()
+    {
+        WriteEntry(Entry("a"));
+
+        var eval = new MemoryAuditEvalResult(
+            new MemoryAuditEvalSummary(Now(-7), 2, 1, 0.5, new Dictionary<string, double> { ["merge"] = 0.5 }),
+            [
+                new MemoryAuditEvalVerdict("merge", ["m1"], false, "Dropped the account number."),
+                new MemoryAuditEvalVerdict("merge", ["m2"], true, "Kept every specific.")
+            ],
+            "FINGERPRINT");
+        Directory.CreateDirectory(_auditRoot);
+        await File.WriteAllTextAsync(
+            Path.Combine(_auditRoot, MemoryAuditFiles.EvalLatest), JsonSerializer.Serialize(eval, JsonOptions));
+
+        await CreateService().RunAuditAsync(CancellationToken.None);
+
+        var report = await File.ReadAllTextAsync(Path.Combine(_auditRoot, MemoryAuditFiles.LatestReport));
+        StringAssert.Contains(report, "(7 day(s) before this snapshot)");
+        StringAssert.Contains(report, "Dropped the account number.");
+    }
+
     // ── Helpers ──────────────────────────────────────────────────────────────
 
     private static string Line(DateTimeOffset takenAt) =>
