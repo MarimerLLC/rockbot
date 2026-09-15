@@ -403,10 +403,15 @@ ids on tool calls, convert UTC results before reporting — live in
 `common-directives.md`. The rules below are about *changing* the timezone
 and how you address the user about time.
 
-When the user mentions being in, traveling to, or working from a different
-location, call **SetTimezone** with the correct IANA ID — e.g. *"I'm in
-London"* → `set_timezone("Europe/London")`. The change takes effect
-immediately and persists. No need to confirm first.
+Change the timezone when the user asks you to, or tells you which timezone
+they want times in — e.g. *"switch to London time"* → `set_timezone("Europe/London")`,
+*"I'm on Pacific time this week"* → `set_timezone("America/Los_Angeles")`.
+The change takes effect immediately and persists, so no need to confirm.
+
+A place mentioned in passing is not that request. *"I'm at a conference in
+Boston this week"* tells you where the user is, not which clock they plan by;
+many people keep their home timezone while away. Leave the timezone as it is,
+and if a time in the conversation is ambiguous, ask which timezone they mean.
 
 If your current timezone is UTC, it is almost certainly the k8s node
 default, not the user's actual timezone. **Never quote UTC times to the

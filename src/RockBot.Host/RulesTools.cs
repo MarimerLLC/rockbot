@@ -124,10 +124,12 @@ public sealed class RulesTools
     }
 
     [Description("Update the timezone used for all date and time calculations. Call this when the user " +
-                 "says they are in, traveling to, or working from a different timezone. Takes effect " +
-                 "immediately and persists across sessions. Use IANA timezone IDs. When the user names " +
-                 "a city or region, convert it to the correct IANA ID — e.g. 'Chicago' → " +
-                 "'America/Chicago', 'London' → 'Europe/London', 'Tokyo' → 'Asia/Tokyo'.")]
+                 "asks you to change timezone or tells you which timezone they want times in — e.g. " +
+                 "'switch to London time', 'I'm on Pacific time this week'. A place mentioned in passing " +
+                 "('I'm at a conference in Boston') is not a request: many people keep their home timezone " +
+                 "while away. Takes effect immediately and persists across sessions. Use IANA timezone " +
+                 "IDs. When the user names a city or region, convert it to the correct IANA ID — e.g. " +
+                 "'Chicago' → 'America/Chicago', 'London' → 'Europe/London', 'Tokyo' → 'Asia/Tokyo'.")]
     public async Task<string> SetTimezone(
         [Description("IANA timezone ID, e.g. 'America/New_York', 'Europe/Paris', 'Asia/Singapore'")] string timezoneId)
     {
