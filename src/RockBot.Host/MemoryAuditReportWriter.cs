@@ -132,7 +132,7 @@ internal static class MemoryAuditReportWriter
             sb.AppendLine("## Sample eval");
             sb.AppendLine();
             sb.AppendLine(
-                $"On {Date(summary.EvaluatedAt)} a judge reviewed {summary.Sampled} sampled outcome(s) and " +
+                $"On {Date(summary.EvaluatedAt)}{EvalAge(summary.EvaluatedAt, snapshot.TakenAt)} a judge reviewed {summary.Sampled} sampled outcome(s) and " +
                 $"agreed with {summary.Sound} of them ({Percent(summary.SoundRate)})." +
                 (summary.Carried > 0
                     ? $" {summary.Carried} verdict(s) were carried forward because the content judged had not changed."
@@ -182,6 +182,27 @@ internal static class MemoryAuditReportWriter
     /// </remarks>
     private static string Percent(double fraction) =>
         (fraction * 100).ToString("F0", CultureInfo.InvariantCulture) + "%";
+
+    /// <summary>
+    /// How old the eval was when the snapshot was measured, as a parenthetical. Empty for an eval
+    /// from the same day.
+    /// </summary>
+    /// <remarks>
+    /// Measured against the snapshot rather than the clock, so a dated report still reads true
+    /// when opened a month later. Counted in calendar days on the snapshot's offset: the eval runs
+    /// an hour after the audit, so last Sunday's eval is six days and 23 hours before this
+    /// Sunday's snapshot, and a reader counting on a calendar expects to see seven.
+    /// </remarks>
+    private static string EvalAge(DateTimeOffset evaluatedAt, DateTimeOffset takenAt)
+    {
+        if (evaluatedAt > takenAt)
+            return " (after this snapshot was measured)";
+
+        var days = (takenAt.Date - evaluatedAt.ToOffset(takenAt.Offset).Date).Days;
+        return days > 0
+            ? $" ({days.ToString(CultureInfo.InvariantCulture)} day(s) before this snapshot)"
+            : string.Empty;
+    }
 
     /// <summary>A signed count, with the ASCII sign rather than a locale's own.</summary>
     private static string Signed(int value) =>

@@ -224,7 +224,7 @@ internal sealed class MemoryAuditService : IHostedService, IDisposable, IPrunabl
 
             // The eval reads content and costs LLM calls; the audit is model-free. Both are due
             // on the same tick whenever their cron slots coincide, and the audit runs first so
-            // the eval's numbers land in a snapshot that already exists.
+            // the eval's refresh of the report lands on that tick's snapshot, not yesterday's.
             var evalDue = _evalCron is not null && IsDue(_evalCron, now);
             var auditDue = _auditCron is not null && IsDue(_auditCron, now);
 
@@ -325,6 +325,7 @@ internal sealed class MemoryAuditService : IHostedService, IDisposable, IPrunabl
 
             var walk = await MemoryStoreWalker.WalkAsync(MemoryRoot, _logger, token);
             var previous = await MemoryAuditState.LoadAsync(StatePath, _logger, token);
+            var eval = await ReadEvalLatestAsync(token);
 
             var (snapshot, state) = MemoryAuditAnalyzer.Analyze(
                 walk,
@@ -333,7 +334,7 @@ internal sealed class MemoryAuditService : IHostedService, IDisposable, IPrunabl
                 ProcessStartsIncludingThisOne(previous),
                 await ProbeEmbeddingClustersAsync(token),
                 ReadVocabularyStoplistSize(),
-                await ReadEvalSummaryAsync(token),
+                eval?.Summary,
                 _dreamOptions,
                 _options,
                 now,
@@ -344,13 +345,7 @@ internal sealed class MemoryAuditService : IHostedService, IDisposable, IPrunabl
             await state.SaveAsync(StatePath, token);
 
             var trend = await ReadTrendAsync(TimeSpan.FromDays(60), token);
-            var report = MemoryAuditReportWriter.Render(snapshot, trend);
-
-            await AtomicFile.WriteAllTextAsync(LatestReportPath, report, token);
-            await AtomicFile.WriteAllTextAsync(
-                Path.Combine(AuditRoot, $"report-{now:yyyy-MM-dd}.md"), report, token);
-
-            await CopyReportToSharedAsync(report, now, token);
+            var report = await WriteReportAsync(snapshot, trend, eval, token);
 
             // One structured line per run. This is what makes the audit visible in Loki without
             // anyone opening a file, and it carries the numbers a dashboard would chart.
@@ -482,6 +477,8 @@ internal sealed class MemoryAuditService : IHostedService, IDisposable, IPrunabl
                 (result.Summary.SoundRate * 100).ToString("F0", System.Globalization.CultureInfo.InvariantCulture) + "%",
                 result.Summary.Carried);
 
+            await RefreshReportAsync(result, token);
+
             return result;
         }
         catch (OperationCanceledException)
@@ -497,6 +494,39 @@ internal sealed class MemoryAuditService : IHostedService, IDisposable, IPrunabl
         finally
         {
             await slot.DisposeAsync();
+        }
+    }
+
+    /// <summary>
+    /// Re-renders the most recent snapshot's report with the eval that just finished.
+    /// </summary>
+    /// <remarks>
+    /// The eval runs after the day's audit, so without this the report it lands in is the next
+    /// day's — a week-old eval sits in the Sunday report for a day after its replacement exists.
+    /// No trend row is appended and nothing is surfaced: the row keeps the summary that was
+    /// current when it was measured, and the eval feeds no finding worth a message. A failure
+    /// here only costs the refresh; the eval itself is already on disk.
+    /// </remarks>
+    private async Task RefreshReportAsync(MemoryAuditEvalResult eval, CancellationToken ct)
+    {
+        try
+        {
+            var trend = await ReadTrendAsync(TimeSpan.FromDays(60), ct);
+            if (trend.Count == 0)
+            {
+                _logger.LogDebug("MemoryAuditService: no recent snapshot to refresh with the new eval");
+                return;
+            }
+
+            await WriteReportAsync(trend[^1], trend, eval, ct);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "MemoryAuditService: could not refresh the report with the new eval");
         }
     }
 
@@ -742,7 +772,29 @@ internal sealed class MemoryAuditService : IHostedService, IDisposable, IPrunabl
         }
     }
 
-    private async Task CopyReportToSharedAsync(string report, DateTimeOffset now, CancellationToken ct)
+    /// <summary>
+    /// Renders <paramref name="snapshot"/> and writes it as <c>latest.md</c>, its dated report,
+    /// and the shared copy. Files are named for the day the snapshot was measured, so an eval
+    /// refreshing it later rewrites the same report rather than starting a new one.
+    /// </summary>
+    private async Task<string> WriteReportAsync(
+        MemoryAuditSnapshot snapshot,
+        IReadOnlyList<MemoryAuditSnapshot> trend,
+        MemoryAuditEvalResult? eval,
+        CancellationToken ct)
+    {
+        var report = MemoryAuditReportWriter.Render(snapshot, trend, eval);
+
+        await AtomicFile.WriteAllTextAsync(LatestReportPath, report, ct);
+        await AtomicFile.WriteAllTextAsync(
+            Path.Combine(AuditRoot, $"report-{snapshot.TakenAt:yyyy-MM-dd}.md"), report, ct);
+
+        await CopyReportToSharedAsync(report, snapshot.TakenAt, ct);
+
+        return report;
+    }
+
+    private async Task CopyReportToSharedAsync(string report, DateTimeOffset takenAt, CancellationToken ct)
     {
         if (!_options.CopyReportToShared || string.IsNullOrWhiteSpace(_options.SharedReportDirectory))
             return;
@@ -753,7 +805,7 @@ internal sealed class MemoryAuditService : IHostedService, IDisposable, IPrunabl
             // exports/ past its TTL, directories included.
             Directory.CreateDirectory(_options.SharedReportDirectory);
 
-            var path = Path.Combine(_options.SharedReportDirectory, $"memory-audit-{now:yyyy-MM-dd}.md");
+            var path = Path.Combine(_options.SharedReportDirectory, $"memory-audit-{takenAt:yyyy-MM-dd}.md");
             await File.WriteAllTextAsync(path, report, ct);
 
             // World-writable, like every other file the agent puts on the shared volume: the
@@ -832,9 +884,6 @@ internal sealed class MemoryAuditService : IHostedService, IDisposable, IPrunabl
             return null;
         }
     }
-
-    private async Task<MemoryAuditEvalSummary?> ReadEvalSummaryAsync(CancellationToken ct) =>
-        (await ReadEvalLatestAsync(ct))?.Summary;
 
     /// <summary>
     /// The live entries most similar to each ephemeral discard the eval will judge, searched

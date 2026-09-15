@@ -154,6 +154,40 @@ public class MemoryAuditReportWriterTests
         Assert.IsFalse(report.Contains("## Sample eval"));
     }
 
+    [TestMethod]
+    public void AnEvalFromLastSundayReadsAsSevenDaysOld_EvenThoughItIsAnHourShortOfAWeek()
+    {
+        // The issue's case: the 05:00 eval against the next Sunday's 04:00 snapshot.
+        var report = MemoryAuditReportWriter.Render(Snapshot(), [Snapshot()], Eval(Now.AddDays(-7).AddHours(1)));
+
+        StringAssert.Contains(report, "On 2026-08-28 (7 day(s) before this snapshot) a judge reviewed");
+    }
+
+    [TestMethod]
+    public void AnEvalRunAfterTheSnapshotSaysSo()
+    {
+        var report = MemoryAuditReportWriter.Render(Snapshot(), [Snapshot()], Eval(Now.AddHours(1)));
+
+        StringAssert.Contains(report, "On 2026-09-04 (after this snapshot was measured) a judge reviewed");
+    }
+
+    [TestMethod]
+    public void ASameDayEvalCarriesNoAge_CountedOnTheSnapshotsOffset()
+    {
+        // 2026-09-03 20:00 at -05:00 is 01:00 on the snapshot's own day in UTC.
+        var evaluatedAt = new DateTimeOffset(2026, 9, 3, 20, 0, 0, TimeSpan.FromHours(-5));
+
+        var report = MemoryAuditReportWriter.Render(Snapshot(), [Snapshot()], Eval(evaluatedAt));
+
+        StringAssert.Contains(report, "On 2026-09-03 a judge reviewed");
+    }
+
+    private static MemoryAuditEvalResult Eval(DateTimeOffset evaluatedAt) =>
+        new(
+            new MemoryAuditEvalSummary(evaluatedAt, 1, 1, 1.0, new Dictionary<string, double> { ["merge"] = 1.0 }),
+            [new MemoryAuditEvalVerdict("merge", ["m1"], true, "Kept.")],
+            "FINGERPRINT");
+
     private static MemoryAuditSnapshot Snapshot() => new()
     {
         SnapshotId = "snap1",

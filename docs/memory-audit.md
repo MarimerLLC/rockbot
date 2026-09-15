@@ -134,6 +134,13 @@ The judge's directive lives at `/data/agent/memory-audit.md` on the profile volu
 built-in fallback. Results go to `memory-audit/eval-latest.json` and the summary is embedded in
 every later snapshot row.
 
+The eval runs after the day's audit, so a finished eval also re-renders the most recent
+snapshot's report: `latest.md`, its dated `report-YYYY-MM-DD.md` and the shared copy. It doesn't
+append a trend row, which keeps the summary that was current when it was measured, and it sends no
+message. Without the refresh, the Sunday report would show the previous week's eval until Monday.
+The report's eval section states how old the eval was when the snapshot was measured, and lists
+the verdicts the judge disagreed with.
+
 Cost is bounded two ways: sampling is capped per family, and the whole run is skipped when the
 corpus fingerprint has not moved since the last eval. A quiet week costs nothing.
 
@@ -145,7 +152,7 @@ chart.
 | File | Contents |
 | --- | --- |
 | `snapshots.jsonl` | One snapshot per line. The trend. Kept for `SnapshotRetention` (400 days). |
-| `latest.md` | The most recent report, in markdown. |
+| `latest.md` | The most recent report, in markdown. Rewritten after each eval with the new result. |
 | `report-YYYY-MM-DD.md` | Dated copies, pruned by the dream cycle's shared file-age policy. |
 | `eval-latest.json`, `eval-YYYY-MM-DD.json` | Sample-eval verdicts. |
 | `state.json` | Private carry-over: the previous run's entry ids, rejection cluster counters, process starts, the chain-depth baseline, and the invariants last reported in a message. Not a public surface; losing it costs one run's deltas and one repeat of the current warning. |
