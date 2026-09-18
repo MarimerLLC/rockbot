@@ -481,6 +481,13 @@ builder.Services.Configure<McpBridgeOptions>(builder.Configuration.GetSection("M
 builder.Services.AddSingleton(new McpArgGuardRegistration(
     PathPrefixArgGuard.HandlerName, new PathPrefixArgGuard()));
 builder.Services.AddSingleton<IMcpArgGuardRegistry, McpArgGuardRegistry>();
+
+// Answers the questions MCP servers ask mid-tool-call (elicitation/create). Registered as an
+// interface so a deployment that can reach a person inside a tool-call timeout can swap in a
+// responder that asks them instead of answering from the call's own arguments.
+builder.Services.AddSingleton<RockBot.Tools.Mcp.Elicitation.IMcpElicitationResponder,
+    RockBot.Tools.Mcp.Elicitation.LlmElicitationResponder>();
+
 builder.Services.AddHostedService<McpBridgeService>();
 
 // WorkIQ auth (MSAL token provider + cache store) — registered only when

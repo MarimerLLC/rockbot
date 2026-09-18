@@ -1,5 +1,6 @@
 using RockBot.Agent.McpBridge.ArgGuards;
 using RockBot.Agent.McpBridge.Attachments;
+using RockBot.Tools.Mcp.Elicitation;
 
 namespace RockBot.Agent.McpBridge;
 
@@ -78,6 +79,15 @@ public sealed class McpBridgeServerConfig
     /// guards are policy about how the server is invoked, not which server it is.
     /// </summary>
     public List<McpArgGuardConfig> ArgGuards { get; set; } = [];
+
+    /// <summary>
+    /// Optional policy for <c>elicitation/create</c> — the question this server may ask the
+    /// client mid-tool-call. When omitted, the bridge's <c>DefaultElicitation</c> applies.
+    /// Excluded from <see cref="CanonicalIdentity"/> for the same reason as
+    /// <see cref="ArgGuards"/>: it is policy about how the server is talked to, not which
+    /// server it is.
+    /// </summary>
+    public McpElicitationConfig? Elicitation { get; set; }
 
     /// <summary>
     /// Optional bearer-token authentication. When set, the bridge resolves

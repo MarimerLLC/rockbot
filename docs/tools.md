@@ -433,6 +433,71 @@ Behavior:
 
 See `design/mcp-arg-guards.md` for the security rationale.
 
+### Elicitation (servers that ask questions mid-call)
+
+MCP servers may interrupt a `tools/call` to ask the client a question — "which mailbox?",
+"this overwrites 12 rows, confirm?" — and block the tool call until they get an answer. The
+bridge always answers, always within the tool-call budget, with one of the protocol's three
+actions (`accept`, `decline`, `cancel`), so such a call finishes on the server's terms instead
+of hanging until the timeout.
+
+Policy is per server, with a bridge-wide `McpBridge:DefaultElicitation` fallback:
+
+```json
+{
+  "mcpServers": {
+    "mail": {
+      "type": "streamable-http",
+      "url": "http://mcp-mail:8080/mcp",
+      "elicitation": {
+        "mode": "auto",
+        "maxPerCall": 3,
+        "responderTimeoutMs": 20000,
+        "defaults": { "mailbox": "work" },
+        "deniedFields": ["accountId"]
+      }
+    }
+  }
+}
+```
+
+| Field | Default | Meaning |
+|---|---|---|
+| `mode` | `auto` | `auto` answers; `decline` refuses every question; `off` never advertises the capability, so a compliant server does not ask. An unrecognized value reads as `decline`. |
+| `maxPerCall` | 3 | Rounds answered per tool call. `0` answers none. |
+| `defaults` | `{}` | Deterministic answers by field name (case-insensitive), applied before — and overriding — the responder. |
+| `deniedFields` | `[]` | Extra field names to refuse, on top of the built-in credential heuristics. |
+| `responderTimeoutMs` | 20000 | Budget for working out an answer, inside the tool-call timeout. |
+
+Behavior:
+
+- **Only `form` mode is answered.** `url` mode expects the client to walk a person through a
+  browser flow; a headless agent has neither, so it is declined with that reason.
+- **Answers are schema-validated.** Values that do not fit the schema the server sent are never
+  forwarded — no coercion, so a string where a number was asked for is a decline, not a parse.
+  Invented fields are dropped; omitted optional fields are left out so the server's own schema
+  defaults still apply.
+- **Yes/no confirmations are declined.** A form whose every field is a boolean is a checkpoint
+  the server put there for a person; answering it from a model defeats the point. Pre-answer it
+  with `defaults` (`{"confirm": true}`) if that is the intent for a given server.
+- **Credential-shaped fields decline the whole request**, before anything tries to answer it.
+  Field name, title and description are matched against credential vocabulary (`password`,
+  `apiKey`, `token`, `ssn`, card numbers, one-time codes, …). This is code, not config, and
+  cannot be switched off from mcp.json.
+- **The agent is told.** Whatever was asked and how it was answered is appended to the tool
+  result as a text block naming the missing fields, so the next attempt can supply them as
+  ordinary tool arguments — or the agent can ask the user. Timeout errors carry the same note.
+- **Answers come from the in-flight call.** The default responder is an LLM call in the bridge
+  with no conversation and no tools, prompted to answer only from the arguments the agent
+  already passed and to decline rather than invent. `IMcpElicitationResponder` is the seam for
+  a deployment that can put the question to a person instead.
+- Servers registered at runtime via `register_mcp_server` always get `DefaultElicitation` —
+  a model-registered server cannot ship its own `defaults` or relax `deniedFields`.
+- `sampling/createMessage` (a server asking the client to run an LLM turn) is **not**
+  implemented; the capability is not advertised.
+
+See `design/mcp-elicitation.md` for the design rationale.
+
 ---
 
 ## Multimodal input: `analyze_file`

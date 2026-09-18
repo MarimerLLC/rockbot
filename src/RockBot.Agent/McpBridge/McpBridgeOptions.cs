@@ -1,3 +1,5 @@
+using RockBot.Tools.Mcp.Elicitation;
+
 namespace RockBot.Agent.McpBridge;
 
 /// <summary>
@@ -53,6 +55,13 @@ public sealed class McpBridgeOptions
     /// filesystems such as Longhorn). Set to zero to disable polling. Default 5 s.
     /// </summary>
     public int ConfigPollIntervalSeconds { get; set; } = 5;
+
+    /// <summary>
+    /// Elicitation policy applied to every server that does not declare its own
+    /// <c>elicitation</c> block. The default answers form-mode questions from the in-flight
+    /// tool call; set <c>Mode</c> to <c>decline</c> or <c>off</c> to tighten it fleet-wide.
+    /// </summary>
+    public McpElicitationConfig DefaultElicitation { get; set; } = new();
 
     /// <summary>
     /// Default MCP servers seeded from infrastructure config (e.g. Helm chart).

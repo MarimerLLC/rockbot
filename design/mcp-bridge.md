@@ -58,6 +58,20 @@ Every tool message carries an `rb-content-trust` header:
 
 Tool responses are always rendered as `tool_result` content blocks, never as user text or system instructions.
 
+## Elicitation (server-to-client questions)
+
+An MCP server handling `tools/call` may send the bridge an `elicitation/create` request and
+block until it is answered. The bridge answers every one, inside the caller's tool-call budget,
+under a per-server policy (`elicitation` in mcp.json, default `McpBridge:DefaultElicitation`):
+form-mode questions are answered from configured defaults and then a responder, with the answer
+validated against the server's own schema; credential-shaped fields, url mode, and anything past
+the per-call cap are declined. What was asked is appended to the tool result so the agent can
+supply the value on the next call.
+
+`sampling/createMessage` is not implemented, so that capability is never advertised.
+
+See `design/mcp-elicitation.md`.
+
 ## Configuration (mcp.json)
 
 ```json
