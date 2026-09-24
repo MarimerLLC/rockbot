@@ -15,14 +15,12 @@ public static class HtmlPlainTextRenderer
         @"<svg\b[^>]*>.*?</svg\s*>",
         RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.Singleline);
 
-    private static readonly Regex TagRegex = new(
-        @"<[^>]+>",
-        RegexOptions.Compiled);
-
     /// <summary>
     /// Replaces <c>&lt;svg&gt;...&lt;/svg&gt;</c> blocks with a chart placeholder
-    /// and removes any other HTML tags. Newlines and whitespace are preserved;
-    /// null / empty input passes through unchanged.
+    /// and removes any other known HTML tags. Angle-bracket placeholders that
+    /// aren't real tags (<c>&lt;folder&gt;/&lt;uid&gt;</c>) are kept verbatim.
+    /// Newlines and whitespace are preserved; null / empty input passes through
+    /// unchanged.
     /// </summary>
     public static string StripHtml(string? input)
     {
@@ -30,6 +28,6 @@ public static class HtmlPlainTextRenderer
             return input ?? string.Empty;
 
         var withoutSvg = SvgRegex.Replace(input, "[chart — view in Blazor]");
-        return TagRegex.Replace(withoutSvg, string.Empty);
+        return KnownMarkupTags.StripKnownTags(withoutSvg);
     }
 }

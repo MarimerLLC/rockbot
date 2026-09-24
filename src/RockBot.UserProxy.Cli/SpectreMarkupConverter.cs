@@ -1,11 +1,13 @@
 using System.Text.RegularExpressions;
+using RockBot.UserProxy.Rendering;
 using Spectre.Console;
 
 namespace RockBot.UserProxy.Cli;
 
 /// <summary>
 /// Translates a small subset of agent-emitted HTML (color spans, bold,
-/// SVG placeholders) into Spectre markup, strips anything else, and escapes
+/// SVG placeholders) into Spectre markup, strips any other known HTML tags
+/// (angle-bracket placeholders like <c>&lt;uid&gt;</c> are kept), and escapes
 /// the surrounding text so user-supplied <c>[</c> / <c>]</c> can't break the
 /// Spectre parser.
 /// </summary>
@@ -25,8 +27,6 @@ internal static class SpectreMarkupConverter
     private static readonly Regex BoldRegex = new(
         @"<(strong|b)\b[^>]*>(.*?)</\1\s*>",
         RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.Singleline);
-
-    private static readonly Regex TagRegex = new(@"<[^>]+>", RegexOptions.Compiled);
 
     private static readonly Regex PlaceholderRegex = new(
         $"{PlaceholderOpen}(\\d+){PlaceholderClose}",
@@ -60,7 +60,7 @@ internal static class SpectreMarkupConverter
         stage = SpanColorRegex.Replace(stage, m =>
         {
             var color = m.Groups[1].Value.Trim();
-            var innerText = TagRegex.Replace(m.Groups[2].Value, string.Empty);
+            var innerText = KnownMarkupTags.StripKnownTags(m.Groups[2].Value);
             var escapedInner = Markup.Escape(innerText);
 
             if (NamedColors.Contains(color))
@@ -74,11 +74,11 @@ internal static class SpectreMarkupConverter
 
         stage = BoldRegex.Replace(stage, m =>
         {
-            var innerText = TagRegex.Replace(m.Groups[2].Value, string.Empty);
+            var innerText = KnownMarkupTags.StripKnownTags(m.Groups[2].Value);
             return Stash($"[bold]{Markup.Escape(innerText)}[/]");
         });
 
-        stage = TagRegex.Replace(stage, string.Empty);
+        stage = KnownMarkupTags.StripKnownTags(stage);
 
         var escaped = Markup.Escape(stage);
 

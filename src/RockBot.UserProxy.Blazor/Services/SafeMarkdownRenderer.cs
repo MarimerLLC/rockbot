@@ -1,5 +1,8 @@
 using Ganss.Xss;
 using Markdig;
+using Markdig.Syntax;
+using Markdig.Syntax.Inlines;
+using RockBot.UserProxy.Rendering;
 
 namespace RockBot.UserProxy.Blazor.Services;
 
@@ -18,6 +21,12 @@ namespace RockBot.UserProxy.Blazor.Services;
 /// via the <c>ClientCapabilities</c> system prompt: bold/italic/code, headings,
 /// tables, fenced code, inline links, strikethrough, GFM task lists, sanitized
 /// inline HTML for color and structure, and inline SVG for charts.
+/// <para>
+/// Before rendering, raw HTML nodes whose tag name isn't a real HTML / SVG element
+/// (see <see cref="KnownMarkupTags"/>) are turned back into literal text. Without
+/// that, prose like <c>Expected '&lt;folder&gt;/&lt;uid&gt;'</c> is parsed as
+/// inline HTML and the sanitizer drops the "tags", leaving <c>Expected '/'</c>.
+/// </para>
 /// </summary>
 public static class SafeMarkdownRenderer
 {
@@ -41,7 +50,9 @@ public static class SafeMarkdownRenderer
         string html;
         try
         {
-            html = Markdown.ToHtml(markdown, Pipeline);
+            var document = Markdown.Parse(markdown, Pipeline);
+            LiteralizeUnknownTags(document);
+            html = document.ToHtml(Pipeline);
         }
         catch
         {
@@ -52,6 +63,49 @@ public static class SafeMarkdownRenderer
 
         return Sanitizer.Sanitize(html);
     }
+
+    /// <summary>
+    /// Replaces raw-HTML nodes that only look like tags (<c>&lt;folder&gt;</c>,
+    /// <c>&lt;/uid&gt;</c>) with literal text, which Markdig then HTML-encodes.
+    /// Known tags — including disallowed ones like <c>&lt;script&gt;</c> — are left
+    /// as HTML for the sanitizer to keep or strip as before.
+    /// </summary>
+    private static void LiteralizeUnknownTags(MarkdownDocument document)
+    {
+        foreach (var inline in document.Descendants<HtmlInline>().ToList())
+        {
+            if (IsUnknownTag(inline.Tag))
+                inline.ReplaceBy(new LiteralInline(inline.Tag));
+        }
+
+        // A line consisting of just a tag (CommonMark HTML block type 7) becomes a
+        // raw HTML block rather than inline HTML. Its whole text is raw until the
+        // next blank line, so render it as a literal paragraph.
+        foreach (var block in document.Descendants<HtmlBlock>().ToList())
+        {
+            if (block.Type != HtmlBlockType.NonInterruptingBlock || block.Parent is not { } parent)
+                continue;
+
+            var lines = block.Lines.Lines.Take(block.Lines.Count).Select(l => l.Slice.ToString()).ToList();
+            if (lines.Count == 0 || !IsUnknownTag(lines[0].Trim()))
+                continue;
+
+            var content = new ContainerInline();
+            for (var i = 0; i < lines.Count; i++)
+            {
+                if (i > 0)
+                    content.AppendChild(new LineBreakInline());
+                content.AppendChild(new LiteralInline(lines[i]));
+            }
+
+            var index = parent.IndexOf(block);
+            parent.RemoveAt(index);
+            parent.Insert(index, new ParagraphBlock { Inline = content });
+        }
+    }
+
+    private static bool IsUnknownTag(string tag) =>
+        KnownMarkupTags.GetTagName(tag) is { } name && !KnownMarkupTags.IsKnown(name);
 
     private static HtmlSanitizer BuildSanitizer()
     {

@@ -89,7 +89,7 @@ public sealed class SpectreMarkupConverterTests
     }
 
     [TestMethod]
-    public void UnknownTag_Stripped_InnerTextRetained()
+    public void KnownTag_Stripped_InnerTextRetained()
     {
         Assert.AreEqual(
             "rows",
@@ -106,5 +106,28 @@ public sealed class SpectreMarkupConverterTests
     public void EmptyInput_ReturnsEmptyString()
     {
         Assert.AreEqual(string.Empty, SpectreMarkupConverter.ToSpectreMarkup(string.Empty));
+    }
+
+    [TestMethod]
+    public void PathPlaceholders_PreservedVerbatim()
+    {
+        var input = "Expected '<folder>/<uidvalidity>/<uid>'";
+        Assert.AreEqual(input, SpectreMarkupConverter.ToSpectreMarkup(input));
+    }
+
+    [TestMethod]
+    public void Placeholder_InsideBoldTagContent_Preserved()
+    {
+        Assert.AreEqual(
+            "[bold]pass <uid>[/]",
+            SpectreMarkupConverter.ToSpectreMarkup("<strong>pass <uid></strong>"));
+    }
+
+    [TestMethod]
+    public void Placeholder_NextToSquareBrackets_BothPreserved()
+    {
+        Assert.AreEqual(
+            "[[<folder>]]",
+            SpectreMarkupConverter.ToSpectreMarkup("[<folder>]"));
     }
 }
