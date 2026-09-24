@@ -38,6 +38,7 @@ internal sealed class WorkerRunner(
     IWorkingMemory workingMemory,
     IToolRegistry toolRegistry,
     IOptions<WorkerOptions> options,
+    IOptions<WorkingMemoryOptions> workingMemoryOptions,
     IMessagePublisher publisher,
     AgentIdentity agent,
     AgentProfile agentProfile,
@@ -120,7 +121,8 @@ internal sealed class WorkerRunner(
         chatMessages.Add(new ChatMessage(ChatRole.User, definition.Description));
 
         // Working memory tools scoped to the worker's namespace.
-        var sessionWorkingMemoryTools = new WorkingMemoryTools(workingMemory, workerNamespace, logger);
+        var sessionWorkingMemoryTools = new WorkingMemoryTools(workingMemory, workerNamespace, logger,
+            workingMemoryOptions.Value.BackgroundTaskMinimumTtl);
 
         // Registry tools — filter out forbidden sources/names, then narrow by tools_allow.
         var registryTools = BuildRegistryTools(definition.ToolsAllow, workerNamespace);

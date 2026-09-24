@@ -13,18 +13,26 @@ namespace RockBot.Memory;
 /// Constructed with a <paramref name="@namespace"/> prefix (e.g. <c>session/abc123</c>,
 /// <c>patrol/heartbeat</c>, <c>subagent/task1</c>) that is automatically prepended to
 /// keys on write, providing namespace isolation without restricting cross-context reads.
+///
+/// An optional <paramref name="minimumTtl"/> puts a floor under every save: background
+/// contexts (subagents, workers) whose output is consumed later by another session pass one
+/// so a too-short (or omitted) <c>ttl_minutes</c> cannot expire findings before the parent
+/// reads them.
 /// </summary>
 public sealed class WorkingMemoryTools
 {
     private readonly IWorkingMemory _workingMemory;
     private readonly string _namespace;
     private readonly ILogger _logger;
+    private readonly TimeSpan? _minimumTtl;
 
-    public WorkingMemoryTools(IWorkingMemory workingMemory, string @namespace, ILogger logger)
+    public WorkingMemoryTools(IWorkingMemory workingMemory, string @namespace, ILogger logger,
+        TimeSpan? minimumTtl = null)
     {
         _workingMemory = workingMemory;
         _namespace = @namespace;
         _logger = logger;
+        _minimumTtl = minimumTtl;
 
         // Names are pinned explicitly rather than inherited from the method names:
         // AIFunctionFactory would register these as PascalCase, while every prompt and
@@ -69,6 +77,14 @@ public sealed class WorkingMemoryTools
         var fullKey = key.Contains('/') ? key : $"{_namespace}/{key}";
         _logger.LogInformation("Tool call: SaveToWorkingMemory(key={Key}, ttl={Ttl}min, category={Category})", fullKey, ttl_minutes, category);
         var ttl = ttl_minutes.HasValue ? TimeSpan.FromMinutes(ttl_minutes.Value) : (TimeSpan?)null;
+        var ttlNote = "";
+        if (_minimumTtl is { } floor && (ttl is null || ttl < floor))
+        {
+            _logger.LogInformation("SaveToWorkingMemory: raised TTL for {Key} from {Requested} to minimum {Floor}",
+                fullKey, ttl?.ToString() ?? "default", floor);
+            ttl = floor;
+            ttlNote = $" TTL raised to the {floor.TotalMinutes:0}-minute minimum for background tasks.";
+        }
         var tagList = ParseTags(tags);
 
         // Phase 2 soft gate — capability-claim language is flagged as an observation
@@ -76,7 +92,7 @@ public sealed class WorkingMemoryTools
         var (gatedTags, hint) = ObservationLanguageDetector.ApplySoftGate(data, tagList);
 
         await _workingMemory.SetAsync(fullKey, data, ttl, category, gatedTags);
-        return $"Saved to working memory under key '{fullKey}'.{hint}";
+        return $"Saved to working memory under key '{fullKey}'.{ttlNote}{hint}";
     }
 
     [Description("Retrieve previously cached data from working memory by key. " +

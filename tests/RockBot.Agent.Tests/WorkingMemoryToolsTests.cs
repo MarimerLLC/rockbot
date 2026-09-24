@@ -40,6 +40,49 @@ public class WorkingMemoryToolsTests
             "Namespace must not be prepended twice");
     }
 
+    // ── TTL floor ─────────────────────────────────────────────────────────
+
+    [TestMethod]
+    public async Task SaveToWorkingMemory_NoFloor_PassesRequestedTtlThrough()
+    {
+        await _tools.SaveToWorkingMemory("my_results", "data", ttl_minutes: 10);
+
+        Assert.AreEqual(TimeSpan.FromMinutes(10), _memory.LastSetTtl);
+    }
+
+    [TestMethod]
+    public async Task SaveToWorkingMemory_WithFloor_RaisesShortTtl()
+    {
+        var tools = new WorkingMemoryTools(_memory, Namespace, NullLogger.Instance, TimeSpan.FromHours(4));
+
+        var result = await tools.SaveToWorkingMemory("my_results", "data", ttl_minutes: 10);
+
+        Assert.AreEqual(TimeSpan.FromHours(4), _memory.LastSetTtl);
+        StringAssert.Contains(result, "240-minute minimum");
+    }
+
+    [TestMethod]
+    public async Task SaveToWorkingMemory_WithFloor_AppliesWhenTtlOmitted()
+    {
+        var tools = new WorkingMemoryTools(_memory, Namespace, NullLogger.Instance, TimeSpan.FromHours(4));
+
+        await tools.SaveToWorkingMemory("my_results", "data");
+
+        Assert.AreEqual(TimeSpan.FromHours(4), _memory.LastSetTtl,
+            "An omitted TTL must not fall back to the 5-minute store default");
+    }
+
+    [TestMethod]
+    public async Task SaveToWorkingMemory_WithFloor_KeepsLongerTtl()
+    {
+        var tools = new WorkingMemoryTools(_memory, Namespace, NullLogger.Instance, TimeSpan.FromHours(4));
+
+        var result = await tools.SaveToWorkingMemory("my_results", "data", ttl_minutes: 480);
+
+        Assert.AreEqual(TimeSpan.FromMinutes(480), _memory.LastSetTtl);
+        Assert.IsFalse(result.Contains("minimum"), "No note when the requested TTL already clears the floor");
+    }
+
     // ── EditWorkingMemory ─────────────────────────────────────────────────
 
     [TestMethod]
@@ -285,10 +328,13 @@ public class WorkingMemoryToolsTests
         public MemorySearchCriteria? LastCriteria { get; private set; }
         public string? LastPrefix { get; private set; }
 
+        public TimeSpan? LastSetTtl { get; private set; }
+
         public Task SetAsync(string key, string value, TimeSpan? ttl = null,
             string? category = null, IReadOnlyList<string>? tags = null)
         {
             Store[key] = value;
+            LastSetTtl = ttl;
             return Task.CompletedTask;
         }
 
