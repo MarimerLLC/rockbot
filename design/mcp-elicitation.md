@@ -217,7 +217,9 @@ opening the retry's, so the first attempt's rounds are not counted against the r
 `DefaultElicitation`. It cannot ship its own `defaults` or relax `deniedFields`. Re-registering
 an *existing* name keeps that server's operator-declared `elicitation` block (and `argGuards`,
 `McpBridgeServerConfig.CarryOperatorPolicyFrom`) rather than falling back to the default — an
-`off` server must not become an answering one because the model re-registered it. The
+`off` server must not become an answering one because the model re-registered it. Unregistering
+first (`mcp_unregister_server`) still deletes the entry and its policy with it; protecting
+operator-declared servers from both paths is tracked in #603. The
 credential heuristics are code, not config, and cannot be turned off from a config file at all.
 
 ## Configuration
