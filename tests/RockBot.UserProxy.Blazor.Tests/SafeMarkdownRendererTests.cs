@@ -278,4 +278,63 @@ public class SafeMarkdownRendererTests
 
         StringAssert.Contains(html, "just plain text");
     }
+
+    // ── Angle-bracket placeholders that aren't real tags (#594) ────────────
+
+    [TestMethod]
+    public void Renders_PathPlaceholders_AsLiteralText()
+    {
+        var html = SafeMarkdownRenderer.RenderSafe(
+            "Expected '<folder>/<uidvalidity>/<uid>' but got 'INBOX'");
+
+        StringAssert.Contains(html, "Expected '&lt;folder&gt;/&lt;uidvalidity&gt;/&lt;uid&gt;'");
+        StringAssert.Contains(html, "but got 'INBOX'");
+    }
+
+    [TestMethod]
+    public void Renders_PlaceholderOnItsOwnLine_AsLiteralText()
+    {
+        var html = SafeMarkdownRenderer.RenderSafe("Usage:\n\n<message-id>\n\nthen retry");
+
+        StringAssert.Contains(html, "&lt;message-id&gt;");
+        StringAssert.Contains(html, "then retry");
+    }
+
+    [TestMethod]
+    public void Renders_PlaceholderInCodeSpan_EncodedOnce()
+    {
+        var html = SafeMarkdownRenderer.RenderSafe("Pass `<uid>` here");
+
+        StringAssert.Contains(html, "<code>&lt;uid&gt;</code>");
+        Assert.IsFalse(html.Contains("&amp;lt;"), $"Must not double-encode. Got: {html}");
+    }
+
+    [TestMethod]
+    public void Renders_PlaceholderWithEventHandler_AsInertText()
+    {
+        var html = SafeMarkdownRenderer.RenderSafe("<folder onclick=\"alert(1)\">x</folder>");
+
+        Assert.IsFalse(html.Contains("<folder"), $"Unknown tag must not become an element. Got: {html}");
+        StringAssert.Contains(html, "&lt;folder");
+    }
+
+    [TestMethod]
+    public void KnownTagsStillRendered_AlongsidePlaceholders()
+    {
+        var html = SafeMarkdownRenderer.RenderSafe(
+            "<span style=\"color:red\">bad id</span> — expected <uid>");
+
+        StringAssert.Contains(html, "<span");
+        StringAssert.Contains(html, "&lt;uid&gt;");
+    }
+
+    [TestMethod]
+    public void Strips_ScriptTag_AlongsidePlaceholders()
+    {
+        var html = SafeMarkdownRenderer.RenderSafe("<uid> <script>alert(1)</script>");
+
+        StringAssert.Contains(html, "&lt;uid&gt;");
+        Assert.IsFalse(html.Contains("script"), $"Script must be stripped, not shown as text. Got: {html}");
+        Assert.IsFalse(html.Contains("alert(1)"), $"Script content must be stripped. Got: {html}");
+    }
 }

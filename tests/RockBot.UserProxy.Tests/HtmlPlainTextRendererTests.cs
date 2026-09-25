@@ -66,4 +66,41 @@ public sealed class HtmlPlainTextRendererTests
     {
         Assert.AreEqual(string.Empty, HtmlPlainTextRenderer.StripHtml(string.Empty));
     }
+
+    // ── Angle-bracket placeholders that aren't real tags (#594) ────────────
+
+    [TestMethod]
+    public void PathPlaceholders_PreservedVerbatim()
+    {
+        var input = "Expected '<folder>/<uidvalidity>/<uid>'";
+        Assert.AreEqual(input, HtmlPlainTextRenderer.StripHtml(input));
+    }
+
+    [TestMethod]
+    public void SinglePlaceholders_PreservedVerbatim()
+    {
+        var input = "Use <id> from the list, not <ts>.";
+        Assert.AreEqual(input, HtmlPlainTextRenderer.StripHtml(input));
+    }
+
+    [TestMethod]
+    public void KnownTagsStripped_PlaceholdersKept()
+    {
+        Assert.AreEqual(
+            "x needs <name>",
+            HtmlPlainTextRenderer.StripHtml("<b>x</b> needs <name>"));
+    }
+
+    [TestMethod]
+    public void HtmlComment_Stripped()
+    {
+        Assert.AreEqual("a b", HtmlPlainTextRenderer.StripHtml("a<!-- hidden --> b"));
+    }
+
+    [TestMethod]
+    public void LessThanComparison_Preserved()
+    {
+        var input = "if a < b and c > d";
+        Assert.AreEqual(input, HtmlPlainTextRenderer.StripHtml(input));
+    }
 }
