@@ -114,6 +114,25 @@ handed back to the agent, which *does* have the conversation and can ask the per
 A deployment that can reach a person inside a tool-call timeout registers a different
 responder. Nothing else changes.
 
+### Who answers is chosen per server
+
+Servers ask different kinds of question. A mail server's "which mailbox?" is transcription from
+the call's own arguments; a research server's "which of these meanings did you intend?" needs
+the conversation. So besides the host's default `IMcpElicitationResponder`, a server's policy
+can name a responder (`responder`), resolved from the host's keyed services
+(`McpElicitationResponders.Resolve`). The shipped one is registered under
+`LlmElicitationResponder.Key` (`"llm"`).
+
+A name with no registered responder leaves the server with **no** responder — only configured
+`defaults` are answered — rather than falling back to the default. Same rule as an unknown
+mode: a typo narrows what the bridge answers, never widens it. And since `responder` lives in
+the `elicitation` block, a model-registered server cannot pick its own.
+
+Each in-flight call carries the agent session that made it (`ToolInvokeRequest.SessionId`,
+forwarded through `mcp_invoke_tool` and recovery retries), and the responder sees it on
+`McpElicitationCallContext.SessionId`. The shipped responder ignores it; a responder that puts
+the question back to the agent needs it to know which conversation to ask in.
+
 The responder's LLM call goes through `ILlmClient` at `ModelTier.Low` and is bounded by
 `ResponderTimeoutMs` (default 20 s) inside the caller's tool-call budget: better a declined
 elicitation than a timed-out tool call.
@@ -126,6 +145,15 @@ question was asked and declined, and retries the identical call. The note names 
 fields so the next attempt can carry them as ordinary tool arguments, or the agent can put the
 question to the user. A timeout error gets the same treatment, since a call that times out
 just after a declined elicitation almost certainly timed out *because* of it.
+
+"Retry with the value" is only advice when the value has somewhere to go. The bridge checks each
+declined field against the called tool's discovered input schema: a field that is a parameter
+gets "supply it and call again"; one that is not ("which of these matches did you mean?") gets
+"this is not a parameter of this tool, so calling again will only get the same question — ask
+the user". Otherwise the agent adds an argument the server ignores, is asked again, and loops
+until its iteration budget runs out. When the schema is unknown — including `invoke_tool`
+dispatchers, whose real parameters belong to the inner tool — the note keeps the general
+wording.
 
 Server-authored text in the note is flattened to a single line. It is untrusted content
 rendered inside a tool-result block; multi-line text would let it forge its own bullet lines.
@@ -169,6 +197,7 @@ heuristics are code, not config, and cannot be turned off from a config file at 
         "mode": "auto",
         "maxPerCall": 3,
         "responderTimeoutMs": 20000,
+        "responder": "llm",
         "defaults": { "mailbox": "work" },
         "deniedFields": ["accountId"]
       }
@@ -184,6 +213,7 @@ heuristics are code, not config, and cannot be turned off from a config file at 
 | `defaults` | `{}` | Deterministic answers by field name (case-insensitive), applied before the responder and overriding it. Still schema-validated, so a stale default is dropped rather than forwarded. |
 | `deniedFields` | `[]` | Extra field names to refuse, on top of the built-in credential heuristics. |
 | `responderTimeoutMs` | 20000 | Budget for the responder, inside the tool-call timeout. |
+| `responder` | *(host default)* | Keyed-service name of the responder for this server. Unregistered names answer from `defaults` only. |
 
 Omit the block entirely to inherit `McpBridge:DefaultElicitation`.
 
@@ -196,6 +226,7 @@ Omit the block entirely to inherit `McpBridge:DefaultElicitation`.
 | `McpElicitationCallScope` | Marks a tool call in flight; collects what was asked. |
 | `IMcpElicitationResponder` / `McpElicitationAnswer` | Who answers, and what they propose. |
 | `LlmElicitationResponder` | The shipped responder: answers from the in-flight call's arguments. |
+| `McpElicitationResponders` | Picks a server's responder: named (keyed service) or the host default. |
 | `McpElicitationSchemaValidator` | The trust boundary. |
 | `McpElicitationSchemaDescriber` | Renders a schema for prompts and notes. |
 | `McpSensitiveFieldDetector` | Credential vocabulary. |

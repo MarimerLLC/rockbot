@@ -27,6 +27,12 @@ public sealed class LlmElicitationResponder(
     ILlmClient llmClient,
     ILogger<LlmElicitationResponder> logger) : IMcpElicitationResponder
 {
+    /// <summary>
+    /// Keyed-service key for this responder, so a server's <see cref="McpElicitationConfig.Responder"/>
+    /// can name it explicitly.
+    /// </summary>
+    public const string Key = "llm";
+
     /// <inheritdoc />
     public async ValueTask<McpElicitationAnswer> AnswerAsync(McpElicitationContext context, CancellationToken ct)
     {

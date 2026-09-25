@@ -453,6 +453,7 @@ Policy is per server, with a bridge-wide `McpBridge:DefaultElicitation` fallback
         "mode": "auto",
         "maxPerCall": 3,
         "responderTimeoutMs": 20000,
+        "responder": "llm",
         "defaults": { "mailbox": "work" },
         "deniedFields": ["accountId"]
       }
@@ -468,6 +469,7 @@ Policy is per server, with a bridge-wide `McpBridge:DefaultElicitation` fallback
 | `defaults` | `{}` | Deterministic answers by field name (case-insensitive), applied before — and overriding — the responder. |
 | `deniedFields` | `[]` | Extra field names to refuse, on top of the built-in credential heuristics. |
 | `responderTimeoutMs` | 20000 | Budget for working out an answer, inside the tool-call timeout. |
+| `responder` | *(host default)* | Which responder answers for this server, by keyed-service name (`llm` is the shipped one). A name that is not registered answers from `defaults` only — it never falls back. |
 
 Behavior:
 
@@ -487,10 +489,13 @@ Behavior:
 - **The agent is told.** Whatever was asked and how it was answered is appended to the tool
   result as a text block naming the missing fields, so the next attempt can supply them as
   ordinary tool arguments — or the agent can ask the user. Timeout errors carry the same note.
+  Retrying is only suggested for fields that are parameters of the tool; for anything else the
+  note says a retry would just be asked the same question, and to ask the user instead.
 - **Answers come from the in-flight call.** The default responder is an LLM call in the bridge
   with no conversation and no tools, prompted to answer only from the arguments the agent
   already passed and to decline rather than invent. `IMcpElicitationResponder` is the seam for
-  a deployment that can put the question to a person instead.
+  a deployment that can put the question to a person instead; register it as a keyed service
+  and name it in a server's `responder` to use it for that server only.
 - Servers registered at runtime via `register_mcp_server` always get `DefaultElicitation` —
   a model-registered server cannot ship its own `defaults` or relax `deniedFields`.
 - `sampling/createMessage` (a server asking the client to run an LLM turn) is **not**

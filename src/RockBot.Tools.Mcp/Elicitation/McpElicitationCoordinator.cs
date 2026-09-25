@@ -96,9 +96,9 @@ public sealed class McpElicitationCoordinator
     /// Registers a tool call as in flight. Dispose the returned scope when the call finishes;
     /// read <see cref="McpElicitationCallScope.Records"/> first to report what was asked.
     /// </summary>
-    public McpElicitationCallScope BeginCall(string toolName, string? arguments)
+    public McpElicitationCallScope BeginCall(string toolName, string? arguments, string? sessionId = null)
     {
-        var scope = new McpElicitationCallScope(toolName, arguments, s => _active.TryRemove(s, out _));
+        var scope = new McpElicitationCallScope(toolName, arguments, sessionId, s => _active.TryRemove(s, out _));
         _active[scope] = 0;
         return scope;
     }
@@ -204,7 +204,7 @@ public sealed class McpElicitationCoordinator
         var context = new McpElicitationContext(
             _serverName,
             request,
-            [.. scopes.Select(s => new McpElicitationCallContext(s.ToolName, s.Arguments))],
+            [.. scopes.Select(s => new McpElicitationCallContext(s.ToolName, s.Arguments, s.SessionId))],
             defaults);
 
         McpElicitationAnswer answer;

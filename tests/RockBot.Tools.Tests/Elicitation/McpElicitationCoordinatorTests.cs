@@ -315,6 +315,22 @@ public class McpElicitationCoordinatorTests
         Assert.AreEqual(1, responder.LastContext!.InFlightCalls.Count);
         Assert.AreEqual("search_mail", responder.LastContext.InFlightCalls[0].ToolName);
         StringAssert.Contains(responder.LastContext.InFlightCalls[0].Arguments!, "invoices");
+        Assert.IsNull(responder.LastContext.InFlightCalls[0].SessionId);
+    }
+
+    [TestMethod]
+    public async Task HandleAsync_GivesTheResponderTheCallingSession()
+    {
+        var responder = new StubResponder(_ => McpElicitationAnswer.Decline("no"));
+        var coordinator = Create(responder: responder);
+
+        using var scope = coordinator.BeginCall("search_mail", "{}", "session-42");
+        await coordinator.HandleAsync(
+            FormRequest(("mailbox", new ElicitRequestParams.StringSchema())),
+            CancellationToken.None);
+
+        Assert.AreEqual("session-42", scope.SessionId);
+        Assert.AreEqual("session-42", responder.LastContext!.InFlightCalls[0].SessionId);
     }
 
     [TestMethod]

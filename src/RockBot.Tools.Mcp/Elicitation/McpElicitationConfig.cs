@@ -71,6 +71,18 @@ public sealed class McpElicitationConfig
     public int ResponderTimeoutMs { get; set; } = 20_000;
 
     /// <summary>
+    /// Key of the <see cref="IMcpElicitationResponder"/> that answers for this server, as
+    /// registered with the host's keyed services. Null or blank uses the host's default
+    /// responder.
+    /// </summary>
+    /// <remarks>
+    /// A key with no registered responder leaves the server with <em>no</em> responder, so only
+    /// configured <see cref="Defaults"/> are answered. A typo narrows what the bridge answers; it
+    /// never falls back to a responder the operator did not choose.
+    /// </remarks>
+    public string? Responder { get; set; }
+
+    /// <summary>
     /// Returns the normalized mode, mapping anything unrecognized to <see cref="ModeDecline"/>.
     /// </summary>
     public string ResolveMode()

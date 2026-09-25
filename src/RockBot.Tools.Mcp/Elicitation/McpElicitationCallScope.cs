@@ -18,10 +18,12 @@ public sealed class McpElicitationCallScope : IDisposable
     private readonly object _gate = new();
     private int _attempts;
 
-    internal McpElicitationCallScope(string toolName, string? arguments, Action<McpElicitationCallScope> onDispose)
+    internal McpElicitationCallScope(
+        string toolName, string? arguments, string? sessionId, Action<McpElicitationCallScope> onDispose)
     {
         ToolName = toolName;
         Arguments = arguments;
+        SessionId = sessionId;
         _onDispose = onDispose;
     }
 
@@ -30,6 +32,9 @@ public sealed class McpElicitationCallScope : IDisposable
 
     /// <summary>Raw JSON arguments the agent supplied, or null.</summary>
     public string? Arguments { get; }
+
+    /// <summary>Agent session that made the call, or null when the caller did not say.</summary>
+    public string? SessionId { get; }
 
     /// <summary>How many elicitations have been attributed to this call.</summary>
     public int Attempts

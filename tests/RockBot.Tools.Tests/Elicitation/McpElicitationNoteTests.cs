@@ -61,6 +61,80 @@ public class McpElicitationNoteTests
     }
 
     [TestMethod]
+    public void Build_SuggestsRetrying_WhenTheDeclinedFieldIsAToolParameter()
+    {
+        var note = McpElicitationNote.Build(
+            [Record(McpElicitationActions.Decline, "no way to answer", "mailbox")],
+            toolParameters: ["query", "Mailbox"]);
+
+        Assert.IsNotNull(note);
+        StringAssert.Contains(note, "supply mailbox in the tool arguments and call the tool again");
+        Assert.IsFalse(note.Contains("not a parameter", StringComparison.Ordinal));
+    }
+
+    [TestMethod]
+    public void Build_SaysNotToRetry_WhenTheDeclinedFieldIsNotAToolParameter()
+    {
+        // "Which of these matches did you mean?" has nowhere to go on a retry — suggesting one
+        // just loops the agent into the same question until its iteration budget runs out.
+        var note = McpElicitationNote.Build(
+            [Record(McpElicitationActions.Decline, "no way to answer", "match")],
+            toolParameters: ["query"]);
+
+        Assert.IsNotNull(note);
+        StringAssert.Contains(note, "match is not a parameter of this tool");
+        StringAssert.Contains(note, "ask the user for it");
+        Assert.IsFalse(note.Contains("call the tool again", StringComparison.Ordinal));
+    }
+
+    [TestMethod]
+    public void Build_SplitsParametersFromOtherFields()
+    {
+        var note = McpElicitationNote.Build(
+            [Record(McpElicitationActions.Decline, "no way to answer", "mailbox", "match", "folder")],
+            toolParameters: ["mailbox"]);
+
+        Assert.IsNotNull(note);
+        StringAssert.Contains(note, "supply mailbox in the tool arguments");
+        StringAssert.Contains(note, "match / folder are not parameters of this tool");
+        StringAssert.Contains(note, "ask the user for them");
+    }
+
+    [TestMethod]
+    public void Build_TreatsEveryFieldAsNotAParameter_WhenTheToolTakesNone()
+    {
+        var note = McpElicitationNote.Build(
+            [Record(McpElicitationActions.Decline, "no way to answer", "mailbox")],
+            toolParameters: []);
+
+        Assert.IsNotNull(note);
+        StringAssert.Contains(note, "mailbox is not a parameter of this tool");
+    }
+
+    [TestMethod]
+    public void DescribeDeclinedForTimeout_IsEmpty_WhenNothingWasDeclined()
+    {
+        Assert.AreEqual(string.Empty, McpElicitationNote.DescribeDeclinedForTimeout([]));
+        Assert.AreEqual(string.Empty,
+            McpElicitationNote.DescribeDeclinedForTimeout([Record(McpElicitationActions.Accept, null, "mailbox")]));
+    }
+
+    [TestMethod]
+    public void DescribeDeclinedForTimeout_NamesTheFieldsAndWhatToDo()
+    {
+        var unknownSchema = McpElicitationNote.DescribeDeclinedForTimeout(
+            [Record(McpElicitationActions.Decline, "no", "mailbox")]);
+        StringAssert.Contains(unknownSchema, "It asked for mailbox.");
+        StringAssert.Contains(unknownSchema, "Supplying that information in the tool arguments");
+
+        var notAParameter = McpElicitationNote.DescribeDeclinedForTimeout(
+            [Record(McpElicitationActions.Decline, "no", "match")], toolParameters: ["query"]);
+        StringAssert.Contains(notAParameter, "match is not a parameter of this tool");
+        StringAssert.Contains(notAParameter, "ask the user instead");
+        Assert.IsFalse(notAParameter.Contains("in the tool arguments", StringComparison.Ordinal));
+    }
+
+    [TestMethod]
     public void AppendTo_KeepsTheServersOwnBlocksAndAddsOne()
     {
         IReadOnlyList<ToolContentBlock> blocks = [new ToolContentBlock { Type = "text", Text = "partial result" }];

@@ -6,7 +6,7 @@ namespace RockBot.Tools.Tests.Elicitation;
 [TestClass]
 public class McpSensitiveFieldDetectorTests
 {
-    [DataTestMethod]
+    [TestMethod]
     [DataRow("password")]
     [DataRow("userPassword")]
     [DataRow("api_key")]
@@ -21,7 +21,7 @@ public class McpSensitiveFieldDetectorTests
     public void IsSensitive_FlagsCredentialShapedNames(string field)
         => Assert.IsTrue(McpSensitiveFieldDetector.IsSensitive(field), field);
 
-    [DataTestMethod]
+    [TestMethod]
     [DataRow("mailbox")]
     [DataRow("maxTokens")]
     [DataRow("slotPosition")]

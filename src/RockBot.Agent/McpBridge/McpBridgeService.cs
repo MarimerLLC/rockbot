@@ -35,6 +35,9 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
     private readonly IMcpArgGuardRegistry? _argGuards;
     private readonly IMcpElicitationResponder? _elicitationResponder;
 
+    /// <summary>Resolves a server's named elicitation responder (keyed services), if it names one.</summary>
+    private readonly IServiceProvider? _services;
+
     private readonly Dictionary<string, McpClient> _clients = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, McpBridgeServerConfig> _serverConfigs = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, List<McpClientTool>> _serverTools = new(StringComparer.OrdinalIgnoreCase);
@@ -94,7 +97,8 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
         ITokenProviderRegistry? tokenProviders = null,
         WorkIqHealthTracker? healthTracker = null,
         IMcpArgGuardRegistry? argGuards = null,
-        IMcpElicitationResponder? elicitationResponder = null)
+        IMcpElicitationResponder? elicitationResponder = null,
+        IServiceProvider? services = null)
     {
         _publisher = publisher;
         _subscriber = subscriber;
@@ -109,6 +113,7 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
         _healthTracker = healthTracker;
         _argGuards = argGuards;
         _elicitationResponder = elicitationResponder;
+        _services = services;
         _binaryCapture = new Lazy<BinaryResponseCapture>(
             () => new BinaryResponseCapture(_attachmentStorage.Value, _logger));
     }
@@ -473,8 +478,12 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
                 // The SDK advertises the elicitation capability during initialize exactly when an
                 // elicitation handler is present, so a server configured "off" is never invited to
                 // ask in the first place — a cleaner answer than advertising and refusing.
+                var elicitationConfig = config.Elicitation ?? _options.DefaultElicitation;
                 var elicitation = McpElicitationCoordinator.TryCreate(
-                    name, config.Elicitation ?? _options.DefaultElicitation, _elicitationResponder, _logger);
+                    name,
+                    elicitationConfig,
+                    McpElicitationResponders.Resolve(elicitationConfig, _elicitationResponder, _services, name, _logger),
+                    _logger);
 
                 var clientOptions = elicitation is null
                     ? null
@@ -1079,7 +1088,7 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
         // while CallToolAsync is still awaiting, not on this async context, so the only way to
         // tie a question back to the call that provoked it is to record the call as in flight.
         using var elicitationScope = _elicitationCoordinators.GetValueOrDefault(serverName)
-            ?.BeginCall(request.ToolName, request.Arguments);
+            ?.BeginCall(request.ToolName, request.Arguments, request.SessionId);
 
         try
         {
@@ -1103,7 +1112,7 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
             // A question the bridge declined usually means a thin or partial result. Say so in
             // the tool output, or the agent retries the identical call and gets the same answer.
             IReadOnlyList<McpElicitationRecord> elicitations = elicitationScope?.Records ?? [];
-            if (McpElicitationNote.Build(elicitations) is { } elicitationNote)
+            if (McpElicitationNote.Build(elicitations, GetToolParameterNames(serverName, request.ToolName)) is { } elicitationNote)
                 blocks = McpElicitationNote.AppendTo(blocks, elicitationNote);
 
             var content = blocks is not null ? McpToolExecutor.TextFromBlocks(blocks) : null;
@@ -1162,7 +1171,8 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
                 Code = ToolError.Codes.Timeout,
                 Message = $"MCP server '{serverName}' timed out after {timeoutMs}ms. " +
                           $"This is a transient error — retry the same tool call to continue."
-                          + DescribeDeclinedElicitations(elicitationScope),
+                          + McpElicitationNote.DescribeDeclinedForTimeout(
+                              elicitationScope?.Records ?? [], GetToolParameterNames(serverName, request.ToolName)),
                 IsRetryable = true
             };
 
@@ -1239,7 +1249,7 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
                         // retry needs a scope from the new one.
                         using var retryElicitationScope = _elicitationCoordinators
                             .GetValueOrDefault(serverName)
-                            ?.BeginCall(request.ToolName, request.Arguments);
+                            ?.BeginCall(request.ToolName, request.Arguments, request.SessionId);
 
                         var retryResult = await freshClient.CallToolAsync(
                             request.ToolName, arguments, cancellationToken: retryCts.Token);
@@ -1262,7 +1272,7 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
 
                         IReadOnlyList<McpElicitationRecord> retryElicitations =
                             retryElicitationScope?.Records ?? [];
-                        if (McpElicitationNote.Build(retryElicitations) is { } retryNote)
+                        if (McpElicitationNote.Build(retryElicitations, GetToolParameterNames(serverName, request.ToolName)) is { } retryNote)
                             retryBlocks = McpElicitationNote.AppendTo(retryBlocks, retryNote);
 
                         var retryContent = retryBlocks is not null ? McpToolExecutor.TextFromBlocks(retryBlocks) : null;
@@ -1706,29 +1716,28 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
     }
 
     /// <summary>
-    /// Describes questions the bridge declined during a call, for appending to a timeout error.
+    /// Parameter names from a tool's discovered input schema, so an elicitation note can say
+    /// whether a declined field is something the agent can pass on retry. Null when the schema
+    /// is unknown, or when the tool is an <c>invoke_tool</c> dispatcher whose real parameters
+    /// belong to the inner tool.
     /// </summary>
-    /// <remarks>
-    /// A call that times out just after a declined elicitation has almost certainly timed out
-    /// <em>because</em> of it: the server is waiting on information it is never going to get.
-    /// Saying so turns a "transient, retry me" error into something the agent can act on.
-    /// </remarks>
-    private static string DescribeDeclinedElicitations(McpElicitationCallScope? scope)
+    private IReadOnlyCollection<string>? GetToolParameterNames(string? serverName, string toolName)
     {
-        if (scope is null) return string.Empty;
+        if (serverName is null
+            || toolName == "invoke_tool"
+            || _serverTools.GetValueOrDefault(serverName)?.FirstOrDefault(t => t.Name == toolName) is not { } tool
+            || tool.JsonSchema.ValueKind != JsonValueKind.Object)
+        {
+            return null;
+        }
 
-        var declined = scope.Records.Where(r => !r.IsAccepted).ToList();
-        if (declined.Count == 0) return string.Empty;
+        if (!tool.JsonSchema.TryGetProperty("properties", out var properties)
+            || properties.ValueKind != JsonValueKind.Object)
+        {
+            return [];
+        }
 
-        var fields = declined
-            .SelectMany(r => r.RequestedFields)
-            .Distinct(StringComparer.Ordinal)
-            .ToList();
-
-        var detail = fields.Count > 0 ? $" It asked for {string.Join(", ", fields)}." : string.Empty;
-
-        return $" The server also asked {declined.Count} question(s) mid-call that this client declined.{detail}" +
-               " Supplying that information in the tool arguments may let the call complete.";
+        return [.. properties.EnumerateObject().Select(p => p.Name)];
     }
 
     private async Task PublishResponseAsync<T>(

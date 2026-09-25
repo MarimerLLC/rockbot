@@ -55,7 +55,12 @@ public sealed record McpElicitationContext(
 /// </summary>
 /// <param name="ToolName">Tool being invoked.</param>
 /// <param name="Arguments">The raw JSON arguments the agent supplied, or null when there were none.</param>
-public sealed record McpElicitationCallContext(string ToolName, string? Arguments);
+/// <param name="SessionId">
+/// The agent session that made the call, when the caller supplied one. A responder that hands the
+/// question back to the agent (rather than answering from <paramref name="Arguments"/>) needs it
+/// to know which conversation to ask in.
+/// </param>
+public sealed record McpElicitationCallContext(string ToolName, string? Arguments, string? SessionId = null);
 
 /// <summary>
 /// A responder's proposed answer. Still subject to schema validation by the coordinator.

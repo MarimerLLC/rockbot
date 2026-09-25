@@ -17,7 +17,15 @@ public static class McpElicitationNote
     /// <summary>
     /// Builds the note, or returns null when there is nothing worth telling the agent.
     /// </summary>
-    public static string? Build(IReadOnlyList<McpElicitationRecord> records)
+    /// <param name="records">What was asked during the call.</param>
+    /// <param name="toolParameters">
+    /// Parameter names from the called tool's input schema, or null when the schema is not known.
+    /// Used to tell apart a declined field the agent can supply on retry from one it cannot:
+    /// retrying with a field the tool does not take just provokes the same question.
+    /// </param>
+    public static string? Build(
+        IReadOnlyList<McpElicitationRecord> records,
+        IReadOnlyCollection<string>? toolParameters = null)
     {
         if (records.Count == 0)
             return null;
@@ -48,19 +56,109 @@ public static class McpElicitationNote
 
         if (declined.Count > 0)
         {
-            var fields = declined
-                .SelectMany(r => r.RequestedFields)
-                .Distinct(StringComparer.Ordinal)
-                .ToList();
+            var fields = DeclinedFields(declined);
+            builder.Append("The server was told the question could not be answered, so this result may be incomplete.");
 
-            builder.Append("The server was told the question could not be answered, so this result may be ")
-                .Append("incomplete. If you need the full answer, supply ")
-                .Append(fields.Count > 0 ? string.Join(" / ", fields) : "the missing information")
-                .AppendLine(" in the tool arguments, or ask the user for it, and call the tool again.");
+            if (toolParameters is null || fields.Count == 0)
+            {
+                builder.Append(" If you need the full answer, supply ")
+                    .Append(fields.Count > 0 ? string.Join(" / ", fields) : "the missing information")
+                    .Append(" in the tool arguments, or ask the user for it, and call the tool again.");
+            }
+            else
+            {
+                var (arguments, others) = Split(fields, toolParameters);
+
+                if (arguments.Count > 0)
+                {
+                    builder.Append(" If you need the full answer, supply ")
+                        .Append(string.Join(" / ", arguments))
+                        .Append(" in the tool arguments and call the tool again.");
+                }
+
+                if (others.Count > 0)
+                {
+                    builder.Append(' ').Append(NotParameters(others))
+                        .Append(", so calling it again will only get the same question: ask the user for ")
+                        .Append(others.Count == 1 ? "it" : "them")
+                        .Append(", or work with this result as it is.");
+                }
+            }
+
+            builder.AppendLine();
         }
 
         return builder.ToString().TrimEnd();
     }
+
+    /// <summary>
+    /// Describes questions declined during a call that then timed out, for appending to the
+    /// timeout error. Empty when nothing was declined.
+    /// </summary>
+    /// <remarks>
+    /// A call that times out just after a declined elicitation has almost certainly timed out
+    /// <em>because</em> of it: the server is waiting on information it is never going to get.
+    /// Saying so turns a "transient, retry me" error into something the agent can act on.
+    /// </remarks>
+    /// <param name="records">What was asked during the call.</param>
+    /// <param name="toolParameters">As for <see cref="Build"/>.</param>
+    public static string DescribeDeclinedForTimeout(
+        IReadOnlyList<McpElicitationRecord> records,
+        IReadOnlyCollection<string>? toolParameters = null)
+    {
+        var declined = records.Where(r => !r.IsAccepted).ToList();
+        if (declined.Count == 0)
+            return string.Empty;
+
+        var fields = DeclinedFields(declined);
+        var builder = new StringBuilder()
+            .Append(" The server also asked ").Append(declined.Count)
+            .Append(" question(s) mid-call that this client declined.");
+
+        if (fields.Count > 0)
+            builder.Append(" It asked for ").Append(string.Join(", ", fields)).Append('.');
+
+        if (toolParameters is null || fields.Count == 0)
+        {
+            builder.Append(" Supplying that information in the tool arguments may let the call complete.");
+            return builder.ToString();
+        }
+
+        var (arguments, others) = Split(fields, toolParameters);
+
+        if (arguments.Count > 0)
+        {
+            builder.Append(" Supplying ").Append(string.Join(" / ", arguments))
+                .Append(" in the tool arguments may let the call complete.");
+        }
+
+        if (others.Count > 0)
+        {
+            builder.Append(' ').Append(NotParameters(others))
+                .Append(", so a retry will stall on the same question: ask the user instead.");
+        }
+
+        return builder.ToString();
+    }
+
+    private static List<string> DeclinedFields(IEnumerable<McpElicitationRecord> declined)
+        => [.. declined.SelectMany(r => r.RequestedFields).Distinct(StringComparer.Ordinal)];
+
+    /// <summary>
+    /// Splits declined fields into those the tool takes as arguments and those it does not.
+    /// Case-insensitive, like the rest of the bridge's field matching.
+    /// </summary>
+    private static (List<string> Arguments, List<string> Others) Split(
+        List<string> fields, IReadOnlyCollection<string> toolParameters)
+    {
+        var parameters = new HashSet<string>(toolParameters, StringComparer.OrdinalIgnoreCase);
+        return ([.. fields.Where(parameters.Contains)], [.. fields.Where(f => !parameters.Contains(f))]);
+    }
+
+    private static string NotParameters(List<string> fields)
+        => fields.Count == 1
+            ? $"{fields[0]} is not a parameter of this tool"
+            : $"{string.Join(" / ", fields)} are not parameters of this tool";
 
     /// <summary>
     /// Appends the note to a tool result's content blocks as an extra text block, leaving the
