@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Text.Json;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using RockBot.Host;
 using RockBot.Llm;
 using RockBot.Memory;
@@ -33,6 +34,7 @@ internal sealed class SubagentRunner(
     TierRoutingLogger tierRoutingLogger,
     AgentProfile agentProfile,
     SessionClientCapabilityStore clientCapabilityStore,
+    IOptions<WorkingMemoryOptions> workingMemoryOptions,
     ILogger<SubagentRunner> logger,
     ISkillResourceUsageStore? skillResourceUsageStore = null,
     ISessionA2AAwaiter? a2aAwaiter = null)
@@ -132,8 +134,10 @@ internal sealed class SubagentRunner(
         var skillTools = new SkillTools(skillStore, llmClient, logger, subagentSessionId,
             enablePromote: true, resourceUsageStore: skillResourceUsageStore);
 
-        // Working memory tools scoped to this subagent's namespace
-        var sessionWorkingMemoryTools = new WorkingMemoryTools(workingMemory, subagentNamespace, logger);
+        // Working memory tools scoped to this subagent's namespace. The TTL floor keeps
+        // findings alive until the primary reads them after batch consolidation.
+        var sessionWorkingMemoryTools = new WorkingMemoryTools(workingMemory, subagentNamespace, logger,
+            workingMemoryOptions.Value.BackgroundTaskMinimumTtl);
 
         // Registry tools — include MCP data tools and web/script tools.
         // Excluded:

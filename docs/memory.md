@@ -329,6 +329,7 @@ public sealed record WorkingMemoryEntry(
 `ConcurrentDictionary<string, EntryMeta>` side index for enumeration.
 
 - **Default TTL:** 5 minutes (configurable per entry)
+- **Background TTL floor:** `save_to_working_memory` calls from subagents and workers are raised to at least `BackgroundTaskMinimumTtl` (4 hours), so findings outlive batch consolidation even when the model picks a short TTL or omits it
 - **Per-namespace limit:** 50 entries per namespace (first two key segments); configurable via `MaxEntriesPerNamespace`
 - **Prefix filtering:** `ListAsync(prefix)` and `SearchAsync(criteria, prefix)` filter by key prefix
 
@@ -555,6 +556,7 @@ public sealed class MemoryOptions
 public sealed class WorkingMemoryOptions
 {
     public TimeSpan DefaultTtl { get; set; } = TimeSpan.FromMinutes(5);
+    public TimeSpan BackgroundTaskMinimumTtl { get; set; } = TimeSpan.FromHours(4);  // floor for subagent/worker saves
     public int MaxEntriesPerNamespace { get; set; } = 50;  // per first-two-segment namespace prefix
     public string BasePath { get; set; } = "working-memory";
 }
