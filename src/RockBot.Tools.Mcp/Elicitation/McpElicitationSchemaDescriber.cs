@@ -36,13 +36,15 @@ public static class McpElicitationSchemaDescriber
         var builder = new StringBuilder();
         foreach (var pair in properties)
         {
-            builder.Append("- ").Append(pair.Key);
-            builder.Append(" (").Append(DescribeType(pair.Value));
+            // Field names and option values are server-authored too, so they are flattened like
+            // the description — otherwise a name could forge its own lines in the field list.
+            builder.Append("- ").Append(Flatten(pair.Key));
+            builder.Append(" (").Append(Flatten(DescribeType(pair.Value)));
             if (required?.Contains(pair.Key) == true)
                 builder.Append(", required");
             builder.Append(')');
 
-            var text = pair.Value.Description ?? pair.Value.Title;
+            var text = pair.Value?.Description ?? pair.Value?.Title;
             if (!string.IsNullOrWhiteSpace(text))
                 builder.Append(": ").Append(Flatten(text));
 
@@ -56,8 +58,9 @@ public static class McpElicitationSchemaDescriber
         return builder.ToString().TrimEnd('\n');
     }
 
-    private static string DescribeType(ElicitRequestParams.PrimitiveSchemaDefinition definition) => definition switch
+    private static string DescribeType(ElicitRequestParams.PrimitiveSchemaDefinition? definition) => definition switch
     {
+        null => "unknown type",
         ElicitRequestParams.StringSchema s => s.Format is { Length: > 0 } f ? $"string, {f}" : "string",
         ElicitRequestParams.NumberSchema n => n.Type,
         ElicitRequestParams.BooleanSchema => "boolean",
@@ -68,7 +71,7 @@ public static class McpElicitationSchemaDescriber
         _ => definition.Type,
     };
 
-    private static string DescribeConstraints(ElicitRequestParams.PrimitiveSchemaDefinition definition)
+    private static string DescribeConstraints(ElicitRequestParams.PrimitiveSchemaDefinition? definition)
     {
         var parts = new List<string>(2);
         switch (definition)

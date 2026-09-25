@@ -44,7 +44,7 @@ public static class McpElicitationNote
                 .Append('"');
 
             if (record.RequestedFields.Count > 0)
-                builder.Append(" (fields: ").Append(string.Join(", ", record.RequestedFields)).Append(')');
+                builder.Append(" (fields: ").Append(Names(record.RequestedFields, ", ")).Append(')');
 
             builder.Append(" — answered '").Append(record.Action).Append('\'');
 
@@ -62,7 +62,7 @@ public static class McpElicitationNote
             if (toolParameters is null || fields.Count == 0)
             {
                 builder.Append(" If you need the full answer, supply ")
-                    .Append(fields.Count > 0 ? string.Join(" / ", fields) : "the missing information")
+                    .Append(fields.Count > 0 ? Names(fields, " / ") : "the missing information")
                     .Append(" in the tool arguments, or ask the user for it, and call the tool again.");
             }
             else
@@ -72,7 +72,7 @@ public static class McpElicitationNote
                 if (arguments.Count > 0)
                 {
                     builder.Append(" If you need the full answer, supply ")
-                        .Append(string.Join(" / ", arguments))
+                        .Append(Names(arguments, " / "))
                         .Append(" in the tool arguments and call the tool again.");
                 }
 
@@ -92,17 +92,18 @@ public static class McpElicitationNote
     }
 
     /// <summary>
-    /// Describes questions declined during a call that then timed out, for appending to the
-    /// timeout error. Empty when nothing was declined.
+    /// Describes questions declined during a call that then timed out or failed, for appending
+    /// to the error. Empty when nothing was declined.
     /// </summary>
     /// <remarks>
-    /// A call that times out just after a declined elicitation has almost certainly timed out
-    /// <em>because</em> of it: the server is waiting on information it is never going to get.
-    /// Saying so turns a "transient, retry me" error into something the agent can act on.
+    /// A call that times out or fails just after a declined elicitation has almost certainly
+    /// done so <em>because</em> of it: the server is waiting on, or gave up without, information
+    /// it is never going to get. Saying so turns a "transient, retry me" error into something
+    /// the agent can act on.
     /// </remarks>
     /// <param name="records">What was asked during the call.</param>
     /// <param name="toolParameters">As for <see cref="Build"/>.</param>
-    public static string DescribeDeclinedForTimeout(
+    public static string DescribeDeclined(
         IReadOnlyList<McpElicitationRecord> records,
         IReadOnlyCollection<string>? toolParameters = null)
     {
@@ -116,7 +117,7 @@ public static class McpElicitationNote
             .Append(" question(s) mid-call that this client declined.");
 
         if (fields.Count > 0)
-            builder.Append(" It asked for ").Append(string.Join(", ", fields)).Append('.');
+            builder.Append(" It asked for ").Append(Names(fields, ", ")).Append('.');
 
         if (toolParameters is null || fields.Count == 0)
         {
@@ -128,7 +129,7 @@ public static class McpElicitationNote
 
         if (arguments.Count > 0)
         {
-            builder.Append(" Supplying ").Append(string.Join(" / ", arguments))
+            builder.Append(" Supplying ").Append(Names(arguments, " / "))
                 .Append(" in the tool arguments may let the call complete.");
         }
 
@@ -157,8 +158,15 @@ public static class McpElicitationNote
 
     private static string NotParameters(List<string> fields)
         => fields.Count == 1
-            ? $"{fields[0]} is not a parameter of this tool"
-            : $"{string.Join(" / ", fields)} are not parameters of this tool";
+            ? $"{Names(fields, "")} is not a parameter of this tool"
+            : $"{Names(fields, " / ")} are not parameters of this tool";
+
+    /// <summary>
+    /// Joins server-authored field names for display, flattened so a name cannot forge its own
+    /// lines in the note.
+    /// </summary>
+    private static string Names(IEnumerable<string> fields, string separator)
+        => string.Join(separator, fields.Select(McpElicitationSchemaDescriber.Flatten));
 
     /// <summary>
     /// Appends the note to a tool result's content blocks as an extra text block, leaving the

@@ -25,6 +25,19 @@ public class McpElicitationSchemaValidatorTests
     }
 
     [TestMethod]
+    public void Validate_RejectsAFieldWhoseTypeCouldNotBeRead()
+    {
+        // The SDK deserializes a type outside MCP's primitive subset to null. The validator is
+        // the trust boundary, so an unknown shape is an error rather than a pass-through.
+        var result = McpElicitationSchemaValidator.Validate(
+            Schema(null, ("value", null!)),
+            new Dictionary<string, JsonElement> { ["value"] = Json("\"hunter2\"") });
+
+        Assert.IsFalse(result.IsValid);
+        StringAssert.Contains(result.Errors[0], "value");
+    }
+
+    [TestMethod]
     public void Validate_AcceptsValuesThatFitTheSchema()
     {
         var schema = Schema(

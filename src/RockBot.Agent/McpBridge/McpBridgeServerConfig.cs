@@ -98,6 +98,23 @@ public sealed class McpBridgeServerConfig
     public McpServerAuthConfig? Auth { get; set; }
 
     /// <summary>
+    /// Copies the operator-only policy that <c>register_mcp_server</c> cannot express from the
+    /// config this one replaces.
+    /// </summary>
+    /// <remarks>
+    /// <c>register_mcp_server</c> is LLM-callable. Re-registering an existing name must not let
+    /// the model shed policy the operator declared — dropping <see cref="Elicitation"/> would
+    /// fall back to <c>DefaultElicitation</c>, turning an <c>off</c> server into an answering
+    /// one and discarding its <c>deniedFields</c> and <c>responder</c>.
+    /// </remarks>
+    public void CarryOperatorPolicyFrom(McpBridgeServerConfig? existing)
+    {
+        if (existing is null) return;
+        ArgGuards = existing.ArgGuards;
+        Elicitation = existing.Elicitation;
+    }
+
+    /// <summary>
     /// Whether this config uses HTTP-based transport (SSE or streamable HTTP).
     /// </summary>
     public bool IsSse => Type?.ToLowerInvariant() is "sse" or "http" or "streamable-http";

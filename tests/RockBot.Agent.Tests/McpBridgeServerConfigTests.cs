@@ -244,6 +244,45 @@ public class McpBridgeServerConfigTests
         Assert.AreEqual(a.CanonicalIdentity(), b.CanonicalIdentity());
     }
 
+    // ── CarryOperatorPolicyFrom ───────────────────────────────────────────────
+
+    [TestMethod]
+    public void CarryOperatorPolicyFrom_KeepsArgGuardsAndElicitationPolicy()
+    {
+        // register_mcp_server is LLM-callable and cannot express either block; re-registering
+        // an existing name must not turn an operator's "off" server back into an answering one.
+        var existing = new McpBridgeServerConfig
+        {
+            Type = "sse",
+            Url = "https://srv/",
+            ArgGuards = [new McpArgGuardConfig { Handler = "path-prefix", Tools = ["download_file"] }],
+            Elicitation = new RockBot.Tools.Mcp.Elicitation.McpElicitationConfig
+            {
+                Mode = "off",
+                DeniedFields = ["accountId"],
+                Responder = "narrow",
+            },
+        };
+        var registered = new McpBridgeServerConfig { Type = "sse", Url = "https://other/" };
+
+        registered.CarryOperatorPolicyFrom(existing);
+
+        Assert.AreSame(existing.ArgGuards, registered.ArgGuards);
+        Assert.AreSame(existing.Elicitation, registered.Elicitation);
+        Assert.AreEqual("https://other/", registered.Url, "only policy is carried, not the connection");
+    }
+
+    [TestMethod]
+    public void CarryOperatorPolicyFrom_NoExistingConfig_LeavesDefaults()
+    {
+        var registered = new McpBridgeServerConfig { Type = "sse", Url = "https://srv/" };
+
+        registered.CarryOperatorPolicyFrom(null);
+
+        Assert.AreEqual(0, registered.ArgGuards.Count);
+        Assert.IsNull(registered.Elicitation);
+    }
+
     [TestMethod]
     public void CanonicalIdentity_DiffersOnlyByToolTimeout_AreEqual()
     {

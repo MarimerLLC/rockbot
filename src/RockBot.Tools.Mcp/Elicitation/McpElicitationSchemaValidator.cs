@@ -87,7 +87,7 @@ public static class McpElicitationSchemaValidator
 
     private static string? ValidateValue(
         string name,
-        ElicitRequestParams.PrimitiveSchemaDefinition definition,
+        ElicitRequestParams.PrimitiveSchemaDefinition? definition,
         JsonElement value)
     {
         switch (definition)
@@ -138,9 +138,11 @@ public static class McpElicitationSchemaValidator
 #pragma warning restore MCP9001
 
             default:
-                // A schema shape this SDK version does not model. Pass the value through rather
-                // than blocking the call — the server validates its own schema either way.
-                return null;
+                // A schema shape this SDK version does not model (it deserializes to null, with
+                // the field's description discarded). This is the trust boundary, so an
+                // unreadable shape is an error, not a pass: nothing is known about what the
+                // value is for, including whether it is a secret.
+                return $"field '{name}' has a type this client cannot check";
         }
     }
 

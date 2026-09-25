@@ -31,7 +31,10 @@ public static class McpElicitationResponders
         if (string.IsNullOrEmpty(key))
             return defaultResponder;
 
-        var named = services?.GetKeyedService<IMcpElicitationResponder>(key);
+        // Keys match as registered, then lower-cased — "LLM" finds "llm", as mode names are
+        // case-insensitive. Register keys in lower case for that to hold.
+        var named = services?.GetKeyedService<IMcpElicitationResponder>(key)
+                    ?? services?.GetKeyedService<IMcpElicitationResponder>(key.ToLowerInvariant());
         if (named is null)
         {
             // Fail closed: answering with a responder the operator did not choose would widen

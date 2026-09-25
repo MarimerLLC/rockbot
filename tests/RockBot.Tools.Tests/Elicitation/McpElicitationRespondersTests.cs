@@ -44,6 +44,10 @@ public class McpElicitationRespondersTests
         => Assert.AreSame(Research, Resolve(" research ", Services()));
 
     [TestMethod]
+    public void Resolve_MatchesALowerCaseKeyWhateverTheConfiguredCase()
+        => Assert.AreSame(Research, Resolve("Research", Services()));
+
+    [TestMethod]
     public void Resolve_ReturnsNull_WhenTheNamedResponderIsNotRegistered()
         => Assert.IsNull(Resolve("reserach", Services()),
             "a typo must leave the server with no responder, not fall back to the default");

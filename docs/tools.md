@@ -478,17 +478,21 @@ Behavior:
 - **Answers are schema-validated.** Values that do not fit the schema the server sent are never
   forwarded — no coercion, so a string where a number was asked for is a decline, not a parse.
   Invented fields are dropped; omitted optional fields are left out so the server's own schema
-  defaults still apply.
-- **Yes/no confirmations are declined.** A form whose every field is a boolean is a checkpoint
-  the server put there for a person; answering it from a model defeats the point. Pre-answer it
-  with `defaults` (`{"confirm": true}`) if that is the intent for a given server.
+  defaults still apply. An answer that supplies none of the requested fields is a decline, and a
+  field of a type the bridge cannot read (anything outside MCP's primitive subset) declines the
+  whole request.
+- **Yes/no decisions are never made by a model.** A boolean field, or a choice between
+  yes/no/confirm/cancel-style options, is a checkpoint the server put there for a person. A
+  required one declines the form unless `defaults` pre-answers it (`{"confirm": true}`); an
+  optional one is left out so the server applies its own default.
 - **Credential-shaped fields decline the whole request**, before anything tries to answer it.
   Field name, title and description are matched against credential vocabulary (`password`,
   `apiKey`, `token`, `ssn`, card numbers, one-time codes, …). This is code, not config, and
   cannot be switched off from mcp.json.
 - **The agent is told.** Whatever was asked and how it was answered is appended to the tool
   result as a text block naming the missing fields, so the next attempt can supply them as
-  ordinary tool arguments — or the agent can ask the user. Timeout errors carry the same note.
+  ordinary tool arguments — or the agent can ask the user. Timeout and failure errors carry the
+  same note, and a call that fails after a declined question is not transparently retried.
   Retrying is only suggested for fields that are parameters of the tool; for anything else the
   note says a retry would just be asked the same question, and to ask the user instead.
 - **Answers come from the in-flight call.** The default responder is an LLM call in the bridge
@@ -497,7 +501,11 @@ Behavior:
   a deployment that can put the question to a person instead; register it as a keyed service
   and name it in a server's `responder` to use it for that server only.
 - Servers registered at runtime via `register_mcp_server` always get `DefaultElicitation` —
-  a model-registered server cannot ship its own `defaults` or relax `deniedFields`.
+  a model-registered server cannot ship its own `defaults` or relax `deniedFields`. Re-registering
+  an existing name keeps that server's `elicitation` block.
+- `McpBridge:DefaultElicitation:Defaults` works from appsettings, Helm values and environment
+  variables (e.g. `McpBridge__DefaultElicitation__Defaults__mailbox=work`). Those values arrive
+  as strings; a string default for a boolean or number field is read as the literal it spells.
 - `sampling/createMessage` (a server asking the client to run an LLM turn) is **not**
   implemented; the capability is not advertised.
 

@@ -79,9 +79,21 @@ configured default, some future human-in-the-loop responder — only values that
 the server sent are forwarded. Nothing is coerced: a string where a number was asked for is an
 error, not a parse, because a server that receives a plausible-looking wrong type acts on it.
 
-Invented fields are dropped rather than rejected (they are noise, not a lie). Omitted optional
-fields are left out entirely so the SDK's `ElicitResult.WithDefaults` can still apply the
-schema's own defaults.
+Invented fields are dropped rather than rejected (they are noise, not a lie). Responder keys are
+matched to the server's field names case-insensitively first, as defaults are, so `Mailbox` for
+`mailbox` is the same answer rather than an invention. Omitted optional fields are left out
+entirely so the SDK's `ElicitResult.WithDefaults` can still apply the schema's own defaults. An
+answer that ends up supplying none of the requested fields is a `decline`, never an empty
+`accept` — that would tell the server a person agreed and chose to give nothing.
+
+A field of a type the validator does not know is an error, not a pass. SDK 1.4 deserializes a
+type outside MCP's primitive subset (`object`, say) to a null definition and discards its title
+and description, so nothing — including the credential check below — can tell what the value
+is for. The coordinator declines any request containing such a field before anything answers.
+
+Operator defaults bound from appsettings, Helm or environment variables arrive as strings. For a
+boolean or number field, a string default is read as the JSON literal it spells (`"true"`,
+`"5"`). That is the only coercion anywhere, and it applies to operator configuration only.
 
 ### Credential-shaped fields decline the whole request, before the responder runs
 
@@ -95,13 +107,22 @@ This also protects the responder from itself: secrets are never in LLM context b
 (`design/security.md` → Secrets Management), so any value a model produced for such a field
 would be a hallucination or a leak.
 
-### A form of nothing but booleans is a decision, not a question
+### A yes/no field is a decision, not a question
 
 A confirmation prompt ("this overwrites 12 rows, continue?") is a second checkpoint the server
 put there for a person, *after* the agent already decided to make the call. Answering it from
-the model makes the checkpoint decorative. Any form whose every field is a `BooleanSchema` is
-declined — unless the operator pre-answered it via `defaults`, which is an explicit, auditable
-decision made outside the model's reach.
+the model makes the checkpoint decorative. So only an operator default — an explicit, auditable
+decision made outside the model's reach — may settle a *decision field*: a `BooleanSchema`, or a
+single-select whose every option is a yes/no/confirm/cancel/approve/reject-style word (the same
+checkpoint spelled as `["yes","no"]`).
+
+- A **required** decision field no default settles declines the whole form.
+- A form with nothing left to answer but decision fields declines.
+- An **optional** decision field is withheld from the answer even if the responder filled it,
+  so the server applies its own default for it.
+
+The LLM responder is also told never to answer such fields, but the coordinator does not rely
+on that.
 
 ### The responder is an interface, and it is not a second agent
 
@@ -143,8 +164,10 @@ Records of each round are attached to the tool result as an extra text block
 (`McpElicitationNote`). Without it the agent sees a thin or empty result, has no idea a
 question was asked and declined, and retries the identical call. The note names the missing
 fields so the next attempt can carry them as ordinary tool arguments, or the agent can put the
-question to the user. A timeout error gets the same treatment, since a call that times out
-just after a declined elicitation almost certainly timed out *because* of it.
+question to the user. Timeout and failure errors get the same treatment, since a call that times
+out or fails just after a declined elicitation almost certainly did so *because* of it — and a
+failure after a declined question is not retried transparently: the retry would only be asked
+the same thing and declined again.
 
 "Retry with the value" is only advice when the value has somewhere to go. The bridge checks each
 declined field against the called tool's discovered input schema: a field that is a parameter
@@ -155,8 +178,10 @@ until its iteration budget runs out. When the schema is unknown — including `i
 dispatchers, whose real parameters belong to the inner tool — the note keeps the general
 wording.
 
-Server-authored text in the note is flattened to a single line. It is untrusted content
-rendered inside a tool-result block; multi-line text would let it forge its own bullet lines.
+Server-authored text — the question, reasons, field names and option values — is flattened to a
+single line wherever it is rendered, in the note and in the responder's prompt. It is untrusted
+content; multi-line text would let it forge its own bullet lines. In the prompt the question
+also sits inside a fence carrying a per-request nonce, so it cannot close the fence either.
 
 ### Attribution is approximate, and says so
 
@@ -174,16 +199,26 @@ is no caller waiting on it and no tool call to answer from.
 
 `MaxPerCall` (default 3) caps rounds per tool call; past it every request is declined. A server
 that dislikes an answer and keeps re-asking would otherwise spin the bridge, and the model
-behind it, until the tool-call timeout. Responder exceptions, responder timeouts, unreadable
-answers and validation failures all resolve to `decline` — a thrown handler leaves the server
-holding a protocol error where the spec gives it a defined outcome.
+behind it, until the tool-call timeout. The SDK dispatches server-initiated requests
+concurrently, so the cap check and the round count are taken together under a lock. Responder
+exceptions, responder timeouts, unreadable answers and validation failures all resolve to
+`decline`; a request the SDK itself withdraws is answered `cancel` and still recorded for the
+agent. A thrown handler leaves the server holding a protocol error where the spec gives it a
+defined outcome.
+
+A transparent reconnect-and-retry after a failed call closes the first attempt's scope before
+opening the retry's, so the first attempt's rounds are not counted against the retry. Null
+`defaults` or `deniedFields` in `mcp.json` read as empty rather than failing the connection.
 
 ### LLM-registered servers cannot write their own policy
 
 `mcp.json` is LLM-writable via `register_mcp_server`, but `McpRegisterServerRequest` carries no
 `elicitation` field, so a server the model registers at runtime always gets
-`DefaultElicitation`. It cannot ship its own `defaults` or relax `deniedFields`. The credential
-heuristics are code, not config, and cannot be turned off from a config file at all.
+`DefaultElicitation`. It cannot ship its own `defaults` or relax `deniedFields`. Re-registering
+an *existing* name keeps that server's operator-declared `elicitation` block (and `argGuards`,
+`McpBridgeServerConfig.CarryOperatorPolicyFrom`) rather than falling back to the default — an
+`off` server must not become an answering one because the model re-registered it. The
+credential heuristics are code, not config, and cannot be turned off from a config file at all.
 
 ## Configuration
 
@@ -240,5 +275,17 @@ Omit the block entirely to inherit `McpBridge:DefaultElicitation`.
   (which tier, whose budget, what the server is allowed to see) and is deliberately out of
   scope here.
 - **url-mode elicitation.** Requires a user agent and a person; see above.
+- **Credential vocabulary gaps.** `McpSensitiveFieldDetector` misses `pwd`, `passcode`, `TOTP`,
+  `PAT`, `accessKey`, "verification code" and acronym-led names like `OTPCode`, and never scans
+  the question text itself. Worth closing; the schema validator and "answer only from the call"
+  keep a hit from being catastrophic meanwhile.
+- **String formats.** `StringSchema.Format` (email, uri, date, date-time) is not checked, and
+  multi-select answers are not checked for duplicates.
+- **Responder budget vs. a short tool timeout.** `ResponderTimeoutMs` is not clamped to the
+  server's `ToolTimeoutMs`; a server with a tool timeout under 20 s can time out while the
+  responder is still working.
+- **Answering from the caller's context.** A question only the calling agent can answer is
+  declined and handed back via the note. Routing it into the agent's own loop is tracked in
+  #602 (MCP C# SDK 2.x), where multi round-trip requests make it practical.
 - **Task-augmented elicitation.** `McpClientOptions.TaskStore` is unset, so the client does not
   accept task-augmented elicitation requests. The synchronous path covers the servers we run.

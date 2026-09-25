@@ -31,7 +31,28 @@ public sealed class McpElicitationCoordinator
     private readonly IMcpElicitationResponder? _responder;
     private readonly ILogger _logger;
     private readonly Dictionary<string, JsonElement> _defaults;
+    private readonly List<string> _deniedFields;
     private readonly ConcurrentDictionary<McpElicitationCallScope, byte> _active = new();
+
+    /// <summary>
+    /// Serializes the per-call cap check with the attempt increment. The SDK dispatches
+    /// server-initiated requests concurrently, so a check-then-act would let two simultaneous
+    /// questions both slip in under the last remaining round.
+    /// </summary>
+    private readonly object _capGate = new();
+
+    /// <summary>
+    /// Option values that make a single-select field a decision rather than data: "Delete 12
+    /// rows?" offered as <c>["yes","no"]</c> is the same checkpoint as a boolean.
+    /// </summary>
+    private static readonly HashSet<string> DecisionWords = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "yes", "no", "y", "n", "true", "false", "ok", "okay",
+        "confirm", "confirmed", "cancel", "cancelled", "canceled",
+        "approve", "approved", "deny", "denied", "reject", "rejected",
+        "accept", "accepted", "decline", "declined", "allow", "disallow",
+        "proceed", "continue", "abort", "stop", "skip",
+    };
 
     private McpElicitationCoordinator(
         string serverName,
@@ -43,9 +64,13 @@ public sealed class McpElicitationCoordinator
         _config = config;
         _responder = responder;
         _logger = logger;
+
+        // mcp.json can say "defaults": null or "deniedFields": null. Treat that as empty rather
+        // than failing construction, which would surface as a misleading connection failure.
         _defaults = new Dictionary<string, JsonElement>(StringComparer.OrdinalIgnoreCase);
-        foreach (var pair in config.Defaults)
+        foreach (var pair in config.Defaults ?? [])
             _defaults[pair.Key] = pair.Value;
+        _deniedFields = config.DeniedFields ?? [];
     }
 
     /// <summary>
@@ -114,10 +139,18 @@ public sealed class McpElicitationCoordinator
         {
             return await HandleCoreAsync(request, ct).ConfigureAwait(false);
         }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            // The SDK withdrew the request (the tool call was cancelled or the session closed).
+            // Expected, not a fault — and the agent should still hear that a question was asked.
+            _logger.LogDebug("Elicitation for MCP server {Server} was cancelled before it was answered", _serverName);
+            return Answer(request, McpElicitationActions.Cancel,
+                "the request was cancelled before an answer was ready", [.. _active.Keys]);
+        }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Elicitation handling failed for MCP server {Server}", _serverName);
-            return Answer(request, McpElicitationActions.Decline, "the client could not process the request", null);
+            return Answer(request, McpElicitationActions.Decline, "the client could not process the request", [.. _active.Keys]);
         }
     }
 
@@ -152,18 +185,40 @@ public sealed class McpElicitationCoordinator
                 scopes);
         }
 
-        var attempts = scopes.Max(s => s.Attempts);
-        if (attempts >= _config.MaxPerCall)
+        int attempts;
+        bool overCap;
+        lock (_capGate)
+        {
+            attempts = scopes.Max(s => s.Attempts);
+            overCap = attempts >= _config.MaxPerCall;
+            if (!overCap)
+            {
+                foreach (var scope in scopes)
+                    scope.CountAttempt();
+            }
+        }
+
+        if (overCap)
         {
             return Answer(request, McpElicitationActions.Decline,
                 $"already handled {attempts} question(s) during this tool call (limit {_config.MaxPerCall})",
                 scopes);
         }
 
-        foreach (var scope in scopes)
-            scope.CountAttempt();
+        // A field the SDK could not model (a type outside MCP's primitive subset, e.g. "object")
+        // arrives as a null definition with its title and description discarded. The client
+        // cannot tell what it is for — including whether it is a credential — so it answers none
+        // of the form rather than guess.
+        var unreadable = UnreadableFields(request.RequestedSchema);
+        if (unreadable.Count > 0)
+        {
+            return Answer(request, McpElicitationActions.Decline,
+                $"the request asks for {string.Join(", ", unreadable)} in a form this client cannot read, " +
+                "so it cannot tell what the value is for",
+                scopes);
+        }
 
-        var sensitive = McpSensitiveFieldDetector.FindSensitiveFields(request.RequestedSchema, _config.DeniedFields);
+        var sensitive = McpSensitiveFieldDetector.FindSensitiveFields(request.RequestedSchema, _deniedFields);
         if (sensitive.Count > 0)
         {
             return Answer(request, McpElicitationActions.Decline,
@@ -182,11 +237,15 @@ public sealed class McpElicitationCoordinator
                 return Answer(request, McpElicitationActions.Accept, "answered from configured defaults", scopes, configured.Content);
         }
 
-        // A form that is nothing but yes/no boxes is a confirmation prompt — a second checkpoint
-        // the server put there for a person. Answering it from the model would defeat the point
-        // of asking. The fully-defaulted case already returned above, so this is the operator
-        // having declined to pre-answer it.
-        if (IsConfirmationOnly(request.RequestedSchema))
+        // A yes/no field — a boolean, or a choice between "yes"/"no"-style options — is a
+        // checkpoint the server put there for a person. Answering it from a model would defeat
+        // the point of asking, so only an operator default may settle one. A required decision
+        // left open declines the form; an optional one is withheld, so the server applies its
+        // own default for it.
+        var decisions = DecisionFields(request.RequestedSchema, defaults);
+        if (decisions.Count > 0
+            && (decisions.Count == fieldNames.Count - defaults.Count
+                || decisions.Any(f => request.RequestedSchema!.Required?.Contains(f) == true)))
         {
             return Answer(request, McpElicitationActions.Decline,
                 "this is a yes/no decision, which this client does not make on a user's behalf; " +
@@ -222,6 +281,11 @@ public sealed class McpElicitationCoordinator
                 $"the client took longer than {_config.ResponderTimeoutMs}ms to work out an answer",
                 scopes);
         }
+        catch (OperationCanceledException)
+        {
+            // The SDK withdrew the request; HandleAsync answers it as a cancellation.
+            throw;
+        }
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "Elicitation responder failed for MCP server {Server}", _serverName);
@@ -234,11 +298,19 @@ public sealed class McpElicitationCoordinator
                 answer.Reason ?? "the client had no answer for this question", scopes);
         }
 
+        // Match the responder's keys to the server's field names case-insensitively, as defaults
+        // already are — "Mailbox" for "mailbox" is the same answer, not an invented field.
+        // Decision fields the responder was not allowed to settle are withheld.
+        var canonical = fieldNames.ToDictionary(n => n, n => n, StringComparer.OrdinalIgnoreCase);
         var merged = new Dictionary<string, JsonElement>(StringComparer.Ordinal);
         if (answer.Content is { Count: > 0 })
         {
             foreach (var pair in answer.Content)
-                merged[pair.Key] = pair.Value;
+            {
+                var key = canonical.GetValueOrDefault(pair.Key, pair.Key);
+                if (!decisions.Contains(key, StringComparer.Ordinal))
+                    merged[key] = pair.Value;
+            }
         }
 
         // Configured defaults overwrite the responder: they are the operator's answer, not a guess.
@@ -260,25 +332,62 @@ public sealed class McpElicitationCoordinator
                 scopes);
         }
 
+        // "accept" with nothing in it tells the server the user agreed and chose to give no
+        // values — a claim nobody made. A form that asked for something and got none of it
+        // is a decline.
+        if (fieldNames.Count > 0 && validated.Content.Count == 0)
+        {
+            return Answer(request, McpElicitationActions.Decline,
+                "the client's answer supplied none of the requested fields", scopes);
+        }
+
         return Answer(request, McpElicitationActions.Accept, null, scopes, validated.Content);
     }
 
     /// <summary>
-    /// Whether every field the server asked for is a plain boolean — the shape of a pure
-    /// confirmation prompt.
+    /// Whether a field asks for a decision rather than data: a boolean, or a single choice
+    /// between options that are all yes/no/confirm/cancel-style words.
     /// </summary>
-    private static bool IsConfirmationOnly(ElicitRequestParams.RequestSchema? schema)
+    internal static bool IsDecisionField(ElicitRequestParams.PrimitiveSchemaDefinition? definition)
+    {
+        return definition switch
+        {
+            ElicitRequestParams.BooleanSchema => true,
+            ElicitRequestParams.UntitledSingleSelectEnumSchema e => AreDecisionWords(e.Enum),
+            ElicitRequestParams.TitledSingleSelectEnumSchema e => AreDecisionWords([.. e.OneOf.Select(o => o.Const)]),
+#pragma warning disable MCP9001 // deprecated by the spec, still emitted by older servers
+            ElicitRequestParams.LegacyTitledEnumSchema e => AreDecisionWords(e.Enum),
+#pragma warning restore MCP9001
+            _ => false,
+        };
+
+        static bool AreDecisionWords(IList<string>? values)
+            => values is { Count: > 0 } && values.All(v => DecisionWords.Contains(v?.Trim() ?? string.Empty));
+    }
+
+    /// <summary>Decision fields that configured defaults did not settle.</summary>
+    private static List<string> DecisionFields(
+        ElicitRequestParams.RequestSchema? schema,
+        IReadOnlyDictionary<string, JsonElement> defaults)
     {
         if (schema?.Properties is not { Count: > 0 } properties)
-            return false;
+            return [];
 
-        foreach (var pair in properties)
-        {
-            if (pair.Value is not ElicitRequestParams.BooleanSchema)
-                return false;
-        }
+        return [.. properties
+            .Where(p => IsDecisionField(p.Value) && !defaults.ContainsKey(p.Key))
+            .Select(p => p.Key)];
+    }
 
-        return true;
+    /// <summary>
+    /// Fields whose definition the SDK could not deserialize — it yields null for a type outside
+    /// the primitive subset MCP allows.
+    /// </summary>
+    private static List<string> UnreadableFields(ElicitRequestParams.RequestSchema? schema)
+    {
+        if (schema?.Properties is not { Count: > 0 } properties)
+            return [];
+
+        return [.. properties.Where(p => p.Value is null).Select(p => p.Key)];
     }
 
     /// <summary>
@@ -296,10 +405,24 @@ public sealed class McpElicitationCoordinator
             if (!_defaults.TryGetValue(pair.Key, out var configured))
                 continue;
 
-            var single = new Dictionary<string, JsonElement>(StringComparer.Ordinal) { [pair.Key] = configured };
-            var check = McpElicitationSchemaValidator.Validate(
-                new ElicitRequestParams.RequestSchema { Properties = new Dictionary<string, ElicitRequestParams.PrimitiveSchemaDefinition> { [pair.Key] = pair.Value } },
-                single);
+            var check = CheckDefault(pair.Key, pair.Value, configured);
+
+            // Defaults bound from appsettings, Helm or environment variables arrive as strings
+            // ("true", "5"). For a boolean or number field, read the operator's string as the
+            // JSON literal it spells. This applies to operator configuration only — responder
+            // output is never coerced.
+            if (!check.IsValid
+                && configured.ValueKind == JsonValueKind.String
+                && pair.Value is ElicitRequestParams.BooleanSchema or ElicitRequestParams.NumberSchema
+                && TryParseLiteral(configured.GetString(), out var literal))
+            {
+                var literalCheck = CheckDefault(pair.Key, pair.Value, literal);
+                if (literalCheck.IsValid)
+                {
+                    configured = literal;
+                    check = literalCheck;
+                }
+            }
 
             if (check.IsValid)
             {
@@ -314,6 +437,33 @@ public sealed class McpElicitationCoordinator
         }
 
         return resolved;
+    }
+
+    private static McpElicitationValidationResult CheckDefault(
+        string name, ElicitRequestParams.PrimitiveSchemaDefinition definition, JsonElement value)
+        => McpElicitationSchemaValidator.Validate(
+            new ElicitRequestParams.RequestSchema
+            {
+                Properties = new Dictionary<string, ElicitRequestParams.PrimitiveSchemaDefinition> { [name] = definition },
+            },
+            new Dictionary<string, JsonElement>(StringComparer.Ordinal) { [name] = value });
+
+    private static bool TryParseLiteral(string? text, out JsonElement literal)
+    {
+        literal = default;
+        if (string.IsNullOrWhiteSpace(text))
+            return false;
+
+        try
+        {
+            using var document = JsonDocument.Parse(text.Trim());
+            literal = document.RootElement.Clone();
+            return true;
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
     }
 
     private ElicitResult Answer(

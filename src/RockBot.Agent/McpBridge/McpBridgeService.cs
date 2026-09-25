@@ -1171,7 +1171,7 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
                 Code = ToolError.Codes.Timeout,
                 Message = $"MCP server '{serverName}' timed out after {timeoutMs}ms. " +
                           $"This is a transient error — retry the same tool call to continue."
-                          + McpElicitationNote.DescribeDeclinedForTimeout(
+                          + McpElicitationNote.DescribeDeclined(
                               elicitationScope?.Records ?? [], GetToolParameterNames(serverName, request.ToolName)),
                 IsRetryable = true
             };
@@ -1225,16 +1225,34 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
         {
             sw.Stop();
 
-            // Any exception from CallToolAsync likely means the connection is dead
+            // The first attempt is over. Close its scope before any retry: when the reconnect
+            // fails quietly and keeps the same coordinator, a still-open scope would carry this
+            // attempt's question count into the retry and list the call twice.
+            elicitationScope?.Dispose();
+            IReadOnlyList<McpElicitationRecord> failedElicitations = elicitationScope?.Records ?? [];
+
+            // A failure right after a declined question is almost certainly the server giving
+            // up without the value — not a dead connection. Retrying the identical call would
+            // only be asked the same thing and declined again.
+            var declinedBeforeFailure = failedElicitations.Any(r => !r.IsAccepted);
+
+            // Any other exception from CallToolAsync likely means the connection is dead
             // (server restarted, session expired, network reset, etc.).
             // Reconnect synchronously and retry the call once so the agent never sees
             // a transient session failure — it's transparent from the agent's perspective.
-            if (serverName is not null && _serverConfigs.TryGetValue(serverName, out var staleConfig))
+            if (declinedBeforeFailure)
+            {
+                _logger.LogWarning(ex,
+                    "← MCP {Server}/{Tool} FAILED after {ElapsedMs}ms following a declined elicitation — not retrying",
+                    serverName, request.ToolName, sw.ElapsedMilliseconds);
+            }
+            else if (serverName is not null && _serverConfigs.TryGetValue(serverName, out var staleConfig))
             {
                 _logger.LogWarning(ex,
                     "← MCP {Server}/{Tool} FAILED after {ElapsedMs}ms — reconnecting and retrying transparently",
                     serverName, request.ToolName, sw.ElapsedMilliseconds);
 
+                McpElicitationCallScope? retryElicitationScope = null;
                 try
                 {
                     await ConnectServerAsync(serverName, staleConfig, ct);
@@ -1245,9 +1263,9 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
                         using var retryCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
                         retryCts.CancelAfter(timeoutMs);
 
-                        // The reconnect replaced the coordinator along with the client, so the
-                        // retry needs a scope from the new one.
-                        using var retryElicitationScope = _elicitationCoordinators
+                        // A successful reconnect replaced the coordinator along with the client,
+                        // so the retry needs a scope from the current one.
+                        retryElicitationScope = _elicitationCoordinators
                             .GetValueOrDefault(serverName)
                             ?.BeginCall(request.ToolName, request.Arguments, request.SessionId);
 
@@ -1300,6 +1318,12 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
                         "Reconnect/retry for MCP {Server}/{Tool} also failed — returning error to agent",
                         serverName, request.ToolName);
                 }
+                finally
+                {
+                    retryElicitationScope?.Dispose();
+                    if (retryElicitationScope is { HasRecords: true })
+                        failedElicitations = [.. failedElicitations, .. retryElicitationScope.Records];
+                }
             }
             else
             {
@@ -1312,7 +1336,9 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
                 ToolCallId = request.ToolCallId,
                 ToolName = request.ToolName,
                 Code = ToolError.Codes.ExecutionFailed,
-                Message = ex.Message,
+                Message = ex.Message
+                          + McpElicitationNote.DescribeDeclined(
+                              failedElicitations, GetToolParameterNames(serverName, request.ToolName)),
                 IsRetryable = true
             };
 
@@ -1389,10 +1415,9 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
                     Env = req.Env
                 };
 
-                // register_mcp_server cannot express argGuards, and it is LLM-callable —
-                // re-registering an existing name must not strip operator-declared policy.
-                if (_serverConfigs.TryGetValue(req.ServerName, out var existingConfig))
-                    config.ArgGuards = existingConfig.ArgGuards;
+                // register_mcp_server cannot express argGuards or elicitation policy, and it is
+                // LLM-callable — re-registering an existing name must not strip operator policy.
+                config.CarryOperatorPolicyFrom(_serverConfigs.GetValueOrDefault(req.ServerName));
 
                 // Validate guards before connecting so the caller gets a descriptive error
                 // instead of the generic "Connection failed" (ConnectServerAsync fails closed

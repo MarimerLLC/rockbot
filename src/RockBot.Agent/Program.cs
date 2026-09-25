@@ -477,7 +477,11 @@ builder.Services.AddSingleton(attachmentUploadOptions);
 builder.Services.AddHostedService<AttachmentUploadEndpoint>();
 
 // MCP bridge (replaces external RockBot.Tools.Mcp.Bridge process)
-builder.Services.Configure<McpBridgeOptions>(builder.Configuration.GetSection("McpBridge"));
+var mcpBridgeSection = builder.Configuration.GetSection("McpBridge");
+builder.Services.Configure<McpBridgeOptions>(mcpBridgeSection);
+// ConfigurationBinder cannot bind the elicitation defaults dictionary; read it explicitly.
+builder.Services.PostConfigure<McpBridgeOptions>(options =>
+    (options.DefaultElicitation ??= new()).Defaults = McpBridgeOptions.ReadElicitationDefaults(mcpBridgeSection));
 builder.Services.AddSingleton(new McpArgGuardRegistration(
     PathPrefixArgGuard.HandlerName, new PathPrefixArgGuard()));
 builder.Services.AddSingleton<IMcpArgGuardRegistry, McpArgGuardRegistry>();
