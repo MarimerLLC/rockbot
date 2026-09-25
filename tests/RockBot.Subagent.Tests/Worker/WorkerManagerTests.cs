@@ -91,6 +91,21 @@ public class WorkerManagerTests
         StringAssert.Contains(batch.Results[0].FailureReason!, "manager exception");
     }
 
+    [TestMethod]
+    public async Task SpawnBatchAsync_RunnerThrows_ReportsResolvedResultKey()
+    {
+        var manager = CreateManager(
+            maxConcurrent: 1,
+            runnerFactory: () => new ThrowingRunner());
+
+        var batch = await manager.SpawnBatchAsync(
+            [new WorkerDefinition { Description = "broken task", ResultKey = "email-sweep" }],
+            "session-1", CancellationToken.None);
+
+        var result = batch.Results[0];
+        Assert.AreEqual($"worker/{result.TaskId}/email-sweep", result.ResultKey);
+    }
+
     // ── helpers ──────────────────────────────────────────────────────────────
 
     private static WorkerManager CreateManager(int maxConcurrent, Func<IWorkerRunner> runnerFactory)
@@ -116,7 +131,7 @@ public class WorkerManagerTests
             {
                 TaskId = taskId,
                 IsSuccess = true,
-                ResultKey = definition.ResultKey ?? $"worker/{taskId}/result",
+                ResultKey = definition.ResolveResultKey(taskId),
                 Duration = TimeSpan.FromMilliseconds(1),
                 LlmTurns = 1,
             });

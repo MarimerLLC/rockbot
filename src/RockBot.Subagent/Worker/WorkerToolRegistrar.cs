@@ -37,7 +37,7 @@ internal sealed class WorkerToolRegistrar(
                   },
                   "result_key": {
                     "type": "string",
-                    "description": "Optional override for the working-memory key the worker writes findings to. Defaults to worker/<task-id>/result."
+                    "description": "Optional override for the working-memory key the worker writes findings to. Defaults to worker/<task-id>/result. A bare key (no '/') is placed under worker/<task-id>/; include a '/' (e.g. shared/patrol/calendar-latest) for an exact path. The receipt reports the resolved key."
                   },
                   "timeout_minutes": {
                     "type": "integer",

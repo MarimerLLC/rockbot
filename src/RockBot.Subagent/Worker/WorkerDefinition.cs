@@ -25,9 +25,27 @@ public sealed record WorkerDefinition
     /// <summary>
     /// Optional override for the working-memory key the worker writes its
     /// structured output to. When null, defaults to <c>worker/&lt;task-id&gt;/result</c>.
+    /// Use <see cref="ResolveResultKey"/> for the full path every party reads and writes.
     /// </summary>
     [JsonPropertyName("result_key")]
     public string? ResultKey { get; init; }
+
+    /// <summary>
+    /// Resolves <see cref="ResultKey"/> to the absolute working-memory path shared by the
+    /// worker (which saves there), <c>spawn_workers</c> (which inlines it), and the spawning
+    /// agent (which may fetch it). A bare key such as <c>email-sweep</c> would otherwise mean
+    /// three different paths — <c>worker/&lt;id&gt;/email-sweep</c> to the worker's namespaced
+    /// save, the raw key to the executor's read, and <c>subagent/&lt;id&gt;/email-sweep</c> to
+    /// the spawner's get — so the findings were saved but never found. Keys containing '/'
+    /// are already absolute (same rule as <c>WorkingMemoryTools</c>) and pass through.
+    /// </summary>
+    public string ResolveResultKey(string taskId)
+    {
+        var key = ResultKey?.Trim();
+        if (string.IsNullOrEmpty(key))
+            return $"worker/{taskId}/result";
+        return key.Contains('/') ? key : $"worker/{taskId}/{key}";
+    }
 
     /// <summary>
     /// Soft wall-clock cap in minutes. When null, falls back to

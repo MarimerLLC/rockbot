@@ -96,7 +96,7 @@ public sealed class WorkerManager(
             {
                 logger.LogError(ex,
                     "Worker {TaskId} failed before runner could return a result", taskId);
-                var resultKey = definition.ResultKey ?? $"worker/{taskId}/result";
+                var resultKey = definition.ResolveResultKey(taskId);
                 return new WorkerResult
                 {
                     TaskId = taskId,

@@ -103,7 +103,7 @@ internal sealed class WorkerRunner(
     {
         var workerSessionId = $"worker-{taskId}";
         var workerNamespace = $"worker/{taskId}";
-        var resultKey = definition.ResultKey ?? $"worker/{taskId}/result";
+        var resultKey = definition.ResolveResultKey(taskId);
 
         logger.LogInformation(
             "Worker {TaskId} starting (session {SessionId}, batch {BatchId}, result_key={ResultKey})",
