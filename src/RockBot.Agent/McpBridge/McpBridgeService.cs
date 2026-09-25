@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Text.Json;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Hosting;
@@ -49,8 +50,10 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
     /// Per-server elicitation policy, rebuilt on every connect so a config reload changes what
     /// the bridge is willing to answer. Absent for a server whose policy is <c>off</c> — and its
     /// absence is what stops the SDK advertising the capability for that server at all.
+    /// Concurrent because every tool invoke reads it while connect, disconnect and config reload
+    /// write it from other subscriptions and the reload sweep.
     /// </summary>
-    private readonly Dictionary<string, McpElicitationCoordinator> _elicitationCoordinators = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<string, McpElicitationCoordinator> _elicitationCoordinators = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, AttachmentGatewayEntry> _attachmentGateways = new(StringComparer.OrdinalIgnoreCase);
     private readonly Lazy<IAttachmentStorage> _attachmentStorage = new(() => new AttachmentStorage());
 
@@ -523,7 +526,7 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
                 _clients[name] = newClient;
 
                 if (elicitation is null)
-                    _elicitationCoordinators.Remove(name);
+                    _elicitationCoordinators.TryRemove(name, out _);
                 else
                     _elicitationCoordinators[name] = elicitation;
 
@@ -600,7 +603,7 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
         _serverMetadata.Remove(name);
         _serverConfigs.Remove(name);
         _serverSummaries.Remove(name);
-        _elicitationCoordinators.Remove(name);
+        _elicitationCoordinators.TryRemove(name, out _);
         InvalidateAttachmentGateway(name);
 
         await PublishServersIndexedAsync([], [name], CancellationToken.None);

@@ -154,6 +154,13 @@ forwarded through `mcp_invoke_tool` and recovery retries), and the responder see
 `McpElicitationCallContext.SessionId`. The shipped responder ignores it; a responder that puts
 the question back to the agent needs it to know which conversation to ask in.
 
+The in-flight call's arguments reach the responder's prompt with the value of every
+credential-named key, at any depth, replaced by `[redacted]` (arguments that are not JSON are
+withheld). They are what the agent's own model wrote, so nothing comes from a secret store, but
+the Low tier may be a different model and provider, and a value a user pasted into an `apiKey`
+argument should not travel further. Nothing is lost: a credential-shaped field is declined
+before any responder runs, so such a value could never be the answer.
+
 The responder's LLM call goes through `ILlmClient` at `ModelTier.Low` and is bounded by
 `ResponderTimeoutMs` (default 20 s) inside the caller's tool-call budget: better a declined
 elicitation than a timed-out tool call.

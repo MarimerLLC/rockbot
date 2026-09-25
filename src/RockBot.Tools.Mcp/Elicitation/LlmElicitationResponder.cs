@@ -1,5 +1,6 @@
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
 using RockBot.Host;
@@ -82,7 +83,7 @@ public sealed class LlmElicitationResponder(
         foreach (var call in context.InFlightCalls)
         {
             builder.Append("- ").Append(call.ToolName).Append(" arguments: ")
-                .AppendLine(string.IsNullOrWhiteSpace(call.Arguments) ? "(none)" : call.Arguments);
+                .AppendLine(RedactArguments(call.Arguments));
         }
 
         if (context.InFlightCalls.Count > 1)
@@ -120,6 +121,56 @@ public sealed class LlmElicitationResponder(
         builder.AppendLine("Use the field names and JSON types exactly as listed above.");
 
         return builder.ToString();
+    }
+
+    /// <summary>
+    /// Renders a call's arguments for the prompt with the value of every credential-named key
+    /// (at any depth) replaced by <c>[redacted]</c>.
+    /// </summary>
+    /// <remarks>
+    /// The arguments are what the agent's own model wrote, so nothing here comes from a secret
+    /// store — but the responder may run on a different model and provider (the Low tier), and a
+    /// value the user pasted into an <c>apiKey</c> argument should not travel further than it
+    /// already has. Nothing is lost by withholding them: the coordinator declines any
+    /// credential-shaped field before a responder is consulted, so such a value could never be
+    /// an answer. Arguments that are not valid JSON are withheld entirely.
+    /// </remarks>
+    internal static string RedactArguments(string? arguments)
+    {
+        if (string.IsNullOrWhiteSpace(arguments))
+            return "(none)";
+
+        try
+        {
+            var node = JsonNode.Parse(arguments);
+            Redact(node);
+            return node?.ToJsonString() ?? "(none)";
+        }
+        catch (JsonException)
+        {
+            return "(withheld: the arguments were not valid JSON)";
+        }
+
+        static void Redact(JsonNode? node)
+        {
+            switch (node)
+            {
+                case JsonObject obj:
+                    foreach (var key in obj.Select(p => p.Key).ToList())
+                    {
+                        if (McpSensitiveFieldDetector.IsSensitive(key))
+                            obj[key] = "[redacted]";
+                        else
+                            Redact(obj[key]);
+                    }
+                    break;
+
+                case JsonArray array:
+                    foreach (var item in array)
+                        Redact(item);
+                    break;
+            }
+        }
     }
 
     /// <summary>

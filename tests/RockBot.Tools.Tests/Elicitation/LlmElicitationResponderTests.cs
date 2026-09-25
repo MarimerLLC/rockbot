@@ -8,6 +8,43 @@ namespace RockBot.Tools.Tests.Elicitation;
 public class LlmElicitationResponderTests
 {
     [TestMethod]
+    public void RedactArguments_WithholdsCredentialNamedValuesAtAnyDepth()
+    {
+        var rendered = LlmElicitationResponder.RedactArguments(
+            """{"query":"invoices","apiKey":"sk-live-123","nested":{"password":"hunter2","folder":"inbox"},"list":[{"access_token":"t0k"}]}""");
+
+        StringAssert.Contains(rendered, "invoices");
+        StringAssert.Contains(rendered, "inbox");
+        Assert.IsFalse(rendered.Contains("sk-live-123", StringComparison.Ordinal));
+        Assert.IsFalse(rendered.Contains("hunter2", StringComparison.Ordinal));
+        Assert.IsFalse(rendered.Contains("t0k", StringComparison.Ordinal));
+        StringAssert.Contains(rendered, "[redacted]");
+    }
+
+    [TestMethod]
+    public void RedactArguments_WithholdsArgumentsThatAreNotJson()
+    {
+        var rendered = LlmElicitationResponder.RedactArguments("password=hunter2");
+
+        Assert.IsFalse(rendered.Contains("hunter2", StringComparison.Ordinal));
+    }
+
+    [TestMethod]
+    public void BuildPrompt_RedactsTheInFlightCallsArguments()
+    {
+        var context = new McpElicitationContext(
+            "mail",
+            new ElicitRequestParams { Message = "Which mailbox?" },
+            [new McpElicitationCallContext("search", """{"query":"invoices","token":"secret-value"}""")],
+            new Dictionary<string, JsonElement>());
+
+        var prompt = LlmElicitationResponder.BuildPrompt(context, "- mailbox (string)");
+
+        StringAssert.Contains(prompt, "invoices");
+        Assert.IsFalse(prompt.Contains("secret-value", StringComparison.Ordinal));
+    }
+
+    [TestMethod]
     public void BuildPrompt_ServerTextCannotCloseTheFenceOrStartLines()
     {
         var context = new McpElicitationContext(
