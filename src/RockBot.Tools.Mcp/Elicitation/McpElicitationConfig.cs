@@ -83,6 +83,25 @@ public sealed class McpElicitationConfig
     public string? Responder { get; set; }
 
     /// <summary>
+    /// A copy that keeps every restriction (mode, <see cref="MaxPerCall"/>,
+    /// <see cref="DeniedFields"/>, <see cref="ResponderTimeoutMs"/>) and drops every grant: no
+    /// named <see cref="Responder"/> (the host default answers) and no <see cref="Defaults"/>.
+    /// </summary>
+    /// <remarks>
+    /// Used when a server name is re-pointed at a different endpoint: what the operator
+    /// restricted still applies, what the operator granted to the original server does not.
+    /// </remarks>
+    public McpElicitationConfig WithoutGrants() => new()
+    {
+        Mode = Mode,
+        MaxPerCall = MaxPerCall,
+        DeniedFields = [.. DeniedFields ?? []],
+        ResponderTimeoutMs = ResponderTimeoutMs,
+        Defaults = [],
+        Responder = null,
+    };
+
+    /// <summary>
     /// Returns the normalized mode, mapping anything unrecognized to <see cref="ModeDecline"/>.
     /// </summary>
     public string ResolveMode()

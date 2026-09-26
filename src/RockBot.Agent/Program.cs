@@ -497,6 +497,10 @@ builder.Services.AddSingleton<RockBot.Tools.Mcp.Elicitation.IMcpElicitationRespo
 builder.Services.AddKeyedSingleton<RockBot.Tools.Mcp.Elicitation.IMcpElicitationResponder>(
     RockBot.Tools.Mcp.Elicitation.LlmElicitationResponder.Key,
     (sp, _) => sp.GetRequiredService<RockBot.Tools.Mcp.Elicitation.LlmElicitationResponder>());
+// Opt-in per server ("responder": "conversation"): answers from the calling conversation, for
+// questions the call's own arguments cannot settle. Never the default.
+builder.Services.AddKeyedSingleton<RockBot.Tools.Mcp.Elicitation.IMcpElicitationResponder,
+    ConversationElicitationResponder>(ConversationElicitationResponder.Key);
 
 builder.Services.AddHostedService<McpBridgeService>();
 

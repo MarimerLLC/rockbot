@@ -102,16 +102,29 @@ public sealed class McpBridgeServerConfig
     /// config this one replaces.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// <c>register_mcp_server</c> is LLM-callable. Re-registering an existing name must not let
     /// the model shed policy the operator declared — dropping <see cref="Elicitation"/> would
     /// fall back to <c>DefaultElicitation</c>, turning an <c>off</c> server into an answering
-    /// one and discarding its <c>deniedFields</c> and <c>responder</c>.
+    /// one and discarding its <c>deniedFields</c>.
+    /// </para>
+    /// <para>
+    /// Restrictions and grants are carried differently. Restrictions (<see cref="ArgGuards"/>,
+    /// the elicitation mode, <c>deniedFields</c>, <c>maxPerCall</c>) always carry over. Grants —
+    /// an elicitation <c>responder</c> that may hand over conversation data, and <c>defaults</c>,
+    /// which answer on the user's behalf and can pre-answer confirmations — belong to the server
+    /// the operator configured, so they carry over only when the re-registration still points at
+    /// that server (same <see cref="CanonicalIdentity"/>). Otherwise the model could re-point a
+    /// trusted name at a URL of its choosing and inherit what the operator granted.
+    /// </para>
     /// </remarks>
     public void CarryOperatorPolicyFrom(McpBridgeServerConfig? existing)
     {
         if (existing is null) return;
         ArgGuards = existing.ArgGuards;
-        Elicitation = existing.Elicitation;
+
+        var sameServer = string.Equals(CanonicalIdentity(), existing.CanonicalIdentity(), StringComparison.Ordinal);
+        Elicitation = sameServer ? existing.Elicitation : existing.Elicitation?.WithoutGrants();
     }
 
     /// <summary>

@@ -55,4 +55,66 @@ public class McpElicitationRespondersTests
     [TestMethod]
     public void Resolve_ReturnsNull_WhenAResponderIsNamedButThereAreNoServices()
         => Assert.IsNull(Resolve("research", services: null));
+
+    private sealed class OptInResponder : IMcpElicitationResponder
+    {
+        public bool RequiresServerOptIn => true;
+
+        public ValueTask<McpElicitationAnswer> AnswerAsync(McpElicitationContext context, CancellationToken ct)
+            => ValueTask.FromResult(McpElicitationAnswer.Decline("n/a"));
+    }
+
+    private static readonly OptInResponder Conversation = new();
+
+    private static IServiceProvider ServicesWithOptIn()
+        => new ServiceCollection()
+            .AddKeyedSingleton<IMcpElicitationResponder>("conversation", Conversation)
+            .BuildServiceProvider();
+
+    [TestMethod]
+    public void Resolve_AllowsAnOptInResponderInAServersOwnPolicy()
+        => Assert.AreSame(Conversation, McpElicitationResponders.Resolve(
+            new McpElicitationConfig { Responder = "conversation" }, Default, ServicesWithOptIn(), "s",
+            NullLogger.Instance, isServerPolicy: true));
+
+    [TestMethod]
+    public void Resolve_RefusesAnOptInResponderInTheBridgeWideDefault()
+    {
+        // DefaultElicitation reaches every server the model registers, at URLs it chose.
+        var resolved = McpElicitationResponders.Resolve(
+            new McpElicitationConfig { Responder = "conversation" }, Default, ServicesWithOptIn(), "s",
+            NullLogger.Instance, isServerPolicy: false);
+
+        Assert.IsNull(resolved, "must not fall back to the default responder either — only defaults answer");
+    }
+
+    [TestMethod]
+    public void Resolve_AllowsAnOrdinaryResponderInTheBridgeWideDefault()
+        => Assert.AreSame(Research, McpElicitationResponders.Resolve(
+            new McpElicitationConfig { Responder = "research" }, Default, Services(), "s",
+            NullLogger.Instance, isServerPolicy: false));
+
+    [TestMethod]
+    public void WithoutGrants_KeepsRestrictionsAndDropsGrants()
+    {
+        var config = new McpElicitationConfig
+        {
+            Mode = "decline",
+            MaxPerCall = 1,
+            DeniedFields = ["accountId"],
+            ResponderTimeoutMs = 5_000,
+            Responder = "conversation",
+            Defaults = new() { ["confirm"] = System.Text.Json.JsonDocument.Parse("true").RootElement },
+        };
+
+        var restricted = config.WithoutGrants();
+
+        Assert.AreEqual("decline", restricted.Mode);
+        Assert.AreEqual(1, restricted.MaxPerCall);
+        CollectionAssert.AreEqual(new[] { "accountId" }, restricted.DeniedFields);
+        Assert.AreEqual(5_000, restricted.ResponderTimeoutMs);
+        Assert.IsNull(restricted.Responder);
+        Assert.AreEqual(0, restricted.Defaults.Count);
+        Assert.AreEqual("conversation", config.Responder, "the original is not modified");
+    }
 }

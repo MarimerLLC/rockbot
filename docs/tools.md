@@ -469,7 +469,7 @@ Policy is per server, with a bridge-wide `McpBridge:DefaultElicitation` fallback
 | `defaults` | `{}` | Deterministic answers by field name (case-insensitive), applied before — and overriding — the responder. |
 | `deniedFields` | `[]` | Extra field names to refuse, on top of the built-in credential heuristics. |
 | `responderTimeoutMs` | 20000 | Budget for working out an answer, inside the tool-call timeout. |
-| `responder` | *(host default)* | Which responder answers for this server, by keyed-service name (`llm` is the shipped one). A name that is not registered answers from `defaults` only — it never falls back. |
+| `responder` | *(host default)* | Which responder answers for this server, by keyed-service name: `llm` (the default — answers from the call's own arguments) or `conversation` (answers choice fields from the calling conversation; server policy only, see below). A name that is not registered answers from `defaults` only — it never falls back. |
 
 Behavior:
 
@@ -500,6 +500,20 @@ Behavior:
   already passed and to decline rather than invent. `IMcpElicitationResponder` is the seam for
   a deployment that can put the question to a person instead; register it as a keyed service
   and name it in a server's `responder` to use it for that server only.
+- **`"responder": "conversation"` answers from the calling conversation's recent turns** — for
+  questions like "which of these did you mean?" that the call's arguments can't settle. It sends
+  values drawn from the user's conversation to the server, so it is deliberately narrow:
+  - it must be named in the **server's own** `elicitation` block — it is refused in
+    `McpBridge:DefaultElicitation`, and does not follow a server name re-registered at a
+    different URL;
+  - it answers **choices and numbers only** — any free-text field is declined before the
+    conversation is read;
+  - it sees **only the recent conversation** — no memory, working memory, rules or tools;
+  - it answers only calls from a single user conversation, and cannot ask the user (an
+    unsettled question is declined and handed back to the agent).
+
+  It runs a short model call through the agent loop, so give the server
+  `"responderTimeoutMs": 30000` or more and a `toolTimeoutMs` above that.
 - Servers registered at runtime via `register_mcp_server` always get `DefaultElicitation` —
   a model-registered server cannot ship its own `defaults` or relax `deniedFields`. Re-registering
   an existing name keeps that server's `elicitation` block.

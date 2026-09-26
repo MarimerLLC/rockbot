@@ -151,8 +151,8 @@ the `elicitation` block, a model-registered server cannot pick its own.
 
 Each in-flight call carries the agent session that made it (`ToolInvokeRequest.SessionId`,
 forwarded through `mcp_invoke_tool` and recovery retries), and the responder sees it on
-`McpElicitationCallContext.SessionId`. The shipped responder ignores it; a responder that puts
-the question back to the agent needs it to know which conversation to ask in.
+`McpElicitationCallContext.SessionId`. The shipped `llm` responder ignores it; the
+`conversation` responder uses it to find the conversation to answer from.
 
 The in-flight call's arguments reach the responder's prompt with the value of every
 credential-named key, at any depth, replaced by `[redacted]` (arguments that are not JSON are
@@ -164,6 +164,57 @@ before any responder runs, so such a value could never be the answer.
 The responder's LLM call goes through `ILlmClient` at `ModelTier.Low` and is bounded by
 `ResponderTimeoutMs` (default 20 s) inside the caller's tool-call budget: better a declined
 elicitation than a timed-out tool call.
+
+### The `conversation` responder: answering from the calling conversation
+
+Some questions only the caller can answer — "which of these meanings did you intend?", "work or
+personal account?" — and the in-flight call's arguments do not settle them. For servers that
+ask those, `ConversationElicitationResponder` (`"responder": "conversation"`) answers from the
+recent turns of the conversation that made the call.
+
+The server writes the question and receives the answer, so this is an **outbound data path from
+the user's conversation to an external server**. It is shaped by what that path may carry, not
+by what would give the best answer:
+
+- **A server's own policy must name it.** The responder sets
+  `IMcpElicitationResponder.RequiresServerOptIn`, and `McpElicitationResponders.Resolve` refuses
+  it in `McpBridge:DefaultElicitation`, which every model-registered server inherits — including
+  one at a URL the model chose. It also never follows a server name the model re-points at a
+  different endpoint (`CarryOperatorPolicyFrom` drops grants on a changed identity; see
+  "LLM-registered servers cannot write their own policy").
+- **Choices and numbers only.** Any free-text field declines the request before the
+  conversation is read. A string field lets a server ask for anything and carry away whatever
+  the conversation holds; a pick from the server's own options says only which one the user
+  meant. (Yes/no decisions are already declined by the coordinator.)
+- **The recent conversation and nothing else.** No tools at all: no durable memory, which spans
+  every conversation; no working memory, whose paths reach other sessions, subagents and
+  stashes; no rules; and no MCP tools, so it cannot call back into the server that is waiting
+  and has no route to any credential. Tool arguments in its prompt are redacted as for `llm`.
+- **One user conversation.** It answers only for calls made from a user conversation
+  (`SessionId` exactly `session/{id}`), and only when every open call against the server
+  belongs to that one conversation — never one user's question from another's conversation.
+  Calls from subagents or scheduled tasks, or with no session, are declined.
+
+Everything else in this document still applies: the coordinator declines credential fields,
+yes/no decisions and unreadable forms before the responder runs, and validates what it returns
+against the server's schema.
+
+It runs through `AgentLoopRunner` (Balanced tier, no reasoning scaffolding) while the caller's
+own loop waits on the tool call, and leaves the caller's session exactly as it found it:
+
+- **It reads the conversation directly**, not through `AgentContextBuilder`, which marks
+  memories and skills as injected for the session and would hide them from the caller's later
+  turns.
+- **It writes nothing to conversation memory.** The caller's turn is still in progress.
+- **It runs under its own loop session id** (`elicitation/{session}/{guid}`), so loop
+  bookkeeping — stashes, and content-filter recovery, which clears conversation memory — never
+  touches the caller's session.
+
+It cannot ask the user. A question the conversation does not already settle is declined, and the
+note hands it back to the agent, which can. Handing it to the agent's own loop instead is #602.
+
+It needs a larger budget than the `llm` responder: set the server's `responderTimeoutMs` to
+30–45 s, and its `toolTimeoutMs` comfortably above that plus the tool's own run time.
 
 ### The agent is told what was asked
 
@@ -222,11 +273,17 @@ opening the retry's, so the first attempt's rounds are not counted against the r
 `mcp.json` is LLM-writable via `register_mcp_server`, but `McpRegisterServerRequest` carries no
 `elicitation` field, so a server the model registers at runtime always gets
 `DefaultElicitation`. It cannot ship its own `defaults` or relax `deniedFields`. Re-registering
-an *existing* name keeps that server's operator-declared `elicitation` block (and `argGuards`,
-`McpBridgeServerConfig.CarryOperatorPolicyFrom`) rather than falling back to the default — an
-`off` server must not become an answering one because the model re-registered it. Unregistering
-first (`mcp_unregister_server`) still deletes the entry and its policy with it; protecting
-operator-declared servers from both paths is tracked in #603. The
+an *existing* name keeps that server's operator-declared restrictions — `argGuards`, and the
+`elicitation` mode, `deniedFields` and `maxPerCall` (`McpBridgeServerConfig.CarryOperatorPolicyFrom`)
+— rather than falling back to the default: an `off` server must not become an answering one
+because the model re-registered it. The operator's *grants* — a named `responder` and
+`defaults` — carry over only if the re-registration still points at the same server (same
+canonical identity). Re-pointed at another endpoint, the name keeps the restrictions and loses
+the grants (`McpElicitationConfig.WithoutGrants`), so the model cannot aim a trusted name at a URL
+of its choosing and inherit what was granted to the original. And a responder that sets
+`RequiresServerOptIn` (such as `conversation`) is refused in `DefaultElicitation` altogether.
+Unregistering first (`mcp_unregister_server`) still deletes the entry and its policy with it;
+protecting operator-declared servers from both paths is tracked in #603. The
 credential heuristics are code, not config, and cannot be turned off from a config file at all.
 
 ## Configuration
@@ -269,7 +326,8 @@ Omit the block entirely to inherit `McpBridge:DefaultElicitation`.
 | `McpElicitationCoordinator` | Enforces the policy; one per connected server; supplies the SDK's elicitation handler. |
 | `McpElicitationCallScope` | Marks a tool call in flight; collects what was asked. |
 | `IMcpElicitationResponder` / `McpElicitationAnswer` | Who answers, and what they propose. |
-| `LlmElicitationResponder` | The shipped responder: answers from the in-flight call's arguments. |
+| `LlmElicitationResponder` | The default responder (`llm`): answers from the in-flight call's arguments. |
+| `ConversationElicitationResponder` | Opt-in responder (`conversation`, in `RockBot.Agent`): answers from the calling conversation. |
 | `McpElicitationResponders` | Picks a server's responder: named (keyed service) or the host default. |
 | `McpElicitationSchemaValidator` | The trust boundary. |
 | `McpElicitationSchemaDescriber` | Renders a schema for prompts and notes. |
@@ -293,8 +351,10 @@ Omit the block entirely to inherit `McpBridge:DefaultElicitation`.
 - **Responder budget vs. a short tool timeout.** `ResponderTimeoutMs` is not clamped to the
   server's `ToolTimeoutMs`; a server with a tool timeout under 20 s can time out while the
   responder is still working.
-- **Answering from the caller's context.** A question only the calling agent can answer is
-  declined and handed back via the note. Routing it into the agent's own loop is tracked in
-  #602 (MCP C# SDK 2.x), where multi round-trip requests make it practical.
+- **Answering from the caller's context in the caller's own loop.** The `conversation` responder
+  (below) answers from the calling conversation, but as a separate bounded loop that cannot
+  ask the user. Handing the question to the agent's own loop — so it can ask the user and
+  resume — is tracked in #602 (MCP C# SDK 2.x), where multi round-trip requests make it
+  practical.
 - **Task-augmented elicitation.** `McpClientOptions.TaskStore` is unset, so the client does not
   accept task-augmented elicitation requests. The synchronous path covers the servers we run.

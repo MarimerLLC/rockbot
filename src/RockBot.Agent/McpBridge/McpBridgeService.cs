@@ -485,7 +485,9 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
                 var elicitation = McpElicitationCoordinator.TryCreate(
                     name,
                     elicitationConfig,
-                    McpElicitationResponders.Resolve(elicitationConfig, _elicitationResponder, _services, name, _logger),
+                    McpElicitationResponders.Resolve(
+                        elicitationConfig, _elicitationResponder, _services, name, _logger,
+                        isServerPolicy: config.Elicitation is not null),
                     _logger);
 
                 var clientOptions = elicitation is null

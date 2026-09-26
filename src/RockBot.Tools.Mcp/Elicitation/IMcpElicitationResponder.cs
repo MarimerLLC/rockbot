@@ -27,6 +27,17 @@ public interface IMcpElicitationResponder
     /// <param name="context">The request plus whatever the bridge knows about the call it interrupted.</param>
     /// <param name="ct">Bounded by <see cref="McpElicitationConfig.ResponderTimeoutMs"/>.</param>
     ValueTask<McpElicitationAnswer> AnswerAsync(McpElicitationContext context, CancellationToken ct);
+
+    /// <summary>
+    /// Whether this responder may only answer for a server whose <em>own</em> policy names it.
+    /// </summary>
+    /// <remarks>
+    /// A responder that draws on anything beyond the call's own arguments (the conversation, for
+    /// instance) hands that data to whichever server asks. Naming it in the bridge-wide default
+    /// would extend it to every server the model registers at runtime — including one at a URL the
+    /// model chose — so <see cref="McpElicitationResponders.Resolve"/> refuses it there.
+    /// </remarks>
+    bool RequiresServerOptIn => false;
 }
 
 /// <summary>
