@@ -121,12 +121,39 @@ public sealed class McpElicitationCoordinator
     /// Registers a tool call as in flight. Dispose the returned scope when the call finishes;
     /// read <see cref="McpElicitationCallScope.Records"/> first to report what was asked.
     /// </summary>
+    /// <remarks>
+    /// The scope also becomes the current call for this async flow. Under the 2026-07-28 protocol
+    /// the client resolves a server's input request (MRTR) inside <c>CallToolAsync</c>'s own flow,
+    /// so the question is attributed to exactly the call that provoked it. A legacy
+    /// <c>elicitation/create</c> from an older server arrives on the session's message loop
+    /// instead, where there is no current call, and attribution falls back to every call open
+    /// against the server.
+    /// </remarks>
     public McpElicitationCallScope BeginCall(string toolName, string? arguments, string? sessionId = null)
     {
-        var scope = new McpElicitationCallScope(toolName, arguments, sessionId, s => _active.TryRemove(s, out _));
+        var previous = CurrentCall.Value;
+        var scope = new McpElicitationCallScope(toolName, arguments, sessionId, s =>
+        {
+            _active.TryRemove(s, out _);
+            if (ReferenceEquals(CurrentCall.Value, s))
+                CurrentCall.Value = previous;
+        });
         _active[scope] = 0;
+        CurrentCall.Value = scope;
         return scope;
     }
+
+    /// <summary>The call open in the current async flow, if any (see <see cref="BeginCall"/>).</summary>
+    private static readonly AsyncLocal<McpElicitationCallScope?> CurrentCall = new();
+
+    /// <summary>
+    /// The calls a question can be attributed to: exactly the current flow's call when it is one
+    /// of this server's open calls (MRTR), otherwise every call open against this server.
+    /// </summary>
+    private List<McpElicitationCallScope> AttributableCalls()
+        => CurrentCall.Value is { } current && _active.ContainsKey(current)
+            ? [current]
+            : [.. _active.Keys];
 
     /// <summary>
     /// Handles one <c>elicitation/create</c> request. Never throws: an elicitation that fails to
@@ -145,12 +172,12 @@ public sealed class McpElicitationCoordinator
             // Expected, not a fault — and the agent should still hear that a question was asked.
             _logger.LogDebug("Elicitation for MCP server {Server} was cancelled before it was answered", _serverName);
             return Answer(request, McpElicitationActions.Cancel,
-                "the request was cancelled before an answer was ready", [.. _active.Keys]);
+                "the request was cancelled before an answer was ready", AttributableCalls());
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Elicitation handling failed for MCP server {Server}", _serverName);
-            return Answer(request, McpElicitationActions.Decline, "the client could not process the request", [.. _active.Keys]);
+            return Answer(request, McpElicitationActions.Decline, "the client could not process the request", AttributableCalls());
         }
     }
 
@@ -159,7 +186,7 @@ public sealed class McpElicitationCoordinator
         if (request is null)
             return Answer(null, McpElicitationActions.Decline, "the request carried no parameters", null);
 
-        var scopes = _active.Keys.ToList();
+        var scopes = AttributableCalls();
 
         // An elicitation with nothing in flight has no caller waiting on it and no tool-call
         // context to answer from — during discovery, say. Decline rather than guess.

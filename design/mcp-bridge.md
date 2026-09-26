@@ -91,6 +91,24 @@ See `design/mcp-elicitation.md`.
 }
 ```
 
+## Protocol versions (MCP C# SDK 2.x)
+
+The bridge uses the 2.x SDK, which speaks the 2026-07-28 protocol: no `initialize` handshake
+(`server/discover` instead), no Streamable HTTP sessions, and Multi Round-Trip Requests (MRTR)
+for server-to-client questions. The bridge does not set `McpClientOptions.ProtocolVersion`, so
+the client prefers 2026-07-28 and falls back automatically to the `initialize` handshake for
+servers that do not support it — external servers on SDK 1.x keep working unchanged. Pinning a
+version would disable that fallback, so don't.
+
+Transport selection is unchanged: `"type": "sse"` / `"http"` / `"streamable-http"` all mean an
+HTTP server, and `transportMode` (default `auto`) picks Streamable HTTP or legacy SSE. 2.x
+servers turn their legacy SSE endpoints off by default, so a `transportMode: "sse"` entry only
+works against servers that still offer SSE; leave it at `auto` unless a server needs it.
+
+The in-repo servers (`McpServer.*`) are 2.x too, and so stateless by default. None of them uses
+server-to-client requests, progress notifications or per-session state, so nothing depends on
+the sessions stateless mode removes.
+
 ## Timeout Strategy
 
 - **Bridge timeout** (default 30s): CancellationToken on MCP server call. Publishes `ToolError` with `Code: "timeout"` and `IsRetryable: true`.
