@@ -506,9 +506,10 @@ Behavior:
   - it must be named in the **server's own** `elicitation` block — it is refused in
     `McpBridge:DefaultElicitation`, and does not follow a server name re-registered at a
     different URL;
-  - it answers **choices and numbers only** — any free-text field is declined before the
+  - it answers **choices only** — any free-text or number field is declined before the
     conversation is read;
-  - it sees **only the recent conversation** — no memory, working memory, rules or tools;
+  - it sees **only the recent conversation**, with secret-shaped text (pasted keys, tokens,
+    passwords, card numbers) redacted — no memory, working memory, rules or tools;
   - it answers only calls from a single user conversation, and cannot ask the user (an
     unsettled question is declined and handed back to the agent).
 

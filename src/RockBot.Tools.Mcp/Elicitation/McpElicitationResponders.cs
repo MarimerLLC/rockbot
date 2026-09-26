@@ -41,7 +41,21 @@ public static class McpElicitationResponders
     {
         var key = config?.Responder?.Trim();
         if (string.IsNullOrEmpty(key))
+        {
+            // An opt-in responder must be *named* by a server's own policy. As the host's unnamed
+            // default it would reach every server that names none — including one whose grants
+            // were dropped by WithoutGrants, and every server inheriting DefaultElicitation.
+            if (defaultResponder?.RequiresServerOptIn == true)
+            {
+                logger.LogWarning(
+                    "The host's default elicitation responder requires a server's own opt-in, so it is never used " +
+                    "implicitly; MCP server {Server} will answer from configured defaults only",
+                    serverName);
+                return null;
+            }
+
             return defaultResponder;
+        }
 
         // Keys match as registered, then lower-cased — "LLM" finds "llm", as mode names are
         // case-insensitive. Register keys in lower case for that to hold.

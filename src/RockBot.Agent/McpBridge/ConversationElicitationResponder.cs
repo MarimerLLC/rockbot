@@ -23,13 +23,16 @@ namespace RockBot.Agent.McpBridge;
 ///   name it (<c>"responder": "conversation"</c>). It is refused in the bridge-wide default, which
 ///   reaches servers the model registers at URLs it chose, and it does not follow a server name
 ///   that the model re-points at a different endpoint.</item>
-///   <item><b>Choices and numbers only.</b> Any free-text field declines the request: a string
-///   field lets a server ask for anything and carry away whatever the conversation holds. A pick
-///   from the server's own options says only which option the user meant.</item>
-///   <item><b>The recent conversation and nothing else.</b> No tools: no durable memory (which
-///   spans every conversation), no working memory (whose paths reach other sessions), no rules,
-///   and no MCP tools — so nothing can call back into the server that is waiting, and there is no
-///   route to any credential.</item>
+///   <item><b>Choices only.</b> Any field that is not a pick from the server's own options —
+///   free text or a number — declines the request. A string field lets a server ask for anything
+///   and carry away whatever the conversation holds; a number can carry a PIN or a card number.
+///   A pick from the server's options says only which option the user meant.</item>
+///   <item><b>The recent conversation and nothing else, scrubbed.</b> Secret-shaped text in the
+///   turns is redacted (<see cref="McpSecretScrubber"/>) — a user may have pasted a key, and this
+///   responder may run on a different model and provider than the turn did. No tools: no durable
+///   memory (which spans every conversation), no working memory (whose paths reach other
+///   sessions), no rules, and no MCP tools — so nothing can call back into the server that is
+///   waiting, and there is no route to any credential.</item>
 ///   <item><b>Only a user conversation's calls</b> (<c>session/{id}</c>), and only when every open
 ///   call against the server belongs to that one conversation — never answer one user's question
 ///   from another's conversation.</item>
@@ -97,13 +100,13 @@ public sealed class ConversationElicitationResponder(
                 "the server asked for confirmation rather than for data, which this client will not give on a user's behalf");
         }
 
-        var freeText = FreeTextFields(context);
-        if (freeText.Count > 0)
+        var nonChoice = NonChoiceFields(context);
+        if (nonChoice.Count > 0)
         {
             return McpElicitationAnswer.Decline(
-                $"{string.Join(", ", freeText.Select(McpElicitationSchemaDescriber.Flatten))} " +
-                "asks for free text, which this client does not fill in from the user's conversation; " +
-                "offer choices instead, or the agent can supply it");
+                $"{string.Join(", ", nonChoice.Select(McpElicitationSchemaDescriber.Flatten))} " +
+                "is not a choice between offered options, which is all this client fills in from the user's " +
+                "conversation; offer choices instead, or the agent can supply it");
         }
 
         if (!TryResolveSession(context.InFlightCalls, out var sessionId, out var reason))
@@ -142,19 +145,37 @@ public sealed class ConversationElicitationResponder(
     }
 
     /// <summary>
-    /// Requested fields that take free text — strings, and anything the SDK could not type —
-    /// excluding those operator configuration already settled.
+    /// Requested fields that are not a pick from server-offered options — free text, numbers,
+    /// anything the SDK could not type — excluding those operator configuration already settled.
     /// </summary>
-    internal static List<string> FreeTextFields(McpElicitationContext context)
+    /// <remarks>
+    /// A string can carry anything the conversation holds; a number can carry a PIN, a card or
+    /// account number, a date of birth. A choice among the server's own options can only say which
+    /// one the user meant. (Booleans and yes/no choices never get this far: the coordinator
+    /// declines them as decisions.)
+    /// </remarks>
+    internal static List<string> NonChoiceFields(McpElicitationContext context)
     {
         if (context.Request.RequestedSchema?.Properties is not { Count: > 0 } properties)
             return [];
 
         return [.. properties
             .Where(p => !context.KnownValues.ContainsKey(p.Key))
-            .Where(p => p.Value is ElicitRequestParams.StringSchema or null)
+            .Where(p => !IsChoice(p.Value))
             .Select(p => p.Key)];
     }
+
+    private static bool IsChoice(ElicitRequestParams.PrimitiveSchemaDefinition? definition) => definition switch
+    {
+        ElicitRequestParams.UntitledSingleSelectEnumSchema => true,
+        ElicitRequestParams.TitledSingleSelectEnumSchema => true,
+        ElicitRequestParams.UntitledMultiSelectEnumSchema => true,
+        ElicitRequestParams.TitledMultiSelectEnumSchema => true,
+#pragma warning disable MCP9001 // deprecated by the spec, still emitted by older servers
+        ElicitRequestParams.LegacyTitledEnumSchema => true,
+#pragma warning restore MCP9001
+        _ => false,
+    };
 
     /// <summary>
     /// Finds the one user conversation the in-flight call(s) belong to. Declines when a call
@@ -210,9 +231,11 @@ public sealed class ConversationElicitationResponder(
         {
             foreach (var turn in recent)
             {
-                var text = turn.Content.Length > MaxTurnChars
-                    ? turn.Content[..MaxTurnChars] + " …"
-                    : turn.Content;
+                // Scrub before truncating, so a secret cut in half at the cap is still caught.
+                var scrubbed = McpSecretScrubber.Scrub(turn.Content);
+                var text = scrubbed.Length > MaxTurnChars
+                    ? scrubbed[..MaxTurnChars] + " …"
+                    : scrubbed;
                 builder.Append("- ").Append(turn.Role).Append(": ")
                     .AppendLine(McpElicitationSchemaDescriber.Flatten(text));
             }

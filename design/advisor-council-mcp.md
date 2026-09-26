@@ -110,7 +110,7 @@ cheap: a declined question costs one short Balanced call, not a deliberation.
 ### What, and in what form
 
 The bridge answers the council through the `conversation` responder (#605): recent conversation
-only, **choice and number fields only**, never free text, never booleans or yes/no choices
+only, **choice fields only** — never free text or numbers, never booleans or yes/no choices
 (#593 treats those as decisions a person must make). The council's questions are shaped to fit:
 
 | What's missing | Ask as | Answered by |
@@ -123,8 +123,9 @@ only, **choice and number fields only**, never free text, never booleans or yes/
 
 Rules for the form:
 
-- **One elicitation, choice and number fields only.** Ask only what would change the plan;
-  everything else is an assumption, stated in `assumptions`.
+- **One elicitation, choice fields only.** Ask only what would change the plan; everything else
+  is an assumption, stated in `assumptions`. Quantities are offered as ranges to pick from
+  (`under_10k` · `10k_100k` · `over_100k`), not as numbers to fill in.
 - **Factual yes/no as named options.** A boolean or `["yes","no"]` is declined by #593 as a
   confirmation. `["easily_reversed","irreversible"]` is a fact the conversation can settle.
 - **Never elicit free text.** The `conversation` responder declines a request containing *any*

@@ -89,6 +89,21 @@ public class McpElicitationRespondersTests
     }
 
     [TestMethod]
+    [DataRow(true, DisplayName = "server policy with no responder named")]
+    [DataRow(false, DisplayName = "bridge-wide default")]
+    public void Resolve_NeverUsesAnOptInResponderAsTheImplicitDefault(bool isServerPolicy)
+    {
+        // A host that registers an opt-in responder as its unnamed default must not thereby
+        // extend it to servers that never named it — including one left with no responder
+        // by WithoutGrants().
+        var resolved = McpElicitationResponders.Resolve(
+            new McpElicitationConfig().WithoutGrants(), Conversation, ServicesWithOptIn(), "s",
+            NullLogger.Instance, isServerPolicy);
+
+        Assert.IsNull(resolved);
+    }
+
+    [TestMethod]
     public void Resolve_AllowsAnOrdinaryResponderInTheBridgeWideDefault()
         => Assert.AreSame(Research, McpElicitationResponders.Resolve(
             new McpElicitationConfig { Responder = "research" }, Default, Services(), "s",

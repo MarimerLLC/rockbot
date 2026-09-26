@@ -159,18 +159,32 @@ public sealed class LlmElicitationResponder(
                     foreach (var key in obj.Select(p => p.Key).ToList())
                     {
                         if (McpSensitiveFieldDetector.IsSensitive(key))
-                            obj[key] = "[redacted]";
+                            obj[key] = McpSecretScrubber.Redacted;
+                        else if (ScrubbedString(obj[key]) is { } scrubbed)
+                            obj[key] = scrubbed;
                         else
                             Redact(obj[key]);
                     }
                     break;
 
                 case JsonArray array:
-                    foreach (var item in array)
-                        Redact(item);
+                    for (var i = 0; i < array.Count; i++)
+                    {
+                        if (ScrubbedString(array[i]) is { } scrubbed)
+                            array[i] = scrubbed;
+                        else
+                            Redact(array[i]);
+                    }
                     break;
             }
         }
+
+        // A string value under an innocuous key can still hold a pasted secret ("query": "use
+        // key sk-..."); scrub it the same way conversation text is scrubbed.
+        static string? ScrubbedString(JsonNode? node)
+            => node is JsonValue value && value.TryGetValue<string>(out var text)
+                ? McpSecretScrubber.Scrub(text)
+                : null;
     }
 
     /// <summary>

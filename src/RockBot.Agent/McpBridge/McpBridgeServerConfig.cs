@@ -114,7 +114,7 @@ public sealed class McpBridgeServerConfig
     /// an elicitation <c>responder</c> that may hand over conversation data, and <c>defaults</c>,
     /// which answer on the user's behalf and can pre-answer confirmations — belong to the server
     /// the operator configured, so they carry over only when the re-registration still points at
-    /// that server (same <see cref="CanonicalIdentity"/>). Otherwise the model could re-point a
+    /// that server (same <see cref="EndpointIdentity"/>). Otherwise the model could re-point a
     /// trusted name at a URL of its choosing and inherit what the operator granted.
     /// </para>
     /// </remarks>
@@ -123,8 +123,30 @@ public sealed class McpBridgeServerConfig
         if (existing is null) return;
         ArgGuards = existing.ArgGuards;
 
-        var sameServer = string.Equals(CanonicalIdentity(), existing.CanonicalIdentity(), StringComparison.Ordinal);
+        var sameServer = string.Equals(EndpointIdentity(), existing.EndpointIdentity(), StringComparison.Ordinal);
         Elicitation = sameServer ? existing.Elicitation : existing.Elicitation?.WithoutGrants();
+    }
+
+    /// <summary>
+    /// Which server this config talks to — transport type, URL, or command, arguments and
+    /// environment — and nothing about how it is talked to.
+    /// </summary>
+    /// <remarks>
+    /// Unlike <see cref="CanonicalIdentity"/>, this leaves out tool filters, headers, auth profile
+    /// and transport mode. <c>register_mcp_server</c> cannot express any of those, so including
+    /// them would make every filtered or authenticated server look like a different server when
+    /// the model re-registers it at the same address.
+    /// </remarks>
+    public string EndpointIdentity()
+    {
+        var type = Type?.Trim().ToLowerInvariant() ?? string.Empty;
+        var url = NormalizeUrl(Url);
+        var command = Command?.Trim() ?? string.Empty;
+        var args = string.Join("\u001f", Args ?? []);
+        var env = string.Join("\u001f", (Env ?? [])
+            .OrderBy(kvp => kvp.Key, StringComparer.Ordinal)
+            .Select(kvp => $"{kvp.Key}={kvp.Value}"));
+        return string.Join("\u001e", type, url, command, args, env);
     }
 
     /// <summary>

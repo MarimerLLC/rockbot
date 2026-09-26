@@ -272,6 +272,29 @@ public class McpBridgeServerConfigTests
     }
 
     [TestMethod]
+    public void CarryOperatorPolicyFrom_SameEndpointWithFiltersHeadersAndAuth_KeepsGrants()
+    {
+        // register_mcp_server cannot express tool filters, headers or auth. A server the operator
+        // filtered or authenticated is still the same server when re-registered at its address.
+        var existing = new McpBridgeServerConfig
+        {
+            Type = "sse",
+            Url = "https://srv/",
+            AllowedTools = ["search"],
+            DeniedTools = ["delete"],
+            Headers = new() { ["X-Api-Key"] = "${KEY}" },
+            Auth = new McpServerAuthConfig { Profile = "workiq" },
+            TransportMode = "sse-only",
+            Elicitation = new RockBot.Tools.Mcp.Elicitation.McpElicitationConfig { Responder = "conversation" },
+        };
+        var registered = new McpBridgeServerConfig { Type = "SSE", Url = "https://SRV" };
+
+        registered.CarryOperatorPolicyFrom(existing);
+
+        Assert.AreSame(existing.Elicitation, registered.Elicitation);
+    }
+
+    [TestMethod]
     public void CarryOperatorPolicyFrom_RepointedName_KeepsRestrictionsButNotGrants()
     {
         // The model re-points a trusted name at a URL of its choosing. The operator's

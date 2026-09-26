@@ -135,8 +135,8 @@ Two responders ship, chosen per server (`responder` in the server's elicitation 
   only from the in-flight call's own arguments. If the caller put the answer in `context`, it
   can transcribe it; if not, it declines, the note goes back to the agent, and the agent retries
   with `context` filled in or asks the user.
-- `conversation` answers from the calling conversation's recent turns, and only choice and
-  number fields — never free text, never memory or tools. "Which Mercury did you mean?" offered
+- `conversation` answers from the calling conversation's recent turns (secret-shaped text
+  redacted), and only choice fields — never free text or numbers, never memory or tools. "Which Mercury did you mean?" offered
   as a choice is usually settled by what the user already said, so this is the right choice for
   the research server: `"responder": "conversation"`, `"responderTimeoutMs": 30000`, in that
   server's own elicitation block. The research server must therefore ask its clarifying

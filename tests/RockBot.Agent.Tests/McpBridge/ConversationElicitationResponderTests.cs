@@ -163,8 +163,55 @@ public class ConversationElicitationResponderTests
         var answer = await responder.AnswerAsync(context, CancellationToken.None);
 
         Assert.IsFalse(answer.Accepted);
-        StringAssert.Contains(answer.Reason!, "free text");
+        StringAssert.Contains(answer.Reason!, "not a choice");
         Assert.AreEqual(0, llm.Calls, "the conversation must never reach the model for a free-text question");
+    }
+
+    [TestMethod]
+    public async Task AnswerAsync_Declines_ANumberField()
+    {
+        // A number can carry a PIN or a card number just as well as a string can carry text.
+        var (responder, llm, _) = Create(
+            """{"action":"accept","content":{"value":4111111111111111}}""",
+            ("user", "My card is 4111 1111 1111 1111."));
+        var context = new McpElicitationContext(
+            "research",
+            new ElicitRequestParams
+            {
+                Message = "Enter a value",
+                RequestedSchema = new ElicitRequestParams.RequestSchema
+                {
+                    Properties = new Dictionary<string, ElicitRequestParams.PrimitiveSchemaDefinition>
+                    {
+                        ["value"] = new ElicitRequestParams.NumberSchema { Type = "number" },
+                    },
+                },
+            },
+            [new McpElicitationCallContext("research", "{}", SessionNamespace)],
+            new Dictionary<string, JsonElement>());
+
+        var answer = await responder.AnswerAsync(context, CancellationToken.None);
+
+        Assert.IsFalse(answer.Accepted);
+        Assert.AreEqual(0, llm.Calls);
+    }
+
+    [TestMethod]
+    public async Task AnswerAsync_ScrubsSecretsTheUserPastedIntoTheConversation()
+    {
+        // The main loop may have run on another tier/provider; the responder's model must not
+        // receive a key the user pasted, even though conversation memory stores it as written.
+        var (responder, llm, _) = Create(
+            """{"action":"accept","content":{"meaning":"planet"}}""",
+            ("user", "Use my key sk-proj-AbCdEf0123456789XyZ and research Mercury, the planet."),
+            ("user", "Also password: hunter2"));
+
+        await responder.AnswerAsync(Context(), CancellationToken.None);
+
+        var seen = string.Join("\n", llm.Messages.Select(m => m.Text));
+        Assert.IsFalse(seen.Contains("sk-proj-AbCdEf0123456789XyZ", StringComparison.Ordinal));
+        Assert.IsFalse(seen.Contains("hunter2", StringComparison.Ordinal));
+        StringAssert.Contains(seen, "research Mercury, the planet");
     }
 
     [TestMethod]

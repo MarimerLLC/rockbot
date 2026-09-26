@@ -182,14 +182,20 @@ by what would give the best answer:
   one at a URL the model chose. It also never follows a server name the model re-points at a
   different endpoint (`CarryOperatorPolicyFrom` drops grants on a changed identity; see
   "LLM-registered servers cannot write their own policy").
-- **Choices and numbers only.** Any free-text field declines the request before the
-  conversation is read. A string field lets a server ask for anything and carry away whatever
-  the conversation holds; a pick from the server's own options says only which one the user
-  meant. (Yes/no decisions are already declined by the coordinator.)
-- **The recent conversation and nothing else.** No tools at all: no durable memory, which spans
-  every conversation; no working memory, whose paths reach other sessions, subagents and
-  stashes; no rules; and no MCP tools, so it cannot call back into the server that is waiting
-  and has no route to any credential. Tool arguments in its prompt are redacted as for `llm`.
+- **Choices only.** Any field that is not a pick from the server's own options — free text or a
+  number — declines the request before the conversation is read. A string field lets a server
+  ask for anything and carry away whatever the conversation holds; a number can carry a PIN, a
+  card or account number, a date of birth. A pick from the server's options says only which one
+  the user meant. (Yes/no decisions are already declined by the coordinator.)
+- **The recent conversation, scrubbed, and nothing else.** Secret-shaped text in the turns is
+  redacted (`McpSecretScrubber`: known key formats, bearer tokens and JWTs, PEM keys,
+  credential-named `key=value` pairs, card- and SSN-like digit runs, long mixed tokens) — a user
+  may have pasted a key, conversation memory stores messages as written, and this responder may
+  run on a different model and provider than the turn did. No tools at all: no durable memory,
+  which spans every conversation; no working memory, whose paths reach other sessions, subagents
+  and stashes; no rules; and no MCP tools, so it cannot call back into the server that is waiting
+  and has no route to any credential. Tool arguments in its prompt are redacted as for `llm`,
+  including secret-shaped text inside ordinary string values.
 - **One user conversation.** It answers only for calls made from a user conversation
   (`SessionId` exactly `session/{id}`), and only when every open call against the server
   belongs to that one conversation — never one user's question from another's conversation.
@@ -278,10 +284,14 @@ an *existing* name keeps that server's operator-declared restrictions — `argGu
 — rather than falling back to the default: an `off` server must not become an answering one
 because the model re-registered it. The operator's *grants* — a named `responder` and
 `defaults` — carry over only if the re-registration still points at the same server (same
-canonical identity). Re-pointed at another endpoint, the name keeps the restrictions and loses
+`McpBridgeServerConfig.EndpointIdentity`: transport type, URL, or command, arguments and
+environment — deliberately not tool filters, headers, auth or transport mode, which
+`register_mcp_server` cannot express, so a filtered or authenticated server re-registered at its
+own address is still recognised). Re-pointed at another endpoint, the name keeps the restrictions and loses
 the grants (`McpElicitationConfig.WithoutGrants`), so the model cannot aim a trusted name at a URL
 of its choosing and inherit what was granted to the original. And a responder that sets
-`RequiresServerOptIn` (such as `conversation`) is refused in `DefaultElicitation` altogether.
+`RequiresServerOptIn` (such as `conversation`) must be *named* in a server's own policy: it is
+refused in `DefaultElicitation`, and never used as the host's implicit default responder either.
 Unregistering first (`mcp_unregister_server`) still deletes the entry and its policy with it;
 protecting operator-declared servers from both paths is tracked in #603. The
 credential heuristics are code, not config, and cannot be turned off from a config file at all.
