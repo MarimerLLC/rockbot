@@ -26,6 +26,22 @@ client a URL and expects it to walk a person through a browser flow out of band.
 A client that does not advertise the `elicitation` capability should never be asked. A client
 that advertises it and then hangs turns every such tool call into a timeout.
 
+### Two wire shapes, one handler
+
+The 2026-07-28 revision (MCP C# SDK 2.x) replaced the server-to-client request with **Multi
+Round-Trip Requests (MRTR)**: the server ends its `tools/call` with an `InputRequiredResult`
+carrying one or more input requests and an opaque `requestState`, and the client answers and
+re-issues the same call with `inputResponses`. Nothing is held open on the server between rounds.
+
+The bridge's 2.x client prefers 2026-07-28 and falls back automatically to the `initialize`
+handshake (and legacy `elicitation/create`) for servers that do not support it — external
+servers still on SDK 1.x look like that. It does not pin `McpClientOptions.ProtocolVersion`, so
+the fallback stays automatic. Both shapes arrive at the same `McpClientHandlers.ElicitationHandler`
+— the SDK's `ResolveInputRequestsAsync` dispatches MRTR input requests to it — so everything in
+this document applies to both. `McpElicitationMrtrTests` pins that end to end against a real 2.x
+server and client: MRTR answers, declines, `MaxPerCall` across SDK-driven rounds, exact
+attribution with concurrent calls, and a server pinned to an older protocol.
+
 ## Why this needed a design and not a default
 
 The obvious "safe" answer — never advertise the capability — is not safe, it is just quiet.
@@ -247,14 +263,20 @@ single line wherever it is rendered, in the note and in the responder's prompt. 
 content; multi-line text would let it forge its own bullet lines. In the prompt the question
 also sits inside a fence carrying a per-request nonce, so it cannot close the fence either.
 
-### Attribution is approximate, and says so
+### Attribution: exact under MRTR, approximate for older servers
 
-MCP carries no link from an `elicitation/create` request back to the request that provoked it,
-and the SDK dispatches server-initiated requests on the session's own message loop rather than
-on the caller's async context — so neither the request id nor an `AsyncLocal` ties the two
-together. The bridge tracks open calls per server (`McpElicitationCallScope`): exact while one
-call is open, and explicit about the ambiguity when several are, in which case the record is
-attached to all of them and the responder is told.
+The bridge tracks open calls per server (`McpElicitationCallScope`). How a question is tied back
+to the call that provoked it depends on the protocol version the server negotiated:
+
+- **2026-07-28 (MRTR).** The server returns an `InputRequiredResult` from `tools/call`, and the
+  client resolves it *inside* `CallToolAsync`'s own async flow before retrying. `BeginCall` makes
+  its scope the current call for that flow (an `AsyncLocal`), so the question is attributed to
+  exactly that call — even with several calls open against the server at once.
+- **Older protocols (legacy `elicitation/create`).** MCP carries no link from the request back to
+  the call that provoked it, and the SDK dispatches server-initiated requests on the session's
+  own message loop, where there is no current call. Attribution falls back to every call open
+  against the server: exact while one is open, and explicit about the ambiguity when several
+  are — the record is attached to all of them and the responder is told.
 
 An elicitation arriving with *nothing* in flight — during discovery, say — is declined. There
 is no caller waiting on it and no tool call to answer from.
@@ -362,9 +384,11 @@ Omit the block entirely to inherit `McpBridge:DefaultElicitation`.
   server's `ToolTimeoutMs`; a server with a tool timeout under 20 s can time out while the
   responder is still working.
 - **Answering from the caller's context in the caller's own loop.** The `conversation` responder
-  (below) answers from the calling conversation, but as a separate bounded loop that cannot
+  (above) answers from the calling conversation, but as a separate bounded loop that cannot
   ask the user. Handing the question to the agent's own loop — so it can ask the user and
-  resume — is tracked in #602 (MCP C# SDK 2.x), where multi round-trip requests make it
-  practical.
-- **Task-augmented elicitation.** `McpClientOptions.TaskStore` is unset, so the client does not
-  accept task-augmented elicitation requests. The synchronous path covers the servers we run.
+  resume — is the remaining part of #602. The bridge is on SDK 2.x now, and MRTR is what makes
+  it practical: nothing is held open on the server while the question waits.
+- **Tasks.** Long-running tools via the 2.x Tasks extension (`ModelContextProtocol.Extensions.Tasks`),
+  including input requests raised while a task runs, are not wired into the bridge. The
+  synchronous path covers the servers we run; the Tasks-aware bridge is part of the
+  ResearchAgent/AdvisorCouncil MCP work.
