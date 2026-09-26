@@ -22,6 +22,17 @@ public class LlmElicitationResponderTests
     }
 
     [TestMethod]
+    public void RedactArguments_ScrubsSecretsInsideOrdinaryStringValues()
+    {
+        var rendered = LlmElicitationResponder.RedactArguments(
+            """{"query":"search using key sk-proj-AbCdEf0123456789XyZ","tags":["ok","ghp_abcdefghijklmnopqrstuvwxyz0123"]}""");
+
+        StringAssert.Contains(rendered, "search using key");
+        Assert.IsFalse(rendered.Contains("sk-proj-AbCdEf0123456789XyZ", StringComparison.Ordinal));
+        Assert.IsFalse(rendered.Contains("ghp_abcdefghijklmnopqrstuvwxyz0123", StringComparison.Ordinal));
+    }
+
+    [TestMethod]
     public void RedactArguments_WithholdsArgumentsThatAreNotJson()
     {
         var rendered = LlmElicitationResponder.RedactArguments("password=hunter2");

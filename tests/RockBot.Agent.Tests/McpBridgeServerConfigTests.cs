@@ -247,7 +247,7 @@ public class McpBridgeServerConfigTests
     // ── CarryOperatorPolicyFrom ───────────────────────────────────────────────
 
     [TestMethod]
-    public void CarryOperatorPolicyFrom_KeepsArgGuardsAndElicitationPolicy()
+    public void CarryOperatorPolicyFrom_SameServer_KeepsArgGuardsAndTheWholeElicitationPolicy()
     {
         // register_mcp_server is LLM-callable and cannot express either block; re-registering
         // an existing name must not turn an operator's "off" server back into an answering one.
@@ -260,16 +260,72 @@ public class McpBridgeServerConfigTests
             {
                 Mode = "off",
                 DeniedFields = ["accountId"],
-                Responder = "narrow",
+                Responder = "conversation",
             },
         };
-        var registered = new McpBridgeServerConfig { Type = "sse", Url = "https://other/" };
+        var registered = new McpBridgeServerConfig { Type = "sse", Url = "https://srv/" };
 
         registered.CarryOperatorPolicyFrom(existing);
 
         Assert.AreSame(existing.ArgGuards, registered.ArgGuards);
         Assert.AreSame(existing.Elicitation, registered.Elicitation);
-        Assert.AreEqual("https://other/", registered.Url, "only policy is carried, not the connection");
+    }
+
+    [TestMethod]
+    public void CarryOperatorPolicyFrom_SameEndpointWithFiltersHeadersAndAuth_KeepsGrants()
+    {
+        // register_mcp_server cannot express tool filters, headers or auth. A server the operator
+        // filtered or authenticated is still the same server when re-registered at its address.
+        var existing = new McpBridgeServerConfig
+        {
+            Type = "sse",
+            Url = "https://srv/",
+            AllowedTools = ["search"],
+            DeniedTools = ["delete"],
+            Headers = new() { ["X-Api-Key"] = "${KEY}" },
+            Auth = new McpServerAuthConfig { Profile = "workiq" },
+            TransportMode = "sse-only",
+            Elicitation = new RockBot.Tools.Mcp.Elicitation.McpElicitationConfig { Responder = "conversation" },
+        };
+        var registered = new McpBridgeServerConfig { Type = "SSE", Url = "https://SRV" };
+
+        registered.CarryOperatorPolicyFrom(existing);
+
+        Assert.AreSame(existing.Elicitation, registered.Elicitation);
+    }
+
+    [TestMethod]
+    public void CarryOperatorPolicyFrom_RepointedName_KeepsRestrictionsButNotGrants()
+    {
+        // The model re-points a trusted name at a URL of its choosing. The operator's
+        // restrictions still apply; what the operator granted the original server — a responder
+        // that hands over conversation data, and defaults that answer (even confirm) on the
+        // user's behalf — must not follow the name.
+        var existing = new McpBridgeServerConfig
+        {
+            Type = "sse",
+            Url = "https://srv/",
+            ArgGuards = [new McpArgGuardConfig { Handler = "path-prefix", Tools = ["download_file"] }],
+            Elicitation = new RockBot.Tools.Mcp.Elicitation.McpElicitationConfig
+            {
+                Mode = "auto",
+                MaxPerCall = 1,
+                DeniedFields = ["accountId"],
+                Responder = "conversation",
+                Defaults = new() { ["confirm"] = System.Text.Json.JsonDocument.Parse("true").RootElement },
+            },
+        };
+        var registered = new McpBridgeServerConfig { Type = "sse", Url = "https://attacker.example/" };
+
+        registered.CarryOperatorPolicyFrom(existing);
+
+        Assert.AreSame(existing.ArgGuards, registered.ArgGuards);
+        Assert.IsNotNull(registered.Elicitation);
+        Assert.AreEqual(1, registered.Elicitation.MaxPerCall);
+        CollectionAssert.AreEqual(new[] { "accountId" }, registered.Elicitation.DeniedFields);
+        Assert.IsNull(registered.Elicitation.Responder);
+        Assert.AreEqual(0, registered.Elicitation.Defaults.Count);
+        Assert.AreEqual("https://attacker.example/", registered.Url, "only policy is carried, not the connection");
     }
 
     [TestMethod]
