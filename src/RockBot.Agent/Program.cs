@@ -477,10 +477,27 @@ builder.Services.AddSingleton(attachmentUploadOptions);
 builder.Services.AddHostedService<AttachmentUploadEndpoint>();
 
 // MCP bridge (replaces external RockBot.Tools.Mcp.Bridge process)
-builder.Services.Configure<McpBridgeOptions>(builder.Configuration.GetSection("McpBridge"));
+var mcpBridgeSection = builder.Configuration.GetSection("McpBridge");
+builder.Services.Configure<McpBridgeOptions>(mcpBridgeSection);
+// ConfigurationBinder cannot bind the elicitation defaults dictionary; read it explicitly.
+builder.Services.PostConfigure<McpBridgeOptions>(options =>
+    (options.DefaultElicitation ??= new()).Defaults = McpBridgeOptions.ReadElicitationDefaults(mcpBridgeSection));
 builder.Services.AddSingleton(new McpArgGuardRegistration(
     PathPrefixArgGuard.HandlerName, new PathPrefixArgGuard()));
 builder.Services.AddSingleton<IMcpArgGuardRegistry, McpArgGuardRegistry>();
+
+// Answers the questions MCP servers ask mid-tool-call (elicitation/create). Registered as an
+// interface so a deployment that can reach a person inside a tool-call timeout can swap in a
+// responder that asks them instead of answering from the call's own arguments. Also registered
+// under its key so a server's `elicitation.responder` can name it; other responders are added as
+// keyed services and chosen per server the same way.
+builder.Services.AddSingleton<RockBot.Tools.Mcp.Elicitation.LlmElicitationResponder>();
+builder.Services.AddSingleton<RockBot.Tools.Mcp.Elicitation.IMcpElicitationResponder>(
+    sp => sp.GetRequiredService<RockBot.Tools.Mcp.Elicitation.LlmElicitationResponder>());
+builder.Services.AddKeyedSingleton<RockBot.Tools.Mcp.Elicitation.IMcpElicitationResponder>(
+    RockBot.Tools.Mcp.Elicitation.LlmElicitationResponder.Key,
+    (sp, _) => sp.GetRequiredService<RockBot.Tools.Mcp.Elicitation.LlmElicitationResponder>());
+
 builder.Services.AddHostedService<McpBridgeService>();
 
 // WorkIQ auth (MSAL token provider + cache store) — registered only when

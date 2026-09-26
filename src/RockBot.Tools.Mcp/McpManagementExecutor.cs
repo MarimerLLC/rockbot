@@ -257,7 +257,8 @@ public sealed class McpManagementExecutor : IToolExecutor, IAsyncDisposable
         {
             ToolCallId = request.ToolCallId,
             ToolName = toolName,
-            Arguments = toolArgs
+            Arguments = toolArgs,
+            SessionId = request.SessionId
         };
 
         var extraHeaders = new Dictionary<string, string>

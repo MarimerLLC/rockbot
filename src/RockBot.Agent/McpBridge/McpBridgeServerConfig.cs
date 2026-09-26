@@ -1,5 +1,6 @@
 using RockBot.Agent.McpBridge.ArgGuards;
 using RockBot.Agent.McpBridge.Attachments;
+using RockBot.Tools.Mcp.Elicitation;
 
 namespace RockBot.Agent.McpBridge;
 
@@ -80,12 +81,38 @@ public sealed class McpBridgeServerConfig
     public List<McpArgGuardConfig> ArgGuards { get; set; } = [];
 
     /// <summary>
+    /// Optional policy for <c>elicitation/create</c> — the question this server may ask the
+    /// client mid-tool-call. When omitted, the bridge's <c>DefaultElicitation</c> applies.
+    /// Excluded from <see cref="CanonicalIdentity"/> for the same reason as
+    /// <see cref="ArgGuards"/>: it is policy about how the server is talked to, not which
+    /// server it is.
+    /// </summary>
+    public McpElicitationConfig? Elicitation { get; set; }
+
+    /// <summary>
     /// Optional bearer-token authentication. When set, the bridge resolves
     /// <see cref="McpServerAuthConfig.Profile"/> against the token provider
     /// registry and wires a <c>BearerInjectionHandler</c> into the HTTP client
     /// so every request carries a fresh access token.
     /// </summary>
     public McpServerAuthConfig? Auth { get; set; }
+
+    /// <summary>
+    /// Copies the operator-only policy that <c>register_mcp_server</c> cannot express from the
+    /// config this one replaces.
+    /// </summary>
+    /// <remarks>
+    /// <c>register_mcp_server</c> is LLM-callable. Re-registering an existing name must not let
+    /// the model shed policy the operator declared — dropping <see cref="Elicitation"/> would
+    /// fall back to <c>DefaultElicitation</c>, turning an <c>off</c> server into an answering
+    /// one and discarding its <c>deniedFields</c> and <c>responder</c>.
+    /// </remarks>
+    public void CarryOperatorPolicyFrom(McpBridgeServerConfig? existing)
+    {
+        if (existing is null) return;
+        ArgGuards = existing.ArgGuards;
+        Elicitation = existing.Elicitation;
+    }
 
     /// <summary>
     /// Whether this config uses HTTP-based transport (SSE or streamable HTTP).

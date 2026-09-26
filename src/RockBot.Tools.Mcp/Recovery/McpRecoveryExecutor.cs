@@ -184,7 +184,8 @@ public sealed class McpRecoveryExecutor
                 {
                     ToolCallId = innerRequest.ToolCallId,
                     ToolName = toolName,
-                    Arguments = JsonSerializer.Serialize(mergedArgs)
+                    Arguments = JsonSerializer.Serialize(mergedArgs),
+                    SessionId = innerRequest.SessionId
                 };
                 return await TryRecoverAsync(serverName, toolName, nextRequest, retryResponse, depth + 1, sessionId, ct);
             }
@@ -332,7 +333,8 @@ public sealed class McpRecoveryExecutor
         {
             ToolCallId = innerRequest.ToolCallId,
             ToolName = toolName,
-            Arguments = argsJson
+            Arguments = argsJson,
+            SessionId = innerRequest.SessionId
         };
         var headers = new Dictionary<string, string>
         {

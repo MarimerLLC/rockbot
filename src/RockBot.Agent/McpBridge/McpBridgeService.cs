@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Text.Json;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Hosting;
@@ -13,6 +14,7 @@ using RockBot.Agent.McpBridge.Auth;
 using RockBot.Tools;
 using RockBot.Tools.Mcp;
 using RockBot.Tools.Mcp.Auth;
+using RockBot.Tools.Mcp.Elicitation;
 
 namespace RockBot.Agent.McpBridge;
 
@@ -32,6 +34,10 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
     private readonly ITokenProviderRegistry? _tokenProviders;
     private readonly WorkIqHealthTracker? _healthTracker;
     private readonly IMcpArgGuardRegistry? _argGuards;
+    private readonly IMcpElicitationResponder? _elicitationResponder;
+
+    /// <summary>Resolves a server's named elicitation responder (keyed services), if it names one.</summary>
+    private readonly IServiceProvider? _services;
 
     private readonly Dictionary<string, McpClient> _clients = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, McpBridgeServerConfig> _serverConfigs = new(StringComparer.OrdinalIgnoreCase);
@@ -39,6 +45,15 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
     private readonly Dictionary<string, List<McpClientPrompt>> _serverPrompts = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, McpServerMetadata> _serverMetadata = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, McpServerSummary> _serverSummaries = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Per-server elicitation policy, rebuilt on every connect so a config reload changes what
+    /// the bridge is willing to answer. Absent for a server whose policy is <c>off</c> — and its
+    /// absence is what stops the SDK advertising the capability for that server at all.
+    /// Concurrent because every tool invoke reads it while connect, disconnect and config reload
+    /// write it from other subscriptions and the reload sweep.
+    /// </summary>
+    private readonly ConcurrentDictionary<string, McpElicitationCoordinator> _elicitationCoordinators = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, AttachmentGatewayEntry> _attachmentGateways = new(StringComparer.OrdinalIgnoreCase);
     private readonly Lazy<IAttachmentStorage> _attachmentStorage = new(() => new AttachmentStorage());
 
@@ -84,7 +99,9 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
         ILlmClient? llmClient = null,
         ITokenProviderRegistry? tokenProviders = null,
         WorkIqHealthTracker? healthTracker = null,
-        IMcpArgGuardRegistry? argGuards = null)
+        IMcpArgGuardRegistry? argGuards = null,
+        IMcpElicitationResponder? elicitationResponder = null,
+        IServiceProvider? services = null)
     {
         _publisher = publisher;
         _subscriber = subscriber;
@@ -98,6 +115,8 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
         _tokenProviders = tokenProviders;
         _healthTracker = healthTracker;
         _argGuards = argGuards;
+        _elicitationResponder = elicitationResponder;
+        _services = services;
         _binaryCapture = new Lazy<BinaryResponseCapture>(
             () => new BinaryResponseCapture(_attachmentStorage.Value, _logger));
     }
@@ -459,7 +478,28 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
                     transport = new HttpClientTransport(transportOptions);
                 }
 
-                var newClient = await McpClient.CreateAsync(transport, cancellationToken: ct);
+                // The SDK advertises the elicitation capability during initialize exactly when an
+                // elicitation handler is present, so a server configured "off" is never invited to
+                // ask in the first place — a cleaner answer than advertising and refusing.
+                var elicitationConfig = config.Elicitation ?? _options.DefaultElicitation;
+                var elicitation = McpElicitationCoordinator.TryCreate(
+                    name,
+                    elicitationConfig,
+                    McpElicitationResponders.Resolve(elicitationConfig, _elicitationResponder, _services, name, _logger),
+                    _logger);
+
+                var clientOptions = elicitation is null
+                    ? null
+                    : new McpClientOptions
+                    {
+                        Handlers = new McpClientHandlers
+                        {
+                            ElicitationHandler = (elicitRequest, elicitCt) =>
+                                elicitation.HandleAsync(elicitRequest, elicitCt)
+                        }
+                    };
+
+                var newClient = await McpClient.CreateAsync(transport, clientOptions, cancellationToken: ct);
 
                 // Discover tools before committing the swap so a failure leaves the old client intact
                 var tools = await newClient.ListToolsAsync(cancellationToken: ct);
@@ -484,6 +524,12 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
                 }
 
                 _clients[name] = newClient;
+
+                if (elicitation is null)
+                    _elicitationCoordinators.TryRemove(name, out _);
+                else
+                    _elicitationCoordinators[name] = elicitation;
+
                 _serverTools[name] = filteredTools;
                 _serverPrompts[name] = prompts;
 
@@ -557,6 +603,7 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
         _serverMetadata.Remove(name);
         _serverConfigs.Remove(name);
         _serverSummaries.Remove(name);
+        _elicitationCoordinators.TryRemove(name, out _);
         InvalidateAttachmentGateway(name);
 
         await PublishServersIndexedAsync([], [name], CancellationToken.None);
@@ -1040,6 +1087,12 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
             }
         }
 
+        // Open before the call: an elicitation arrives on the MCP session's own message loop
+        // while CallToolAsync is still awaiting, not on this async context, so the only way to
+        // tie a question back to the call that provoked it is to record the call as in flight.
+        using var elicitationScope = _elicitationCoordinators.GetValueOrDefault(serverName)
+            ?.BeginCall(request.ToolName, request.Arguments, request.SessionId);
+
         try
         {
             using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
@@ -1058,6 +1111,13 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
 
             sw.Stop();
             var blocks = McpToolExecutor.MapContentBlocks(result);
+
+            // A question the bridge declined usually means a thin or partial result. Say so in
+            // the tool output, or the agent retries the identical call and gets the same answer.
+            IReadOnlyList<McpElicitationRecord> elicitations = elicitationScope?.Records ?? [];
+            if (McpElicitationNote.Build(elicitations, GetToolParameterNames(serverName, request.ToolName)) is { } elicitationNote)
+                blocks = McpElicitationNote.AppendTo(blocks, elicitationNote);
+
             var content = blocks is not null ? McpToolExecutor.TextFromBlocks(blocks) : null;
 
             if (result.IsError == true)
@@ -1113,7 +1173,9 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
                 ToolName = request.ToolName,
                 Code = ToolError.Codes.Timeout,
                 Message = $"MCP server '{serverName}' timed out after {timeoutMs}ms. " +
-                          $"This is a transient error — retry the same tool call to continue.",
+                          $"This is a transient error — retry the same tool call to continue."
+                          + McpElicitationNote.DescribeDeclined(
+                              elicitationScope?.Records ?? [], GetToolParameterNames(serverName, request.ToolName)),
                 IsRetryable = true
             };
 
@@ -1166,16 +1228,34 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
         {
             sw.Stop();
 
-            // Any exception from CallToolAsync likely means the connection is dead
+            // The first attempt is over. Close its scope before any retry: when the reconnect
+            // fails quietly and keeps the same coordinator, a still-open scope would carry this
+            // attempt's question count into the retry and list the call twice.
+            elicitationScope?.Dispose();
+            IReadOnlyList<McpElicitationRecord> failedElicitations = elicitationScope?.Records ?? [];
+
+            // A failure right after a declined question is almost certainly the server giving
+            // up without the value — not a dead connection. Retrying the identical call would
+            // only be asked the same thing and declined again.
+            var declinedBeforeFailure = failedElicitations.Any(r => !r.IsAccepted);
+
+            // Any other exception from CallToolAsync likely means the connection is dead
             // (server restarted, session expired, network reset, etc.).
             // Reconnect synchronously and retry the call once so the agent never sees
             // a transient session failure — it's transparent from the agent's perspective.
-            if (serverName is not null && _serverConfigs.TryGetValue(serverName, out var staleConfig))
+            if (declinedBeforeFailure)
+            {
+                _logger.LogWarning(ex,
+                    "← MCP {Server}/{Tool} FAILED after {ElapsedMs}ms following a declined elicitation — not retrying",
+                    serverName, request.ToolName, sw.ElapsedMilliseconds);
+            }
+            else if (serverName is not null && _serverConfigs.TryGetValue(serverName, out var staleConfig))
             {
                 _logger.LogWarning(ex,
                     "← MCP {Server}/{Tool} FAILED after {ElapsedMs}ms — reconnecting and retrying transparently",
                     serverName, request.ToolName, sw.ElapsedMilliseconds);
 
+                McpElicitationCallScope? retryElicitationScope = null;
                 try
                 {
                     await ConnectServerAsync(serverName, staleConfig, ct);
@@ -1185,6 +1265,12 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
                     {
                         using var retryCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
                         retryCts.CancelAfter(timeoutMs);
+
+                        // A successful reconnect replaced the coordinator along with the client,
+                        // so the retry needs a scope from the current one.
+                        retryElicitationScope = _elicitationCoordinators
+                            .GetValueOrDefault(serverName)
+                            ?.BeginCall(request.ToolName, request.Arguments, request.SessionId);
 
                         var retryResult = await freshClient.CallToolAsync(
                             request.ToolName, arguments, cancellationToken: retryCts.Token);
@@ -1204,6 +1290,12 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
 
                         sw.Stop();
                         var retryBlocks = McpToolExecutor.MapContentBlocks(retryResult);
+
+                        IReadOnlyList<McpElicitationRecord> retryElicitations =
+                            retryElicitationScope?.Records ?? [];
+                        if (McpElicitationNote.Build(retryElicitations, GetToolParameterNames(serverName, request.ToolName)) is { } retryNote)
+                            retryBlocks = McpElicitationNote.AppendTo(retryBlocks, retryNote);
+
                         var retryContent = retryBlocks is not null ? McpToolExecutor.TextFromBlocks(retryBlocks) : null;
 
                         _logger.LogInformation(
@@ -1229,6 +1321,12 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
                         "Reconnect/retry for MCP {Server}/{Tool} also failed — returning error to agent",
                         serverName, request.ToolName);
                 }
+                finally
+                {
+                    retryElicitationScope?.Dispose();
+                    if (retryElicitationScope is { HasRecords: true })
+                        failedElicitations = [.. failedElicitations, .. retryElicitationScope.Records];
+                }
             }
             else
             {
@@ -1241,7 +1339,9 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
                 ToolCallId = request.ToolCallId,
                 ToolName = request.ToolName,
                 Code = ToolError.Codes.ExecutionFailed,
-                Message = ex.Message,
+                Message = ex.Message
+                          + McpElicitationNote.DescribeDeclined(
+                              failedElicitations, GetToolParameterNames(serverName, request.ToolName)),
                 IsRetryable = true
             };
 
@@ -1318,10 +1418,9 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
                     Env = req.Env
                 };
 
-                // register_mcp_server cannot express argGuards, and it is LLM-callable —
-                // re-registering an existing name must not strip operator-declared policy.
-                if (_serverConfigs.TryGetValue(req.ServerName, out var existingConfig))
-                    config.ArgGuards = existingConfig.ArgGuards;
+                // register_mcp_server cannot express argGuards or elicitation policy, and it is
+                // LLM-callable — re-registering an existing name must not strip operator policy.
+                config.CarryOperatorPolicyFrom(_serverConfigs.GetValueOrDefault(req.ServerName));
 
                 // Validate guards before connecting so the caller gets a descriptive error
                 // instead of the generic "Connection failed" (ConnectServerAsync fails closed
@@ -1642,6 +1741,31 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
         {
             _configPersistLock.Release();
         }
+    }
+
+    /// <summary>
+    /// Parameter names from a tool's discovered input schema, so an elicitation note can say
+    /// whether a declined field is something the agent can pass on retry. Null when the schema
+    /// is unknown, or when the tool is an <c>invoke_tool</c> dispatcher whose real parameters
+    /// belong to the inner tool.
+    /// </summary>
+    private IReadOnlyCollection<string>? GetToolParameterNames(string? serverName, string toolName)
+    {
+        if (serverName is null
+            || toolName == "invoke_tool"
+            || _serverTools.GetValueOrDefault(serverName)?.FirstOrDefault(t => t.Name == toolName) is not { } tool
+            || tool.JsonSchema.ValueKind != JsonValueKind.Object)
+        {
+            return null;
+        }
+
+        if (!tool.JsonSchema.TryGetProperty("properties", out var properties)
+            || properties.ValueKind != JsonValueKind.Object)
+        {
+            return [];
+        }
+
+        return [.. properties.EnumerateObject().Select(p => p.Name)];
     }
 
     private async Task PublishResponseAsync<T>(

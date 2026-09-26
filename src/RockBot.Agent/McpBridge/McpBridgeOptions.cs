@@ -1,3 +1,7 @@
+using System.Text.Json;
+using Microsoft.Extensions.Configuration;
+using RockBot.Tools.Mcp.Elicitation;
+
 namespace RockBot.Agent.McpBridge;
 
 /// <summary>
@@ -53,6 +57,43 @@ public sealed class McpBridgeOptions
     /// filesystems such as Longhorn). Set to zero to disable polling. Default 5 s.
     /// </summary>
     public int ConfigPollIntervalSeconds { get; set; } = 5;
+
+    /// <summary>
+    /// Elicitation policy applied to every server that does not declare its own
+    /// <c>elicitation</c> block. The default answers form-mode questions from the in-flight
+    /// tool call; set <c>Mode</c> to <c>decline</c> or <c>off</c> to tighten it fleet-wide.
+    /// </summary>
+    public McpElicitationConfig DefaultElicitation { get; set; } = new();
+
+    /// <summary>
+    /// Reads <c>DefaultElicitation:Defaults</c> from the bridge's configuration section.
+    /// </summary>
+    /// <remarks>
+    /// <c>ConfigurationBinder</c> cannot bind <see cref="McpElicitationConfig.Defaults"/>
+    /// (<c>Dictionary&lt;string, JsonElement&gt;</c>) and silently yields an empty dictionary, so
+    /// defaults set in appsettings, Helm values or environment variables would be ignored.
+    /// Configuration values are always strings: each becomes a JSON string (an indexed list
+    /// becomes an array of strings, for multi-select fields), and the coordinator reads a string
+    /// default for a boolean or number field as the literal it spells.
+    /// </remarks>
+    public static Dictionary<string, JsonElement> ReadElicitationDefaults(IConfiguration bridgeSection)
+    {
+        var defaults = new Dictionary<string, JsonElement>(StringComparer.OrdinalIgnoreCase);
+        foreach (var child in bridgeSection.GetSection("DefaultElicitation:Defaults").GetChildren())
+        {
+            if (child.Value is not null)
+            {
+                defaults[child.Key] = JsonSerializer.SerializeToElement(child.Value);
+                continue;
+            }
+
+            string[] items = [.. child.GetChildren().Select(c => c.Value).OfType<string>()];
+            if (items.Length > 0)
+                defaults[child.Key] = JsonSerializer.SerializeToElement(items);
+        }
+
+        return defaults;
+    }
 
     /// <summary>
     /// Default MCP servers seeded from infrastructure config (e.g. Helm chart).

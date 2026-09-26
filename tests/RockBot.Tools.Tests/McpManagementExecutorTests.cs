@@ -299,6 +299,35 @@ public class McpManagementExecutorTests
     }
 
     [TestMethod]
+    public async Task InvokeTool_ForwardsTheSessionToTheBridge()
+    {
+        // The bridge attributes a server's mid-call question (elicitation) to the session that
+        // made the call; dropping the session here leaves a responder no way to ask the agent.
+        var (executor, publisher, subscriber) = CreateExecutor();
+
+        var request = new ToolInvokeRequest
+        {
+            ToolCallId = "call-session",
+            ToolName = "mcp_invoke_tool",
+            Arguments = "{\"server_name\":\"filesystem\",\"tool_name\":\"read_file\",\"arguments\":{\"path\":\"/tmp/x.txt\"}}",
+            SessionId = "session-42"
+        };
+
+        var executeTask = executor.ExecuteAsync(request, CancellationToken.None);
+        await Task.Delay(100);
+
+        Assert.AreEqual(1, publisher.Published.Count);
+        var innerRequest = publisher.Published[0].Envelope.GetPayload<ToolInvokeRequest>();
+        Assert.AreEqual("session-42", innerRequest!.SessionId);
+
+        var response = new ToolInvokeResponse { ToolCallId = "call-session", ToolName = "read_file", Content = "ok" };
+        var responseEnvelope = response.ToEnvelope("bridge",
+            correlationId: publisher.Published[0].Envelope.CorrelationId);
+        await subscriber.DeliverAsync($"tool.result.{_identity.Name}", responseEnvelope);
+        await executeTask;
+    }
+
+    [TestMethod]
     public async Task InvokeTool_FlatTopLevelFields_PromotedIntoArguments()
     {
         // Some models drop the `arguments` wrapper and inline the inner-tool fields
