@@ -153,7 +153,7 @@ public class FallbackChatClientTests
     public async Task RetriesSameModel_OnTransientError()
     {
         var stub = new SequentialStub();
-        stub.Enqueue(HttpEx(HttpStatusCode.TooManyRequests)); // attempt 0: 429
+        stub.Enqueue(HttpEx(HttpStatusCode.ServiceUnavailable)); // attempt 0: 503
         stub.Enqueue(OkResponse("retried"));                  // attempt 1: success
 
         var client = Build([("m1", stub)], maxRetries: 1);
@@ -521,6 +521,162 @@ public class FallbackChatClientTests
 
         public object? GetService(Type serviceType, object? serviceKey = null) => null;
         public void Dispose() { }
+    }
+
+    // ── rate limiting (429) ──────────────────────────────────────────────────
+
+    /// <summary>A 429 as Azure OpenAI sends it, with the given response headers.</summary>
+    private static ClientResultException RateLimitEx(params (string Name, string Value)[] headers) =>
+        new("HTTP 429 (Too Many Requests)", new HeaderedPipelineResponse(429, headers));
+
+    private sealed class HeaderedPipelineResponse(int status, (string Name, string Value)[] headers)
+        : PipelineResponse
+    {
+        public override int Status { get; } = status;
+        public override string ReasonPhrase => string.Empty;
+        public override Stream? ContentStream { get => null; set { } }
+        public override BinaryData Content => BinaryData.Empty;
+        protected override PipelineResponseHeaders HeadersCore { get; } = new HeaderSet(headers);
+        public override BinaryData BufferContent(CancellationToken cancellationToken = default) => BinaryData.Empty;
+        public override ValueTask<BinaryData> BufferContentAsync(CancellationToken cancellationToken = default) =>
+            new(BinaryData.Empty);
+        public override void Dispose() { }
+
+        private sealed class HeaderSet((string Name, string Value)[] headers) : PipelineResponseHeaders
+        {
+            public override bool TryGetValue(string name, out string? value)
+            {
+                value = headers.FirstOrDefault(h => h.Name.Equals(name, StringComparison.OrdinalIgnoreCase)).Value;
+                return value is not null;
+            }
+
+            public override bool TryGetValues(string name, out IEnumerable<string>? values)
+            {
+                values = TryGetValue(name, out var v) ? [v!] : null;
+                return values is not null;
+            }
+
+            public override IEnumerator<KeyValuePair<string, string>> GetEnumerator() =>
+                headers.Select(h => new KeyValuePair<string, string>(h.Name, h.Value)).GetEnumerator();
+        }
+    }
+
+    private sealed class ManualTimeProvider : TimeProvider
+    {
+        private DateTimeOffset _now = new(2026, 9, 28, 15, 0, 0, TimeSpan.Zero);
+        public override DateTimeOffset GetUtcNow() => _now;
+        public void Advance(TimeSpan by) => _now += by;
+    }
+
+    [TestMethod]
+    public async Task RateLimited_FallsBackImmediately_WithoutRetryingSameModel()
+    {
+        // Regression: a 429 used to be retried on the same model. Behind the SDK's
+        // retry-after handling each attempt ran to the 90s per-attempt timeout, so a
+        // throttled turn took ~3 minutes to reach the fallback and subagents timed out.
+        var first  = new FixedStub(ex: RateLimitEx(("retry-after", "30")));
+        var second = new FixedStub(response: OkResponse("from-second"));
+
+        var client = Build([("m1", first), ("m2", second)], maxRetries: 1);
+
+        var response = await client.GetResponseAsync([]);
+
+        Assert.AreEqual("from-second", response.Messages[^1].Text);
+        Assert.AreEqual(1, first.CallCount, "A 429 must not be retried on the throttled model");
+        Assert.AreEqual(1, second.CallCount);
+    }
+
+    [TestMethod]
+    public async Task RateLimited_ModelIsSkippedUntilRetryAfterElapses()
+    {
+        var time   = new ManualTimeProvider();
+        var first  = new SequentialStub();
+        first.Enqueue(RateLimitEx(("retry-after", "20")));
+        first.Enqueue(OkResponse("from-first"));
+        var second = new FixedStub(response: OkResponse("from-second"));
+
+        var client = new FallbackChatClient([("m1", first), ("m2", second)], NullLogger.Instance,
+            retryDelay: TimeSpan.Zero, timeProvider: time);
+
+        await client.GetResponseAsync([]);
+        time.Advance(TimeSpan.FromSeconds(10));
+        var whilePaused = await client.GetResponseAsync([]);
+
+        Assert.AreEqual("from-second", whilePaused.Messages[^1].Text);
+        Assert.AreEqual(1, first.CallCount, "A paused model must not be called inside its retry-after window");
+
+        time.Advance(TimeSpan.FromSeconds(11));
+        var afterPause = await client.GetResponseAsync([]);
+
+        Assert.AreEqual("from-first", afterPause.Messages[^1].Text, "The primary is used again once the window closes");
+        Assert.AreEqual(2, first.CallCount);
+    }
+
+    [TestMethod]
+    public async Task RateLimited_WithoutRetryAfter_UsesDefaultPause()
+    {
+        var time   = new ManualTimeProvider();
+        var first  = new FixedStub(ex: ClientResultEx(429)); // no readable headers
+        var second = new FixedStub(response: OkResponse("from-second"));
+
+        var client = new FallbackChatClient([("m1", first), ("m2", second)], NullLogger.Instance,
+            retryDelay: TimeSpan.Zero, defaultRateLimitPause: TimeSpan.FromSeconds(30), timeProvider: time);
+
+        await client.GetResponseAsync([]);
+        time.Advance(TimeSpan.FromSeconds(29));
+        await client.GetResponseAsync([]);
+        Assert.AreEqual(1, first.CallCount, "Still inside the default pause");
+
+        time.Advance(TimeSpan.FromSeconds(2));
+        await client.GetResponseAsync([]);
+        Assert.AreEqual(2, first.CallCount, "Default pause has elapsed");
+    }
+
+    [TestMethod]
+    public async Task RateLimited_PausedModelIsStillTried_WhenNothingElseIsAvailable()
+    {
+        var time   = new ManualTimeProvider();
+        var first  = new SequentialStub();
+        first.Enqueue(RateLimitEx(("retry-after", "60")));
+        first.Enqueue(OkResponse("from-first"));
+        var second = new FixedStub(ex: HttpEx(HttpStatusCode.Unauthorized)); // degrades permanently
+
+        var client = new FallbackChatClient([("m1", first), ("m2", second)], NullLogger.Instance,
+            retryDelay: TimeSpan.Zero, maxRetries: 0, timeProvider: time);
+
+        await Assert.ThrowsExactlyAsync<InvalidOperationException>(() => client.GetResponseAsync([]));
+
+        var response = await client.GetResponseAsync([]);
+
+        Assert.AreEqual("from-first", response.Messages[^1].Text,
+            "With the fallback degraded, the paused primary is tried rather than failing the call");
+    }
+
+    [TestMethod]
+    public async Task RateLimited_LastModel_WaitsOutRetryAfterAndRetries()
+    {
+        var only = new SequentialStub();
+        only.Enqueue(RateLimitEx(("retry-after-ms", "5")));
+        only.Enqueue(OkResponse("after-wait"));
+
+        var client = Build([("m1", only)], maxRetries: 1);
+
+        var response = await client.GetResponseAsync([]);
+
+        Assert.AreEqual("after-wait", response.Messages[^1].Text);
+        Assert.AreEqual(2, only.CallCount);
+    }
+
+    [TestMethod]
+    public void GetRetryAfter_PrefersMillisecondsHeader()
+    {
+        Assert.AreEqual(TimeSpan.FromMilliseconds(1500),
+            FallbackChatClient.GetRetryAfter(RateLimitEx(("retry-after-ms", "1500"), ("retry-after", "2"))));
+        Assert.AreEqual(TimeSpan.FromSeconds(7),
+            FallbackChatClient.GetRetryAfter(RateLimitEx(("retry-after", "7"))));
+        Assert.IsNull(FallbackChatClient.GetRetryAfter(RateLimitEx()));
+        Assert.IsNull(FallbackChatClient.GetRetryAfter(ClientResultEx(429)), "Unreadable headers yield null, not a throw");
+        Assert.IsNull(FallbackChatClient.GetRetryAfter(HttpEx(HttpStatusCode.TooManyRequests)));
     }
 
     [TestMethod]
