@@ -1,4 +1,5 @@
 using System.ClientModel;
+using System.Globalization;
 using System.IO;
 using System.Net;
 using System.Net.Sockets;
@@ -8,23 +9,37 @@ using Microsoft.Extensions.Logging;
 
 namespace RockBot.Llm;
 
-internal enum FallbackErrorCategory { Transient, QuotaExhausted, ContentFilter, HardError, Unknown }
+internal enum FallbackErrorCategory { Transient, RateLimited, QuotaExhausted, ContentFilter, HardError, Unknown }
 
 /// <summary>
 /// IChatClient decorator that holds an ordered list of model clients and falls back to
 /// the next when the current is permanently degraded (quota/auth errors), while retrying
-/// the same client with backoff for transient errors (429, timeout).
+/// the same client with backoff for transient errors (5xx, timeout).
 /// </summary>
+/// <remarks>
+/// A 429 is handled differently from other transient errors: the model is paused for the
+/// provider's <c>retry-after</c> window and the request moves straight to the next model.
+/// Retrying a throttled model just queues behind the same tokens-per-minute ceiling — with
+/// the SDK's own retry policy that meant ~30s per 429 until the per-attempt timeout fired,
+/// then the same again on the retry, so a throttled turn cost ~3 minutes before it ever
+/// reached the fallback. The pause is shared across callers so concurrent sessions stop
+/// piling onto the throttled deployment. Entries that should fail over on 429 must be
+/// built with SDK-level retries disabled, or the 429 never reaches this client.
+/// </remarks>
 public sealed class FallbackChatClient : IChatClient
 {
     private readonly IReadOnlyList<(string ModelId, IChatClient Client)> _entries;
     private readonly ILogger _logger;
     private readonly bool[] _degraded;
     private readonly DateTimeOffset[] _degradedAt;
+    private readonly long[] _rateLimitedUntilTicks;
     private readonly TimeSpan _retryDelay;
     private readonly TimeSpan _cooldownPeriod;
     private readonly TimeSpan _perAttemptTimeout;
     private readonly int _maxRetries;
+    private readonly TimeSpan _defaultRateLimitPause;
+    private readonly TimeSpan _maxRateLimitPause;
+    private readonly TimeProvider _timeProvider;
     private volatile int _activeIndex;
 
     /// <summary>
@@ -40,7 +55,10 @@ public sealed class FallbackChatClient : IChatClient
         TimeSpan? retryDelay = null,
         int maxRetries = 1,
         TimeSpan? cooldownPeriod = null,
-        TimeSpan? perAttemptTimeout = null)
+        TimeSpan? perAttemptTimeout = null,
+        TimeSpan? defaultRateLimitPause = null,
+        TimeSpan? maxRateLimitPause = null,
+        TimeProvider? timeProvider = null)
     {
         if (entries.Count == 0)
             throw new ArgumentException("At least one entry is required.", nameof(entries));
@@ -48,10 +66,14 @@ public sealed class FallbackChatClient : IChatClient
         _logger = logger;
         _degraded = new bool[entries.Count];
         _degradedAt = new DateTimeOffset[entries.Count];
+        _rateLimitedUntilTicks = new long[entries.Count];
         _retryDelay = retryDelay ?? TimeSpan.FromSeconds(1);
         _cooldownPeriod = cooldownPeriod ?? TimeSpan.FromMinutes(5);
         _perAttemptTimeout = perAttemptTimeout ?? TimeSpan.Zero;
         _maxRetries = maxRetries;
+        _defaultRateLimitPause = defaultRateLimitPause ?? TimeSpan.FromSeconds(30);
+        _maxRateLimitPause = maxRateLimitPause ?? TimeSpan.FromMinutes(2);
+        _timeProvider = timeProvider ?? TimeProvider.System;
     }
 
     public async Task<ChatResponse> GetResponseAsync(
@@ -69,6 +91,11 @@ public sealed class FallbackChatClient : IChatClient
         for (int i = _activeIndex; i < _entries.Count; i++)
         {
             if (_degraded[i]) continue;
+
+            // A throttled model is skipped while its retry-after window is open, but only
+            // when something else can take the request — otherwise try it anyway rather
+            // than fail a call the provider may well accept.
+            if (IsRateLimited(i) && HasAvailableAfter(i)) continue;
 
             var (modelId, client) = _entries[i];
 
@@ -117,6 +144,35 @@ public sealed class FallbackChatClient : IChatClient
 
                     if (category == FallbackErrorCategory.Unknown)
                         throw; // Propagate immediately — don't retry or switch
+
+                    if (category == FallbackErrorCategory.RateLimited)
+                    {
+                        var pause = GetRetryAfter(ex) ?? _defaultRateLimitPause;
+                        if (pause > _maxRateLimitPause) pause = _maxRateLimitPause;
+                        Volatile.Write(ref _rateLimitedUntilTicks[i],
+                            (_timeProvider.GetUtcNow() + pause).UtcTicks);
+
+                        if (HasAvailableAfter(i))
+                        {
+                            _logger.LogWarning(
+                                "FallbackChatClient: model {ModelId} rate-limited (429); pausing it for {Pause} and trying the next model",
+                                modelId, pause);
+                            NotifyFallback(i, modelId, "rate limited");
+                            break; // Fall through to next model
+                        }
+
+                        // Nothing to fall back to — waiting out the window is the only option.
+                        if (attempt < _maxRetries)
+                        {
+                            _logger.LogWarning(
+                                "FallbackChatClient: model {ModelId} rate-limited (429) with no fallback available; waiting {Pause}",
+                                modelId, pause);
+                            await Task.Delay(pause, _timeProvider, cancellationToken);
+                            continue;
+                        }
+
+                        break;
+                    }
 
                     if (category == FallbackErrorCategory.Transient && attempt < _maxRetries)
                         continue; // One more retry on the same client
@@ -233,6 +289,51 @@ public sealed class FallbackChatClient : IChatClient
         }
     }
 
+    private bool IsRateLimited(int index) =>
+        Volatile.Read(ref _rateLimitedUntilTicks[index]) > _timeProvider.GetUtcNow().UtcTicks;
+
+    /// <summary>True when a later entry is neither degraded nor inside a rate-limit pause.</summary>
+    private bool HasAvailableAfter(int index)
+    {
+        for (int j = index + 1; j < _entries.Count; j++)
+        {
+            if (!_degraded[j] && !IsRateLimited(j)) return true;
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// Reads the provider's retry hint from a 429. Azure OpenAI sends both
+    /// <c>retry-after-ms</c> and <c>retry-after</c> (seconds); OpenAI sends the latter.
+    /// Returns null when the exception carries no response or no usable header.
+    /// </summary>
+    internal static TimeSpan? GetRetryAfter(Exception ex)
+    {
+        if (ex is not ClientResultException cre) return null;
+
+        try
+        {
+            var headers = cre.GetRawResponse()?.Headers;
+            if (headers is null) return null;
+
+            if (headers.TryGetValue("retry-after-ms", out var ms)
+                && double.TryParse(ms, NumberStyles.Float, CultureInfo.InvariantCulture, out var msValue)
+                && msValue > 0)
+                return TimeSpan.FromMilliseconds(msValue);
+
+            if (headers.TryGetValue("retry-after", out var ra)
+                && double.TryParse(ra, NumberStyles.Float, CultureInfo.InvariantCulture, out var seconds)
+                && seconds > 0)
+                return TimeSpan.FromSeconds(seconds);
+        }
+        catch (Exception)
+        {
+            // A response without readable headers is not worth failing the request over.
+        }
+
+        return null;
+    }
+
     private void NotifyFallback(int currentIndex, string fromModelId, string reason)
     {
         for (int j = currentIndex + 1; j < _entries.Count; j++)
@@ -307,7 +408,7 @@ public sealed class FallbackChatClient : IChatClient
     private static FallbackErrorCategory ClassifyStatusCode(int status) => status switch
     {
         408 => FallbackErrorCategory.Transient,        // Request Timeout
-        429 => FallbackErrorCategory.Transient,        // Too Many Requests
+        429 => FallbackErrorCategory.RateLimited,      // Too Many Requests
         500 => FallbackErrorCategory.Transient,        // Internal Server Error
         502 => FallbackErrorCategory.Transient,        // Bad Gateway
         503 => FallbackErrorCategory.Transient,        // Service Unavailable

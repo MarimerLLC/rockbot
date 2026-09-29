@@ -128,7 +128,7 @@ async Task<CopilotClient> GetOrCreateCopilotClientAsync()
     return copilotClient;
 }
 
-IChatClient BuildOpenAIClient(LlmTierConfig config)
+IChatClient BuildOpenAIClient(LlmTierConfig config, bool sdkRetries = true)
 {
     var clientOptions = new OpenAIClientOptions
     {
@@ -137,6 +137,13 @@ IChatClient BuildOpenAIClient(LlmTierConfig config)
         // longer responses that can exceed the default before the body is fully read.
         NetworkTimeout = TimeSpan.FromMinutes(5)
     };
+
+    // Inside a fallback chain the SDK's retry policy works against us: it silently waits
+    // out each 429's retry-after (~30s on Azure) until FallbackChatClient's per-attempt
+    // timeout fires, so a throttled model burned ~3 minutes per turn before failing over.
+    // With retries off, the 429 reaches FallbackChatClient at once and it moves on.
+    if (!sdkRetries)
+        clientOptions.RetryPolicy = new ClientRetryPolicy(maxRetries: 0);
 
     // repetition_penalty has no ChatOptions equivalent, so it is injected into the
     // serialised body by a pipeline policy. Only registered when configured, so the
@@ -190,7 +197,7 @@ IChatClient BuildOpenAIClient(LlmTierConfig config)
         .GetChatClient(config.ModelId!).AsIChatClient();
 }
 
-async Task<IChatClient> BuildClientForTierAsync(LlmTierConfig config, string tierName)
+async Task<IChatClient> BuildClientForTierAsync(LlmTierConfig config, string tierName, bool sdkRetries = true)
 {
     if (config.IsCopilot(globalProvider))
     {
@@ -214,7 +221,7 @@ async Task<IChatClient> BuildClientForTierAsync(LlmTierConfig config, string tie
     }
 
     Console.WriteLine($"  {tierName}: OpenAI-compatible ({config.ModelId} @ {config.Endpoint})");
-    return BuildOpenAIClient(config);
+    return BuildOpenAIClient(config, sdkRetries);
 }
 
 // Determine whether any tier is configured.
@@ -237,8 +244,12 @@ if (anyConfigured)
         var fallbackLogger = fallbackLoggerFactory.CreateLogger<FallbackChatClient>();
 
         var entries = new List<(string ModelId, IChatClient Client)>();
+        // Every entry but the last fails over on 429 instead of waiting it out; the last
+        // has nowhere to go, so it keeps the SDK's retry-after handling.
+        var lastIndex = tierOptions.BalancedModels.Count - 1;
         foreach (var cfg in tierOptions.BalancedModels)
-            entries.Add((cfg.ModelId!, await BuildClientForTierAsync(cfg, $"Balanced[{entries.Count}]")));
+            entries.Add((cfg.ModelId!, await BuildClientForTierAsync(cfg, $"Balanced[{entries.Count}]",
+                sdkRetries: entries.Count == lastIndex)));
 
         var agentHostOpts = new AgentHostOptions();
         builder.Configuration.GetSection("AgentHost").Bind(agentHostOpts);
