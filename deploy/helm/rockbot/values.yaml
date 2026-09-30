@@ -133,6 +133,12 @@ blazor:
   # so raising this does not scale the UI — it deadlocks the rollout with the second
   # pod stuck Pending on a volume the first one already holds.
   replicaCount: 1
+  # How long the chat page waits for the agent's reply before showing "No reply received
+  # (timeout)", as a .NET TimeSpan ("00:10:00"). Empty keeps the built-in 3 minutes. Raise
+  # it for a slow self-hosted model: a turn with a tool round makes two full model calls.
+  # The agent finishes and saves the reply regardless; this only changes when the page
+  # stops waiting for it.
+  replyTimeout: ""
   resources:
     requests:
       cpu: 100m

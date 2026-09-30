@@ -35,6 +35,11 @@ public sealed class UserProxyOptions
     /// Used to scope message bus topics so multiple agent instances can share the same broker.
     /// </summary>
     public string AgentName { get; set; } = "RockBot";
+
+    /// <summary>
+    /// How long to wait for the agent's reply before giving up. Set from
+    /// <c>UserProxy:ReplyTimeout</c> by the Blazor client and <c>--timeout</c> by the CLI.
+    /// </summary>
     public TimeSpan DefaultReplyTimeout { get; set; } = TimeSpan.FromMinutes(3);
 
     /// <summary>
