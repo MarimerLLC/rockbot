@@ -9,10 +9,17 @@ namespace RockBot.ServiceSearch;
 /// Unified BM25-searchable index over all known A2A agents and MCP servers.
 /// Reads live from the in-memory <see cref="IAgentDirectory"/> and <see cref="McpServerIndex"/>
 /// on each search — no separate cache layer needed since both are already singletons.
+/// <para>
+/// Ranking stays per service. With typed MCP tools on (#612), an MCP candidate's top items are the
+/// typed <c>{server}__{tool}</c> names that best fit the query (<see cref="McpToolSearch"/>), so a
+/// hint can say which tool to call rather than send the model to <c>mcp_get_service_details</c>.
+/// Tool-level search across every server is <c>mcp_find_tools</c>.
+/// </para>
 /// </summary>
 public sealed class ServiceSearchIndex(
     IAgentDirectory agentDirectory,
-    McpServerIndex mcpServerIndex) : IServiceSearchIndex
+    McpServerIndex mcpServerIndex,
+    McpTypedToolSurface? typedTools = null) : IServiceSearchIndex
 {
     public IReadOnlyList<ServiceSearchCandidate> Search(string query, int maxResults = 3)
     {
@@ -27,15 +34,33 @@ public sealed class ServiceSearchIndex(
 
         return ranked
             .Take(maxResults)
-            .Select(r => new ServiceSearchCandidate
+            .Select(r =>
             {
-                Id = r.Item.Id,
-                Type = r.Item.Type,
-                Summary = r.Item.Summary,
-                TopItems = r.Item.TopItems,
-                RelevanceScore = Math.Round(r.Score / maxScore, 2)
+                var typed = TypedTopItems(r.Item, query);
+                return new ServiceSearchCandidate
+                {
+                    Id = r.Item.Id,
+                    Type = r.Item.Type,
+                    Summary = r.Item.Summary,
+                    TopItems = typed ?? r.Item.TopItems,
+                    TopItemsAreTypedTools = typed is not null,
+                    RelevanceScore = Math.Round(r.Score / maxScore, 2)
+                };
             })
             .ToList();
+    }
+
+    private IReadOnlyList<string>? TypedTopItems(ServiceIndexDocument doc, string query)
+    {
+        if (typedTools is null || doc.Type != "mcp")
+            return null;
+
+        var server = mcpServerIndex.Servers.FirstOrDefault(s => s.ServerName == doc.Id);
+        if (server is null)
+            return null;
+
+        var typed = typedTools.TypedNamesFor(server, query, max: 3);
+        return typed.Count > 0 ? typed : null;
     }
 
     private List<ServiceIndexDocument> BuildDocuments()

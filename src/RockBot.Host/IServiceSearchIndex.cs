@@ -20,6 +20,12 @@ public sealed record ServiceSearchCandidate
     /// </summary>
     public required IReadOnlyList<string> TopItems { get; init; }
 
+    /// <summary>
+    /// MCP only: <see cref="TopItems"/> are typed <c>{server}__{tool}</c> tool names the model can
+    /// call, rather than the server's own tool names (#612).
+    /// </summary>
+    public bool TopItemsAreTypedTools { get; init; }
+
     /// <summary>Relevance score normalized to [0, 1]. Higher = better match to the query.</summary>
     public double RelevanceScore { get; init; }
 }

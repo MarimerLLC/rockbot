@@ -1,4 +1,6 @@
+using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using RockBot.Tools.Mcp.Recovery;
 
@@ -15,8 +17,10 @@ public sealed record McpWrapperTool(
     string Fingerprint);
 
 /// <summary>
-/// Keeps the typed <c>{server}__{tool}</c> wrapper tools in the <see cref="IToolRegistry"/> in step
-/// with the bridge's server index (#420, porting mcp-aggregator#42).
+/// Keeps the typed <c>{server}__{tool}</c> wrapper tools in step with the bridge's server index
+/// (#420, porting mcp-aggregator#42). In <see cref="McpWrapperMode.Eager"/> they are registered in
+/// the <see cref="IToolRegistry"/>; in <see cref="McpWrapperMode.Lazy"/> they are only indexed here,
+/// and <see cref="McpTypedToolSurface"/> adds them to the sessions that activate them (#612).
 /// <para>
 /// On each <see cref="McpServersIndexed"/> it reconciles the affected servers' wrappers: tools
 /// that appeared are registered, tools that vanished or whose fingerprint (description plus
@@ -38,6 +42,7 @@ public sealed class McpWrapperCatalog
     private readonly ToolSchemaCache _schemas;
     private readonly McpWrapperToolExecutor _executor;
     private readonly McpToolSurfaceOptions _options;
+    private readonly McpTypedToolSurface _surface;
     private readonly ILogger<McpWrapperCatalog> _logger;
     private readonly SemaphoreSlim _gate = new(1, 1);
 
@@ -52,16 +57,25 @@ public sealed class McpWrapperCatalog
         ToolSchemaCache schemas,
         McpManagementExecutor management,
         IOptions<McpToolSurfaceOptions> options,
-        ILogger<McpWrapperCatalog> logger)
+        ILogger<McpWrapperCatalog> logger,
+        McpTypedToolSurface? surface = null)
     {
         _registry = registry;
         _schemas = schemas;
         _options = options.Value;
         _logger = logger;
         _executor = new McpWrapperToolExecutor(this, management);
+        _surface = surface ?? new McpTypedToolSurface(options, NullLogger<McpTypedToolSurface>.Instance);
+        _surface.Bind(this);
     }
 
     public McpWrapperMode Mode => _options.WrapperMode;
+
+    /// <summary>The surface lazy-mode activations go through.</summary>
+    public McpTypedToolSurface Surface => _surface;
+
+    /// <summary>Runs every typed tool, whether it is registered (eager) or activated (lazy).</summary>
+    public IToolExecutor Executor => _executor;
 
     /// <summary>Every registered wrapper.</summary>
     public IReadOnlyCollection<McpWrapperTool> Wrappers => [.. _byName.Values];
@@ -79,6 +93,24 @@ public sealed class McpWrapperCatalog
         return false;
     }
 
+    /// <summary>The typed tools of <paramref name="serverName"/>.</summary>
+    public IReadOnlyList<McpWrapperTool> WrappersFor(string serverName) =>
+        [.. _byName.Values.Where(w => string.Equals(w.ServerName, serverName, StringComparison.OrdinalIgnoreCase))];
+
+    /// <summary>The registration a typed tool has, or would have, in the registry.</summary>
+    public static ToolRegistration RegistrationFor(McpWrapperTool wrapper) => new()
+    {
+        Name = wrapper.Name,
+        Description = DescriptionFor(wrapper),
+        ParametersSchema = wrapper.InputSchema,
+        Source = McpWrapperSource(wrapper.ServerName),
+        DownstreamName = wrapper.ToolName
+    };
+
+    /// <summary>A typed tool as a function for one session's tool list (lazy mode).</summary>
+    public AIFunction CreateFunction(McpWrapperTool wrapper, string? toolSessionId) =>
+        new RegistryToolFunction(RegistrationFor(wrapper), _executor, toolSessionId);
+
     /// <summary>
     /// Reconciles the wrappers of every server the index message names. Call after the
     /// handler has invalidated cached schemas for servers whose surface moved.
@@ -91,8 +123,10 @@ public sealed class McpWrapperCatalog
         await _gate.WaitAsync(ct);
         try
         {
+            var stale = new HashSet<string>(StringComparer.Ordinal);
+
             foreach (var removed in message.RemovedServers)
-                Reconcile(removed, []);
+                Reconcile(removed, [], stale);
 
             foreach (var server in message.Servers)
             {
@@ -106,15 +140,19 @@ public sealed class McpWrapperCatalog
                     continue;
                 }
 
-                Reconcile(server.ServerName, Desired(server, schemas));
+                Reconcile(server.ServerName, Desired(server, schemas), stale);
             }
 
             _byName = _byServer.Values
                 .SelectMany(tools => tools.Values)
                 .ToDictionary(w => w.Name, StringComparer.Ordinal);
 
-            _logger.LogInformation("Typed MCP tools: {Count} registered across {Servers} server(s)",
-                _byName.Count, _byServer.Count(kvp => kvp.Value.Count > 0));
+            // A session that activated a tool that has since gone or changed must search again
+            // and get the current schema, so its activation goes.
+            _surface.Evict(stale);
+
+            _logger.LogInformation("Typed MCP tools ({Mode}): {Count} across {Servers} server(s)",
+                _options.WrapperMode, _byName.Count, _byServer.Count(kvp => kvp.Value.Count > 0));
         }
         finally
         {
@@ -169,15 +207,34 @@ public sealed class McpWrapperCatalog
         return desired;
     }
 
-    private void Reconcile(string serverName, Dictionary<string, McpWrapperTool> desired)
+    private void Reconcile(string serverName, Dictionary<string, McpWrapperTool> desired, HashSet<string> stale)
     {
         _byServer.TryGetValue(serverName, out var current);
         current ??= [];
+        var register = _options.WrapperMode == McpWrapperMode.Eager;
 
         foreach (var (name, wrapper) in current)
         {
             if (!desired.TryGetValue(name, out var next) || next.Fingerprint != wrapper.Fingerprint)
-                _registry.Unregister(name);
+            {
+                if (register)
+                    _registry.Unregister(name);
+                stale.Add(name);
+            }
+            else if (next.ServerId != wrapper.ServerId)
+            {
+                stale.Add(name);
+            }
+        }
+
+        // Lazy: indexed here only; sessions add the tools they activate.
+        if (!register)
+        {
+            if (desired.Count == 0)
+                _byServer.Remove(serverName);
+            else
+                _byServer[serverName] = desired;
+            return;
         }
 
         var failed = new List<string>();
@@ -188,14 +245,7 @@ public sealed class McpWrapperCatalog
 
             try
             {
-                _registry.Register(new ToolRegistration
-                {
-                    Name = name,
-                    Description = DescriptionFor(wrapper),
-                    ParametersSchema = wrapper.InputSchema,
-                    Source = McpWrapperSource(serverName),
-                    DownstreamName = wrapper.ToolName
-                }, _executor);
+                _registry.Register(RegistrationFor(wrapper), _executor);
             }
             catch (InvalidOperationException ex)
             {

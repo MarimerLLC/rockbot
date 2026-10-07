@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Microsoft.Extensions.AI;
+using RockBot.Host;
 
 namespace RockBot.Tools;
 
@@ -13,9 +14,12 @@ public sealed class RegistryToolFunction(
     IToolExecutor executor,
     string? sessionId,
     string? batchId = null,
-    Action<string>? onInvoke = null) : AIFunction
+    Action<string>? onInvoke = null) : AIFunction, ISessionBoundTool
 {
     private static readonly JsonSerializerOptions SerializerOptions = new();
+
+    /// <inheritdoc />
+    public string? SessionId => sessionId;
 
     /// <summary>
     /// Minimal valid OpenAI tool schema used as a fallback when a tool has no schema

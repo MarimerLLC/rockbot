@@ -47,7 +47,7 @@ public sealed class McpServersIndexedHandler(
             index.ManagementToolsRegistered = true;
         }
 
-        // Typed {server}__{tool} tools follow the index; a no-op unless McpBridge:WrapperMode is Eager.
+        // Typed {server}__{tool} tools follow the index; a no-op unless McpBridge:WrapperMode is Eager or Lazy.
         if (wrappers is not null)
             await wrappers.ApplyAsync(message, context.CancellationToken);
     }
@@ -107,6 +107,21 @@ public sealed class McpServersIndexedHandler(
             ParametersSchema = """{"type":"object","properties":{"server_name":{"type":"string","description":"Name of the MCP server"},"prompt_name":{"type":"string","description":"Name of the prompt template to invoke"},"arguments":{"type":"object","description":"Key-value arguments to fill in the prompt template (all values as strings)"}},"required":["server_name","prompt_name"]}""",
             Source = "mcp:management"
         }, executor);
+
+        // Lazy typed tools (#612): the search that activates them. Same source as the other
+        // gateway tools, so every tool profile that has the gateway has this too.
+        if (wrappers is { Mode: McpWrapperMode.Lazy })
+        {
+            registry.Register(new ToolRegistration
+            {
+                Name = McpTypedToolSurface.FindToolsName,
+                Description = McpFindToolsExecutor.Description,
+                ParametersSchema = McpFindToolsExecutor.ParametersSchema,
+                Source = "mcp:management"
+            }, new McpFindToolsExecutor(wrappers.Surface, index));
+
+            logger.LogInformation("Registered {Tool} (typed MCP tools are lazy)", McpTypedToolSurface.FindToolsName);
+        }
 
         logger.LogInformation("Registered 6 MCP management tools");
     }

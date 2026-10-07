@@ -29,7 +29,8 @@ public sealed partial class AgentLoopRunner(
     IEnumerable<IServiceSearchIndex> serviceSearchIndexProviders,
     IConversationMemory conversationMemory,
     ILogger<AgentLoopRunner> logger,
-    InjectedMemoryTracker? injectedMemoryTracker = null)
+    InjectedMemoryTracker? injectedMemoryTracker = null,
+    ITypedToolSurface? typedToolSurface = null)
 {
     private readonly IServiceSearchIndex? _serviceSearchIndex = serviceSearchIndexProviders.FirstOrDefault();
     private const int MaxConsecutiveTimeoutIterations = 2;
@@ -426,6 +427,11 @@ public sealed partial class AgentLoopRunner(
         var loadedSkillsState = new LoadedSkillsContext.State();
         using var _____ = LoadedSkillsContext.Set(loadedSkillsState);
 
+        // Lazy typed MCP tools (#612): tools this session activated on earlier turns join the
+        // list now; ones it activates during the run join before the next LLM request.
+        using var ______ = TypedToolSurfaceContext.Set(typedToolSurface);
+        TypedToolSurfaceContext.AddActivated(chatOptions);
+
         // Ensure a current datetime context is always present.
         EnsureDateTimeContext(chatMessages);
 
@@ -712,13 +718,12 @@ public sealed partial class AgentLoopRunner(
             // has no overlap with "calendar"). Search using the evaluator reason + original
             // request combined, which WILL contain domain terms like "calendar", "email", etc.
             await EnrichContextForRepromptAsync(
-                chatMessages, originalUserRequest, reason ?? string.Empty, cancellationToken);
+                chatMessages, chatOptions, originalUserRequest, reason ?? string.Empty, cancellationToken);
 
             // Build a targeted continuation nudge.
             var nudge = CapabilityDenialRegex.IsMatch(result.Response)
                 ? $"Not complete because: {reason}. You DO have access to external services. " +
-                  "Call search_known_services or mcp_list_services to discover available integrations, " +
-                  "then use mcp_invoke_tool to call the appropriate service. Do not give up without trying."
+                  HowToReachServices() + " Do not give up without trying."
                 : $"Not complete because: {reason}. Continue working on the original request. " +
                   "Use your available tools — do not claim you lack access without trying them first.";
 
@@ -1051,6 +1056,9 @@ public sealed partial class AgentLoopRunner(
                 // results that recorded earlier task_update calls have been trimmed.
                 RefreshTaskListContext(chatMessages, taskList);
 
+                // Typed tools activated by the previous iteration's calls (#612).
+                TypedToolSurfaceContext.AddActivated(chatOptions);
+
                 var stashState = AgentLoopStashContext.Value
                     ?? throw new InvalidOperationException("AgentLoopStashContext was not initialised — RunAsync must set it before invoking the loop.");
 
@@ -1200,7 +1208,8 @@ public sealed partial class AgentLoopRunner(
                 {
                     var tool = chatOptions.Tools?
                         .OfType<AIFunction>()
-                        .FirstOrDefault(t => t.Name.Equals(toolName, StringComparison.OrdinalIgnoreCase));
+                        .FirstOrDefault(t => t.Name.Equals(toolName, StringComparison.OrdinalIgnoreCase))
+                        ?? TypedToolSurfaceContext.TryActivate(chatOptions, toolName);
 
                     if (tool is null)
                     {
@@ -1375,7 +1384,8 @@ public sealed partial class AgentLoopRunner(
 
                 var tool = chatOptions.Tools?
                     .OfType<AIFunction>()
-                    .FirstOrDefault(t => t.Name.Equals(fc.Name, StringComparison.OrdinalIgnoreCase));
+                    .FirstOrDefault(t => t.Name.Equals(fc.Name, StringComparison.OrdinalIgnoreCase))
+                    ?? TypedToolSurfaceContext.TryActivate(chatOptions, fc.Name);
 
                 if (tool is null)
                 {
@@ -2739,7 +2749,7 @@ public sealed partial class AgentLoopRunner(
         // Enrich context with skills/services relevant to the follow-up.
         var searchTerms = followUp.SearchTerms ?? followUp.Prompt;
         await EnrichContextForRepromptAsync(
-            chatMessages, originalUserRequest, searchTerms, cancellationToken);
+            chatMessages, chatOptions, originalUserRequest, searchTerms, cancellationToken);
 
         // Inject the completed response and the follow-up instruction.
         chatMessages.Add(new ChatMessage(ChatRole.Assistant, completedResponse));
@@ -2994,6 +3004,66 @@ public sealed partial class AgentLoopRunner(
     };
 
     /// <summary>
+    /// Adds the typed tools this session activated on earlier turns to <paramref name="chatOptions"/>
+    /// (#612). <see cref="RunAsync"/> does this itself; call it only before an LLM request made
+    /// outside the loop, such as a pre-fetched first response.
+    /// </summary>
+    public void AddSessionTools(ChatOptions chatOptions)
+    {
+        using var _ = TypedToolSurfaceContext.Set(typedToolSurface);
+        TypedToolSurfaceContext.AddActivated(chatOptions);
+    }
+
+    /// <summary>
+    /// How the model reaches an external service, worded for the typed-tool mode (#612): by
+    /// typed <c>{server}__{tool}</c> name when wrappers are on, through <c>mcp_invoke_tool</c>
+    /// when they're off.
+    /// </summary>
+    private string HowToReachServices() => (typedToolSurface?.Mode ?? TypedToolMode.Off) switch
+    {
+        TypedToolMode.Lazy =>
+            $"Call {typedToolSurface!.LoaderToolName} with a few keywords for what you need; the tools it returns " +
+            "become callable by their typed names ({server}__{tool}). search_known_services and " +
+            "mcp_list_services list whole services.",
+        TypedToolMode.Eager =>
+            "Call search_known_services or mcp_list_services to discover available integrations, " +
+            "then call the service's typed tool ({server}__{tool}) directly.",
+        _ =>
+            "Call search_known_services or mcp_list_services to discover available integrations, " +
+            "then use mcp_invoke_tool to call the appropriate service."
+    };
+
+    /// <summary>
+    /// One MCP server's lines in the re-prompt's service hints. With typed tools on, the
+    /// candidate's top items are typed names (see <c>ServiceSearchIndex</c>) and the hint says to
+    /// call them; in lazy mode they're activated first, so the names it gives are callable.
+    /// </summary>
+    private void AppendMcpServiceHint(StringBuilder sb, ServiceSearchCandidate candidate, ChatOptions chatOptions)
+    {
+        var mode = typedToolSurface?.Mode ?? TypedToolMode.Off;
+        if (mode == TypedToolMode.Off || !candidate.TopItemsAreTypedTools)
+        {
+            sb.AppendLine($"  Sample tools: {string.Join(", ", candidate.TopItems)}");
+            sb.AppendLine($"  IMPORTANT: Call mcp_get_service_details(server_name=\"{candidate.Id}\") " +
+                "to see ALL available tools before invoking. Do NOT guess tool names.");
+            return;
+        }
+
+        if (mode == TypedToolMode.Lazy)
+        {
+            var present = (chatOptions.Tools ?? []).Select(t => t.Name).ToHashSet(StringComparer.Ordinal);
+            foreach (var name in candidate.TopItems.Where(n => !present.Contains(n)))
+                TypedToolSurfaceContext.TryActivate(chatOptions, name);
+        }
+
+        sb.AppendLine($"  Typed tools: {string.Join(", ", candidate.TopItems)} — call them directly.");
+        sb.AppendLine(mode == TypedToolMode.Lazy
+            ? $"  For another tool on this server, call {typedToolSurface!.LoaderToolName} " +
+              $"or mcp_get_service_details(server_name=\"{candidate.Id}\")."
+            : $"  For the rest of this server's tools, call mcp_get_service_details(server_name=\"{candidate.Id}\").");
+    }
+
+    /// <summary>
     /// On re-prompt, searches for skills and services using the evaluator reason combined
     /// with the original request. This catches cases where the original user prompt had no
     /// keyword overlap with relevant skills/services (e.g. "what time do I speak tomorrow?"
@@ -3001,6 +3071,7 @@ public sealed partial class AgentLoopRunner(
     /// </summary>
     private async Task EnrichContextForRepromptAsync(
         List<ChatMessage> chatMessages,
+        ChatOptions chatOptions,
         string originalUserRequest,
         string evaluatorReason,
         CancellationToken ct)
@@ -3047,11 +3118,7 @@ public sealed partial class AgentLoopRunner(
                     {
                         sb.AppendLine($"\n### {c.Id} ({c.Type}): {c.Summary}");
                         if (c.Type == "mcp")
-                        {
-                            sb.AppendLine($"  Sample tools: {string.Join(", ", c.TopItems)}");
-                            sb.AppendLine($"  IMPORTANT: Call mcp_get_service_details(server_name=\"{c.Id}\") " +
-                                "to see ALL available tools before invoking. Do NOT guess tool names.");
-                        }
+                            AppendMcpServiceHint(sb, c, chatOptions);
                         else if (c.TopItems.Count > 0)
                         {
                             sb.AppendLine($"  Top skills: {string.Join(", ", c.TopItems)}");

@@ -47,6 +47,8 @@ agent:
   # How downstream MCP tools are offered to the model. "Off": only the mcp_* management
   # tools (every call goes through mcp_invoke_tool). "Eager": every downstream tool is also
   # registered as a typed {server}__{tool} tool with its own parameter schema. See #420.
+  # "Lazy": the same typed tools, but a session only gets the ones it finds with
+  # mcp_find_tools, opens with mcp_get_service_details, or calls by name. See #612.
   mcpWrapperMode: "Off"
   # Always Recreate — only one agent may run at a time (stateful)
   replicaCount: 1

@@ -20,14 +20,14 @@ namespace RockBot.Agent.Tests.McpBridge;
 [TestClass]
 public class McpWrapperEndToEndTests
 {
-    private sealed class Counter
+    internal sealed class Counter
     {
         private int _value;
         public int Value => Volatile.Read(ref _value);
         public void Increment() => Interlocked.Increment(ref _value);
     }
 
-    private static McpServerTool SendEmail(Counter executions) => McpServerTool.Create(
+    internal static McpServerTool SendEmail(Counter executions) => McpServerTool.Create(
         (string[] to, string subject) =>
         {
             executions.Increment();
@@ -35,32 +35,34 @@ public class McpWrapperEndToEndTests
         },
         new McpServerToolCreateOptions { Name = "send_email", Description = "Sends an email." });
 
-    private static McpServerTool DeleteEverything() => McpServerTool.Create(
+    internal static McpServerTool DeleteEverything() => McpServerTool.Create(
         () => "deleted",
         new McpServerToolCreateOptions { Name = "delete_everything" });
 
-    private sealed class AgentSide
+    internal sealed class AgentSide
     {
         public required TestToolRegistry Registry { get; init; }
         public required McpManagementExecutor Management { get; init; }
         public required McpWrapperCatalog Catalog { get; init; }
+        public required McpTypedToolSurface Surface { get; init; }
         public required Func<Task> ReplayIndexAsync { get; init; }
     }
 
     /// <summary>The agent's half of the gateway, on the harness's in-memory bus, fed the bridge's index.</summary>
-    private static async Task<AgentSide> ConnectAgentAsync(BridgeHarness harness)
+    internal static async Task<AgentSide> ConnectAgentAsync(BridgeHarness harness, McpWrapperMode mode = McpWrapperMode.Eager)
     {
         var identity = new AgentIdentity("test-agent");
         var proxy = new McpToolProxy(harness.BusPublisher, harness.BusSubscriber, identity,
             NullLogger<McpToolProxy>.Instance, TimeSpan.FromSeconds(10), TimeSpan.FromSeconds(10));
         var index = new McpServerIndex();
+        var options = Options.Create(new McpToolSurfaceOptions { WrapperMode = mode });
+        var surface = new McpTypedToolSurface(options, NullLogger<McpTypedToolSurface>.Instance);
         var management = new McpManagementExecutor(index, proxy, harness.BusPublisher, harness.BusSubscriber, identity,
-            NullLogger<McpManagementExecutor>.Instance, TimeSpan.FromSeconds(10));
+            NullLogger<McpManagementExecutor>.Instance, TimeSpan.FromSeconds(10), typedTools: surface);
         var cache = new ToolSchemaCache((server, ct) => management.GetSchemasAsync(server, ct));
         var registry = new TestToolRegistry();
-        var catalog = new McpWrapperCatalog(registry, cache, management,
-            Options.Create(new McpToolSurfaceOptions { WrapperMode = McpWrapperMode.Eager }),
-            NullLogger<McpWrapperCatalog>.Instance);
+        var catalog = new McpWrapperCatalog(registry, cache, management, options,
+            NullLogger<McpWrapperCatalog>.Instance, surface);
         var handler = new McpServersIndexedHandler(registry, index, management,
             NullLogger<McpServersIndexedHandler>.Instance, cache, catalog);
 
@@ -82,7 +84,10 @@ public class McpWrapperEndToEndTests
         }
 
         await ReplayIndexAsync();
-        return new AgentSide { Registry = registry, Management = management, Catalog = catalog, ReplayIndexAsync = ReplayIndexAsync };
+        return new AgentSide
+        {
+            Registry = registry, Management = management, Catalog = catalog, Surface = surface, ReplayIndexAsync = ReplayIndexAsync
+        };
     }
 
     private static Task<ToolInvokeResponse> CallAsync(AgentSide agent, string tool, string arguments) =>
