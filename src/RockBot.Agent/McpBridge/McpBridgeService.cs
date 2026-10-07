@@ -40,12 +40,15 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
     /// <summary>Resolves a server's named elicitation responder (keyed services), if it names one.</summary>
     private readonly IServiceProvider? _services;
 
-    private readonly Dictionary<string, McpClient> _clients = new(StringComparer.OrdinalIgnoreCase);
-    private readonly Dictionary<string, McpBridgeServerConfig> _serverConfigs = new(StringComparer.OrdinalIgnoreCase);
-    private readonly Dictionary<string, List<McpClientTool>> _serverTools = new(StringComparer.OrdinalIgnoreCase);
-    private readonly Dictionary<string, List<McpClientPrompt>> _serverPrompts = new(StringComparer.OrdinalIgnoreCase);
-    private readonly Dictionary<string, McpServerMetadata> _serverMetadata = new(StringComparer.OrdinalIgnoreCase);
-    private readonly Dictionary<string, McpServerSummary> _serverSummaries = new(StringComparer.OrdinalIgnoreCase);
+    /// <summary>
+    /// Configured servers and a consistent snapshot of each connected one. Connect, refresh and
+    /// disconnect for a server run one at a time under its lock; calls lease a snapshot so the
+    /// client they use isn't disposed under them. See issue #604.
+    /// </summary>
+    private readonly McpServerConnections _connections = new();
+
+    /// <summary>How long shutdown waits for in-flight calls before clients are dropped.</summary>
+    private static readonly TimeSpan ShutdownGrace = TimeSpan.FromSeconds(5);
 
     /// <summary>
     /// When each connected server's tool and prompt lists were last read, for the periodic
@@ -53,23 +56,13 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
     /// </summary>
     private readonly ConcurrentDictionary<string, DateTimeOffset> _lastSurfaceCheck = new(StringComparer.OrdinalIgnoreCase);
 
-    /// <summary>Serialises surface refreshes per server, so a burst can't interleave re-lists.</summary>
-    private readonly ConcurrentDictionary<string, SemaphoreSlim> _surfaceLocks = new(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>Servers with a debounced list_changed refresh already queued.</summary>
     private readonly ConcurrentDictionary<string, byte> _pendingSurfaceRefresh = new(StringComparer.OrdinalIgnoreCase);
 
     private static readonly TimeSpan SurfaceRefreshDebounce = TimeSpan.FromMilliseconds(500);
 
-    /// <summary>
-    /// Per-server elicitation policy, rebuilt on every connect so a config reload changes what
-    /// the bridge is willing to answer. Absent for a server whose policy is <c>off</c> — and its
-    /// absence is what stops the SDK advertising the capability for that server at all.
-    /// Concurrent because every tool invoke reads it while connect, disconnect and config reload
-    /// write it from other subscriptions and the reload sweep.
-    /// </summary>
-    private readonly ConcurrentDictionary<string, McpElicitationCoordinator> _elicitationCoordinators = new(StringComparer.OrdinalIgnoreCase);
-    private readonly Dictionary<string, AttachmentGatewayEntry> _attachmentGateways = new(StringComparer.OrdinalIgnoreCase);
+
     private readonly Lazy<IAttachmentStorage> _attachmentStorage;
 
     /// <summary>
@@ -366,7 +359,7 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
         }
 
         // Disconnect servers that are no longer in config
-        var removedServers = _clients.Keys.Except(config.McpServers.Keys).ToList();
+        var removedServers = _connections.ConfiguredNames.Except(config.McpServers.Keys, StringComparer.OrdinalIgnoreCase).ToList();
         foreach (var name in removedServers)
         {
             await DisconnectServerAsync(name);
@@ -468,7 +461,18 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
         return removed;
     }
 
-    private async Task ConnectServerAsync(string name, McpBridgeServerConfig config, CancellationToken ct)
+    /// <summary>
+    /// Connects (or reconnects) <paramref name="name"/> with <paramref name="config"/> and publishes
+    /// its snapshot. Runs under the server's lock, so the reconnect sweep, a config reload and an
+    /// invoke's reconnect-and-retry queue behind one another instead of racing to build clients.
+    /// A caller that passes <paramref name="replacing"/> wants a reconnect only while that client
+    /// is still current, and one that passes <paramref name="onlyIfDisconnected"/> only while the
+    /// server has no connection: if another caller connected it while this one waited, there is
+    /// nothing to do.
+    /// </summary>
+    private async Task ConnectServerAsync(
+        string name, McpBridgeServerConfig config, CancellationToken ct,
+        McpClient? replacing = null, bool onlyIfDisconnected = false)
     {
         if (!config.IsSse)
         {
@@ -485,8 +489,8 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
         }
 
         // Fail closed on invalid argGuards: connecting without the declared policy would
-        // silently weaken it. The server never lands in _serverConfigs, so tool invokes
-        // get server-not-found until the config is fixed. Outside the retry loop below —
+        // silently weaken it. The server is never configured, so tool invokes get
+        // server-not-found until the config is fixed. Outside the retry loop below —
         // a config error is not transient.
         var guardConfigError = McpArgGuardEvaluator.ValidateConfig(_argGuards, name, config);
         if (guardConfigError is not null)
@@ -497,18 +501,27 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
             return;
         }
 
-        // Store config before attempting connection so the reconnect sweep can
-        // retry servers that never connected successfully at startup. Invalidate any
-        // cached attachment gateway so the next call rebuilds it against the fresh
-        // URL/headers/manifest.
-        _serverConfigs[name] = config;
-        InvalidateAttachmentGateway(name);
+        using var serverLock = await _connections.LockAsync(name, ct);
+
+        _connections.TryGet(name, out var previous);
+        if ((replacing is not null && previous is not null && !ReferenceEquals(previous.Client, replacing))
+            || (onlyIfDisconnected && previous is not null))
+        {
+            _logger.LogDebug("MCP server {Name} was reconnected by another caller while this one waited; skipping", name);
+            return;
+        }
+
+        // Record the config before attempting the connection so the reconnect sweep can retry a
+        // server that never connected.
+        _connections.SetConfig(name, config);
 
         var maxAttempts = 1 + Math.Max(0, _options.ConnectRetryCount);
         var delayMs = _options.ConnectRetryBaseDelayMs;
 
         for (var attempt = 1; attempt <= maxAttempts; attempt++)
         {
+            McpClient? newClient = null;
+            var published = false;
             try
             {
                 var httpTransportMode = config.TransportMode?.ToLowerInvariant() switch
@@ -558,31 +571,14 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
                     }
                 };
 
-                var newClient = await McpClient.CreateAsync(transport, clientOptions, cancellationToken: ct);
+                newClient = await McpClient.CreateAsync(transport, clientOptions, cancellationToken: ct);
 
-                // Discover tools before committing the swap so a failure leaves the old client intact
+                // Discover tools before publishing, so a failure leaves the current snapshot serving.
                 var tools = await newClient.ListToolsAsync(cancellationToken: ct);
                 var filteredTools = ApplyToolFilters(tools.ToList(), config);
 
-                var (prompts, promptsKnown) = await ListPromptsAsync(name, newClient, ct);
+                var (prompts, promptsKnown) = await ListPromptsAsync(name, newClient, previous, ct);
                 var (fingerprint, toolFingerprints) = ComputeFingerprints(filteredTools, prompts, promptsKnown);
-
-                // Connection succeeded — atomically replace the old client without publishing a removal
-                if (_clients.Remove(name, out var oldClient))
-                {
-                    try { await oldClient.DisposeAsync(); }
-                    catch { /* Best-effort cleanup */ }
-                }
-
-                _clients[name] = newClient;
-
-                if (elicitation is null)
-                    _elicitationCoordinators.TryRemove(name, out _);
-                else
-                    _elicitationCoordinators[name] = elicitation;
-
-                _serverTools[name] = filteredTools;
-                _serverPrompts[name] = prompts;
 
                 var serverInfo = newClient.ServerInfo;
                 var metadata = new McpServerMetadata(
@@ -591,24 +587,20 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
                     Version: serverInfo?.Version,
                     Description: serverInfo?.Description,
                     Instructions: newClient.ServerInstructions);
-                var previousMetadata = _serverMetadata.GetValueOrDefault(name);
-                _serverMetadata[name] = metadata;
-                _lastSurfaceCheck[name] = DateTimeOffset.UtcNow;
 
                 _logger.LogInformation(
                     "Connected to MCP server {Name} (impl={ImplName} v{Version}) with {ToolCount} tools and {PromptCount} prompts",
                     name, metadata.ImplementationName ?? "(unknown)", metadata.Version ?? "(unknown)",
                     filteredTools.Count, prompts.Count);
 
-                // Build summary and cache so a future health flip can re-publish without
-                // re-running the (LLM-driven) summary generation. Every reconnect and config
-                // reload comes through here; when the server's surface and identity are unchanged
-                // the previous summary still describes it, so the LLM isn't asked again.
-                var previousSummary = _serverSummaries.GetValueOrDefault(name);
-                var summary = previousSummary is { Fingerprint: { } previousFingerprint }
+                // Cached so a future health flip can re-publish without re-running the (LLM-driven)
+                // summary generation. Every reconnect and config reload comes through here; when the
+                // server's surface and identity are unchanged the previous summary still describes
+                // it, so the LLM isn't asked again.
+                var summary = previous is { Summary.Fingerprint: { } previousFingerprint }
                               && previousFingerprint == fingerprint
-                              && previousMetadata == metadata
-                    ? previousSummary
+                              && previous.Metadata == metadata
+                    ? previous.Summary
                     : await GenerateSummaryAsync(name, metadata, filteredTools, prompts, ct);
                 summary = summary with
                 {
@@ -616,7 +608,23 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
                     Fingerprint = fingerprint,
                     ToolFingerprints = toolFingerprints
                 };
-                _serverSummaries[name] = summary;
+
+                var resources = new ConnectionResources(newClient);
+                _connections.Publish(new ConnectedServer
+                {
+                    Name = name,
+                    Config = config,
+                    Client = newClient,
+                    Tools = filteredTools,
+                    Prompts = prompts,
+                    Metadata = metadata,
+                    Summary = summary,
+                    Elicitation = elicitation,
+                    AttachmentGateway = CreateAttachmentGateway(name, config, resources),
+                    Resources = resources
+                });
+                published = true;
+                _lastSurfaceCheck[name] = DateTimeOffset.UtcNow;
 
                 if (IsServerHiddenByAuth(config))
                 {
@@ -634,10 +642,17 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
             {
+                if (!published && newClient is not null)
+                    await DisposeQuietlyAsync(newClient);
                 throw;
             }
             catch (Exception ex)
             {
+                // A client that connected but failed discovery was never published; nothing else
+                // holds it.
+                if (!published && newClient is not null)
+                    await DisposeQuietlyAsync(newClient);
+
                 if (attempt < maxAttempts)
                 {
                     _logger.LogWarning(ex,
@@ -654,53 +669,54 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
                 }
             }
         }
+
+        // Every attempt failed, so the previous connection (if any) keeps serving. If the config
+        // changed, apply its policy to that connection now rather than at the next successful
+        // connect: re-filtering the previous tool list can only narrow it, so an operator who
+        // just denied a tool isn't overruled by a server that happened to be down.
+        if (previous is not null && !ReferenceEquals(previous.Config, config))
+        {
+            _connections.Publish(previous with
+            {
+                Config = config,
+                Tools = ApplyToolFilters([.. previous.Tools], config)
+            });
+        }
+    }
+
+    private static async Task DisposeQuietlyAsync(IAsyncDisposable disposable)
+    {
+        try { await disposable.DisposeAsync(); }
+        catch { /* Best-effort cleanup */ }
     }
 
     private async Task DisconnectServerAsync(string name)
     {
-        if (_clients.Remove(name, out var client))
+        using (await _connections.LockAsync(name, CancellationToken.None))
         {
-            try { await client.DisposeAsync(); }
-            catch { /* Best-effort cleanup */ }
+            _connections.Remove(name, forgetConfig: true);
+            _lastSurfaceCheck.TryRemove(name, out _);
         }
-
-        _serverTools.Remove(name);
-        _serverPrompts.Remove(name);
-        _serverMetadata.Remove(name);
-        _serverConfigs.Remove(name);
-        _serverSummaries.Remove(name);
-        _lastSurfaceCheck.TryRemove(name, out _);
-        _elicitationCoordinators.TryRemove(name, out _);
-        InvalidateAttachmentGateway(name);
 
         await PublishServersIndexedAsync([], [name], CancellationToken.None);
 
         _logger.LogInformation("Disconnected from MCP server {Name}", name);
     }
 
-    private AttachmentGateway? GetOrCreateAttachmentGateway(string serverName)
+    /// <summary>
+    /// The connection's attachment gateway, built on first use. Its HTTP client carries the same
+    /// auth and headers as MCP tool calls and is disposed with the connection.
+    /// </summary>
+    private Lazy<AttachmentGateway?> CreateAttachmentGateway(
+        string serverName, McpBridgeServerConfig config, ConnectionResources resources) => new(() =>
     {
-        if (!_serverConfigs.TryGetValue(serverName, out var config)) return null;
-        if (config.Attachments is null) return null;
-        if (string.IsNullOrEmpty(config.Url)) return null;
+        if (config.Attachments is null || string.IsNullOrEmpty(config.Url))
+            return null;
 
-        if (_attachmentGateways.TryGetValue(serverName, out var entry))
-            return entry.Gateway;
-
-        // Reuse the same client-construction logic so attachment uploads carry
-        // the same auth and headers as MCP tool calls.
         var http = TryBuildHttpClient(serverName, config) ?? new HttpClient();
-
-        var gateway = new AttachmentGateway(
-            _attachmentStorage.Value,
-            http,
-            new Uri(config.Url),
-            config.Attachments,
-            _logger);
-
-        _attachmentGateways[serverName] = new AttachmentGatewayEntry(gateway, http);
-        return gateway;
-    }
+        resources.Add(http);
+        return new AttachmentGateway(_attachmentStorage.Value, http, new Uri(config.Url), config.Attachments, _logger);
+    }, LazyThreadSafetyMode.ExecutionAndPublication);
 
     /// <summary>
     /// Builds an <see cref="HttpClient"/> for a server config that needs custom
@@ -759,38 +775,15 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
     /// </summary>
     private Task<CallToolResult> CaptureBinaryContentAsync(
         string serverName,
+        McpBridgeServerConfig? config,
         string toolName,
         CallToolResult result,
         CancellationToken ct)
     {
-        _serverConfigs.TryGetValue(serverName, out var config);
         return _binaryCapture.Value.CaptureAsync(
             serverName, toolName, result, config?.Attachments?.Capture, ct);
     }
 
-    private void InvalidateAttachmentGateway(string serverName)
-    {
-        if (_attachmentGateways.Remove(serverName, out var entry))
-        {
-            try { entry.HttpClient.Dispose(); }
-            catch { /* Best-effort cleanup */ }
-        }
-    }
-
-    private sealed record AttachmentGatewayEntry(AttachmentGateway Gateway, HttpClient HttpClient);
-
-    /// <summary>
-    /// Snapshot of a connected MCP server's self-reported identity, captured once at connect
-    /// from <see cref="McpClient.ServerInfo"/> and <see cref="McpClient.ServerInstructions"/>.
-    /// Forwarded to agents via <see cref="McpGetServiceDetailsResponse"/> and used as input
-    /// to the LLM-generated server summary.
-    /// </summary>
-    private sealed record McpServerMetadata(
-        string? ImplementationName,
-        string? Title,
-        string? Version,
-        string? Description,
-        string? Instructions);
 
     private static List<McpClientTool> ApplyToolFilters(List<McpClientTool> tools, McpBridgeServerConfig config)
     {
@@ -812,12 +805,12 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
     /// <summary>
     /// Lists a server's prompts. <c>Known</c> is false only when the list couldn't be read: a
     /// server without the prompts capability, or one answering method-not-found, simply has none.
-    /// On a failed read the previously known prompts are kept, so a transient error doesn't make
-    /// them vanish, and the surface fingerprint becomes unknown rather than recording a surface
-    /// that was never seen (mcp-aggregator#41 baselined a failed read and read stale forever).
+    /// On a failed read the prompts <paramref name="previous"/> knew are kept, so a transient error
+    /// doesn't make them vanish, and the surface fingerprint becomes unknown rather than recording a
+    /// surface that was never seen (mcp-aggregator#41 baselined a failed read and read stale forever).
     /// </summary>
     private async Task<(List<McpClientPrompt> Prompts, bool Known)> ListPromptsAsync(
-        string name, McpClient client, CancellationToken ct)
+        string name, McpClient client, ConnectedServer? previous, CancellationToken ct)
     {
         if (client.ServerCapabilities?.Prompts is null)
             return ([], true);
@@ -838,7 +831,7 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "Listing prompts on MCP server {Name} failed; its surface fingerprint is unknown", name);
-            return (_serverPrompts.GetValueOrDefault(name) ?? [], false);
+            return ([.. previous?.Prompts ?? []], false);
         }
     }
 
@@ -859,7 +852,7 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
     /// fingerprints for a surface.
     /// </summary>
     private static (string? Server, Dictionary<string, string> Tools) ComputeFingerprints(
-        List<McpClientTool> tools, List<McpClientPrompt> prompts, bool promptsKnown)
+        IReadOnlyList<McpClientTool> tools, IReadOnlyList<McpClientPrompt> prompts, bool promptsKnown)
     {
         var toolFingerprints = new Dictionary<string, string>(StringComparer.Ordinal);
         foreach (var tool in tools)
@@ -923,103 +916,88 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
 
     /// <summary>
     /// Re-reads a connected server's tools and prompts on its existing connection and, when the
-    /// surface fingerprint moved, updates the bridge's view, regenerates the summary and publishes
-    /// the change. An unchanged surface publishes nothing. Returns true when a change was published.
-    /// A server whose lists can't be read is left alone: a dead connection is the reconnect path's
-    /// job, not this one's.
+    /// surface fingerprint moved, publishes a new snapshot of that connection, regenerates the
+    /// summary and announces the change. An unchanged surface publishes nothing. Returns true when
+    /// a change was published. A server whose lists can't be read is left alone: a dead connection
+    /// is the reconnect path's job, not this one's. Shares the server's lock with connect and
+    /// disconnect, so a refresh never interleaves with a reconnect.
     /// </summary>
     internal async Task<bool> RefreshSurfaceAsync(string name, CancellationToken ct)
     {
-        var gate = _surfaceLocks.GetOrAdd(name, _ => new SemaphoreSlim(1, 1));
-        await gate.WaitAsync(ct);
+        using var serverLock = await _connections.LockAsync(name, ct);
+
+        using var lease = _connections.Lease(name);
+        if (lease is null)
+            return false;
+        var current = lease.Server;
+
+        List<McpClientTool> tools;
         try
         {
-            if (!_clients.TryGetValue(name, out var client) || !_serverConfigs.TryGetValue(name, out var config))
-                return false;
-
-            List<McpClientTool> tools;
-            try
-            {
-                tools = ApplyToolFilters([.. await client.ListToolsAsync(cancellationToken: ct)], config);
-            }
-            catch (OperationCanceledException) when (ct.IsCancellationRequested)
-            {
-                throw;
-            }
-            catch (Exception ex)
-            {
-                _logger.LogDebug(ex, "Surface refresh: listing tools on MCP server {Name} failed", name);
-                return false;
-            }
-
-            var (prompts, promptsKnown) = await ListPromptsAsync(name, client, ct);
-            var (fingerprint, toolFingerprints) = ComputeFingerprints(tools, prompts, promptsKnown);
-            _lastSurfaceCheck[name] = DateTimeOffset.UtcNow;
-
-            var current = _serverSummaries.GetValueOrDefault(name);
-            var unchanged = fingerprint is not null
-                ? current?.Fingerprint == fingerprint
-                : current is not null && SameToolFingerprints(current.ToolFingerprints, toolFingerprints);
-            if (unchanged)
-                return false;
-
-            _serverTools[name] = tools;
-            _serverPrompts[name] = prompts;
-
-            var metadata = _serverMetadata.GetValueOrDefault(name) ?? new McpServerMetadata(null, null, null, null, null);
-            var summary = (await GenerateSummaryAsync(name, metadata, tools, prompts, ct)) with
-            {
-                ServerId = config.Id,
-                Fingerprint = fingerprint,
-                ToolFingerprints = toolFingerprints
-            };
-            _serverSummaries[name] = summary;
-
-            _logger.LogInformation(
-                "MCP server {Name} changed its surface: now {ToolCount} tools and {PromptCount} prompts",
-                name, tools.Count, prompts.Count);
-
-            if (!IsServerHiddenByAuth(config))
-                await PublishServersIndexedAsync([summary], [], ct);
-            return true;
+            tools = ApplyToolFilters([.. await current.Client.ListToolsAsync(cancellationToken: ct)], current.Config);
         }
-        finally
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
-            gate.Release();
+            throw;
         }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "Surface refresh: listing tools on MCP server {Name} failed", name);
+            return false;
+        }
+
+        var (prompts, promptsKnown) = await ListPromptsAsync(name, current.Client, current, ct);
+        var (fingerprint, toolFingerprints) = ComputeFingerprints(tools, prompts, promptsKnown);
+        _lastSurfaceCheck[name] = DateTimeOffset.UtcNow;
+
+        var unchanged = fingerprint is not null
+            ? current.Summary.Fingerprint == fingerprint
+            : SameToolFingerprints(current.Summary.ToolFingerprints, toolFingerprints);
+        if (unchanged)
+            return false;
+
+        var summary = (await GenerateSummaryAsync(name, current.Metadata, tools, prompts, ct)) with
+        {
+            ServerId = current.Config.Id,
+            Fingerprint = fingerprint,
+            ToolFingerprints = toolFingerprints
+        };
+
+        // Same connection, new surface: the snapshot keeps its resources, so nothing is retired.
+        _connections.Publish(current with { Tools = tools, Prompts = prompts, Summary = summary });
+
+        _logger.LogInformation(
+            "MCP server {Name} changed its surface: now {ToolCount} tools and {PromptCount} prompts",
+            name, tools.Count, prompts.Count);
+
+        if (!IsServerHiddenByAuth(current.Config))
+            await PublishServersIndexedAsync([summary], [], ct);
+        return true;
 
         static bool SameToolFingerprints(Dictionary<string, string> a, Dictionary<string, string> b) =>
             a.Count == b.Count && a.All(kvp => b.TryGetValue(kvp.Key, out var v) && v == kvp.Value);
     }
 
     /// <summary>
-    /// Finds <paramref name="toolName"/> among the tools <paramref name="serverName"/> may be
-    /// called with. A miss against the cached list re-lists once, without touching cached state,
-    /// so a tool added since the last connect still goes through. Returns the tool when found.
-    /// <c>Available</c> is non-null only on a miss: it holds the names the model may use instead.
-    /// Both are null only when the bridge holds no tool list for the server at all, in which case
-    /// the call proceeds and the downstream answers for itself.
+    /// Finds <paramref name="toolName"/> among the tools <paramref name="server"/> may be called
+    /// with. A miss against the snapshot's list re-lists once, without touching the snapshot, so a
+    /// tool added since the last connect still goes through. Returns the tool when found;
+    /// otherwise <c>Available</c> holds the names the model may use instead.
     /// </summary>
     private async Task<(McpClientTool? Tool, IReadOnlyList<string>? Available)> ResolveToolAsync(
-        string serverName, McpClient client, string toolName, CancellationToken ct)
+        ConnectedServer server, string toolName, CancellationToken ct)
     {
-        if (!_serverTools.TryGetValue(serverName, out var cached))
-            return (null, null);
-
-        if (FindTool(cached, toolName) is { } hit)
+        if (FindTool(server.Tools, toolName) is { } hit)
             return (hit, null);
-
-        if (!_serverConfigs.TryGetValue(serverName, out var config))
-            return (null, cached.Select(t => t.Name).ToList());
 
         try
         {
-            var fresh = ApplyToolFilters([.. await client.ListToolsAsync(cancellationToken: ct)], config);
+            var fresh = ApplyToolFilters([.. await server.Client.ListToolsAsync(cancellationToken: ct)], server.Config);
             if (FindTool(fresh, toolName) is { } freshHit)
             {
                 _logger.LogInformation(
                     "MCP {Server}/{Tool} is not in the cached tool list but the server lists it now; proceeding",
-                    serverName, toolName);
+                    server.Name, toolName);
                 return (freshHit, null);
             }
 
@@ -1033,13 +1011,13 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
         {
             // Fail closed: letting the call through here would let a filtered-out tool past the
             // operator's deniedTools whenever tools/list happens to fail.
-            _logger.LogDebug(ex, "Re-listing tools for {Server} failed; answering from the cached list", serverName);
-            return (null, cached.Select(t => t.Name).ToList());
+            _logger.LogDebug(ex, "Re-listing tools for {Server} failed; answering from the cached list", server.Name);
+            return (null, server.Tools.Select(t => t.Name).ToList());
         }
 
         // MCP tool names are case-sensitive, but a case slip is better answered by the downstream
         // (and the unknown-tool hint) than refused here as if the tool didn't exist.
-        static McpClientTool? FindTool(List<McpClientTool> tools, string name) =>
+        static McpClientTool? FindTool(IReadOnlyList<McpClientTool> tools, string name) =>
             tools.FirstOrDefault(t => string.Equals(t.Name, name, StringComparison.Ordinal))
             ?? tools.FirstOrDefault(t => string.Equals(t.Name, name, StringComparison.OrdinalIgnoreCase));
     }
@@ -1048,25 +1026,36 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
     /// Pre-checks a prompt request against the server's listed prompts: an unknown name, or
     /// missing required arguments, is answered here with the real names and signature instead of
     /// a round trip that ends in the downstream's bare protocol error. Returns null when the call
-    /// may proceed, including when the server's prompt list is unknown.
+    /// may proceed.
     /// </summary>
-    private string? CheckPromptCall(McpGetPromptRequest req)
+    private static string? CheckPromptCall(ConnectedServer server, McpGetPromptRequest req)
     {
-        if (!_serverPrompts.TryGetValue(req.ServerName, out var prompts))
-            return null;
-
-        var prompt = prompts.FirstOrDefault(p => string.Equals(p.Name, req.PromptName, StringComparison.Ordinal))
-                     ?? prompts.FirstOrDefault(p => string.Equals(p.Name, req.PromptName, StringComparison.OrdinalIgnoreCase));
+        var prompt = server.Prompts.FirstOrDefault(p => string.Equals(p.Name, req.PromptName, StringComparison.Ordinal))
+                     ?? server.Prompts.FirstOrDefault(p => string.Equals(p.Name, req.PromptName, StringComparison.OrdinalIgnoreCase));
         if (prompt is null)
         {
             return McpCallDiagnostics.DescribeUnknownPrompt(
-                req.ServerName, req.PromptName, prompts.Select(p => p.Name).ToList());
+                req.ServerName, req.PromptName, server.Prompts.Select(p => p.Name).ToList());
         }
 
         return McpCallDiagnostics.DescribeMissingPromptArguments(
             req.ServerName, prompt.Name, ToPromptDefinition(prompt).Arguments, req.Arguments.Keys);
     }
 
+    private static McpGetPromptResponse ToPromptResponse(McpGetPromptRequest req, GetPromptResult result) => new()
+    {
+        ServerName = req.ServerName,
+        PromptName = req.PromptName,
+        Description = result.Description,
+        Messages = (result.Messages ?? []).Select(m => m.Content is TextContentBlock textBlock
+            ? new McpPromptMessage { Role = m.Role.ToString().ToLowerInvariant(), Content = textBlock.Text, ContentType = "text" }
+            : new McpPromptMessage
+            {
+                Role = m.Role.ToString().ToLowerInvariant(),
+                Content = JsonSerializer.Serialize(m.Content, JsonOptions),
+                ContentType = m.Content?.Type ?? "unknown"
+            }).ToList()
+    };
     /// <summary>
     /// Appends <see cref="McpCallDiagnostics.DescribeArgumentProblem"/>'s hint, when there is one,
     /// to a failed call's content as its own text block.
@@ -1089,8 +1078,8 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
     private async Task<McpServerSummary> GenerateSummaryAsync(
         string serverName,
         McpServerMetadata metadata,
-        List<McpClientTool> tools,
-        List<McpClientPrompt> prompts,
+        IReadOnlyList<McpClientTool> tools,
+        IReadOnlyList<McpClientPrompt> prompts,
         CancellationToken ct)
     {
         var toolNames = tools.Select(t => t.Name).ToList();
@@ -1218,31 +1207,31 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
 
         var replyTo = envelope.ReplyTo ?? $"tool.result.{_agentName}";
 
-        // Check for direct server routing via rb-mcp-server header
-        string? serverName = null;
-        McpClient? client = null;
+        // The call leases one snapshot of the server and uses only it: the client, tools, config,
+        // elicitation coordinator and attachment gateway all come from the same connect, and the
+        // client can't be disposed under the call by a concurrent reconnect.
+        ServerLease? lease = null;
 
         if (envelope.Headers.TryGetValue(McpHeaders.ServerName, out var headerServer)
             && !string.IsNullOrEmpty(headerServer))
         {
-            serverName = headerServer;
-            client = _clients.GetValueOrDefault(headerServer);
+            lease = _connections.Lease(headerServer);
 
-            if (client is null)
+            if (lease is null)
             {
                 // Server is configured but not yet connected (e.g. tool call arrived during
                 // startup before the background connection completed). Attempt an on-demand
                 // connection so the call succeeds transparently rather than returning an error.
-                if (_serverConfigs.TryGetValue(headerServer, out var pendingConfig))
+                if (_connections.TryGetConfig(headerServer, out var pendingConfig))
                 {
                     _logger.LogInformation(
                         "MCP server '{Server}' is configured but not connected; connecting on demand before tool invoke",
                         headerServer);
                     await ConnectServerAsync(headerServer, pendingConfig, ct);
-                    client = _clients.GetValueOrDefault(headerServer);
+                    lease = _connections.Lease(headerServer);
                 }
 
-                if (client is null)
+                if (lease is null)
                 {
                     // A model that invents a server name needs the real ones to recover; one whose
                     // server is merely down needs to know retrying the name is right.
@@ -1251,9 +1240,9 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
                         ToolCallId = request.ToolCallId,
                         ToolName = request.ToolName,
                         Code = ToolError.Codes.ToolNotFound,
-                        Message = _serverConfigs.ContainsKey(headerServer)
+                        Message = _connections.IsConfigured(headerServer)
                             ? McpCallDiagnostics.DescribeUnavailableServer(headerServer)
-                            : McpCallDiagnostics.DescribeUnknownServer(headerServer, _serverConfigs.Keys),
+                            : McpCallDiagnostics.DescribeUnknownServer(headerServer, _connections.ConfiguredNames),
                         IsRetryable = false
                     };
                     await PublishResponseAsync(error, replyTo, envelope.CorrelationId, ct);
@@ -1264,18 +1253,12 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
         else
         {
             // Fall back to searching by tool name
-            foreach (var (name, tools) in _serverTools)
-            {
-                if (tools.Any(t => t.Name == request.ToolName))
-                {
-                    serverName = name;
-                    client = _clients.GetValueOrDefault(name);
-                    break;
-                }
-            }
+            var owner = _connections.Connected.FirstOrDefault(s => s.Tools.Any(t => t.Name == request.ToolName));
+            if (owner is not null)
+                lease = _connections.Lease(owner.Name);
         }
 
-        if (client is null || serverName is null)
+        if (lease is null)
         {
             var error = new ToolError
             {
@@ -1290,11 +1273,22 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
             return MessageResult.Ack;
         }
 
+        using (lease)
+        {
+            return await InvokeOnServerAsync(envelope, request, replyTo, lease.Server, ct);
+        }
+    }
+
+    private async Task<MessageResult> InvokeOnServerAsync(
+        MessageEnvelope envelope, ToolInvokeRequest request, string replyTo, ConnectedServer server, CancellationToken ct)
+    {
+        var serverName = server.Name;
+
         // Only tools the server lists — after the operator's allowedTools/deniedTools filter — may
         // be called. Without this check a filtered-out tool was hidden from the model but still
         // callable by name, and an unknown name cost a reconnect-and-retry before failing with the
         // downstream's bare protocol error.
-        var toolDefinition = await ResolveToolAsync(serverName, client, request.ToolName, ct);
+        var toolDefinition = await ResolveToolAsync(server, request.ToolName, ct);
         if (toolDefinition.Tool is null && toolDefinition.Available is { } available)
         {
             _logger.LogWarning("MCP {Server}/{Tool} refused: not among the server's {Count} available tool(s)",
@@ -1331,9 +1325,7 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
         // A per-server timeout is authoritative for that MCP server.
         // This lets slow analytical MCPs opt into a larger budget while
         // ordinary MCPs retain the normal caller/default timeout.
-        if (!string.IsNullOrWhiteSpace(serverName)
-            && _serverConfigs.TryGetValue(serverName, out var timeoutConfig)
-            && timeoutConfig.ToolTimeoutMs is int serverTimeoutMs)
+        if (server.Config.ToolTimeoutMs is int serverTimeoutMs)
         {
             if (serverTimeoutMs <= 0)
             {
@@ -1405,10 +1397,10 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
         // Apply per-server argument guards on the LLM's original arguments, BEFORE the
         // attachment gateway mutates them. Runs after the invoke_tool unwrap so guards
         // see the effective inner arguments. Fail closed: unresolvable guard config rejects.
-        if (_serverConfigs.TryGetValue(serverName, out var invokeConfig) && invokeConfig.ArgGuards.Count > 0)
+        if (server.Config.ArgGuards.Count > 0)
         {
             var rejection = await McpArgGuardEvaluator.EvaluateAsync(
-                _argGuards, serverName, invokeConfig, request.ToolName, arguments, ct);
+                _argGuards, serverName, server.Config, request.ToolName, arguments, ct);
 
             if (rejection is not null)
             {
@@ -1435,7 +1427,7 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
         // Apply attachment-passthrough request rewrite (no-op when the server has no manifest).
         // We capture ShouldRewriteResponse BEFORE RewriteRequestAsync because the rewrite
         // mutates the gateway-only `mode: "save"` to `stash`/`inline`.
-        var attachmentGateway = GetOrCreateAttachmentGateway(serverName);
+        var attachmentGateway = server.AttachmentGateway.Value;
         var rewriteResponse = false;
         if (attachmentGateway is not null)
         {
@@ -1469,7 +1461,7 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
         // Open before the call: an elicitation arrives on the MCP session's own message loop
         // while CallToolAsync is still awaiting, not on this async context, so the only way to
         // tie a question back to the call that provoked it is to record the call as in flight.
-        using var elicitationScope = _elicitationCoordinators.GetValueOrDefault(serverName)
+        using var elicitationScope = server.Elicitation
             ?.BeginCall(request.ToolName, request.Arguments, request.SessionId);
 
         try
@@ -1477,7 +1469,7 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
             using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
             timeoutCts.CancelAfter(timeoutMs);
 
-            var result = await client.CallToolAsync(
+            var result = await server.Client.CallToolAsync(
                 request.ToolName, arguments, cancellationToken: timeoutCts.Token);
 
             if (rewriteResponse && attachmentGateway is not null)
@@ -1486,7 +1478,7 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
                     request.ToolName, arguments, result, ct);
             }
 
-            result = await CaptureBinaryContentAsync(serverName, request.ToolName, result, ct);
+            result = await CaptureBinaryContentAsync(serverName, server.Config, request.ToolName, result, ct);
 
             sw.Stop();
             var blocks = McpToolExecutor.MapContentBlocks(result);
@@ -1494,7 +1486,7 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
             // A question the bridge declined usually means a thin or partial result. Say so in
             // the tool output, or the agent retries the identical call and gets the same answer.
             IReadOnlyList<McpElicitationRecord> elicitations = elicitationScope?.Records ?? [];
-            if (McpElicitationNote.Build(elicitations, GetToolParameterNames(serverName, request.ToolName)) is { } elicitationNote)
+            if (McpElicitationNote.Build(elicitations, GetToolParameterNames(server, request.ToolName)) is { } elicitationNote)
                 blocks = McpElicitationNote.AppendTo(blocks, elicitationNote);
 
             var content = blocks is not null ? McpToolExecutor.TextFromBlocks(blocks) : null;
@@ -1557,7 +1549,7 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
                 Message = $"MCP server '{serverName}' timed out after {timeoutMs}ms. " +
                           $"This is a transient error — retry the same tool call to continue."
                           + McpElicitationNote.DescribeDeclined(
-                              elicitationScope?.Records ?? [], GetToolParameterNames(serverName, request.ToolName)),
+                              elicitationScope?.Records ?? [], GetToolParameterNames(server, request.ToolName)),
                 IsRetryable = true
             };
 
@@ -1575,7 +1567,7 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
             var hint = ex.Message.Contains("unknown tool", StringComparison.OrdinalIgnoreCase)
                 ? McpCallDiagnostics.DescribeUnknownTool(
                     serverName, request.ToolName,
-                    _serverTools.GetValueOrDefault(serverName)?.Select(t => t.Name).ToList() ?? [])
+                    server.Tools.Select(t => t.Name).ToList())
                 : McpCallDiagnostics.DescribeArgumentProblem(
                     serverName, request.ToolName, inputSchema, sentArguments, ex.Message);
 
@@ -1586,7 +1578,7 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
                 Content = ex.Message
                           + (hint is null ? "" : "\n\n" + hint)
                           + McpElicitationNote.DescribeDeclined(
-                              elicitationScope?.Records ?? [], GetToolParameterNames(serverName, request.ToolName)),
+                              elicitationScope?.Records ?? [], GetToolParameterNames(server, request.ToolName)),
                 IsError = true
             };
 
@@ -1660,51 +1652,50 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
                     "← MCP {Server}/{Tool} FAILED after {ElapsedMs}ms following a declined elicitation — not retrying",
                     serverName, request.ToolName, sw.ElapsedMilliseconds);
             }
-            else if (serverName is not null && _serverConfigs.TryGetValue(serverName, out var staleConfig))
+            else if (_connections.TryGetConfig(serverName, out var staleConfig))
             {
                 _logger.LogWarning(ex,
                     "← MCP {Server}/{Tool} FAILED after {ElapsedMs}ms — reconnecting and retrying transparently",
                     serverName, request.ToolName, sw.ElapsedMilliseconds);
 
                 McpElicitationCallScope? retryElicitationScope = null;
+                ServerLease? retryLease = null;
                 try
                 {
-                    await ConnectServerAsync(serverName, staleConfig, ct);
+                    // Reconnect only if nobody else has replaced the failed client meanwhile; if they
+                    // have, retry on their connection instead of building yet another.
+                    await ConnectServerAsync(serverName, staleConfig, ct, replacing: server.Client);
 
-                    var freshClient = _clients.GetValueOrDefault(serverName);
-                    if (freshClient is not null)
+                    retryLease = _connections.Lease(serverName);
+                    if (retryLease is not null && !ReferenceEquals(retryLease.Server.Client, server.Client))
                     {
+                        var fresh = retryLease.Server;
                         using var retryCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
                         retryCts.CancelAfter(timeoutMs);
 
-                        // A successful reconnect replaced the coordinator along with the client,
-                        // so the retry needs a scope from the current one.
-                        retryElicitationScope = _elicitationCoordinators
-                            .GetValueOrDefault(serverName)
+                        // A new connection comes with its own coordinator, so the retry needs a
+                        // scope from it.
+                        retryElicitationScope = fresh.Elicitation
                             ?.BeginCall(request.ToolName, request.Arguments, request.SessionId);
 
-                        var retryResult = await freshClient.CallToolAsync(
+                        var retryResult = await fresh.Client.CallToolAsync(
                             request.ToolName, arguments, cancellationToken: retryCts.Token);
 
-                        if (rewriteResponse)
+                        if (rewriteResponse && fresh.AttachmentGateway.Value is { } freshGateway)
                         {
-                            var freshGateway = GetOrCreateAttachmentGateway(serverName);
-                            if (freshGateway is not null)
-                            {
-                                retryResult = await freshGateway.RewriteResponseAsync(
-                                    request.ToolName, arguments, retryResult, ct);
-                            }
+                            retryResult = await freshGateway.RewriteResponseAsync(
+                                request.ToolName, arguments, retryResult, ct);
                         }
 
                         retryResult = await CaptureBinaryContentAsync(
-                            serverName, request.ToolName, retryResult, ct);
+                            serverName, fresh.Config, request.ToolName, retryResult, ct);
 
                         sw.Stop();
                         var retryBlocks = McpToolExecutor.MapContentBlocks(retryResult);
 
                         IReadOnlyList<McpElicitationRecord> retryElicitations =
                             retryElicitationScope?.Records ?? [];
-                        if (McpElicitationNote.Build(retryElicitations, GetToolParameterNames(serverName, request.ToolName)) is { } retryNote)
+                        if (McpElicitationNote.Build(retryElicitations, GetToolParameterNames(fresh, request.ToolName)) is { } retryNote)
                             retryBlocks = McpElicitationNote.AppendTo(retryBlocks, retryNote);
 
                         var retryContent = retryBlocks is not null ? McpToolExecutor.TextFromBlocks(retryBlocks) : null;
@@ -1743,6 +1734,7 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
                     retryElicitationScope?.Dispose();
                     if (retryElicitationScope is { HasRecords: true })
                         failedElicitations = [.. failedElicitations, .. retryElicitationScope.Records];
+                    retryLease?.Dispose();
                 }
             }
             else
@@ -1758,7 +1750,7 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
                 Code = ToolError.Codes.ExecutionFailed,
                 Message = ex.Message
                           + McpElicitationNote.DescribeDeclined(
-                              failedElicitations, GetToolParameterNames(serverName, request.ToolName)),
+                              failedElicitations, GetToolParameterNames(server, request.ToolName)),
                 IsRetryable = true
             };
 
@@ -1782,14 +1774,15 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
             var req = envelope.GetPayload<McpGetServiceDetailsRequest>();
             if (req is null) return MessageResult.DeadLetter;
 
-            var tools = _serverTools.GetValueOrDefault(req.ServerName) ?? [];
-            var serverPrompts = _serverPrompts.GetValueOrDefault(req.ServerName) ?? [];
-            var metadata = _serverMetadata.GetValueOrDefault(req.ServerName);
+            _connections.TryGet(req.ServerName, out var server);
+            IReadOnlyList<McpClientTool> tools = server?.Tools ?? [];
+            IReadOnlyList<McpClientPrompt> serverPrompts = server?.Prompts ?? [];
+            var metadata = server?.Metadata;
             var response = new McpGetServiceDetailsResponse
             {
                 ServerName = req.ServerName,
-                ServerId = _serverConfigs.GetValueOrDefault(req.ServerName)?.Id,
-                Fingerprint = _serverSummaries.GetValueOrDefault(req.ServerName)?.Fingerprint,
+                ServerId = server?.Config.Id,
+                Fingerprint = server?.Summary.Fingerprint,
                 ImplementationName = metadata?.ImplementationName,
                 Title = metadata?.Title,
                 Version = metadata?.Version,
@@ -1804,10 +1797,10 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
                         : null
                 }).ToList(),
                 Prompts = serverPrompts.Select(ToPromptDefinition).ToList(),
-                Error = _clients.ContainsKey(req.ServerName) ? null
-                    : _serverConfigs.ContainsKey(req.ServerName)
+                Error = server is not null ? null
+                    : _connections.IsConfigured(req.ServerName)
                         ? McpCallDiagnostics.DescribeUnavailableServer(req.ServerName)
-                        : McpCallDiagnostics.DescribeUnknownServer(req.ServerName, _serverConfigs.Keys)
+                        : McpCallDiagnostics.DescribeUnknownServer(req.ServerName, _connections.ConfiguredNames)
             };
 
             await PublishResponseAsync(response, replyTo, envelope.CorrelationId, ct);
@@ -1843,7 +1836,7 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
 
                 // register_mcp_server cannot express argGuards or elicitation policy, and it is
                 // LLM-callable — re-registering an existing name must not strip operator policy.
-                var existingConfig = _serverConfigs.GetValueOrDefault(req.ServerName);
+                _connections.TryGetConfig(req.ServerName, out var existingConfig);
                 config.CarryOperatorPolicyFrom(existingConfig);
                 config.AssignIdFrom(existingConfig);
 
@@ -1869,17 +1862,18 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
                 var newIdentity = config.CanonicalIdentity();
                 if (!string.IsNullOrEmpty(newIdentity))
                 {
-                    var existingDup = _serverConfigs.FirstOrDefault(kvp =>
-                        !string.Equals(kvp.Key, req.ServerName, StringComparison.OrdinalIgnoreCase)
-                        && string.Equals(kvp.Value.CanonicalIdentity(), newIdentity, StringComparison.Ordinal));
+                    var existingDup = _connections.ConfiguredNames.FirstOrDefault(name =>
+                        !string.Equals(name, req.ServerName, StringComparison.OrdinalIgnoreCase)
+                        && _connections.TryGetConfig(name, out var other)
+                        && string.Equals(other.CanonicalIdentity(), newIdentity, StringComparison.Ordinal));
 
-                    if (existingDup.Key is not null)
+                    if (existingDup is not null)
                     {
                         var dupResponse = new McpRegisterServerResponse
                         {
                             ServerName = req.ServerName,
                             Success = false,
-                            Error = $"An MCP server with the same URL and credentials is already registered as '{existingDup.Key}'. " +
+                            Error = $"An MCP server with the same URL and credentials is already registered as '{existingDup}'. " +
                                     $"Use the existing registration, or unregister it before registering under a different name."
                         };
                         await PublishResponseAsync(dupResponse, replyTo, envelope.CorrelationId, ct);
@@ -1890,16 +1884,13 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
                 await ConnectServerAsync(req.ServerName, config, ct);
                 await PersistServerConfigAsync(req.ServerName, config, remove: false);
 
-                var summary = _serverTools.ContainsKey(req.ServerName)
-                    ? $"{_serverTools[req.ServerName].Count} tool(s) available."
-                    : null;
-
+                var connected = _connections.TryGet(req.ServerName, out var registered);
                 var response = new McpRegisterServerResponse
                 {
                     ServerName = req.ServerName,
-                    Success = _clients.ContainsKey(req.ServerName),
-                    Summary = summary,
-                    Error = _clients.ContainsKey(req.ServerName) ? null : "Connection failed"
+                    Success = connected,
+                    Summary = connected ? $"{registered!.Tools.Count} tool(s) available." : null,
+                    Error = connected ? null : "Connection failed"
                 };
 
                 await PublishResponseAsync(response, replyTo, envelope.CorrelationId, ct);
@@ -1950,14 +1941,14 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
             var req = envelope.GetPayload<McpGetPromptRequest>();
             if (req is null) return MessageResult.DeadLetter;
 
-            var client = _clients.GetValueOrDefault(req.ServerName);
-            var precheckError = client is null
-                ? _serverConfigs.ContainsKey(req.ServerName)
+            using var lease = _connections.Lease(req.ServerName);
+            var precheckError = lease is null
+                ? _connections.IsConfigured(req.ServerName)
                     ? McpCallDiagnostics.DescribeUnavailableServer(req.ServerName)
-                    : McpCallDiagnostics.DescribeUnknownServer(req.ServerName, _serverConfigs.Keys)
-                : CheckPromptCall(req);
+                    : McpCallDiagnostics.DescribeUnknownServer(req.ServerName, _connections.ConfiguredNames)
+                : CheckPromptCall(lease.Server, req);
 
-            if (client is null || precheckError is not null)
+            if (lease is null || precheckError is not null)
             {
                 var rejected = new McpGetPromptResponse
                 {
@@ -1969,44 +1960,13 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
                 return MessageResult.Ack;
             }
 
+            IReadOnlyDictionary<string, object?> promptArgs =
+                req.Arguments.ToDictionary(kvp => kvp.Key, kvp => (object?)kvp.Value);
+
             try
             {
-                IReadOnlyDictionary<string, object?> promptArgs = req.Arguments.Count > 0
-                    ? req.Arguments.ToDictionary(kvp => kvp.Key, kvp => (object?)kvp.Value)
-                    : new Dictionary<string, object?>();
-
-                var result = await client.GetPromptAsync(req.PromptName, promptArgs, cancellationToken: ct);
-
-                var messages = (result.Messages ?? []).Select(m =>
-                {
-                    string content;
-                    string contentType;
-                    if (m.Content is ModelContextProtocol.Protocol.TextContentBlock textBlock)
-                    {
-                        content = textBlock.Text;
-                        contentType = "text";
-                    }
-                    else
-                    {
-                        content = JsonSerializer.Serialize(m.Content, JsonOptions);
-                        contentType = m.Content?.Type ?? "unknown";
-                    }
-                    return new McpPromptMessage
-                    {
-                        Role = m.Role.ToString().ToLowerInvariant(),
-                        Content = content,
-                        ContentType = contentType
-                    };
-                }).ToList();
-
-                var response = new McpGetPromptResponse
-                {
-                    ServerName = req.ServerName,
-                    PromptName = req.PromptName,
-                    Description = result.Description,
-                    Messages = messages
-                };
-                await PublishResponseAsync(response, replyTo, envelope.CorrelationId, ct);
+                var result = await lease.Server.Client.GetPromptAsync(req.PromptName, promptArgs, cancellationToken: ct);
+                await PublishResponseAsync(ToPromptResponse(req, result), replyTo, envelope.CorrelationId, ct);
             }
             catch (McpProtocolException ex) when (ex.ErrorCode is McpErrorCode.InvalidParams or McpErrorCode.MethodNotFound)
             {
@@ -2024,53 +1984,22 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
             }
             catch (Exception ex)
             {
-                // Attempt reconnect and retry once (same pattern as HandleToolInvokeAsync)
-                if (_serverConfigs.TryGetValue(req.ServerName, out var staleConfig))
+                // Attempt reconnect and retry once (same pattern as HandleToolInvokeAsync): only if
+                // nobody else replaced the failed client meanwhile, and only on a new connection.
+                if (_connections.TryGetConfig(req.ServerName, out var staleConfig))
                 {
                     _logger.LogWarning(ex,
                         "GetPrompt {Server}/{Prompt} FAILED — reconnecting and retrying transparently",
                         req.ServerName, req.PromptName);
                     try
                     {
-                        await ConnectServerAsync(req.ServerName, staleConfig, ct);
-                        var freshClient = _clients.GetValueOrDefault(req.ServerName);
-                        if (freshClient is not null)
+                        await ConnectServerAsync(req.ServerName, staleConfig, ct, replacing: lease.Server.Client);
+                        using var retryLease = _connections.Lease(req.ServerName);
+                        if (retryLease is not null && !ReferenceEquals(retryLease.Server.Client, lease.Server.Client))
                         {
-                            IReadOnlyDictionary<string, object?> retryArgs = req.Arguments.Count > 0
-                                ? req.Arguments.ToDictionary(kvp => kvp.Key, kvp => (object?)kvp.Value)
-                                : new Dictionary<string, object?>();
-
-                            var retryResult = await freshClient.GetPromptAsync(req.PromptName, retryArgs, cancellationToken: ct);
-                            var retryMessages = (retryResult.Messages ?? []).Select(m =>
-                            {
-                                string content;
-                                string contentType;
-                                if (m.Content is ModelContextProtocol.Protocol.TextContentBlock textBlock)
-                                {
-                                    content = textBlock.Text;
-                                    contentType = "text";
-                                }
-                                else
-                                {
-                                    content = JsonSerializer.Serialize(m.Content, JsonOptions);
-                                    contentType = m.Content?.Type ?? "unknown";
-                                }
-                                return new McpPromptMessage
-                                {
-                                    Role = m.Role.ToString().ToLowerInvariant(),
-                                    Content = content,
-                                    ContentType = contentType
-                                };
-                            }).ToList();
-
-                            var retryResponse = new McpGetPromptResponse
-                            {
-                                ServerName = req.ServerName,
-                                PromptName = req.PromptName,
-                                Description = retryResult.Description,
-                                Messages = retryMessages
-                            };
-                            await PublishResponseAsync(retryResponse, replyTo, envelope.CorrelationId, ct);
+                            var retryResult = await retryLease.Server.Client.GetPromptAsync(
+                                req.PromptName, promptArgs, cancellationToken: ct);
+                            await PublishResponseAsync(ToPromptResponse(req, retryResult), replyTo, envelope.CorrelationId, ct);
                             return MessageResult.Ack;
                         }
                     }
@@ -2194,11 +2123,10 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
     /// is unknown, or when the tool is an <c>invoke_tool</c> dispatcher whose real parameters
     /// belong to the inner tool.
     /// </summary>
-    private IReadOnlyCollection<string>? GetToolParameterNames(string? serverName, string toolName)
+    private static IReadOnlyCollection<string>? GetToolParameterNames(ConnectedServer server, string toolName)
     {
-        if (serverName is null
-            || toolName == "invoke_tool"
-            || _serverTools.GetValueOrDefault(serverName)?.FirstOrDefault(t => t.Name == toolName) is not { } tool
+        if (toolName == "invoke_tool"
+            || server.Tools.FirstOrDefault(t => t.Name == toolName) is not { } tool
             || tool.JsonSchema.ValueKind != JsonValueKind.Object)
         {
             return null;
@@ -2245,7 +2173,7 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
 
         if (request?.ServerName is not null)
         {
-            if (_serverConfigs.TryGetValue(request.ServerName, out var config))
+            if (_connections.TryGetConfig(request.ServerName, out var config))
             {
                 // Reconnect rather than refresh the stale client — this handles server restarts.
                 await ConnectServerAsync(request.ServerName, config, ct);
@@ -2253,9 +2181,9 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
         }
         else
         {
-            foreach (var (name, _) in _clients.ToList())
+            foreach (var name in _connections.Connected.Select(s => s.Name))
             {
-                if (!_serverConfigs.TryGetValue(name, out var config)) continue;
+                if (!_connections.TryGetConfig(name, out var config)) continue;
 
                 try
                 {
@@ -2282,19 +2210,20 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
         {
             while (await timer.WaitForNextTickAsync(ct))
             {
-                var disconnected = _serverConfigs.Keys
-                    .Where(name => !_clients.ContainsKey(name))
+                var disconnected = _connections.ConfiguredNames
+                    .Where(name => !_connections.IsConnected(name))
                     .ToList();
 
                 foreach (var name in disconnected)
                 {
-                    if (!_serverConfigs.TryGetValue(name, out var config)) continue;
+                    if (!_connections.TryGetConfig(name, out var config)) continue;
 
                     _logger.LogInformation(
                         "Reconnect sweep: attempting to reconnect MCP server {Name}", name);
                     try
                     {
-                        await ConnectServerAsync(name, config, ct);
+                        // Another caller may connect it while this one waits for the lock.
+                        await ConnectServerAsync(name, config, ct, onlyIfDisconnected: true);
                     }
                     catch (OperationCanceledException) when (ct.IsCancellationRequested)
                     {
@@ -2328,7 +2257,7 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
 
         var interval = TimeSpan.FromSeconds(_options.SurfaceRefreshIntervalSeconds);
         var now = DateTimeOffset.UtcNow;
-        foreach (var name in _clients.Keys.ToList())
+        foreach (var name in _connections.Connected.Select(s => s.Name))
         {
             if (_lastSurfaceCheck.TryGetValue(name, out var last) && now - last < interval)
                 continue;
@@ -2476,27 +2405,7 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
         }
     }
 
-    private async Task DisposeClientsAsync()
-    {
-        foreach (var (_, client) in _clients)
-        {
-            try { await client.DisposeAsync(); }
-            catch { /* Best-effort cleanup */ }
-        }
-        _clients.Clear();
-        _serverTools.Clear();
-        _serverPrompts.Clear();
-        _serverMetadata.Clear();
-        _serverConfigs.Clear();
-        _serverSummaries.Clear();
-
-        foreach (var (_, entry) in _attachmentGateways)
-        {
-            try { entry.HttpClient.Dispose(); }
-            catch { /* Best-effort cleanup */ }
-        }
-        _attachmentGateways.Clear();
-    }
+    private Task DisposeClientsAsync() => _connections.RetireAllAsync(ShutdownGrace);
 
     /// <summary>
     /// Walks the exception chain looking for an <see cref="McpAuthChallengeException"/>.
@@ -2572,14 +2481,10 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
     /// </summary>
     private void OnAuthHealthChanged(WorkIqHealthTracker.HealthChangedArgs args)
     {
-        // Snapshot the affected servers under the same lock domain we use elsewhere.
-        // Modifications to _serverConfigs come from foreground async paths; reading
-        // the keys here is safe because we tolerate races (a server added/removed
-        // mid-flip just gets the next publish cycle).
-        var workiqServers = _serverConfigs
-            .Where(kvp => string.Equals(kvp.Value.Auth?.Profile, "workiq",
-                StringComparison.OrdinalIgnoreCase))
-            .Select(kvp => kvp.Key)
+        // Races are tolerated: a server added or removed mid-flip just gets the next publish cycle.
+        var workiqServers = _connections.ConfiguredNames
+            .Where(name => _connections.TryGetConfig(name, out var config)
+                && string.Equals(config.Auth?.Profile, "workiq", StringComparison.OrdinalIgnoreCase))
             .ToList();
 
         if (workiqServers.Count == 0) return;
@@ -2593,9 +2498,9 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
                     // Healthy again — re-publish each workiq server's cached summary.
                     foreach (var name in workiqServers)
                     {
-                        if (_serverSummaries.TryGetValue(name, out var summary))
+                        if (_connections.TryGet(name, out var server))
                         {
-                            await PublishServersIndexedAsync([summary], [], CancellationToken.None);
+                            await PublishServersIndexedAsync([server.Summary], [], CancellationToken.None);
                         }
                     }
                 }
