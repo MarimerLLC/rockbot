@@ -18,25 +18,10 @@ public static class StrictArguments
         {
             filters.AddCallToolFilter(next => async (context, cancellationToken) =>
             {
-                if (context.MatchedPrimitive is McpServerTool tool && context.Params?.Arguments is { Count: > 0 } arguments)
+                if (context.MatchedPrimitive is McpServerTool tool && context.Params?.Arguments is { Count: > 0 } arguments
+                    && Validate(tool.ProtocolTool, arguments) is { } error)
                 {
-                    var unknown = FindUnknownArguments(tool.ProtocolTool.InputSchema, arguments.Keys);
-                    if (unknown.Count > 0)
-                    {
-                        var valid = GetPropertyNames(tool.ProtocolTool.InputSchema);
-                        return new CallToolResult
-                        {
-                            IsError = true,
-                            Content =
-                            [
-                                new TextContentBlock
-                                {
-                                    Text = $"unknown argument(s) {string.Join(", ", unknown.Select(k => $"'{k}'"))} " +
-                                           $"for {tool.ProtocolTool.Name}; valid arguments: {string.Join(", ", valid)}"
-                                }
-                            ]
-                        };
-                    }
+                    return new CallToolResult { IsError = true, Content = [new TextContentBlock { Text = error }] };
                 }
 
                 return await next(context, cancellationToken);
@@ -50,6 +35,49 @@ public static class StrictArguments
                 return result;
             });
         });
+
+    /// <summary>Returns an error message when the arguments don't fit the tool's input schema, otherwise null.</summary>
+    public static string? Validate(Tool tool, IDictionary<string, JsonElement> arguments)
+    {
+        var unknown = FindUnknownArguments(tool.InputSchema, arguments.Keys);
+        if (unknown.Count > 0)
+        {
+            return $"unknown argument(s) {string.Join(", ", unknown.Select(k => $"'{k}'"))} " +
+                   $"for {tool.Name}; valid arguments: {string.Join(", ", GetPropertyNames(tool.InputSchema))}";
+        }
+
+        // The SDK reports an unbindable enum value only as a generic invocation error, so check it here.
+        foreach (var (name, value) in arguments)
+        {
+            if (FindAllowedValues(tool.InputSchema, name) is { } allowed
+                && value.ValueKind == JsonValueKind.String
+                && !allowed.Contains(value.GetString()!, StringComparer.OrdinalIgnoreCase))
+            {
+                return $"invalid value '{value.GetString()}' for {name}; expected one of: {string.Join(", ", allowed)}";
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>The string values a property's schema allows via <c>enum</c>, or null when it isn't an enum.</summary>
+    public static IReadOnlyList<string>? FindAllowedValues(JsonElement inputSchema, string propertyName)
+    {
+        if (inputSchema.ValueKind != JsonValueKind.Object
+            || !inputSchema.TryGetProperty("properties", out var properties)
+            || !properties.TryGetProperty(propertyName, out var property)
+            || property.ValueKind != JsonValueKind.Object
+            || !property.TryGetProperty("enum", out var values)
+            || values.ValueKind != JsonValueKind.Array)
+        {
+            return null;
+        }
+
+        return values.EnumerateArray()
+            .Where(v => v.ValueKind == JsonValueKind.String)
+            .Select(v => v.GetString()!)
+            .ToList();
+    }
 
     /// <summary>Returns the argument names that are not declared in the tool's input schema.</summary>
     public static IReadOnlyList<string> FindUnknownArguments(JsonElement inputSchema, IEnumerable<string> argumentNames)

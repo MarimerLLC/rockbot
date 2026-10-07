@@ -11,35 +11,28 @@ namespace McpServer.TodoApp.Tools;
 [McpServerToolType]
 public sealed class TodoTools(TodoRepository repository)
 {
-    private static readonly JsonSerializerOptions JsonOptions = new()
-    {
-        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
-        WriteIndented = true,
-        Converters = { new JsonStringEnumConverter(JsonNamingPolicy.CamelCase) }
-    };
-
-    [McpServerTool(Name = "add_task")]
+    [McpServerTool(Name = "add_task", Destructive = false, Idempotent = false, OpenWorld = false)]
     [Description("Adds a new to-do task. Returns the created task as JSON.")]
     public async Task<string> AddTaskAsync(
         [Description("Title of the task.")] string title,
         [Description("Due date in ISO format (YYYY-MM-DD).")] string due_date,
-        [Description("Recurrence type: none, daily, weekly, monthly, quarterly, biannual, yearly. Defaults to none.")] string recurrence = "none",
+        [Description("Recurrence type. Defaults to none.")] RecurrenceType recurrence = RecurrenceType.None,
         [Description("Optional description of the task.")] string? description = null,
         [Description(RecurrenceUntilDescription)] string? recurrence_until = null,
         [Description(RecurrenceCountDescription)] int? recurrence_count = null,
-        [Description(MonthAnchorDescription + " With last_day, due_date is moved to the last day of its month.")] string? month_anchor = null)
+        [Description(MonthAnchorDescription + " With last_day, due_date is moved to the last day of its month.")] MonthAnchor? month_anchor = null)
     {
         try
         {
             if (!DateOnly.TryParse(due_date, out var dueDate))
                 throw new McpException("invalid due_date format, expected YYYY-MM-DD");
 
-            var recurrenceType = ParseRecurrence(recurrence);
+            var recurrenceType = recurrence;
             DateOnly? until = recurrence_until is null ? null : ParseUntil(recurrence_until);
             int? count = recurrence_count is null ? null : ParseCount(recurrence_count.Value);
             RequireRecurringForLimits(recurrenceType, until, count);
             var (anchor, anchorDay, anchoredDue) = ResolveAnchor(
-                recurrenceType, month_anchor is null ? null : ParseMonthAnchor(month_anchor), existing: null, dueDate, dueDateExplicit: false);
+                recurrenceType, month_anchor, existing: null, dueDate, dueDateExplicit: false);
 
             var id = Guid.NewGuid();
             var item = new TodoItem(
@@ -59,7 +52,7 @@ public sealed class TodoTools(TodoRepository repository)
             active.Add(item);
             await repository.SaveActiveAsync(active);
 
-            return JsonSerializer.Serialize(item, JsonOptions);
+            return JsonSerializer.Serialize(item, ToolJson.Options);
         }
         catch (Exception ex) when (ex is not McpException)
         {
@@ -67,7 +60,7 @@ public sealed class TodoTools(TodoRepository repository)
         }
     }
 
-    [McpServerTool(Name = "list_tasks")]
+    [McpServerTool(Name = "list_tasks", ReadOnly = true, OpenWorld = false)]
     [Description("Lists active to-do tasks, optionally filtered by due date range. Returns a JSON array.")]
     public async Task<string> ListTasksAsync(
         [Description("Optional ISO date (YYYY-MM-DD). Only return tasks due before this date.")] string? due_before = null,
@@ -94,7 +87,7 @@ public sealed class TodoTools(TodoRepository repository)
                 .Where(t => after is null || t.DueDate > after.Value)
                 .ToList();
 
-            return JsonSerializer.Serialize(filtered, JsonOptions);
+            return JsonSerializer.Serialize(filtered, ToolJson.Options);
         }
         catch (Exception ex) when (ex is not McpException)
         {
@@ -102,13 +95,13 @@ public sealed class TodoTools(TodoRepository repository)
         }
     }
 
-    [McpServerTool(Name = "complete_task")]
+    [McpServerTool(Name = "complete_task", Destructive = false, Idempotent = false, OpenWorld = false)]
     [Description(
         "Marks a task as completed. For repeating tasks, creates the next occurrence from the original due date " +
         "(monthly-type series land on their anchor day, or on the last day of the month for month_anchor last_day) " +
         "unless stop_recurrence is true or the series' recurrence_until / recurrence_count limit is reached. " +
-        "Returns JSON { completed, next, seriesEnded }: next is the newly created occurrence (with its new id) or null; " +
-        "seriesEnded is stop_recurrence, count_reached or until_reached when a repeating series ended, otherwise null.")]
+        "Returns JSON { completed, next, series_ended }: next is the newly created occurrence (with its new id) or null; " +
+        "series_ended is stop_recurrence, count_reached or until_reached when a repeating series ended, otherwise null.")]
     public async Task<string> CompleteTaskAsync(
         [Description("GUID of the task to complete.")] string id,
         [Description("If true, complete this occurrence and end the series: no next occurrence is created. Defaults to false.")] bool stop_recurrence = false)
@@ -165,7 +158,7 @@ public sealed class TodoTools(TodoRepository repository)
             await repository.SaveActiveAsync(active);
             await repository.SaveCompletedAsync(completed);
 
-            return JsonSerializer.Serialize(new { completed = completedItem, next, seriesEnded }, JsonOptions);
+            return JsonSerializer.Serialize(new { completed = completedItem, next, seriesEnded }, ToolJson.Options);
         }
         catch (Exception ex) when (ex is not McpException)
         {
@@ -173,7 +166,7 @@ public sealed class TodoTools(TodoRepository repository)
         }
     }
 
-    [McpServerTool(Name = "delete_task")]
+    [McpServerTool(Name = "delete_task", Destructive = true, Idempotent = true, OpenWorld = false)]
     [Description("Deletes an active task without marking it as completed.")]
     public async Task<string> DeleteTaskAsync(
         [Description("GUID of the task to delete.")] string id)
@@ -199,19 +192,19 @@ public sealed class TodoTools(TodoRepository repository)
         }
     }
 
-    [McpServerTool(Name = "update_task")]
+    [McpServerTool(Name = "update_task", Destructive = false, Idempotent = true, OpenWorld = false)]
     [Description("Updates fields on an active task. Only provided fields are changed.")]
     public async Task<string> UpdateTaskAsync(
         [Description("GUID of the task to update.")] string id,
         [Description("New title.")] string? title = null,
         [Description("New description.")] string? description = null,
         [Description("New due date in ISO format (YYYY-MM-DD).")] string? due_date = null,
-        [Description("New recurrence type: none, daily, weekly, monthly, quarterly, biannual, yearly. " +
-                     "Setting none ends the series but keeps this task and its id; it also clears any series limits.")] string? recurrence = null,
+        [Description("New recurrence type. " +
+                     "Setting none ends the series but keeps this task and its id; it also clears any series limits.")] RecurrenceType? recurrence = null,
         [Description(RecurrenceUntilDescription + " Pass an empty string to remove an existing end date.")] string? recurrence_until = null,
         [Description(RecurrenceCountDescription + " Pass 0 to remove an existing count limit.")] int? recurrence_count = null,
         [Description(MonthAnchorDescription + " Switching to last_day moves the current due date to the last day of its month " +
-                     "unless due_date is also given.")] string? month_anchor = null)
+                     "unless due_date is also given.")] MonthAnchor? month_anchor = null)
     {
         try
         {
@@ -226,8 +219,8 @@ public sealed class TodoTools(TodoRepository repository)
                 newDue = d;
             }
 
-            RecurrenceType? newRecurrence = recurrence is null ? null : ParseRecurrence(recurrence);
-            MonthAnchor? newAnchor = month_anchor is null ? null : ParseMonthAnchor(month_anchor);
+            var newRecurrence = recurrence;
+            var newAnchor = month_anchor;
             if (recurrence_count < 0)
                 throw new McpException("invalid recurrence_count, expected 0 (to clear) or a positive integer");
 
@@ -282,7 +275,7 @@ public sealed class TodoTools(TodoRepository repository)
 
             await repository.SaveActiveAsync(active);
 
-            return JsonSerializer.Serialize(updated, JsonOptions);
+            return JsonSerializer.Serialize(updated, ToolJson.Options);
         }
         catch (Exception ex) when (ex is not McpException)
         {
@@ -290,7 +283,7 @@ public sealed class TodoTools(TodoRepository repository)
         }
     }
 
-    [McpServerTool(Name = "list_completed")]
+    [McpServerTool(Name = "list_completed", ReadOnly = true, OpenWorld = false)]
     [Description("Lists completed tasks, optionally filtered by completion date range. Returns a JSON array.")]
     public async Task<string> ListCompletedAsync(
         [Description("Optional ISO datetime. Only return tasks completed after this time.")] string? completed_after = null,
@@ -317,7 +310,7 @@ public sealed class TodoTools(TodoRepository repository)
                 .Where(t => before is null || t.CompletedAt < before.Value)
                 .ToList();
 
-            return JsonSerializer.Serialize(filtered, JsonOptions);
+            return JsonSerializer.Serialize(filtered, ToolJson.Options);
         }
         catch (Exception ex) when (ex is not McpException)
         {
@@ -338,11 +331,6 @@ public sealed class TodoTools(TodoRepository repository)
         "Optional total number of occurrences in a repeating series, counting the first. Completing the last one ends the series. " +
         "Only valid when recurrence is not none. For series created before series tracking existed, counting starts at the current occurrence.";
 
-    private static RecurrenceType ParseRecurrence(string recurrence) =>
-        Enum.TryParse<RecurrenceType>(recurrence, ignoreCase: true, out var value)
-            ? value
-            : throw new McpException("invalid recurrence, expected none/daily/weekly/monthly/quarterly/biannual/yearly");
-
     private static DateOnly ParseUntil(string recurrenceUntil) =>
         DateOnly.TryParse(recurrenceUntil, out var value)
             ? value
@@ -358,13 +346,6 @@ public sealed class TodoTools(TodoRepository repository)
         if (recurrence == RecurrenceType.None && (until is not null || count is not null))
             throw new McpException("recurrence_until and recurrence_count require a recurrence other than none");
     }
-
-    private static MonthAnchor ParseMonthAnchor(string monthAnchor) => monthAnchor.ToLowerInvariant() switch
-    {
-        "same_day" => MonthAnchor.SameDay,
-        "last_day" => MonthAnchor.LastDay,
-        _ => throw new McpException("invalid month_anchor, expected same_day or last_day")
-    };
 
     /// <summary>
     /// Works out the day-of-month anchor (and possibly adjusted due date) for a task's resulting recurrence.

@@ -8,7 +8,7 @@ builder.Services.AddSingleton<TodoRepository>();
 builder.Services.AddHealthChecks();
 builder.Services.AddMcpServer()
     .WithHttpTransport()
-    .WithTools<TodoTools>()
+    .WithTools<TodoTools>(ToolJson.Options)
     .WithStrictArguments();
 
 var app = builder.Build();

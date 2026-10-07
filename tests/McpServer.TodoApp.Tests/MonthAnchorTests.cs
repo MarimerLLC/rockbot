@@ -8,7 +8,7 @@ public sealed class MonthAnchorTests : TodoServerTestBase
     private async Task<JsonElement> CompleteAsync(string id) =>
         (await CallOkAsync("complete_task", new() { ["id"] = id })).GetProperty("next");
 
-    private static string Due(JsonElement task) => task.GetProperty("dueDate").GetString()!;
+    private static string Due(JsonElement task) => task.GetProperty("due_date").GetString()!;
     private static string Id(JsonElement task) => task.GetProperty("id").GetString()!;
 
     [TestMethod]
@@ -22,11 +22,11 @@ public sealed class MonthAnchorTests : TodoServerTestBase
             ["month_anchor"] = "last_day"
         });
         Assert.AreEqual("2026-10-31", Due(task));
-        Assert.AreEqual("last_day", task.GetProperty("monthAnchor").GetString());
+        Assert.AreEqual("last_day", task.GetProperty("month_anchor").GetString());
 
         var next = await CompleteAsync(Id(task));
         Assert.AreEqual("2026-11-30", Due(next));
-        Assert.AreEqual("last_day", next.GetProperty("monthAnchor").GetString());
+        Assert.AreEqual("last_day", next.GetProperty("month_anchor").GetString());
     }
 
     [TestMethod]
@@ -38,8 +38,8 @@ public sealed class MonthAnchorTests : TodoServerTestBase
             ["due_date"] = "2027-01-31",
             ["recurrence"] = "monthly"
         });
-        Assert.AreEqual("same_day", task.GetProperty("monthAnchor").GetString());
-        Assert.AreEqual(31, task.GetProperty("anchorDay").GetInt32());
+        Assert.AreEqual("same_day", task.GetProperty("month_anchor").GetString());
+        Assert.AreEqual(31, task.GetProperty("anchor_day").GetInt32());
 
         var feb = await CompleteAsync(Id(task));
         var mar = await CompleteAsync(Id(feb));
@@ -62,7 +62,7 @@ public sealed class MonthAnchorTests : TodoServerTestBase
         var feb = await CompleteAsync(Id(task));
 
         var renamed = await CallOkAsync("update_task", new() { ["id"] = Id(feb), ["title"] = "Rent (renamed)" });
-        Assert.AreEqual(31, renamed.GetProperty("anchorDay").GetInt32());
+        Assert.AreEqual(31, renamed.GetProperty("anchor_day").GetInt32());
 
         var mar = await CompleteAsync(Id(feb));
         Assert.AreEqual("2027-03-31", Due(mar));
@@ -104,7 +104,7 @@ public sealed class MonthAnchorTests : TodoServerTestBase
 
         var updated = await CallOkAsync("update_task", new() { ["id"] = id, ["due_date"] = "2026-11-15" });
 
-        Assert.AreEqual(15, updated.GetProperty("anchorDay").GetInt32());
+        Assert.AreEqual(15, updated.GetProperty("anchor_day").GetInt32());
         Assert.AreEqual("2026-12-15", Due(await CompleteAsync(id)));
     }
 
@@ -121,8 +121,8 @@ public sealed class MonthAnchorTests : TodoServerTestBase
 
         var updated = await CallOkAsync("update_task", new() { ["id"] = Id(task), ["recurrence"] = "weekly" });
 
-        Assert.AreEqual(JsonValueKind.Null, updated.GetProperty("monthAnchor").ValueKind);
-        Assert.AreEqual(JsonValueKind.Null, updated.GetProperty("anchorDay").ValueKind);
+        Assert.AreEqual(JsonValueKind.Null, updated.GetProperty("month_anchor").ValueKind);
+        Assert.AreEqual(JsonValueKind.Null, updated.GetProperty("anchor_day").ValueKind);
     }
 
     [TestMethod]
@@ -148,7 +148,7 @@ public sealed class MonthAnchorTests : TodoServerTestBase
         var result = await CallAsync("update_task", new() { ["id"] = id, ["month_anchor"] = "end" });
 
         Assert.IsTrue(result.IsError);
-        StringAssert.Contains(TextOf(result), "same_day or last_day");
+        StringAssert.Contains(TextOf(result), "expected one of: same_day, last_day");
     }
 
     [TestMethod]
