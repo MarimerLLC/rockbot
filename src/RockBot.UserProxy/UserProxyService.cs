@@ -20,6 +20,9 @@ public sealed class UserProxyService(
     ILogger<UserProxyService> logger,
     Func<HttpClient>? httpClientFactory = null) : IHostedService
 {
+    // Per-run proxies (the CLI) mark their reply queues ephemeral so they don't outlive the process.
+    private SubscriptionOptions QueueOptions => new() { Ephemeral = options.EphemeralQueues };
+
     private readonly ConcurrentDictionary<string, (TaskCompletionSource<AgentReply> Tcs, IProgress<AgentReply>? Progress)> _pending = new();
     private readonly ConcurrentDictionary<string, TaskCompletionSource<ConversationHistoryResponse>> _pendingHistory = new();
     private readonly ConcurrentDictionary<string, TaskCompletionSource<AgentInfoResponse>> _pendingAgentInfo = new();
@@ -124,12 +127,14 @@ public sealed class UserProxyService(
                 UserResponseBroadcastTopic,
                 $"user-proxy.{options.ProxyId}",
                 HandleResponseAsync,
+                QueueOptions,
                 ct);
 
             p2p = await subscriber.SubscribeAsync(
                 UserResponsePointToPointTopic,
                 $"user-proxy.{options.ProxyId}.p2p",
                 HandleResponseAsync,
+                QueueOptions,
                 ct);
 
             _subscription = broadcast;
@@ -567,6 +572,7 @@ public sealed class UserProxyService(
                 HistoryResponseTopic,
                 $"user-proxy.{options.ProxyId}.history",
                 HandleHistoryResponseAsync,
+                QueueOptions,
                 ct);
 
             _historyInitialized = true;
@@ -640,6 +646,7 @@ public sealed class UserProxyService(
                 AgentInfoResponseTopic,
                 $"user-proxy.{options.ProxyId}.agent-info",
                 HandleAgentInfoResponseAsync,
+                QueueOptions,
                 ct);
 
             _agentInfoInitialized = true;
@@ -752,6 +759,7 @@ public sealed class UserProxyService(
                 ActiveStatusResponseTopic,
                 $"user-proxy.{options.ProxyId}.active-status",
                 HandleActiveStatusResponseAsync,
+                QueueOptions,
                 ct);
 
             _activeStatusInitialized = true;
@@ -1013,6 +1021,7 @@ public sealed class UserProxyService(
                 SaveResponseAckTopic,
                 $"user-proxy.{options.ProxyId}.save-response",
                 HandleSaveResponseAckAsync,
+                QueueOptions,
                 ct);
 
             _saveResponseInitialized = true;
@@ -1036,6 +1045,7 @@ public sealed class UserProxyService(
                 ListSavedResponsesTopic,
                 $"user-proxy.{options.ProxyId}.list-saved",
                 HandleListSavedResponseAsync,
+                QueueOptions,
                 ct);
 
             _listSavedInitialized = true;
@@ -1059,6 +1069,7 @@ public sealed class UserProxyService(
                 GetSavedResponseTopic,
                 $"user-proxy.{options.ProxyId}.get-saved",
                 HandleGetSavedResponseAsync,
+                QueueOptions,
                 ct);
 
             _getSavedInitialized = true;
@@ -1082,6 +1093,7 @@ public sealed class UserProxyService(
                 DeleteSavedAckTopic,
                 $"user-proxy.{options.ProxyId}.delete-saved",
                 HandleDeleteSavedAckAsync,
+                QueueOptions,
                 ct);
 
             _deleteSavedInitialized = true;
@@ -1421,6 +1433,7 @@ public sealed class UserProxyService(
                 UploadResponseTopic,
                 $"user-proxy.{options.ProxyId}.upload",
                 HandleUploadResponseAsync,
+                QueueOptions,
                 ct);
 
             _uploadInitialized = true;

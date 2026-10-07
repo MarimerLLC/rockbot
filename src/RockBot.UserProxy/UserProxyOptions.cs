@@ -8,6 +8,14 @@ public sealed class UserProxyOptions
     public string ProxyId { get; set; } = "user-proxy";
 
     /// <summary>
+    /// When true, this proxy's response queues are ephemeral: deleted when the proxy stops
+    /// and expired by the broker after an idle period. Set for short-lived proxies (the CLI)
+    /// whose <see cref="ProxyId"/> is unique per run; leave false for long-lived proxies with
+    /// a stable identity (Blazor). Default false.
+    /// </summary>
+    public bool EphemeralQueues { get; set; }
+
+    /// <summary>
     /// Human-friendly channel name for this proxy ("cli", "blazor", "discord", …), stamped
     /// onto outgoing <see cref="UserMessage.ChannelName"/> so unsolicited replies can show
     /// the user which client originated the work. Defaults to the portion of

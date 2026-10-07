@@ -122,6 +122,7 @@ internal sealed class RockBotBridgeHandler(
                 catch { /* ignore deserialization errors from unrelated messages */ }
                 return Task.FromResult(MessageResult.Ack);
             },
+            new SubscriptionOptions { Ephemeral = true },
             cancellationToken);
 
         // Subscribe to status updates for intermediate streaming events
@@ -165,6 +166,7 @@ internal sealed class RockBotBridgeHandler(
                     catch { /* ignore deserialization errors */ }
                     return MessageResult.Ack;
                 },
+                new SubscriptionOptions { Ephemeral = true },
                 cancellationToken);
         }
 

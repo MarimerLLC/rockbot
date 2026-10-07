@@ -18,6 +18,10 @@
   </ItemGroup>
 
   <ItemGroup>
+    <InternalsVisibleTo Include="RockBot.Messaging.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\RockBot.Messaging.Abstractions\RockBot.Messaging.Abstractions.csproj" />
   </ItemGroup>
 
