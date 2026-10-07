@@ -39,9 +39,8 @@ public class McpBridgeConcurrencyEndToEndTests
         var calls = Enumerable.Range(0, 8).Select(_ => harness.InvokeAsync("slow_send", "{}")).ToList();
         await WaitUntil(() => executions.Value == 8);
 
-        // Re-registering the same name reconnects: a new client replaces the one the calls hold.
-        var reconnect = await harness.RegisterAsync(BridgeHarness.ServerName, harness.ServerUrl);
-        Assert.IsTrue(reconnect.Success, reconnect.Error);
+        // A reconnect replaces the client the calls hold with a new one.
+        Assert.IsTrue(await harness.Bridge.ReconnectAsync(BridgeHarness.ServerName, CancellationToken.None));
 
         var results = await Task.WhenAll(calls);
 
@@ -78,10 +77,10 @@ public class McpBridgeConcurrencyEndToEndTests
         await using var harness = await BridgeHarness.StartAsync([OtherTool()]);
 
         var reconnects = await Task.WhenAll(Enumerable.Range(0, 5)
-            .Select(_ => harness.RegisterAsync(BridgeHarness.ServerName, harness.ServerUrl)));
+            .Select(_ => harness.Bridge.ReconnectAsync(BridgeHarness.ServerName, CancellationToken.None)));
 
-        foreach (var reconnect in reconnects)
-            Assert.IsTrue(reconnect.Success, reconnect.Error);
+        foreach (var reconnected in reconnects)
+            Assert.IsTrue(reconnected);
 
         var result = await harness.InvokeAsync("other", "{}");
         Assert.IsFalse(result.IsError, result.Content);

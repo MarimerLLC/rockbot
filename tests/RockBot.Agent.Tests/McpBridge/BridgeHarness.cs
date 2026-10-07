@@ -174,6 +174,28 @@ internal sealed class BridgeHarness : IAsyncDisposable
         return reply.GetPayload<McpRegisterServerResponse>()!;
     }
 
+    /// <summary>Sends an <c>mcp_unregister_server</c> management request.</summary>
+    public async Task<McpUnregisterServerResponse> UnregisterAsync(string name)
+    {
+        var request = new McpUnregisterServerRequest { ServerName = name };
+        var reply = await SendAsync(McpManagementExecutor.ManageTopic, request, headers: null);
+        return reply.GetPayload<McpUnregisterServerResponse>()!;
+    }
+
+    /// <summary>The server entries as the bridge last persisted them to <c>mcp.json</c>.</summary>
+    public McpBridgeConfig ReadPersistedConfig() =>
+        JsonSerializer.Deserialize<McpBridgeConfig>(File.ReadAllText(ConfigPath),
+            new JsonSerializerOptions { PropertyNameCaseInsensitive = true })!;
+
+    /// <summary>Rewrites one entry of <c>mcp.json</c>, as an operator would by hand.</summary>
+    public void EditPersistedEntry(string name, Action<McpBridgeServerConfig> edit)
+    {
+        var config = ReadPersistedConfig();
+        edit(config.McpServers[name]);
+        File.WriteAllText(ConfigPath, JsonSerializer.Serialize(config,
+            new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase }));
+    }
+
     /// <summary>
     /// Sends a tool invoke routed to <paramref name="server"/> exactly as <c>mcp_invoke_tool</c>
     /// does, and returns what the agent side would receive (a <see cref="ToolError"/> is mapped to
