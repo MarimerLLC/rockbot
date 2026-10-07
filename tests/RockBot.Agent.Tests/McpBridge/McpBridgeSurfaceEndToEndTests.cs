@@ -59,14 +59,13 @@ public class McpBridgeSurfaceEndToEndTests
     }
 
     [TestMethod]
-    public async Task ReRegisteringTheSameEndpoint_KeepsTheId()
+    public async Task Reconnect_KeepsTheId()
     {
         await using var harness = await BridgeHarness.StartAsync([ListAccounts()]);
         var firstId = LastSummary(harness).ServerId;
 
-        var response = await harness.RegisterAsync(BridgeHarness.ServerName, harness.ServerUrl);
+        Assert.IsTrue(await harness.Bridge.ReconnectAsync(BridgeHarness.ServerName, CancellationToken.None));
 
-        Assert.IsTrue(response.Success, response.Error);
         Assert.AreEqual(firstId, LastSummary(harness).ServerId);
     }
 
@@ -124,9 +123,8 @@ public class McpBridgeSurfaceEndToEndTests
         await using var harness = await BridgeHarness.StartAsync([ListAccounts()], llmClient: llm);
         Assert.AreEqual(1, llm.Calls);
 
-        var response = await harness.RegisterAsync(BridgeHarness.ServerName, harness.ServerUrl);
+        Assert.IsTrue(await harness.Bridge.ReconnectAsync(BridgeHarness.ServerName, CancellationToken.None));
 
-        Assert.IsTrue(response.Success, response.Error);
         Assert.AreEqual(1, llm.Calls, "An unchanged server must not cost another summary call.");
         Assert.AreEqual("A summary.", LastSummary(harness).Summary);
     }

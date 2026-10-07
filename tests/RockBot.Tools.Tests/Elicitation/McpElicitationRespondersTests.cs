@@ -94,10 +94,9 @@ public class McpElicitationRespondersTests
     public void Resolve_NeverUsesAnOptInResponderAsTheImplicitDefault(bool isServerPolicy)
     {
         // A host that registers an opt-in responder as its unnamed default must not thereby
-        // extend it to servers that never named it — including one left with no responder
-        // by WithoutGrants().
+        // extend it to servers that never named it.
         var resolved = McpElicitationResponders.Resolve(
-            new McpElicitationConfig().WithoutGrants(), Conversation, ServicesWithOptIn(), "s",
+            new McpElicitationConfig(), Conversation, ServicesWithOptIn(), "s",
             NullLogger.Instance, isServerPolicy);
 
         Assert.IsNull(resolved);
@@ -108,28 +107,4 @@ public class McpElicitationRespondersTests
         => Assert.AreSame(Research, McpElicitationResponders.Resolve(
             new McpElicitationConfig { Responder = "research" }, Default, Services(), "s",
             NullLogger.Instance, isServerPolicy: false));
-
-    [TestMethod]
-    public void WithoutGrants_KeepsRestrictionsAndDropsGrants()
-    {
-        var config = new McpElicitationConfig
-        {
-            Mode = "decline",
-            MaxPerCall = 1,
-            DeniedFields = ["accountId"],
-            ResponderTimeoutMs = 5_000,
-            Responder = "conversation",
-            Defaults = new() { ["confirm"] = System.Text.Json.JsonDocument.Parse("true").RootElement },
-        };
-
-        var restricted = config.WithoutGrants();
-
-        Assert.AreEqual("decline", restricted.Mode);
-        Assert.AreEqual(1, restricted.MaxPerCall);
-        CollectionAssert.AreEqual(new[] { "accountId" }, restricted.DeniedFields);
-        Assert.AreEqual(5_000, restricted.ResponderTimeoutMs);
-        Assert.IsNull(restricted.Responder);
-        Assert.AreEqual(0, restricted.Defaults.Count);
-        Assert.AreEqual("conversation", config.Responder, "the original is not modified");
-    }
 }

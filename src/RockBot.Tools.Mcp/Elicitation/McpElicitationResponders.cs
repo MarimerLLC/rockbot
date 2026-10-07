@@ -43,8 +43,8 @@ public static class McpElicitationResponders
         if (string.IsNullOrEmpty(key))
         {
             // An opt-in responder must be *named* by a server's own policy. As the host's unnamed
-            // default it would reach every server that names none — including one whose grants
-            // were dropped by WithoutGrants, and every server inheriting DefaultElicitation.
+            // default it would reach every server that names none, including every server
+            // inheriting DefaultElicitation.
             if (defaultResponder?.RequiresServerOptIn == true)
             {
                 logger.LogWarning(

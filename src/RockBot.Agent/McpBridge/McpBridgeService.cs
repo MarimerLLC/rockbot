@@ -439,6 +439,9 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
             var entries = group.ToList();
             var preferred = entries.FirstOrDefault(e =>
                 _options.DefaultServers.ContainsKey(e.Key));
+            // Never drop an operator's entry in favour of one the agent registered.
+            if (preferred.Key is null)
+                preferred = entries.FirstOrDefault(e => !e.Value.IsAgentOwned());
             if (preferred.Key is null)
             {
                 preferred = entries
@@ -913,6 +916,23 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
             }
         });
     }
+
+    /// <summary>
+    /// Reconnects a configured server with its current configuration, as the reconnect sweep and
+    /// a config reload do. For tests: there is no model-facing way to force a reconnect.
+    /// </summary>
+    internal async Task<bool> ReconnectAsync(string name, CancellationToken ct)
+    {
+        if (!_connections.TryGetConfig(name, out var config))
+            return false;
+        await ConnectServerAsync(name, config, ct);
+        return _connections.TryGet(name, out _);
+    }
+
+    /// <summary>Why the agent can't change <paramref name="name"/> through <paramref name="tool"/>.</summary>
+    private static string OperatorManaged(string name, string tool) =>
+        $"The MCP server '{name}' is managed by the operator, so {tool} can't change it. " +
+        "Its configuration can only be changed in the agent's MCP configuration; ask the user if it needs to change.";
 
     /// <summary>
     /// Re-reads a connected server's tools and prompts on its existing connection and, when the
@@ -1825,20 +1845,34 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
                     return MessageResult.Ack;
                 }
 
+                // mcp_register_server is LLM-callable, and what it does is persisted. It only adds
+                // new names: replacing an entry would drop whatever policy the operator gave it
+                // (tool filters, auth, guards, elicitation...) and could re-point a trusted name,
+                // credentials and all, at a URL of the model's choosing (#603).
+                if (_connections.TryGetConfig(req.ServerName, out var existingConfig))
+                {
+                    await PublishResponseAsync(new McpRegisterServerResponse
+                    {
+                        ServerName = req.ServerName,
+                        Success = false,
+                        Error = existingConfig.IsAgentOwned()
+                            ? $"An MCP server named '{req.ServerName}' is already registered. To point it somewhere " +
+                              "else, remove it with mcp_unregister_server first."
+                            : OperatorManaged(req.ServerName, "mcp_register_server")
+                    }, replyTo, envelope.CorrelationId, ct);
+                    return MessageResult.Ack;
+                }
+
                 var config = new McpBridgeServerConfig
                 {
+                    Id = McpServerNames.NewId(),
+                    Origin = McpBridgeServerConfig.AgentOrigin,
                     Type = req.Type,
                     Url = req.Url,
                     Command = req.Command,
                     Args = req.Args,
                     Env = req.Env
                 };
-
-                // register_mcp_server cannot express argGuards or elicitation policy, and it is
-                // LLM-callable — re-registering an existing name must not strip operator policy.
-                _connections.TryGetConfig(req.ServerName, out var existingConfig);
-                config.CarryOperatorPolicyFrom(existingConfig);
-                config.AssignIdFrom(existingConfig);
 
                 // Validate guards before connecting so the caller gets a descriptive error
                 // instead of the generic "Connection failed" (ConnectServerAsync fails closed
@@ -1914,6 +1948,23 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
 
             try
             {
+                // Only an entry the agent registered, and the operator hasn't since given policy,
+                // may be removed this way. Removing an operator's entry would shed its policy, and
+                // registering the name again would bring it back without any (#603).
+                var refusal = !_connections.TryGetConfig(req.ServerName, out var existing)
+                    ? McpCallDiagnostics.DescribeUnknownServer(req.ServerName, _connections.ConfiguredNames)
+                    : existing.IsAgentOwned() ? null : OperatorManaged(req.ServerName, "mcp_unregister_server");
+                if (refusal is not null)
+                {
+                    await PublishResponseAsync(new McpUnregisterServerResponse
+                    {
+                        ServerName = req.ServerName,
+                        Success = false,
+                        Error = refusal
+                    }, replyTo, envelope.CorrelationId, ct);
+                    return MessageResult.Ack;
+                }
+
                 await DisconnectServerAsync(req.ServerName);
                 await PersistServerConfigAsync(req.ServerName, null, remove: true);
 

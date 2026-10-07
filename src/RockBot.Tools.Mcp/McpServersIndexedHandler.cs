@@ -87,7 +87,7 @@ public sealed class McpServersIndexedHandler(
         registry.Register(new ToolRegistration
         {
             Name = "mcp_register_server",
-            Description = "Register a new MCP server at runtime via SSE transport.",
+            Description = "Register a new MCP server at runtime via SSE transport. Only adds a server under a new name: it can't change or replace one that already exists.",
             ParametersSchema = """{"type":"object","properties":{"name":{"type":"string","description":"Unique server name"},"type":{"type":"string","enum":["sse"],"description":"Transport type"},"url":{"type":"string","description":"SSE endpoint URL"},"display_name":{"type":"string","description":"Human-readable display name"},"description":{"type":"string","description":"Server description"}},"required":["name","type","url"]}""",
             Source = "mcp:management"
         }, executor);
@@ -95,7 +95,7 @@ public sealed class McpServersIndexedHandler(
         registry.Register(new ToolRegistration
         {
             Name = "mcp_unregister_server",
-            Description = "Remove an MCP server at runtime.",
+            Description = "Remove an MCP server at runtime. Only servers added with mcp_register_server can be removed; servers the operator configured can't.",
             ParametersSchema = """{"type":"object","properties":{"server_name":{"type":"string","description":"Name of the MCP server to remove"}},"required":["server_name"]}""",
             Source = "mcp:management"
         }, executor);

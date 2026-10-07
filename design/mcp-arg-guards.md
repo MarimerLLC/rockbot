@@ -67,14 +67,12 @@ one invoke handler. No component holds its own `McpClient`. The transparent
 reconnect-retry inside the handler reuses the already-validated `arguments` instance, so
 it cannot bypass a guard (a rejected call never reaches the retry path).
 
-### Re-registration preserves guards
+### The model can't shed guards
 
-`register_mcp_server` cannot express `argGuards`, and it is model-callable. Without
-protection, re-registering an existing server name would overwrite its config and silently
-strip operator-declared policy. The register flow copies `ArgGuards` from the existing
-config when the name matches. A renamed duplicate of the same URL is rejected by the
-canonical-identity dedup check. **Known follow-up**: `Attachments` and `Auth` have the same
-re-registration exposure and are not yet preserved; fixing that is out of scope here.
+`register_mcp_server` can't express `argGuards`, and it is model-callable. Since #603 it only adds
+new names, and `mcp_unregister_server` can't remove an entry that has guards (or any other
+operator policy). So the model can't strip an operator's guards by replacing or re-creating the
+entry. See "Operator entries and model registrations" in `mcp-bridge.md`.
 
 ### Excluded from `CanonicalIdentity()`
 

@@ -194,10 +194,9 @@ by what would give the best answer:
 
 - **A server's own policy must name it.** The responder sets
   `IMcpElicitationResponder.RequiresServerOptIn`, and `McpElicitationResponders.Resolve` refuses
-  it in `McpBridge:DefaultElicitation`, which every model-registered server inherits — including
-  one at a URL the model chose. It also never follows a server name the model re-points at a
-  different endpoint (`CarryOperatorPolicyFrom` drops grants on a changed identity; see
-  "LLM-registered servers cannot write their own policy").
+  it in `McpBridge:DefaultElicitation`, which every model-registered server inherits, including
+  one at a URL the model chose. The model can't re-point an operator's server at another endpoint
+  either; see "LLM-registered servers cannot write their own policy".
 - **Choices only.** Any field that is not a pick from the server's own options — free text or a
   number — declines the request before the conversation is read. A string field lets a server
   ask for anything and carry away whatever the conversation holds; a number can carry a PIN, a
@@ -298,24 +297,25 @@ opening the retry's, so the first attempt's rounds are not counted against the r
 
 ### LLM-registered servers cannot write their own policy
 
-`mcp.json` is LLM-writable via `register_mcp_server`, but `McpRegisterServerRequest` carries no
-`elicitation` field, so a server the model registers at runtime always gets
-`DefaultElicitation`. It cannot ship its own `defaults` or relax `deniedFields`. Re-registering
-an *existing* name keeps that server's operator-declared restrictions — `argGuards`, and the
-`elicitation` mode, `deniedFields` and `maxPerCall` (`McpBridgeServerConfig.CarryOperatorPolicyFrom`)
-— rather than falling back to the default: an `off` server must not become an answering one
-because the model re-registered it. The operator's *grants* — a named `responder` and
-`defaults` — carry over only if the re-registration still points at the same server (same
-`McpBridgeServerConfig.EndpointIdentity`: transport type, URL, or command, arguments and
-environment — deliberately not tool filters, headers, auth or transport mode, which
-`register_mcp_server` cannot express, so a filtered or authenticated server re-registered at its
-own address is still recognised). Re-pointed at another endpoint, the name keeps the restrictions and loses
-the grants (`McpElicitationConfig.WithoutGrants`), so the model cannot aim a trusted name at a URL
-of its choosing and inherit what was granted to the original. And a responder that sets
-`RequiresServerOptIn` (such as `conversation`) must be *named* in a server's own policy: it is
-refused in `DefaultElicitation`, and never used as the host's implicit default responder either.
-Unregistering first (`mcp_unregister_server`) still deletes the entry and its policy with it;
-protecting operator-declared servers from both paths is tracked in #603. The
+`mcp.json` is LLM-writable through `mcp_register_server` and `mcp_unregister_server`, but
+neither can touch an operator's entry (#603; see "Operator entries and model registrations" in
+`mcp-bridge.md`).
+
+- **New servers get the defaults.** `McpRegisterServerRequest` carries no `elicitation` field, so
+  a server the model registers always gets `DefaultElicitation`. It can't ship its own `defaults`
+  or relax `deniedFields`.
+- **Existing names are refused.** Registering an existing name is refused, so the model can't
+  replace an operator's server, or re-point a trusted name, along with a `responder` or `defaults`
+  granted to it, at a URL of its choosing.
+- **Operator entries can't be removed.** Unregistering an operator's entry is refused, so the
+  unregister-then-register path can't shed its `elicitation` block either.
+- **Granted policy makes an entry the operator's.** An entry the model registered and the operator
+  later gave an `elicitation` block (or any other policy) counts as the operator's from then on.
+- **Opt-in responders must be named.** A responder that sets `RequiresServerOptIn` (such as
+  `conversation`) must be named in a server's own policy. It is refused in `DefaultElicitation`,
+  and never used as the host's implicit default responder either.
+
+The
 credential heuristics are code, not config, and cannot be turned off from a config file at all.
 
 ## Configuration

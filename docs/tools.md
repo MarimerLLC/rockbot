@@ -209,8 +209,8 @@ management tools that give the agent runtime control over MCP servers:
 | `mcp_list_services` | Lists all connected MCP servers from the local index (no bridge call) |
 | `mcp_get_service_details(server_name, tool_name?)` | Returns tool schemas for a server (or a single tool) |
 | `mcp_invoke_tool(server_name, tool_name, arguments)` | Invokes a specific MCP tool |
-| `mcp_register_server(server_name, command, arguments?)` | Connects a new MCP server at runtime |
-| `mcp_unregister_server(server_name)` | Disconnects an MCP server and removes its tools |
+| `mcp_register_server(server_name, command, arguments?)` | Connects a new MCP server at runtime. New names only; it can't change an existing server |
+| `mcp_unregister_server(server_name)` | Disconnects and removes a server added with `mcp_register_server`. Servers the operator configured can't be removed |
 
 **Critical:** `mcp_invoke_tool` requires the exact `server_name` from `mcp_list_services`. The
 `rb-mcp-server` header carries the server name through the message bus so `McpToolProxy` routes
@@ -427,7 +427,8 @@ Behavior:
   not allow-all.
 - Handlers are resolved from a DI registry by name — mcp.json never names CLR types
   (`register_mcp_server` is model-callable, so config-driven type loading would be a code
-  execution channel). Re-registering an existing server name preserves its guards.
+  execution channel). The model can't replace or remove a server that has guards, so it can't
+  strip them (see "Operator entries and model registrations" in `design/mcp-bridge.md`).
 - Guards are excluded from the canonical-identity dedup, like `attachments`: they describe
   how the server is invoked, not which server it is.
 
@@ -504,8 +505,7 @@ Behavior:
   questions like "which of these did you mean?" that the call's arguments can't settle. It sends
   values drawn from the user's conversation to the server, so it is deliberately narrow:
   - it must be named in the **server's own** `elicitation` block — it is refused in
-    `McpBridge:DefaultElicitation`, and does not follow a server name re-registered at a
-    different URL;
+    `McpBridge:DefaultElicitation`, and the model can't re-point the server it was granted to;
   - it answers **choices only** — any free-text or number field is declined before the
     conversation is read;
   - it sees **only the recent conversation**, with secret-shaped text (pasted keys, tokens,
@@ -516,8 +516,8 @@ Behavior:
   It runs a short model call through the agent loop, so give the server
   `"responderTimeoutMs": 30000` or more and a `toolTimeoutMs` above that.
 - Servers registered at runtime via `register_mcp_server` always get `DefaultElicitation` —
-  a model-registered server cannot ship its own `defaults` or relax `deniedFields`. Re-registering
-  an existing name keeps that server's `elicitation` block.
+  a model-registered server cannot ship its own `defaults` or relax `deniedFields`. The model can't
+  replace or remove a server you configured, so it can't shed that server's `elicitation` block.
 - `McpBridge:DefaultElicitation:Defaults` works from appsettings, Helm values and environment
   variables (e.g. `McpBridge__DefaultElicitation__Defaults__mailbox=work`). Those values arrive
   as strings; a string default for a boolean or number field is read as the literal it spells.

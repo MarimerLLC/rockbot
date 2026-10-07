@@ -193,7 +193,9 @@ internal sealed class McpToolSkillProvider : IToolSkillProvider
 
         ## Tool Reference: mcp_register_server
 
-        Connects a new MCP server at runtime via SSE transport.
+        Connects a new MCP server at runtime via SSE transport. The name must be new: an existing
+        server can't be changed or replaced this way. Servers you register start with the default
+        policy.
 
         **Parameters**
         - `name` (string, required) — unique identifier
@@ -205,7 +207,8 @@ internal sealed class McpToolSkillProvider : IToolSkillProvider
 
         ## Tool Reference: mcp_unregister_server
 
-        Disconnects an MCP server at runtime.
+        Disconnects and removes a server you added with `mcp_register_server`. Servers the operator
+        configured can't be removed; if one needs to change, tell the user.
 
         **Parameters**
         - `server_name` (string, required)

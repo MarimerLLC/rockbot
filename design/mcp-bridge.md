@@ -137,6 +137,35 @@ An added tool carries the same tool session id as the run's other registry tools
 
 Agent publishes `McpMetadataRefreshRequest` to `tool.meta.mcp.refresh`. Bridge re-runs `tools/list` and publishes updated `McpToolsAvailable`.
 
+### Operator entries and model registrations
+
+Issue #603. `mcp_register_server` and `mcp_unregister_server` are LLM-callable, and the bridge persists what they do to `mcp.json`. So they may only add servers, and remove the servers they added. An operator's entry is never theirs to change.
+
+**Ownership.** Each entry carries an `origin`:
+- **Agent-owned:** `mcp_register_server` stamps `"origin": "agent"` on what it creates.
+- **Operator-owned:** every other entry. That covers entries seeded from `McpBridge:DefaultServers`, entries written into `mcp.json` by hand, and entries from before #603, which have no `origin`.
+- **Policy makes it the operator's:** an agent-registered entry that the operator has since given any policy belongs to the operator from then on (`McpBridgeServerConfig.IsAgentOwned`). Policy here means anything `mcp_register_server` can't express: tool filters, headers, auth, arg guards, elicitation, attachments, `toolTimeoutMs`, or a `transportMode` other than `auto`.
+
+**What the model can affect:**
+
+| Field | Through `mcp_register_server` | Through `mcp_unregister_server` |
+|---|---|---|
+| name, `type`, `url`, `command`, `args`, `env` | Sets them on a **new** entry only | Removes an agent-owned entry |
+| `allowedTools`, `deniedTools`, `headers`, `auth`, `argGuards`, `elicitation`, `attachments`, `toolTimeoutMs`, `transportMode` | Never. A new entry gets the `McpBridge` defaults. | Never. An entry with any of these is operator-owned and can't be removed. |
+| `id`, `origin` | Assigned by the bridge | n/a |
+
+**Rules:**
+- **Register only adds.** `mcp_register_server` refuses an existing name, whoever owns it. Replacing an entry would drop its policy, and could re-point a trusted name, credentials included, at a URL of the model's choosing. To move one of its own servers, the model unregisters it first.
+- **Unregister only removes the agent's own.** `mcp_unregister_server` refuses an operator-owned entry, and reports an unknown name as unknown.
+- **No way around it.** The two paths that used to shed policy, re-registering a name and unregistering then registering it, are both closed for operator entries.
+- **Credentials don't follow a URL.** A new registration at the same URL as an operator entry is a separate entry with no headers or auth. Credentials are never copied from one entry to another.
+- **Load-time dedup.** It never drops an operator entry in favour of an agent-registered duplicate.
+- **The operator changes their own entries through configuration:** `mcp.json` on the volume, or Helm values for seeded servers. A config reload picks the change up.
+
+**Other write paths.** The agent can't write `mcp.json` any other way. The file tools resolve every path under `FileSystem:BasePath` (`/rockbot/shared`) and reject any that resolve outside it. `mcp.json` lives on the agent's data volume (`/data/agent`). Scripts run in the separate scripts-manager pod.
+
+There is no model-facing reconnect. The reconnect sweep and config reloads handle that, and tests use the internal `McpBridgeService.ReconnectAsync`.
+
 ### Config File Changes
 
 Bridge watches `mcp.json` via `FileSystemWatcher` (including `Renamed`/`FileName` events so rename-into-place writes are seen) **and** a polling fallback that stats the file's last-write time + size every `ConfigPollIntervalSeconds` (default 5 s, 0 disables). The poll exists because `FileSystemWatcher`/inotify can miss changes entirely on some network/overlay filesystems such as Longhorn PVCs (issue #470). Both paths funnel through a single debounced reload that disconnects removed servers, connects new ones, and publishes updated tool availability. The on-disk stamp is recorded after each load so the bridge's own writes (seeding/dedup) don't trigger a redundant reload.
@@ -148,8 +177,9 @@ Ported from mcp-aggregator PRs #42 and #47.
 - **Stable id.** Every `mcp.json` entry carries an immutable `id` (12 hex characters).
   - The bridge assigns one to any entry without it on load, and persists it.
   - It is published in `McpServerSummary.ServerId` and returned by `mcp_list_services` and `mcp_get_service_details`.
-  - Names stay human-readable. Re-registering the same name at the same endpoint keeps the id. A rename, or the same name pointed at a different endpoint, gets a new id.
+  - Names stay human-readable. A reconnect keeps the id. A rename (unregister, then register under a new name) gets a new id.
   - Anything that must follow a server durably stores the id next to the name.
+- **Who may change an entry.** See [Operator entries and model registrations](#operator-entries-and-model-registrations).
 - **Name rules for new registrations.** `mcp_register_server` only accepts names matching `^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$` that don't contain `__`, because server names become part of skill names, file paths and typed tool names. Existing entries that break these rules still load, with a warning.
 - **Fingerprints** (`McpSurfaceFingerprint`, SHA-256).
   - **Per-tool fingerprint:** covers name, description and the canonical input schema.

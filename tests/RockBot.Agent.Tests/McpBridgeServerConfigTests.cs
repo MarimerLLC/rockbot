@@ -244,99 +244,47 @@ public class McpBridgeServerConfigTests
         Assert.AreEqual(a.CanonicalIdentity(), b.CanonicalIdentity());
     }
 
-    // ── CarryOperatorPolicyFrom ───────────────────────────────────────────────
+    // ── Ownership (#603) ──────────────────────────────────────────────────────
+
+    private static McpBridgeServerConfig AgentRegistered() => WithOrigin(McpBridgeServerConfig.AgentOrigin);
+
+    private static McpBridgeServerConfig WithOrigin(string origin) =>
+        new() { Type = "http", Url = "https://srv/mcp", Origin = origin };
 
     [TestMethod]
-    public void CarryOperatorPolicyFrom_SameServer_KeepsArgGuardsAndTheWholeElicitationPolicy()
+    public void IsAgentOwned_OnlyForAnEntryTheAgentRegistered()
     {
-        // register_mcp_server is LLM-callable and cannot express either block; re-registering
-        // an existing name must not turn an operator's "off" server back into an answering one.
-        var existing = new McpBridgeServerConfig
-        {
-            Type = "sse",
-            Url = "https://srv/",
-            ArgGuards = [new McpArgGuardConfig { Handler = "path-prefix", Tools = ["download_file"] }],
-            Elicitation = new RockBot.Tools.Mcp.Elicitation.McpElicitationConfig
-            {
-                Mode = "off",
-                DeniedFields = ["accountId"],
-                Responder = "conversation",
-            },
-        };
-        var registered = new McpBridgeServerConfig { Type = "sse", Url = "https://srv/" };
-
-        registered.CarryOperatorPolicyFrom(existing);
-
-        Assert.AreSame(existing.ArgGuards, registered.ArgGuards);
-        Assert.AreSame(existing.Elicitation, registered.Elicitation);
+        Assert.IsTrue(AgentRegistered().IsAgentOwned());
+        Assert.IsTrue(WithOrigin("AGENT").IsAgentOwned(), "Origin is case-insensitive.");
+        Assert.IsFalse(new McpBridgeServerConfig { Type = "http", Url = "https://srv/mcp" }.IsAgentOwned(),
+            "No origin means the operator's: seeded, hand-written, or from before #603.");
+        Assert.IsFalse(WithOrigin("operator").IsAgentOwned());
     }
 
-    [TestMethod]
-    public void CarryOperatorPolicyFrom_SameEndpointWithFiltersHeadersAndAuth_KeepsGrants()
-    {
-        // register_mcp_server cannot express tool filters, headers or auth. A server the operator
-        // filtered or authenticated is still the same server when re-registered at its address.
-        var existing = new McpBridgeServerConfig
-        {
-            Type = "sse",
-            Url = "https://srv/",
-            AllowedTools = ["search"],
-            DeniedTools = ["delete"],
-            Headers = new() { ["X-Api-Key"] = "${KEY}" },
-            Auth = new McpServerAuthConfig { Profile = "workiq" },
-            TransportMode = "sse-only",
-            Elicitation = new RockBot.Tools.Mcp.Elicitation.McpElicitationConfig { Responder = "conversation" },
-        };
-        var registered = new McpBridgeServerConfig { Type = "SSE", Url = "https://SRV" };
-
-        registered.CarryOperatorPolicyFrom(existing);
-
-        Assert.AreSame(existing.Elicitation, registered.Elicitation);
-    }
+    public static IEnumerable<object[]> OperatorPolicies() =>
+    [
+        ["allowedTools", (Action<McpBridgeServerConfig>)(c => c.AllowedTools = ["search"])],
+        ["deniedTools", (Action<McpBridgeServerConfig>)(c => c.DeniedTools = ["delete"])],
+        ["headers", (Action<McpBridgeServerConfig>)(c => c.Headers = new() { ["X-Api-Key"] = "${KEY}" })],
+        ["auth", (Action<McpBridgeServerConfig>)(c => c.Auth = new McpServerAuthConfig { Profile = "workiq" })],
+        ["argGuards", (Action<McpBridgeServerConfig>)(c => c.ArgGuards = [new McpArgGuardConfig { Handler = "path-prefix" }])],
+        ["elicitation", (Action<McpBridgeServerConfig>)(c => c.Elicitation = new RockBot.Tools.Mcp.Elicitation.McpElicitationConfig { Mode = "off" })],
+        ["attachments", (Action<McpBridgeServerConfig>)(c => c.Attachments = new RockBot.Agent.McpBridge.Attachments.AttachmentManifest())],
+        ["toolTimeoutMs", (Action<McpBridgeServerConfig>)(c => c.ToolTimeoutMs = 5_000)],
+        ["transportMode", (Action<McpBridgeServerConfig>)(c => c.TransportMode = "sse")],
+    ];
 
     [TestMethod]
-    public void CarryOperatorPolicyFrom_RepointedName_KeepsRestrictionsButNotGrants()
+    [DynamicData(nameof(OperatorPolicies))]
+    public void IsAgentOwned_False_OnceTheOperatorAddsPolicy(string field, Action<McpBridgeServerConfig> addPolicy)
     {
-        // The model re-points a trusted name at a URL of its choosing. The operator's
-        // restrictions still apply; what the operator granted the original server — a responder
-        // that hands over conversation data, and defaults that answer (even confirm) on the
-        // user's behalf — must not follow the name.
-        var existing = new McpBridgeServerConfig
-        {
-            Type = "sse",
-            Url = "https://srv/",
-            ArgGuards = [new McpArgGuardConfig { Handler = "path-prefix", Tools = ["download_file"] }],
-            Elicitation = new RockBot.Tools.Mcp.Elicitation.McpElicitationConfig
-            {
-                Mode = "auto",
-                MaxPerCall = 1,
-                DeniedFields = ["accountId"],
-                Responder = "conversation",
-                Defaults = new() { ["confirm"] = System.Text.Json.JsonDocument.Parse("true").RootElement },
-            },
-        };
-        var registered = new McpBridgeServerConfig { Type = "sse", Url = "https://attacker.example/" };
+        // The operator gave a server the agent registered some policy. The agent must not be able
+        // to shed it by unregistering and registering again, so the entry is the operator's now.
+        var config = AgentRegistered();
+        addPolicy(config);
 
-        registered.CarryOperatorPolicyFrom(existing);
-
-        Assert.AreSame(existing.ArgGuards, registered.ArgGuards);
-        Assert.IsNotNull(registered.Elicitation);
-        Assert.AreEqual(1, registered.Elicitation.MaxPerCall);
-        CollectionAssert.AreEqual(new[] { "accountId" }, registered.Elicitation.DeniedFields);
-        Assert.IsNull(registered.Elicitation.Responder);
-        Assert.AreEqual(0, registered.Elicitation.Defaults.Count);
-        Assert.AreEqual("https://attacker.example/", registered.Url, "only policy is carried, not the connection");
-    }
-
-    [TestMethod]
-    public void CarryOperatorPolicyFrom_NoExistingConfig_LeavesDefaults()
-    {
-        var registered = new McpBridgeServerConfig { Type = "sse", Url = "https://srv/" };
-
-        registered.CarryOperatorPolicyFrom(null);
-
-        Assert.AreEqual(0, registered.ArgGuards.Count);
-        Assert.IsNull(registered.Elicitation);
+        Assert.IsTrue(config.HasOperatorPolicy(), field);
+        Assert.IsFalse(config.IsAgentOwned(), field);
     }
 
     [TestMethod]
