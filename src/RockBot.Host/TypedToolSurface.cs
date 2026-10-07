@@ -78,6 +78,15 @@ public interface ISessionBoundTool
 }
 
 /// <summary>
+/// Marks a tool the caller put in a run's list on purpose — a wisp step's tools above all (#647).
+/// <see cref="TypedToolSurfaceContext.Shape"/> never drops it, even when it is a typed tool and
+/// the run's mode isn't eager, and a run holding one gets no MCP orientation: the caller chose the
+/// tools, so the modes' text ("every server's tools are in your list", "call mcp_find_tools")
+/// would be wrong for it.
+/// </summary>
+public interface ICallerScopedTool;
+
+/// <summary>
 /// Keeps a run's tool list in step with the session's typed-tool activations. The surface is
 /// ambient per agent loop run (set by <see cref="AgentLoopRunner.RunAsync"/>), so the singleton
 /// chat-client pipeline can reach it without constructor plumbing.
@@ -105,6 +114,7 @@ public static class TypedToolSurfaceContext
     public static string? Orientation(ChatOptions? options)
     {
         if (Current.Value is not { } run || options?.Tools is not { Count: > 0 } tools
+            || tools.Any(IsCallerScoped)
             || !tools.Any(t => t.Name.StartsWith("mcp_", StringComparison.Ordinal) || run.Surface.IsTypedTool(t.Name)))
             return null;
 
@@ -131,17 +141,21 @@ public static class TypedToolSurfaceContext
 
         var dropTyped = run.Mode != TypedToolMode.Eager;
         var dropLoader = run.Mode is TypedToolMode.Off or TypedToolMode.Eager;
-        if (!tools.Any(t => Drops(t.Name)))
+        if (!tools.Any(Drops))
             return 0;
 
-        var kept = tools.Where(t => !Drops(t.Name)).ToList();
+        var kept = tools.Where(t => !Drops(t)).ToList();
         var removed = tools.Count - kept.Count;
         options.Tools = kept;
         return removed;
 
-        bool Drops(string name) =>
-            (dropLoader && name == run.Surface.LoaderToolName) || (dropTyped && run.Surface.IsTypedTool(name));
+        bool Drops(AITool tool) =>
+            !IsCallerScoped(tool)
+            && ((dropLoader && tool.Name == run.Surface.LoaderToolName)
+                || (dropTyped && run.Surface.IsTypedTool(tool.Name)));
     }
+
+    private static bool IsCallerScoped(AITool tool) => tool.GetService<ICallerScopedTool>() is not null;
 
     /// <summary>
     /// Adds the session's activated typed tools that <paramref name="options"/> doesn't list yet.

@@ -19,11 +19,19 @@ internal static partial class GatewayRouter
     /// Resolves a direct step into a <see cref="ToolInvokeRequest"/> by mapping
     /// the gateway type to the correct registered tool and building its arguments.
     /// </summary>
-    public static ToolRouteResult Route(WispStep step, string wispId, IReadOnlyDictionary<string, WispStepResult> priorResults)
+    /// <param name="typed">
+    /// For an MCP step whose tool has a typed wrapper (#647): the resolved tool. The step is then
+    /// routed to the wrapper with the tool's own arguments; without it, to <c>mcp_invoke_tool</c>.
+    /// </param>
+    public static ToolRouteResult Route(
+        WispStep step,
+        string wispId,
+        IReadOnlyDictionary<string, WispStepResult> priorResults,
+        McpToolEntry? typed = null)
     {
         return step.Gateway switch
         {
-            GatewayType.Mcp => RouteMcp(step, wispId, priorResults),
+            GatewayType.Mcp => RouteMcp(step, wispId, priorResults, typed),
             GatewayType.A2A => RouteA2A(step, wispId, priorResults),
             GatewayType.Script => RouteScript(step, wispId, priorResults),
             GatewayType.Web => RouteWeb(step, wispId, priorResults),
@@ -34,7 +42,8 @@ internal static partial class GatewayRouter
 
     /// <summary>
     /// Returns the registered tool name that a gateway type maps to.
-    /// Used for tool scope resolution.
+    /// Used for tool scope resolution. For MCP this is the generic fallback; a step whose tool
+    /// has a typed wrapper is scoped to the wrapper instead (<c>WispExecutor.BuildLlmStepTools</c>).
     /// </summary>
     public static string? GetToolName(WispStep step)
     {
@@ -48,16 +57,27 @@ internal static partial class GatewayRouter
         };
     }
 
-    private static ToolRouteResult RouteMcp(WispStep step, string wispId, IReadOnlyDictionary<string, WispStepResult> priorResults)
+    private static ToolRouteResult RouteMcp(
+        WispStep step,
+        string wispId,
+        IReadOnlyDictionary<string, WispStepResult> priorResults,
+        McpToolEntry? typed)
     {
-        if (string.IsNullOrEmpty(step.Server))
-            return ToolRouteResult.Failure("MCP gateway requires 'server' field", FailureCategory.Structural);
         if (string.IsNullOrEmpty(step.Tool))
             return ToolRouteResult.Failure("MCP gateway requires 'tool' field", FailureCategory.Structural);
+        if (string.IsNullOrEmpty(step.Server) && typed?.Wrapper is null)
+            return ToolRouteResult.Failure(
+                "MCP gateway requires 'server' field, or a typed tool name (server__tool) from your tool list in 'tool'",
+                FailureCategory.Structural);
 
         // Missing params is treated as an empty arguments object. The MCP server validates
         // its own tool schema and returns a specific error if required arguments are absent.
         var resolvedParams = ResolveTemplates(step.ResolvedParams, priorResults);
+
+        // Typed wrapper: called by its own name with the tool's own arguments (#647).
+        if (typed?.Wrapper is { } wrapper)
+            return ToolRouteResult.Success(wrapper.Name,
+                resolvedParams is null ? "{}" : JsonSerializer.Serialize(resolvedParams, JsonOptions));
 
         var args = new Dictionary<string, object?>
         {

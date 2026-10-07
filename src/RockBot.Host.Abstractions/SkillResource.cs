@@ -31,6 +31,12 @@ namespace RockBot.Host;
 /// recent wisp records to count successes and failures of the captured pattern. Null for
 /// resources saved before this field existed and for non-hashed resource types.
 /// </param>
+/// <param name="ToolFingerprints">
+/// For wisp resources: the fingerprint of each MCP tool the wisp calls, keyed
+/// <c>server/tool</c>, as it was when the wisp was captured (#647). The dream pass compares them
+/// with the live tools and sends the wisp back to provisional when one moved. Null for other
+/// resource types, for wisps captured before this field existed, and when no tool resolved.
+/// </param>
 public sealed record SkillResource(
     string Filename,
     SkillResourceType Type,
@@ -38,4 +44,5 @@ public sealed record SkillResource(
     bool Provisional = false,
     DateTimeOffset? CreatedAt = null,
     string? VerifyHint = null,
-    string? DefinitionHash = null);
+    string? DefinitionHash = null,
+    IReadOnlyDictionary<string, string>? ToolFingerprints = null);

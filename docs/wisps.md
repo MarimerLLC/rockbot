@@ -105,15 +105,32 @@ registered tool:
 
 | Gateway | Registered tool | Required fields |
 |---------|----------------|-----------------|
-| `Mcp` | `mcp_invoke_tool` | `server`, `tool`, `params` |
+| `Mcp` | the typed `{server}__{tool}` wrapper, else `mcp_invoke_tool` | `tool` (typed name), or `server` + `tool`; `params` |
 | `A2A` | `invoke_agent` | `agent`, `skill`, `message` |
 | `Script` | `execute_{language}_script` | `params.script` |
 | `Web` | `web_search` or `web_browse` | `tool`, `params` |
 
 The `GatewayRouter` builds the correct `ToolInvokeRequest` arguments for each gateway
-type. For example, an MCP step with `server: "ms365"` and `tool: "search_emails"` is
-translated to `mcp_invoke_tool({ server_name: "ms365", tool_name: "search_emails",
-arguments: { ... } })`.
+type.
+
+**MCP steps use typed tools (#647).** A step names its tool by the typed name from the
+agent's tool list (`"tool": "ms365__search_emails"`), or by `server` plus the server's own
+tool name (`"server": "ms365", "tool": "search_emails"`). `WispExecutor` resolves either
+form through `IMcpToolDirectory`; typed names are looked up, never parsed. `spawn_wisps`
+rewrites the shorthand to `server` + `tool` before hashing, so both forms of the same wisp
+share a definition hash and shape hash.
+
+- A tool with a typed wrapper is called through the wrapper with its own arguments:
+  `ms365__search_emails({ ... })`. In pinned and lazy mode the wrapper isn't in the
+  registry, so the directory supplies its executor.
+- A tool with no wrapper (a name over 64 characters, a sanitised-name collision, every
+  tier `Off`), or one the directory doesn't know yet, falls back to
+  `mcp_invoke_tool({ server_name: "ms365", tool_name: "search_emails", arguments: { ... } })`.
+- A shorthand name that doesn't resolve within `McpReadinessWait` fails as a Structural
+  authoring error.
+
+Both paths end in `McpManagementExecutor.InvokeDownstreamAsync`, so recovery, elicitation
+and pinning behave the same.
 
 ---
 
@@ -121,13 +138,39 @@ arguments: { ... } })`.
 
 LLM steps can only call tools that are explicitly in scope. The tool set is built from:
 
-1. All tools implied by **direct steps'** gateway declarations (e.g., if any direct
-   step uses the MCP gateway, `mcp_invoke_tool` is in scope)
-2. Tools listed in the top-level **`tools`** array (for tools only LLM steps need)
+1. All tools the **direct steps** call. An MCP step contributes its typed tool
+   (`calendar-mcp__get_calendar_events`), with that tool's own schema. `mcp_invoke_tool`
+   joins only when a referenced MCP tool has no typed wrapper.
+2. Entries in the top-level **`tools`** array (for tools only LLM steps need): a registry
+   tool name (`web_browse`), a typed MCP tool name, or an MCP server name, which brings in
+   all of that server's typed tools.
 3. **Working memory tools** (`GetFromWorkingMemory`, `SearchWorkingMemory`, etc.) —
    always available
 
 This prevents the LLM from calling tools the wisp definition didn't anticipate.
+
+The small wisp model gets MCP tools typed, never just the generic `mcp_invoke_tool`. #618's
+measurements put weak models at 0–25% first-call correctness on the generic tool against
+90–100% on typed ones. Wisp tools are caller-scoped (`ICallerScopedTool`), so the agent
+loop keeps them even though LLM steps run at `ModelTier.Low`, which isn't eager. For the same
+reason the run gets no MCP orientation.
+
+### Tool drift
+
+When a wisp is attached to a skill as a `Wisp` resource, the manifest entry records the
+fingerprint of each MCP tool it calls, in `ToolFingerprints`, keyed `server/tool`. Every
+attach path records it: eager promotion, the dream wisp-success promotion,
+`promote_skill_asset` and repair-ticket attaches.
+
+The dream service's wisp tool drift pass (`Dream:WispToolDriftEnabled`, no LLM call) compares
+each validated wisp's fingerprints with the live tools:
+- A tool whose fingerprint moved, or which is gone from a server the agent has indexed,
+  sends the wisp back to provisional.
+- The pass tags the description `[tool changed: server/tool]` and restarts the validation
+  window (`CreatedAt`).
+- The provisional validation pass re-promotes the wisp only after successes on the new
+  surface, and then re-records the fingerprints.
+- Unknown tools (server not indexed, fingerprint unavailable) are skipped.
 
 ---
 

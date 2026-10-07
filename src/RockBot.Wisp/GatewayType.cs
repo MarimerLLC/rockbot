@@ -8,7 +8,10 @@ namespace RockBot.Wisp;
 [JsonConverter(typeof(JsonStringEnumConverter<GatewayType>))]
 public enum GatewayType
 {
-    /// <summary>MCP server tool invocation via mcp_invoke_tool.</summary>
+    /// <summary>
+    /// MCP server tool invocation: through the tool's typed <c>{server}__{tool}</c> wrapper, or
+    /// <c>mcp_invoke_tool</c> when it has none (#647).
+    /// </summary>
     Mcp,
 
     /// <summary>A2A agent invocation via invoke_agent.</summary>

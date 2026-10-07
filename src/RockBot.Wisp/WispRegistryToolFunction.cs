@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Microsoft.Extensions.AI;
+using RockBot.Host;
 using RockBot.Tools;
 
 namespace RockBot.Wisp;
@@ -7,13 +8,15 @@ namespace RockBot.Wisp;
 /// <summary>
 /// Wraps a <see cref="ToolRegistration"/> and its <see cref="IToolExecutor"/> as an
 /// <see cref="AIFunction"/> so registry tools can be passed to the LLM in wisp LLM steps
-/// with a restricted tool scope.
+/// with a restricted tool scope. The wisp chose these tools, so the agent loop keeps them even
+/// when they are typed MCP tools and the run's tier isn't eager (<see cref="ICallerScopedTool"/>,
+/// #647).
 /// </summary>
 internal sealed class WispRegistryToolFunction(
     ToolRegistration registration,
     IToolExecutor executor,
     string wispId,
-    string? parentSessionId = null) : AIFunction
+    string? parentSessionId = null) : AIFunction, ICallerScopedTool
 {
     private static readonly JsonSerializerOptions SerializerOptions = new();
 

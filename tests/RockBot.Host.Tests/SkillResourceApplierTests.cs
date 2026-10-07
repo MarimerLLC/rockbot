@@ -315,7 +315,8 @@ internal sealed class InMemorySkillResourceStore : ISkillStore
             resource.Filename, resource.Type, resource.Description,
             Provisional: resource.Provisional,
             CreatedAt: DateTimeOffset.UtcNow,
-            VerifyHint: resource.VerifyHint);
+            VerifyHint: resource.VerifyHint,
+            ToolFingerprints: resource.ToolFingerprints);
 
         var oldManifest = existing.Manifest ?? [];
         var newManifest = new List<SkillResource>(oldManifest.Count + 1);

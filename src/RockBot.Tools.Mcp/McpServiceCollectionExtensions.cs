@@ -109,6 +109,11 @@ public static class McpServiceCollectionExtensions
         builder.Services.AddSingleton<ITypedToolSurface>(sp => sp.GetRequiredService<McpTypedToolSurface>());
         builder.Services.AddSingleton<McpWrapperCatalog>();
 
+        // Typed tools by server and tool, or by typed name, for code that can't see the catalog —
+        // wisps above all (#647): in pinned and lazy modes no wrapper is in the registry.
+        builder.Services.AddSingleton<IMcpToolDirectory>(sp => new McpToolDirectory(
+            sp.GetRequiredService<McpWrapperCatalog>(), sp.GetRequiredService<McpServerIndex>()));
+
         builder.HandleMessage<McpServersIndexed, McpServersIndexedHandler>();
         builder.SubscribeTo($"tool.meta.mcp.{agentName}");
 

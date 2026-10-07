@@ -19,7 +19,8 @@ internal sealed class WispToolRegistrar(
     IWispExecutionLog? executionLog = null,
     IFeedbackStore? feedbackStore = null,
     ISkillStore? skillStore = null,
-    ISkillUsageStore? skillUsageStore = null) : IHostedService
+    ISkillUsageStore? skillUsageStore = null,
+    IMcpToolDirectory? mcpToolDirectory = null) : IHostedService
 {
     private const string SpawnWispsSchema = """
         {
@@ -39,7 +40,7 @@ internal sealed class WispToolRegistrar(
                   "tools": {
                     "type": "array",
                     "items": { "type": "string" },
-                    "description": "Optional additional tool names available to LLM steps (e.g. web_browse)."
+                    "description": "Optional additional tools for LLM steps: a tool name (e.g. web_browse), a typed MCP tool name (server__tool), or an MCP server name for all of that server's typed tools. LLM steps already get the typed tools the Direct steps call."
                   },
                   "steps": {
                     "type": "array",
@@ -51,8 +52,8 @@ internal sealed class WispToolRegistrar(
                         "id": { "type": "string", "description": "Unique step identifier." },
                         "mode": { "type": "string", "enum": ["Direct", "Llm"], "description": "Direct = harness calls tool (zero LLM tokens). Llm = lightweight LLM interprets prompt." },
                         "gateway": { "type": "string", "enum": ["Mcp", "A2A", "Script", "Web"], "description": "Tool backend for Direct steps." },
-                        "server": { "type": "string", "description": "MCP server name (gateway=Mcp)." },
-                        "tool": { "type": "string", "description": "Tool name (gateway=Mcp or Web)." },
+                        "server": { "type": "string", "description": "MCP server name (gateway=Mcp). Optional when 'tool' is a typed name." },
+                        "tool": { "type": "string", "description": "gateway=Mcp: the typed tool name as it appears in your tool list (server__tool), or the server's own tool name together with 'server'. gateway=Web: the web tool name." },
                         "params": { "type": "object", "description": "Tool parameters as key-value pairs." },
                         "prompt": { "type": "string", "description": "Prompt for LLM steps (mode=Llm). Must be self-contained." },
                         "agent": { "type": "string", "description": "A2A agent name (gateway=A2A)." },
@@ -95,9 +96,10 @@ internal sealed class WispToolRegistrar(
                 procedural tasks. Returns a batch result with per-wisp success/failure and writes
                 a summary to working memory.
 
-                Before authoring a wisp that targets an MCP server, call
-                mcp_get_service_details(server_name=...) once so you have the exact parameter
-                schema for each tool in context. Authoring from training priors is where wisps
+                MCP steps name the tool by its typed name (server__tool) and pass that tool's own
+                arguments in params. If the typed tool is in your tool list, its schema is already
+                in context; otherwise call mcp_get_service_details(server_name=...) once so you
+                have the exact parameter schema for each tool. Authoring from training priors is where wisps
                 most often go wrong — parameter names (e.g. `timeMin` vs `startDate`) vary by
                 server and cannot be guessed reliably.
 
@@ -119,7 +121,8 @@ internal sealed class WispToolRegistrar(
             ParametersSchema = SpawnWispsSchema,
             Source = "wisp"
         }, new SpawnWispsExecutor(wispExecutor, executionLog, feedbackStore, workingMemory, options,
-            loggerFactory.CreateLogger<SpawnWispsExecutor>(), circuitBreaker, skillStore, skillUsageStore));
+            loggerFactory.CreateLogger<SpawnWispsExecutor>(), circuitBreaker, skillStore, skillUsageStore,
+            mcpToolDirectory));
         logger.LogInformation("Registered tool: spawn_wisps");
 
         return Task.CompletedTask;

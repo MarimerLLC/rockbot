@@ -564,6 +564,13 @@ public sealed class DreamOptions
     public string WispFailureDirectivePath { get; set; } = "wisp-failure-dream.md";
 
     /// <summary>
+    /// Whether the wisp tool drift pass is enabled (#647). It sends a validated wisp resource back
+    /// to provisional when an MCP tool it calls changed since it was captured. No LLM call.
+    /// Requires the MCP gateway.
+    /// </summary>
+    public bool WispToolDriftEnabled { get; set; } = true;
+
+    /// <summary>
     /// Whether the MCP skill refresh pass is enabled. It rewrites <c>mcp/{server}</c> skills whose
     /// server's tool surface changed since they were written, against the live schemas, and
     /// records a new surface baseline. Requires the MCP gateway (<see cref="IMcpSkillSurface"/>).

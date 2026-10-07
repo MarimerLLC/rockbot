@@ -34,6 +34,7 @@ internal sealed class DreamService : IHostedService, IDisposable
     private readonly IToolCallLog? _toolCallLog;
     private readonly IWispExecutionLog? _wispExecutionLog;
     private readonly IMcpSkillSurface? _mcpSkillSurface;
+    private readonly IMcpToolDirectory? _mcpToolDirectory;
     private readonly IKnowledgeGraph? _knowledgeGraph;
     private readonly IWorkingMemory? _workingMemory;
     private readonly ILlmClient _llmClient;
@@ -129,7 +130,8 @@ internal sealed class DreamService : IHostedService, IDisposable
         IEnumerable<IPrunableLog>? prunableLogs = null,
         IMemoryDeduplicator? memoryDeduplicator = null,
         IOptions<MemoryAuditOptions>? memoryAuditOptions = null,
-        IMcpSkillSurface? mcpSkillSurface = null)
+        IMcpSkillSurface? mcpSkillSurface = null,
+        IMcpToolDirectory? mcpToolDirectory = null)
     {
         _memory = memory;
         _skillStore = skillStores.FirstOrDefault();
@@ -169,6 +171,7 @@ internal sealed class DreamService : IHostedService, IDisposable
         _prunableLogs = prunableLogs?.ToList() ?? (IReadOnlyList<IPrunableLog>)Array.Empty<IPrunableLog>();
         _memoryDeduplicator = memoryDeduplicator;
         _mcpSkillSurface = mcpSkillSurface;
+        _mcpToolDirectory = mcpToolDirectory;
         _consolidationPausePath = ResolvePath(
             Path.Combine(
                 (memoryAuditOptions?.Value.BasePath ?? MemoryAuditFiles.DefaultBasePath),
@@ -797,6 +800,7 @@ internal sealed class DreamService : IHostedService, IDisposable
 
             ct.ThrowIfCancellationRequested(); await RunWispSuccessAnalysisPassAsync(ct);
 
+            ct.ThrowIfCancellationRequested(); await RunWispToolDriftPassAsync(ct);
             ct.ThrowIfCancellationRequested(); await RunProvisionalValidationPassAsync(ct);
 
             ct.ThrowIfCancellationRequested(); await RunToolSuccessLearningPassAsync(ct);
@@ -5127,7 +5131,7 @@ internal sealed class DreamService : IHostedService, IDisposable
             if (result is null) return;
 
             var attached = await ApplyWispSuccessPromotionsAsync(
-                _skillStore, candidates, existingSkillNames, result.Promotions, _logger, ct);
+                _skillStore, candidates, existingSkillNames, result.Promotions, _logger, ct, _mcpToolDirectory);
 
             _logger.LogInformation(
                 "DreamService: wisp success analysis pass complete — {Attached}/{Total} promotions attached",
@@ -5145,7 +5149,8 @@ internal sealed class DreamService : IHostedService, IDisposable
         HashSet<string> existingSkillNames,
         IReadOnlyList<WispSuccessPromotionDto>? promotions,
         Microsoft.Extensions.Logging.ILogger logger,
-        CancellationToken ct)
+        CancellationToken ct,
+        IMcpToolDirectory? mcpToolDirectory = null)
     {
         if (promotions is null || promotions.Count == 0)
             return 0;
@@ -5183,15 +5188,21 @@ internal sealed class DreamService : IHostedService, IDisposable
             // Pre-build the manifest entry so Provisional=false (dream-pass promotions
             // are observed-repetition validated, not hypotheses) and DefinitionHash
             // matches the source wisp record's hash.
+            // A wisp records the MCP tools it was proven against, so a later change to one
+            // sends it back to provisional (#647).
+            var fingerprints = resourceType == SkillResourceType.Wisp
+                ? WispToolFingerprints.Capture(candidate.Body, mcpToolDirectory)
+                : null;
             var entry = new SkillResource(
                 promotion.Filename!, resourceType, description,
                 Provisional: false,
                 CreatedAt: DateTimeOffset.UtcNow,
                 VerifyHint: null,
-                DefinitionHash: candidate.DefinitionHash);
+                DefinitionHash: candidate.DefinitionHash,
+                ToolFingerprints: fingerprints);
             var input = new SkillResourceInput(
                 promotion.Filename!, resourceType, description, candidate.Body,
-                Provisional: false);
+                Provisional: false, ToolFingerprints: fingerprints);
 
             var ok = await skillStore.AttachResourceAsync(promotion.TargetSkill!, input, entry);
             if (ok)
@@ -5264,6 +5275,118 @@ internal sealed class DreamService : IHostedService, IDisposable
     /// The decision is delegated to the static <see cref="DecideProvisionalAction"/>
     /// helper so unit tests can drive it without standing up the full DreamService stack.
     /// </summary>
+    // ── Wisp tool drift (#647) ────────────────────────────────────────────
+
+    /// <summary>Description prefix on a wisp resource sent back to provisional because a tool it calls changed.</summary>
+    internal const string ToolChangedTagPrefix = "[tool changed: ";
+
+    private static readonly System.Text.RegularExpressions.Regex ToolChangedTag =
+        new(@"^\[tool changed: [^\]]*\] ", System.Text.RegularExpressions.RegexOptions.Compiled);
+
+    /// <summary>
+    /// Sends validated wisp resources back to provisional when an MCP tool they call changed since
+    /// they were captured (#647): the tool's fingerprint moved, or its server is indexed and the
+    /// tool is gone. A tool whose server isn't indexed, or whose fingerprint isn't known, is
+    /// skipped — unknown isn't changed. The flagged entry's <c>CreatedAt</c> restarts the
+    /// provisional validation window, so it is re-promoted only by successes on the new surface
+    /// (and then re-stamped, see <see cref="RunProvisionalValidationPassAsync"/>). No LLM call.
+    /// </summary>
+    internal async Task RunWispToolDriftPassAsync(CancellationToken ct)
+    {
+        if (!_options.WispToolDriftEnabled || _skillStore is null || _mcpToolDirectory is null)
+            return;
+
+        await RunPassAsync("wisp tool drift", async () =>
+        {
+            var candidates = (await _skillStore.ListAsync())
+                .Where(s => s.Manifest is not null)
+                .SelectMany(s => s.Manifest!
+                    .Where(r => r.Type == SkillResourceType.Wisp && !r.Provisional && r.ToolFingerprints is { Count: > 0 })
+                    .Select(r => (Skill: s.Name, Resource: r)))
+                .ToList();
+            if (candidates.Count == 0)
+                return;
+
+            var flagged = 0;
+            foreach (var (skillName, resource) in candidates)
+            {
+                ct.ThrowIfCancellationRequested();
+                var changed = ChangedTools(resource, _mcpToolDirectory);
+                if (changed.Count == 0)
+                    continue;
+
+                var tag = $"{ToolChangedTagPrefix}{string.Join(", ", changed)}] ";
+                var entry = resource with
+                {
+                    Provisional = true,
+                    CreatedAt = DateTimeOffset.UtcNow,
+                    Description = tag + ToolChangedTag.Replace(resource.Description, string.Empty)
+                };
+                if (await _skillStore.UpdateResourceMetadataAsync(skillName, entry))
+                {
+                    flagged++;
+                    _logger.LogInformation(
+                        "DreamService: wisp tool drift — '{File}' on '{Skill}' back to provisional; changed: {Tools}",
+                        resource.Filename, skillName, string.Join(", ", changed));
+                }
+            }
+
+            _logger.LogInformation(
+                "DreamService: wisp tool drift pass complete — {Flagged} of {Total} validated wisp(s) flagged",
+                flagged, candidates.Count);
+        });
+    }
+
+    /// <summary>
+    /// The <c>server/tool</c> keys of <paramref name="resource"/>'s recorded fingerprints whose
+    /// tool changed: a different live fingerprint, or gone from a server that is indexed.
+    /// </summary>
+    internal static IReadOnlyList<string> ChangedTools(SkillResource resource, IMcpToolDirectory directory)
+    {
+        var changed = new List<string>();
+        foreach (var (key, recorded) in resource.ToolFingerprints ?? new Dictionary<string, string>())
+        {
+            if (!WispToolFingerprints.TryParseKey(key, out var server, out var tool))
+                continue;
+
+            var live = directory.Resolve(server, tool);
+            if (live is null)
+            {
+                if (directory.IsServerIndexed(server))
+                    changed.Add(key);
+                continue;
+            }
+
+            if (live.Fingerprint is { Length: > 0 } current
+                && !string.Equals(current, recorded, StringComparison.Ordinal))
+                changed.Add(key);
+        }
+        return changed;
+    }
+
+    /// <summary>
+    /// A wisp entry being promoted: re-stamped with the fingerprints of the tools it now calls,
+    /// since it was just validated against them, and stripped of a <c>[tool changed: …]</c> tag.
+    /// </summary>
+    internal async Task<SkillResource> RestampPromotedWispAsync(string skillName, SkillResource resource)
+    {
+        if (resource.Type != SkillResourceType.Wisp)
+            return resource;
+
+        var fingerprints = resource.ToolFingerprints;
+        if (_mcpToolDirectory is not null)
+        {
+            var body = await _skillStore!.GetResourceAsync(skillName, resource.Filename);
+            fingerprints = WispToolFingerprints.Capture(body, _mcpToolDirectory) ?? fingerprints;
+        }
+
+        return resource with
+        {
+            ToolFingerprints = fingerprints,
+            Description = ToolChangedTag.Replace(resource.Description, string.Empty)
+        };
+    }
+
     private async Task RunProvisionalValidationPassAsync(CancellationToken ct)
     {
         if (!_options.ProvisionalValidationEnabled || _skillStore is null || _wispExecutionLog is null)
@@ -5323,7 +5446,7 @@ internal sealed class DreamService : IHostedService, IDisposable
                 switch (decision.Action)
                 {
                     case ProvisionalAction.Promote:
-                        var promotedEntry = resource with { Provisional = false };
+                        var promotedEntry = (await RestampPromotedWispAsync(skillName, resource)) with { Provisional = false };
                         if (await _skillStore.UpdateResourceMetadataAsync(skillName, promotedEntry))
                         {
                             promoted++;
@@ -6427,7 +6550,8 @@ internal sealed class DreamService : IHostedService, IDisposable
                 inputs.Add(new SkillResourceInput(
                     entry.Filename, entry.Type, entry.Description, body,
                     Provisional: entry.Provisional,
-                    VerifyHint: entry.VerifyHint));
+                    VerifyHint: entry.VerifyHint,
+                    ToolFingerprints: entry.ToolFingerprints));
             }
         }
 

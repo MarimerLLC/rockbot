@@ -539,6 +539,21 @@ description to surface recurring patterns.
 
 See [Wisps — Dream-time learning](wisps.md#dream-time-learning-phase-5) for details.
 
+### Wisp tool drift
+
+Issue #647. This pass runs right before provisional validation. It makes no LLM call.
+
+**Input:** every validated (non-provisional) `Wisp` resource whose manifest entry has `ToolFingerprints`. Those are the per-tool fingerprints recorded when the wisp was attached.
+
+**What it does:** compares each recorded fingerprint with the live one from `IMcpToolDirectory`.
+- If a tool's fingerprint moved, or the tool is gone from a server the agent has indexed, the pass sends the wisp back to provisional.
+  - It tags the description `[tool changed: server/tool]`.
+  - It resets `CreatedAt`, which restarts the provisional validation window, so only successes on the new surface can re-promote the wisp.
+- When provisional validation promotes a wisp, it re-records the fingerprints and removes the tag.
+- Unknown tools (server not indexed, fingerprint unavailable) are skipped.
+
+Requires `ISkillStore` and the MCP gateway (`IMcpToolDirectory`). Enabled/disabled by `DreamOptions.WispToolDriftEnabled`.
+
 ### MCP skill refresh
 
 Issue #615. This pass runs right after wisp failure analysis.
@@ -595,6 +610,9 @@ public sealed class DreamOptions
     // Feature flags
     public bool PreferenceInferenceEnabled { get; set; } = true;
     public bool SkillGapEnabled { get; set; } = true;
+
+    // Wisp tool drift (#647)
+    public bool WispToolDriftEnabled { get; set; } = true;
 
     // MCP skill refresh (#615)
     public bool McpSkillRefreshEnabled { get; set; } = true;
