@@ -39,6 +39,24 @@ Each agent has its own MCP Bridge instance, scoped to that agent's tool set. The
 4. Bridge publishes `ToolInvokeResponse` (or `ToolError`) to `tool.result.{agentName}`
 5. Agent host receives response, returns to LLM as `tool_result`
 
+### Invoke pre-checks and error hints
+
+The bridge answers mistakes it can prove itself, with the real names, so the model can correct the call on its next attempt (`McpCallDiagnostics`, ported from mcp-aggregator PRs #29, #36, #42 and #51):
+
+- **Unknown server.** The error lists the registered servers. A registered server whose connection is down gets a separate "not reachable right now" message.
+- **Unknown tool.** Only tools the server lists *after* the operator's `allowedTools`/`deniedTools` filter may be called. Any other name is refused before reaching the downstream, with the available names. That also means a filtered-out tool can't be called by name. On a miss against the cached list the bridge re-lists once, so a tool added since the last connect still goes through.
+- **Unknown prompt / missing required prompt arguments.** These are refused before reaching the downstream, with the prompt names or the full argument signature.
+- **A downstream protocol rejection** (`-32602` invalid params, `-32601` method not found). The server answered, so the connection is alive: the error goes back to the model without the reconnect-and-retry that other exceptions get.
+
+When a call fails, a hint is appended **only on positive evidence**:
+
+1. **Missing required keys or unrecognised keys.** The hint lists them, together with the keys sent and the input schema. A missing field the downstream already named in words recovery understands is left to `McpRecoveryExecutor`.
+2. **A top-level value whose JSON type contradicts the declared `type`.** For example: "Parameter 'to' is declared as array but you sent a string."
+3. **A narrow validation phrase from another SDK** (`Invalid arguments for tool`, `-32602`, `validation error for`). The schema is attached without a type claim.
+4. **The C# SDK's detail-free `An error occurred invoking '<tool>'.`** This gets a hedged note: the problem is either in a nested value or format, or on the server's side.
+
+Any other failure on schema-valid arguments comes back unchanged. A hint that blames the arguments for a server-side failure sends the model hunting for a bug that doesn't exist (mcp-aggregator#50).
+
 ### Metadata Refresh
 
 Agent publishes `McpMetadataRefreshRequest` to `tool.meta.mcp.refresh`. Bridge re-runs `tools/list` and publishes updated `McpToolsAvailable`.

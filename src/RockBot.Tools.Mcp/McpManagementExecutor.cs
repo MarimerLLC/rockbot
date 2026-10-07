@@ -114,11 +114,15 @@ public sealed class McpManagementExecutor : IToolExecutor, IAsyncDisposable
         var tools = (IReadOnlyList<McpToolDefinition>)details.Tools;
         if (TryGetString(args, "tool_name", out var toolName))
         {
+            var allTools = tools;
             tools = tools
                 .Where(t => t.Name.Equals(toolName, StringComparison.OrdinalIgnoreCase))
                 .ToList();
             if (tools.Count == 0)
-                return Error(request, $"No tool named '{toolName}' found on server '{serverName}'");
+            {
+                return Error(request, McpCallDiagnostics.DescribeUnknownTool(
+                    serverName, toolName, allTools.Select(t => t.Name).ToList()));
+            }
         }
 
         // Surface the server's self-reported identity alongside tool schemas so the

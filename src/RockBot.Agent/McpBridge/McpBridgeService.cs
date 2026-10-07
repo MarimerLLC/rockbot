@@ -4,6 +4,7 @@ using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using ModelContextProtocol;
 using ModelContextProtocol.Client;
 using ModelContextProtocol.Protocol;
 using RockBot.Agent.McpBridge.ArgGuards;
@@ -744,6 +745,104 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
         return tools;
     }
 
+    /// <summary>
+    /// Finds <paramref name="toolName"/> among the tools <paramref name="serverName"/> may be
+    /// called with. A miss against the cached list re-lists once, without touching cached state,
+    /// so a tool added since the last connect still goes through. Returns the tool when found.
+    /// <c>Available</c> is non-null only on a miss: it holds the names the model may use instead.
+    /// Both are null only when the bridge holds no tool list for the server at all, in which case
+    /// the call proceeds and the downstream answers for itself.
+    /// </summary>
+    private async Task<(McpClientTool? Tool, IReadOnlyList<string>? Available)> ResolveToolAsync(
+        string serverName, McpClient client, string toolName, CancellationToken ct)
+    {
+        if (!_serverTools.TryGetValue(serverName, out var cached))
+            return (null, null);
+
+        if (FindTool(cached, toolName) is { } hit)
+            return (hit, null);
+
+        if (!_serverConfigs.TryGetValue(serverName, out var config))
+            return (null, cached.Select(t => t.Name).ToList());
+
+        try
+        {
+            var fresh = ApplyToolFilters([.. await client.ListToolsAsync(cancellationToken: ct)], config);
+            if (FindTool(fresh, toolName) is { } freshHit)
+            {
+                _logger.LogInformation(
+                    "MCP {Server}/{Tool} is not in the cached tool list but the server lists it now; proceeding",
+                    serverName, toolName);
+                return (freshHit, null);
+            }
+
+            return (null, fresh.Select(t => t.Name).ToList());
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            // Fail closed: letting the call through here would let a filtered-out tool past the
+            // operator's deniedTools whenever tools/list happens to fail.
+            _logger.LogDebug(ex, "Re-listing tools for {Server} failed; answering from the cached list", serverName);
+            return (null, cached.Select(t => t.Name).ToList());
+        }
+
+        // MCP tool names are case-sensitive, but a case slip is better answered by the downstream
+        // (and the unknown-tool hint) than refused here as if the tool didn't exist.
+        static McpClientTool? FindTool(List<McpClientTool> tools, string name) =>
+            tools.FirstOrDefault(t => string.Equals(t.Name, name, StringComparison.Ordinal))
+            ?? tools.FirstOrDefault(t => string.Equals(t.Name, name, StringComparison.OrdinalIgnoreCase));
+    }
+
+    /// <summary>
+    /// Pre-checks a prompt request against the server's listed prompts: an unknown name, or
+    /// missing required arguments, is answered here with the real names and signature instead of
+    /// a round trip that ends in the downstream's bare protocol error. Returns null when the call
+    /// may proceed, including when the server's prompt list is unknown.
+    /// </summary>
+    private string? CheckPromptCall(McpGetPromptRequest req)
+    {
+        if (!_serverPrompts.TryGetValue(req.ServerName, out var prompts))
+            return null;
+
+        var prompt = prompts.FirstOrDefault(p => string.Equals(p.Name, req.PromptName, StringComparison.Ordinal))
+                     ?? prompts.FirstOrDefault(p => string.Equals(p.Name, req.PromptName, StringComparison.OrdinalIgnoreCase));
+        if (prompt is null)
+        {
+            return McpCallDiagnostics.DescribeUnknownPrompt(
+                req.ServerName, req.PromptName, prompts.Select(p => p.Name).ToList());
+        }
+
+        var declared = (prompt.ProtocolPrompt.Arguments ?? [])
+            .Select(a => new McpPromptArgument { Name = a.Name, Description = a.Description, Required = a.Required ?? false })
+            .ToList();
+
+        return McpCallDiagnostics.DescribeMissingPromptArguments(
+            req.ServerName, prompt.Name, declared, req.Arguments.Keys);
+    }
+
+    /// <summary>
+    /// Appends <see cref="McpCallDiagnostics.DescribeArgumentProblem"/>'s hint, when there is one,
+    /// to a failed call's content as its own text block.
+    /// </summary>
+    private static (IReadOnlyList<ToolContentBlock>? Blocks, string? Content) AppendArgumentHint(
+        string serverName,
+        string toolName,
+        string? inputSchema,
+        IReadOnlyDictionary<string, object?> sentArguments,
+        IReadOnlyList<ToolContentBlock>? blocks,
+        string? content)
+    {
+        var hint = McpCallDiagnostics.DescribeArgumentProblem(serverName, toolName, inputSchema, sentArguments, content);
+        if (hint is null) return (blocks, content);
+
+        var withHint = McpElicitationNote.AppendTo(blocks, "\n" + hint);
+        return (withHint, McpToolExecutor.TextFromBlocks(withHint));
+    }
+
     private async Task<McpServerSummary> GenerateSummaryAsync(
         string serverName,
         McpServerMetadata metadata,
@@ -902,12 +1001,16 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
 
                 if (client is null)
                 {
+                    // A model that invents a server name needs the real ones to recover; one whose
+                    // server is merely down needs to know retrying the name is right.
                     var error = new ToolError
                     {
                         ToolCallId = request.ToolCallId,
                         ToolName = request.ToolName,
                         Code = ToolError.Codes.ToolNotFound,
-                        Message = $"MCP server '{headerServer}' is not connected",
+                        Message = _serverConfigs.ContainsKey(headerServer)
+                            ? McpCallDiagnostics.DescribeUnavailableServer(headerServer)
+                            : McpCallDiagnostics.DescribeUnknownServer(headerServer, _serverConfigs.Keys),
                         IsRetryable = false
                     };
                     await PublishResponseAsync(error, replyTo, envelope.CorrelationId, ct);
@@ -943,6 +1046,34 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
             await PublishResponseAsync(error, replyTo, envelope.CorrelationId, ct);
             return MessageResult.Ack;
         }
+
+        // Only tools the server lists — after the operator's allowedTools/deniedTools filter — may
+        // be called. Without this check a filtered-out tool was hidden from the model but still
+        // callable by name, and an unknown name cost a reconnect-and-retry before failing with the
+        // downstream's bare protocol error.
+        var toolDefinition = await ResolveToolAsync(serverName, client, request.ToolName, ct);
+        if (toolDefinition.Tool is null && toolDefinition.Available is { } available)
+        {
+            _logger.LogWarning("MCP {Server}/{Tool} refused: not among the server's {Count} available tool(s)",
+                serverName, request.ToolName, available.Count);
+
+            var error = new ToolError
+            {
+                ToolCallId = request.ToolCallId,
+                ToolName = request.ToolName,
+                Code = ToolError.Codes.ToolNotFound,
+                Message = McpCallDiagnostics.DescribeUnknownTool(serverName, request.ToolName, available),
+                IsRetryable = false
+            };
+
+            await PublishResponseAsync(error, replyTo, envelope.CorrelationId, ct);
+            return MessageResult.Ack;
+        }
+
+        var inputSchema = toolDefinition.Tool is { } resolvedTool
+            && resolvedTool.JsonSchema.ValueKind != JsonValueKind.Undefined
+                ? resolvedTool.JsonSchema.GetRawText()
+                : null;
 
         // Parse timeout from headers — callers may request more time than the default (e.g. for
         // large MCP operations), so allow header values up to MaxTimeoutMs.
@@ -1055,6 +1186,9 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
             }
         }
 
+        // Error hints describe what the model sent, not what the attachment rewrite below turns it into.
+        var sentArguments = new Dictionary<string, object?>(arguments);
+
         // Apply attachment-passthrough request rewrite (no-op when the server has no manifest).
         // We capture ShouldRewriteResponse BEFORE RewriteRequestAsync because the rewrite
         // mutates the gateway-only `mode: "save"` to `stash`/`inline`.
@@ -1127,6 +1261,9 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
                 _logger.LogWarning("← MCP {Server}/{Tool} ERROR in {ElapsedMs}ms: {Content}",
                     serverName, request.ToolName, sw.ElapsedMilliseconds, content);
 
+                (blocks, content) = AppendArgumentHint(
+                    serverName, request.ToolName, inputSchema, sentArguments, blocks, content);
+
                 if (request.ToolName == "invoke_tool"
                     && GetStringArgument(arguments, "arguments") is { } innerArgs
                     && !innerArgs.TrimStart().StartsWith('{'))
@@ -1182,6 +1319,35 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
             };
 
             await PublishResponseAsync(error, replyTo, envelope.CorrelationId, ct);
+        }
+        catch (McpProtocolException ex) when (ex.ErrorCode is McpErrorCode.InvalidParams or McpErrorCode.MethodNotFound)
+        {
+            // The server answered, so the connection is alive: reconnecting and retrying would only
+            // repeat the rejection. Servers on other SDKs report argument validation this way rather
+            // than as an isError result. Return it as a tool error the model can act on.
+            sw.Stop();
+            _logger.LogWarning("← MCP {Server}/{Tool} REJECTED in {ElapsedMs}ms ({Code}): {Message}",
+                serverName, request.ToolName, sw.ElapsedMilliseconds, ex.ErrorCode, ex.Message);
+
+            var hint = ex.Message.Contains("unknown tool", StringComparison.OrdinalIgnoreCase)
+                ? McpCallDiagnostics.DescribeUnknownTool(
+                    serverName, request.ToolName,
+                    _serverTools.GetValueOrDefault(serverName)?.Select(t => t.Name).ToList() ?? [])
+                : McpCallDiagnostics.DescribeArgumentProblem(
+                    serverName, request.ToolName, inputSchema, sentArguments, ex.Message);
+
+            var response = new ToolInvokeResponse
+            {
+                ToolCallId = request.ToolCallId,
+                ToolName = request.ToolName,
+                Content = ex.Message
+                          + (hint is null ? "" : "\n\n" + hint)
+                          + McpElicitationNote.DescribeDeclined(
+                              elicitationScope?.Records ?? [], GetToolParameterNames(serverName, request.ToolName)),
+                IsError = true
+            };
+
+            await PublishResponseAsync(response, replyTo, envelope.CorrelationId, ct);
         }
         catch (Exception ex) when (FindReauthRequired(ex) is { } reauth)
         {
@@ -1300,6 +1466,12 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
 
                         var retryContent = retryBlocks is not null ? McpToolExecutor.TextFromBlocks(retryBlocks) : null;
 
+                        if (retryResult.IsError == true)
+                        {
+                            (retryBlocks, retryContent) = AppendArgumentHint(
+                                serverName, request.ToolName, inputSchema, sentArguments, retryBlocks, retryContent);
+                        }
+
                         _logger.LogInformation(
                             "← MCP {Server}/{Tool} OK after transparent reconnect ({ContentLen} chars)",
                             serverName, request.ToolName, retryContent?.Length ?? 0);
@@ -1399,7 +1571,9 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
                         }).ToList()
                 }).ToList(),
                 Error = _clients.ContainsKey(req.ServerName) ? null
-                    : $"Server '{req.ServerName}' is not connected"
+                    : _serverConfigs.ContainsKey(req.ServerName)
+                        ? McpCallDiagnostics.DescribeUnavailableServer(req.ServerName)
+                        : McpCallDiagnostics.DescribeUnknownServer(req.ServerName, _serverConfigs.Keys)
             };
 
             await PublishResponseAsync(response, replyTo, envelope.CorrelationId, ct);
@@ -1528,15 +1702,21 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
             if (req is null) return MessageResult.DeadLetter;
 
             var client = _clients.GetValueOrDefault(req.ServerName);
-            if (client is null)
+            var precheckError = client is null
+                ? _serverConfigs.ContainsKey(req.ServerName)
+                    ? McpCallDiagnostics.DescribeUnavailableServer(req.ServerName)
+                    : McpCallDiagnostics.DescribeUnknownServer(req.ServerName, _serverConfigs.Keys)
+                : CheckPromptCall(req);
+
+            if (client is null || precheckError is not null)
             {
-                var notFound = new McpGetPromptResponse
+                var rejected = new McpGetPromptResponse
                 {
                     ServerName = req.ServerName,
                     PromptName = req.PromptName,
-                    Error = $"Server '{req.ServerName}' is not connected"
+                    Error = precheckError
                 };
-                await PublishResponseAsync(notFound, replyTo, envelope.CorrelationId, ct);
+                await PublishResponseAsync(rejected, replyTo, envelope.CorrelationId, ct);
                 return MessageResult.Ack;
             }
 
@@ -1578,6 +1758,20 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
                     Messages = messages
                 };
                 await PublishResponseAsync(response, replyTo, envelope.CorrelationId, ct);
+            }
+            catch (McpProtocolException ex) when (ex.ErrorCode is McpErrorCode.InvalidParams or McpErrorCode.MethodNotFound)
+            {
+                // The server answered: a reconnect would only repeat the rejection.
+                _logger.LogWarning("GetPrompt {Server}/{Prompt} REJECTED ({Code}): {Message}",
+                    req.ServerName, req.PromptName, ex.ErrorCode, ex.Message);
+
+                var rejected = new McpGetPromptResponse
+                {
+                    ServerName = req.ServerName,
+                    PromptName = req.PromptName,
+                    Error = ex.Message
+                };
+                await PublishResponseAsync(rejected, replyTo, envelope.CorrelationId, ct);
             }
             catch (Exception ex)
             {
