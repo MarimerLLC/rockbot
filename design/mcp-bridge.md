@@ -86,6 +86,27 @@ Ported from mcp-aggregator PRs #42 and #47.
   - On the agent side, `ToolSchemaCache` is invalidated only when a server's fingerprint or id moves, not on every re-publish.
 - **Summary reuse.** Every reconnect and config reload goes through `ConnectServerAsync`. When the fingerprint and the server's self-reported identity are unchanged, the previous LLM-generated summary is reused instead of being regenerated.
 
+### Per-server state and concurrency
+
+These paths run independently of one another:
+- the tool-invoke, management and metadata-refresh subscriptions;
+- the reconnect sweep;
+- config reload;
+- list_changed refreshes.
+
+All of the bridge's per-server state lives in `McpServerConnections` (issue #604):
+
+- **Configured servers** map a name to the latest `McpBridgeServerConfig`, connected or not. A configured server that isn't connected is what the reconnect sweep retries.
+- **Connected servers** map a name to an immutable `ConnectedServer` snapshot holding the client, config, filtered tools, prompts, metadata, summary, elicitation coordinator and attachment gateway, all from the same connect.
+  - A reader takes one snapshot and uses it for the whole operation, so it can't see a new client with an old tool list.
+  - A surface refresh publishes a new snapshot of the same connection.
+- **One writer per server at a time.** Connect, refresh and disconnect each hold that server's lock, so the reconnect sweep, a config reload and an invoke's reconnect-and-retry queue behind one another instead of each building a client.
+  - The retry passes the client that failed. If another caller has already replaced it, the retry uses the new connection instead of reconnecting again.
+  - The sweep skips a server that got connected while it waited.
+- **Leases.** A call leases its snapshot. A replaced or removed connection is *retired*, and its client and attachment HTTP client are disposed when the last lease is released. They are never disposed under a running call.
+  - Before #604, a reconnect disposed the client while calls were in flight, and those calls failed with a bogus "timed out after 60000ms" error.
+- **Failed reconnect with a changed config.** If every reconnect attempt fails after the config changed, the previous connection keeps serving under the new config, with its tool list filtered again by the new filters. That can only narrow what's callable, so an operator who just denied a tool isn't overruled by a server that happened to be down.
+
 ## Content Trust
 
 Every tool message carries an `rb-content-trust` header:
