@@ -1,0 +1,20 @@
+{
+  "Measure": {
+    "Providers": {
+      "azure": {
+        "Endpoint": ""
+      },
+      "openrouter": {
+        "Endpoint": "https://openrouter.ai/api/v1"
+      }
+    },
+    "Models": {
+      "high": { "Tier": "High", "Provider": "azure", "ModelId": "gpt-5.5" },
+      "balanced": { "Tier": "Balanced", "Provider": "azure", "ModelId": "gpt-5.4" },
+      "low": { "Tier": "Low", "Provider": "azure", "ModelId": "gpt-5.4-mini" },
+      "weak-qwen3-8b": { "Tier": "Low", "Provider": "openrouter", "ModelId": "qwen/qwen3-8b" },
+      "weak-llama-3.1-8b": { "Tier": "Low", "Provider": "openrouter", "ModelId": "meta-llama/llama-3.1-8b-instruct" }
+    },
+    "DefaultModels": [ "high", "balanced", "low", "weak-qwen3-8b" ]
+  }
+}

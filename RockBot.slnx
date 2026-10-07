@@ -50,6 +50,9 @@
     <Project Path="src/RockBot.A2A.Gateway/RockBot.A2A.Gateway.csproj" />
     <Project Path="src/RockBot.A2A.Gateway.Host/RockBot.A2A.Gateway.Host.csproj" />
   </Folder>
+  <Folder Name="/tools/">
+    <Project Path="tools/RockBot.McpMeasure/RockBot.McpMeasure.csproj" />
+  </Folder>
   <Folder Name="/tests/">
 <Project Path="tests/RockBot.Host.Tests/RockBot.Host.Tests.csproj" />
     <Project Path="tests/RockBot.Llm.Tests/RockBot.Llm.Tests.csproj" />
@@ -72,6 +75,7 @@
     <Project Path="tests/RockBot.A2A.Gateway.Tests/RockBot.A2A.Gateway.Tests.csproj" />
     <Project Path="tests/RockBot.Observation.Tests/RockBot.Observation.Tests.csproj" />
     <Project Path="tests/RockBot.AdvisorCouncil.Tests/RockBot.AdvisorCouncil.Tests.csproj" />
+    <Project Path="tests/RockBot.McpMeasure.Tests/RockBot.McpMeasure.Tests.csproj" />
   </Folder>
   <Project Path="src/RockBot.Messaging.Abstractions/RockBot.Messaging.Abstractions.csproj" />
   <Project Path="src/RockBot.Messaging.RabbitMQ/RockBot.Messaging.RabbitMQ.csproj" />
