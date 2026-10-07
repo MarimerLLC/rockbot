@@ -50,6 +50,15 @@ internal sealed class BridgeHarness : IAsyncDisposable
     /// <summary>The bridge under test.</summary>
     public McpBridgeService Bridge => _bridge;
 
+    /// <summary>
+    /// The in-memory bus, for wiring agent-side components (proxy, management executor) to the
+    /// bridge: a publish is captured and delivered to whatever subscribed to that exact topic.
+    /// </summary>
+    public IMessagePublisher BusPublisher => _publisher;
+
+    /// <inheritdoc cref="BusPublisher"/>
+    public IMessageSubscriber BusSubscriber => _subscriber;
+
     /// <summary>Path of the bridge's <c>mcp.json</c>.</summary>
     public string ConfigPath => _options.Value.ConfigPath;
 
@@ -85,7 +94,7 @@ internal sealed class BridgeHarness : IAsyncDisposable
     private async Task StartBridgeAsync()
     {
         _subscriber = new TopicSubscriber();
-        _publisher = new CapturingPublisher();
+        _publisher = new CapturingPublisher(_subscriber);
         // Attachment storage defaults to the shared volume (/rockbot/shared), which a test runner
         // can't write; keep it inside the run's temporary directory.
         _bridge = new McpBridgeService(
@@ -239,7 +248,7 @@ internal sealed class BridgeHarness : IAsyncDisposable
     /// <summary>Keeps every subscription's handler, keyed by topic.</summary>
     private sealed class TopicSubscriber : IMessageSubscriber
     {
-        private readonly Dictionary<string, Func<MessageEnvelope, CancellationToken, Task<MessageResult>>> _handlers = new();
+        private readonly System.Collections.Concurrent.ConcurrentDictionary<string, Func<MessageEnvelope, CancellationToken, Task<MessageResult>>> _handlers = new();
 
         public Task<ISubscription> SubscribeAsync(
             string topic,
@@ -258,6 +267,9 @@ internal sealed class BridgeHarness : IAsyncDisposable
             return handler(envelope, CancellationToken.None);
         }
 
+        public Task TryDeliverAsync(string topic, MessageEnvelope envelope) =>
+            _handlers.TryGetValue(topic, out var handler) ? handler(envelope, CancellationToken.None) : Task.CompletedTask;
+
         public ValueTask DisposeAsync() => default;
 
         private sealed class NoopSubscription : ISubscription
@@ -269,7 +281,7 @@ internal sealed class BridgeHarness : IAsyncDisposable
         }
     }
 
-    private sealed class CapturingPublisher : IMessagePublisher
+    private sealed class CapturingPublisher(TopicSubscriber subscriber) : IMessagePublisher
     {
         private readonly object _gate = new();
         private readonly List<(string Topic, MessageEnvelope Envelope)> _published = [];
@@ -282,7 +294,7 @@ internal sealed class BridgeHarness : IAsyncDisposable
         public Task PublishAsync(string topic, MessageEnvelope envelope, CancellationToken cancellationToken = default)
         {
             lock (_gate) _published.Add((topic, envelope));
-            return Task.CompletedTask;
+            return subscriber.TryDeliverAsync(topic, envelope);
         }
 
         public ValueTask DisposeAsync() => default;

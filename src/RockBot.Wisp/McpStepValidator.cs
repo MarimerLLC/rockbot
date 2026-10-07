@@ -125,13 +125,19 @@ internal static class McpStepValidator
         return new Result(missing, unknown, error);
     }
 
+    /// <summary>
+    /// The registry entry for <paramref name="tool"/> on <paramref name="server"/>: a typed
+    /// <c>{server}__{tool}</c> wrapper records the downstream name in
+    /// <see cref="ToolRegistration.DownstreamName"/>; an in-process stdio registration uses it as
+    /// its own name.
+    /// </summary>
     private static ToolRegistration? FindMcpTool(IToolRegistry registry, string server, string tool)
     {
         var source = $"mcp:{server}";
         foreach (var reg in registry.GetTools())
         {
-            if (string.Equals(reg.Name, tool, StringComparison.Ordinal)
-                && string.Equals(reg.Source, source, StringComparison.Ordinal))
+            if (string.Equals(reg.Source, source, StringComparison.OrdinalIgnoreCase)
+                && string.Equals(reg.DownstreamName ?? reg.Name, tool, StringComparison.Ordinal))
                 return reg;
         }
         return null;

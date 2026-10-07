@@ -28,6 +28,12 @@ public sealed record ToolRegistration
     public required string Source { get; init; }
 
     /// <summary>
+    /// For a tool that stands in for another system's tool — a typed MCP wrapper named
+    /// <c>{server}__{tool}</c> — the tool's own name in that system. Null for native tools.
+    /// </summary>
+    public string? DownstreamName { get; init; }
+
+    /// <summary>
     /// Convert to an <see cref="LlmToolDefinition"/> for passing to the LLM.
     /// </summary>
     public LlmToolDefinition ToLlmToolDefinition() => new()

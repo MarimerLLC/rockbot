@@ -79,11 +79,11 @@ internal sealed class WorkerRunner(
     /// (<c>mcp_list_services</c>, <c>mcp_get_service_details</c>,
     /// <c>mcp_invoke_tool</c>, <c>mcp_get_prompt</c>, plus the two admin tools).
     /// Workers ALWAYS retain gateway tools regardless of a definition's
-    /// <c>tools_allow</c> allowlist. Every external MCP call routes through the
-    /// single <c>mcp_invoke_tool</c> gateway (there are no per-server tools in the
-    /// registry), so a server-scoped allowlist like <c>["calendar-mcp.*"]</c> matches
-    /// none of the gateway's literal names and would silently strip all MCP access —
-    /// which is exactly the job most workers are spawned for. Keying off the source
+    /// <c>tools_allow</c> allowlist. A server-scoped allowlist like <c>["calendar-mcp.*"]</c>
+    /// matches none of the gateway's literal names and would otherwise silently strip all
+    /// MCP access — which is exactly the job most workers are spawned for. Typed
+    /// <c>{server}__{tool}</c> wrappers, when enabled, are narrowed by the allowlist through
+    /// their dotted <c>{server}.{tool}</c> form (see <see cref="QualifiedMcpName"/>). Keying off the source
     /// (rather than a hard-coded name list) means any future gateway tool is covered
     /// automatically, matching how the primary/subagent <c>ToolProfile</c> paths
     /// treat the gateway. The allowlist still narrows non-MCP registry tools
@@ -295,7 +295,8 @@ internal sealed class WorkerRunner(
             // everything else. See McpGatewaySource. (ExcludedNames above has
             // already dropped the two admin gateway tools.)
             .Where(r => IsMcpGatewayTool(r.Source)
-                        || MatchesAllowlist(r.Name, toolsAllow))
+                        || MatchesAllowlist(r.Name, toolsAllow)
+                        || MatchesAllowlist(QualifiedMcpName(r), toolsAllow))
             .ToList();
 
         var tools = new List<AIFunction>(allowedRegistrations.Count);
@@ -316,6 +317,20 @@ internal sealed class WorkerRunner(
     /// </summary>
     internal static bool IsMcpGatewayTool(string? source) =>
         string.Equals(source, McpGatewaySource, StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// For a typed MCP wrapper (source <c>mcp:{server}</c>, registered as <c>{server}__{tool}</c>),
+    /// its dotted <c>{server}.{tool}</c> form, so a server-scoped allowlist entry such as
+    /// <c>"calendar-mcp.*"</c> admits that server's typed tools. Empty for anything else, which
+    /// no allowlist entry matches.
+    /// </summary>
+    internal static string QualifiedMcpName(ToolRegistration registration) =>
+        registration.DownstreamName is { } tool
+        && registration.Source is { } source
+        && source.StartsWith("mcp:", StringComparison.OrdinalIgnoreCase)
+        && !IsMcpGatewayTool(source)
+            ? $"{source["mcp:".Length..]}.{tool}"
+            : string.Empty;
 
     internal static bool MatchesAllowlist(string toolName, IReadOnlyList<string>? toolsAllow)
     {

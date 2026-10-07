@@ -28,7 +28,7 @@ public class ToolProfileSnapshotTests
         R("mcp_get_service_details", "mcp:management"),
         R("mcp_register_server", "mcp:management"),
         R("mcp_unregister_server", "mcp:management"),
-        // mcp:{server} (McpToolRegistrar — per-server source)
+        // mcp:{server} (McpWrapperCatalog typed wrappers, and the legacy McpToolRegistrar — per-server source)
         R("calendar__list_events", "mcp:calendar"),
         // scheduling (SchedulingToolRegistrar)
         R("create_scheduled_task", "scheduling"),

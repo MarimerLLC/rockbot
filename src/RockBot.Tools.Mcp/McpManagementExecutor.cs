@@ -270,12 +270,29 @@ public sealed class McpManagementExecutor : IToolExecutor, IAsyncDisposable
                 return Error(request, remediation);
         }
 
+        return await InvokeDownstreamAsync(serverName, toolName, toolArgs, request, McpInvocationPath.InvokeTool, ct);
+    }
+
+    /// <summary>
+    /// The one path every downstream MCP tool call takes, whether the model used
+    /// <c>mcp_invoke_tool</c> or a typed <c>{server}__{tool}</c> wrapper: the bridge (guards,
+    /// attachments, elicitation, timeouts, reconnect-and-retry, error hints) and then recovery.
+    /// <paramref name="via"/> tags logs and metrics so reliability can be compared by surface.
+    /// </summary>
+    internal async Task<ToolInvokeResponse> InvokeDownstreamAsync(
+        string serverName,
+        string toolName,
+        string? toolArgs,
+        ToolInvokeRequest outer,
+        string via,
+        CancellationToken ct)
+    {
         var innerRequest = new ToolInvokeRequest
         {
-            ToolCallId = request.ToolCallId,
+            ToolCallId = outer.ToolCallId,
             ToolName = toolName,
             Arguments = toolArgs,
-            SessionId = request.SessionId
+            SessionId = outer.SessionId
         };
 
         var extraHeaders = new Dictionary<string, string>
@@ -294,8 +311,12 @@ public sealed class McpManagementExecutor : IToolExecutor, IAsyncDisposable
         if (_recovery is not null)
         {
             response = await _recovery.RecoverAsync(
-                serverName, toolName, innerRequest, response, ct, sessionId: request.SessionId);
+                serverName, toolName, innerRequest, response, ct, sessionId: outer.SessionId);
         }
+
+        McpDiagnostics.RecordInvocation(serverName, via, response.IsError);
+        _logger.LogDebug("MCP {Server}/{Tool} via {Via}: {Outcome}",
+            serverName, toolName, via, response.IsError ? "error" : "ok");
 
         return response;
     }

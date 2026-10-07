@@ -158,6 +158,29 @@ public class McpStepValidatorTests
     }
 
     [TestMethod]
+    public void Validate_FindsATypedWrapperByItsDownstreamName()
+    {
+        // With typed wrappers on, the registry holds "calendar-mcp__get_calendar_events"; the
+        // wisp step still names the downstream tool.
+        var registry = new FakeToolRegistry();
+        registry.Register(
+            new ToolRegistration
+            {
+                Name = "calendar-mcp__get_calendar_events",
+                Description = "",
+                Source = "mcp:calendar-mcp",
+                DownstreamName = "get_calendar_events",
+                ParametersSchema = GetCalendarEventsSchema
+            },
+            new NoopExecutor());
+        var step = McpStep("calendar-mcp", "get_calendar_events", """{"accountId":"a"}""");
+
+        var error = McpStepValidator.Validate(step, registry);
+
+        Assert.IsNotNull(error, "The wrapper's schema must be found and applied.");
+        StringAssert.Contains(error.Message, "calendarId");
+    }
+    [TestMethod]
     public void Validate_MissingParams_TreatedAsEmptyObject()
     {
         // A step with null params and a schema that requires fields should fail.

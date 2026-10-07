@@ -1,10 +1,36 @@
 using RockBot.Subagent.Worker;
+using RockBot.Tools;
 
 namespace RockBot.Subagent.Tests.Worker;
 
 [TestClass]
 public class WorkerRunnerHelpersTests
 {
+    // ── QualifiedMcpName ─────────────────────────────────────────────────────
+
+    [TestMethod]
+    public void QualifiedMcpName_GivesATypedWrapperItsDottedForm()
+    {
+        var wrapper = new ToolRegistration
+        {
+            Name = "calendar-mcp__send_email", Description = "", Source = "mcp:calendar-mcp", DownstreamName = "send_email"
+        };
+
+        Assert.AreEqual("calendar-mcp.send_email", WorkerRunner.QualifiedMcpName(wrapper));
+        Assert.IsTrue(WorkerRunner.MatchesAllowlist(WorkerRunner.QualifiedMcpName(wrapper), ["calendar-mcp.*"]),
+            "A server-scoped allowlist entry admits that server's typed tools.");
+        Assert.IsFalse(WorkerRunner.MatchesAllowlist(WorkerRunner.QualifiedMcpName(wrapper), ["todo.*"]));
+    }
+
+    [TestMethod]
+    public void QualifiedMcpName_IsEmptyForEverythingElse()
+    {
+        Assert.AreEqual("", WorkerRunner.QualifiedMcpName(
+            new ToolRegistration { Name = "web_search", Description = "", Source = "web" }));
+        Assert.AreEqual("", WorkerRunner.QualifiedMcpName(
+            new ToolRegistration { Name = "mcp_invoke_tool", Description = "", Source = "mcp:management", DownstreamName = "x" }));
+        Assert.IsFalse(WorkerRunner.MatchesAllowlist("", ["calendar-mcp.*"]));
+    }
     // ── MatchesAllowlist ─────────────────────────────────────────────────────
 
     [TestMethod]

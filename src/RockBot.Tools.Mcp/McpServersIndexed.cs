@@ -4,7 +4,9 @@ namespace RockBot.Tools.Mcp;
 /// Published by the MCP Bridge when its server inventory changes.
 /// Agents receive concise server summaries and register a fixed set of management
 /// tools — they drill into individual tool schemas via <c>mcp_get_service_details</c>
-/// on demand rather than receiving every schema at once.
+/// on demand rather than receiving every schema at once. With typed wrappers enabled
+/// (<see cref="McpToolSurfaceOptions.WrapperMode"/>), <see cref="McpWrapperCatalog"/> also
+/// registers a <c>{server}__{tool}</c> tool per downstream tool from these summaries.
 /// </summary>
 public sealed record McpServersIndexed
 {
