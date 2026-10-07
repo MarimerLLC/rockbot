@@ -46,11 +46,14 @@ So the bridge **parks** the call instead:
 Under MRTR this is cheap, because **the server holds nothing while the question waits**: it
 returned `InputRequiredResult` and forgot the call. Only the bridge holds a pending task.
 
-Consequence: a pending question lives in the bridge's memory. A restart of the agent process
-(the bridge runs inside it) loses it. The agent is told "that question expired, call the tool
-again", which is no worse than today. If a later SDK exposes the `InputRequiredResult` (worth
-asking upstream), pending questions could be persisted and survive restarts, with nothing else
-in this design changing.
+Consequence: the parked call lives in the bridge's memory. A restart of the agent process (the
+bridge runs inside it) loses it. What does *not* get lost is the knowledge that it was pending.
+Every hand-back is written to a durable **pending ledger** before the agent sees the question,
+with enough context about the original call for a freshly restarted agent to understand what
+failed. On startup the bridge turns every still-pending entry into an **interruption notice** to
+its session. (See "Pending ledger and restart recovery".) If a later SDK exposes the
+`InputRequiredResult` (worth asking upstream), the ledger could also hold the server's
+`requestState`, and an interrupted call could be resumed rather than redone.
 
 ## Flow
 
@@ -129,7 +132,9 @@ A new management tool alongside `mcp_invoke_tool`:
 The bridge checks the following, and any failure is a tool error the agent can act on, not a
 decline sent to the server:
 
-1. **The question exists and hasn't expired.** Otherwise: "expired — call the tool again".
+1. **The question exists, is still pending, and hasn't expired.** Otherwise the error says which:
+   "expired", "already answered", or "interrupted by a restart". The last one carries the same
+   call context as the interruption notice, from the ledger.
 2. **Same session.** `ToolInvokeRequest.SessionId` of the `mcp_answer` call equals the session
    that made the original call. A question can't be answered from another conversation, a
    subagent or a scheduled task.
@@ -160,6 +165,123 @@ decline sent to the server:
     server has given up. Hand-back suits the first kind; `design/research-agent-mcp.md` and
     `design/advisor-council-mcp.md` both use `InputRequiredException`.
 
+## Pending ledger and restart recovery
+
+The parked call can't survive a restart, but the fact that it was waiting can, along with what
+it was doing. A restart must never leave a question silently dangling. The rules:
+
+- The bridge knows **deterministically** which calls a restart interrupted.
+- The session that made each call is told **proactively**, without waiting for it to try
+  `mcp_answer`.
+- The notice carries enough **context about the original call** for a freshly restarted agent
+  (no in-memory state, only its conversation) to decide whether to redo it, and how.
+
+### What is recorded
+
+One entry per handed-back question. It's written **before** the hand-back is returned to the
+agent (write-ahead), so any question an agent has seen has a ledger entry. An example entry:
+
+```json
+{
+  "questionId": "q_7f3c2a…",
+  "status": "pending",
+  "sessionId": "abc123",
+  "createdAt": "2026-10-07T14:02:11Z",
+  "expiresAt": "2026-10-07T14:32:11Z",
+  "call": {
+    "server": "research",
+    "tool": "research",
+    "toolDescription": "Research a topic using web search and page fetching, then synthesise a concise answer.",
+    "arguments": "{\"question\":\"Tell me about Mercury\",\"context\":\"for a telescope night\"}",
+    "startedAt": "2026-10-07T14:02:09Z",
+    "round": 1,
+    "earlierRounds": []
+  },
+  "triggeredBy": {
+    "at": "2026-10-07T14:01:58Z",
+    "userExcerpt": "I'm planning a telescope night next week and want to see Mercury — can you look into it?"
+  },
+  "question": {
+    "message": "Which Mercury do you mean?",
+    "fields": [
+      { "name": "meaning", "type": "one of: planet, element, band", "required": true }
+    ]
+  },
+  "notifiedAt": null,
+  "resolvedAt": null
+}
+```
+
+Why each part is there:
+
+| Part | Tells the restarted agent |
+|---|---|
+| `call.server`, `call.tool`, `call.toolDescription` | *What* was being done. The description is the tool's own, from `tools/list`, truncated to 300 characters, because the restarted agent may not have that tool's schema in context. |
+| `call.arguments` | *How* to redo it: the arguments the agent sent. |
+| `triggeredBy.userExcerpt` | *Why* it was done: the last user message in the session when the call started. That's the request the call was serving. |
+| `question` | *What the server still needed* when the call stopped, so the redo can include it up front (in a `context` argument, say) and not get stuck on the same question. |
+| `call.round`, `call.earlierRounds` | What was already settled in this call: earlier questions, with the action and the **names** of fields answered. Never the values. |
+| `createdAt`, `expiresAt`, `call.startedAt` | Whether the request is stale enough that redoing it no longer makes sense. |
+
+**Content rules:**
+- **Arguments** go through `LlmElicitationResponder.RedactArguments`: credential-named keys are
+  redacted, and secret-shaped text inside other values is scrubbed.
+- **`userExcerpt`** goes through `McpSecretScrubber` and is capped at 500 characters.
+- **Server-written text** (question, field names, options, tool description) is flattened, as
+  everywhere else.
+- **Never stored:** answer values, and anything from the server's continuation (the bridge never
+  has `requestState`). The ledger records *what was asked and why*, not what anyone said in reply.
+
+### Where, and in what shape
+
+- **Location:** a single JSON file on the agent's volume, by default
+  `/data/agent/mcp/pending-questions.json` (`McpBridge:PendingLedgerPath`). It's a persisted
+  store, so it has a top-level `version` and follows `design/schema-migrations.md`: a change the
+  tolerant deserializer can't absorb bumps the version and ships an `ISchemaMigration`.
+- **Writes:** the bridge is the only writer. Writes are serialized, and each one goes to a
+  temporary file that is then renamed over the old one, so a crash mid-write leaves the
+  previous ledger intact.
+- **Size is bounded:** at most `MaxPendingQuestions` entries can be pending at once, and resolved
+  entries are purged 24 hours after they resolve.
+
+### Lifecycle
+
+```
+pending ──answered / declined / expired──► resolved          (normal path; resolvedAt set)
+pending ──process restarts──► interrupted ──notice delivered──► notified ──24 h──► purged
+```
+
+### Startup reconciliation
+
+Before the bridge accepts tool invocations:
+
+1. **Mark.** Every `pending` entry becomes `interrupted`. No parked call can have survived, so
+   this is certain, not a guess. Entries past `expiresAt` become `expired` instead and aren't
+   announced, because their question had already lapsed.
+2. **Notify.** For each `interrupted` entry whose session is a user conversation
+   (`session/{id}`), use the path A2A results use today (`A2ATaskResultHandler`):
+   - put the full entry in the session's working memory at `mcp-interrupted/{questionId}`
+     (24 h TTL);
+   - inject a synthetic turn, so the next agent turn in that session sees it whether or not the
+     user is mid-conversation:
+
+   > [rockbot] A tool call was interrupted by a restart. You had called `research` on the
+   > `research` server (arguments: question "Tell me about Mercury", context "for a telescope
+   > night") because the user asked: "I'm planning a telescope night next week and want to see
+   > Mercury…". It was waiting for an answer to "Which Mercury do you mean?" (meaning: planet |
+   > element | band). That call is gone and can't be resumed. If it's still needed, call the tool
+   > again, and include the answer in the arguments if the tool takes it (for example in
+   > `context`), or ask the user first. Full details: `get_from_working_memory("mcp-interrupted/q_7f3c2a…")`.
+
+   Interrupted calls from subagents or scheduled tasks are logged and marked, not announced.
+   The run that made them doesn't outlive a restart.
+3. **Mark notified.** Delivery is at least once. A crash between notifying and marking may
+   repeat a notice, and the working-memory key and `questionId` let a repeat be recognized as
+   one.
+
+A late `mcp_answer` for an interrupted question gets the same context back, so whichever way the
+agent finds out, it gets the same deterministic explanation.
+
 ## Interaction with responders
 
 `handback` replaces the server's responder for that server. The `conversation` responder stays
@@ -171,7 +293,8 @@ data on how often each path is used.
 ## Observability
 
 - **Metrics:** questions handed back, answered, declined by the agent, expired, rejected (with
-  a reason label), and parked calls (gauge).
+  a reason label), interrupted by a restart, interruption notices delivered, and parked calls
+  (gauge).
 - **Logs:** server, tool, session, `question_id` and outcome. Never answer values.
 
 ## Security summary
@@ -184,6 +307,9 @@ data on how often each path is used.
   conversation that caused it.
 - **Decisions require a user turn** after the hand-back. The agent can't confirm on the user's
   behalf.
+- **The pending ledger holds context, never answers.** Arguments are redacted and scrubbed, the
+  user excerpt is scrubbed and capped, server text is flattened, and answer values and server
+  continuations are never written.
 - **Opt-in per server**, never through the bridge-wide default, and never following a server
   name the model re-points. `McpElicitationConfig.WithoutGrants()` must turn `handback` back
   into `auto`, just as it drops a named `responder` and `defaults`. It doesn't touch `mode`
@@ -192,26 +318,34 @@ data on how often each path is used.
 ## Phases
 
 1. **Bridge:**
-   - `PendingQuestionStore`;
+   - `PendingQuestionStore`, backed by the durable pending ledger (write-ahead, atomic writes,
+     status transitions, purge);
    - hand-back mode in `McpElicitationCoordinator`, with a signal to the invoke path;
    - the invoke path's first-of (result | hand-back);
    - TTL and caps.
 
    Tested with the MRTR harness from #607 (hand-back, answer, second question, decline, expiry,
-   wrong session).
+   wrong session), plus ledger tests (write-ahead, crash-safe write, purge, schema version).
 2. **`mcp_answer`:** a management tool in `McpManagementExecutor`, a bridge management handler,
    validation, and the user-turn check through `IConversationMemory` (the bridge runs in the
    agent process).
-3. **Agent guidance:** tool description and a directive line: answer from context when you can,
-   ask the user when you can't, and never guess a decision.
-4. **UI (follow-up):** render the structured question as a form in the Blazor UI, so the user
+3. **Restart recovery:** startup reconciliation (pending → interrupted or expired), the
+   working-memory entry and synthetic turn for each user session, notified-marking, and the
+   "interrupted" answer to a late `mcp_answer`. Tested by writing a ledger with pending entries,
+   starting the bridge, and checking the notices.
+4. **Agent guidance:** tool description and a directive line: answer from context when you can,
+   ask the user when you can't, never guess a decision, and on an interruption notice decide
+   whether the original request still needs doing before redoing the call.
+5. **UI (follow-up):** render the structured question as a form in the Blazor UI, so the user
    answers the server's form directly. That's the strongest guarantee for decision fields.
 
 ## Open questions
 
-1. **Persistence.** Pending questions die with the process. Ask the SDK maintainers for a way to
-   receive `InputRequiredResult` instead of auto-resolution; with it, `requestState` could be
-   persisted and re-issued after a restart.
+1. **Resume after a restart.** With the pending ledger, a restart is detected and announced, but
+   the interrupted call must be redone. Ask the SDK maintainers for a way to receive
+   `InputRequiredResult` instead of auto-resolution. The ledger could then store `requestState`
+   (encrypted at rest; it's the server's opaque continuation), and reconciliation could re-park
+   the call instead of announcing an interruption.
 2. **Asynchronous tools.** When the Tasks-aware bridge lands, a task's input request should use
    the same hand-back, not a parked `CallToolAsync`. The pending store and `mcp_answer` are
    meant to serve both.
