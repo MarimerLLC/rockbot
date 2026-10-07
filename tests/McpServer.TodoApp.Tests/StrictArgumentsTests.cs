@@ -76,4 +76,21 @@ public sealed class StrictArgumentsTests
 
         Assert.IsTrue(result.GetProperty("additionalProperties").GetBoolean());
     }
+
+    [TestMethod]
+    public void FindAllowedValues_ReturnsStringEnumMembers()
+    {
+        var schema = JsonDocument.Parse("""
+            { "type": "object", "properties": { "kind": { "type": ["string", "null"], "enum": ["a", "b", null] } } }
+            """).RootElement;
+
+        CollectionAssert.AreEqual(new[] { "a", "b" }, StrictArguments.FindAllowedValues(schema, "kind")!.ToArray());
+    }
+
+    [TestMethod]
+    public void FindAllowedValues_NonEnumProperty_ReturnsNull()
+    {
+        Assert.IsNull(StrictArguments.FindAllowedValues(Schema, "title"));
+        Assert.IsNull(StrictArguments.FindAllowedValues(Schema, "missing"));
+    }
 }

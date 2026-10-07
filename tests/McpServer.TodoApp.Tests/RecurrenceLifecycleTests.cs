@@ -25,7 +25,7 @@ public sealed class RecurrenceLifecycleTests : TodoServerTestBase
         var result = await CallOkAsync("complete_task", new() { ["id"] = id });
 
         Assert.AreEqual(JsonValueKind.Null, result.GetProperty("next").ValueKind);
-        Assert.AreEqual(JsonValueKind.Null, result.GetProperty("seriesEnded").ValueKind);
+        Assert.AreEqual(JsonValueKind.Null, result.GetProperty("series_ended").ValueKind);
         Assert.AreEqual(0, (await ListTasksAsync()).GetArrayLength());
     }
 
@@ -40,11 +40,11 @@ public sealed class RecurrenceLifecycleTests : TodoServerTestBase
         var next = result.GetProperty("next");
         Assert.AreEqual(id, completed.GetProperty("id").GetString());
         Assert.AreNotEqual(id, next.GetProperty("id").GetString());
-        Assert.AreEqual(completed.GetProperty("seriesId").GetString(), next.GetProperty("seriesId").GetString());
-        Assert.AreEqual(id, next.GetProperty("seriesId").GetString());
-        Assert.AreEqual("2026-11-15", next.GetProperty("dueDate").GetString());
+        Assert.AreEqual(completed.GetProperty("series_id").GetString(), next.GetProperty("series_id").GetString());
+        Assert.AreEqual(id, next.GetProperty("series_id").GetString());
+        Assert.AreEqual("2026-11-15", next.GetProperty("due_date").GetString());
         Assert.AreEqual(2, next.GetProperty("occurrence").GetInt32());
-        Assert.AreEqual(JsonValueKind.Null, result.GetProperty("seriesEnded").ValueKind);
+        Assert.AreEqual(JsonValueKind.Null, result.GetProperty("series_ended").ValueKind);
 
         var tasks = await ListTasksAsync();
         Assert.AreEqual(1, tasks.GetArrayLength());
@@ -59,7 +59,7 @@ public sealed class RecurrenceLifecycleTests : TodoServerTestBase
         var result = await CallOkAsync("complete_task", new() { ["id"] = id });
 
         Assert.AreEqual(JsonValueKind.Null, result.GetProperty("next").ValueKind);
-        Assert.AreEqual(JsonValueKind.Null, result.GetProperty("seriesEnded").ValueKind);
+        Assert.AreEqual(JsonValueKind.Null, result.GetProperty("series_ended").ValueKind);
     }
 
     [TestMethod]
@@ -70,7 +70,7 @@ public sealed class RecurrenceLifecycleTests : TodoServerTestBase
         var result = await CallOkAsync("complete_task", new() { ["id"] = id, ["stop_recurrence"] = true });
 
         Assert.AreEqual(JsonValueKind.Null, result.GetProperty("next").ValueKind);
-        Assert.AreEqual("stop_recurrence", result.GetProperty("seriesEnded").GetString());
+        Assert.AreEqual("stop_recurrence", result.GetProperty("series_ended").GetString());
         Assert.AreEqual(0, (await ListTasksAsync()).GetArrayLength());
     }
 
@@ -91,7 +91,7 @@ public sealed class RecurrenceLifecycleTests : TodoServerTestBase
 
         var r2 = await CallOkAsync("complete_task", new() { ["id"] = second.GetProperty("id").GetString() });
         Assert.AreEqual(JsonValueKind.Null, r2.GetProperty("next").ValueKind);
-        Assert.AreEqual("count_reached", r2.GetProperty("seriesEnded").GetString());
+        Assert.AreEqual("count_reached", r2.GetProperty("series_ended").GetString());
         Assert.AreEqual(0, (await ListTasksAsync()).GetArrayLength());
     }
 
@@ -108,11 +108,11 @@ public sealed class RecurrenceLifecycleTests : TodoServerTestBase
 
         var r1 = await CallOkAsync("complete_task", new() { ["id"] = first.GetProperty("id").GetString() });
         var second = r1.GetProperty("next");
-        Assert.AreEqual("2026-10-08", second.GetProperty("dueDate").GetString());
+        Assert.AreEqual("2026-10-08", second.GetProperty("due_date").GetString());
 
         var r2 = await CallOkAsync("complete_task", new() { ["id"] = second.GetProperty("id").GetString() });
         Assert.AreEqual(JsonValueKind.Null, r2.GetProperty("next").ValueKind);
-        Assert.AreEqual("until_reached", r2.GetProperty("seriesEnded").GetString());
+        Assert.AreEqual("until_reached", r2.GetProperty("series_ended").GetString());
     }
 
     [TestMethod]
@@ -134,8 +134,8 @@ public sealed class RecurrenceLifecycleTests : TodoServerTestBase
             ["recurrence_count"] = 0,
             ["recurrence_until"] = ""
         });
-        Assert.AreEqual(JsonValueKind.Null, updated.GetProperty("recurrenceCount").ValueKind);
-        Assert.AreEqual(JsonValueKind.Null, updated.GetProperty("recurrenceUntil").ValueKind);
+        Assert.AreEqual(JsonValueKind.Null, updated.GetProperty("recurrence_count").ValueKind);
+        Assert.AreEqual(JsonValueKind.Null, updated.GetProperty("recurrence_until").ValueKind);
 
         var result = await CallOkAsync("complete_task", new() { ["id"] = id });
         Assert.AreEqual(JsonValueKind.Object, result.GetProperty("next").ValueKind);
@@ -149,7 +149,7 @@ public sealed class RecurrenceLifecycleTests : TodoServerTestBase
         await CallOkAsync("update_task", new() { ["id"] = id, ["recurrence_count"] = 1 });
         var result = await CallOkAsync("complete_task", new() { ["id"] = id });
 
-        Assert.AreEqual("count_reached", result.GetProperty("seriesEnded").GetString());
+        Assert.AreEqual("count_reached", result.GetProperty("series_ended").GetString());
     }
 
     [TestMethod]
@@ -170,7 +170,7 @@ public sealed class RecurrenceLifecycleTests : TodoServerTestBase
         });
 
         Assert.AreEqual("none", updated.GetProperty("recurrence").GetString());
-        Assert.AreEqual(JsonValueKind.Null, updated.GetProperty("recurrenceCount").ValueKind);
+        Assert.AreEqual(JsonValueKind.Null, updated.GetProperty("recurrence_count").ValueKind);
     }
 
     [TestMethod]
@@ -259,12 +259,12 @@ public sealed class RecurrenceLifecycleTests : TodoServerTestBase
 
         var tasks = await ListTasksAsync();
         Assert.AreEqual(1, tasks.GetArrayLength());
-        Assert.AreEqual(legacyId, tasks[0].GetProperty("seriesId").GetString());
+        Assert.AreEqual(legacyId, tasks[0].GetProperty("series_id").GetString());
         Assert.AreEqual(1, tasks[0].GetProperty("occurrence").GetInt32());
 
         var result = await CallOkAsync("complete_task", new() { ["id"] = legacyId });
         var next = result.GetProperty("next");
-        Assert.AreEqual(legacyId, next.GetProperty("seriesId").GetString());
-        Assert.AreEqual("2027-04-30", next.GetProperty("dueDate").GetString());
+        Assert.AreEqual(legacyId, next.GetProperty("series_id").GetString());
+        Assert.AreEqual("2027-04-30", next.GetProperty("due_date").GetString());
     }
 }
