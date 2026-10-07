@@ -4,6 +4,8 @@ An MCP server providing a persistent to-do list accessible to AI agents via the 
 
 ## Tools
 
+The server also returns a short instructions string in the MCP `initialize` result (`ServerInstructions.cs`), for clients that connect directly rather than through the aggregator. Keep it consistent with `SKILL.md`.
+
 Client-facing usage guidance (conventions, recurrence semantics, workflows) lives in [`SKILL.md`](SKILL.md). It is published to the mcp-aggregator as the `todo-mcp` skill document; after editing it, re-publish it with the aggregator's `update_skill(serverName: "todo-mcp", markdown: ...)`.
 
 | Tool | Parameters | Description |
