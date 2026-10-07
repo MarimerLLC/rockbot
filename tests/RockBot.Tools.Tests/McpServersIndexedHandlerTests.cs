@@ -68,7 +68,7 @@ public class McpServersIndexedHandlerTests
     }
 
     [TestMethod]
-    public async Task HandleAsync_FirstMessage_RegistersExactlyFiveManagementTools()
+    public async Task HandleAsync_FirstMessage_RegistersExactlySixManagementTools()
     {
         var handler = CreateHandler();
         var message = new McpServersIndexed

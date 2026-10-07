@@ -27,11 +27,13 @@ public class McpLazyWrapperEndToEndTests
     {
         private int _step;
         public List<string[]> ToolsOffered { get; } = [];
+        public List<string[]> SystemTexts { get; } = [];
 
         public Task<ChatResponse> GetResponseAsync(
             IEnumerable<ChatMessage> messages, ChatOptions? options = null, CancellationToken cancellationToken = default)
         {
             ToolsOffered.Add([.. options?.Tools?.Select(t => t.Name) ?? []]);
+            SystemTexts.Add([.. messages.Where(m => m.Role == ChatRole.System).Select(m => m.Text)]);
             var reply = _step < script.Length ? script[_step++] : new ChatMessage(ChatRole.Assistant, "(script ended)");
             return Task.FromResult(new ChatResponse(reply));
         }
@@ -220,6 +222,29 @@ public class McpLazyWrapperEndToEndTests
         Assert.AreEqual(typed, model.ToolsOffered[0].Contains("fixture__send_email"));
         Assert.AreEqual(loader, model.ToolsOffered[0].Contains("mcp_find_tools"));
         CollectionAssert.Contains(model.ToolsOffered[0], "mcp_invoke_tool");
+    }
+
+    [TestMethod]
+    [DataRow(ModelTier.Low, TypedToolMode.Eager, DisplayName = "Low (eager)")]
+    [DataRow(ModelTier.Balanced, TypedToolMode.Off, DisplayName = "Balanced (off)")]
+    [DataRow(ModelTier.High, TypedToolMode.Lazy, DisplayName = "High (lazy)")]
+    public async Task MixedTiers_EachTierGetsTheOrientationForItsMode(ModelTier tier, TypedToolMode mode)
+    {
+        await using var harness = await BridgeHarness.StartAsync([SendEmail(new Counter())]);
+        var agent = await ConnectAgentAsync(harness, McpWrapperMode.Off, o =>
+        {
+            o.WrapperModeByTier[ModelTier.Low] = McpWrapperMode.Eager;
+            o.WrapperModeByTier[ModelTier.High] = McpWrapperMode.Lazy;
+        });
+        var model = new ScriptedModel(Text("ok"));
+
+        await RunTurnAsync(CreateRunner(model, false, agent.Surface), agent, tier: tier);
+
+        var orientations = model.SystemTexts[0]
+            .Where(t => t.StartsWith(TypedToolSurfaceContext.OrientationHeading, StringComparison.Ordinal))
+            .ToList();
+        Assert.AreEqual(1, orientations.Count, "Exactly one MCP orientation reaches the model (#614).");
+        Assert.AreEqual(((ITypedToolSurface)agent.Surface).Orientation(mode), orientations[0]);
     }
 
     [TestMethod]

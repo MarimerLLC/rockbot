@@ -35,7 +35,8 @@ internal sealed class ServiceSearchToolRegistrar(
                 BM25 keyword search across all known A2A agents and MCP servers.
                 Returns a ranked list of candidates with summaries and top tools/skills to help
                 identify the right service for a task before calling mcp_get_service_details or get_agent_details.
-                Result 'type' field determines how to interact: 'mcp' → mcp_invoke_tool, 'a2a' → invoke_agent.
+                Result 'type' field determines how to interact: 'mcp' → the typed {server}__{tool} tools in top_tools,
+                or mcp_invoke_tool when they aren't typed names; 'a2a' → invoke_agent.
                 """,
             ParametersSchema = Schema,
             Source = "service-search"

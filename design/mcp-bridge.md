@@ -2,42 +2,42 @@
 
 ## Overview
 
-The MCP Bridge moves MCP tool execution out of the agent host process and into a separate deployable service. Agents communicate with the bridge exclusively via the message bus, enforcing RockBot's core isolation principle.
+The MCP Bridge owns RockBot's connections to MCP servers. It runs as `McpBridgeService`, a hosted service inside the RockBot.Agent process (`src/RockBot.Agent/McpBridge/`); there is no separate bridge deployable. The agent side (`RockBot.Tools.Mcp`, registered with `AddMcpToolProxy`) still talks to it only through the message bus, so the topics below are the contract between the two halves.
 
 ## Architecture
 
 ```
-Agent Host                MCP Bridge (separate process)
+Agent side                McpBridgeService (same process)
     │                           │
     │  ToolInvokeRequest        │
     │  topic: tool.invoke.mcp   │
     │ ─────────────────────────>│
-    │                           │──> MCP Server (stdio/SSE)
+    │                           │──> MCP Server (HTTP/SSE)
     │                           │<── CallToolResult
     │  ToolInvokeResponse       │
     │  topic: tool.result.{agent}│
     │ <─────────────────────────│
 ```
 
-Each agent has its own MCP Bridge instance, scoped to that agent's tool set. The bridge is not shared across agents.
+Each agent process hosts its own bridge, scoped to that agent's `mcp.json`. The bridge is not shared across agents.
 
 ## Message Flow
 
 ### Tool Discovery
 
-1. Bridge starts and reads `mcp.json`
+1. Bridge starts and reads `mcp.json` (`McpBridge:ConfigPath`), seeding any `McpBridge:DefaultServers` entries
 2. Connects to each configured MCP server
-3. Calls `tools/list`, applies allow/deny filters
-4. Publishes `McpToolsAvailable` on `tool.meta.mcp.{agentName}`
-5. Agent host receives message, registers tools in local `IToolRegistry`
+3. Lists its tools and prompts, applies allow/deny filters, and writes an LLM summary of the server
+4. Publishes `McpServersIndexed` on `tool.meta.mcp.{agentName}`
+5. The agent's `McpServersIndexedHandler` updates `McpServerIndex`. On the first message it registers the six `mcp_*` management tools in `IToolRegistry` (plus `mcp_find_tools` when a tier is `Lazy` or `Pinned`), and `McpWrapperCatalog` reconciles the typed tools. Downstream tools are not registered under their bare names.
 
 ### Tool Invocation
 
-1. LLM emits tool_use for an MCP tool
-2. Agent host's `McpToolProxy` publishes `ToolInvokeRequest` to `tool.invoke.mcp`
+1. LLM calls a typed `{server}__{tool}` tool or `mcp_invoke_tool`
+2. `McpManagementExecutor.InvokeDownstreamAsync` hands it to `McpToolProxy`, which publishes `ToolInvokeRequest` to `tool.invoke.mcp` with the server in the `rb-mcp-server` header
 3. Bridge receives request, routes to correct MCP server
 4. Bridge publishes `ToolInvokeResponse` (or `ToolError`) to `tool.result.{agentName}`
-5. Agent host receives response, returns to LLM as `tool_result`
+5. The proxy matches the response by correlation id; it passes through `McpRecoveryExecutor` and returns to the LLM as `tool_result`
 
 ### Invoke pre-checks and error hints
 
@@ -112,7 +112,7 @@ Issue #612, ported from mcp-aggregator PR #42's lazy mode. Eager mode puts every
 - **`mcp_get_service_details(server)`** activates that server's typed tools. With `tool_name`, it activates just that one.
 - **A call by typed name** to a valid tool the list doesn't hold (a name from a skill or from memory) runs it and activates it. It does not answer "unknown tool".
 
-`mcp_find_tools` is registered only in lazy mode, under source `mcp:management`, so every profile that has the gateway has it.
+`mcp_find_tools` is registered when any tier's mode is `Lazy` or `Pinned`, under source `mcp:management`, so every profile that has the gateway has it. Runs in an `Off` or `Eager` tier drop it (see [Per-tier modes](#per-tier-modes-and-pinned-servers)).
 
 **Scope and lifetime.** `McpTypedToolSurface` holds the activations, keyed by the tool session id that the run's registry tools carry. That id is the one their executors see: `session/{id}` for a conversation, or the subagent's, worker's or wisp's own namespace.
 - Activations last for the session, up to `McpBridge:MaxActivatedToolsPerSession` (default 40). Beyond that, the oldest is dropped. Re-activating a tool keeps its place, so the tool list's order, and the provider's prompt cache, stay stable.
@@ -165,9 +165,17 @@ The re-prompt hints, the capability-denial nudge, `ServiceSearchIndex`'s typed t
 - Whatever the mode, typed tools join a run's list only while it holds at most `McpBridge:MaxToolsPerRequest` tools (default 120). OpenAI and Azure reject a request with more than 128 tools, and the loop appends its task-list tools after the typed ones.
 - Pins share the activations' lifetime: they go with the session after `ActivationIdleTimeout`, and a removed server's tools drop out because the list is rebuilt from the catalog each time.
 
+### Orientation and server instructions
+
+Issue #614, ported from mcp-aggregator#48.
+
+- **Orientation.** Every run whose tool list holds an MCP tool carries a short orientation: `AgentLoopRunner.EnsureMcpOrientation` inserts it as a system message right after the system prompt, from `ITypedToolSurface.Orientation(mode)`. `McpOrientation` builds one fixed text per mode, so the prompt-cache prefix holds within a tier. It covers what MCP servers are for, the `{server}__{tool}` naming, the mode's workflow, the `mcp/{server}` skill to read first and the `mcp_invoke_tool` escape hatch, and stays under 2,000 characters (test-enforced). It repeats nothing the tool schemas already say.
+- **Full reference.** The `mcp` tool guide (`McpToolSkillProvider`), fetched with `get_tool_guide`.
+- **Server instructions.** A downstream server's own `instructions` are capped by `McpInstructionsCap`: 2,000 characters in `mcp_get_service_details` output, 8,000 in the prompt that writes the server's summary. Longer text is cut on a line boundary and ends with an explicit `[Server instructions truncated: N of M characters shown. ...]` marker, never a silent cut. The marker names the server's guide-like tools, if it has any, as the way to the rest.
+
 ### Metadata Refresh
 
-Agent publishes `McpMetadataRefreshRequest` to `tool.meta.mcp.refresh`. Bridge re-runs `tools/list` and publishes updated `McpToolsAvailable`.
+Agent publishes `McpMetadataRefreshRequest` to `tool.meta.mcp.refresh` (`McpStartupProbeService` does so once the agent has started). Bridge reconnects the named server, or every connected one, and publishes updated `McpServersIndexed`. Requests sent before the bridge finished starting are ignored.
 
 ### Operator entries and model registrations
 
@@ -276,8 +284,8 @@ See `design/mcp-elicitation.md`.
 {
   "mcpServers": {
     "filesystem": {
-      "command": "mcp-server-filesystem",
-      "args": ["/data"],
+      "type": "streamable-http",
+      "url": "http://mcp-files:8080/mcp",
       "allowedTools": ["read_file", "list_directory"]
     },
     "database": {
@@ -291,6 +299,8 @@ See `design/mcp-elicitation.md`.
 ```
 
 `id` is assigned by the bridge when absent. Don't hand-edit it.
+
+Only HTTP servers connect. An entry with `command`/`args`/`env` (stdio) still parses, but the bridge skips it with a warning: it runs inside the agent and doesn't launch server processes.
 
 ## Protocol versions (MCP C# SDK 2.x)
 
@@ -312,14 +322,14 @@ the sessions stateless mode removes.
 
 ## Timeout Strategy
 
-- **Bridge timeout** (default 30s): CancellationToken on MCP server call. Publishes `ToolError` with `Code: "timeout"` and `IsRetryable: true`.
-- **Agent timeout** (default 60s): Timer on the proxy side. Synthesizes timeout error locally if no response arrives.
-- Bridge timeout < agent timeout ensures proper error propagation.
+- **Bridge timeout**: CancellationToken on the MCP server call. The proxy sends its request timeout in the `rb-timeout-ms` header (`McpToolProxy:RequestTimeoutSeconds`, default 60s); the bridge caps it at `McpBridge:MaxTimeoutMs` (default 900s) and falls back to `McpBridge:DefaultTimeoutMs` (default 60s) without one. A server's `toolTimeoutMs` overrides both, still capped at `MaxTimeoutMs`. On expiry the bridge publishes `ToolError` with `Code: "timeout"` and `IsRetryable: true`.
+- **Agent timeout**: the proxy waits `McpToolProxy:ResponseTimeoutSeconds` (RockBot.Agent default 930s) and synthesizes a timeout error locally if no response arrives.
+- The proxy outwaits the bridge's cap, so the caller sees the bridge's own timeout error rather than a transport failure.
 
 ## Projects
 
 | Project | Role |
 |---|---|
-| `RockBot.Tools.Mcp` | Agent-side proxy (`McpToolProxy`, `McpToolsAvailableHandler`) + bridge-side executor |
-| `RockBot.Tools.Mcp.Bridge` | Standalone worker service hosting the bridge |
+| `RockBot.Tools.Mcp` | Agent side: `McpToolProxy`, `McpServersIndexedHandler`, `McpManagementExecutor`, typed tools (`McpWrapperCatalog`, `McpTypedToolSurface`), `McpOrientation`; plus types the bridge shares (`McpServersIndexed`, management messages, `McpCallDiagnostics`, elicitation) |
+| `RockBot.Agent` (`McpBridge/`) | The bridge: `McpBridgeService` (hosted service), `McpServerConnections`, `mcp.json` config, arg guards, attachments, auth |
 | `RockBot.Messaging.Abstractions` | `WellKnownHeaders` constants |

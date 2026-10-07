@@ -180,6 +180,46 @@ public class McpManagementExecutorTests
     }
 
     [TestMethod]
+    public async Task GetServiceDetails_OversizedInstructions_AreCappedWithAMarker_NamingTheGuideTool()
+    {
+        var (executor, publisher, subscriber) = CreateExecutor();
+        var instructions = string.Join("\n", Enumerable.Range(1, 100).Select(i => $"Line {i}: " + new string('x', 40)));
+
+        var executeTask = executor.ExecuteAsync(new ToolInvokeRequest
+        {
+            ToolCallId = "call-1",
+            ToolName = "mcp_get_service_details",
+            Arguments = """{"server_name":"adjutant"}"""
+        }, CancellationToken.None);
+        await Task.Delay(100);
+
+        var response = new McpGetServiceDetailsResponse
+        {
+            ServerName = "adjutant",
+            Instructions = instructions,
+            Tools =
+            [
+                new McpToolDefinition { Name = "send_email", Description = "Sends an email" },
+                new McpToolDefinition { Name = "get_guide", Description = "Returns the usage guide" }
+            ]
+        };
+        await subscriber.DeliverAsync(executor.ResponseTopic,
+            response.ToEnvelope("bridge", correlationId: publisher.Published[0].Envelope.CorrelationId));
+
+        var result = await executeTask;
+
+        Assert.IsFalse(result.IsError);
+        var shown = JsonDocument.Parse(result.Content!).RootElement
+            .GetProperty("server").GetProperty("instructions").GetString()!;
+        Assert.IsTrue(instructions.Length > McpInstructionsCap.DetailsMaxChars, "the fixture must exceed the cap");
+        Assert.IsTrue(shown.Length < instructions.Length);
+        StringAssert.StartsWith(shown, "Line 1: ");
+        StringAssert.Contains(shown, $"of {instructions.Length} characters shown.");
+        StringAssert.Contains(shown, "`get_guide` (through mcp_invoke_tool)",
+            "outside a typed-tool run, the guide tool is reached through mcp_invoke_tool");
+    }
+
+    [TestMethod]
     public async Task GetServiceDetails_MissingServerName_ReturnsError()
     {
         var (executor, _, _) = CreateExecutor();

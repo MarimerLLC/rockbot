@@ -43,9 +43,10 @@ public sealed class WorkerToolSkillProvider : IToolSkillProvider
           may invoke — exact names or prefixes. Use it to bound schema-injection cost
           when you know the scope ahead of time. The **MCP gateway is always
           available** (`mcp_list_services`, `mcp_get_service_details`,
-          `mcp_invoke_tool`, `mcp_get_prompt`) and is never gated by this list — every
-          external MCP call routes through the gateway, so a value like `calendar-mcp.*`
-          does not restrict (or grant) MCP access.
+          `mcp_invoke_tool`, `mcp_get_prompt`, and `mcp_find_tools` when the worker's
+          mode has it) and is never gated by this list, so a value like
+          `calendar-mcp.*` never cuts a worker off from MCP. In eager mode it does
+          narrow the typed `{server}__{tool}` tools, matched as `{server}.{tool}`.
 
         ## Consuming a worker batch
 

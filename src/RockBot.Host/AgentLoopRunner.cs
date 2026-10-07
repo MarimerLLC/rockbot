@@ -75,9 +75,12 @@ public sealed partial class AgentLoopRunner(
         @"|\bNo\s+tools\s+were\s+invoked\b",
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
-    public const string CapabilityDenialNudge =
-        "Before concluding you lack access, check what services are available using " +
-        "mcp_list_services or search_known_services, then use mcp_invoke_tool to call them.";
+    /// <summary>
+    /// The nudge after the model claims it lacks a capability, worded for the run's typed-tool
+    /// mode (#614) so it doesn't steer a typed-tool run back to mcp_invoke_tool.
+    /// </summary>
+    private string CapabilityDenialNudge() =>
+        "Before concluding you lack access, check what services are available. " + HowToReachServices();
 
     /// <summary>
     /// Detects internal tool-call scaffolding that has leaked into the model's text output
@@ -433,6 +436,7 @@ public sealed partial class AgentLoopRunner(
         using var ______ = TypedToolSurfaceContext.Set(typedToolSurface, tier);
         TypedToolSurfaceContext.Shape(chatOptions);
         TypedToolSurfaceContext.AddActivated(chatOptions);
+        EnsureMcpOrientation(chatMessages, chatOptions);
 
         // Ensure a current datetime context is always present.
         EnsureDateTimeContext(chatMessages);
@@ -877,6 +881,25 @@ public sealed partial class AgentLoopRunner(
     }
 
     /// <summary>
+    /// Puts the MCP orientation for the run's mode (#614) right behind the system prompt. Only
+    /// the run knows its mode — the context is built before the tier picks one — so this is the
+    /// one place every handler's runs get it. Any earlier copy is removed first, so a re-run on the
+    /// same message list, or one in a different mode, leaves exactly one. The text is fixed per
+    /// mode and sits ahead of everything that varies by turn, so the cached prefix holds.
+    /// </summary>
+    internal static void EnsureMcpOrientation(List<ChatMessage> chatMessages, ChatOptions chatOptions)
+    {
+        chatMessages.RemoveAll(m => m.Role == ChatRole.System
+            && m.Text?.StartsWith(TypedToolSurfaceContext.OrientationHeading, StringComparison.Ordinal) == true);
+
+        if (TypedToolSurfaceContext.Orientation(chatOptions) is not { Length: > 0 } orientation)
+            return;
+
+        var insertAt = chatMessages.Count > 0 && chatMessages[0].Role == ChatRole.System ? 1 : 0;
+        chatMessages.Insert(insertAt, new ChatMessage(ChatRole.System, orientation));
+    }
+
+    /// <summary>
     /// Fills sampling parameters from <see cref="AgentHostOptions"/> where the caller has not
     /// already set them. Left null by default so provider defaults apply unchanged; a caller
     /// that sets a value explicitly always wins.
@@ -1189,7 +1212,7 @@ public sealed partial class AgentLoopRunner(
                             "Capability denial detected ({Length} chars); nudging LLM to check available services",
                             text.Length);
                         chatMessages.Add(new ChatMessage(ChatRole.Assistant, text));
-                        chatMessages.Add(new ChatMessage(ChatRole.User, CapabilityDenialNudge));
+                        chatMessages.Add(new ChatMessage(ChatRole.User, CapabilityDenialNudge()));
                         continue;
                     }
 
@@ -3049,8 +3072,8 @@ public sealed partial class AgentLoopRunner(
         if (mode == TypedToolMode.Off || !candidate.TopItemsAreTypedTools)
         {
             sb.AppendLine($"  Sample tools: {string.Join(", ", candidate.TopItems)}");
-            sb.AppendLine($"  IMPORTANT: Call mcp_get_service_details(server_name=\"{candidate.Id}\") " +
-                "to see ALL available tools before invoking. Do NOT guess tool names.");
+            sb.AppendLine($"  Before calling one, get the server's tool names and schemas with " +
+                $"mcp_get_service_details(server_name=\"{candidate.Id}\").");
             return;
         }
 

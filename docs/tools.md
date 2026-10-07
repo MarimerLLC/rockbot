@@ -125,7 +125,7 @@ a markdown document explaining how to use the tools effectively.
 ```csharp
 public interface IToolSkillProvider
 {
-    string Name { get; }       // e.g. "web-tools", "mcp-tool-guide"
+    string Name { get; }       // e.g. "web-tools", "mcp"
     string Summary { get; }    // One-line description
     string GetDocument();      // Full markdown guide
 }
@@ -141,7 +141,7 @@ public interface IToolSkillProvider
 The typical agent workflow:
 1. Encounter a new capability (e.g. MCP server)
 2. Call `list_tool_guides` to discover available guides
-3. Call `get_tool_guide("mcp-tool-guide")` to read the full procedure
+3. Call `get_tool_guide("mcp")` to read the full procedure
 4. Follow the guide; call `save_skill` to cache the pattern for future sessions
 
 ---
@@ -167,16 +167,34 @@ tool name and result status.
 ## MCP bridge (`RockBot.Tools.Mcp`)
 
 The MCP (Model Context Protocol) bridge connects the agent to external MCP servers — services
-that expose tools in a standard protocol over SSE transport.
+that expose tools in a standard protocol over HTTP (Streamable HTTP or legacy SSE).
+
+It has two halves that talk over the message bus:
+
+- **Agent side** (`RockBot.Tools.Mcp`, registered with `agent.AddMcpToolProxy(...)`): the
+  `mcp_*` management tools, the typed `{server}__{tool}` tools, `McpToolProxy`, and the server
+  index the agent reads.
+- **Bridge** (`McpBridgeService` in `src/RockBot.Agent/McpBridge/`): a hosted service inside the
+  RockBot.Agent process that owns the MCP client connections. There is no separate bridge
+  process or deployable; the bus topics (`tool.invoke.mcp`, `mcp.manage`, `tool.meta.mcp.*`)
+  are the boundary between the halves.
 
 ### Discovery and registration
 
-`McpToolRegistrar` (hosted service) connects to each configured MCP server at startup:
+`McpBridgeService` connects to each configured MCP server at startup:
 
-1. For each server in `McpOptions.Servers`, establishes an SSE connection
-2. Calls `tools/list` to discover available tools
-3. Registers each tool in `IToolRegistry` with source `mcp:{serverName}`
-4. Publishes `McpServersIndexed` to notify the agent that the index has changed
+1. Loads `mcp.json` (`McpBridge:ConfigPath`), seeds any `McpBridge:DefaultServers` entries, and
+   assigns each entry a stable `id`
+2. Connects to each server, reads its tools and prompts, and applies the entry's
+   `allowedTools`/`deniedTools` filters
+3. Writes a one-sentence LLM summary of each server (`McpBridge:GenerateLlmSummaries`, default
+   on)
+4. Publishes `McpServersIndexed` on `tool.meta.mcp.{agentName}`
+
+On the agent side `McpServersIndexedHandler` applies the message to `McpServerIndex`, registers
+the management tools on the first message, and has `McpWrapperCatalog` reconcile the typed
+tools. Downstream tools are not registered under their bare names: the model reaches them
+through typed tools or `mcp_invoke_tool`.
 
 `McpStartupProbeService` sends a `McpMetadataRefreshRequest` after the agent is fully started,
 closing the race condition where the bridge publishes the inventory before the agent has
@@ -184,73 +202,131 @@ subscribed.
 
 ### Server configuration
 
+Servers are declared in `mcp.json` (Helm sets `McpBridge__ConfigPath` to
+`/data/agent/mcp.json` on the agent PVC):
+
 ```json
 {
-  "Mcp": {
-    "Servers": [
-      {
-        "Name": "weather-server",
-        "Command": "uvx",
-        "Arguments": ["mcp-server-weather"],
-        "EnvironmentVariables": { "API_KEY": "..." }
-      }
-    ]
+  "mcpServers": {
+    "weather": {
+      "type": "sse",
+      "url": "http://mcp-weather:8080/",
+      "deniedTools": ["delete_station"],
+      "toolTimeoutMs": 120000
+    }
   }
 }
 ```
 
+- `type` `sse`, `http` and `streamable-http` all mean an HTTP server; `transportMode` (default
+  `auto`) picks Streamable HTTP or legacy SSE. Entries with `command`/`args` (stdio) are parsed
+  but skipped with a warning — the bridge runs inside the agent and does not launch server
+  processes.
+- Other per-server fields: `allowedTools`, `deniedTools`, `headers`, `auth`, `toolTimeoutMs`,
+  `attachments`, `argGuards` and `elicitation` (the last three are described below). `id` and
+  `origin` are written by the bridge.
+- `McpBridge:DefaultServers:{name}` (Helm configmap) maps a name to a URL; each is seeded into
+  `mcp.json` as an `sse` entry unless an entry already points at that URL.
+- The bridge watches `mcp.json` (file watcher plus a `ConfigPollIntervalSeconds` poll) and
+  picks up edits without a restart.
+
+See `design/mcp-bridge.md` for the full field list and the ownership rules.
+
 ### Management tools
 
-When the first `McpServersIndexed` message arrives, `McpServersIndexedHandler` registers five
+When the first `McpServersIndexed` message arrives, `McpServersIndexedHandler` registers six
 management tools that give the agent runtime control over MCP servers:
 
 | Tool | Purpose |
 |---|---|
 | `mcp_list_services` | Lists all connected MCP servers from the local index (no bridge call) |
-| `mcp_get_service_details(server_name, tool_name?)` | Returns tool schemas for a server (or a single tool) |
-| `mcp_invoke_tool(server_name, tool_name, arguments)` | Invokes a specific MCP tool |
-| `mcp_register_server(server_name, command, arguments?)` | Connects a new MCP server at runtime. New names only; it can't change an existing server |
+| `mcp_get_service_details(server_name, tool_name?)` | Returns the server's identity and capped instructions, plus tool and prompt schemas (or a single tool's). In lazy/pinned mode it also makes those tools callable by typed name |
+| `mcp_invoke_tool(server_name, tool_name, arguments)` | Invokes a downstream tool by the server's own tool name — the escape hatch when there is no typed tool |
+| `mcp_register_server(name, type, url)` | Connects a new HTTP MCP server at runtime (`type` is `sse`). New names only; it can't change an existing server |
 | `mcp_unregister_server(server_name)` | Disconnects and removes a server added with `mcp_register_server`. Servers the operator configured can't be removed |
+| `mcp_get_prompt(server_name, prompt_name, arguments?)` | Fills in a server's prompt template and returns its messages |
+
+A seventh, `mcp_find_tools(query, limit?)`, is registered alongside them when some tier's
+wrapper mode is `Lazy` or `Pinned` (see below). Runs in an `Off` or `Eager` tier drop it from
+their tool list.
 
 **Critical:** `mcp_invoke_tool` requires the exact `server_name` from `mcp_list_services`. The
-`rb-mcp-server` header carries the server name through the message bus so `McpToolProxy` routes
+`rb-mcp-server` header carries the server name through the message bus so the bridge routes
 to the correct server. Case-insensitive matching is used throughout.
 
-### Tool invocation flow (remote)
+### Typed tools (`{server}__{tool}`)
 
-When the agent is in a separate process from the MCP bridge:
+Each downstream tool can also be offered as a typed tool named `{server}__{tool}`, with the
+server's own input schema as its parameters (`McpWrapperCatalog`, `McpTypedToolSurface`). Typed
+calls and `mcp_invoke_tool` share one invoke path (`McpManagementExecutor.InvokeDownstreamAsync`),
+so guards, attachments, elicitation, timeouts and recovery apply to both.
+
+`McpBridge:WrapperMode` (Helm `agent.mcpWrapperMode`) picks how they are offered, and
+`McpBridge:WrapperModeByTier:{Low|Balanced|High}` (Helm `agent.mcpWrapperModeByTier`) overrides
+it per model tier:
+
+| Mode | Typed tools in a run |
+|---|---|
+| `Off` | None — management tools only |
+| `Eager` | Every typed tool, in every run |
+| `Lazy` | Only those the session activated: found with `mcp_find_tools`, opened with `mcp_get_service_details`, or called by typed name |
+| `Pinned` (default) | As `Lazy`, plus every typed tool of the servers the session has called |
+
+Naming, activation limits and the per-tier measurements are in `design/mcp-bridge.md`.
+
+### Orientation and server instructions
+
+Every run whose tool list has an MCP tool carries a short MCP orientation: a system message
+(`McpOrientation`, under 2,000 characters — a test holds it there) that `AgentLoopRunner`
+inserts right after the system prompt. It covers what the servers are for, the typed-tool
+naming, the workflow for the run's wrapper mode, the `mcp/{server}` skill to read first, and the
+`mcp_invoke_tool` escape hatch. The full reference is the `mcp` tool guide
+(`McpToolSkillProvider`), fetched with `get_tool_guide`.
+
+A downstream server's own `instructions` are capped by `McpInstructionsCap`: 2,000 characters in
+`mcp_get_service_details` output, and 8,000 in the prompt the bridge uses to write the server's
+summary. Longer text is cut on a line boundary and ends with an explicit
+`[Server instructions truncated: N of M characters shown. ...]` marker, which names the server's
+guide-like tools (`guide`, `help`, `docs`, …) when it has any.
+
+### Tool invocation flow
 
 ```
-Agent: mcp_invoke_tool(server_name, tool_name, args)
+Agent: calendar__get_events(args)   or   mcp_invoke_tool(server_name, tool_name, args)
     │
     ▼
-McpManagementExecutor → McpToolProxy
+McpManagementExecutor.InvokeDownstreamAsync → McpToolProxy
     │   Publishes ToolInvokeRequest to "tool.invoke.mcp"
     │   rb-mcp-server: {server_name}
     │
     ▼
-McpBridge (tools process)
-    │   McpToolExecutor.ExecuteAsync()
-    │   → calls MCP server via SSE
+McpBridgeService (hosted in the agent process)
+    │   guards → attachment rewrite → tools/call over HTTP
     │
     ▼
 ToolInvokeResponse on "tool.result.{agentName}"
-    │   Correlated by ToolCallId
+    │   Correlated by the envelope's CorrelationId
+    │
+    ▼
+McpRecoveryExecutor → tool result
 ```
 
 `McpToolProxy` uses lazy subscription initialization (semaphore-protected) so the
 result-listener topic is subscribed only on the first actual invocation.
 
-### In-process registration
+### In-process registration (non-production)
 
-For agents that embed the MCP bridge in-process (not via message bus):
+`AddMcpTools` is an older in-process path that RockBot.Agent does not use:
 
 ```csharp
 agent.AddMcpTools(opts => builder.Configuration.GetSection("Mcp").Bind(opts));
 ```
 
-This registers `McpToolRegistrar` and `McpStartupProbeService` directly, skipping the message
-bus hop.
+It registers `McpToolRegistrar`, which launches each `McpOptions.Servers` entry as a stdio
+process (`Name`, `Command`, `Arguments`, `EnvironmentVariables`) and registers every downstream
+tool in `IToolRegistry` under its bare name with source `mcp:{serverName}`. There is no bridge,
+no management tools, no typed tools, and none of the guards, attachment, elicitation or
+recovery handling described here.
 
 ### Attachment passthrough
 
@@ -426,7 +502,7 @@ Behavior:
   arguments pass unless `requireArgs` is set. Empty `allowedPrefixes` is a config error,
   not allow-all.
 - Handlers are resolved from a DI registry by name — mcp.json never names CLR types
-  (`register_mcp_server` is model-callable, so config-driven type loading would be a code
+  (`mcp_register_server` is model-callable, so config-driven type loading would be a code
   execution channel). The model can't replace or remove a server that has guards, so it can't
   strip them (see "Operator entries and model registrations" in `design/mcp-bridge.md`).
 - Guards are excluded from the canonical-identity dedup, like `attachments`: they describe
@@ -515,7 +591,7 @@ Behavior:
 
   It runs a short model call through the agent loop, so give the server
   `"responderTimeoutMs": 30000` or more and a `toolTimeoutMs` above that.
-- Servers registered at runtime via `register_mcp_server` always get `DefaultElicitation` —
+- Servers registered at runtime via `mcp_register_server` always get `DefaultElicitation` —
   a model-registered server cannot ship its own `defaults` or relax `deniedFields`. The model can't
   replace or remove a server you configured, so it can't shed that server's `elicitation` block.
 - `McpBridge:DefaultElicitation:Defaults` works from appsettings, Helm values and environment
@@ -644,11 +720,11 @@ Returns up to 5 ranked results:
 | Field | Description |
 |---|---|
 | `id` | Pass to `get_agent_details(agent_name)` or `mcp_get_service_details(server_name)` for full details |
-| `type` | `"a2a"` → use `invoke_agent`; `"mcp"` → use `mcp_invoke_tool` |
+| `type` | `"a2a"` → use `invoke_agent`; `"mcp"` → call the typed tools in `top_tools`, or `mcp_invoke_tool` when they aren't typed names |
 | `summary` | LLM-generated description — the primary signal for choosing between candidates |
 | `relevance_score` | BM25 score normalized to [0, 1]; below ~0.3 consider browsing manually |
 | `top_skills` | (A2A only) Top 3 skill IDs — immediate scouting report without a details call |
-| `top_tools` | (MCP only) Top 3 tool names — immediate scouting report without a details call |
+| `top_tools` | (MCP only) Top 3 tool names — immediate scouting report without a details call. With typed tools on, these are the typed `{server}__{tool}` names that best fit the query |
 
 ### Context hints
 
@@ -662,7 +738,8 @@ Potentially relevant services for this request (call search_known_services for f
 ```
 
 When the hint already identifies the right service with a high score, the agent can skip the
-explicit tool call and proceed directly to `invoke_agent` or `mcp_invoke_tool`.
+explicit tool call and go straight to the service: `invoke_agent` for an agent, or for an MCP
+server its typed tool (`mcp_invoke_tool` when there is none).
 
 ### `Bm25Ranker`
 
@@ -1001,9 +1078,9 @@ services.AddRockBotHost(agent =>
     agent.AddToolHandler();             // IToolRegistry + ToolGuideTools + ToolInvokeHandler
 
     // Tool subsystems (add as needed)
-    agent.AddMcpToolProxy();            // MCP management tools (message-bus proxy to bridge)
-    // OR:
-    agent.AddMcpTools(opts => ...);     // MCP bridge in-process (no message-bus hop)
+    agent.AddMcpToolProxy();            // MCP management + typed tools (message-bus proxy to the bridge)
+    // OR (non-production):
+    agent.AddMcpTools(opts => ...);     // stdio servers registered in-process; no bridge
 
     agent.AddWebTools(opts => ...);     // web_search + web_browse
     agent.AddSchedulingTools();         // schedule_task + list/cancel

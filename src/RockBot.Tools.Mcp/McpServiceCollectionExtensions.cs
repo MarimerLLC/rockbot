@@ -16,7 +16,8 @@ namespace RockBot.Tools.Mcp;
 public static class McpServiceCollectionExtensions
 {
     /// <summary>
-    /// Registers MCP tool servers for in-process execution (used by the MCP Bridge process).
+    /// Registers stdio MCP tool servers for direct in-process execution, without the bridge.
+    /// Not the production path: the agent uses <see cref="AddMcpToolProxy"/> with the hosted bridge.
     /// </summary>
     public static AgentHostBuilder AddMcpTools(
         this AgentHostBuilder builder,
@@ -35,9 +36,10 @@ public static class McpServiceCollectionExtensions
     /// Registers the MCP management proxy for agents that interact with MCP servers via
     /// the message bus. On startup the bridge sends <see cref="McpServersIndexed"/>;
     /// the handler registers the 6 management tools in <see cref="IToolRegistry"/>,
-    /// plus a typed <c>{server}__{tool}</c> tool per downstream tool when <see cref="McpToolSurfaceOptions.WrapperMode"/>
-    /// is <see cref="McpWrapperMode.Eager"/>, or <c>mcp_find_tools</c> and per-session activation when it is
-    /// <see cref="McpWrapperMode.Lazy"/>.
+    /// plus a typed <c>{server}__{tool}</c> tool per downstream tool when some tier's wrapper mode
+    /// (<see cref="McpToolSurfaceOptions.ModeFor"/>) is <see cref="McpWrapperMode.Eager"/>, or
+    /// <c>mcp_find_tools</c> and per-session activation when one is <see cref="McpWrapperMode.Lazy"/>
+    /// or <see cref="McpWrapperMode.Pinned"/>.
     /// </summary>
     public static AgentHostBuilder AddMcpToolProxy(
         this AgentHostBuilder builder,

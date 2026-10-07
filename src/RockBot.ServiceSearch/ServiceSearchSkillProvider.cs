@@ -66,7 +66,8 @@ public sealed class ServiceSearchSkillProvider : IToolSkillProvider
         as a hint in the context (labeled "Potentially relevant services"). These are the
         same BM25 results you would get from calling search_known_services. If the hint
         already identifies the right service with a high relevance_score, you can skip the
-        explicit tool call and proceed directly to mcp_invoke_tool or invoke_agent.
+        explicit tool call and go straight to the service: its typed tool (or mcp_invoke_tool)
+        for MCP, invoke_agent for an agent.
 
         ## Typical routing workflow
         1. Check context hint — if a service is already surfaced with high relevance, use it
@@ -74,6 +75,7 @@ public sealed class ServiceSearchSkillProvider : IToolSkillProvider
         3. Read the top result: check type, summary, and top_skills/top_tools
         4. If relevance_score < 0.3 or summary doesn't match, call mcp_list_services +
            list_known_agents to browse manually
-        5. Once identified: invoke with mcp_invoke_tool (mcp) or invoke_agent (a2a)
+        5. Once identified: call the typed tool, or mcp_invoke_tool when there is none (mcp), or
+           invoke_agent (a2a). Before a server's first use, read its mcp/{server} skill.
         """;
 }
