@@ -15,6 +15,10 @@ An MCP server providing a persistent to-do list accessible to AI agents via the 
 
 Recurrence next-due is calculated from the original due date, not the completion date.
 
+Argument handling is strict: every tool's input schema declares `additionalProperties: false`, and a call that passes an argument the tool doesn't declare fails with an error naming the unknown key(s) instead of being silently ignored. All failures (unknown arguments, invalid ids or dates, task not found) are returned as MCP tool errors (`isError: true`).
+
+Set `TodoApp:DataPath` (env `TodoApp__DataPath`) to override the `/data` storage directory.
+
 ## Local Development
 
 ```bash
