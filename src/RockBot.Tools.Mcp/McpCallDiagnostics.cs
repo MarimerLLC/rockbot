@@ -108,6 +108,24 @@ public static class McpCallDiagnostics
     }
 
     /// <summary>
+    /// Pre-flight check for a typed wrapper call: returns an error naming the required parameters
+    /// the call left out, with the schema, or null when every required key is present. Checks
+    /// nothing else — optional keys, nulls and values are the downstream's to judge.
+    /// </summary>
+    public static string? DescribeMissingRequired(
+        string toolName, string? inputSchema, IReadOnlyDictionary<string, object?> arguments)
+    {
+        using var schemaDoc = TryParseObject(inputSchema);
+        if (schemaDoc is null) return null;
+
+        var (missing, _) = CompareKeys(schemaDoc.RootElement, JsonSerializer.SerializeToElement(arguments));
+        if (missing.Count == 0) return null;
+
+        return $"'{toolName}' was not called: required parameter(s) [{string.Join(", ", missing)}] are missing. " +
+               $"Call it again with every required parameter. Input schema: {schemaDoc.RootElement.GetRawText()}";
+    }
+
+    /// <summary>
     /// Message for a tool name the server doesn't expose. Lists the real names so the model can
     /// pick one, and catches the common slip of passing a combined <c>server__tool</c> name.
     /// </summary>

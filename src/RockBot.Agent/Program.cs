@@ -490,6 +490,8 @@ builder.Services.AddHostedService<AttachmentUploadEndpoint>();
 // MCP bridge (replaces external RockBot.Tools.Mcp.Bridge process)
 var mcpBridgeSection = builder.Configuration.GetSection("McpBridge");
 builder.Services.Configure<McpBridgeOptions>(mcpBridgeSection);
+// The model-facing tool surface reads the same section: McpBridge:WrapperMode selects typed wrappers.
+builder.Services.Configure<RockBot.Tools.Mcp.McpToolSurfaceOptions>(mcpBridgeSection);
 // ConfigurationBinder cannot bind the elicitation defaults dictionary; read it explicitly.
 builder.Services.PostConfigure<McpBridgeOptions>(options =>
     (options.DefaultElicitation ??= new()).Defaults = McpBridgeOptions.ReadElicitationDefaults(mcpBridgeSection));

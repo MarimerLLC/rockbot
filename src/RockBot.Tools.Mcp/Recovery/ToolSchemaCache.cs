@@ -34,6 +34,21 @@ public sealed class ToolSchemaCache(
             string.Equals(t.Name, tool, StringComparison.OrdinalIgnoreCase));
     }
 
+    /// <summary>
+    /// Returns every cached tool schema for <paramref name="server"/>, fetching on a miss, or null
+    /// when the fetch fails.
+    /// </summary>
+    public async Task<IReadOnlyList<McpToolDefinition>?> GetServerAsync(string server, CancellationToken ct)
+    {
+        if (_byServer.TryGetValue(server, out var tools))
+            return tools;
+
+        var fetched = await fetchServerTools(server, ct);
+        if (fetched is not null)
+            _byServer[server] = fetched;
+        return fetched;
+    }
+
     /// <summary>Drops cached schemas for a single server (next lookup re-fetches).</summary>
     public void Invalidate(string server) => _byServer.TryRemove(server, out _);
 

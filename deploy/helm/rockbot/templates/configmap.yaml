@@ -85,6 +85,7 @@ data:
 
   Skill__BasePath: "/data/agent/skills"
   McpBridge__ConfigPath: "/data/agent/mcp.json"
+  McpBridge__WrapperMode: {{ .Values.agent.mcpWrapperMode | default "Off" | quote }}
   LlmPricing__ConfigPath: "/data/agent/llm-pricing.json"
 
   # ── Default MCP servers (auto-seeded into mcp.json on startup) ────────────

@@ -15,9 +15,10 @@ public sealed class McpServersIndexedHandler(
     McpServerIndex index,
     McpManagementExecutor executor,
     ILogger<McpServersIndexedHandler> logger,
-    ToolSchemaCache? schemaCache = null) : IMessageHandler<McpServersIndexed>
+    ToolSchemaCache? schemaCache = null,
+    McpWrapperCatalog? wrappers = null) : IMessageHandler<McpServersIndexed>
 {
-    public Task HandleAsync(McpServersIndexed message, MessageHandlerContext context)
+    public async Task HandleAsync(McpServersIndexed message, MessageHandlerContext context)
     {
         // Every reconnect and config reload re-publishes a server's summary; only a moved
         // fingerprint (or a server whose surface is unknown) means its cached schemas are stale.
@@ -46,7 +47,9 @@ public sealed class McpServersIndexedHandler(
             index.ManagementToolsRegistered = true;
         }
 
-        return Task.CompletedTask;
+        // Typed {server}__{tool} tools follow the index; a no-op unless McpBridge:WrapperMode is Eager.
+        if (wrappers is not null)
+            await wrappers.ApplyAsync(message, context.CancellationToken);
     }
 
     internal static bool SurfaceUnchanged(McpServerSummary? previous, McpServerSummary incoming) =>

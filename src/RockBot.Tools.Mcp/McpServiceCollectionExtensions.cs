@@ -34,8 +34,9 @@ public static class McpServiceCollectionExtensions
     /// <summary>
     /// Registers the MCP management proxy for agents that interact with MCP servers via
     /// the message bus. On startup the bridge sends <see cref="McpServersIndexed"/>;
-    /// the handler registers exactly 5 management tools in <see cref="IToolRegistry"/>
-    /// instead of one tool per schema.
+    /// the handler registers the 6 management tools in <see cref="IToolRegistry"/>,
+    /// plus a typed <c>{server}__{tool}</c> tool per downstream tool when <see cref="McpToolSurfaceOptions.WrapperMode"/>
+    /// is <see cref="McpWrapperMode.Eager"/>.
     /// </summary>
     public static AgentHostBuilder AddMcpToolProxy(
         this AgentHostBuilder builder,
@@ -90,6 +91,10 @@ public static class McpServiceCollectionExtensions
         // errors before invoking the tool, without RockBot.Wisp taking a hard dependency
         // on RockBot.Tools.Mcp.
         builder.Services.AddSingleton<IMcpPreflightRecovery, McpPreflightRecovery>();
+
+        // Typed {server}__{tool} tools (#420). Off unless McpBridge:WrapperMode says otherwise.
+        builder.Services.AddOptions<McpToolSurfaceOptions>();
+        builder.Services.AddSingleton<McpWrapperCatalog>();
 
         builder.HandleMessage<McpServersIndexed, McpServersIndexedHandler>();
         builder.SubscribeTo($"tool.meta.mcp.{agentName}");

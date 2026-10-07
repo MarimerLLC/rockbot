@@ -57,6 +57,48 @@ When a call fails, a hint is appended **only on positive evidence**:
 
 Any other failure on schema-valid arguments comes back unchanged. A hint that blames the arguments for a server-side failure sends the model hunting for a bug that doesn't exist (mcp-aggregator#50).
 
+### Typed wrapper tools (`{server}__{tool}`)
+
+Issue #420, ported from mcp-aggregator PR #42.
+
+**Mode.** `McpBridge:WrapperMode` (Helm `agent.mcpWrapperMode`) chooses how downstream tools are offered:
+- `Off` (default): the six `mcp_*` management tools only.
+- `Eager`: `McpWrapperCatalog` also registers one typed tool per downstream tool.
+
+The aggregator measured typed tools at 90–100% first-call success for small models, against 10–25% through `invoke_tool`. Per-tier defaults are chosen in #613.
+
+**Naming.**
+- Names are `{server}__{tool}`. Each part is sanitised to `[A-Za-z0-9_-]`, the strictest charset the LLM providers accept. That is narrower than MCP's charset, so `.` becomes `-`.
+- Names are never truncated. A name over 64 characters isn't registered, and the tool stays reachable through `mcp_invoke_tool`.
+- Routing uses the server and tool stored with the registration (`ToolRegistration.DownstreamName`), never a parse of the name.
+
+**Registration.** Each wrapper gets:
+- the downstream input schema as its parameter schema, unchanged;
+- the description `[server] <downstream description>`;
+- source `mcp:{server}`.
+
+The catalog reconciles on every `McpServersIndexed`:
+- new tools are registered;
+- vanished tools, or tools whose fingerprint (description plus canonical schema) moved, are replaced;
+- unchanged tools keep their registration.
+
+**Collisions.**
+- The server prefix keeps same-named tools on different servers apart.
+- Two tools on one server that sanitise to the same name: the first is kept.
+- A wrapper never displaces a tool registered by anything else.
+- Operator-denied tools never get a wrapper, because the bridge's tool list is already filtered.
+
+**One call path.**
+- A wrapper call checks for missing required keys first. If any are missing, it returns them with the schema, without calling the downstream. Nothing else is checked.
+- It then takes exactly the path `mcp_invoke_tool` takes (`McpManagementExecutor.InvokeDownstreamAsync`): proxy, bridge (guards, attachments, elicitation, timeouts, reconnect-and-retry, error hints), then recovery.
+- Calls are counted in `rockbot.mcp.tool.invocations`, tagged `via=wrapper|invoke_tool`.
+- `mcp_invoke_tool` stays available as the escape hatch.
+
+**Profiles, workers and wisps.**
+- Every tool profile admits wrappers, the same profiles that admit `mcp_invoke_tool`.
+- A worker's `tools_allow` narrows wrappers through their dotted `{server}.{tool}` form, so `"calendar-mcp.*"` admits that server's typed tools.
+- Wisp `Direct/Mcp` steps keep routing through `mcp_invoke_tool`. `McpStepValidator` finds a wrapper's schema by its `DownstreamName`.
+
 ### Metadata Refresh
 
 Agent publishes `McpMetadataRefreshRequest` to `tool.meta.mcp.refresh`. Bridge re-runs `tools/list` and publishes updated `McpToolsAvailable`.
