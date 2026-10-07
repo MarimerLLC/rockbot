@@ -563,6 +563,56 @@ public class McpLazyTypedToolsTests
     }
 
     [TestMethod]
+    public void Default_IsPinned()
+    {
+        Assert.AreEqual(McpWrapperMode.Pinned, new McpToolSurfaceOptions().WrapperMode);
+        Assert.AreEqual(120, new McpToolSurfaceOptions().MaxToolsPerRequest);
+    }
+
+    [TestMethod]
+    public async Task Pin_SharesTheActivationBudget_ActivationsFirst()
+    {
+        var gateway = await CreateAsync(McpWrapperMode.Pinned, cap: 3);
+        gateway.Surface.ActivateByName("session/a", "chat__send_message");
+
+        gateway.Surface.Pin("session/a", "adjutant");
+
+        var names = gateway.Activated("session/a", TypedToolMode.Pinned);
+        Assert.AreEqual(3, names.Length, "Activations and pinned tools together stay within the cap.");
+        Assert.AreEqual("chat__send_message", names[0]);
+        Assert.IsTrue(names.Skip(1).All(n => n.StartsWith("adjutant__", StringComparison.Ordinal)));
+    }
+
+    [TestMethod]
+    public async Task Pin_OverBudget_TheMostRecentlyCalledServerFillsItFirst_ListOrderStaysStable()
+    {
+        var gateway = await CreateAsync(McpWrapperMode.Pinned, cap: 2);
+
+        gateway.Surface.Pin("session/a", "adjutant");
+        gateway.Surface.Pin("session/a", "chat");
+
+        CollectionAssert.AreEqual(new[] { "adjutant__send_email", "chat__send_message" },
+            gateway.Activated("session/a", TypedToolMode.Pinned),
+            "chat (newest) gets its one tool, adjutant the rest; the older pin still lists first.");
+    }
+
+    [TestMethod]
+    public async Task AddActivated_StopsAtMaxToolsPerRequest()
+    {
+        var gateway = await CreateAsync(McpWrapperMode.Pinned, configure: o => o.MaxToolsPerRequest = 4);
+        gateway.Surface.Pin("session/a", "adjutant");
+        var options = OptionsFor(gateway, "session/a", "mcp_find_tools", "mcp_invoke_tool");
+
+        using (TypedToolSurfaceContext.Set(gateway.Surface, ModelTier.Balanced))
+        {
+            Assert.AreEqual(2, TypedToolSurfaceContext.AddActivated(options), "2 registry tools + 2 typed = the cap of 4.");
+            Assert.IsNull(TypedToolSurfaceContext.TryActivate(options, "chat__send_message"), "At the cap, nothing more joins.");
+        }
+
+        Assert.AreEqual(4, options.Tools!.Count);
+    }
+
+    [TestMethod]
     public async Task Pin_RemovedServer_DropsOutOfTheList()
     {
         var gateway = await CreateAsync(McpWrapperMode.Pinned);

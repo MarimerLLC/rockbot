@@ -49,9 +49,12 @@ agent:
   # registered as a typed {server}__{tool} tool with its own parameter schema. See #420.
   # "Lazy": the same typed tools, but a session only gets the ones it finds with
   # mcp_find_tools, opens with mcp_get_service_details, or calls by name. See #612.
-  # "Pinned": lazy, and once a session calls a server (either way) all of that server's
-  # typed tools stay in its list. See #613.
-  mcpWrapperMode: "Off"
+  # "Pinned" (default): lazy, and once a session calls a server (either way) all of that
+  # server's typed tools stay in its list. #613 measured the modes on each tier
+  # (docs/measurements/2026-10-07-mcp-wrapper-modes.md): pinned matched or beat lazy
+  # everywhere, and eager puts every typed tool in every request, which the main agent's
+  # list can't hold under the providers' 128-tool cap once all servers are connected.
+  mcpWrapperMode: "Pinned"
   # Per-tier overrides of mcpWrapperMode (#613): the run's model tier picks its mode, so a
   # weak model can get eager typed tools while a strong one keeps a small baseline. Leave a
   # tier empty to use mcpWrapperMode.

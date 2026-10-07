@@ -47,6 +47,9 @@ public interface ITypedToolSurface
     /// <summary>True when <paramref name="toolName"/> is a typed downstream tool.</summary>
     bool IsTypedTool(string toolName);
 
+    /// <summary>Typed tools join a run's list only while it holds at most this many tools.</summary>
+    int MaxToolsPerRequest => 120;
+
     /// <summary>
     /// The typed tools <paramref name="toolSessionId"/> has activated, oldest first; in
     /// <see cref="TypedToolMode.Pinned"/>, followed by every typed tool of the servers it has called.
@@ -130,6 +133,9 @@ public static class TypedToolSurfaceContext
         var added = 0;
         foreach (var tool in surface.GetActivated(sessionId, Current.Value!.Mode))
         {
+            // Over the provider's tool cap the whole request fails, not just the extra tool.
+            if (options.Tools!.Count >= surface.MaxToolsPerRequest)
+                break;
             if (present.Add(tool.Name))
             {
                 Append(options, loader, tool);
@@ -145,7 +151,8 @@ public static class TypedToolSurfaceContext
     /// </summary>
     public static AIFunction? TryActivate(ChatOptions? options, string toolName)
     {
-        if (!TryGetLoader(options, out var surface, out var loader, out var sessionId))
+        if (!TryGetLoader(options, out var surface, out var loader, out var sessionId)
+            || options!.Tools!.Count >= surface.MaxToolsPerRequest)
             return null;
 
         if (surface.ActivateByName(sessionId, toolName) is not { } tool)

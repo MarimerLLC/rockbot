@@ -36,8 +36,12 @@ public enum McpWrapperMode
 /// </summary>
 public sealed class McpToolSurfaceOptions
 {
-    /// <summary>The mode of every tier <see cref="WrapperModeByTier"/> doesn't name.</summary>
-    public McpWrapperMode WrapperMode { get; set; } = McpWrapperMode.Off;
+    /// <summary>
+    /// The mode of every tier <see cref="WrapperModeByTier"/> doesn't name. Pinned, from #613's
+    /// measurement (docs/measurements/2026-10-07-mcp-wrapper-modes.md): it matched or beat lazy on
+    /// every tier, and eager can't fit the main agent's tool list under the providers' 128-tool cap.
+    /// </summary>
+    public McpWrapperMode WrapperMode { get; set; } = McpWrapperMode.Pinned;
 
     /// <summary>Per-tier overrides of <see cref="WrapperMode"/>.</summary>
     public Dictionary<ModelTier, McpWrapperMode> WrapperModeByTier { get; set; } = [];
@@ -49,7 +53,15 @@ public sealed class McpToolSurfaceOptions
     public int MaxPinnedServersPerSession { get; set; } = 3;
 
     /// <summary>
-    /// Lazy and pinned modes: the most typed tools one session keeps activated. Activating another drops the
+    /// Typed tools join a run's list only while it stays at or under this many tools. OpenAI and
+    /// Azure reject a request with more than 128; the default leaves room for the tools the loop
+    /// appends after the typed ones (the task list).
+    /// </summary>
+    public int MaxToolsPerRequest { get; set; } = 120;
+
+    /// <summary>
+    /// Lazy and pinned modes: the most typed tools one session keeps activated; pinned servers'
+    /// tools share this budget. Activating another drops the
     /// session's oldest activation.
     /// </summary>
     public int MaxActivatedToolsPerSession { get; set; } = 40;

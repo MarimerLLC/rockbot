@@ -65,7 +65,7 @@ Issue #420, ported from mcp-aggregator PR #42.
 - `Off`: the six `mcp_*` management tools only.
 - `Eager`: `McpWrapperCatalog` also registers one typed tool per downstream tool.
 - `Lazy`: the same typed tools, but only in the sessions that search for them. See [Lazy typed tools](#lazy-typed-tools-mcp_find_tools) below.
-- `Pinned`: lazy, plus every typed tool of a server the session has called.
+- `Pinned` (default): lazy, plus every typed tool of a server the session has called.
 
 The aggregator measured typed tools at 90–100% first-call success for small models, against 10–25% through `invoke_tool`. #613 measured the modes on RockBot's own tiers; see [Per-tier modes](#per-tier-modes-and-pinned-servers).
 
@@ -138,6 +138,11 @@ An added tool carries the same tool session id as the run's other registry tools
 
 Issue #613. The right surface depends on the model: a weak model gets typed tools wrong less often when they are all in front of it, while a strong one handles the discovery step and saves the context. RockBot routes each message to a tier, so the mode follows the tier.
 
+**Defaults.** Every tier defaults to `Pinned`. The measurement is in [docs/measurements/2026-10-07-mcp-wrapper-modes.md](../docs/measurements/2026-10-07-mcp-wrapper-modes.md):
+- Pinned matched or beat lazy on every tier.
+- Eager was the most accurate and the cheapest, but every typed tool goes in every request. The main agent's own 56 tools plus production's 92 typed tools would break the providers' 128-tool cap.
+- Off was the least reliable and the most expensive.
+
 **Configuration.** `McpToolSurfaceOptions.ModeFor(tier)` is `WrapperModeByTier[tier]`, else `WrapperMode`. The registry is global, so it holds what any tier needs:
 - typed tools are indexed when any tier is not `Off`;
 - they are registered in `IToolRegistry` when any tier is `Eager`, so `tools_allow`, tool profiles and the worker and wisp registry lookups keep working unchanged;
@@ -156,6 +161,8 @@ The re-prompt hints, the capability-denial nudge, `ServiceSearchIndex`'s typed t
 **Pinned servers.** In `Pinned`, a session that calls one of a server's tools — typed or through `mcp_invoke_tool`, successfully or not — keeps every typed tool of that server in its list from the next request on. It targets the case lazy mode handles worst: a conversation that goes back to the same server for a different tool, where lazy needs another search.
 - `McpManagementExecutor.InvokeDownstreamAsync`, the one downstream path, calls `McpTypedToolSurface.Pin` after every call. Pins are recorded only when some tier is pinned, and only for a server with typed tools, so an invented server name can't push a real one out.
 - A session keeps its `McpBridge:MaxPinnedServersPerSession` (default 3) most recently called servers. Pinned tools come after the session's activations, in the server's order, so the list grows at the end and the prompt cache holds.
+- Pinned tools share the activations' budget (`MaxActivatedToolsPerSession`, default 40). The activations come first, then the most recently called server's tools, then the next server's, until the budget is spent.
+- Whatever the mode, typed tools join a run's list only while it holds at most `McpBridge:MaxToolsPerRequest` tools (default 120). OpenAI and Azure reject a request with more than 128 tools, and the loop appends its task-list tools after the typed ones.
 - Pins share the activations' lifetime: they go with the session after `ActivationIdleTimeout`, and a removed server's tools drop out because the list is rebuilt from the catalog each time.
 
 ### Metadata Refresh

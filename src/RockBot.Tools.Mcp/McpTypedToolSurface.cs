@@ -63,6 +63,8 @@ public sealed class McpTypedToolSurface : ITypedToolSurface
 
     public string LoaderToolName => FindToolsName;
 
+    public int MaxToolsPerRequest => _options.MaxToolsPerRequest;
+
     public bool IsTypedTool(string toolName) => _catalog is { } catalog && catalog.TryGet(toolName, out _);
 
     internal void Bind(McpWrapperCatalog catalog) => _catalog = catalog;
@@ -226,12 +228,27 @@ public sealed class McpTypedToolSurface : ITypedToolSurface
                 tools.Add(catalog.CreateFunction(wrapper, toolSessionId));
         }
 
-        // Pinned servers' tools follow the activations, in the server's own order.
+        // Pinned servers' tools share the activations' budget: the most recently called server
+        // fills it first. They follow the activations in the list, oldest pin first, each in the
+        // server's own order, so a new pin adds to the end and the prompt cache holds.
+        var budget = Math.Max(1, _options.MaxActivatedToolsPerSession) - tools.Count;
+        var admitted = new HashSet<string>(StringComparer.Ordinal);
+        for (var i = pinned.Count - 1; i >= 0 && budget > 0; i--)
+        {
+            foreach (var wrapper in catalog.WrappersFor(pinned[i]))
+            {
+                if (budget == 0)
+                    break;
+                if (!seen.Contains(wrapper.Name) && admitted.Add(wrapper.Name))
+                    budget--;
+            }
+        }
+
         foreach (var server in pinned)
         {
             foreach (var wrapper in catalog.WrappersFor(server))
             {
-                if (seen.Add(wrapper.Name))
+                if (admitted.Contains(wrapper.Name) && seen.Add(wrapper.Name))
                     tools.Add(catalog.CreateFunction(wrapper, toolSessionId));
             }
         }
