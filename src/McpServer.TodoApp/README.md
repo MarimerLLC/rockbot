@@ -7,12 +7,13 @@ An MCP server providing a persistent to-do list accessible to AI agents via the 
 | Tool | Parameters | Description |
 |------|-----------|-------------|
 | `add_task` | `title`, `due_date` (YYYY-MM-DD), optional `recurrence` (none/daily/weekly/monthly/quarterly/biannual/yearly), `description`, `recurrence_until`, `recurrence_count`, `month_anchor` | Adds a new task; returns created task as JSON |
-| `list_tasks` | optional `due_before`, `due_after` (YYYY-MM-DD) | Lists active tasks, optionally filtered by due date; notes are summarized as `note_count` + `last_note` |
+| `list_tasks` | optional `due_before`, `due_after` (YYYY-MM-DD), `query`, `sort` (due_date/created_at/title), `compact` | Lists active tasks, sorted by due date by default; notes are summarized as `note_count` + `last_note` |
+| `get_task` | `id` | One task with full detail and all notes; returns `{ status, task }` (status `active` or `completed`) |
 | `add_task_note` | `id`, `text`, optional `source` | Appends a timestamped note to a task's activity log; returns the task with all notes |
 | `complete_task` | `id` (GUID), optional `stop_recurrence` | Marks task complete; returns `{ completed, next, series_ended }` |
 | `delete_task` | `id` (GUID) | Removes task from active list |
 | `update_task` | `id`, optional `title`, `description`, `due_date`, `recurrence`, `recurrence_until`, `recurrence_count`, `month_anchor` | Updates fields on an active task; the id is preserved |
-| `list_completed` | optional `completed_after`, `completed_before` (ISO datetime) | Lists completed tasks |
+| `list_completed` | optional `completed_after`, `completed_before` (ISO datetime), `query`, `sort` (completed_at/due_date/title), `compact` | Lists completed tasks, most recent first by default |
 
 ### Recurrence
 
@@ -32,6 +33,11 @@ An MCP server providing a persistent to-do list accessible to AI agents via the 
 - `complete_task` returns `next` (the new occurrence with its id, or `null`) and `series_ended` (`stop_recurrence` / `count_reached` / `until_reached`, or `null`).
 - `update_task(recurrence: "none")` ends a series without deleting the task and clears its limits. `recurrence_until: ""` and `recurrence_count: 0` clear a single limit.
 - Setting a limit on a task whose recurrence is `none` is an error.
+
+### Finding tasks
+
+- `query` is a case-insensitive substring match against title and description.
+- `compact: true` returns only `id`, `title`, `due_date` and `recurrence` (plus `completed_at` for completed tasks). Use it for an overview, then `get_task` for detail.
 
 ### Notes
 

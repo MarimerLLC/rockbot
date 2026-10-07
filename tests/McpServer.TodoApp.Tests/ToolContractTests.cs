@@ -39,6 +39,7 @@ public sealed class ToolContractTests : TodoServerTestBase
 
         Assert.IsTrue(tools["list_tasks"].ProtocolTool.Annotations?.ReadOnlyHint);
         Assert.IsTrue(tools["list_completed"].ProtocolTool.Annotations?.ReadOnlyHint);
+        Assert.IsTrue(tools["get_task"].ProtocolTool.Annotations?.ReadOnlyHint);
         Assert.IsTrue(tools["delete_task"].ProtocolTool.Annotations?.DestructiveHint);
         Assert.IsFalse(tools["add_task"].ProtocolTool.Annotations?.DestructiveHint);
         Assert.IsFalse(tools["add_task"].ProtocolTool.Annotations?.IdempotentHint);

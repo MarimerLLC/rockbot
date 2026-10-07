@@ -62,11 +62,15 @@ public sealed class TodoTools(TodoRepository repository)
     }
 
     [McpServerTool(Name = "list_tasks", ReadOnly = true, OpenWorld = false)]
-    [Description("Lists active to-do tasks, optionally filtered by due date range. Returns a JSON array. " +
-                 "Notes are omitted; each task shows note_count and its most recent note as last_note.")]
+    [Description("Lists active to-do tasks, sorted by due date by default, optionally filtered by due date range or text. " +
+                 "Returns a JSON array. Notes are omitted; each task shows note_count and its most recent note as last_note. " +
+                 "Use compact for an overview and get_task for one task's full detail.")]
     public async Task<string> ListTasksAsync(
         [Description("Optional ISO date (YYYY-MM-DD). Only return tasks due before this date.")] string? due_before = null,
-        [Description("Optional ISO date (YYYY-MM-DD). Only return tasks due after this date.")] string? due_after = null)
+        [Description("Optional ISO date (YYYY-MM-DD). Only return tasks due after this date.")] string? due_after = null,
+        [Description(QueryDescription)] string? query = null,
+        [Description("Sort order: due_date (default; ties by title), created_at, or title.")] TaskSort sort = TaskSort.DueDate,
+        [Description(CompactDescription)] bool compact = false)
     {
         try
         {
@@ -87,9 +91,43 @@ public sealed class TodoTools(TodoRepository repository)
             var filtered = active
                 .Where(t => before is null || t.DueDate < before.Value)
                 .Where(t => after is null || t.DueDate > after.Value)
-                .ToList();
+                .Where(t => Matches(query, t.Title, t.Description));
 
-            return JsonSerializer.Serialize(filtered.Select(ToListView), ToolJson.Options);
+            var sorted = sort switch
+            {
+                TaskSort.CreatedAt => filtered.OrderBy(t => t.CreatedAt),
+                TaskSort.Title => filtered.OrderBy(t => t.Title, StringComparer.OrdinalIgnoreCase).ThenBy(t => t.DueDate),
+                _ => filtered.OrderBy(t => t.DueDate).ThenBy(t => t.Title, StringComparer.OrdinalIgnoreCase)
+            };
+
+            return JsonSerializer.Serialize(
+                sorted.Select(t => compact ? Compact(t.Id, t.Title, t.DueDate, t.Recurrence) : ToListView(t)),
+                ToolJson.Options);
+        }
+        catch (Exception ex) when (ex is not McpException)
+        {
+            throw new McpException(ex.Message, ex);
+        }
+    }
+
+    [McpServerTool(Name = "get_task", ReadOnly = true, OpenWorld = false)]
+    [Description("Gets one task by id with its full detail, including all notes. Looks in active tasks first, then " +
+                 "completed history. Returns JSON { status, task } where status is active or completed.")]
+    public async Task<string> GetTaskAsync(
+        [Description("GUID of the task.")] string id)
+    {
+        try
+        {
+            if (!Guid.TryParse(id, out var guid))
+                throw new McpException("invalid id, expected a GUID");
+
+            if ((await repository.GetActiveAsync()).FirstOrDefault(t => t.Id == guid) is { } active)
+                return JsonSerializer.Serialize(new { status = "active", task = active }, ToolJson.Options);
+
+            if ((await repository.GetCompletedAsync()).FirstOrDefault(t => t.Id == guid) is { } completed)
+                return JsonSerializer.Serialize(new { status = "completed", task = completed }, ToolJson.Options);
+
+            throw new McpException("task not found");
         }
         catch (Exception ex) when (ex is not McpException)
         {
@@ -323,10 +361,14 @@ public sealed class TodoTools(TodoRepository repository)
     }
 
     [McpServerTool(Name = "list_completed", ReadOnly = true, OpenWorld = false)]
-    [Description("Lists completed tasks, optionally filtered by completion date range. Returns a JSON array.")]
+    [Description("Lists completed tasks, most recently completed first by default, optionally filtered by completion date " +
+                 "range or text. Returns a JSON array.")]
     public async Task<string> ListCompletedAsync(
         [Description("Optional ISO datetime. Only return tasks completed after this time.")] string? completed_after = null,
-        [Description("Optional ISO datetime. Only return tasks completed before this time.")] string? completed_before = null)
+        [Description("Optional ISO datetime. Only return tasks completed before this time.")] string? completed_before = null,
+        [Description(QueryDescription)] string? query = null,
+        [Description("Sort order: completed_at (default; most recent first), due_date, or title.")] CompletedSort sort = CompletedSort.CompletedAt,
+        [Description(CompactDescription)] bool compact = false)
     {
         try
         {
@@ -347,9 +389,19 @@ public sealed class TodoTools(TodoRepository repository)
             var filtered = completed
                 .Where(t => after is null || t.CompletedAt > after.Value)
                 .Where(t => before is null || t.CompletedAt < before.Value)
-                .ToList();
+                .Where(t => Matches(query, t.Title, t.Description));
 
-            return JsonSerializer.Serialize(filtered, ToolJson.Options);
+            var sorted = sort switch
+            {
+                CompletedSort.DueDate => filtered.OrderBy(t => t.DueDate).ThenBy(t => t.Title, StringComparer.OrdinalIgnoreCase),
+                CompletedSort.Title => filtered.OrderBy(t => t.Title, StringComparer.OrdinalIgnoreCase).ThenByDescending(t => t.CompletedAt),
+                _ => filtered.OrderByDescending(t => t.CompletedAt)
+            };
+
+            return compact
+                ? JsonSerializer.Serialize(
+                    sorted.Select(t => Compact(t.Id, t.Title, t.DueDate, t.Recurrence, t.CompletedAt)), ToolJson.Options)
+                : JsonSerializer.Serialize(sorted, ToolJson.Options);
         }
         catch (Exception ex) when (ex is not McpException)
         {
@@ -360,6 +412,12 @@ public sealed class TodoTools(TodoRepository repository)
     private const string RecurrenceUntilDescription =
         "Optional ISO date (YYYY-MM-DD) ending a repeating series. Inclusive: an occurrence due on this date is still created, " +
         "none after it. Only valid when recurrence is not none.";
+
+    private const string QueryDescription =
+        "Optional text to search for: a case-insensitive substring match against title and description.";
+
+    private const string CompactDescription =
+        "If true, return only id, title, due_date and recurrence (plus completed_at for completed tasks) for each task. Defaults to false.";
 
     private const string MonthAnchorDescription =
         "Optional day-of-month rule for monthly, quarterly, biannual and yearly series: same_day (default) repeats on the " +
@@ -409,6 +467,25 @@ public sealed class TodoTools(TodoRepository repository)
         // unless the caller moved the due date or the task wasn't anchored on a day before.
         var keepDay = !dueDateExplicit && existing?.MonthAnchor == MonthAnchor.SameDay && existing.AnchorDay is not null;
         return (anchor, keepDay ? existing!.AnchorDay : dueDate.Day, dueDate);
+    }
+
+    private static bool Matches(string? query, string title, string? description) =>
+        string.IsNullOrWhiteSpace(query)
+        || title.Contains(query.Trim(), StringComparison.OrdinalIgnoreCase)
+        || (description?.Contains(query.Trim(), StringComparison.OrdinalIgnoreCase) ?? false);
+
+    private static JsonObject Compact(Guid id, string title, DateOnly dueDate, RecurrenceType recurrence, DateTimeOffset? completedAt = null)
+    {
+        var node = new JsonObject
+        {
+            ["id"] = id.ToString(),
+            ["title"] = title,
+            ["due_date"] = dueDate.ToString("yyyy-MM-dd"),
+            ["recurrence"] = JsonSerializer.SerializeToNode(recurrence, ToolJson.Options)
+        };
+        if (completedAt is not null)
+            node["completed_at"] = JsonSerializer.SerializeToNode(completedAt, ToolJson.Options);
+        return node;
     }
 
     /// <summary>List form of a task: the notes log is replaced by its count and latest entry to keep listings small.</summary>
