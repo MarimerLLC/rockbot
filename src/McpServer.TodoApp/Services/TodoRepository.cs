@@ -8,6 +8,10 @@ public sealed class TodoRepository
 {
     private readonly string _activeFile;
     private readonly string _completedFile;
+    private readonly string _deletedFile;
+
+    /// <summary>How long soft-deleted tasks remain restorable.</summary>
+    public int RetentionDays { get; }
 
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -24,6 +28,8 @@ public sealed class TodoRepository
         Directory.CreateDirectory(dataPath);
         _activeFile = Path.Combine(dataPath, "active.json");
         _completedFile = Path.Combine(dataPath, "completed.json");
+        _deletedFile = Path.Combine(dataPath, "deleted.json");
+        RetentionDays = int.TryParse(configuration["TodoApp:DeletedRetentionDays"], out var days) && days > 0 ? days : 30;
     }
 
     public async Task<List<TodoItem>> GetActiveAsync()
@@ -74,6 +80,41 @@ public sealed class TodoRepository
         try
         {
             await SaveAsync(_completedFile, items);
+        }
+        finally
+        {
+            _lock.Release();
+        }
+    }
+
+    /// <summary>
+    /// Soft-deleted tasks still inside the retention window. Entries older than <see cref="RetentionDays"/>
+    /// are purged from the file as a side effect.
+    /// </summary>
+    public async Task<List<DeletedTodoItem>> GetDeletedAsync()
+    {
+        await _lock.WaitAsync();
+        try
+        {
+            var items = await LoadAsync<List<DeletedTodoItem>>(_deletedFile) ?? [];
+            var cutoff = DateTimeOffset.UtcNow.AddDays(-RetentionDays);
+            var kept = items.FindAll(d => d.DeletedAt > cutoff);
+            if (kept.Count != items.Count)
+                await SaveAsync(_deletedFile, kept);
+            return kept;
+        }
+        finally
+        {
+            _lock.Release();
+        }
+    }
+
+    public async Task SaveDeletedAsync(List<DeletedTodoItem> items)
+    {
+        await _lock.WaitAsync();
+        try
+        {
+            await SaveAsync(_deletedFile, items);
         }
         finally
         {

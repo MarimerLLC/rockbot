@@ -11,7 +11,10 @@ An MCP server providing a persistent to-do list accessible to AI agents via the 
 | `get_task` | `id` | One task with full detail and all notes; returns `{ status, task }` (status `active` or `completed`) |
 | `add_task_note` | `id`, `text`, optional `source` | Appends a timestamped note to a task's activity log; returns the task with all notes |
 | `complete_task` | `id` (GUID), optional `stop_recurrence` | Marks task complete; returns `{ completed, next, series_ended }` |
-| `delete_task` | `id` (GUID) | Removes task from active list |
+| `delete_task` | `id` (GUID) | Soft-deletes a task; returns its id, `deleted_at` and `purge_after` |
+| `restore_task` | `id` | Brings a deleted task back with its original id, notes and series |
+| `list_deleted` | — | Restorable deleted tasks, most recent first |
+| `uncomplete_task` | `id` | Moves a completed task back to active; removes its untouched next occurrence; returns `{ restored, removed_next }` |
 | `update_task` | `id`, optional `title`, `description`, `due_date`, `recurrence`, `recurrence_until`, `recurrence_count`, `month_anchor` | Updates fields on an active task; the id is preserved |
 | `list_completed` | optional `completed_after`, `completed_before` (ISO datetime), `query`, `sort` (completed_at/due_date/title), `compact` | Lists completed tasks, most recent first by default |
 
@@ -33,6 +36,14 @@ An MCP server providing a persistent to-do list accessible to AI agents via the 
 - `complete_task` returns `next` (the new occurrence with its id, or `null`) and `series_ended` (`stop_recurrence` / `count_reached` / `until_reached`, or `null`).
 - `update_task(recurrence: "none")` ends a series without deleting the task and clears its limits. `recurrence_until: ""` and `recurrence_count: 0` clear a single limit.
 - Setting a limit on a task whose recurrence is `none` is an error.
+
+### Undo
+
+Deletes and completions can be undone, so callers can act on corrections without an extra confirmation round-trip.
+- **Delete:** `delete_task` moves the task to `/data/deleted.json`. `restore_task` brings it back unchanged until it is purged, `TodoApp:DeletedRetentionDays` days later (default 30). `get_task` reports a deleted task with `status: "deleted"`.
+- **Complete:** `uncomplete_task` restores a completed task with its id, notes and series settings.
+  - If completing it created a next occurrence, that occurrence is removed again, but only while it is untouched.
+  - The call fails, changing nothing, if the next occurrence was edited, given notes or completed since.
 
 ### Finding tasks
 
