@@ -12,7 +12,8 @@ public sealed record TodoItem(
     int? RecurrenceCount = null,
     int Occurrence = 1,
     MonthAnchor? MonthAnchor = null,
-    int? AnchorDay = null
+    int? AnchorDay = null,
+    IReadOnlyList<TaskNote>? Notes = null
 );
 
 public sealed record CompletedTodoItem(
@@ -24,5 +25,9 @@ public sealed record CompletedTodoItem(
     DateTimeOffset CreatedAt,
     DateTimeOffset CompletedAt,
     Guid? SeriesId = null,
-    int Occurrence = 1
+    int Occurrence = 1,
+    IReadOnlyList<TaskNote>? Notes = null
 );
+
+/// <summary>An append-only status or activity entry, kept separate from the task's description.</summary>
+public sealed record TaskNote(DateTimeOffset At, string Text, string? Source = null);

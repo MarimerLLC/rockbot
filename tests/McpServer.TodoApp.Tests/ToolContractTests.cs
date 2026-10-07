@@ -43,6 +43,8 @@ public sealed class ToolContractTests : TodoServerTestBase
         Assert.IsFalse(tools["add_task"].ProtocolTool.Annotations?.DestructiveHint);
         Assert.IsFalse(tools["add_task"].ProtocolTool.Annotations?.IdempotentHint);
         Assert.IsFalse(tools["complete_task"].ProtocolTool.Annotations?.IdempotentHint);
+        Assert.IsFalse(tools["add_task_note"].ProtocolTool.Annotations?.DestructiveHint);
+        Assert.IsFalse(tools["add_task_note"].ProtocolTool.Annotations?.IdempotentHint);
         Assert.IsTrue(tools["update_task"].ProtocolTool.Annotations?.IdempotentHint);
         foreach (var tool in tools.Values)
             Assert.IsFalse(tool.ProtocolTool.Annotations?.OpenWorldHint, $"{tool.Name} should not be open-world");
