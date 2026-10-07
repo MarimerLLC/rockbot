@@ -84,6 +84,10 @@ internal sealed class MeasureCommand : AsyncCommand<MeasureCommand.Settings>
         [Description("Print every call.")]
         public bool Verbose { get; init; }
 
+        [CommandOption("--resume")]
+        [Description("Keep the task runs already in --out's results.jsonl that finished without an error; run only the rest.")]
+        public bool Resume { get; init; }
+
         [CommandOption("--summarize <DIR>")]
         [Description("Don't run: write summary.md for every results.jsonl under DIR (e.g. one per model, run in parallel).")]
         public string? Summarize { get; init; }
@@ -162,7 +166,9 @@ internal sealed class MeasureCommand : AsyncCommand<MeasureCommand.Settings>
             var outDir = settings.Out ?? Path.Combine("measure-results", DateTime.Now.ToString("yyyy-MM-dd-HHmmss", CultureInfo.InvariantCulture));
             Directory.CreateDirectory(outDir);
             var resultsPath = Path.Combine(outDir, "results.jsonl");
-            File.Delete(resultsPath);
+            var done = settings.Resume ? await KeepCompletedAsync(resultsPath, ct) : [];
+            if (!settings.Resume)
+                File.Delete(resultsPath);
 
             var runner = new Runner(fixtures, loggers);
             var runSettings = new RunSettings(settings.MaxIterations, systemPrompt, settings.Verbose);
@@ -172,6 +178,7 @@ internal sealed class MeasureCommand : AsyncCommand<MeasureCommand.Settings>
             await AnsiConsole.Progress().StartAsync(async progress =>
             {
                 var bar = progress.AddTask("runs", maxValue: total);
+                bar.Increment(done.Count);
                 // Modes are interleaved within each run, so drift in a provider over the session
                 // doesn't land on one mode.
                 foreach (var model in models)
@@ -183,8 +190,21 @@ internal sealed class MeasureCommand : AsyncCommand<MeasureCommand.Settings>
                             foreach (var rig in rigs)
                             {
                                 ct.ThrowIfCancellationRequested();
+                                if (done.Contains((model.Label, rig.Mode.ToString(), task.Id, run)))
+                                    continue;
+
                                 bar.Description = $"{model.Label} {rig.Mode} {task.Id} #{run}";
                                 var rows = await runner.RunAsync(rig, graders[rig.Mode], model, task, run, runSettings, ct);
+
+                                // A rate limit is the provider's, not the model's: wait it out and
+                                // run the task again rather than record it.
+                                for (var attempt = 1; attempt <= MaxRateLimitRetries && rows.Any(IsRateLimited); attempt++)
+                                {
+                                    bar.Description = $"{model.Label} {rig.Mode} {task.Id} #{run} (429, retry {attempt})";
+                                    await Task.Delay(TimeSpan.FromSeconds(20 * attempt), ct);
+                                    rows = await runner.RunAsync(rig, graders[rig.Mode], model, task, run, runSettings, ct);
+                                }
+
                                 await Report.AppendAsync(resultsPath, rows, ct);
                                 bar.Increment(1);
                             }
@@ -214,6 +234,35 @@ internal sealed class MeasureCommand : AsyncCommand<MeasureCommand.Settings>
             foreach (var rig in rigs)
                 await rig.DisposeAsync();
         }
+    }
+
+    private const int MaxRateLimitRetries = 5;
+
+    private static bool IsRateLimited(TurnResult row) =>
+        row.Error?.Contains("429", StringComparison.Ordinal) == true;
+
+    /// <summary>
+    /// --resume: keeps the task runs in <paramref name="resultsPath"/> whose every turn finished
+    /// without an error, drops the rest from the file, and returns the kept ones' keys.
+    /// </summary>
+    private static async Task<HashSet<(string Model, string Mode, string Task, int Run)>> KeepCompletedAsync(
+        string resultsPath, CancellationToken ct)
+    {
+        if (!File.Exists(resultsPath))
+            return [];
+
+        var rows = Report.Read(resultsPath);
+        var byRun = rows.GroupBy(r => (r.Model, r.Mode, Task: r.Task.Split('#')[0], r.Run)).ToList();
+        var complete = byRun
+            .Where(g => g.All(r => r.Error is null)
+                        && g.Count() == MeasureTasks.All.Single(t => t.Id == g.Key.Task).Turns.Count)
+            .ToList();
+
+        File.Delete(resultsPath);
+        await Report.AppendAsync(resultsPath, complete.SelectMany(g => g), ct);
+        AnsiConsole.MarkupLineInterpolated(
+            $"Resuming: kept {complete.Count} completed task run(s), dropped {byRun.Count - complete.Count}.");
+        return [.. complete.Select(g => g.Key)];
     }
 
     private static List<ModelUnderTest> BuildModels(Settings settings, MeasureOptions options, ILoggerFactory loggers)

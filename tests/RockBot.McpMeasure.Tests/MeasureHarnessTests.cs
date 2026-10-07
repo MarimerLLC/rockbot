@@ -185,9 +185,26 @@ public class MeasureHarnessTests
 
         var summary = Report.Summarize([Row(true, null), Row(false, Outcome.WrongKey)], "# t");
 
-        StringAssert.Contains(summary, "| low (m) | Eager | 2 | 50% |");
+        StringAssert.Contains(summary, "| low (m) | Eager | 2 | 0% | 50% |", "No attempts recorded, so no target call was right.");
         StringAssert.Contains(summary, "| send_email |");
         StringAssert.Contains(summary, Outcome.WrongKey);
+    }
+
+    [TestMethod]
+    public void TargetRightFirstTime_IgnoresPreparatoryCalls_ButNotAWrongFirstTry()
+    {
+        DownstreamAttempt Attempt(string tool, string args, string outcome = Outcome.Ok) =>
+            new("typed", $"adjutant__{tool}", "adjutant", tool, args, outcome, null);
+        TurnResult Row(params DownstreamAttempt[] attempts) => new()
+        {
+            Model = "m", ModelId = "m", Tier = "Low", Mode = "Eager", Task = "reply_thread#2", Run = 1, Attempts = [.. attempts]
+        };
+        var good = $$"""{"to":["{{FixtureServers.DanaAddress}}"],"subject":"Re","body":"Count me in."}""";
+
+        Assert.IsTrue(Report.TargetRightFirstTime(Row(Attempt("search_emails", """{"query":"Dana"}"""), Attempt("send_email", good))));
+        Assert.IsFalse(Report.TargetRightFirstTime(Row(Attempt("send_email", """{"to":"dana","subject":"Re"}""", Outcome.WrongType),
+            Attempt("send_email", good))));
+        Assert.IsFalse(Report.TargetRightFirstTime(Row(Attempt("search_emails", """{"query":"Dana"}"""))));
     }
 
     private static async Task<IReadOnlyList<TurnResult>> RunScriptedAsync(McpWrapperMode mode)

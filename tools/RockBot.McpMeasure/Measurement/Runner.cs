@@ -61,6 +61,7 @@ public sealed class Runner(FixtureHost fixtures, ILoggerFactory loggers)
     private readonly InMemoryWorkingMemory _workingMemory = new();
     private readonly IOptions<AgentHostOptions> _hostOptions = Options.Create(new AgentHostOptions());
     private readonly string _scratch = Path.Combine(Path.GetTempPath(), "rockbot-mcp-measure-agent-" + Guid.NewGuid().ToString("N"));
+    private LlmCostEstimator? _costEstimator;
 
     public async Task<IReadOnlyList<TurnResult>> RunAsync(
         MeasureRig rig, Grader grader, ModelUnderTest model, MeasureTask task, int run, RunSettings settings, CancellationToken ct)
@@ -148,12 +149,14 @@ public sealed class Runner(FixtureHost fixtures, ILoggerFactory loggers)
     private AgentLoopRunner CreateLoop(IChatClient capture, ModelBehavior behavior, MeasureRig rig)
     {
         Directory.CreateDirectory(_scratch);
+        // One estimator per runner: it watches its pricing file.
+        _costEstimator ??= new LlmCostEstimator(
+            Options.Create(new LlmPricingOptions { ConfigPath = Path.Combine(_scratch, "llm-pricing.json") }),
+            loggers.CreateLogger<LlmCostEstimator>());
+
         IChatClient client = behavior.UseTextBasedToolCalling
             ? capture
-            : new RockBotFunctionInvokingChatClient(capture, null, null, behavior,
-                new LlmCostEstimator(
-                    Options.Create(new LlmPricingOptions { ConfigPath = Path.Combine(_scratch, "llm-pricing.json") }),
-                    loggers.CreateLogger<LlmCostEstimator>()),
+            : new RockBotFunctionInvokingChatClient(capture, null, null, behavior, _costEstimator,
                 _workingMemory, _hostOptions, loggers.CreateLogger<RockBotFunctionInvokingChatClient>());
 
         return new AgentLoopRunner(
