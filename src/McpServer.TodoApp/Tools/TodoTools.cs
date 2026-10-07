@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
 using McpServer.TodoApp.Models;
 using McpServer.TodoApp.Services;
@@ -17,7 +18,7 @@ public sealed class TodoTools(TodoRepository repository)
         [Description("Title of the task.")] string title,
         [Description("Due date in ISO format (YYYY-MM-DD).")] string due_date,
         [Description("Recurrence type. Defaults to none.")] RecurrenceType recurrence = RecurrenceType.None,
-        [Description("Optional description of the task.")] string? description = null,
+        [Description("Optional description of the task's intent. Record later status updates with add_task_note, not here.")] string? description = null,
         [Description(RecurrenceUntilDescription)] string? recurrence_until = null,
         [Description(RecurrenceCountDescription)] int? recurrence_count = null,
         [Description(MonthAnchorDescription + " With last_day, due_date is moved to the last day of its month.")] MonthAnchor? month_anchor = null)
@@ -61,7 +62,8 @@ public sealed class TodoTools(TodoRepository repository)
     }
 
     [McpServerTool(Name = "list_tasks", ReadOnly = true, OpenWorld = false)]
-    [Description("Lists active to-do tasks, optionally filtered by due date range. Returns a JSON array.")]
+    [Description("Lists active to-do tasks, optionally filtered by due date range. Returns a JSON array. " +
+                 "Notes are omitted; each task shows note_count and its most recent note as last_note.")]
     public async Task<string> ListTasksAsync(
         [Description("Optional ISO date (YYYY-MM-DD). Only return tasks due before this date.")] string? due_before = null,
         [Description("Optional ISO date (YYYY-MM-DD). Only return tasks due after this date.")] string? due_after = null)
@@ -87,7 +89,42 @@ public sealed class TodoTools(TodoRepository repository)
                 .Where(t => after is null || t.DueDate > after.Value)
                 .ToList();
 
-            return JsonSerializer.Serialize(filtered, ToolJson.Options);
+            return JsonSerializer.Serialize(filtered.Select(ToListView), ToolJson.Options);
+        }
+        catch (Exception ex) when (ex is not McpException)
+        {
+            throw new McpException(ex.Message, ex);
+        }
+    }
+
+    [McpServerTool(Name = "add_task_note", Destructive = false, Idempotent = false, OpenWorld = false)]
+    [Description(
+        "Appends a timestamped note to an active task's activity log without changing its description. Use this for status " +
+        "updates, verification results and other agent observations instead of editing description. Returns the task with all its notes.")]
+    public async Task<string> AddTaskNoteAsync(
+        [Description("GUID of the task.")] string id,
+        [Description("The note text.")] string text,
+        [Description("Optional short label for who or what wrote the note, e.g. heartbeat-patrol.")] string? source = null)
+    {
+        try
+        {
+            if (!Guid.TryParse(id, out var guid))
+                throw new McpException("invalid id, expected a GUID");
+            if (string.IsNullOrWhiteSpace(text))
+                throw new McpException("text must not be empty");
+
+            var active = await repository.GetActiveAsync();
+            var index = active.FindIndex(t => t.Id == guid);
+            if (index < 0)
+                throw new McpException("task not found");
+
+            var existing = active[index];
+            var note = new TaskNote(DateTimeOffset.UtcNow, text.Trim(), string.IsNullOrWhiteSpace(source) ? null : source.Trim());
+            var updated = existing with { Notes = [.. existing.Notes ?? [], note] };
+            active[index] = updated;
+            await repository.SaveActiveAsync(active);
+
+            return JsonSerializer.Serialize(updated, ToolJson.Options);
         }
         catch (Exception ex) when (ex is not McpException)
         {
@@ -128,7 +165,8 @@ public sealed class TodoTools(TodoRepository repository)
                 CreatedAt: task.CreatedAt,
                 CompletedAt: DateTimeOffset.UtcNow,
                 SeriesId: task.SeriesId,
-                Occurrence: task.Occurrence);
+                Occurrence: task.Occurrence,
+                Notes: task.Notes);
             completed.Add(completedItem);
 
             TodoItem? next = null;
@@ -149,7 +187,8 @@ public sealed class TodoTools(TodoRepository repository)
                         Id = Guid.NewGuid(),
                         DueDate = nextDue,
                         CreatedAt = DateTimeOffset.UtcNow,
-                        Occurrence = task.Occurrence + 1
+                        Occurrence = task.Occurrence + 1,
+                        Notes = null
                     };
                     active.Add(next);
                 }
@@ -197,7 +236,7 @@ public sealed class TodoTools(TodoRepository repository)
     public async Task<string> UpdateTaskAsync(
         [Description("GUID of the task to update.")] string id,
         [Description("New title.")] string? title = null,
-        [Description("New description.")] string? description = null,
+        [Description("New description (replaces the old one). For status updates or observations, use add_task_note instead.")] string? description = null,
         [Description("New due date in ISO format (YYYY-MM-DD).")] string? due_date = null,
         [Description("New recurrence type. " +
                      "Setting none ends the series but keeps this task and its id; it also clears any series limits.")] RecurrenceType? recurrence = null,
@@ -370,5 +409,17 @@ public sealed class TodoTools(TodoRepository repository)
         // unless the caller moved the due date or the task wasn't anchored on a day before.
         var keepDay = !dueDateExplicit && existing?.MonthAnchor == MonthAnchor.SameDay && existing.AnchorDay is not null;
         return (anchor, keepDay ? existing!.AnchorDay : dueDate.Day, dueDate);
+    }
+
+    /// <summary>List form of a task: the notes log is replaced by its count and latest entry to keep listings small.</summary>
+    private static JsonNode ToListView(TodoItem task)
+    {
+        var node = JsonSerializer.SerializeToNode(task with { Notes = null }, ToolJson.Options)!.AsObject();
+        node.Remove("notes");
+        node["note_count"] = task.Notes?.Count ?? 0;
+        node["last_note"] = task.Notes is { Count: > 0 } notes
+            ? JsonSerializer.SerializeToNode(notes[^1], ToolJson.Options)
+            : null;
+        return node;
     }
 }

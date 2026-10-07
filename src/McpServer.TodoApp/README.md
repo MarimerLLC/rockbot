@@ -7,7 +7,8 @@ An MCP server providing a persistent to-do list accessible to AI agents via the 
 | Tool | Parameters | Description |
 |------|-----------|-------------|
 | `add_task` | `title`, `due_date` (YYYY-MM-DD), optional `recurrence` (none/daily/weekly/monthly/quarterly/biannual/yearly), `description`, `recurrence_until`, `recurrence_count`, `month_anchor` | Adds a new task; returns created task as JSON |
-| `list_tasks` | optional `due_before`, `due_after` (YYYY-MM-DD) | Lists active tasks, optionally filtered by due date |
+| `list_tasks` | optional `due_before`, `due_after` (YYYY-MM-DD) | Lists active tasks, optionally filtered by due date; notes are summarized as `note_count` + `last_note` |
+| `add_task_note` | `id`, `text`, optional `source` | Appends a timestamped note to a task's activity log; returns the task with all notes |
 | `complete_task` | `id` (GUID), optional `stop_recurrence` | Marks task complete; returns `{ completed, next, series_ended }` |
 | `delete_task` | `id` (GUID) | Removes task from active list |
 | `update_task` | `id`, optional `title`, `description`, `due_date`, `recurrence`, `recurrence_until`, `recurrence_count`, `month_anchor` | Updates fields on an active task; the id is preserved |
@@ -31,6 +32,13 @@ An MCP server providing a persistent to-do list accessible to AI agents via the 
 - `complete_task` returns `next` (the new occurrence with its id, or `null`) and `series_ended` (`stop_recurrence` / `count_reached` / `until_reached`, or `null`).
 - `update_task(recurrence: "none")` ends a series without deleting the task and clears its limits. `recurrence_until: ""` and `recurrence_count: 0` clear a single limit.
 - Setting a limit on a task whose recurrence is `none` is an error.
+
+### Notes
+
+`description` holds the task's intent. Status updates, verification results and other agent observations go in the append-only notes log via `add_task_note`, not into `description`.
+- Each note records `at` (a server timestamp), `text`, and an optional `source` (e.g. `heartbeat-patrol`).
+- `list_tasks` omits the log, showing only `note_count` and `last_note`, so listings don't grow as notes accumulate.
+- Notes stay with the occurrence they were written on: they move to completed history (visible in `list_completed`) and don't carry over to the next occurrence.
 
 ### Contract
 
