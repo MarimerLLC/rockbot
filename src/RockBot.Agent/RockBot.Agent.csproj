@@ -11,6 +11,8 @@
 
   <ItemGroup>
     <InternalsVisibleTo Include="RockBot.Agent.Tests" />
+    <!-- The MCP measurement harness (#613) starts the bridge with its own attachment storage. -->
+    <InternalsVisibleTo Include="RockBot.McpMeasure" />
   </ItemGroup>
 
   <ItemGroup>

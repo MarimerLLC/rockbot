@@ -1,0 +1,48 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Measures how well models call downstream MCP tools through each typed-tool mode (#613):
+    RockBot's real agent loop and MCP bridge, in one process, against in-process fixture MCP
+    servers. See README.md.
+  -->
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsPackable>false</IsPackable>
+    <UserSecretsId>rockbot-mcp-measure</UserSecretsId>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="RockBot.McpMeasure.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="ModelContextProtocol.AspNetCore" Version="2.2.0" />
+    <PackageReference Include="Microsoft.Extensions.AI.OpenAI" Version="10.3.0" />
+    <PackageReference Include="Microsoft.Extensions.Configuration.UserSecrets" Version="10.0.*" />
+    <PackageReference Include="Spectre.Console" Version="0.49.*" />
+    <PackageReference Include="Spectre.Console.Cli" Version="0.49.*" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- The bridge (McpBridgeService) lives in the agent; its agent/ and model-behaviors/ content
+         and appsettings.json are copied here, so runs use the agent's real prompts and behaviors. -->
+    <ProjectReference Include="..\..\src\RockBot.Agent\RockBot.Agent.csproj" />
+    <ProjectReference Include="..\..\src\RockBot.Host\RockBot.Host.csproj" />
+    <ProjectReference Include="..\..\src\RockBot.Llm\RockBot.Llm.csproj" />
+    <ProjectReference Include="..\..\src\RockBot.Tools\RockBot.Tools.csproj" />
+    <ProjectReference Include="..\..\src\RockBot.Tools.Mcp\RockBot.Tools.Mcp.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="measure.json" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+</Project>

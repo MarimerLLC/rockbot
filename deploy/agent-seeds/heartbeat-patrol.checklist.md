@@ -32,8 +32,9 @@ file exists unless the relevant tool output confirms it.
   successful tool call confirms data.
 - Do not infer mailbox integration, calendar contents, scheduler state, or file
   contents from prior expectations.
-- When invoking MCP tools, call `mcp_get_service_details` first if arguments
-  are uncertain; do not retry random parameter names while narrating success.
+- When invoking MCP tools, prefer the typed `{server}__{tool}` tool; call
+  `mcp_get_service_details` first if arguments are uncertain; do not retry
+  random parameter names while narrating success.
 
 ## Steps
 
@@ -45,7 +46,8 @@ For each fire:
    it. Pass the resulting plan list to the active-plans worker as `context`.
 
 2. **Parallel gather via `spawn_workers`** — one call, three definitions, each
-   with `timeout_minutes: 5`. Workers reach MCP servers via `mcp_invoke_tool`;
+   with `timeout_minutes: 5`. Workers reach MCP servers through typed
+   `{server}__{tool}` tools, or `mcp_invoke_tool` when a tool isn't typed;
    each description lists the servers it should call. Cross-namespace working
    memory is accessible by passing the full key path (e.g.
    `shared/pending/deadlines`).
@@ -53,8 +55,9 @@ For each fire:
    - **`calendar-scan`**
      - `result_key`: `shared/patrol/calendar-latest`
      - description: "Scan all calendar accounts via the `calendar-mcp` MCP
-       server for events in the next 7 days. Use `mcp_get_service_details`
-       to load schemas before invoking. Record events plus actionable next-24h
+       server for events in the next 7 days. Call its typed
+       `calendar-mcp__*` tools, or load schemas with `mcp_get_service_details`
+       before using `mcp_invoke_tool`. Record events plus actionable next-24h
        items (prep gaps, back-to-back stretches, focus windows) to the result
        key."
 
@@ -73,7 +76,7 @@ For each fire:
        any existing `shared/pending/*` entries you can read directly.
      - description: "For each active plan in `context`, identify the next
        useful evidence-gathering step and pull only data the plan needs. Use
-       the `todo` MCP server (via `mcp_invoke_tool`) to cross-check
+       the `todo` MCP server (its `todo__*` tools) to cross-check
        overdue/due-today items. Record what was checked and what remains
        blocked. Do not infer from expectations."
 
@@ -110,8 +113,10 @@ is currently the full registry (minus the worker-exclusion list). After the
 first few worker-aware patrol fires, phase 4 will narrow each definition to the
 specific MCP management + memory tool names actually invoked, to shrink schema
 injection cost. Do not add `tools_allow` here in a phase-3 update without first
-confirming the exact registry tool names — the registry holds management
-proxies like `mcp_invoke_tool`, not per-server prefixes such as `calendar-mcp.*`.
+confirming the exact registry tool names. With typed MCP tools on, a pattern
+such as `calendar-mcp.*` admits that server's `calendar-mcp__*` tools (see
+design/mcp-bridge.md); with them off, the registry holds only the management
+proxies such as `mcp_invoke_tool`.
 
 ## After the patrol
 

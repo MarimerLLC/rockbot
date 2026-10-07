@@ -7,8 +7,9 @@ using RockBot.Host;
 namespace RockBot.Tools.Mcp;
 
 /// <summary>
-/// The typed MCP tool surface as the agent loop sees it, and, in <see cref="McpWrapperMode.Lazy"/>,
-/// the per-session activations (#612, porting mcp-aggregator#42's lazy mode).
+/// The typed MCP tool surface as the agent loop sees it, and, for tiers in
+/// <see cref="McpWrapperMode.Lazy"/> or <see cref="McpWrapperMode.Pinned"/>, the per-session
+/// activations and pinned servers (#612 porting mcp-aggregator#42's lazy mode; #613).
 /// <para>
 /// Activations are scoped to one tool session — a conversation, a subagent run, a worker run —
 /// and never registered in the global <see cref="IToolRegistry"/>: one session's search must not
@@ -17,6 +18,11 @@ namespace RockBot.Tools.Mcp;
 /// loses them all after <see cref="McpToolSurfaceOptions.ActivationIdleTimeout"/> unused. A
 /// tool whose server goes away or whose surface changes is evicted everywhere; the next search
 /// activates it again with its new schema.
+/// </para>
+/// <para>
+/// A session's pinned servers are the ones it most recently called, at most
+/// <see cref="McpToolSurfaceOptions.MaxPinnedServersPerSession"/>. They are recorded whenever some
+/// tier is pinned, and a pinned run gets every current typed tool of each, after its activations.
 /// </para>
 /// <para>
 /// Deliberately dependency-free so the agent loop can take it without a DI cycle;
@@ -47,14 +53,19 @@ public sealed class McpTypedToolSurface : ITypedToolSurface
         _lastSweepTicks = _time.GetUtcNow().UtcTicks;
     }
 
-    public TypedToolMode Mode => _options.WrapperMode switch
+    public TypedToolMode ModeFor(ModelTier tier) => _options.ModeFor(tier) switch
     {
         McpWrapperMode.Eager => TypedToolMode.Eager,
         McpWrapperMode.Lazy => TypedToolMode.Lazy,
+        McpWrapperMode.Pinned => TypedToolMode.Pinned,
         _ => TypedToolMode.Off
     };
 
     public string LoaderToolName => FindToolsName;
+
+    public int MaxToolsPerRequest => _options.MaxToolsPerRequest;
+
+    public bool IsTypedTool(string toolName) => _catalog is { } catalog && catalog.TryGet(toolName, out _);
 
     internal void Bind(McpWrapperCatalog catalog) => _catalog = catalog;
 
@@ -68,11 +79,13 @@ public sealed class McpTypedToolSurface : ITypedToolSurface
 
     /// <summary>
     /// The typed names of <paramref name="server"/>'s tools that best fit <paramref name="query"/>,
-    /// falling back to its first tools when none match. Empty when typed tools are off.
+    /// falling back to its first tools when none match. Empty when typed tools are off for every
+    /// tier, or for the current run's.
     /// </summary>
     public IReadOnlyList<string> TypedNamesFor(McpServerSummary server, string query, int max)
     {
-        if (Mode == TypedToolMode.Off || _catalog is not { } catalog)
+        if (!_options.IndexesWrappers || TypedToolSurfaceContext.Mode == TypedToolMode.Off
+            || _catalog is not { } catalog)
             return [];
 
         var tools = catalog.WrappersFor(server.ServerName);
@@ -98,18 +111,16 @@ public sealed class McpTypedToolSurface : ITypedToolSurface
 
     /// <summary>
     /// Activates <paramref name="tools"/> for <paramref name="sessionId"/>, in order. Returns the
-    /// names now active; empty outside lazy mode or without a session.
+    /// names now active; empty when no tier activates typed tools, or without a session.
     /// </summary>
     public IReadOnlyList<string> Activate(string? sessionId, IEnumerable<McpWrapperTool> tools)
     {
-        if (Mode != TypedToolMode.Lazy || string.IsNullOrEmpty(sessionId))
+        if (!_options.ActivatesWrappers || string.IsNullOrEmpty(sessionId))
             return [];
-
-        SweepIfDue();
 
         var requested = tools.ToList();
         var cap = Math.Max(1, _options.MaxActivatedToolsPerSession);
-        var session = _sessions.GetOrAdd(sessionId, _ => new Session { Touched = _time.GetUtcNow() });
+        var session = SessionFor(sessionId);
         var added = new List<string>();
         lock (session)
         {
@@ -152,31 +163,101 @@ public sealed class McpTypedToolSurface : ITypedToolSurface
         lock (session) return session.Names.Contains(toolName);
     }
 
-    public IReadOnlyList<AIFunction> GetActivated(string toolSessionId)
+    /// <summary>
+    /// Records that <paramref name="sessionId"/> called a tool on <paramref name="serverName"/>, so a
+    /// pinned run of that session gets all of the server's typed tools. A no-op unless some tier
+    /// is pinned.
+    /// </summary>
+    public void Pin(string? sessionId, string serverName)
     {
-        if (Mode != TypedToolMode.Lazy || _catalog is not { } catalog
+        // An unknown server, or one without typed tools, would only push a real one out.
+        if (!_options.PinsServers || string.IsNullOrEmpty(sessionId) || string.IsNullOrEmpty(serverName)
+            || _catalog is not { } catalog || catalog.WrappersFor(serverName).Count == 0)
+            return;
+
+        var cap = Math.Max(1, _options.MaxPinnedServersPerSession);
+        var session = SessionFor(sessionId);
+        lock (session)
+        {
+            session.Touched = _time.GetUtcNow();
+            var index = session.Pinned.FindIndex(s => string.Equals(s, serverName, StringComparison.OrdinalIgnoreCase));
+            if (index >= 0)
+            {
+                session.Pinned.RemoveAt(index);
+            }
+            else
+            {
+                _logger.LogInformation("MCP server {Server} pinned for session {Session}", serverName, sessionId);
+            }
+            session.Pinned.Add(serverName);
+
+            var overflow = session.Pinned.Count - cap;
+            if (overflow > 0)
+                session.Pinned.RemoveRange(0, overflow);
+        }
+    }
+
+    /// <summary>The servers <paramref name="sessionId"/> has pinned, least recently called first.</summary>
+    public IReadOnlyList<string> GetPinned(string sessionId)
+    {
+        if (!_sessions.TryGetValue(sessionId, out var session))
+            return [];
+        lock (session) return [.. session.Pinned];
+    }
+
+    public IReadOnlyList<AIFunction> GetActivated(string toolSessionId, TypedToolMode mode)
+    {
+        if (mode is not (TypedToolMode.Lazy or TypedToolMode.Pinned) || _catalog is not { } catalog
             || !_sessions.TryGetValue(toolSessionId, out var session))
             return [];
 
         List<string> names;
+        List<string> pinned;
         lock (session)
         {
             session.Touched = _time.GetUtcNow();
             names = [.. session.Names];
+            pinned = mode == TypedToolMode.Pinned ? [.. session.Pinned] : [];
         }
 
         var tools = new List<AIFunction>(names.Count);
+        var seen = new HashSet<string>(StringComparer.Ordinal);
         foreach (var name in names)
         {
-            if (catalog.TryGet(name, out var wrapper))
+            if (catalog.TryGet(name, out var wrapper) && seen.Add(name))
                 tools.Add(catalog.CreateFunction(wrapper, toolSessionId));
+        }
+
+        // Pinned servers' tools share the activations' budget: the most recently called server
+        // fills it first. They follow the activations in the list, oldest pin first, each in the
+        // server's own order, so a new pin adds to the end and the prompt cache holds.
+        var budget = Math.Max(1, _options.MaxActivatedToolsPerSession) - tools.Count;
+        var admitted = new HashSet<string>(StringComparer.Ordinal);
+        for (var i = pinned.Count - 1; i >= 0 && budget > 0; i--)
+        {
+            foreach (var wrapper in catalog.WrappersFor(pinned[i]))
+            {
+                if (budget == 0)
+                    break;
+                if (!seen.Contains(wrapper.Name) && admitted.Add(wrapper.Name))
+                    budget--;
+            }
+        }
+
+        foreach (var server in pinned)
+        {
+            foreach (var wrapper in catalog.WrappersFor(server))
+            {
+                if (admitted.Contains(wrapper.Name) && seen.Add(wrapper.Name))
+                    tools.Add(catalog.CreateFunction(wrapper, toolSessionId));
+            }
         }
         return tools;
     }
 
     public AIFunction? ActivateByName(string toolSessionId, string toolName)
     {
-        if (Mode != TypedToolMode.Lazy || _catalog is not { } catalog || !catalog.TryGet(toolName, out var wrapper))
+        if (!_options.ActivatesWrappers || _catalog is not { } catalog || !catalog.TryGet(toolName, out var wrapper))
             return null;
 
         _logger.LogInformation("Typed MCP tool {Tool} called by name in session {Session}; activating it",
@@ -206,6 +287,12 @@ public sealed class McpTypedToolSurface : ITypedToolSurface
         }
     }
 
+    private Session SessionFor(string sessionId)
+    {
+        SweepIfDue();
+        return _sessions.GetOrAdd(sessionId, _ => new Session { Touched = _time.GetUtcNow() });
+    }
+
     private void SweepIfDue()
     {
         var now = _time.GetUtcNow();
@@ -226,6 +313,7 @@ public sealed class McpTypedToolSurface : ITypedToolSurface
     private sealed class Session
     {
         public List<string> Names { get; } = [];
+        public List<string> Pinned { get; } = [];
         public DateTimeOffset Touched { get; set; }
     }
 }

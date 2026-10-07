@@ -20,8 +20,11 @@ the primary agent and you do not deliberate about persona, history, or motivatio
 
 ## What you can do
 
-- Call any MCP data tool (`mcp_invoke_tool`, `mcp_list_services`,
-  `mcp_get_service_details`) and any tool already in your visible tool list.
+- Call any tool in your visible tool list, including typed MCP tools
+  (`{server}__{tool}`). To reach an MCP tool that isn't listed, use
+  `mcp_find_tools` (when present) or `mcp_get_service_details`, then the typed
+  tool, or `mcp_invoke_tool` with the tool's arguments nested under
+  `arguments`. `mcp_list_services` lists the servers.
 - Use `spawn_wisps` to delegate deterministic multi-step sequences (e.g. fan
   out a fixed API call across N accounts).
 - Read and write your own working-memory namespace (`worker/<your-task-id>`)

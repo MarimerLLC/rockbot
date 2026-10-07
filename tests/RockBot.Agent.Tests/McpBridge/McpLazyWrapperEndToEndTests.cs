@@ -15,6 +15,7 @@ namespace RockBot.Agent.Tests.McpBridge;
 /// (<see cref="AgentLoopRunner"/> over <see cref="RockBotFunctionInvokingChatClient"/>, or the
 /// text-based loop) against the real gateway — catalog, bridge, MCP server. A tool the model
 /// finds, or names, in one iteration is offered and callable in the next, within the same turn.
+/// Also per-tier modes and pinned servers (#613), through the same loop.
 /// </summary>
 [TestClass]
 public class McpLazyWrapperEndToEndTests
@@ -97,11 +98,13 @@ public class McpLazyWrapperEndToEndTests
             typedToolSurface: surface);
     }
 
-    private static Task<string> RunTurnAsync(AgentLoopRunner runner, AgentSide agent, string session = Session) =>
+    private static Task<string> RunTurnAsync(
+        AgentLoopRunner runner, AgentSide agent, string session = Session, ModelTier tier = ModelTier.Balanced) =>
         runner.RunAsync(
             [new ChatMessage(ChatRole.User, "Email a@b.c with the subject 'hi'.")],
             new ChatOptions { Tools = [.. agent.Registry.BuildAgentToolFunctions(session, "batch")] },
             session,
+            tier: tier,
             enableFollowUp: false,
             enableCompletionEval: false,
             enableReasoningScaffolding: false);
@@ -126,7 +129,7 @@ public class McpLazyWrapperEndToEndTests
         CollectionAssert.DoesNotContain(model.ToolsOffered[0], "fixture__send_email", "Lazy: not in the baseline.");
         CollectionAssert.Contains(model.ToolsOffered[1], "fixture__send_email",
             "The tool mcp_find_tools activated must be offered on the very next request.");
-        Assert.AreEqual(0, agent.Surface.GetActivated("session/other").Count, "Other sessions don't see it.");
+        Assert.AreEqual(0, agent.Surface.GetActivated("session/other", TypedToolMode.Lazy).Count, "Other sessions don't see it.");
     }
 
     [TestMethod]
@@ -171,11 +174,15 @@ public class McpLazyWrapperEndToEndTests
         var agent = await ConnectAgentAsync(harness, McpWrapperMode.Lazy);
         var details = agent.Registry.GetExecutor("mcp_get_service_details")!;
 
-        var one = await details.ExecuteAsync(new ToolInvokeRequest
+        ToolInvokeResponse one;
+        using (TypedToolSurfaceContext.Set(agent.Surface, ModelTier.Balanced))
         {
-            ToolCallId = "1", ToolName = "mcp_get_service_details", SessionId = "s1",
-            Arguments = """{"server_name":"fixture","tool_name":"send_email"}"""
-        }, CancellationToken.None);
+            one = await details.ExecuteAsync(new ToolInvokeRequest
+            {
+                ToolCallId = "1", ToolName = "mcp_get_service_details", SessionId = "s1",
+                Arguments = """{"server_name":"fixture","tool_name":"send_email"}"""
+            }, CancellationToken.None);
+        }
         var all = await details.ExecuteAsync(new ToolInvokeRequest
         {
             ToolCallId = "2", ToolName = "mcp_get_service_details", SessionId = "s2",
@@ -183,9 +190,77 @@ public class McpLazyWrapperEndToEndTests
         }, CancellationToken.None);
 
         Assert.IsFalse(one.IsError, one.Content);
+        StringAssert.DoesNotMatch(all.Content!, new System.Text.RegularExpressions.Regex("Now callable"),
+            "Outside an activating run, nothing tells the model it can call typed tools it hasn't got.");
         StringAssert.Contains(one.Content, "Now callable in this conversation by typed name: fixture__send_email.");
-        CollectionAssert.AreEqual(new[] { "fixture__send_email" }, agent.Surface.GetActivated("s1").Select(f => f.Name).ToArray());
+        CollectionAssert.AreEqual(new[] { "fixture__send_email" },
+            agent.Surface.GetActivated("s1", TypedToolMode.Lazy).Select(f => f.Name).ToArray());
         CollectionAssert.AreEquivalent(new[] { "fixture__send_email", "fixture__delete_everything" },
-            agent.Surface.GetActivated("s2").Select(f => f.Name).ToArray());
+            agent.Surface.GetActivated("s2", TypedToolMode.Lazy).Select(f => f.Name).ToArray());
+    }
+
+    // ── Per-tier modes and pinned servers (#613) ──────────────────────────────
+
+    [TestMethod]
+    [DataRow(ModelTier.Low, true, false, DisplayName = "Low (eager)")]
+    [DataRow(ModelTier.Balanced, false, false, DisplayName = "Balanced (off)")]
+    [DataRow(ModelTier.High, false, true, DisplayName = "High (lazy)")]
+    public async Task MixedTiers_OneRegistry_EachTierGetsItsOwnList(ModelTier tier, bool typed, bool loader)
+    {
+        await using var harness = await BridgeHarness.StartAsync([SendEmail(new Counter())]);
+        var agent = await ConnectAgentAsync(harness, McpWrapperMode.Off, o =>
+        {
+            o.WrapperModeByTier[ModelTier.Low] = McpWrapperMode.Eager;
+            o.WrapperModeByTier[ModelTier.High] = McpWrapperMode.Lazy;
+        });
+        var model = new ScriptedModel(Text("ok"));
+
+        await RunTurnAsync(CreateRunner(model, false, agent.Surface), agent, tier: tier);
+
+        Assert.AreEqual(typed, model.ToolsOffered[0].Contains("fixture__send_email"));
+        Assert.AreEqual(loader, model.ToolsOffered[0].Contains("mcp_find_tools"));
+        CollectionAssert.Contains(model.ToolsOffered[0], "mcp_invoke_tool");
+    }
+
+    [TestMethod]
+    [DataRow(false, DisplayName = "native")]
+    [DataRow(true, DisplayName = "text-based")]
+    public async Task Pinned_AnInvokeToolCall_PinsTheServer_ForTheRestOfTheTurnAndTheNext(bool textBased)
+    {
+        var executions = new Counter();
+        await using var harness = await BridgeHarness.StartAsync([SendEmail(executions), DeleteEverything()]);
+        var agent = await ConnectAgentAsync(harness, McpWrapperMode.Pinned);
+        var model = new ScriptedModel(
+            Call("mcp_invoke_tool", new()
+            {
+                ["server_name"] = "fixture",
+                ["tool_name"] = "send_email",
+                ["arguments"] = SendArgs
+            }),
+            Text("Sent."));
+
+        await RunTurnAsync(CreateRunner(model, textBased, agent.Surface), agent);
+        var next = new ScriptedModel(Text("ok"));
+        await RunTurnAsync(CreateRunner(next, textBased, agent.Surface), agent);
+
+        Assert.AreEqual(1, executions.Value);
+        CollectionAssert.DoesNotContain(model.ToolsOffered[0], "fixture__send_email", "Nothing pinned yet.");
+        CollectionAssert.Contains(model.ToolsOffered[1], "fixture__delete_everything",
+            "Calling the server pins all its typed tools, from the next request on.");
+        CollectionAssert.IsSubsetOf(new[] { "fixture__send_email", "fixture__delete_everything" }, next.ToolsOffered[0]);
+    }
+
+    [TestMethod]
+    public async Task Lazy_AnInvokeToolCall_PinsNothing()
+    {
+        await using var harness = await BridgeHarness.StartAsync([SendEmail(new Counter()), DeleteEverything()]);
+        var agent = await ConnectAgentAsync(harness, McpWrapperMode.Lazy);
+        var model = new ScriptedModel(
+            Call("mcp_invoke_tool", new() { ["server_name"] = "fixture", ["tool_name"] = "send_email", ["arguments"] = SendArgs }),
+            Text("Sent."));
+
+        await RunTurnAsync(CreateRunner(model, false, agent.Surface), agent);
+
+        CollectionAssert.DoesNotContain(model.ToolsOffered[1], "fixture__delete_everything");
     }
 }

@@ -165,12 +165,13 @@ public sealed class McpManagementExecutor : IToolExecutor, IAsyncDisposable
         var content = JsonSerializer.Serialize(payload, JsonOptions);
 
         // Lazy typed tools (#612): looking at a server's tools (or one of them) activates them
-        // for this session, so the next call can use the typed name.
-        if (_typedTools is { Mode: TypedToolMode.Lazy })
+        // for this session, so the next call can use the typed name. Only a run that activates
+        // typed tools is told so (#613).
+        if (_typedTools is not null)
         {
             var activated = _typedTools.Activate(request.SessionId,
                 tools.Count == 1 ? _typedTools.WrappersFor(serverName, tools[0].Name) : _typedTools.WrappersFor(serverName));
-            if (activated.Count > 0)
+            if (activated.Count > 0 && TypedToolSurfaceContext.IsActivating)
             {
                 content += $"\n\nNow callable in this conversation by typed name: {string.Join(", ", activated)}. " +
                            "Call them directly rather than through mcp_invoke_tool.";
@@ -329,6 +330,11 @@ public sealed class McpManagementExecutor : IToolExecutor, IAsyncDisposable
             response = await _recovery.RecoverAsync(
                 serverName, toolName, innerRequest, response, ct, sessionId: outer.SessionId);
         }
+
+        // Pinned typed tools (#613): a server this session calls keeps all its typed tools in
+        // the session's list. Either path counts; a failed call does too, since the typed tool's
+        // schema is the likeliest way to get the next one right.
+        _typedTools?.Pin(outer.SessionId, serverName);
 
         McpDiagnostics.RecordInvocation(serverName, via, response.IsError);
         _logger.LogDebug("MCP {Server}/{Tool} via {Via}: {Outcome}",
