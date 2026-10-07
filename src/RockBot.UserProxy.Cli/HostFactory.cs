@@ -58,6 +58,8 @@ internal static class HostFactory
         {
             opts.AgentName = builder.Configuration["Agent:Name"] ?? "RockBot";
             opts.ProxyId = proxyId;
+            // Every CLI run is a short-lived process — don't leave its reply queues on the broker.
+            opts.EphemeralQueues = true;
             // Only set where the agent's HTTP port is reachable — a CLI on a laptop generally
             // cannot see it, and leaving this unset falls back to the bus rather than failing.
             opts.AttachmentUploadUrl = builder.Configuration["UserProxy:AttachmentUploadUrl"];

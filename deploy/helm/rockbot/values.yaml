@@ -286,16 +286,18 @@ rabbitmq:
   userName: ""      # REQUIRED
   virtualHost: /
   managementApiBaseUrl: ""  # optional — e.g. http://rabbitmq-mgmt.default.svc.cluster.local:15672
-                            # required for DLQ depth metrics (rockbot.messaging.dlq.depth)
-                            # required for dlqRetention policy application (below)
+                            # required for DLQ depth metrics (rockbot.messaging.dlq.depth),
+                            # the DLQ-growth alert built on them, and DLQ sampling by the dream cycle
 
-  # DLQ retention policy — applied via RabbitMQ Management API on every helm install/upgrade.
-  # Matches all *.dlq queues and enforces TTL + max-length so messages cannot accumulate forever.
-  # Only active when managementApiBaseUrl is also set.
+  # DLQ retention — applied by the agent itself as queue arguments when it declares each
+  # *.dlq queue (no Management API or policy needed). Queue arguments combine with broker
+  # policies and the stricter limit wins, so no policy can lift these caps.
+  # See design/messaging.md "Retention and expiry".
   dlqRetention:
     enabled: true
-    messageTtlMs: 259200000  # 72 hours — messages older than this are expired by the broker
-    maxLength: 10000          # drop oldest messages (drop-head) when queue exceeds this count
+    messageTtlMs: 259200000     # 72 hours — messages older than this are expired by the broker
+    maxLength: 10000            # drop oldest messages (drop-head) when queue exceeds this count
+    maxLengthBytes: 268435456   # 256 MiB — drop oldest messages when queue bodies exceed this size
 
 # ── Script Manager pod ────────────────────────────────────────────────────────
 # Trusted sidecar that owns all pod RBAC in the scripts namespace.

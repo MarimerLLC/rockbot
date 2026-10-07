@@ -8,12 +8,14 @@ namespace RockBot.Messaging.RabbitMQ;
 /// Represents an active RabbitMQ subscription.
 /// Transparently reconnects the channel and consumer if the channel is closed
 /// by the broker or a network event.  Disposing cancels the consumer and
-/// closes the channel without triggering a reconnect.
+/// closes the channel without triggering a reconnect, and deletes the queues of an
+/// ephemeral subscription.
 /// </summary>
 internal sealed class RabbitMqSubscription : ISubscription, IAsyncDisposable
 {
     private readonly Func<CancellationToken, Task<(IChannel channel, string consumerTag)>> _channelFactory;
     private readonly ILogger _logger;
+    private readonly (string Queue, string Dlq)? _ephemeralQueues;
     private readonly CancellationTokenSource _disposeCts = new();
 
     // Updated atomically by the reconnect loop; read in DisposeAsync.
@@ -37,7 +39,8 @@ internal sealed class RabbitMqSubscription : ISubscription, IAsyncDisposable
         string topic,
         string subscriptionName,
         Func<CancellationToken, Task<(IChannel channel, string consumerTag)>> channelFactory,
-        ILogger logger)
+        ILogger logger,
+        (string Queue, string Dlq)? ephemeralQueues = null)
     {
         _channel = channel;
         _consumerTag = consumerTag;
@@ -45,6 +48,7 @@ internal sealed class RabbitMqSubscription : ISubscription, IAsyncDisposable
         SubscriptionName = subscriptionName;
         _channelFactory = channelFactory;
         _logger = logger;
+        _ephemeralQueues = ephemeralQueues;
 
         RegisterShutdownHandler(channel);
     }
@@ -127,7 +131,25 @@ internal sealed class RabbitMqSubscription : ISubscription, IAsyncDisposable
         if (channel.IsOpen)
         {
             try { await channel.BasicCancelAsync(_consumerTag); } catch { /* best-effort */ }
-            await channel.CloseAsync();
+
+            // An ephemeral subscription's queues die with it. The DLQ is only removed when
+            // empty so dead-letters stay inspectable until the broker's x-expires reaps it.
+            // A process that crashes skips this; x-expires covers that case too.
+            if (_ephemeralQueues is (string queue, string dlq))
+            {
+                try
+                {
+                    await channel.QueueDeleteAsync(queue);
+                    await channel.QueueDeleteAsync(dlq, ifUnused: false, ifEmpty: true);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogDebug(ex, "Best-effort delete of ephemeral queue {Queue} failed", queue);
+                }
+            }
+
+            if (channel.IsOpen)
+                await channel.CloseAsync();
         }
     }
 }

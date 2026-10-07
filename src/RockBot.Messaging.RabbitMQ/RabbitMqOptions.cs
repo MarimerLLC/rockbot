@@ -55,4 +55,42 @@ public sealed class RabbitMqOptions
     /// When null or empty, DLQ depth reporting and DLQ message sampling are disabled.
     /// </summary>
     public string? ManagementApiBaseUrl { get; set; }
+
+    /// <summary>
+    /// Retention caps applied as queue arguments to every dead-letter queue.
+    /// </summary>
+    public RabbitMqDlqRetentionOptions DlqRetention { get; set; } = new();
+
+    /// <summary>
+    /// Idle period after which the broker deletes an ephemeral subscription's queues
+    /// (<c>x-expires</c>). Default: 24 hours.
+    /// </summary>
+    public TimeSpan EphemeralQueueExpiry { get; set; } = TimeSpan.FromHours(24);
+
+    /// <summary>
+    /// Message TTL on an ephemeral subscription's main queue (<c>x-message-ttl</c>).
+    /// A reply nobody consumed within this window is dead-lettered. Default: 1 hour.
+    /// </summary>
+    public TimeSpan EphemeralMessageTtl { get; set; } = TimeSpan.FromHours(1);
+}
+
+/// <summary>
+/// Dead-letter queue retention caps. Applied as queue arguments when a DLQ is declared,
+/// so they hold regardless of broker policies: when a policy also sets a limit, RabbitMQ
+/// enforces the stricter of the two. Keep these identical across every process that
+/// shares a broker vhost — a DLQ re-declared with different arguments is rejected.
+/// </summary>
+public sealed class RabbitMqDlqRetentionOptions
+{
+    /// <summary>Whether to cap DLQs at all. Default: true.</summary>
+    public bool Enabled { get; set; } = true;
+
+    /// <summary>Dead-lettered messages expire after this many milliseconds. Default: 72 hours.</summary>
+    public long MessageTtlMs { get; set; } = 259_200_000;
+
+    /// <summary>Maximum messages per DLQ; the oldest are dropped beyond it. Default: 10 000.</summary>
+    public long MaxLength { get; set; } = 10_000;
+
+    /// <summary>Maximum total body bytes per DLQ; the oldest are dropped beyond it. Default: 256 MiB.</summary>
+    public long MaxLengthBytes { get; set; } = 256L * 1024 * 1024;
 }

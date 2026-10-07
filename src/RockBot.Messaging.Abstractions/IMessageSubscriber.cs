@@ -31,4 +31,18 @@ public interface IMessageSubscriber : IAsyncDisposable
         Func<MessageEnvelope, CancellationToken, Task<MessageResult>> handler,
         CancellationToken cancellationToken = default,
         int dispatchConcurrency = 1);
+
+    /// <summary>
+    /// Subscribe to a topic with explicit <see cref="SubscriptionOptions"/>.
+    /// The default implementation forwards to the basic overload and ignores
+    /// <see cref="SubscriptionOptions.Ephemeral"/>, which is correct for providers
+    /// whose subscriptions don't outlive the process (e.g. in-process).
+    /// </summary>
+    Task<ISubscription> SubscribeAsync(
+        string topic,
+        string subscriptionName,
+        Func<MessageEnvelope, CancellationToken, Task<MessageResult>> handler,
+        SubscriptionOptions options,
+        CancellationToken cancellationToken = default)
+        => SubscribeAsync(topic, subscriptionName, handler, cancellationToken, options.DispatchConcurrency);
 }

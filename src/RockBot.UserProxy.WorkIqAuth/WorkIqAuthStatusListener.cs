@@ -36,6 +36,7 @@ public sealed class WorkIqAuthStatusListener
             WorkIqAuthTopics.Expired,
             $"ui.workiq.expired.{Guid.NewGuid():N}",
             HandleAsync,
+            new SubscriptionOptions { Ephemeral = true },
             cancellationToken);
         _logger.LogInformation("WorkIq auth status listener subscribed");
     }
