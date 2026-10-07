@@ -127,6 +127,13 @@ public sealed class TodoTools(TodoRepository repository)
             if ((await repository.GetCompletedAsync()).FirstOrDefault(t => t.Id == guid) is { } completed)
                 return JsonSerializer.Serialize(new { status = "completed", task = completed }, ToolJson.Options);
 
+            if ((await repository.GetDeletedAsync()).FirstOrDefault(d => d.Task.Id == guid) is { } deleted)
+            {
+                return JsonSerializer.Serialize(
+                    new { status = "deleted", task = deleted.Task, deletedAt = deleted.DeletedAt, purgeAfter = PurgeAfter(deleted) },
+                    ToolJson.Options);
+            }
+
             throw new McpException("task not found");
         }
         catch (Exception ex) when (ex is not McpException)
@@ -204,7 +211,11 @@ public sealed class TodoTools(TodoRepository repository)
                 CompletedAt: DateTimeOffset.UtcNow,
                 SeriesId: task.SeriesId,
                 Occurrence: task.Occurrence,
-                Notes: task.Notes);
+                Notes: task.Notes,
+                RecurrenceUntil: task.RecurrenceUntil,
+                RecurrenceCount: task.RecurrenceCount,
+                MonthAnchor: task.MonthAnchor,
+                AnchorDay: task.AnchorDay);
             completed.Add(completedItem);
 
             TodoItem? next = null;
@@ -244,7 +255,8 @@ public sealed class TodoTools(TodoRepository repository)
     }
 
     [McpServerTool(Name = "delete_task", Destructive = true, Idempotent = true, OpenWorld = false)]
-    [Description("Deletes an active task without marking it as completed.")]
+    [Description("Deletes an active task without marking it as completed. The delete is recoverable: the task keeps its id " +
+                 "and can be brought back with restore_task until it is purged (see purge_after in the result).")]
     public async Task<string> DeleteTaskAsync(
         [Description("GUID of the task to delete.")] string id)
     {
@@ -258,10 +270,146 @@ public sealed class TodoTools(TodoRepository repository)
             if (task is null)
                 throw new McpException("task not found");
 
+            var deleted = await repository.GetDeletedAsync();
+            var entry = new DeletedTodoItem(task, DateTimeOffset.UtcNow);
+            deleted.Add(entry);
+            await repository.SaveDeletedAsync(deleted);
             active.Remove(task);
             await repository.SaveActiveAsync(active);
 
-            return $"deleted task {guid}";
+            return JsonSerializer.Serialize(DeletedView(entry), ToolJson.Options);
+        }
+        catch (Exception ex) when (ex is not McpException)
+        {
+            throw new McpException(ex.Message, ex);
+        }
+    }
+
+    [McpServerTool(Name = "restore_task", Destructive = false, Idempotent = false, OpenWorld = false)]
+    [Description("Restores a deleted task to the active list with its original id, notes and series. Returns the restored task.")]
+    public async Task<string> RestoreTaskAsync(
+        [Description("GUID of the deleted task.")] string id)
+    {
+        try
+        {
+            if (!Guid.TryParse(id, out var guid))
+                throw new McpException("invalid id, expected a GUID");
+
+            var deleted = await repository.GetDeletedAsync();
+            var entry = deleted.FirstOrDefault(d => d.Task.Id == guid)
+                ?? throw new McpException("deleted task not found (it may have been purged, or was never deleted)");
+
+            var active = await repository.GetActiveAsync();
+            active.Add(entry.Task);
+            await repository.SaveActiveAsync(active);
+            deleted.Remove(entry);
+            await repository.SaveDeletedAsync(deleted);
+
+            return JsonSerializer.Serialize(entry.Task, ToolJson.Options);
+        }
+        catch (Exception ex) when (ex is not McpException)
+        {
+            throw new McpException(ex.Message, ex);
+        }
+    }
+
+    [McpServerTool(Name = "list_deleted", ReadOnly = true, OpenWorld = false)]
+    [Description("Lists deleted tasks that can still be restored, most recently deleted first. Each entry has the task's " +
+                 "id, title, due_date and recurrence plus deleted_at and purge_after.")]
+    public async Task<string> ListDeletedAsync()
+    {
+        try
+        {
+            var deleted = await repository.GetDeletedAsync();
+            return JsonSerializer.Serialize(
+                deleted.OrderByDescending(d => d.DeletedAt).Select(DeletedView), ToolJson.Options);
+        }
+        catch (Exception ex) when (ex is not McpException)
+        {
+            throw new McpException(ex.Message, ex);
+        }
+    }
+
+    [McpServerTool(Name = "uncomplete_task", Destructive = false, Idempotent = false, OpenWorld = false)]
+    [Description(
+        "Reverses complete_task: moves a completed task back to the active list with its original id. If completing it " +
+        "created a next occurrence, that occurrence is removed again, but only while it is untouched. If the next " +
+        "occurrence was edited, noted or completed since, the call fails so nothing is lost. Returns JSON " +
+        "{ restored, removed_next } where removed_next is the id of the removed occurrence or null.")]
+    public async Task<string> UncompleteTaskAsync(
+        [Description("GUID of the completed task (the id it had when it was completed).")] string id)
+    {
+        try
+        {
+            if (!Guid.TryParse(id, out var guid))
+                throw new McpException("invalid id, expected a GUID");
+
+            var completed = await repository.GetCompletedAsync();
+            var done = completed.FirstOrDefault(t => t.Id == guid)
+                ?? throw new McpException("completed task not found");
+
+            var restored = new TodoItem(
+                Id: done.Id,
+                Title: done.Title,
+                Description: done.Description,
+                DueDate: done.DueDate,
+                Recurrence: done.Recurrence,
+                CreatedAt: done.CreatedAt,
+                SeriesId: done.SeriesId,
+                RecurrenceUntil: done.RecurrenceUntil,
+                RecurrenceCount: done.RecurrenceCount,
+                Occurrence: done.Occurrence,
+                MonthAnchor: done.MonthAnchor,
+                AnchorDay: done.AnchorDay,
+                Notes: done.Notes);
+
+            var active = await repository.GetActiveAsync();
+            Guid? removedNext = null;
+            if (done.Recurrence != RecurrenceType.None)
+            {
+                // Completions recorded before the completed record kept series limits and the month anchor lack them;
+                // the spawned occurrence inherited them, so take them from there.
+                var linked = active.FirstOrDefault(t => t.Id != done.Id && t.SeriesId == done.SeriesId && t.Occurrence == done.Occurrence + 1);
+                var hasSeriesFields = done.MonthAnchor is not null || done.RecurrenceUntil is not null || done.RecurrenceCount is not null;
+                if (!hasSeriesFields && linked is not null)
+                {
+                    restored = restored with
+                    {
+                        RecurrenceUntil = linked.RecurrenceUntil,
+                        RecurrenceCount = linked.RecurrenceCount,
+                        MonthAnchor = linked.MonthAnchor,
+                        AnchorDay = linked.AnchorDay
+                    };
+                }
+
+                var expected = restored with
+                {
+                    DueDate = Recurrence.NextDueDate(restored),
+                    Occurrence = restored.Occurrence + 1,
+                    Notes = null
+                };
+
+                if (FindSpawnedNext(completed, expected, done) is { } nextCompleted)
+                    throw new McpException(
+                        $"cannot uncomplete: its next occurrence {nextCompleted.Id} was already completed; uncomplete that one first");
+
+                if (FindSpawnedNext(active, expected, done) is { } next)
+                {
+                    if (!IsUntouched(next, expected))
+                        throw new McpException(
+                            $"cannot uncomplete: its next occurrence {next.Id} has been edited or has notes since it was created; " +
+                            "delete or adjust that occurrence first if you still want to undo this completion");
+                    active.Remove(next);
+                    removedNext = next.Id;
+                }
+            }
+
+            active.Add(restored);
+            await repository.SaveActiveAsync(active);
+            completed.Remove(done);
+            await repository.SaveCompletedAsync(completed);
+
+            return JsonSerializer.Serialize(new { restored, removedNext }, ToolJson.Options);
         }
         catch (Exception ex) when (ex is not McpException)
         {
@@ -468,6 +616,52 @@ public sealed class TodoTools(TodoRepository repository)
         var keepDay = !dueDateExplicit && existing?.MonthAnchor == MonthAnchor.SameDay && existing.AnchorDay is not null;
         return (anchor, keepDay ? existing!.AnchorDay : dueDate.Day, dueDate);
     }
+
+    private DateTimeOffset PurgeAfter(DeletedTodoItem entry) => entry.DeletedAt.AddDays(repository.RetentionDays);
+
+    private JsonObject DeletedView(DeletedTodoItem entry)
+    {
+        var node = Compact(entry.Task.Id, entry.Task.Title, entry.Task.DueDate, entry.Task.Recurrence);
+        node["deleted_at"] = JsonSerializer.SerializeToNode(entry.DeletedAt, ToolJson.Options);
+        node["purge_after"] = JsonSerializer.SerializeToNode(PurgeAfter(entry), ToolJson.Options);
+        return node;
+    }
+
+    /// <summary>
+    /// Finds the occurrence complete_task spawned after <paramref name="done"/>: linked by series and occurrence
+    /// number, or, for occurrences created before series tracking existed, by title, recurrence and due date.
+    /// </summary>
+    private static T? FindSpawnedNext<T>(IEnumerable<T> items, TodoItem expected, CompletedTodoItem done) where T : class
+    {
+        static (Guid Id, Guid? Series, int Occurrence, string Title, RecurrenceType Recurrence, DateOnly Due) Key(T item) => item switch
+        {
+            TodoItem t => (t.Id, t.SeriesId, t.Occurrence, t.Title, t.Recurrence, t.DueDate),
+            CompletedTodoItem c => (c.Id, c.SeriesId, c.Occurrence, c.Title, c.Recurrence, c.DueDate),
+            _ => throw new ArgumentException(nameof(item))
+        };
+
+        return items.FirstOrDefault(i =>
+            {
+                var k = Key(i);
+                return k.Id != done.Id && k.Series == done.SeriesId && k.Occurrence == expected.Occurrence;
+            })
+            ?? items.FirstOrDefault(i =>
+            {
+                var k = Key(i);
+                return k.Id != done.Id && k.Title == expected.Title && k.Recurrence == expected.Recurrence && k.Due == expected.DueDate;
+            });
+    }
+
+    /// <summary>True when the spawned occurrence still looks exactly as complete_task created it.</summary>
+    private static bool IsUntouched(TodoItem next, TodoItem expected) =>
+        next.Title == expected.Title
+        && next.Description == expected.Description
+        && next.DueDate == expected.DueDate
+        && next.Recurrence == expected.Recurrence
+        && next.RecurrenceUntil == expected.RecurrenceUntil
+        && next.RecurrenceCount == expected.RecurrenceCount
+        && next.MonthAnchor == expected.MonthAnchor
+        && next.Notes is null or { Count: 0 };
 
     private static bool Matches(string? query, string title, string? description) =>
         string.IsNullOrWhiteSpace(query)
