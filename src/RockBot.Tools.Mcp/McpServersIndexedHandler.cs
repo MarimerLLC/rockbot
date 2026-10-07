@@ -63,7 +63,7 @@ public sealed class McpServersIndexedHandler(
         registry.Register(new ToolRegistration
         {
             Name = "mcp_list_services",
-            Description = "List all connected MCP servers with their summaries and tool counts. Call this first when you need live, personal, or external data (calendar, email, files, etc.) and don't know which server to use.",
+            Description = "List all connected MCP servers with their summaries and tool counts. Call this first when you need live, personal, or external data (calendar, email, files, etc.) and don't know which server to use. Before a server's first use, read its mcp/{server} skill (get_skill) if one exists.",
             ParametersSchema = """{"type":"object","properties":{},"required":[]}""",
             Source = "mcp:management"
         }, executor);
@@ -88,7 +88,7 @@ public sealed class McpServersIndexedHandler(
         {
             Name = "mcp_register_server",
             Description = "Register a new MCP server at runtime via SSE transport. Only adds a server under a new name: it can't change or replace one that already exists.",
-            ParametersSchema = """{"type":"object","properties":{"name":{"type":"string","description":"Unique server name"},"type":{"type":"string","enum":["sse"],"description":"Transport type"},"url":{"type":"string","description":"SSE endpoint URL"},"display_name":{"type":"string","description":"Human-readable display name"},"description":{"type":"string","description":"Server description"}},"required":["name","type","url"]}""",
+            ParametersSchema = """{"type":"object","properties":{"name":{"type":"string","description":"Unique server name"},"type":{"type":"string","enum":["sse"],"description":"Transport type"},"url":{"type":"string","description":"SSE endpoint URL"}},"required":["name","type","url"]}""",
             Source = "mcp:management"
         }, executor);
 

@@ -21,7 +21,7 @@ public sealed class McpFindToolsExecutor(McpTypedToolSurface surface, McpServerI
         "Search the connected MCP servers' tools by keyword (e.g. \"send email\", \"list calendar events\"). " +
         "Each match comes back with its typed name ({server}__{tool}) and full parameter schema, and becomes " +
         "callable by that name in this conversation — call it next, as a normal tool. Search again with other " +
-        "words if nothing fits.";
+        "words if nothing fits. Before a server's first use, read its mcp/{server} skill (get_skill) if one exists.";
 
     public const string ParametersSchema =
         """{"type":"object","properties":{"query":{"type":"string","description":"Keywords for the action or data you need, e.g. 'send email' or 'calendar events'"},"limit":{"type":"integer","description":"Most results to return (default 10, max 25)"}},"required":["query"]}""";

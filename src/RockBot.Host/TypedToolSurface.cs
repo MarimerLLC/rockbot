@@ -44,6 +44,13 @@ public interface ITypedToolSurface
     /// <summary>The tool that searches for and activates typed tools (<c>mcp_find_tools</c>).</summary>
     string LoaderToolName { get; }
 
+    /// <summary>
+    /// The short orientation a run in <paramref name="mode"/> carries in its context (#614): the
+    /// naming convention and workflow for that mode, with the full guide left behind a tool call.
+    /// Starts with <see cref="TypedToolSurfaceContext.OrientationHeading"/>. Null for none.
+    /// </summary>
+    string? Orientation(TypedToolMode mode) => null;
+
     /// <summary>True when <paramref name="toolName"/> is a typed downstream tool.</summary>
     bool IsTypedTool(string toolName);
 
@@ -87,6 +94,22 @@ public static class TypedToolSurfaceContext
 
     /// <summary>True when the current run adds typed tools as the session activates them.</summary>
     public static bool IsActivating => Mode is TypedToolMode.Lazy or TypedToolMode.Pinned;
+
+    /// <summary>The first line of every MCP orientation, which marks its system message.</summary>
+    public const string OrientationHeading = "## Using MCP servers";
+
+    /// <summary>
+    /// The current run's MCP orientation (#614), or null outside a run, without one, or when
+    /// <paramref name="options"/> holds no MCP tool to orient the model toward.
+    /// </summary>
+    public static string? Orientation(ChatOptions? options)
+    {
+        if (Current.Value is not { } run || options?.Tools is not { Count: > 0 } tools
+            || !tools.Any(t => t.Name.StartsWith("mcp_", StringComparison.Ordinal) || run.Surface.IsTypedTool(t.Name)))
+            return null;
+
+        return run.Surface.Orientation(run.Mode);
+    }
 
     /// <summary>Makes <paramref name="surface"/>, in the mode for <paramref name="tier"/>, ambient for a run.</summary>
     public static IDisposable Set(ITypedToolSurface? surface, ModelTier tier)

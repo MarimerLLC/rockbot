@@ -63,6 +63,8 @@ public sealed class McpTypedToolSurface : ITypedToolSurface
 
     public string LoaderToolName => FindToolsName;
 
+    public string? Orientation(TypedToolMode mode) => McpOrientation.Build(mode);
+
     public int MaxToolsPerRequest => _options.MaxToolsPerRequest;
 
     public bool IsTypedTool(string toolName) => _catalog is { } catalog && catalog.TryGet(toolName, out _);

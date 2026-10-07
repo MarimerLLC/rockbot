@@ -1134,14 +1134,18 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
                       + string.Join("\n", identityLines) + "\n\n"
                     : string.Empty;
 
-                var instructionsSection = !string.IsNullOrWhiteSpace(metadata.Instructions)
-                    ? $"Server instructions (the MCP server's own description of its purpose and usage):\n{metadata.Instructions}\n\n"
+                // Capped with an explicit marker (#614): a server that sends pages of instructions
+                // would otherwise crowd the tool list out of the summary model's attention.
+                var instructions = McpInstructionsCap.Apply(metadata.Instructions,
+                    McpInstructionsCap.SummaryPromptMaxChars, McpInstructionsCap.GuideTools(tools.Select(t => t.Name)));
+                var instructionsSection = !string.IsNullOrWhiteSpace(instructions)
+                    ? $"Server instructions (the MCP server's own description of its purpose and usage):\n{instructions}\n\n"
                     : string.Empty;
 
                 var prompt = $"""
                     You are summarizing an MCP server's capabilities for an AI agent that must decide
-                    which server to query for a given task. The agent sees ONLY this summary when
-                    deciding — it does not see individual tool names until it calls mcp_get_service_details.
+                    which server to query for a given task. When deciding, the agent sees this summary and
+                    the bare tool names — not the tools' descriptions or the server's instructions.
 
                     Write 2-4 sentences (40-80 words) for the '{serverName}' MCP server that:
                     1. State what domain it covers (e.g. email, calendar, file storage, etc.)
@@ -1153,7 +1157,7 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
                     its purpose; use the tool list to confirm and enumerate capability categories.
 
                     The summary must give enough detail that an agent can confidently decide "this is the
-                    server I need for email/calendar/contact tasks" without seeing tool names.
+                    server I need for email/calendar/contact tasks" without reading each tool's description.
 
                     {identitySection}{instructionsSection}Based on these tools:
                     {toolList}{promptSection}

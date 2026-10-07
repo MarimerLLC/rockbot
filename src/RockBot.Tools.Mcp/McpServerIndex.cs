@@ -11,7 +11,7 @@ public sealed class McpServerIndex
     private List<McpServerSummary> _servers = [];
 
     /// <summary>
-    /// Whether the 5 management tools have been registered in <see cref="IToolRegistry"/>.
+    /// Whether the management tools have been registered in <see cref="IToolRegistry"/>.
     /// Stored here (singleton) because the handler is scoped (created per message).
     /// </summary>
     public bool ManagementToolsRegistered { get; set; }

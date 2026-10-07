@@ -96,7 +96,6 @@ public sealed class McpManagementExecutor : IToolExecutor, IAsyncDisposable
         {
             s.ServerName,
             s.ServerId,
-            s.DisplayName,
             s.Summary,
             s.ToolCount,
             s.ToolNames,
@@ -156,7 +155,8 @@ public sealed class McpManagementExecutor : IToolExecutor, IAsyncDisposable
                 title = details.Title,
                 version = details.Version,
                 description = details.Description,
-                instructions = details.Instructions
+                instructions = McpInstructionsCap.Apply(details.Instructions, McpInstructionsCap.DetailsMaxChars,
+                    GuideToolsFor(serverName, details.Tools))
             },
             tools,
             prompts = details.Prompts
@@ -202,6 +202,20 @@ public sealed class McpManagementExecutor : IToolExecutor, IAsyncDisposable
             ToolName = request.ToolName,
             Content = content
         };
+    }
+
+    /// <summary>
+    /// The server's guide-like tools (<see cref="McpInstructionsCap.GuideTools"/>), named the way
+    /// this run calls them: by typed name when it has typed tools, else through mcp_invoke_tool.
+    /// </summary>
+    private List<string> GuideToolsFor(string serverName, IEnumerable<McpToolDefinition> tools)
+    {
+        var typed = TypedToolSurfaceContext.Mode is TypedToolMode.Eager or TypedToolMode.Lazy or TypedToolMode.Pinned;
+        return McpInstructionsCap.GuideTools(tools.Select(t => t.Name))
+            .Select(name => typed && _typedTools?.WrappersFor(serverName, name).FirstOrDefault() is { } wrapper
+                ? $"`{wrapper.Name}`"
+                : $"`{name}` (through mcp_invoke_tool)")
+            .ToList();
     }
 
     /// <summary>

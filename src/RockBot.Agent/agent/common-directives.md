@@ -89,16 +89,8 @@ after reasonable attempts, report what you tried and what the current state is.
 
 ## Tool Calling
 
-- Call tools by the exact name in your tool list. MCP server tools appear
-  there as typed tools named `{server}__{tool}` (e.g.
-  `calendar-mcp__get_calendar_events`): call them directly, with arguments
-  that match their schema.
-- If the MCP tool you need isn't in your list, call `mcp_find_tools` with a
-  few keywords when you have it — the tools it returns become callable by
-  their typed names — or `mcp_get_service_details` for the server. Use
-  `mcp_invoke_tool(server_name, tool_name, arguments)` when there is no typed
-  tool: `tool_name` is the server's own tool name (never a `{server}__{tool}`
-  name), and the tool's arguments go inside `arguments`.
+- Call tools by the exact name in your tool list. How to reach MCP server
+  tools in this run is in the "Using MCP servers" section of your context.
 - Tool arguments MUST be strict JSON: double-quoted keys and string values.
   Never use single-quoted strings or unquoted keys.
   Correct: `{"timeZone": "America/Chicago"}` — Wrong:
@@ -217,9 +209,10 @@ tool calls re-doing them.
 - **Skill index and per-turn recall.** The full skill summary index is
   injected once per session; BM25 recall runs against your skill library on
   every turn. Do not call `list_skills` repeatedly.
-- **MCP and tool discovery.** All configured MCP servers are connected and
-  their tools registered at process start. Use `list_tool_guides` and
-  `get_tool_guide` to see usage docs; tools themselves are already callable.
+- **MCP and tool discovery.** Configured MCP servers are connected at process
+  start. Which of their tools are already in your list depends on the run;
+  the "Using MCP servers" section says how to reach the rest. Use
+  `list_tool_guides` and `get_tool_guide` to see usage docs.
 
 ### MCP server skill naming
 

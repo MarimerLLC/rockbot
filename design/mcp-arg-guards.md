@@ -21,13 +21,13 @@ flows through.
 
 ### Named handlers, never `Type.GetType()`
 
-mcp.json is **LLM-writable**: the model can call `register_mcp_server`, and the bridge
+mcp.json is **LLM-writable**: the model can call `mcp_register_server`, and the bridge
 persists config back to disk. If a config entry could name an arbitrary CLR type for the
 bridge to load and execute, anything that writes mcp.json would have an arbitrary-code
-execution channel into the bridge process — the exact host that the "nothing trusts the
-LLM" isolation exists to protect. Instead, config selects from a closed set: handlers are
-registered in DI (`McpArgGuardRegistration` + `McpArgGuardRegistry`, mirroring the
-`TokenProviderRegistry` pattern) and referenced by name. Adding a custom handler requires
+execution channel into the agent process that hosts the bridge — the exact host that the
+"nothing trusts the LLM" isolation exists to protect. Instead, config selects from a closed
+set: handlers are registered in DI (`McpArgGuardRegistration` + `McpArgGuardRegistry`,
+mirroring the `TokenProviderRegistry` pattern) and referenced by name. Adding a custom handler requires
 compiling it into the image and one `AddSingleton` line — which is also what `Type.GetType()`
 would require in practice, minus the gadget risk.
 
@@ -35,7 +35,8 @@ would require in practice, minus the gadget risk.
 
 `ConnectServerAsync` validates `argGuards` (unknown handler, missing handler name, invalid
 options) **before** storing the server config. On failure it logs an error and refuses the
-connection; the server never enters `_serverConfigs`, so invokes get server-not-found.
+connection; the server never enters `McpServerConnections`' configured servers, so invokes
+get server-not-found.
 Rationale: the operator declared a security policy; connecting without it silently weakens
 it — the same "reports success, actually wrong" failure mode this feature exists to fix.
 Partial alternatives (disable only guarded tools) create confusing half-connected states,
@@ -62,14 +63,15 @@ the model self-corrects in one turn instead of flailing.
 ### Single enforcement point covers all callers
 
 Every MCP invocation in the framework — primary agent, subagents, workers, wisps, A2A
-handlers, self-repair — flows through `McpToolProxy` → `tool.invoke.mcp` → the bridge's
-one invoke handler. No component holds its own `McpClient`. The transparent
+handlers, self-repair, typed `{server}__{tool}` calls as well as `mcp_invoke_tool` — flows
+through `McpToolProxy` → `tool.invoke.mcp` → the bridge's one invoke handler. No component
+holds its own `McpClient` (the non-production `AddMcpTools` path aside). The transparent
 reconnect-retry inside the handler reuses the already-validated `arguments` instance, so
 it cannot bypass a guard (a rejected call never reaches the retry path).
 
 ### The model can't shed guards
 
-`register_mcp_server` can't express `argGuards`, and it is model-callable. Since #603 it only adds
+`mcp_register_server` can't express `argGuards`, and it is model-callable. Since #603 it only adds
 new names, and `mcp_unregister_server` can't remove an entry that has guards (or any other
 operator policy). So the model can't strip an operator's guards by replacing or re-creating the
 entry. See "Operator entries and model registrations" in `mcp-bridge.md`.
@@ -115,5 +117,5 @@ Rejects when a configured string argument falls outside the allowed absolute pre
   removes.
 - **No implicit default prefixes** from `FileSystem:BasePath` — guards are explicit
   per-server config; an implicit default would make policy invisible.
-- **No `argGuards` parameter on `register_mcp_server`** — guards are operator policy,
+- **No `argGuards` parameter on `mcp_register_server`** — guards are operator policy,
   declared only via mcp.json on the PVC.
