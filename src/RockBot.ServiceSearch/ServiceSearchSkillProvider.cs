@@ -35,12 +35,14 @@ public sealed class ServiceSearchSkillProvider : IToolSkillProvider
         - summary: LLM-generated description of the service's purpose
         - relevance_score: [0, 1] — 1.0 means top match; below ~0.3 consider keeping searching
         - top_skills: (A2A only) 2–3 skill IDs available on the agent
-        - top_tools: (MCP only) 2–3 tool names available on the server
+        - top_tools: (MCP only) 2–3 tool names available on the server. When typed MCP tools
+          are on, these are typed names ({server}__{tool}) picked for your query.
 
         ## Deciding what to do with a result
 
         If type == "mcp":
-          → Use mcp_invoke_tool with the id as server_name (synchronous, returns immediately)
+          → If top_tools are typed names, call the one you need directly
+          → Otherwise use mcp_invoke_tool with the id as server_name (synchronous, returns immediately)
           → For tool details first: mcp_get_service_details(server_name=id)
 
         If type == "a2a":

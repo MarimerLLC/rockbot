@@ -64,6 +64,7 @@ Issue #420, ported from mcp-aggregator PR #42.
 **Mode.** `McpBridge:WrapperMode` (Helm `agent.mcpWrapperMode`) chooses how downstream tools are offered:
 - `Off` (default): the six `mcp_*` management tools only.
 - `Eager`: `McpWrapperCatalog` also registers one typed tool per downstream tool.
+- `Lazy`: the same typed tools, but only in the sessions that search for them. See [Lazy typed tools](#lazy-typed-tools-mcp_find_tools) below.
 
 The aggregator measured typed tools at 90–100% first-call success for small models, against 10–25% through `invoke_tool`. Per-tier defaults are chosen in #613.
 
@@ -98,6 +99,39 @@ The catalog reconciles on every `McpServersIndexed`:
 - Every tool profile admits wrappers, the same profiles that admit `mcp_invoke_tool`.
 - A worker's `tools_allow` narrows wrappers through their dotted `{server}.{tool}` form, so `"calendar-mcp.*"` admits that server's typed tools.
 - Wisp `Direct/Mcp` steps keep routing through `mcp_invoke_tool`. `McpStepValidator` finds a wrapper's schema by its `DownstreamName`.
+
+### Lazy typed tools (`mcp_find_tools`)
+
+Issue #612, ported from mcp-aggregator PR #42's lazy mode. Eager mode puts every downstream tool in every prompt. Lazy mode keeps the baseline to the `mcp_*` tools and adds a typed tool only to the session that asked for it. The aggregator measured the trade-off: mid-tier models used 7.6k input tokens per task lazy, against 4.3k eager and 10.3k through `invoke_tool`. Weak models drop more calls on the extra discovery step (gpt-4.1-nano: 60% lazy, 90% eager). #613 measures this on RockBot's tiers.
+
+**Indexing.** `McpWrapperCatalog` builds the same wrappers it would in eager mode, under the same naming and collision rules, but does not register them in `IToolRegistry`. The registry is global, and one session's search must not grow every other session's context. That is why the aggregator rejected process-wide activation.
+
+**Activation.** A session activates typed tools in three ways:
+- **`mcp_find_tools(query, limit=10)`** ranks typed tools with the aggregator's scoring (`McpToolSearch`). An exact match of the whole query against the typed or tool name scores +1000. Each query token then scores +80 if it equals a tool-name token, else +50 if it is inside the tool name, else +30 if it is inside the typed name. Each token also adds +10 if the description has it and +5 if the server's name, display name or summary does. Every match comes back with its typed name, server, `serverId`, tool name, description, full `inputSchema` and an `activated` flag, and is activated. There is no "schemas without activating" variant: a schema the model can't call by name is `invoke_tool` with extra steps.
+- **`mcp_get_service_details(server)`** activates that server's typed tools. With `tool_name`, it activates just that one.
+- **A call by typed name** to a valid tool the list doesn't hold (a name from a skill or from memory) runs it and activates it. It does not answer "unknown tool".
+
+`mcp_find_tools` is registered only in lazy mode, under source `mcp:management`, so every profile that has the gateway has it.
+
+**Scope and lifetime.** `McpTypedToolSurface` holds the activations, keyed by the tool session id that the run's registry tools carry. That id is the one their executors see: `session/{id}` for a conversation, or the subagent's, worker's or wisp's own namespace.
+- Activations last for the session, up to `McpBridge:MaxActivatedToolsPerSession` (default 40). Beyond that, the oldest is dropped. Re-activating a tool keeps its place, so the tool list's order, and the provider's prompt cache, stay stable.
+- A session's activations are dropped after `McpBridge:ActivationIdleTimeout` (default 12h) without use.
+- When a server is removed, or a tool's fingerprint or server id changes, the catalog evicts that tool from every session. The next search activates it again, with its new schema.
+
+**Taking effect within the turn.** The tool array is built once per message, so activations reach a run through `AgentLoopRunner`, the single LLM entry point:
+- `RunAsync` sets the surface as an ambient context (`TypedToolSurfaceContext`) and adds the session's earlier activations to the run's tool list.
+- On the native path, `TypedToolSurfaceChatClient` sits directly under `RockBotFunctionInvokingChatClient`. Before each request, it adds the tools activated since the last one. After each response, it resolves calls to typed tools the list doesn't hold. Both mutate the `ChatOptions` the function-invoking loop dispatches against. `FunctionInvokingChatClient` (M.E.AI 10.x) looks tools up in `options.Tools` live at every dispatch, so a tool added there is callable in the same loop.
+- The text-based loop does the same before each request and at its tool lookups.
+
+An added tool carries the same tool session id as the run's other registry tools (`ISessionBoundTool`), and is wrapped like the `mcp_find_tools` entry in the list (for example, with `ChunkingAIFunction`). A run whose tool list has no `mcp_find_tools` never gains typed tools this way. That keeps profiles that leave out the gateway closed.
+
+**Workers.** A worker's `tools_allow` doesn't gate lazy activations, because workers always keep the gateway and could reach the same tool through `mcp_invoke_tool`.
+
+**Hints.** With typed tools on, `ServiceSearchIndex` sets an MCP candidate's top items to the typed names that best fit the query. It falls back to the server's first tools. So the per-turn service hints and `search_known_services` name typed tools. The completion re-prompt does the same:
+- its service hints name typed tools, and in lazy mode activate them first;
+- its capability-denial nudge points to `mcp_find_tools` (lazy) or to typed tools (eager), not to `mcp_invoke_tool`.
+
+`search_known_services` stays the per-service router across MCP servers and A2A agents. `mcp_find_tools` is the per-tool search within MCP.
 
 ### Metadata Refresh
 

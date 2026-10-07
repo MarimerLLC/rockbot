@@ -14,6 +14,8 @@ namespace RockBot.Host;
 /// Subclass of <see cref="FunctionInvokingChatClient"/> that preserves the infrastructure
 /// <see cref="AgentLoopRunner"/> previously provided for native tool-calling models:
 /// progress notifications, consecutive timeout detection, and context overflow recovery.
+/// Its inner client is wrapped in <see cref="TypedToolSurfaceChatClient"/>, so typed tools a
+/// session activates mid-loop are offered, and callable, on the loop's next iteration.
 /// </summary>
 public class RockBotFunctionInvokingChatClient : FunctionInvokingChatClient
 {
@@ -39,7 +41,7 @@ public class RockBotFunctionInvokingChatClient : FunctionInvokingChatClient
         LlmCostEstimator costEstimator,
         IWorkingMemory workingMemory,
         IOptions<AgentHostOptions> hostOptions,
-        ILogger logger) : base(innerClient)
+        ILogger logger) : base(new TypedToolSurfaceChatClient(innerClient))
     {
         _progressNotifier = progressNotifier;
         _toolCallLog = toolCallLog;

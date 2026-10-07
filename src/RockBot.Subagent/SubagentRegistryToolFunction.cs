@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Microsoft.Extensions.AI;
+using RockBot.Host;
 using RockBot.Tools;
 
 namespace RockBot.Subagent;
@@ -12,9 +13,12 @@ namespace RockBot.Subagent;
 internal sealed class SubagentRegistryToolFunction(
     ToolRegistration registration,
     IToolExecutor executor,
-    string? sessionId) : AIFunction
+    string? sessionId) : AIFunction, ISessionBoundTool
 {
     private static readonly JsonSerializerOptions SerializerOptions = new();
+
+    /// <inheritdoc />
+    public string? SessionId => sessionId;
 
     /// <summary>
     /// Minimal valid OpenAI tool schema used as a fallback when a tool has no schema

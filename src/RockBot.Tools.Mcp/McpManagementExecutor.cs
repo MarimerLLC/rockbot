@@ -32,6 +32,7 @@ public sealed class McpManagementExecutor : IToolExecutor, IAsyncDisposable
     private readonly McpRecoveryExecutor? _recovery;
     private readonly ISkillStore? _skillStore;
     private readonly ToolSchemaCache? _schemaCache;
+    private readonly McpTypedToolSurface? _typedTools;
 
     private readonly ConcurrentDictionary<string, TaskCompletionSource<MessageEnvelope>> _pending = new();
     private ISubscription? _responseSubscription;
@@ -56,7 +57,8 @@ public sealed class McpManagementExecutor : IToolExecutor, IAsyncDisposable
         TimeSpan? timeout = null,
         McpRecoveryExecutor? recovery = null,
         ISkillStore? skillStore = null,
-        ToolSchemaCache? schemaCache = null)
+        ToolSchemaCache? schemaCache = null,
+        McpTypedToolSurface? typedTools = null)
     {
         _index = index;
         _proxy = proxy;
@@ -68,6 +70,7 @@ public sealed class McpManagementExecutor : IToolExecutor, IAsyncDisposable
         _recovery = recovery;
         _skillStore = skillStore;
         _schemaCache = schemaCache;
+        _typedTools = typedTools;
     }
 
     public string ResponseTopic => $"mcp.manage.response.{_identity.Name}";
@@ -160,6 +163,19 @@ public sealed class McpManagementExecutor : IToolExecutor, IAsyncDisposable
         };
 
         var content = JsonSerializer.Serialize(payload, JsonOptions);
+
+        // Lazy typed tools (#612): looking at a server's tools (or one of them) activates them
+        // for this session, so the next call can use the typed name.
+        if (_typedTools is { Mode: TypedToolMode.Lazy })
+        {
+            var activated = _typedTools.Activate(request.SessionId,
+                tools.Count == 1 ? _typedTools.WrappersFor(serverName, tools[0].Name) : _typedTools.WrappersFor(serverName));
+            if (activated.Count > 0)
+            {
+                content += $"\n\nNow callable in this conversation by typed name: {string.Join(", ", activated)}. " +
+                           "Call them directly rather than through mcp_invoke_tool.";
+            }
+        }
 
         // Pre-flight skill injection: the LLM has just narrowed in on a single
         // server, so this is the moment any `mcp/{server}` skills become uniquely

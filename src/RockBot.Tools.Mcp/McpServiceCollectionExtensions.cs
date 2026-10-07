@@ -36,7 +36,8 @@ public static class McpServiceCollectionExtensions
     /// the message bus. On startup the bridge sends <see cref="McpServersIndexed"/>;
     /// the handler registers the 6 management tools in <see cref="IToolRegistry"/>,
     /// plus a typed <c>{server}__{tool}</c> tool per downstream tool when <see cref="McpToolSurfaceOptions.WrapperMode"/>
-    /// is <see cref="McpWrapperMode.Eager"/>.
+    /// is <see cref="McpWrapperMode.Eager"/>, or <c>mcp_find_tools</c> and per-session activation when it is
+    /// <see cref="McpWrapperMode.Lazy"/>.
     /// </summary>
     public static AgentHostBuilder AddMcpToolProxy(
         this AgentHostBuilder builder,
@@ -92,8 +93,12 @@ public static class McpServiceCollectionExtensions
         // on RockBot.Tools.Mcp.
         builder.Services.AddSingleton<IMcpPreflightRecovery, McpPreflightRecovery>();
 
-        // Typed {server}__{tool} tools (#420). Off unless McpBridge:WrapperMode says otherwise.
+        // Typed {server}__{tool} tools (#420), eager or lazy (#612). Off unless McpBridge:WrapperMode
+        // says otherwise. The surface is what the agent loop sees: it carries each session's lazy
+        // activations into the run's tool list.
         builder.Services.AddOptions<McpToolSurfaceOptions>();
+        builder.Services.AddSingleton<McpTypedToolSurface>();
+        builder.Services.AddSingleton<ITypedToolSurface>(sp => sp.GetRequiredService<McpTypedToolSurface>());
         builder.Services.AddSingleton<McpWrapperCatalog>();
 
         builder.HandleMessage<McpServersIndexed, McpServersIndexedHandler>();
