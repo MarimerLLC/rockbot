@@ -113,4 +113,13 @@ public sealed class ToolContractTests : TodoServerTestBase
         StringAssert.Contains(stored, "\"dueDate\"");
         StringAssert.Contains(stored, "\"biAnnual\"");
     }
+
+    [TestMethod]
+    public async Task Initialize_ReturnsServerInstructions()
+    {
+        var client = await ClientAsync();
+
+        Assert.AreEqual(ServerInstructions.Text, client.ServerInstructions);
+        StringAssert.Contains(client.ServerInstructions, "add_task_note");
+    }
 }
