@@ -75,6 +75,11 @@ spec:
             - name: UserProxy__AttachmentUploadUrl
               value: "http://{{ include "rockbot.fullname" . }}-agent:{{ .Values.agent.attachmentUpload.port | default 8082 }}"
             {{- end }}
+            {{- with .Values.blazor.replyTimeout }}
+            # How long the chat page waits for a reply before reporting a timeout.
+            - name: UserProxy__ReplyTimeout
+              value: {{ . | quote }}
+            {{- end }}
             # Persistent ASP.NET Core data-protection key ring. Backs antiforgery tokens;
             # in memory (the default) they are invalidated by every pod restart.
             - name: DataProtection__KeyRingPath

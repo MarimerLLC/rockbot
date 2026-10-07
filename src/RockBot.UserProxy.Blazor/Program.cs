@@ -20,6 +20,12 @@ builder.Services.AddUserProxy(opts =>
     // Upload attachments to the agent over HTTP when it is reachable, so a screenshot's bytes
     // never enter the broker. Unset means uploads fall back to the bus, which still works.
     opts.AttachmentUploadUrl = builder.Configuration["UserProxy:AttachmentUploadUrl"];
+    // How long the page waits for a reply before showing "No reply received (timeout)". The
+    // agent keeps going and saves the reply either way; a slow self-hosted model with a tool
+    // round can need longer than the default. Format: "00:10:00".
+    if (builder.Configuration.GetValue<TimeSpan?>("UserProxy:ReplyTimeout") is { } replyTimeout
+        && replyTimeout > TimeSpan.Zero)
+        opts.DefaultReplyTimeout = replyTimeout;
 });
 builder.Services.AddSingleton<IUserFrontend, BlazorUserFrontend>();
 builder.Services.AddSingleton<ChatStateService>();
