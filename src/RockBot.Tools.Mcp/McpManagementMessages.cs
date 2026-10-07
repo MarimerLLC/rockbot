@@ -19,6 +19,12 @@ public sealed record McpGetServiceDetailsResponse
 {
     public required string ServerName { get; init; }
 
+    /// <summary>Stable id of the server entry (see <see cref="McpServerSummary.ServerId"/>).</summary>
+    public string? ServerId { get; init; }
+
+    /// <summary>Surface fingerprint (see <see cref="McpServerSummary.Fingerprint"/>).</summary>
+    public string? Fingerprint { get; init; }
+
     /// <summary>Server's self-reported implementation name (from <c>initialize.result.serverInfo.name</c>).</summary>
     public string? ImplementationName { get; init; }
 

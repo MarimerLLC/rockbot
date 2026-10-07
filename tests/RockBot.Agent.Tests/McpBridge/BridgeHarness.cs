@@ -30,19 +30,70 @@ internal sealed class BridgeHarness : IAsyncDisposable
     private const string AgentName = "test-agent";
 
     private readonly WebApplication _server;
-    private readonly McpBridgeService _bridge;
-    private readonly TopicSubscriber _subscriber;
-    private readonly CapturingPublisher _publisher;
+    private readonly IOptions<McpBridgeOptions> _options;
+    private readonly ILlmClient? _llmClient;
     private readonly string _configDir;
+    private McpBridgeService _bridge = null!;
+    private TopicSubscriber _subscriber = null!;
+    private CapturingPublisher _publisher = null!;
 
     private BridgeHarness(
-        WebApplication server, McpBridgeService bridge, TopicSubscriber subscriber, CapturingPublisher publisher, string configDir)
+        WebApplication server, IOptions<McpBridgeOptions> options, ILlmClient? llmClient, string configDir, List<McpServerTool> lateTools)
     {
         _server = server;
-        _bridge = bridge;
-        _subscriber = subscriber;
-        _publisher = publisher;
+        _lateTools = lateTools;
+        _options = options;
+        _llmClient = llmClient;
         _configDir = configDir;
+    }
+
+    /// <summary>The bridge under test.</summary>
+    public McpBridgeService Bridge => _bridge;
+
+    /// <summary>Path of the bridge's <c>mcp.json</c>.</summary>
+    public string ConfigPath => _options.Value.ConfigPath;
+
+    /// <summary>The fixture server's MCP endpoint.</summary>
+    public string ServerUrl { get; private init; } = "";
+
+    /// <summary>Every <see cref="McpServersIndexed"/> the bridge has published since it (re)started.</summary>
+    public IReadOnlyList<McpServersIndexed> IndexMessages => _publisher.Published
+        .Where(p => p.Envelope.MessageType == typeof(McpServersIndexed).FullName)
+        .Select(p => p.Envelope.GetPayload<McpServersIndexed>()!)
+        .ToList();
+
+    /// <summary>Adds a tool to the running fixture server, as an upgraded server would.</summary>
+    public void AddServerTool(McpServerTool tool)
+    {
+        // Stateless HTTP may build server options per request (from the Configure callback in
+        // StartAsync) or once (the cached options instance); covering both keeps this independent
+        // of which the SDK does.
+        lock (_lateTools) _lateTools.Add(tool);
+        _server.Services.GetRequiredService<IOptions<McpServerOptions>>().Value.ToolCollection?.Add(tool);
+    }
+
+    private readonly List<McpServerTool> _lateTools;
+
+    /// <summary>Stops the bridge and starts a fresh one on the same <c>mcp.json</c>.</summary>
+    public async Task RestartBridgeAsync()
+    {
+        await _bridge.StopAsync(CancellationToken.None);
+        await _bridge.DisposeAsync();
+        await StartBridgeAsync();
+    }
+
+    private async Task StartBridgeAsync()
+    {
+        _subscriber = new TopicSubscriber();
+        _publisher = new CapturingPublisher();
+        // Attachment storage defaults to the shared volume (/rockbot/shared), which a test runner
+        // can't write; keep it inside the run's temporary directory.
+        _bridge = new McpBridgeService(
+            _publisher, _subscriber, new AgentIdentity(AgentName), _options, NullLogger<McpBridgeService>.Instance,
+            llmClient: _llmClient, tokenProviders: null, healthTracker: null, argGuards: null,
+            elicitationResponder: null, services: null,
+            attachmentStorage: new AttachmentStorage(Path.Combine(_configDir, "attachments")));
+        await _bridge.StartAsync(CancellationToken.None);
     }
 
     /// <summary>
@@ -53,14 +104,27 @@ internal sealed class BridgeHarness : IAsyncDisposable
     public static async Task<BridgeHarness> StartAsync(
         IEnumerable<McpServerTool> tools,
         IEnumerable<McpServerPrompt>? prompts = null,
-        Action<McpBridgeServerConfig>? configure = null)
+        Action<McpBridgeServerConfig>? configure = null,
+        ILlmClient? llmClient = null)
     {
         var builder = WebApplication.CreateSlimBuilder();
         builder.WebHost.UseUrls("http://127.0.0.1:0");
         builder.Logging.ClearProviders();
+        var lateTools = new List<McpServerTool>();
         var mcp = builder.Services.AddMcpServer().WithHttpTransport().WithTools(tools);
         if (prompts is not null)
             mcp.WithPrompts(prompts);
+        builder.Services.Configure<McpServerOptions>(o =>
+        {
+            lock (lateTools)
+            {
+                foreach (var tool in lateTools)
+                {
+                    o.ToolCollection ??= [];
+                    if (!o.ToolCollection.Contains(tool)) o.ToolCollection.Add(tool);
+                }
+            }
+        });
 
         var server = builder.Build();
         server.MapMcp("/mcp");
@@ -82,24 +146,23 @@ internal sealed class BridgeHarness : IAsyncDisposable
         var options = Options.Create(new McpBridgeOptions
         {
             ConfigPath = configPath,
-            GenerateLlmSummaries = false,
+            GenerateLlmSummaries = llmClient is not null,
             ConnectRetryCount = 0,
             ReconnectSweepIntervalSeconds = 0,
             ConfigPollIntervalSeconds = 0,
         });
 
-        var subscriber = new TopicSubscriber();
-        var publisher = new CapturingPublisher();
-        // Attachment storage defaults to the shared volume (/rockbot/shared), which a test runner
-        // can't write; keep it inside the run's temporary directory.
-        var bridge = new McpBridgeService(
-            publisher, subscriber, new AgentIdentity(AgentName), options, NullLogger<McpBridgeService>.Instance,
-            llmClient: null, tokenProviders: null, healthTracker: null, argGuards: null,
-            elicitationResponder: null, services: null,
-            attachmentStorage: new AttachmentStorage(Path.Combine(configDir, "attachments")));
-        await bridge.StartAsync(CancellationToken.None);
+        var harness = new BridgeHarness(server, options, llmClient, configDir, lateTools) { ServerUrl = entry.Url };
+        await harness.StartBridgeAsync();
+        return harness;
+    }
 
-        return new BridgeHarness(server, bridge, subscriber, publisher, configDir);
+    /// <summary>Sends an <c>mcp_register_server</c> management request.</summary>
+    public async Task<McpRegisterServerResponse> RegisterAsync(string name, string url)
+    {
+        var request = new McpRegisterServerRequest { ServerName = name, Type = "http", Url = url };
+        var reply = await SendAsync(McpManagementExecutor.ManageTopic, request, headers: null);
+        return reply.GetPayload<McpRegisterServerResponse>()!;
     }
 
     /// <summary>

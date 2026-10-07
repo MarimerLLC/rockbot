@@ -10,6 +10,14 @@ namespace RockBot.Agent.McpBridge;
 public sealed class McpBridgeServerConfig
 {
     /// <summary>
+    /// Stable id of this entry (<see cref="RockBot.Tools.Mcp.McpServerNames.NewId"/>). The bridge
+    /// assigns one to any entry without it on load and persists it. It survives restarts and
+    /// re-registration of the same name and endpoint, but not a rename: consumers that must
+    /// follow a server across renames store the id next to the name and re-resolve.
+    /// </summary>
+    public string? Id { get; set; }
+
+    /// <summary>
     /// Transport type: "sse" (only SSE is supported in this embedded mode).
     /// </summary>
     public string? Type { get; set; }
@@ -125,6 +133,19 @@ public sealed class McpBridgeServerConfig
 
         var sameServer = string.Equals(EndpointIdentity(), existing.EndpointIdentity(), StringComparison.Ordinal);
         Elicitation = sameServer ? existing.Elicitation : existing.Elicitation?.WithoutGrants();
+    }
+
+    /// <summary>
+    /// Keeps the existing entry's <see cref="Id"/> when this config re-registers the same name at
+    /// the same endpoint; otherwise assigns a new one. A name pointed at a different server is a
+    /// different server, and anything that recorded the old id must not mistake it for the same.
+    /// </summary>
+    public void AssignIdFrom(McpBridgeServerConfig? existing)
+    {
+        Id = existing?.Id is { Length: > 0 } existingId
+             && string.Equals(EndpointIdentity(), existing.EndpointIdentity(), StringComparison.Ordinal)
+            ? existingId
+            : RockBot.Tools.Mcp.McpServerNames.NewId();
     }
 
     /// <summary>
