@@ -31,7 +31,9 @@ public sealed class TodoRepository
         await _lock.WaitAsync();
         try
         {
-            return await LoadAsync<List<TodoItem>>(_activeFile) ?? [];
+            // Items saved before series tracking existed have no SeriesId; each starts its own series.
+            var items = await LoadAsync<List<TodoItem>>(_activeFile) ?? [];
+            return items.ConvertAll(t => t.SeriesId is null ? t with { SeriesId = t.Id } : t);
         }
         finally
         {
@@ -44,7 +46,8 @@ public sealed class TodoRepository
         await _lock.WaitAsync();
         try
         {
-            return await LoadAsync<List<CompletedTodoItem>>(_completedFile) ?? [];
+            var items = await LoadAsync<List<CompletedTodoItem>>(_completedFile) ?? [];
+            return items.ConvertAll(t => t.SeriesId is null ? t with { SeriesId = t.Id } : t);
         }
         finally
         {

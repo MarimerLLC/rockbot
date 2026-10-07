@@ -6,14 +6,24 @@ An MCP server providing a persistent to-do list accessible to AI agents via the 
 
 | Tool | Parameters | Description |
 |------|-----------|-------------|
-| `add_task` | `title`, `due_date` (YYYY-MM-DD), `recurrence` (none/daily/weekly/monthly/yearly), optional `description` | Adds a new task; returns created task as JSON |
+| `add_task` | `title`, `due_date` (YYYY-MM-DD), optional `recurrence` (none/daily/weekly/monthly/quarterly/biannual/yearly), `description`, `recurrence_until`, `recurrence_count` | Adds a new task; returns created task as JSON |
 | `list_tasks` | optional `due_before`, `due_after` (YYYY-MM-DD) | Lists active tasks, optionally filtered by due date |
-| `complete_task` | `id` (GUID) | Marks task complete; repeating tasks auto-schedule next occurrence |
+| `complete_task` | `id` (GUID), optional `stop_recurrence` | Marks task complete; returns `{ completed, next, seriesEnded }` |
 | `delete_task` | `id` (GUID) | Removes task from active list |
-| `update_task` | `id`, optional `title`, `description`, `due_date` | Updates fields on an active task |
+| `update_task` | `id`, optional `title`, `description`, `due_date`, `recurrence`, `recurrence_until`, `recurrence_count` | Updates fields on an active task; the id is preserved |
 | `list_completed` | optional `completed_after`, `completed_before` (ISO datetime) | Lists completed tasks |
 
-Recurrence next-due is calculated from the original due date, not the completion date.
+### Recurrence
+
+- Next-due is calculated from the original due date, not the completion date.
+- Every occurrence of a series shares a `seriesId` and carries its 1-based `occurrence` number. Tasks stored before series tracking existed get `seriesId = id` and start counting at 1.
+- A series ends when:
+  - `complete_task` is called with `stop_recurrence: true`;
+  - the next occurrence would exceed `recurrence_count` (total occurrences, counting the first);
+  - the next due date would fall after `recurrence_until` (inclusive).
+- `complete_task` returns `next` (the new occurrence with its id, or `null`) and `seriesEnded` (`stop_recurrence` / `count_reached` / `until_reached`, or `null`).
+- `update_task(recurrence: "none")` ends a series without deleting the task and clears its limits. `recurrence_until: ""` and `recurrence_count: 0` clear a single limit.
+- Setting a limit on a task whose recurrence is `none` is an error.
 
 Argument handling is strict: every tool's input schema declares `additionalProperties: false`, and a call that passes an argument the tool doesn't declare fails with an error naming the unknown key(s) instead of being silently ignored. All failures (unknown arguments, invalid ids or dates, task not found) are returned as MCP tool errors (`isError: true`).
 

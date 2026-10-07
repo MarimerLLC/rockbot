@@ -6,7 +6,11 @@ public sealed record TodoItem(
     string? Description,
     DateOnly DueDate,
     RecurrenceType Recurrence,
-    DateTimeOffset CreatedAt
+    DateTimeOffset CreatedAt,
+    Guid? SeriesId = null,
+    DateOnly? RecurrenceUntil = null,
+    int? RecurrenceCount = null,
+    int Occurrence = 1
 );
 
 public sealed record CompletedTodoItem(
@@ -16,5 +20,7 @@ public sealed record CompletedTodoItem(
     DateOnly DueDate,
     RecurrenceType Recurrence,
     DateTimeOffset CreatedAt,
-    DateTimeOffset CompletedAt
+    DateTimeOffset CompletedAt,
+    Guid? SeriesId = null,
+    int Occurrence = 1
 );
