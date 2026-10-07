@@ -88,7 +88,19 @@ public sealed class McpManagementExecutor : IToolExecutor, IAsyncDisposable
 
     private ToolInvokeResponse ListServices(ToolInvokeRequest request)
     {
-        var json = JsonSerializer.Serialize(_index.Servers, JsonOptions);
+        // Fingerprints are bookkeeping for the gateway, not information for the model.
+        var view = _index.Servers.Select(s => new
+        {
+            s.ServerName,
+            s.ServerId,
+            s.DisplayName,
+            s.Summary,
+            s.ToolCount,
+            s.ToolNames,
+            s.PromptCount,
+            s.PromptNames
+        });
+        var json = JsonSerializer.Serialize(view, JsonOptions);
         return new ToolInvokeResponse
         {
             ToolCallId = request.ToolCallId,
@@ -136,6 +148,7 @@ public sealed class McpManagementExecutor : IToolExecutor, IAsyncDisposable
             server = new
             {
                 name = serverName,
+                id = details.ServerId,
                 implementationName = details.ImplementationName,
                 title = details.Title,
                 version = details.Version,

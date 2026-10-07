@@ -19,18 +19,22 @@ public sealed class McpServersIndexedHandler(
 {
     public Task HandleAsync(McpServersIndexed message, MessageHandlerContext context)
     {
-        index.Apply(message);
-
-        // Invalidate cached schemas for any server whose summary changed or that
-        // was removed. Schemas are server-state, so a reconnect invalidates the
-        // cache for that server. Lookups re-fetch lazily.
+        // Every reconnect and config reload re-publishes a server's summary; only a moved
+        // fingerprint (or a server whose surface is unknown) means its cached schemas are stale.
+        // Lookups re-fetch lazily.
         if (schemaCache is not null)
         {
+            var previous = index.Servers.ToDictionary(s => s.ServerName, StringComparer.OrdinalIgnoreCase);
             foreach (var server in message.Servers)
-                schemaCache.Invalidate(server.ServerName);
+            {
+                if (!SurfaceUnchanged(previous.GetValueOrDefault(server.ServerName), server))
+                    schemaCache.Invalidate(server.ServerName);
+            }
             foreach (var removed in message.RemovedServers)
                 schemaCache.Invalidate(removed);
         }
+
+        index.Apply(message);
 
         logger.LogInformation(
             "MCP server index updated: {Added} added/updated, {Removed} removed",
@@ -44,6 +48,12 @@ public sealed class McpServersIndexedHandler(
 
         return Task.CompletedTask;
     }
+
+    internal static bool SurfaceUnchanged(McpServerSummary? previous, McpServerSummary incoming) =>
+        previous is { Fingerprint: { } before }
+        && incoming.Fingerprint is { } after
+        && before == after
+        && previous.ServerId == incoming.ServerId;
 
     private void RegisterManagementTools()
     {

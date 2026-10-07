@@ -48,6 +48,20 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
     private readonly Dictionary<string, McpServerSummary> _serverSummaries = new(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>
+    /// When each connected server's tool and prompt lists were last read, for the periodic
+    /// surface refresh. Concurrent: written by connect, refresh and the sweep.
+    /// </summary>
+    private readonly ConcurrentDictionary<string, DateTimeOffset> _lastSurfaceCheck = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>Serialises surface refreshes per server, so a burst can't interleave re-lists.</summary>
+    private readonly ConcurrentDictionary<string, SemaphoreSlim> _surfaceLocks = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>Servers with a debounced list_changed refresh already queued.</summary>
+    private readonly ConcurrentDictionary<string, byte> _pendingSurfaceRefresh = new(StringComparer.OrdinalIgnoreCase);
+
+    private static readonly TimeSpan SurfaceRefreshDebounce = TimeSpan.FromMilliseconds(500);
+
+    /// <summary>
     /// Per-server elicitation policy, rebuilt on every connect so a config reload changes what
     /// the bridge is willing to answer. Absent for a server whose policy is <c>off</c> — and its
     /// absence is what stops the SDK advertising the capability for that server at all.
@@ -315,7 +329,23 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
             seeded = true;
         }
 
-        if (seeded || removedDupes > 0)
+        // Every entry gets a stable id once, persisted below. Existing names that break the
+        // rules for new registrations still load — renaming them would break whatever already
+        // refers to them — but the operator is told.
+        var backfilledIds = 0;
+        foreach (var (name, entry) in config.McpServers)
+        {
+            if (string.IsNullOrEmpty(entry.Id))
+            {
+                entry.Id = McpServerNames.NewId();
+                backfilledIds++;
+            }
+
+            if (McpServerNames.Validate(name) is { } nameProblem)
+                _logger.LogWarning("MCP server entry in {Path}: {Problem}", _configPath, nameProblem);
+        }
+
+        if (seeded || removedDupes > 0 || backfilledIds > 0)
         {
             try
             {
@@ -326,8 +356,8 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
                 });
                 await File.WriteAllTextAsync(_configPath, updatedJson, ct);
                 _logger.LogInformation(
-                    "Persisted MCP config changes to {Path} (seeded={Seeded}, duplicatesRemoved={Removed})",
-                    _configPath, seeded, removedDupes);
+                    "Persisted MCP config changes to {Path} (seeded={Seeded}, duplicatesRemoved={Removed}, idsAssigned={Ids})",
+                    _configPath, seeded, removedDupes, backfilledIds);
             }
             catch (Exception ex)
             {
@@ -352,7 +382,7 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
         // file is newer than what we read, so re-read its stamp to avoid a redundant
         // reload; otherwise record the pre-read stamp so any edit that landed mid-load is
         // still detected by the next poll.
-        var didSelfWrite = seeded || removedDupes > 0;
+        var didSelfWrite = seeded || removedDupes > 0 || backfilledIds > 0;
         var stampToRemember = didSelfWrite ? ReadConfigStamp(_configPath) : stampAtLoad;
         lock (_stampGate)
         {
@@ -517,16 +547,16 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
                         isServerPolicy: config.Elicitation is not null),
                     _logger);
 
-                var clientOptions = elicitation is null
-                    ? null
-                    : new McpClientOptions
+                var clientOptions = new McpClientOptions
+                {
+                    Handlers = new McpClientHandlers
                     {
-                        Handlers = new McpClientHandlers
-                        {
-                            ElicitationHandler = (elicitRequest, elicitCt) =>
-                                elicitation.HandleAsync(elicitRequest, elicitCt)
-                        }
-                    };
+                        ElicitationHandler = elicitation is null
+                            ? null
+                            : (elicitRequest, elicitCt) => elicitation.HandleAsync(elicitRequest, elicitCt),
+                        NotificationHandlers = SurfaceChangeHandlers(name)
+                    }
+                };
 
                 var newClient = await McpClient.CreateAsync(transport, clientOptions, cancellationToken: ct);
 
@@ -534,16 +564,8 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
                 var tools = await newClient.ListToolsAsync(cancellationToken: ct);
                 var filteredTools = ApplyToolFilters(tools.ToList(), config);
 
-                List<McpClientPrompt> prompts = [];
-                try
-                {
-                    var rawPrompts = await newClient.ListPromptsAsync(cancellationToken: ct);
-                    prompts = [.. rawPrompts];
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogDebug(ex, "MCP server {Name} does not support prompts or listing failed", name);
-                }
+                var (prompts, promptsKnown) = await ListPromptsAsync(name, newClient, ct);
+                var (fingerprint, toolFingerprints) = ComputeFingerprints(filteredTools, prompts, promptsKnown);
 
                 // Connection succeeded — atomically replace the old client without publishing a removal
                 if (_clients.Remove(name, out var oldClient))
@@ -569,7 +591,9 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
                     Version: serverInfo?.Version,
                     Description: serverInfo?.Description,
                     Instructions: newClient.ServerInstructions);
+                var previousMetadata = _serverMetadata.GetValueOrDefault(name);
                 _serverMetadata[name] = metadata;
+                _lastSurfaceCheck[name] = DateTimeOffset.UtcNow;
 
                 _logger.LogInformation(
                     "Connected to MCP server {Name} (impl={ImplName} v{Version}) with {ToolCount} tools and {PromptCount} prompts",
@@ -577,8 +601,21 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
                     filteredTools.Count, prompts.Count);
 
                 // Build summary and cache so a future health flip can re-publish without
-                // re-running the (LLM-driven) summary generation.
-                var summary = await GenerateSummaryAsync(name, metadata, filteredTools, prompts, ct);
+                // re-running the (LLM-driven) summary generation. Every reconnect and config
+                // reload comes through here; when the server's surface and identity are unchanged
+                // the previous summary still describes it, so the LLM isn't asked again.
+                var previousSummary = _serverSummaries.GetValueOrDefault(name);
+                var summary = previousSummary is { Fingerprint: { } previousFingerprint }
+                              && previousFingerprint == fingerprint
+                              && previousMetadata == metadata
+                    ? previousSummary
+                    : await GenerateSummaryAsync(name, metadata, filteredTools, prompts, ct);
+                summary = summary with
+                {
+                    ServerId = config.Id,
+                    Fingerprint = fingerprint,
+                    ToolFingerprints = toolFingerprints
+                };
                 _serverSummaries[name] = summary;
 
                 if (IsServerHiddenByAuth(config))
@@ -632,6 +669,7 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
         _serverMetadata.Remove(name);
         _serverConfigs.Remove(name);
         _serverSummaries.Remove(name);
+        _lastSurfaceCheck.TryRemove(name, out _);
         _elicitationCoordinators.TryRemove(name, out _);
         InvalidateAttachmentGateway(name);
 
@@ -772,6 +810,189 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
     }
 
     /// <summary>
+    /// Lists a server's prompts. <c>Known</c> is false only when the list couldn't be read: a
+    /// server without the prompts capability, or one answering method-not-found, simply has none.
+    /// On a failed read the previously known prompts are kept, so a transient error doesn't make
+    /// them vanish, and the surface fingerprint becomes unknown rather than recording a surface
+    /// that was never seen (mcp-aggregator#41 baselined a failed read and read stale forever).
+    /// </summary>
+    private async Task<(List<McpClientPrompt> Prompts, bool Known)> ListPromptsAsync(
+        string name, McpClient client, CancellationToken ct)
+    {
+        if (client.ServerCapabilities?.Prompts is null)
+            return ([], true);
+
+        try
+        {
+            return ([.. await client.ListPromptsAsync(cancellationToken: ct)], true);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (McpProtocolException ex) when (ex.ErrorCode == McpErrorCode.MethodNotFound)
+        {
+            _logger.LogDebug("MCP server {Name} advertises prompts but does not implement prompts/list", name);
+            return ([], true);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Listing prompts on MCP server {Name} failed; its surface fingerprint is unknown", name);
+            return (_serverPrompts.GetValueOrDefault(name) ?? [], false);
+        }
+    }
+
+    private static McpPromptDefinition ToPromptDefinition(McpClientPrompt prompt) => new()
+    {
+        Name = prompt.Name,
+        Description = prompt.Description,
+        Arguments = (prompt.ProtocolPrompt.Arguments ?? [])
+            .Select(a => new McpPromptArgument { Name = a.Name, Description = a.Description, Required = a.Required ?? false })
+            .ToList()
+    };
+
+    private static string? RawSchema(McpClientTool tool) =>
+        tool.JsonSchema.ValueKind != JsonValueKind.Undefined ? tool.JsonSchema.GetRawText() : null;
+
+    /// <summary>
+    /// The server fingerprint (null when the prompt list couldn't be read) and per-tool
+    /// fingerprints for a surface.
+    /// </summary>
+    private static (string? Server, Dictionary<string, string> Tools) ComputeFingerprints(
+        List<McpClientTool> tools, List<McpClientPrompt> prompts, bool promptsKnown)
+    {
+        var toolFingerprints = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var tool in tools)
+            toolFingerprints.TryAdd(tool.Name, McpSurfaceFingerprint.Tool(tool.Name, tool.Description, RawSchema(tool)));
+
+        var server = promptsKnown
+            ? McpSurfaceFingerprint.Server(
+                tools.Select(t => (t.Name, t.Description, RawSchema(t))),
+                prompts.Select(ToPromptDefinition))
+            : null;
+
+        return (server, toolFingerprints);
+    }
+
+    /// <summary>
+    /// Client notification handlers that queue a surface refresh when the server says its tool or
+    /// prompt list changed. Servers that never send these are covered by the periodic refresh.
+    /// </summary>
+    private IEnumerable<KeyValuePair<string, Func<JsonRpcNotification, CancellationToken, ValueTask>>> SurfaceChangeHandlers(string name)
+    {
+        Func<JsonRpcNotification, CancellationToken, ValueTask> handler = (_, _) =>
+        {
+            QueueSurfaceRefresh(name);
+            return ValueTask.CompletedTask;
+        };
+
+        return
+        [
+            new(NotificationMethods.ToolListChangedNotification, handler),
+            new(NotificationMethods.PromptListChangedNotification, handler),
+        ];
+    }
+
+    /// <summary>
+    /// Debounces list_changed bursts into one refresh per server. A notification that arrives
+    /// while a refresh is running queues another, so the last change is never missed.
+    /// </summary>
+    private void QueueSurfaceRefresh(string name)
+    {
+        if (!_pendingSurfaceRefresh.TryAdd(name, 0))
+            return;
+
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await Task.Delay(SurfaceRefreshDebounce);
+                _pendingSurfaceRefresh.TryRemove(name, out _);
+                await RefreshSurfaceAsync(name, CancellationToken.None);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Surface refresh for MCP server {Name} failed", name);
+            }
+            finally
+            {
+                _pendingSurfaceRefresh.TryRemove(name, out _);
+            }
+        });
+    }
+
+    /// <summary>
+    /// Re-reads a connected server's tools and prompts on its existing connection and, when the
+    /// surface fingerprint moved, updates the bridge's view, regenerates the summary and publishes
+    /// the change. An unchanged surface publishes nothing. Returns true when a change was published.
+    /// A server whose lists can't be read is left alone: a dead connection is the reconnect path's
+    /// job, not this one's.
+    /// </summary>
+    internal async Task<bool> RefreshSurfaceAsync(string name, CancellationToken ct)
+    {
+        var gate = _surfaceLocks.GetOrAdd(name, _ => new SemaphoreSlim(1, 1));
+        await gate.WaitAsync(ct);
+        try
+        {
+            if (!_clients.TryGetValue(name, out var client) || !_serverConfigs.TryGetValue(name, out var config))
+                return false;
+
+            List<McpClientTool> tools;
+            try
+            {
+                tools = ApplyToolFilters([.. await client.ListToolsAsync(cancellationToken: ct)], config);
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "Surface refresh: listing tools on MCP server {Name} failed", name);
+                return false;
+            }
+
+            var (prompts, promptsKnown) = await ListPromptsAsync(name, client, ct);
+            var (fingerprint, toolFingerprints) = ComputeFingerprints(tools, prompts, promptsKnown);
+            _lastSurfaceCheck[name] = DateTimeOffset.UtcNow;
+
+            var current = _serverSummaries.GetValueOrDefault(name);
+            var unchanged = fingerprint is not null
+                ? current?.Fingerprint == fingerprint
+                : current is not null && SameToolFingerprints(current.ToolFingerprints, toolFingerprints);
+            if (unchanged)
+                return false;
+
+            _serverTools[name] = tools;
+            _serverPrompts[name] = prompts;
+
+            var metadata = _serverMetadata.GetValueOrDefault(name) ?? new McpServerMetadata(null, null, null, null, null);
+            var summary = (await GenerateSummaryAsync(name, metadata, tools, prompts, ct)) with
+            {
+                ServerId = config.Id,
+                Fingerprint = fingerprint,
+                ToolFingerprints = toolFingerprints
+            };
+            _serverSummaries[name] = summary;
+
+            _logger.LogInformation(
+                "MCP server {Name} changed its surface: now {ToolCount} tools and {PromptCount} prompts",
+                name, tools.Count, prompts.Count);
+
+            if (!IsServerHiddenByAuth(config))
+                await PublishServersIndexedAsync([summary], [], ct);
+            return true;
+        }
+        finally
+        {
+            gate.Release();
+        }
+
+        static bool SameToolFingerprints(Dictionary<string, string> a, Dictionary<string, string> b) =>
+            a.Count == b.Count && a.All(kvp => b.TryGetValue(kvp.Key, out var v) && v == kvp.Value);
+    }
+
+    /// <summary>
     /// Finds <paramref name="toolName"/> among the tools <paramref name="serverName"/> may be
     /// called with. A miss against the cached list re-lists once, without touching cached state,
     /// so a tool added since the last connect still goes through. Returns the tool when found.
@@ -842,12 +1063,8 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
                 req.ServerName, req.PromptName, prompts.Select(p => p.Name).ToList());
         }
 
-        var declared = (prompt.ProtocolPrompt.Arguments ?? [])
-            .Select(a => new McpPromptArgument { Name = a.Name, Description = a.Description, Required = a.Required ?? false })
-            .ToList();
-
         return McpCallDiagnostics.DescribeMissingPromptArguments(
-            req.ServerName, prompt.Name, declared, req.Arguments.Keys);
+            req.ServerName, prompt.Name, ToPromptDefinition(prompt).Arguments, req.Arguments.Keys);
     }
 
     /// <summary>
@@ -1571,6 +1788,8 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
             var response = new McpGetServiceDetailsResponse
             {
                 ServerName = req.ServerName,
+                ServerId = _serverConfigs.GetValueOrDefault(req.ServerName)?.Id,
+                Fingerprint = _serverSummaries.GetValueOrDefault(req.ServerName)?.Fingerprint,
                 ImplementationName = metadata?.ImplementationName,
                 Title = metadata?.Title,
                 Version = metadata?.Version,
@@ -1584,18 +1803,7 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
                         ? t.JsonSchema.GetRawText()
                         : null
                 }).ToList(),
-                Prompts = serverPrompts.Select(p => new McpPromptDefinition
-                {
-                    Name = p.Name,
-                    Description = p.Description,
-                    Arguments = (p.ProtocolPrompt.Arguments ?? [])
-                        .Select(a => new McpPromptArgument
-                        {
-                            Name = a.Name,
-                            Description = a.Description,
-                            Required = a.Required ?? false
-                        }).ToList()
-                }).ToList(),
+                Prompts = serverPrompts.Select(ToPromptDefinition).ToList(),
                 Error = _clients.ContainsKey(req.ServerName) ? null
                     : _serverConfigs.ContainsKey(req.ServerName)
                         ? McpCallDiagnostics.DescribeUnavailableServer(req.ServerName)
@@ -1611,6 +1819,19 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
 
             try
             {
+                // A new name must be plain enough to become part of skill names, file paths and
+                // typed tool names, and must not contain the server/tool separator.
+                if (McpServerNames.Validate(req.ServerName) is { } nameError)
+                {
+                    await PublishResponseAsync(new McpRegisterServerResponse
+                    {
+                        ServerName = req.ServerName,
+                        Success = false,
+                        Error = nameError
+                    }, replyTo, envelope.CorrelationId, ct);
+                    return MessageResult.Ack;
+                }
+
                 var config = new McpBridgeServerConfig
                 {
                     Type = req.Type,
@@ -1622,7 +1843,9 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
 
                 // register_mcp_server cannot express argGuards or elicitation policy, and it is
                 // LLM-callable — re-registering an existing name must not strip operator policy.
-                config.CarryOperatorPolicyFrom(_serverConfigs.GetValueOrDefault(req.ServerName));
+                var existingConfig = _serverConfigs.GetValueOrDefault(req.ServerName);
+                config.CarryOperatorPolicyFrom(existingConfig);
+                config.AssignIdFrom(existingConfig);
 
                 // Validate guards before connecting so the caller gets a descriptive error
                 // instead of the generic "Connection failed" (ConnectServerAsync fails closed
@@ -2083,11 +2306,45 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
                             "Reconnect sweep: failed to reconnect MCP server {Name}", name);
                     }
                 }
+
+                await RefreshStaleSurfacesAsync(ct);
             }
         }
         catch (OperationCanceledException)
         {
             // Normal shutdown
+        }
+    }
+
+    /// <summary>
+    /// Re-reads the surface of every connected server not checked within
+    /// <see cref="McpBridgeOptions.SurfaceRefreshIntervalSeconds"/>. This is the backstop for
+    /// servers that change their tools without sending list_changed — including stateless HTTP
+    /// servers, which have no stream to send it on.
+    /// </summary>
+    private async Task RefreshStaleSurfacesAsync(CancellationToken ct)
+    {
+        if (_options.SurfaceRefreshIntervalSeconds <= 0) return;
+
+        var interval = TimeSpan.FromSeconds(_options.SurfaceRefreshIntervalSeconds);
+        var now = DateTimeOffset.UtcNow;
+        foreach (var name in _clients.Keys.ToList())
+        {
+            if (_lastSurfaceCheck.TryGetValue(name, out var last) && now - last < interval)
+                continue;
+
+            try
+            {
+                await RefreshSurfaceAsync(name, ct);
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Surface refresh for MCP server {Name} failed", name);
+            }
         }
     }
 

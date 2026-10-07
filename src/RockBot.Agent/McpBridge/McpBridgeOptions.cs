@@ -59,6 +59,14 @@ public sealed class McpBridgeOptions
     public int ConfigPollIntervalSeconds { get; set; } = 5;
 
     /// <summary>
+    /// How often, in seconds, each connected server's tool and prompt lists are re-read to catch
+    /// a surface change the server didn't announce with list_changed. Checked on the reconnect
+    /// sweep, so it only runs when <see cref="ReconnectSweepIntervalSeconds"/> is positive.
+    /// 0 disables. A changed surface is published; an unchanged one publishes nothing.
+    /// </summary>
+    public int SurfaceRefreshIntervalSeconds { get; set; } = 300;
+
+    /// <summary>
     /// Elicitation policy applied to every server that does not declare its own
     /// <c>elicitation</c> block. The default answers form-mode questions from the in-flight
     /// tool call; set <c>Mode</c> to <c>decline</c> or <c>off</c> to tighten it fleet-wide.

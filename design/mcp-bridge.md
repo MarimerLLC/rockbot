@@ -65,6 +65,27 @@ Agent publishes `McpMetadataRefreshRequest` to `tool.meta.mcp.refresh`. Bridge r
 
 Bridge watches `mcp.json` via `FileSystemWatcher` (including `Renamed`/`FileName` events so rename-into-place writes are seen) **and** a polling fallback that stats the file's last-write time + size every `ConfigPollIntervalSeconds` (default 5 s, 0 disables). The poll exists because `FileSystemWatcher`/inotify can miss changes entirely on some network/overlay filesystems such as Longhorn PVCs (issue #470). Both paths funnel through a single debounced reload that disconnects removed servers, connects new ones, and publishes updated tool availability. The on-disk stamp is recorded after each load so the bridge's own writes (seeding/dedup) don't trigger a redundant reload.
 
+### Server identity and surface change detection
+
+Ported from mcp-aggregator PRs #42 and #47.
+
+- **Stable id.** Every `mcp.json` entry carries an immutable `id` (12 hex characters).
+  - The bridge assigns one to any entry without it on load, and persists it.
+  - It is published in `McpServerSummary.ServerId` and returned by `mcp_list_services` and `mcp_get_service_details`.
+  - Names stay human-readable. Re-registering the same name at the same endpoint keeps the id. A rename, or the same name pointed at a different endpoint, gets a new id.
+  - Anything that must follow a server durably stores the id next to the name.
+- **Name rules for new registrations.** `mcp_register_server` only accepts names matching `^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$` that don't contain `__`, because server names become part of skill names, file paths and typed tool names. Existing entries that break these rules still load, with a warning.
+- **Fingerprints** (`McpSurfaceFingerprint`, SHA-256).
+  - **Per-tool fingerprint:** covers name, description and the canonical input schema.
+  - **Per-server fingerprint:** covers all tools plus all prompts, including each prompt's arguments.
+  - Canonicalisation sorts object keys at every level and keeps array order, so a server that only reorders keys doesn't look changed. A description-only change does count as a change.
+  - If a prompt list can't be read, the server fingerprint is `null` (unknown). A failed read is never recorded as a surface. A server without the prompts capability, or one answering method-not-found, simply has no prompts.
+- **Refresh.**
+  - The bridge re-reads a server's tools and prompts on its existing connection in two cases: when the server sends `notifications/tools/list_changed` or `notifications/prompts/list_changed` (debounced), and every `SurfaceRefreshIntervalSeconds` (default 300) on the reconnect sweep. The periodic refresh covers servers that never send `list_changed`, such as stateless HTTP servers, which have no stream to send it on.
+  - Only a moved fingerprint is published.
+  - On the agent side, `ToolSchemaCache` is invalidated only when a server's fingerprint or id moves, not on every re-publish.
+- **Summary reuse.** Every reconnect and config reload goes through `ConnectServerAsync`. When the fingerprint and the server's self-reported identity are unchanged, the previous LLM-generated summary is reused instead of being regenerated.
+
 ## Content Trust
 
 Every tool message carries an `rb-content-trust` header:
@@ -101,6 +122,7 @@ See `design/mcp-elicitation.md`.
       "allowedTools": ["read_file", "list_directory"]
     },
     "database": {
+      "id": "3f9c1a7e2b40",
       "type": "sse",
       "url": "http://mcp-db:8080/sse",
       "deniedTools": ["drop_table"]
@@ -108,6 +130,8 @@ See `design/mcp-elicitation.md`.
   }
 }
 ```
+
+`id` is assigned by the bridge when absent. Don't hand-edit it.
 
 ## Protocol versions (MCP C# SDK 2.x)
 
