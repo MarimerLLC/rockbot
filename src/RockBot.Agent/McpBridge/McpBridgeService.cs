@@ -56,7 +56,7 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
     /// </summary>
     private readonly ConcurrentDictionary<string, McpElicitationCoordinator> _elicitationCoordinators = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, AttachmentGatewayEntry> _attachmentGateways = new(StringComparer.OrdinalIgnoreCase);
-    private readonly Lazy<IAttachmentStorage> _attachmentStorage = new(() => new AttachmentStorage());
+    private readonly Lazy<IAttachmentStorage> _attachmentStorage;
 
     /// <summary>
     /// Response-side binary capture. Unlike <see cref="AttachmentGateway"/> this needs no
@@ -103,7 +103,33 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
         IMcpArgGuardRegistry? argGuards = null,
         IMcpElicitationResponder? elicitationResponder = null,
         IServiceProvider? services = null)
+        : this(publisher, subscriber, identity, options, logger, llmClient, tokenProviders, healthTracker,
+            argGuards, elicitationResponder, services, attachmentStorage: null)
     {
+    }
+
+    /// <summary>
+    /// Also takes the attachment storage, which otherwise defaults to the shared-volume path from
+    /// <c>ROCKBOT_SHARED_PATH</c>. Internal so DI keeps resolving the public constructor and the
+    /// bridge keeps its own instance in production; tests point it at a temporary directory.
+    /// </summary>
+    internal McpBridgeService(
+        IMessagePublisher publisher,
+        IMessageSubscriber subscriber,
+        AgentIdentity identity,
+        IOptions<McpBridgeOptions> options,
+        ILogger<McpBridgeService> logger,
+        ILlmClient? llmClient,
+        ITokenProviderRegistry? tokenProviders,
+        WorkIqHealthTracker? healthTracker,
+        IMcpArgGuardRegistry? argGuards,
+        IMcpElicitationResponder? elicitationResponder,
+        IServiceProvider? services,
+        IAttachmentStorage? attachmentStorage)
+    {
+        _attachmentStorage = attachmentStorage is not null
+            ? new Lazy<IAttachmentStorage>(attachmentStorage)
+            : new Lazy<IAttachmentStorage>(() => new AttachmentStorage());
         _publisher = publisher;
         _subscriber = subscriber;
         _options = options.Value;

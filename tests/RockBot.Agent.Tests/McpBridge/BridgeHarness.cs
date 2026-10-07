@@ -9,6 +9,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using ModelContextProtocol.Server;
 using RockBot.Agent.McpBridge;
+using RockBot.Agent.McpBridge.Attachments;
 using RockBot.Host;
 using RockBot.Messaging;
 using RockBot.Tools;
@@ -89,8 +90,13 @@ internal sealed class BridgeHarness : IAsyncDisposable
 
         var subscriber = new TopicSubscriber();
         var publisher = new CapturingPublisher();
+        // Attachment storage defaults to the shared volume (/rockbot/shared), which a test runner
+        // can't write; keep it inside the run's temporary directory.
         var bridge = new McpBridgeService(
-            publisher, subscriber, new AgentIdentity(AgentName), options, NullLogger<McpBridgeService>.Instance);
+            publisher, subscriber, new AgentIdentity(AgentName), options, NullLogger<McpBridgeService>.Instance,
+            llmClient: null, tokenProviders: null, healthTracker: null, argGuards: null,
+            elicitationResponder: null, services: null,
+            attachmentStorage: new AttachmentStorage(Path.Combine(configDir, "attachments")));
         await bridge.StartAsync(CancellationToken.None);
 
         return new BridgeHarness(server, bridge, subscriber, publisher, configDir);
