@@ -516,6 +516,117 @@ public class SkillToolsTests
         Assert.AreEqual(" [Python, Wisp]", tag);
     }
 
+    // ── MCP surface baselines (#615) ──────────────────────────────────────────
+
+    private static readonly SkillSurfaceBaseline OldBaseline =
+        new("adjutant", "id-a", "fp-old", "1.0.0", "ident-a", DateTimeOffset.UtcNow.AddDays(-10));
+
+    private static readonly SkillSurfaceBaseline NewBaseline =
+        new("adjutant", "id-a", "fp-new", "1.1.0", "ident-a", DateTimeOffset.UtcNow);
+
+    [TestMethod]
+    public async Task SaveSkill_McpSkill_RecordsTheCurrentSurface()
+    {
+        var store = new StubSkillStore();
+        var surface = new StubSkillSurface { Capture = SkillBaselineCapture.Recorded(NewBaseline) };
+        var tools = new SkillTools(store, new StubChatClient(), NullLogger<SkillTools>.Instance, mcpSkillSurface: surface);
+
+        var result = await tools.SaveSkill("mcp/adjutant", "# Adjutant");
+
+        Assert.AreEqual(NewBaseline, (await store.GetAsync("mcp/adjutant"))!.SurfaceBaseline);
+        Assert.IsFalse(result.Contains("No MCP surface baseline"));
+    }
+
+    [TestMethod]
+    public async Task SaveSkill_McpSkill_UnreadableSurface_RecordsNothing_AndSaysSo()
+    {
+        var store = new StubSkillStore();
+        store.Add(new Skill("mcp/adjutant", "s", "old", DateTimeOffset.UtcNow, SurfaceBaseline: OldBaseline));
+        var surface = new StubSkillSurface { Capture = SkillBaselineCapture.NotRecorded("MCP server 'adjutant' isn't connected") };
+        var tools = new SkillTools(store, new StubChatClient(), NullLogger<SkillTools>.Instance, mcpSkillSurface: surface);
+
+        var result = await tools.SaveSkill("mcp/adjutant", "# Adjutant rewritten");
+
+        Assert.IsNull((await store.GetAsync("mcp/adjutant"))!.SurfaceBaseline,
+            "a failed read is never stored, and the old baseline no longer describes the new text");
+        StringAssert.Contains(result, "No MCP surface baseline recorded (MCP server 'adjutant' isn't connected)");
+    }
+
+    [TestMethod]
+    public async Task SaveSkill_NonMcpSkill_NeverAsksForABaseline()
+    {
+        var store = new StubSkillStore();
+        var surface = new StubSkillSurface { Capture = SkillBaselineCapture.Recorded(NewBaseline) };
+        var tools = new SkillTools(store, new StubChatClient(), NullLogger<SkillTools>.Instance, mcpSkillSurface: surface);
+
+        await tools.SaveSkill("plan-meeting", "# Plan");
+        await tools.SaveSkill("mcp", "# MCP guide");
+
+        Assert.AreEqual(0, surface.CaptureCalls);
+        Assert.IsNull((await store.GetAsync("plan-meeting"))!.SurfaceBaseline);
+    }
+
+    [TestMethod]
+    public async Task EditSkill_McpSkill_ReBaselines()
+    {
+        var store = new StubSkillStore();
+        store.Add(new Skill("mcp/adjutant/calendar", "kept summary", "Use `start`.", DateTimeOffset.UtcNow, SurfaceBaseline: OldBaseline));
+        var surface = new StubSkillSurface { Capture = SkillBaselineCapture.Recorded(NewBaseline) };
+        var tools = new SkillTools(store, new StubChatClient(), NullLogger<SkillTools>.Instance, mcpSkillSurface: surface);
+
+        await tools.EditSkill("mcp/adjutant/calendar", "`start`", "`from`");
+
+        var saved = (await store.GetAsync("mcp/adjutant/calendar"))!;
+        Assert.AreEqual("Use `from`.", saved.Content);
+        Assert.AreEqual("kept summary", saved.Summary);
+        Assert.AreEqual(NewBaseline, saved.SurfaceBaseline);
+    }
+
+    [TestMethod]
+    public async Task EditSkill_McpSkill_UnreadableSurface_ClearsTheOldBaseline_AndSaysSo()
+    {
+        var store = new StubSkillStore();
+        store.Add(new Skill("mcp/adjutant", "s", "Use `start`.", DateTimeOffset.UtcNow, SurfaceBaseline: OldBaseline));
+        var surface = new StubSkillSurface { Capture = SkillBaselineCapture.NotRecorded("MCP server 'adjutant' surface couldn't be read in full") };
+        var tools = new SkillTools(store, new StubChatClient(), NullLogger<SkillTools>.Instance, mcpSkillSurface: surface);
+
+        var result = await tools.EditSkill("mcp/adjutant", "`start`", "`from`");
+
+        Assert.IsNull((await store.GetAsync("mcp/adjutant"))!.SurfaceBaseline);
+        StringAssert.Contains(result, "No MCP surface baseline recorded");
+    }
+
+    [TestMethod]
+    public async Task GetSkill_KeepsTheBaseline()
+    {
+        var store = new StubSkillStore();
+        store.Add(new Skill("mcp/adjutant", "s", "body", DateTimeOffset.UtcNow, SurfaceBaseline: OldBaseline));
+        var surface = new StubSkillSurface { Capture = SkillBaselineCapture.Recorded(NewBaseline) };
+        var tools = new SkillTools(store, new StubChatClient(), NullLogger<SkillTools>.Instance, mcpSkillSurface: surface);
+
+        await tools.GetSkill("mcp/adjutant");
+
+        Assert.AreEqual(OldBaseline, (await store.GetAsync("mcp/adjutant"))!.SurfaceBaseline,
+            "reading a skill is not writing it; a stale skill must not turn fresh by being loaded");
+        Assert.AreEqual(0, surface.CaptureCalls);
+    }
+
+    private sealed class StubSkillSurface : IMcpSkillSurface
+    {
+        public SkillBaselineCapture Capture { get; set; } = SkillBaselineCapture.NotRecorded("not configured");
+        public int CaptureCalls { get; private set; }
+
+        public SkillBaselineCapture CaptureBaseline(string skillName)
+        {
+            CaptureCalls++;
+            return Capture;
+        }
+
+        public SkillFreshness Evaluate(Skill skill) => new(SkillFreshnessStatus.Unknown);
+
+        public Task<string?> GetLiveSurfaceTextAsync(string serverName, CancellationToken ct) => Task.FromResult<string?>(null);
+    }
+
     // ── Stubs ─────────────────────────────────────────────────────────────────
 
     private sealed class StubSkillStore : ISkillStore

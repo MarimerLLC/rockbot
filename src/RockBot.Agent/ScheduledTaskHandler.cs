@@ -31,7 +31,8 @@ internal sealed class ScheduledTaskHandler(
     IOptions<AgentProfileOptions> profileOptions,
     IScheduledTaskStore scheduledTaskStore,
     ILogger<ScheduledTaskHandler> logger,
-    ISkillUsageStore? skillUsageStore = null) : IMessageHandler<ScheduledTaskMessage>
+    ISkillUsageStore? skillUsageStore = null,
+    IMcpSkillSurface? mcpSkillSurface = null) : IMessageHandler<ScheduledTaskMessage>
 {
     public async Task HandleAsync(ScheduledTaskMessage message, MessageHandlerContext context)
     {
@@ -83,7 +84,8 @@ internal sealed class ScheduledTaskHandler(
 
         // Per-session tools — same set the user handler builds (sessionId already is "patrol/name")
         var sessionWorkingMemoryTools = new WorkingMemoryTools(workingMemory, sessionId, logger);
-        var sessionSkillTools = new SkillTools(skillStore, llmClient, logger, sessionId, skillUsageStore);
+        var sessionSkillTools = new SkillTools(skillStore, llmClient, logger, sessionId, skillUsageStore,
+            mcpSkillSurface: mcpSkillSurface);
         var taskDirectiveTools = new TaskDirectiveTools(scheduledTaskStore, message.TaskName, logger);
 
         var batchId = Guid.NewGuid().ToString("N")[..12];

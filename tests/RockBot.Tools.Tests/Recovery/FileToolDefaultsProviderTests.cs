@@ -1,6 +1,8 @@
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using RockBot.Host;
+using RockBot.Tools.Mcp;
 using RockBot.Tools.Mcp.Recovery;
 using RockBot.Tools.Mcp.Recovery.Providers;
 
@@ -128,6 +130,89 @@ public class FileToolDefaultsProviderTests
         using var provider = NewProvider();
 
         Assert.IsFalse(provider.CanResolve("svr", "tool", "f"));
+    }
+
+    // ── Stale entries (#615) ─────────────────────────────────────────────────
+
+    private const string EventsSchema = """{"type":"object","properties":{"timeZone":{"type":"string"},"start":{"type":"string"}}}""";
+
+    [TestMethod]
+    public async Task ResolveAsync_FieldNoLongerInSchema_IsNotInjected_AndWarnsOnce()
+    {
+        await WriteServerFileAsync("calendar-mcp", """
+            [ { "providerName": "TimeZone", "field": "tz", "value": "America/Chicago" } ]
+            """);
+        var logger = new CountingLogger<FileToolDefaultsProvider>();
+        using var provider = NewProvider(SchemaCache(EventsSchema), logger);
+
+        var ctx = new ResolveContext("calendar-mcp", "get_calendar_events", "tz", new Dictionary<string, object?>());
+        Assert.IsNull(await provider.ResolveAsync(ctx, CancellationToken.None));
+        Assert.IsNull(await provider.ResolveAsync(ctx, CancellationToken.None));
+
+        Assert.AreEqual(1, logger.Warnings, "one warning per server/tool/field, not one per call");
+    }
+
+    [TestMethod]
+    public async Task ResolveAsync_FieldStillInSchema_IsInjected()
+    {
+        await WriteServerFileAsync("calendar-mcp", """
+            [ { "providerName": "TimeZone", "field": "timeZone", "value": "America/Chicago" } ]
+            """);
+        using var provider = NewProvider(SchemaCache(EventsSchema), new CountingLogger<FileToolDefaultsProvider>());
+
+        var resolved = await provider.ResolveAsync(
+            new ResolveContext("calendar-mcp", "get_calendar_events", "timeZone", new Dictionary<string, object?>()),
+            CancellationToken.None);
+
+        Assert.AreEqual("America/Chicago", resolved?.Value);
+    }
+
+    [TestMethod]
+    public async Task ResolveAsync_SchemaUnavailable_ResolvesAsBefore()
+    {
+        await WriteServerFileAsync("calendar-mcp", """
+            [ { "providerName": "TimeZone", "field": "tz", "value": "America/Chicago" } ]
+            """);
+        using var provider = NewProvider(
+            new ToolSchemaCache((_, _) => Task.FromResult<IReadOnlyList<McpToolDefinition>?>(null)),
+            new CountingLogger<FileToolDefaultsProvider>());
+
+        var resolved = await provider.ResolveAsync(
+            new ResolveContext("calendar-mcp", "get_calendar_events", "tz", new Dictionary<string, object?>()),
+            CancellationToken.None);
+
+        Assert.AreEqual("America/Chicago", resolved?.Value);
+    }
+
+    [TestMethod]
+    [DataRow("""{"type":"object","properties":{"a":{}}}""", "a", false)]
+    [DataRow("""{"type":"object","properties":{"A":{}}}""", "a", false)]
+    [DataRow("""{"type":"object","properties":{"a":{}}}""", "b", true)]
+    [DataRow("""{"type":"object","properties":{}}""", "b", true)]
+    [DataRow("""{"type":"object"}""", "b", null)]
+    [DataRow("not json", "b", null)]
+    [DataRow("", "b", null)]
+    public void IsMissingFromSchema_IsTriState(string schema, string field, bool? expected)
+    {
+        Assert.AreEqual(expected, FileToolDefaultsProvider.IsMissingFromSchema(schema, field));
+    }
+
+    private static ToolSchemaCache SchemaCache(string schema) =>
+        new((_, _) => Task.FromResult<IReadOnlyList<McpToolDefinition>?>(
+            [new McpToolDefinition { Name = "get_calendar_events", Description = "d", ParametersSchema = schema }]));
+
+    private FileToolDefaultsProvider NewProvider(ToolSchemaCache schemas, ILogger<FileToolDefaultsProvider> logger) =>
+        new(Options.Create(new AgentProfileOptions { BasePath = _tempDir }), logger, schemas);
+
+    private sealed class CountingLogger<T> : ILogger<T>
+    {
+        public int Warnings { get; private set; }
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+        public bool IsEnabled(LogLevel logLevel) => true;
+        public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter)
+        {
+            if (logLevel == LogLevel.Warning) Warnings++;
+        }
     }
 
     private async Task WriteServerFileAsync(string server, string content)

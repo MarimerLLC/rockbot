@@ -21,6 +21,22 @@ public sealed class McpServerIndex
         get { lock (_lock) { return _servers; } }
     }
 
+    /// <summary>A copy of the current summaries, safe to enumerate while updates arrive.</summary>
+    public IReadOnlyList<McpServerSummary> Snapshot()
+    {
+        lock (_lock) { return [.. _servers]; }
+    }
+
+    /// <summary>The current summary for <paramref name="serverName"/> (case-insensitive), or null.</summary>
+    public McpServerSummary? TryGet(string serverName)
+    {
+        lock (_lock)
+        {
+            return _servers.FirstOrDefault(s =>
+                string.Equals(s.ServerName, serverName, StringComparison.OrdinalIgnoreCase));
+        }
+    }
+
     /// <summary>
     /// Applies an index update: adds/updates servers in <see cref="McpServersIndexed.Servers"/>
     /// and removes any servers listed in <see cref="McpServersIndexed.RemovedServers"/>.

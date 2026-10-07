@@ -32,7 +32,8 @@ internal sealed class A2ATaskStatusHandler(
     AgentNameHolder agentNameHolder,
     SessionClientCapabilityStore clientCapabilityStore,
     SessionOriginStore originStore,
-    ILogger<A2ATaskStatusHandler> logger) : IMessageHandler<AgentTaskStatusUpdate>
+    ILogger<A2ATaskStatusHandler> logger,
+    IMcpSkillSurface? mcpSkillSurface = null) : IMessageHandler<AgentTaskStatusUpdate>
 {
     private string DisplayName => agentNameHolder.DisplayName ?? agent.Name;
     public async Task HandleAsync(AgentTaskStatusUpdate update, MessageHandlerContext context)
@@ -100,7 +101,8 @@ internal sealed class A2ATaskStatusHandler(
             clientCapabilities: clientCapabilityStore.Get(rawSessionId));
 
         var sessionWorkingMemoryTools = new WorkingMemoryTools(workingMemory, sessionNamespace, logger);
-        var sessionSkillTools = new SkillTools(skillStore, llmClient, logger, rawSessionId);
+        var sessionSkillTools = new SkillTools(skillStore, llmClient, logger, rawSessionId,
+            mcpSkillSurface: mcpSkillSurface);
         var batchId = Guid.NewGuid().ToString("N")[..12];
         var registryTools = toolRegistry.BuildAgentToolFunctions(
             sessionNamespace, batchId, ToolProfiles.A2ASynthesis, logger: logger);

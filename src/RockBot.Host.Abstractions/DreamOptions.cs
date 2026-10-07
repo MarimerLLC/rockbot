@@ -564,6 +564,25 @@ public sealed class DreamOptions
     public string WispFailureDirectivePath { get; set; } = "wisp-failure-dream.md";
 
     /// <summary>
+    /// Whether the MCP skill refresh pass is enabled. It rewrites <c>mcp/{server}</c> skills whose
+    /// server's tool surface changed since they were written, against the live schemas, and
+    /// records a new surface baseline. Requires the MCP gateway (<see cref="IMcpSkillSurface"/>).
+    /// </summary>
+    public bool McpSkillRefreshEnabled { get; set; } = true;
+
+    /// <summary>
+    /// Path to the MCP skill refresh directive file, relative to <see cref="AgentProfileOptions.BasePath"/>.
+    /// When the file does not exist, a built-in fallback directive is used.
+    /// </summary>
+    public string McpSkillRefreshDirectivePath { get; set; } = "mcp-skill-refresh-dream.md";
+
+    /// <summary>
+    /// Most stale <c>mcp/</c> skills the refresh pass rewrites per dream cycle (one LLM call each).
+    /// The oldest are refreshed first; the rest wait for later cycles and stay marked stale.
+    /// </summary>
+    public int McpSkillRefreshMaxPerCycle { get; set; } = 5;
+
+    /// <summary>
     /// Whether the wisp success analysis pass (requires <see cref="IWispExecutionLog"/>) is enabled.
     /// Detects wisp definitions that have repeated successfully across distinct sessions and
     /// promotes them to validated skill resources via <c>ISkillStore.AttachResourceAsync</c>.

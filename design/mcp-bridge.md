@@ -173,6 +173,19 @@ Issue #614, ported from mcp-aggregator#48.
 - **Full reference.** The `mcp` tool guide (`McpToolSkillProvider`), fetched with `get_tool_guide`.
 - **Server instructions.** A downstream server's own `instructions` are capped by `McpInstructionsCap`: 2,000 characters in `mcp_get_service_details` output, 8,000 in the prompt that writes the server's summary. Longer text is cut on a line boundary and ends with an explicit `[Server instructions truncated: N of M characters shown. ...]` marker, never a silent cut. The marker names the server's guide-like tools, if it has any, as the way to the rest.
 
+### Skill freshness
+
+Issue #615, ported from mcp-aggregator#47 (and its fixes in aggregator#41).
+
+- **Baseline.** A content write to an `mcp/{server}` or `mcp/{server}/*` skill records a `SkillSurfaceBaseline` on the skill: server name and id, the stage-2 surface fingerprint, the server's `serverInfo.version`, the identity hash and a timestamp. The writes that do this are the agent's `save_skill` and `edit_skill`, repair tickets (`SkillBodyApplier`) and the dream refresh pass. Other writes carry the existing baseline: `get_skill` touches, summary regeneration, and dream merge or optimize (which keeps the oldest source baseline, or none if any source had none).
+- **No baseline from a failed read.** If the server isn't connected or its fingerprint is null, no baseline is stored, and `save_skill` / `edit_skill` say so in their result. The old baseline is cleared rather than kept.
+- **Evaluation** (`McpSkillFreshness`) runs against the agent's `McpServerIndex`. It returns `unknown` when there is no baseline (every skill written before #615) or the server's surface can't be read. It returns `stale` when the recorded and current versions differ, when the fingerprints differ, or when the name now belongs to a different server (different id and identity). Otherwise it returns `fresh`. A baseline whose server is gone, but whose id or identity hash is live under another name, is `renamed`.
+- **Marker.** `McpServerSkillFormatter` puts `[stale: {server}'s tool surface changed since this skill was written; trust the schema above where they disagree]` under the header of each stale skill it injects. It does this both in `mcp_get_service_details` and in schema-error recovery. Unknown skills are not marked.
+- **Renames.** `mcp_list_services` lists renamed skills on the server's row as `skillsWrittenUnderPreviousName`.
+- **Wire.** `McpServerSummary` carries `Version` and `IdentityHash`, the first 16 hex characters of the SHA-256 of `CanonicalIdentity()`. The identity includes env vars and headers, so only the hash travels.
+- **Refresh.** The dream service's MCP skill refresh pass rewrites up to `Dream:McpSkillRefreshMaxPerCycle` stale skills per cycle against the live schemas, then records a new baseline. See `docs/dream-service.md`.
+- **Tool defaults.** `FileToolDefaultsProvider` ignores a `tool-defaults/{server}.json` entry for a field the tool's current schema no longer declares, and warns once. The file isn't rewritten.
+
 ### Metadata Refresh
 
 Agent publishes `McpMetadataRefreshRequest` to `tool.meta.mcp.refresh` (`McpStartupProbeService` does so once the agent has started). Bridge reconnects the named server, or every connected one, and publishes updated `McpServersIndexed`. Requests sent before the bridge finished starting are ignored.

@@ -176,6 +176,15 @@ public sealed class McpBridgeServerConfig
     }
 
     /// <summary>
+    /// First 16 hex characters of the SHA-256 of <see cref="CanonicalIdentity"/>. This is what goes
+    /// on the bus (<c>McpServerSummary.IdentityHash</c>) so the agent can recognise a renamed
+    /// server; the identity itself includes env vars and headers, which can carry secrets.
+    /// </summary>
+    public string IdentityHash() =>
+        Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(
+            System.Text.Encoding.UTF8.GetBytes(CanonicalIdentity())))[..16];
+
+    /// <summary>
     /// Normalizes a URL for duplicate detection: lowercases the scheme and authority,
     /// preserves path case, and strips a trailing slash. Returns empty string for null/blank.
     /// </summary>

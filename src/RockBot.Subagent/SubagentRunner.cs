@@ -37,7 +37,8 @@ internal sealed class SubagentRunner(
     IOptions<WorkingMemoryOptions> workingMemoryOptions,
     ILogger<SubagentRunner> logger,
     ISkillResourceUsageStore? skillResourceUsageStore = null,
-    ISessionA2AAwaiter? a2aAwaiter = null)
+    ISessionA2AAwaiter? a2aAwaiter = null,
+    IMcpSkillSurface? mcpSkillSurface = null)
 {
     public async Task RunAsync(
         string taskId,
@@ -132,7 +133,8 @@ internal sealed class SubagentRunner(
         // tool-call discovery whose result is worth capturing as a typed asset; the main
         // agent reaches assets via skills the dream pass has already promoted.
         var skillTools = new SkillTools(skillStore, llmClient, logger, subagentSessionId,
-            enablePromote: true, resourceUsageStore: skillResourceUsageStore);
+            enablePromote: true, resourceUsageStore: skillResourceUsageStore,
+            mcpSkillSurface: mcpSkillSurface);
 
         // Working memory tools scoped to this subagent's namespace. The TTL floor keeps
         // findings alive until the primary reads them after batch consolidation.

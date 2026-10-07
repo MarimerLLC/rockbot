@@ -188,6 +188,134 @@ public class McpSkillInjectionTests
         Assert.IsFalse(result.Contains("[mcp-skill-injection]"));
     }
 
+    // ── Freshness marker (#615) ──────────────────────────────────────────────
+
+    private const string CurrentFingerprint = "fp-current";
+
+    private static SkillSurfaceBaseline BaselineFor(string server, string fingerprint) =>
+        new(server, $"id-{server}", fingerprint, null, $"ident-{server}", DateTimeOffset.UtcNow.AddDays(-3));
+
+    [TestMethod]
+    public async Task GetServiceDetails_StaleSkill_CarriesTheStaleMarker()
+    {
+        var skills = new SkillSeed()
+            .With("mcp/filesystem", "FS", "Call read_file with `file`.", BaselineFor("filesystem", "fp-old"))
+            .Build();
+        var (executor, publisher, subscriber) = NewExecutorWithSurface(skills);
+
+        var result = await RunGetServiceDetailsAsync(executor, publisher, subscriber, "filesystem");
+
+        StringAssert.Contains(result.Content!,
+            "[stale: filesystem's tool surface changed since this skill was written; trust the schema above where they disagree]");
+        Assert.IsTrue(
+            result.Content!.IndexOf("[stale:", StringComparison.Ordinal) < result.Content!.IndexOf("Call read_file", StringComparison.Ordinal),
+            "the marker precedes the skill body");
+    }
+
+    [TestMethod]
+    public async Task GetServiceDetails_FreshOrUnknownSkill_HasNoMarker()
+    {
+        var skills = new SkillSeed()
+            .With("mcp/filesystem", "FS", "fresh body", BaselineFor("filesystem", CurrentFingerprint))
+            .With("mcp/filesystem/legacy", "FS legacy", "no-baseline body")
+            .Build();
+        var (executor, publisher, subscriber) = NewExecutorWithSurface(skills);
+
+        var result = await RunGetServiceDetailsAsync(executor, publisher, subscriber, "filesystem");
+
+        StringAssert.Contains(result.Content!, "fresh body");
+        StringAssert.Contains(result.Content!, "no-baseline body");
+        Assert.IsFalse(result.Content!.Contains("[stale:"), "fresh and unknown skills are not marked");
+    }
+
+    [TestMethod]
+    public async Task SchemaErrorEnricher_StaleSkill_CarriesTheStaleMarker()
+    {
+        var skills = new SkillSeed()
+            .With("mcp/calendar-mcp", "Calendar", "Requires accountId.", BaselineFor("calendar-mcp", "fp-old"))
+            .Build();
+        var enricher = new SchemaErrorEnricher(
+            new ToolSchemaCache((_, _) => Task.FromResult<IReadOnlyList<McpToolDefinition>?>(null)),
+            new EmptyToolCallLog(),
+            skills,
+            new McpSkillSurface(IndexWithFingerprints(), NoSchemas()));
+
+        var result = await enricher.EnrichAsync(
+            "calendar-mcp", "get_calendar_events", "accountId",
+            sessionId: null,
+            originalError: "Required parameter 'accountId' was not provided",
+            CancellationToken.None);
+
+        StringAssert.Contains(result, "[mcp-skill-injection]");
+        StringAssert.Contains(result, "[stale: calendar-mcp's tool surface changed since this skill was written");
+    }
+
+    [TestMethod]
+    public async Task ListServices_ReportsSkillsWrittenForARenamedServer()
+    {
+        // mcp/old-fs was written for the server that now runs as "filesystem" (same id).
+        var skills = new SkillSeed()
+            .With("mcp/old-fs", "FS", "body", BaselineFor("old-fs", CurrentFingerprint) with { ServerId = "id-filesystem" })
+            .With("mcp/calendar-mcp", "Calendar", "body", BaselineFor("calendar-mcp", CurrentFingerprint))
+            .Build();
+        var (executor, _, _) = NewExecutorWithSurface(skills);
+
+        var result = await executor.ExecuteAsync(
+            new ToolInvokeRequest { ToolCallId = "c", ToolName = "mcp_list_services", Arguments = "{}" },
+            CancellationToken.None);
+
+        using var doc = JsonDocument.Parse(result.Content!);
+        var rows = doc.RootElement.EnumerateArray().ToDictionary(r => r.GetProperty("serverName").GetString()!);
+
+        var renamed = rows["filesystem"].GetProperty("skillsWrittenUnderPreviousName");
+        Assert.AreEqual(1, renamed.GetArrayLength());
+        Assert.AreEqual("mcp/old-fs", renamed[0].GetProperty("skill").GetString());
+        Assert.AreEqual("old-fs", renamed[0].GetProperty("previousServerName").GetString());
+        Assert.IsFalse(rows["calendar-mcp"].TryGetProperty("skillsWrittenUnderPreviousName", out _),
+            "the field is omitted when there is nothing to report");
+    }
+
+    private static McpServerIndex IndexWithFingerprints()
+    {
+        var index = new McpServerIndex();
+        index.Apply(new McpServersIndexed
+        {
+            Servers =
+            [
+                new McpServerSummary
+                {
+                    ServerName = "filesystem", ServerId = "id-filesystem", IdentityHash = "ident-filesystem",
+                    Fingerprint = CurrentFingerprint, Summary = "FS tools", ToolCount = 1, ToolNames = ["read_file"]
+                },
+                new McpServerSummary
+                {
+                    ServerName = "calendar-mcp", ServerId = "id-calendar-mcp", IdentityHash = "ident-calendar-mcp",
+                    Fingerprint = CurrentFingerprint, Summary = "Calendar tools", ToolCount = 1, ToolNames = ["get_calendar_events"]
+                }
+            ]
+        });
+        return index;
+    }
+
+    private static ToolSchemaCache NoSchemas() =>
+        new((_, _) => Task.FromResult<IReadOnlyList<McpToolDefinition>?>(null));
+
+    private static (McpManagementExecutor Executor, TrackingPublisher Publisher, StubSubscriber Subscriber)
+        NewExecutorWithSurface(InMemorySkillStore skillStore)
+    {
+        var publisher = new TrackingPublisher();
+        var subscriber = new StubSubscriber();
+        var proxy = new McpToolProxy(publisher, subscriber, Identity, NullLogger<McpToolProxy>.Instance);
+        var index = IndexWithFingerprints();
+
+        var executor = new McpManagementExecutor(
+            index, proxy, publisher, subscriber, Identity,
+            NullLogger<McpManagementExecutor>.Instance,
+            timeout: null, recovery: null, skillStore: skillStore,
+            skillSurface: new McpSkillSurface(index, NoSchemas()));
+        return (executor, publisher, subscriber);
+    }
+
     // ── Helpers ──────────────────────────────────────────────────────────────
 
     private static (McpManagementExecutor Executor, TrackingPublisher Publisher, StubSubscriber Subscriber)
@@ -258,9 +386,9 @@ internal sealed class SkillSeed
 {
     private readonly Dictionary<string, Skill> _skills = new(StringComparer.OrdinalIgnoreCase);
 
-    public SkillSeed With(string name, string summary, string content)
+    public SkillSeed With(string name, string summary, string content, SkillSurfaceBaseline? baseline = null)
     {
-        _skills[name] = new Skill(name, summary, content, DateTimeOffset.UtcNow);
+        _skills[name] = new Skill(name, summary, content, DateTimeOffset.UtcNow, SurfaceBaseline: baseline);
         return this;
     }
 

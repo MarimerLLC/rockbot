@@ -34,4 +34,15 @@ public sealed record McpServerSummary
 
     /// <summary>Per-tool <see cref="McpSurfaceFingerprint.Tool"/>, keyed by tool name.</summary>
     public Dictionary<string, string> ToolFingerprints { get; init; } = [];
+
+    /// <summary>Server-reported <c>serverInfo.version</c>, or null when the server didn't report one.</summary>
+    public string? Version { get; init; }
+
+    /// <summary>
+    /// Short hash of the server entry's canonical identity (transport, URL or command, auth
+    /// profile, tool filters). Two names with the same hash point at the same server, which is
+    /// how a skill written for a since-renamed server is recognised. Only the hash travels; the
+    /// identity itself can contain secrets.
+    /// </summary>
+    public string? IdentityHash { get; init; }
 }

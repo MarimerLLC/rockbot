@@ -31,6 +31,7 @@ public sealed class SkillTools
     private readonly string? _sessionId;
     private readonly ISkillUsageStore? _usageStore;
     private readonly ISkillResourceUsageStore? _resourceUsageStore;
+    private readonly IMcpSkillSurface? _mcpSkillSurface;
 
     public SkillTools(
         ISkillStore skillStore,
@@ -39,7 +40,8 @@ public sealed class SkillTools
         string? sessionId = null,
         ISkillUsageStore? usageStore = null,
         bool enablePromote = false,
-        ISkillResourceUsageStore? resourceUsageStore = null)
+        ISkillResourceUsageStore? resourceUsageStore = null,
+        IMcpSkillSurface? mcpSkillSurface = null)
     {
         _skillStore = skillStore;
         _llmClient = llmClient;
@@ -47,6 +49,7 @@ public sealed class SkillTools
         _sessionId = sessionId;
         _usageStore = usageStore;
         _resourceUsageStore = resourceUsageStore;
+        _mcpSkillSurface = mcpSkillSurface;
 
         // Tool names are pinned to snake_case rather than inherited from the method
         // names: every prompt and directive in the repo refers to them that way, and
@@ -194,15 +197,18 @@ public sealed class SkillTools
         // When resources is explicitly provided the 2-arg SaveAsync rebuilds the manifest.
         var preservedManifest = resources is null ? existing?.Manifest : null;
 
+        // New content for an mcp/{server} skill is written against the server as it is now.
+        var capture = CaptureMcpBaseline(name);
+
         // Save immediately with empty summary; LLM generates it in the background
         var skill = new Skill(name, "", content, existing?.CreatedAt ?? now, now, LastUsedAt: now,
-            Manifest: preservedManifest);
+            Manifest: preservedManifest, SurfaceBaseline: capture?.Baseline);
         await _skillStore.SaveAsync(skill, resources);
 
         _ = Task.Run(() => GenerateSummaryAsync(name, content));
 
         var index = await _skillStore.ListAsync();
-        return $"Skill '{name}' saved. Summary is being generated.\n\n{FormatIndex(index)}";
+        return $"Skill '{name}' saved. Summary is being generated.{BaselineNote(capture)}\n\n{FormatIndex(index)}";
     }
 
     [Description("Change part of an existing skill's markdown without rewriting the whole document. " +
@@ -226,10 +232,47 @@ public sealed class SkillTools
         if (!result.IsSuccess)
             return $"Edit failed on skill '{name}': {result.Error}";
 
+        var capture = CaptureMcpBaseline(name);
+        if (capture is not null)
+        {
+            // The edited text was written against the server as it is now. A failed read clears
+            // the old baseline rather than keeping one that no longer describes this text.
+            var edited = await _skillStore.GetAsync(name);
+            if (edited is not null && edited.SurfaceBaseline != capture.Baseline)
+                await _skillStore.SaveAsync(edited with { SurfaceBaseline = capture.Baseline });
+        }
+
         var plural = result.ReplacementCount == 1 ? "occurrence" : "occurrences";
         return $"Skill '{name}' edited — replaced {result.ReplacementCount} {plural} " +
-               $"({result.OldLength} → {result.NewLength} characters). Summary and resources unchanged.";
+               $"({result.OldLength} → {result.NewLength} characters). Summary and resources unchanged." +
+               BaselineNote(capture);
     }
+
+    /// <summary>
+    /// Baseline for a content write to an <c>mcp/{server}</c> skill, or <c>null</c> when the
+    /// skill isn't one or no MCP gateway is wired (nothing to record or report).
+    /// </summary>
+    private SkillBaselineCapture? CaptureMcpBaseline(string name)
+    {
+        if (_mcpSkillSurface is null || !McpSkillNames.TryGetServerName(name, out _))
+            return null;
+
+        try
+        {
+            return _mcpSkillSurface.CaptureBaseline(name);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Recording the MCP surface baseline for skill {Name} failed", name);
+            return SkillBaselineCapture.NotRecorded("the MCP surface couldn't be read");
+        }
+    }
+
+    private static string BaselineNote(SkillBaselineCapture? capture) =>
+        capture is { Baseline: null, Reason: { } reason }
+            ? $"\nNo MCP surface baseline recorded ({reason}); this skill's freshness will read as unknown " +
+              "until it is saved or edited again while the server is reachable."
+            : string.Empty;
 
     [Description("Save a working asset (wisp definition, script, schema) you just verified " +
                  "as a resource attached to the skill that guided you. Use this only after " +

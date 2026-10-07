@@ -32,7 +32,8 @@ internal sealed class LateA2ANotificationHandler(
     AgentNameHolder agentNameHolder,
     SessionClientCapabilityStore clientCapabilityStore,
     SessionOriginStore originStore,
-    ILogger<LateA2ANotificationHandler> logger) : IMessageHandler<LateA2ANotificationMessage>
+    ILogger<LateA2ANotificationHandler> logger,
+    IMcpSkillSurface? mcpSkillSurface = null) : IMessageHandler<LateA2ANotificationMessage>
 {
     private string DisplayName => agentNameHolder.DisplayName ?? agent.Name;
 
@@ -68,7 +69,8 @@ internal sealed class LateA2ANotificationHandler(
             clientCapabilities: clientCapabilityStore.Get(rawSessionId));
 
         var sessionWorkingMemoryTools = new WorkingMemoryTools(workingMemory, sessionNamespace, logger);
-        var sessionSkillTools = new SkillTools(skillStore, llmClient, logger, rawSessionId);
+        var sessionSkillTools = new SkillTools(skillStore, llmClient, logger, rawSessionId,
+            mcpSkillSurface: mcpSkillSurface);
         var batchId = Guid.NewGuid().ToString("N")[..12];
         var registryTools = toolRegistry.BuildAgentToolFunctions(
             sessionNamespace, batchId, ToolProfiles.A2ASynthesis, logger: logger);

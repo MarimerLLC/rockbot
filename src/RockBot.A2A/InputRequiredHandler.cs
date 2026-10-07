@@ -33,7 +33,8 @@ internal sealed class InputRequiredHandler(
     IConversationMemory conversationMemory,
     IAgentTrustStore trustStore,
     AgentNameHolder agentNameHolder,
-    ILogger<InputRequiredHandler> logger)
+    ILogger<InputRequiredHandler> logger,
+    IMcpSkillSurface? mcpSkillSurface = null)
 {
     private string DisplayName => agentNameHolder.DisplayName ?? agent.Name;
     public async Task<InputRequiredResponse> HandleAsync(
@@ -89,7 +90,8 @@ internal sealed class InputRequiredHandler(
             rawSessionId, syntheticUserTurn, ct);
 
         var sessionWorkingMemoryTools = new WorkingMemoryTools(workingMemory, sessionNamespace, logger);
-        var sessionSkillTools = new SkillTools(skillStore, llmClient, logger, rawSessionId);
+        var sessionSkillTools = new SkillTools(skillStore, llmClient, logger, rawSessionId,
+            mcpSkillSurface: mcpSkillSurface);
         var batchId = Guid.NewGuid().ToString("N")[..12];
         var registryTools = toolRegistry.BuildAgentToolFunctions(
             sessionNamespace, batchId, ToolProfiles.A2ASynthesis, logger: logger);

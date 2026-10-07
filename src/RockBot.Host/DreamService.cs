@@ -33,6 +33,7 @@ internal sealed class DreamService : IHostedService, IDisposable
     private readonly IDlqSampler? _dlqSampler;
     private readonly IToolCallLog? _toolCallLog;
     private readonly IWispExecutionLog? _wispExecutionLog;
+    private readonly IMcpSkillSurface? _mcpSkillSurface;
     private readonly IKnowledgeGraph? _knowledgeGraph;
     private readonly IWorkingMemory? _workingMemory;
     private readonly ILlmClient _llmClient;
@@ -77,6 +78,7 @@ internal sealed class DreamService : IHostedService, IDisposable
     private string? _dlqDirective;
     private string? _identityDirective;
     private string? _wispFailureDirective;
+    private string? _mcpSkillRefreshDirective;
     private string? _wispSuccessDirective;
     private string? _toolSuccessLearningDirective;
     private string? _contradictionSweepDirective;
@@ -126,7 +128,8 @@ internal sealed class DreamService : IHostedService, IDisposable
         TieredChatClientRegistry? tieredRegistry = null,
         IEnumerable<IPrunableLog>? prunableLogs = null,
         IMemoryDeduplicator? memoryDeduplicator = null,
-        IOptions<MemoryAuditOptions>? memoryAuditOptions = null)
+        IOptions<MemoryAuditOptions>? memoryAuditOptions = null,
+        IMcpSkillSurface? mcpSkillSurface = null)
     {
         _memory = memory;
         _skillStore = skillStores.FirstOrDefault();
@@ -165,6 +168,7 @@ internal sealed class DreamService : IHostedService, IDisposable
         _toolSkillProviders = toolSkillProviders?.ToList() ?? (IReadOnlyList<IToolSkillProvider>)Array.Empty<IToolSkillProvider>();
         _prunableLogs = prunableLogs?.ToList() ?? (IReadOnlyList<IPrunableLog>)Array.Empty<IPrunableLog>();
         _memoryDeduplicator = memoryDeduplicator;
+        _mcpSkillSurface = mcpSkillSurface;
         _consolidationPausePath = ResolvePath(
             Path.Combine(
                 (memoryAuditOptions?.Value.BasePath ?? MemoryAuditFiles.DefaultBasePath),
@@ -508,6 +512,18 @@ internal sealed class DreamService : IHostedService, IDisposable
                 _logger.LogDebug("DreamService: loaded wisp failure directive from {Path}", wispDirectivePath);
         }
 
+        if (_options.McpSkillRefreshEnabled && _mcpSkillSurface is not null && _skillStore is not null)
+        {
+            var refreshDirectivePath = ResolvePath(_options.McpSkillRefreshDirectivePath, _profileOptions.BasePath);
+            _mcpSkillRefreshDirective = File.Exists(refreshDirectivePath)
+                ? File.ReadAllText(refreshDirectivePath)
+                : null;
+            if (_mcpSkillRefreshDirective is null)
+                _logger.LogDebug("DreamService: mcp skill refresh directive not found at {Path}; using built-in", refreshDirectivePath);
+            else
+                _logger.LogDebug("DreamService: loaded mcp skill refresh directive from {Path}", refreshDirectivePath);
+        }
+
         if (_options.WispSuccessAnalysisEnabled && _wispExecutionLog is not null && _skillStore is not null)
         {
             var wispSuccessPath = ResolvePath(_options.WispSuccessDirectivePath, _profileOptions.BasePath);
@@ -777,6 +793,7 @@ internal sealed class DreamService : IHostedService, IDisposable
             ct.ThrowIfCancellationRequested(); await RunSequenceSkillDetectionPassAsync(ct);
 
             ct.ThrowIfCancellationRequested(); await RunWispFailureAnalysisPassAsync(ct);
+            ct.ThrowIfCancellationRequested(); await RunMcpSkillRefreshPassAsync(ct);
 
             ct.ThrowIfCancellationRequested(); await RunWispSuccessAnalysisPassAsync(ct);
 
@@ -2290,6 +2307,12 @@ internal sealed class DreamService : IHostedService, IDisposable
             s => s.Name, s => s.LastUsedAt,
             StringComparer.OrdinalIgnoreCase);
 
+        // A merge doesn't look at the server's schema, so it can't make an mcp/{server} skill any
+        // fresher than its sources: carry their baseline forward (#615).
+        var baselineByName = all.ToDictionary(
+            s => s.Name, s => s.SurfaceBaseline,
+            StringComparer.OrdinalIgnoreCase);
+
         foreach (var dto in result.ToSave ?? [])
         {
             if (string.IsNullOrWhiteSpace(dto.Name) || string.IsNullOrWhiteSpace(dto.Content))
@@ -2324,7 +2347,8 @@ internal sealed class DreamService : IHostedService, IDisposable
                 CreatedAt: minCreatedAt,
                 UpdatedAt: DateTimeOffset.UtcNow,
                 LastUsedAt: maxLastUsedAt,
-                SeeAlso: seeAlso is { Count: > 0 } ? seeAlso : null);
+                SeeAlso: seeAlso is { Count: > 0 } ? seeAlso : null,
+                SurfaceBaseline: CarriedSurfaceBaseline(dto.Name.Trim(), sourceNames, baselineByName));
 
             if (capturedResourcesByDto.TryGetValue(skill.Name, out var carriedResources))
             {
@@ -2347,6 +2371,36 @@ internal sealed class DreamService : IHostedService, IDisposable
         _logger.LogInformation(
             "DreamService: skill consolidation complete — {Deleted} deleted, {Saved} saved",
             deleted, saved);
+    }
+
+    /// <summary>
+    /// The surface baseline a merged or rewritten <paramref name="targetName"/> inherits from its
+    /// sources (and from itself, when it is rewritten in place). Only sources documenting the
+    /// same MCP server count. If any of them has no baseline the result has none — merged-in
+    /// text of unknown provenance makes the whole skill unknown; otherwise the oldest baseline
+    /// wins, so a merge never reads fresher than its stalest input.
+    /// </summary>
+    internal static SkillSurfaceBaseline? CarriedSurfaceBaseline(
+        string targetName,
+        IEnumerable<string> sourceNames,
+        IReadOnlyDictionary<string, SkillSurfaceBaseline?> baselineByName)
+    {
+        if (!McpSkillNames.TryGetServerName(targetName, out var server))
+            return null;
+
+        var candidates = sourceNames
+            .Append(targetName)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Where(n => baselineByName.ContainsKey(n)
+                        && McpSkillNames.TryGetServerName(n, out var s)
+                        && string.Equals(s, server, StringComparison.OrdinalIgnoreCase))
+            .Select(n => baselineByName[n])
+            .ToList();
+
+        if (candidates.Count == 0 || candidates.Any(b => b is null))
+            return null;
+
+        return candidates.MinBy(b => b!.RecordedAt);
     }
 
     /// <summary>
@@ -2559,6 +2613,10 @@ internal sealed class DreamService : IHostedService, IDisposable
                 capturedResourcesByDto[dto.Name.Trim()] = captured;
         }
 
+        // Rewording a skill doesn't re-verify it against its MCP server; keep the baseline (#615).
+        var baselineByName = (await _skillStore!.ListAsync())
+            .ToDictionary(s => s.Name, s => s.SurfaceBaseline, StringComparer.OrdinalIgnoreCase);
+
         foreach (var name in allToDelete)
         {
             await _skillStore!.DeleteAsync(name);
@@ -2589,7 +2647,8 @@ internal sealed class DreamService : IHostedService, IDisposable
                 Content: dto.Content.Trim(),
                 CreatedAt: minCreatedAt,
                 UpdatedAt: DateTimeOffset.UtcNow,
-                LastUsedAt: null);
+                LastUsedAt: null,
+                SurfaceBaseline: CarriedSurfaceBaseline(dto.Name.Trim(), sourceNames, baselineByName));
 
             if (capturedResourcesByDto.TryGetValue(skill.Name, out var carriedResources))
             {
@@ -2779,13 +2838,18 @@ internal sealed class DreamService : IHostedService, IDisposable
             if (string.IsNullOrWhiteSpace(dto.Name) || string.IsNullOrWhiteSpace(dto.Content))
                 continue;
 
+            // A name collision overwrites the skill; keep its baseline rather than dropping a stale
+            // mcp/{server} skill back to unknown (#615).
+            var collided = await _skillStore.GetAsync(dto.Name.Trim());
+
             var skill = new Skill(
                 Name: dto.Name.Trim(),
                 Summary: dto.Summary?.Trim() ?? string.Empty,
                 Content: dto.Content.Trim(),
                 CreatedAt: DateTimeOffset.UtcNow,
                 UpdatedAt: DateTimeOffset.UtcNow,
-                LastUsedAt: null);
+                LastUsedAt: null,
+                SurfaceBaseline: collided?.SurfaceBaseline);
 
             await _skillStore.SaveAsync(skill);
             saved++;
@@ -4732,6 +4796,175 @@ internal sealed class DreamService : IHostedService, IDisposable
                 "DreamService: wisp failure analysis pass complete — {Patterns} patterns, {Updates} skill updates",
                 result?.Patterns?.Count ?? 0, updated);
         });
+    }
+
+    // ── MCP skill refresh (#615) ──────────────────────────────────────────
+
+    // Kept in sync with src/RockBot.Agent/agent/mcp-skill-refresh-dream.md.
+    internal const string BuiltInMcpSkillRefreshDirective = """
+        You are refreshing an agent skill that documents one MCP server's tools. The server's tool
+        surface changed since the skill was written, so parts of the skill may describe tool names,
+        parameters or behaviour that no longer exist.
+
+        You are given the skill's current markdown and the server's current tools, each with its
+        description and input schema. The current schemas are authoritative.
+
+        Rewrite the skill so every tool name, parameter name, type, required flag and enum value it
+        mentions matches the current schemas:
+        - Fix statements the schemas contradict, and correct the arguments in examples.
+        - Remove references to tools that no longer exist.
+        - Keep everything the schemas don't contradict: procedures, pitfalls, account or ID
+          mappings, examples, and sections other passes appended (such as "Wisp Failure Pattern").
+        - Keep the existing structure and headings. Don't document tools the skill didn't cover,
+          and don't pad.
+
+        Respond with a JSON object:
+        {
+          "changed": true,
+          "content": "the full rewritten skill markdown (empty when changed is false)",
+          "notes": "one sentence on what changed, or why nothing needed to"
+        }
+
+        Set "changed" to false when the skill already agrees with the current schemas.
+        """;
+
+    /// <summary>
+    /// Rewrites stale <c>mcp/{server}</c> skills against the server's live schemas and records a
+    /// new surface baseline (#615). A skill is stale when its server's surface or version moved
+    /// since its content was written (<see cref="IMcpSkillSurface.Evaluate"/>). Staleness is the
+    /// pass's own change gate — a refreshed skill stops being stale — so no ledger fingerprint
+    /// is used. Skills recorded for a server that now runs under another name are logged, not
+    /// renamed.
+    /// </summary>
+    internal async Task RunMcpSkillRefreshPassAsync(CancellationToken ct)
+    {
+        if (_mcpSkillSurface is null || _skillStore is null || !_options.McpSkillRefreshEnabled)
+            return;
+
+        await RunPassAsync("mcp skill refresh", async () =>
+        {
+            var evaluated = (await _skillStore.ListAsync())
+                .Where(s => McpSkillNames.TryGetServerName(s.Name, out _))
+                .Select(s => (Skill: s, Freshness: _mcpSkillSurface.Evaluate(s)))
+                .ToList();
+
+            foreach (var (skill, freshness) in evaluated.Where(x => x.Freshness.Status == SkillFreshnessStatus.Renamed))
+            {
+                _logger.LogWarning(
+                    "DreamService: mcp skill refresh — skill '{Skill}' is orphaned: {Reason}",
+                    skill.Name, freshness.Reason);
+            }
+
+            var stale = evaluated
+                .Where(x => x.Freshness.Status == SkillFreshnessStatus.Stale)
+                .OrderBy(x => x.Skill.UpdatedAt ?? x.Skill.CreatedAt)
+                .ToList();
+            if (stale.Count == 0)
+            {
+                _logger.LogDebug("DreamService: mcp skill refresh — no stale mcp/ skills");
+                return;
+            }
+
+            var batch = stale.Take(Math.Max(0, _options.McpSkillRefreshMaxPerCycle)).ToList();
+            _logger.LogInformation(
+                "DreamService: mcp skill refresh pass — {Stale} stale skill(s), refreshing {Batch}",
+                stale.Count, batch.Count);
+
+            var refreshed = 0;
+            foreach (var (skill, freshness) in batch)
+            {
+                ct.ThrowIfCancellationRequested();
+                McpSkillNames.TryGetServerName(skill.Name, out var server);
+
+                // Baseline first: if the surface moves while we work, the next cycle sees it.
+                var capture = _mcpSkillSurface.CaptureBaseline(skill.Name);
+                if (capture.Baseline is null)
+                {
+                    _logger.LogDebug(
+                        "DreamService: mcp skill refresh — skipping '{Skill}': {Reason}", skill.Name, capture.Reason);
+                    continue;
+                }
+
+                var surfaceText = await _mcpSkillSurface.GetLiveSurfaceTextAsync(server, ct);
+                if (string.IsNullOrWhiteSpace(surfaceText))
+                {
+                    _logger.LogDebug(
+                        "DreamService: mcp skill refresh — skipping '{Skill}': schemas for '{Server}' unavailable",
+                        skill.Name, server);
+                    continue;
+                }
+
+                var userMessage = new StringBuilder()
+                    .Append("Skill: ").AppendLine(skill.Name)
+                    .Append("Why it is stale: ").AppendLine(freshness.Reason)
+                    .AppendLine()
+                    .Append("## Current tools on MCP server '").Append(server).AppendLine("'")
+                    .AppendLine()
+                    .AppendLine(surfaceText)
+                    .AppendLine()
+                    .AppendLine("## Current skill markdown")
+                    .AppendLine()
+                    .AppendLine(skill.Content)
+                    .ToString();
+
+                var result = await InvokeDreamPassAsync<McpSkillRefreshResultDto>(
+                    "mcp skill refresh",
+                    _mcpSkillRefreshDirective ?? BuiltInMcpSkillRefreshDirective,
+                    userMessage,
+                    ct);
+                if (result is null)
+                    continue;
+
+                if (await ApplyMcpSkillRefreshAsync(_skillStore, skill, result, capture.Baseline, _logger))
+                    refreshed++;
+            }
+
+            _logger.LogInformation(
+                "DreamService: mcp skill refresh pass complete — {Refreshed} of {Batch} refreshed, {Remaining} stale skill(s) left for later cycles",
+                refreshed, batch.Count, stale.Count - refreshed);
+        });
+    }
+
+    /// <summary>
+    /// Saves one refresh result: the rewritten content when the model changed it, otherwise the
+    /// existing content (now verified against the live schema); either way with the new
+    /// baseline. Skips the save when another writer touched the skill since it was read.
+    /// </summary>
+    internal static async Task<bool> ApplyMcpSkillRefreshAsync(
+        ISkillStore store,
+        Skill original,
+        McpSkillRefreshResultDto result,
+        SkillSurfaceBaseline baseline,
+        ILogger logger)
+    {
+        var current = await store.GetAsync(original.Name);
+        if (current is null || current.UpdatedAt != original.UpdatedAt)
+        {
+            logger.LogDebug(
+                "DreamService: mcp skill refresh — '{Skill}' changed or vanished while refreshing; leaving it for the next cycle",
+                original.Name);
+            return false;
+        }
+
+        var rewritten = result.Changed && !string.IsNullOrWhiteSpace(result.Content);
+        await store.SaveAsync(current with
+        {
+            Content = rewritten ? result.Content!.Trim() : current.Content,
+            UpdatedAt = DateTimeOffset.UtcNow,
+            SurfaceBaseline = baseline
+        });
+
+        logger.LogInformation(
+            "DreamService: mcp skill refresh {Action} '{Skill}': {Notes}",
+            rewritten ? "rewrote" : "re-verified", original.Name, result.Notes ?? "(no notes)");
+        return true;
+    }
+
+    internal sealed record McpSkillRefreshResultDto
+    {
+        public bool Changed { get; init; }
+        public string? Content { get; init; }
+        public string? Notes { get; init; }
     }
 
     private sealed record WispFailureAnalysisResultDto

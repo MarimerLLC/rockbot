@@ -25,11 +25,17 @@ internal static class McpServerSkillFormatter
     /// Returns the formatted skill block for <paramref name="serverName"/>, or
     /// <c>null</c> when no matching skills exist or the store is unavailable.
     /// Lookup is case-insensitive on <c>mcp/{server}</c>.
+    /// <para>
+    /// With a <paramref name="surface"/>, each skill whose recorded baseline no longer matches
+    /// the server's live surface carries a <c>[stale: …]</c> marker telling the model to prefer
+    /// the live schema (#615). Skills with no baseline are left unmarked: unknown isn't stale.
+    /// </para>
     /// </summary>
     public static async Task<string?> FormatAsync(
         ISkillStore? skillStore,
         string serverName,
-        CancellationToken ct)
+        CancellationToken ct,
+        IMcpSkillSurface? surface = null)
     {
         if (skillStore is null || string.IsNullOrWhiteSpace(serverName))
             return null;
@@ -69,6 +75,9 @@ internal static class McpServerSkillFormatter
         {
             sb.AppendLine();
             sb.Append("### Skill: `").Append(skill.Name).AppendLine("`");
+            var marker = FreshnessMarker(surface, skill);
+            if (marker is not null)
+                sb.AppendLine(marker);
             if (!string.IsNullOrWhiteSpace(skill.Summary))
                 sb.Append("_").Append(skill.Summary.Trim()).AppendLine("_");
             sb.AppendLine();
@@ -87,5 +96,34 @@ internal static class McpServerSkillFormatter
         }
 
         return sb.ToString().TrimEnd();
+    }
+
+    /// <summary>
+    /// The marker line for a skill that no longer matches its server, or <c>null</c> when it is
+    /// fresh or its freshness can't be determined.
+    /// </summary>
+    internal static string? FreshnessMarker(IMcpSkillSurface? surface, Skill skill)
+    {
+        if (surface is null)
+            return null;
+
+        SkillFreshness freshness;
+        try
+        {
+            freshness = surface.Evaluate(skill);
+        }
+        catch
+        {
+            return null;
+        }
+
+        return freshness.Status switch
+        {
+            SkillFreshnessStatus.Stale =>
+                $"[stale: {freshness.Reason}; trust the schema above where they disagree]",
+            SkillFreshnessStatus.Renamed =>
+                $"[renamed: {freshness.Reason}; check its parameters against the schema above]",
+            _ => null
+        };
     }
 }

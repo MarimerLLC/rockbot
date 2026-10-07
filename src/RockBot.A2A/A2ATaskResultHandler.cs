@@ -42,7 +42,8 @@ internal sealed class A2ATaskResultHandler(
     SessionClientCapabilityStore clientCapabilityStore,
     SessionOriginStore originStore,
     A2ALateReplyFolder lateReplyFolder,
-    ILogger<A2ATaskResultHandler> logger) : IMessageHandler<AgentTaskResult>
+    ILogger<A2ATaskResultHandler> logger,
+    IMcpSkillSurface? mcpSkillSurface = null) : IMessageHandler<AgentTaskResult>
 {
     private string DisplayName => agentNameHolder.DisplayName ?? agent.Name;
 
@@ -319,7 +320,8 @@ internal sealed class A2ATaskResultHandler(
             clientCapabilities: clientCapabilityStore.Get(rawSessionId));
 
         var sessionWorkingMemoryTools = new WorkingMemoryTools(workingMemory, sessionNamespace, logger);
-        var sessionSkillTools = new SkillTools(skillStore, llmClient, logger, rawSessionId);
+        var sessionSkillTools = new SkillTools(skillStore, llmClient, logger, rawSessionId,
+            mcpSkillSurface: mcpSkillSurface);
         // Exclude A2A caller tools (invoke_agent, register_agent, etc.) from the result
         // synthesis — the LLM should present the result, not start new agent interactions.
         var batchId = Guid.NewGuid().ToString("N")[..12];
