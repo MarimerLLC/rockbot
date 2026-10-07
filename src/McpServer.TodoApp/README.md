@@ -4,6 +4,8 @@ An MCP server providing a persistent to-do list accessible to AI agents via the 
 
 ## Tools
 
+Client-facing usage guidance (conventions, recurrence semantics, workflows) lives in [`SKILL.md`](SKILL.md). It is published to the mcp-aggregator as the `todo-mcp` skill document; after editing it, re-publish it with the aggregator's `update_skill(serverName: "todo-mcp", markdown: ...)`.
+
 | Tool | Parameters | Description |
 |------|-----------|-------------|
 | `add_task` | `title`, `due_date` (YYYY-MM-DD), optional `recurrence` (none/daily/weekly/monthly/quarterly/biannual/yearly), `description`, `recurrence_until`, `recurrence_count`, `month_anchor` | Adds a new task; returns created task as JSON |
