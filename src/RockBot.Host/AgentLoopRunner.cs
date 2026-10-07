@@ -427,9 +427,11 @@ public sealed partial class AgentLoopRunner(
         var loadedSkillsState = new LoadedSkillsContext.State();
         using var _____ = LoadedSkillsContext.Set(loadedSkillsState);
 
-        // Lazy typed MCP tools (#612): tools this session activated on earlier turns join the
-        // list now; ones it activates during the run join before the next LLM request.
-        using var ______ = TypedToolSurfaceContext.Set(typedToolSurface);
+        // Typed MCP tools: the run's tier picks the mode (#613), which fits the registry's tools
+        // to it. Lazily, tools this session activated on earlier turns join the list now; ones
+        // it activates during the run join before the next LLM request (#612).
+        using var ______ = TypedToolSurfaceContext.Set(typedToolSurface, tier);
+        TypedToolSurfaceContext.Shape(chatOptions);
         TypedToolSurfaceContext.AddActivated(chatOptions);
 
         // Ensure a current datetime context is always present.
@@ -3004,24 +3006,26 @@ public sealed partial class AgentLoopRunner(
     };
 
     /// <summary>
-    /// Adds the typed tools this session activated on earlier turns to <paramref name="chatOptions"/>
-    /// (#612). <see cref="RunAsync"/> does this itself; call it only before an LLM request made
-    /// outside the loop, such as a pre-fetched first response.
+    /// Fits <paramref name="chatOptions"/> to the typed-tool mode of <paramref name="tier"/> (#613)
+    /// and adds the typed tools this session activated on earlier turns (#612). <see cref="RunAsync"/>
+    /// does this itself; call it only before an LLM request made outside the loop, such as a
+    /// pre-fetched first response.
     /// </summary>
-    public void AddSessionTools(ChatOptions chatOptions)
+    public void AddSessionTools(ChatOptions chatOptions, ModelTier tier)
     {
-        using var _ = TypedToolSurfaceContext.Set(typedToolSurface);
+        using var _ = TypedToolSurfaceContext.Set(typedToolSurface, tier);
+        TypedToolSurfaceContext.Shape(chatOptions);
         TypedToolSurfaceContext.AddActivated(chatOptions);
     }
 
     /// <summary>
-    /// How the model reaches an external service, worded for the typed-tool mode (#612): by
-    /// typed <c>{server}__{tool}</c> name when wrappers are on, through <c>mcp_invoke_tool</c>
-    /// when they're off.
+    /// How the model reaches an external service, worded for the run's typed-tool mode (#612,
+    /// #613): by typed <c>{server}__{tool}</c> name when wrappers are on, through
+    /// <c>mcp_invoke_tool</c> when they're off.
     /// </summary>
-    private string HowToReachServices() => (typedToolSurface?.Mode ?? TypedToolMode.Off) switch
+    private string HowToReachServices() => (TypedToolSurfaceContext.Mode ?? TypedToolMode.Off) switch
     {
-        TypedToolMode.Lazy =>
+        TypedToolMode.Lazy or TypedToolMode.Pinned =>
             $"Call {typedToolSurface!.LoaderToolName} with a few keywords for what you need; the tools it returns " +
             "become callable by their typed names ({server}__{tool}). search_known_services and " +
             "mcp_list_services list whole services.",
@@ -3040,7 +3044,8 @@ public sealed partial class AgentLoopRunner(
     /// </summary>
     private void AppendMcpServiceHint(StringBuilder sb, ServiceSearchCandidate candidate, ChatOptions chatOptions)
     {
-        var mode = typedToolSurface?.Mode ?? TypedToolMode.Off;
+        var mode = TypedToolSurfaceContext.Mode ?? TypedToolMode.Off;
+        var activating = mode is TypedToolMode.Lazy or TypedToolMode.Pinned;
         if (mode == TypedToolMode.Off || !candidate.TopItemsAreTypedTools)
         {
             sb.AppendLine($"  Sample tools: {string.Join(", ", candidate.TopItems)}");
@@ -3049,7 +3054,7 @@ public sealed partial class AgentLoopRunner(
             return;
         }
 
-        if (mode == TypedToolMode.Lazy)
+        if (activating)
         {
             var present = (chatOptions.Tools ?? []).Select(t => t.Name).ToHashSet(StringComparer.Ordinal);
             foreach (var name in candidate.TopItems.Where(n => !present.Contains(n)))
@@ -3057,7 +3062,7 @@ public sealed partial class AgentLoopRunner(
         }
 
         sb.AppendLine($"  Typed tools: {string.Join(", ", candidate.TopItems)} — call them directly.");
-        sb.AppendLine(mode == TypedToolMode.Lazy
+        sb.AppendLine(activating
             ? $"  For another tool on this server, call {typedToolSurface!.LoaderToolName} " +
               $"or mcp_get_service_details(server_name=\"{candidate.Id}\")."
             : $"  For the rest of this server's tools, call mcp_get_service_details(server_name=\"{candidate.Id}\").");

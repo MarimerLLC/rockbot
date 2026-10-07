@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Microsoft.Extensions.AI;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using RockBot.Host;
@@ -11,7 +12,8 @@ namespace RockBot.Tools.Tests;
 
 /// <summary>
 /// Lazy typed MCP tools (#612): <c>mcp_find_tools</c> scoring, per-session activation, eviction
-/// when a server changes or goes, and how activations reach a run's tool list.
+/// when a server changes or goes, and how activations reach a run's tool list. Per-tier modes and
+/// pinned servers (#613): what the registry holds and how each run's list is fitted to its tier.
 /// </summary>
 [TestClass]
 public class McpLazyTypedToolsTests
@@ -87,16 +89,20 @@ public class McpLazyTypedToolsTests
             return JsonDocument.Parse(response.Content!);
         }
 
-        public string[] Activated(string session) => [.. Surface.GetActivated(session).Select(f => f.Name)];
+        public string[] Activated(string session, TypedToolMode mode = TypedToolMode.Lazy) =>
+            [.. Surface.GetActivated(session, mode).Select(f => f.Name)];
     }
 
     private static async Task<Gateway> CreateAsync(
         McpWrapperMode mode = McpWrapperMode.Lazy,
         int cap = 40,
-        TimeProvider? time = null)
+        TimeProvider? time = null,
+        Action<McpToolSurfaceOptions>? configure = null)
     {
         var live = Servers.ToDictionary(kvp => kvp.Key, kvp => kvp.Value);
-        var options = Options.Create(new McpToolSurfaceOptions { WrapperMode = mode, MaxActivatedToolsPerSession = cap });
+        var surfaceOptions = new McpToolSurfaceOptions { WrapperMode = mode, MaxActivatedToolsPerSession = cap };
+        configure?.Invoke(surfaceOptions);
+        var options = Options.Create(surfaceOptions);
         var identity = new AgentIdentity("test-agent");
         var index = new McpServerIndex();
         var management = new McpManagementExecutor(index,
@@ -321,7 +327,7 @@ public class McpLazyTypedToolsTests
         gateway.Surface.ActivateByName("session/a", "adjutant__send_email");
         var options = OptionsFor(gateway, "session/a", "mcp_find_tools", "mcp_invoke_tool");
 
-        using (TypedToolSurfaceContext.Set(gateway.Surface))
+        using (TypedToolSurfaceContext.Set(gateway.Surface, ModelTier.Balanced))
         {
             Assert.AreEqual(1, TypedToolSurfaceContext.AddActivated(options));
             Assert.AreEqual(0, TypedToolSurfaceContext.AddActivated(options));
@@ -339,7 +345,7 @@ public class McpLazyTypedToolsTests
         gateway.Surface.ActivateByName("session/a", "adjutant__send_email");
         var options = OptionsFor(gateway, "session/a", "mcp_invoke_tool");
 
-        using (TypedToolSurfaceContext.Set(gateway.Surface))
+        using (TypedToolSurfaceContext.Set(gateway.Surface, ModelTier.Balanced))
         {
             Assert.AreEqual(0, TypedToolSurfaceContext.AddActivated(options),
                 "A tool profile without mcp_find_tools must not gain typed tools.");
@@ -354,7 +360,7 @@ public class McpLazyTypedToolsTests
         var options = OptionsFor(gateway, "session/a", "mcp_find_tools");
         options.Tools = options.Tools!.ToArray();
 
-        using (TypedToolSurfaceContext.Set(gateway.Surface))
+        using (TypedToolSurfaceContext.Set(gateway.Surface, ModelTier.Balanced))
             Assert.IsNotNull(TypedToolSurfaceContext.TryActivate(options, "adjutant__send_email"));
 
         CollectionAssert.Contains(options.Tools.Select(t => t.Name).ToList(), "adjutant__send_email");
@@ -371,7 +377,7 @@ public class McpLazyTypedToolsTests
                 .WithChunking(new NullWorkingMemory(), "session/a", RockBot.Llm.ModelBehavior.Default, NullLogger.Instance)
         };
 
-        using (TypedToolSurfaceContext.Set(gateway.Surface))
+        using (TypedToolSurfaceContext.Set(gateway.Surface, ModelTier.Balanced))
             TypedToolSurfaceContext.AddActivated(options);
 
         Assert.IsInstanceOfType<ChunkingAIFunction>(options.Tools!.Single(t => t.Name == "adjutant__send_email"));
@@ -385,6 +391,186 @@ public class McpLazyTypedToolsTests
         var names = gateway.Surface.TypedNamesFor(gateway.Summary("adjutant"), "create a calendar event for friday", 2);
 
         Assert.AreEqual("adjutant__create_event", names[0]);
+    }
+
+    // ── Per-tier modes (#613) ─────────────────────────────────────────────────
+
+    private static Task<Gateway> MixedAsync(Action<McpToolSurfaceOptions>? more = null) =>
+        CreateAsync(McpWrapperMode.Off, configure: o =>
+        {
+            o.WrapperModeByTier[ModelTier.Low] = McpWrapperMode.Eager;
+            o.WrapperModeByTier[ModelTier.High] = McpWrapperMode.Lazy;
+            more?.Invoke(o);
+        });
+
+    private static string[] Names(ChatOptions options) => [.. options.Tools!.Select(t => t.Name)];
+
+    [TestMethod]
+    public void Options_TierOverride_WinsOverTheDefault()
+    {
+        var options = new McpToolSurfaceOptions { WrapperMode = McpWrapperMode.Lazy };
+        options.WrapperModeByTier[ModelTier.Low] = McpWrapperMode.Eager;
+
+        Assert.AreEqual(McpWrapperMode.Eager, options.ModeFor(ModelTier.Low));
+        Assert.AreEqual(McpWrapperMode.Lazy, options.ModeFor(ModelTier.Balanced));
+        Assert.IsTrue(options.RegistersWrappers);
+        Assert.IsTrue(options.ActivatesWrappers);
+        Assert.IsFalse(options.PinsServers);
+        Assert.AreEqual("Low=Eager, Balanced=Lazy, High=Lazy", options.Describe());
+    }
+
+    [TestMethod]
+    public void Options_BindFromConfiguration_ByTierName()
+    {
+        var config = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["McpBridge:WrapperMode"] = "Lazy",
+                ["McpBridge:WrapperModeByTier:Low"] = "Eager",
+                ["McpBridge:WrapperModeByTier:High"] = "Pinned"
+            })
+            .Build();
+
+        var options = new McpToolSurfaceOptions();
+        ConfigurationBinder.Bind(config.GetSection("McpBridge"), options);
+
+        Assert.AreEqual("Low=Eager, Balanced=Lazy, High=Pinned", options.Describe());
+    }
+
+    [TestMethod]
+    public async Task MixedTiers_RegistryHoldsTypedTools_AndFindTools()
+    {
+        var gateway = await MixedAsync();
+
+        Assert.IsNotNull(gateway.Registry.GetExecutor("adjutant__send_email"), "Low is eager.");
+        Assert.IsNotNull(gateway.Registry.GetExecutor(McpTypedToolSurface.FindToolsName), "High is lazy.");
+    }
+
+    [TestMethod]
+    [DataRow(ModelTier.Low, true, false, DisplayName = "Low (eager): typed tools, no mcp_find_tools")]
+    [DataRow(ModelTier.Balanced, false, false, DisplayName = "Balanced (off): neither")]
+    [DataRow(ModelTier.High, false, true, DisplayName = "High (lazy): mcp_find_tools, no typed tools")]
+    public async Task Shape_FitsTheRunsListToItsTier(ModelTier tier, bool typed, bool loader)
+    {
+        var gateway = await MixedAsync();
+        var options = new ChatOptions { Tools = [.. gateway.Registry.BuildAgentToolFunctions("session/a", "batch")] };
+
+        using (TypedToolSurfaceContext.Set(gateway.Surface, tier))
+            TypedToolSurfaceContext.Shape(options);
+
+        var names = Names(options);
+        Assert.AreEqual(typed, names.Contains("adjutant__send_email"));
+        Assert.AreEqual(typed, names.Contains("chat__send_message"));
+        Assert.AreEqual(loader, names.Contains(McpTypedToolSurface.FindToolsName));
+        CollectionAssert.Contains(names, "mcp_invoke_tool", "The generic path stays in every mode.");
+    }
+
+    [TestMethod]
+    public async Task MixedTiers_ActivationsReachOnlyTheActivatingTier()
+    {
+        var gateway = await MixedAsync();
+        gateway.Surface.ActivateByName("session/a", "adjutant__send_email");
+
+        ChatOptions Run(ModelTier tier)
+        {
+            var options = new ChatOptions { Tools = [.. gateway.Registry.BuildAgentToolFunctions("session/a", "batch")] };
+            using (TypedToolSurfaceContext.Set(gateway.Surface, tier))
+            {
+                TypedToolSurfaceContext.Shape(options);
+                TypedToolSurfaceContext.AddActivated(options);
+            }
+            return options;
+        }
+
+        var high = Names(Run(ModelTier.High));
+        CollectionAssert.Contains(high, "adjutant__send_email");
+        CollectionAssert.DoesNotContain(high, "chat__send_message");
+        CollectionAssert.DoesNotContain(Names(Run(ModelTier.Balanced)), "adjutant__send_email");
+    }
+
+    [TestMethod]
+    public async Task Shape_OutsideARun_LeavesTheListAlone()
+    {
+        var gateway = await MixedAsync();
+        var options = new ChatOptions { Tools = [.. gateway.Registry.BuildAgentToolFunctions("session/a", "batch")] };
+        var before = Names(options);
+
+        Assert.AreEqual(0, TypedToolSurfaceContext.Shape(options));
+        CollectionAssert.AreEqual(before, Names(options));
+    }
+
+    // ── Pinned servers (#613) ─────────────────────────────────────────────────
+
+    [TestMethod]
+    public async Task Pin_PinnedRunGetsTheServersTypedTools_LazyRunDoesNot()
+    {
+        var gateway = await CreateAsync(McpWrapperMode.Pinned);
+
+        gateway.Surface.Pin("session/a", "adjutant");
+
+        CollectionAssert.AreEquivalent(
+            new[] { "adjutant__send_email", "adjutant__list_emails", "adjutant__search_email", "adjutant__create_event" },
+            gateway.Activated("session/a", TypedToolMode.Pinned));
+        Assert.AreEqual(0, gateway.Activated("session/a", TypedToolMode.Lazy).Length);
+        Assert.AreEqual(0, gateway.Activated("session/b", TypedToolMode.Pinned).Length, "Pins are per session.");
+    }
+
+    [TestMethod]
+    public async Task Pin_ActivationsComeFirst_ThenPinnedServers_WithoutDuplicates()
+    {
+        var gateway = await CreateAsync(McpWrapperMode.Pinned);
+        gateway.Surface.ActivateByName("session/a", "chat__send_message");
+        gateway.Surface.ActivateByName("session/a", "adjutant__create_event");
+
+        gateway.Surface.Pin("session/a", "adjutant");
+
+        var names = gateway.Activated("session/a", TypedToolMode.Pinned);
+        CollectionAssert.AreEqual(new[] { "chat__send_message", "adjutant__create_event" }, names.Take(2).ToArray());
+        Assert.AreEqual(names.Length, names.Distinct().Count());
+        Assert.AreEqual(5, names.Length);
+    }
+
+    [TestMethod]
+    public async Task Pin_UnknownServer_IsIgnored()
+    {
+        var gateway = await CreateAsync(McpWrapperMode.Pinned);
+
+        gateway.Surface.Pin("session/a", "made-up-server");
+
+        Assert.AreEqual(0, gateway.Surface.GetPinned("session/a").Count);
+    }
+
+    [TestMethod]
+    public async Task Pin_KeepsTheMostRecentlyCalledServers()
+    {
+        var gateway = await CreateAsync(McpWrapperMode.Pinned, configure: o => o.MaxPinnedServersPerSession = 1);
+
+        gateway.Surface.Pin("session/a", "adjutant");
+        gateway.Surface.Pin("session/a", "chat");
+
+        CollectionAssert.AreEqual(new[] { "chat" }, gateway.Surface.GetPinned("session/a").ToArray());
+        CollectionAssert.AreEqual(new[] { "chat__send_message" }, gateway.Activated("session/a", TypedToolMode.Pinned));
+    }
+
+    [TestMethod]
+    public async Task Pin_NoTierPinned_RecordsNothing()
+    {
+        var gateway = await CreateAsync(McpWrapperMode.Lazy);
+
+        gateway.Surface.Pin("session/a", "adjutant");
+
+        Assert.AreEqual(0, gateway.Surface.GetPinned("session/a").Count);
+    }
+
+    [TestMethod]
+    public async Task Pin_RemovedServer_DropsOutOfTheList()
+    {
+        var gateway = await CreateAsync(McpWrapperMode.Pinned);
+        gateway.Surface.Pin("session/a", "chat");
+
+        await gateway.DeliverAsync(new McpServersIndexed { Servers = [], RemovedServers = ["chat"] });
+
+        Assert.AreEqual(0, gateway.Activated("session/a", TypedToolMode.Pinned).Length);
     }
 
     private sealed class NullWorkingMemory : IWorkingMemory

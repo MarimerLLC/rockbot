@@ -237,7 +237,7 @@ internal sealed class UserMessageHandler(
 
             // Typed MCP tools this session activated on earlier turns (lazy mode, #612). The loop
             // adds them too, but the text-based path's first request is made here, before it.
-            agentLoopRunner.AddSessionTools(chatOptions);
+            agentLoopRunner.AddSessionTools(chatOptions, tier);
 
             var toolNames = chatOptions.Tools!.OfType<AIFunction>().Select(t => t.Name).ToList();
             logger.LogInformation("Calling LLM with {ToolCount} tools: [{Tools}]",

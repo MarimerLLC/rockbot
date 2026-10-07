@@ -49,13 +49,18 @@ public class McpWrapperEndToEndTests
     }
 
     /// <summary>The agent's half of the gateway, on the harness's in-memory bus, fed the bridge's index.</summary>
-    internal static async Task<AgentSide> ConnectAgentAsync(BridgeHarness harness, McpWrapperMode mode = McpWrapperMode.Eager)
+    internal static async Task<AgentSide> ConnectAgentAsync(
+        BridgeHarness harness,
+        McpWrapperMode mode = McpWrapperMode.Eager,
+        Action<McpToolSurfaceOptions>? configure = null)
     {
         var identity = new AgentIdentity("test-agent");
         var proxy = new McpToolProxy(harness.BusPublisher, harness.BusSubscriber, identity,
             NullLogger<McpToolProxy>.Instance, TimeSpan.FromSeconds(10), TimeSpan.FromSeconds(10));
         var index = new McpServerIndex();
-        var options = Options.Create(new McpToolSurfaceOptions { WrapperMode = mode });
+        var surfaceOptions = new McpToolSurfaceOptions { WrapperMode = mode };
+        configure?.Invoke(surfaceOptions);
+        var options = Options.Create(surfaceOptions);
         var surface = new McpTypedToolSurface(options, NullLogger<McpTypedToolSurface>.Instance);
         var management = new McpManagementExecutor(index, proxy, harness.BusPublisher, harness.BusSubscriber, identity,
             NullLogger<McpManagementExecutor>.Instance, TimeSpan.FromSeconds(10), typedTools: surface);

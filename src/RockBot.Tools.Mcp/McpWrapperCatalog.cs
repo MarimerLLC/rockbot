@@ -18,9 +18,11 @@ public sealed record McpWrapperTool(
 
 /// <summary>
 /// Keeps the typed <c>{server}__{tool}</c> wrapper tools in step with the bridge's server index
-/// (#420, porting mcp-aggregator#42). In <see cref="McpWrapperMode.Eager"/> they are registered in
-/// the <see cref="IToolRegistry"/>; in <see cref="McpWrapperMode.Lazy"/> they are only indexed here,
-/// and <see cref="McpTypedToolSurface"/> adds them to the sessions that activate them (#612).
+/// (#420, porting mcp-aggregator#42). They are indexed here whenever some model tier offers them.
+/// When some tier is <see cref="McpWrapperMode.Eager"/> they are also registered in the
+/// <see cref="IToolRegistry"/>, and each run of a tier in another mode drops them from its list
+/// (<c>TypedToolSurfaceContext.Shape</c>, #613); <see cref="McpTypedToolSurface"/> adds them to the
+/// lazy and pinned sessions that activate them (#612).
 /// <para>
 /// On each <see cref="McpServersIndexed"/> it reconciles the affected servers' wrappers: tools
 /// that appeared are registered, tools that vanished or whose fingerprint (description plus
@@ -69,7 +71,8 @@ public sealed class McpWrapperCatalog
         _surface.Bind(this);
     }
 
-    public McpWrapperMode Mode => _options.WrapperMode;
+    /// <summary>The surface options: the mode of each tier.</summary>
+    public McpToolSurfaceOptions Options => _options;
 
     /// <summary>The surface lazy-mode activations go through.</summary>
     public McpTypedToolSurface Surface => _surface;
@@ -107,7 +110,7 @@ public sealed class McpWrapperCatalog
         DownstreamName = wrapper.ToolName
     };
 
-    /// <summary>A typed tool as a function for one session's tool list (lazy mode).</summary>
+    /// <summary>A typed tool as a function for one session's tool list (lazy and pinned modes).</summary>
     public AIFunction CreateFunction(McpWrapperTool wrapper, string? toolSessionId) =>
         new RegistryToolFunction(RegistrationFor(wrapper), _executor, toolSessionId);
 
@@ -117,7 +120,7 @@ public sealed class McpWrapperCatalog
     /// </summary>
     public async Task ApplyAsync(McpServersIndexed message, CancellationToken ct)
     {
-        if (_options.WrapperMode == McpWrapperMode.Off)
+        if (!_options.IndexesWrappers)
             return;
 
         await _gate.WaitAsync(ct);
@@ -151,8 +154,8 @@ public sealed class McpWrapperCatalog
             // and get the current schema, so its activation goes.
             _surface.Evict(stale);
 
-            _logger.LogInformation("Typed MCP tools ({Mode}): {Count} across {Servers} server(s)",
-                _options.WrapperMode, _byName.Count, _byServer.Count(kvp => kvp.Value.Count > 0));
+            _logger.LogInformation("Typed MCP tools ({Modes}): {Count} across {Servers} server(s)",
+                _options.Describe(), _byName.Count, _byServer.Count(kvp => kvp.Value.Count > 0));
         }
         finally
         {
@@ -211,7 +214,7 @@ public sealed class McpWrapperCatalog
     {
         _byServer.TryGetValue(serverName, out var current);
         current ??= [];
-        var register = _options.WrapperMode == McpWrapperMode.Eager;
+        var register = _options.RegistersWrappers;
 
         foreach (var (name, wrapper) in current)
         {
@@ -227,7 +230,7 @@ public sealed class McpWrapperCatalog
             }
         }
 
-        // Lazy: indexed here only; sessions add the tools they activate.
+        // No tier eager: indexed here only; sessions add the tools they activate.
         if (!register)
         {
             if (desired.Count == 0)

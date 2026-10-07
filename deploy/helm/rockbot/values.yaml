@@ -49,7 +49,16 @@ agent:
   # registered as a typed {server}__{tool} tool with its own parameter schema. See #420.
   # "Lazy": the same typed tools, but a session only gets the ones it finds with
   # mcp_find_tools, opens with mcp_get_service_details, or calls by name. See #612.
+  # "Pinned": lazy, and once a session calls a server (either way) all of that server's
+  # typed tools stay in its list. See #613.
   mcpWrapperMode: "Off"
+  # Per-tier overrides of mcpWrapperMode (#613): the run's model tier picks its mode, so a
+  # weak model can get eager typed tools while a strong one keeps a small baseline. Leave a
+  # tier empty to use mcpWrapperMode.
+  mcpWrapperModeByTier:
+    low: ""
+    balanced: ""
+    high: ""
   # Always Recreate — only one agent may run at a time (stateful)
   replicaCount: 1
   # IANA timezone ID injected into every LLM prompt as current date/time context.

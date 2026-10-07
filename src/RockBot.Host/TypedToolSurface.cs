@@ -15,13 +15,20 @@ public enum TypedToolMode
     /// Typed tools join a session's tool list only once the session has searched for them, or
     /// called one by name (#612).
     /// </summary>
-    Lazy
+    Lazy,
+
+    /// <summary>
+    /// Lazy, and once the session has called a server, all of that server's typed tools stay in
+    /// its tool list (#613).
+    /// </summary>
+    Pinned
 }
 
 /// <summary>
-/// The typed downstream tool surface as host-level code sees it: the mode, for prompts and hints
-/// that name tools, and, in <see cref="TypedToolMode.Lazy"/>, the tools each session has
-/// activated (#612).
+/// The typed downstream tool surface as host-level code sees it: the mode each model tier runs
+/// in (#613), for shaping each run's tool list and for prompts and hints that name tools, and, in
+/// <see cref="TypedToolMode.Lazy"/> and <see cref="TypedToolMode.Pinned"/>, the tools each
+/// session has activated (#612).
 /// <para>
 /// Activations are keyed by the tool session id that a run's registry tools carry
 /// (<see cref="ISessionBoundTool"/>), the same id their executors see on each call. They join a
@@ -31,13 +38,20 @@ public enum TypedToolMode
 /// </summary>
 public interface ITypedToolSurface
 {
-    TypedToolMode Mode { get; }
+    /// <summary>The mode a run on <paramref name="tier"/> uses.</summary>
+    TypedToolMode ModeFor(ModelTier tier);
 
     /// <summary>The tool that searches for and activates typed tools (<c>mcp_find_tools</c>).</summary>
     string LoaderToolName { get; }
 
-    /// <summary>The typed tools <paramref name="toolSessionId"/> has activated, oldest first.</summary>
-    IReadOnlyList<AIFunction> GetActivated(string toolSessionId);
+    /// <summary>True when <paramref name="toolName"/> is a typed downstream tool.</summary>
+    bool IsTypedTool(string toolName);
+
+    /// <summary>
+    /// The typed tools <paramref name="toolSessionId"/> has activated, oldest first; in
+    /// <see cref="TypedToolMode.Pinned"/>, followed by every typed tool of the servers it has called.
+    /// </summary>
+    IReadOnlyList<AIFunction> GetActivated(string toolSessionId, TypedToolMode mode);
 
     /// <summary>
     /// The model called <paramref name="toolName"/>, which isn't in its tool list. When that is a
@@ -60,16 +74,47 @@ public interface ISessionBoundTool
 /// </summary>
 public static class TypedToolSurfaceContext
 {
-    private static readonly AsyncLocal<ITypedToolSurface?> Current = new();
+    private static readonly AsyncLocal<Run?> Current = new();
 
     /// <summary>The surface for the current run, or null.</summary>
-    public static ITypedToolSurface? Surface => Current.Value;
+    public static ITypedToolSurface? Surface => Current.Value?.Surface;
 
-    public static IDisposable Set(ITypedToolSurface? surface)
+    /// <summary>The current run's mode; null outside a run.</summary>
+    public static TypedToolMode? Mode => Current.Value?.Mode;
+
+    /// <summary>True when the current run adds typed tools as the session activates them.</summary>
+    public static bool IsActivating => Mode is TypedToolMode.Lazy or TypedToolMode.Pinned;
+
+    /// <summary>Makes <paramref name="surface"/>, in the mode for <paramref name="tier"/>, ambient for a run.</summary>
+    public static IDisposable Set(ITypedToolSurface? surface, ModelTier tier)
     {
         var previous = Current.Value;
-        Current.Value = surface;
+        Current.Value = surface is null ? null : new Run(surface, surface.ModeFor(tier));
         return new Scope(previous);
+    }
+
+    /// <summary>
+    /// Fits a run's tool list to its mode (#613). The registry holds every typed tool when any
+    /// tier runs eager, and <c>mcp_find_tools</c> when any tier activates; a run drops the ones
+    /// its own mode doesn't use. Returns how many were removed.
+    /// </summary>
+    public static int Shape(ChatOptions? options)
+    {
+        if (Current.Value is not { } run || options?.Tools is not { Count: > 0 } tools)
+            return 0;
+
+        var dropTyped = run.Mode != TypedToolMode.Eager;
+        var dropLoader = run.Mode is TypedToolMode.Off or TypedToolMode.Eager;
+        if (!tools.Any(t => Drops(t.Name)))
+            return 0;
+
+        var kept = tools.Where(t => !Drops(t.Name)).ToList();
+        var removed = tools.Count - kept.Count;
+        options.Tools = kept;
+        return removed;
+
+        bool Drops(string name) =>
+            (dropLoader && name == run.Surface.LoaderToolName) || (dropTyped && run.Surface.IsTypedTool(name));
     }
 
     /// <summary>
@@ -83,7 +128,7 @@ public static class TypedToolSurfaceContext
 
         var present = Names(options!.Tools!);
         var added = 0;
-        foreach (var tool in surface.GetActivated(sessionId))
+        foreach (var tool in surface.GetActivated(sessionId, Current.Value!.Mode))
         {
             if (present.Add(tool.Name))
             {
@@ -116,9 +161,11 @@ public static class TypedToolSurfaceContext
         loader = null!;
         sessionId = null!;
 
-        if (Current.Value is not { Mode: TypedToolMode.Lazy } current || options?.Tools is not { Count: > 0 } tools)
+        if (Current.Value is not { Mode: TypedToolMode.Lazy or TypedToolMode.Pinned } run
+            || options?.Tools is not { Count: > 0 } tools)
             return false;
 
+        var current = run.Surface;
         var found = tools.OfType<AIFunction>().FirstOrDefault(t => t.Name == current.LoaderToolName);
         if (found?.GetService<ISessionBoundTool>()?.SessionId is not { Length: > 0 } id)
             return false;
@@ -146,7 +193,9 @@ public static class TypedToolSurfaceContext
     private static HashSet<string> Names(IList<AITool> tools) =>
         tools.Select(t => t.Name).ToHashSet(StringComparer.Ordinal);
 
-    private sealed class Scope(ITypedToolSurface? previous) : IDisposable
+    private sealed record Run(ITypedToolSurface Surface, TypedToolMode Mode);
+
+    private sealed class Scope(Run? previous) : IDisposable
     {
         public void Dispose() => Current.Value = previous;
     }
@@ -159,7 +208,7 @@ public static class TypedToolSurfaceContext
 /// iteration N+1. After each response it resolves calls to typed tools the list doesn't hold
 /// (a name from a skill or from memory), so the function-invoking loop finds and runs them
 /// instead of answering "unknown tool". Both act on the options instance the loop dispatches
-/// against. A no-op outside lazy mode.
+/// against. A no-op unless the run activates typed tools.
 /// </summary>
 internal sealed class TypedToolSurfaceChatClient(IChatClient innerClient) : DelegatingChatClient(innerClient)
 {
