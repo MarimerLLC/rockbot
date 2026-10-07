@@ -26,7 +26,8 @@ public sealed class TodoTools(TodoRepository repository)
         [Description("Recurrence type: none, daily, weekly, monthly, quarterly, biannual, yearly. Defaults to none.")] string recurrence = "none",
         [Description("Optional description of the task.")] string? description = null,
         [Description(RecurrenceUntilDescription)] string? recurrence_until = null,
-        [Description(RecurrenceCountDescription)] int? recurrence_count = null)
+        [Description(RecurrenceCountDescription)] int? recurrence_count = null,
+        [Description(MonthAnchorDescription + " With last_day, due_date is moved to the last day of its month.")] string? month_anchor = null)
     {
         try
         {
@@ -37,18 +38,22 @@ public sealed class TodoTools(TodoRepository repository)
             DateOnly? until = recurrence_until is null ? null : ParseUntil(recurrence_until);
             int? count = recurrence_count is null ? null : ParseCount(recurrence_count.Value);
             RequireRecurringForLimits(recurrenceType, until, count);
+            var (anchor, anchorDay, anchoredDue) = ResolveAnchor(
+                recurrenceType, month_anchor is null ? null : ParseMonthAnchor(month_anchor), existing: null, dueDate, dueDateExplicit: false);
 
             var id = Guid.NewGuid();
             var item = new TodoItem(
                 Id: id,
                 Title: title,
                 Description: description,
-                DueDate: dueDate,
+                DueDate: anchoredDue,
                 Recurrence: recurrenceType,
                 CreatedAt: DateTimeOffset.UtcNow,
                 SeriesId: id,
                 RecurrenceUntil: until,
-                RecurrenceCount: count);
+                RecurrenceCount: count,
+                MonthAnchor: anchor,
+                AnchorDay: anchorDay);
 
             var active = await repository.GetActiveAsync();
             active.Add(item);
@@ -100,6 +105,7 @@ public sealed class TodoTools(TodoRepository repository)
     [McpServerTool(Name = "complete_task")]
     [Description(
         "Marks a task as completed. For repeating tasks, creates the next occurrence from the original due date " +
+        "(monthly-type series land on their anchor day, or on the last day of the month for month_anchor last_day) " +
         "unless stop_recurrence is true or the series' recurrence_until / recurrence_count limit is reached. " +
         "Returns JSON { completed, next, seriesEnded }: next is the newly created occurrence (with its new id) or null; " +
         "seriesEnded is stop_recurrence, count_reached or until_reached when a repeating series ended, otherwise null.")]
@@ -136,7 +142,7 @@ public sealed class TodoTools(TodoRepository repository)
             string? seriesEnded = null;
             if (task.Recurrence != RecurrenceType.None)
             {
-                var nextDue = NextDueDate(task);
+                var nextDue = Recurrence.NextDueDate(task);
                 if (stop_recurrence)
                     seriesEnded = "stop_recurrence";
                 else if (task.RecurrenceCount is { } count && task.Occurrence + 1 > count)
@@ -203,7 +209,9 @@ public sealed class TodoTools(TodoRepository repository)
         [Description("New recurrence type: none, daily, weekly, monthly, quarterly, biannual, yearly. " +
                      "Setting none ends the series but keeps this task and its id; it also clears any series limits.")] string? recurrence = null,
         [Description(RecurrenceUntilDescription + " Pass an empty string to remove an existing end date.")] string? recurrence_until = null,
-        [Description(RecurrenceCountDescription + " Pass 0 to remove an existing count limit.")] int? recurrence_count = null)
+        [Description(RecurrenceCountDescription + " Pass 0 to remove an existing count limit.")] int? recurrence_count = null,
+        [Description(MonthAnchorDescription + " Switching to last_day moves the current due date to the last day of its month " +
+                     "unless due_date is also given.")] string? month_anchor = null)
     {
         try
         {
@@ -219,6 +227,7 @@ public sealed class TodoTools(TodoRepository repository)
             }
 
             RecurrenceType? newRecurrence = recurrence is null ? null : ParseRecurrence(recurrence);
+            MonthAnchor? newAnchor = month_anchor is null ? null : ParseMonthAnchor(month_anchor);
             if (recurrence_count < 0)
                 throw new McpException("invalid recurrence_count, expected 0 (to clear) or a positive integer");
 
@@ -255,14 +264,19 @@ public sealed class TodoTools(TodoRepository repository)
                 count = null;
             }
 
+            var (anchor, anchorDay, anchoredDue) = ResolveAnchor(
+                resultingRecurrence, newAnchor, existing, newDue ?? existing.DueDate, dueDateExplicit: newDue is not null);
+
             var updated = existing with
             {
                 Title = title ?? existing.Title,
                 Description = description ?? existing.Description,
-                DueDate = newDue ?? existing.DueDate,
+                DueDate = anchoredDue,
                 Recurrence = resultingRecurrence,
                 RecurrenceUntil = until,
-                RecurrenceCount = count
+                RecurrenceCount = count,
+                MonthAnchor = anchor,
+                AnchorDay = anchorDay
             };
             active[index] = updated;
 
@@ -315,6 +329,11 @@ public sealed class TodoTools(TodoRepository repository)
         "Optional ISO date (YYYY-MM-DD) ending a repeating series. Inclusive: an occurrence due on this date is still created, " +
         "none after it. Only valid when recurrence is not none.";
 
+    private const string MonthAnchorDescription =
+        "Optional day-of-month rule for monthly, quarterly, biannual and yearly series: same_day (default) repeats on the " +
+        "original day of the month, using the month's last day when it is shorter (a 31st lands on Feb 28, then back on Mar 31); " +
+        "last_day repeats on the last day of every month.";
+
     private const string RecurrenceCountDescription =
         "Optional total number of occurrences in a repeating series, counting the first. Completing the last one ends the series. " +
         "Only valid when recurrence is not none. For series created before series tracking existed, counting starts at the current occurrence.";
@@ -340,14 +359,35 @@ public sealed class TodoTools(TodoRepository repository)
             throw new McpException("recurrence_until and recurrence_count require a recurrence other than none");
     }
 
-    private static DateOnly NextDueDate(TodoItem task) => task.Recurrence switch
+    private static MonthAnchor ParseMonthAnchor(string monthAnchor) => monthAnchor.ToLowerInvariant() switch
     {
-        RecurrenceType.Daily     => task.DueDate.AddDays(1),
-        RecurrenceType.Weekly    => task.DueDate.AddDays(7),
-        RecurrenceType.Monthly   => task.DueDate.AddMonths(1),
-        RecurrenceType.Quarterly => task.DueDate.AddMonths(3),
-        RecurrenceType.BiAnnual  => task.DueDate.AddMonths(6),
-        RecurrenceType.Yearly    => task.DueDate.AddYears(1),
-        _ => task.DueDate
+        "same_day" => MonthAnchor.SameDay,
+        "last_day" => MonthAnchor.LastDay,
+        _ => throw new McpException("invalid month_anchor, expected same_day or last_day")
     };
+
+    /// <summary>
+    /// Works out the day-of-month anchor (and possibly adjusted due date) for a task's resulting recurrence.
+    /// Month-based series keep their original anchor day across clamped months; switching to last_day snaps
+    /// the due date to month-end unless the caller supplied the due date explicitly.
+    /// </summary>
+    private static (MonthAnchor? Anchor, int? AnchorDay, DateOnly DueDate) ResolveAnchor(
+        RecurrenceType recurrence, MonthAnchor? requested, TodoItem? existing, DateOnly dueDate, bool dueDateExplicit)
+    {
+        if (!Recurrence.IsMonthBased(recurrence))
+        {
+            if (requested is not null)
+                throw new McpException("month_anchor requires a monthly, quarterly, biannual or yearly recurrence");
+            return (null, null, dueDate);
+        }
+
+        var anchor = requested ?? existing?.MonthAnchor ?? MonthAnchor.SameDay;
+        if (anchor == MonthAnchor.LastDay)
+            return (anchor, null, dueDateExplicit ? dueDate : Recurrence.EndOfMonth(dueDate));
+
+        // Keep an established anchor day (e.g. 31 while the current occurrence is clamped to Feb 28)
+        // unless the caller moved the due date or the task wasn't anchored on a day before.
+        var keepDay = !dueDateExplicit && existing?.MonthAnchor == MonthAnchor.SameDay && existing.AnchorDay is not null;
+        return (anchor, keepDay ? existing!.AnchorDay : dueDate.Day, dueDate);
+    }
 }

@@ -6,16 +6,23 @@ An MCP server providing a persistent to-do list accessible to AI agents via the 
 
 | Tool | Parameters | Description |
 |------|-----------|-------------|
-| `add_task` | `title`, `due_date` (YYYY-MM-DD), optional `recurrence` (none/daily/weekly/monthly/quarterly/biannual/yearly), `description`, `recurrence_until`, `recurrence_count` | Adds a new task; returns created task as JSON |
+| `add_task` | `title`, `due_date` (YYYY-MM-DD), optional `recurrence` (none/daily/weekly/monthly/quarterly/biannual/yearly), `description`, `recurrence_until`, `recurrence_count`, `month_anchor` | Adds a new task; returns created task as JSON |
 | `list_tasks` | optional `due_before`, `due_after` (YYYY-MM-DD) | Lists active tasks, optionally filtered by due date |
 | `complete_task` | `id` (GUID), optional `stop_recurrence` | Marks task complete; returns `{ completed, next, seriesEnded }` |
 | `delete_task` | `id` (GUID) | Removes task from active list |
-| `update_task` | `id`, optional `title`, `description`, `due_date`, `recurrence`, `recurrence_until`, `recurrence_count` | Updates fields on an active task; the id is preserved |
+| `update_task` | `id`, optional `title`, `description`, `due_date`, `recurrence`, `recurrence_until`, `recurrence_count`, `month_anchor` | Updates fields on an active task; the id is preserved |
 | `list_completed` | optional `completed_after`, `completed_before` (ISO datetime) | Lists completed tasks |
 
 ### Recurrence
 
 - Next-due is calculated from the original due date, not the completion date.
+- Monthly, quarterly, biannual and yearly series have a `month_anchor`:
+  - `same_day` (default) repeats on the series' original day of the month (`anchorDay`). When a month is shorter, the occurrence lands on that month's last day, and the series returns to its anchor afterwards: Jan 31 → Feb 28 → Mar 31.
+  - `last_day` repeats on the last day of every month.
+  - Using `month_anchor` with none, daily or weekly is an error.
+  - `add_task(month_anchor: "last_day")` moves `due_date` to the end of its month.
+  - `update_task(month_anchor: "last_day")` does the same, unless `due_date` is also given.
+  - Tasks stored before anchors existed use their current due day as the anchor.
 - Every occurrence of a series shares a `seriesId` and carries its 1-based `occurrence` number. Tasks stored before series tracking existed get `seriesId = id` and start counting at 1.
 - A series ends when:
   - `complete_task` is called with `stop_recurrence: true`;

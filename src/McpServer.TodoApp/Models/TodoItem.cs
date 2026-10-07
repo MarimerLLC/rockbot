@@ -10,7 +10,9 @@ public sealed record TodoItem(
     Guid? SeriesId = null,
     DateOnly? RecurrenceUntil = null,
     int? RecurrenceCount = null,
-    int Occurrence = 1
+    int Occurrence = 1,
+    MonthAnchor? MonthAnchor = null,
+    int? AnchorDay = null
 );
 
 public sealed record CompletedTodoItem(
