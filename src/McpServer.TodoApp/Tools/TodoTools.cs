@@ -3,6 +3,7 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using McpServer.TodoApp.Models;
 using McpServer.TodoApp.Services;
+using ModelContextProtocol;
 using ModelContextProtocol.Server;
 
 namespace McpServer.TodoApp.Tools;
@@ -28,10 +29,10 @@ public sealed class TodoTools(TodoRepository repository)
         try
         {
             if (!DateOnly.TryParse(due_date, out var dueDate))
-                return "error: invalid due_date format, expected YYYY-MM-DD";
+                throw new McpException("invalid due_date format, expected YYYY-MM-DD");
 
             if (!Enum.TryParse<RecurrenceType>(recurrence, ignoreCase: true, out var recurrenceType))
-                return "error: invalid recurrence, expected none/daily/weekly/monthly/quarterly/biannual/yearly";
+                throw new McpException("invalid recurrence, expected none/daily/weekly/monthly/quarterly/biannual/yearly");
 
             var item = new TodoItem(
                 Id: Guid.NewGuid(),
@@ -47,9 +48,9 @@ public sealed class TodoTools(TodoRepository repository)
 
             return JsonSerializer.Serialize(item, JsonOptions);
         }
-        catch (Exception ex)
+        catch (Exception ex) when (ex is not McpException)
         {
-            return $"error: {ex.Message}";
+            throw new McpException(ex.Message, ex);
         }
     }
 
@@ -65,12 +66,12 @@ public sealed class TodoTools(TodoRepository repository)
             DateOnly? after = null;
 
             if (due_before is not null && !DateOnly.TryParse(due_before, out var b))
-                return "error: invalid due_before format, expected YYYY-MM-DD";
+                throw new McpException("invalid due_before format, expected YYYY-MM-DD");
             else if (due_before is not null)
                 before = DateOnly.Parse(due_before);
 
             if (due_after is not null && !DateOnly.TryParse(due_after, out var a))
-                return "error: invalid due_after format, expected YYYY-MM-DD";
+                throw new McpException("invalid due_after format, expected YYYY-MM-DD");
             else if (due_after is not null)
                 after = DateOnly.Parse(due_after);
 
@@ -82,9 +83,9 @@ public sealed class TodoTools(TodoRepository repository)
 
             return JsonSerializer.Serialize(filtered, JsonOptions);
         }
-        catch (Exception ex)
+        catch (Exception ex) when (ex is not McpException)
         {
-            return $"error: {ex.Message}";
+            throw new McpException(ex.Message, ex);
         }
     }
 
@@ -96,12 +97,12 @@ public sealed class TodoTools(TodoRepository repository)
         try
         {
             if (!Guid.TryParse(id, out var guid))
-                return "error: invalid id, expected a GUID";
+                throw new McpException("invalid id, expected a GUID");
 
             var active = await repository.GetActiveAsync();
             var task = active.FirstOrDefault(t => t.Id == guid);
             if (task is null)
-                return "error: task not found";
+                throw new McpException("task not found");
 
             active.Remove(task);
 
@@ -137,9 +138,9 @@ public sealed class TodoTools(TodoRepository repository)
 
             return JsonSerializer.Serialize(completedItem, JsonOptions);
         }
-        catch (Exception ex)
+        catch (Exception ex) when (ex is not McpException)
         {
-            return $"error: {ex.Message}";
+            throw new McpException(ex.Message, ex);
         }
     }
 
@@ -151,21 +152,21 @@ public sealed class TodoTools(TodoRepository repository)
         try
         {
             if (!Guid.TryParse(id, out var guid))
-                return "error: invalid id, expected a GUID";
+                throw new McpException("invalid id, expected a GUID");
 
             var active = await repository.GetActiveAsync();
             var task = active.FirstOrDefault(t => t.Id == guid);
             if (task is null)
-                return "error: task not found";
+                throw new McpException("task not found");
 
             active.Remove(task);
             await repository.SaveActiveAsync(active);
 
             return $"deleted task {guid}";
         }
-        catch (Exception ex)
+        catch (Exception ex) when (ex is not McpException)
         {
-            return $"error: {ex.Message}";
+            throw new McpException(ex.Message, ex);
         }
     }
 
@@ -180,20 +181,20 @@ public sealed class TodoTools(TodoRepository repository)
         try
         {
             if (!Guid.TryParse(id, out var guid))
-                return "error: invalid id, expected a GUID";
+                throw new McpException("invalid id, expected a GUID");
 
             DateOnly? newDue = null;
             if (due_date is not null)
             {
                 if (!DateOnly.TryParse(due_date, out var d))
-                    return "error: invalid due_date format, expected YYYY-MM-DD";
+                    throw new McpException("invalid due_date format, expected YYYY-MM-DD");
                 newDue = d;
             }
 
             var active = await repository.GetActiveAsync();
             var index = active.FindIndex(t => t.Id == guid);
             if (index < 0)
-                return "error: task not found";
+                throw new McpException("task not found");
 
             var existing = active[index];
             var updated = existing with
@@ -208,9 +209,9 @@ public sealed class TodoTools(TodoRepository repository)
 
             return JsonSerializer.Serialize(updated, JsonOptions);
         }
-        catch (Exception ex)
+        catch (Exception ex) when (ex is not McpException)
         {
-            return $"error: {ex.Message}";
+            throw new McpException(ex.Message, ex);
         }
     }
 
@@ -226,12 +227,12 @@ public sealed class TodoTools(TodoRepository repository)
             DateTimeOffset? before = null;
 
             if (completed_after is not null && !DateTimeOffset.TryParse(completed_after, out var a))
-                return "error: invalid completed_after format";
+                throw new McpException("invalid completed_after format");
             else if (completed_after is not null)
                 after = DateTimeOffset.Parse(completed_after);
 
             if (completed_before is not null && !DateTimeOffset.TryParse(completed_before, out var b))
-                return "error: invalid completed_before format";
+                throw new McpException("invalid completed_before format");
             else if (completed_before is not null)
                 before = DateTimeOffset.Parse(completed_before);
 
@@ -243,9 +244,9 @@ public sealed class TodoTools(TodoRepository repository)
 
             return JsonSerializer.Serialize(filtered, JsonOptions);
         }
-        catch (Exception ex)
+        catch (Exception ex) when (ex is not McpException)
         {
-            return $"error: {ex.Message}";
+            throw new McpException(ex.Message, ex);
         }
     }
 }

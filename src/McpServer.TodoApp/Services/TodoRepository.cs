@@ -6,9 +6,8 @@ namespace McpServer.TodoApp.Services;
 
 public sealed class TodoRepository
 {
-    private const string DataPath = "/data";
-    private static readonly string ActiveFile = Path.Combine(DataPath, "active.json");
-    private static readonly string CompletedFile = Path.Combine(DataPath, "completed.json");
+    private readonly string _activeFile;
+    private readonly string _completedFile;
 
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -19,9 +18,12 @@ public sealed class TodoRepository
 
     private readonly SemaphoreSlim _lock = new(1, 1);
 
-    public TodoRepository()
+    public TodoRepository(IConfiguration configuration)
     {
-        Directory.CreateDirectory(DataPath);
+        var dataPath = configuration["TodoApp:DataPath"] ?? "/data";
+        Directory.CreateDirectory(dataPath);
+        _activeFile = Path.Combine(dataPath, "active.json");
+        _completedFile = Path.Combine(dataPath, "completed.json");
     }
 
     public async Task<List<TodoItem>> GetActiveAsync()
@@ -29,7 +31,7 @@ public sealed class TodoRepository
         await _lock.WaitAsync();
         try
         {
-            return await LoadAsync<List<TodoItem>>(ActiveFile) ?? [];
+            return await LoadAsync<List<TodoItem>>(_activeFile) ?? [];
         }
         finally
         {
@@ -42,7 +44,7 @@ public sealed class TodoRepository
         await _lock.WaitAsync();
         try
         {
-            return await LoadAsync<List<CompletedTodoItem>>(CompletedFile) ?? [];
+            return await LoadAsync<List<CompletedTodoItem>>(_completedFile) ?? [];
         }
         finally
         {
@@ -55,7 +57,7 @@ public sealed class TodoRepository
         await _lock.WaitAsync();
         try
         {
-            await SaveAsync(ActiveFile, items);
+            await SaveAsync(_activeFile, items);
         }
         finally
         {
@@ -68,7 +70,7 @@ public sealed class TodoRepository
         await _lock.WaitAsync();
         try
         {
-            await SaveAsync(CompletedFile, items);
+            await SaveAsync(_completedFile, items);
         }
         finally
         {
