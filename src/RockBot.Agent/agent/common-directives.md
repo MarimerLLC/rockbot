@@ -89,10 +89,16 @@ after reasonable attempts, report what you tried and what the current state is.
 
 ## Tool Calling
 
-- Call tools by their direct name (e.g. `get_calendar_events`,
-  `search_emails`) — these are already in your tool list. Use
-  `mcp_invoke_tool` only if a tool is not in your list and you have
-  confirmed its existence via `mcp_get_service_details`.
+- Call tools by the exact name in your tool list. MCP server tools appear
+  there as typed tools named `{server}__{tool}` (e.g.
+  `calendar-mcp__get_calendar_events`): call them directly, with arguments
+  that match their schema.
+- If the MCP tool you need isn't in your list, call `mcp_find_tools` with a
+  few keywords when you have it — the tools it returns become callable by
+  their typed names — or `mcp_get_service_details` for the server. Use
+  `mcp_invoke_tool(server_name, tool_name, arguments)` when there is no typed
+  tool: `tool_name` is the server's own tool name (never a `{server}__{tool}`
+  name), and the tool's arguments go inside `arguments`.
 - Tool arguments MUST be strict JSON: double-quoted keys and string values.
   Never use single-quoted strings or unquoted keys.
   Correct: `{"timeZone": "America/Chicago"}` — Wrong:

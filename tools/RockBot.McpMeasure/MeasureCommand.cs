@@ -84,6 +84,10 @@ internal sealed class MeasureCommand : AsyncCommand<MeasureCommand.Settings>
         [Description("Print every call.")]
         public bool Verbose { get; init; }
 
+        [CommandOption("--summarize <DIR>")]
+        [Description("Don't run: write summary.md for every results.jsonl under DIR (e.g. one per model, run in parallel).")]
+        public string? Summarize { get; init; }
+
         [CommandOption("--log-level <LEVEL>")]
         [Description("Log level for RockBot's own logs. Default: Warning.")]
         public LogLevel LogLevel { get; init; } = LogLevel.Warning;
@@ -99,6 +103,17 @@ internal sealed class MeasureCommand : AsyncCommand<MeasureCommand.Settings>
         using var cts = new CancellationTokenSource();
         Console.CancelKeyPress += (_, e) => { e.Cancel = true; cts.Cancel(); };
         var ct = cts.Token;
+
+        if (settings.Summarize is { } dir)
+        {
+            var files = Directory.GetFiles(dir, "results.jsonl", SearchOption.AllDirectories);
+            var all = files.SelectMany(Report.Read).ToList();
+            var text = Report.Summarize(all,
+                $"# MCP wrapper modes — {DateTime.Now:yyyy-MM-dd}\n\nCombined from {files.Length} results file(s), {all.Count} turns.");
+            await File.WriteAllTextAsync(Path.Combine(dir, "summary.md"), text, ct);
+            AnsiConsole.WriteLine(text);
+            return 0;
+        }
 
         var config = new ConfigurationBuilder()
             .SetBasePath(AppContext.BaseDirectory)
