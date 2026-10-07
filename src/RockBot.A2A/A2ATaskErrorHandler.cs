@@ -32,7 +32,8 @@ internal sealed class A2ATaskErrorHandler(
     SessionClientCapabilityStore clientCapabilityStore,
     SessionOriginStore originStore,
     A2ALateReplyFolder lateReplyFolder,
-    ILogger<A2ATaskErrorHandler> logger) : IMessageHandler<AgentTaskError>
+    ILogger<A2ATaskErrorHandler> logger,
+    IMcpSkillSurface? mcpSkillSurface = null) : IMessageHandler<AgentTaskError>
 {
     private string DisplayName => agentNameHolder.DisplayName ?? agent.Name;
 
@@ -109,7 +110,8 @@ internal sealed class A2ATaskErrorHandler(
             clientCapabilities: clientCapabilityStore.Get(rawSessionId));
 
         var sessionWorkingMemoryTools = new WorkingMemoryTools(workingMemory, sessionNamespace, logger);
-        var sessionSkillTools = new SkillTools(skillStore, llmClient, logger, rawSessionId);
+        var sessionSkillTools = new SkillTools(skillStore, llmClient, logger, rawSessionId,
+            mcpSkillSurface: mcpSkillSurface);
         var batchId = Guid.NewGuid().ToString("N")[..12];
         var registryTools = toolRegistry.BuildAgentToolFunctions(
             sessionNamespace, batchId, ToolProfiles.A2ASynthesis, logger: logger);

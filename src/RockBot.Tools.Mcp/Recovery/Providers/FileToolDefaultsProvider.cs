@@ -20,6 +20,12 @@ namespace RockBot.Tools.Mcp.Recovery.Providers;
 /// when present, the entry only resolves for that specific tool name; when
 /// absent, it resolves for any tool on the server. Files are reloaded
 /// automatically when changed on disk via <see cref="FileSystemWatcher"/>.
+/// <para>
+/// An entry for a field the tool's current input schema no longer has is ignored, with one
+/// warning per server/tool/field (#615): a server that renames or drops a parameter must not
+/// keep receiving the old one. The file isn't rewritten, so the entry comes back into effect if
+/// the field does. When the schema can't be fetched the entry is used as before.
+/// </para>
 /// </remarks>
 public sealed class FileToolDefaultsProvider : IToolArgumentDefaultsProvider, IDisposable
 {
@@ -34,12 +40,16 @@ public sealed class FileToolDefaultsProvider : IToolArgumentDefaultsProvider, ID
     private readonly ConcurrentDictionary<string, IReadOnlyList<DefaultEntry>> _byServer
         = new(StringComparer.OrdinalIgnoreCase);
     private readonly FileSystemWatcher? _watcher;
+    private readonly ToolSchemaCache? _schemas;
+    private readonly ConcurrentDictionary<string, byte> _reportedStale = new(StringComparer.OrdinalIgnoreCase);
 
     public FileToolDefaultsProvider(
         IOptions<AgentProfileOptions> profileOptions,
-        ILogger<FileToolDefaultsProvider> logger)
+        ILogger<FileToolDefaultsProvider> logger,
+        ToolSchemaCache? schemas = null)
     {
         _logger = logger;
+        _schemas = schemas;
         _basePath = ResolvePath("tool-defaults", profileOptions.Value.BasePath);
 
         try
@@ -85,21 +95,89 @@ public sealed class FileToolDefaultsProvider : IToolArgumentDefaultsProvider, ID
         return false;
     }
 
-    public Task<ResolvedDefault?> ResolveAsync(ResolveContext ctx, CancellationToken ct)
+    public async Task<ResolvedDefault?> ResolveAsync(ResolveContext ctx, CancellationToken ct)
     {
         if (!_byServer.TryGetValue(ctx.ServerName, out var entries))
-            return Task.FromResult<ResolvedDefault?>(null);
+            return null;
 
         foreach (var e in entries)
         {
             if (!Matches(e, ctx.ToolName, ctx.FieldName))
                 continue;
 
+            if (await IsFieldGoneFromSchemaAsync(ctx.ServerName, ctx.ToolName, ctx.FieldName, ct))
+                return null;
+
             var value = MaterializeValue(e.Value);
-            return Task.FromResult<ResolvedDefault?>(value is null ? null : new ResolvedDefault(value));
+            return value is null ? null : new ResolvedDefault(value);
         }
 
-        return Task.FromResult<ResolvedDefault?>(null);
+        return null;
+    }
+
+    /// <summary>
+    /// True when the tool's current input schema is known, declares its properties, and none of
+    /// them is <paramref name="fieldName"/>. Unknown schemas answer false, so a schema fetch
+    /// failure never suppresses a default.
+    /// </summary>
+    private async Task<bool> IsFieldGoneFromSchemaAsync(string server, string tool, string fieldName, CancellationToken ct)
+    {
+        if (_schemas is null)
+            return false;
+
+        McpToolDefinition? definition;
+        try
+        {
+            definition = await _schemas.GetAsync(server, tool, ct);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "FileToolDefaultsProvider: schema lookup for {Server}/{Tool} failed", server, tool);
+            return false;
+        }
+
+        if (IsMissingFromSchema(definition?.ParametersSchema, fieldName) != true)
+            return false;
+
+        if (_reportedStale.TryAdd($"{server}\u001F{tool}\u001F{fieldName}", 0))
+        {
+            _logger.LogWarning(
+                "FileToolDefaultsProvider: ignoring the default for '{Field}' on {Server}/{Tool} — the tool's current schema has no such field. Remove it from tool-defaults/{Server}.json if the change is permanent.",
+                fieldName, server, tool, server);
+        }
+        return true;
+    }
+
+    /// <summary>
+    /// Whether <paramref name="fieldName"/> is absent from the top-level <c>properties</c> of
+    /// <paramref name="schemaJson"/>: <c>true</c> absent, <c>false</c> present, <c>null</c> when
+    /// the schema is missing, unparseable or declares no <c>properties</c> object.
+    /// </summary>
+    internal static bool? IsMissingFromSchema(string? schemaJson, string fieldName)
+    {
+        if (string.IsNullOrWhiteSpace(schemaJson))
+            return null;
+
+        try
+        {
+            using var doc = JsonDocument.Parse(schemaJson);
+            if (doc.RootElement.ValueKind != JsonValueKind.Object
+                || !doc.RootElement.TryGetProperty("properties", out var props)
+                || props.ValueKind != JsonValueKind.Object)
+                return null;
+
+            foreach (var p in props.EnumerateObject())
+            {
+                if (string.Equals(p.Name, fieldName, StringComparison.OrdinalIgnoreCase))
+                    return false;
+            }
+            return true;
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
     }
 
     private static bool Matches(DefaultEntry entry, string toolName, string fieldName)

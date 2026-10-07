@@ -27,6 +27,9 @@ namespace RockBot.Agent.Tests.McpBridge;
 internal sealed class BridgeHarness : IAsyncDisposable
 {
     public const string ServerName = "fixture";
+
+    /// <summary><c>serverInfo.version</c> the fixture server reports.</summary>
+    public const string HarnessServerVersion = "1.2.3";
     private const string AgentName = "test-agent";
 
     private readonly WebApplication _server;
@@ -125,6 +128,7 @@ internal sealed class BridgeHarness : IAsyncDisposable
             mcp.WithPrompts(prompts);
         builder.Services.Configure<McpServerOptions>(o =>
         {
+            o.ServerInfo = new ModelContextProtocol.Protocol.Implementation { Name = "harness", Version = HarnessServerVersion };
             lock (lateTools)
             {
                 foreach (var tool in lateTools)

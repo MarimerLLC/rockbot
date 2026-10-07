@@ -59,7 +59,8 @@ internal sealed class UserMessageHandler(
     ILogger<UserMessageHandler> logger,
     TierRoutingLogger tierRoutingLogger,
     ISkillUsageStore? skillUsageStore = null,
-    LlmTierOptions? llmTierOptions = null) : IMessageHandler<UserMessage>
+    LlmTierOptions? llmTierOptions = null,
+    IMcpSkillSurface? mcpSkillSurface = null) : IMessageHandler<UserMessage>
 {
     private static readonly TimeSpan ProgressMessageThreshold = TimeSpan.FromSeconds(5);
 
@@ -214,7 +215,8 @@ internal sealed class UserMessageHandler(
                 attachmentStorage, attachmentBuffer, message.SessionId, turnId, logger);
 
             // Per-session skill tools with usage tracking
-            var sessionSkillTools = new SkillTools(skillStore, llmClient, logger, message.SessionId, skillUsageStore);
+            var sessionSkillTools = new SkillTools(skillStore, llmClient, logger, message.SessionId, skillUsageStore,
+            mcpSkillSurface: mcpSkillSurface);
 
             var batchId = Guid.NewGuid().ToString("N")[..12];
             var registryTools = toolRegistry.BuildAgentToolFunctions(

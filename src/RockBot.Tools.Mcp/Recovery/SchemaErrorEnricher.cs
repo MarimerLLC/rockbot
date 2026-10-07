@@ -17,7 +17,8 @@ namespace RockBot.Tools.Mcp.Recovery;
 public sealed class SchemaErrorEnricher(
     ToolSchemaCache schemas,
     IToolCallLog toolCallLog,
-    ISkillStore? skillStore = null)
+    ISkillStore? skillStore = null,
+    IMcpSkillSurface? skillSurface = null)
 {
     /// <summary>Maximum number of recent calls listed in the enriched output.</summary>
     internal const int MaxRecentCallsListed = 5;
@@ -92,7 +93,7 @@ public sealed class SchemaErrorEnricher(
         // instead of re-guessing from training priors.
         try
         {
-            var skillBlock = await McpServerSkillFormatter.FormatAsync(skillStore, serverName, ct);
+            var skillBlock = await McpServerSkillFormatter.FormatAsync(skillStore, serverName, ct, skillSurface);
             if (!string.IsNullOrEmpty(skillBlock))
                 sb.AppendLine().Append(skillBlock);
         }

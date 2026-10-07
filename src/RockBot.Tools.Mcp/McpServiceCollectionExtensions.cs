@@ -87,6 +87,12 @@ public static class McpServiceCollectionExtensions
             (server, ct) => sp.GetRequiredService<McpManagementExecutor>().GetSchemasAsync(server, ct)));
         builder.Services.AddSingleton<SchemaErrorEnricher>();
 
+        // Skill freshness (#615): baselines for mcp/{server} skills and the stale marker. The
+        // interface lives in Host.Abstractions so skill tools, repair tickets and the dream service
+        // can use it without referencing this project.
+        builder.Services.AddSingleton<IMcpSkillSurface>(sp => new McpSkillSurface(
+            sp.GetRequiredService<McpServerIndex>(), sp.GetRequiredService<ToolSchemaCache>()));
+
         builder.Services.AddSingleton<McpRecoveryExecutor>();
 
         // Pre-flight recovery: same providers + enricher exposed via a small abstraction

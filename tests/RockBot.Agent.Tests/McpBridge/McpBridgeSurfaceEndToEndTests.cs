@@ -47,6 +47,23 @@ public class McpBridgeSurfaceEndToEndTests
     }
 
     [TestMethod]
+    public async Task ConnectedServer_IsPublishedWithVersionAndIdentityHash()
+    {
+        await using var harness = await BridgeHarness.StartAsync([ListAccounts()]);
+        var before = LastSummary(harness);
+
+        Assert.AreEqual(BridgeHarness.HarnessServerVersion, before.Version);
+        Assert.AreEqual(16, before.IdentityHash?.Length, "only a short hash of the identity goes on the bus");
+
+        harness.AddServerTool(SendEmail());
+        await harness.Bridge.RefreshSurfaceAsync(BridgeHarness.ServerName, CancellationToken.None);
+        var after = LastSummary(harness);
+
+        Assert.AreEqual(before.Version, after.Version, "a surface refresh keeps the version");
+        Assert.AreEqual(before.IdentityHash, after.IdentityHash, "a surface refresh keeps the identity");
+    }
+
+    [TestMethod]
     public async Task ServerId_SurvivesARestart()
     {
         await using var harness = await BridgeHarness.StartAsync([ListAccounts()]);

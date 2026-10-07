@@ -539,6 +539,24 @@ description to surface recurring patterns.
 
 See [Wisps — Dream-time learning](wisps.md#dream-time-learning-phase-5) for details.
 
+### MCP skill refresh
+
+Issue #615. This pass runs right after wisp failure analysis.
+
+**Input:** every `mcp/{server}` skill that `IMcpSkillSurface.Evaluate` reports as **stale**: the server's tool surface or version changed since the skill's content was written. See [Skill freshness](../design/mcp-bridge.md#skill-freshness).
+
+**What it does:** works through stale skills, oldest `UpdatedAt` first, up to `McpSkillRefreshMaxPerCycle` (default 5) per cycle. For each one, the LLM gets the skill's markdown and the server's current tools (descriptions and canonical input schemas). It returns `{changed, content, notes}`. The skill is saved with the rewritten content, or with its old content if `changed` is false, and either way with a new surface baseline, so it reads as fresh. The pass skips a skill, leaving it stale, when:
+- the surface or the schemas can't be read; or
+- another writer touched the skill while the refresh was running.
+
+Skills whose server now runs under another name are logged as orphaned, not renamed.
+
+The staleness check is the change gate, because a refreshed skill is no longer stale. The pass makes one LLM call per refreshed skill.
+
+**Directive file:** `mcp-skill-refresh-dream.md`. Built-in fallback if not present. Requires `ISkillStore` and the MCP gateway (`IMcpSkillSurface`). Enabled/disabled by `DreamOptions.McpSkillRefreshEnabled`.
+
+Skill consolidation and optimization don't look at schemas, so they carry an `mcp/` skill's baseline forward instead of refreshing it.
+
 ---
 
 ## Directive files
@@ -554,6 +572,7 @@ entirely — write a complete replacement, not a diff.
 | `skill-dream.md` | Skill consolidation | How to merge, abstract, and cross-reference skills |
 | `skill-optimize.md` | Skill optimization | How to improve skills from failure context |
 | `pref-dream.md` | Preference inference | How to infer and record preferences |
+| `mcp-skill-refresh-dream.md` | MCP skill refresh | How to reconcile a stale `mcp/{server}` skill with the live schemas |
 
 ---
 
@@ -576,6 +595,11 @@ public sealed class DreamOptions
     // Feature flags
     public bool PreferenceInferenceEnabled { get; set; } = true;
     public bool SkillGapEnabled { get; set; } = true;
+
+    // MCP skill refresh (#615)
+    public bool McpSkillRefreshEnabled { get; set; } = true;
+    public string McpSkillRefreshDirectivePath { get; set; } = "mcp-skill-refresh-dream.md";
+    public int McpSkillRefreshMaxPerCycle { get; set; } = 5;
 
     // Change gate — skip a corpus-wide pass whose input has not moved
     public bool DreamPassChangeGateEnabled { get; set; } = true;

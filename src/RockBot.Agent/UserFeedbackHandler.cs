@@ -37,7 +37,8 @@ internal sealed class UserFeedbackHandler(
     RulesTools rulesTools,
     ToolGuideTools toolGuideTools,
     IAgentWorkSerializer workSerializer,
-    ILogger<UserFeedbackHandler> logger) : IMessageHandler<UserFeedback>
+    ILogger<UserFeedbackHandler> logger,
+    IMcpSkillSurface? mcpSkillSurface = null) : IMessageHandler<UserFeedback>
 {
     public async Task HandleAsync(UserFeedback message, MessageHandlerContext context)
     {
@@ -130,7 +131,8 @@ internal sealed class UserFeedbackHandler(
                 // use memory, skills, web search, MCP tools, etc. as needed.
                 var sessionNamespace = $"session/{message.SessionId}";
                 var sessionWorkingMemoryTools = new WorkingMemoryTools(workingMemory, sessionNamespace, logger);
-                var sessionSkillTools = new SkillTools(skillStore, llmClient, logger, message.SessionId);
+                var sessionSkillTools = new SkillTools(skillStore, llmClient, logger, message.SessionId,
+            mcpSkillSurface: mcpSkillSurface);
                 var batchId = Guid.NewGuid().ToString("N")[..12];
                 var registryTools = toolRegistry.BuildAgentToolFunctions(
                     sessionNamespace, batchId, ToolProfiles.Main, logger: logger);

@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using Microsoft.Extensions.Logging;
 using RockBot.Host;
 using RockBot.Messaging;
@@ -33,6 +34,7 @@ public sealed class McpManagementExecutor : IToolExecutor, IAsyncDisposable
     private readonly ISkillStore? _skillStore;
     private readonly ToolSchemaCache? _schemaCache;
     private readonly McpTypedToolSurface? _typedTools;
+    private readonly IMcpSkillSurface? _skillSurface;
 
     private readonly ConcurrentDictionary<string, TaskCompletionSource<MessageEnvelope>> _pending = new();
     private ISubscription? _responseSubscription;
@@ -58,7 +60,8 @@ public sealed class McpManagementExecutor : IToolExecutor, IAsyncDisposable
         McpRecoveryExecutor? recovery = null,
         ISkillStore? skillStore = null,
         ToolSchemaCache? schemaCache = null,
-        McpTypedToolSurface? typedTools = null)
+        McpTypedToolSurface? typedTools = null,
+        IMcpSkillSurface? skillSurface = null)
     {
         _index = index;
         _proxy = proxy;
@@ -71,6 +74,7 @@ public sealed class McpManagementExecutor : IToolExecutor, IAsyncDisposable
         _skillStore = skillStore;
         _schemaCache = schemaCache;
         _typedTools = typedTools;
+        _skillSurface = skillSurface;
     }
 
     public string ResponseTopic => $"mcp.manage.response.{_identity.Name}";
@@ -78,7 +82,7 @@ public sealed class McpManagementExecutor : IToolExecutor, IAsyncDisposable
     public Task<ToolInvokeResponse> ExecuteAsync(ToolInvokeRequest request, CancellationToken ct) =>
         request.ToolName switch
         {
-            "mcp_list_services"       => Task.FromResult(ListServices(request)),
+            "mcp_list_services"       => ListServicesAsync(request, ct),
             "mcp_get_service_details" => GetServiceDetailsAsync(request, ct),
             "mcp_invoke_tool"         => InvokeToolAsync(request, ct),
             "mcp_register_server"     => RegisterServerAsync(request, ct),
@@ -89,19 +93,20 @@ public sealed class McpManagementExecutor : IToolExecutor, IAsyncDisposable
 
     // ── mcp_list_services ────────────────────────────────────────────────────
 
-    private ToolInvokeResponse ListServices(ToolInvokeRequest request)
+    private async Task<ToolInvokeResponse> ListServicesAsync(ToolInvokeRequest request, CancellationToken ct)
     {
+        var renamed = await FindRenamedServerSkillsAsync(ct);
+
         // Fingerprints are bookkeeping for the gateway, not information for the model.
-        var view = _index.Servers.Select(s => new
-        {
+        var view = _index.Snapshot().Select(s => new ServiceView(
             s.ServerName,
             s.ServerId,
             s.Summary,
             s.ToolCount,
             s.ToolNames,
             s.PromptCount,
-            s.PromptNames
-        });
+            s.PromptNames,
+            renamed.TryGetValue(s.ServerName, out var skills) ? skills : null));
         var json = JsonSerializer.Serialize(view, JsonOptions);
         return new ToolInvokeResponse
         {
@@ -109,6 +114,60 @@ public sealed class McpManagementExecutor : IToolExecutor, IAsyncDisposable
             ToolName = request.ToolName,
             Content = json
         };
+    }
+
+    /// <summary>
+    /// <c>mcp_list_services</c> row. <see cref="SkillsWrittenUnderPreviousName"/> lists
+    /// <c>mcp/{old}</c> skills whose server now runs under this name (#615), so they don't go
+    /// unused without anyone noticing; omitted when there are none.
+    /// </summary>
+    private sealed record ServiceView(
+        string ServerName,
+        string? ServerId,
+        string? Summary,
+        int ToolCount,
+        List<string> ToolNames,
+        int PromptCount,
+        List<string> PromptNames,
+        [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        IReadOnlyList<RenamedSkillView>? SkillsWrittenUnderPreviousName);
+
+    private sealed record RenamedSkillView(string Skill, string PreviousServerName);
+
+    /// <summary>
+    /// <c>mcp/{server}</c> skills whose server is gone under that name but live under another,
+    /// keyed by the current name. Empty without a skill store or skill surface.
+    /// </summary>
+    private async Task<Dictionary<string, IReadOnlyList<RenamedSkillView>>> FindRenamedServerSkillsAsync(CancellationToken ct)
+    {
+        var result = new Dictionary<string, IReadOnlyList<RenamedSkillView>>(StringComparer.OrdinalIgnoreCase);
+        if (_skillStore is null || _skillSurface is null)
+            return result;
+
+        IReadOnlyList<Skill> skills;
+        try
+        {
+            skills = await _skillStore.ListAsync();
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "mcp_list_services: listing skills for rename detection failed");
+            return result;
+        }
+
+        foreach (var group in skills
+                     .Where(s => s.SurfaceBaseline is not null && McpSkillNames.TryGetServerName(s.Name, out _))
+                     .Select(s => (Skill: s, Freshness: _skillSurface.Evaluate(s)))
+                     .Where(x => x.Freshness is { Status: SkillFreshnessStatus.Renamed, RenamedTo: not null })
+                     .GroupBy(x => x.Freshness.RenamedTo!, StringComparer.OrdinalIgnoreCase))
+        {
+            result[group.Key] = group
+                .OrderBy(x => x.Skill.Name, StringComparer.OrdinalIgnoreCase)
+                .Select(x => new RenamedSkillView(x.Skill.Name, x.Skill.SurfaceBaseline!.ServerName))
+                .ToList();
+        }
+        return result;
     }
 
     // ── mcp_get_service_details ──────────────────────────────────────────────
@@ -185,7 +244,7 @@ public sealed class McpManagementExecutor : IToolExecutor, IAsyncDisposable
         // before the first mcp_invoke_tool attempt. No-op when no skill exists.
         try
         {
-            var skillBlock = await McpServerSkillFormatter.FormatAsync(_skillStore, serverName, ct);
+            var skillBlock = await McpServerSkillFormatter.FormatAsync(_skillStore, serverName, ct, _skillSurface);
             if (!string.IsNullOrEmpty(skillBlock))
                 content = content + "\n" + skillBlock;
         }

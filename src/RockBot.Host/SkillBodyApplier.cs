@@ -21,11 +21,16 @@ internal sealed class SkillBodyApplier : IRepairTargetApplier
 
     private readonly ISkillStore _skillStore;
     private readonly ILogger<SkillBodyApplier> _logger;
+    private readonly IMcpSkillSurface? _mcpSkillSurface;
 
-    public SkillBodyApplier(ISkillStore skillStore, ILogger<SkillBodyApplier> logger)
+    public SkillBodyApplier(
+        ISkillStore skillStore,
+        ILogger<SkillBodyApplier> logger,
+        IMcpSkillSurface? mcpSkillSurface = null)
     {
         _skillStore = skillStore ?? throw new ArgumentNullException(nameof(skillStore));
         _logger = logger;
+        _mcpSkillSurface = mcpSkillSurface;
     }
 
     public RepairTarget Target => RepairTarget.SkillBody;
@@ -49,6 +54,7 @@ internal sealed class SkillBodyApplier : IRepairTargetApplier
         var preBody = existing.Content ?? string.Empty;
         var preHash = HashOf(preBody);
         var preUpdatedAt = existing.UpdatedAt;
+        var preBaseline = existing.SurfaceBaseline;
 
         var newBody = preBody;
         foreach (var op in change.Ops)
@@ -62,6 +68,7 @@ internal sealed class SkillBodyApplier : IRepairTargetApplier
         {
             Content = newBody,
             UpdatedAt = DateTimeOffset.UtcNow,
+            SurfaceBaseline = BaselineAfterContentWrite(existing),
         };
         await _skillStore.SaveAsync(updated);
 
@@ -102,12 +109,41 @@ internal sealed class SkillBodyApplier : IRepairTargetApplier
             {
                 Content = preBody,
                 UpdatedAt = preUpdatedAt ?? DateTimeOffset.UtcNow,
+                SurfaceBaseline = preBaseline,
             };
             await _skillStore.SaveAsync(reverted);
             _logger.LogInformation("SkillBodyApplier reverted skill {Skill} to pre-apply body", skill);
         };
 
         return new RepairApplyOutcome(diff, revert);
+    }
+
+    /// <summary>
+    /// A repair ticket rewrites the skill's text, so an <c>mcp/{server}</c> skill is re-baselined
+    /// against the server as it is now (#615). When the surface can't be read the baseline is
+    /// cleared — the old one no longer describes this text. Other skills keep what they had.
+    /// </summary>
+    private SkillSurfaceBaseline? BaselineAfterContentWrite(Skill existing)
+    {
+        if (_mcpSkillSurface is null || !McpSkillNames.TryGetServerName(existing.Name, out _))
+            return existing.SurfaceBaseline;
+
+        try
+        {
+            var capture = _mcpSkillSurface.CaptureBaseline(existing.Name);
+            if (capture.Baseline is null)
+            {
+                _logger.LogInformation(
+                    "SkillBodyApplier: no MCP surface baseline recorded for {Skill} ({Reason})",
+                    existing.Name, capture.Reason);
+            }
+            return capture.Baseline;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "SkillBodyApplier: recording the MCP surface baseline for {Skill} failed", existing.Name);
+            return null;
+        }
     }
 
     internal static string ApplyOp(string body, SkillBodyOp op)

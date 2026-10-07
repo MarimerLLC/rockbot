@@ -609,7 +609,9 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
                 {
                     ServerId = config.Id,
                     Fingerprint = fingerprint,
-                    ToolFingerprints = toolFingerprints
+                    ToolFingerprints = toolFingerprints,
+                    Version = metadata.Version,
+                    IdentityHash = config.IdentityHash()
                 };
 
                 var resources = new ConnectionResources(newClient);
@@ -980,7 +982,9 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
         {
             ServerId = current.Config.Id,
             Fingerprint = fingerprint,
-            ToolFingerprints = toolFingerprints
+            ToolFingerprints = toolFingerprints,
+            Version = current.Metadata.Version,
+            IdentityHash = current.Config.IdentityHash()
         };
 
         // Same connection, new surface: the snapshot keeps its resources, so nothing is retired.

@@ -32,7 +32,8 @@ internal sealed class SubagentResultHandler(
     ISubagentManager subagentManager,
     ISessionTracker sessionTracker,
     SessionOriginStore originStore,
-    ILogger<SubagentResultHandler> logger) : IMessageHandler<SubagentResultMessage>
+    ILogger<SubagentResultHandler> logger,
+    IMcpSkillSurface? mcpSkillSurface = null) : IMessageHandler<SubagentResultMessage>
 {
     public async Task HandleAsync(SubagentResultMessage message, MessageHandlerContext context)
     {
@@ -200,7 +201,8 @@ internal sealed class SubagentResultHandler(
         }
 
         var sessionWorkingMemoryTools = new WorkingMemoryTools(workingMemory, sessionNamespace, logger);
-        var sessionSkillTools = new SkillTools(skillStore, llmClient, logger, rawSessionId);
+        var sessionSkillTools = new SkillTools(skillStore, llmClient, logger, rawSessionId,
+            mcpSkillSurface: mcpSkillSurface);
         var registryTools = toolRegistry.GetTools()
             .Select(r => (AIFunction)new SubagentRegistryToolFunction(
                 r, toolRegistry.GetExecutor(r.Name)!, sessionNamespace))
