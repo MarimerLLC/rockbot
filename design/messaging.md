@@ -158,7 +158,7 @@ The `rb-` prefix on custom headers avoids collisions with AMQP's own header fiel
 
 ### Retention and Expiry
 
-A queue that only grows eventually fills the broker's disk. When it does, RabbitMQ's disk alarm blocks **every** publisher on the broker, and the whole swarm stops. Two kinds of queue would grow without a bound: dead-letter queues and per-process queues that outlive their process. Both are capped in code by `RabbitMqSubscriber`, so the caps don't depend on Helm values, the Management API, or broker policies.
+A queue that only grows eventually fills the broker's disk. When it does, RabbitMQ's disk alarm blocks **every** publisher on the broker, and the whole swarm stops. Three kinds of queue would grow without a bound: dead-letter queues, per-process queues that outlive their process, and per-identity fan-out queues whose identity stops running. Both are capped in code by `RabbitMqSubscriber`, so the caps don't depend on Helm values, the Management API, or broker policies.
 
 #### Dead-letter queue caps
 
@@ -197,7 +197,33 @@ These callers subscribe with `new SubscriptionOptions { Ephemeral = true }` (the
 
 Long-lived subscriptions (agent `{identity}.*` queues, Blazor's stable `user-proxy` identity) stay durable and shared.
 
-`SubscriptionOptions` is a default-implemented overload on `IMessageSubscriber`. Providers whose subscriptions don't outlive the process (in-process) ignore `Ephemeral`.
+`SubscriptionOptions` is a default-implemented overload on `IMessageSubscriber`. Providers whose subscriptions don't outlive the process (in-process) ignore `Ephemeral` and the retention options below.
+
+#### Per-identity fan-out subscriptions
+
+A queue named after an agent identity (`rockbot.{Agent}.*`) is durable and shared, so it outlives the agent. When it is bound to a fan-out topic, every other agent's traffic keeps arriving after the agent has stopped for good. `rockbot.{Agent}.discovery` is the case that grew: each live agent re-announces its card every 2 minutes, and the queues of retired runs reached 62 785 (`AdvisorCouncil`) and 44 340 (`ResearchAgent`) messages before #650.
+
+`Ephemeral` is the wrong fix for these queues. It deletes the queue on dispose, and during a rolling restart the old pod's dispose would delete the queue that the replacement pod is already consuming from. Instead, three per-subscription options set retention without changing the queue's lifetime:
+
+| Option | Queue argument | Effect |
+|---|---|---|
+| `MessageTtl` | `x-message-ttl` on the main queue | Messages older than this are discarded |
+| `IdleExpiry` | `x-expires` on the main queue | The broker deletes the queue once it has had no consumer for this long |
+| `DeadLetter = false` | no `x-dead-letter-*`, no DLQ declared | Expired and rejected messages are dropped |
+
+On an `Ephemeral` subscription, `MessageTtl` and `IdleExpiry` override `RabbitMq:EphemeralMessageTtl` and `RabbitMq:EphemeralQueueExpiry`. A shared DLQ still never gets `x-expires`, even when its main queue has `IdleExpiry`.
+
+**Turn off dead-lettering together with a short TTL.** RabbitMQ dead-letters expired messages whenever the queue has a dead-letter exchange. A short TTL without `DeadLetter = false` moves the backlog into the DLQ and sets off the DLQ growth alert.
+
+**Discovery** (`AgentDiscoveryService.DiscoverySubscriptionOptions`): `MessageTtl` = 10 min (5 × the re-announce interval), `IdleExpiry` = 24 h, `DeadLetter = false`. A stopped agent's queue holds at most 10 minutes of announcements, and the broker deletes it a day after the agent stopped. Nothing is lost: on start, the directory is rebuilt from fresh announcements within one interval. An invalid card, which the handler dead-letters, is now dropped and logged as a warning.
+
+**Migration.** The new arguments differ from the existing queue's, so the first start on the new version gets a 406 and deletes and recreates the main queue. Whatever was queued is dropped, which is fine for discovery. The old `rockbot.{Agent}.discovery.dlq` is no longer declared or fed. Delete it once it is empty (see the cleanup below).
+
+**Audit of other fan-out subscriptions:**
+
+- `agent.task.status` is bound by every A2A caller as `{Agent}.agent-task-status`. It has the same failure mode, but it only carries traffic while tasks are running, so it grows far slower. It is subscribed through `AgentHost`'s topic list, which has no `SubscriptionOptions` yet. Follow-up.
+- `user.response` broadcast (`user-proxy.{ProxyId}`): the CLI is ephemeral, and Blazor is a long-running deployment with a stable identity.
+- `council.research-reply.{pid}.{guid}` (AdvisorCouncil's `ResearchAgentInvoker`) is a per-process reply queue, and it was not ephemeral. It is now `Ephemeral = true`.
 
 #### Alerting and broker disk limit
 
@@ -217,7 +243,7 @@ Queues orphaned before ephemeral subscriptions existed have no `x-expires`, so t
 
 ```bash
 rabbitmqctl -p <vhost> list_queues name consumers messages \
-  | awk '$2 == 0 && ($1 ~ /^rockbot\.user-proxy\.cli-/ || $1 ~ /^rockbot\.ui\.workiq\.expired/ || $1 ~ /^rockbot\.a2a-gw-/)'
+  | awk '$2 == 0 && ($1 ~ /^rockbot\.user-proxy\.cli-/ || $1 ~ /^rockbot\.ui\.workiq\.expired/ || $1 ~ /^rockbot\.a2a-gw-/ || $1 ~ /^rockbot\.council\.research-reply\./ || $1 ~ /\.discovery(\.dlq)?$/)'
 
 # after reviewing the list:
 rabbitmqctl -p <vhost> delete_queue <queue-name>

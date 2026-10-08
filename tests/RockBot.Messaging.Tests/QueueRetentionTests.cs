@@ -14,10 +14,13 @@ namespace RockBot.Messaging.Tests;
 [TestClass]
 public class QueueRetentionTests
 {
+    private static readonly SubscriptionOptions Shared = new();
+    private static readonly SubscriptionOptions Ephemeral = new() { Ephemeral = true };
+
     [TestMethod]
     public void DlqArguments_Shared_HaveRetentionCapsAndNoExpiry()
     {
-        var args = RabbitMqSubscriber.BuildDlqArguments(new RabbitMqOptions(), ephemeral: false);
+        var args = RabbitMqSubscriber.BuildDlqArguments(new RabbitMqOptions(), Shared);
 
         Assert.IsNotNull(args);
         Assert.AreEqual(259_200_000L, args["x-message-ttl"]);
@@ -33,7 +36,7 @@ public class QueueRetentionTests
     {
         var options = new RabbitMqOptions { EphemeralQueueExpiry = TimeSpan.FromHours(2) };
 
-        var args = RabbitMqSubscriber.BuildDlqArguments(options, ephemeral: true);
+        var args = RabbitMqSubscriber.BuildDlqArguments(options, Ephemeral);
 
         Assert.IsNotNull(args);
         Assert.AreEqual(7_200_000L, args["x-expires"]);
@@ -46,7 +49,7 @@ public class QueueRetentionTests
         var options = new RabbitMqOptions();
         options.DlqRetention.Enabled = false;
 
-        Assert.IsNull(RabbitMqSubscriber.BuildDlqArguments(options, ephemeral: false));
+        Assert.IsNull(RabbitMqSubscriber.BuildDlqArguments(options, Shared));
     }
 
     [TestMethod]
@@ -55,7 +58,7 @@ public class QueueRetentionTests
         var options = new RabbitMqOptions();
         options.DlqRetention.Enabled = false;
 
-        var args = RabbitMqSubscriber.BuildDlqArguments(options, ephemeral: true);
+        var args = RabbitMqSubscriber.BuildDlqArguments(options, Ephemeral);
 
         Assert.IsNotNull(args);
         Assert.AreEqual(1, args.Count);
@@ -65,7 +68,7 @@ public class QueueRetentionTests
     [TestMethod]
     public void QueueArguments_Shared_OnlyDeadLetterRouting()
     {
-        var args = RabbitMqSubscriber.BuildQueueArguments(new RabbitMqOptions(), "agent.task", ephemeral: false);
+        var args = RabbitMqSubscriber.BuildQueueArguments(new RabbitMqOptions(), "agent.task", Shared);
 
         Assert.AreEqual(2, args.Count);
         Assert.AreEqual("rockbot.dlx", args["x-dead-letter-exchange"]);
@@ -75,11 +78,70 @@ public class QueueRetentionTests
     [TestMethod]
     public void QueueArguments_Ephemeral_AddExpiryAndMessageTtl()
     {
-        var args = RabbitMqSubscriber.BuildQueueArguments(new RabbitMqOptions(), "user.response", ephemeral: true);
+        var args = RabbitMqSubscriber.BuildQueueArguments(new RabbitMqOptions(), "user.response", Ephemeral);
 
         Assert.AreEqual(24L * 3_600_000, args["x-expires"]);
         Assert.AreEqual(3_600_000L, args["x-message-ttl"]);
         Assert.AreEqual("rockbot.dlx", args["x-dead-letter-exchange"]);
+    }
+
+    [TestMethod]
+    public void QueueArguments_SharedWithRetention_AddTtlAndExpiry()
+    {
+        var subscription = new SubscriptionOptions
+        {
+            MessageTtl = TimeSpan.FromMinutes(10),
+            IdleExpiry = TimeSpan.FromHours(24),
+        };
+
+        var args = RabbitMqSubscriber.BuildQueueArguments(new RabbitMqOptions(), "discovery.announce", subscription);
+
+        Assert.AreEqual(600_000L, args["x-message-ttl"]);
+        Assert.AreEqual(24L * 3_600_000, args["x-expires"]);
+        Assert.AreEqual("rockbot.dlx", args["x-dead-letter-exchange"]);
+    }
+
+    [TestMethod]
+    public void QueueArguments_Ephemeral_SubscriptionOverridesDefaults()
+    {
+        var subscription = new SubscriptionOptions
+        {
+            Ephemeral = true,
+            MessageTtl = TimeSpan.FromMinutes(1),
+            IdleExpiry = TimeSpan.FromMinutes(30),
+        };
+
+        var args = RabbitMqSubscriber.BuildQueueArguments(new RabbitMqOptions(), "user.response", subscription);
+        var dlqArgs = RabbitMqSubscriber.BuildDlqArguments(new RabbitMqOptions(), subscription);
+
+        Assert.AreEqual(60_000L, args["x-message-ttl"]);
+        Assert.AreEqual(1_800_000L, args["x-expires"]);
+        Assert.IsNotNull(dlqArgs);
+        Assert.AreEqual(1_800_000L, dlqArgs["x-expires"]);
+    }
+
+    [TestMethod]
+    public void QueueArguments_NoDeadLetter_OmitDeadLetterRouting()
+    {
+        var subscription = new SubscriptionOptions { DeadLetter = false, MessageTtl = TimeSpan.FromMinutes(10) };
+
+        var args = RabbitMqSubscriber.BuildQueueArguments(new RabbitMqOptions(), "discovery.announce", subscription);
+
+        Assert.IsFalse(args.ContainsKey("x-dead-letter-exchange"),
+            "Without dead-letter routing, every TTL expiry would land in the DLQ");
+        Assert.IsFalse(args.ContainsKey("x-dead-letter-routing-key"));
+        Assert.AreEqual(600_000L, args["x-message-ttl"]);
+    }
+
+    [TestMethod]
+    public void QueueArguments_SharedWithIdleExpiry_DlqStillNeverExpires()
+    {
+        var subscription = new SubscriptionOptions { IdleExpiry = TimeSpan.FromHours(24) };
+
+        var dlqArgs = RabbitMqSubscriber.BuildDlqArguments(new RabbitMqOptions(), subscription);
+
+        Assert.IsNotNull(dlqArgs);
+        Assert.IsFalse(dlqArgs.ContainsKey("x-expires"));
     }
 
     [TestMethod]
@@ -233,7 +295,7 @@ public class QueueRetentionIntegrationTests
 
         await using (await subscriber.SubscribeAsync("test.retention", name, Ack)) { }
 
-        var expected = RabbitMqSubscriber.BuildDlqArguments(new RabbitMqOptions(), ephemeral: false);
+        var expected = RabbitMqSubscriber.BuildDlqArguments(new RabbitMqOptions(), new SubscriptionOptions());
         Assert.IsTrue(await QueueMatchesAsync($"rockbot.{name}.dlq", expected));
         Assert.IsTrue(await QueueExistsAsync($"rockbot.{name}"), "Shared queues survive dispose");
 
@@ -259,6 +321,57 @@ public class QueueRetentionIntegrationTests
     }
 
     [TestMethod]
+    public async Task NoDeadLetterSubscription_DeclaresNoDlqAndKeepsQueueOnDispose()
+    {
+        if (!RequireRabbit()) return;
+        var name = $"fanout-{Guid.NewGuid():N}";
+        var subscriber = _provider!.GetRequiredService<IMessageSubscriber>();
+        var subscription = new SubscriptionOptions
+        {
+            MessageTtl = TimeSpan.FromMinutes(10),
+            IdleExpiry = TimeSpan.FromHours(24),
+            DeadLetter = false,
+        };
+
+        await using (await subscriber.SubscribeAsync("test.fanout", name, Ack, subscription)) { }
+
+        var expected = RabbitMqSubscriber.BuildQueueArguments(
+            _provider.GetRequiredService<Microsoft.Extensions.Options.IOptions<RabbitMqOptions>>().Value,
+            "test.fanout", subscription);
+        Assert.IsTrue(await QueueMatchesAsync($"rockbot.{name}", expected));
+        Assert.IsFalse(await QueueExistsAsync($"rockbot.{name}.dlq"));
+
+        await DeleteQueueAsync($"rockbot.{name}");
+    }
+
+    [TestMethod]
+    public async Task LegacyMainQueue_IsRecreatedWithRetentionArguments()
+    {
+        if (!RequireRabbit()) return;
+        var name = $"legacy-main-{Guid.NewGuid():N}";
+        var subscriber = _provider!.GetRequiredService<IMessageSubscriber>();
+
+        // Pre-#650 shape: a plain shared subscription with dead-letter routing and no TTL.
+        await using (await subscriber.SubscribeAsync("test.legacymain", name, Ack)) { }
+
+        var subscription = new SubscriptionOptions
+        {
+            MessageTtl = TimeSpan.FromMinutes(10),
+            IdleExpiry = TimeSpan.FromHours(24),
+            DeadLetter = false,
+        };
+        await using (await subscriber.SubscribeAsync("test.legacymain", name, Ack, subscription)) { }
+
+        var expected = RabbitMqSubscriber.BuildQueueArguments(
+            _provider.GetRequiredService<Microsoft.Extensions.Options.IOptions<RabbitMqOptions>>().Value,
+            "test.legacymain", subscription);
+        Assert.IsTrue(await QueueMatchesAsync($"rockbot.{name}", expected));
+
+        await DeleteQueueAsync($"rockbot.{name}");
+        await DeleteQueueAsync($"rockbot.{name}.dlq");
+    }
+
+    [TestMethod]
     public async Task LegacyEmptyDlq_IsMigratedToCappedArguments()
     {
         if (!RequireRabbit()) return;
@@ -269,7 +382,7 @@ public class QueueRetentionIntegrationTests
         var subscriber = _provider!.GetRequiredService<IMessageSubscriber>();
         await using (await subscriber.SubscribeAsync("test.legacy", name, Ack)) { }
 
-        var expected = RabbitMqSubscriber.BuildDlqArguments(new RabbitMqOptions(), ephemeral: false);
+        var expected = RabbitMqSubscriber.BuildDlqArguments(new RabbitMqOptions(), new SubscriptionOptions());
         Assert.IsTrue(await QueueMatchesAsync(dlq, expected));
 
         await DeleteQueueAsync($"rockbot.{name}");

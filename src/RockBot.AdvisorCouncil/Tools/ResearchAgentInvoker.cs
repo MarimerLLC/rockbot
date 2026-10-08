@@ -54,6 +54,8 @@ internal sealed class ResearchAgentInvoker : IHostedService, IAsyncDisposable
             topic: _replyTopic,
             subscriptionName: _replyTopic,
             handler: HandleReplyAsync,
+            // The reply topic is unique to this process, so its queue must not outlive it.
+            options: new SubscriptionOptions { Ephemeral = true },
             cancellationToken: cancellationToken);
         _logger.LogInformation("ResearchAgentInvoker reply queue {Topic} ready", _replyTopic);
     }
