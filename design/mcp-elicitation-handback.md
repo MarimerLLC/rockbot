@@ -1,6 +1,6 @@
 # MCP Elicitation Hand-back
 
-**Status:** Accepted. Remaining part of #602; builds on MCP elicitation (#593), the
+**Status:** Implemented (v0.16.11). Remaining part of #602; builds on MCP elicitation (#593), the
 `conversation` responder (#605) and MCP C# SDK 2.x (#607). Re-validated on 2026-10-08 against the
 bridge as the MCP gateway series (#618) left it: leased server snapshots (#604), operator-owned
 entries (#603) and the typed-tool modes (#613).
@@ -126,7 +126,7 @@ behaves like `auto`, using the server's responder.
 
 **Callers that can't answer.** Only a run that has `mcp_answer` can take a hand-back:
 - Wisps make their calls under their parent's session id but have no `mcp_answer`.
-- Subagents and scheduled runs may not have it either.
+- Subagents, workers and scheduled runs don't have it: their tool profiles leave it out.
 
 The run says so explicitly:
 - `AgentLoopRunner` marks a run whose tool list includes `mcp_answer`.
@@ -153,7 +153,8 @@ the question stays open for 30 minutes.
   are flattened, as in `McpElicitationNote`.
 - **`question_id` is a random, unguessable id.** The server's `requestState` never reaches the
   model.
-- **The same content goes out as a structured block**, so the UI can render it as a form.
+- **A structured form for the UI is phase 5.** A tool result goes to the model, not the UI, so
+  the form needs its own path to the chat; the ledger already keeps the question structured.
 
 ## `mcp_answer`
 
@@ -186,9 +187,9 @@ decline sent to the server:
 **Transport.** `mcp_answer` goes to the bridge as an `McpAnswerQuestionRequest` on `mcp.manage`.
 - **Waiting.** Its reply is the resumed tool call's outcome. The agent side waits for the
   tool-call response budget, not the shorter management timeout.
-- **Recovery.** The result passes through the same recovery, pinning and metrics as any MCP
-  tool result. The hand-back itself is an ordinary successful result, and recovery must leave
-  it alone.
+- **Recovery.** The result gets the same pinning and metrics as any MCP tool result, but not
+  recovery: recovery retries a call with filled-in arguments, and the original arguments stay in
+  the bridge. The hand-back itself is an ordinary, non-JSON result that recovery leaves alone.
 
 **Registration.** `mcp_answer` is offered only while some connected server is in hand-back
 mode, which the bridge reports in each server's summary. Every other run's tool list stays as
@@ -198,7 +199,7 @@ it is (#613).
 
 | Setting | Default | |
 |---|---|---|
-| `handbackTtlMinutes` (per server) | 30 | After this, the parked call is cancelled and the server receives `cancel`. A later `mcp_answer` gets "expired". |
+| `handbackTtlMinutes` (per server) | 30 | After this, the parked call is cancelled. Under MRTR the server holds nothing for it, so there is nothing to tell the server. A later `mcp_answer` gets "expired". |
 | `McpBridge:MaxPendingQuestionsPerSession` | 5 | Past this, new questions for the session are declined in-band. |
 | `McpBridge:MaxPendingQuestions` | 50 | Bridge-wide cap on parked calls. |
 
@@ -321,9 +322,10 @@ Before the bridge accepts tool invocations:
    > Mercury…". It was waiting for an answer to "Which Mercury do you mean?" (meaning: planet |
    > element | band). That call is gone and can't be resumed. If it's still needed, call the tool
    > again, and include the answer in the arguments if the tool takes it (for example in
-   > `context`), or ask the user first. Full details: `get_from_working_memory("mcp-interrupted/q_7f3c2a…")`.
+   > `context`), or ask the user first. Full details: `get_from_working_memory("session/abc123/mcp-interrupted/q_7f3c2a…")`.
 
-   Interrupted calls from subagents or scheduled tasks are logged and marked, not announced.
+   Interrupted calls from other sessions are logged and marked, not announced. In practice
+   there are none: subagents, workers and scheduled tasks don't have `mcp_answer`.
    The run that made them doesn't outlive a restart.
 3. **Mark notified.** Delivery is at least once. A crash between notifying and marking may
    repeat a notice, and the working-memory key and `questionId` let a repeat be recognized as
@@ -388,7 +390,8 @@ data on how often each path is used.
    working-memory entry and synthetic turn for each user session, notified-marking, and the
    "interrupted" answer to a late `mcp_answer`. Tested by writing a ledger with pending entries,
    starting the bridge, and checking the notices.
-4. **Agent guidance:** tool description and a directive line: answer from context when you can,
+4. **Agent guidance:** the `mcp_answer` description, a directives section and the `mcp` tool guide
+   (the per-mode orientation stays fixed, for the prompt cache): answer from context when you can,
    ask the user when you can't, never guess a decision, and on an interruption notice decide
    whether the original request still needs doing before redoing the call.
 5. **UI (follow-up):** render the structured question as a form in the Blazor UI, so the user
