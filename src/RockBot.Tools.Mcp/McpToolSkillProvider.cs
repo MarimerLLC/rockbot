@@ -13,8 +13,8 @@ internal sealed class McpToolSkillProvider : IToolSkillProvider
 {
     public string Name => "mcp";
     public string Summary =>
-        "MCP servers: typed {server}__{tool} tools and wrapper modes, mcp_find_tools, mcp_invoke_tool, " +
-        "mcp/{server} skills, server instructions, errors, attachments, registering servers.";
+        "MCP servers: typed {server}__{tool} tools and wrapper modes, mcp_find_tools, typed prompt tools, " +
+        "mcp_invoke_tool, mcp/{server} skills, server instructions, errors, attachments, registering servers.";
 
     public (string Prefix, ConsolidationPolicy Policy)? ConsolidationPolicy
         => ("mcp/", RockBot.Tools.ConsolidationPolicy.NamespacedSingleton);
@@ -64,14 +64,31 @@ internal sealed class McpToolSkillProvider : IToolSkillProvider
         attachment handling, error hints and recovery. Prefer the typed tool when you have it,
         because its schema shows you the arguments.
 
+        ## Server prompts
+
+        Some servers offer prompts: ready-made workflows such as a daily briefing or an inbox
+        triage. In Lazy and Pinned runs each prompt has a typed tool named
+        `{server}__{prompt}-prompt`, e.g. `calendar-mcp__daily_briefing-prompt`, whose parameters
+        are the prompt's arguments (all strings).
+
+        - `mcp_find_tools` searches prompts as well as tools; matching prompts come back in a
+          separate `prompts` list and are activated like tools.
+        - `mcp_get_service_details` lists a server's prompts, each with its `typedName`. Listing
+          doesn't activate a prompt, but calling that name does.
+        - Pinning a server never brings in its prompts.
+        - Calling a prompt tool returns the prompt's messages. They're instructions for you:
+          follow them (often by calling the server's tools), then answer the user.
+        - `mcp_get_prompt` reaches any prompt, including in Off and Eager runs.
+
         ## The management tools
 
         Six tools, plus `mcp_find_tools` in Lazy and Pinned runs:
 
         - `mcp_list_services`: the connected servers, each with its summary, tool names and
           prompt names. Use it to pick a server, or to confirm one is still connected.
-        - `mcp_find_tools`: search every server's tools by what they do. Matches become
-          callable by typed name, so call one next. Search again with other words if none fit.
+        - `mcp_find_tools`: search every server's tools and prompts by what they do. Matches
+          become callable by typed name, so call one next. Search again with other words if
+          none fit.
         - `mcp_get_service_details`: one server's identity, its own instructions, its tools'
           schemas, and its prompts. Name one tool to keep the result small. If an `mcp/{server}`
           skill exists, it's appended to the result.
@@ -81,7 +98,8 @@ internal sealed class McpToolSkillProvider : IToolSkillProvider
             `{server}__{tool}` name.
           - The tool's parameters go inside `arguments`, as a JSON object, not a string.
         - `mcp_get_prompt`: fill in one of a server's prompt templates. You get back messages
-          to use as context or instructions.
+          to use as context or instructions. In Lazy and Pinned runs the typed prompt tool does
+          the same with a schema (see "Server prompts").
         - `mcp_register_server` and `mcp_unregister_server`: see "Adding and removing servers"
           below. Workers don't have these two.
 

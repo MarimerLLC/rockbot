@@ -15,7 +15,8 @@ namespace RockBot.Agent.Tests.McpBridge;
 /// <summary>
 /// Typed <c>{server}__{tool}</c> wrappers end to end (#420): the agent-side catalog builds them
 /// from the bridge's index, and a wrapper call travels the same path as <c>mcp_invoke_tool</c> —
-/// proxy, bridge, real MCP server — and gets the same answer.
+/// proxy, bridge, real MCP server — and gets the same answer. Typed prompt tools (#616) likewise
+/// get the same messages as <c>mcp_get_prompt</c>.
 /// </summary>
 [TestClass]
 public class McpWrapperEndToEndTests
@@ -34,6 +35,14 @@ public class McpWrapperEndToEndTests
             return $"sent '{subject}' to {string.Join(",", to)}";
         },
         new McpServerToolCreateOptions { Name = "send_email", Description = "Sends an email." });
+
+    internal static McpServerPrompt DailyBriefing(Counter fetches) => McpServerPrompt.Create(
+        (string date, string? accountId = null) =>
+        {
+            fetches.Increment();
+            return $"Brief me on {date} for {accountId ?? "all accounts"}";
+        },
+        new McpServerPromptCreateOptions { Name = "daily_briefing", Description = "A daily briefing." });
 
     internal static McpServerTool DeleteEverything() => McpServerTool.Create(
         () => "deleted",
@@ -64,7 +73,7 @@ public class McpWrapperEndToEndTests
         var surface = new McpTypedToolSurface(options, NullLogger<McpTypedToolSurface>.Instance);
         var management = new McpManagementExecutor(index, proxy, harness.BusPublisher, harness.BusSubscriber, identity,
             NullLogger<McpManagementExecutor>.Instance, TimeSpan.FromSeconds(10), typedTools: surface);
-        var cache = new ToolSchemaCache((server, ct) => management.GetSchemasAsync(server, ct));
+        var cache = ToolSchemaCache.WithPrompts((server, ct) => management.GetSurfaceAsync(server, ct));
         var registry = new TestToolRegistry();
         var catalog = new McpWrapperCatalog(registry, cache, management, options,
             NullLogger<McpWrapperCatalog>.Instance, surface);
@@ -178,6 +187,60 @@ public class McpWrapperEndToEndTests
         Assert.IsNotNull(agent.Registry.GetExecutor("fixture__delete_everything"));
         Assert.AreSame(sendBefore, agent.Registry.GetTools().Single(t => t.Name == "fixture__send_email"),
             "An unchanged tool keeps its registration when its server's surface changes.");
+    }
+
+    // ── Typed prompt tools (#616) ─────────────────────────────────────────────
+
+    private const string BriefingTool = "fixture__daily_briefing-prompt";
+
+    private static async Task<string?> CallFunctionAsync(Microsoft.Extensions.AI.AIFunction function, Dictionary<string, object?> arguments) =>
+        (await function.InvokeAsync(new Microsoft.Extensions.AI.AIFunctionArguments(arguments)))?.ToString();
+
+    [TestMethod]
+    public async Task TypedPrompt_AndGetPrompt_ReturnTheSameMessages()
+    {
+        var fetches = new Counter();
+        await using var harness = await BridgeHarness.StartAsync([SendEmail(new Counter())], [DailyBriefing(fetches)]);
+        var agent = await ConnectAgentAsync(harness, McpWrapperMode.Lazy);
+
+        var function = agent.Surface.ActivateByName("session-1", BriefingTool);
+        Assert.IsNotNull(function, "The bridge's prompt has a typed tool in lazy mode.");
+        var typed = await CallFunctionAsync(function, new() { ["date"] = "2026-10-08" });
+        var generic = await CallAsync(agent, "mcp_get_prompt",
+            """{"server_name":"fixture","prompt_name":"daily_briefing","arguments":{"date":"2026-10-08"}}""");
+
+        Assert.IsFalse(generic.IsError, generic.Content);
+        Assert.AreEqual(generic.Content, typed);
+        StringAssert.Contains(typed, "Brief me on 2026-10-08 for all accounts");
+        Assert.AreEqual(2, fetches.Value);
+    }
+
+    [TestMethod]
+    public async Task TypedPrompt_MissingARequiredArgument_NeverReachesTheServer()
+    {
+        var fetches = new Counter();
+        await using var harness = await BridgeHarness.StartAsync([SendEmail(new Counter())], [DailyBriefing(fetches)]);
+        var agent = await ConnectAgentAsync(harness, McpWrapperMode.Pinned);
+
+        var function = agent.Surface.ActivateByName("session-1", BriefingTool)!;
+        var result = await CallFunctionAsync(function, new() { ["accountId"] = "work" });
+
+        StringAssert.StartsWith(result, "Error:");
+        StringAssert.Contains(result, "[date]");
+        Assert.AreEqual(0, fetches.Value);
+    }
+
+    [TestMethod]
+    public async Task EagerMode_HasNoTypedPrompt_ButGetPromptStillWorks()
+    {
+        await using var harness = await BridgeHarness.StartAsync([SendEmail(new Counter())], [DailyBriefing(new Counter())]);
+        var agent = await ConnectAgentAsync(harness);
+
+        Assert.AreEqual(0, agent.Catalog.PromptWrappers.Count);
+        var generic = await CallAsync(agent, "mcp_get_prompt",
+            """{"server_name":"fixture","prompt_name":"daily_briefing","arguments":{"date":"2026-10-08"}}""");
+        Assert.IsFalse(generic.IsError, generic.Content);
+        StringAssert.Contains(generic.Content, "Brief me on 2026-10-08");
     }
 
     /// <summary>Minimal <see cref="IToolRegistry"/> (the production one is internal to RockBot.Tools).</summary>

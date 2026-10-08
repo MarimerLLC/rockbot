@@ -1,7 +1,8 @@
 namespace RockBot.Tools.Mcp;
 
 /// <summary>
-/// Names of typed MCP wrapper tools: <c>{server}__{tool}</c>.
+/// Names of typed MCP wrapper tools: <c>{server}__{tool}</c>, and <c>{server}__{prompt}-prompt</c>
+/// for a server's prompts (#616).
 /// <para>
 /// Each part is sanitised to the strictest charset the LLM providers accept for tool names —
 /// <c>^[a-zA-Z0-9_-]{1,64}$</c> for Anthropic and OpenAI. That is narrower than the MCP spec,
@@ -22,6 +23,16 @@ public static class McpWrapperNaming
     /// <summary>The wrapper name for <paramref name="toolName"/> on <paramref name="serverName"/>.</summary>
     public static string For(string serverName, string toolName) =>
         Sanitize(serverName) + McpServerNames.ToolSeparator + Sanitize(toolName);
+
+    /// <summary>What a typed prompt tool's name ends with, so it never reads as a tool (#616).</summary>
+    public const string PromptSuffix = "-prompt";
+
+    /// <summary>
+    /// The typed tool name for prompt <paramref name="promptName"/> on <paramref name="serverName"/>:
+    /// <c>{server}__{prompt}-prompt</c>. A tool and a prompt of the same name get distinct names.
+    /// </summary>
+    public static string ForPrompt(string serverName, string promptName) =>
+        For(serverName, promptName) + PromptSuffix;
 
     /// <summary>True when <paramref name="name"/> fits the providers' length limit.</summary>
     public static bool FitsProviderLimit(string name) => name.Length is > 0 and <= MaxLength;

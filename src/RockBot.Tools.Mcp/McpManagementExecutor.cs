@@ -218,7 +218,7 @@ public sealed class McpManagementExecutor : IToolExecutor, IAsyncDisposable
                     GuideToolsFor(serverName, details.Tools))
             },
             tools,
-            prompts = details.Prompts
+            prompts = PromptViews(serverName, details.Prompts)
         };
 
         var content = JsonSerializer.Serialize(payload, JsonOptions);
@@ -264,6 +264,30 @@ public sealed class McpManagementExecutor : IToolExecutor, IAsyncDisposable
     }
 
     /// <summary>
+    /// The server's prompts as details lists them. In a run that activates typed tools, each prompt
+    /// with a typed tool carries its <c>typedName</c> (#616): calling that name activates it. Listing
+    /// a prompt here never activates it.
+    /// </summary>
+    private List<PromptView> PromptViews(string serverName, List<McpPromptDefinition> prompts)
+    {
+        var typed = _typedTools is not null && TypedToolSurfaceContext.IsActivating;
+        return prompts
+            .Select(p => new PromptView(
+                p.Name,
+                p.Description,
+                p.Arguments,
+                typed ? _typedTools!.PromptWrapperFor(serverName, p.Name)?.Name : null))
+            .ToList();
+    }
+
+    private sealed record PromptView(
+        string Name,
+        string? Description,
+        List<McpPromptArgument> Arguments,
+        [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        string? TypedName);
+
+    /// <summary>
     /// The server's guide-like tools (<see cref="McpInstructionsCap.GuideTools"/>), named the way
     /// this run calls them: by typed name when it has typed tools, else through mcp_invoke_tool.
     /// </summary>
@@ -289,6 +313,17 @@ public sealed class McpManagementExecutor : IToolExecutor, IAsyncDisposable
         var response = await GetServiceDetailsAsync(serverName, ct);
         if (response is null || response.Error is not null) return null;
         return response.Tools;
+    }
+
+    /// <summary>
+    /// <see cref="GetSchemasAsync"/> plus the server's prompt definitions, from the same details
+    /// round trip (#616). Returns null on timeout or transport failure.
+    /// </summary>
+    public async Task<McpServerSurface?> GetSurfaceAsync(string serverName, CancellationToken ct)
+    {
+        var response = await GetServiceDetailsAsync(serverName, ct);
+        if (response is null || response.Error is not null) return null;
+        return new McpServerSurface(response.Tools, response.Prompts);
     }
 
     /// <summary>
@@ -502,22 +537,52 @@ public sealed class McpManagementExecutor : IToolExecutor, IAsyncDisposable
         if (TryGetNestedArgs(args, out var argsObj))
         {
             var argsJson = argsObj is JsonElement je ? je.GetRawText() : JsonSerializer.Serialize(argsObj, JsonOptions);
-            try
-            {
-                var parsed = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(argsJson, JsonOptions);
-                if (parsed is not null)
-                {
-                    foreach (var (k, v) in parsed)
-                    {
-                        promptArgs[k] = v.ValueKind == JsonValueKind.String
-                            ? v.GetString() ?? string.Empty
-                            : v.GetRawText();
-                    }
-                }
-            }
-            catch { /* ignore malformed arguments */ }
+            promptArgs = ToPromptArguments(argsJson);
         }
 
+        return await GetPromptDownstreamAsync(serverName, promptName, promptArgs, request, McpInvocationPath.GetPrompt, ct);
+    }
+
+    /// <summary>
+    /// Prompt arguments as the bridge takes them: every value a string. A JSON string is passed
+    /// as-is, anything else as its raw JSON text. Malformed JSON yields no arguments.
+    /// </summary>
+    internal static Dictionary<string, string> ToPromptArguments(string? argsJson)
+    {
+        var promptArgs = new Dictionary<string, string>();
+        if (string.IsNullOrWhiteSpace(argsJson))
+            return promptArgs;
+        try
+        {
+            var parsed = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(argsJson, JsonOptions);
+            if (parsed is not null)
+            {
+                foreach (var (k, v) in parsed)
+                {
+                    promptArgs[k] = v.ValueKind == JsonValueKind.String
+                        ? v.GetString() ?? string.Empty
+                        : v.GetRawText();
+                }
+            }
+        }
+        catch { /* ignore malformed arguments */ }
+        return promptArgs;
+    }
+
+    /// <summary>
+    /// The one path every downstream MCP prompt takes, whether the model used <c>mcp_get_prompt</c>
+    /// or a typed <c>{server}__{prompt}-prompt</c> tool (#616): the bridge's <c>prompts/get</c>
+    /// (pre-check, timeout, reconnect-and-retry), then the filled-in messages as JSON.
+    /// <paramref name="via"/> tags logs and metrics, as <see cref="InvokeDownstreamAsync"/> does.
+    /// </summary>
+    internal async Task<ToolInvokeResponse> GetPromptDownstreamAsync(
+        string serverName,
+        string promptName,
+        Dictionary<string, string> promptArgs,
+        ToolInvokeRequest outer,
+        string via,
+        CancellationToken ct)
+    {
         var mgmtRequest = new McpGetPromptRequest
         {
             ServerName = serverName,
@@ -526,21 +591,25 @@ public sealed class McpManagementExecutor : IToolExecutor, IAsyncDisposable
         };
 
         var responseEnvelope = await SendRequestAsync(mgmtRequest, ct);
-        if (responseEnvelope is null)
-            return Error(request, $"Timed out waiting for prompt '{promptName}' from server '{serverName}'");
+        var response = responseEnvelope?.GetPayload<McpGetPromptResponse>();
+        var result = responseEnvelope is null
+            ? Error(outer, $"Timed out waiting for prompt '{promptName}' from server '{serverName}'")
+            : response is null
+                ? Error(outer, "Failed to deserialize prompt response")
+                : response.Error is not null
+                    ? Error(outer, response.Error)
+                    : new ToolInvokeResponse
+                    {
+                        ToolCallId = outer.ToolCallId,
+                        ToolName = outer.ToolName,
+                        Content = JsonSerializer.Serialize(response.Messages, JsonOptions)
+                    };
 
-        var response = responseEnvelope.GetPayload<McpGetPromptResponse>();
-        if (response is null)
-            return Error(request, "Failed to deserialize prompt response");
-        if (response.Error is not null)
-            return Error(request, response.Error);
+        McpDiagnostics.RecordPromptInvocation(serverName, via, result.IsError);
+        _logger.LogDebug("MCP prompt {Server}/{Prompt} via {Via}: {Outcome}",
+            serverName, promptName, via, result.IsError ? "error" : "ok");
 
-        return new ToolInvokeResponse
-        {
-            ToolCallId = request.ToolCallId,
-            ToolName = request.ToolName,
-            Content = JsonSerializer.Serialize(response.Messages, JsonOptions)
-        };
+        return result;
     }
 
     // ── Request-response infrastructure ─────────────────────────────────────

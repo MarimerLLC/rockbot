@@ -49,16 +49,23 @@ public static class McpSurfaceFingerprint
 
         foreach (var prompt in prompts.OrderBy(p => p.Name, StringComparer.Ordinal))
         {
-            sb.Append(prompt.Name).Append(FieldSeparator).Append(prompt.Description).Append(FieldSeparator);
-            foreach (var arg in prompt.Arguments)
-            {
-                sb.Append(arg.Name).Append(FieldSeparator)
-                  .Append(arg.Description).Append(FieldSeparator)
-                  .Append(arg.Required ? '1' : '0').Append(FieldSeparator);
-            }
+            AppendPrompt(sb, prompt, prompt.Arguments);
             sb.Append(RecordSeparator);
         }
 
+        return Hash(sb);
+    }
+
+    /// <summary>
+    /// Fingerprint of one prompt: its name, description, then each argument's name, description
+    /// and required flag, arguments sorted by name so a server that merely reorders them doesn't
+    /// look changed (#616). <see cref="Server"/> keeps the server's order, so that existing
+    /// fingerprints don't move.
+    /// </summary>
+    public static string Prompt(McpPromptDefinition prompt)
+    {
+        var sb = new StringBuilder();
+        AppendPrompt(sb, prompt, prompt.Arguments.OrderBy(a => a.Name, StringComparer.Ordinal));
         return Hash(sb);
     }
 
@@ -81,6 +88,17 @@ public static class McpSurfaceFingerprint
         catch (JsonException)
         {
             return json;
+        }
+    }
+
+    private static void AppendPrompt(StringBuilder sb, McpPromptDefinition prompt, IEnumerable<McpPromptArgument> arguments)
+    {
+        sb.Append(prompt.Name).Append(FieldSeparator).Append(prompt.Description).Append(FieldSeparator);
+        foreach (var arg in arguments)
+        {
+            sb.Append(arg.Name).Append(FieldSeparator)
+              .Append(arg.Description).Append(FieldSeparator)
+              .Append(arg.Required ? '1' : '0').Append(FieldSeparator);
         }
     }
 

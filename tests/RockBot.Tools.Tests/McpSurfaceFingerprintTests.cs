@@ -86,6 +86,38 @@ public class McpSurfaceFingerprintTests
             McpSurfaceFingerprint.Server([], [Briefing(false)]));
     }
 
+    private static McpPromptDefinition Briefing(
+        string description = "Daily briefing", string dateDescription = "The day", bool dateRequired = true) => new()
+    {
+        Name = "daily_briefing",
+        Description = description,
+        Arguments =
+        [
+            new() { Name = "date", Description = dateDescription, Required = dateRequired },
+            new() { Name = "accountId", Description = "Account" }
+        ]
+    };
+
+    [TestMethod]
+    public void PromptFingerprint_MovesOnADescriptionOrArgumentChange()
+    {
+        var baseline = McpSurfaceFingerprint.Prompt(Briefing());
+
+        Assert.AreNotEqual(baseline, McpSurfaceFingerprint.Prompt(Briefing(description: "Morning briefing")));
+        Assert.AreNotEqual(baseline, McpSurfaceFingerprint.Prompt(Briefing(dateDescription: "YYYY-MM-DD")));
+        Assert.AreNotEqual(baseline, McpSurfaceFingerprint.Prompt(Briefing(dateRequired: false)));
+        Assert.AreNotEqual(baseline, McpSurfaceFingerprint.Prompt(Briefing() with { Arguments = [.. Briefing().Arguments.Take(1)] }));
+    }
+
+    [TestMethod]
+    public void PromptFingerprint_IsStableAcrossInstances_AndArgumentOrder()
+    {
+        var reordered = Briefing() with { Arguments = [.. Briefing().Arguments.AsEnumerable().Reverse()] };
+
+        Assert.AreEqual(McpSurfaceFingerprint.Prompt(Briefing()), McpSurfaceFingerprint.Prompt(Briefing()));
+        Assert.AreEqual(McpSurfaceFingerprint.Prompt(Briefing()), McpSurfaceFingerprint.Prompt(reordered));
+    }
+
     [TestMethod]
     public void ToolsAndPrompts_AreSeparateSections()
     {

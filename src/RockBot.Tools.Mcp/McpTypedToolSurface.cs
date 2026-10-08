@@ -25,6 +25,11 @@ namespace RockBot.Tools.Mcp;
 /// tier is pinned, and a pinned run gets every current typed tool of each, after its activations.
 /// </para>
 /// <para>
+/// Typed prompt tools, <c>{server}__{prompt}-prompt</c> (#616), are activated like typed tools and
+/// share their per-session cap, but only by <c>mcp_find_tools</c> or a call by name: a pinned
+/// server brings in its tools, never its prompts.
+/// </para>
+/// <para>
 /// Deliberately dependency-free so the agent loop can take it without a DI cycle;
 /// <see cref="McpWrapperCatalog"/> binds itself here when it is built.
 /// </para>
@@ -67,7 +72,8 @@ public sealed class McpTypedToolSurface : ITypedToolSurface
 
     public int MaxToolsPerRequest => _options.MaxToolsPerRequest;
 
-    public bool IsTypedTool(string toolName) => _catalog is { } catalog && catalog.TryGet(toolName, out _);
+    public bool IsTypedTool(string toolName) =>
+        _catalog is { } catalog && (catalog.TryGet(toolName, out _) || catalog.TryGetPrompt(toolName, out _));
 
     internal void Bind(McpWrapperCatalog catalog) => _catalog = catalog;
 
@@ -78,6 +84,19 @@ public sealed class McpTypedToolSurface : ITypedToolSurface
         _catalog is { } catalog
             ? McpToolSearch.Rank(query, catalog.Wrappers, servers, limit)
             : [];
+
+    /// <summary>Typed prompt tools ranked for <paramref name="query"/>, as <see cref="Find"/> ranks tools (#616).</summary>
+    public IReadOnlyList<McpPromptMatch> FindPrompts(string query, IReadOnlyList<McpServerSummary> servers, int limit) =>
+        _catalog is { } catalog
+            ? McpToolSearch.RankPrompts(query, catalog.PromptWrappers, servers, limit)
+            : [];
+
+    /// <summary>The typed prompt tool of prompt <paramref name="promptName"/> on <paramref name="server"/>, if it has one.</summary>
+    public McpPromptWrapper? PromptWrapperFor(string server, string promptName) =>
+        _catalog?.PromptsFor(server)
+            .FirstOrDefault(p => string.Equals(p.PromptName, promptName, StringComparison.Ordinal))
+        ?? _catalog?.PromptsFor(server)
+            .FirstOrDefault(p => string.Equals(p.PromptName, promptName, StringComparison.OrdinalIgnoreCase));
 
     /// <summary>
     /// The typed names of <paramref name="server"/>'s tools that best fit <paramref name="query"/>,
@@ -115,26 +134,33 @@ public sealed class McpTypedToolSurface : ITypedToolSurface
     /// Activates <paramref name="tools"/> for <paramref name="sessionId"/>, in order. Returns the
     /// names now active; empty when no tier activates typed tools, or without a session.
     /// </summary>
-    public IReadOnlyList<string> Activate(string? sessionId, IEnumerable<McpWrapperTool> tools)
+    public IReadOnlyList<string> Activate(string? sessionId, IEnumerable<McpWrapperTool> tools) =>
+        Activate(sessionId, tools.Select(t => t.Name));
+
+    /// <summary>Activates typed prompt tools, as <see cref="Activate(string?, IEnumerable{McpWrapperTool})"/> does tools.</summary>
+    public IReadOnlyList<string> Activate(string? sessionId, IEnumerable<McpPromptWrapper> prompts) =>
+        Activate(sessionId, prompts.Select(p => p.Name));
+
+    private IReadOnlyList<string> Activate(string? sessionId, IEnumerable<string> names)
     {
         if (!_options.ActivatesWrappers || string.IsNullOrEmpty(sessionId))
             return [];
 
-        var requested = tools.ToList();
+        var requested = names.ToList();
         var cap = Math.Max(1, _options.MaxActivatedToolsPerSession);
         var session = SessionFor(sessionId);
         var added = new List<string>();
         lock (session)
         {
             session.Touched = _time.GetUtcNow();
-            foreach (var tool in requested)
+            foreach (var name in requested)
             {
                 // Re-activating keeps a tool's place: moving it would reorder the tool list and
                 // cost the provider's prompt cache for nothing.
-                if (!session.Names.Contains(tool.Name))
+                if (!session.Names.Contains(name))
                 {
-                    session.Names.Add(tool.Name);
-                    added.Add(tool.Name);
+                    session.Names.Add(name);
+                    added.Add(name);
                 }
             }
 
@@ -153,7 +179,7 @@ public sealed class McpTypedToolSurface : ITypedToolSurface
                     sessionId, string.Join(", ", added));
             }
 
-            return [.. requested.Select(t => t.Name).Where(session.Names.Contains)];
+            return [.. requested.Where(session.Names.Contains)];
         }
     }
 
@@ -226,8 +252,12 @@ public sealed class McpTypedToolSurface : ITypedToolSurface
         var seen = new HashSet<string>(StringComparer.Ordinal);
         foreach (var name in names)
         {
-            if (catalog.TryGet(name, out var wrapper) && seen.Add(name))
+            if (!seen.Add(name))
+                continue;
+            if (catalog.TryGet(name, out var wrapper))
                 tools.Add(catalog.CreateFunction(wrapper, toolSessionId));
+            else if (catalog.TryGetPrompt(name, out var prompt))
+                tools.Add(catalog.CreateFunction(prompt, toolSessionId));
         }
 
         // Pinned servers' tools share the activations' budget: the most recently called server
@@ -259,13 +289,26 @@ public sealed class McpTypedToolSurface : ITypedToolSurface
 
     public AIFunction? ActivateByName(string toolSessionId, string toolName)
     {
-        if (!_options.ActivatesWrappers || _catalog is not { } catalog || !catalog.TryGet(toolName, out var wrapper))
+        if (!_options.ActivatesWrappers || _catalog is not { } catalog)
             return null;
 
-        _logger.LogInformation("Typed MCP tool {Tool} called by name in session {Session}; activating it",
-            toolName, toolSessionId);
-        Activate(toolSessionId, [wrapper]);
-        return catalog.CreateFunction(wrapper, toolSessionId);
+        if (catalog.TryGet(toolName, out var wrapper))
+        {
+            _logger.LogInformation("Typed MCP tool {Tool} called by name in session {Session}; activating it",
+                toolName, toolSessionId);
+            Activate(toolSessionId, [wrapper]);
+            return catalog.CreateFunction(wrapper, toolSessionId);
+        }
+
+        if (catalog.TryGetPrompt(toolName, out var prompt))
+        {
+            _logger.LogInformation("Typed MCP prompt {Tool} called by name in session {Session}; activating it",
+                toolName, toolSessionId);
+            Activate(toolSessionId, [prompt]);
+            return catalog.CreateFunction(prompt, toolSessionId);
+        }
+
+        return null;
     }
 
     /// <summary>Removes <paramref name="toolNames"/> from every session.</summary>

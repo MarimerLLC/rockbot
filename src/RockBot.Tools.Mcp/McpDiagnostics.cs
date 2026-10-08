@@ -11,6 +11,12 @@ public static class McpInvocationPath
 
     /// <summary>A typed <c>{server}__{tool}</c> wrapper tool.</summary>
     public const string Wrapper = "wrapper";
+
+    /// <summary>The generic <c>mcp_get_prompt(server_name, prompt_name, arguments)</c>.</summary>
+    public const string GetPrompt = "get_prompt";
+
+    /// <summary>A typed <c>{server}__{prompt}-prompt</c> tool (#616).</summary>
+    public const string PromptWrapper = "prompt_wrapper";
 }
 
 /// <summary>
@@ -26,8 +32,22 @@ internal static class McpDiagnostics
             unit: "{call}",
             description: "Downstream MCP tool calls. Tags: server, via (invoke_tool|wrapper), outcome (ok|error).");
 
+    private static readonly Counter<long> PromptInvocations =
+        ToolDiagnostics.Meter.CreateCounter<long>(
+            "rockbot.mcp.prompt.invocations",
+            unit: "{call}",
+            description: "Downstream MCP prompt fetches. Tags: server, via (get_prompt|prompt_wrapper), outcome (ok|error).");
+
     public static void RecordInvocation(string server, string via, bool isError) =>
         Invocations.Add(1, new TagList
+        {
+            { "server", server },
+            { "via", via },
+            { "outcome", isError ? "error" : "ok" }
+        });
+
+    public static void RecordPromptInvocation(string server, string via, bool isError) =>
+        PromptInvocations.Add(1, new TagList
         {
             { "server", server },
             { "via", via },
