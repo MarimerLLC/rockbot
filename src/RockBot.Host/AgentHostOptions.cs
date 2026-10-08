@@ -1,14 +1,23 @@
+using RockBot.Messaging;
+
 namespace RockBot.Host;
 
 /// <summary>
-/// A topic subscription paired with its dispatch concurrency.
+/// A topic subscription paired with its dispatch concurrency and, optionally, the
+/// per-subscription queue options (retention, dead-lettering) it is subscribed with.
 /// </summary>
 /// <param name="Topic">The topic pattern (with wildcards).</param>
 /// <param name="DispatchConcurrency">Maximum concurrent in-flight handler invocations
 /// for this subscription. Default 1 (sequential, preserves ordering). Bump only for
 /// re-entrant handlers where cross-message coordination would otherwise deadlock the
 /// consumer (e.g. the subagent-result consolidation gate).</param>
-public sealed record TopicSubscription(string Topic, int DispatchConcurrency = 1);
+/// <param name="Options">Queue options for this subscription, such as retention for a
+/// shared fan-out topic. Null subscribes with the defaults. <see cref="DispatchConcurrency"/>
+/// always wins over <see cref="SubscriptionOptions.DispatchConcurrency"/>.</param>
+public sealed record TopicSubscription(
+    string Topic,
+    int DispatchConcurrency = 1,
+    SubscriptionOptions? Options = null);
 
 /// <summary>
 /// Which shape of image pricing a provider uses. These are genuinely different models, not

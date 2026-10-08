@@ -83,6 +83,39 @@ public class A2ARegistrationTests
     }
 
     [TestMethod]
+    public void AddA2ACaller_SubscribesToStatusTopicWithRetention()
+    {
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddSingleton<IMessagePublisher, TrackingPublisher>();
+        services.AddSingleton<IMessageSubscriber, StubSubscriber>();
+        services.AddRockBotHost(agent => agent
+            .WithIdentity("my-agent")
+            .AddA2ACaller());
+
+        var provider = services.BuildServiceProvider();
+        var topics = provider.GetRequiredService<IOptions<AgentHostOptions>>().Value.Topics;
+
+        var status = topics.Single(t => t.Topic == new A2AOptions().StatusTopic);
+        Assert.AreSame(A2ACallerServiceCollectionExtensions.StatusSubscriptionOptions, status.Options);
+
+        // Per-agent topics are point-to-point and keep the defaults.
+        Assert.IsTrue(topics.Where(t => t != status).All(t => t.Options is null));
+    }
+
+    [TestMethod]
+    public void StatusSubscription_ExpiresStaleUpdatesAndIdleQueues()
+    {
+        var options = A2ACallerServiceCollectionExtensions.StatusSubscriptionOptions;
+
+        Assert.AreEqual(TimeSpan.FromMinutes(10), options.MessageTtl);
+        Assert.AreEqual(TimeSpan.FromHours(24), options.IdleExpiry);
+        Assert.IsFalse(options.DeadLetter, "Expired status updates would otherwise fill the DLQ");
+        Assert.IsFalse(options.Ephemeral,
+            "Deleting the shared queue on dispose would break the replacement pod in a rolling restart");
+    }
+
+    [TestMethod]
     public void AddA2A_RegistersMessageTypeResolver()
     {
         var services = new ServiceCollection();

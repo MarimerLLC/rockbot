@@ -1,6 +1,7 @@
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
 using RockBot.Host;
+using RockBot.Messaging;
 
 namespace RockBot.Host.Tests;
 
@@ -55,6 +56,30 @@ public class AgentHostBuilderTests
         Assert.IsTrue(options.Topics.Any(t => t.Topic == "llm.response"));
         Assert.IsTrue(options.Topics.All(t => t.DispatchConcurrency == 1),
             "Topics added without explicit concurrency should default to 1.");
+    }
+
+    [TestMethod]
+    public void SubscribeTo_WithSubscriptionOptions_RecordsOptionsAndConcurrency()
+    {
+        var retention = new SubscriptionOptions
+        {
+            MessageTtl = TimeSpan.FromMinutes(10),
+            IdleExpiry = TimeSpan.FromHours(24),
+            DeadLetter = false,
+            DispatchConcurrency = 2,
+        };
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddRockBotHost(agent => agent
+            .WithIdentity("my-agent")
+            .SubscribeTo("agent.task.status", retention));
+
+        var provider = services.BuildServiceProvider();
+        var topic = provider.GetRequiredService<IOptions<AgentHostOptions>>().Value.Topics.Single();
+
+        Assert.AreEqual("agent.task.status", topic.Topic);
+        Assert.AreEqual(2, topic.DispatchConcurrency);
+        Assert.AreSame(retention, topic.Options);
     }
 
     [TestMethod]

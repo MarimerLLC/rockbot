@@ -1,6 +1,7 @@
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using RockBot.Host;
+using RockBot.Messaging;
 using RockBot.Tools;
 
 namespace RockBot.A2A;
@@ -10,6 +11,23 @@ namespace RockBot.A2A;
 /// </summary>
 public static class A2ACallerServiceCollectionExtensions
 {
+    /// <summary>
+    /// Queue retention for the shared status subscription (#654). Every caller binds a
+    /// durable per-identity queue to the status fan-out topic, so a stopped caller's queue
+    /// keeps collecting every other agent's status updates. A status update is only useful
+    /// while the caller still tracks the task, and tracking is in memory, so it is lost on
+    /// restart. Updates expire after 10 minutes and are dropped rather than dead-lettered,
+    /// and a queue with no consumer for a day is deleted by the broker. Not
+    /// <see cref="SubscriptionOptions.Ephemeral"/>: deleting the shared queue on dispose
+    /// would pull it out from under the replacement pod during a rolling restart.
+    /// </summary>
+    internal static readonly SubscriptionOptions StatusSubscriptionOptions = new()
+    {
+        MessageTtl = TimeSpan.FromMinutes(10),
+        IdleExpiry = TimeSpan.FromHours(24),
+        DeadLetter = false,
+    };
+
     /// <summary>
     /// Registers A2A caller tools (<c>invoke_agent</c>, <c>list_known_agents</c>) and
     /// result/error/status handlers that fold external agent responses into the primary
@@ -87,7 +105,7 @@ public static class A2ACallerServiceCollectionExtensions
         var agentName = builder.Identity.Name;
         var resultTopic = $"{options.CallerResultTopic}.{agentName}";
         builder.SubscribeTo(resultTopic);
-        builder.SubscribeTo(options.StatusTopic);
+        builder.SubscribeTo(options.StatusTopic, StatusSubscriptionOptions);
         builder.SubscribeTo($"{options.LateNotificationTopic}.{agentName}");
 
         // Tool registration hosted service

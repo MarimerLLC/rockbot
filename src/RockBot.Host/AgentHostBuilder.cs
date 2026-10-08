@@ -1,4 +1,5 @@
 using Microsoft.Extensions.DependencyInjection;
+using RockBot.Messaging;
 
 namespace RockBot.Host;
 
@@ -48,6 +49,18 @@ public sealed class AgentHostBuilder
     public AgentHostBuilder SubscribeTo(string topic, int dispatchConcurrency = 1)
     {
         _options.Topics.Add(new TopicSubscription(topic, dispatchConcurrency));
+        return this;
+    }
+
+    /// <summary>
+    /// Subscribe to a topic with explicit <see cref="SubscriptionOptions"/>, e.g. a message
+    /// TTL and idle expiry for a shared fan-out topic whose per-identity queue would
+    /// otherwise outlive this agent. Dispatch concurrency is taken from
+    /// <see cref="SubscriptionOptions.DispatchConcurrency"/>.
+    /// </summary>
+    public AgentHostBuilder SubscribeTo(string topic, SubscriptionOptions options)
+    {
+        _options.Topics.Add(new TopicSubscription(topic, options.DispatchConcurrency, options));
         return this;
     }
 
