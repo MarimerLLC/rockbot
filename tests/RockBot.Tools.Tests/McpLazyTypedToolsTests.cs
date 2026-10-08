@@ -14,6 +14,7 @@ namespace RockBot.Tools.Tests;
 /// Lazy typed MCP tools (#612): <c>mcp_find_tools</c> scoring, per-session activation, eviction
 /// when a server changes or goes, and how activations reach a run's tool list. Per-tier modes and
 /// pinned servers (#613): what the registry holds and how each run's list is fitted to its tier.
+/// Typed prompt tools (#616): found and activated like tools, never pinned, never eager.
 /// </summary>
 [TestClass]
 public class McpLazyTypedToolsTests
@@ -34,6 +35,19 @@ public class McpLazyTypedToolsTests
         ])
     };
 
+    private const string DailyBriefing = "adjutant__daily_briefing-prompt";
+
+    private static McpPromptDefinition Briefing(string? accountDescription = "Account to brief on; all when omitted") => new()
+    {
+        Name = "daily_briefing",
+        Description = "A daily briefing of today's schedule and inbox.",
+        Arguments =
+        [
+            new() { Name = "date", Description = "The day, as YYYY-MM-DD", Required = true },
+            new() { Name = "accountId", Description = accountDescription }
+        ]
+    };
+
     private sealed class ManualTime(DateTimeOffset start) : TimeProvider
     {
         public DateTimeOffset Now { get; set; } = start;
@@ -47,6 +61,11 @@ public class McpLazyTypedToolsTests
         public required McpTypedToolSurface Surface { get; init; }
         public required McpServersIndexedHandler Handler { get; init; }
         public required Dictionary<string, (string Summary, McpToolDefinition[] Tools)> Live { get; init; }
+        public required Dictionary<string, McpPromptDefinition[]> LivePrompts { get; init; }
+        public required McpWrapperCatalog Catalog { get; init; }
+        public required McpManagementExecutor Management { get; init; }
+        public required TrackingPublisher ManagementPublisher { get; init; }
+        public required StubSubscriber ManagementSubscriber { get; init; }
 
         public Task PublishAsync(params string[] servers) => DeliverAsync(new McpServersIndexed
         {
@@ -65,6 +84,7 @@ public class McpLazyTypedToolsTests
         public McpServerSummary Summary(string server)
         {
             var (summary, tools) = Live[server];
+            var prompts = LivePrompts.GetValueOrDefault(server) ?? [];
             return new McpServerSummary
             {
                 ServerName = server,
@@ -72,7 +92,9 @@ public class McpLazyTypedToolsTests
                 Summary = summary,
                 ToolCount = tools.Length,
                 ToolNames = [.. tools.Select(t => t.Name)],
-                Fingerprint = McpSurfaceFingerprint.Server(tools.Select(t => (t.Name, (string?)t.Description, t.ParametersSchema)), []),
+                PromptCount = prompts.Length,
+                PromptNames = [.. prompts.Select(p => p.Name)],
+                Fingerprint = McpSurfaceFingerprint.Server(tools.Select(t => (t.Name, (string?)t.Description, t.ParametersSchema)), prompts),
                 ToolFingerprints = tools.ToDictionary(t => t.Name, t => McpSurfaceFingerprint.Tool(t.Name, t.Description, t.ParametersSchema))
             };
         }
@@ -100,24 +122,34 @@ public class McpLazyTypedToolsTests
         Action<McpToolSurfaceOptions>? configure = null)
     {
         var live = Servers.ToDictionary(kvp => kvp.Key, kvp => kvp.Value);
+        var livePrompts = new Dictionary<string, McpPromptDefinition[]> { ["adjutant"] = [Briefing()] };
         var surfaceOptions = new McpToolSurfaceOptions { WrapperMode = mode, MaxActivatedToolsPerSession = cap };
         configure?.Invoke(surfaceOptions);
         var options = Options.Create(surfaceOptions);
         var identity = new AgentIdentity("test-agent");
         var index = new McpServerIndex();
+        var surface = new McpTypedToolSurface(options, NullLogger<McpTypedToolSurface>.Instance, time);
+        var managementPublisher = new TrackingPublisher();
+        var managementSubscriber = new StubSubscriber();
         var management = new McpManagementExecutor(index,
             new McpToolProxy(new TrackingPublisher(), new StubSubscriber(), identity, NullLogger<McpToolProxy>.Instance),
-            new TrackingPublisher(), new StubSubscriber(), identity, NullLogger<McpManagementExecutor>.Instance);
-        var cache = new ToolSchemaCache((server, _) =>
-            Task.FromResult<IReadOnlyList<McpToolDefinition>?>(live.TryGetValue(server, out var s) ? s.Tools : null));
+            managementPublisher, managementSubscriber, identity, NullLogger<McpManagementExecutor>.Instance,
+            typedTools: surface);
+        var cache = ToolSchemaCache.WithPrompts((server, _) => Task.FromResult(live.TryGetValue(server, out var s)
+            ? new McpServerSurface(s.Tools, livePrompts.GetValueOrDefault(server) ?? [])
+            : null));
         var registry = new ToolRegistry();
-        var surface = new McpTypedToolSurface(options, NullLogger<McpTypedToolSurface>.Instance, time);
         var catalog = new McpWrapperCatalog(registry, cache, management, options,
             NullLogger<McpWrapperCatalog>.Instance, surface);
         var handler = new McpServersIndexedHandler(registry, index, management,
             NullLogger<McpServersIndexedHandler>.Instance, cache, catalog);
 
-        var gateway = new Gateway { Registry = registry, Index = index, Surface = surface, Handler = handler, Live = live };
+        var gateway = new Gateway
+        {
+            Registry = registry, Index = index, Surface = surface, Handler = handler, Live = live, LivePrompts = livePrompts,
+            Catalog = catalog, Management = management,
+            ManagementPublisher = managementPublisher, ManagementSubscriber = managementSubscriber
+        };
         await gateway.PublishAsync([.. live.Keys]);
         return gateway;
     }
@@ -621,6 +653,235 @@ public class McpLazyTypedToolsTests
         await gateway.DeliverAsync(new McpServersIndexed { Servers = [], RemovedServers = ["chat"] });
 
         Assert.AreEqual(0, gateway.Activated("session/a", TypedToolMode.Pinned).Length);
+    }
+
+    // ── Typed prompt tools (#616) ─────────────────────────────────────────────
+
+    private static async Task<string> CallAsync(AIFunction function, object? arguments = null)
+    {
+        var args = new AIFunctionArguments();
+        if (arguments is not null)
+        {
+            foreach (var (key, value) in JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(JsonSerializer.Serialize(arguments))!)
+                args[key] = value;
+        }
+        return (await function.InvokeAsync(args))?.ToString() ?? string.Empty;
+    }
+
+    private static int PromptRequests(Gateway gateway) =>
+        gateway.ManagementPublisher.Published.Count(p => p.Envelope.MessageType == typeof(McpGetPromptRequest).FullName);
+
+    [TestMethod]
+    public async Task FindTools_DailyBriefing_ReturnsThePromptWithItsArgumentSchema_AndActivatesIt()
+    {
+        var gateway = await CreateAsync();
+
+        using var result = await gateway.FindAsync("daily briefing", "session/a");
+        var prompt = result.RootElement.GetProperty("prompts")[0];
+
+        Assert.AreEqual(DailyBriefing, prompt.GetProperty("name").GetString());
+        Assert.AreEqual("adjutant", prompt.GetProperty("server").GetString());
+        Assert.AreEqual("daily_briefing", prompt.GetProperty("prompt").GetString());
+        Assert.IsTrue(prompt.GetProperty("activated").GetBoolean());
+        var schema = prompt.GetProperty("inputSchema");
+        CollectionAssert.AreEqual(new[] { "date" },
+            schema.GetProperty("required").EnumerateArray().Select(e => e.GetString()).ToArray());
+        Assert.AreEqual("string", schema.GetProperty("properties").GetProperty("accountId").GetProperty("type").GetString());
+        Assert.AreEqual("The day, as YYYY-MM-DD",
+            schema.GetProperty("properties").GetProperty("date").GetProperty("description").GetString());
+
+        CollectionAssert.Contains(gateway.Activated("session/a"), DailyBriefing);
+        Assert.IsFalse(gateway.Registry.GetTools().Any(t => t.Name == DailyBriefing), "Prompt tools are never registered.");
+    }
+
+    [TestMethod]
+    public async Task FindTools_NoPromptMatches_LeavesThePromptsListOut()
+    {
+        var gateway = await CreateAsync();
+
+        using var result = await gateway.FindAsync("team chat", "session/a");
+
+        Assert.IsTrue(result.RootElement.GetProperty("tools").GetArrayLength() > 0);
+        Assert.IsFalse(result.RootElement.TryGetProperty("prompts", out _));
+    }
+
+    [TestMethod]
+    public async Task FindTools_APromptMatchingOnlyOnItsServersText_IsNotReturned()
+    {
+        var gateway = await CreateAsync();
+
+        // "email" is in adjutant's summary, not in the prompt's name or description.
+        using var result = await gateway.FindAsync("send email", "session/a");
+
+        Assert.IsFalse(result.RootElement.TryGetProperty("prompts", out _));
+        CollectionAssert.DoesNotContain(gateway.Activated("session/a"), DailyBriefing);
+    }
+
+    [TestMethod]
+    public async Task ServiceDetails_ListsThePromptsTypedName_WithoutActivatingIt()
+    {
+        var gateway = await CreateAsync();
+
+        Task<ToolInvokeResponse> details;
+        using (TypedToolSurfaceContext.Set(gateway.Surface, ModelTier.Balanced))
+        {
+            details = gateway.Management.ExecuteAsync(new ToolInvokeRequest
+            {
+                ToolCallId = "c1",
+                ToolName = "mcp_get_service_details",
+                Arguments = """{"server_name":"adjutant","tool_name":"send_email"}""",
+                SessionId = "session/a"
+            }, CancellationToken.None);
+        }
+
+        for (var i = 0; i < 200 && gateway.ManagementPublisher.Published.Count == 0; i++)
+            await Task.Delay(10);
+        var published = gateway.ManagementPublisher.Published.Single().Envelope;
+        var response = new McpGetServiceDetailsResponse
+        {
+            ServerName = "adjutant",
+            Tools = [.. gateway.Live["adjutant"].Tools],
+            Prompts = [Briefing()]
+        };
+        await gateway.ManagementSubscriber.DeliverAsync(gateway.Management.ResponseTopic,
+            response.ToEnvelope("bridge", correlationId: published.CorrelationId));
+
+        var result = await details;
+        Assert.IsFalse(result.IsError, result.Content);
+        // The details JSON is the first line; notes and skills follow it.
+        using var doc = JsonDocument.Parse(result.Content!.Split('\n')[0]);
+        var prompt = doc.RootElement.GetProperty("prompts")[0];
+        Assert.AreEqual("daily_briefing", prompt.GetProperty("name").GetString());
+        Assert.AreEqual(DailyBriefing, prompt.GetProperty("typedName").GetString());
+        Assert.AreEqual(2, prompt.GetProperty("arguments").GetArrayLength());
+        CollectionAssert.AreEqual(new[] { "adjutant__send_email" }, gateway.Activated("session/a"),
+            "Details activates the tool it shows, never a prompt.");
+    }
+
+    [TestMethod]
+    public async Task PromptCall_MissingTheRequiredArgument_FailsBeforeTheBridge_AndNamesIt()
+    {
+        var gateway = await CreateAsync();
+        var function = gateway.Surface.ActivateByName("session/a", DailyBriefing);
+        Assert.IsNotNull(function, "A valid prompt tool name activates without a prior search.");
+        CollectionAssert.AreEqual(new[] { DailyBriefing }, gateway.Activated("session/a"));
+
+        var content = await CallAsync(function, new { accountId = "work" });
+
+        StringAssert.StartsWith(content, "Error:");
+        StringAssert.Contains(content, "[date]");
+        Assert.AreEqual(0, PromptRequests(gateway), "Nothing may reach the bridge.");
+    }
+
+    [TestMethod]
+    public async Task PromptCall_WithTheRequiredArgument_FetchesThePrompt_AndReturnsItsMessages()
+    {
+        var gateway = await CreateAsync();
+        var function = gateway.Surface.ActivateByName("session/a", DailyBriefing)!;
+
+        var call = CallAsync(function, new { date = "2026-10-08", accountId = (string?)null });
+        for (var i = 0; i < 200 && PromptRequests(gateway) == 0; i++)
+            await Task.Delay(10);
+
+        var published = gateway.ManagementPublisher.Published
+            .Single(p => p.Envelope.MessageType == typeof(McpGetPromptRequest).FullName).Envelope;
+        var request = published.GetPayload<McpGetPromptRequest>()!;
+        Assert.AreEqual("adjutant", request.ServerName);
+        Assert.AreEqual("daily_briefing", request.PromptName);
+        CollectionAssert.AreEquivalent(new Dictionary<string, string> { ["date"] = "2026-10-08" }, request.Arguments,
+            "A null optional argument is left out, not sent as \"null\".");
+
+        var response = new McpGetPromptResponse
+        {
+            ServerName = "adjutant",
+            PromptName = "daily_briefing",
+            Messages = [new McpPromptMessage { Role = "user", Content = "Brief me on 2026-10-08." }]
+        };
+        await gateway.ManagementSubscriber.DeliverAsync(gateway.Management.ResponseTopic,
+            response.ToEnvelope("bridge", correlationId: published.CorrelationId));
+
+        var content = await call;
+        Assert.IsFalse(content.StartsWith("Error:", StringComparison.Ordinal), content);
+        StringAssert.Contains(content, "Brief me on 2026-10-08.");
+    }
+
+    [TestMethod]
+    public async Task Pin_BringsInTheServersTools_NeverItsPrompts()
+    {
+        var gateway = await CreateAsync(McpWrapperMode.Pinned);
+
+        gateway.Surface.Pin("session/a", "adjutant");
+
+        var names = gateway.Activated("session/a", TypedToolMode.Pinned);
+        Assert.AreEqual(4, names.Length);
+        Assert.IsFalse(names.Any(n => n.EndsWith(McpWrapperNaming.PromptSuffix, StringComparison.Ordinal)));
+        Assert.IsFalse(gateway.Catalog.WrappersFor("adjutant").Any(w => w.Name == DailyBriefing));
+        Assert.AreEqual(1, gateway.Catalog.PromptsFor("adjutant").Count);
+    }
+
+    [TestMethod]
+    public async Task ActivatedPrompts_ShareTheActivationCap()
+    {
+        var gateway = await CreateAsync(cap: 2);
+
+        gateway.Surface.ActivateByName("s", DailyBriefing);
+        gateway.Surface.ActivateByName("s", "adjutant__send_email");
+        gateway.Surface.ActivateByName("s", "chat__send_message");
+
+        CollectionAssert.AreEqual(new[] { "adjutant__send_email", "chat__send_message" }, gateway.Activated("s"));
+    }
+
+    [TestMethod]
+    public async Task ChangedPrompt_IsEvicted_AndTheNextSearchBringsItBackWithTheNewSchema()
+    {
+        var gateway = await CreateAsync();
+        gateway.Surface.ActivateByName("s", DailyBriefing);
+        gateway.Surface.ActivateByName("s", "adjutant__send_email");
+
+        gateway.LivePrompts["adjutant"] = [Briefing("The mailbox to brief on")];
+        await gateway.PublishAsync("adjutant");
+
+        CollectionAssert.AreEqual(new[] { "adjutant__send_email" }, gateway.Activated("s"));
+
+        using var result = await gateway.FindAsync("daily briefing", "s");
+        Assert.AreEqual("The mailbox to brief on", result.RootElement.GetProperty("prompts")[0]
+            .GetProperty("inputSchema").GetProperty("properties").GetProperty("accountId").GetProperty("description").GetString());
+        CollectionAssert.Contains(gateway.Activated("s"), DailyBriefing);
+    }
+
+    [TestMethod]
+    public async Task RemovedServer_DropsItsPromptTools()
+    {
+        var gateway = await CreateAsync();
+        gateway.Surface.ActivateByName("s", DailyBriefing);
+
+        await gateway.DeliverAsync(new McpServersIndexed { Servers = [], RemovedServers = ["adjutant"] });
+
+        Assert.AreEqual(0, gateway.Activated("s").Length);
+        Assert.AreEqual(0, gateway.Catalog.PromptWrappers.Count);
+        Assert.IsNull(gateway.Surface.ActivateByName("s", DailyBriefing));
+    }
+
+    [TestMethod]
+    [DataRow(McpWrapperMode.Eager, DisplayName = "Eager")]
+    [DataRow(McpWrapperMode.Off, DisplayName = "Off")]
+    public async Task NoActivatingTier_NoPromptTools(McpWrapperMode mode)
+    {
+        var gateway = await CreateAsync(mode);
+
+        Assert.AreEqual(0, gateway.Catalog.PromptWrappers.Count);
+        Assert.IsNull(gateway.Surface.ActivateByName("s", DailyBriefing));
+        Assert.IsFalse(gateway.Registry.GetTools().Any(t => t.Name.EndsWith(McpWrapperNaming.PromptSuffix, StringComparison.Ordinal)));
+    }
+
+    [TestMethod]
+    public void RankPrompts_ScoresThePromptNameLikeAToolName()
+    {
+        var prompt = new McpPromptWrapper(DailyBriefing, "adjutant", null, "daily_briefing", "Brief me.", "{}", "fp");
+
+        var ranked = McpToolSearch.RankPrompts("daily briefing", [prompt], [], 5);
+
+        Assert.AreEqual(2 * McpToolSearch.ToolNameToken, ranked.Single().Score);
     }
 
     private sealed class NullWorkingMemory : IWorkingMemory

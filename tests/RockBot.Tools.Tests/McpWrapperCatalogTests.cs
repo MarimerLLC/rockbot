@@ -35,6 +35,10 @@ public class McpWrapperNamingTests
         Assert.AreEqual("adjutant__send_email", tool);
         Assert.IsFalse(McpWrapperNaming.TryParse("plain", out _, out _));
     }
+
+    [TestMethod]
+    public void PromptName_IsTheTypedNameWithASuffix() =>
+        Assert.AreEqual("microsoft-learn__daily_briefing-prompt", McpWrapperNaming.ForPrompt("microsoft.learn", "daily_briefing"));
 }
 
 /// <summary>
@@ -48,6 +52,7 @@ public class McpWrapperCatalogTests
 
     private readonly ToolRegistry _registry = new();
     private readonly Dictionary<string, IReadOnlyList<McpToolDefinition>?> _serverTools = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, IReadOnlyList<McpPromptDefinition>> _serverPrompts = new(StringComparer.OrdinalIgnoreCase);
     private readonly TrackingPublisher _publisher = new();
     private ToolSchemaCache _cache = null!;
 
@@ -59,7 +64,9 @@ public class McpWrapperCatalogTests
 
     private McpWrapperCatalog Catalog(McpWrapperMode mode = McpWrapperMode.Eager)
     {
-        _cache = new ToolSchemaCache((server, _) => Task.FromResult(_serverTools.GetValueOrDefault(server)));
+        _cache = ToolSchemaCache.WithPrompts((server, _) => Task.FromResult(_serverTools.GetValueOrDefault(server) is { } tools
+            ? new McpServerSurface(tools, _serverPrompts.GetValueOrDefault(server) ?? [])
+            : null));
         var identity = new AgentIdentity("test-agent");
         var proxy = new McpToolProxy(_publisher, new StubSubscriber(), identity, NullLogger<McpToolProxy>.Instance);
         var management = new McpManagementExecutor(
@@ -75,6 +82,89 @@ public class McpWrapperCatalogTests
     private static McpServersIndexed Indexed(params McpServerSummary[] servers) => new() { Servers = [.. servers] };
 
     private ToolRegistration? Registered(string name) => _registry.GetTools().FirstOrDefault(t => t.Name == name);
+
+    private static McpPromptDefinition Prompt(string name, params string[] required) => new()
+    {
+        Name = name,
+        Description = "A workflow.",
+        Arguments = [.. required.Select(a => new McpPromptArgument { Name = a, Required = true })]
+    };
+
+    // ── Typed prompt tools (#616) ─────────────────────────────────────────────
+
+    [TestMethod]
+    public async Task ToolAndPromptOfTheSameName_GetDistinctNames_AndBothResolve()
+    {
+        _serverTools["adjutant"] = [Tool("daily_briefing")];
+        _serverPrompts["adjutant"] = [Prompt("daily_briefing", "date")];
+        var catalog = Catalog(McpWrapperMode.Pinned);
+
+        await catalog.ApplyAsync(Indexed(Summary("adjutant")), CancellationToken.None);
+
+        Assert.IsTrue(catalog.TryGet("adjutant__daily_briefing", out var tool));
+        Assert.AreEqual("daily_briefing", tool.ToolName);
+        Assert.IsTrue(catalog.TryGetPrompt("adjutant__daily_briefing-prompt", out var prompt));
+        Assert.AreEqual("daily_briefing", prompt.PromptName);
+        Assert.AreEqual("""{"type":"object","properties":{"date":{"type":"string"}},"required":["date"]}""", prompt.InputSchema);
+        Assert.IsFalse(catalog.TryGet("adjutant__daily_briefing-prompt", out _), "A prompt is never looked up as a tool.");
+        Assert.IsFalse(catalog.TryGetPrompt("adjutant__daily_briefing", out _));
+    }
+
+    [TestMethod]
+    public async Task PromptNameOverTheLimit_IsSkipped()
+    {
+        _serverTools["adjutant"] = [Tool("send_email")];
+        _serverPrompts["adjutant"] = [Prompt(new string('p', 60)), Prompt("triage")];
+        var catalog = Catalog(McpWrapperMode.Lazy);
+
+        await catalog.ApplyAsync(Indexed(Summary("adjutant")), CancellationToken.None);
+
+        CollectionAssert.AreEqual(new[] { "adjutant__triage-prompt" }, catalog.PromptWrappers.Select(p => p.Name).ToArray());
+    }
+
+    [TestMethod]
+    public async Task PromptNamedLikeATypedTool_GivesWayToTheTool()
+    {
+        // The tool "x-prompt" and the prompt "x" both map to adjutant__x-prompt.
+        _serverTools["adjutant"] = [Tool("x-prompt")];
+        _serverPrompts["adjutant"] = [Prompt("x")];
+        var catalog = Catalog(McpWrapperMode.Lazy);
+
+        await catalog.ApplyAsync(Indexed(Summary("adjutant")), CancellationToken.None);
+
+        Assert.IsTrue(catalog.TryGet("adjutant__x-prompt", out _));
+        Assert.AreEqual(0, catalog.PromptWrappers.Count);
+    }
+
+    [TestMethod]
+    [DataRow(McpWrapperMode.Lazy, DisplayName = "Lazy")]
+    [DataRow(McpWrapperMode.Pinned, DisplayName = "Pinned")]
+    public async Task PromptTools_StayOutOfTheToolListsAndTheRegistry(McpWrapperMode mode)
+    {
+        _serverTools["adjutant"] = [Tool("send_email")];
+        _serverPrompts["adjutant"] = [Prompt("daily_briefing", "date")];
+        var catalog = Catalog(mode);
+
+        await catalog.ApplyAsync(Indexed(Summary("adjutant")), CancellationToken.None);
+
+        Assert.AreEqual(1, catalog.PromptWrappers.Count);
+        CollectionAssert.AreEqual(new[] { "adjutant__send_email" }, catalog.Wrappers.Select(w => w.Name).ToArray());
+        CollectionAssert.AreEqual(new[] { "adjutant__send_email" }, catalog.WrappersFor("adjutant").Select(w => w.Name).ToArray());
+        Assert.AreEqual(0, _registry.GetTools().Count);
+    }
+
+    [TestMethod]
+    public async Task EagerMode_HasNoPromptTools()
+    {
+        _serverTools["adjutant"] = [Tool("send_email")];
+        _serverPrompts["adjutant"] = [Prompt("daily_briefing", "date")];
+        var catalog = Catalog(McpWrapperMode.Eager);
+
+        await catalog.ApplyAsync(Indexed(Summary("adjutant")), CancellationToken.None);
+
+        Assert.AreEqual(0, catalog.PromptWrappers.Count);
+        Assert.IsFalse(_registry.GetTools().Any(t => t.Name.EndsWith("-prompt", StringComparison.Ordinal)));
+    }
 
     [TestMethod]
     public async Task OffMode_RegistersNothing()

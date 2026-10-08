@@ -272,6 +272,13 @@ it per model tier:
 | `Lazy` | Only those the session activated: found with `mcp_find_tools`, opened with `mcp_get_service_details`, or called by typed name |
 | `Pinned` (default) | As `Lazy`, plus every typed tool of the servers the session has called |
 
+In `Lazy` and `Pinned` runs, each downstream **prompt** also has a typed tool,
+`{server}__{prompt}-prompt`, whose parameters are the prompt's arguments (all strings). It is
+activated only by `mcp_find_tools` (which returns matching prompts in a separate `prompts` list)
+or by calling its name; `mcp_get_service_details` lists it as the prompt's `typedName`, and a pinned
+server never brings its prompts in. Calling one returns the prompt's messages, the same as
+`mcp_get_prompt`, which stays available in every mode.
+
 Naming, activation limits and the per-tier measurements are in `design/mcp-bridge.md`.
 
 ### Orientation and server instructions

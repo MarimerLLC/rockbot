@@ -8,6 +8,11 @@ namespace RockBot.Tools.Mcp;
 /// matches for the calling session, and returns each with its full input schema. Activated
 /// tools are callable by typed name from the agent loop's next iteration.
 /// <para>
+/// Server prompts are searched too (#616): matching ones come back in a separate <c>prompts</c>
+/// list as <c>{server}__{prompt}-prompt</c> tools, activated the same way. Calling one returns the
+/// prompt's messages, which the model then follows.
+/// </para>
+/// <para>
 /// There is no "return schemas without activating" variant: a schema the model can't call by
 /// name is just <c>mcp_invoke_tool</c> with extra steps, which the aggregator found too.
 /// </para>
@@ -21,10 +26,12 @@ public sealed class McpFindToolsExecutor(McpTypedToolSurface surface, McpServerI
         "Search the connected MCP servers' tools by keyword (e.g. \"send email\", \"list calendar events\"). " +
         "Each match comes back with its typed name ({server}__{tool}) and full parameter schema, and becomes " +
         "callable by that name in this conversation — call it next, as a normal tool. Search again with other " +
-        "words if nothing fits. Before a server's first use, read its mcp/{server} skill (get_skill) if one exists.";
+        "words if nothing fits. Matching server prompts (workflows such as a daily briefing) come back as " +
+        "{server}__{prompt}-prompt tools: calling one returns the prompt's messages, which you then follow. " +
+        "Before a server's first use, read its mcp/{server} skill (get_skill) if one exists.";
 
     public const string ParametersSchema =
-        """{"type":"object","properties":{"query":{"type":"string","description":"Keywords for the action or data you need, e.g. 'send email' or 'calendar events'"},"limit":{"type":"integer","description":"Most results to return (default 10, max 25)"}},"required":["query"]}""";
+        """{"type":"object","properties":{"query":{"type":"string","description":"Keywords for the action, data or workflow you need, e.g. 'send email', 'calendar events' or 'daily briefing'"},"limit":{"type":"integer","description":"Most results to return (default 10, max 25)"}},"required":["query"]}""";
 
     private static readonly JsonSerializerOptions JsonOptions = new() { PropertyNamingPolicy = JsonNamingPolicy.CamelCase };
 
@@ -48,23 +55,40 @@ public sealed class McpFindToolsExecutor(McpTypedToolSurface surface, McpServerI
             : DefaultLimit;
 
         var matches = surface.Find(query, index.Servers, limit);
+        var prompts = surface.FindPrompts(query, index.Servers, limit);
         var active = surface.Activate(request.SessionId, matches.Select(m => m.Tool)).ToHashSet(StringComparer.Ordinal);
+        active.UnionWith(surface.Activate(request.SessionId, prompts.Select(m => m.Prompt)));
 
-        var payload = new
+        var toolViews = matches.Select(m => new
         {
-            query,
-            tools = matches.Select(m => new
+            name = m.Tool.Name,
+            server = m.Tool.ServerName,
+            serverId = m.Tool.ServerId,
+            tool = m.Tool.ToolName,
+            description = m.Tool.Description,
+            inputSchema = ParseSchema(m.Tool.InputSchema),
+            activated = active.Contains(m.Tool.Name)
+        });
+        var note = Note(matches.Count + prompts.Count, active.Count);
+
+        // The prompts list is left out when nothing matched, so a tools-only result reads as before.
+        object payload = prompts.Count == 0
+            ? new { query, tools = toolViews, note }
+            : new
             {
-                name = m.Tool.Name,
-                server = m.Tool.ServerName,
-                serverId = m.Tool.ServerId,
-                tool = m.Tool.ToolName,
-                description = m.Tool.Description,
-                inputSchema = ParseSchema(m.Tool.InputSchema),
-                activated = active.Contains(m.Tool.Name)
-            }),
-            note = Note(matches.Count, active.Count)
-        };
+                query,
+                tools = toolViews,
+                prompts = prompts.Select(m => new
+                {
+                    name = m.Prompt.Name,
+                    server = m.Prompt.ServerName,
+                    prompt = m.Prompt.PromptName,
+                    description = m.Prompt.Description,
+                    inputSchema = ParseSchema(m.Prompt.InputSchema),
+                    activated = active.Contains(m.Prompt.Name)
+                }),
+                note
+            };
 
         return Task.FromResult(new ToolInvokeResponse
         {
@@ -78,7 +102,7 @@ public sealed class McpFindToolsExecutor(McpTypedToolSurface surface, McpServerI
     {
         (0, _) => "No tools matched. Try different or fewer keywords, or mcp_list_services to see every server.",
         (_, 0) => "These tools could not be activated for this conversation. Call them through " +
-                  "mcp_invoke_tool(server_name, tool_name, arguments).",
+                  "mcp_invoke_tool(server_name, tool_name, arguments), and prompts through mcp_get_prompt.",
         _ => "Tools marked activated are now callable by their typed name. Call the one you need directly."
     };
 

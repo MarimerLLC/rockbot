@@ -1052,6 +1052,19 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
     /// a round trip that ends in the downstream's bare protocol error. Returns null when the call
     /// may proceed.
     /// </summary>
+    /// <summary>
+    /// The time a <c>prompts/get</c> on <paramref name="config"/>'s server may take: its
+    /// <c>ToolTimeoutMs</c> when valid, else <see cref="McpBridgeOptions.DefaultTimeoutMs"/>, never
+    /// over <see cref="McpBridgeOptions.MaxTimeoutMs"/> — a tool call's budget without the header.
+    /// </summary>
+    private int PromptTimeoutMs(McpBridgeServerConfig config)
+    {
+        var timeoutMs = config.ToolTimeoutMs is int serverTimeoutMs and > 0
+            ? serverTimeoutMs
+            : _options.DefaultTimeoutMs;
+        return Math.Min(timeoutMs, _options.MaxTimeoutMs);
+    }
+
     private static string? CheckPromptCall(ConnectedServer server, McpGetPromptRequest req)
     {
         var prompt = server.Prompts.FirstOrDefault(p => string.Equals(p.Name, req.PromptName, StringComparison.Ordinal))
@@ -2022,10 +2035,31 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
             IReadOnlyDictionary<string, object?> promptArgs =
                 req.Arguments.ToDictionary(kvp => kvp.Key, kvp => (object?)kvp.Value);
 
+            // The same budget a tool call on this server gets (#616): a prompt can be as slow as a
+            // tool, and a stalled one must not hold the agent until its own wait gives up.
+            var timeoutMs = PromptTimeoutMs(lease.Server.Config);
+            using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            timeoutCts.CancelAfter(timeoutMs);
+
             try
             {
-                var result = await lease.Server.Client.GetPromptAsync(req.PromptName, promptArgs, cancellationToken: ct);
+                var result = await lease.Server.Client.GetPromptAsync(req.PromptName, promptArgs, cancellationToken: timeoutCts.Token);
                 await PublishResponseAsync(ToPromptResponse(req, result), replyTo, envelope.CorrelationId, ct);
+            }
+            catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested && !ct.IsCancellationRequested)
+            {
+                // A timeout isn't a broken connection: reconnecting would only wait as long again.
+                _logger.LogWarning("GetPrompt {Server}/{Prompt} TIMED OUT after {TimeoutMs}ms",
+                    req.ServerName, req.PromptName, timeoutMs);
+
+                var timedOut = new McpGetPromptResponse
+                {
+                    ServerName = req.ServerName,
+                    PromptName = req.PromptName,
+                    Error = $"Prompt '{req.PromptName}' on server '{req.ServerName}' timed out after {timeoutMs}ms. " +
+                            "Retry once; if it times out again, try another approach."
+                };
+                await PublishResponseAsync(timedOut, replyTo, envelope.CorrelationId, ct);
             }
             catch (McpProtocolException ex) when (ex.ErrorCode is McpErrorCode.InvalidParams or McpErrorCode.MethodNotFound)
             {
@@ -2056,8 +2090,10 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
                         using var retryLease = _connections.Lease(req.ServerName);
                         if (retryLease is not null && !ReferenceEquals(retryLease.Server.Client, lease.Server.Client))
                         {
+                            using var retryTimeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                            retryTimeoutCts.CancelAfter(timeoutMs);
                             var retryResult = await retryLease.Server.Client.GetPromptAsync(
-                                req.PromptName, promptArgs, cancellationToken: ct);
+                                req.PromptName, promptArgs, cancellationToken: retryTimeoutCts.Token);
                             await PublishResponseAsync(ToPromptResponse(req, retryResult), replyTo, envelope.CorrelationId, ct);
                             return MessageResult.Ack;
                         }

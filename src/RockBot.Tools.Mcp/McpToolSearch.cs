@@ -3,9 +3,14 @@ namespace RockBot.Tools.Mcp;
 /// <summary>A typed tool and how well it matched a <see cref="McpToolSearch"/> query.</summary>
 public sealed record McpToolMatch(McpWrapperTool Tool, int Score);
 
+/// <summary>A typed prompt tool and how well it matched a <see cref="McpToolSearch"/> query (#616).</summary>
+public sealed record McpPromptMatch(McpPromptWrapper Prompt, int Score);
+
 /// <summary>
 /// Keyword scoring for <c>mcp_find_tools</c>, ported from mcp-aggregator#42's <c>find_tools</c>
-/// so both gateways rank alike.
+/// so both gateways rank alike. Prompts rank the same way, their prompt name standing in for the
+/// tool name (#616), except that the server's text alone is no match: every prompt of a mail server
+/// would otherwise come back, and be activated, for any query that says "email".
 /// <list type="bullet">
 ///   <item>The whole query, normalized, equal to the typed name or the tool name: +1000.</item>
 ///   <item>
@@ -34,7 +39,39 @@ public static class McpToolSearch
         string query,
         IEnumerable<McpWrapperTool> tools,
         IReadOnlyList<McpServerSummary> servers,
-        int limit)
+        int limit) =>
+        RankBy(query, tools, Searchable.Of, servers, limit)
+            .Select(m => new McpToolMatch(m.Item, m.Score))
+            .ToList();
+
+    /// <summary>
+    /// The prompt tools that match <paramref name="query"/> on their own name or description, ranked
+    /// as <see cref="Rank"/> ranks tools.
+    /// </summary>
+    public static IReadOnlyList<McpPromptMatch> RankPrompts(
+        string query,
+        IEnumerable<McpPromptWrapper> prompts,
+        IReadOnlyList<McpServerSummary> servers,
+        int limit) =>
+        RankBy(query, prompts, Searchable.Of, servers, limit, ownMatchRequired: true)
+            .Select(m => new McpPromptMatch(m.Item, m.Score))
+            .ToList();
+
+    /// <summary>What a search sees of a typed tool or prompt.</summary>
+    internal readonly record struct Searchable(string TypedName, string OwnName, string? Description, string ServerName)
+    {
+        public static Searchable Of(McpWrapperTool tool) => new(tool.Name, tool.ToolName, tool.Description, tool.ServerName);
+
+        public static Searchable Of(McpPromptWrapper prompt) => new(prompt.Name, prompt.PromptName, prompt.Description, prompt.ServerName);
+    }
+
+    private static List<(T Item, int Score)> RankBy<T>(
+        string query,
+        IEnumerable<T> items,
+        Func<T, Searchable> view,
+        IReadOnlyList<McpServerSummary> servers,
+        int limit,
+        bool ownMatchRequired = false)
     {
         var normalized = query.Trim().ToLowerInvariant();
         var tokens = Tokens(normalized).Distinct().ToList();
@@ -46,22 +83,28 @@ public static class McpToolSearch
             s => $"{s.ServerName} {s.DisplayName} {s.Summary}".ToLowerInvariant(),
             StringComparer.OrdinalIgnoreCase);
 
-        return tools
-            .Select(t => new McpToolMatch(t, Score(t, normalized, tokens,
-                serverText.GetValueOrDefault(t.ServerName) ?? t.ServerName.ToLowerInvariant())))
+        return items
+            .Select(item => (Item: item, View: view(item)))
+            .Where(x => !ownMatchRequired || Score(x.View, normalized, tokens, string.Empty) > 0)
+            .Select(x => (x.Item, x.View.TypedName, Score: Score(x.View, normalized, tokens,
+                serverText.GetValueOrDefault(x.View.ServerName) ?? x.View.ServerName.ToLowerInvariant())))
             .Where(m => m.Score > 0)
             .OrderByDescending(m => m.Score)
-            .ThenBy(m => m.Tool.Name, StringComparer.Ordinal)
+            .ThenBy(m => m.TypedName, StringComparer.Ordinal)
             .Take(limit)
+            .Select(m => (m.Item, m.Score))
             .ToList();
     }
 
-    internal static int Score(McpWrapperTool tool, string normalizedQuery, IReadOnlyList<string> tokens, string serverText)
+    internal static int Score(McpWrapperTool tool, string normalizedQuery, IReadOnlyList<string> tokens, string serverText) =>
+        Score(Searchable.Of(tool), normalizedQuery, tokens, serverText);
+
+    internal static int Score(Searchable item, string normalizedQuery, IReadOnlyList<string> tokens, string serverText)
     {
-        var typedName = tool.Name.ToLowerInvariant();
-        var toolName = tool.ToolName.ToLowerInvariant();
-        var description = tool.Description?.ToLowerInvariant() ?? string.Empty;
-        var nameTokens = Tokens(SplitCamelCase(tool.ToolName).ToLowerInvariant()).ToHashSet(StringComparer.Ordinal);
+        var typedName = item.TypedName.ToLowerInvariant();
+        var toolName = item.OwnName.ToLowerInvariant();
+        var description = item.Description?.ToLowerInvariant() ?? string.Empty;
+        var nameTokens = Tokens(SplitCamelCase(item.OwnName).ToLowerInvariant()).ToHashSet(StringComparer.Ordinal);
 
         var score = normalizedQuery == typedName || normalizedQuery == toolName ? ExactMatch : 0;
 

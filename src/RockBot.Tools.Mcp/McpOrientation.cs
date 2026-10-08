@@ -21,6 +21,11 @@ internal static class McpOrientation
 
     private const string Invoke = "mcp_invoke_tool";
 
+    // Server prompts (#616) are found the same way and only in the activating modes.
+    private const string PromptClause =
+        "A server's ready-made workflows are typed too, as `{server}__{prompt}-prompt`; what one returns " +
+        "is instructions for you to carry out.";
+
     public static string Build(TypedToolMode mode)
     {
         var sb = new StringBuilder();
@@ -44,11 +49,12 @@ internal static class McpOrientation
             TypedToolMode.Lazy =>
                 $"- Typed tools join your list as you need them. If the one you want isn't there, call " +
                 $"`{McpTypedToolSurface.FindToolsName}` with a few keywords: its matches become callable by " +
-                "typed name, so call one next.",
+                "typed name, so call one next. " + PromptClause,
             TypedToolMode.Pinned =>
                 $"- Typed tools join your list as you need them. If the one you want isn't there, call " +
                 $"`{McpTypedToolSurface.FindToolsName}` with a few keywords: its matches become callable by " +
-                "typed name, so call one next. Once you call a server, all its typed tools stay in your list.",
+                "typed name, so call one next. Once you call a server, all its typed tools stay in your list. " +
+                PromptClause,
             _ =>
                 "- Pick a server with `mcp_list_services`, read its tools with `mcp_get_service_details`, then " +
                 $"call one with `{Invoke}`: `tool_name` is the server's own tool name and the tool's " +

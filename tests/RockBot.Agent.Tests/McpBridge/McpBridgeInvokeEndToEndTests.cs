@@ -181,6 +181,25 @@ public class McpBridgeInvokeEndToEndTests
     }
 
     [TestMethod]
+    public async Task StalledPrompt_TimesOutWithTheServersToolBudget()
+    {
+        var slow = McpServerPrompt.Create(
+            async (CancellationToken ct) =>
+            {
+                await Task.Delay(TimeSpan.FromSeconds(20), ct);
+                return "too late";
+            },
+            new McpServerPromptCreateOptions { Name = "slow_briefing" });
+        await using var harness = await BridgeHarness.StartAsync([MoveEmail()], [slow], c => c.ToolTimeoutMs = 300);
+
+        var watch = System.Diagnostics.Stopwatch.StartNew();
+        var response = await harness.GetPromptAsync("slow_briefing");
+
+        StringAssert.Contains(response.Error, "timed out after 300ms");
+        Assert.IsTrue(watch.Elapsed < TimeSpan.FromSeconds(10), $"took {watch.Elapsed}");
+    }
+
+    [TestMethod]
     public async Task Prompt_OnUnknownServer_ListsTheRegisteredServers()
     {
         await using var harness = await StartAsync();

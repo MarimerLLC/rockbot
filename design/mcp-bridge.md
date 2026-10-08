@@ -112,6 +112,8 @@ Issue #612, ported from mcp-aggregator PR #42's lazy mode. Eager mode puts every
 - **`mcp_get_service_details(server)`** activates that server's typed tools. With `tool_name`, it activates just that one.
 - **A call by typed name** to a valid tool the list doesn't hold (a name from a skill or from memory) runs it and activates it. It does not answer "unknown tool".
 
+`mcp_find_tools` also ranks typed prompt tools with the same scoring, the prompt name standing in for the tool name, and returns them in a separate `prompts` list (omitted when empty) with the same `limit`. They are activated like tools; see [Prompts](#typed-prompt-tools-server__prompt-prompt).
+
 `mcp_find_tools` is registered when any tier's mode is `Lazy` or `Pinned`, under source `mcp:management`, so every profile that has the gateway has it. Runs in an `Off` or `Eager` tier drop it (see [Per-tier modes](#per-tier-modes-and-pinned-servers)).
 
 **Scope and lifetime.** `McpTypedToolSurface` holds the activations, keyed by the tool session id that the run's registry tools carry. That id is the one their executors see: `session/{id}` for a conversation, or the subagent's, worker's or wisp's own namespace.
@@ -133,6 +135,17 @@ An added tool carries the same tool session id as the run's other registry tools
 - its capability-denial nudge points to `mcp_find_tools` (lazy) or to typed tools (eager), not to `mcp_invoke_tool`.
 
 `search_known_services` stays the per-service router across MCP servers and A2A agents. `mcp_find_tools` is the per-tool search within MCP.
+
+### Typed prompt tools (`{server}__{prompt}-prompt`)
+
+Issue #616, porting mcp-aggregator#43 for a host. Downstream prompts were reachable only through `mcp_get_prompt(server_name, prompt_name, arguments)`, the untyped nested-argument shape #420 removed for tools. The aggregator kept prompts out of its tool list because Claude Desktop shows them in a picker; RockBot has no picker, its LLM is the only caller, and lazy activation keeps the tool count down.
+
+- **Only lazy and pinned.** `McpWrapperCatalog` builds a prompt tool per downstream prompt when some tier is `Lazy` or `Pinned`; with every tier `Off` or `Eager` there are none. They are never registered in `IToolRegistry`.
+- **Naming.** `McpWrapperNaming.ForPrompt`: `{server}__{prompt}` plus `-prompt`, so a tool and a prompt of the same name stay distinct. A name over 64 characters, one that duplicates another prompt on the server, one that is already a typed tool's, or one that is already a registry tool is skipped with one log line; the prompt stays reachable through `mcp_get_prompt`.
+- **Kept apart from tools.** Prompt tools live in their own maps. `Wrappers`, `WrappersFor`, `TryGet` and `IMcpToolDirectory` stay tools-only, so a pinned server never brings in its prompts and a wisp step never resolves a prompt as a tool.
+- **Schema and fingerprint.** The input schema is built from the prompt's arguments: a string property per argument (with its description) and the required ones listed. `McpSurfaceFingerprint.Prompt` hashes the name, description and each argument's name, description and required flag. A changed fingerprint, a changed server id or a removed server evicts the prompt tool from every session, as for tools. The schemas come from `ToolSchemaCache`, which keeps each server's prompts from the same details round trip as its tools.
+- **Activation.** Only `mcp_find_tools` and a call by typed name. Prompt tools share `MaxActivatedToolsPerSession` with typed tools. `mcp_get_service_details` lists each prompt with its `typedName` in an activating run, but listing never activates.
+- **Calls.** `McpPromptWrapperExecutor` checks the required arguments against the built schema and refuses before the downstream call, naming what is missing. It drops null arguments and passes the rest as strings (a non-string value as its JSON text), then takes `McpManagementExecutor.GetPromptDownstreamAsync`, the path `mcp_get_prompt` takes. Both are counted on `rockbot.mcp.prompt.invocations`, tagged `via` = `get_prompt` or `prompt_wrapper`. The result is the prompt's messages as JSON, which the model then follows.
 
 ### Per-tier modes and pinned servers
 
@@ -343,6 +356,7 @@ the sessions stateless mode removes.
 ## Timeout Strategy
 
 - **Bridge timeout**: CancellationToken on the MCP server call. The proxy sends its request timeout in the `rb-timeout-ms` header (`McpToolProxy:RequestTimeoutSeconds`, default 60s); the bridge caps it at `McpBridge:MaxTimeoutMs` (default 900s) and falls back to `McpBridge:DefaultTimeoutMs` (default 60s) without one. A server's `toolTimeoutMs` overrides both, still capped at `MaxTimeoutMs`. On expiry the bridge publishes `ToolError` with `Code: "timeout"` and `IsRetryable: true`.
+- **Prompt timeout**: `prompts/get` gets a tool call's budget without the header: the server's `toolTimeoutMs`, else `DefaultTimeoutMs`, capped at `MaxTimeoutMs`. A timeout is answered with an error and not retried, since a reconnect would only wait as long again.
 - **Agent timeout**: the proxy waits `McpToolProxy:ResponseTimeoutSeconds` (RockBot.Agent default 930s) and synthesizes a timeout error locally if no response arrives.
 - The proxy outwaits the bridge's cap, so the caller sees the bridge's own timeout error rather than a transport failure.
 

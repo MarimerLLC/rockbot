@@ -25,7 +25,9 @@ public class McpToolDirectoryTests
             new McpToolDefinition { Name = new string('t', 70), Description = "Name too long for a wrapper." }
         ];
 
-        var cache = new ToolSchemaCache((server, _) => Task.FromResult(_serverTools.GetValueOrDefault(server)));
+        var cache = ToolSchemaCache.WithPrompts((server, _) => Task.FromResult(_serverTools.GetValueOrDefault(server) is { } tools
+            ? new McpServerSurface(tools, [new McpPromptDefinition { Name = "daily_briefing" }])
+            : null));
         var identity = new AgentIdentity("test-agent");
         var publisher = new TrackingPublisher();
         var proxy = new McpToolProxy(publisher, new StubSubscriber(), identity, NullLogger<McpToolProxy>.Instance);
@@ -63,6 +65,16 @@ public class McpToolDirectoryTests
         Assert.AreEqual("microsoft-learn__docs-search", entry.Wrapper.Name);
         Assert.AreEqual("docs.search", entry.Wrapper.DownstreamName);
         Assert.AreEqual("fp-search", entry.Fingerprint, "the bridge's per-tool fingerprint");
+    }
+
+    [TestMethod]
+    public async Task APromptsTypedName_DoesNotResolveAsATool()
+    {
+        var (directory, _) = await BuildAsync();
+
+        Assert.IsNull(directory.Resolve(null, "microsoft-learn__daily_briefing-prompt"));
+        Assert.IsNull(directory.Resolve("microsoft.learn", "daily_briefing"));
+        Assert.IsFalse(directory.ForServer("microsoft.learn").Any(e => e.ToolName == "daily_briefing"));
     }
 
     [TestMethod]

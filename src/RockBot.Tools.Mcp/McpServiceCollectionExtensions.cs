@@ -80,11 +80,12 @@ public static class McpServiceCollectionExtensions
         builder.Services.TryAddEnumerable(ServiceDescriptor.Singleton<IToolArgumentDefaultsProvider, FileToolDefaultsProvider>());
 
         // Self-repair Amendment 1: schema-error enrichment. The cache populates lazily
-        // through McpManagementExecutor.GetSchemasAsync — the Func factory defers DI
+        // through McpManagementExecutor.GetSurfaceAsync — the Func factory defers DI
         // resolution to call time so the executor → recovery → enricher → cache cycle
-        // resolves without DI complaining.
-        builder.Services.AddSingleton(sp => new ToolSchemaCache(
-            (server, ct) => sp.GetRequiredService<McpManagementExecutor>().GetSchemasAsync(server, ct)));
+        // resolves without DI complaining. It keeps each server's prompts too, for the typed
+        // prompt tools (#616).
+        builder.Services.AddSingleton(sp => ToolSchemaCache.WithPrompts(
+            (server, ct) => sp.GetRequiredService<McpManagementExecutor>().GetSurfaceAsync(server, ct)));
         builder.Services.AddSingleton<SchemaErrorEnricher>();
 
         // Skill freshness (#615): baselines for mcp/{server} skills and the stale marker. The
