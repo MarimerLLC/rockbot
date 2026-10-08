@@ -50,17 +50,31 @@ internal sealed class AgentHost : IHostedService
             var sanitizedTopic = sub.Topic.Replace(".", "-").Replace("*", "_").Replace("#", "__");
             var subscriptionName = $"{_identity.Name}.{sanitizedTopic}";
 
+            var subscriptionOptions = (sub.Options ?? new SubscriptionOptions())
+                with { DispatchConcurrency = sub.DispatchConcurrency };
+
             var subscription = await _subscriber.SubscribeAsync(
                 sub.Topic,
                 subscriptionName,
                 (envelope, ct) => _pipeline.DispatchAsync(envelope, ct),
-                cancellationToken,
-                sub.DispatchConcurrency);
+                subscriptionOptions,
+                cancellationToken);
 
             _subscriptions.Add(subscription);
-            _logger.LogInformation(
-                "Subscribed to {Topic} as {SubscriptionName} (dispatchConcurrency={Concurrency})",
-                sub.Topic, subscriptionName, sub.DispatchConcurrency);
+            if (sub.Options is null)
+            {
+                _logger.LogInformation(
+                    "Subscribed to {Topic} as {SubscriptionName} (dispatchConcurrency={Concurrency})",
+                    sub.Topic, subscriptionName, sub.DispatchConcurrency);
+            }
+            else
+            {
+                _logger.LogInformation(
+                    "Subscribed to {Topic} as {SubscriptionName} (dispatchConcurrency={Concurrency}, " +
+                    "messageTtl={MessageTtl}, idleExpiry={IdleExpiry}, deadLetter={DeadLetter}, ephemeral={Ephemeral})",
+                    sub.Topic, subscriptionName, sub.DispatchConcurrency, subscriptionOptions.MessageTtl,
+                    subscriptionOptions.IdleExpiry, subscriptionOptions.DeadLetter, subscriptionOptions.Ephemeral);
+            }
         }
     }
 
