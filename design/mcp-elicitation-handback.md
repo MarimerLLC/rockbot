@@ -1,7 +1,9 @@
 # MCP Elicitation Hand-back
 
-**Status:** Proposed. Remaining part of #602; builds on MCP elicitation (#593), the
-`conversation` responder (#605) and MCP C# SDK 2.x (#607).
+**Status:** Accepted. Remaining part of #602; builds on MCP elicitation (#593), the
+`conversation` responder (#605) and MCP C# SDK 2.x (#607). Re-validated on 2026-10-08 against the
+bridge as the MCP gateway series (#618) left it: leased server snapshots (#604), operator-owned
+entries (#603) and the typed-tool modes (#613).
 
 ## Problem
 
@@ -79,6 +81,28 @@ The invoke path waits for whichever comes first: T completing (no question, so a
 result) or a hand-back signal (reply with the question). `mcp_answer` does the same after
 completing the TCS, so a server that asks again produces another hand-back, not a hang.
 
+### Where the parked call runs
+
+The bridge's `tool.invoke` and `mcp.manage` subscriptions dispatch one message at a time. A
+handler that waited on a parked call would hold up every other MCP call, and every management
+request, for as long as the question waits. So:
+
+- **The invoke handler returns once the hand-back is published.** It acks the message, and a
+  detached *parked call* owns the rest: the server lease, the elicitation scope, T, and the
+  result mapping (attachment rewrite, binary capture, elicitation note) that runs when T
+  completes. It runs on the bridge's lifetime, not the message's.
+- **`mcp_answer` works the same way.** The management handler validates the answer, completes
+  the TCS and returns. The parked call publishes the outcome (the result, or the next hand-back)
+  to that `mcp_answer`'s reply topic and correlation id.
+- **The lease stays with the parked call.** A reconnect retires the old connection without
+  disposing it under the call (#604), so the resumed retry still has its client.
+- **Removing a server cancels its parked calls.** This covers unregistering it, a config
+  reload that drops it, and one that changes its elicitation policy. Each question is resolved
+  as "server removed", which a late `mcp_answer` is told.
+- **A failure after a hand-back is not retried transparently.** The bridge's usual
+  reconnect-and-retry would redo the call and ask the same question again, the same reasoning
+  as for a failure after a declined question.
+
 ## Policy
 
 Hand-back is a new elicitation mode, `"mode": "handback"`, set in a **server's own policy**.
@@ -99,6 +123,18 @@ What reaches the agent is a question the operator wants the agent to own.
 (`McpProtocolVersions.IsJuly2026OrLaterProtocolVersion`). A legacy `elicitation/create` holds
 the server's request open for as long as the question waits, so for those servers hand-back mode
 behaves like `auto`, using the server's responder.
+
+**Callers that can't answer.** Only a run that has `mcp_answer` can take a hand-back:
+- Wisps make their calls under their parent's session id but have no `mcp_answer`.
+- Subagents and scheduled runs may not have it either.
+
+The run says so explicitly:
+- `AgentLoopRunner` marks a run whose tool list includes `mcp_answer`.
+- `McpManagementExecutor` adds an `rb-mcp-handback` header to that run's MCP calls.
+- The coordinator hands back only for a call carrying the header. Any other caller gets the
+  server's responder, just as an older server does.
+
+A server in hand-back mode can name a `responder` for exactly these fallbacks.
 
 ## What the agent sees
 
@@ -147,6 +183,17 @@ decline sent to the server:
    user turn: the agent may answer them from its context, just as it chooses tool arguments.
 5. **One-shot.** A question is answered once. A second `mcp_answer` gets "already answered".
 
+**Transport.** `mcp_answer` goes to the bridge as an `McpAnswerQuestionRequest` on `mcp.manage`.
+- **Waiting.** Its reply is the resumed tool call's outcome. The agent side waits for the
+  tool-call response budget, not the shorter management timeout.
+- **Recovery.** The result passes through the same recovery, pinning and metrics as any MCP
+  tool result. The hand-back itself is an ordinary successful result, and recovery must leave
+  it alone.
+
+**Registration.** `mcp_answer` is offered only while some connected server is in hand-back
+mode, which the bridge reports in each server's summary. Every other run's tool list stays as
+it is (#613).
+
 ## Lifetime and limits
 
 | Setting | Default | |
@@ -157,7 +204,8 @@ decline sent to the server:
 
 - **The parked call ignores the tool-call timeout.** `toolTimeoutMs` bounds each *active*
   stretch (before the question, and after the answer), not the time the question waits. The
-  TTL bounds that.
+  TTL bounds that. The call's timeout is suspended when it parks and restarted in full when
+  the answer arrives.
 - **Server-side cost varies with how the server asks.**
   - A server that throws `InputRequiredException` holds nothing.
   - A server that calls `ElicitAsync` inside its handler, under MRTR, keeps that handler
@@ -263,7 +311,9 @@ Before the bridge accepts tool invocations:
    - put the full entry in the session's working memory at `mcp-interrupted/{questionId}`
      (24 h TTL);
    - inject a synthetic turn, so the next agent turn in that session sees it whether or not the
-     user is mid-conversation:
+     user is mid-conversation;
+   - publish the same text to the user as a fixed-text reply, with no model run at startup, so
+     the user learns of it without having to speak first:
 
    > [rockbot] A tool call was interrupted by a restart. You had called `research` on the
    > `research` server (arguments: question "Tell me about Mercury", context "for a telescope
@@ -310,10 +360,14 @@ data on how often each path is used.
 - **The pending ledger holds context, never answers.** Arguments are redacted and scrubbed, the
   user excerpt is scrubbed and capped, server text is flattened, and answer values and server
   continuations are never written.
-- **Opt-in per server**, never through the bridge-wide default, and never following a server
-  name the model re-points. `McpElicitationConfig.WithoutGrants()` must turn `handback` back
-  into `auto`, just as it drops a named `responder` and `defaults`. It doesn't touch `mode`
-  today, so phase 1 adds that.
+- **Opt-in per server**, never through the bridge-wide default. A model-registered server can't
+  opt in:
+  - `mcp_register_server` has no elicitation field, so such a server only ever inherits
+    `DefaultElicitation`.
+  - An entry with its own elicitation block is the operator's (#603), and the model can't
+    replace, re-point or remove it.
+- **Only callers that can answer** (`rb-mcp-handback`) get a hand-back. Wisps, and runs without
+  `mcp_answer`, get the server's responder.
 
 ## Phases
 
@@ -326,9 +380,10 @@ data on how often each path is used.
 
    Tested with the MRTR harness from #607 (hand-back, answer, second question, decline, expiry,
    wrong session), plus ledger tests (write-ahead, crash-safe write, purge, schema version).
-2. **`mcp_answer`:** a management tool in `McpManagementExecutor`, a bridge management handler,
-   validation, and the user-turn check through `IConversationMemory` (the bridge runs in the
-   agent process).
+2. **`mcp_answer`:** a management tool in `McpManagementExecutor`, registered only while a
+   hand-back server is connected; a bridge management handler; validation, and the user-turn
+   check through `IConversationMemory` (the bridge runs in the agent process); the run marker
+   and the `rb-mcp-handback` header.
 3. **Restart recovery:** startup reconciliation (pending → interrupted or expired), the
    working-memory entry and synthetic turn for each user session, notified-marking, and the
    "interrupted" answer to a late `mcp_answer`. Tested by writing a ledger with pending entries,
