@@ -155,6 +155,15 @@ internal sealed record ConnectedServer
 
     public required IReadOnlyList<McpClientPrompt> Prompts { get; init; }
 
+    /// <summary>
+    /// MCP resources the server lists (#617); empty for a server without the capability. Not to
+    /// be confused with <see cref="Resources"/>, the connection's disposables.
+    /// </summary>
+    public IReadOnlyList<McpClientResource> DownstreamResources { get; init; } = [];
+
+    /// <summary>Resource templates the server lists (#617); empty for a server without the capability.</summary>
+    public IReadOnlyList<McpClientResourceTemplate> DownstreamResourceTemplates { get; init; } = [];
+
     public required McpServerMetadata Metadata { get; init; }
 
     public required McpServerSummary Summary { get; init; }

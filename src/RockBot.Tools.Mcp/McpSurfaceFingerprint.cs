@@ -32,11 +32,18 @@ public static class McpSurfaceFingerprint
 
     /// <summary>
     /// Fingerprint of a whole server surface: tools sorted by name, then prompts sorted by name
-    /// with each argument's name, description and required flag. Order of the inputs is ignored.
+    /// with each argument's name, description and required flag, then resources and templates
+    /// (#617). Order of the inputs is ignored.
+    /// <para>
+    /// The resource section is appended only when the server lists any, so a server without
+    /// resources keeps the fingerprint it had before resources were bridged: a moved fingerprint
+    /// marks every <c>mcp/{server}</c> skill stale and regenerates the summary.
+    /// </para>
     /// </summary>
     public static string Server(
         IEnumerable<(string Name, string? Description, string? InputSchema)> tools,
-        IEnumerable<McpPromptDefinition> prompts)
+        IEnumerable<McpPromptDefinition> prompts,
+        IEnumerable<McpResourceDefinition>? resources = null)
     {
         var sb = new StringBuilder();
         foreach (var tool in tools.OrderBy(t => t.Name, StringComparer.Ordinal))
@@ -51,6 +58,21 @@ public static class McpSurfaceFingerprint
         {
             AppendPrompt(sb, prompt, prompt.Arguments);
             sb.Append(RecordSeparator);
+        }
+
+        var sortedResources = (resources ?? [])
+            .OrderBy(r => r.IsTemplate)
+            .ThenBy(r => r.Uri, StringComparer.Ordinal)
+            .ThenBy(r => r.Name, StringComparer.Ordinal)
+            .ToList();
+        if (sortedResources.Count > 0)
+        {
+            sb.Append(SectionSeparator).Append("resources").Append(SectionSeparator);
+            foreach (var resource in sortedResources)
+            {
+                AppendResource(sb, resource);
+                sb.Append(RecordSeparator);
+            }
         }
 
         return Hash(sb);
@@ -101,6 +123,15 @@ public static class McpSurfaceFingerprint
               .Append(arg.Required ? '1' : '0').Append(FieldSeparator);
         }
     }
+
+    private static void AppendResource(StringBuilder sb, McpResourceDefinition resource) =>
+        sb.Append(resource.IsTemplate ? 'T' : 'R').Append(FieldSeparator)
+          .Append(resource.Uri).Append(FieldSeparator)
+          .Append(resource.Name).Append(FieldSeparator)
+          .Append(resource.Title).Append(FieldSeparator)
+          .Append(resource.Description).Append(FieldSeparator)
+          .Append(resource.MimeType).Append(FieldSeparator)
+          .Append(resource.Size?.ToString(System.Globalization.CultureInfo.InvariantCulture));
 
     private static void AppendTool(StringBuilder sb, string name, string? description, string? inputSchema) =>
         sb.Append(name).Append(FieldSeparator)

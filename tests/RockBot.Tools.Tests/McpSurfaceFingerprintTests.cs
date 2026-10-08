@@ -127,6 +127,65 @@ public class McpSurfaceFingerprintTests
             McpSurfaceFingerprint.Server([], [new McpPromptDefinition { Name = "x", Description = "d" }]));
     }
 
+    // ── Resources (#617) ─────────────────────────────────────────────────────
+
+    private static McpResourceDefinition Readme(
+        string uri = "docs://readme", string name = "readme", string? title = "Read me",
+        string? description = "The project readme", string? mimeType = "text/markdown", long? size = 1024,
+        bool isTemplate = false) =>
+        new()
+        {
+            Uri = uri, Name = name, Title = title, Description = description,
+            MimeType = mimeType, Size = size, IsTemplate = isTemplate
+        };
+
+    [TestMethod]
+    public void NoResources_KeepsTheFingerprintServersHadBeforeResourcesWereBridged()
+    {
+        // SHA-256 of "x␟d␟␞␝": the pre-#617 encoding of one tool and no prompts. A server without
+        // resources must keep this, or every mcp/{server} skill goes stale on upgrade.
+        const string before = "408179e4f1171fdb3cc34668b17d82c466e85002e1c8e5c11cd8d844e80efc8e";
+
+        Assert.AreEqual(before, McpSurfaceFingerprint.Server([("x", "d", null)], []));
+        Assert.AreEqual(before, McpSurfaceFingerprint.Server([("x", "d", null)], [], []));
+        Assert.AreEqual(before, McpSurfaceFingerprint.Server([("x", "d", null)], [], null));
+    }
+
+    [TestMethod]
+    public void Resources_MoveTheFingerprint_OnEveryField()
+    {
+        static string Of(McpResourceDefinition r) => McpSurfaceFingerprint.Server([("x", "d", null)], [], [r]);
+        var baseline = Of(Readme());
+
+        Assert.AreNotEqual(McpSurfaceFingerprint.Server([("x", "d", null)], []), baseline);
+        Assert.AreNotEqual(baseline, Of(Readme(uri: "docs://readme2")));
+        Assert.AreNotEqual(baseline, Of(Readme(name: "readme2")));
+        Assert.AreNotEqual(baseline, Of(Readme(title: null)));
+        Assert.AreNotEqual(baseline, Of(Readme(description: "Changed")));
+        Assert.AreNotEqual(baseline, Of(Readme(mimeType: "text/plain")));
+        Assert.AreNotEqual(baseline, Of(Readme(size: 2048)));
+        Assert.AreNotEqual(baseline, Of(Readme(isTemplate: true)));
+    }
+
+    [TestMethod]
+    public void Resources_IgnoreInputOrder()
+    {
+        var a = Readme();
+        var b = Readme(uri: "docs://files/{name}", name: "files", size: null, isTemplate: true);
+
+        Assert.AreEqual(
+            McpSurfaceFingerprint.Server([], [], [a, b]),
+            McpSurfaceFingerprint.Server([], [], [b, a]));
+    }
+
+    [TestMethod]
+    public void PromptsAndResources_AreSeparateSections()
+    {
+        Assert.AreNotEqual(
+            McpSurfaceFingerprint.Server([], [new McpPromptDefinition { Name = "readme", Description = "d" }]),
+            McpSurfaceFingerprint.Server([], [], [Readme(name: "readme", description: "d")]));
+    }
+
     [TestMethod]
     public void Fingerprint_IsFullLengthLowercaseHex()
     {

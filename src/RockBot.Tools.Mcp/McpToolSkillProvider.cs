@@ -80,9 +80,26 @@ internal sealed class McpToolSkillProvider : IToolSkillProvider
           follow them (often by calling the server's tools), then answer the user.
         - `mcp_get_prompt` reaches any prompt, including in Off and Eager runs.
 
+        ## Server resources
+
+        Some servers expose resources: readable data such as documents, files or records,
+        addressed by a URI rather than called like a tool. `mcp_list_services` shows a
+        `resourceCount` for a server that has any.
+
+        - `mcp_list_resources` lists a server's resources (each with a `uri`) and resource
+          templates (each with a `uriTemplate` such as `docs://files/{name}`).
+        - `mcp_read_resource` reads one by the server's own URI. For a template, fill in every
+          `{…}` expression first.
+        - Text comes back inline. Binary or very large content is saved to the shared volume
+          and comes back as a file `path`; use a tool that takes a file path to work with it.
+        - A tool result can contain a `[resource link]` naming a server and URI. Read it with
+          `mcp_read_resource` when you need what it points to.
+        - Resources aren't tools: `mcp_find_tools` doesn't search them and they have no typed
+          tools.
+
         ## The management tools
 
-        Six tools, plus `mcp_find_tools` in Lazy and Pinned runs:
+        Eight tools, plus `mcp_find_tools` in Lazy and Pinned runs:
 
         - `mcp_list_services`: the connected servers, each with its summary, tool names and
           prompt names. Use it to pick a server, or to confirm one is still connected.
@@ -100,6 +117,8 @@ internal sealed class McpToolSkillProvider : IToolSkillProvider
         - `mcp_get_prompt`: fill in one of a server's prompt templates. You get back messages
           to use as context or instructions. In Lazy and Pinned runs the typed prompt tool does
           the same with a schema (see "Server prompts").
+        - `mcp_list_resources` and `mcp_read_resource`: a server's resources (see "Server
+          resources").
         - `mcp_register_server` and `mcp_unregister_server`: see "Adding and removing servers"
           below. Workers don't have these two.
 

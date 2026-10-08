@@ -259,4 +259,80 @@ public class McpToolExecutorTests
         // TextFromBlocks only returns text parts
         Assert.AreEqual("Here is an image:", McpToolExecutor.TextFromBlocks(blocks));
     }
+
+    // ── Resource blocks (#617) ───────────────────────────────────────────────
+
+    [TestMethod]
+    public void MapContentBlocks_RendersAnEmbeddedTextResource_AsText()
+    {
+        var result = new CallToolResult
+        {
+            Content =
+            [
+                new EmbeddedResourceBlock
+                {
+                    Resource = new TextResourceContents { Uri = "docs://readme", MimeType = "text/markdown", Text = "# Hello" }
+                }
+            ]
+        };
+
+        var blocks = McpToolExecutor.MapContentBlocks(result)!;
+
+        Assert.AreEqual("text", blocks[0].Type);
+        Assert.AreEqual("docs://readme", blocks[0].Uri);
+        Assert.AreEqual("[resource docs://readme (text/markdown)]\n# Hello", blocks[0].Text);
+        Assert.AreEqual(blocks[0].Text, McpToolExecutor.TextFromBlocks(blocks));
+    }
+
+    [TestMethod]
+    public void MapContentBlocks_DescribesAnEmbeddedBlob_WithoutBase64()
+    {
+        var bytes = new byte[] { 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A };
+        var result = new CallToolResult
+        {
+            Content = [new EmbeddedResourceBlock { Resource = BlobResourceContents.FromBytes(bytes, "img://logo.png", "image/png") }]
+        };
+
+        var blocks = McpToolExecutor.MapContentBlocks(result)!;
+
+        Assert.AreEqual("text", blocks[0].Type);
+        Assert.IsNull(blocks[0].Data);
+        Assert.AreEqual("[binary resource img://logo.png (image/png), 8 bytes, not shown]", blocks[0].Text);
+        Assert.IsFalse(blocks[0].Text!.Contains(Convert.ToBase64String(bytes)));
+    }
+
+    [TestMethod]
+    public void MapContentBlocks_RendersAResourceLink_NamingTheServerToReadItFrom()
+    {
+        var result = new CallToolResult
+        {
+            Content =
+            [
+                new ResourceLinkBlock
+                {
+                    Uri = "docs://files/report.md", Name = "report.md", Title = "Q3 report",
+                    MimeType = "text/markdown", Size = 2048
+                }
+            ]
+        };
+
+        var withServer = McpToolExecutor.MapContentBlocks(result, "docs")!;
+        var withoutServer = McpToolExecutor.MapContentBlocks(result)!;
+
+        Assert.AreEqual("text", withServer[0].Type);
+        Assert.AreEqual("docs://files/report.md", withServer[0].Uri);
+        Assert.AreEqual(
+            "[resource link] Q3 report: docs://files/report.md (text/markdown, 2,048 bytes). " +
+            "Read it with mcp_read_resource(server_name: \"docs\", uri: \"docs://files/report.md\").",
+            withServer[0].Text);
+        Assert.AreEqual("[resource link] Q3 report: docs://files/report.md (text/markdown, 2,048 bytes).", withoutServer[0].Text);
+    }
+
+    [TestMethod]
+    public void MapContentBlocks_ResourceLinkWithoutTitleOrDetails_UsesTheName()
+    {
+        var result = new CallToolResult { Content = [new ResourceLinkBlock { Uri = "docs://a", Name = "a" }] };
+
+        Assert.AreEqual("[resource link] a: docs://a.", McpToolExecutor.MapContentBlocks(result)![0].Text);
+    }
 }

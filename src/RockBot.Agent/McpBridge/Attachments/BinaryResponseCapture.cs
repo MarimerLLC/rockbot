@@ -23,8 +23,9 @@ namespace RockBot.Agent.McpBridge.Attachments;
 /// </para>
 /// <list type="number">
 ///   <item>
-///     Typed <c>image</c> and <c>audio</c> content blocks are captured with no configuration at
-///     all — MCP has already labelled them, so no guessing is involved.
+///     Typed <c>image</c> and <c>audio</c> content blocks, and embedded blob resources (#617),
+///     are captured with no configuration at all — MCP has already labelled them, so no guessing
+///     is involved.
 ///   </item>
 ///   <item>
 ///     Base64 inside a JSON response is captured only where a manifest rule names the fields.
@@ -106,8 +107,11 @@ public sealed class BinaryResponseCapture(IAttachmentStorage storage, ILogger? l
             // which every downstream reader then rejects as a corrupt image.
             var payload = block switch
             {
-                ImageContentBlock img => (Bytes: McpBinaryPayload.Decode(img.Data), Mime: img.MimeType),
-                AudioContentBlock audio => (Bytes: McpBinaryPayload.Decode(audio.Data), Mime: audio.MimeType),
+                ImageContentBlock img => (Bytes: McpBinaryPayload.Decode(img.Data), Mime: img.MimeType, Uri: (string?)null),
+                AudioContentBlock audio => (Bytes: McpBinaryPayload.Decode(audio.Data), Mime: audio.MimeType, Uri: null),
+                // An embedded blob resource (#617) is the same problem with a URI attached.
+                EmbeddedResourceBlock { Resource: BlobResourceContents blob } =>
+                    (Bytes: McpBinaryPayload.Decode(blob.Blob), Mime: blob.MimeType, Uri: blob.Uri),
                 _ => default
             };
 
@@ -119,7 +123,7 @@ public sealed class BinaryResponseCapture(IAttachmentStorage storage, ILogger? l
 
             var name = GenerateFileName(toolName, payload.Mime);
             var fullPath = await storage.WriteAsync(name, payload.Bytes, ct);
-            rewritten.Add(DescriptorBlock(fullPath, payload.Bytes.LongLength, payload.Mime));
+            rewritten.Add(DescriptorBlock(fullPath, payload.Bytes.LongLength, payload.Mime, payload.Uri));
             capturedCount++;
 
             logger?.LogInformation(
@@ -133,7 +137,7 @@ public sealed class BinaryResponseCapture(IAttachmentStorage storage, ILogger? l
     }
 
     private static bool IsTypedBinary(ContentBlock block) =>
-        block is ImageContentBlock or AudioContentBlock;
+        block is ImageContentBlock or AudioContentBlock or EmbeddedResourceBlock { Resource: BlobResourceContents };
 
     // ── Rule 2: declared base64 fields in a JSON response ─────────────────────
 
@@ -311,19 +315,58 @@ public sealed class BinaryResponseCapture(IAttachmentStorage storage, ILogger? l
         return rewritten;
     }
 
+    // ── Saving content that isn't in a tool result ────────────────────────────
+
+    /// <summary>
+    /// Saves content that must not go into context inline — a blob or oversized text resource
+    /// read with <c>mcp_read_resource</c> (#617) — under a generated name derived from
+    /// <paramref name="origin"/>, and describes the saved file the same way captured tool output
+    /// is described. Unlike <see cref="CaptureAsync"/> this throws on a storage failure: the caller
+    /// has no original to fall back to and decides what to tell the model.
+    /// </summary>
+    public async Task<McpResourceContentView> SaveAsync(
+        string serverName, string origin, string uri, byte[] bytes, string? mime, CancellationToken ct)
+    {
+        var fullPath = await storage.WriteAsync(GenerateFileName(origin, mime), bytes, ct);
+
+        logger?.LogInformation(
+            "Resource capture: {Server} {Uri} {Mime} ({Bytes} bytes) → {Path}",
+            serverName, uri, mime, bytes.LongLength, fullPath);
+
+        return new McpResourceContentView
+        {
+            Uri = uri,
+            MimeType = mime,
+            Path = fullPath,
+            Name = Path.GetFileName(fullPath),
+            Size = bytes.LongLength,
+            Note = CapturedNote
+        };
+    }
+
     // ── Shared helpers ────────────────────────────────────────────────────────
 
-    private static ContentBlock DescriptorBlock(string fullPath, long size, string? mime) =>
+    private static ContentBlock DescriptorBlock(string fullPath, long size, string? mime, string? uri = null) =>
         new TextContentBlock
         {
-            Text = JsonSerializer.Serialize(new
-            {
-                path = fullPath,
-                name = Path.GetFileName(fullPath),
-                size,
-                mime,
-                note = CapturedNote
-            }, JsonOptions)
+            Text = uri is null
+                ? JsonSerializer.Serialize(new
+                {
+                    path = fullPath,
+                    name = Path.GetFileName(fullPath),
+                    size,
+                    mime,
+                    note = CapturedNote
+                }, JsonOptions)
+                : JsonSerializer.Serialize(new
+                {
+                    uri,
+                    path = fullPath,
+                    name = Path.GetFileName(fullPath),
+                    size,
+                    mime,
+                    note = CapturedNote
+                }, JsonOptions)
         };
 
     /// <summary>

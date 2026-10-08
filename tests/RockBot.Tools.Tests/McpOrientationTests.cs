@@ -157,7 +157,7 @@ public class McpOrientationTests
             .Select(t => (t.Name, t.Description))
             .ToList();
         descriptions.Add((McpTypedToolSurface.FindToolsName, McpFindToolsExecutor.Description));
-        Assert.IsTrue(descriptions.Count >= 7, $"expected the six management tools plus mcp_find_tools, got {descriptions.Count}");
+        Assert.IsTrue(descriptions.Count >= 9, $"expected the eight management tools plus mcp_find_tools, got {descriptions.Count}");
         return descriptions;
     }
 

@@ -10,7 +10,7 @@ using RockBot.Tools.Mcp.Recovery;
 namespace RockBot.Tools.Mcp;
 
 /// <summary>
-/// <see cref="IToolExecutor"/> for the 6 MCP management tools registered by
+/// <see cref="IToolExecutor"/> for the 8 MCP management tools registered by
 /// <see cref="McpServersIndexedHandler"/>:
 /// <list type="bullet">
 ///   <item><c>mcp_list_services</c> — returns cached server index</item>
@@ -19,6 +19,8 @@ namespace RockBot.Tools.Mcp;
 ///   <item><c>mcp_register_server</c> — asks bridge to connect a new server</item>
 ///   <item><c>mcp_unregister_server</c> — asks bridge to remove a server</item>
 ///   <item><c>mcp_get_prompt</c> — invokes a prompt template on an MCP server</item>
+///   <item><c>mcp_list_resources</c> — lists a server's resources and resource templates</item>
+///   <item><c>mcp_read_resource</c> — reads one resource by the server's URI</item>
 /// </list>
 /// </summary>
 public sealed class McpManagementExecutor : IToolExecutor, IAsyncDisposable
@@ -88,6 +90,8 @@ public sealed class McpManagementExecutor : IToolExecutor, IAsyncDisposable
             "mcp_register_server"     => RegisterServerAsync(request, ct),
             "mcp_unregister_server"   => UnregisterServerAsync(request, ct),
             "mcp_get_prompt"          => GetPromptAsync(request, ct),
+            "mcp_list_resources"      => ListResourcesAsync(request, ct),
+            "mcp_read_resource"       => ReadResourceAsync(request, ct),
             _ => Task.FromResult(Error(request, $"Unknown management tool: {request.ToolName}"))
         };
 
@@ -106,6 +110,8 @@ public sealed class McpManagementExecutor : IToolExecutor, IAsyncDisposable
             s.ToolNames,
             s.PromptCount,
             s.PromptNames,
+            s.ResourceCount > 0 ? s.ResourceCount : null,
+            s.ResourceCount > 0 ? s.ResourceNames : null,
             renamed.TryGetValue(s.ServerName, out var skills) ? skills : null));
         var json = JsonSerializer.Serialize(view, JsonOptions);
         return new ToolInvokeResponse
@@ -119,7 +125,8 @@ public sealed class McpManagementExecutor : IToolExecutor, IAsyncDisposable
     /// <summary>
     /// <c>mcp_list_services</c> row. <see cref="SkillsWrittenUnderPreviousName"/> lists
     /// <c>mcp/{old}</c> skills whose server now runs under this name (#615), so they don't go
-    /// unused without anyone noticing; omitted when there are none.
+    /// unused without anyone noticing; omitted when there are none. The resource fields (#617)
+    /// are likewise omitted for a server without resources.
     /// </summary>
     private sealed record ServiceView(
         string ServerName,
@@ -129,6 +136,10 @@ public sealed class McpManagementExecutor : IToolExecutor, IAsyncDisposable
         List<string> ToolNames,
         int PromptCount,
         List<string> PromptNames,
+        [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        int? ResourceCount,
+        [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        List<string>? ResourceNames,
         [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
         IReadOnlyList<RenamedSkillView>? SkillsWrittenUnderPreviousName);
 
@@ -222,6 +233,15 @@ public sealed class McpManagementExecutor : IToolExecutor, IAsyncDisposable
         };
 
         var content = JsonSerializer.Serialize(payload, JsonOptions);
+
+        // Resources aren't tools, so they aren't in the payload; only a server that has some
+        // says so (#617), keeping every other details result as it was.
+        if (details.ResourceCount > 0)
+        {
+            content += $"\n\nThis server also lists {details.ResourceCount} resource(s) and resource template(s): " +
+                       $"readable data rather than tools. List them with mcp_list_resources(server_name: \"{serverName}\") " +
+                       "and read one with mcp_read_resource.";
+        }
 
         // Lazy typed tools (#612): looking at a server's tools (or one of them) activates them
         // for this session, so the next call can use the typed name. Only a run that activates
@@ -611,6 +631,89 @@ public sealed class McpManagementExecutor : IToolExecutor, IAsyncDisposable
 
         return result;
     }
+
+    // ── mcp_list_resources / mcp_read_resource (#617) ────────────────────────
+
+    private async Task<ToolInvokeResponse> ListResourcesAsync(ToolInvokeRequest request, CancellationToken ct)
+    {
+        var args = ParseArguments(request.Arguments);
+        if (!TryGetServerName(args, out var serverName))
+            return Error(request, "Missing required parameter: server_name");
+
+        var responseEnvelope = await SendRequestAsync(new McpListResourcesRequest { ServerName = serverName }, ct);
+        if (responseEnvelope is null)
+            return Error(request, $"Timed out waiting for the resource list of '{serverName}'");
+        var response = responseEnvelope.GetPayload<McpListResourcesResponse>();
+        if (response is null)
+            return Error(request, "Failed to deserialize resource list response");
+        if (response.Error is not null)
+            return Error(request, response.Error);
+
+        var content = response.Resources.Count + response.Templates.Count == 0
+            ? $"MCP server '{serverName}' lists no resources or resource templates."
+            : JsonSerializer.Serialize(new
+            {
+                server = serverName,
+                resources = response.Resources.Select(ResourceView),
+                templates = response.Templates.Select(ResourceView)
+            }, ResourceJsonOptions);
+
+        return new ToolInvokeResponse
+        {
+            ToolCallId = request.ToolCallId,
+            ToolName = request.ToolName,
+            Content = content
+        };
+
+        static object ResourceView(McpResourceDefinition r) => new
+        {
+            uri = r.IsTemplate ? null : r.Uri,
+            uriTemplate = r.IsTemplate ? r.Uri : null,
+            name = r.Name,
+            title = r.Title,
+            description = r.Description,
+            mimeType = r.MimeType,
+            size = r.Size
+        };
+    }
+
+    private async Task<ToolInvokeResponse> ReadResourceAsync(ToolInvokeRequest request, CancellationToken ct)
+    {
+        var args = ParseArguments(request.Arguments);
+        if (!TryGetServerName(args, out var serverName))
+            return Error(request, "Missing required parameter: server_name");
+        if (!TryGetString(args, "uri", out var uri))
+            return Error(request, "Missing required parameter: uri");
+
+        var responseEnvelope = await SendRequestAsync(new McpReadResourceRequest { ServerName = serverName, Uri = uri }, ct);
+        var response = responseEnvelope?.GetPayload<McpReadResourceResponse>();
+        var result = responseEnvelope is null
+            ? Error(request, $"Timed out waiting for resource '{uri}' from server '{serverName}'")
+            : response is null
+                ? Error(request, "Failed to deserialize resource read response")
+                : response.Error is not null
+                    ? Error(request, response.Error)
+                    : new ToolInvokeResponse
+                    {
+                        ToolCallId = request.ToolCallId,
+                        ToolName = request.ToolName,
+                        Content = JsonSerializer.Serialize(
+                            new { server = serverName, uri, contents = response.Contents }, ResourceJsonOptions)
+                    };
+
+        McpDiagnostics.RecordResourceRead(serverName, result.IsError);
+        _logger.LogDebug("MCP resource read {Server} {Uri}: {Outcome}", serverName, uri, result.IsError ? "error" : "ok");
+        return result;
+    }
+
+    /// <summary>
+    /// Resource views leave out absent fields: a text item has no path, a saved file no text, and
+    /// most resources have no title or size.
+    /// </summary>
+    private static readonly JsonSerializerOptions ResourceJsonOptions = new(JsonOptions)
+    {
+        DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull
+    };
 
     // ── Request-response infrastructure ─────────────────────────────────────
 

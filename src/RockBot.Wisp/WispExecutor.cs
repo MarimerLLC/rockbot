@@ -49,6 +49,8 @@ internal sealed class WispExecutor(
         "mcp_register_server",
         "mcp_unregister_server",
         "mcp_get_prompt",
+        "mcp_list_resources",
+        "mcp_read_resource",
     };
 
     internal static readonly string WispDirectives =

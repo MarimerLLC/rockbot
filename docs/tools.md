@@ -234,7 +234,7 @@ See `design/mcp-bridge.md` for the full field list and the ownership rules.
 
 ### Management tools
 
-When the first `McpServersIndexed` message arrives, `McpServersIndexedHandler` registers six
+When the first `McpServersIndexed` message arrives, `McpServersIndexedHandler` registers eight
 management tools that give the agent runtime control over MCP servers:
 
 | Tool | Purpose |
@@ -245,8 +245,10 @@ management tools that give the agent runtime control over MCP servers:
 | `mcp_register_server(name, type, url)` | Connects a new HTTP MCP server at runtime (`type` is `sse`). New names only; it can't change an existing server |
 | `mcp_unregister_server(server_name)` | Disconnects and removes a server added with `mcp_register_server`. Servers the operator configured can't be removed |
 | `mcp_get_prompt(server_name, prompt_name, arguments?)` | Fills in a server's prompt template and returns its messages |
+| `mcp_list_resources(server_name)` | Lists a server's resources (`uri`) and resource templates (`uriTemplate`), with name, description and MIME type |
+| `mcp_read_resource(server_name, uri)` | Reads one resource by the server's own URI, any template expanded. Text comes back inline; binary or long text is saved to the shared volume and returned as a path |
 
-A seventh, `mcp_find_tools(query, limit?)`, is registered alongside them when some tier's
+A ninth, `mcp_find_tools(query, limit?)`, is registered alongside them when some tier's
 wrapper mode is `Lazy` or `Pinned` (see below). Runs in an `Off` or `Eager` tier drop it from
 their tool list.
 
@@ -280,6 +282,17 @@ server never brings its prompts in. Calling one returns the prompt's messages, t
 `mcp_get_prompt`, which stays available in every mode.
 
 Naming, activation limits and the per-tier measurements are in `design/mcp-bridge.md`.
+
+### Resources
+
+Downstream MCP **resources** (readable data addressed by URI) are reached through
+`mcp_list_resources` and `mcp_read_resource` only: they have no typed tools and
+`mcp_find_tools` doesn't search them. `mcp_list_services` shows a `resourceCount` for a server
+that has any. Text up to `McpBridge:ResourceInlineTextLimit` (default 32,000 characters) is
+returned inline; blobs and longer text are saved to the shared attachments volume and come back
+as a path, never as base64. In a tool result, a `resource_link` block becomes a
+`[resource link]` line naming the server and URI to read, and an embedded resource becomes
+its text (or, for a blob, a saved file). See `design/mcp-bridge.md`.
 
 ### Orientation and server instructions
 

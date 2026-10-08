@@ -27,9 +27,9 @@ Each agent process hosts its own bridge, scoped to that agent's `mcp.json`. The 
 
 1. Bridge starts and reads `mcp.json` (`McpBridge:ConfigPath`), seeding any `McpBridge:DefaultServers` entries
 2. Connects to each configured MCP server
-3. Lists its tools and prompts, applies allow/deny filters, and writes an LLM summary of the server
+3. Lists its tools, prompts and resources, applies allow/deny filters, and writes an LLM summary of the server
 4. Publishes `McpServersIndexed` on `tool.meta.mcp.{agentName}`
-5. The agent's `McpServersIndexedHandler` updates `McpServerIndex`. On the first message it registers the six `mcp_*` management tools in `IToolRegistry` (plus `mcp_find_tools` when a tier is `Lazy` or `Pinned`), and `McpWrapperCatalog` reconciles the typed tools. Downstream tools are not registered under their bare names.
+5. The agent's `McpServersIndexedHandler` updates `McpServerIndex`. On the first message it registers the eight `mcp_*` management tools in `IToolRegistry` (plus `mcp_find_tools` when a tier is `Lazy` or `Pinned`), and `McpWrapperCatalog` reconciles the typed tools. Downstream tools are not registered under their bare names.
 
 ### Tool Invocation
 
@@ -62,7 +62,7 @@ Any other failure on schema-valid arguments comes back unchanged. A hint that bl
 Issue #420, ported from mcp-aggregator PR #42.
 
 **Mode.** `McpBridge:WrapperMode` (Helm `agent.mcpWrapperMode`) chooses how downstream tools are offered, and `McpBridge:WrapperModeByTier:{Low|Balanced|High}` (Helm `agent.mcpWrapperModeByTier`) overrides it per model tier. See [Per-tier modes](#per-tier-modes-and-pinned-servers) below.
-- `Off`: the six `mcp_*` management tools only.
+- `Off`: the eight `mcp_*` management tools only.
 - `Eager`: `McpWrapperCatalog` also registers one typed tool per downstream tool.
 - `Lazy`: the same typed tools, but only in the sessions that search for them. See [Lazy typed tools](#lazy-typed-tools-mcp_find_tools) below.
 - `Pinned` (default): lazy, plus every typed tool of a server the session has called.
@@ -146,6 +146,18 @@ Issue #616, porting mcp-aggregator#43 for a host. Downstream prompts were reacha
 - **Schema and fingerprint.** The input schema is built from the prompt's arguments: a string property per argument (with its description) and the required ones listed. `McpSurfaceFingerprint.Prompt` hashes the name, description and each argument's name, description and required flag. A changed fingerprint, a changed server id or a removed server evicts the prompt tool from every session, as for tools. The schemas come from `ToolSchemaCache`, which keeps each server's prompts from the same details round trip as its tools.
 - **Activation.** Only `mcp_find_tools` and a call by typed name. Prompt tools share `MaxActivatedToolsPerSession` with typed tools. `mcp_get_service_details` lists each prompt with its `typedName` in an activating run, but listing never activates.
 - **Calls.** `McpPromptWrapperExecutor` checks the required arguments against the built schema and refuses before the downstream call, naming what is missing. It drops null arguments and passes the rest as strings (a non-string value as its JSON text), then takes `McpManagementExecutor.GetPromptDownstreamAsync`, the path `mcp_get_prompt` takes. Both are counted on `rockbot.mcp.prompt.invocations`, tagged `via` = `get_prompt` or `prompt_wrapper`. The result is the prompt's messages as JSON, which the model then follows.
+
+### Resources
+
+Issue #617, porting the client side of mcp-aggregator#46. Downstream resources were invisible: nothing listed or read them, and resource blocks in tool results became placeholders.
+
+- **Discovery.** On connect and on every surface refresh the bridge lists a server's resources and resource templates (`ConnectedServer.DownstreamResources` / `DownstreamResourceTemplates`). A server without the `resources` capability, or one answering method-not-found to either list, has none; that's logged at Debug only. Any other failure keeps the previous lists and makes the server fingerprint unknown, as for prompts. `notifications/resources/list_changed` queues the same debounced refresh as tools and prompts. There are no subscriptions.
+- **Summary.** `McpServerSummary.ResourceCount` and `ResourceNames` count resources plus templates; `mcp_list_services` shows them only for a server that has any, and `mcp_get_service_details` adds one line pointing at `mcp_list_resources`. The summary prompt lists up to 10.
+- **`mcp_list_resources(server_name)`** answers from the cached lists, with no downstream call.
+- **`mcp_read_resource(server_name, uri)`** takes the server's own URI, any template expanded. The read is always tried, since servers may serve URIs they don't list. When the server rejects a URI that matches no declared resource or template, the error lists the declared URIs and templates (up to 50) and keeps the server's message. A declared URI's rejection is passed through unchanged. Matching is exact first, then templates, with `McpResourceUriTemplate`'s best-effort RFC 6570 regex (ported from the aggregator). A read gets the prompt budget and one reconnect-and-retry on a broken connection; a protocol error isn't retried. Counted on `rockbot.mcp.resource.reads`.
+- **Content.** Text up to `McpBridge:ResourceInlineTextLimit` (default 32,000 characters) is returned inline. Blobs and longer text go to the shared attachments volume through `BinaryResponseCapture.SaveAsync`, and the result carries `path`, `name`, `size`, `mimeType` and a note instead, never base64.
+- **Resource blocks in tool results.** Binary capture saves an embedded blob resource like an image block (its descriptor also names the `uri`). `McpToolExecutor.MapContentBlocks` turns an embedded text resource into `[resource {uri} ({mime})]` plus its text, a blob that wasn't captured into a one-line description, and a `resource_link` into `[resource link] {title}: {uri} (...). Read it with mcp_read_resource(server_name: "...", uri: "...")`. All are text blocks, so they stay in the result's text and in working-memory chunking.
+- **Fingerprint.** `McpSurfaceFingerprint.Server` appends a resource section (kind, URI or template, name, title, description, MIME type, size) only when the server lists any, so a server without resources keeps the fingerprint it had before #617, and upgrading marks no `mcp/{server}` skill stale.
 
 ### Per-tier modes and pinned servers
 
@@ -256,11 +268,11 @@ Ported from mcp-aggregator PRs #42 and #47.
 - **Name rules for new registrations.** `mcp_register_server` only accepts names matching `^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$` that don't contain `__`, because server names become part of skill names, file paths and typed tool names. Existing entries that break these rules still load, with a warning.
 - **Fingerprints** (`McpSurfaceFingerprint`, SHA-256).
   - **Per-tool fingerprint:** covers name, description and the canonical input schema.
-  - **Per-server fingerprint:** covers all tools plus all prompts, including each prompt's arguments.
+  - **Per-server fingerprint:** covers all tools plus all prompts, including each prompt's arguments, plus any resources and resource templates (#617).
   - Canonicalisation sorts object keys at every level and keeps array order, so a server that only reorders keys doesn't look changed. A description-only change does count as a change.
-  - If a prompt list can't be read, the server fingerprint is `null` (unknown). A failed read is never recorded as a surface. A server without the prompts capability, or one answering method-not-found, simply has no prompts.
+  - If a prompt or resource list can't be read, the server fingerprint is `null` (unknown). A failed read is never recorded as a surface. A server without the prompts capability, or one answering method-not-found, simply has no prompts.
 - **Refresh.**
-  - The bridge re-reads a server's tools and prompts on its existing connection in two cases: when the server sends `notifications/tools/list_changed` or `notifications/prompts/list_changed` (debounced), and every `SurfaceRefreshIntervalSeconds` (default 300) on the reconnect sweep. The periodic refresh covers servers that never send `list_changed`, such as stateless HTTP servers, which have no stream to send it on.
+  - The bridge re-reads a server's tools, prompts and resources on its existing connection in two cases: when the server sends `notifications/tools/list_changed`, `notifications/prompts/list_changed` or `notifications/resources/list_changed` (debounced), and every `SurfaceRefreshIntervalSeconds` (default 300) on the reconnect sweep. The periodic refresh covers servers that never send `list_changed`, such as stateless HTTP servers, which have no stream to send it on.
   - Only a moved fingerprint is published.
   - On the agent side, `ToolSchemaCache` is invalidated only when a server's fingerprint or id moves, not on every re-publish.
 - **Summary reuse.** Every reconnect and config reload goes through `ConnectServerAsync`. When the fingerprint and the server's self-reported identity are unchanged, the previous LLM-generated summary is reused instead of being regenerated.
@@ -276,7 +288,7 @@ These paths run independently of one another:
 All of the bridge's per-server state lives in `McpServerConnections` (issue #604):
 
 - **Configured servers** map a name to the latest `McpBridgeServerConfig`, connected or not. A configured server that isn't connected is what the reconnect sweep retries.
-- **Connected servers** map a name to an immutable `ConnectedServer` snapshot holding the client, config, filtered tools, prompts, metadata, summary, elicitation coordinator and attachment gateway, all from the same connect.
+- **Connected servers** map a name to an immutable `ConnectedServer` snapshot holding the client, config, filtered tools, prompts, resources and resource templates, metadata, summary, elicitation coordinator and attachment gateway, all from the same connect.
   - A reader takes one snapshot and uses it for the whole operation, so it can't see a new client with an old tool list.
   - A surface refresh publishes a new snapshot of the same connection.
 - **One writer per server at a time.** Connect, refresh and disconnect each hold that server's lock, so the reconnect sweep, a config reload and an invoke's reconnect-and-retry queue behind one another instead of each building a client.
@@ -356,7 +368,7 @@ the sessions stateless mode removes.
 ## Timeout Strategy
 
 - **Bridge timeout**: CancellationToken on the MCP server call. The proxy sends its request timeout in the `rb-timeout-ms` header (`McpToolProxy:RequestTimeoutSeconds`, default 60s); the bridge caps it at `McpBridge:MaxTimeoutMs` (default 900s) and falls back to `McpBridge:DefaultTimeoutMs` (default 60s) without one. A server's `toolTimeoutMs` overrides both, still capped at `MaxTimeoutMs`. On expiry the bridge publishes `ToolError` with `Code: "timeout"` and `IsRetryable: true`.
-- **Prompt timeout**: `prompts/get` gets a tool call's budget without the header: the server's `toolTimeoutMs`, else `DefaultTimeoutMs`, capped at `MaxTimeoutMs`. A timeout is answered with an error and not retried, since a reconnect would only wait as long again.
+- **Prompt and resource timeout**: `prompts/get` and `resources/read` get a tool call's budget without the header: the server's `toolTimeoutMs`, else `DefaultTimeoutMs`, capped at `MaxTimeoutMs`. A timeout is answered with an error and not retried, since a reconnect would only wait as long again.
 - **Agent timeout**: the proxy waits `McpToolProxy:ResponseTimeoutSeconds` (RockBot.Agent default 930s) and synthesizes a timeout error locally if no response arrives.
 - The proxy outwaits the bridge's cap, so the caller sees the bridge's own timeout error rather than a transport failure.
 

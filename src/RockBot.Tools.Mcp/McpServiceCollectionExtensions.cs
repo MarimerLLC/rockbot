@@ -35,7 +35,7 @@ public static class McpServiceCollectionExtensions
     /// <summary>
     /// Registers the MCP management proxy for agents that interact with MCP servers via
     /// the message bus. On startup the bridge sends <see cref="McpServersIndexed"/>;
-    /// the handler registers the 6 management tools in <see cref="IToolRegistry"/>,
+    /// the handler registers the 8 management tools in <see cref="IToolRegistry"/>,
     /// plus a typed <c>{server}__{tool}</c> tool per downstream tool when some tier's wrapper mode
     /// (<see cref="McpToolSurfaceOptions.ModeFor"/>) is <see cref="McpWrapperMode.Eager"/>, or
     /// <c>mcp_find_tools</c> and per-session activation when one is <see cref="McpWrapperMode.Lazy"/>

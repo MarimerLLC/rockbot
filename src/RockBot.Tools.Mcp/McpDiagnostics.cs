@@ -38,6 +38,19 @@ internal static class McpDiagnostics
             unit: "{call}",
             description: "Downstream MCP prompt fetches. Tags: server, via (get_prompt|prompt_wrapper), outcome (ok|error).");
 
+    private static readonly Counter<long> ResourceReads =
+        ToolDiagnostics.Meter.CreateCounter<long>(
+            "rockbot.mcp.resource.reads",
+            unit: "{call}",
+            description: "Downstream MCP resource reads (mcp_read_resource). Tags: server, outcome (ok|error).");
+
+    public static void RecordResourceRead(string server, bool isError) =>
+        ResourceReads.Add(1, new TagList
+        {
+            { "server", server },
+            { "outcome", isError ? "error" : "ok" }
+        });
+
     public static void RecordInvocation(string server, string via, bool isError) =>
         Invocations.Add(1, new TagList
         {
