@@ -20,10 +20,15 @@ namespace RockBot.Host;
 /// Optional advisory free text describing how a future session would know the asset still works.
 /// Persisted on the manifest entry; retained even after the entry is validated.
 /// </param>
+/// <param name="ToolFingerprints">
+/// Carried onto the manifest entry's <see cref="SkillResource.ToolFingerprints"/> (#647). Set by
+/// the code that attaches a wisp, never by the model: it's hidden from the <c>save_skill</c> schema.
+/// </param>
 public sealed record SkillResourceInput(
     string Filename,
     SkillResourceType Type,
     string Description,
     string Content,
     bool Provisional = false,
-    string? VerifyHint = null);
+    string? VerifyHint = null,
+    [property: System.Text.Json.Serialization.JsonIgnore] IReadOnlyDictionary<string, string>? ToolFingerprints = null);

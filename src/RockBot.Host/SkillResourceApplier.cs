@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Microsoft.Extensions.Logging;
+using RockBot.Tools;
 
 namespace RockBot.Host;
 
@@ -27,11 +28,16 @@ internal sealed class SkillResourceApplier : IRepairTargetApplier
 
     private readonly ISkillStore _skillStore;
     private readonly ILogger<SkillResourceApplier> _logger;
+    private readonly IMcpToolDirectory? _mcpToolDirectory;
 
-    public SkillResourceApplier(ISkillStore skillStore, ILogger<SkillResourceApplier> logger)
+    public SkillResourceApplier(
+        ISkillStore skillStore,
+        ILogger<SkillResourceApplier> logger,
+        IMcpToolDirectory? mcpToolDirectory = null)
     {
         _skillStore = skillStore ?? throw new ArgumentNullException(nameof(skillStore));
         _logger = logger;
+        _mcpToolDirectory = mcpToolDirectory;
     }
 
     public RepairTarget Target => RepairTarget.SkillResource;
@@ -78,10 +84,14 @@ internal sealed class SkillResourceApplier : IRepairTargetApplier
         var resourceType = change.Type ?? SkillResourceType.Wisp;
         var description = change.Description ?? change.Filename!;
 
+        // A wisp records the MCP tools it calls as they are now (#647).
         var input = new SkillResourceInput(
             change.Filename!, resourceType, description, change.Content!,
             Provisional: true,
-            VerifyHint: change.VerifyHint);
+            VerifyHint: change.VerifyHint,
+            ToolFingerprints: resourceType == SkillResourceType.Wisp
+                ? WispToolFingerprints.Capture(change.Content, _mcpToolDirectory)
+                : null);
         var attached = await _skillStore.AttachResourceAsync(change.Skill!, input);
         if (!attached)
             throw new InvalidOperationException($"Skill '{change.Skill}' not found.");
@@ -115,7 +125,8 @@ internal sealed class SkillResourceApplier : IRepairTargetApplier
                 var restoreInput = new SkillResourceInput(
                     priorEntry.Filename, priorEntry.Type, priorEntry.Description, priorBody ?? string.Empty,
                     Provisional: priorEntry.Provisional,
-                    VerifyHint: priorEntry.VerifyHint);
+                    VerifyHint: priorEntry.VerifyHint,
+                    ToolFingerprints: priorEntry.ToolFingerprints);
                 await _skillStore.AttachResourceAsync(change.Skill!, restoreInput, priorEntry);
                 _logger.LogInformation(
                     "SkillResourceApplier reverted attach: restored prior '{File}' on skill '{Skill}'",

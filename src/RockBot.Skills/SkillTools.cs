@@ -4,6 +4,7 @@ using System.Text;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
 using RockBot.Host;
+using RockBot.Tools;
 
 namespace RockBot.Skills;
 
@@ -32,6 +33,7 @@ public sealed class SkillTools
     private readonly ISkillUsageStore? _usageStore;
     private readonly ISkillResourceUsageStore? _resourceUsageStore;
     private readonly IMcpSkillSurface? _mcpSkillSurface;
+    private readonly IMcpToolDirectory? _mcpToolDirectory;
 
     public SkillTools(
         ISkillStore skillStore,
@@ -41,7 +43,8 @@ public sealed class SkillTools
         ISkillUsageStore? usageStore = null,
         bool enablePromote = false,
         ISkillResourceUsageStore? resourceUsageStore = null,
-        IMcpSkillSurface? mcpSkillSurface = null)
+        IMcpSkillSurface? mcpSkillSurface = null,
+        IMcpToolDirectory? mcpToolDirectory = null)
     {
         _skillStore = skillStore;
         _llmClient = llmClient;
@@ -50,6 +53,7 @@ public sealed class SkillTools
         _usageStore = usageStore;
         _resourceUsageStore = resourceUsageStore;
         _mcpSkillSurface = mcpSkillSurface;
+        _mcpToolDirectory = mcpToolDirectory;
 
         // Tool names are pinned to snake_case rather than inherited from the method
         // names: every prompt and directive in the repo refers to them that way, and
@@ -299,16 +303,23 @@ public sealed class SkillTools
 
         // Pre-build the manifest entry so Provisional, CreatedAt, VerifyHint, and
         // DefinitionHash are all set per the in-session-promotion contract.
+        // A wisp records the MCP tools it calls as they are now, so a later change to one sends
+        // it back for re-validation (#647).
+        var fingerprints = type == SkillResourceType.Wisp
+            ? WispToolFingerprints.Capture(content, _mcpToolDirectory)
+            : null;
         var input = new SkillResourceInput(
             filename, type, description, content,
             Provisional: true,
-            VerifyHint: verifyHint);
+            VerifyHint: verifyHint,
+            ToolFingerprints: fingerprints);
         var entry = new SkillResource(
             filename, type, description,
             Provisional: true,
             CreatedAt: DateTimeOffset.UtcNow,
             VerifyHint: verifyHint,
-            DefinitionHash: ComputeContentHash(content));
+            DefinitionHash: ComputeContentHash(content),
+            ToolFingerprints: fingerprints);
 
         var attached = await _skillStore.AttachResourceAsync(skillName, input, entry);
         if (!attached)

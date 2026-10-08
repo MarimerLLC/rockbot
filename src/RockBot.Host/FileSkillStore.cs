@@ -148,7 +148,8 @@ internal sealed partial class FileSkillStore : ISkillStore
                     Provisional: r.Provisional,
                     CreatedAt: nowStamp,
                     VerifyHint: r.VerifyHint,
-                    DefinitionHash: ComputeDefinitionHash(r.Content)))
+                    DefinitionHash: ComputeDefinitionHash(r.Content),
+                    ToolFingerprints: r.ToolFingerprints))
                 .ToList();
 
             // Save skill JSON with updated manifest
@@ -276,7 +277,8 @@ internal sealed partial class FileSkillStore : ISkillStore
                 Provisional: resource.Provisional,
                 CreatedAt: DateTimeOffset.UtcNow,
                 VerifyHint: resource.VerifyHint,
-                DefinitionHash: ComputeDefinitionHash(resource.Content));
+                DefinitionHash: ComputeDefinitionHash(resource.Content),
+                ToolFingerprints: resource.ToolFingerprints);
 
             // Replace by filename (case-insensitive to match folder semantics) or append.
             var oldManifest = existing.Manifest ?? [];

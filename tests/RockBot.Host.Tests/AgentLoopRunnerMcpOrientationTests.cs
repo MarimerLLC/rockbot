@@ -113,4 +113,44 @@ public class AgentLoopRunnerMcpOrientationTests
 
         Assert.AreSame(Orientations(messages).Single(), messages[0]);
     }
+
+    // ── Caller-scoped tools (#647) ───────────────────────────────────────────
+
+    /// <summary>A tool a caller put in the run on purpose, as a wisp step does.</summary>
+    private sealed class ScopedTool(string name) : AIFunction, ICallerScopedTool
+    {
+        public override string Name => name;
+        protected override ValueTask<object?> InvokeCoreAsync(AIFunctionArguments arguments, CancellationToken cancellationToken) =>
+            ValueTask.FromResult<object?>("ok");
+    }
+
+    [TestMethod]
+    public void Shape_KeepsCallerScopedTypedTools_InANonEagerRun()
+    {
+        var options = new ChatOptions
+        {
+            Tools = [new ScopedTool("calendar-mcp__get_events"), Tool("ms365__search_emails"), Tool("get_skill")]
+        };
+
+        using (TypedToolSurfaceContext.Set(new FakeSurface { Mode = TypedToolMode.Pinned }, ModelTier.Low))
+            TypedToolSurfaceContext.Shape(options);
+
+        var names = options.Tools!.Select(t => t.Name).ToList();
+        CollectionAssert.Contains(names, "calendar-mcp__get_events", "the wisp chose it, so the run keeps it");
+        CollectionAssert.DoesNotContain(names, "ms365__search_emails", "an unscoped typed tool is still dropped");
+        CollectionAssert.Contains(names, "get_skill");
+    }
+
+    [TestMethod]
+    public void CallerScopedTools_GetNoOrientation()
+    {
+        var messages = Conversation();
+        var options = new ChatOptions { Tools = [new ScopedTool("calendar-mcp__get_events"), Tool("mcp_invoke_tool")] };
+
+        using (TypedToolSurfaceContext.Set(new FakeSurface { Mode = TypedToolMode.Pinned }, ModelTier.Low))
+            AgentLoopRunner.EnsureMcpOrientation(messages, options);
+
+        Assert.AreEqual(0, Orientations(messages).Count(),
+            "the pinned text would tell a wisp to call mcp_find_tools, which it doesn't have");
+    }
 }

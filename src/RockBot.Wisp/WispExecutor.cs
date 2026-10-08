@@ -22,7 +22,8 @@ internal sealed class WispExecutor(
     ILogger<WispExecutor> logger,
     ILlmClient? llmClient = null,
     ISessionA2ACanceller? a2aCanceller = null,
-    IMcpPreflightRecovery? preflightRecovery = null)
+    IMcpPreflightRecovery? preflightRecovery = null,
+    IMcpToolDirectory? mcpToolDirectory = null)
 {
     private const int DefaultLlmStepMaxIterations = 10;
     private const int InputChunkingThreshold = 8_000;
@@ -286,8 +287,30 @@ internal sealed class WispExecutor(
             };
         }
 
+        // Resolve an MCP step to its downstream tool and, when it has one, its typed wrapper
+        // (#647). The shorthand ("tool": "server__tool") becomes server + tool here, so validation
+        // and recovery below always see the canonical names.
+        McpToolEntry? typed = null;
+        if (step.Gateway == GatewayType.Mcp && mcpToolDirectory is not null)
+        {
+            var (resolvedStep, entry, resolveError) = await ResolveMcpStepAsync(step, wispId, ct);
+            if (resolveError is not null)
+            {
+                return new WispStepResult
+                {
+                    StepId = step.Id,
+                    StepIndex = index,
+                    IsSuccess = false,
+                    Error = resolveError,
+                    Duration = stepSw.Elapsed
+                };
+            }
+            step = resolvedStep;
+            typed = entry?.Wrapper is not null ? entry : null;
+        }
+
         // Route the step to a tool invocation
-        var route = GatewayRouter.Route(step, wispId, priorResults);
+        var route = GatewayRouter.Route(step, wispId, priorResults, typed);
         if (!route.IsSuccess)
         {
             return new WispStepResult
@@ -333,7 +356,7 @@ internal sealed class WispExecutor(
                     // to invocation; otherwise we keep filledStep as the new baseline
                     // for the LLM correction so it doesn't have to re-derive defaults.
                     step = filledStep;
-                    route = GatewayRouter.Route(step, wispId, priorResults);
+                    route = GatewayRouter.Route(step, wispId, priorResults, typed);
                     if (!route.IsSuccess)
                     {
                         return new WispStepResult
@@ -380,7 +403,7 @@ internal sealed class WispExecutor(
             // correction is schema-clean; if it isn't, bubble the original error
             // rather than trying again.
             step = corrected;
-            route = GatewayRouter.Route(step, wispId, priorResults);
+            route = GatewayRouter.Route(step, wispId, priorResults, typed);
             if (!route.IsSuccess)
             {
                 return new WispStepResult
@@ -419,7 +442,10 @@ internal sealed class WispExecutor(
         // mcp_invoke_tool) are registered lazily on the first McpServersIndexed
         // message from the bridge, so a step firing in the startup/reconnect window
         // may find them absent. Briefly wait for them to appear before failing.
-        var executor = await ResolveExecutorWithReadinessAsync(route.ToolName!, ct);
+        // A typed wrapper isn't in the registry in pinned or lazy mode; the directory runs it.
+        var executor = typed is not null
+            ? mcpToolDirectory!.WrapperExecutor
+            : await ResolveExecutorWithReadinessAsync(route.ToolName!, ct);
         if (executor is null)
         {
             var isManagementTool = McpManagementToolNames.Contains(route.ToolName!);
@@ -692,45 +718,125 @@ internal sealed class WispExecutor(
     /// - Tools listed in the top-level 'tools' array
     /// - Working memory tools (GetFromWorkingMemory, SearchWorkingMemory)
     /// </summary>
-    private List<AITool> BuildLlmStepTools(WispDefinition definition, string wispNamespace, string? parentSessionId)
+    internal List<AITool> BuildLlmStepTools(WispDefinition definition, string wispNamespace, string? parentSessionId)
     {
         var tools = new List<AITool>();
+        var added = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
-        // Collect tool names from direct steps and top-level tools array
-        var toolNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        // MCP tools are offered typed (#647): the small wisp model gets the tool by name with its
+        // own schema instead of the generic mcp_invoke_tool, which weak models call badly (#618).
+        // mcp_invoke_tool joins only for a tool that has no typed wrapper.
+        var needsInvokeTool = false;
 
         foreach (var s in definition.Steps.Where(s => s.Mode == StepMode.Direct))
         {
-            var name = GatewayRouter.GetToolName(s);
-            if (name is not null)
-                toolNames.Add(name);
-        }
-
-        if (definition.Tools is not null)
-        {
-            foreach (var name in definition.Tools)
-                toolNames.Add(name);
-        }
-
-        // Wrap registry tools as AIFunctions
-        foreach (var name in toolNames)
-        {
-            var registration = toolRegistry.GetTools().FirstOrDefault(r =>
-                string.Equals(r.Name, name, StringComparison.OrdinalIgnoreCase));
-            var executor = toolRegistry.GetExecutor(name);
-
-            if (registration is not null && executor is not null)
+            if (s.Gateway == GatewayType.Mcp)
             {
-                tools.Add(new WispRegistryToolFunction(registration, executor,
-                    wispId: wispNamespace, parentSessionId: parentSessionId));
+                if (McpStepResolver.TryResolve(s, mcpToolDirectory) is { Wrapper: not null } entry)
+                    AddTyped(entry);
+                else
+                    needsInvokeTool = true;
+                continue;
             }
+
+            if (GatewayRouter.GetToolName(s) is { } name)
+                AddRegistry(name);
         }
+
+        // Top-level tools: a registry tool, a typed MCP tool name, or an MCP server name (all of
+        // that server's typed tools).
+        foreach (var name in definition.Tools ?? [])
+        {
+            if (string.IsNullOrWhiteSpace(name) || AddRegistry(name) || mcpToolDirectory is null)
+                continue;
+
+            if (mcpToolDirectory.Resolve(null, name) is { Wrapper: not null } typedTool)
+            {
+                AddTyped(typedTool);
+                continue;
+            }
+
+            var serverTools = mcpToolDirectory.ForServer(name);
+            foreach (var entry in serverTools.Where(e => e.Wrapper is not null))
+                AddTyped(entry);
+            if (serverTools.Count == 0)
+                logger.LogDebug("Wisp {WispNamespace}: tool '{Name}' is not a registered tool, typed MCP tool or MCP server", wispNamespace, name);
+        }
+
+        if (needsInvokeTool)
+            AddRegistry("mcp_invoke_tool");
 
         // Add working memory tools scoped to wisp namespace
         var wmTools = new WorkingMemoryTools(workingMemory, wispNamespace, logger);
         tools.AddRange(wmTools.Tools);
 
         return tools;
+
+        bool AddRegistry(string name)
+        {
+            var registration = toolRegistry.GetTools().FirstOrDefault(r =>
+                string.Equals(r.Name, name, StringComparison.OrdinalIgnoreCase));
+            if (registration is null || toolRegistry.GetExecutor(registration.Name) is not { } executor)
+                return false;
+
+            if (added.Add(registration.Name))
+            {
+                tools.Add(new WispRegistryToolFunction(registration, executor,
+                    wispId: wispNamespace, parentSessionId: parentSessionId));
+            }
+            return true;
+        }
+
+        void AddTyped(McpToolEntry entry)
+        {
+            if (added.Add(entry.Wrapper!.Name))
+            {
+                tools.Add(new WispRegistryToolFunction(entry.Wrapper, mcpToolDirectory!.WrapperExecutor,
+                    wispId: wispNamespace, parentSessionId: parentSessionId));
+            }
+        }
+    }
+
+    /// <summary>
+    /// Resolves an MCP step through the tool directory (#647). A step with <c>server</c> resolves
+    /// to its tool, typed or not; one the directory doesn't know yet routes through
+    /// <c>mcp_invoke_tool</c> as before. The shorthand (typed name, no server) has no such fallback,
+    /// so it waits up to <see cref="WispOptions.McpReadinessWait"/> for the wrappers to be indexed —
+    /// they arrive with the bridge's first index — and then fails as an authoring error.
+    /// </summary>
+    private async Task<(WispStep Step, McpToolEntry? Entry, WispStepError? Error)> ResolveMcpStepAsync(
+        WispStep step, string wispId, CancellationToken ct)
+    {
+        var entry = McpStepResolver.TryResolve(step, mcpToolDirectory);
+        var shorthand = McpStepResolver.IsShorthand(step);
+
+        if (entry is null && shorthand)
+        {
+            var deadline = DateTime.UtcNow + options.McpReadinessWait;
+            while (entry is null && DateTime.UtcNow < deadline)
+            {
+                await Task.Delay(McpReadinessPollInterval, ct);
+                entry = McpStepResolver.TryResolve(step, mcpToolDirectory);
+            }
+        }
+
+        if (entry is null)
+        {
+            if (!shorthand)
+                return (step, null, null);
+
+            logger.LogWarning(
+                "Wisp {WispId} step {StepId}: '{Tool}' is not a typed MCP tool", wispId, step.Id, step.Tool);
+            return (step, null, new WispStepError
+            {
+                Category = FailureCategory.Structural,
+                Message = $"'{step.Tool}' isn't a typed MCP tool. Use a typed tool name from your tool list " +
+                          "(server__tool), or give 'server' together with the server's own tool name.",
+                ToolName = step.Tool
+            });
+        }
+
+        return (McpStepResolver.Canonicalize(step, entry), entry, null);
     }
 
     /// <summary>

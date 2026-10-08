@@ -22,7 +22,8 @@ internal sealed class SpawnWispsExecutor(
     ILogger<SpawnWispsExecutor> logger,
     WispDispatchCircuitBreaker? circuitBreaker = null,
     ISkillStore? skillStore = null,
-    ISkillUsageStore? skillUsageStore = null) : IToolExecutor
+    ISkillUsageStore? skillUsageStore = null,
+    IMcpToolDirectory? mcpToolDirectory = null) : IToolExecutor
 {
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -96,6 +97,10 @@ internal sealed class SpawnWispsExecutor(
         try
         {
             var wispId = $"wisp-{Guid.NewGuid():N}"[..16];
+
+            // Typed-name shorthand becomes server + tool before hashing, so the definition hash,
+            // shape hash and stored body don't depend on which form the author wrote (#647).
+            definition = McpStepResolver.CanonicalizeShorthand(definition, mcpToolDirectory);
             var defJson = JsonSerializer.Serialize(definition, JsonOptions);
             var defHash = ComputeDefinitionHash(defJson);
             var shapeHash = ComputeShapeHash(definition);
@@ -298,9 +303,12 @@ internal sealed class SpawnWispsExecutor(
                 CreatedAt: DateTimeOffset.UtcNow,
                 VerifyHint: $"Repeats shape {record.ShapeHash} from scheduled-task session {record.SessionId}",
                 DefinitionHash: record.ShapeHash);
+            // The MCP tools it was proven against, so a later change to one flags it (#647).
+            var fingerprints = WispToolFingerprints.Capture(record.DefinitionBody, mcpToolDirectory);
+            entry = entry with { ToolFingerprints = fingerprints };
             var input = new SkillResourceInput(
                 filename, SkillResourceType.Wisp, description, record.DefinitionBody!,
-                Provisional: true);
+                Provisional: true, ToolFingerprints: fingerprints);
 
             var attached = await skillStore.AttachResourceAsync(invokingSkill, input, entry);
             if (attached)

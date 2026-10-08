@@ -186,6 +186,13 @@ Issue #615, ported from mcp-aggregator#47 (and its fixes in aggregator#41).
 - **Refresh.** The dream service's MCP skill refresh pass rewrites up to `Dream:McpSkillRefreshMaxPerCycle` stale skills per cycle against the live schemas, then records a new baseline. See `docs/dream-service.md`.
 - **Tool defaults.** `FileToolDefaultsProvider` ignores a `tool-defaults/{server}.json` entry for a field the tool's current schema no longer declares, and warns once. The file isn't rewritten.
 
+### Wisps
+
+Issue #647. Wisps use the typed wrappers too.
+- `IMcpToolDirectory` (Tools.Abstractions, implemented over `McpWrapperCatalog` and `McpServerIndex`) resolves a tool by server and tool name, or by typed name. It also lists a server's typed tools, and supplies the wrapper executor and the bridge's per-tool fingerprints. Wisps can't see the catalog, and in pinned and lazy modes no wrapper is in the registry.
+- Direct MCP steps call the wrapper. LLM steps get the wrappers in their tool list, marked `ICallerScopedTool` so `TypedToolSurfaceContext.Shape` keeps them in a Low-tier run. `mcp_invoke_tool` stays as the fallback for tools without a wrapper.
+- Stored wisp resources record per-tool fingerprints, and the dream drift pass sends a wisp back to provisional when one moves. See `docs/wisps.md`.
+
 ### Metadata Refresh
 
 Agent publishes `McpMetadataRefreshRequest` to `tool.meta.mcp.refresh` (`McpStartupProbeService` does so once the agent has started). Bridge reconnects the named server, or every connected one, and publishes updated `McpServersIndexed`. Requests sent before the bridge finished starting are ignored.

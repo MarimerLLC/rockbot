@@ -516,6 +516,32 @@ public class SkillToolsTests
         Assert.AreEqual(" [Python, Wisp]", tag);
     }
 
+    [TestMethod]
+    public async Task PromoteSkillAsset_Wisp_RecordsTheToolFingerprintsOfTheMcpToolsItCalls()
+    {
+        var store = new StubSkillStore();
+        store.Add(new Skill("calendar/scan", "Scan", "# Scan", DateTimeOffset.UtcNow));
+        var tools = new SkillTools(store, new StubChatClient(), NullLogger<SkillTools>.Instance,
+            enablePromote: true, mcpToolDirectory: new OneToolDirectory());
+
+        await tools.PromoteSkillAsset("calendar/scan", "events.json", SkillResourceType.Wisp, "Events",
+            """{"description":"x","steps":[{"id":"e","mode":"Direct","gateway":"Mcp","tool":"calendar-mcp__get_events"}]}""");
+
+        var entry = (await store.GetAsync("calendar/scan"))!.Manifest!.Single();
+        Assert.AreEqual("fp-events", entry.ToolFingerprints!["calendar-mcp/get_events"]);
+    }
+
+    private sealed class OneToolDirectory : RockBot.Tools.IMcpToolDirectory
+    {
+        public RockBot.Tools.IToolExecutor WrapperExecutor => throw new NotSupportedException();
+        public RockBot.Tools.McpToolEntry? Resolve(string? serverName, string tool) =>
+            tool is "calendar-mcp__get_events" or "get_events"
+                ? new RockBot.Tools.McpToolEntry("calendar-mcp", "get_events", null, "fp-events")
+                : null;
+        public IReadOnlyList<RockBot.Tools.McpToolEntry> ForServer(string serverName) => [];
+        public bool IsServerIndexed(string serverName) => serverName == "calendar-mcp";
+    }
+
     // ── MCP surface baselines (#615) ──────────────────────────────────────────
 
     private static readonly SkillSurfaceBaseline OldBaseline =

@@ -71,13 +71,13 @@ public sealed class WispToolSkillProvider : IToolSkillProvider
           "definitions": [
             { "description": "Events for marimer-work",
               "steps": [{ "id": "e", "mode": "Direct", "gateway": "Mcp",
-                          "server": "calendar-mcp", "tool": "get_calendar_events",
+                          "tool": "calendar-mcp__get_calendar_events",
                           "params": { "accountId": "marimer-work", "timeZone": "America/Chicago",
                                       "startDate": "2026-04-23", "endDate": "2026-04-23" }}]
             },
             { "description": "Events for xebia",
               "steps": [{ "id": "e", "mode": "Direct", "gateway": "Mcp",
-                          "server": "calendar-mcp", "tool": "get_calendar_events",
+                          "tool": "calendar-mcp__get_calendar_events",
                           "params": { "accountId": "xebia", "timeZone": "America/Chicago",
                                       "startDate": "2026-04-23", "endDate": "2026-04-23" }}]
             }
@@ -87,7 +87,7 @@ public sealed class WispToolSkillProvider : IToolSkillProvider
 
         **Dynamic fan-out** — you discover the N items at runtime:
 
-        1. Discover. Either a direct tool call (`mcp_invoke_tool(list_accounts)`) or a
+        1. Discover. Either a direct call to the typed tool (`calendar-mcp__list_accounts`) or a
            small discovery wisp that returns the list.
         2. Read the result in the parent agent.
         3. Compose a second `spawn_wisps` call with N definitions, one per discovered
@@ -104,7 +104,7 @@ public sealed class WispToolSkillProvider : IToolSkillProvider
         depends on the previous stage's data, so no single wisp can express it. The
         parent agent runs it as a sequence of batches:
 
-        1. **Batch 1 — discover accounts.** One wisp (or a direct `mcp_invoke_tool` call):
+        1. **Batch 1 — discover accounts.** One wisp (or a direct call to the typed tool):
            `list_accounts` → returns `["marimer-work", "xebia", "personal"]`.
         2. **Read** the result in the parent agent.
         3. **Batch 2 — parallel per account.** One `spawn_wisps` call with N=3 definitions,
@@ -193,14 +193,15 @@ public sealed class WispToolSkillProvider : IToolSkillProvider
         directly to the tool with no defaulting or inference. For MCP tools that take
         no arguments, you may omit `params` entirely (or set it to `{}`).
 
-        **MCP** — Call any MCP server tool:
+        **MCP** — Call any MCP server tool. Name it by its typed name, exactly as it
+        appears in your tool list (`server__tool`); `params` are that tool's own arguments,
+        with the schema you see for it:
         ```json
         {
           "id": "get_emails",
           "mode": "Direct",
           "gateway": "Mcp",
-          "server": "ms365",
-          "tool": "search_emails",
+          "tool": "ms365__search_emails",
           "params": { "query": "from:sales subject:report", "max_results": 5 },
           "output_to": "wisp-data/emails.json"
         }
@@ -212,10 +213,13 @@ public sealed class WispToolSkillProvider : IToolSkillProvider
           "id": "list_calendars",
           "mode": "Direct",
           "gateway": "Mcp",
-          "server": "ms365",
-          "tool": "list_calendars"
+          "tool": "ms365__list_calendars"
         }
         ```
+
+        A tool that has no typed name (rare — e.g. a name too long for one) is called with
+        `server` plus the server's own tool name instead: `"server": "ms365", "tool": "list_calendars"`.
+        That form works for every tool.
 
         **Script** — Execute a Python script in an ephemeral container:
         ```json
@@ -288,9 +292,15 @@ public sealed class WispToolSkillProvider : IToolSkillProvider
         ```
 
         The LLM step's tool scope is automatically built from:
-        - All tools implied by Direct steps' gateway declarations
-        - Tools listed in the top-level `tools` array
+        - The tools the Direct steps call — MCP tools by their typed names, so the step's
+          model sees each one with its own schema
+        - Tools listed in the top-level `tools` array: a tool name (`web_browse`), a typed MCP
+          tool name (`calendar-mcp__get_calendar_events`), or an MCP server name
+          (`calendar-mcp`) for all of that server's typed tools
         - Working memory tools (always available)
+
+        Keep the scope small: the wisp model is a small one, and it does best with the few
+        tools the step needs.
 
         ### Data flow between steps
 
@@ -355,8 +365,7 @@ public sealed class WispToolSkillProvider : IToolSkillProvider
               "id": "list",
               "mode": "Direct",
               "gateway": "Mcp",
-              "server": "calendar-mcp",
-              "tool": "get_calendar_events",
+              "tool": "calendar-mcp__get_calendar_events",
               "params": {
                 "accountId": "xebia",
                 "timeZone": "America/Chicago",
@@ -376,8 +385,7 @@ public sealed class WispToolSkillProvider : IToolSkillProvider
               "id": "details",
               "mode": "Direct",
               "gateway": "Mcp",
-              "server": "calendar-mcp",
-              "tool": "get_calendar_event_details",
+              "tool": "calendar-mcp__get_calendar_event_details",
               "params": {
                 "accountId":  "{{steps.pick.result.accountId}}",
                 "calendarId": "{{steps.pick.result.calendarId}}",
@@ -448,7 +456,7 @@ public sealed class WispToolSkillProvider : IToolSkillProvider
         ```
         - `wisp-xyz`: "Fetch events" [failed] (13ms)
           Error (Structural): accountId is required
-          Tool: mcp_invoke_tool
+          Tool: calendar-mcp__get_calendar_events
         ```
 
         Fix: usually the same as above — add the missing field. Soft errors commonly
@@ -463,7 +471,7 @@ public sealed class WispToolSkillProvider : IToolSkillProvider
         ```
         - `wisp-xyz`: "Fetch details" [failed] (8ms)
           Error (Data): Event '{{steps.pick.result.eventId}}' not found
-          Tool: mcp_invoke_tool
+          Tool: calendar-mcp__get_calendar_event_details
         ```
 
         Fix: check what the upstream step actually produced (the batch summary shows
@@ -510,8 +518,7 @@ public sealed class WispToolSkillProvider : IToolSkillProvider
                   "id": "get_events",
                   "mode": "Direct",
                   "gateway": "Mcp",
-                  "server": "google-calendar",
-                  "tool": "gcal_list_events",
+                  "tool": "google-calendar__gcal_list_events",
                   "params": { "time_min": "2024-01-15T00:00:00Z", "time_max": "2024-01-15T23:59:59Z" },
                   "output_to": "wisp-data/calendar.json"
                 }
@@ -524,8 +531,7 @@ public sealed class WispToolSkillProvider : IToolSkillProvider
                   "id": "search",
                   "mode": "Direct",
                   "gateway": "Mcp",
-                  "server": "ms365",
-                  "tool": "outlook_email_search",
+                  "tool": "ms365__outlook_email_search",
                   "params": { "query": "from:team newer:1d", "max_results": 10 },
                   "output_to": "wisp-data/emails.json"
                 }
