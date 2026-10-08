@@ -15,7 +15,7 @@ internal sealed class RabbitMqSubscription : ISubscription, IAsyncDisposable
 {
     private readonly Func<CancellationToken, Task<(IChannel channel, string consumerTag)>> _channelFactory;
     private readonly ILogger _logger;
-    private readonly (string Queue, string Dlq)? _ephemeralQueues;
+    private readonly (string Queue, string? Dlq)? _ephemeralQueues;
     private readonly CancellationTokenSource _disposeCts = new();
 
     // Updated atomically by the reconnect loop; read in DisposeAsync.
@@ -40,7 +40,7 @@ internal sealed class RabbitMqSubscription : ISubscription, IAsyncDisposable
         string subscriptionName,
         Func<CancellationToken, Task<(IChannel channel, string consumerTag)>> channelFactory,
         ILogger logger,
-        (string Queue, string Dlq)? ephemeralQueues = null)
+        (string Queue, string? Dlq)? ephemeralQueues = null)
     {
         _channel = channel;
         _consumerTag = consumerTag;
@@ -135,12 +135,13 @@ internal sealed class RabbitMqSubscription : ISubscription, IAsyncDisposable
             // An ephemeral subscription's queues die with it. The DLQ is only removed when
             // empty so dead-letters stay inspectable until the broker's x-expires reaps it.
             // A process that crashes skips this; x-expires covers that case too.
-            if (_ephemeralQueues is (string queue, string dlq))
+            if (_ephemeralQueues is (string queue, var dlq))
             {
                 try
                 {
                     await channel.QueueDeleteAsync(queue);
-                    await channel.QueueDeleteAsync(dlq, ifUnused: false, ifEmpty: true);
+                    if (dlq is not null)
+                        await channel.QueueDeleteAsync(dlq, ifUnused: false, ifEmpty: true);
                 }
                 catch (Exception ex)
                 {

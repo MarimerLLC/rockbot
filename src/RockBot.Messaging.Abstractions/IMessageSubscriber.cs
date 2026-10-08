@@ -35,8 +35,9 @@ public interface IMessageSubscriber : IAsyncDisposable
     /// <summary>
     /// Subscribe to a topic with explicit <see cref="SubscriptionOptions"/>.
     /// The default implementation forwards to the basic overload and ignores
-    /// <see cref="SubscriptionOptions.Ephemeral"/>, which is correct for providers
-    /// whose subscriptions don't outlive the process (e.g. in-process).
+    /// <see cref="SubscriptionOptions.Ephemeral"/> and the queue-retention options,
+    /// which is correct for providers whose subscriptions don't outlive the process
+    /// (e.g. in-process).
     /// </summary>
     Task<ISubscription> SubscribeAsync(
         string topic,

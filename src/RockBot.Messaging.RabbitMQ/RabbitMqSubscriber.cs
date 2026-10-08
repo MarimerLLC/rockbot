@@ -56,8 +56,9 @@ public sealed class RabbitMqSubscriber : IMessageSubscriber
         var prefetchCount = _options.PrefetchCount;
         var durable = _options.Durable;
         var ephemeral = options.Ephemeral;
-        var dlqArgs = BuildDlqArguments(_options, ephemeral);
-        var args = BuildQueueArguments(_options, topic, ephemeral);
+        var deadLetter = options.DeadLetter;
+        var dlqArgs = BuildDlqArguments(_options, options);
+        var args = BuildQueueArguments(_options, topic, options);
         // Translate the abstraction's dispatchConcurrency hint into a channel-level
         // ConsumerDispatchConcurrency. Values <=1 leave it unset so we keep the
         // connection-level default and the channel processes deliveries sequentially.
@@ -141,7 +142,9 @@ public sealed class RabbitMqSubscriber : IMessageSubscriber
         {
             var channel = await OpenChannelAsync(ct);
 
-            channel = await DeclareDlqAsync(channel, ct);
+            // A subscription that opts out of dead-lettering has no DLQ to declare.
+            if (deadLetter)
+                channel = await DeclareDlqAsync(channel, ct);
 
             // Declare the main queue with dead-letter routing.
             // If the queue already exists with different arguments (e.g. after a
@@ -172,7 +175,8 @@ public sealed class RabbitMqSubscriber : IMessageSubscriber
                 await channel.QueueDeleteAsync(queueName, cancellationToken: ct);
 
                 // Re-declare DLQ and main queue on the fresh channel
-                channel = await DeclareDlqAsync(channel, ct);
+                if (deadLetter)
+                    channel = await DeclareDlqAsync(channel, ct);
 
                 await channel.QueueDeclareAsync(
                     queue: queueName, durable: durable, exclusive: false,
@@ -278,7 +282,7 @@ public sealed class RabbitMqSubscriber : IMessageSubscriber
             subscriptionName,
             CreateChannelAndConsumerAsync,
             _logger,
-            ephemeral ? (queueName, dlqName) : null);
+            ephemeral ? (queueName, deadLetter ? dlqName : null) : null);
     }
 
     /// <summary>
@@ -286,7 +290,7 @@ public sealed class RabbitMqSubscriber : IMessageSubscriber
     /// ephemeral subscription, an idle expiry. Shared DLQs never get <c>x-expires</c>:
     /// a DLQ has no consumer, so the broker would treat it as idle while still in use.
     /// </summary>
-    internal static Dictionary<string, object?>? BuildDlqArguments(RabbitMqOptions options, bool ephemeral)
+    internal static Dictionary<string, object?>? BuildDlqArguments(RabbitMqOptions options, SubscriptionOptions subscription)
     {
         var args = new Dictionary<string, object?>();
         var retention = options.DlqRetention;
@@ -297,30 +301,37 @@ public sealed class RabbitMqSubscriber : IMessageSubscriber
             args["x-max-length-bytes"] = retention.MaxLengthBytes;
             args["x-overflow"] = "drop-head";
         }
-        if (ephemeral)
-            args["x-expires"] = (long)options.EphemeralQueueExpiry.TotalMilliseconds;
+        if (subscription.Ephemeral)
+            args["x-expires"] = ToMs(subscription.IdleExpiry ?? options.EphemeralQueueExpiry);
 
         return args.Count > 0 ? args : null;
     }
 
     /// <summary>
-    /// Arguments for a subscription's main queue: dead-letter routing, plus an idle
-    /// expiry and message TTL for an ephemeral subscription.
+    /// Arguments for a subscription's main queue: dead-letter routing (unless the
+    /// subscription opts out), plus the subscription's message TTL and idle expiry.
+    /// An ephemeral subscription falls back to the configured ephemeral defaults.
     /// </summary>
-    internal static Dictionary<string, object?> BuildQueueArguments(RabbitMqOptions options, string topic, bool ephemeral)
+    internal static Dictionary<string, object?> BuildQueueArguments(
+        RabbitMqOptions options, string topic, SubscriptionOptions subscription)
     {
-        var args = new Dictionary<string, object?>
+        var args = new Dictionary<string, object?>();
+        if (subscription.DeadLetter)
         {
-            ["x-dead-letter-exchange"] = options.DeadLetterExchangeName,
-            ["x-dead-letter-routing-key"] = topic
-        };
-        if (ephemeral)
-        {
-            args["x-expires"] = (long)options.EphemeralQueueExpiry.TotalMilliseconds;
-            args["x-message-ttl"] = (long)options.EphemeralMessageTtl.TotalMilliseconds;
+            args["x-dead-letter-exchange"] = options.DeadLetterExchangeName;
+            args["x-dead-letter-routing-key"] = topic;
         }
+
+        var expiry = subscription.IdleExpiry ?? (subscription.Ephemeral ? options.EphemeralQueueExpiry : null);
+        var ttl = subscription.MessageTtl ?? (subscription.Ephemeral ? options.EphemeralMessageTtl : null);
+        if (expiry is { } e)
+            args["x-expires"] = ToMs(e);
+        if (ttl is { } t)
+            args["x-message-ttl"] = ToMs(t);
         return args;
     }
+
+    private static long ToMs(TimeSpan value) => (long)value.TotalMilliseconds;
 
     private static MessageEnvelope MapToEnvelope(BasicDeliverEventArgs ea)
     {

@@ -21,6 +21,24 @@ internal sealed class AgentDiscoveryService(
     /// <summary>How often to re-broadcast the agent card so late-joining callers can discover it.</summary>
     private static readonly TimeSpan ReannounceInterval = TimeSpan.FromMinutes(2);
 
+    /// <summary>
+    /// Queue retention for the discovery subscription (#650). The queue is durable and
+    /// named per identity, so it outlives a stopped agent and keeps collecting every other
+    /// agent's re-announcements. An announcement is superseded within one
+    /// <see cref="ReannounceInterval"/>, so a backlog is pure waste: messages expire after
+    /// a few intervals and are dropped rather than dead-lettered, and a queue unused for a
+    /// day is deleted by the broker. Not <see cref="SubscriptionOptions.Ephemeral"/>: that
+    /// deletes the queue on dispose, which during a rolling restart would pull it out from
+    /// under the replacement pod that shares it. Discovery state is rebuilt from fresh
+    /// announcements on start, so nothing is lost when a queue expires.
+    /// </summary>
+    internal static readonly SubscriptionOptions DiscoverySubscriptionOptions = new()
+    {
+        MessageTtl = ReannounceInterval * 5,
+        IdleExpiry = TimeSpan.FromHours(24),
+        DeadLetter = false,
+    };
+
     private ISubscription? _subscription;
     private CancellationTokenSource? _reAnnounceCts;
 
@@ -31,6 +49,7 @@ internal sealed class AgentDiscoveryService(
             options.DiscoveryTopic,
             $"{agent.Name}.discovery",
             HandleDiscoveryMessage,
+            DiscoverySubscriptionOptions,
             cancellationToken);
 
         logger.LogInformation("Subscribed to discovery topic {Topic}", options.DiscoveryTopic);
