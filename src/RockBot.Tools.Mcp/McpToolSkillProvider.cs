@@ -134,6 +134,8 @@ internal sealed class McpToolSkillProvider : IToolSkillProvider
           call's result, or the server's next question.
         - If the conversation doesn't settle it, ask the user, end your turn, and answer when
           they reply. A yes/no, confirm or approve field is always the user's to answer.
+        - In a subagent you can't ask the user: decline what your task doesn't settle, and say
+          in your result what the server asked.
         - `mcp_answer(question_id, decline: true)` refuses; the server goes on without it.
         - A question is answered once, only from the conversation that caused it, and expires
           after the time it states. A restart ends the call; you'll be told what it was doing.

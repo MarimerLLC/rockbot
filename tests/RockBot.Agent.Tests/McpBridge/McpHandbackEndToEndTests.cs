@@ -295,6 +295,25 @@ public class McpHandbackEndToEndTests
 
     [TestMethod]
     [Timeout(30_000, CooperativeCancellation = true)]
+    public async Task ASubagentAnswersFromContext_ButDeclinesADecision()
+    {
+        await using var harness = await StartAsync();
+        const string subagent = "subagent/task-1";
+
+        // Data: answered from the subagent's own context.
+        var mailbox = IdIn((await harness.InvokeAsync("search_mail", "{}", sessionId: subagent, canAnswer: true)).Content);
+        var answered = await harness.AnswerAsync(mailbox, """{"mailbox":"work"}""", sessionId: subagent);
+        StringAssert.StartsWith(answered.Result!.Content, "round 1 accept:work");
+
+        // A decision: it's told it can't ask the user, and confirming is refused.
+        var handedBack = await harness.InvokeAsync("delete_rows", "{}", sessionId: subagent, canAnswer: true);
+        StringAssert.Contains(handedBack.Content, "you can't ask them from here");
+        var refused = await harness.AnswerAsync(IdIn(handedBack.Content), """{"confirm":true}""", sessionId: subagent);
+        StringAssert.Contains(refused.Error, "decline it");
+    }
+
+    [TestMethod]
+    [Timeout(30_000, CooperativeCancellation = true)]
     public async Task ADecisionCanBeDeclinedWithoutTheUser()
     {
         await using var harness = await StartAsync();

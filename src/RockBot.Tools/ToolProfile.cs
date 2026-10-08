@@ -87,15 +87,15 @@ public static class ToolProfiles
     ///   primary session, not the subagent's, so it is silently useless here.</item>
     ///   <item><c>mcp_register_server</c> / <c>mcp_unregister_server</c> — infrastructure-only;
     ///   subagents must not reconfigure the MCP bridge.</item>
-    ///   <item><c>mcp_answer</c> — a subagent can't put an MCP server's question to the user, so
-    ///   the server's responder answers its calls instead of handing questions back.</item>
     /// </list>
-    /// Everything else (including <c>mcp:management</c> invoke/list/details) is allowed.
+    /// Everything else (including <c>mcp:management</c> invoke/list/details) is allowed —
+    /// <c>mcp_answer</c> too, so a subagent answers an MCP server's question from its task's
+    /// context. It can't ask the user, so it declines a decision and reports it in its result.
     /// </summary>
     public static ToolProfile Subagent { get; } = ToolProfile.All
         .Named("Subagent")
         .DenyingSources("subagent", "scheduling", "a2a")
-        .DenyingToolNames("mcp_register_server", "mcp_unregister_server", "mcp_answer");
+        .DenyingToolNames("mcp_register_server", "mcp_unregister_server");
 
     /// <summary>
     /// Scheduled-task surface. Denies MCP bridge reconfiguration, and <c>mcp_answer</c> because

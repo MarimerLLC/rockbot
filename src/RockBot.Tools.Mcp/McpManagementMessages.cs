@@ -209,3 +209,13 @@ public sealed record McpAnswerQuestionResponse
 
     public string? Error { get; init; }
 }
+
+/// <summary>
+/// A run's session has ended for good (a subagent finished): the bridge releases any question it
+/// handed back to that session and cancels the parked call. Fire-and-forget; no reply.
+/// Published to <c>mcp.manage</c>.
+/// </summary>
+public sealed record McpReleaseSessionQuestionsRequest
+{
+    public required string SessionId { get; init; }
+}

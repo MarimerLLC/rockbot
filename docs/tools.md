@@ -617,8 +617,12 @@ Behavior:
   the user and answers on a later turn, with the `mcp_answer` tool. The paused call then resumes
   and `mcp_answer` returns its result.
   - It applies only to servers on the 2026-07-28 protocol, and only to calls from a run that has
-    `mcp_answer`, which is the primary agent's conversation. Subagents, scheduled tasks and
-    wisps get the server's `responder` instead, as do older servers.
+    `mcp_answer`: the primary agent's conversation, and subagents.
+    - Scheduled tasks, workers and wisps get the server's `responder` instead, as do older
+      servers.
+    - A subagent answers from its task's context. It can't ask the user, so it declines
+      decisions and reports them in its result.
+    - When a subagent's run ends, any question it left open is released.
   - It must be in the **server's own** `elicitation` block. `McpBridge:DefaultElicitation`
     treats it as `auto`.
   - Everything above still runs first: credential and denied fields, url mode, `defaults` that

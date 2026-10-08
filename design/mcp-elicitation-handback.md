@@ -126,7 +126,20 @@ behaves like `auto`, using the server's responder.
 
 **Callers that can't answer.** Only a run that has `mcp_answer` can take a hand-back:
 - Wisps make their calls under their parent's session id but have no `mcp_answer`.
-- Subagents, workers and scheduled runs don't have it: their tool profiles leave it out.
+- Workers and scheduled runs don't have it: their tool profiles leave it out.
+
+**Subagents** do take hand-backs. A subagent is a full agent loop on a task, and it knows its
+task's context far better than a responder that sees only the call's arguments. It can't ask
+the user, though:
+- The hand-back tells it to decline what it can't settle, and to say in its result what the
+  server asked.
+- A decision is never accepted from it. Its session has no user turns, so the check always
+  fails, and the refusal tells it to decline.
+- When its run ends, `SubagentRunner` notifies `ISessionEndListener`s. The MCP listener sends
+  `McpReleaseSessionQuestionsRequest`, and the bridge cancels any question still open for that
+  session rather than leaving its call parked until the TTL.
+
+Passing a subagent's decision up to the user through the primary agent is a possible follow-up.
 
 The run says so explicitly:
 - `AgentLoopRunner` marks a run whose tool list includes `mcp_answer`.
@@ -324,9 +337,8 @@ Before the bridge accepts tool invocations:
    > again, and include the answer in the arguments if the tool takes it (for example in
    > `context`), or ask the user first. Full details: `get_from_working_memory("session/abc123/mcp-interrupted/q_7f3c2a…")`.
 
-   Interrupted calls from other sessions are logged and marked, not announced. In practice
-   there are none: subagents, workers and scheduled tasks don't have `mcp_answer`.
-   The run that made them doesn't outlive a restart.
+   Interrupted calls from subagents are logged and marked, not announced. The run that made
+   them doesn't outlive a restart.
 3. **Mark notified.** Delivery is at least once. A crash between notifying and marking may
    repeat a notice, and the working-memory key and `questionId` let a repeat be recognized as
    one.

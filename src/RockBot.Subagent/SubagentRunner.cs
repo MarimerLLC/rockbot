@@ -39,7 +39,8 @@ internal sealed class SubagentRunner(
     ISkillResourceUsageStore? skillResourceUsageStore = null,
     ISessionA2AAwaiter? a2aAwaiter = null,
     IMcpSkillSurface? mcpSkillSurface = null,
-    IMcpToolDirectory? mcpToolDirectory = null)
+    IMcpToolDirectory? mcpToolDirectory = null,
+    IEnumerable<ISessionEndListener>? sessionEndListeners = null)
 {
     public async Task RunAsync(
         string taskId,
@@ -305,6 +306,20 @@ internal sealed class SubagentRunner(
             {
                 logger.LogWarning(ex,
                     "Subagent {TaskId} A2A await threw — continuing to publish anyway", taskId);
+            }
+        }
+
+        // The run is over and its session with it. Anything it left open there — an MCP question
+        // handed back to it and never answered — is released now rather than left waiting.
+        foreach (var listener in sessionEndListeners ?? [])
+        {
+            try
+            {
+                await listener.OnSessionEndedAsync(subagentNamespace, CancellationToken.None);
+            }
+            catch (Exception ex)
+            {
+                logger.LogWarning(ex, "Subagent {TaskId}: a session-end listener failed", taskId);
             }
         }
 

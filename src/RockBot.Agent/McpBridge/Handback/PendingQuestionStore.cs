@@ -156,9 +156,19 @@ internal sealed class PendingQuestionStore : IDisposable
     /// Abandons every open question from <paramref name="serverName"/> and cancels their calls,
     /// because the server was removed or its policy changed.
     /// </summary>
-    public async Task CancelServerAsync(string serverName, string reason)
+    public Task CancelServerAsync(string serverName, string reason) =>
+        CancelWhereAsync(q => string.Equals(q.ServerName, serverName, StringComparison.OrdinalIgnoreCase), reason);
+
+    /// <summary>
+    /// Abandons every open question asked of <paramref name="sessionId"/> and cancels their calls,
+    /// because the run that held the session has ended (a subagent finished).
+    /// </summary>
+    public Task CancelSessionAsync(string sessionId, string reason) =>
+        CancelWhereAsync(q => string.Equals(q.SessionId, sessionId, StringComparison.Ordinal), reason);
+
+    private async Task CancelWhereAsync(Func<PendingQuestion, bool> match, string reason)
     {
-        foreach (var question in _open.Values.Where(q => string.Equals(q.ServerName, serverName, StringComparison.OrdinalIgnoreCase)).ToList())
+        foreach (var question in _open.Values.Where(match).ToList())
         {
             if (!Abandon(question, reason))
                 continue;

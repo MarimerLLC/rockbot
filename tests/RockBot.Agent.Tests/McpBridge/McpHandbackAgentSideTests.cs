@@ -155,7 +155,7 @@ public class McpHandbackAgentSideTests
     }
 
     [TestMethod]
-    public void SubagentsWorkersAndPatrols_DontGetMcpAnswer()
+    public void SubagentsGetMcpAnswer_PatrolsDont()
     {
         var registration = new ToolRegistration
         {
@@ -166,8 +166,60 @@ public class McpHandbackAgentSideTests
 
         Assert.IsTrue(ToolProfiles.Main.Matches(registration));
         Assert.IsTrue(ToolProfiles.A2ASynthesis.Matches(registration));
-        Assert.IsFalse(ToolProfiles.Subagent.Matches(registration));
+        Assert.IsTrue(ToolProfiles.Subagent.Matches(registration), "a subagent answers from its task's context");
         Assert.IsFalse(ToolProfiles.Scheduled.Matches(registration));
+    }
+
+    [TestMethod]
+    [Timeout(30_000, CooperativeCancellation = true)]
+    public async Task WhenASubagentsSessionEnds_ItsUnansweredQuestionIsReleased()
+    {
+        await using var harness = await StartAsync();
+        var agent = await McpWrapperEndToEndTests.ConnectAgentAsync(harness, McpWrapperMode.Off);
+        const string subagentSession = "subagent/task-1";
+
+        var handedBack = await harness.InvokeAsync("search_mail", "{}", sessionId: subagentSession, canAnswer: true);
+        var id = McpHandbackEndToEndTests.IdIn(handedBack.Content);
+        StringAssert.Contains(handedBack.Content, "say in your result what the server asked",
+            "a subagent can't ask the user, so it isn't told to");
+
+        // The agent side's listener, as SubagentRunner calls it when the run ends. Its message is
+        // delivered to the bridge over the harness's bus.
+        var listener = new McpHandbackSessionEndListener(agent.Index, harness.BusPublisher, new AgentIdentity("test-agent"));
+        await listener.OnSessionEndedAsync(subagentSession, CancellationToken.None);
+
+        var late = await harness.AnswerAsync(id, """{"mailbox":"work"}""", sessionId: subagentSession);
+        StringAssert.Contains(late.Error, "finished without answering");
+    }
+
+    [TestMethod]
+    public async Task TheSessionEndListener_SendsNothingWithoutAHandBackServer()
+    {
+        var publisher = new RecordingPublisher();
+        var index = new McpServerIndex();
+        index.Apply(new McpServersIndexed { Servers = [new McpServerSummary { ServerName = "plain" }] });
+
+        await new McpHandbackSessionEndListener(index, publisher, new AgentIdentity("a"))
+            .OnSessionEndedAsync("subagent/x", CancellationToken.None);
+        Assert.AreEqual(0, publisher.Count);
+
+        index.Apply(new McpServersIndexed { Servers = [new McpServerSummary { ServerName = "asks", Handback = true }] });
+        await new McpHandbackSessionEndListener(index, publisher, new AgentIdentity("a"))
+            .OnSessionEndedAsync("subagent/x", CancellationToken.None);
+        Assert.AreEqual(1, publisher.Count);
+    }
+
+    private sealed class RecordingPublisher : RockBot.Messaging.IMessagePublisher
+    {
+        public int Count { get; private set; }
+
+        public Task PublishAsync(string topic, RockBot.Messaging.MessageEnvelope envelope, CancellationToken cancellationToken = default)
+        {
+            Count++;
+            return Task.CompletedTask;
+        }
+
+        public ValueTask DisposeAsync() => default;
     }
 
     private sealed class CallerScopedAnswer : AIFunction, ICallerScopedTool

@@ -286,6 +286,9 @@ result is the call's result.
 - **Never decide a yes/no, confirm or approve question yourself.** It is the
   user's decision; ask, and answer with their reply.
 - **Decline** (`decline: true`) when the user doesn't want to answer.
+- **In a subagent you can't ask the user.** Answer what your task's context
+  settles. Decline the rest, decisions included, and say in your result what
+  the server asked so the primary agent can take it to the user.
 - **After a restart** you may see that a call "was interrupted by a restart".
   That call is gone. Check whether the user's request still needs it before
   calling the tool again, and include what the server was asking in the new

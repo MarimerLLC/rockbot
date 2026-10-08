@@ -2431,6 +2431,14 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
 
     private async Task<MessageResult> HandleManagementRequestAsync(MessageEnvelope envelope, CancellationToken ct)
     {
+        // Fire-and-forget: a subagent's session ended, so nothing will answer what it was asked.
+        if (envelope.MessageType == typeof(McpReleaseSessionQuestionsRequest).FullName)
+        {
+            if (envelope.GetPayload<McpReleaseSessionQuestionsRequest>() is { SessionId.Length: > 0 } release)
+                await _handback.CancelSessionAsync(release.SessionId, "the run that was asked finished without answering");
+            return MessageResult.Ack;
+        }
+
         var replyTo = envelope.ReplyTo;
         if (replyTo is null)
         {
@@ -2853,10 +2861,7 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
                 .ToList();
             if (decisions.Count > 0 && !await UserSpokeSinceAsync(question.SessionId, question.CreatedAt, ct))
             {
-                await RefuseAsync(
-                    $"{string.Join(", ", decisions)} {(decisions.Count == 1 ? "is a decision" : "are decisions")} " +
-                    "the user has to make. Ask the user, and call mcp_answer after they reply. The question stays open.",
-                    "decision-without-user");
+                await RefuseAsync(HandbackText.DecisionNeedsUser(decisions, question.SessionId), "decision-without-user");
                 return;
             }
 

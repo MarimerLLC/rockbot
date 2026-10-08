@@ -61,6 +61,7 @@ public static class McpServiceCollectionExtensions
 
         builder.Services.AddSingleton<McpServerIndex>();
         builder.Services.AddSingleton<McpManagementExecutor>();
+        builder.Services.AddSingleton<ISessionEndListener, McpHandbackSessionEndListener>();
         builder.Services.AddHostedService<McpStartupProbeService>();
         builder.Services.AddHostedService<McpSkillNameMigrationService>();
         builder.Services.AddSingleton<IToolSkillProvider, McpToolSkillProvider>();
