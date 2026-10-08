@@ -42,6 +42,10 @@ public sealed record McpGetServiceDetailsResponse
 
     public List<McpToolDefinition> Tools { get; init; } = [];
     public List<McpPromptDefinition> Prompts { get; init; } = [];
+
+    /// <summary>Resources plus resource templates the server lists; read them with <c>mcp_list_resources</c>.</summary>
+    public int ResourceCount { get; init; }
+
     public string? Error { get; init; }
 }
 
@@ -118,4 +122,45 @@ public sealed record McpPromptMessage
     public required string Role { get; init; }       // "user" or "assistant"
     public required string Content { get; init; }    // text content (most common case)
     public string ContentType { get; init; } = "text";
+}
+
+// ── ListResources ────────────────────────────────────────────────────────────
+
+/// <summary>
+/// Requests the resources and resource templates an MCP server lists (#617).
+/// Published to <c>mcp.manage</c>.
+/// </summary>
+public sealed record McpListResourcesRequest
+{
+    public required string ServerName { get; init; }
+}
+
+/// <summary>Bridge response carrying a server's resources and resource templates.</summary>
+public sealed record McpListResourcesResponse
+{
+    public required string ServerName { get; init; }
+    public List<McpResourceDefinition> Resources { get; init; } = [];
+    public List<McpResourceDefinition> Templates { get; init; } = [];
+    public string? Error { get; init; }
+}
+
+// ── ReadResource ─────────────────────────────────────────────────────────────
+
+/// <summary>
+/// Requests one resource from an MCP server by the server's own URI, any template expanded
+/// (#617). Published to <c>mcp.manage</c>.
+/// </summary>
+public sealed record McpReadResourceRequest
+{
+    public required string ServerName { get; init; }
+    public required string Uri { get; init; }
+}
+
+/// <summary>Bridge response carrying a read resource's contents.</summary>
+public sealed record McpReadResourceResponse
+{
+    public required string ServerName { get; init; }
+    public required string Uri { get; init; }
+    public List<McpResourceContentView> Contents { get; init; } = [];
+    public string? Error { get; init; }
 }

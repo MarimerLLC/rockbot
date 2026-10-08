@@ -180,6 +180,36 @@ public static class McpCallDiagnostics
                $"Available prompts: [{string.Join(", ", availablePrompts)}].";
     }
 
+    /// <summary>How many resource URIs an unknown-resource hint lists before it summarises the rest.</summary>
+    internal const int MaxListedResources = 50;
+
+    /// <summary>Message for a resource read on a server that doesn't have the resources capability.</summary>
+    public static string DescribeNoResources(string serverName) =>
+        $"MCP server '{serverName}' exposes no resources. Use its tools instead " +
+        $"(mcp_get_service_details(server_name: \"{serverName}\")).";
+
+    /// <summary>
+    /// Message for a resource URI the server rejected and doesn't declare (#617): names every
+    /// declared resource URI and template (up to <see cref="MaxListedResources"/>) so one retry can
+    /// get the URI right, and keeps the server's own error for a URI that was close.
+    /// </summary>
+    public static string DescribeUnknownResource(
+        string serverName, string uri, IReadOnlyCollection<McpResourceDefinition> declared, string? cause)
+    {
+        var underlying = string.IsNullOrWhiteSpace(cause) ? "" : $" Underlying error: {cause}";
+        if (declared.Count == 0)
+            return $"Unknown resource '{uri}': server '{serverName}' lists no resources or templates.{underlying}";
+
+        var uris = declared.Select(d => d.Uri).Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal).ToList();
+        var listed = string.Join(", ", uris.Take(MaxListedResources));
+        var more = uris.Count > MaxListedResources ? $" and {uris.Count - MaxListedResources} more" : "";
+
+        return $"Unknown resource '{uri}' on server '{serverName}'. " +
+               $"Its resources and templates: [{listed}]{more}. " +
+               "Re-read with one of those URIs (expanding any {…} template expression), or call " +
+               $"mcp_list_resources(server_name: \"{serverName}\") for their descriptions.{underlying}";
+    }
+
     /// <summary>
     /// Returns an error naming the required prompt arguments the call left out, or null when all
     /// are present. Lists every declared argument so one retry can get the call right.

@@ -68,7 +68,7 @@ public class McpServersIndexedHandlerTests
     }
 
     [TestMethod]
-    public async Task HandleAsync_FirstMessage_RegistersExactlySixManagementTools()
+    public async Task HandleAsync_FirstMessage_RegistersExactlyEightManagementTools()
     {
         var handler = CreateHandler();
         var message = new McpServersIndexed
@@ -79,7 +79,7 @@ public class McpServersIndexedHandlerTests
         await handler.HandleAsync(message, CreateContext(message));
 
         var tools = _registry.GetTools();
-        Assert.AreEqual(6, tools.Count);
+        Assert.AreEqual(8, tools.Count);
 
         var names = tools.Select(t => t.Name).ToHashSet();
         Assert.IsTrue(names.Contains("mcp_list_services"));
@@ -88,6 +88,8 @@ public class McpServersIndexedHandlerTests
         Assert.IsTrue(names.Contains("mcp_register_server"));
         Assert.IsTrue(names.Contains("mcp_unregister_server"));
         Assert.IsTrue(names.Contains("mcp_get_prompt"));
+        Assert.IsTrue(names.Contains("mcp_list_resources"));
+        Assert.IsTrue(names.Contains("mcp_read_resource"));
     }
 
     [TestMethod]
@@ -102,8 +104,8 @@ public class McpServersIndexedHandlerTests
         await handler.HandleAsync(message, CreateContext(message));
         await handler.HandleAsync(message, CreateContext(message));
 
-        // Tools should be registered exactly once — still 6, not 12
-        Assert.AreEqual(6, _registry.GetTools().Count);
+        // Tools should be registered exactly once — still 8, not 16
+        Assert.AreEqual(8, _registry.GetTools().Count);
     }
 
     [TestMethod]

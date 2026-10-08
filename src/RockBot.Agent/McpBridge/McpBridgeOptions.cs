@@ -26,6 +26,13 @@ public sealed class McpBridgeOptions
     public int MaxTimeoutMs { get; set; } = 900_000;
 
     /// <summary>
+    /// Longest text resource, in characters, that <c>mcp_read_resource</c> returns inline (#617).
+    /// Longer text is saved to the shared volume and returned as a path, as binary resources
+    /// always are.
+    /// </summary>
+    public int ResourceInlineTextLimit { get; set; } = 32_000;
+
+    /// <summary>
     /// When true, the bridge calls the LLM to generate a one-sentence summary of each
     /// connected server's capabilities before publishing <see cref="McpServersIndexed"/>.
     /// Falls back to a simple tool-list summary if the LLM is unavailable or the call fails.

@@ -581,7 +581,9 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
                 var filteredTools = ApplyToolFilters(tools.ToList(), config);
 
                 var (prompts, promptsKnown) = await ListPromptsAsync(name, newClient, previous, ct);
-                var (fingerprint, toolFingerprints) = ComputeFingerprints(filteredTools, prompts, promptsKnown);
+                var resourceLists = await ListResourcesAsync(name, newClient, previous, ct);
+                var (fingerprint, toolFingerprints) = ComputeFingerprints(
+                    filteredTools, prompts, resourceLists, promptsKnown && resourceLists.Known);
 
                 var serverInfo = newClient.ServerInfo;
                 var metadata = new McpServerMetadata(
@@ -592,9 +594,9 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
                     Instructions: newClient.ServerInstructions);
 
                 _logger.LogInformation(
-                    "Connected to MCP server {Name} (impl={ImplName} v{Version}) with {ToolCount} tools and {PromptCount} prompts",
+                    "Connected to MCP server {Name} (impl={ImplName} v{Version}) with {ToolCount} tools, {PromptCount} prompts and {ResourceCount} resources",
                     name, metadata.ImplementationName ?? "(unknown)", metadata.Version ?? "(unknown)",
-                    filteredTools.Count, prompts.Count);
+                    filteredTools.Count, prompts.Count, resourceLists.Count);
 
                 // Cached so a future health flip can re-publish without re-running the (LLM-driven)
                 // summary generation. Every reconnect and config reload comes through here; when the
@@ -604,7 +606,7 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
                               && previousFingerprint == fingerprint
                               && previous.Metadata == metadata
                     ? previous.Summary
-                    : await GenerateSummaryAsync(name, metadata, filteredTools, prompts, ct);
+                    : await GenerateSummaryAsync(name, metadata, filteredTools, prompts, resourceLists, ct);
                 summary = summary with
                 {
                     ServerId = config.Id,
@@ -622,6 +624,8 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
                     Client = newClient,
                     Tools = filteredTools,
                     Prompts = prompts,
+                    DownstreamResources = resourceLists.Resources,
+                    DownstreamResourceTemplates = resourceLists.Templates,
                     Metadata = metadata,
                     Summary = summary,
                     Elicitation = elicitation,
@@ -840,6 +844,91 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
         }
     }
 
+    /// <summary>
+    /// A server's resources and resource templates (#617), as one read. <see cref="Known"/> is
+    /// false only when a list couldn't be read.
+    /// </summary>
+    internal sealed record ResourceLists(
+        IReadOnlyList<McpClientResource> Resources,
+        IReadOnlyList<McpClientResourceTemplate> Templates,
+        bool Known)
+    {
+        public static readonly ResourceLists None = new([], [], true);
+
+        public int Count => Resources.Count + Templates.Count;
+
+        public List<McpResourceDefinition> Definitions() =>
+            [.. Resources.Select(ToResourceDefinition), .. Templates.Select(ToResourceDefinition)];
+
+        public static ResourceLists Of(ConnectedServer server, bool known = true) =>
+            new(server.DownstreamResources, server.DownstreamResourceTemplates, known);
+    }
+
+    /// <summary>
+    /// Lists a server's resources and resource templates, the same way <see cref="ListPromptsAsync"/>
+    /// lists prompts: a server without the capability, or one answering method-not-found, simply
+    /// has none — that's most servers, so it logs at Debug only. Templates are listed separately
+    /// and a server may implement one list and not the other. On any other failure the lists
+    /// <paramref name="previous"/> knew are kept and the result is unknown.
+    /// </summary>
+    private async Task<ResourceLists> ListResourcesAsync(
+        string name, McpClient client, ConnectedServer? previous, CancellationToken ct)
+    {
+        if (client.ServerCapabilities?.Resources is null)
+            return ResourceLists.None;
+
+        try
+        {
+            var resources = await ListOrEmptyAsync<McpClientResource>("resources/list",
+                async () => [.. await client.ListResourcesAsync(cancellationToken: ct)]);
+            var templates = await ListOrEmptyAsync<McpClientResourceTemplate>("resources/templates/list",
+                async () => [.. await client.ListResourceTemplatesAsync(cancellationToken: ct)]);
+            return new ResourceLists(resources, templates, true);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Listing resources on MCP server {Name} failed; its surface fingerprint is unknown", name);
+            return previous is null ? ResourceLists.None with { Known = false } : ResourceLists.Of(previous, known: false);
+        }
+
+        async Task<List<T>> ListOrEmptyAsync<T>(string method, Func<Task<List<T>>> list)
+        {
+            try
+            {
+                return await list();
+            }
+            catch (McpProtocolException ex) when (ex.ErrorCode == McpErrorCode.MethodNotFound)
+            {
+                _logger.LogDebug("MCP server {Name} advertises resources but does not implement {Method}", name, method);
+                return [];
+            }
+        }
+    }
+
+    private static McpResourceDefinition ToResourceDefinition(McpClientResource resource) => new()
+    {
+        Uri = resource.Uri,
+        Name = resource.Name,
+        Title = resource.Title,
+        Description = resource.Description,
+        MimeType = resource.MimeType,
+        Size = resource.ProtocolResource.Size
+    };
+
+    private static McpResourceDefinition ToResourceDefinition(McpClientResourceTemplate template) => new()
+    {
+        Uri = template.UriTemplate,
+        Name = template.Name,
+        Title = template.Title,
+        Description = template.Description,
+        MimeType = template.MimeType,
+        IsTemplate = true
+    };
+
     private static McpPromptDefinition ToPromptDefinition(McpClientPrompt prompt) => new()
     {
         Name = prompt.Name,
@@ -853,28 +942,31 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
         tool.JsonSchema.ValueKind != JsonValueKind.Undefined ? tool.JsonSchema.GetRawText() : null;
 
     /// <summary>
-    /// The server fingerprint (null when the prompt list couldn't be read) and per-tool
-    /// fingerprints for a surface.
+    /// The server fingerprint (null when the prompt or resource lists couldn't be read) and
+    /// per-tool fingerprints for a surface.
     /// </summary>
     private static (string? Server, Dictionary<string, string> Tools) ComputeFingerprints(
-        IReadOnlyList<McpClientTool> tools, IReadOnlyList<McpClientPrompt> prompts, bool promptsKnown)
+        IReadOnlyList<McpClientTool> tools, IReadOnlyList<McpClientPrompt> prompts,
+        ResourceLists resources, bool surfaceKnown)
     {
         var toolFingerprints = new Dictionary<string, string>(StringComparer.Ordinal);
         foreach (var tool in tools)
             toolFingerprints.TryAdd(tool.Name, McpSurfaceFingerprint.Tool(tool.Name, tool.Description, RawSchema(tool)));
 
-        var server = promptsKnown
+        var server = surfaceKnown
             ? McpSurfaceFingerprint.Server(
                 tools.Select(t => (t.Name, t.Description, RawSchema(t))),
-                prompts.Select(ToPromptDefinition))
+                prompts.Select(ToPromptDefinition),
+                resources.Definitions())
             : null;
 
         return (server, toolFingerprints);
     }
 
     /// <summary>
-    /// Client notification handlers that queue a surface refresh when the server says its tool or
-    /// prompt list changed. Servers that never send these are covered by the periodic refresh.
+    /// Client notification handlers that queue a surface refresh when the server says its tool,
+    /// prompt or resource list changed. Servers that never send these are covered by the periodic
+    /// refresh.
     /// </summary>
     private IEnumerable<KeyValuePair<string, Func<JsonRpcNotification, CancellationToken, ValueTask>>> SurfaceChangeHandlers(string name)
     {
@@ -888,6 +980,7 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
         [
             new(NotificationMethods.ToolListChangedNotification, handler),
             new(NotificationMethods.PromptListChangedNotification, handler),
+            new(NotificationMethods.ResourceListChangedNotification, handler),
         ];
     }
 
@@ -937,7 +1030,7 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
         "Its configuration can only be changed in the agent's MCP configuration; ask the user if it needs to change.";
 
     /// <summary>
-    /// Re-reads a connected server's tools and prompts on its existing connection and, when the
+    /// Re-reads a connected server's tools, prompts and resources on its existing connection and, when the
     /// surface fingerprint moved, publishes a new snapshot of that connection, regenerates the
     /// summary and announces the change. An unchanged surface publishes nothing. Returns true when
     /// a change was published. A server whose lists can't be read is left alone: a dead connection
@@ -969,7 +1062,9 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
         }
 
         var (prompts, promptsKnown) = await ListPromptsAsync(name, current.Client, current, ct);
-        var (fingerprint, toolFingerprints) = ComputeFingerprints(tools, prompts, promptsKnown);
+        var resourceLists = await ListResourcesAsync(name, current.Client, current, ct);
+        var (fingerprint, toolFingerprints) = ComputeFingerprints(
+            tools, prompts, resourceLists, promptsKnown && resourceLists.Known);
         _lastSurfaceCheck[name] = DateTimeOffset.UtcNow;
 
         var unchanged = fingerprint is not null
@@ -978,7 +1073,7 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
         if (unchanged)
             return false;
 
-        var summary = (await GenerateSummaryAsync(name, current.Metadata, tools, prompts, ct)) with
+        var summary = (await GenerateSummaryAsync(name, current.Metadata, tools, prompts, resourceLists, ct)) with
         {
             ServerId = current.Config.Id,
             Fingerprint = fingerprint,
@@ -988,11 +1083,18 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
         };
 
         // Same connection, new surface: the snapshot keeps its resources, so nothing is retired.
-        _connections.Publish(current with { Tools = tools, Prompts = prompts, Summary = summary });
+        _connections.Publish(current with
+        {
+            Tools = tools,
+            Prompts = prompts,
+            DownstreamResources = resourceLists.Resources,
+            DownstreamResourceTemplates = resourceLists.Templates,
+            Summary = summary
+        });
 
         _logger.LogInformation(
-            "MCP server {Name} changed its surface: now {ToolCount} tools and {PromptCount} prompts",
-            name, tools.Count, prompts.Count);
+            "MCP server {Name} changed its surface: now {ToolCount} tools, {PromptCount} prompts and {ResourceCount} resources",
+            name, tools.Count, prompts.Count, resourceLists.Count);
 
         if (!IsServerHiddenByAuth(current.Config))
             await PublishServersIndexedAsync([summary], [], ct);
@@ -1053,11 +1155,11 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
     /// may proceed.
     /// </summary>
     /// <summary>
-    /// The time a <c>prompts/get</c> on <paramref name="config"/>'s server may take: its
+    /// The time a <c>prompts/get</c> or <c>resources/read</c> on <paramref name="config"/>'s server may take: its
     /// <c>ToolTimeoutMs</c> when valid, else <see cref="McpBridgeOptions.DefaultTimeoutMs"/>, never
     /// over <see cref="McpBridgeOptions.MaxTimeoutMs"/> — a tool call's budget without the header.
     /// </summary>
-    private int PromptTimeoutMs(McpBridgeServerConfig config)
+    private int RequestTimeoutMs(McpBridgeServerConfig config)
     {
         var timeoutMs = config.ToolTimeoutMs is int serverTimeoutMs and > 0
             ? serverTimeoutMs
@@ -1093,6 +1195,192 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
                 ContentType = m.Content?.Type ?? "unknown"
             }).ToList()
     };
+
+    // ── Resources (#617) ──────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Answers <c>mcp_list_resources</c> from the lists read at connect (and kept current by
+    /// <c>resources/list_changed</c> and the periodic refresh), without a downstream call.
+    /// </summary>
+    private McpListResourcesResponse ListResources(McpListResourcesRequest req)
+    {
+        if (!_connections.TryGet(req.ServerName, out var server) || server is null)
+        {
+            return new McpListResourcesResponse
+            {
+                ServerName = req.ServerName,
+                Error = _connections.IsConfigured(req.ServerName)
+                    ? McpCallDiagnostics.DescribeUnavailableServer(req.ServerName)
+                    : McpCallDiagnostics.DescribeUnknownServer(req.ServerName, _connections.ConfiguredNames)
+            };
+        }
+
+        return new McpListResourcesResponse
+        {
+            ServerName = req.ServerName,
+            Resources = server.DownstreamResources.Select(ToResourceDefinition).ToList(),
+            Templates = server.DownstreamResourceTemplates.Select(ToResourceDefinition).ToList()
+        };
+    }
+
+    /// <summary>
+    /// Reads one resource by the server's own URI. The read is tried even for a URI the server
+    /// doesn't declare — servers may serve more than they list — and only when the server rejects
+    /// it does an undeclared URI get the hint naming the declared ones. Shares the prompt path's
+    /// budget and its single reconnect-and-retry on a broken connection.
+    /// </summary>
+    private async Task<McpReadResourceResponse> ReadResourceAsync(McpReadResourceRequest req, CancellationToken ct)
+    {
+        McpReadResourceResponse Failed(string error) =>
+            new() { ServerName = req.ServerName, Uri = req.Uri, Error = error };
+
+        using var lease = _connections.Lease(req.ServerName);
+        if (lease is null)
+        {
+            return Failed(_connections.IsConfigured(req.ServerName)
+                ? McpCallDiagnostics.DescribeUnavailableServer(req.ServerName)
+                : McpCallDiagnostics.DescribeUnknownServer(req.ServerName, _connections.ConfiguredNames));
+        }
+
+        if (string.IsNullOrWhiteSpace(req.Uri))
+        {
+            return Failed("'uri' is required: the resource URI as the server lists it " +
+                          $"(see mcp_list_resources(server_name: \"{req.ServerName}\")), any template expanded.");
+        }
+
+        if (lease.Server.Client.ServerCapabilities?.Resources is null)
+            return Failed(McpCallDiagnostics.DescribeNoResources(req.ServerName));
+
+        var timeoutMs = RequestTimeoutMs(lease.Server.Config);
+
+        try
+        {
+            var result = await ReadOnceAsync(lease.Server.Client);
+            return await ToReadResponseAsync(req, result, ct);
+        }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+        {
+            _logger.LogWarning("ReadResource {Server} {Uri} TIMED OUT after {TimeoutMs}ms", req.ServerName, req.Uri, timeoutMs);
+            return Failed($"Reading resource '{req.Uri}' on server '{req.ServerName}' timed out after {timeoutMs}ms. " +
+                          "Retry once; if it times out again, try another approach.");
+        }
+        catch (McpProtocolException ex)
+        {
+            // The server answered, so the connection is fine and a reconnect would only repeat
+            // the rejection.
+            return Failed(DescribeRejectedRead(lease.Server, req, ex));
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            if (_connections.TryGetConfig(req.ServerName, out var staleConfig))
+            {
+                _logger.LogWarning(ex, "ReadResource {Server} {Uri} FAILED — reconnecting and retrying transparently",
+                    req.ServerName, req.Uri);
+                try
+                {
+                    await ConnectServerAsync(req.ServerName, staleConfig, ct, replacing: lease.Server.Client);
+                    using var retryLease = _connections.Lease(req.ServerName);
+                    if (retryLease is not null && !ReferenceEquals(retryLease.Server.Client, lease.Server.Client))
+                    {
+                        try
+                        {
+                            var retryResult = await ReadOnceAsync(retryLease.Server.Client);
+                            return await ToReadResponseAsync(req, retryResult, ct);
+                        }
+                        catch (McpProtocolException retryRejected)
+                        {
+                            return Failed(DescribeRejectedRead(retryLease.Server, req, retryRejected));
+                        }
+                    }
+                }
+                catch (Exception retryEx)
+                {
+                    _logger.LogError(retryEx, "Reconnect/retry for ReadResource {Server} {Uri} also failed",
+                        req.ServerName, req.Uri);
+                }
+            }
+
+            return Failed(ex.Message);
+        }
+
+        async Task<ReadResourceResult> ReadOnceAsync(McpClient client)
+        {
+            using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            timeoutCts.CancelAfter(timeoutMs);
+            return await client.ReadResourceAsync(req.Uri, cancellationToken: timeoutCts.Token);
+        }
+    }
+
+    /// <summary>
+    /// The error for a read the server rejected: the server's own message for a URI it declares
+    /// (a real fault there shouldn't be masked), the declared URIs and templates for one it doesn't.
+    /// </summary>
+    private string DescribeRejectedRead(ConnectedServer server, McpReadResourceRequest req, McpProtocolException ex)
+    {
+        var declared = ResourceLists.Of(server).Definitions();
+        if (McpResourceUriTemplate.Resolve(declared, req.Uri) is not null)
+        {
+            _logger.LogWarning("ReadResource {Server} {Uri} REJECTED ({Code}): {Message}",
+                req.ServerName, req.Uri, ex.ErrorCode, ex.Message);
+            return ex.Message;
+        }
+
+        _logger.LogInformation("ReadResource {Server} {Uri} rejected an undeclared URI ({Code})",
+            req.ServerName, req.Uri, ex.ErrorCode);
+        return McpCallDiagnostics.DescribeUnknownResource(req.ServerName, req.Uri, declared, ex.Message);
+    }
+
+    /// <summary>
+    /// Text up to <see cref="McpBridgeOptions.ResourceInlineTextLimit"/> comes back inline; blobs
+    /// and longer text are saved to the shared volume and come back as a path, never as base64.
+    /// </summary>
+    private async Task<McpReadResourceResponse> ToReadResponseAsync(
+        McpReadResourceRequest req, ReadResourceResult result, CancellationToken ct)
+    {
+        var contents = new List<McpResourceContentView>();
+        foreach (var item in result.Contents ?? [])
+        {
+            contents.Add(item switch
+            {
+                TextResourceContents text when text.Text.Length <= _options.ResourceInlineTextLimit =>
+                    new McpResourceContentView { Uri = text.Uri, MimeType = text.MimeType, Text = text.Text },
+                TextResourceContents text =>
+                    await SaveResourceAsync(req.ServerName, text.Uri,
+                        System.Text.Encoding.UTF8.GetBytes(text.Text), text.MimeType ?? "text/plain", ct),
+                BlobResourceContents blob =>
+                    await SaveResourceAsync(req.ServerName, blob.Uri, McpBinaryPayload.Decode(blob.Blob), blob.MimeType, ct),
+                _ => new McpResourceContentView
+                {
+                    Uri = item.Uri,
+                    MimeType = item.MimeType,
+                    Note = $"Resource contents of an unsupported kind ({item.GetType().Name}); not shown."
+                }
+            });
+        }
+
+        return new McpReadResourceResponse { ServerName = req.ServerName, Uri = req.Uri, Contents = contents };
+    }
+
+    private async Task<McpResourceContentView> SaveResourceAsync(
+        string serverName, string uri, byte[] bytes, string? mime, CancellationToken ct)
+    {
+        try
+        {
+            return await _binaryCapture.Value.SaveAsync(serverName, $"{serverName}-resource", uri, bytes, mime, ct);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(ex, "Saving resource {Uri} from MCP server {Server} to the shared volume failed", uri, serverName);
+            return new McpResourceContentView
+            {
+                Uri = uri,
+                MimeType = mime,
+                Size = bytes.LongLength,
+                Note = $"The resource's {bytes.LongLength.ToString("N0", System.Globalization.CultureInfo.InvariantCulture)} bytes could not be saved to the shared volume ({ex.Message}), " +
+                       "and are too large or binary to return inline."
+            };
+        }
+    }
     /// <summary>
     /// Appends <see cref="McpCallDiagnostics.DescribeArgumentProblem"/>'s hint, when there is one,
     /// to a failed call's content as its own text block.
@@ -1117,10 +1405,13 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
         McpServerMetadata metadata,
         IReadOnlyList<McpClientTool> tools,
         IReadOnlyList<McpClientPrompt> prompts,
+        ResourceLists resourceLists,
         CancellationToken ct)
     {
         var toolNames = tools.Select(t => t.Name).ToList();
         var promptNames = prompts.Select(p => p.Name).ToList();
+        var resources = resourceLists.Definitions();
+        var resourceNames = resources.Select(r => r.Name).ToList();
 
         string? summaryText = null;
 
@@ -1134,6 +1425,11 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
                 var promptSection = prompts.Count > 0
                     ? "\nPrompts:\n" + string.Join("\n", prompts.Take(10).Select(p =>
                         $"- {p.Name}: {p.Description}"))
+                    : string.Empty;
+
+                var resourceSection = resources.Count > 0
+                    ? "\nResources (readable data, not tools):\n" + string.Join("\n", resources.Take(10).Select(r =>
+                        $"- {r.Name} ({r.Uri}): {r.Description}"))
                     : string.Empty;
 
                 var identityLines = new List<string>();
@@ -1177,7 +1473,7 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
                     server I need for email/calendar/contact tasks" without reading each tool's description.
 
                     {identitySection}{instructionsSection}Based on these tools:
-                    {toolList}{promptSection}
+                    {toolList}{promptSection}{resourceSection}
                     Respond with only the summary, no preamble or explanation.
                     """;
 
@@ -1201,7 +1497,11 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
                 ? $" {prompts.Count} prompt template(s): {string.Join(", ", promptNames.Take(10))}" +
                   (promptNames.Count > 10 ? $" and {promptNames.Count - 10} more." : ".")
                 : string.Empty;
-            summaryText = toolsPart + promptsPart;
+            var resourcesPart = resources.Count > 0
+                ? $" {resources.Count} resource(s): {string.Join(", ", resourceNames.Take(10))}" +
+                  (resourceNames.Count > 10 ? $" and {resourceNames.Count - 10} more." : ".")
+                : string.Empty;
+            summaryText = toolsPart + promptsPart + resourcesPart;
         }
 
         return new McpServerSummary
@@ -1211,7 +1511,9 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
             ToolCount = tools.Count,
             ToolNames = toolNames,
             PromptCount = prompts.Count,
-            PromptNames = promptNames
+            PromptNames = promptNames,
+            ResourceCount = resources.Count,
+            ResourceNames = resourceNames
         };
     }
 
@@ -1522,7 +1824,7 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
             result = await CaptureBinaryContentAsync(serverName, server.Config, request.ToolName, result, ct);
 
             sw.Stop();
-            var blocks = McpToolExecutor.MapContentBlocks(result);
+            var blocks = McpToolExecutor.MapContentBlocks(result, serverName);
 
             // A question the bridge declined usually means a thin or partial result. Say so in
             // the tool output, or the agent retries the identical call and gets the same answer.
@@ -1732,7 +2034,7 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
                             serverName, fresh.Config, request.ToolName, retryResult, ct);
 
                         sw.Stop();
-                        var retryBlocks = McpToolExecutor.MapContentBlocks(retryResult);
+                        var retryBlocks = McpToolExecutor.MapContentBlocks(retryResult, serverName);
 
                         IReadOnlyList<McpElicitationRecord> retryElicitations =
                             retryElicitationScope?.Records ?? [];
@@ -1838,6 +2140,7 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
                         : null
                 }).ToList(),
                 Prompts = serverPrompts.Select(ToPromptDefinition).ToList(),
+                ResourceCount = server is null ? 0 : ResourceLists.Of(server).Count,
                 Error = server is not null ? null
                     : _connections.IsConfigured(req.ServerName)
                         ? McpCallDiagnostics.DescribeUnavailableServer(req.ServerName)
@@ -2037,7 +2340,7 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
 
             // The same budget a tool call on this server gets (#616): a prompt can be as slow as a
             // tool, and a stalled one must not hold the agent until its own wait gives up.
-            var timeoutMs = PromptTimeoutMs(lease.Server.Config);
+            var timeoutMs = RequestTimeoutMs(lease.Server.Config);
             using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
             timeoutCts.CancelAfter(timeoutMs);
 
@@ -2114,6 +2417,20 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
                 };
                 await PublishResponseAsync(errorResponse, replyTo, envelope.CorrelationId, ct);
             }
+        }
+        else if (envelope.MessageType == typeof(McpListResourcesRequest).FullName)
+        {
+            var req = envelope.GetPayload<McpListResourcesRequest>();
+            if (req is null) return MessageResult.DeadLetter;
+
+            await PublishResponseAsync(ListResources(req), replyTo, envelope.CorrelationId, ct);
+        }
+        else if (envelope.MessageType == typeof(McpReadResourceRequest).FullName)
+        {
+            var req = envelope.GetPayload<McpReadResourceRequest>();
+            if (req is null) return MessageResult.DeadLetter;
+
+            await PublishResponseAsync(await ReadResourceAsync(req, ct), replyTo, envelope.CorrelationId, ct);
         }
         else
         {

@@ -6,7 +6,7 @@ namespace RockBot.Tools.Mcp;
 
 /// <summary>
 /// Handles <see cref="McpServersIndexed"/> messages from the MCP Bridge.
-/// On the first message, registers the 6 MCP management tools in <see cref="IToolRegistry"/>.
+/// On the first message, registers the 8 MCP management tools in <see cref="IToolRegistry"/>.
 /// All subsequent messages only update the <see cref="McpServerIndex"/> cache and
 /// invalidate any cached tool schemas for the affected servers.
 /// </summary>
@@ -108,6 +108,22 @@ public sealed class McpServersIndexedHandler(
             Source = "mcp:management"
         }, executor);
 
+        registry.Register(new ToolRegistration
+        {
+            Name = "mcp_list_resources",
+            Description = "List the resources and resource templates an MCP server exposes: readable data (documents, files, records) addressed by URI rather than called like a tool. mcp_list_services shows which servers have any. Returns each one's uri (or uriTemplate), name, description and MIME type.",
+            ParametersSchema = """{"type":"object","properties":{"server_name":{"type":"string","description":"Name of the MCP server"}},"required":["server_name"]}""",
+            Source = "mcp:management"
+        }, executor);
+
+        registry.Register(new ToolRegistration
+        {
+            Name = "mcp_read_resource",
+            Description = "Read one resource from an MCP server by its URI, as mcp_list_resources lists it; for a uriTemplate, fill in every {…} expression first. Also follows a [resource link] in a tool result. Text comes back inline; binary or very large content is saved to the shared volume and comes back as a file path.",
+            ParametersSchema = """{"type":"object","properties":{"server_name":{"type":"string","description":"Name of the MCP server"},"uri":{"type":"string","description":"The resource URI as the server lists it, any template expanded (e.g. 'docs://files/readme.md')"}},"required":["server_name","uri"]}""",
+            Source = "mcp:management"
+        }, executor);
+
         // Lazy typed tools (#612): the search that activates them, registered when some tier is
         // lazy or pinned; runs of other tiers drop it (#613). Same source as the other gateway
         // tools, so every tool profile that has the gateway has this too.
@@ -125,6 +141,6 @@ public sealed class McpServersIndexedHandler(
                 McpTypedToolSurface.FindToolsName, wrappers.Options.Describe());
         }
 
-        logger.LogInformation("Registered 6 MCP management tools");
+        logger.LogInformation("Registered 8 MCP management tools");
     }
 }

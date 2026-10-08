@@ -20,6 +20,12 @@ public sealed record McpServerSummary
     public int PromptCount { get; init; }
     public List<string> PromptNames { get; init; } = [];
 
+    /// <summary>Resources plus resource templates the server lists (#617).</summary>
+    public int ResourceCount { get; init; }
+
+    /// <summary>Names of the server's resources and resource templates.</summary>
+    public List<string> ResourceNames { get; init; } = [];
+
     /// <summary>
     /// Stable id of the server entry. Unlike <see cref="ServerName"/> it never changes for the
     /// life of the entry; a rename is an unregister plus a register and gets a new id.

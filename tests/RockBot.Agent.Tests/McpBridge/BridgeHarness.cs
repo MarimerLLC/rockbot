@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Text.Json;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
@@ -41,10 +42,12 @@ internal sealed class BridgeHarness : IAsyncDisposable
     private CapturingPublisher _publisher = null!;
 
     private BridgeHarness(
-        WebApplication server, IOptions<McpBridgeOptions> options, ILlmClient? llmClient, string configDir, List<McpServerTool> lateTools)
+        WebApplication server, IOptions<McpBridgeOptions> options, ILlmClient? llmClient, string configDir,
+        List<McpServerTool> lateTools, List<McpServerResource> lateResources)
     {
         _server = server;
         _lateTools = lateTools;
+        _lateResources = lateResources;
         _options = options;
         _llmClient = llmClient;
         _configDir = configDir;
@@ -86,6 +89,26 @@ internal sealed class BridgeHarness : IAsyncDisposable
 
     private readonly List<McpServerTool> _lateTools;
 
+    /// <summary>
+    /// Adds a resource to the running fixture server. The server must have started with
+    /// resources (possibly an empty list), or it doesn't advertise the capability at all.
+    /// </summary>
+    public void AddServerResource(McpServerResource resource)
+    {
+        lock (_lateResources) _lateResources.Add(resource);
+        _server.Services.GetRequiredService<IOptions<McpServerOptions>>().Value.ResourceCollection?.Add(resource);
+    }
+
+    private readonly List<McpServerResource> _lateResources;
+
+    /// <summary>Where the bridge saves attachments and captured content.</summary>
+    public string AttachmentsPath => Path.Combine(_configDir, "attachments");
+
+    /// <summary>Everything the bridge has logged, with its level.</summary>
+    public IReadOnlyList<(LogLevel Level, string Message)> BridgeLog => [.. _bridgeLog.Entries];
+
+    private readonly CapturingLogger _bridgeLog = new();
+
     /// <summary>Stops the bridge and starts a fresh one on the same <c>mcp.json</c>.</summary>
     public async Task RestartBridgeAsync()
     {
@@ -101,31 +124,38 @@ internal sealed class BridgeHarness : IAsyncDisposable
         // Attachment storage defaults to the shared volume (/rockbot/shared), which a test runner
         // can't write; keep it inside the run's temporary directory.
         _bridge = new McpBridgeService(
-            _publisher, _subscriber, new AgentIdentity(AgentName), _options, NullLogger<McpBridgeService>.Instance,
+            _publisher, _subscriber, new AgentIdentity(AgentName), _options, _bridgeLog,
             llmClient: _llmClient, tokenProviders: null, healthTracker: null, argGuards: null,
             elicitationResponder: null, services: null,
-            attachmentStorage: new AttachmentStorage(Path.Combine(_configDir, "attachments")));
+            attachmentStorage: new AttachmentStorage(AttachmentsPath));
         await _bridge.StartAsync(CancellationToken.None);
     }
 
     /// <summary>
-    /// Starts the fixture server with <paramref name="tools"/> and <paramref name="prompts"/>, then
-    /// starts the bridge with one configured server pointing at it. <paramref name="configure"/>
-    /// may adjust the server entry (tool filters, guards, …) before the bridge reads it.
+    /// Starts the fixture server with <paramref name="tools"/>, <paramref name="prompts"/> and
+    /// <paramref name="resources"/>, then starts the bridge with one configured server pointing at
+    /// it. <paramref name="configure"/> may adjust the server entry (tool filters, guards, …) before
+    /// the bridge reads it. A null <paramref name="resources"/> leaves the server without the
+    /// resources capability; an empty one advertises it with nothing in it.
     /// </summary>
     public static async Task<BridgeHarness> StartAsync(
         IEnumerable<McpServerTool> tools,
         IEnumerable<McpServerPrompt>? prompts = null,
         Action<McpBridgeServerConfig>? configure = null,
-        ILlmClient? llmClient = null)
+        ILlmClient? llmClient = null,
+        IEnumerable<McpServerResource>? resources = null,
+        Action<McpBridgeOptions>? configureBridge = null)
     {
         var builder = WebApplication.CreateSlimBuilder();
         builder.WebHost.UseUrls("http://127.0.0.1:0");
         builder.Logging.ClearProviders();
         var lateTools = new List<McpServerTool>();
+        var lateResources = new List<McpServerResource>();
         var mcp = builder.Services.AddMcpServer().WithHttpTransport().WithTools(tools);
         if (prompts is not null)
             mcp.WithPrompts(prompts);
+        if (resources is not null)
+            mcp.WithResources(resources);
         builder.Services.Configure<McpServerOptions>(o =>
         {
             o.ServerInfo = new ModelContextProtocol.Protocol.Implementation { Name = "harness", Version = HarnessServerVersion };
@@ -135,6 +165,14 @@ internal sealed class BridgeHarness : IAsyncDisposable
                 {
                     o.ToolCollection ??= [];
                     if (!o.ToolCollection.Contains(tool)) o.ToolCollection.Add(tool);
+                }
+            }
+            lock (lateResources)
+            {
+                foreach (var resource in lateResources)
+                {
+                    o.ResourceCollection ??= [];
+                    if (!o.ResourceCollection.Contains(resource)) o.ResourceCollection.Add(resource);
                 }
             }
         });
@@ -156,16 +194,18 @@ internal sealed class BridgeHarness : IAsyncDisposable
             new McpBridgeConfig { McpServers = { [ServerName] = entry } },
             new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase }));
 
-        var options = Options.Create(new McpBridgeOptions
+        var bridgeOptions = new McpBridgeOptions
         {
             ConfigPath = configPath,
             GenerateLlmSummaries = llmClient is not null,
             ConnectRetryCount = 0,
             ReconnectSweepIntervalSeconds = 0,
             ConfigPollIntervalSeconds = 0,
-        });
+        };
+        configureBridge?.Invoke(bridgeOptions);
+        var options = Options.Create(bridgeOptions);
 
-        var harness = new BridgeHarness(server, options, llmClient, configDir, lateTools) { ServerUrl = entry.Url };
+        var harness = new BridgeHarness(server, options, llmClient, configDir, lateTools, lateResources) { ServerUrl = entry.Url };
         await harness.StartBridgeAsync();
         return harness;
     }
@@ -248,6 +288,22 @@ internal sealed class BridgeHarness : IAsyncDisposable
         return reply.GetPayload<McpGetPromptResponse>()!;
     }
 
+    /// <summary>Sends an <c>mcp_list_resources</c> management request.</summary>
+    public async Task<McpListResourcesResponse> ListResourcesAsync(string server = ServerName)
+    {
+        var reply = await SendAsync(McpManagementExecutor.ManageTopic,
+            new McpListResourcesRequest { ServerName = server }, headers: null);
+        return reply.GetPayload<McpListResourcesResponse>()!;
+    }
+
+    /// <summary>Sends an <c>mcp_read_resource</c> management request.</summary>
+    public async Task<McpReadResourceResponse> ReadResourceAsync(string uri, string server = ServerName)
+    {
+        var reply = await SendAsync(McpManagementExecutor.ManageTopic,
+            new McpReadResourceRequest { ServerName = server, Uri = uri }, headers: null);
+        return reply.GetPayload<McpReadResourceResponse>()!;
+    }
+
     private async Task<MessageEnvelope> SendAsync<T>(string topic, T payload, IReadOnlyDictionary<string, string>? headers)
     {
         var correlationId = Guid.NewGuid().ToString("N");
@@ -269,6 +325,19 @@ internal sealed class BridgeHarness : IAsyncDisposable
         await _server.StopAsync();
         await _server.DisposeAsync();
         try { Directory.Delete(_configDir, recursive: true); } catch { /* best effort */ }
+    }
+
+    /// <summary>Records every bridge log entry, so a test can assert what was (not) logged.</summary>
+    private sealed class CapturingLogger : ILogger<McpBridgeService>
+    {
+        public ConcurrentQueue<(LogLevel Level, string Message)> Entries { get; } = new();
+
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception,
+            Func<TState, Exception?, string> formatter) =>
+            Entries.Enqueue((logLevel, formatter(state, exception)));
     }
 
     /// <summary>Keeps every subscription's handler, keyed by topic.</summary>
