@@ -6,7 +6,8 @@ namespace RockBot.Tools.Mcp;
 
 /// <summary>
 /// Handles <see cref="McpServersIndexed"/> messages from the MCP Bridge.
-/// On the first message, registers the 8 MCP management tools in <see cref="IToolRegistry"/>.
+/// On the first message, registers the 8 MCP management tools in <see cref="IToolRegistry"/>, and
+/// keeps <c>mcp_answer</c> registered exactly while a connected server hands questions back.
 /// All subsequent messages only update the <see cref="McpServerIndex"/> cache and
 /// invalidate any cached tool schemas for the affected servers.
 /// </summary>
@@ -47,6 +48,8 @@ public sealed class McpServersIndexedHandler(
             index.ManagementToolsRegistered = true;
         }
 
+        SyncAnswerTool();
+
         // Typed {server}__{tool} tools follow the index; a no-op unless some tier's wrapper mode is on.
         if (wrappers is not null)
             await wrappers.ApplyAsync(message, context.CancellationToken);
@@ -57,6 +60,45 @@ public sealed class McpServersIndexedHandler(
         && incoming.Fingerprint is { } after
         && before == after
         && previous.ServerId == incoming.ServerId;
+
+    /// <summary>
+    /// <c>mcp_answer</c> is offered only while some connected server can hand a question back,
+    /// so every other run's tool list stays as it was (#613).
+    /// </summary>
+    private void SyncAnswerTool()
+    {
+        var wanted = index.Servers.Any(s => s.Handback);
+        var registered = registry.GetExecutor(McpHandbackContext.AnswerToolName) is not null;
+
+        if (wanted && !registered)
+        {
+            registry.Register(new ToolRegistration
+            {
+                Name = McpHandbackContext.AnswerToolName,
+                Description = AnswerToolDescription,
+                ParametersSchema = AnswerToolSchema,
+                Source = "mcp:management"
+            }, executor);
+            logger.LogInformation("Registered {Tool}: a connected MCP server hands questions back", McpHandbackContext.AnswerToolName);
+        }
+        else if (!wanted && registered)
+        {
+            registry.Unregister(McpHandbackContext.AnswerToolName);
+            logger.LogInformation("Unregistered {Tool}: no connected MCP server hands questions back", McpHandbackContext.AnswerToolName);
+        }
+    }
+
+    internal const string AnswerToolDescription =
+        "Answer a question an MCP server asked in the middle of a tool call. When a tool result says the server " +
+        "\"needs input\" and gives a question_id, the call is paused, not finished: answering resumes it, and this " +
+        "tool returns the call's result (or the server's next question). Answer from what you know when you can. " +
+        "When you can't, ask the user and call mcp_answer after they reply. A yes/no, confirm or approve field is " +
+        "the user's decision: always ask, never decide it yourself. Pass decline: true to refuse; the server then " +
+        "continues without the value. Each question is answered once, from the conversation that caused it, and " +
+        "expires after the time it states.";
+
+    internal const string AnswerToolSchema =
+        """{"type":"object","properties":{"question_id":{"type":"string","description":"The question_id from the hand-back, exactly as given."},"answers":{"type":"object","description":"Field values keyed by the server's field names, e.g. {\"mailbox\": \"work\"}. Values must fit the field types the question lists.","additionalProperties":true},"decline":{"type":"boolean","description":"Refuse the question instead of answering it."}},"required":["question_id"]}""";
 
     private void RegisterManagementTools()
     {

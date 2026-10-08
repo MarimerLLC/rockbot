@@ -438,6 +438,9 @@ public sealed partial class AgentLoopRunner(
         TypedToolSurfaceContext.AddActivated(chatOptions);
         EnsureMcpOrientation(chatMessages, chatOptions);
 
+        // MCP hand-back: a server's mid-call question comes back to this run only if it can answer.
+        using var _______ = McpHandbackContext.Set(chatOptions);
+
         // Ensure a current datetime context is always present.
         EnsureDateTimeContext(chatMessages);
 

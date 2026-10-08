@@ -121,6 +121,22 @@ internal sealed class McpToolSkillProvider : IToolSkillProvider
           resources").
         - `mcp_register_server` and `mcp_unregister_server`: see "Adding and removing servers"
           below. Workers don't have these two.
+        - `mcp_answer`: only while a server can hand questions back (see "Questions from a
+          server").
+
+        ## Questions from a server
+
+        A server set up to hand questions back can pause a call to ask you something. The
+        result then says the server "needs input", shows the question and its fields, and gives
+        a `question_id`. The call is paused, not failed: don't call the tool again.
+
+        - Answer with `mcp_answer(question_id, answers: {field: value})`. Its result is the
+          call's result, or the server's next question.
+        - If the conversation doesn't settle it, ask the user, end your turn, and answer when
+          they reply. A yes/no, confirm or approve field is always the user's to answer.
+        - `mcp_answer(question_id, decline: true)` refuses; the server goes on without it.
+        - A question is answered once, only from the conversation that caused it, and expires
+          after the time it states. A restart ends the call; you'll be told what it was doing.
 
         ## Names
 

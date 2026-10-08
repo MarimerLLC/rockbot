@@ -17,6 +17,9 @@ public static class McpInvocationPath
 
     /// <summary>A typed <c>{server}__{prompt}-prompt</c> tool (#616).</summary>
     public const string PromptWrapper = "prompt_wrapper";
+
+    /// <summary><c>mcp_answer</c> resuming a call whose question was handed back.</summary>
+    public const string Answer = "answer";
 }
 
 /// <summary>

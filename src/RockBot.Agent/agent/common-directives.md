@@ -273,6 +273,24 @@ Work through these alternatives before saying you cannot do something:
    still unreachable.
 4. **Never report failure after a single timeout.**
 
+### MCP questions handed back to you
+
+Some servers pause a call to ask a question; the tool result then says the
+server "needs input" and gives a `question_id`. The call isn't finished, so
+don't call the tool again: answer the question with `mcp_answer`, and its
+result is the call's result.
+
+- **Answer from what you know** when the conversation already settles it.
+- **Otherwise ask the user**, end your turn, and call `mcp_answer` when they
+  reply. The question stays open for the time it states.
+- **Never decide a yes/no, confirm or approve question yourself.** It is the
+  user's decision; ask, and answer with their reply.
+- **Decline** (`decline: true`) when the user doesn't want to answer.
+- **After a restart** you may see that a call "was interrupted by a restart".
+  That call is gone. Check whether the user's request still needs it before
+  calling the tool again, and include what the server was asking in the new
+  call's arguments if the tool takes it.
+
 ## Recovering Elided Tool Output
 
 When a tool result contains the marker

@@ -106,7 +106,7 @@ public sealed class McpElicitationCoordinator
             return null;
         }
 
-        if (mode == McpElicitationConfig.ModeAuto && responder is null)
+        if (mode is McpElicitationConfig.ModeAuto or McpElicitationConfig.ModeHandback && responder is null)
         {
             logger.LogInformation(
                 "MCP server {Server} is configured for automatic elicitation but no responder is " +
@@ -130,6 +130,15 @@ public sealed class McpElicitationCoordinator
     /// against the server.
     /// </remarks>
     public McpElicitationCallScope BeginCall(string toolName, string? arguments, string? sessionId = null)
+        => BeginCall(toolName, arguments, sessionId, handback: null);
+
+    /// <summary>
+    /// <see cref="BeginCall(string, string?, string?)"/> for a call that can take a hand-back:
+    /// in <see cref="McpElicitationConfig.ModeHandback"/>, its questions go to
+    /// <paramref name="handback"/> rather than the responder.
+    /// </summary>
+    public McpElicitationCallScope BeginCall(
+        string toolName, string? arguments, string? sessionId, IMcpHandbackChannel? handback)
     {
         var previous = CurrentCall.Value;
         var scope = new McpElicitationCallScope(toolName, arguments, sessionId, s =>
@@ -137,7 +146,7 @@ public sealed class McpElicitationCoordinator
             _active.TryRemove(s, out _);
             if (ReferenceEquals(CurrentCall.Value, s))
                 CurrentCall.Value = previous;
-        });
+        }, handback);
         _active[scope] = 0;
         CurrentCall.Value = scope;
         return scope;
@@ -264,6 +273,16 @@ public sealed class McpElicitationCoordinator
                 return Answer(request, McpElicitationActions.Accept, "answered from configured defaults", scopes, configured.Content);
         }
 
+        // Hand-back: the question goes to the agent that made the call. Only for exactly one call
+        // in this flow (MRTR attribution) that the bridge marked as able to take one; anything
+        // else falls through to the responder, as in auto mode.
+        if (_config.ResolveMode() == McpElicitationConfig.ModeHandback
+            && scopes is [{ Handback: { } channel } only]
+            && ReferenceEquals(CurrentCall.Value, only))
+        {
+            return await HandBackAsync(request, only, channel, defaults, fieldNames, ct).ConfigureAwait(false);
+        }
+
         // A yes/no field — a boolean, or a choice between "yes"/"no"-style options — is a
         // checkpoint the server put there for a person. Answering it from a model would defeat
         // the point of asking, so only an operator default may settle one. A required decision
@@ -369,6 +388,52 @@ public sealed class McpElicitationCoordinator
         }
 
         return Answer(request, McpElicitationActions.Accept, null, scopes, validated.Content);
+    }
+
+    /// <summary>
+    /// Hands the question to the calling agent and turns its answer into the server's. The
+    /// answer was validated where the agent gave it (<c>mcp_answer</c>); it is validated again
+    /// here, after configured defaults are merged over it, because nothing reaches a server
+    /// unvalidated.
+    /// </summary>
+    private async ValueTask<ElicitResult> HandBackAsync(
+        ElicitRequestParams request,
+        McpElicitationCallScope scope,
+        IMcpHandbackChannel channel,
+        Dictionary<string, JsonElement> defaults,
+        IReadOnlyList<string> fieldNames,
+        CancellationToken ct)
+    {
+        IReadOnlyList<McpElicitationCallScope> scopes = [scope];
+        var outcome = await channel.AskAsync(new McpHandbackQuestion(_serverName, request, scope.Attempts), ct)
+            .ConfigureAwait(false);
+
+        if (!string.Equals(outcome.Action, McpElicitationActions.Accept, StringComparison.OrdinalIgnoreCase))
+        {
+            var action = string.Equals(outcome.Action, McpElicitationActions.Cancel, StringComparison.OrdinalIgnoreCase)
+                ? McpElicitationActions.Cancel
+                : McpElicitationActions.Decline;
+            return Answer(request, action, outcome.Reason ?? "the calling agent declined the question", scopes);
+        }
+
+        var canonical = fieldNames.ToDictionary(n => n, n => n, StringComparer.OrdinalIgnoreCase);
+        var merged = new Dictionary<string, JsonElement>(StringComparer.Ordinal);
+        foreach (var pair in outcome.Content ?? new Dictionary<string, JsonElement>())
+            merged[canonical.GetValueOrDefault(pair.Key, pair.Key)] = pair.Value;
+        foreach (var pair in defaults)
+            merged[pair.Key] = pair.Value;
+
+        var validated = McpElicitationSchemaValidator.Validate(request.RequestedSchema, merged);
+        if (!validated.IsValid)
+        {
+            return Answer(request, McpElicitationActions.Decline,
+                $"the answer did not fit the requested form ({string.Join("; ", validated.Errors)})", scopes);
+        }
+
+        if (fieldNames.Count > 0 && validated.Content.Count == 0)
+            return Answer(request, McpElicitationActions.Decline, "the answer supplied none of the requested fields", scopes);
+
+        return Answer(request, McpElicitationActions.Accept, "answered by the calling agent", scopes, validated.Content);
     }
 
     /// <summary>

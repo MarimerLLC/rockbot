@@ -63,6 +63,7 @@ internal sealed class WorkerRunner(
     private static readonly HashSet<string> ExcludedNames = new(StringComparer.OrdinalIgnoreCase)
     {
         "mcp_register_server",
+        "mcp_answer",
         "mcp_unregister_server",
         "save_memory",
         "edit_memory",

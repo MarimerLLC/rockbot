@@ -51,4 +51,11 @@ public sealed record McpServerSummary
     /// identity itself can contain secrets.
     /// </summary>
     public string? IdentityHash { get; init; }
+
+    /// <summary>
+    /// The server can hand questions back to the calling agent (its elicitation policy is
+    /// <c>handback</c> and it speaks the 2026-07-28 protocol). While any connected server can,
+    /// the agent offers <c>mcp_answer</c>.
+    /// </summary>
+    public bool Handback { get; init; }
 }

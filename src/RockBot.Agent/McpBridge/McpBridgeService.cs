@@ -9,6 +9,7 @@ using ModelContextProtocol.Client;
 using ModelContextProtocol.Protocol;
 using RockBot.Agent.McpBridge.ArgGuards;
 using RockBot.Agent.McpBridge.Attachments;
+using RockBot.Agent.McpBridge.Handback;
 using RockBot.Host;
 using RockBot.Messaging;
 using RockBot.Agent.McpBridge.Auth;
@@ -39,6 +40,25 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
 
     /// <summary>Resolves a server's named elicitation responder (keyed services), if it names one.</summary>
     private readonly IServiceProvider? _services;
+
+    /// <summary>
+    /// Sessions' conversations: the user turn that triggered a handed-back call, the user turn an
+    /// answered decision needs, and where a restart's interruption notice is recorded. Optional,
+    /// as the bridge also runs without the agent's memory in tests.
+    /// </summary>
+    private readonly IConversationMemory? _conversationMemory;
+
+    /// <summary>Where a restart's interruption notice keeps the full ledger entry.</summary>
+    private readonly IWorkingMemory? _workingMemory;
+
+    /// <summary>Open handed-back questions and their ledger (see <c>design/mcp-elicitation-handback.md</c>).</summary>
+    private readonly PendingQuestionStore _handback;
+
+    /// <summary>Parked calls outlive the message that started them; they run until the bridge stops.</summary>
+    private readonly CancellationTokenSource _lifetime = new();
+
+    /// <summary>Parked calls in flight, so shutdown can let them observe their cancellation.</summary>
+    private readonly ConcurrentDictionary<Task, byte> _parkedTasks = new();
 
     /// <summary>
     /// Configured servers and a consistent snapshot of each connected one. Connect, refresh and
@@ -109,9 +129,12 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
         WorkIqHealthTracker? healthTracker = null,
         IMcpArgGuardRegistry? argGuards = null,
         IMcpElicitationResponder? elicitationResponder = null,
-        IServiceProvider? services = null)
+        IServiceProvider? services = null,
+        IConversationMemory? conversationMemory = null,
+        IWorkingMemory? workingMemory = null)
         : this(publisher, subscriber, identity, options, logger, llmClient, tokenProviders, healthTracker,
-            argGuards, elicitationResponder, services, attachmentStorage: null)
+            argGuards, elicitationResponder, services, attachmentStorage: null,
+            conversationMemory: conversationMemory, workingMemory: workingMemory)
     {
     }
 
@@ -132,7 +155,10 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
         IMcpArgGuardRegistry? argGuards,
         IMcpElicitationResponder? elicitationResponder,
         IServiceProvider? services,
-        IAttachmentStorage? attachmentStorage)
+        IAttachmentStorage? attachmentStorage,
+        IConversationMemory? conversationMemory = null,
+        IWorkingMemory? workingMemory = null,
+        TimeProvider? timeProvider = null)
     {
         _attachmentStorage = attachmentStorage is not null
             ? new Lazy<IAttachmentStorage>(attachmentStorage)
@@ -151,12 +177,30 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
         _argGuards = argGuards;
         _elicitationResponder = elicitationResponder;
         _services = services;
+        _conversationMemory = conversationMemory;
+        _workingMemory = workingMemory;
         _binaryCapture = new Lazy<BinaryResponseCapture>(
             () => new BinaryResponseCapture(_attachmentStorage.Value, _logger));
+
+        var ledgerPath = Path.IsPathRooted(_options.PendingLedgerPath)
+            ? _options.PendingLedgerPath
+            : Path.Combine(Path.GetDirectoryName(_configPath) ?? AppContext.BaseDirectory, _options.PendingLedgerPath);
+        _handback = new PendingQuestionStore(
+            new PendingQuestionLedger(ledgerPath, _logger, timeProvider),
+            Math.Max(1, _options.MaxPendingQuestionsPerSession),
+            Math.Max(1, _options.MaxPendingQuestions),
+            _logger,
+            timeProvider,
+            conversationMemory is null ? null : FindTriggerAsync);
+        McpHandbackDiagnostics.ObserveParked(() => _handback.OpenCount);
     }
 
     public async Task StartAsync(CancellationToken cancellationToken)
     {
+        // Before any call can hand back a new question: no parked call survives a restart, so
+        // every question the ledger still shows as pending was interrupted.
+        var interrupted = await MarkInterruptedQuestionsAsync(cancellationToken);
+
         // Subscribe to tool invoke requests
         _invokeSubscription = await _subscriber.SubscribeAsync(
             McpToolProxy.InvokeTopic,
@@ -204,10 +248,21 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
             if (_options.ConfigPollIntervalSeconds > 0)
                 _configPollTask = RunConfigPollAsync(_sweepCts.Token);
         }
+
+        // Tell each session about its interrupted calls. Not awaited: it writes to the sessions'
+        // memories and the user's chat, and the bridge doesn't need to wait for that to serve.
+        if (interrupted.Count > 0)
+            _ = NotifyInterruptedQuestionsAsync(interrupted, _lifetime.Token);
     }
 
     public async Task StopAsync(CancellationToken cancellationToken)
     {
+        // Parked calls end with the process. Their ledger entries stay pending, so the next start
+        // announces them as interrupted.
+        _handback.AbandonAllForShutdown();
+        await _lifetime.CancelAsync();
+        await Task.WhenAny(Task.WhenAll(_parkedTasks.Keys), Task.Delay(ShutdownGrace, CancellationToken.None));
+
         _configWatcher?.Dispose();
         _configWatcher = null;
 
@@ -514,6 +569,11 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
             return;
         }
 
+        // A server whose policy no longer hands questions back mustn't keep calls parked under the
+        // old one: their answers would go to a server the operator has since restricted.
+        if (_connections.TryGetConfig(name, out var priorConfig) && IsHandbackServer(priorConfig) && !IsHandbackServer(config))
+            await _handback.CancelServerAsync(name, $"the MCP server \"{name}\" no longer takes answers from the agent");
+
         // Record the config before attempting the connection so the reconnect sweep can retry a
         // server that never connected.
         _connections.SetConfig(name, config);
@@ -554,7 +614,7 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
                 // The SDK advertises the elicitation capability during initialize exactly when an
                 // elicitation handler is present, so a server configured "off" is never invited to
                 // ask in the first place — a cleaner answer than advertising and refusing.
-                var elicitationConfig = config.Elicitation ?? _options.DefaultElicitation;
+                var elicitationConfig = config.Elicitation ?? DefaultElicitationPolicy(name);
                 var elicitation = McpElicitationCoordinator.TryCreate(
                     name,
                     elicitationConfig,
@@ -613,7 +673,8 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
                     Fingerprint = fingerprint,
                     ToolFingerprints = toolFingerprints,
                     Version = metadata.Version,
-                    IdentityHash = config.IdentityHash()
+                    IdentityHash = config.IdentityHash(),
+                    Handback = IsHandbackServer(config) && IsJuly2026OrLater(newClient.NegotiatedProtocolVersion)
                 };
 
                 var resources = new ConnectionResources(newClient);
@@ -699,6 +760,28 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
         catch { /* Best-effort cleanup */ }
     }
 
+    /// <summary>
+    /// <see cref="McpBridgeOptions.DefaultElicitation"/> as a server without its own policy gets
+    /// it: never in hand-back mode, which only a server's own policy may grant.
+    /// </summary>
+    private McpElicitationConfig DefaultElicitationPolicy(string serverName)
+    {
+        var policy = _options.DefaultElicitation ?? new McpElicitationConfig();
+        var withoutHandback = policy.WithoutHandback();
+        if (!ReferenceEquals(policy, withoutHandback))
+        {
+            _logger.LogWarning(
+                "McpBridge:DefaultElicitation sets mode 'handback', which only a server's own elicitation policy may set; " +
+                "MCP server {Server} uses 'auto' instead",
+                serverName);
+        }
+        return withoutHandback;
+    }
+
+    /// <summary>Whether <paramref name="config"/>'s own policy hands questions back.</summary>
+    private static bool IsHandbackServer(McpBridgeServerConfig? config) =>
+        config?.Elicitation?.ResolveMode() == McpElicitationConfig.ModeHandback;
+
     private async Task DisconnectServerAsync(string name)
     {
         using (await _connections.LockAsync(name, CancellationToken.None))
@@ -706,6 +789,8 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
             _connections.Remove(name, forgetConfig: true);
             _lastSurfaceCheck.TryRemove(name, out _);
         }
+
+        await _handback.CancelServerAsync(name, $"the MCP server \"{name}\" was removed");
 
         await PublishServersIndexedAsync([], [name], CancellationToken.None);
 
@@ -1801,19 +1886,245 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
             }
         }
 
-        // Open before the call: an elicitation arrives on the MCP session's own message loop
+        // Open before the call: a legacy elicitation arrives on the MCP session's own message loop
         // while CallToolAsync is still awaiting, not on this async context, so the only way to
-        // tie a question back to the call that provoked it is to record the call as in flight.
-        using var elicitationScope = server.Elicitation
-            ?.BeginCall(request.ToolName, request.Arguments, request.SessionId);
+        // tie such a question back to the call that provoked it is to record the call as in flight.
+        // A call that can take a hand-back passes its channel, which then owns its cancellation.
+        var handback = CreateHandbackCall(envelope, request, server, toolDefinition.Tool, timeoutMs);
+        var state = new InvocationState
+        {
+            Request = request,
+            Server = server,
+            TimeoutMs = timeoutMs,
+            InputSchema = inputSchema,
+            Arguments = arguments,
+            SentArguments = sentArguments,
+            RewriteResponse = rewriteResponse,
+            AttachmentGateway = attachmentGateway,
+            Stopwatch = sw,
+            Handback = handback,
+            CallCts = handback?.Cts ?? CancellationTokenSource.CreateLinkedTokenSource(ct),
+            ElicitationScope = server.Elicitation
+                ?.BeginCall(request.ToolName, request.Arguments, request.SessionId, handback),
+        };
+        if (handback is null)
+            state.CallCts.CancelAfter(timeoutMs);
+
+        var target = new HandbackReplyTarget(replyTo, envelope.CorrelationId, request.ToolCallId, request.ToolName);
+        var parked = false;
+        try
+        {
+            var callTask = StartCallAsync(state);
+
+            // A question handed back ends this message's work: the agent gets the question now, and
+            // the call stays parked until mcp_answer resumes it. The bridge takes tool calls one at
+            // a time, so waiting here would hold up every other call for as long as the question
+            // waits.
+            if (handback is not null && await handback.NextAsync(callTask) is { } question)
+            {
+                await PublishHandbackAsync(question, target, ct);
+                state.Lease = ServerLease.Share(server);
+                parked = true;
+                TrackParked(RunParkedAsync(state, callTask, question));
+                return MessageResult.Ack;
+            }
+
+            await CompleteCallAsync(state, callTask, target, ct);
+        }
+        finally
+        {
+            if (!parked)
+                state.Dispose();
+        }
+
+        return MessageResult.Ack;
+    }
+
+    /// <summary>
+    /// Everything one tool call needs from start to finish. A parked call carries it past the
+    /// message that started it, so it owns the call's cancellation, elicitation scope and — once
+    /// parked — its own lease on the server's connection.
+    /// </summary>
+    private sealed class InvocationState : IDisposable
+    {
+        public required ToolInvokeRequest Request { get; init; }
+        public required ConnectedServer Server { get; init; }
+        public required int TimeoutMs { get; init; }
+        public required string? InputSchema { get; init; }
+        public required Dictionary<string, object?> Arguments { get; init; }
+        public required Dictionary<string, object?> SentArguments { get; init; }
+        public required bool RewriteResponse { get; init; }
+        public required AttachmentGateway? AttachmentGateway { get; init; }
+        public required System.Diagnostics.Stopwatch Stopwatch { get; init; }
+        public required CancellationTokenSource CallCts { get; init; }
+        public McpElicitationCallScope? ElicitationScope { get; init; }
+        public HandbackCall? Handback { get; init; }
+
+        /// <summary>Held only while parked: the invoke handler's own lease ends with the message.</summary>
+        public ServerLease? Lease { get; set; }
+
+        public void Dispose()
+        {
+            ElicitationScope?.Dispose();
+            if (Handback is not null)
+                Handback.Dispose();
+            else
+                CallCts.Dispose();
+            Lease?.Dispose();
+        }
+    }
+
+    /// <summary>Starts the downstream call. Async so that any failure surfaces through the task.</summary>
+    private static async Task<CallToolResult> StartCallAsync(InvocationState state) =>
+        await state.Server.Client.CallToolAsync(
+            state.Request.ToolName, state.Arguments, cancellationToken: state.CallCts.Token);
+
+    /// <summary>
+    /// A hand-back channel for this call, or null when it can't take one: the server's own policy
+    /// must be <c>handback</c>, it must speak the 2026-07-28 protocol (a legacy elicitation holds the
+    /// server's request open while the question waits), and the caller must be a run that can
+    /// answer with <c>mcp_answer</c>.
+    /// </summary>
+    private HandbackCall? CreateHandbackCall(
+        MessageEnvelope envelope, ToolInvokeRequest request, ConnectedServer server, McpClientTool? tool, int timeoutMs)
+    {
+        if (server.Elicitation is null
+            || !IsHandbackServer(server.Config)
+            || string.IsNullOrEmpty(request.SessionId)
+            || !envelope.Headers.TryGetValue(McpHeaders.Handback, out var capable)
+            || !string.Equals(capable, McpHeaders.HandbackCapable, StringComparison.Ordinal)
+            || !IsJuly2026OrLater(server.Client.NegotiatedProtocolVersion))
+        {
+            return null;
+        }
+
+        var info = new HandbackCallInfo(
+            server.Name, request.ToolName, tool?.Description, request.Arguments, request.SessionId,
+            DateTimeOffset.UtcNow, server.Config.Elicitation!.HandbackTtl);
+        return new HandbackCall(_handback, info, timeoutMs, _lifetime.Token);
+    }
+
+    /// <summary>
+    /// Whether <paramref name="protocolVersion"/> is 2026-07-28 or later, the revision whose input
+    /// requests (MRTR) leave the server holding nothing while a question waits. Versions are
+    /// ISO dates, so they order ordinally.
+    /// </summary>
+    internal static bool IsJuly2026OrLater(string? protocolVersion) =>
+        protocolVersion is { Length: > 0 } && string.CompareOrdinal(protocolVersion, "2026-07-28") >= 0;
+
+    private void TrackParked(Task parked)
+    {
+        _parkedTasks[parked] = 0;
+        _ = parked.ContinueWith(t => _parkedTasks.TryRemove(t, out _), TaskScheduler.Default);
+    }
+
+    /// <summary>
+    /// A parked call, from its first hand-back to its end: each answer resumes it, and its next
+    /// outcome — the result, or another question — goes to whoever sent that answer.
+    /// </summary>
+    private async Task RunParkedAsync(InvocationState state, Task<CallToolResult> callTask, PendingQuestion question)
+    {
+        var ct = _lifetime.Token;
+        try
+        {
+            while (true)
+            {
+                var submission = await question.Submission;
+                if (submission.Target is not { } target)
+                {
+                    // Abandoned (expired, server removed, bridge stopping): nobody waits for the
+                    // call any more. Let it observe its cancellation before its resources go.
+                    await ((Task)callTask).ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
+                    _logger.LogInformation("← MCP {Server}/{Tool} parked call ended: {Reason}",
+                        state.Server.Name, state.Request.ToolName, submission.Outcome.Reason);
+                    return;
+                }
+
+                var next = await state.Handback!.NextAsync(callTask);
+                if (next is null)
+                {
+                    await CompleteCallAsync(state, callTask, target, ct);
+                    return;
+                }
+
+                await PublishHandbackAsync(next, target, ct);
+                question = next;
+            }
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
+        {
+            _logger.LogError(ex, "Parked MCP call {Server}/{Tool} failed", state.Server.Name, state.Request.ToolName);
+        }
+        catch (OperationCanceledException)
+        {
+            // The bridge is stopping.
+        }
+        finally
+        {
+            state.Dispose();
+        }
+    }
+
+    /// <summary>Gives <paramref name="question"/> to the agent as the outcome it is waiting for.</summary>
+    private Task PublishHandbackAsync(PendingQuestion question, HandbackReplyTarget target, CancellationToken ct)
+    {
+        _logger.LogInformation("← MCP {Server}/{Tool} handed back question {QuestionId}",
+            question.ServerName, question.ToolName, question.QuestionId);
+
+        return PublishToTargetAsync(new ToolInvokeResponse
+        {
+            ToolCallId = target.ToolCallId,
+            ToolName = target.ToolName,
+            Content = HandbackText.Question(question),
+        }, target, ct);
+    }
+
+    private Task PublishToTargetAsync(ToolInvokeResponse response, HandbackReplyTarget target, CancellationToken ct) =>
+        target.AnsweringQuestionId is { } questionId
+            ? PublishResponseAsync(new McpAnswerQuestionResponse { QuestionId = questionId, ServerName = target.CallServer, ToolName = target.CallTool, Result = response },
+                target.ReplyTo, target.CorrelationId, ct)
+            : PublishResponseAsync(response, target.ReplyTo, target.CorrelationId, ct);
+
+    private Task PublishToTargetAsync(ToolError error, HandbackReplyTarget target, CancellationToken ct) =>
+        target.AnsweringQuestionId is { } questionId
+            ? PublishResponseAsync(new McpAnswerQuestionResponse
+            {
+                QuestionId = questionId,
+                ServerName = target.CallServer,
+                ToolName = target.CallTool,
+                Result = new ToolInvokeResponse
+                {
+                    ToolCallId = target.ToolCallId,
+                    ToolName = target.ToolName,
+                    Content = error.Message,
+                    IsError = true,
+                },
+            }, target.ReplyTo, target.CorrelationId, ct)
+            : PublishResponseAsync(error, target.ReplyTo, target.CorrelationId, ct);
+
+    /// <summary>
+    /// Waits for the downstream call and publishes its outcome to <paramref name="target"/>: the
+    /// result with its elicitation note and error hints, or the error — after one transparent
+    /// reconnect-and-retry when the connection looks dead.
+    /// </summary>
+    private async Task CompleteCallAsync(
+        InvocationState state, Task<CallToolResult> callTask, HandbackReplyTarget target, CancellationToken ct)
+    {
+        var request = state.Request;
+        var server = state.Server;
+        var serverName = server.Name;
+        var timeoutMs = state.TimeoutMs;
+        var inputSchema = state.InputSchema;
+        var arguments = state.Arguments;
+        var sentArguments = state.SentArguments;
+        var rewriteResponse = state.RewriteResponse;
+        var attachmentGateway = state.AttachmentGateway;
+        var sw = state.Stopwatch;
+        var elicitationScope = state.ElicitationScope;
 
         try
         {
-            using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-            timeoutCts.CancelAfter(timeoutMs);
-
-            var result = await server.Client.CallToolAsync(
-                request.ToolName, arguments, cancellationToken: timeoutCts.Token);
+            var result = await callTask;
 
             if (rewriteResponse && attachmentGateway is not null)
             {
@@ -1869,14 +2180,30 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
 
             var response = new ToolInvokeResponse
             {
-                ToolCallId = request.ToolCallId,
-                ToolName = request.ToolName,
+                ToolCallId = target.ToolCallId,
+                ToolName = target.ToolName,
                 ContentBlocks = blocks,
                 Content = content,
                 IsError = result.IsError == true
             };
 
-            await PublishResponseAsync(response, replyTo, envelope.CorrelationId, ct);
+            await PublishToTargetAsync(response, target, ct);
+        }
+        catch (OperationCanceledException) when (state.Handback?.AbortReason is { } abortReason)
+        {
+            // Abandoned while someone was waiting on it: its server was removed mid-stretch.
+            sw.Stop();
+            _logger.LogWarning("← MCP {Server}/{Tool} CANCELLED after {ElapsedMs}ms: {Reason}",
+                serverName, request.ToolName, sw.ElapsedMilliseconds, abortReason);
+
+            await PublishToTargetAsync(new ToolError
+            {
+                ToolCallId = target.ToolCallId,
+                ToolName = target.ToolName,
+                Code = ToolError.Codes.ExecutionFailed,
+                Message = $"The call to {request.ToolName} on MCP server '{serverName}' was cancelled: {abortReason}.",
+                IsRetryable = false
+            }, target, ct);
         }
         catch (OperationCanceledException) when (!ct.IsCancellationRequested)
         {
@@ -1886,8 +2213,8 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
 
             var error = new ToolError
             {
-                ToolCallId = request.ToolCallId,
-                ToolName = request.ToolName,
+                ToolCallId = target.ToolCallId,
+                ToolName = target.ToolName,
                 Code = ToolError.Codes.Timeout,
                 Message = $"MCP server '{serverName}' timed out after {timeoutMs}ms. " +
                           $"This is a transient error — retry the same tool call to continue."
@@ -1896,7 +2223,7 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
                 IsRetryable = true
             };
 
-            await PublishResponseAsync(error, replyTo, envelope.CorrelationId, ct);
+            await PublishToTargetAsync(error, target, ct);
         }
         catch (McpProtocolException ex) when (ex.ErrorCode is McpErrorCode.InvalidParams or McpErrorCode.MethodNotFound)
         {
@@ -1916,8 +2243,8 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
 
             var response = new ToolInvokeResponse
             {
-                ToolCallId = request.ToolCallId,
-                ToolName = request.ToolName,
+                ToolCallId = target.ToolCallId,
+                ToolName = target.ToolName,
                 Content = ex.Message
                           + (hint is null ? "" : "\n\n" + hint)
                           + McpElicitationNote.DescribeDeclined(
@@ -1925,7 +2252,7 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
                 IsError = true
             };
 
-            await PublishResponseAsync(response, replyTo, envelope.CorrelationId, ct);
+            await PublishToTargetAsync(response, target, ct);
         }
         catch (Exception ex) when (FindReauthRequired(ex) is { } reauth)
         {
@@ -1939,15 +2266,14 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
             // any Work IQ tool will succeed.
             var error = new ToolError
             {
-                ToolCallId = request.ToolCallId,
-                ToolName = request.ToolName,
+                ToolCallId = target.ToolCallId,
+                ToolName = target.ToolName,
                 Code = ToolError.Codes.AuthRequired,
                 Message = BuildReauthRequiredMessage(reauth),
                 IsRetryable = false
             };
 
-            await PublishResponseAsync(error, replyTo, envelope.CorrelationId, ct);
-            return MessageResult.Ack;
+            await PublishToTargetAsync(error, target, ct);
         }
         catch (Exception ex) when (FindAuthChallenge(ex) is { } authChallenge)
         {
@@ -1960,15 +2286,14 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
             // reconnecting will not help; the user must re-consent interactively.
             var error = new ToolError
             {
-                ToolCallId = request.ToolCallId,
-                ToolName = request.ToolName,
+                ToolCallId = target.ToolCallId,
+                ToolName = target.ToolName,
                 Code = ToolError.Codes.AuthRequired,
                 Message = authChallenge.Message,
                 IsRetryable = false
             };
 
-            await PublishResponseAsync(error, replyTo, envelope.CorrelationId, ct);
-            return MessageResult.Ack;
+            await PublishToTargetAsync(error, target, ct);
         }
         catch (Exception ex)
         {
@@ -1982,18 +2307,21 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
 
             // A failure right after a declined question is almost certainly the server giving
             // up without the value — not a dead connection. Retrying the identical call would
-            // only be asked the same thing and declined again.
+            // only be asked the same thing and declined again. Likewise after a hand-back: a
+            // retry would redo the call and put the same question to the agent again.
             var declinedBeforeFailure = failedElicitations.Any(r => !r.IsAccepted);
+            var handedBack = state.Handback?.HasHandedBack == true;
 
             // Any other exception from CallToolAsync likely means the connection is dead
             // (server restarted, session expired, network reset, etc.).
             // Reconnect synchronously and retry the call once so the agent never sees
             // a transient session failure — it's transparent from the agent's perspective.
-            if (declinedBeforeFailure)
+            if (declinedBeforeFailure || handedBack)
             {
                 _logger.LogWarning(ex,
-                    "← MCP {Server}/{Tool} FAILED after {ElapsedMs}ms following a declined elicitation — not retrying",
-                    serverName, request.ToolName, sw.ElapsedMilliseconds);
+                    "← MCP {Server}/{Tool} FAILED after {ElapsedMs}ms following a {Kind} — not retrying",
+                    serverName, request.ToolName, sw.ElapsedMilliseconds,
+                    handedBack ? "hand-back" : "declined elicitation");
             }
             else if (_connections.TryGetConfig(serverName, out var staleConfig))
             {
@@ -2017,7 +2345,7 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
                         retryCts.CancelAfter(timeoutMs);
 
                         // A new connection comes with its own coordinator, so the retry needs a
-                        // scope from it.
+                        // scope from it. The retry never hands back: its first attempt didn't.
                         retryElicitationScope = fresh.Elicitation
                             ?.BeginCall(request.ToolName, request.Arguments, request.SessionId);
 
@@ -2055,15 +2383,15 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
 
                         var retryResponse = new ToolInvokeResponse
                         {
-                            ToolCallId = request.ToolCallId,
-                            ToolName = request.ToolName,
+                            ToolCallId = target.ToolCallId,
+                            ToolName = target.ToolName,
                             ContentBlocks = retryBlocks,
                             Content = retryContent,
                             IsError = retryResult.IsError == true
                         };
 
-                        await PublishResponseAsync(retryResponse, replyTo, envelope.CorrelationId, ct);
-                        return MessageResult.Ack;
+                        await PublishToTargetAsync(retryResponse, target, ct);
+                        return;
                     }
                 }
                 catch (Exception retryEx)
@@ -2088,19 +2416,17 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
 
             var error = new ToolError
             {
-                ToolCallId = request.ToolCallId,
-                ToolName = request.ToolName,
+                ToolCallId = target.ToolCallId,
+                ToolName = target.ToolName,
                 Code = ToolError.Codes.ExecutionFailed,
                 Message = ex.Message
                           + McpElicitationNote.DescribeDeclined(
                               failedElicitations, GetToolParameterNames(server, request.ToolName)),
-                IsRetryable = true
+                IsRetryable = !handedBack
             };
 
-            await PublishResponseAsync(error, replyTo, envelope.CorrelationId, ct);
+            await PublishToTargetAsync(error, target, ct);
         }
-
-        return MessageResult.Ack;
     }
 
     private async Task<MessageResult> HandleManagementRequestAsync(MessageEnvelope envelope, CancellationToken ct)
@@ -2432,12 +2758,313 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
 
             await PublishResponseAsync(await ReadResourceAsync(req, ct), replyTo, envelope.CorrelationId, ct);
         }
+        else if (envelope.MessageType == typeof(McpAnswerQuestionRequest).FullName)
+        {
+            var req = envelope.GetPayload<McpAnswerQuestionRequest>();
+            if (req is null) return MessageResult.DeadLetter;
+
+            // Returns once the answer is accepted or refused. The resumed call's outcome is
+            // published by the parked call, so a slow resume doesn't hold up management requests.
+            await HandleAnswerAsync(req, replyTo, envelope.CorrelationId, ct);
+        }
         else
         {
             _logger.LogWarning("Unknown management message type: {MessageType}", envelope.MessageType);
         }
 
         return MessageResult.Ack;
+    }
+
+    /// <summary>
+    /// <c>mcp_answer</c>: checks the answer and, when it is acceptable, resumes the parked call
+    /// with it. A refusal is an error the agent can act on; nothing is sent to the server.
+    /// </summary>
+    private async Task HandleAnswerAsync(McpAnswerQuestionRequest req, string replyTo, string? correlationId, CancellationToken ct)
+    {
+        Task RefuseAsync(string reason, string metric)
+        {
+            McpHandbackDiagnostics.Rejected(metric);
+            _logger.LogInformation("mcp_answer for {QuestionId} refused ({Reason})", req.QuestionId, metric);
+            return PublishResponseAsync(new McpAnswerQuestionResponse { QuestionId = req.QuestionId ?? "", Error = reason },
+                replyTo, correlationId, ct);
+        }
+
+        // Unknown and someone else's look the same: a question exists only for the conversation
+        // that caused it.
+        var unknown = $"There is no open question with id \"{McpElicitationSchemaDescriber.Flatten(req.QuestionId ?? "")}\" " +
+                      "in this conversation. Use the question_id from the hand-back exactly as given.";
+
+        var question = string.IsNullOrEmpty(req.QuestionId) ? null : _handback.Get(req.QuestionId);
+        if (question is null)
+        {
+            var entry = string.IsNullOrEmpty(req.QuestionId) ? null : await TryGetLedgerEntryAsync(req.QuestionId, ct);
+            if (entry is null || !SameSession(entry.SessionId, req.SessionId))
+                await RefuseAsync(unknown, "unknown");
+            else
+                await RefuseAsync(HandbackText.Unavailable(entry), entry.Status);
+            return;
+        }
+
+        if (!SameSession(question.SessionId, req.SessionId))
+        {
+            await RefuseAsync(unknown, "wrong-session");
+            return;
+        }
+
+        McpHandbackOutcome outcome;
+        if (req.Decline)
+        {
+            outcome = McpHandbackOutcome.Decline("the calling agent declined the question");
+        }
+        else
+        {
+            var schema = question.Request.RequestedSchema;
+            var fieldNames = McpElicitationSchemaDescriber.FieldNames(schema);
+            if (!TryParseAnswers(req.Answers, fieldNames, out var answers))
+            {
+                await RefuseAsync(
+                    "answers must be a JSON object keyed by the server's field names, for example " +
+                    $"{{{string.Join(", ", fieldNames.Select(n => $"\"{McpElicitationSchemaDescriber.Flatten(n)}\": ..."))}}}. " +
+                    "To refuse the question, pass decline: true instead.", "malformed");
+                return;
+            }
+
+            var validated = McpElicitationSchemaValidator.Validate(schema, answers);
+            if (!validated.IsValid)
+            {
+                await RefuseAsync(
+                    $"The answer doesn't fit the server's form: {string.Join("; ", validated.Errors)}. " +
+                    $"The form is:\n{McpElicitationSchemaDescriber.Describe(schema)}", "schema");
+                return;
+            }
+
+            if (fieldNames.Count > 0 && validated.Content.Count == 0)
+            {
+                await RefuseAsync("The answer supplies none of the fields the server asked for. " +
+                                  "Answer them, or pass decline: true.", "empty");
+                return;
+            }
+
+            // A yes/no checkpoint is the user's to answer, so it is accepted only once the user
+            // has said something since the question was handed back.
+            var decisions = (schema?.Properties ?? new Dictionary<string, ElicitRequestParams.PrimitiveSchemaDefinition>())
+                .Where(p => validated.Content.ContainsKey(p.Key) && McpElicitationCoordinator.IsDecisionField(p.Value))
+                .Select(p => McpElicitationSchemaDescriber.Flatten(p.Key))
+                .ToList();
+            if (decisions.Count > 0 && !await UserSpokeSinceAsync(question.SessionId, question.CreatedAt, ct))
+            {
+                await RefuseAsync(
+                    $"{string.Join(", ", decisions)} {(decisions.Count == 1 ? "is a decision" : "are decisions")} " +
+                    "the user has to make. Ask the user, and call mcp_answer after they reply. The question stays open.",
+                    "decision-without-user");
+                return;
+            }
+
+            outcome = McpHandbackOutcome.Accept(validated.Content);
+        }
+
+        var target = new HandbackReplyTarget(replyTo, correlationId, req.ToolCallId ?? "", "mcp_answer", question.QuestionId,
+            question.ServerName, question.ToolName);
+        if (!await _handback.TryAnswerAsync(question, new McpAnswerSubmission(outcome, target), ct))
+        {
+            // Settled between the lookup and now: answered by a concurrent call, or expired.
+            var entry = await TryGetLedgerEntryAsync(question.QuestionId, ct);
+            await RefuseAsync(entry is null
+                ? $"Question {question.QuestionId} is no longer open."
+                : HandbackText.Unavailable(entry), "settled");
+        }
+    }
+
+    private static bool SameSession(string? asked, string? answering) =>
+        !string.IsNullOrEmpty(asked) && string.Equals(asked, answering, StringComparison.Ordinal);
+
+    /// <summary>
+    /// Parses <c>answers</c> as a JSON object and maps its keys onto the server's field names
+    /// case-insensitively — "Mailbox" for "mailbox" is the same answer, not an invented field.
+    /// </summary>
+    private static bool TryParseAnswers(string? json, IReadOnlyList<string> fieldNames, out Dictionary<string, JsonElement> answers)
+    {
+        answers = new Dictionary<string, JsonElement>(StringComparer.Ordinal);
+        if (string.IsNullOrWhiteSpace(json))
+            return false;
+
+        try
+        {
+            using var document = JsonDocument.Parse(json);
+            if (document.RootElement.ValueKind != JsonValueKind.Object)
+                return false;
+
+            var canonical = fieldNames.ToDictionary(n => n, n => n, StringComparer.OrdinalIgnoreCase);
+            foreach (var property in document.RootElement.EnumerateObject())
+                answers[canonical.GetValueOrDefault(property.Name, property.Name)] = property.Value.Clone();
+            return true;
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
+    }
+
+    private async Task<PendingQuestionEntry?> TryGetLedgerEntryAsync(string questionId, CancellationToken ct)
+    {
+        try
+        {
+            return await _handback.Ledger.GetAsync(questionId, ct);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(ex, "Could not read the pending-question ledger");
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Whether the user — a person, not a synthetic turn from an agent or subagent, which carries
+    /// an agent name — has said something in <paramref name="sessionId"/> since <paramref name="since"/>.
+    /// Without conversation memory the answer is no: a decision is never confirmed on a guess.
+    /// </summary>
+    private async Task<bool> UserSpokeSinceAsync(string? sessionId, DateTimeOffset since, CancellationToken ct)
+    {
+        if (_conversationMemory is null || string.IsNullOrEmpty(sessionId))
+            return false;
+
+        var turns = await _conversationMemory.GetTurnsAsync(HandbackSessions.ConversationId(sessionId), ct);
+        return turns.Any(t => IsPersonTurn(t) && t.Timestamp > since);
+    }
+
+    /// <summary>
+    /// The last thing the user said in <paramref name="sessionId"/> before <paramref name="before"/>:
+    /// the request a handed-back call was serving, for its ledger entry.
+    /// </summary>
+    private async Task<PendingTrigger?> FindTriggerAsync(string sessionId, DateTimeOffset before, CancellationToken ct)
+    {
+        var turns = await _conversationMemory!.GetTurnsAsync(HandbackSessions.ConversationId(sessionId), ct);
+        var turn = turns.LastOrDefault(t => IsPersonTurn(t) && t.Timestamp <= before);
+        return turn is null
+            ? null
+            : new PendingTrigger { At = turn.Timestamp, UserExcerpt = PendingQuestionStore.ExcerptOf(turn.Content) };
+    }
+
+    private static bool IsPersonTurn(ConversationTurn turn) =>
+        string.Equals(turn.Role, "user", StringComparison.OrdinalIgnoreCase) && turn.AgentName is null;
+
+    /// <summary>The agent name restart notices carry in conversation memory and in the chat.</summary>
+    internal const string RestartNoticeAgentName = "mcp-bridge";
+
+    /// <summary>
+    /// Startup, before any call can hand back a question: every entry still pending was
+    /// interrupted (no parked call survives a restart), or had already expired. Returns the
+    /// interrupted entries whose sessions haven't been told yet, including any a crash left
+    /// between interruption and notice.
+    /// </summary>
+    private async Task<IReadOnlyList<PendingQuestionEntry>> MarkInterruptedQuestionsAsync(CancellationToken ct)
+    {
+        try
+        {
+            var now = DateTimeOffset.UtcNow;
+            var marked = 0;
+            await _handback.Ledger.UpdateAllAsync(entry =>
+            {
+                if (entry.Status != PendingQuestionStatus.Pending)
+                    return;
+
+                if (entry.ExpiresAt <= now)
+                {
+                    entry.Status = PendingQuestionStatus.Expired;
+                    entry.Reason = "it expired while the agent was restarting";
+                    entry.ResolvedAt = now;
+                    return;
+                }
+
+                entry.Status = PendingQuestionStatus.Interrupted;
+                marked++;
+            }, ct);
+
+            if (marked > 0)
+            {
+                McpHandbackDiagnostics.Interrupted(marked);
+                _logger.LogWarning("{Count} handed-back MCP question(s) were interrupted by a restart", marked);
+            }
+
+            return [.. (await _handback.Ledger.ReadAllAsync(ct)).Where(e => e.Status == PendingQuestionStatus.Interrupted)];
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogError(ex, "Could not reconcile the MCP pending-question ledger at {Path}", _handback.Ledger.Path);
+            return [];
+        }
+    }
+
+    /// <summary>
+    /// Tells each user session about its interrupted calls: the full entry in working memory, a
+    /// turn in its conversation so the agent's next turn sees it, and the same text in the chat
+    /// so the user does too. Then marks the entry notified. A crash between telling and marking
+    /// repeats a notice, which the question id lets a reader recognize as one.
+    /// </summary>
+    private async Task NotifyInterruptedQuestionsAsync(IReadOnlyList<PendingQuestionEntry> entries, CancellationToken ct)
+    {
+        foreach (var entry in entries)
+        {
+            try
+            {
+                var notice = HandbackText.InterruptionNotice(entry);
+                if (HandbackSessions.IsUserSession(entry.SessionId))
+                {
+                    var conversationId = HandbackSessions.ConversationId(entry.SessionId!);
+
+                    if (_workingMemory is not null)
+                    {
+                        await _workingMemory.SetAsync(
+                            HandbackSessions.InterruptedKey(entry), HandbackText.Details(entry),
+                            ttl: PendingQuestionLedger.RetainSettled, category: "mcp-interrupted",
+                            tags: [entry.Call.Server, entry.QuestionId]);
+                    }
+
+                    if (_conversationMemory is not null)
+                    {
+                        await _conversationMemory.AddTurnAsync(conversationId,
+                            new ConversationTurn("user", notice, DateTimeOffset.UtcNow) { AgentName = RestartNoticeAgentName },
+                            ct);
+                    }
+
+                    await _publisher.PublishAsync($"{UserProxy.UserProxyTopics.UserResponse}.{_agentName}",
+                        new UserProxy.AgentReply
+                        {
+                            Content = notice,
+                            SessionId = conversationId,
+                            AgentName = RestartNoticeAgentName,
+                            IsFinal = true,
+                        }.ToEnvelope<UserProxy.AgentReply>(source: _agentName), ct);
+
+                    McpHandbackDiagnostics.Notified();
+                    _logger.LogInformation("Told session {Session} that MCP question {QuestionId} was interrupted by a restart",
+                        entry.SessionId, entry.QuestionId);
+                }
+                else
+                {
+                    // The run that made the call (a subagent, a patrol) didn't outlive the restart.
+                    _logger.LogInformation(
+                        "MCP question {QuestionId} from non-user session {Session} was interrupted by a restart; not announced",
+                        entry.QuestionId, entry.SessionId);
+                }
+
+                await _handback.Ledger.UpdateAsync(entry.QuestionId, e =>
+                {
+                    e.Status = PendingQuestionStatus.Notified;
+                    e.NotifiedAt = DateTimeOffset.UtcNow;
+                    e.ResolvedAt = e.NotifiedAt;
+                }, ct);
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                return;
+            }
+            catch (Exception ex)
+            {
+                // Left interrupted: the next start tries again.
+                _logger.LogWarning(ex, "Could not deliver the restart notice for MCP question {QuestionId}", entry.QuestionId);
+            }
+        }
     }
 
     private async Task PersistServerConfigAsync(string name, McpBridgeServerConfig? config, bool remove)
@@ -2986,5 +3613,10 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
             await _manageSubscription.DisposeAsync();
 
         _configPersistLock.Dispose();
+
+        _handback.AbandonAllForShutdown();
+        if (!_lifetime.IsCancellationRequested)
+            await _lifetime.CancelAsync();
+        _handback.Dispose();
     }
 }

@@ -124,9 +124,9 @@ public class McpElicitationMrtrTests
             return harness;
         }
 
-        public async Task<string> CallAsync(string sessionId = "session/abc")
+        public async Task<string> CallAsync(string sessionId = "session/abc", IMcpHandbackChannel? handback = null)
         {
-            using var scope = Coordinator.BeginCall("search_mail", "{}", sessionId);
+            using var scope = Coordinator.BeginCall("search_mail", "{}", sessionId, handback);
             var result = await Client.CallToolAsync("search_mail", new Dictionary<string, object?>(), cancellationToken: _cts.Token);
             LastRecords = scope.Records;
             return string.Concat(result.Content.OfType<TextContentBlock>().Select(b => b.Text));
@@ -246,6 +246,209 @@ public class McpElicitationMrtrTests
         Assert.AreEqual("accept:home", calls[1].Text);
         Assert.AreEqual(1, calls[0].Records.Count, "a question must not be recorded against the other call");
         Assert.AreEqual(1, calls[1].Records.Count);
+    }
+
+    // ── Hand-back (#602) ─────────────────────────────────────────────────────
+
+    /// <summary>Stands in for the bridge's hand-back: answers each question it is given in turn.</summary>
+    private sealed class ScriptedChannel(params McpHandbackOutcome[] outcomes) : IMcpHandbackChannel
+    {
+        public List<McpHandbackQuestion> Asked { get; } = [];
+
+        public ValueTask<McpHandbackOutcome> AskAsync(McpHandbackQuestion question, CancellationToken ct)
+        {
+            Asked.Add(question);
+            return ValueTask.FromResult(outcomes[Math.Min(Asked.Count, outcomes.Length) - 1]);
+        }
+    }
+
+    private static McpHandbackOutcome AcceptMailbox(string mailbox) =>
+        McpHandbackOutcome.Accept(new Dictionary<string, JsonElement> { ["mailbox"] = Json($"\"{mailbox}\"") });
+
+    private static McpElicitationConfig Handback() => new() { Mode = McpElicitationConfig.ModeHandback };
+
+    [TestMethod]
+    [Timeout(20_000, CooperativeCancellation = true)]
+    public async Task Handback_TheAgentsAnswerResumesTheCall()
+    {
+        var responder = new CountingResponder("personal");
+        var channel = new ScriptedChannel(AcceptMailbox("work"));
+        await using var harness = await Harness.StartAsync(MrtrTool(), Handback(), responder);
+
+        var text = await harness.CallAsync(handback: channel);
+
+        Assert.AreEqual("round 1 accept:work", text);
+        Assert.AreEqual(0, responder.Calls, "in hand-back mode the responder is only the fallback");
+        Assert.AreEqual("mail", channel.Asked.Single().ServerName);
+        Assert.AreEqual(1, channel.Asked.Single().Round);
+        Assert.AreEqual("answered by the calling agent", harness.LastRecords.Single().Reason);
+    }
+
+    [TestMethod]
+    [Timeout(20_000, CooperativeCancellation = true)]
+    public async Task Handback_EachRoundIsHandedBack()
+    {
+        var channel = new ScriptedChannel(AcceptMailbox("work"), AcceptMailbox("personal"));
+        await using var harness = await Harness.StartAsync(MrtrTool(rounds: 2), Handback());
+
+        var text = await harness.CallAsync(handback: channel);
+
+        Assert.AreEqual("round 2 accept:personal", text);
+        CollectionAssert.AreEqual(new[] { 1, 2 }, channel.Asked.Select(q => q.Round).ToArray());
+    }
+
+    [TestMethod]
+    [Timeout(20_000, CooperativeCancellation = true)]
+    public async Task Handback_MaxPerCallStillBoundsTheRounds()
+    {
+        var channel = new ScriptedChannel(AcceptMailbox("work"));
+        await using var harness = await Harness.StartAsync(
+            MrtrTool(rounds: 5), new McpElicitationConfig { Mode = McpElicitationConfig.ModeHandback, MaxPerCall = 2 });
+
+        var text = await harness.CallAsync(handback: channel);
+
+        Assert.AreEqual(2, channel.Asked.Count);
+        Assert.AreEqual("round 3 decline:", text);
+    }
+
+    [TestMethod]
+    [Timeout(20_000, CooperativeCancellation = true)]
+    public async Task Handback_TheAgentsDeclineReachesTheServer()
+    {
+        var channel = new ScriptedChannel(McpHandbackOutcome.Decline("the user would rather not say"));
+        await using var harness = await Harness.StartAsync(MrtrTool(), Handback());
+
+        var text = await harness.CallAsync(handback: channel);
+
+        Assert.AreEqual("round 1 decline:", text);
+        Assert.AreEqual("the user would rather not say", harness.LastRecords.Single().Reason);
+    }
+
+    [TestMethod]
+    [Timeout(20_000, CooperativeCancellation = true)]
+    public async Task Handback_AnAnswerOutsideTheFormIsDeclinedNotForwarded()
+    {
+        var channel = new ScriptedChannel(AcceptMailbox("shared"));
+        await using var harness = await Harness.StartAsync(MrtrTool(), Handback());
+
+        var text = await harness.CallAsync(handback: channel);
+
+        Assert.AreEqual("round 1 decline:", text, "a value the form doesn't allow must never reach the server");
+    }
+
+    [TestMethod]
+    [Timeout(20_000, CooperativeCancellation = true)]
+    public async Task Handback_InBandChecksStillRunFirst()
+    {
+        // A denied field declines the whole form before anyone is asked.
+        var denied = new ScriptedChannel(AcceptMailbox("work"));
+        await using (var harness = await Harness.StartAsync(MrtrTool(),
+                         new McpElicitationConfig { Mode = McpElicitationConfig.ModeHandback, DeniedFields = ["mailbox"] }))
+        {
+            Assert.AreEqual("round 1 decline:", await harness.CallAsync(handback: denied));
+        }
+        Assert.AreEqual(0, denied.Asked.Count);
+
+        // Operator defaults that settle the whole form answer it without a hand-back.
+        var defaulted = new ScriptedChannel(AcceptMailbox("work"));
+        await using (var harness = await Harness.StartAsync(MrtrTool(), new McpElicitationConfig
+                     {
+                         Mode = McpElicitationConfig.ModeHandback,
+                         Defaults = new() { ["mailbox"] = Json("\"personal\"") },
+                     }))
+        {
+            Assert.AreEqual("round 1 accept:personal", await harness.CallAsync(handback: defaulted));
+        }
+        Assert.AreEqual(0, defaulted.Asked.Count);
+    }
+
+    [TestMethod]
+    [Timeout(20_000, CooperativeCancellation = true)]
+    public async Task Handback_ACallThatCantTakeOneGetsTheResponder()
+    {
+        // No channel on the scope: the caller can't answer (a wisp, a subagent), so the server's
+        // responder answers, as in auto mode.
+        var responder = new CountingResponder("personal");
+        await using var harness = await Harness.StartAsync(MrtrTool(), Handback(), responder);
+
+        var text = await harness.CallAsync();
+
+        Assert.AreEqual("round 1 accept:personal", text);
+        Assert.AreEqual(1, responder.Calls);
+    }
+
+    [TestMethod]
+    [Timeout(20_000, CooperativeCancellation = true)]
+    public async Task Handback_ALegacyElicitationGetsTheResponder()
+    {
+        // A legacy elicitation/create arrives off the call's async flow, so it can't be tied to
+        // exactly one call, and it holds the server's request open while it waits: never handed back.
+        var responder = new CountingResponder("personal");
+        var channel = new ScriptedChannel(AcceptMailbox("work"));
+        await using var harness = await Harness.StartAsync(LegacyTool(), Handback(), responder, serverProtocolVersion: "2025-11-25");
+
+        var text = await harness.CallAsync(handback: channel);
+
+        Assert.AreEqual("accept:personal", text);
+        Assert.AreEqual(0, channel.Asked.Count);
+    }
+
+    [TestMethod]
+    [Timeout(20_000, CooperativeCancellation = true)]
+    public async Task Handback_ADecisionIsHandedBackRatherThanDeclined()
+    {
+        // In auto mode a yes/no field is declined unless a default settles it; in hand-back mode
+        // it goes to the agent, whose answer the bridge accepts only after the user has spoken.
+        var tool = McpServerTool.Create(
+            (McpServer server, RequestContext<CallToolRequestParams> context) =>
+            {
+                if (context.Params?.RequestState is not null)
+                {
+                    var answer = context.Params.InputResponses!["confirm"].Deserialize(InputResponse.ElicitResultJsonTypeInfo)!;
+                    return answer.Action + ":" + (answer.Content?.TryGetValue("confirm", out var c) == true ? c.GetRawText() : "");
+                }
+
+                throw new InputRequiredException(
+                    new Dictionary<string, InputRequest>
+                    {
+                        ["confirm"] = InputRequest.ForElicitation(new ElicitRequestParams
+                        {
+                            Message = "Delete 12 rows?",
+                            RequestedSchema = new ElicitRequestParams.RequestSchema
+                            {
+                                Properties = new Dictionary<string, ElicitRequestParams.PrimitiveSchemaDefinition>
+                                {
+                                    ["confirm"] = new ElicitRequestParams.BooleanSchema(),
+                                },
+                                Required = ["confirm"],
+                            },
+                        }),
+                    }, "1");
+            },
+            new McpServerToolCreateOptions { Name = "search_mail" });
+
+        var channel = new ScriptedChannel(McpHandbackOutcome.Accept(new Dictionary<string, JsonElement> { ["confirm"] = Json("true") }));
+        await using var harness = await Harness.StartAsync(tool, Handback());
+
+        Assert.AreEqual("accept:true", await harness.CallAsync(handback: channel));
+        Assert.AreEqual(1, channel.Asked.Count);
+    }
+
+    [TestMethod]
+    public void Handback_IsRecognizedAndRefusedAsTheBridgeWideDefault()
+    {
+        var config = new McpElicitationConfig { Mode = "HandBack", Responder = "conversation", MaxPerCall = 4 };
+
+        Assert.IsTrue(config.IsRecognizedMode);
+        Assert.AreEqual(McpElicitationConfig.ModeHandback, config.ResolveMode());
+
+        var asDefault = config.WithoutHandback();
+        Assert.AreEqual(McpElicitationConfig.ModeAuto, asDefault.ResolveMode());
+        Assert.AreEqual(4, asDefault.MaxPerCall, "only the mode changes");
+        Assert.AreEqual("conversation", asDefault.Responder);
+
+        var auto = new McpElicitationConfig();
+        Assert.AreSame(auto, auto.WithoutHandback());
     }
 
     [TestMethod]

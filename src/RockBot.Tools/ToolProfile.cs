@@ -87,16 +87,19 @@ public static class ToolProfiles
     ///   primary session, not the subagent's, so it is silently useless here.</item>
     ///   <item><c>mcp_register_server</c> / <c>mcp_unregister_server</c> — infrastructure-only;
     ///   subagents must not reconfigure the MCP bridge.</item>
+    ///   <item><c>mcp_answer</c> — a subagent can't put an MCP server's question to the user, so
+    ///   the server's responder answers its calls instead of handing questions back.</item>
     /// </list>
     /// Everything else (including <c>mcp:management</c> invoke/list/details) is allowed.
     /// </summary>
     public static ToolProfile Subagent { get; } = ToolProfile.All
         .Named("Subagent")
         .DenyingSources("subagent", "scheduling", "a2a")
-        .DenyingToolNames("mcp_register_server", "mcp_unregister_server");
+        .DenyingToolNames("mcp_register_server", "mcp_unregister_server", "mcp_answer");
 
     /// <summary>
-    /// Scheduled-task surface. Denies only MCP bridge reconfiguration — scheduled tasks
+    /// Scheduled-task surface. Denies MCP bridge reconfiguration, and <c>mcp_answer</c> because
+    /// nobody is there to answer a handed-back question — scheduled tasks
     /// (e.g. the heartbeat patrol) legitimately spawn subagents, so source <c>subagent</c>
     /// is intentionally <b>not</b> denied here despite the originating issue's table:
     /// <c>ScheduledTaskHandler</c> tracks <c>spawn_subagent</c> invocations and denying the
@@ -104,7 +107,7 @@ public static class ToolProfiles
     /// </summary>
     public static ToolProfile Scheduled { get; } = ToolProfile.All
         .Named("Scheduled")
-        .DenyingToolNames("mcp_register_server", "mcp_unregister_server");
+        .DenyingToolNames("mcp_register_server", "mcp_unregister_server", "mcp_answer");
 
     /// <summary>
     /// A2A result-synthesis surface. Denies the A2A caller tools so the synthesis LLM
