@@ -315,13 +315,54 @@ agent process. Every message handler (`UserMessageHandler`, `ScheduledTaskHandle
    call evaluates whether the response actually completes the original user request. If
    incomplete, a continuation nudge is appended and the tool loop re-enters (up to
    `MaxCompletionReprompts` times, default 2). Evaluation is skipped on force-termination
-   (consecutive timeouts) and fails open on any evaluator error.
+   (consecutive timeouts) and fails open on any evaluator error. See
+   [When the completion evaluator runs](#when-the-completion-evaluator-runs).
 5. **Proactive follow-up** — after the completion evaluator says COMPLETE, a second
    `ModelTier.Low` call assesses whether there are high-value proactive actions the agent
    could take within the current context (e.g. looking up a contact mentioned in conversation,
    cross-referencing calendar events, connecting related information). If found, context is
    enriched with relevant skills/services and the tool loop runs one more pass. The follow-up
    response is appended to the original. Skipped for simple exchanges. Fails open on error.
+
+### When the completion evaluator runs
+
+The evaluator is one `ModelTier.Low` call, so `RunAsync` gates it (`CompletionEvalTriggers.Decide`,
+#666). It runs when any trigger below fires, and logs
+`Completion evaluator: RUN (trigger=<name>)`; otherwise it logs `SKIPPED (…, no trigger)`.
+Triggers are checked in this order, and the first match is logged:
+
+| Trigger | Fires when |
+|---|---|
+| `subagent-synthesis` | The loop relays a subagent's result (`SubagentResultHandler`). It's judged against the user request that led to the spawn. |
+| `promise-no-action` | The loop made no tool calls and the reply promises or describes work: "I should have…", "I'm cutting it… now", "I've got the right path", "I'll search…", or a closing "Let me…". |
+| `bare-claim` | The reply opens with a bare completion claim such as "Done." or "Updated.". |
+| `imperative-no-tools` | The loop made no tool calls and the user gave an instruction ("do it", "go ahead", "figure out…", "can you trim it?") or pushed back ("why didn't you…", "30 slides is a lot", "try again"). |
+| `side-effect` | The loop made a side-effecting tool call. `ToolSideEffects` decides this from the verb in the tool name; for `mcp_invoke_tool` it reads the `tool_name` argument. |
+| `pattern` | The pre-#666 gate: the hallucinated-action or capability-denial regex matched, the reply is under 20 characters (unless the user only said "thanks", "ok" or "hi"), or the loop hit its iteration cap. |
+
+The agent's own bookkeeping (task list, working memory, long-term memory, progress reports)
+doesn't count as a tool call for the "no tool calls" triggers, and it isn't a side effect. A loop
+that calls `spawn_subagent` or `invoke_agent` is still skipped, because its results arrive later.
+The loop records its tool calls in `LoopToolCallLedger` instead of reading the chat history,
+because context trimming can shorten the history.
+
+The evaluator reads the user's last three messages, the agent's previous message, every tool
+call the loop made (name, ok or failed, and whether it changed state), and the reason the check
+is running. Its rubric asks five questions:
+
+1. What did the user ask for (counts, format, location, constraints)?
+2. Was it delivered?
+3. Does any number in the reply contradict the user's constraints?
+4. Do the tool calls support every action the reply claims?
+5. Did the reply promise work it could have done now?
+
+After an INCOMPLETE verdict, the re-prompt adds guidance specific to the trigger. The
+re-prompt budget is unchanged.
+
+`spawn_subagent` reads the user request of the loop that ran it from
+`OriginatingUserRequestContext`. The request is stored on `SubagentEntry` and carried on
+`SubagentResultMessage.OriginatingUserRequest`, so the synthesis turn's check sees what the user
+asked, not only how the primary agent described the task to the subagent.
 
 ### Completion evaluator configuration
 
@@ -336,8 +377,8 @@ agent process. Every message handler (`UserMessageHandler`, `ScheduledTaskHandle
 
 | Counter | Fires when |
 |---|---|
-| `rockbot.agent.completion_check.complete` | Evaluator says task is done |
-| `rockbot.agent.completion_check.incomplete` | Evaluator triggers a re-prompt |
+| `rockbot.agent.completion_check.complete` | Evaluator says task is done (tagged `rockbot.completion_check.trigger`) |
+| `rockbot.agent.completion_check.incomplete` | Evaluator triggers a re-prompt (tagged `rockbot.completion_check.trigger`) |
 | `rockbot.agent.completion_check.skipped` | Evaluation skipped (force termination) |
 | `rockbot.agent.follow_up.triggered` | Follow-up evaluator found an opportunity |
 | `rockbot.agent.follow_up.none` | Follow-up evaluator found nothing worth doing |

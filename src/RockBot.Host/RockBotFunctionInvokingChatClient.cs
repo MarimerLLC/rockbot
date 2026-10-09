@@ -202,6 +202,8 @@ public class RockBotFunctionInvokingChatClient : FunctionInvokingChatClient
                 diagEx.LastToolStatus = status;
                 diagEx.LastToolResult = $"Error: {ex.Message}";
             }
+            LoopToolCallLedgerContext.Value?.Record(
+                callContent.Name, AgentLoopRunner.TruncateLedgerArgs(argsSummary), succeeded: false);
             throw;
         }
         sw.Stop();
@@ -305,6 +307,8 @@ public class RockBotFunctionInvokingChatClient : FunctionInvokingChatClient
                 ? resultStr[..500] + "…"
                 : resultStr;
         }
+        LoopToolCallLedgerContext.Value?.Record(
+            callContent.Name, AgentLoopRunner.TruncateLedgerArgs(argsSummary), succeeded: status == "ok");
 
         // Log tool-call event for sequence analysis (fire-and-forget)
         if (_toolCallLog is not null && ToolCallSessionContext.SessionId is { } sid)

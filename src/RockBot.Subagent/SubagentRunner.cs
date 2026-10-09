@@ -52,7 +52,10 @@ internal sealed class SubagentRunner(
         bool consolidate,
         int? maxIterations,
         TimeSpan timeout,
-        CancellationToken ct)
+        CancellationToken ct,
+        // #666: the user message that led to the spawn; passed through to the result so the
+        // primary's synthesis turn is checked against it.
+        string? originatingUserRequest = null)
     {
         var classification = tierSelector.Classify(description, new TierRoutingContext(Origin: "subagent"));
         var tier = classification.Tier;
@@ -358,7 +361,8 @@ internal sealed class SubagentRunner(
             Error = error,
             Timestamp = DateTimeOffset.UtcNow,
             BatchId = batchId,
-            Consolidate = consolidate
+            Consolidate = consolidate,
+            OriginatingUserRequest = originatingUserRequest
         };
 
         var envelope = result.ToEnvelope<SubagentResultMessage>(source: subagentId);

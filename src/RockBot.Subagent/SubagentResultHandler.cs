@@ -223,9 +223,13 @@ internal sealed class SubagentResultHandler(
                 ReplyTo = $"{UserProxyTopics.UserResponse}.{agent.Name}"
             });
 
+            // #666: the synthesis is always checked by the completion evaluator, against the
+            // user request that led to the spawn — not just the subagent's self-report.
             var finalContent = await agentLoopRunner.RunAsync(
                 chatMessages, chatOptions, rawSessionId,
-                enableFollowUp: false, cancellationToken: ct);
+                enableFollowUp: false, cancellationToken: ct,
+                subagentSynthesis: true,
+                originatingUserRequest: CombineOriginatingRequests(batchedResults));
 
             await conversationMemory.AddTurnAsync(
                 rawSessionId,
@@ -301,6 +305,28 @@ internal sealed class SubagentResultHandler(
                 "Degraded subagent consolidation reply also failed for session {SessionId}",
                 rawSessionId);
         }
+    }
+
+    /// <summary>
+    /// The user request(s) behind a batch of results, for the synthesis turn's completion check
+    /// (#666). Siblings spawned from one turn share a request, so duplicates collapse; distinct
+    /// requests are listed in arrival order. Null when no result carries one (e.g. results from
+    /// an older build, or a spawn made outside a user turn).
+    /// </summary>
+    internal static string? CombineOriginatingRequests(IReadOnlyList<SubagentResultMessage> results)
+    {
+        var distinct = results
+            .Select(r => r.OriginatingUserRequest?.Trim())
+            .Where(r => !string.IsNullOrEmpty(r))
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
+
+        return distinct.Count switch
+        {
+            0 => null,
+            1 => distinct[0],
+            _ => string.Join("\n\n", distinct.Select((r, i) => $"({i + 1}) {r}")),
+        };
     }
 
     internal static string BuildDegradedReplyContent(

@@ -190,6 +190,45 @@ public class SubagentToolExecutorTests
     }
 
     [TestMethod]
+    public async Task SpawnSubagentExecutor_PassesTheLoopsUserRequestToManager()
+    {
+        // #666: AgentLoopRunner.RunAsync sets the ambient request for its run; the spawn
+        // records it so the synthesis turn is checked against what the user actually asked.
+        var manager = new FakeSubagentManager([]) { SpawnResult = "task-orig" };
+        var executor = new SpawnSubagentExecutor(manager);
+        var request = new ToolInvokeRequest
+        {
+            ToolCallId = "call-1",
+            ToolName = "spawn_subagent",
+            Arguments = JsonSerializer.Serialize(new { description = "Rebuild the deck at approximately 30 slides" }),
+            SessionId = "session-1"
+        };
+
+        using (RockBot.Host.OriginatingUserRequestContext.Set("figure out a way to update the doc"))
+            await executor.ExecuteAsync(request, CancellationToken.None);
+
+        Assert.AreEqual("figure out a way to update the doc", manager.LastOriginatingUserRequest);
+    }
+
+    [TestMethod]
+    public async Task SpawnSubagentExecutor_OutsideALoop_PassesNullRequest()
+    {
+        var manager = new FakeSubagentManager([]) { SpawnResult = "task-none" };
+        var executor = new SpawnSubagentExecutor(manager);
+        var request = new ToolInvokeRequest
+        {
+            ToolCallId = "call-1",
+            ToolName = "spawn_subagent",
+            Arguments = JsonSerializer.Serialize(new { description = "Background task" }),
+            SessionId = "session-1"
+        };
+
+        await executor.ExecuteAsync(request, CancellationToken.None);
+
+        Assert.IsNull(manager.LastOriginatingUserRequest);
+    }
+
+    [TestMethod]
     public async Task SpawnSubagentExecutor_WithoutMaxIterations_PassesNullToManager()
     {
         var manager = new FakeSubagentManager([]) { SpawnResult = "task789" };
@@ -239,11 +278,15 @@ public class SubagentToolExecutorTests
 
         public Task<string> SpawnAsync(string description, string? context, int? timeoutMinutes,
             string primarySessionId, CancellationToken ct,
-            string? batchId = null, bool consolidate = true, int? maxIterations = null)
+            string? batchId = null, bool consolidate = true, int? maxIterations = null,
+            string? originatingUserRequest = null)
         {
             LastMaxIterations = maxIterations;
+            LastOriginatingUserRequest = originatingUserRequest;
             return Task.FromResult(SpawnResult);
         }
+
+        public string? LastOriginatingUserRequest { get; private set; }
 
         public Task<bool> CancelAsync(string taskId) =>
             Task.FromResult(CancelResult);

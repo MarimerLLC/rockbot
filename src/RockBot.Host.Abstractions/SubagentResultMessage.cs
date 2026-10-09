@@ -14,4 +14,11 @@ public sealed record SubagentResultMessage
     public required DateTimeOffset Timestamp { get; init; }
     public string? BatchId { get; init; }
     public bool Consolidate { get; init; } = true;
+
+    /// <summary>
+    /// The user message that led the primary agent to spawn this subagent, when known (#666).
+    /// The synthesis turn's completion check judges the relayed result against it rather than
+    /// against the subagent's own task description, which the primary may have paraphrased.
+    /// </summary>
+    public string? OriginatingUserRequest { get; init; }
 }

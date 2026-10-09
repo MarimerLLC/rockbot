@@ -354,6 +354,25 @@ internal sealed class UserMessageHandler(
                             chatMessages, chatOptions, firstResponse, classification, message.Content, postInjectionTokenEstimate,
                             message.SessionId, turnId, replyTo, correlationId, sessionHandle.Generation, wipMessageId, turnActivity, sessionCt);
                     }
+                    else if (CompletionEvalTriggers.NeedsCheckWithoutTools(text, message.Content))
+                    {
+                        // #666: a no-tool reply that promises work, claims "Done."/"Updated.", or
+                        // answers an instruction would otherwise go straight to the user without
+                        // the completion evaluator ever seeing it. Route it through the loop.
+                        logger.LogInformation(
+                            "First response needs a completion check (promise, bare claim, or instruction with no tool calls; {Length} chars); routing to background loop",
+                            text.Length);
+
+                        await PublishReplyAsync(
+                            "I'm working on that — I'll follow up shortly.",
+                            replyTo, correlationId, message.SessionId, turnId, isFinal: false, ct);
+
+                        turnActivityHandedOff = true;
+                        context.Items[WipConstants.DeferredKey] = true;
+                        _ = BackgroundToolLoopAsync(
+                            chatMessages, chatOptions, firstResponse, classification, message.Content, postInjectionTokenEstimate,
+                            message.SessionId, turnId, replyTo, correlationId, sessionHandle.Generation, wipMessageId, turnActivity, sessionCt);
+                    }
                     else
                     {
                         // Single-response text path (no background loop): firstResponse IS

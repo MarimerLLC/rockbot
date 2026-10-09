@@ -14,4 +14,10 @@ public sealed class SubagentEntry
     public required Task Task { get; init; }
     public string? BatchId { get; init; }
     public bool Consolidate { get; init; } = true;
+
+    /// <summary>
+    /// The user message that led the primary agent to spawn this subagent, when known (#666).
+    /// Carried to the result so the synthesis turn is checked against what the user asked.
+    /// </summary>
+    public string? OriginatingUserRequest { get; init; }
 }

@@ -305,23 +305,41 @@ public sealed partial class AgentLoopRunner(
 
     private const string CompletionEvaluatorPrompt =
         """
-        You are a task-completion evaluator. Given an original user request and an
-        agent's response, determine whether the agent fully completed the requested task.
+        You are a task-completion evaluator. You receive the user's recent messages (the last
+        one is what the agent is answering), the list of tool calls the agent actually made
+        this turn, and the agent's response. Decide whether the response fully and truthfully
+        delivers what the user asked for.
 
-        Rules:
-        - "Complete" means the agent performed the actions requested and reported results.
-        - If the agent only described what it would do, narrated a plan, or gave a partial
-          answer without taking action, that is INCOMPLETE.
-        - If the agent said it completed the task and the response contains evidence of
-          completion (specific data, confirmation of actions taken), that is COMPLETE.
-        - If the original request was a simple question and the agent answered it, that
-          is COMPLETE.
-        - If the agent encountered a SPECIFIC tool error (timeout, auth failure, API error)
-          and explained it clearly, that is COMPLETE.
-        - IMPORTANT: If the agent claimed it lacks access to a service, cannot connect,
-          or does not have the right tools — WITHOUT actually trying to call any tools
-          first — that is INCOMPLETE. The agent should attempt to use its tools before
-          concluding it cannot do something.
+        Work through these questions in order:
+        1. What did the user ask for? List every concrete requirement: counts, sizes, durations,
+           format, location (which file or document), and constraints — including ones stated in
+           earlier messages, and quantities that follow from them (for example, a 30-minute talk
+           at 3 minutes per slide means about 10 slides).
+        2. Was it delivered? A question answered correctly is delivered. An instruction ("do it",
+           "update the doc", "cut the slides", "search for it") is delivered only if the tool
+           calls show the action was actually taken.
+        3. Does any number or claim in the response contradict a constraint the user gave or a
+           fact in the conversation? A count the user never gave, or a figure that does not
+           follow from the user's own numbers, means INCOMPLETE.
+        4. Is any action the response claims ("Updated.", "Done.", "I've trimmed it…") unsupported
+           by the tool calls listed? If no listed tool call could have done it, that is INCOMPLETE.
+        5. Does the response promise, plan or apologise for work ("I should have…", "I'll search…",
+           "Let me…", "I've got the right path…") that the agent could have done now with its
+           tools? That is INCOMPLETE.
+
+        Also:
+        - If the agent hit a SPECIFIC tool error (timeout, auth failure, API error) and explained
+          it clearly, that is COMPLETE.
+        - If the agent claimed it lacks access to a service, cannot connect, or does not have the
+          right tools — WITHOUT trying to call any tools first — that is INCOMPLETE.
+        - If the request is genuinely ambiguous and the agent asked one necessary clarifying
+          question instead of guessing, that is COMPLETE.
+        - When an "Original user request" section is present, the agent is relaying a subagent's
+          result: judge it against that original request, not against the subagent's own task
+          description or self-report.
+
+        In "reason", name the specific unmet requirement, contradicted number or unsupported
+        claim, so the agent can fix it.
 
         Return ONLY a valid JSON object — no markdown, no code fences.
         {"complete": true, "reason": "brief explanation"}
@@ -408,7 +426,13 @@ public sealed partial class AgentLoopRunner(
         double? complexityScore = null,
         int? maxIterationsOverride = null,
         LoopDiagnostics? diagnostics = null,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        // #666: true when this loop relays a subagent's result to the user. The completion
+        // evaluator then always runs, judged against originatingUserRequest when it is known.
+        bool subagentSynthesis = false,
+        // #666: the user request this loop ultimately serves when the latest user-role message is
+        // not it (a subagent synthesis turn's latest message is the subagent's report).
+        string? originatingUserRequest = null)
     {
         using var _ = ToolCallSessionContext.Set(sessionId);
         // Set the per-async-flow override so RockBotFunctionInvokingChatClient
@@ -474,6 +498,24 @@ public sealed partial class AgentLoopRunner(
         }
 
         var originalUserRequest = ExtractOriginalUserRequest(chatMessages);
+
+        // #666: every tool call this run makes, for the completion evaluator's gate and input.
+        // Kept outside the chat history, which context trimming can shorten.
+        var toolCallLedger = new LoopToolCallLedger();
+        using var ________ = LoopToolCallLedgerContext.Set(toolCallLedger);
+
+        // #666: the user request this run serves, for tools that start work whose result comes
+        // back later (spawn_subagent records it so the synthesis turn is checked against it).
+        var servedUserRequest = string.IsNullOrWhiteSpace(originatingUserRequest)
+            ? originalUserRequest
+            : originatingUserRequest;
+        using var _________ = OriginatingUserRequestContext.Set(servedUserRequest);
+
+        // Captured before any re-prompt nudge joins the history, so the evaluator reads only
+        // what the user actually said.
+        var recentUserMessages = ExtractRecentUserMessages(chatMessages, CompletionEvalTriggers.RecentUserMessageCount);
+        var previousAgentMessage = ExtractPreviousAgentMessage(chatMessages);
+
         var maxReprompts = modelBehavior.MaxCompletionRepromptsOverride
             ?? hostOptions.Value.MaxCompletionReprompts;
         var alreadyNudgedToolFailure = false;
@@ -621,27 +663,38 @@ public sealed partial class AgentLoopRunner(
             // subagent is intentional delegation — the SubagentResultHandler will
             // synthesize and publish the result. Re-prompting here would race with
             // that handler and produce duplicate answers.
-            if (chatMessages.Any(m => m.Contents.OfType<FunctionCallContent>()
-                    .Any(fc => fc.Name is "spawn_subagent" or "invoke_agent")))
+            //
+            // The synthesis turn (subagentSynthesis) is checked instead, against the user's
+            // original request. The ledger also sees text-parsed calls, which never become
+            // FunctionCallContent in the history.
+            var loopToolCalls = toolCallLedger.Snapshot();
+            if (loopToolCalls.Any(c => ToolSideEffects.IsDelegation(c.Name))
+                || chatMessages.Any(m => m.Contents.OfType<FunctionCallContent>()
+                    .Any(fc => ToolSideEffects.IsDelegation(fc.Name))))
             {
                 HostDiagnostics.CompletionCheckSkipped.Add(1);
                 logger.LogInformation("Completion evaluator: SKIPPED (delegated to subagent/agent)");
                 return FinalizeResponse(result.Response, chatMessages, originalUserRequest);
             }
 
-            // Heuristic short-circuit: if the model stopped naturally and the response
-            // passes basic quality checks, skip the evaluator LLM call. The hallucination
-            // and capability denial patterns are the primary triggers for INCOMPLETE verdicts;
-            // when neither fires, the evaluator almost always returns complete.
-            if (result.ExitReason == LoopExitReason.ModelStopped
-                && result.Response.Length >= 20
-                && !HallucinatedActionRegex.IsMatch(result.Response)
-                && !CapabilityDenialRegex.IsMatch(result.Response))
+            // Gate (#666): run the evaluator when the turn changed something, relays a subagent
+            // result, answers an instruction without any tool call, promises work it didn't do,
+            // opens with a bare "Done."/"Updated." — or trips the original hallucination /
+            // capability-denial / short-reply gate. Otherwise skip the LLM call: a plain answer
+            // to a question almost always evaluates complete.
+            var trigger = CompletionEvalTriggers.Decide(
+                result.Response,
+                originalUserRequest,
+                loopToolCalls,
+                subagentSynthesis,
+                modelStopped: result.ExitReason == LoopExitReason.ModelStopped);
+
+            if (trigger == CompletionEvalTrigger.None)
             {
                 HostDiagnostics.CompletionCheckSkipped.Add(1);
                 logger.LogInformation(
-                    "Completion evaluator: SKIPPED (model stopped, {ResponseLen} chars, no hallucination/denial patterns)",
-                    result.Response.Length);
+                    "Completion evaluator: SKIPPED (model stopped, {ResponseLen} chars, {ToolCalls} tool call(s), no trigger)",
+                    result.Response.Length, loopToolCalls.Count);
 
                 if (!enableFollowUp || reprompt > 0)
                 {
@@ -667,16 +720,29 @@ public sealed partial class AgentLoopRunner(
                 }
             }
 
-            // Full evaluator path: response may be incomplete (short, hallucinated, or denial).
+            // Full evaluator path.
+            var triggerTag = new KeyValuePair<string, object?>(
+                "rockbot.completion_check.trigger", CompletionEvalTriggers.LogName(trigger));
+            logger.LogInformation(
+                "Completion evaluator: RUN (trigger={Trigger}) — {ToolCalls} tool call(s), {ResponseLen} chars",
+                CompletionEvalTriggers.LogName(trigger), loopToolCalls.Count, result.Response.Length);
+
             if (onStageProgress is not null)
                 await onStageProgress("Reviewing response…", cancellationToken);
 
             var (complete, reason) = await EvaluateCompletionAsync(
-                originalUserRequest, result.Response, cancellationToken);
+                new CompletionEvalTriggers.EvaluatorInput(
+                    recentUserMessages,
+                    previousAgentMessage,
+                    string.IsNullOrWhiteSpace(originatingUserRequest) ? null : originatingUserRequest,
+                    result.Response,
+                    loopToolCalls,
+                    trigger),
+                cancellationToken);
 
             if (complete)
             {
-                HostDiagnostics.CompletionCheckComplete.Add(1);
+                HostDiagnostics.CompletionCheckComplete.Add(1, triggerTag);
                 logger.LogInformation(
                     "Completion evaluator: COMPLETE (reprompt {Reprompt}/{Max}) — {Reason}",
                     reprompt, maxReprompts, reason);
@@ -712,7 +778,7 @@ public sealed partial class AgentLoopRunner(
             }
 
             // Not complete — inject continuation and re-enter the loop.
-            HostDiagnostics.CompletionCheckIncomplete.Add(1);
+            HostDiagnostics.CompletionCheckIncomplete.Add(1, triggerTag);
             logger.LogInformation(
                 "Completion evaluator: INCOMPLETE (reprompt {Reprompt}/{Max}) — {Reason}",
                 reprompt, maxReprompts, reason);
@@ -727,14 +793,15 @@ public sealed partial class AgentLoopRunner(
             // has no overlap with "calendar"). Search using the evaluator reason + original
             // request combined, which WILL contain domain terms like "calendar", "email", etc.
             await EnrichContextForRepromptAsync(
-                chatMessages, chatOptions, originalUserRequest, reason ?? string.Empty, cancellationToken);
+                chatMessages, chatOptions, servedUserRequest, reason ?? string.Empty, cancellationToken);
 
             // Build a targeted continuation nudge.
             var nudge = CapabilityDenialRegex.IsMatch(result.Response)
                 ? $"Not complete because: {reason}. You DO have access to external services. " +
                   HowToReachServices() + " Do not give up without trying."
                 : $"Not complete because: {reason}. Continue working on the original request. " +
-                  "Use your available tools — do not claim you lack access without trying them first.";
+                  "Use your available tools — do not claim you lack access without trying them first." +
+                  CompletionEvalTriggers.RepromptGuidance(trigger, loopToolCalls);
 
             chatMessages.Add(new ChatMessage(ChatRole.User, nudge));
         }
@@ -1333,6 +1400,10 @@ public sealed partial class AgentLoopRunner(
                             ? textResultStr[..500] + "…"
                             : textResultStr;
                     }
+                    LoopToolCallLedgerContext.Value?.Record(
+                        toolName, TruncateLedgerArgs(argsJson),
+                        succeeded: textToolStatus == "ok"
+                            && !RockBotFunctionInvokingChatClient.IsErrorResult(textResultStr));
 
                     // Chunking is handled by ChunkingAIFunction wrapper on the tool itself.
                     // Per-tool-result cap: text-parsed calls have no callId so the cap falls
@@ -1471,6 +1542,10 @@ public sealed partial class AgentLoopRunner(
                 ToolDiagnostics.Invocations.Add(1,
                     new KeyValuePair<string, object?>("rockbot.tool.name", fc.Name),
                     new KeyValuePair<string, object?>("rockbot.tool.status", toolStatus));
+                LoopToolCallLedgerContext.Value?.Record(
+                    fc.Name, TruncateLedgerArgs(argsSummary),
+                    succeeded: toolStatus == "ok"
+                        && !RockBotFunctionInvokingChatClient.IsErrorResult(nativeResultStr));
 
                 // Per-tool-result cap (text-loop native path). Same intent as the cap
                 // applied by RockBotFunctionInvokingChatClient on the FICC path: stash
@@ -1959,6 +2034,14 @@ public sealed partial class AgentLoopRunner(
         }
         chatMessages.Insert(insertAt, msg);
     }
+
+    /// <summary>
+    /// Shortens a call's arguments for <see cref="LoopToolCallLedger"/>. The ledger only needs the
+    /// leading arguments — enough to read <c>mcp_invoke_tool</c>'s <c>tool_name</c> — not a
+    /// <c>file_write</c>'s whole body.
+    /// </summary>
+    internal static string? TruncateLedgerArgs(string? args) =>
+        args is { Length: > 300 } ? args[..300] : args;
 
     /// <summary>
     /// Truncates a long args summary so registry entries stay compact in the system
@@ -2985,45 +3068,100 @@ public sealed partial class AgentLoopRunner(
     /// on any error so it never blocks the response pipeline.
     /// </summary>
     private async Task<(bool Complete, string? Reason)> EvaluateCompletionAsync(
-        string originalUserRequest, string agentResponse, CancellationToken cancellationToken)
+        CompletionEvalTriggers.EvaluatorInput input, CancellationToken cancellationToken)
     {
-        if (string.IsNullOrWhiteSpace(originalUserRequest) || string.IsNullOrWhiteSpace(agentResponse))
+        if ((input.RecentUserMessages.Count == 0 && string.IsNullOrWhiteSpace(input.OriginatingUserRequest))
+            || string.IsNullOrWhiteSpace(input.AgentResponse))
             return (true, "empty request or response");
 
         try
         {
-            var messages = new List<ChatMessage>
-            {
-                new(ChatRole.System, CompletionEvaluatorPrompt),
-                new(ChatRole.User,
-                    $"## Original user request\n{originalUserRequest}\n\n## Agent response\n{agentResponse}")
-            };
+            var messages = BuildCompletionEvaluatorMessages(input);
 
             var response = await llmClient.GetResponseAsync(
                 messages, ModelTier.Low, new ChatOptions(), cancellationToken);
-            var raw = response.Text?.Trim() ?? string.Empty;
-            var json = ExtractJsonObject(raw);
-
-            if (string.IsNullOrEmpty(json))
+            if (ParseCompletionVerdict(response.Text) is not { } verdict)
             {
-                logger.LogWarning("Completion evaluator: no parseable JSON in response; defaulting to complete");
-                return (true, "evaluator returned no JSON");
+                logger.LogWarning("Completion evaluator: no parseable JSON verdict in response; defaulting to complete");
+                return (true, "evaluator returned no usable JSON");
             }
 
-            var dto = JsonSerializer.Deserialize<CompletionEvalDto>(json, s_evalJsonOptions);
-            if (dto is null)
-            {
-                logger.LogWarning("Completion evaluator: failed to deserialize JSON; defaulting to complete");
-                return (true, "evaluator JSON deserialization failed");
-            }
-
-            return (dto.Complete, dto.Reason);
+            return verdict;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             logger.LogWarning(ex, "Completion evaluator failed; defaulting to complete");
             return (true, "evaluator error");
         }
+    }
+
+    /// <summary>
+    /// The completion evaluator's request: the request-versus-result rubric as the system message,
+    /// and the user's recent messages, the tool-call list and the reply as the user message (#666).
+    /// Internal so tests can assert on what the evaluator reads.
+    /// </summary>
+    internal static List<ChatMessage> BuildCompletionEvaluatorMessages(CompletionEvalTriggers.EvaluatorInput input) =>
+    [
+        new(ChatRole.System, CompletionEvaluatorPrompt),
+        new(ChatRole.User, CompletionEvalTriggers.BuildEvaluatorUserMessage(input)),
+    ];
+
+    /// <summary>
+    /// Parses the evaluator's raw output into a verdict. Tolerates <c>&lt;think&gt;</c> preambles,
+    /// code fences and prose around the JSON; returns null when no usable verdict is present so the
+    /// caller can fail open. Internal for tests.
+    /// </summary>
+    internal static (bool Complete, string? Reason)? ParseCompletionVerdict(string? raw)
+    {
+        var json = ExtractJsonObject(raw?.Trim() ?? string.Empty);
+        if (string.IsNullOrEmpty(json))
+            return null;
+
+        try
+        {
+            var dto = JsonSerializer.Deserialize<CompletionEvalDto>(json, s_evalJsonOptions);
+            return dto is null ? null : (dto.Complete, dto.Reason);
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// The last <paramref name="count"/> user-role messages with text, oldest first — what the user
+    /// has been asking for over the last few turns, so the evaluator sees constraints given before
+    /// the latest message (#666).
+    /// </summary>
+    internal static IReadOnlyList<string> ExtractRecentUserMessages(List<ChatMessage> chatMessages, int count)
+    {
+        var found = new List<string>(count);
+        for (var i = chatMessages.Count - 1; i >= 0 && found.Count < count; i--)
+        {
+            if (chatMessages[i].Role == ChatRole.User && !string.IsNullOrWhiteSpace(chatMessages[i].Text))
+                found.Add(chatMessages[i].Text!);
+        }
+        found.Reverse();
+        return found;
+    }
+
+    /// <summary>
+    /// The agent's last message before the latest user message, so the evaluator can resolve
+    /// "do it" or "that" against what the agent had proposed. Null when there is none.
+    /// </summary>
+    internal static string? ExtractPreviousAgentMessage(List<ChatMessage> chatMessages)
+    {
+        var i = chatMessages.Count - 1;
+        while (i >= 0 && !(chatMessages[i].Role == ChatRole.User && !string.IsNullOrWhiteSpace(chatMessages[i].Text)))
+            i--;
+        for (i--; i >= 0; i--)
+        {
+            if (chatMessages[i].Role == ChatRole.User && !string.IsNullOrWhiteSpace(chatMessages[i].Text))
+                return null; // two user messages in a row: no agent message between them
+            if (chatMessages[i].Role == ChatRole.Assistant && !string.IsNullOrWhiteSpace(chatMessages[i].Text))
+                return chatMessages[i].Text;
+        }
+        return null;
     }
 
     private static readonly JsonSerializerOptions s_evalJsonOptions = new()
