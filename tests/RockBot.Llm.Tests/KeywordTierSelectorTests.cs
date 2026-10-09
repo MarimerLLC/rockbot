@@ -505,8 +505,9 @@ public class KeywordTierSelectorTests
 
     // ── Conversational keyword tests ─────────────────────────────────────────
 
+    // "I think ..." was retired as a low signal in #663 — it opens work instructions
+    // ("I think the deck needs fewer slides") as often as chit-chat.
     [TestMethod]
-    [DataRow("I think we should go hiking tomorrow")]
     [DataRow("I plan to read a book tonight")]
     [DataRow("What do you think about that?")]
     [DataRow("Good evening, how are you?")]
@@ -615,10 +616,10 @@ public class KeywordTierSelectorTests
             var options = Options.Create(new AgentProfileOptions { BasePath = tempDir });
             var selector = new KeywordTierSelector(options, NullLogger<KeywordTierSelector>.Instance);
 
-            // "what is" is a compiled default low-signal keyword — must still be present
+            // "capital of" is a compiled default low-signal keyword — must still be present
             var result = selector.Classify("What is the capital of France?");
-            Assert.IsTrue(result.MatchedLowKeywords.Contains("what is"),
-                "Compiled default 'what is' must survive merge with dream keywords");
+            Assert.IsTrue(result.MatchedLowKeywords.Contains("capital of"),
+                "Compiled default 'capital of' must survive merge with dream keywords");
         }
         finally
         {
@@ -680,7 +681,7 @@ public class KeywordTierSelectorTests
             var result = selector.Classify("What is the capital of France?");
             Assert.AreEqual(ModelTier.Low, result.Tier,
                 "Empty dream lists should fall back to compiled defaults");
-            Assert.IsTrue(result.MatchedLowKeywords.Contains("what is"),
+            Assert.IsTrue(result.MatchedLowKeywords.Contains("capital of"),
                 "Compiled default keywords must be present when dream list is empty");
         }
         finally
@@ -717,40 +718,23 @@ public class KeywordTierSelectorTests
     }
 
     [TestMethod]
-    public void ActiveThreadOverride_LongMessage_Unchanged()
+    public void ActiveThreadOverride_LongMessage_AlsoFloorsAtBalanced()
     {
-        // A simple long message routes Low normally; threadEstablished must not
-        // promote it, because the override is gated on the short-message threshold.
-        const string longPrompt = "What is the capital of France?"; // 30 chars exactly — at the threshold boundary
+        // Since #663 the active-thread floor is gated on message shape (trivial ack or not),
+        // not length: a longer follow-up on an established thread is just as much a
+        // continuation of the thread's work. It floors at Balanced and never goes above.
+        const string clearlyLong = "Who was Abraham Lincoln and what did he do?"; // 43 chars
         var withThread = _selector.Classify(
-            longPrompt,
+            clearlyLong,
             new TierRoutingContext(Origin: "user-message", ThreadEstablished: true));
         var withoutThread = _selector.Classify(
-            longPrompt,
-            new TierRoutingContext(Origin: "user-message"));
-
-        // At exactly 30 chars, the override CAN fire — switch to a clearly-long prompt
-        // to validate that long messages are unaffected.
-        const string clearlyLong = "Who was Abraham Lincoln and what did he do?"; // 43 chars
-        var clearlyLongWithThread = _selector.Classify(
-            clearlyLong,
-            new TierRoutingContext(Origin: "user-message", ThreadEstablished: true));
-        var clearlyLongWithoutThread = _selector.Classify(
             clearlyLong,
             new TierRoutingContext(Origin: "user-message"));
 
-        Assert.AreEqual(clearlyLongWithoutThread.Tier, clearlyLongWithThread.Tier,
-            "Long prompts must route identically regardless of ThreadEstablished.");
-
-        // Also check that the boundary at exactly the threshold behaves consistently —
-        // the override may or may not fire, but the test fixes the relationship.
-        if (withoutThread.Tier == ModelTier.Low)
-        {
-            // At the boundary, the override is allowed to fire.
-            Assert.IsTrue(
-                withThread.Tier == ModelTier.Balanced || withThread.Tier == withoutThread.Tier,
-                "Boundary-length messages may stay Low or promote to Balanced under ThreadEstablished — never escalate beyond Balanced.");
-        }
+        Assert.AreEqual(ModelTier.Low, withoutThread.Tier, "Test premise: routes Low without a thread.");
+        Assert.AreEqual(ModelTier.Balanced, withThread.Tier,
+            "A non-trivial follow-up on an established thread floors at Balanced, whatever its length.");
+        Assert.AreEqual(TierRoutingRules.ActiveThreadFloor, withThread.Rule);
     }
 
     [TestMethod]
@@ -999,16 +983,11 @@ public class KeywordTierSelectorTests
     }
 
     [TestMethod]
-    public void ActiveThreadOverride_MatchedHighKeyword_GateBlocksPromotion()
+    public void ActiveThreadOverride_MatchedHighKeyword_AlsoFloorsAtBalanced()
     {
-        // The override is gated on matchedHigh.Length == 0 — when a high-signal keyword
-        // is present, the override must NOT promote Low to Balanced. This protects the
-        // existing keyword-driven routing path from being short-circuited by the gate.
-        //
-        // Construct comparable short prompts: one with a high keyword, one without.
-        // Both score below the low ceiling for length reasons, so they'd otherwise
-        // route Low. Verify ThreadEstablished promotes the non-keyword version but
-        // NOT the keyword version.
+        // Until #663 the override skipped prompts with a high-signal keyword, which left a
+        // short "architect it now" on Low — the opposite of what the keyword signals. The
+        // floor now applies to every non-trivial follow-up on an established thread.
         var withKeyword = _selector.Classify(
             "architect it now",
             new TierRoutingContext(Origin: "user-message", ThreadEstablished: true));
@@ -1018,8 +997,8 @@ public class KeywordTierSelectorTests
 
         Assert.IsTrue(withKeyword.MatchedHighKeywords.Count > 0,
             "Test premise: 'architect' must register as a high-signal keyword.");
-        Assert.AreEqual(ModelTier.Low, withKeyword.Tier,
-            "Short prompt with a high-signal keyword should not be promoted by the active-thread override.");
+        Assert.AreEqual(ModelTier.Balanced, withKeyword.Tier,
+            "A short prompt with a high-signal keyword on an active thread must not stay Low.");
         Assert.AreEqual(ModelTier.Balanced, withoutKeyword.Tier,
             "Short prompt without high-signal keywords on an active thread should promote to Balanced.");
     }

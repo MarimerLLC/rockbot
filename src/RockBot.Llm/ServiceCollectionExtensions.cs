@@ -87,25 +87,39 @@ public static class LlmServiceCollectionExtensions
             var costEstimator = sp.GetRequiredService<LlmCostEstimator>();
             var workingMemory = sp.GetRequiredService<IWorkingMemory>();
 
-            IChatClient Wrap(IChatClient raw, string tierLabel)
+            IChatClient Wrap(IChatClient raw, string tierLabel, IChatClient? escalateTo = null)
             {
                 // Diagnostic-watch sits between the OpenAI client and the function-invoking
                 // middleware so it sees each tool iteration's raw response, including the
                 // assistant message before any RockBot post-processing.
                 var watched = new DiagnosticLoggingChatClient(raw, diagLogger, tierLabel);
-                return behavior.UseTextBasedToolCalling
+                if (behavior.UseTextBasedToolCalling)
+                {
                     // Tools stay in ChatOptions for AgentLoopRunner to dispatch parsed calls.
                     // Only suppress them on the wire when the provider rejects a tools array
-                    // outright — see ToolStrippingChatClient.
-                    ? behavior.SuppressToolSchemaInRequest
+                    // outright — see ToolStrippingChatClient. Mid-turn escalation on this path
+                    // happens in AgentLoopRunner, which owns every iteration's tier.
+                    return behavior.SuppressToolSchemaInRequest
                         ? new ToolStrippingChatClient(watched)
-                        : (IChatClient)watched
-                    : new RockBotFunctionInvokingChatClient(watched, progressNotifier, toolCallLog, behavior,
-                        costEstimator, workingMemory, sp.GetRequiredService<IOptions<AgentHostOptions>>(), logger);
+                        : watched;
+                }
+
+                // Native path: the function-invoking loop owns the iterations, so the Low
+                // tier's escalation to Balanced (#663) has to happen below it.
+                IChatClient inner = escalateTo is null
+                    ? watched
+                    : new TierEscalatingChatClient(watched, escalateTo);
+                return new RockBotFunctionInvokingChatClient(inner, progressNotifier, toolCallLog, behavior,
+                    costEstimator, workingMemory, sp.GetRequiredService<IOptions<AgentHostOptions>>(), logger);
             }
 
+            // The escalation target is the Balanced tier's raw client (with its own diagnostic
+            // watch), not its function-invoking wrapper: the Low tier's loop keeps running and
+            // only its model changes.
+            var escalationTarget = new DiagnosticLoggingChatClient(balancedInnerClient, diagLogger, "Balanced (escalated)");
+
             return new TieredChatClientRegistry(
-                Wrap(lowInnerClient, "Low"),
+                Wrap(lowInnerClient, "Low", escalateTo: escalationTarget),
                 Wrap(balancedInnerClient, "Balanced"),
                 Wrap(highInnerClient, "High"));
         });

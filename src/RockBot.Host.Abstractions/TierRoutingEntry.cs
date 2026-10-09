@@ -32,6 +32,22 @@ public sealed record TierRoutingEntry
     /// <summary>Simplicity signal keywords matched in the prompt (push toward Low tier).</summary>
     public IReadOnlyList<string> MatchedLowKeywords { get; init; } = [];
 
+    /// <summary>
+    /// The rule that decided <see cref="Tier"/> (a <see cref="TierRoutingRules"/> value),
+    /// e.g. <c>score-band</c> or <c>active-thread-floor</c>. Null on entries written before
+    /// #663.
+    /// </summary>
+    public string? RoutingRule { get; init; }
+
+    /// <summary>
+    /// The tier the loop escalated to mid-turn (e.g. Balanced after a Low turn issued a
+    /// side-effecting tool call), or null when the turn stayed on <see cref="Tier"/>. See #663.
+    /// </summary>
+    public ModelTier? EscalatedTier { get; init; }
+
+    /// <summary>Why the turn escalated mid-turn; null when it did not.</summary>
+    public string? EscalationReason { get; init; }
+
     // ── Post-injection context size ────────────────────────────────────────────
 
     /// <summary>

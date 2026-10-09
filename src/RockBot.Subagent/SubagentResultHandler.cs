@@ -33,7 +33,8 @@ internal sealed class SubagentResultHandler(
     ISessionTracker sessionTracker,
     SessionOriginStore originStore,
     ILogger<SubagentResultHandler> logger,
-    IMcpSkillSurface? mcpSkillSurface = null) : IMessageHandler<SubagentResultMessage>
+    IMcpSkillSurface? mcpSkillSurface = null,
+    SessionTierHistory? tierHistory = null) : IMessageHandler<SubagentResultMessage>
 {
     public async Task HandleAsync(SubagentResultMessage message, MessageHandlerContext context)
     {
@@ -56,6 +57,11 @@ internal sealed class SubagentResultHandler(
         var rawSessionId = sessionNamespace.StartsWith(SessionPrefix, StringComparison.OrdinalIgnoreCase)
             ? sessionNamespace[SessionPrefix.Length..]
             : sessionNamespace;
+
+        // A subagent result coming back into the thread means the thread carries delegated
+        // work: the user's next follow-ups inherit at least Balanced (#663). Balanced, not the
+        // subagent's own tier — a High research brief should not push every reply to High.
+        tierHistory?.Record(rawSessionId, $"subagent:{message.TaskId}", ModelTier.Balanced);
 
         // ── Phase 1: immediate per-result work (every result) ──────────────────
 

@@ -161,6 +161,10 @@ public class RockBotFunctionInvokingChatClient : FunctionInvokingChatClient
             diagPre.LastToolStatus = "in-flight";
         }
 
+        // Mid-turn tier escalation (#663): a side-effecting call on a Low run moves the
+        // loop's remaining iterations to Balanced (see TierEscalatingChatClient).
+        TierEscalationContext.Value?.ObserveToolCall(callContent.Name, callContent.Arguments);
+
         var sw = System.Diagnostics.Stopwatch.StartNew();
         var status = "ok";
         object? result;
@@ -202,6 +206,7 @@ public class RockBotFunctionInvokingChatClient : FunctionInvokingChatClient
                 diagEx.LastToolStatus = status;
                 diagEx.LastToolResult = $"Error: {ex.Message}";
             }
+            TierEscalationContext.Value?.ObserveToolResult(callContent.Name, isError: true);
             throw;
         }
         sw.Stop();
@@ -239,6 +244,8 @@ public class RockBotFunctionInvokingChatClient : FunctionInvokingChatClient
         {
             status = ToolError.Codes.ExecutionFailed;
         }
+
+        TierEscalationContext.Value?.ObserveToolResult(callContent.Name, isError: status != "ok");
 
         // Track consecutive identical (tool, args, result) triples to detect stuck loops.
         if (_repetitiveCallDetector.Track(callContent.Name, argsSummary ?? string.Empty, resultStr ?? string.Empty))
