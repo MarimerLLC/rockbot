@@ -319,6 +319,9 @@ public sealed class AgentHostOptions
     /// bloats a subagent run without crossing the global watermark.
     /// Default 8,000 chars (≈2,000 tokens). Set to 0 to disable per-call capping and
     /// rely solely on the watermark.
+    /// Explicit working-memory retrievals (<see cref="StashExemptTools"/>) and tools that
+    /// page their own output (<see cref="SelfPagingTools"/>, i.e. <c>file_read</c>, which has
+    /// its own <c>FileSystem:FileReadMaxChars</c> budget) are not capped.
     /// </summary>
     public int ToolResultMaxChars { get; set; } = 8_000;
 

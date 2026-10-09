@@ -21,6 +21,10 @@ public static class FileSystemServiceCollectionExtensions
         configure(options);
         builder.Services.AddSingleton(options);
 
+        // Which file versions each session has seen in full — backs file_write's
+        // read-before-overwrite rule (issue #664). One per process, shared by all executors.
+        builder.Services.AddSingleton<FileReadLedger>();
+
         builder.Services.AddSingleton<IToolSkillProvider, FileSystemToolSkillProvider>();
         builder.Services.AddHostedService<FileSystemToolRegistrar>();
 

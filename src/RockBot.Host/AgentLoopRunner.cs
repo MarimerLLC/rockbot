@@ -1836,6 +1836,12 @@ public sealed partial class AgentLoopRunner(
         if (StashExemptTools.Contains(toolName))
             return resultStr;
 
+        // file_read pages its own output on whole-line boundaries and names the next offset
+        // in a footer. A head+tail stitch would hide that footer and hand the model a partial
+        // file it may then "restore" with file_write (issue #664). See SelfPagingTools.
+        if (SelfPagingTools.Contains(toolName))
+            return resultStr;
+
         // No callId or no stash state → head-only truncation. The model can't recover
         // the elided content (nothing to register), so we don't promise it can.
         if (string.IsNullOrEmpty(callId) || stashState is null)
