@@ -6,8 +6,10 @@ namespace RockBot.Host;
 /// message text return noise that drowns out the recent conversation thread,
 /// leading the LLM to summarise injected memory instead of replying to what
 /// was actually said. Consumers include <see cref="AgentContextBuilder"/>'s
-/// per-turn search gate, the tier selector's active-thread override, and the
-/// AgentLoopRunner memory-summary-reply guard. See issue #383.
+/// per-turn search gate and the AgentLoopRunner memory-summary-reply guard. See
+/// issue #383. The tier selector's active-thread floor used the char threshold until
+/// #663; it now applies to every non-trivial follow-up on an established thread, and
+/// reads only <see cref="ThreadEstablishedMinTurns"/> and <see cref="ThreadEstablishedRecency"/>.
 /// </summary>
 public static class ShortMessageHeuristics
 {

@@ -16,6 +16,12 @@ namespace RockBot.Llm;
 /// When created via the DI constructor, keywords and thresholds are hot-reloaded every 60 s
 /// from <c>{AgentBasePath}/tier-selector.json</c> (falls back to compiled defaults if missing).
 /// </para>
+/// <para>
+/// For user messages, compiled thread-state rules run after the score (#663): the
+/// active-thread and active-subagent Balanced floors, the research-question floor, and the
+/// inherited tier — with pure acknowledgements exempt. They are not dream-tunable. Each
+/// classification names the rule that decided it (<see cref="TierClassification.Rule"/>).
+/// </para>
 /// </summary>
 public sealed class KeywordTierSelector : ILlmTierSelector
 {
@@ -56,7 +62,7 @@ public sealed class KeywordTierSelector : ILlmTierSelector
     // ── Simplicity signals → push toward Low tier ────────────────────────────
     private static readonly string[] DefaultLowSignalKeywords =
     [
-        "what is", "what's", "who is", "who was", "when was", "when is",
+        "who is", "who was", "when was", "when is",
         "where is", "what time", "what day",
         "define", "definition of", "spell", "translate",
         "capital of", "how many", "list the", "give me a list",
@@ -65,12 +71,26 @@ public sealed class KeywordTierSelector : ILlmTierSelector
         "hello", "hey", "thanks", "thank you", "good morning", "good afternoon",
         "good night", "good evening", "how are you", "how's it going",
         // Casual conversational patterns — these dominate Balanced drift cases
-        "i think", "i plan to", "what do you think", "i was thinking",
+        "i plan to", "what do you think",
         "sounds good", "that's great", "got it", "okay",
         // Simple operational / tool-use patterns
         "check my", "send a", "send an", "remind me",
-        "tell me about", "show me", "look up",
     ];
+
+    // ── Retired low signals (#663) ───────────────────────────────────────────
+    // Phrases that open research requests and work instructions as often as trivia —
+    // "what are the key features of the X spec", "tell me about the new release",
+    // "look up the latest docs", "I think the deck needs fewer slides". They pushed real
+    // work to Low. They are filtered from the effective low-signal list even when the
+    // hot-reloaded tier-selector.json lists them, so a dream (or a stale PVC file) cannot
+    // silently reintroduce them. Matched after normalisation (trim + lower-case).
+    internal static readonly IReadOnlySet<string> RetiredLowSignalKeywords =
+        new HashSet<string>(StringComparer.Ordinal)
+        {
+            "what is", "what's", "whats", "what are",
+            "tell me about", "show me", "look up",
+            "i think", "i was thinking",
+        };
 
     // ── Balanced-floor signals → floor a Low-routed user query at Balanced ───
     // Empty by default (add-only caveat): the dream owns this list and no
@@ -118,6 +138,7 @@ public sealed class KeywordTierSelector : ILlmTierSelector
     private readonly ILogger<KeywordTierSelector>? _logger;
     private volatile CachedConfig? _cache;
     private readonly object _cacheLock = new();
+    private string? _lastRetiredSignature;
 
     // ── Parameterless constructor — used by tests, always uses compiled defaults ──
     public KeywordTierSelector() { }
@@ -187,12 +208,14 @@ public sealed class KeywordTierSelector : ILlmTierSelector
         // missing events") from routing High purely on verbosity. The keyword list
         // is the only real complexity signal we have; absent any hit, Balanced is
         // the safe ceiling. See issue #471.
+        var rule = TierRoutingRules.ScoreBand;
         if (tier == ModelTier.High
             && matchedHigh.Length == 0
             && !hasCode
             && !hasMath)
         {
             tier = ModelTier.Balanced;
+            rule = TierRoutingRules.HighGate;
         }
 
         // Trivial guard: force Low for objectively simple prompts regardless of
@@ -205,20 +228,40 @@ public sealed class KeywordTierSelector : ILlmTierSelector
             && matchedHigh.Length == 0)
         {
             tier = ModelTier.Low;
+            rule = TierRoutingRules.TrivialGuard;
         }
 
-        // Active-thread short-message override: when a short follow-up arrives on
-        // an established conversational thread, route through Balanced. The
-        // Low-tier model otherwise tends to summarise injected long-term memory
-        // instead of continuing the thread — see issue #383. Bounded by the
-        // matched-high-keyword gate so genuinely complex short prompts still
-        // escalate naturally.
-        if (context?.ThreadEstablished == true
-            && tier == ModelTier.Low
-            && promptText.Length <= ShortMessageHeuristics.UserMessageCharThreshold
-            && matchedHigh.Length == 0)
+        if (context?.Origin != "user-message")
+            return new TierClassification(tier, score, matchedHigh, matchedLow) { Rule = rule, IntrinsicTier = tier };
+
+        // ── User-message floors (#663) ────────────────────────────────────────
+        // Keyword scoring sees only the current message; on an interactive thread the
+        // real complexity lives in the thread (an open deck, a running subagent, a task
+        // list). The floors below route from thread state. A pure acknowledgement or
+        // greeting ("thanks", "ok", "👍") is the one message shape exempt from them.
+        var isTrivialAck = ConversationalSignals.IsTrivialAck(promptText);
+        var floorSuppressed = false;
+
+        if (tier == ModelTier.Low)
         {
-            tier = ModelTier.Balanced;
+            // Active-thread floor: any follow-up on an established thread routes at least
+            // Balanced. The Low-tier model otherwise summarises injected memory instead of
+            // continuing the thread (#383), and short instructions like "figure out a way to
+            // update the doc" are continuations of heavy work. Until #663 this only fired
+            // for messages ≤ 30 chars — a 34-char instruction slipped through to Low.
+            if (context.ThreadEstablished)
+            {
+                if (isTrivialAck) floorSuppressed = true;
+                else { tier = ModelTier.Balanced; rule = TierRoutingRules.ActiveThreadFloor; }
+            }
+
+            // Active-subagent floor: the session has delegated work still running, so the
+            // thread is mid-task even if the conversation itself is young.
+            if (tier == ModelTier.Low && context.ActiveSubagent)
+            {
+                if (isTrivialAck) floorSuppressed = true;
+                else { tier = ModelTier.Balanced; rule = TierRoutingRules.ActiveSubagentFloor; }
+            }
         }
 
         // Balanced-floor override: a first-turn user query naming a known tool/topic
@@ -226,15 +269,44 @@ public sealed class KeywordTierSelector : ILlmTierSelector
         // fails to select the right MCP tool. When the dream has learned such a floor
         // keyword, escalate Low→Balanced (never High) so it lands on a cheap but
         // tool-capable tier. Exempt from TopicBlocklist by design. See issue #486.
-        if (context?.Origin == "user-message"
-            && tier == ModelTier.Low
+        if (tier == ModelTier.Low
             && config.BalancedFloorKeywords.Length > 0
             && config.BalancedFloorKeywords.Any(k => ContainsWholePhrase(lower, k)))
         {
             tier = ModelTier.Balanced;
+            rule = TierRoutingRules.BalancedFloorKeyword;
         }
 
-        return new TierClassification(tier, score, matchedHigh, matchedLow);
+        // Research-question floor: "what are the key features of the MCP version 2 spec"
+        // scores ~0 and the Low model answers from prior knowledge instead of searching.
+        // A question naming a technical subject (acronym, version, spec/protocol/API) is
+        // floored at Balanced; trivia ("what is the capital of France?") is not. See #663.
+        if (tier == ModelTier.Low && ConversationalSignals.IsResearchQuestion(promptText))
+        {
+            tier = ModelTier.Balanced;
+            rule = TierRoutingRules.ResearchQuestionFloor;
+        }
+
+        var intrinsicTier = tier;
+
+        // Inherited tier: a turn routes at least as high as the highest tier the session
+        // used in its recent turns, so "do that" after a High analysis stays High. The
+        // caller records IntrinsicTier (not the inherited tier) in its history, so the
+        // inheritance decays after a run of turns that don't earn it on their own.
+        if (context.RecentMaxTier is { } recentMax && recentMax > tier)
+        {
+            if (isTrivialAck) floorSuppressed = true;
+            else { tier = recentMax; rule = TierRoutingRules.InheritedTier; }
+        }
+
+        if (floorSuppressed && tier == ModelTier.Low)
+            rule = TierRoutingRules.TrivialAck;
+
+        return new TierClassification(tier, score, matchedHigh, matchedLow)
+        {
+            Rule = rule,
+            IntrinsicTier = intrinsicTier,
+        };
     }
 
     // ── Hot-reload cache ──────────────────────────────────────────────────────
@@ -276,7 +348,8 @@ public sealed class KeywordTierSelector : ILlmTierSelector
 
             // Merge dream keywords with compiled defaults (dream adds, never replaces).
             var highKeywords = MergeKeywords(DefaultHighSignalKeywords, dto.HighSignalKeywords, "highSignalKeywords");
-            var lowKeywords  = MergeKeywords(DefaultLowSignalKeywords, dto.LowSignalKeywords, "lowSignalKeywords");
+            var lowKeywords  = FilterRetiredLowSignals(
+                MergeKeywords(DefaultLowSignalKeywords, dto.LowSignalKeywords, "lowSignalKeywords"));
             // Balanced-floor list is exempt from the TopicBlocklist: SanitizeKeywords only
             // applies the blocklist when the list name contains "high", so "balancedFloorKeywords"
             // passes topic/tool words (todo, calendar, ...) through unfiltered — by design.
@@ -459,6 +532,35 @@ public sealed class KeywordTierSelector : ILlmTierSelector
         var merged = compiledDefaults.Concat(additions).ToArray();
         return SanitizeKeywords(merged, listName);
     }
+
+    /// <summary>
+    /// Removes <see cref="RetiredLowSignalKeywords"/> from a merged low-signal list, logging
+    /// what it dropped. The compiled defaults no longer contain them, so anything removed
+    /// here came from the hot-reloaded config file. See #663.
+    /// </summary>
+    private string[] FilterRetiredLowSignals(string[] keywords)
+    {
+        var retired = keywords.Where(IsRetiredLowSignal).ToArray();
+        if (retired.Length == 0)
+            return keywords;
+
+        // The file is re-read every CacheTtl; warn once per distinct set rather than every minute.
+        var signature = string.Join("|", retired);
+        if (!string.Equals(signature, _lastRetiredSignature, StringComparison.Ordinal))
+        {
+            _lastRetiredSignature = signature;
+            _logger?.LogWarning(
+                "KeywordTierSelector: ignored {Count} retired low-signal keyword(s) from {Path}: [{Keywords}] " +
+                "— these phrases open research requests and work instructions, not trivia (#663)",
+                retired.Length, _configPath, string.Join(", ", retired.Select(k => $"\"{k}\"")));
+        }
+
+        return keywords.Where(k => !IsRetiredLowSignal(k)).ToArray();
+    }
+
+    internal static bool IsRetiredLowSignal(string keyword) =>
+        RetiredLowSignalKeywords.Contains(
+            keyword.Trim().ToLowerInvariant().Replace('’', '\''));
 
     /// <summary>
     /// Returns true if the keyword contains any <see cref="TopicBlocklist"/> entry

@@ -408,9 +408,19 @@ public sealed partial class AgentLoopRunner(
         double? complexityScore = null,
         int? maxIterationsOverride = null,
         LoopDiagnostics? diagnostics = null,
+        // Mid-turn tier escalation (#663): when true and the run is routed Low, a
+        // side-effecting tool call or repeated tool errors move the rest of the loop to
+        // Balanced. Opt-in so pinned tiers and background paths keep their tier.
+        bool allowTierEscalation = false,
         CancellationToken cancellationToken = default)
     {
         using var _ = ToolCallSessionContext.Set(sessionId);
+        // Always bind (possibly null) so a nested run — a subagent started from a tool call —
+        // never inherits the parent run's escalation state.
+        using var escalationScope = TierEscalationContext.Set(
+            allowTierEscalation && tier == ModelTier.Low
+                ? new TierEscalationContext.State(tier, logger, diagnostics)
+                : null);
         // Set the per-async-flow override so RockBotFunctionInvokingChatClient
         // (singleton, native path) picks it up for this request.
         using var __ = MaxIterationsOverrideContext.Set(maxIterationsOverride);
@@ -784,17 +794,25 @@ public sealed partial class AgentLoopRunner(
         LogContextBreakdown(chatMessages, "native-entry", sessionId, logger, hostOptions.Value.ImageCost);
         RecordLlmCallContextSize(chatMessages, sessionId, hostOptions.Value.ImageCost, logger);
 
+        // A run that escalated mid-turn on an earlier pass (#663) starts this one on the
+        // escalated tier. Within the pass, the function-invoking loop's later iterations are
+        // redirected by TierEscalatingChatClient once the primary-call scope is marked.
+        tier = TierEscalationContext.EffectiveTier(tier);
+
         ChatResponse response;
-        try
+        using (TierEscalationContext.EnterPrimaryCall())
         {
-            response = await llmClient.GetResponseAsync(chatMessages, tier, chatOptions, cancellationToken);
-        }
-        catch (ClientResultException ex)
-            when (ex.Status == 400 && ex.Message.Contains("content_filter", StringComparison.OrdinalIgnoreCase))
-        {
-            LogContentFilterDiagnostics(chatMessages, ex);
-            response = await RecoverFromContentFilterAsync(
-                chatMessages, tier, chatOptions, sessionId, ex, cancellationToken);
+            try
+            {
+                response = await llmClient.GetResponseAsync(chatMessages, tier, chatOptions, cancellationToken);
+            }
+            catch (ClientResultException ex)
+                when (ex.Status == 400 && ex.Message.Contains("content_filter", StringComparison.OrdinalIgnoreCase))
+            {
+                LogContentFilterDiagnostics(chatMessages, ex);
+                response = await RecoverFromContentFilterAsync(
+                    chatMessages, tier, chatOptions, sessionId, ex, cancellationToken);
+            }
         }
 
         // Append response messages to chatMessages so re-prompts have full tool-call history.
@@ -1119,6 +1137,10 @@ public sealed partial class AgentLoopRunner(
                     iteration + 2, chatMessages.Count);
                 var sw = Stopwatch.StartNew();
 
+                // Mid-turn escalation (#663): once a tool call in this run escalated it,
+                // every later iteration requests the escalated tier.
+                tier = TierEscalationContext.EffectiveTier(tier);
+
                 try
                 {
                     response = await llmClient.GetResponseAsync(chatMessages, tier, chatOptions, cancellationToken);
@@ -1288,6 +1310,8 @@ public sealed partial class AgentLoopRunner(
                         diagTextPre.LastToolStatus = "in-flight";
                     }
 
+                    TierEscalationContext.Value?.ObserveToolCall(toolName, args);
+
                     object? result;
                     try
                     {
@@ -1318,6 +1342,8 @@ public sealed partial class AgentLoopRunner(
 
                     var textResultStr = result?.ToString() ?? string.Empty;
                     if (IsTimeoutResult(textResultStr)) textToolStatus = ToolError.Codes.Timeout;
+                    TierEscalationContext.Value?.ObserveToolResult(toolName,
+                        textToolStatus != "ok" || RockBotFunctionInvokingChatClient.IsErrorResult(textResultStr));
                     ToolDiagnostics.InvokeDuration.Record(toolSw.Elapsed.TotalMilliseconds,
                         new KeyValuePair<string, object?>("rockbot.tool.name", toolName),
                         new KeyValuePair<string, object?>("rockbot.tool.status", textToolStatus));
@@ -1434,6 +1460,7 @@ public sealed partial class AgentLoopRunner(
                 toolActivity?.SetTag("rockbot.tool.name", fc.Name);
                 var toolSw = Stopwatch.StartNew();
                 var toolStatus = "ok";
+                TierEscalationContext.Value?.ObserveToolCall(fc.Name, fc.Arguments);
                 object? result;
                 try
                 {
@@ -1465,6 +1492,8 @@ public sealed partial class AgentLoopRunner(
                 // Chunking is handled by ChunkingAIFunction wrapper on the tool itself.
                 var nativeResultStr = result?.ToString() ?? string.Empty;
                 if (IsTimeoutResult(nativeResultStr)) toolStatus = ToolError.Codes.Timeout;
+                TierEscalationContext.Value?.ObserveToolResult(fc.Name,
+                    toolStatus != "ok" || RockBotFunctionInvokingChatClient.IsErrorResult(nativeResultStr));
                 ToolDiagnostics.InvokeDuration.Record(toolSw.Elapsed.TotalMilliseconds,
                     new KeyValuePair<string, object?>("rockbot.tool.name", fc.Name),
                     new KeyValuePair<string, object?>("rockbot.tool.status", toolStatus));
@@ -1561,6 +1590,7 @@ public sealed partial class AgentLoopRunner(
                 "Report only what was completed — do not describe intentions or future actions.")
         };
 
+        tier = TierEscalationContext.EffectiveTier(tier);
         var finalResponse = await llmClient.GetResponseAsync(
             summaryMessages, tier, new ChatOptions(), cancellationToken);
         var forcedText = ExtractAssistantText(finalResponse);
