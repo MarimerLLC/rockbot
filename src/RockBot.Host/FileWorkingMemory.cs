@@ -29,13 +29,20 @@ internal sealed class FileWorkingMemory : IWorkingMemory, IHostedService
         PropertyNameCaseInsensitive = true
     };
 
+    /// <remarks>
+    /// <c>Writer</c> was added for issue #668 as an optional property with a default — an
+    /// additive change, so files written before it load unchanged (writer unknown). A file
+    /// with no <c>storedAt</c> deserializes it as <c>default</c>, which renders as
+    /// "stored at unknown".
+    /// </remarks>
     private sealed record PersistedEntry(
         string Key,
         string Value,
         DateTimeOffset StoredAt,
         DateTimeOffset ExpiresAt,
         string? Category,
-        IReadOnlyList<string>? Tags);
+        IReadOnlyList<string>? Tags,
+        string? Writer = null);
 
     public FileWorkingMemory(
         HybridCacheWorkingMemory inner,
@@ -75,11 +82,10 @@ internal sealed class FileWorkingMemory : IWorkingMemory, IHostedService
                     continue;
                 }
 
+                // Restore with the original stored-at and writer — re-setting would stamp
+                // every entry with the restart time and make old snapshots look fresh.
                 foreach (var e in live)
-                {
-                    var remainingTtl = e.ExpiresAt - now;
-                    await _inner.SetAsync(e.Key, e.Value, remainingTtl, e.Category, e.Tags);
-                }
+                    await _inner.RestoreAsync(e.Key, e.Value, e.StoredAt, e.ExpiresAt, e.Category, e.Tags, e.Writer);
 
                 filesRestored++;
                 entriesRestored += live.Count;
@@ -148,8 +154,18 @@ internal sealed class FileWorkingMemory : IWorkingMemory, IHostedService
         await PersistGroupAsync(GetGroup(key));
     }
 
+    public async Task SetAsync(string key, string value, TimeSpan? ttl, string? category,
+        IReadOnlyList<string>? tags, string? writer)
+    {
+        await _inner.SetAsync(key, value, ttl, category, tags, writer);
+        await PersistGroupAsync(GetGroup(key));
+    }
+
     public Task<string?> GetAsync(string key)
         => _inner.GetAsync(key);
+
+    public Task<WorkingMemoryEntry?> GetEntryAsync(string key)
+        => _inner.GetEntryAsync(key);
 
     public async Task<ContentEditResult> EditAsync(string key, string oldText, string newText, bool replaceAll = false)
     {
@@ -228,7 +244,7 @@ internal sealed class FileWorkingMemory : IWorkingMemory, IHostedService
             }
 
             var persisted = entries
-                .Select(e => new PersistedEntry(e.Key, e.Value, e.StoredAt, e.ExpiresAt, e.Category, e.Tags))
+                .Select(e => new PersistedEntry(e.Key, e.Value, e.StoredAt, e.ExpiresAt, e.Category, e.Tags, e.Writer))
                 .ToList();
 
             var json = JsonSerializer.Serialize(persisted, JsonOptions);

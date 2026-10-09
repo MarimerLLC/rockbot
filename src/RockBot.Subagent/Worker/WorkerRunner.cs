@@ -122,8 +122,13 @@ internal sealed class WorkerRunner(
         chatMessages.Add(new ChatMessage(ChatRole.User, definition.Description));
 
         // Working memory tools scoped to the worker's namespace.
+        // The writer names the spawning session too — a worker namespace alone ("worker/ab12")
+        // tells a later reader nothing about whether the patrol or a user turn produced it.
         var sessionWorkingMemoryTools = new WorkingMemoryTools(workingMemory, workerNamespace, logger,
-            workingMemoryOptions.Value.BackgroundTaskMinimumTtl);
+            workingMemoryOptions.Value.BackgroundTaskMinimumTtl, workingMemoryOptions.Value,
+            writer: string.IsNullOrWhiteSpace(primarySessionId)
+                ? workerNamespace
+                : $"{workerNamespace} (spawned by {primarySessionId})");
 
         // Registry tools — filter out forbidden sources/names, then narrow by tools_allow.
         var registryTools = BuildRegistryTools(definition.ToolsAllow, workerNamespace);

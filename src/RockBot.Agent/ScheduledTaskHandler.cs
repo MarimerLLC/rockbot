@@ -32,7 +32,8 @@ internal sealed class ScheduledTaskHandler(
     IScheduledTaskStore scheduledTaskStore,
     ILogger<ScheduledTaskHandler> logger,
     ISkillUsageStore? skillUsageStore = null,
-    IMcpSkillSurface? mcpSkillSurface = null) : IMessageHandler<ScheduledTaskMessage>
+    IMcpSkillSurface? mcpSkillSurface = null,
+    IOptions<WorkingMemoryOptions>? workingMemoryOptions = null) : IMessageHandler<ScheduledTaskMessage>
 {
     public async Task HandleAsync(ScheduledTaskMessage message, MessageHandlerContext context)
     {
@@ -83,7 +84,8 @@ internal sealed class ScheduledTaskHandler(
         chatMessages.Add(new ChatMessage(ChatRole.User, message.Description));
 
         // Per-session tools — same set the user handler builds (sessionId already is "patrol/name")
-        var sessionWorkingMemoryTools = new WorkingMemoryTools(workingMemory, sessionId, logger);
+        var sessionWorkingMemoryTools = new WorkingMemoryTools(workingMemory, sessionId, logger,
+            options: workingMemoryOptions?.Value);
         var sessionSkillTools = new SkillTools(skillStore, llmClient, logger, sessionId, skillUsageStore,
             mcpSkillSurface: mcpSkillSurface);
         var taskDirectiveTools = new TaskDirectiveTools(scheduledTaskStore, message.TaskName, logger);

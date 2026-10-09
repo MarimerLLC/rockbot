@@ -310,6 +310,38 @@ public class MemoryToolsTests
     }
 
     // -------------------------------------------------------------------------
+    // SearchMemory — absolute created/updated dates (issue #668)
+    // -------------------------------------------------------------------------
+
+    [TestMethod]
+    public async Task SearchMemory_ShowsCreatedDate()
+    {
+        var memory = new StubLongTermMemory();
+        memory.Add(new MemoryEntry("id1", "Plan for the week", "active-plans", [],
+            new DateTimeOffset(2026, 10, 2, 9, 30, 0, TimeSpan.Zero)));
+        var tools = MakeTools(memory);
+
+        var result = await tools.SearchMemory();
+
+        StringAssert.Contains(result, "created 2026-10-02");
+        Assert.IsFalse(result.Contains("updated "), "No updated date for a never-edited entry");
+    }
+
+    [TestMethod]
+    public async Task SearchMemory_ShowsUpdatedDate_WhenEntryWasEdited()
+    {
+        var memory = new StubLongTermMemory();
+        memory.Add(new MemoryEntry("id1", "Plan for the week", "active-plans", [],
+            new DateTimeOffset(2026, 10, 2, 9, 30, 0, TimeSpan.Zero),
+            UpdatedAt: new DateTimeOffset(2026, 10, 7, 23, 0, 0, TimeSpan.Zero)));
+        var tools = MakeTools(memory);
+
+        var result = await tools.SearchMemory();
+
+        StringAssert.Contains(result, "created 2026-10-02, updated 2026-10-07");
+    }
+
+    // -------------------------------------------------------------------------
     // SearchMemory — mode parameter
     // -------------------------------------------------------------------------
 

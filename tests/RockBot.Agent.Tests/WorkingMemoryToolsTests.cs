@@ -145,7 +145,9 @@ public class WorkingMemoryToolsTests
 
         var result = await _tools.GetFromWorkingMemory("cached");
 
-        Assert.AreEqual("value", result);
+        // The stub cannot supply entry metadata, so the value comes back under the
+        // "stored at unknown" provenance header (issue #668).
+        Assert.AreEqual("[stored at unknown]\nvalue", result);
     }
 
     [TestMethod]
@@ -155,7 +157,7 @@ public class WorkingMemoryToolsTests
 
         var result = await _tools.GetFromWorkingMemory("patrol/heartbeat/alert");
 
-        Assert.AreEqual("alert-data", result);
+        Assert.IsTrue(result.EndsWith("\nalert-data"), result);
     }
 
     // ── DeleteFromWorkingMemory ───────────────────────────────────────────

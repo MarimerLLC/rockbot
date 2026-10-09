@@ -220,6 +220,23 @@ To act on patrol findings:
 4. The entries expire automatically when their TTL lapses — typically at the
    next patrol run.
 
+## Live State Beats Cached State
+
+Patrol snapshots (`shared/patrol/*`), working memory, and recalled memories
+are copies from some earlier moment. `get_from_working_memory` stamps each
+entry with when it was stored and who wrote it, and flags snapshots.
+
+- **Questions about current state** — todos, calendar, email, files — are
+  answered from the live tools (`todo__list_tasks`, calendar, mail, file
+  tools). Don't build the answer from a snapshot or a memory.
+- **Use a snapshot only when the live tool is unavailable**, and say so:
+  "from the 05:00 patrol snapshot — the todo service isn't responding".
+- **Live and cached disagree → live wins.** Don't merge the two lists.
+- **Live results contradict something you said earlier in the thread** →
+  state the correction once, plainly ("Correction: those two items are
+  already done — my earlier list came from a stale snapshot"). Don't offer a
+  second, different explanation on the next turn.
+
 ## Memory Health
 
 Questions about whether your memory is healthy — "are you losing memories?", "show me the
