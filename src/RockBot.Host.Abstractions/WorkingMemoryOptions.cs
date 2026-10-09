@@ -31,4 +31,30 @@ public sealed class WorkingMemoryOptions
     /// (e.g. <c>session.json</c>, <c>patrol.json</c>, <c>subagent.json</c>).
     /// </summary>
     public string BasePath { get; set; } = "working-memory";
+
+    /// <summary>The snapshot prefixes used when <see cref="SnapshotKeyPrefixes"/> is not set.</summary>
+    public static readonly IReadOnlyList<string> DefaultSnapshotKeyPrefixes = ["shared/patrol/"];
+
+    /// <summary>
+    /// Key prefixes whose entries are point-in-time snapshots of state that lives somewhere
+    /// else (todos, calendar, mail) — e.g. what the heartbeat patrol writes under
+    /// <c>shared/patrol/</c>. <c>get_from_working_memory</c> wraps these in a banner naming
+    /// the writer and the snapshot's age, so a cached copy cannot pass for live state
+    /// (issue #668). <c>null</c> (the default) means <see cref="DefaultSnapshotKeyPrefixes"/>;
+    /// a configured list replaces the default rather than adding to it.
+    /// </summary>
+    public IList<string>? SnapshotKeyPrefixes { get; set; }
+
+    /// <summary>
+    /// Age past which a snapshot entry (see <see cref="SnapshotKeyPrefixes"/>) is flagged
+    /// STALE when read. The data is still returned; only the banner changes. Defaults to
+    /// 6 hours — a little over one heartbeat-patrol cycle.
+    /// </summary>
+    public TimeSpan SnapshotStaleAfter { get; set; } = TimeSpan.FromHours(6);
+
+    /// <summary>The snapshot prefixes in effect: the configured list, or the default.</summary>
+    public IReadOnlyList<string> EffectiveSnapshotKeyPrefixes =>
+        SnapshotKeyPrefixes is { Count: > 0 } configured
+            ? configured.Where(p => !string.IsNullOrWhiteSpace(p)).ToList()
+            : DefaultSnapshotKeyPrefixes;
 }

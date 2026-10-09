@@ -465,6 +465,11 @@ builder.Services.Configure<AgentProfileOptions>(builder.Configuration.GetSection
 // Allow MaxToolIterations and other AgentHostOptions to be overridden via appsettings.json or env vars.
 builder.Services.Configure<AgentHostOptions>(builder.Configuration.GetSection("AgentHost"));
 
+// Working memory — e.g. WorkingMemory__SnapshotStaleAfter=08:00:00 or
+// WorkingMemory__SnapshotKeyPrefixes__0=shared/patrol/ (issue #668). Composes with the
+// defaults registered by WithMemory(); unset keys keep their defaults.
+builder.Services.Configure<WorkingMemoryOptions>(builder.Configuration.GetSection("WorkingMemory"));
+
 // LLM pricing — loaded from a JSON file on the agent PVC so prices can be refreshed
 // without rebuilding the image. LlmPricing__ConfigPath in the ConfigMap overrides the default.
 builder.Services.Configure<LlmPricingOptions>(builder.Configuration.GetSection("LlmPricing"));

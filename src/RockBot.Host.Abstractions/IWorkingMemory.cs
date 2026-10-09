@@ -13,8 +13,29 @@ public interface IWorkingMemory
     Task SetAsync(string key, string value, TimeSpan? ttl = null,
         string? category = null, IReadOnlyList<string>? tags = null);
 
+    /// <summary>
+    /// Sets or overwrites an entry for <paramref name="key"/>, recording who wrote it.
+    /// <paramref name="writer"/> is the writing context's identity (typically its namespace,
+    /// e.g. <c>patrol/heartbeat-patrol</c>) and is surfaced on read so a snapshot can be told
+    /// apart from live state. Stores that do not track writers fall back to the plain overload.
+    /// </summary>
+    Task SetAsync(string key, string value, TimeSpan? ttl, string? category,
+        IReadOnlyList<string>? tags, string? writer)
+        => SetAsync(key, value, ttl, category, tags);
+
     /// <summary>Returns the cached value, or <c>null</c> if not found or expired.</summary>
     Task<string?> GetAsync(string key);
+
+    /// <summary>
+    /// Returns the live entry for <paramref name="key"/> with its metadata (stored-at, writer,
+    /// category, tags), or <c>null</c> if not found or expired. The default implementation
+    /// looks the key up through <see cref="ListAsync"/>; stores override it with a direct read.
+    /// </summary>
+    async Task<WorkingMemoryEntry?> GetEntryAsync(string key)
+    {
+        var entries = await ListAsync(key);
+        return entries.FirstOrDefault(e => string.Equals(e.Key, key, StringComparison.OrdinalIgnoreCase));
+    }
 
     /// <summary>
     /// Replaces an exact piece of text inside an existing entry's value, leaving the rest of

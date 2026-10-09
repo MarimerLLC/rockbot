@@ -38,11 +38,15 @@ public sealed class AgentContextBuilder(
     ILogger<AgentContextBuilder> logger,
     ICapabilityClaimVerifier? capabilityClaimVerifier = null,
     IToolCallLog? toolCallLog = null,
-    IOptions<AgentHostOptions>? agentHostOptions = null)
+    IOptions<AgentHostOptions>? agentHostOptions = null,
+    IOptions<WorkingMemoryOptions>? workingMemoryOptions = null)
 #pragma warning restore CS9113
 {
     /// <summary>Host options, defaulted when not supplied so existing callers and tests are unaffected.</summary>
     private readonly AgentHostOptions _hostOptions = agentHostOptions?.Value ?? new AgentHostOptions();
+
+    /// <summary>Working memory options (snapshot prefixes), defaulted like <see cref="_hostOptions"/>.</summary>
+    private readonly WorkingMemoryOptions _workingMemoryOptions = workingMemoryOptions?.Value ?? new WorkingMemoryOptions();
 
     /// <summary>How many recent turns are replayed into the LLM context; see
     /// <see cref="AgentHostOptions.MaxLlmContextTurns"/>.</summary>
@@ -677,6 +681,7 @@ public sealed class AgentContextBuilder(
                 var meta = new System.Text.StringBuilder($"- {e.Key}: expires in {remainingStr}");
                 if (e.Category is not null) meta.Append($", category: {e.Category}");
                 if (e.Tags is { Count: > 0 }) meta.Append($", tags: {string.Join(", ", e.Tags)}");
+                meta.Append($", {WorkingMemoryProvenance.Describe(e, now)}");
                 return meta.ToString();
             });
             var patrolContext =
@@ -708,8 +713,12 @@ public sealed class AgentContextBuilder(
                 var meta = new System.Text.StringBuilder($"- {e.Key}: expires in {remainingStr}");
                 if (e.Category is not null) meta.Append($", category: {e.Category}");
                 if (e.Tags is { Count: > 0 }) meta.Append($", tags: {string.Join(", ", e.Tags)}");
+                meta.Append($", {WorkingMemoryProvenance.Describe(e, now)}");
+                meta.Append(WorkingMemoryProvenance.SnapshotMarker(e, now, _workingMemoryOptions));
                 return meta.ToString();
             });
+            var hasPatrolSnapshots = sharedEntries.Any(e =>
+                WorkingMemoryProvenance.IsSnapshotKey(e.Key, _workingMemoryOptions));
             var sharedContext =
                 "Shared working memory (cross-session handoff — any session, patrol, or subagent can write here):\n" +
                 string.Join("\n", lines) + "\n\n" +
@@ -717,7 +726,11 @@ public sealed class AgentContextBuilder(
                 "- To write here, pass a full path key beginning with 'shared/' to save_to_working_memory " +
                 "(e.g. 'shared/drafts/...', 'shared/pending/...'). Choose self-describing keys — other sessions " +
                 "discover entries by name, not content.\n" +
-                "- Prefer this over your own namespace when the entry is meant for another session to pick up.";
+                "- Prefer this over your own namespace when the entry is meant for another session to pick up." +
+                (hasPatrolSnapshots
+                    ? "\n- Entries flagged as snapshots (e.g. shared/patrol/*) are point-in-time copies, not live state. For current " +
+                      "todos, calendar, or mail, call the live tool and answer from it."
+                    : "");
             chatMessages.Add(new ChatMessage(ChatRole.System, sharedContext));
             logger.LogInformation("Injected {Count} shared working memory entries into context", sharedEntries.Count);
         }

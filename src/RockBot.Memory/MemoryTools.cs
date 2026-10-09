@@ -290,8 +290,9 @@ public sealed class MemoryTools
         foreach (var entry in results)
         {
             var age = FormatAge(entry);
+            var dates = FormatDates(entry);
             var subject = FormatSubjectTime(entry.Metadata);
-            sb.AppendLine($"- [{entry.Id}] ({entry.Category ?? "uncategorized"}, importance={entry.ImportanceScore:F2}, {age}){subject}: {entry.Content}");
+            sb.AppendLine($"- [{entry.Id}] ({entry.Category ?? "uncategorized"}, importance={entry.ImportanceScore:F2}, {age}, {dates}){subject}: {entry.Content}");
             if (entry.Tags.Count > 0)
                 sb.AppendLine($"  Tags: {string.Join(", ", entry.Tags)}");
         }
@@ -370,6 +371,18 @@ public sealed class MemoryTools
         var firstStr = firstDays < 30 ? $"{firstDays}d ago" : e.CreatedAt.ToString("yyyy-MM");
         var lastStr = lastDays < 1 ? "today" : e.LastSeenAt.ToString("yyyy-MM-dd");
         return $"seen {e.ReinforcementCount}× from {firstStr} to {lastStr}";
+    }
+
+    /// <summary>
+    /// Absolute created/updated dates, so a recalled plan or status note can be weighed by
+    /// when it was written rather than read as current (issue #668).
+    /// </summary>
+    internal static string FormatDates(MemoryEntry e)
+    {
+        var created = $"created {e.CreatedAt.UtcDateTime:yyyy-MM-dd}";
+        return e.UpdatedAt is { } updated && updated != default
+            ? $"{created}, updated {updated.UtcDateTime:yyyy-MM-dd}"
+            : created;
     }
 
     private static string FormatSubjectTime(IReadOnlyDictionary<string, string>? meta)
