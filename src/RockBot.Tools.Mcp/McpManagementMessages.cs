@@ -164,3 +164,58 @@ public sealed record McpReadResourceResponse
     public List<McpResourceContentView> Contents { get; init; } = [];
     public string? Error { get; init; }
 }
+
+// ── AnswerQuestion ───────────────────────────────────────────────────────────
+
+/// <summary>
+/// <c>mcp_answer</c>: the agent's answer to a question an MCP server asked mid-call and the bridge
+/// handed back (see <c>design/mcp-elicitation-handback.md</c>). Published to <c>mcp.manage</c>.
+/// </summary>
+public sealed record McpAnswerQuestionRequest
+{
+    /// <summary>The <c>question_id</c> from the hand-back.</summary>
+    public required string QuestionId { get; init; }
+
+    /// <summary>Session of the run answering; it must be the session that made the original call.</summary>
+    public string? SessionId { get; init; }
+
+    /// <summary>Tool call id of the <c>mcp_answer</c> call, for the result it gets back.</summary>
+    public string? ToolCallId { get; init; }
+
+    /// <summary>The answer's field values as a JSON object, keyed by the server's field names.</summary>
+    public string? Answers { get; init; }
+
+    /// <summary>Refuse the question: the server continues without the value.</summary>
+    public bool Decline { get; init; }
+}
+
+/// <summary>
+/// What <c>mcp_answer</c> led to. <see cref="Error"/> means the answer was refused (the question
+/// is unknown, expired, answered, from another session, or the answer doesn't fit) and nothing
+/// was sent to the server. Otherwise <see cref="Result"/> is the resumed call's outcome: its
+/// result, or the server's next question, handed back the same way.
+/// </summary>
+public sealed record McpAnswerQuestionResponse
+{
+    public required string QuestionId { get; init; }
+
+    /// <summary>Server of the resumed call, for metrics and typed-tool pinning.</summary>
+    public string? ServerName { get; init; }
+
+    /// <summary>Tool of the resumed call.</summary>
+    public string? ToolName { get; init; }
+
+    public ToolInvokeResponse? Result { get; init; }
+
+    public string? Error { get; init; }
+}
+
+/// <summary>
+/// A run's session has ended for good (a subagent finished): the bridge releases any question it
+/// handed back to that session and cancels the parked call. Fire-and-forget; no reply.
+/// Published to <c>mcp.manage</c>.
+/// </summary>
+public sealed record McpReleaseSessionQuestionsRequest
+{
+    public required string SessionId { get; init; }
+}

@@ -561,7 +561,8 @@ Policy is per server, with a bridge-wide `McpBridge:DefaultElicitation` fallback
 
 | Field | Default | Meaning |
 |---|---|---|
-| `mode` | `auto` | `auto` answers; `decline` refuses every question; `off` never advertises the capability, so a compliant server does not ask. An unrecognized value reads as `decline`. |
+| `mode` | `auto` | `auto` answers; `decline` refuses every question; `off` never advertises the capability, so a compliant server does not ask; `handback` hands the question to the calling agent (see below; server policy only). An unrecognized value reads as `decline`. |
+| `handbackTtlMinutes` | 30 | `handback` only: how long a handed-back question stays open before its call is cancelled. |
 | `maxPerCall` | 3 | Rounds answered per tool call. `0` answers none. |
 | `defaults` | `{}` | Deterministic answers by field name (case-insensitive), applied before — and overriding — the responder. |
 | `deniedFields` | `[]` | Extra field names to refuse, on top of the built-in credential heuristics. |
@@ -611,6 +612,36 @@ Behavior:
 
   It runs a short model call through the agent loop, so give the server
   `"responderTimeoutMs": 30000` or more and a `toolTimeoutMs` above that.
+- **`"mode": "handback"` lets the agent, or the user, answer.** The tool call returns at once
+  with the server's question and a `question_id`. The agent answers from what it knows, or asks
+  the user and answers on a later turn, with the `mcp_answer` tool. The paused call then resumes
+  and `mcp_answer` returns its result.
+  - It applies only to servers on the 2026-07-28 protocol, and only to calls from a run that has
+    `mcp_answer`: the primary agent's conversation, and subagents.
+    - Scheduled tasks, workers and wisps get the server's `responder` instead, as do older
+      servers.
+    - A subagent answers from its task's context. It can't ask the user, so it declines
+      decisions and reports them in its result.
+    - When a subagent's run ends, any question it left open is released.
+  - It must be in the **server's own** `elicitation` block. `McpBridge:DefaultElicitation`
+    treats it as `auto`.
+  - Everything above still runs first: credential and denied fields, url mode, `defaults` that
+    settle the whole form, and `maxPerCall`.
+  - A yes/no decision is accepted only after the user has said something since the question
+    was handed back.
+  - A question is answered once, only from the conversation that caused it, and expires after
+    `handbackTtlMinutes`.
+  - Limits: `McpBridge:MaxPendingQuestionsPerSession` (5) and `McpBridge:MaxPendingQuestions`
+    (50). Past them a question is declined in-band.
+  - The waiting time doesn't count against `toolTimeoutMs`, which bounds the call's active
+    stretches only.
+  - Each handed-back question is recorded in a ledger, `McpBridge:PendingLedgerPath` (default
+    `mcp/pending-questions.json` beside `mcp.json`). The ledger holds the question and the
+    call's context, never the answers. After a restart, each conversation with an interrupted
+    call is told what that call was doing, both in its next turn and in the chat. The call
+    itself can't be resumed.
+  - `mcp_answer` is offered only while a connected server can hand questions back.
+  - See `design/mcp-elicitation-handback.md`.
 - Servers registered at runtime via `mcp_register_server` always get `DefaultElicitation` —
   a model-registered server cannot ship its own `defaults` or relax `deniedFields`. The model can't
   replace or remove a server you configured, so it can't shed that server's `elicitation` block.

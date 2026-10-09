@@ -58,6 +58,12 @@ public sealed class McpToolProxy : IToolExecutor, IAsyncDisposable
     }
 
     /// <summary>
+    /// How long a caller waits for a tool call's outcome. <c>mcp_answer</c> waits as long, since
+    /// its outcome is the resumed call's.
+    /// </summary>
+    public TimeSpan ResponseTimeout => _responseTimeout;
+
+    /// <summary>
     /// The topic this proxy subscribes to for responses.
     /// </summary>
     public string ResponseTopic => $"tool.result.{_identity.Name}";

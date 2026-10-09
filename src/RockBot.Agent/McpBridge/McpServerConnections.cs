@@ -206,6 +206,18 @@ internal sealed class ServerLease(ConnectedServer server) : IDisposable
 
     public ConnectedServer Server { get; } = server;
 
+    /// <summary>
+    /// Another lease on <paramref name="server"/>'s connection, for work that outlives the lease
+    /// the caller holds (a parked call). Only valid while the caller still holds one, so the
+    /// connection can't have been disposed; unlike <see cref="McpServerConnections.Lease"/> it
+    /// succeeds even when the connection has since been retired.
+    /// </summary>
+    public static ServerLease Share(ConnectedServer server)
+    {
+        server.Resources.AddLease();
+        return new ServerLease(server);
+    }
+
     public void Dispose()
     {
         if (Interlocked.Exchange(ref _released, 1) == 0)
@@ -264,6 +276,15 @@ internal sealed class ConnectionResources
             _leases++;
             return true;
         }
+    }
+
+    /// <summary>
+    /// Takes a lease whether or not the connection is retired. The caller must already hold one,
+    /// which guarantees the owned objects haven't been disposed.
+    /// </summary>
+    public void AddLease()
+    {
+        lock (_gate) _leases++;
     }
 
     public void Release()

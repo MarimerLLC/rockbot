@@ -341,7 +341,8 @@ credential heuristics are code, not config, and cannot be turned off from a conf
 
 | Key | Default | Meaning |
 |---|---|---|
-| `mode` | `auto` | `auto`, `decline`, or `off`. Anything else is read as `decline`. |
+| `mode` | `auto` | `auto`, `decline`, `off`, or `handback` (server policy only; see `design/mcp-elicitation-handback.md`). Anything else is read as `decline`. |
+| `handbackTtlMinutes` | 30 | `handback` only: how long a handed-back question stays open. |
 | `maxPerCall` | 3 | Rounds answered per tool call. `0` answers none. |
 | `defaults` | `{}` | Deterministic answers by field name (case-insensitive), applied before the responder and overriding it. Still schema-validated, so a stale default is dropped rather than forwarded. |
 | `deniedFields` | `[]` | Extra field names to refuse, on top of the built-in credential heuristics. |
@@ -365,6 +366,7 @@ Omit the block entirely to inherit `McpBridge:DefaultElicitation`.
 | `McpElicitationSchemaDescriber` | Renders a schema for prompts and notes. |
 | `McpSensitiveFieldDetector` | Credential vocabulary. |
 | `McpElicitationNote` | Tells the agent what happened. |
+| `IMcpHandbackChannel` / `McpHandbackOutcome` | Hand-back mode: hands the question to the calling agent and waits for its answer (`design/mcp-elicitation-handback.md`). |
 
 ## Not done
 
@@ -383,11 +385,6 @@ Omit the block entirely to inherit `McpBridge:DefaultElicitation`.
 - **Responder budget vs. a short tool timeout.** `ResponderTimeoutMs` is not clamped to the
   server's `ToolTimeoutMs`; a server with a tool timeout under 20 s can time out while the
   responder is still working.
-- **Answering from the caller's context in the caller's own loop.** The `conversation` responder
-  (above) answers from the calling conversation, but as a separate bounded loop that cannot
-  ask the user. Handing the question to the agent's own loop — so it can ask the user and
-  resume — is the remaining part of #602. The bridge is on SDK 2.x now, and MRTR is what makes
-  it practical: nothing is held open on the server while the question waits.
 - **Tasks.** Long-running tools via the 2.x Tasks extension (`ModelContextProtocol.Extensions.Tasks`),
   including input requests raised while a task runs, are not wired into the bridge. The
   synchronous path covers the servers we run; the Tasks-aware bridge is part of the

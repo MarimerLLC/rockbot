@@ -89,6 +89,11 @@ internal sealed class WispExecutor(
         logger.LogInformation("Wisp {WispId} starting: {Description} ({StepCount} steps)",
             wispId, definition.Description, definition.Steps.Count);
 
+        // A wisp runs inside its parent's tool call and makes MCP calls under the parent's session,
+        // but it has no mcp_answer: a server's question must get the server's responder, not be
+        // handed back to a caller that can't answer it.
+        using var noHandback = McpHandbackContext.Suppress();
+
         var overallSw = Stopwatch.StartNew();
         var stepResults = new List<WispStepResult>();
         var resultsByStepId = new Dictionary<string, WispStepResult>(StringComparer.OrdinalIgnoreCase);

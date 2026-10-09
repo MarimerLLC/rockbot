@@ -81,6 +81,22 @@ public sealed class McpBridgeOptions
     public McpElicitationConfig DefaultElicitation { get; set; } = new();
 
     /// <summary>
+    /// Most questions handed back (<c>"mode": "handback"</c>) that one session can have waiting
+    /// at once. Past this, a server's new question for the session is declined in-band.
+    /// </summary>
+    public int MaxPendingQuestionsPerSession { get; set; } = 5;
+
+    /// <summary>Most handed-back questions, and so parked calls, the bridge holds at once.</summary>
+    public int MaxPendingQuestions { get; set; } = 50;
+
+    /// <summary>
+    /// The durable ledger of handed-back questions, which lets a restarted bridge tell each
+    /// session about the calls a restart interrupted. A relative path resolves next to
+    /// <see cref="ConfigPath"/>. Default <c>mcp/pending-questions.json</c> beside <c>mcp.json</c>.
+    /// </summary>
+    public string PendingLedgerPath { get; set; } = "mcp/pending-questions.json";
+
+    /// <summary>
     /// Reads <c>DefaultElicitation:Defaults</c> from the bridge's configuration section.
     /// </summary>
     /// <remarks>

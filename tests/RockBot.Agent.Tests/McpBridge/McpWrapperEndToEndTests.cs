@@ -55,6 +55,7 @@ public class McpWrapperEndToEndTests
         public required McpWrapperCatalog Catalog { get; init; }
         public required McpTypedToolSurface Surface { get; init; }
         public required Func<Task> ReplayIndexAsync { get; init; }
+        public McpServerIndex Index { get; init; } = null!;
     }
 
     /// <summary>The agent's half of the gateway, on the harness's in-memory bus, fed the bridge's index.</summary>
@@ -100,7 +101,8 @@ public class McpWrapperEndToEndTests
         await ReplayIndexAsync();
         return new AgentSide
         {
-            Registry = registry, Management = management, Catalog = catalog, Surface = surface, ReplayIndexAsync = ReplayIndexAsync
+            Registry = registry, Management = management, Catalog = catalog, Surface = surface, ReplayIndexAsync = ReplayIndexAsync,
+            Index = index
         };
     }
 

@@ -58,7 +58,7 @@ public static class McpElicitationSchemaDescriber
         return builder.ToString().TrimEnd('\n');
     }
 
-    private static string DescribeType(ElicitRequestParams.PrimitiveSchemaDefinition? definition) => definition switch
+    internal static string DescribeType(ElicitRequestParams.PrimitiveSchemaDefinition? definition) => definition switch
     {
         null => "unknown type",
         ElicitRequestParams.StringSchema s => s.Format is { Length: > 0 } f ? $"string, {f}" : "string",

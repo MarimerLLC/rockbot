@@ -28,7 +28,17 @@ public sealed class McpElicitationConfig
     public const string ModeOff = "off";
 
     /// <summary>
-    /// One of <see cref="ModeAuto"/>, <see cref="ModeDecline"/>, or <see cref="ModeOff"/>.
+    /// Hand the question to the calling agent as the tool result and resume the call when it
+    /// answers with <c>mcp_answer</c> (see <c>design/mcp-elicitation-handback.md</c>). Only in a
+    /// server's own policy: in <c>McpBridge:DefaultElicitation</c> it is treated as
+    /// <see cref="ModeAuto"/>. A question that can't be handed back (an older server, or a caller
+    /// that can't answer) gets the server's responder, as in <see cref="ModeAuto"/>.
+    /// </summary>
+    public const string ModeHandback = "handback";
+
+    /// <summary>
+    /// One of <see cref="ModeAuto"/>, <see cref="ModeDecline"/>, <see cref="ModeOff"/> or
+    /// <see cref="ModeHandback"/>.
     /// An unrecognized value is treated as <see cref="ModeDecline"/> (fail closed) — a typo
     /// must never silently widen what the bridge is willing to answer.
     /// </summary>
@@ -83,12 +93,27 @@ public sealed class McpElicitationConfig
     public string? Responder { get; set; }
 
     /// <summary>
+    /// How long, in minutes, a handed-back question stays open (<see cref="ModeHandback"/> only).
+    /// Past this the parked call is cancelled and a later <c>mcp_answer</c> is told it expired.
+    /// Zero or less uses the default of 30.
+    /// </summary>
+    public int HandbackTtlMinutes { get; set; } = DefaultHandbackTtlMinutes;
+
+    /// <summary>Default for <see cref="HandbackTtlMinutes"/>.</summary>
+    public const int DefaultHandbackTtlMinutes = 30;
+
+    /// <summary><see cref="HandbackTtlMinutes"/> as a usable duration.</summary>
+    public TimeSpan HandbackTtl =>
+        TimeSpan.FromMinutes(HandbackTtlMinutes > 0 ? HandbackTtlMinutes : DefaultHandbackTtlMinutes);
+
+    /// <summary>
     /// Returns the normalized mode, mapping anything unrecognized to <see cref="ModeDecline"/>.
     /// </summary>
     public string ResolveMode()
     {
         if (string.Equals(Mode, ModeAuto, StringComparison.OrdinalIgnoreCase)) return ModeAuto;
         if (string.Equals(Mode, ModeOff, StringComparison.OrdinalIgnoreCase)) return ModeOff;
+        if (string.Equals(Mode, ModeHandback, StringComparison.OrdinalIgnoreCase)) return ModeHandback;
         return ModeDecline;
     }
 
@@ -99,5 +124,29 @@ public sealed class McpElicitationConfig
     public bool IsRecognizedMode =>
         string.Equals(Mode, ModeAuto, StringComparison.OrdinalIgnoreCase)
         || string.Equals(Mode, ModeOff, StringComparison.OrdinalIgnoreCase)
-        || string.Equals(Mode, ModeDecline, StringComparison.OrdinalIgnoreCase);
+        || string.Equals(Mode, ModeDecline, StringComparison.OrdinalIgnoreCase)
+        || string.Equals(Mode, ModeHandback, StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// The policy as the bridge-wide default may carry it: <see cref="ModeHandback"/> becomes
+    /// <see cref="ModeAuto"/>, because handing a server's question to the agent (and the agent's
+    /// answer to the server) is something a server's own policy has to grant. Every other setting
+    /// is kept. Returns this instance when there is nothing to change.
+    /// </summary>
+    public McpElicitationConfig WithoutHandback()
+    {
+        if (ResolveMode() != ModeHandback)
+            return this;
+
+        return new McpElicitationConfig
+        {
+            Mode = ModeAuto,
+            MaxPerCall = MaxPerCall,
+            Defaults = Defaults is null ? [] : new Dictionary<string, JsonElement>(Defaults),
+            DeniedFields = [.. DeniedFields ?? []],
+            ResponderTimeoutMs = ResponderTimeoutMs,
+            Responder = Responder,
+            HandbackTtlMinutes = HandbackTtlMinutes,
+        };
+    }
 }

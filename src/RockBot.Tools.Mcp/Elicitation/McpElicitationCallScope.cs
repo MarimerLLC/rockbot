@@ -19,13 +19,21 @@ public sealed class McpElicitationCallScope : IDisposable
     private int _attempts;
 
     internal McpElicitationCallScope(
-        string toolName, string? arguments, string? sessionId, Action<McpElicitationCallScope> onDispose)
+        string toolName, string? arguments, string? sessionId, Action<McpElicitationCallScope> onDispose,
+        IMcpHandbackChannel? handback = null)
     {
         ToolName = toolName;
         Arguments = arguments;
         SessionId = sessionId;
+        Handback = handback;
         _onDispose = onDispose;
     }
+
+    /// <summary>
+    /// Where this call's questions go when the server is in hand-back mode; null when the call
+    /// can't take a hand-back, and the server's responder answers instead.
+    /// </summary>
+    public IMcpHandbackChannel? Handback { get; }
 
     /// <summary>Tool being invoked.</summary>
     public string ToolName { get; }

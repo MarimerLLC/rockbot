@@ -37,6 +37,9 @@ internal sealed class BridgeHarness : IAsyncDisposable
     private readonly IOptions<McpBridgeOptions> _options;
     private readonly ILlmClient? _llmClient;
     private readonly string _configDir;
+    private IConversationMemory? _conversationMemory;
+    private IWorkingMemory? _workingMemory;
+    private TimeProvider? _timeProvider;
     private McpBridgeService _bridge = null!;
     private TopicSubscriber _subscriber = null!;
     private CapturingPublisher _publisher = null!;
@@ -127,7 +130,8 @@ internal sealed class BridgeHarness : IAsyncDisposable
             _publisher, _subscriber, new AgentIdentity(AgentName), _options, _bridgeLog,
             llmClient: _llmClient, tokenProviders: null, healthTracker: null, argGuards: null,
             elicitationResponder: null, services: null,
-            attachmentStorage: new AttachmentStorage(AttachmentsPath));
+            attachmentStorage: new AttachmentStorage(AttachmentsPath),
+            conversationMemory: _conversationMemory, workingMemory: _workingMemory, timeProvider: _timeProvider);
         await _bridge.StartAsync(CancellationToken.None);
     }
 
@@ -144,7 +148,11 @@ internal sealed class BridgeHarness : IAsyncDisposable
         Action<McpBridgeServerConfig>? configure = null,
         ILlmClient? llmClient = null,
         IEnumerable<McpServerResource>? resources = null,
-        Action<McpBridgeOptions>? configureBridge = null)
+        Action<McpBridgeOptions>? configureBridge = null,
+        IConversationMemory? conversationMemory = null,
+        IWorkingMemory? workingMemory = null,
+        Action<string>? beforeBridgeStarts = null,
+        TimeProvider? timeProvider = null)
     {
         var builder = WebApplication.CreateSlimBuilder();
         builder.WebHost.UseUrls("http://127.0.0.1:0");
@@ -205,7 +213,16 @@ internal sealed class BridgeHarness : IAsyncDisposable
         configureBridge?.Invoke(bridgeOptions);
         var options = Options.Create(bridgeOptions);
 
-        var harness = new BridgeHarness(server, options, llmClient, configDir, lateTools, lateResources) { ServerUrl = entry.Url };
+        var harness = new BridgeHarness(server, options, llmClient, configDir, lateTools, lateResources)
+        {
+            ServerUrl = entry.Url,
+            _conversationMemory = conversationMemory,
+            _workingMemory = workingMemory,
+            _timeProvider = timeProvider,
+        };
+
+        // Lets a test seed files (the pending-question ledger) the bridge reads as it starts.
+        beforeBridgeStarts?.Invoke(configDir);
         await harness.StartBridgeAsync();
         return harness;
     }
@@ -245,18 +262,23 @@ internal sealed class BridgeHarness : IAsyncDisposable
     /// does, and returns what the agent side would receive (a <see cref="ToolError"/> is mapped to
     /// an error response, as <see cref="McpToolProxy"/> maps it).
     /// </summary>
-    public async Task<ToolInvokeResponse> InvokeAsync(string tool, string? argumentsJson, string server = ServerName)
+    public async Task<ToolInvokeResponse> InvokeAsync(
+        string tool, string? argumentsJson, string server = ServerName,
+        string sessionId = "session-1", bool canAnswer = false)
     {
         var request = new ToolInvokeRequest
         {
             ToolCallId = Guid.NewGuid().ToString("N"),
             ToolName = tool,
             Arguments = argumentsJson,
-            SessionId = "session-1",
+            SessionId = sessionId,
         };
 
-        var reply = await SendAsync(McpToolProxy.InvokeTopic, request,
-            new Dictionary<string, string> { [McpHeaders.ServerName] = server });
+        var headers = new Dictionary<string, string> { [McpHeaders.ServerName] = server };
+        if (canAnswer)
+            headers[McpHeaders.Handback] = McpHeaders.HandbackCapable;
+
+        var reply = await SendAsync(McpToolProxy.InvokeTopic, request, headers);
 
         if (reply.MessageType == typeof(ToolError).FullName)
         {
@@ -302,6 +324,53 @@ internal sealed class BridgeHarness : IAsyncDisposable
         var reply = await SendAsync(McpManagementExecutor.ManageTopic,
             new McpReadResourceRequest { ServerName = server, Uri = uri }, headers: null);
         return reply.GetPayload<McpReadResourceResponse>()!;
+    }
+
+    /// <summary>Where the bridge keeps its pending-question ledger in this run.</summary>
+    public string LedgerPath => Path.Combine(_configDir, "mcp", "pending-questions.json");
+
+    /// <summary>Everything the bridge published on <paramref name="topic"/>.</summary>
+    public IReadOnlyList<MessageEnvelope> PublishedOn(string topic) =>
+        [.. _publisher.Published.Where(p => p.Topic == topic).Select(p => p.Envelope)];
+
+    /// <summary>
+    /// Sends an <c>mcp_answer</c> request and waits for its reply. An accepted answer is replied to
+    /// by the parked call once the resumed call completes, after the handler has returned.
+    /// </summary>
+    public async Task<McpAnswerQuestionResponse> AnswerAsync(
+        string questionId, string? answersJson, bool decline = false, string sessionId = "session/test",
+        TimeSpan? wait = null)
+    {
+        var correlationId = Guid.NewGuid().ToString("N");
+        var replyTo = $"reply.{correlationId}";
+        var envelope = new McpAnswerQuestionRequest
+        {
+            QuestionId = questionId,
+            SessionId = sessionId,
+            ToolCallId = "answer-call",
+            Answers = answersJson,
+            Decline = decline,
+        }.ToEnvelope(source: AgentName, correlationId: correlationId, replyTo: replyTo);
+
+        await _subscriber.DeliverAsync(McpManagementExecutor.ManageTopic, envelope);
+
+        var reply = await WaitForAsync(replyTo, wait ?? TimeSpan.FromSeconds(15));
+        return reply.GetPayload<McpAnswerQuestionResponse>()!;
+    }
+
+    /// <summary>Waits for the first message the bridge publishes on <paramref name="topic"/>.</summary>
+    public async Task<MessageEnvelope> WaitForAsync(string topic, TimeSpan timeout)
+    {
+        var deadline = DateTime.UtcNow + timeout;
+        while (true)
+        {
+            var published = _publisher.Published.FirstOrDefault(p => p.Topic == topic);
+            if (published.Envelope is not null)
+                return published.Envelope;
+            if (DateTime.UtcNow > deadline)
+                Assert.Fail($"The bridge published nothing on {topic} within {timeout}.");
+            await Task.Delay(25);
+        }
     }
 
     private async Task<MessageEnvelope> SendAsync<T>(string topic, T payload, IReadOnlyDictionary<string, string>? headers)

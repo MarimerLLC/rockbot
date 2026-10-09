@@ -10,7 +10,7 @@ using RockBot.Tools.Mcp.Recovery;
 namespace RockBot.Tools.Mcp;
 
 /// <summary>
-/// <see cref="IToolExecutor"/> for the 8 MCP management tools registered by
+/// <see cref="IToolExecutor"/> for the MCP management tools registered by
 /// <see cref="McpServersIndexedHandler"/>:
 /// <list type="bullet">
 ///   <item><c>mcp_list_services</c> — returns cached server index</item>
@@ -21,6 +21,7 @@ namespace RockBot.Tools.Mcp;
 ///   <item><c>mcp_get_prompt</c> — invokes a prompt template on an MCP server</item>
 ///   <item><c>mcp_list_resources</c> — lists a server's resources and resource templates</item>
 ///   <item><c>mcp_read_resource</c> — reads one resource by the server's URI</item>
+///   <item><c>mcp_answer</c> — answers a question a server handed back mid-call (registered only while a server can)</item>
 /// </list>
 /// </summary>
 public sealed class McpManagementExecutor : IToolExecutor, IAsyncDisposable
@@ -92,8 +93,92 @@ public sealed class McpManagementExecutor : IToolExecutor, IAsyncDisposable
             "mcp_get_prompt"          => GetPromptAsync(request, ct),
             "mcp_list_resources"      => ListResourcesAsync(request, ct),
             "mcp_read_resource"       => ReadResourceAsync(request, ct),
+            McpHandbackContext.AnswerToolName => AnswerAsync(request, ct),
             _ => Task.FromResult(Error(request, $"Unknown management tool: {request.ToolName}"))
         };
+
+    // ── mcp_answer ───────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Answers (or declines) a question an MCP server asked mid-call and the bridge handed back.
+    /// The result is the resumed call's: the tool's result, or the server's next question.
+    /// </summary>
+    private async Task<ToolInvokeResponse> AnswerAsync(ToolInvokeRequest request, CancellationToken ct)
+    {
+        string? questionId = null;
+        string? answers = null;
+        var decline = false;
+        try
+        {
+            using var document = JsonDocument.Parse(string.IsNullOrWhiteSpace(request.Arguments) ? "{}" : request.Arguments);
+            var root = document.RootElement;
+            if (root.ValueKind == JsonValueKind.Object)
+            {
+                if (root.TryGetProperty("question_id", out var id) && id.ValueKind == JsonValueKind.String)
+                    questionId = id.GetString();
+
+                // Models sometimes send the object as a JSON string; take either.
+                if (root.TryGetProperty("answers", out var a))
+                {
+                    answers = a.ValueKind switch
+                    {
+                        JsonValueKind.Object => a.GetRawText(),
+                        JsonValueKind.String => a.GetString(),
+                        _ => null,
+                    };
+                }
+
+                if (root.TryGetProperty("decline", out var d))
+                {
+                    decline = d.ValueKind == JsonValueKind.True
+                              || (d.ValueKind == JsonValueKind.String && bool.TryParse(d.GetString(), out var parsed) && parsed);
+                }
+            }
+        }
+        catch (JsonException)
+        {
+            return Error(request, "mcp_answer arguments must be a JSON object: {\"question_id\": \"...\", \"answers\": {...}} or {\"question_id\": \"...\", \"decline\": true}.");
+        }
+
+        if (string.IsNullOrWhiteSpace(questionId))
+            return Error(request, "Missing required parameter: question_id");
+        if (!decline && string.IsNullOrWhiteSpace(answers))
+            return Error(request, "Provide answers (an object keyed by the server's field names), or decline: true.");
+
+        var envelope = await SendRequestAsync(new McpAnswerQuestionRequest
+        {
+            QuestionId = questionId,
+            SessionId = request.SessionId,
+            ToolCallId = request.ToolCallId,
+            Answers = decline ? null : answers,
+            Decline = decline,
+        }, ct, _proxy.ResponseTimeout);
+
+        if (envelope is null)
+        {
+            return Error(request,
+                "Timed out waiting for the MCP call to continue after the answer. The answer was delivered; " +
+                "don't answer the same question again.");
+        }
+
+        var response = envelope.GetPayload<McpAnswerQuestionResponse>();
+        if (response is null)
+            return Error(request, "Failed to deserialize the mcp_answer response");
+        if (response.Error is not null)
+            return Error(request, response.Error);
+        if (response.Result is not { } result)
+            return Error(request, "The bridge returned no result for the answer.");
+
+        // The result is the original call's. Recovery isn't run on it: recovery retries a call
+        // with filled-in arguments, and the original arguments aren't here; the agent can retry.
+        if (response.ServerName is { Length: > 0 } serverName)
+        {
+            _typedTools?.Pin(request.SessionId, serverName);
+            McpDiagnostics.RecordInvocation(serverName, McpInvocationPath.Answer, result.IsError);
+        }
+
+        return result with { ToolCallId = request.ToolCallId, ToolName = request.ToolName };
+    }
 
     // ── mcp_list_services ────────────────────────────────────────────────────
 
@@ -445,6 +530,11 @@ public sealed class McpManagementExecutor : IToolExecutor, IAsyncDisposable
             [McpHeaders.ServerName] = serverName
         };
 
+        // A server in hand-back mode may hand its mid-call question to this run, but only to a
+        // run that can answer it with mcp_answer.
+        if (McpHandbackContext.CanAnswer)
+            extraHeaders[McpHeaders.Handback] = McpHeaders.HandbackCapable;
+
         var response = await _proxy.ExecuteAsync(innerRequest, extraHeaders, ct);
 
         // Always pass through recovery — it inspects both IsError=true responses
@@ -717,8 +807,9 @@ public sealed class McpManagementExecutor : IToolExecutor, IAsyncDisposable
 
     // ── Request-response infrastructure ─────────────────────────────────────
 
-    private async Task<MessageEnvelope?> SendRequestAsync<T>(T payload, CancellationToken ct)
+    private async Task<MessageEnvelope?> SendRequestAsync<T>(T payload, CancellationToken ct, TimeSpan? timeout = null)
     {
+        var wait = timeout ?? _timeout;
         await EnsureSubscribedAsync(ct);
 
         var correlationId = Guid.NewGuid().ToString("N");
@@ -735,7 +826,7 @@ public sealed class McpManagementExecutor : IToolExecutor, IAsyncDisposable
             await _publisher.PublishAsync(ManageTopic, envelope, ct);
 
             using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-            timeoutCts.CancelAfter(_timeout);
+            timeoutCts.CancelAfter(wait);
 
             try
             {
@@ -743,7 +834,7 @@ public sealed class McpManagementExecutor : IToolExecutor, IAsyncDisposable
             }
             catch (OperationCanceledException) when (!ct.IsCancellationRequested)
             {
-                _logger.LogWarning("Management request timed out after {TimeoutMs}ms", _timeout.TotalMilliseconds);
+                _logger.LogWarning("Management request timed out after {TimeoutMs}ms", wait.TotalMilliseconds);
                 return null;
             }
         }
