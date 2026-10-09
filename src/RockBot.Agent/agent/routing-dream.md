@@ -66,8 +66,16 @@ tier. Reject these candidates even when the frequency ratio is dramatic.
 **Good high-signal keywords describe reasoning difficulty**: `analyze`, `architect`,
 `trade-off`, `compare and contrast`, `threat model`, `prove`, `optimize`, `step by step`.
 
-**Good low-signal keywords describe trivial intent**: `time`, `today`, `what's`, `weather`,
+**Good low-signal keywords describe trivial intent**: `time`, `today`, `weather`,
 `hello`, `thanks`.
+
+**Never propose question or instruction openers as low signals.** `what is`, `what's`,
+`what are`, `tell me about`, `look up`, `show me`, `i think` and `i was thinking` are
+**retired**: they open research requests ("what are the key features of the X spec") and
+work instructions ("I think the deck needs fewer slides") as often as trivia, and they
+pushed real work to Low. The selector ignores them even if you return them, and logs a
+warning. The same goes for any phrase that only says *how* a request is phrased rather
+than *that it is trivial*.
 
 Return your accepted additions in the `config.highSignalKeywords` / `config.lowSignalKeywords`
 arrays. These are **merged** with the compiled defaults — return ONLY your additions, not
@@ -126,6 +134,32 @@ shape (not a one-off). Pick the single recurring topic/tool word from the cluste
 and **never** to High. The "reject topic words" rule in job 2 still applies to
 `highSignalKeywords` only — topic words belong in `balancedFloorKeywords`, not in the
 high-signal list.
+
+## Rules that route from thread state (not yours to tune)
+
+The keyword score is only the first step for **user messages**. These compiled rules run
+after it, and you cannot change them through `config` — do not try to compensate for them
+with keywords or thresholds:
+
+- **Active-thread floor** — on an established thread (several recent turns), a user
+  message routes at least **Balanced**, whatever its length. Short instructions like
+  "do that" or "figure out a way to update the doc" continue the thread's work.
+- **Inherited tier** — a user message routes at least as high as the highest tier the
+  session's last few turns earned on their own (within the thread's recency window).
+- **Active-subagent floor** — while the session has a subagent running, a user message
+  routes at least **Balanced**.
+- **Research-question floor** — a question naming a technical subject (an acronym, a
+  version, or a spec/protocol/API word) routes at least **Balanced**; trivia does not.
+- **Trivial-acknowledgement exemption** — a pure acknowledgement or greeting ("thanks",
+  "ok", "got it", "👍") is exempt from the floors above and may stay **Low**.
+- **Mid-turn escalation** — a turn routed Low that makes a side-effecting tool call (file
+  write/edit/delete, upload, send, create/update) or hits two tool errors finishes its loop
+  on **Balanced**. Such entries still show `Low` as their routed tier.
+
+Consequences for your analysis: Balanced-tier clusters of short or low-scoring user
+prompts are usually these floors working as intended — they are **not** evidence that
+`lowCeiling` is too low or that the prompts need low-signal keywords. And Low-tier
+clusters are now mostly first-turn, thread-less messages, so judge them as such.
 
 ## Response format
 

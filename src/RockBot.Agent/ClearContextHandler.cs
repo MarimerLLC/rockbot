@@ -19,7 +19,8 @@ internal sealed class ClearContextHandler(
     InjectedMemoryTracker injectedMemoryTracker,
     IMessagePublisher publisher,
     AgentIdentity agent,
-    ILogger<ClearContextHandler> logger) : IMessageHandler<ClearContextRequest>
+    ILogger<ClearContextHandler> logger,
+    SessionTierHistory? tierHistory = null) : IMessageHandler<ClearContextRequest>
 {
     public async Task HandleAsync(ClearContextRequest message, MessageHandlerContext context)
     {
@@ -48,6 +49,9 @@ internal sealed class ClearContextHandler(
 
         // Drop the cached origin so the next turn re-anchors fresh background work.
         originStore.Clear(message.SessionId);
+
+        // A fresh context starts a fresh thread — don't inherit the old thread's tier (#663).
+        tierHistory?.Clear(message.SessionId);
 
         logger.LogInformation("Cleared conversation context for session {SessionId}", message.SessionId);
 
