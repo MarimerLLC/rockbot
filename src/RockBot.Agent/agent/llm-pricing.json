@@ -1,4 +1,7 @@
 [
+  { "prefix": "gpt-5.6-sol",      "inputPerM":  5.00, "outputPerM":  30.00 },
+  { "prefix": "gpt-5.6-terra",    "inputPerM":  2.00, "outputPerM":  12.00 },
+  { "prefix": "gpt-5.6-luna",     "inputPerM":  0.20, "outputPerM":   1.20 },
   { "prefix": "gpt-5.5-pro",      "inputPerM": 30.00, "outputPerM": 180.00 },
   { "prefix": "gpt-5.5",          "inputPerM":  5.00, "outputPerM":  30.00 },
   { "prefix": "gpt-5.4-pro",      "inputPerM": 30.00, "outputPerM": 180.00 },
