@@ -1,4 +1,5 @@
 using System.Text.Json;
+using RockBot.Host;
 using RockBot.Tools;
 
 namespace RockBot.Subagent;
@@ -30,8 +31,14 @@ internal sealed class SpawnSubagentExecutor(ISubagentManager manager) : IToolExe
 
         var primarySessionId = request.SessionId ?? "unknown";
 
+        // #666: the user request the spawning loop serves (set by AgentLoopRunner.RunAsync on this
+        // async flow). It goes with the task so the synthesis turn is judged against what the user
+        // asked, not just against the description the primary wrote for the subagent.
+        var originatingUserRequest = OriginatingUserRequestContext.Value;
+
         var taskId = await manager.SpawnAsync(description, context, timeoutMinutes, primarySessionId, ct,
-            batchId: request.BatchId, consolidate: consolidate, maxIterations: maxIterations);
+            batchId: request.BatchId, consolidate: consolidate, maxIterations: maxIterations,
+            originatingUserRequest: originatingUserRequest);
 
         return new ToolInvokeResponse
         {

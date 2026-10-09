@@ -237,6 +237,84 @@ public class SubagentManagerTests
         Assert.AreEqual(0, active.Count);
     }
 
+    // ── Originating user request (#666) ─────────────────────────────────────────
+
+    [TestMethod]
+    public async Task SpawnAsync_RecordsOriginatingUserRequestOnTheEntry()
+    {
+        var (manager, release) = CreateBlockingManager();
+
+        var taskId = await manager.SpawnAsync(
+            "Rebuild the deck at ~30 slides", context: null, timeoutMinutes: 10,
+            primarySessionId: "session/blazor-session", ct: CancellationToken.None,
+            originatingUserRequest: "figure out a way to update the doc");
+        await Task.Delay(100);
+
+        var entry = manager.ListActive().Single(e => e.TaskId == taskId);
+        Assert.AreEqual("figure out a way to update the doc", entry.OriginatingUserRequest);
+
+        release.SetResult(true);
+        await manager.CancelAsync(taskId);
+    }
+
+    [TestMethod]
+    public async Task SpawnAsync_PublishedResultCarriesOriginatingUserRequest()
+    {
+        var publisher = new CapturingPublisher();
+        var services = new ServiceCollection();
+        services.AddLogging();
+        AddSubagentRunnerStubs(services, new NoopLlmClient());
+        services.AddSingleton<IMessagePublisher>(publisher); // last registration wins
+        var provider = services.BuildServiceProvider();
+
+        var manager = new SubagentManager(
+            provider.GetRequiredService<IServiceScopeFactory>(),
+            Options.Create(new SubagentOptions { MaxConcurrentSubagents = 3 }),
+            publisher,
+            new AgentIdentity("TestBot"),
+            NullLogger<SubagentManager>.Instance);
+
+        await manager.SpawnAsync(
+            "Rebuild the deck", context: null, timeoutMinutes: null,
+            primarySessionId: "session/blazor-session", ct: CancellationToken.None,
+            originatingUserRequest: "trim the deck to about 11 slides");
+
+        var result = await publisher.WaitForResultAsync(TimeSpan.FromSeconds(10));
+        Assert.IsNotNull(result, "the runner should publish a result");
+        Assert.AreEqual("trim the deck to about 11 slides", result.OriginatingUserRequest);
+    }
+
+    [TestMethod]
+    public void CapOriginatingRequest_BlankIsNull_LongIsCapped()
+    {
+        Assert.IsNull(SubagentManager.CapOriginatingRequest("   "));
+        Assert.IsNull(SubagentManager.CapOriginatingRequest(null));
+        Assert.AreEqual(SubagentManager.MaxOriginatingRequestChars,
+            SubagentManager.CapOriginatingRequest(new string('x', 10_000))!.Length);
+    }
+
+    private sealed class CapturingPublisher : IMessagePublisher
+    {
+        private readonly TaskCompletionSource<SubagentResultMessage> _result =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public Task PublishAsync(string topic, MessageEnvelope envelope, CancellationToken cancellationToken = default)
+        {
+            if (topic.StartsWith(SubagentTopics.Result, StringComparison.Ordinal)
+                && envelope.GetPayload<SubagentResultMessage>() is { } result)
+                _result.TrySetResult(result);
+            return Task.CompletedTask;
+        }
+
+        public async Task<SubagentResultMessage?> WaitForResultAsync(TimeSpan timeout)
+        {
+            var done = await Task.WhenAny(_result.Task, Task.Delay(timeout));
+            return done == _result.Task ? _result.Task.Result : null;
+        }
+
+        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+    }
+
     // ── ISubagentSessionResolver ────────────────────────────────────────────────
 
     [TestMethod]

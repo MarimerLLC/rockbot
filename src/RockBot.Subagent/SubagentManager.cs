@@ -34,8 +34,11 @@ public sealed class SubagentManager(
         CancellationToken ct,
         string? batchId = null,
         bool consolidate = true,
-        int? maxIterations = null)
+        int? maxIterations = null,
+        string? originatingUserRequest = null)
     {
+        originatingUserRequest = CapOriginatingRequest(originatingUserRequest);
+
         // Clean up completed tasks first
         foreach (var key in _active.Keys.ToList())
         {
@@ -62,7 +65,7 @@ public sealed class SubagentManager(
         var cts = new CancellationTokenSource();
         cts.CancelAfter(timeoutSpan);
 
-        var task = RunSubagentAsync(taskId, subagentSessionId, description, context, primarySessionId, batchId, consolidate, maxIterations, timeoutSpan, cts.Token);
+        var task = RunSubagentAsync(taskId, subagentSessionId, description, context, primarySessionId, batchId, consolidate, maxIterations, originatingUserRequest, timeoutSpan, cts.Token);
 
         var newEntry = new SubagentEntry
         {
@@ -74,7 +77,8 @@ public sealed class SubagentManager(
             CancellationTokenSource = cts,
             Task = task,
             BatchId = batchId,
-            Consolidate = consolidate
+            Consolidate = consolidate,
+            OriginatingUserRequest = originatingUserRequest
         };
 
         _active[taskId] = newEntry;
@@ -121,6 +125,7 @@ public sealed class SubagentManager(
         string? batchId,
         bool consolidate,
         int? maxIterations,
+        string? originatingUserRequest,
         TimeSpan timeout,
         CancellationToken ct)
     {
@@ -132,7 +137,8 @@ public sealed class SubagentManager(
         {
             await using var scope = scopeFactory.CreateAsyncScope();
             var runner = scope.ServiceProvider.GetRequiredService<SubagentRunner>();
-            await runner.RunAsync(taskId, subagentSessionId, description, context, primarySessionId, batchId, consolidate, maxIterations, timeout, ct);
+            await runner.RunAsync(taskId, subagentSessionId, description, context, primarySessionId, batchId, consolidate, maxIterations, timeout, ct,
+                originatingUserRequest: originatingUserRequest);
         }
         catch (Exception ex)
         {
@@ -152,7 +158,8 @@ public sealed class SubagentManager(
                     Error = ex.Message,
                     Timestamp = DateTimeOffset.UtcNow,
                     BatchId = batchId,
-                    Consolidate = consolidate
+                    Consolidate = consolidate,
+                    OriginatingUserRequest = originatingUserRequest
                 };
                 var envelope = result.ToEnvelope<SubagentResultMessage>(source: $"subagent-{taskId}");
                 await publisher.PublishAsync($"{SubagentTopics.Result}.{agent.Name}", envelope, CancellationToken.None);
@@ -168,6 +175,14 @@ public sealed class SubagentManager(
             RemoveActive(taskId);
         }
     }
+
+    /// <summary>Longest originating user request kept with a task; the evaluator reads less than this.</summary>
+    internal const int MaxOriginatingRequestChars = 4000;
+
+    internal static string? CapOriginatingRequest(string? request) =>
+        string.IsNullOrWhiteSpace(request) ? null
+        : request.Length > MaxOriginatingRequestChars ? request[..MaxOriginatingRequestChars]
+        : request;
 
     /// <summary>
     /// Removes a subagent from the active set and records a tombstone of its owning primary

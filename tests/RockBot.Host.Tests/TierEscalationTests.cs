@@ -46,7 +46,7 @@ public class TierEscalationTests
     [DataRow("save_to_working_memory")]
     [DataRow("task_update")]
     [DataRow("spawn_subagent")]
-    [DataRow("attach_image")]
+    [DataRow("set_timezone")]
     public void ReadOnlyOrExempt_ToolNames(string name)
     {
         Assert.IsFalse(ToolSideEffects.IsSideEffectingName(name), $"{name} must not escalate a turn.");
