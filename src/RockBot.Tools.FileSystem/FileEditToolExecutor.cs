@@ -1,4 +1,3 @@
-using System.Collections.Concurrent;
 using System.Text.Json;
 using RockBot.Host;
 
@@ -8,15 +7,23 @@ namespace RockBot.Tools.FileSystem;
 /// Applies an exact-match replacement to a single file on the shared volume,
 /// leaving the rest of the file byte-for-byte untouched.
 /// </summary>
-internal sealed class FileEditToolExecutor(FileSystemOptions options) : IToolExecutor
+/// <remarks>
+/// <para>
+/// A failed match returns the region of the file closest to <c>old_string</c>, with line
+/// numbers, so the model can copy the real text instead of giving up and rewriting the whole
+/// file (issue #664). See <see cref="NearestRegion"/>.
+/// </para>
+/// <para>
+/// A successful edit keeps the previous content under <see cref="FileBackup.DirectoryName"/>.
+/// It also updates <see cref="FileReadLedger"/>. If the session had seen the pre-edit version
+/// in full, it now knows the edited version in full. Otherwise its earlier partial coverage is
+/// dropped: an edit proves the session knew <c>old_string</c>, not the rest of the file, and the
+/// edit may have shifted line numbers.
+/// </para>
+/// </remarks>
+internal sealed class FileEditToolExecutor(FileSystemOptions options, FileReadLedger ledger) : IToolExecutor
 {
-    /// <summary>
-    /// One lock per resolved path, so concurrent edits to the same file serialize while
-    /// edits to different files do not. Entries are never evicted — one small object per
-    /// distinct file edited in the process lifetime, bounded by the volume's contents.
-    /// </summary>
-    private static readonly ConcurrentDictionary<string, SemaphoreSlim> PathLocks = new(StringComparer.Ordinal);
-
+    public FileEditToolExecutor(FileSystemOptions options) : this(options, new FileReadLedger()) { }
 
     public async Task<ToolInvokeResponse> ExecuteAsync(ToolInvokeRequest request, CancellationToken ct)
     {
@@ -60,12 +67,13 @@ internal sealed class FileEditToolExecutor(FileSystemOptions options) : IToolExe
                 return Error(request, "Invalid path: must be within the shared volume.");
 
             if (!File.Exists(fullPath))
-                return Error(request, $"File not found: {relativePath}. Use file_write to create it.");
+                return Error(request, MissingFile.Describe(options.BasePath, relativePath, forEdit: true));
 
             // Serialize edits to the same file: several subagents can be in flight at
             // once, and without this both would read the pre-edit content and the
-            // second write would erase the first, each reporting success.
-            var gate = PathLocks.GetOrAdd(fullPath, _ => new SemaphoreSlim(1, 1));
+            // second write would erase the first, each reporting success. file_write
+            // takes the same lock.
+            var gate = FileLocks.For(fullPath);
             await gate.WaitAsync(ct);
 
             try
@@ -78,7 +86,12 @@ internal sealed class FileEditToolExecutor(FileSystemOptions options) : IToolExe
                 var result = TextEdit.Apply(original, oldString, newString, replaceAll);
 
                 if (!result.IsSuccess)
-                    return Error(request, $"Edit failed on {relativePath}: {result.Error}");
+                {
+                    var hint = result.Status == TextEditStatus.NotFound
+                        ? NearestRegion.Describe(original, oldString)
+                        : string.Empty;
+                    return Error(request, $"Edit failed on {relativePath}: {result.Error}{hint}");
+                }
 
                 // The atomic write replaces the directory entry, which a writable directory
                 // permits even when the file itself is not writable. Probe first so editing
@@ -91,6 +104,14 @@ internal sealed class FileEditToolExecutor(FileSystemOptions options) : IToolExe
                         + "or mode, or write your change to a new file.");
                 }
 
+                // Whether the session knew the whole pre-edit version decides what it knows
+                // of the post-edit one. Checked before writing, while the hash still matches.
+                var knewAll = ledger.Check(request.SessionId, fullPath, FileReadLedger.Hash(read.Bytes!)).Status
+                    == FileCoverageStatus.Full;
+
+                // Keep the version being replaced before replacing it, so a bad edit can be undone.
+                var backup = await FileBackup.KeepAsync(options.BasePath, fullPath, read.Bytes!, ct);
+
                 var written = await FileText.WriteAtomicIfUnchangedAsync(
                     fullPath, read.Bytes!, result.Content!, read.Encoding!, ct);
 
@@ -102,13 +123,25 @@ internal sealed class FileEditToolExecutor(FileSystemOptions options) : IToolExe
                         + "discarded that change. Read the file again and redo the edit.");
                 }
 
+                if (knewAll)
+                {
+                    var newBytes = await File.ReadAllBytesAsync(fullPath, ct);
+                    ledger.RecordFullyKnown(
+                        request.SessionId, fullPath, FileReadLedger.Hash(newBytes), LineIndex.CountLines(result.Content!));
+                }
+                else
+                {
+                    ledger.Forget(request.SessionId, fullPath);
+                }
+
                 var plural = result.ReplacementCount == 1 ? "occurrence" : "occurrences";
                 return new ToolInvokeResponse
                 {
                     ToolCallId = request.ToolCallId,
                     ToolName = request.ToolName,
                     Content = $"Replaced {result.ReplacementCount} {plural} in {relativePath} "
-                        + $"({original.Length} → {result.Content!.Length} characters).",
+                        + $"({original.Length} → {result.Content!.Length} characters)."
+                        + FileBackup.Describe(backup),
                     IsError = false
                 };
             }

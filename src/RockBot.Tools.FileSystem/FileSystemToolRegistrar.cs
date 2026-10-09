@@ -17,6 +17,7 @@ namespace RockBot.Tools.FileSystem;
 internal sealed class FileSystemToolRegistrar(
     IToolRegistry registry,
     FileSystemOptions options,
+    FileReadLedger ledger,
     IServiceProvider services,
     ILogger<FileSystemToolRegistrar> logger) : IHostedService
 {
@@ -30,7 +31,7 @@ internal sealed class FileSystemToolRegistrar(
             },
             "content": {
               "type": "string",
-              "description": "UTF-8 text content to write"
+              "description": "The complete new content of the file. Replaces everything in it."
             }
           },
           "required": ["path", "content"]
@@ -44,6 +45,16 @@ internal sealed class FileSystemToolRegistrar(
             "path": {
               "type": "string",
               "description": "Relative path within the shared volume"
+            },
+            "offset": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "Optional 1-based line number to start reading from. Use the offset named in the previous page's footer to continue a large file."
+            },
+            "limit": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "Optional maximum number of lines to return."
             }
           },
           "required": ["path"]
@@ -140,10 +151,17 @@ internal sealed class FileSystemToolRegistrar(
         registry.Register(new ToolRegistration
         {
             Name = "file_write",
-            Description = "Write UTF-8 text content to a file on the shared volume (e.g. 'drafts/report.md'). Creates parent directories as needed.",
+            Description = """
+                Create a new file on the shared volume (e.g. 'drafts/report.md'), or replace an
+                existing file's entire content. Creates parent directories as needed. To change
+                part of an existing file, use file_edit instead. Replacing an existing file is
+                refused unless this session has read its current version in full with file_read
+                (every page, if it was paged) or wrote that version itself. The replaced version
+                is kept under .prev/.
+                """,
             ParametersSchema = WriteSchema,
             Source = "filesystem"
-        }, new FileWriteToolExecutor(options));
+        }, new FileWriteToolExecutor(options, ledger));
         logger.LogInformation("Registered file tool: file_write");
 
         registry.Register(new ToolRegistration
@@ -153,27 +171,36 @@ internal sealed class FileSystemToolRegistrar(
                 Replace an exact piece of text in an existing file on the shared volume,
                 leaving the rest of the file untouched. Prefer this over file_write when
                 changing part of a file — file_write replaces the entire file, so anything
-                not reproduced in full is lost. old_string must match exactly once unless
-                replace_all is set.
+                not reproduced in full is lost. old_string must be copied verbatim from
+                file_read output (not from a summary) and must match exactly once unless
+                replace_all is set. If it does not match, the error shows the closest region
+                of the file with line numbers. The previous version is kept under .prev/.
                 """,
             ParametersSchema = EditSchema,
             Source = "filesystem"
-        }, new FileEditToolExecutor(options));
+        }, new FileEditToolExecutor(options, ledger));
         logger.LogInformation("Registered file tool: file_edit");
 
         registry.Register(new ToolRegistration
         {
             Name = "file_read",
-            Description = "Read the UTF-8 text content of a file on the shared volume.",
+            Description = $"""
+                Read the UTF-8 text content of a file on the shared volume. A file up to
+                {options.FileReadMaxChars:N0} characters is returned whole, exactly as stored.
+                A larger file is returned one page at a time on whole-line boundaries. Each page
+                starts with a header and ends with a footer, like "[lines 1–400 of 1210 (... chars)
+                — call file_read with offset=401 to continue]". Keep calling with the offset in
+                the footer until it says "end of file". Pass offset/limit to read specific lines.
+                """,
             ParametersSchema = ReadSchema,
             Source = "filesystem"
-        }, new FileReadToolExecutor(options));
+        }, new FileReadToolExecutor(options, ledger));
         logger.LogInformation("Registered file tool: file_read");
 
         registry.Register(new ToolRegistration
         {
             Name = "file_list",
-            Description = "List files on the shared volume as a JSON array of relative paths. Optional prefix filters results (e.g. 'drafts/').",
+            Description = "List files on the shared volume as a JSON array of relative paths. Optional prefix filters results (e.g. 'drafts/'). Previous versions kept by file_write and file_edit are hidden unless prefix is '.prev/'.",
             ParametersSchema = ListSchema,
             Source = "filesystem"
         }, new FileListToolExecutor(options));

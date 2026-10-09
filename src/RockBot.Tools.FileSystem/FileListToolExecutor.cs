@@ -35,6 +35,10 @@ internal sealed class FileListToolExecutor(FileSystemOptions options) : IToolExe
                 });
             }
 
+            // Backups kept by file_write/file_edit live under .prev/. They are listed only when
+            // the caller asks for that directory by prefix, so they do not clutter the volume.
+            var includeBackups = FileBackup.IsBackupPath(prefix);
+
             var files = new List<string>();
             try
             {
@@ -44,7 +48,10 @@ internal sealed class FileListToolExecutor(FileSystemOptions options) : IToolExe
                     IgnoreInaccessible = true
                 }))
                 {
-                    files.Add(Path.GetRelativePath(basePath, f).Replace('\\', '/'));
+                    var relative = Path.GetRelativePath(basePath, f).Replace('\\', '/');
+                    if (!includeBackups && FileBackup.IsBackupPath(relative))
+                        continue;
+                    files.Add(relative);
                 }
             }
             catch (UnauthorizedAccessException) { }

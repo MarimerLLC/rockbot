@@ -320,3 +320,19 @@ shared volume and downstream tools or scripts can use the path directly.
 Scripts already mount the same shared volume — write generated files under
 `os.path.join(os.environ['ROCKBOT_SHARED_PATH'], 'attachments', '<name>')`
 and return the path so a follow-up MCP call can attach it.
+
+## Changing Shared Files
+
+- Change an existing file with `file_edit`. Use `file_write` only for new files or
+  for a deliberate full replacement.
+- `file_write` refuses to replace a file you have not read in full in this session.
+  `file_read` pages large files. Keep reading at the `offset=` its footer names until
+  it says "end of file". When an overwrite is refused, do what the message says. Do
+  not rebuild the file from a summary or a partial view.
+- Copy `file_edit`'s `old_string` from `file_read` output, not from a summary. When
+  it does not match, the error shows the nearest region of the file with line
+  numbers. Copy from that.
+- A OneDrive, SharePoint, or other remote path is not a shared-volume file. Edit the
+  local copy (usually under `drafts/` or `exports/`), then upload it again.
+- The version a write or edit replaced is kept under `.prev/<same path>` until the
+  next change.
