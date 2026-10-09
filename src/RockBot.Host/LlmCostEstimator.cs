@@ -15,7 +15,13 @@ public sealed class LlmCostEstimator : IDisposable
 {
     private static readonly LlmPricingEntry[] BuiltInDefaults =
     [
-        // Azure OpenAI / OpenAI gpt-5.4 family — currently deployed via Azure
+        // Azure OpenAI / OpenAI gpt-5.x family — currently deployed via Azure.
+        // gpt-5.6-sol is at list price; a $4/$20 promo runs through at least 2026-11-30.
+        new("gpt-5.6-sol",         5.00,  30.00),
+        new("gpt-5.6-terra",       2.00,  12.00),
+        new("gpt-5.6-luna",        0.20,   1.20),
+        new("gpt-5.5-pro",        30.00, 180.00),
+        new("gpt-5.5",             5.00,  30.00),
         new("gpt-5.4-pro",        30.00, 180.00),
         new("gpt-5.4-mini",        0.75,   4.50),
         new("gpt-5.4",             2.50,  15.00),

@@ -35,6 +35,19 @@ public class LlmCostEstimatorTests
     }
 
     [TestMethod]
+    [DataRow("gpt-5.6-terra", 14.00)]
+    [DataRow("gpt-5.6-terra-2026-07-09", 14.00)]
+    [DataRow("gpt-5.6-sol", 35.00)]
+    [DataRow("gpt-5.6-luna", 1.40)]
+    [DataRow("gpt-5.5", 35.00)]
+    public void EstimateCost_BuiltInDefaults_CoverDeployedGpt5Models(string modelId, double expected)
+    {
+        using var estimator = NewEstimator(Path.Combine(Path.GetTempPath(), $"missing-{Guid.NewGuid():N}.json"));
+
+        Assert.AreEqual(expected, estimator.EstimateCost(modelId, 1_000_000, 1_000_000), 0.0001);
+    }
+
+    [TestMethod]
     public void EstimateCost_ReturnsZero_ForUnknownModel()
     {
         using var estimator = NewEstimator(Path.Combine(Path.GetTempPath(), $"missing-{Guid.NewGuid():N}.json"));
