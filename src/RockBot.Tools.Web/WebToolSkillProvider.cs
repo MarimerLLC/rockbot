@@ -70,6 +70,10 @@ internal sealed class WebToolSkillProvider : IToolSkillProvider
         - Prefer official documentation, reputable publications, and primary sources
         - Use `count: 3–5` for quick factual lookups; higher counts for broad research
         - If no results look useful, refine the query and search again before browsing
+        - Searches run one at a time, spaced to stay within the provider's rate limit, so
+          firing several in parallel queues them rather than speeding them up
+        - If `web_search` reports it was rate-limited, wait a few seconds and retry that
+          query, or continue with `web_browse` on a URL you already know
 
 
         ## Step 3 — Browse for Full Content (when needed)
