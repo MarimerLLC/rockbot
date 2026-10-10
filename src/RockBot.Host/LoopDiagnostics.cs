@@ -47,4 +47,11 @@ public sealed class LoopDiagnostics
 
     /// <summary>Model ID reported by the LLM for this loop run (last seen value when multiple responses occur).</summary>
     public string? ModelId { get; set; }
+
+    /// <summary>
+    /// The run's tool-call ledger (#683), set when <see cref="AgentLoopRunner.RunAsync"/> starts, so
+    /// the caller can read every call the run made — even after a timeout or failure.
+    /// <c>SubagentRunner</c> carries a compact copy on its result for the synthesis turn's check.
+    /// </summary>
+    public LoopToolCallLedger? ToolCallLedger { get; set; }
 }

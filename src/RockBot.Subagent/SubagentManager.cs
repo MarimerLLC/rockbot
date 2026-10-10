@@ -179,7 +179,10 @@ public sealed class SubagentManager(
                     BatchId = batchId,
                     Consolidate = consolidate,
                     OriginatingUserRequest = originatingUserRequest,
-                    Description = description
+                    Description = description,
+                    // #683: it never ran, so it made no tool calls.
+                    ToolCalls = [],
+                    ToolCallCount = 0,
                 };
                 var envelope = result.ToEnvelope<SubagentResultMessage>(source: $"subagent-{taskId}");
                 await publisher.PublishAsync($"{SubagentTopics.Result}.{agent.Name}", envelope, CancellationToken.None);

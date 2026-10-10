@@ -347,8 +347,8 @@ The loop records its tool calls in `LoopToolCallLedger` instead of reading the c
 because context trimming can shorten the history.
 
 The evaluator reads the user's last three messages, the agent's previous message, every tool
-call the loop made (name, ok or failed, and whether it changed state), and the reason the check
-is running. Its rubric asks five questions:
+call the loop made (name, ok or failed, and whether it changed state), what the user asked for,
+and the reason the check is running. Its rubric asks five questions:
 
 1. What did the user ask for (counts, format, location, constraints)?
 2. Was it delivered?
@@ -356,13 +356,60 @@ is running. Its rubric asks five questions:
 4. Do the tool calls support every action the reply claims?
 5. Did the reply promise work it could have done now?
 
-After an INCOMPLETE verdict, the re-prompt adds guidance specific to the trigger. The
-re-prompt budget is unchanged.
+**What the user asked for (#683).** `CompletionEvalTriggers.ClassifyUserRequest` labels the
+request being judged `UserAskedFor: instruction` or `UserAskedFor: information-only`. It reuses
+the #666 `ImperativeInstructionRegex`; a bare "yes"/"sure"/"please" right after an agent message
+also counts as an instruction, and an unknown request keeps the full rubric. For a synthesis turn
+the request is the one behind the spawn (`OriginatingUserRequest`), otherwise the latest user
+message. When the request is information-only (it shares context, gives information or asks a
+question), questions 1–2 are skipped, except that a question asked must be answered. The reply is
+judged only on whether its facts and claims are supported and stated accurately (questions 3–5).
+"The user's goal implies more work" is never a reason for INCOMPLETE. Before this, a context-only
+message ("the talk doesn't exist yet") was judged INCOMPLETE for not delivering demos, and the
+re-prompt spawned a subagent nobody asked for.
+
+**Subagent evidence (#683).** A synthesis turn's own tool calls are usually only
+`get_from_working_memory`. Every honest relay of a subagent's writes and uploads therefore looked
+like an unsupported claim, and the re-prompt made the agent disown real work. Now:
+
+- `AgentLoopRunner.RunAsync` exposes its ledger on `LoopDiagnostics.ToolCallLedger`.
+- `SubagentRunner` carries a compact copy on `SubagentResultMessage.ToolCalls`
+  (`SubagentToolCallSummary`: name, ok/failed, changes-state, args up to 100 chars) and
+  `ToolCallCount`. The list holds at most 40 calls. Over the cap, failed and state-changing calls
+  are kept first, then other calls, then bookkeeping, newest first within each group.
+  Both properties are additive; results from an older build deserialize with `null`.
+- `SubagentResultHandler.BuildRelayedWork` adds the session-work-registry artifacts written by
+  that subagent's session or by the wisps and workers linked under it
+  (`ISessionWorkRegistry.IsSessionWithin`).
+- It passes the result to `RunAsync(relayedWork: …)`.
+
+The evaluator gets a section for each subagent: "Tool calls made by subagent `<id>` (the relayed
+work)". All of these sections share about 3,000 characters, and each subagent gets at least 500.
+When a section is over its share, state-changing and failed calls are kept first, and the section
+says how many calls were left out. The rubric says a relayed claim is supported when that
+subagent's calls show it. The agent's own calls are judged separately, only for what the agent
+says it did itself this turn. A claim that neither list supports is still INCOMPLETE. If a
+subagent made no tool calls, its section says so. If its result didn't report its calls (an
+older build), the section says "not reported", and the evaluator is told not to treat their
+absence as proof the work didn't happen.
+
+**Re-prompt (#683).** After an INCOMPLETE verdict, the re-prompt adds guidance specific to the
+trigger and to what the user asked for. For an information-only request it says to fix what was
+flagged and not to start unrequested work. For a synthesis turn it adds: "work the subagent's
+own tool calls show it did is real — do not disown it". The message starts with
+`[Internal completion check — not a message from the user]` and quotes the user's original
+message. It tells the model to reply to that message directly; that the user has not seen the
+draft; not to address or thank the user for feedback; not to say "you're right" or "you were
+right"; and not to mention the review. It is still sent in the user role, because the history
+ends on the assistant draft and some provider paths hoist or reject a trailing system message.
+The re-prompt budget is unchanged.
 
 `spawn_subagent` reads the user request of the loop that ran it from
 `OriginatingUserRequestContext`. The request is stored on `SubagentEntry` and carried on
 `SubagentResultMessage.OriginatingUserRequest`, so the synthesis turn's check sees what the user
 asked, not only how the primary agent described the task to the subagent.
+
+Every RUN, COMPLETE and INCOMPLETE log line includes `trigger=` and `userAskedFor=`.
 
 ### Completion evaluator configuration
 
@@ -377,8 +424,8 @@ asked, not only how the primary agent described the task to the subagent.
 
 | Counter | Fires when |
 |---|---|
-| `rockbot.agent.completion_check.complete` | Evaluator says task is done (tagged `rockbot.completion_check.trigger`) |
-| `rockbot.agent.completion_check.incomplete` | Evaluator triggers a re-prompt (tagged `rockbot.completion_check.trigger`) |
+| `rockbot.agent.completion_check.complete` | Evaluator says task is done (tagged `rockbot.completion_check.trigger` and `rockbot.completion_check.user_asked_for`) |
+| `rockbot.agent.completion_check.incomplete` | Evaluator triggers a re-prompt (tagged `rockbot.completion_check.trigger` and `rockbot.completion_check.user_asked_for`), so a trigger with a high false-positive rate is visible |
 | `rockbot.agent.completion_check.skipped` | Evaluation skipped (force termination) |
 | `rockbot.agent.follow_up.triggered` | Follow-up evaluator found an opportunity |
 | `rockbot.agent.follow_up.none` | Follow-up evaluator found nothing worth doing |

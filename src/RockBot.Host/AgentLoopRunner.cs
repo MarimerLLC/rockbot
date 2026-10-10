@@ -338,6 +338,20 @@ public sealed partial class AgentLoopRunner(
         - When an "Original user request" section is present, the agent is relaying a subagent's
           result: judge it against that original request, not against the subagent's own task
           description or self-report.
+        - When a "Tool calls made by subagent …" section is present, that subagent did the relayed
+          work in its own session. A claim in the relayed report (a file written, a deck uploaded,
+          a read-back verified) is supported when that subagent's tool calls show it; the agent's
+          own tool calls this turn (typically reading the subagent's saved output) will not show
+          it and need not. Judge the agent's own calls separately, only for what the agent says it
+          did itself this turn. A relayed claim that neither list supports is unsupported
+          (question 4). If a subagent's tool calls are "not reported", do not mark the reply
+          INCOMPLETE only because the agent's own calls lack the relayed work.
+        - The "What the user asked for" section says "UserAskedFor: instruction" or
+          "UserAskedFor: information-only". For information-only, the user's message gave no
+          instruction (it shared context or information, or asked a question): skip questions 1–2
+          except that a question asked must be answered, and judge only whether the reply's facts,
+          numbers and claims are supported and accurately stated (questions 3–5). That the user's
+          wider goal implies more work this message did not ask for is NOT a reason for INCOMPLETE.
 
         In "reason", name the specific unmet requirement, contradicted number or unsupported
         claim, so the agent can fix it.
@@ -433,7 +447,10 @@ public sealed partial class AgentLoopRunner(
         bool subagentSynthesis = false,
         // #666: the user request this loop ultimately serves when the latest user-role message is
         // not it (a subagent synthesis turn's latest message is the subagent's report).
-        string? originatingUserRequest = null)
+        string? originatingUserRequest = null,
+        // #683: for a subagent synthesis, the tool calls (and recorded artifacts) of each subagent
+        // whose result this loop relays, so the evaluator can check the relayed claims against them.
+        IReadOnlyList<RelayedSubagentWork>? relayedWork = null)
     {
         using var _ = ToolCallSessionContext.Set(sessionId);
         // Set the per-async-flow override so RockBotFunctionInvokingChatClient
@@ -507,6 +524,9 @@ public sealed partial class AgentLoopRunner(
             ? null
             : (name, rawArgs, ok) => sessionWorkRegistry.RecordToolCall(sessionId!, name, rawArgs, ok));
         using var ________ = LoopToolCallLedgerContext.Set(toolCallLedger);
+        // #683: the caller's handle on the run's calls — SubagentRunner carries them on its result.
+        if (diagnostics is not null)
+            diagnostics.ToolCallLedger = toolCallLedger;
 
         // #666: the user request this run serves, for tools that start work whose result comes
         // back later (spawn_subagent records it so the synthesis turn is checked against it).
@@ -519,6 +539,15 @@ public sealed partial class AgentLoopRunner(
         // what the user actually said.
         var recentUserMessages = ExtractRecentUserMessages(chatMessages, CompletionEvalTriggers.RecentUserMessageCount);
         var previousAgentMessage = ExtractPreviousAgentMessage(chatMessages);
+
+        // #683: the user message the reply is judged against, and whether it asked for anything.
+        // A synthesis turn's latest user-role message is the subagent's report, so it is judged
+        // against the request behind the spawn; when that is unknown, the full rubric applies.
+        var judgedUserRequest = subagentSynthesis
+            ? (string.IsNullOrWhiteSpace(originatingUserRequest) ? null : originatingUserRequest)
+            : originalUserRequest;
+        var userAskedFor = CompletionEvalTriggers.ClassifyUserRequest(
+            judgedUserRequest, followsAgentMessage: subagentSynthesis || previousAgentMessage is not null);
 
         var maxReprompts = modelBehavior.MaxCompletionRepromptsOverride
             ?? hostOptions.Value.MaxCompletionReprompts;
@@ -725,11 +754,16 @@ public sealed partial class AgentLoopRunner(
             }
 
             // Full evaluator path.
-            var triggerTag = new KeyValuePair<string, object?>(
-                "rockbot.completion_check.trigger", CompletionEvalTriggers.LogName(trigger));
+            var triggerName = CompletionEvalTriggers.LogName(trigger);
+            var askedForName = CompletionEvalTriggers.LogName(userAskedFor);
+            var triggerTag = new KeyValuePair<string, object?>("rockbot.completion_check.trigger", triggerName);
+            var askedForTag = new KeyValuePair<string, object?>("rockbot.completion_check.user_asked_for", askedForName);
+            var relayedForEval = trigger == CompletionEvalTrigger.SubagentSynthesis ? relayedWork : null;
             logger.LogInformation(
-                "Completion evaluator: RUN (trigger={Trigger}) — {ToolCalls} tool call(s), {ResponseLen} chars",
-                CompletionEvalTriggers.LogName(trigger), loopToolCalls.Count, result.Response.Length);
+                "Completion evaluator: RUN (trigger={Trigger}, userAskedFor={UserAskedFor}) — {ToolCalls} tool call(s), " +
+                "{RelayedCalls} relayed subagent call(s), {ResponseLen} chars",
+                triggerName, askedForName, loopToolCalls.Count,
+                relayedForEval?.Sum(w => w.ToolCalls?.Count ?? 0) ?? 0, result.Response.Length);
 
             if (onStageProgress is not null)
                 await onStageProgress("Reviewing response…", cancellationToken);
@@ -741,15 +775,17 @@ public sealed partial class AgentLoopRunner(
                     string.IsNullOrWhiteSpace(originatingUserRequest) ? null : originatingUserRequest,
                     result.Response,
                     loopToolCalls,
-                    trigger),
+                    trigger,
+                    relayedForEval,
+                    userAskedFor),
                 cancellationToken);
 
             if (complete)
             {
-                HostDiagnostics.CompletionCheckComplete.Add(1, triggerTag);
+                HostDiagnostics.CompletionCheckComplete.Add(1, triggerTag, askedForTag);
                 logger.LogInformation(
-                    "Completion evaluator: COMPLETE (reprompt {Reprompt}/{Max}) — {Reason}",
-                    reprompt, maxReprompts, reason);
+                    "Completion evaluator: COMPLETE (trigger={Trigger}, userAskedFor={UserAskedFor}, reprompt {Reprompt}/{Max}) — {Reason}",
+                    triggerName, askedForName, reprompt, maxReprompts, reason);
 
                 // Proactive follow-up: only on first-pass completion (reprompt == 0)
                 // of direct user requests (enableFollowUp == true). Subagent results,
@@ -782,10 +818,11 @@ public sealed partial class AgentLoopRunner(
             }
 
             // Not complete — inject continuation and re-enter the loop.
-            HostDiagnostics.CompletionCheckIncomplete.Add(1, triggerTag);
+            // #683: tagged and logged by trigger, so a trigger with a high false-positive rate shows.
+            HostDiagnostics.CompletionCheckIncomplete.Add(1, triggerTag, askedForTag);
             logger.LogInformation(
-                "Completion evaluator: INCOMPLETE (reprompt {Reprompt}/{Max}) — {Reason}",
-                reprompt, maxReprompts, reason);
+                "Completion evaluator: INCOMPLETE (trigger={Trigger}, userAskedFor={UserAskedFor}, reprompt {Reprompt}/{Max}) — {Reason}",
+                triggerName, askedForName, reprompt, maxReprompts, reason);
 
             if (onStageProgress is not null)
                 await onStageProgress("Still working — refining response…", cancellationToken);
@@ -799,13 +836,21 @@ public sealed partial class AgentLoopRunner(
             await EnrichContextForRepromptAsync(
                 chatMessages, chatOptions, servedUserRequest, reason ?? string.Empty, cancellationToken);
 
-            // Build a targeted continuation nudge.
-            var nudge = CapabilityDenialRegex.IsMatch(result.Response)
-                ? $"Not complete because: {reason}. You DO have access to external services. " +
-                  HowToReachServices() + " Do not give up without trying."
-                : $"Not complete because: {reason}. Continue working on the original request. " +
-                  "Use your available tools — do not claim you lack access without trying them first." +
-                  CompletionEvalTriggers.RepromptGuidance(trigger, loopToolCalls);
+            // Build a targeted continuation nudge. #683: it is marked as an internal check and tells
+            // the model to answer the user's original message — unmarked, the model took it for user
+            // feedback ("You're right…") and disowned work its subagent had really done. It stays in
+            // the user role: the history ends on the draft (assistant), and a trailing system
+            // message is hoisted or rejected by some provider paths.
+            var instructions = CapabilityDenialRegex.IsMatch(result.Response)
+                ? "You DO have access to external services. " + HowToReachServices() + " Do not give up without trying."
+                : userAskedFor == UserRequestKind.InformationOnly
+                    ? "Fix what it flagged. Use your tools if you need to check a fact, but do not start work " +
+                      "the user did not ask for." +
+                      CompletionEvalTriggers.RepromptGuidance(trigger, loopToolCalls, userAskedFor)
+                    : "Continue working on the original request. Use your available tools — do not claim you " +
+                      "lack access without trying them first." +
+                      CompletionEvalTriggers.RepromptGuidance(trigger, loopToolCalls, userAskedFor);
+            var nudge = CompletionEvalTriggers.BuildRepromptMessage(reason, instructions, judgedUserRequest);
 
             chatMessages.Add(new ChatMessage(ChatRole.User, nudge));
         }
