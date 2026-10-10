@@ -69,6 +69,19 @@ internal sealed class WebSearchToolExecutor(
             // reporting a generic search failure or a misleading "no results found".
             return Error(request, ex.Message);
         }
+        catch (WebSearchRateLimitedException ex)
+        {
+            // The provider kept saying "slow down" through every retry. The message tells the
+            // model what to do next (wait and retry, or browse a known URL) instead of a raw
+            // HTTP status it reads as a dead end.
+            return Error(request, ex.Message);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            // The caller cancelled (e.g. while queued behind other searches): let it unwind
+            // the turn, as the agent loop expects, rather than report a search failure.
+            throw;
+        }
         catch (Exception ex)
         {
             return Error(request, $"Search failed: {ex.Message}");
