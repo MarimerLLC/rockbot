@@ -66,6 +66,26 @@ public class RockBotFunctionInvokingChatClient : FunctionInvokingChatClient
         _logger.LogInformation("Executing tool {Name}(callId={CallId}, args={Args})",
             callContent.Name, callContent.CallId, argsSummary ?? "(none)");
 
+        // #685: an external change the user did not ask for is refused, not run. The refusal is
+        // the tool result, recorded as a failed call so the evaluator and relays don't count it.
+        if (ActionGateContext.Check(callContent.Name, argsSummary) is { } refusal)
+        {
+            ToolDiagnostics.Invocations.Add(1,
+                new KeyValuePair<string, object?>("rockbot.tool.name", callContent.Name),
+                new KeyValuePair<string, object?>("rockbot.tool.status", AgentLoopRunner.ConsequentialActionGatedStatus));
+            if (LoopDiagnosticsContext.Value is { } diagGated)
+            {
+                diagGated.ToolCalls++;
+                diagGated.LastToolName = callContent.Name;
+                diagGated.LastToolStatus = AgentLoopRunner.ConsequentialActionGatedStatus;
+                diagGated.LastToolResult = refusal;
+            }
+            LoopToolCallLedgerContext.Value?.Record(
+                callContent.Name, AgentLoopRunner.TruncateLedgerArgs(argsSummary), succeeded: false,
+                rawArguments: callContent.Arguments);
+            return refusal;
+        }
+
         // Temporary diagnostic — per-tool-call context size for patrol/* sessions so we
         // can see growth across FICC's internal iterations (this override is the only
         // observable boundary inside FunctionInvokingChatClient's tool loop).

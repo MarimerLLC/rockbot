@@ -360,6 +360,8 @@ builder.Services.AddRockBotHost(agent =>
     agent.WithDreaming(opts => builder.Configuration.GetSection("Dream").Bind(opts));
     agent.WithMemoryAudit(opts => builder.Configuration.GetSection("MemoryAudit").Bind(opts));
     agent.AddToolHandler();
+    // #685: convert_time, so cross-zone times use the DST rules of the date in question.
+    agent.AddTimeTools();
     // The proxy must outwait the bridge: the bridge caps a tool call at MaxTimeoutMs
     // (15 min) and answers with a timeout response of its own. If the proxy gave up
     // first the caller would see a transport failure instead of that response.

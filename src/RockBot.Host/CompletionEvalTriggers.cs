@@ -328,7 +328,42 @@ public static class CompletionEvalTriggers
         IReadOnlyList<LoopToolCall> ToolCalls,
         CompletionEvalTrigger Trigger,
         IReadOnlyList<RelayedSubagentWork>? RelayedWork = null,
-        UserRequestKind UserAskedFor = UserRequestKind.Instruction);
+        UserRequestKind UserAskedFor = UserRequestKind.Instruction,
+        bool ExternalChangesNeedRequest = false);
+
+    /// <summary>What the evaluator is told when an information-only request led to external changes (#685).</summary>
+    public const string UnrequestedExternalChangeRubric =
+        "The user's message asked for nothing, yet the calls above changed an external system (calendar, " +
+        "mail, files in the user's accounts, todos or other MCP data, or the agent's scheduled tasks). " +
+        "That is grounds for INCOMPLETE: give the reason as \"unrequested external change: <what changed, where>\".";
+
+    /// <summary>The prefix of the evaluator's reason for an unrequested external change (#685).</summary>
+    public const string UnrequestedExternalChangeReason = "unrequested external change";
+
+    /// <summary>
+    /// The successful external changes (#685) among <paramref name="calls"/> and, for a synthesis,
+    /// the relayed subagents' calls — one display line each. These are what an information-only
+    /// request must not have caused; the consequential-action gate normally refuses them first.
+    /// </summary>
+    public static IReadOnlyList<string> ExternalChanges(
+        IReadOnlyList<LoopToolCall> calls, IReadOnlyList<RelayedSubagentWork>? relayed = null)
+    {
+        var changes = calls
+            .Where(ConsequentialActions.IsSucceededConsequential)
+            .Select(DisplayName)
+            .ToList();
+        if (relayed is not null)
+        {
+            foreach (var work in relayed)
+            {
+                if (work.ToolCalls is null) continue;
+                changes.AddRange(work.ToolCalls
+                    .Where(ConsequentialActions.IsSucceededConsequential)
+                    .Select(c => $"subagent {work.TaskId}: {c.Name}"));
+            }
+        }
+        return changes;
+    }
 
     /// <summary>Renders <paramref name="input"/> as the evaluator's user message.</summary>
     public static string BuildEvaluatorUserMessage(EvaluatorInput input)
@@ -383,6 +418,21 @@ public static class CompletionEvalTriggers
                 sb.AppendLine(FormatRelayedWork(work, perSubagent));
                 sb.AppendLine();
             }
+        }
+
+        // #685: the backstop to the consequential-action gate. Only for runs that trace back to a
+        // user message — a scheduled task's own prompt may read as information-only and still
+        // legitimately change things.
+        if (input.ExternalChangesNeedRequest && input.UserAskedFor == UserRequestKind.InformationOnly
+            && ExternalChanges(input.ToolCalls, relayed) is { Count: > 0 } changes)
+        {
+            sb.AppendLine("## External changes the user did not ask for");
+            foreach (var change in changes.Take(MaxRelayedArtifactsListed))
+                sb.AppendLine($"- {change}");
+            if (changes.Count > MaxRelayedArtifactsListed)
+                sb.AppendLine($"- … and {changes.Count - MaxRelayedArtifactsListed} more");
+            sb.AppendLine(UnrequestedExternalChangeRubric);
+            sb.AppendLine();
         }
 
         sb.AppendLine("## Why this reply is being checked");
@@ -570,9 +620,34 @@ public static class CompletionEvalTriggers
     /// The extra instruction added to the re-prompt after an INCOMPLETE verdict, specific to why
     /// the reply was checked. Empty when the generic continuation is enough.
     /// </summary>
+    /// <param name="trigger">Why the reply was checked.</param>
+    /// <param name="calls">The loop's tool calls.</param>
+    /// <param name="userAskedFor">Whether the judged request gave an instruction.</param>
+    /// <param name="unrequestedExternalChanges">For an information-only request in a run that traces
+    /// back to a user message, the external changes made anyway (#685, <see cref="ExternalChanges"/>).
+    /// When there are any, the guidance is to tell the user plainly what changed.</param>
     public static string RepromptGuidance(
         CompletionEvalTrigger trigger, IReadOnlyList<LoopToolCall> calls,
-        UserRequestKind userAskedFor = UserRequestKind.Instruction) => trigger switch
+        UserRequestKind userAskedFor = UserRequestKind.Instruction,
+        IReadOnlyList<string>? unrequestedExternalChanges = null) =>
+        userAskedFor == UserRequestKind.InformationOnly && unrequestedExternalChanges is { Count: > 0 }
+            ? UnrequestedExternalChangeGuidance(unrequestedExternalChanges)
+            : TriggerGuidance(trigger, calls, userAskedFor);
+
+    /// <summary>
+    /// The re-prompt guidance after an unrequested external change (#685): no further changes, and
+    /// no hiding the ones made — the user is told what changed so they can keep or undo it.
+    /// </summary>
+    public static string UnrequestedExternalChangeGuidance(IReadOnlyList<string> changes) =>
+        " The user did not ask for these external changes: " +
+        string.Join("; ", changes.Take(MaxRelayedArtifactsListed)) +
+        (changes.Count > MaxRelayedArtifactsListed ? $"; and {changes.Count - MaxRelayedArtifactsListed} more" : string.Empty) +
+        ". Make no further external changes. Tell the user plainly what was changed and where, so they can " +
+        "keep or undo it — do not hide it, and do not present it as something they asked for.";
+
+    private static string TriggerGuidance(
+        CompletionEvalTrigger trigger, IReadOnlyList<LoopToolCall> calls,
+        UserRequestKind userAskedFor) => trigger switch
     {
         CompletionEvalTrigger.PromiseNoAction when userAskedFor == UserRequestKind.InformationOnly =>
             " Your reply promised or described work instead of doing it. If answering the user's message " +

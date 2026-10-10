@@ -59,7 +59,10 @@ internal sealed class SubagentRunner(
         // primary's synthesis turn is checked against it.
         string? originatingUserRequest = null,
         // #665: spawn_subagent inputs, resolved at spawn; inlined ahead of other prior work.
-        IReadOnlyList<SubagentInput>? inputs = null)
+        IReadOnlyList<SubagentInput>? inputs = null,
+        // #685: the consequential-action scope captured at spawn (already marked as a subagent's).
+        // Null leaves RunAsync to inherit whatever scope flows in, or none.
+        ActionGateScope? actionGate = null)
     {
         var classification = tierSelector.Classify(description, new TierRoutingContext(Origin: "subagent"));
         var tier = classification.Tier;
@@ -245,7 +248,8 @@ internal sealed class SubagentRunner(
                 tier: tier, enableFollowUp: false, enableCompletionEval: false,
                 maxIterationsOverride: maxIterations,
                 diagnostics: diagnostics,
-                cancellationToken: ct);
+                cancellationToken: ct,
+                actionGate: actionGate);
             finalOutput = ResponseSanitizer.StripTrailingOffers(finalOutput);
             isSuccess = true;
             subagentActivity?.SetStatus(ActivityStatusCode.Ok);
@@ -387,6 +391,9 @@ internal sealed class SubagentRunner(
             Description = description,
             ToolCalls = ledgerCalls is null ? null : CompletionEvalTriggers.SummarizeForRelay(ledgerCalls),
             ToolCallCount = ledgerCalls?.Count,
+            // #685: the synthesis turn relaying this result runs under the same gate.
+            RunOrigin = actionGate is null ? null : ActionGateScope.LogName(actionGate.Origin),
+            UserAskedFor = actionGate?.UserAskedFor is { } askedFor ? CompletionEvalTriggers.LogName(askedFor) : null,
         };
 
         var envelope = result.ToEnvelope<SubagentResultMessage>(source: subagentId);
