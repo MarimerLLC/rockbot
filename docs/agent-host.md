@@ -451,6 +451,78 @@ Every RUN, COMPLETE and INCOMPLETE log line includes `trigger=` and `userAskedFo
 | `rockbot.agent.follow_up.triggered` | Follow-up evaluator found an opportunity |
 | `rockbot.agent.follow_up.none` | Follow-up evaluator found nothing worth doing |
 | `rockbot.agent.follow_up.skipped` | Follow-up evaluation skipped (disabled, force term) |
+| `rockbot.agent.consequential_action.gated` | The consequential-action gate refused an external change (tagged `rockbot.tool.name` and `rockbot.action_gate.origin`) |
+
+### Consequential-action gate
+
+A user message that only shares context ("here's the abstract; the talk doesn't exist yet") must
+not lead to real calendar events, sent mail or uploads (#685). Before #685 the persona's
+"proactive" directives did exactly that, through a subagent and its wisps, and the evaluator
+(correctly) judged only the reply's facts. The gate separates *noticing* (always fine) from
+*changing an external system* (needs a request).
+
+**What is gated.** `ConsequentialActions.IsConsequential` — a call is consequential when
+`ToolSideEffects` says it writes **and** it reaches an MCP server (`mcp_invoke_tool`, judged by its
+`tool_name`, or a typed `{server}__{tool}` wrapper), or it creates or cancels one of the agent's
+scheduled tasks (`schedule_task`, `cancel_scheduled_task` — automation that would later act
+unasked), or it is listed in `AgentHost:ConsequentialActionGate:ExternalTools`. Everything else is
+agent-local and never gated: `file_*` on the agent's volume (`drafts/`), working and long-term
+memory, the task list, skills, rules, progress reports, sandboxed scripts, and delegation itself
+(`spawn_subagent`, `spawn_wisps`, `spawn_workers`, `invoke_agent`) — the gate applies to what the
+delegate does. Reads (`list_events`, `get_message`, …) always run.
+
+**When it refuses.** Every run has an `ActionGateScope(RunOrigin, UserAskedFor)`, bound to the async
+flow by `RunAsync` (`ActionGateContext`):
+
+| Origin | Set by | External changes |
+|---|---|---|
+| `UserTurn` | `UserMessageHandler`, `UserFeedbackHandler`; a synthesis turn (`SubagentResultHandler`) relaying a user-turn subagent | Only when the originating request is an `instruction` |
+| `SubagentOfUserTurn` | `SubagentManager` captures the spawning run's scope at spawn; `SubagentRunner` passes it on | Inherits the spawning turn's classification |
+| `Scheduled` | `ScheduledTaskHandler` (scheduled tasks, patrol) | Allowed — the user configured it |
+| `A2A` | `RockBotTaskHandler`, `ResearchAgentTaskHandler` (inbound tasks) | Allowed |
+| `Unknown` | Any caller that passes nothing and is not nested in another run | Allowed (pre-#685 behaviour) |
+
+A run that passes no scope and runs inside another run's tool call — a wisp LLM step, a worker —
+inherits the enclosing scope. For a user turn, the classification is the one the completion
+evaluator uses: `ClassifyUserRequest(latest user message, followsAgentMessage)`, so "yes", "sure"
+or "go ahead" right after an agent proposal counts as an instruction. A subagent keeps the
+*user's* classification; its own imperative task description doesn't launder an information-only
+message. `SubagentResultMessage.RunOrigin` / `.UserAskedFor` carry the scope back, so the synthesis
+turn runs under the same gate (`ActionGateScope.FromRelayedResults`; siblings that disagree resolve
+to instruction; results from an older build keep the old behaviour).
+
+**Where it checks.** `ActionGateContext.Check(tool, args)` runs at every dispatch site:
+`RockBotFunctionInvokingChatClient.InvokeFunctionAsync` (native path), both dispatch sites of the
+text-based loop, and `WispExecutor`'s direct steps. A refused call is not executed. Its tool result
+is:
+
+> Not run: calendar-mcp__create_event would change calendar-mcp but the user did not ask for that.
+> Propose it to the user in one sentence (what, when, where) and wait for them to ask. Do not retry
+> this call or route it through another tool.
+
+The call is recorded in the run's ledger as failed (so it neither counts as a side effect nor
+shows as relayed work that happened), logged at Information as
+`Consequential action gated: <tool> (originating request: information-only, origin=<origin>)`,
+and counted on `rockbot.agent.consequential_action.gated`. A refused wisp step fails with category
+`Judgment`.
+
+**Evaluator backstop.** For a run that needs an instruction and an information-only request, any
+*successful* external change in the loop's calls or a relayed subagent's calls is listed under
+"External changes the user did not ask for", and the rubric makes that INCOMPLETE ("unrequested
+external change: …"). The re-prompt then says to make no further external changes and to tell the
+user plainly what was changed and where, so they can keep or undo it. With the gate on, this
+should rarely fire.
+
+**Configuration.** `AgentHost:ConsequentialActionGate:Enabled` (default `true`; env
+`AgentHost__ConsequentialActionGate__Enabled=false` turns the gate off) and
+`AgentHost:ConsequentialActionGate:ExternalTools` (native tool names to gate like MCP writes;
+default empty).
+
+**Time conversion.** The same incident relayed 09:45 Amsterdam on 2026-10-28 as 2:45 AM Chicago
+(it is 3:45 — Europe left summer time on Oct 25, the US does on Nov 1). The `convert_time`
+registry tool (`RockBot.Tools.TimeConversion`, registered by `AddTimeTools()`) converts a wall-clock
+time between IANA zones with the DST rules of that date and reports both UTC offsets;
+`common-directives.md` tells every rung to use it instead of doing the arithmetic.
 
 ---
 
@@ -632,7 +704,8 @@ Key configuration sections (from `appsettings.json` or environment variables):
   "AgentHost": {
     "MaxToolIterations": 50,
     "MaxCompletionReprompts": 2,
-    "MaxFollowUpPasses": 1
+    "MaxFollowUpPasses": 1,
+    "ConsequentialActionGate": { "Enabled": true, "ExternalTools": [] }
   },
   "RabbitMq": {
     "HostName": "rabbitmq.cluster.local",
