@@ -64,13 +64,20 @@ internal sealed class FileSystemToolSkillProvider(IServiceProvider services) : I
         the file's current version in full. That means one of these:
         - one `file_read` returned the whole file;
         - paged `file_read` calls on the same version together covered every line;
-        - you wrote that version yourself with `file_write`.
+        - you wrote that version yourself with `file_write`;
+        - you read, in full, another file whose content is identical to it (for example
+          the `attachments/` download of the same document).
 
         The refusal tells you which lines you are missing and the offset to read next. Do
-        what it says, or switch to `file_edit`. Do not try to get around it. If the file
-        changed after you read it (another session, a subagent, or a script wrote it),
-        read it again. A subagent is a separate session. If a subagent wrote a file, read
-        it yourself before replacing it.
+        what it says, or switch to `file_edit`. Do not try to get around it, and never by
+        writing a renamed copy (`deck-revised.md` next to `deck.md`): the original goes
+        stale, and later turns edit the wrong file. If the file changed after you read it
+        (another session, a subagent, or a script wrote it), read it again. A subagent is a
+        separate session. If a subagent wrote a file, read it yourself before replacing it.
+
+        `attachments/` holds downloaded files (MCP downloads, files the user sent) and is
+        read-only for file tools. To change one, edit the matching file under `drafts/`, or
+        copy the content to a new `drafts/` path and work there.
 
         Never rebuild a file from a summary, a subagent's report, or a partial view and
         write that back. You will lose whatever you did not see.

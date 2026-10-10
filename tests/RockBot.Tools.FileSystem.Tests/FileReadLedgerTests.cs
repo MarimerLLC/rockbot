@@ -67,6 +67,74 @@ public class FileReadLedgerTests
     }
 
     [TestMethod]
+    public void FindFullyKnownCopy_ReturnsAnotherFullySeenPathWithTheSameHash()
+    {
+        var ledger = new FileReadLedger();
+        ledger.RecordFullyKnown("s", "/vol/attachments/a.md", "h1", 3);
+
+        Assert.AreEqual("/vol/attachments/a.md", ledger.FindFullyKnownCopy("s", "h1", excludePath: "/vol/drafts/a.md"));
+        Assert.IsNull(ledger.FindFullyKnownCopy("s", "h2"), "Different content.");
+        Assert.IsNull(ledger.FindFullyKnownCopy("other", "h1"), "Different session.");
+        Assert.IsNull(ledger.FindFullyKnownCopy("s", "h1", excludePath: "/vol/attachments/a.md"));
+    }
+
+    [TestMethod]
+    public void FindFullyKnownCopy_IgnoresPartialCoverage()
+    {
+        var ledger = new FileReadLedger();
+        ledger.RecordRead("s", "/vol/a.md", "h1", 10, 1, 5);
+        Assert.IsNull(ledger.FindFullyKnownCopy("s", "h1"));
+
+        ledger.RecordRead("s", "/vol/a.md", "h1", 10, 6, 10);
+        Assert.AreEqual("/vol/a.md", ledger.FindFullyKnownCopy("s", "h1"));
+    }
+
+    [TestMethod]
+    public void FindFullyKnownCopy_ForgetsReplacedForgottenAndEvictedEntries()
+    {
+        var ledger = new FileReadLedger(maxEntries: 4);
+        ledger.RecordFullyKnown("s", "/vol/a.md", "h1", 1);
+
+        // A newer version of the same path replaces the old hash.
+        ledger.RecordFullyKnown("s", "/vol/a.md", "h2", 1);
+        Assert.IsNull(ledger.FindFullyKnownCopy("s", "h1"));
+        Assert.AreEqual("/vol/a.md", ledger.FindFullyKnownCopy("s", "h2"));
+
+        ledger.Forget("s", "/vol/a.md");
+        Assert.IsNull(ledger.FindFullyKnownCopy("s", "h2"));
+
+        ledger.RecordFullyKnown("s", "/vol/old.md", "h-old", 1);
+        for (var i = 0; i < 5; i++)
+            ledger.RecordFullyKnown("s", $"/vol/f{i}", $"h{i + 10}", 1);
+        Assert.IsNull(ledger.FindFullyKnownCopy("s", "h-old"), "Evicted entries leave the index too.");
+
+        Assert.AreEqual(ledger.Count, ledger.HashIndexPathCount, "The index mirrors the entries exactly.");
+    }
+
+    [TestMethod]
+    public void HashIndex_StaysInStepWithEntriesUnderChurn()
+    {
+        var ledger = new FileReadLedger(maxEntries: 8);
+        var random = new Random(677);
+        for (var i = 0; i < 2000; i++)
+        {
+            var session = $"s{random.Next(3)}";
+            var path = $"/vol/f{random.Next(20)}";
+            var hash = $"h{random.Next(5)}";
+            switch (random.Next(3))
+            {
+                case 0: ledger.RecordFullyKnown(session, path, hash, 4); break;
+                case 1: ledger.RecordRead(session, path, hash, 4, 1, 2); break;
+                default: ledger.Forget(session, path); break;
+            }
+
+            Assert.AreEqual(ledger.Count, ledger.HashIndexPathCount, $"After step {i}.");
+        }
+
+        Assert.IsTrue(ledger.Count <= 8);
+    }
+
+    [TestMethod]
     public void LineCount_IgnoresTrailingNewline()
     {
         Assert.AreEqual(0, LineIndex.CountLines(""));

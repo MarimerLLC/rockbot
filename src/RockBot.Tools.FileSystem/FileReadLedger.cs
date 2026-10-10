@@ -89,25 +89,49 @@ internal readonly record struct FileCoverage(
 /// itself wrote it with <c>file_write</c>.
 /// </para>
 /// <para>
+/// <b>Identical content (issue #677).</b> A per-session index from content hash to the paths
+/// whose recorded version has that hash lets <see cref="FindFullyKnownCopy"/> answer "has this
+/// session fully seen these exact bytes under any path?". In #677 a session read
+/// <c>attachments/deck.md</c> in full, then was refused an overwrite of
+/// <c>drafts/deck.md</c>, whose content was byte-for-byte the same. Nothing could have been
+/// lost, and the refusal pushed the model into writing a renamed sibling copy instead.
+/// </para>
+/// <para>
+/// <b>Refusals.</b> The ledger also remembers, per session, the paths it refused to overwrite
+/// in the last <see cref="RefusalWindow"/>. That is diagnostic only: it lets <c>file_write</c>
+/// log when a refusal is followed by a renamed copy (see <see cref="RecentRefusals"/>).
+/// </para>
+/// <para>
 /// <b>Bounds.</b> The ledger is in-memory and process-local. It holds at most
 /// <see cref="MaxEntries"/> entries and evicts the least recently touched quarter when it
-/// overflows. Eviction or a restart can only cause a refused overwrite. The refusal tells
-/// the model to read the file, so the failure is safe.
+/// overflows. The hash index mirrors the entries exactly (one membership per entry), so it
+/// shares that bound. Refusals are capped per session and across sessions. Eviction or a
+/// restart can only cause a refused overwrite. The refusal tells the model to read the
+/// file, so the failure is safe.
 /// </para>
 /// </remarks>
 internal sealed class FileReadLedger
 {
     internal const int DefaultMaxEntries = 4096;
 
+    /// <summary>How long a refused overwrite is remembered for sibling-copy diagnostics.</summary>
+    public static readonly TimeSpan RefusalWindow = TimeSpan.FromMinutes(10);
+
+    private const int MaxRefusalsPerSession = 16;
+
     private readonly object _gate = new();
     private readonly Dictionary<(string Session, string Path), Entry> _entries = new();
+    private readonly Dictionary<(string Session, string Hash), HashSet<string>> _byHash = new();
+    private readonly Dictionary<string, List<(string Path, DateTimeOffset At)>> _refusals = new(StringComparer.Ordinal);
+    private readonly TimeProvider _time;
     private long _clock;
 
     public FileReadLedger() : this(DefaultMaxEntries) { }
 
-    internal FileReadLedger(int maxEntries)
+    internal FileReadLedger(int maxEntries, TimeProvider? timeProvider = null)
     {
         MaxEntries = Math.Max(1, maxEntries);
+        _time = timeProvider ?? TimeProvider.System;
     }
 
     /// <summary>Largest number of (session, path) entries kept before eviction.</summary>
@@ -156,7 +180,110 @@ internal sealed class FileReadLedger
     public void Forget(string? sessionId, string fullPath)
     {
         lock (_gate)
-            _entries.Remove(Key(sessionId, fullPath));
+        {
+            var key = Key(sessionId, fullPath);
+            if (_entries.Remove(key, out var entry))
+                Unindex(key, entry.Hash);
+        }
+    }
+
+    /// <summary>
+    /// A path other than <paramref name="excludePath"/> whose recorded version has hash
+    /// <paramref name="versionHash"/> and which this session has seen in full, or <c>null</c>.
+    /// </summary>
+    /// <remarks>
+    /// The match is on the hash recorded when the session saw that path, not on that path's
+    /// current content: what matters is that the session has seen these exact bytes. When
+    /// several paths qualify, the most recently touched one is returned.
+    /// </remarks>
+    public string? FindFullyKnownCopy(string? sessionId, string versionHash, string? excludePath = null)
+    {
+        lock (_gate)
+        {
+            var session = sessionId ?? string.Empty;
+            if (!_byHash.TryGetValue((session, versionHash), out var paths))
+                return null;
+
+            string? best = null;
+            long bestTouched = long.MinValue;
+            foreach (var path in paths)
+            {
+                if (excludePath is not null && string.Equals(path, excludePath, StringComparison.Ordinal))
+                    continue;
+                if (!_entries.TryGetValue((session, path), out var entry)
+                    || !string.Equals(entry.Hash, versionHash, StringComparison.Ordinal)
+                    || !IsFull(entry))
+                {
+                    continue;
+                }
+
+                if (entry.Touched > bestTouched)
+                {
+                    best = path;
+                    bestTouched = entry.Touched;
+                }
+            }
+
+            return best;
+        }
+    }
+
+    /// <summary>Remembers that <c>file_write</c> refused to overwrite <paramref name="fullPath"/> for this session.</summary>
+    public void RecordRefusal(string? sessionId, string fullPath)
+    {
+        lock (_gate)
+        {
+            var session = sessionId ?? string.Empty;
+            var now = _time.GetUtcNow();
+
+            if (!_refusals.TryGetValue(session, out var list))
+            {
+                list = [];
+                _refusals[session] = list;
+            }
+
+            list.RemoveAll(r => now - r.At > RefusalWindow
+                || string.Equals(r.Path, fullPath, StringComparison.Ordinal));
+            list.Add((fullPath, now));
+            if (list.Count > MaxRefusalsPerSession)
+                list.RemoveRange(0, list.Count - MaxRefusalsPerSession);
+
+            if (_refusals.Count > MaxEntries)
+            {
+                // Drop sessions whose refusals have all expired, then the oldest if still over.
+                foreach (var stale in _refusals.Where(kv => kv.Value.All(r => now - r.At > RefusalWindow))
+                             .Select(kv => kv.Key).ToList())
+                {
+                    _refusals.Remove(stale);
+                }
+
+                while (_refusals.Count > MaxEntries)
+                {
+                    var oldest = _refusals.MinBy(kv => kv.Value.Count == 0 ? DateTimeOffset.MinValue : kv.Value[^1].At).Key;
+                    _refusals.Remove(oldest);
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    /// Full paths this session was refused an overwrite of within the last
+    /// <see cref="RefusalWindow"/>, most recent first.
+    /// </summary>
+    public IReadOnlyList<string> RecentRefusals(string? sessionId)
+    {
+        lock (_gate)
+        {
+            if (!_refusals.TryGetValue(sessionId ?? string.Empty, out var list))
+                return [];
+
+            // The list is in the order refusals were recorded.
+            var now = _time.GetUtcNow();
+            return list.Where(r => now - r.At <= RefusalWindow)
+                .Select(r => r.Path)
+                .Reverse()
+                .ToList();
+        }
     }
 
     /// <summary>
@@ -175,12 +302,14 @@ internal sealed class FileReadLedger
                 return new FileCoverage(FileCoverageStatus.Stale, entry.TotalLines, entry.Ranges.ToArray());
 
             var ranges = entry.Ranges.ToArray();
-            var full = entry.TotalLines == 0
-                || (ranges.Length == 1 && ranges[0].Start <= 1 && ranges[0].End >= entry.TotalLines);
             return new FileCoverage(
-                full ? FileCoverageStatus.Full : FileCoverageStatus.Partial, entry.TotalLines, ranges);
+                IsFull(entry) ? FileCoverageStatus.Full : FileCoverageStatus.Partial, entry.TotalLines, ranges);
         }
     }
+
+    private static bool IsFull(Entry entry) =>
+        entry.TotalLines == 0
+        || (entry.Ranges.Count == 1 && entry.Ranges[0].Start <= 1 && entry.Ranges[0].End >= entry.TotalLines);
 
     private Entry GetOrReset(string? sessionId, string fullPath, string versionHash, int totalLines)
     {
@@ -188,9 +317,13 @@ internal sealed class FileReadLedger
         if (!_entries.TryGetValue(key, out var entry)
             || !string.Equals(entry.Hash, versionHash, StringComparison.Ordinal))
         {
+            if (entry is not null)
+                Unindex(key, entry.Hash);
+
             // Stamp before evicting, or the new entry would look like the oldest one.
             entry = new Entry(versionHash, totalLines) { Touched = ++_clock };
             _entries[key] = entry;
+            Index(key, versionHash);
             EvictIfNeeded();
             return entry;
         }
@@ -205,8 +338,37 @@ internal sealed class FileReadLedger
             return;
 
         var drop = Math.Max(1, _entries.Count / 4);
-        foreach (var key in _entries.OrderBy(e => e.Value.Touched).Take(drop).Select(e => e.Key).ToList())
+        foreach (var (key, entry) in _entries.OrderBy(e => e.Value.Touched).Take(drop).ToList())
+        {
             _entries.Remove(key);
+            Unindex(key, entry.Hash);
+        }
+    }
+
+    private void Index((string Session, string Path) key, string hash)
+    {
+        if (!_byHash.TryGetValue((key.Session, hash), out var paths))
+        {
+            paths = new HashSet<string>(StringComparer.Ordinal);
+            _byHash[(key.Session, hash)] = paths;
+        }
+        paths.Add(key.Path);
+    }
+
+    private void Unindex((string Session, string Path) key, string hash)
+    {
+        if (_byHash.TryGetValue((key.Session, hash), out var paths)
+            && paths.Remove(key.Path)
+            && paths.Count == 0)
+        {
+            _byHash.Remove((key.Session, hash));
+        }
+    }
+
+    /// <summary>Total paths held in the hash index. For tests: it must always equal <see cref="Count"/>.</summary>
+    internal int HashIndexPathCount
+    {
+        get { lock (_gate) return _byHash.Values.Sum(p => p.Count); }
     }
 
     private static (string, string) Key(string? sessionId, string fullPath) => (sessionId ?? string.Empty, fullPath);
