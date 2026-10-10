@@ -301,8 +301,19 @@ public sealed record SubagentResultMessage
     public bool Consolidate { get; init; } = true;
     public string? OriginatingUserRequest { get; init; } // #666
     public string? Description { get; init; }            // #665
+    public IReadOnlyList<SubagentToolCallSummary>? ToolCalls { get; init; } // #683
+    public int? ToolCallCount { get; init; }             // #683
 }
 ```
+
+`ToolCalls` is a compact copy of the subagent run's tool-call ledger: up to 40 calls, each with
+its name, ok/failed, whether it changed state, and a short argument summary. `ToolCallCount` is
+the total number of calls. The primary's synthesis turn passes both to the completion evaluator,
+with the session-work-registry artifacts written by the subagent and its wisps. The evaluator
+checks the relayed report's claims against what the subagent actually did, not against the
+synthesis turn's own read-only calls. See
+[When the completion evaluator runs](agent-host.md#when-the-completion-evaluator-runs).
+Both properties are null on results from an older build.
 
 Topic: `subagent.result`
 

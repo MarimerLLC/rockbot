@@ -253,7 +253,10 @@ internal sealed class SubagentResultHandler(
                 chatMessages, chatOptions, rawSessionId,
                 enableFollowUp: false, cancellationToken: ct,
                 subagentSynthesis: true,
-                originatingUserRequest: CombineOriginatingRequests(batchedResults));
+                originatingUserRequest: CombineOriginatingRequests(batchedResults),
+                // #683: what each relayed subagent actually did, so the check doesn't read an honest
+                // relay of its writes and uploads as an unsupported claim.
+                relayedWork: BuildRelayedWork(batchedResults, sessionWorkRegistry, sessionNamespace));
 
             await conversationMemory.AddTurnAsync(
                 rawSessionId,
@@ -351,6 +354,53 @@ internal sealed class SubagentResultHandler(
             1 => distinct[0],
             _ => string.Join("\n\n", distinct.Select((r, i) => $"({i + 1}) {r}")),
         };
+    }
+
+    /// <summary>
+    /// The work of each subagent in a batch, for the synthesis turn's completion check (#683): the
+    /// tool calls its result carries, plus the files and uploads the session work registry recorded
+    /// for its session and the wisps and workers it ran. Never throws — the evidence is an aid.
+    /// </summary>
+    internal static IReadOnlyList<RelayedSubagentWork> BuildRelayedWork(
+        IReadOnlyList<SubagentResultMessage> results, ISessionWorkRegistry? registry, string primarySessionId)
+    {
+        IReadOnlyList<SessionArtifact> artifacts = [];
+        try
+        {
+            if (registry is not null)
+                artifacts = registry.GetSnapshot(primarySessionId).Artifacts;
+        }
+        catch
+        {
+            // Best-effort: the tool calls on the results are the main evidence.
+        }
+
+        return results.Select(r => new RelayedSubagentWork(
+            r.TaskId,
+            r.ToolCalls,
+            r.ToolCallCount,
+            ArtifactsWrittenBy(r, artifacts, registry))).ToList();
+    }
+
+    private static IReadOnlyList<string> ArtifactsWrittenBy(
+        SubagentResultMessage result, IReadOnlyList<SessionArtifact> artifacts, ISessionWorkRegistry? registry)
+    {
+        if (registry is null || artifacts.Count == 0) return [];
+        try
+        {
+            return artifacts
+                .Where(a => registry.IsSessionWithin(a.LastWriterSessionId, result.SubagentSessionId))
+                .Select(a => a.IsRemoteOnly
+                    ? $"uploaded to {a.RemoteTarget ?? a.Path} (by {a.LastTool})"
+                    : a.RemoteTarget is { Length: > 0 } remote
+                        ? $"{a.Path} (last change by {a.LastTool}; uploaded to {remote})"
+                        : $"{a.Path} (last change by {a.LastTool})")
+                .ToList();
+        }
+        catch
+        {
+            return [];
+        }
     }
 
     internal static string BuildDegradedReplyContent(

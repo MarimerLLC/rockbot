@@ -366,6 +366,11 @@ internal sealed class SubagentRunner(
             LatencyMs = subagentSw.ElapsedMilliseconds,
         });
 
+        // #683: the calls this run made travel with the result. The primary's synthesis turn only
+        // reads the saved output, so its completion check needs them to see the writes and uploads
+        // the relayed report describes.
+        var ledgerCalls = diagnostics.ToolCallLedger?.Snapshot();
+
         // Publish result
         var result = new SubagentResultMessage
         {
@@ -379,7 +384,9 @@ internal sealed class SubagentRunner(
             BatchId = batchId,
             Consolidate = consolidate,
             OriginatingUserRequest = originatingUserRequest,
-            Description = description
+            Description = description,
+            ToolCalls = ledgerCalls is null ? null : CompletionEvalTriggers.SummarizeForRelay(ledgerCalls),
+            ToolCallCount = ledgerCalls?.Count,
         };
 
         var envelope = result.ToEnvelope<SubagentResultMessage>(source: subagentId);

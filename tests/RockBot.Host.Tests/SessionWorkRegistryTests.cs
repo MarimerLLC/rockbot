@@ -139,6 +139,22 @@ public class SessionWorkRegistryTests
     }
 
     [TestMethod]
+    public void IsSessionWithin_FollowsLinks_ButNotAcrossSiblings()
+    {
+        var registry = new SessionWorkRegistry();
+        registry.LinkSession("subagent-abc123", "session/s1");
+        registry.LinkSession("subagent-def456", "session/s1");
+        registry.LinkSession("wisp-0123456789a", "subagent/abc123");
+
+        Assert.IsTrue(registry.IsSessionWithin("wisp-0123456789a", "subagent-abc123"), "a subagent's wisp is within it");
+        Assert.IsTrue(registry.IsSessionWithin("subagent/abc123", "subagent-abc123"), "spellings normalize");
+        Assert.IsTrue(registry.IsSessionWithin("wisp-0123456789a", "session/s1"));
+        Assert.IsFalse(registry.IsSessionWithin("wisp-0123456789a", "subagent-def456"), "not a sibling's");
+        Assert.IsFalse(registry.IsSessionWithin("s1", "subagent-abc123"), "a parent is not within its child");
+        Assert.IsFalse(registry.IsSessionWithin("", "subagent-abc123"));
+    }
+
+    [TestMethod]
     public void McpInvokeUpload_RecordsTheRemoteTargetOnTheLocalFile()
     {
         var registry = new SessionWorkRegistry();

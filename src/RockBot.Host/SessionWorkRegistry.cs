@@ -108,6 +108,15 @@ public interface ISessionWorkRegistry
 
     /// <summary>The conversation's results and artifacts, newest first.</summary>
     SessionWorkSnapshot GetSnapshot(string sessionId);
+
+    /// <summary>
+    /// True when <paramref name="sessionId"/> is <paramref name="ancestorSessionId"/> or works for it
+    /// through links — a subagent's wisps and workers are within the subagent (#683). The default
+    /// only compares the two sessions.
+    /// </summary>
+    bool IsSessionWithin(string sessionId, string ancestorSessionId) =>
+        SessionWorkRegistry.NormalizeSessionId(sessionId) is { Length: > 0 } s
+        && s == SessionWorkRegistry.NormalizeSessionId(ancestorSessionId);
 }
 
 /// <summary>Bounds for <see cref="SessionWorkRegistry"/>.</summary>
@@ -169,6 +178,24 @@ public sealed partial class SessionWorkRegistry(
     public string ResolveRootSession(string sessionId)
     {
         lock (_lock) return ResolveRootLocked(NormalizeSessionId(sessionId));
+    }
+
+    /// <inheritdoc />
+    public bool IsSessionWithin(string sessionId, string ancestorSessionId)
+    {
+        var current = NormalizeSessionId(sessionId);
+        var ancestor = NormalizeSessionId(ancestorSessionId);
+        if (current.Length == 0 || ancestor.Length == 0) return false;
+        lock (_lock)
+        {
+            for (var depth = 0; depth <= MaxLinkDepth; depth++)
+            {
+                if (current == ancestor) return true;
+                if (!_links.TryGetValue(current, out var link)) return false;
+                current = link.Parent;
+            }
+        }
+        return false;
     }
 
     /// <inheritdoc />
