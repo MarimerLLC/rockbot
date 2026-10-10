@@ -9,19 +9,20 @@ namespace RockBot.Tools.FileSystem.Tests;
 /// </summary>
 internal sealed class FileToolsFixture : IDisposable
 {
-    public FileToolsFixture(int? readMaxChars = null)
+    public FileToolsFixture(int? readMaxChars = null, TimeProvider? time = null)
     {
         Root = Path.Combine(Path.GetTempPath(), "rockbot-file-tools-tests", Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(Root);
         Options = new FileSystemOptions { BasePath = Root };
         if (readMaxChars is { } max)
             Options.FileReadMaxChars = max;
-        Ledger = new FileReadLedger();
+        Ledger = new FileReadLedger(FileReadLedger.DefaultMaxEntries, time);
     }
 
     public string Root { get; }
     public FileSystemOptions Options { get; }
     public FileReadLedger Ledger { get; }
+    public ListLogger Log { get; } = new();
 
     public string FullPath(string relative) => Path.Combine(Root, relative);
 
@@ -44,7 +45,7 @@ internal sealed class FileToolsFixture : IDisposable
     }
 
     public Task<ToolInvokeResponse> WriteAsync(string session, string path, string content) =>
-        new FileWriteToolExecutor(Options, Ledger).ExecuteAsync(
+        new FileWriteToolExecutor(Options, Ledger, Log).ExecuteAsync(
             Request("file_write", session, new { path, content }), CancellationToken.None);
 
     public Task<ToolInvokeResponse> EditAsync(string session, string path, string oldString, string newString) =>
@@ -111,9 +112,36 @@ internal sealed class FileToolsFixture : IDisposable
         Arguments = JsonSerializer.Serialize(args),
     };
 
+    /// <summary>
+    /// Makes a file non-writable: the read-only attribute on Windows, mode 0444 on Unix.
+    /// Returns false when the current user can write it anyway (root on Linux), so the
+    /// caller can mark the test inconclusive instead of asserting on a write that succeeds.
+    /// </summary>
+    public bool TryMakeReadOnly(string relative)
+    {
+        var full = FullPath(relative);
+        if (OperatingSystem.IsWindows())
+            File.SetAttributes(full, File.GetAttributes(full) | FileAttributes.ReadOnly);
+        else
+            File.SetUnixFileMode(full, UnixFileMode.UserRead | UnixFileMode.GroupRead | UnixFileMode.OtherRead);
+
+        return !WriteAccess.CanWrite(full);
+    }
+
     public void Dispose()
     {
-        if (Directory.Exists(Root))
-            Directory.Delete(Root, recursive: true);
+        if (!Directory.Exists(Root))
+            return;
+
+        // Undo TryMakeReadOnly, or Windows refuses to delete the file.
+        foreach (var file in Directory.EnumerateFiles(Root, "*", SearchOption.AllDirectories))
+        {
+            if (OperatingSystem.IsWindows())
+                File.SetAttributes(file, FileAttributes.Normal);
+            else
+                File.SetUnixFileMode(file, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+        }
+
+        Directory.Delete(Root, recursive: true);
     }
 }

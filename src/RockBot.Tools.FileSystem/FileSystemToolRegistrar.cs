@@ -156,12 +156,16 @@ internal sealed class FileSystemToolRegistrar(
                 existing file's entire content. Creates parent directories as needed. To change
                 part of an existing file, use file_edit instead. Replacing an existing file is
                 refused unless this session has read its current version in full with file_read
-                (every page, if it was paged) or wrote that version itself. The replaced version
-                is kept under .prev/.
+                (every page, if it was paged), has read a file with identical content, or wrote
+                that version itself. If refused, read the file; do not write a renamed copy. The
+                replaced version is kept under .prev/.
                 """,
             ParametersSchema = WriteSchema,
             Source = "filesystem"
-        }, new FileWriteToolExecutor(options, ledger));
+        }, new FileWriteToolExecutor(
+            options,
+            ledger,
+            (ILogger?)services.GetService<ILoggerFactory>()?.CreateLogger<FileWriteToolExecutor>() ?? logger));
         logger.LogInformation("Registered file tool: file_write");
 
         registry.Register(new ToolRegistration
