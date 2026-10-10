@@ -343,7 +343,9 @@ public class ConsequentialActionGateTests
             diagnostics.ToolCallLedger?.Snapshot() ?? []);
     }
 
-    private static AgentLoopRunner CreateRunner(IChatClient model, bool textBased, AgentHostOptions host)
+    // Shared with ToolCallOutcomeTests (#686).
+    internal static AgentLoopRunner CreateRunner(IChatClient model, bool textBased, AgentHostOptions host,
+        IToolCallLog? toolCallLog = null)
     {
         var profileOpts = Options.Create(new AgentProfileOptions
         {
@@ -357,7 +359,7 @@ public class ConsequentialActionGateTests
 
         IChatClient client = textBased
             ? model
-            : new RockBotFunctionInvokingChatClient(model, null, null, behavior,
+            : new RockBotFunctionInvokingChatClient(model, null, toolCallLog, behavior,
                 new LlmCostEstimator(
                     Options.Create(new LlmPricingOptions
                     {
@@ -381,7 +383,7 @@ public class ConsequentialActionGateTests
     }
 
     /// <summary>First call returns a tool call; later calls record the tool result and return text.</summary>
-    private sealed class ToolThenTextChatClient(FunctionCallContent call, string finalText) : IChatClient
+    internal sealed class ToolThenTextChatClient(FunctionCallContent call, string finalText) : IChatClient
     {
         private int _calls;
 

@@ -44,6 +44,47 @@ public class AgentLoopRunnerCompletionEvaluatorTests
     }
 
     [TestMethod]
+    public async Task TriggerFilter_SkipsTriggersNotEnabled()
+    {
+        // A subagent's self-check (#686) runs only on claims of work. A promise is not one of them.
+        var llm = new ScriptedLlmClient(
+            loopReplies: [CompletionEvalTriggersTests.WebSearchReply],
+            evaluatorReplies: [IncompleteVerdict]);
+        var runner = CreateRunner(llm);
+
+        var result = await runner.RunAsync(
+            Conversation(CompletionEvalTriggersTests.WebSearchUser), new ChatOptions(), "s1",
+            enableFollowUp: false, cancellationToken: CancellationToken.None,
+            completionEvalTriggers: new HashSet<CompletionEvalTrigger> { CompletionEvalTrigger.ClaimedChange });
+
+        Assert.AreEqual(CompletionEvalTriggersTests.WebSearchReply, result);
+        Assert.AreEqual(0, llm.EvaluatorRequests.Count);
+    }
+
+    [TestMethod]
+    public async Task TriggerFilter_ClaimedChange_RunsEvaluator_AndReprompts()
+    {
+        // The second #686 instance: "I have also updated the checklist" with no write at all.
+        var llm = new ScriptedLlmClient(
+            loopReplies: [CompletionEvalTriggersTests.ChecklistReply, "The demo plan is solid. I did not update the checklist."],
+            evaluatorReplies: ["{\"complete\": false, \"reason\": \"claims the checklist was updated; no write was made\"}"]);
+        var runner = CreateRunner(llm);
+
+        var result = await runner.RunAsync(
+            Conversation("Prepare the demo plan and update the readiness checklist."), new ChatOptions(), "subagent-1",
+            enableFollowUp: false, cancellationToken: CancellationToken.None,
+            completionEvalTriggers: new HashSet<CompletionEvalTrigger>
+            {
+                CompletionEvalTrigger.SideEffect, CompletionEvalTrigger.BareClaim, CompletionEvalTrigger.ClaimedChange,
+            });
+
+        Assert.AreEqual("The demo plan is solid. I did not update the checklist.", result);
+        Assert.AreEqual(1, llm.EvaluatorRequests.Count);
+        StringAssert.Contains(llm.EvaluatorRequests[0], "no tool call this turn changed anything");
+        StringAssert.Contains(llm.LoopRequests[1].Last(m => m.Role == ChatRole.User).Text!, "Remove or correct every such claim");
+    }
+
+    [TestMethod]
     public async Task PlainQuestionAnswer_SkipsEvaluator()
     {
         var llm = new ScriptedLlmClient(

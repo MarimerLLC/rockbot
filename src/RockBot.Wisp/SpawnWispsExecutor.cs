@@ -31,8 +31,14 @@ internal sealed class SpawnWispsExecutor(
         WriteIndented = false
     };
 
+    /// <summary>How many of the wisps' calls are reported on the <c>spawn_wisps</c> call (#686).</summary>
+    internal const int MaxReportedNestedCalls = 50;
+
     public async Task<ToolInvokeResponse> ExecuteAsync(ToolInvokeRequest request, CancellationToken ct)
     {
+        // Captured before any wisp runs: an LLM step's own loop binds holders for its calls.
+        var outcome = ToolCallOutcomeContext.Value;
+
         Dictionary<string, JsonElement> args;
         try
         {
@@ -73,6 +79,11 @@ internal sealed class SpawnWispsExecutor(
 
         // Write batch summary to working memory
         await WriteBatchSummaryAsync(batchResult, ct);
+
+        // #686: the result stays a non-error, so the model does not re-run wisps that worked, but
+        // the call itself is recorded as failed when any wisp failed, together with the calls the
+        // wisps made, for the ledger, the tool-call log and the completion evaluator.
+        ReportOutcome(outcome, batchResult);
 
         // Format response
         var content = FormatBatchResult(batchResult);
@@ -549,9 +560,49 @@ internal sealed class SpawnWispsExecutor(
         return keys;
     }
 
+    /// <summary>
+    /// Reports the batch's outcome on the running tool call (#686). The call failed when any wisp
+    /// failed. The wisps' own tool calls are attached either way, so a relay can show which
+    /// creates and writes actually happened. When there are more than
+    /// <see cref="MaxReportedNestedCalls"/>, the failed and state-changing ones are kept first.
+    /// </summary>
+    internal static void ReportOutcome(ToolCallOutcome? outcome, WispBatchResult batch)
+    {
+        if (outcome is null) return;
+
+        var calls = batch.Results.SelectMany(r => r.ToolCalls).ToList();
+        if (calls.Count > MaxReportedNestedCalls)
+        {
+            calls = calls
+                .Select((call, index) => (Call: call, Index: index,
+                    Rank: !call.Succeeded || ToolSideEffects.IsSideEffecting(call) ? 0 : 1))
+                .OrderBy(c => c.Rank).ThenBy(c => c.Index)
+                .Take(MaxReportedNestedCalls)
+                .OrderBy(c => c.Index)
+                .Select(c => c.Call)
+                .ToList();
+        }
+        outcome.AddNested(calls);
+
+        outcome.Report(
+            succeeded: batch.FailedCount == 0,
+            detail: batch.FailedCount == 0
+                ? $"all {batch.TotalCount} wisps succeeded"
+                : $"{batch.FailedCount} of {batch.TotalCount} wisps failed");
+    }
+
     internal static string FormatBatchResult(WispBatchResult batch)
     {
         var sb = new StringBuilder();
+
+        // #686: say plainly when wisps failed, before the per-wisp lines. A subagent once read a
+        // batch with 6 of 7 failed creates as "seven events created and verified".
+        if (batch.FailedCount > 0)
+        {
+            sb.AppendLine(batch.SucceededCount == 0
+                ? $"ALL {batch.TotalCount} WISPS FAILED. None of their work completed past the failed step; do not report it as done."
+                : $"PARTIAL FAILURE: {batch.FailedCount} of {batch.TotalCount} wisps failed. Their steps after the failure did NOT run; do not report them as done. Report only the work of the wisps marked [ok], and do not re-run those.");
+        }
 
         sb.AppendLine($"{batch.TotalCount} wisp(s) completed ({batch.SucceededCount} succeeded, {batch.FailedCount} failed, {batch.TotalDuration.TotalSeconds:F1}s total):");
         sb.AppendLine();
@@ -566,6 +617,17 @@ internal sealed class SpawnWispsExecutor(
                 sb.AppendLine($"  Error ({err.Category}): {err.Message}");
                 if (err.ToolName is not null)
                     sb.AppendLine($"  Tool: {err.ToolName}");
+
+                // #686: steps that ran before the failure did take effect. Name them, so the
+                // model neither redoes them nor counts the whole wisp as done.
+                var failedIndex = result.FailedStep.StepIndex;
+                var completed = result.StepResults
+                    .Where(s => s.StepIndex < failedIndex && s.IsSuccess && !s.WasSkipped)
+                    .Select(s => s.StepId)
+                    .ToList();
+                sb.AppendLine(completed.Count > 0
+                    ? $"  Steps completed before the failure: {string.Join(", ", completed)}; failed at: {result.FailedStep.StepId}"
+                    : $"  Failed at the first step run ({result.FailedStep.StepId}); nothing in this wisp completed");
             }
 
             if (result.IsSuccess)

@@ -472,6 +472,189 @@ public class SpawnWispsExecutorTests
 
     // ── Helpers ──────────────────────────────────────────────────────────────
 
+    // ── #686: the batch's outcome and its nested calls ──────────────────────
+
+    // The 2026-10-10 batch: seven create-then-verify wisps. Only the first create succeeded; the
+    // other six hit Graph HTTP 400 and aborted at "create".
+    private static ToolInvokeRequest SevenPrepBlocks() => new()
+    {
+        ToolCallId = "tc-686",
+        ToolName = "spawn_wisps",
+        Arguments = JsonSerializer.Serialize(new
+        {
+            definitions = Enumerable.Range(1, 7).Select(i => new
+            {
+                description = $"Prep block {i}",
+                steps = new object[]
+                {
+                    new { id = "create", mode = "Direct", gateway = "Mcp", server = "calendar-mcp", tool = "create_event",
+                          @params = new { title = $"Prep {i}", calendarId = "primary" } },
+                    new { id = "verify", mode = "Direct", gateway = "Mcp", server = "calendar-mcp", tool = "get_event",
+                          @params = new { title = $"Prep {i}" } },
+                },
+            }),
+        }),
+    };
+
+    private static SpawnWispsExecutor CreateCalendarExecutor()
+    {
+        var executor = CreateSpawnExecutor(out var registry, out _);
+        registry.Register(
+            new ToolRegistration { Name = "mcp_invoke_tool", Description = "Invoke an MCP tool", Source = "mcp" },
+            new CalendarExecutor());
+        return executor;
+    }
+
+    [TestMethod]
+    public async Task ExecuteAsync_SixOfSevenWispsAbort_ReportsFailedOutcome_WithNestedCalls()
+    {
+        var executor = CreateCalendarExecutor();
+        var outcome = new ToolCallOutcome();
+
+        ToolInvokeResponse response;
+        using (ToolCallOutcomeContext.Set(outcome))
+            response = await executor.ExecuteAsync(SevenPrepBlocks(), CancellationToken.None);
+
+        Assert.IsFalse(response.IsError, "an error result would make the model re-run the wisp that worked");
+        StringAssert.StartsWith(response.Content, "PARTIAL FAILURE: 6 of 7 wisps failed.");
+        StringAssert.Contains(response.Content, "7 wisp(s) completed (1 succeeded, 6 failed");
+        StringAssert.Contains(response.Content, "Failed at the first step run (create); nothing in this wisp completed");
+
+        Assert.AreEqual(false, outcome.Succeeded);
+        Assert.AreEqual("6 of 7 wisps failed", outcome.Detail);
+
+        var nested = outcome.NestedSnapshot();
+        Assert.AreEqual(8, nested.Count, "7 creates + 1 verify (the aborted wisps never ran verify)");
+        var creates = nested.Where(c => c.Name == "calendar-mcp__create_event").ToList();
+        Assert.AreEqual(7, creates.Count, "MCP steps are named by their downstream tool, not mcp_invoke_tool");
+        Assert.AreEqual(1, creates.Count(c => c.Succeeded));
+        Assert.IsTrue(creates.All(c => c.Detail!.StartsWith("wisp wisp-", StringComparison.Ordinal) && c.Detail.EndsWith("step create", StringComparison.Ordinal)));
+        Assert.IsTrue(nested.Single(c => c.Name == "calendar-mcp__get_event").Succeeded);
+        Assert.IsTrue(creates.All(ToolSideEffects.IsSideEffecting));
+    }
+
+    [TestMethod]
+    public async Task ExecuteAsync_AllWispsSucceed_ReportsSuccess_WithNestedCalls()
+    {
+        var executor = CreateCalendarExecutor();
+        var outcome = new ToolCallOutcome();
+        var request = SevenPrepBlocks();
+        request = new ToolInvokeRequest
+        {
+            ToolCallId = request.ToolCallId,
+            ToolName = request.ToolName,
+            Arguments = request.Arguments!.Replace("\"primary\"", "\"default\"", StringComparison.Ordinal),
+        };
+
+        ToolInvokeResponse response;
+        using (ToolCallOutcomeContext.Set(outcome))
+            response = await executor.ExecuteAsync(request, CancellationToken.None);
+
+        Assert.IsFalse(response.Content!.Contains("FAILURE", StringComparison.Ordinal));
+        Assert.AreEqual(true, outcome.Succeeded);
+        Assert.AreEqual("all 7 wisps succeeded", outcome.Detail);
+        Assert.AreEqual(14, outcome.NestedSnapshot().Count);
+    }
+
+    [TestMethod]
+    public async Task ExecuteAsync_OutsideAToolCallLoop_StillWorks()
+    {
+        Assert.IsNull(ToolCallOutcomeContext.Value);
+        var response = await CreateCalendarExecutor().ExecuteAsync(SevenPrepBlocks(), CancellationToken.None);
+        StringAssert.Contains(response.Content, "1 succeeded, 6 failed");
+    }
+
+    [TestMethod]
+    public void ReportOutcome_ManyCalls_KeepsFailedAndStateChangingFirst()
+    {
+        var reads = Enumerable.Range(0, 60).Select(i => new WispStepResult
+        {
+            StepId = $"r{i}", StepIndex = i, IsSuccess = true, Duration = TimeSpan.Zero,
+            ToolCalls = [new LoopToolCall("calendar-mcp__get_event", null, true)],
+        });
+        var failedCreate = new WispStepResult
+        {
+            StepId = "create", StepIndex = 60, IsSuccess = false, Duration = TimeSpan.Zero,
+            ToolCalls = [new LoopToolCall("calendar-mcp__create_event", null, false)],
+        };
+        var batch = new WispBatchResult
+        {
+            BatchId = "b",
+            TotalDuration = TimeSpan.Zero,
+            Results =
+            [
+                new WispExecutionResult
+                {
+                    WispId = "wisp-big", IsSuccess = false, Duration = TimeSpan.Zero,
+                    Definition = new WispDefinition { Description = "big", Steps = [] },
+                    StepResults = [.. reads, failedCreate],
+                },
+            ],
+        };
+        var outcome = new ToolCallOutcome();
+
+        SpawnWispsExecutor.ReportOutcome(outcome, batch);
+
+        var nested = outcome.NestedSnapshot();
+        Assert.AreEqual(SpawnWispsExecutor.MaxReportedNestedCalls, nested.Count);
+        Assert.AreEqual("calendar-mcp__create_event", nested[^1].Name, "the failed create is kept, in order");
+        Assert.AreEqual("1 of 1 wisps failed", outcome.Detail);
+    }
+
+    [TestMethod]
+    public void FormatBatchResult_FailedAfterAnEarlierStep_NamesTheStepsThatCompleted()
+    {
+        var batch = new WispBatchResult
+        {
+            BatchId = "b",
+            TotalDuration = TimeSpan.Zero,
+            Results =
+            [
+                new WispExecutionResult
+                {
+                    WispId = "wisp-1", IsSuccess = false, Duration = TimeSpan.Zero,
+                    Definition = new WispDefinition { Description = "Create then verify", Steps = [] },
+                    StepResults =
+                    [
+                        new WispStepResult { StepId = "create", StepIndex = 0, IsSuccess = true, Duration = TimeSpan.Zero },
+                        new WispStepResult
+                        {
+                            StepId = "verify", StepIndex = 1, IsSuccess = false, Duration = TimeSpan.Zero,
+                            Error = new WispStepError { Category = FailureCategory.External, Message = "not found" },
+                        },
+                    ],
+                },
+            ],
+        };
+
+        var text = SpawnWispsExecutor.FormatBatchResult(batch);
+
+        StringAssert.StartsWith(text, "ALL 1 WISPS FAILED.");
+        StringAssert.Contains(text, "Steps completed before the failure: create; failed at: verify");
+    }
+
+    private sealed class CalendarExecutor : IToolExecutor
+    {
+        // Graph rejects calendarId "primary" (MarimerLLC/calendar-mcp#107) — except for the one
+        // create in the incident that had no calendarId; here Prep 1 stands in for it.
+        public Task<ToolInvokeResponse> ExecuteAsync(ToolInvokeRequest request, CancellationToken ct)
+        {
+            var args = request.Arguments ?? string.Empty;
+            var fails = args.Contains("create_event", StringComparison.Ordinal)
+                        && args.Contains("primary", StringComparison.Ordinal)
+                        && !args.Contains("Prep 1", StringComparison.Ordinal);
+            return Task.FromResult(new ToolInvokeResponse
+            {
+                ToolCallId = request.ToolCallId,
+                ToolName = request.ToolName,
+                Content = fails
+                    ? "Failed to create event: Microsoft Graph returned HTTP 400 (ErrorInvalidIdMalformed): The Id is invalid."
+                    : "{\"id\":\"evt-1\"}",
+                IsError = fails,
+            });
+        }
+    }
+
     private static SpawnWispsExecutor CreateSpawnExecutor(
         out FakeToolRegistry registry, out FakeWorkingMemory memory)
     {

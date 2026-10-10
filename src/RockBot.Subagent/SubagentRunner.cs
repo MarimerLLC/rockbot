@@ -44,6 +44,19 @@ internal sealed class SubagentRunner(
     ISessionWorkRegistry? sessionWorkRegistry = null,
     IOptions<SubagentOptions>? subagentOptions = null)
 {
+    /// <summary>
+    /// The completion-evaluator triggers a subagent's own loop runs on (#686): claims of work it
+    /// must back with tool calls before the result is relayed. The other triggers stay off, so an
+    /// unfinished-looking subagent is not pushed to do work its task did not include.
+    /// </summary>
+    internal static readonly IReadOnlySet<CompletionEvalTrigger> SelfCheckTriggers =
+        new HashSet<CompletionEvalTrigger>
+        {
+            CompletionEvalTrigger.SideEffect,
+            CompletionEvalTrigger.BareClaim,
+            CompletionEvalTrigger.ClaimedChange,
+        };
+
     public async Task RunAsync(
         string taskId,
         string subagentSessionId,
@@ -243,13 +256,18 @@ internal sealed class SubagentRunner(
                 ReplyTo = $"{UserProxy.UserProxyTopics.UserResponse}.{agent.Name}"
             });
 
+            // #686: the subagent checks its own claims of work before they are relayed. It is a
+            // narrow check, not the full gate: it runs only when the subagent changed something,
+            // opened with "Done."-style claims, or claims a change no call made. A subagent once
+            // reported seven events "created and verified" when one create had succeeded.
             finalOutput = await agentLoopRunner.RunAsync(
                 chatMessages, chatOptions, subagentSessionId,
-                tier: tier, enableFollowUp: false, enableCompletionEval: false,
+                tier: tier, enableFollowUp: false, enableCompletionEval: true,
                 maxIterationsOverride: maxIterations,
                 diagnostics: diagnostics,
                 cancellationToken: ct,
-                actionGate: actionGate);
+                actionGate: actionGate,
+                completionEvalTriggers: SelfCheckTriggers);
             finalOutput = ResponseSanitizer.StripTrailingOffers(finalOutput);
             isSuccess = true;
             subagentActivity?.SetStatus(ActivityStatusCode.Ok);

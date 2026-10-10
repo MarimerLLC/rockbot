@@ -18,6 +18,11 @@ public enum CompletionEvalTrigger
     ImperativeNoTools,
     /// <summary>The loop made a side-effecting tool call (wrote, edited, uploaded, sent…).</summary>
     SideEffect,
+    /// <summary>
+    /// The reply claims a change or check ("I have also updated…", "Scheduled and verified seven…")
+    /// and no tool call in the loop changed anything (#686).
+    /// </summary>
+    ClaimedChange,
     /// <summary>The pre-#666 gate: hallucinated-action or capability-denial pattern, a very short reply, or a loop that did not stop on its own.</summary>
     Pattern,
 }
@@ -102,6 +107,28 @@ public static class CompletionEvalTriggers
         @"(?:\s+(?:it|that|this|now))?[*_]*\s*(?:[.!:;,—–]|-\s|\r?\n|$)",
         Opts);
 
+    // Past-tense verbs of a claimed change, for ChangeClaimRegex.
+    private const string ChangeVerbs =
+        @"created|scheduled|rescheduled|booked|updated|wrote|written|saved|sent|uploaded|added|deleted|removed|" +
+        @"edited|revised|rewritten|cancell?ed|moved|renamed|published|posted|filed|drafted|replaced|verified|confirmed";
+
+    /// <summary>
+    /// A reply that claims, anywhere in it, a change or a check it made (#686). Examples are
+    /// "I have also updated the checklist", "Scheduled and verified seven prep blocks", "- Created
+    /// `drafts/x.md`" and "the event has been created". <see cref="BareCompletionClaimRegex"/>
+    /// only looks at the opening, and <see cref="AgentLoopRunner.HallucinatedActionRegex"/> misses
+    /// "also"/"now" and claims that open a sentence. A sentence-opening verb must be capitalised
+    /// and followed by a word, so "created: 2026-10-10" in a listing does not match.
+    /// </summary>
+    public static readonly Regex ChangeClaimRegex = new(
+        // "I have also updated…", "I've now scheduled…", "we created…"
+        @"\b(?:I|we)(?:" + Ap + @"ve|\s+have)?\s+(?:(?:also|now|just|already|successfully|then|since)\s+)*(?:" + ChangeVerbs + @")\b" +
+        // "Scheduled and verified seven…", "- Created `drafts/x.md`", "Updated 3 files." — at a sentence or bullet start
+        @"|(?:^|[.!?]\s+|\n[\s>]*(?:[-*•]|\d+[.)])?\s*)(?:\*\*)?(?-i:Created|Scheduled|Rescheduled|Booked|Updated|Wrote|Saved|Sent|Uploaded|Added|Deleted|Removed|Edited|Revised|Cancell?ed|Moved|Renamed|Published|Posted|Filed|Drafted|Replaced|Verified)(?:\*\*)?(?:\s+and\s+\w+)?\s+(?=[\w`*""'“])" +
+        // "the event has been created", "all seven have now been scheduled"
+        @"|\b(?:has|have)\s+(?:(?:also|now|just|already|successfully|all)\s+)*been\s+(?:" + ChangeVerbs + @")\b",
+        Opts);
+
     // Verbs a user gives as an instruction. Shared by the sentence-start and "can you…" forms.
     private const string ActionVerbs =
         @"go\s+ahead|figure\s+out|make(?!\s+sense\b)|create|fix|update|trim|cut|upload|send|write|rewrite|edit|add|remove|delete|" +
@@ -161,6 +188,10 @@ public static class CompletionEvalTriggers
     public static bool IsBareCompletionClaim(string? reply) =>
         !string.IsNullOrWhiteSpace(reply) && BareCompletionClaimRegex.IsMatch(reply);
 
+    /// <summary>True when <paramref name="reply"/> claims a change or check anywhere in it (#686).</summary>
+    public static bool IsChangeClaim(string? reply) =>
+        !string.IsNullOrWhiteSpace(reply) && ChangeClaimRegex.IsMatch(reply);
+
     /// <summary>True when <paramref name="userMessage"/> gives the agent an instruction.</summary>
     public static bool IsImperativeInstruction(string? userMessage) =>
         !string.IsNullOrWhiteSpace(userMessage) && ImperativeInstructionRegex.IsMatch(userMessage);
@@ -204,6 +235,7 @@ public static class CompletionEvalTriggers
         CompletionEvalTrigger.BareClaim => "bare-claim",
         CompletionEvalTrigger.ImperativeNoTools => "imperative-no-tools",
         CompletionEvalTrigger.SideEffect => "side-effect",
+        CompletionEvalTrigger.ClaimedChange => "claimed-change",
         CompletionEvalTrigger.Pattern => "pattern",
         _ => "none",
     };
@@ -226,44 +258,55 @@ public static class CompletionEvalTriggers
     /// <summary>
     /// Picks the trigger for a finished loop, or <see cref="CompletionEvalTrigger.None"/> to skip
     /// the evaluator. Precedence (first match wins, for the log): subagent synthesis, promise
-    /// without action, bare claim, instruction with no tools, side effect, then the pre-#666
-    /// pattern gate.
+    /// without action, bare claim, instruction with no tools, side effect, claimed change (#686),
+    /// then the pre-#666 pattern gate.
     /// </summary>
     /// <param name="response">The loop's final reply.</param>
     /// <param name="latestUserMessage">The user message the loop answers.</param>
     /// <param name="toolCalls">Every tool call the loop made.</param>
     /// <param name="subagentSynthesis">True when the loop relays a subagent's result.</param>
     /// <param name="modelStopped">False when the loop ended on its iteration cap rather than on its own.</param>
+    /// <param name="enabled">When set, only these triggers count (#686): the first match among them
+    /// wins, so a trigger that is off cannot hide a later one that is on.</param>
     public static CompletionEvalTrigger Decide(
         string response,
         string latestUserMessage,
         IReadOnlyList<LoopToolCall> toolCalls,
         bool subagentSynthesis,
-        bool modelStopped = true)
+        bool modelStopped = true,
+        IReadOnlySet<CompletionEvalTrigger>? enabled = null)
     {
-        if (subagentSynthesis)
+        bool On(CompletionEvalTrigger trigger) => enabled is null || enabled.Contains(trigger);
+
+        if (subagentSynthesis && On(CompletionEvalTrigger.SubagentSynthesis))
             return CompletionEvalTrigger.SubagentSynthesis;
 
         var noTools = SubstantiveCalls(toolCalls).Count == 0;
 
-        if (noTools && IsPromiseWithoutAction(response))
+        if (noTools && On(CompletionEvalTrigger.PromiseNoAction) && IsPromiseWithoutAction(response))
             return CompletionEvalTrigger.PromiseNoAction;
 
-        if (IsBareCompletionClaim(response))
+        if (On(CompletionEvalTrigger.BareClaim) && IsBareCompletionClaim(response))
             return CompletionEvalTrigger.BareClaim;
 
-        if (noTools && IsImperativeInstruction(latestUserMessage))
+        if (noTools && On(CompletionEvalTrigger.ImperativeNoTools) && IsImperativeInstruction(latestUserMessage))
             return CompletionEvalTrigger.ImperativeNoTools;
 
-        if (toolCalls.Any(ToolSideEffects.IsSideEffecting))
+        if (On(CompletionEvalTrigger.SideEffect) && toolCalls.Any(ToolSideEffects.IsSideEffecting))
             return CompletionEvalTrigger.SideEffect;
+
+        // #686: a claimed change with no state-changing call behind it. A subagent once reported
+        // "I have also updated the checklist" after 78 calls, none of them a write.
+        if (On(CompletionEvalTrigger.ClaimedChange) && IsChangeClaim(response))
+            return CompletionEvalTrigger.ClaimedChange;
 
         // Pre-#666 gate. A short reply to "thanks" or "hi" is expected, so it is exempt.
         var shortReply = response.Length < 20 && !(noTools && IsTrivialChat(latestUserMessage));
-        if (!modelStopped
-            || shortReply
-            || AgentLoopRunner.HallucinatedActionRegex.IsMatch(response)
-            || AgentLoopRunner.CapabilityDenialRegex.IsMatch(response))
+        if (On(CompletionEvalTrigger.Pattern)
+            && (!modelStopped
+                || shortReply
+                || AgentLoopRunner.HallucinatedActionRegex.IsMatch(response)
+                || AgentLoopRunner.CapabilityDenialRegex.IsMatch(response)))
             return CompletionEvalTrigger.Pattern;
 
         return CompletionEvalTrigger.None;
@@ -279,6 +322,9 @@ public static class CompletionEvalTriggers
 
     /// <summary>The longest argument summary a relayed tool call keeps (#683).</summary>
     public const int MaxRelayedArgumentChars = 100;
+
+    /// <summary>How many of a batch tool's nested calls are relayed or listed for the evaluator (#686).</summary>
+    public const int MaxRelayedNestedCalls = 15;
 
     /// <summary>Character budget shared by all "Tool calls made by subagent" sections of one evaluator request (#683).</summary>
     public const int RelayedWorkBudgetChars = 3000;
@@ -305,7 +351,9 @@ public static class CompletionEvalTriggers
         "context or information, or asks a question. Skip questions 1–2, except that a question the user " +
         "asked must be answered. Judge the reply on questions 3–5 only: are its facts, numbers and claims " +
         "supported by the tool calls and accurately stated? Do NOT mark it INCOMPLETE because the user's " +
-        "wider goal implies more work (building, writing, researching, fixing) that this message did not ask for.";
+        "wider goal implies more work (building, writing, researching, fixing) that this message did not ask for. " +
+        "A claim that something was created, updated, written, scheduled or verified this turn still needs a " +
+        "successful tool call that did it.";
 
     /// <summary>What the evaluator is told when the user gave an instruction (#683).</summary>
     public const string InstructionRubric =
@@ -348,7 +396,9 @@ public static class CompletionEvalTriggers
     public static IReadOnlyList<string> ExternalChanges(
         IReadOnlyList<LoopToolCall> calls, IReadOnlyList<RelayedSubagentWork>? relayed = null)
     {
+        // #686: a batch tool's own name never reads as a change; the calls it made do.
         var changes = calls
+            .SelectMany(c => c.Nested is { Count: > 0 } nested ? nested.Prepend(c) : Enumerable.Repeat(c, 1))
             .Where(ConsequentialActions.IsSucceededConsequential)
             .Select(DisplayName)
             .ToList();
@@ -358,6 +408,7 @@ public static class CompletionEvalTriggers
             {
                 if (work.ToolCalls is null) continue;
                 changes.AddRange(work.ToolCalls
+                    .SelectMany(c => c.Nested is { Count: > 0 } nested ? nested.Prepend(c) : Enumerable.Repeat(c, 1))
                     .Where(ConsequentialActions.IsSucceededConsequential)
                     .Select(c => $"subagent {work.TaskId}: {c.Name}"));
             }
@@ -459,7 +510,10 @@ public static class CompletionEvalTriggers
         {
             var outcome = call.Succeeded ? "ok" : "FAILED";
             var effect = ToolSideEffects.IsSideEffecting(call) ? ", changes state" : string.Empty;
-            sb.AppendLine($"- {DisplayName(call)} ({outcome}{effect})");
+            var detail = call.Detail is null ? string.Empty : $" — {call.Detail}";
+            sb.AppendLine($"- {DisplayName(call)} ({outcome}{effect}){detail}");
+            if (call.Nested is { Count: > 0 } nested)
+                AppendNested(sb, PickNested(nested).Select(n => ToSummary(n, includeNested: false)).ToList(), nested.Count);
         }
         if (calls.Count > MaxToolCallsListed)
             sb.AppendLine($"- … and {calls.Count - MaxToolCallsListed} more");
@@ -487,14 +541,38 @@ public static class CompletionEvalTriggers
                 .ToList();
         }
 
-        return ranked
-            .Select(r => new SubagentToolCallSummary(
-                DisplayName(r.Call),
-                r.Call.Succeeded,
-                ToolSideEffects.IsSideEffecting(r.Call),
-                CompactArguments(r.Call.Arguments, MaxRelayedArgumentChars)))
-            .ToList();
+        return ranked.Select(r => ToSummary(r.Call, includeNested: true)).ToList();
     }
+
+    /// <summary>
+    /// The relayed form of one call. A batch tool's nested calls (#686) are carried one level deep,
+    /// at most <see cref="MaxRelayedNestedCalls"/> of them. When there are more, the failed and
+    /// state-changing ones are kept first.
+    /// </summary>
+    private static SubagentToolCallSummary ToSummary(LoopToolCall call, bool includeNested) =>
+        new(DisplayName(call),
+            call.Succeeded,
+            ToolSideEffects.IsSideEffecting(call),
+            CompactArguments(call.Arguments, MaxRelayedArgumentChars))
+        {
+            Detail = call.Detail,
+            Nested = includeNested && call.Nested is { Count: > 0 } nested
+                ? PickNested(nested).Select(n => ToSummary(n, includeNested: false)).ToList()
+                : null,
+        };
+
+    // The nested calls to show, oldest first. When there are more than MaxRelayedNestedCalls,
+    // failed and state-changing calls are kept first.
+    private static IReadOnlyList<LoopToolCall> PickNested(IReadOnlyList<LoopToolCall> nested) =>
+        nested.Count <= MaxRelayedNestedCalls
+            ? nested
+            : nested
+                .Select((call, index) => (Call: call, Index: index, Rank: EvidenceRank(call)))
+                .OrderBy(n => n.Rank).ThenBy(n => n.Index)
+                .Take(MaxRelayedNestedCalls)
+                .OrderBy(n => n.Index)
+                .Select(n => n.Call)
+                .ToList();
 
     /// <summary>
     /// The "Tool calls made by subagent …" section for one relayed result (#683), within
@@ -559,10 +637,35 @@ public static class CompletionEvalTriggers
     {
         var outcome = call.Succeeded ? "ok" : "FAILED";
         var effect = call.ChangesState ? ", changes state" : string.Empty;
+        var detail = call.Detail is null ? string.Empty : $" — {call.Detail}";
         var args = CompactArguments(call.Arguments, MaxRelayedArgumentCharsShown);
-        return args is null
-            ? $"- {call.Name} ({outcome}{effect})"
-            : $"- {call.Name} ({outcome}{effect}): {args}";
+        var line = args is null
+            ? $"- {call.Name} ({outcome}{effect}){detail}"
+            : $"- {call.Name} ({outcome}{effect}){detail}: {args}";
+        if (call.Nested is not { Count: > 0 } nested)
+            return line;
+
+        var sb = new StringBuilder();
+        sb.AppendLine(line);
+        AppendNested(sb, nested, nested.Count);
+        return sb.ToString().TrimEnd();
+    }
+
+    /// <summary>
+    /// Appends a batch tool's nested calls (#686) as indented <c>↳</c> lines under the call that
+    /// made them, e.g. <c>  ↳ calendar-mcp__create_event (FAILED, changes state) — wisp wisp-9eaa… step create</c>.
+    /// </summary>
+    private static void AppendNested(StringBuilder sb, IReadOnlyList<SubagentToolCallSummary> nested, int total)
+    {
+        foreach (var call in nested)
+        {
+            var outcome = call.Succeeded ? "ok" : "FAILED";
+            var effect = call.ChangesState ? ", changes state" : string.Empty;
+            var detail = call.Detail is null ? string.Empty : $" — {call.Detail}";
+            sb.AppendLine($"  ↳ {call.Name} ({outcome}{effect}){detail}");
+        }
+        if (total > nested.Count)
+            sb.AppendLine($"  ↳ … and {total - nested.Count} more nested calls");
     }
 
     // 0: failed or state-changing (the evidence a relayed claim stands on), 1: other calls,
@@ -612,7 +715,11 @@ public static class CompletionEvalTriggers
         CompletionEvalTrigger.ImperativeNoTools =>
             "The user gave an instruction, and the agent made no tool calls this turn.",
         CompletionEvalTrigger.SideEffect =>
-            "The agent changed something (a file, document, message or record). Check that the change matches the request.",
+            "The agent changed something (a file, document, message or record). Check that the change matches the request, " +
+            "and that every change or check the reply claims, with its count, is backed by a successful call.",
+        CompletionEvalTrigger.ClaimedChange =>
+            "The reply claims that something was created, updated, sent, scheduled or verified, but no tool call this " +
+            "turn changed anything. Check each claim of work done this turn against the tool calls listed.",
         _ => "Routine check.",
     };
 
@@ -665,6 +772,9 @@ public static class CompletionEvalTriggers
             "your tools, then report what actually changed.",
         CompletionEvalTrigger.ImperativeNoTools =>
             " The user gave an instruction and you made no tool calls. Carry it out now with your tools.",
+        CompletionEvalTrigger.ClaimedChange =>
+            " Your reply claims work that no tool call this turn did. Remove or correct every such claim, " +
+            "and report only what your tool calls show actually happened.",
         CompletionEvalTrigger.SubagentSynthesis when userAskedFor == UserRequestKind.InformationOnly =>
             " The user's message gave no instruction. Correct any relayed fact or claim the review flagged, " +
             "and do not start work the user did not ask for. Work the subagent's own tool calls show it did " +

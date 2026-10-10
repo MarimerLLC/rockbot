@@ -355,12 +355,21 @@ public sealed partial class AgentLoopRunner(
           did itself this turn. A relayed claim that neither list supports is unsupported
           (question 4). If a subagent's tool calls are "not reported", do not mark the reply
           INCOMPLETE only because the agent's own calls lack the relayed work.
+        - Lines starting "↳" under a call (for example spawn_wisps) are calls that batch tool made
+          on the agent's behalf, each with its own outcome. A claimed count of things created,
+          scheduled, sent, updated or verified must match the successful calls that did them: a
+          reply that claims seven events when one create succeeded and six FAILED is INCOMPLETE,
+          and the reason names both numbers. A batch call marked FAILED (for example "6 of 7
+          wisps failed") did not do all its work, even when parts of it succeeded.
         - The "What the user asked for" section says "UserAskedFor: instruction" or
           "UserAskedFor: information-only". For information-only, the user's message gave no
           instruction (it shared context or information, or asked a question): skip questions 1–2
           except that a question asked must be answered, and judge only whether the reply's facts,
           numbers and claims are supported and accurately stated (questions 3–5). That the user's
           wider goal implies more work this message did not ask for is NOT a reason for INCOMPLETE.
+          A claim that the agent or a subagent created, updated, wrote, saved, scheduled or
+          verified something this turn is still a claim: it needs a successful call that did it,
+          in the agent's calls or the relayed ones (question 4).
         - An "External changes the user did not ask for" section means the agent (or a subagent it
           relays) changed a calendar, mailbox, the user's files or todos, or other external data
           although the user's message asked for nothing. That is INCOMPLETE, with a reason starting
@@ -473,7 +482,11 @@ public sealed partial class AgentLoopRunner(
         // #685: what started this run, for the consequential-action gate. Null inherits the scope
         // of the run this one is nested in (wisp LLM steps, workers, subagents spawned in-flow);
         // with no enclosing run it is RunOrigin.Unknown, which allows external changes.
-        ActionGateScope? actionGate = null)
+        ActionGateScope? actionGate = null,
+        // #686: when set, the completion evaluator runs only for these triggers. The first one that
+        // matches wins; a disabled trigger never hides a later enabled one. Subagents use this to
+        // check their own claims of work before reporting back.
+        IReadOnlySet<CompletionEvalTrigger>? completionEvalTriggers = null)
     {
         using var _ = ToolCallSessionContext.Set(sessionId);
         // Always bind (possibly null) so a nested run — a subagent started from a tool call —
@@ -756,7 +769,8 @@ public sealed partial class AgentLoopRunner(
                 originalUserRequest,
                 loopToolCalls,
                 subagentSynthesis,
-                modelStopped: result.ExitReason == LoopExitReason.ModelStopped);
+                modelStopped: result.ExitReason == LoopExitReason.ModelStopped,
+                enabled: completionEvalTriggers);
 
             if (trigger == CompletionEvalTrigger.None)
             {
@@ -1460,6 +1474,7 @@ public sealed partial class AgentLoopRunner(
                     TierEscalationContext.Value?.ObserveToolCall(toolName, args);
 
                     object? result;
+                    var textOutcome = new ToolCallOutcome(); // #686, see RockBotFunctionInvokingChatClient
                     // #685: an external change the user did not ask for is refused, not run.
                     if (ActionGateContext.Check(toolName, argsJson) is { } textRefusal)
                     {
@@ -1470,7 +1485,8 @@ public sealed partial class AgentLoopRunner(
                     else
                     try
                     {
-                        result = await tool.InvokeAsync(args, cancellationToken);
+                        using (ToolCallOutcomeContext.Set(textOutcome))
+                            result = await tool.InvokeAsync(args, cancellationToken);
                         toolSw.Stop();
                         textToolActivity?.SetTag("rockbot.tool.result_length", result?.ToString()?.Length ?? 0);
                         textToolActivity?.SetStatus(ActivityStatusCode.Ok);
@@ -1517,8 +1533,9 @@ public sealed partial class AgentLoopRunner(
                     LoopToolCallLedgerContext.Value?.Record(
                         toolName, TruncateLedgerArgs(argsJson),
                         succeeded: textToolStatus == "ok"
-                            && !RockBotFunctionInvokingChatClient.IsErrorResult(textResultStr),
-                        rawArguments: args);
+                            && !RockBotFunctionInvokingChatClient.IsErrorResult(textResultStr)
+                            && textOutcome.Succeeded != false,
+                        rawArguments: args, outcome: textOutcome);
 
                     // Chunking is handled by ChunkingAIFunction wrapper on the tool itself.
                     // Per-tool-result cap: text-parsed calls have no callId so the cap falls
@@ -1622,6 +1639,7 @@ public sealed partial class AgentLoopRunner(
                 var toolStatus = "ok";
                 TierEscalationContext.Value?.ObserveToolCall(fc.Name, fc.Arguments);
                 object? result;
+                var nativeOutcome = new ToolCallOutcome(); // #686, see RockBotFunctionInvokingChatClient
                 // #685: an external change the user did not ask for is refused, not run.
                 if (ActionGateContext.Check(fc.Name, argsSummary) is { } refusal)
                 {
@@ -1632,7 +1650,8 @@ public sealed partial class AgentLoopRunner(
                 else
                 try
                 {
-                    result = await tool.InvokeAsync(args, cancellationToken);
+                    using (ToolCallOutcomeContext.Set(nativeOutcome))
+                        result = await tool.InvokeAsync(args, cancellationToken);
                     toolSw.Stop();
                     toolActivity?.SetTag("rockbot.tool.result_length", result?.ToString()?.Length ?? 0);
                     toolActivity?.SetStatus(ActivityStatusCode.Ok);
@@ -1671,8 +1690,9 @@ public sealed partial class AgentLoopRunner(
                 LoopToolCallLedgerContext.Value?.Record(
                     fc.Name, TruncateLedgerArgs(argsSummary),
                     succeeded: toolStatus == "ok"
-                        && !RockBotFunctionInvokingChatClient.IsErrorResult(nativeResultStr),
-                    rawArguments: fc.Arguments);
+                        && !RockBotFunctionInvokingChatClient.IsErrorResult(nativeResultStr)
+                        && nativeOutcome.Succeeded != false,
+                    rawArguments: fc.Arguments, outcome: nativeOutcome);
 
                 // Per-tool-result cap (text-loop native path). Same intent as the cap
                 // applied by RockBotFunctionInvokingChatClient on the FICC path: stash

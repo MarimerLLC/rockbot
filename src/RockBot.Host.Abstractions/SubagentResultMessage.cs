@@ -63,4 +63,15 @@ public sealed record SubagentResultMessage
 /// <param name="Succeeded">False when the call threw or returned an error result.</param>
 /// <param name="ChangesState">True when the call changed something outside the subagent's own scratch state (wrote, uploaded, sent…).</param>
 /// <param name="Arguments">A short argument summary, or null.</param>
-public sealed record SubagentToolCallSummary(string Name, bool Succeeded, bool ChangesState, string? Arguments);
+public sealed record SubagentToolCallSummary(string Name, bool Succeeded, bool ChangesState, string? Arguments)
+{
+    /// <summary>The tool's own summary of its outcome (#686), e.g. <c>6 of 7 wisps failed</c>, or null.</summary>
+    public string? Detail { get; init; }
+
+    /// <summary>
+    /// The calls a batch tool such as <c>spawn_wisps</c> made on the subagent's behalf (#686), or
+    /// null. Without them a relay showed one successful <c>spawn_wisps</c> where six of seven nested
+    /// creates had failed.
+    /// </summary>
+    public IReadOnlyList<SubagentToolCallSummary>? Nested { get; init; }
+}

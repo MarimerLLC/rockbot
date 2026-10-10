@@ -108,10 +108,20 @@ public class CompletionEvalTriggersTests
     }
 
     [TestMethod]
+    public void Decide_UnbackedActionClaim_IsClaimedChange()
+    {
+        // Before #686 this reached the evaluator only through the legacy hallucination pattern.
+        var trigger = CompletionEvalTriggers.Decide(
+            "I've scheduled the review for Thursday at 3pm and sent the invite.",
+            "what time works for the review?", NoCalls, subagentSynthesis: false);
+        Assert.AreEqual(CompletionEvalTrigger.ClaimedChange, trigger);
+    }
+
+    [TestMethod]
     public void Decide_LegacyHallucinationPattern_StillRuns()
     {
         var trigger = CompletionEvalTriggers.Decide(
-            "I've scheduled the review for Thursday at 3pm and sent the invite.",
+            "Subagent **a1b2c3d4e5** is now running and will report back.",
             "what time works for the review?", NoCalls, subagentSynthesis: false);
         Assert.AreEqual(CompletionEvalTrigger.Pattern, trigger);
     }
@@ -760,6 +770,204 @@ public class CompletionEvalTriggersTests
         StringAssert.Contains(
             CompletionEvalTriggers.RepromptGuidance(CompletionEvalTrigger.PromiseNoAction, NoCalls),
             "Do that work now with your tools");
+    }
+
+    // ── #686: claims of work, and the calls a batch tool made ───────────────
+
+    // Production fixtures, 2026-10-10.
+    internal const string SevenBlocksReply =
+        "Scheduled and verified **seven solo prep blocks** on the default calendar. Each has no attendees " +
+        "and was read back successfully.";
+    internal const string ChecklistReply =
+        "The demo plan is solid. I have also updated the demo-readiness checklist at " +
+        "`drafts/techorama-mcp-v2-demo-readiness-checklist.md`.";
+
+    // The subagent's spawn_wisps call as the ledger now records it: 1 create ok, 6 aborted.
+    private static LoopToolCall SevenBlocksBatch() =>
+        new("spawn_wisps", "definitions=[7 wisps]", false)
+        {
+            Detail = "6 of 7 wisps failed",
+            Nested =
+            [
+                new("calendar-mcp__create_event", "title=Prep 1", true) { Detail = "wisp wisp-01 step create" },
+                .. Enumerable.Range(2, 6).Select(i =>
+                    new LoopToolCall("calendar-mcp__create_event", $"title=Prep {i}", false) { Detail = $"wisp wisp-0{i} step create" }),
+            ],
+        };
+
+    [TestMethod]
+    [DataRow(SevenBlocksReply)]
+    [DataRow(ChecklistReply)]
+    [DataRow("I've now created the draft.")]
+    [DataRow("We created three events for you.")]
+    [DataRow("Here's the summary:\n- Created `drafts/x.md` with the outline\n- Left the deck as is")]
+    [DataRow("All seven events have been created on your calendar.")]
+    [DataRow("The invite has now been sent.")]
+    public void ChangeClaim_Matches(string reply)
+    {
+        Assert.IsTrue(CompletionEvalTriggers.IsChangeClaim(reply), reply);
+    }
+
+    [TestMethod]
+    [DataRow("Here is what I found about the venue.")]
+    [DataRow("I'll create the draft next if you want.")]
+    [DataRow("The file was last updated: 2026-10-01.")]
+    [DataRow("created: 2026-10-10, owner: rocky")]
+    [DataRow("Do you want me to update the checklist?")]
+    [DataRow("The checklist lists what to verify before the demo.")]
+    public void ChangeClaim_DoesNotMatch(string reply)
+    {
+        Assert.IsFalse(CompletionEvalTriggers.IsChangeClaim(reply), reply);
+    }
+
+    [TestMethod]
+    public void Decide_ChecklistClaimAfterOnlyReads_IsClaimedChange()
+    {
+        // The second #686 instance: 78 calls, no write, "I have also updated the checklist".
+        var reads = Enumerable.Range(0, 78).Select(i => Call(i % 2 == 0 ? "file_read" : "web_search")).ToList();
+        var trigger = CompletionEvalTriggers.Decide(ChecklistReply, "Prepare the demo plan.", reads, subagentSynthesis: false);
+        Assert.AreEqual(CompletionEvalTrigger.ClaimedChange, trigger);
+        Assert.AreEqual("claimed-change", CompletionEvalTriggers.LogName(trigger));
+    }
+
+    [TestMethod]
+    public void Decide_EnabledSet_DisabledTriggerDoesNotHideALaterEnabledOne()
+    {
+        // A subagent's task is an instruction. With no tool calls, ImperativeNoTools matches first,
+        // but the subagent self-check only enables claims of work.
+        var enabled = new HashSet<CompletionEvalTrigger>
+        {
+            CompletionEvalTrigger.SideEffect, CompletionEvalTrigger.BareClaim, CompletionEvalTrigger.ClaimedChange,
+        };
+
+        Assert.AreEqual(CompletionEvalTrigger.ImperativeNoTools,
+            CompletionEvalTriggers.Decide(ChecklistReply, "Update the checklist.", NoCalls, subagentSynthesis: false));
+        Assert.AreEqual(CompletionEvalTrigger.ClaimedChange,
+            CompletionEvalTriggers.Decide(ChecklistReply, "Update the checklist.", NoCalls, subagentSynthesis: false, enabled: enabled));
+        Assert.AreEqual(CompletionEvalTrigger.None,
+            CompletionEvalTriggers.Decide(WebSearchReply, WebSearchUser, NoCalls, subagentSynthesis: false, enabled: enabled),
+            "a promise is not a claim of work");
+    }
+
+    [TestMethod]
+    public void Decide_SpawnWispsWithNestedCreates_IsSideEffect()
+    {
+        var trigger = CompletionEvalTriggers.Decide(SevenBlocksReply, "Schedule seven prep blocks.", [SevenBlocksBatch()],
+            subagentSynthesis: false);
+        Assert.AreEqual(CompletionEvalTrigger.SideEffect, trigger);
+    }
+
+    [TestMethod]
+    public void SummarizeForRelay_CarriesBatchOutcomeAndNestedCalls()
+    {
+        var summary = CompletionEvalTriggers.SummarizeForRelay([SevenBlocksBatch()]).Single();
+
+        Assert.AreEqual("spawn_wisps", summary.Name);
+        Assert.IsFalse(summary.Succeeded);
+        Assert.IsTrue(summary.ChangesState);
+        Assert.AreEqual("6 of 7 wisps failed", summary.Detail);
+        Assert.AreEqual(7, summary.Nested!.Count);
+        Assert.AreEqual(6, summary.Nested.Count(n => !n.Succeeded));
+        Assert.IsTrue(summary.Nested.All(n => n.ChangesState && n.Nested is null));
+    }
+
+    [TestMethod]
+    public void SummarizeForRelay_ManyNestedCalls_KeepsFailedAndStateChangingFirst()
+    {
+        var reads = Enumerable.Range(0, 30).Select(i => new LoopToolCall("calendar-mcp__get_event", $"id={i}", true));
+        var batch = new LoopToolCall("spawn_wisps", null, false)
+        {
+            Nested = [.. reads, new LoopToolCall("calendar-mcp__create_event", "title=X", false)],
+        };
+
+        var nested = CompletionEvalTriggers.SummarizeForRelay([batch]).Single().Nested!;
+
+        Assert.AreEqual(CompletionEvalTriggers.MaxRelayedNestedCalls, nested.Count);
+        Assert.AreEqual("calendar-mcp__create_event → create_event", nested[^1].Name, "the failed create is kept, in order");
+    }
+
+    [TestMethod]
+    public void EvaluatorMessage_RelayOfTheSevenBlocks_ShowsTheFailedNestedCreates()
+    {
+        // Acceptance for #686: replaying the relay gives the evaluator what it needs to answer
+        // INCOMPLETE. That is the batch marked FAILED with its count, plus each nested create.
+        var relayed = new RelayedSubagentWork("0ed4f3073397",
+            CompletionEvalTriggers.SummarizeForRelay([new LoopToolCall("calendar-mcp__create_event", "title=Prep 1", true), SevenBlocksBatch()]),
+            TotalToolCalls: 2);
+
+        var user = AgentLoopRunner.BuildCompletionEvaluatorMessages(
+            SynthesisInput([relayed]) with { AgentResponse = SevenBlocksReply })[1].Text!;
+
+        StringAssert.Contains(user, "- spawn_wisps (FAILED, changes state) — 6 of 7 wisps failed");
+        StringAssert.Contains(user, "  ↳ calendar-mcp__create_event → create_event (ok, changes state) — wisp wisp-01 step create");
+        StringAssert.Contains(user, "  ↳ calendar-mcp__create_event → create_event (FAILED, changes state) — wisp wisp-07 step create");
+        Assert.AreEqual(6, CountOf(user, "↳ calendar-mcp__create_event → create_event (FAILED"));
+
+        var system = AgentLoopRunner.BuildCompletionEvaluatorMessages(SynthesisInput([relayed]))[0].Text!;
+        StringAssert.Contains(system, "Lines starting \"↳\"");
+        StringAssert.Contains(system, "the reason names both numbers");
+    }
+
+    [TestMethod]
+    public void FormatToolCalls_OwnBatchCall_ShowsNestedCalls()
+    {
+        var text = CompletionEvalTriggers.FormatToolCalls([SevenBlocksBatch()]);
+
+        StringAssert.Contains(text, "- spawn_wisps (FAILED, changes state) — 6 of 7 wisps failed");
+        Assert.AreEqual(6, CountOf(text, "↳ calendar-mcp__create_event → create_event (FAILED, changes state)"));
+    }
+
+    [TestMethod]
+    public void ExternalChanges_IncludeTheSucceededNestedCreate_Only()
+    {
+        var changes = CompletionEvalTriggers.ExternalChanges([SevenBlocksBatch()]);
+        CollectionAssert.AreEqual(new[] { "calendar-mcp__create_event → create_event" }, changes.ToArray());
+
+        var relayed = new RelayedSubagentWork("abc", CompletionEvalTriggers.SummarizeForRelay([SevenBlocksBatch()]));
+        CollectionAssert.AreEqual(new[] { "subagent abc: calendar-mcp__create_event → create_event" },
+            CompletionEvalTriggers.ExternalChanges([], [relayed]).ToArray());
+    }
+
+    [TestMethod]
+    public void InformationOnlyRubric_StillChecksClaimsOfWork()
+    {
+        StringAssert.Contains(CompletionEvalTriggers.InformationOnlyRubric,
+            "A claim that something was created, updated, written, scheduled or verified this turn still needs");
+    }
+
+    [TestMethod]
+    public void RepromptGuidance_ClaimedChange_AsksToCorrectTheClaims()
+    {
+        StringAssert.Contains(
+            CompletionEvalTriggers.RepromptGuidance(CompletionEvalTrigger.ClaimedChange, NoCalls),
+            "Remove or correct every such claim");
+    }
+
+    [TestMethod]
+    public void SubagentToolCallSummary_JsonWithoutNested_StillDeserializes()
+    {
+        // A result published by a pre-#686 subagent.
+        const string json = """{"name":"spawn_wisps","succeeded":true,"changesState":false,"arguments":"count=2"}""";
+        var options = new System.Text.Json.JsonSerializerOptions(System.Text.Json.JsonSerializerDefaults.Web);
+
+        var summary = System.Text.Json.JsonSerializer.Deserialize<SubagentToolCallSummary>(json, options)!;
+        Assert.AreEqual("spawn_wisps", summary.Name);
+        Assert.IsNull(summary.Nested);
+        Assert.IsNull(summary.Detail);
+
+        var roundTrip = System.Text.Json.JsonSerializer.Deserialize<SubagentToolCallSummary>(
+            System.Text.Json.JsonSerializer.Serialize(
+                CompletionEvalTriggers.SummarizeForRelay([SevenBlocksBatch()]).Single(), options), options)!;
+        Assert.AreEqual(7, roundTrip.Nested!.Count);
+        Assert.AreEqual("6 of 7 wisps failed", roundTrip.Detail);
+    }
+
+    private static int CountOf(string text, string value)
+    {
+        var count = 0;
+        for (var i = text.IndexOf(value, StringComparison.Ordinal); i >= 0; i = text.IndexOf(value, i + 1, StringComparison.Ordinal))
+            count++;
+        return count;
     }
 
     // ── Verdict parsing stays robust ────────────────────────────────────────
