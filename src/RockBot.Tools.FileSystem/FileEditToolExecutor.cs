@@ -27,6 +27,9 @@ internal sealed class FileEditToolExecutor(FileSystemOptions options, FileReadLe
 
     public async Task<ToolInvokeResponse> ExecuteAsync(ToolInvokeRequest request, CancellationToken ct)
     {
+        string? relativePath = null;
+        string? fullPath = null;
+
         try
         {
             var args = ParseArguments(request.Arguments);
@@ -51,7 +54,7 @@ internal sealed class FileEditToolExecutor(FileSystemOptions options, FileReadLe
                     + "text, pass an empty string.");
             }
 
-            var relativePath = pathElement.GetString()!;
+            relativePath = pathElement.GetString()!;
             var oldString = oldElement.GetString()!;
             var newString = newElement.GetString()!;
 
@@ -62,7 +65,7 @@ internal sealed class FileEditToolExecutor(FileSystemOptions options, FileReadLe
                     + "it would refuse your edit as ambiguous with no way to see why.");
             }
 
-            var fullPath = FileWriteToolExecutor.SafeResolvePath(options.BasePath, relativePath);
+            fullPath = FileWriteToolExecutor.SafeResolvePath(options.BasePath, relativePath);
             if (fullPath is null)
                 return Error(request, "Invalid path: must be within the shared volume.");
 
@@ -96,8 +99,11 @@ internal sealed class FileEditToolExecutor(FileSystemOptions options, FileReadLe
                 // The atomic write replaces the directory entry, which a writable directory
                 // permits even when the file itself is not writable. Probe first so editing
                 // keeps the same permission boundary an in-place write would have had.
-                if (!CanWrite(fullPath))
+                if (!WriteAccess.CanWrite(fullPath))
                 {
+                    if (AttachmentsArea.Contains(options, fullPath))
+                        return Error(request, AttachmentsArea.Describe(options, relativePath, systemError: null));
+
                     return Error(request,
                         $"Permission denied: {relativePath} is not writable. It was created by "
                         + "another user on the shared volume; ask an operator to fix its ownership "
@@ -150,6 +156,13 @@ internal sealed class FileEditToolExecutor(FileSystemOptions options, FileReadLe
                 gate.Release();
             }
         }
+        catch (Exception ex) when (fullPath is not null && WriteAccess.IsAccessDenied(ex)
+                                   && AttachmentsArea.Contains(options, fullPath))
+        {
+            // The atomic write creates a temp file beside the target, so a non-writable
+            // attachments directory surfaces here rather than at the probe above.
+            return Error(request, AttachmentsArea.Describe(options, relativePath!, ex.Message));
+        }
         catch (Exception ex)
         {
             return Error(request, $"Edit failed: {ex.Message}");
@@ -187,22 +200,6 @@ internal sealed class FileEditToolExecutor(FileSystemOptions options, FileReadLe
                 return true;
             default:
                 return false;
-        }
-    }
-
-    /// <summary>
-    /// Whether the file itself can be opened for writing, independent of its directory.
-    /// </summary>
-    private static bool CanWrite(string path)
-    {
-        try
-        {
-            using var probe = new FileStream(path, FileMode.Open, FileAccess.Write, FileShare.ReadWrite);
-            return true;
-        }
-        catch (UnauthorizedAccessException)
-        {
-            return false;
         }
     }
 

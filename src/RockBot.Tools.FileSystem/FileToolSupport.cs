@@ -151,9 +151,11 @@ internal static class MissingFile
 
     /// <summary>
     /// Volume files whose name matches the requested file's name (case-insensitively), or
-    /// failing that, files whose name contains its stem. Never returns backups.
+    /// failing that, files whose name contains its stem. Never returns backups, nor any
+    /// volume-relative path for which <paramref name="exclude"/> returns <c>true</c>.
     /// </summary>
-    internal static IReadOnlyList<string> FindSimilar(string basePath, string relativePath)
+    internal static IReadOnlyList<string> FindSimilar(
+        string basePath, string relativePath, Func<string, bool>? exclude = null)
     {
         var fileName = Path.GetFileName(relativePath.Replace('\\', '/').TrimEnd('/'));
         if (string.IsNullOrEmpty(fileName))
@@ -180,7 +182,7 @@ internal static class MissingFile
                     break;
 
                 var rel = Path.GetRelativePath(fullBase, file).Replace('\\', '/');
-                if (FileBackup.IsBackupPath(rel))
+                if (FileBackup.IsBackupPath(rel) || exclude?.Invoke(rel) == true)
                     continue;
 
                 var name = Path.GetFileName(rel);
@@ -198,6 +200,158 @@ internal static class MissingFile
         var chosen = exact.Count > 0 ? exact : partial;
         chosen.Sort(StringComparer.Ordinal);
         return chosen.Take(MaxSuggestions).ToList();
+    }
+}
+
+/// <summary>Write-permission checks and the messages for a refused write.</summary>
+internal static class WriteAccess
+{
+    /// <summary>
+    /// Whether the file itself can be opened for writing, independent of its directory.
+    /// </summary>
+    public static bool CanWrite(string fullPath)
+    {
+        try
+        {
+            using var probe = new FileStream(fullPath, FileMode.Open, FileAccess.Write, FileShare.ReadWrite);
+            return true;
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Whether <paramref name="ex"/> is a permission failure: <see cref="UnauthorizedAccessException"/>
+    /// (EACCES/EPERM on Unix, access denied or a read-only attribute on Windows), or an
+    /// <see cref="IOException"/> reporting access denied or a read-only filesystem (EROFS).
+    /// </summary>
+    public static bool IsAccessDenied(Exception ex) =>
+        ex is UnauthorizedAccessException
+        || (ex is IOException io
+            && (io.Message.Contains("denied", StringComparison.OrdinalIgnoreCase)
+                || io.Message.Contains("read-only file system", StringComparison.OrdinalIgnoreCase)));
+}
+
+/// <summary>
+/// The attachments area (<see cref="FileSystemOptions.AttachmentsDirectory"/>) and the error
+/// for a write into it that the filesystem refused.
+/// </summary>
+/// <remarks>
+/// In issue #677 a model downloaded a OneDrive deck into <c>attachments/</c>, failed to
+/// write it back there with a bare "Access to the path … is denied", and then went looking
+/// for some other path to write to. It ended up creating a renamed sibling copy. The message
+/// here says what <c>attachments/</c> is for and names the <c>drafts/</c> file to edit instead.
+/// </remarks>
+internal static class AttachmentsArea
+{
+    /// <summary>Whether <paramref name="fullPath"/> lies inside the attachments directory.</summary>
+    public static bool Contains(FileSystemOptions options, string fullPath)
+    {
+        var dir = ConfiguredDirectory(options);
+        if (dir is null)
+            return false;
+
+        var fullDir = Path.GetFullPath(Path.Combine(Path.GetFullPath(options.BasePath), dir));
+        var candidate = Path.GetFullPath(fullPath);
+        return candidate.StartsWith(fullDir + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase)
+            || candidate.StartsWith(fullDir + Path.AltDirectorySeparatorChar, StringComparison.OrdinalIgnoreCase)
+            || candidate.Equals(fullDir, StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// The error for a refused write to <paramref name="relativePath"/> in the attachments
+    /// area. Names a same-name file outside the attachments area, preferring <c>drafts/</c>,
+    /// when one exists.
+    /// </summary>
+    public static string Describe(FileSystemOptions options, string relativePath, string? systemError)
+    {
+        var dir = ConfiguredDirectory(options) ?? "attachments";
+        var name = Path.GetFileName(relativePath.Replace('\\', '/').TrimEnd('/'));
+        var match = FindMatchingDraft(options, relativePath);
+
+        var sb = new StringBuilder();
+        sb.Append($"Cannot change {relativePath}: {dir}/ holds downloaded files and is read-only for file tools.");
+        if (match is not null)
+        {
+            sb.Append($" Edit the matching file under drafts/ instead: {match} exists (file_read it, then use "
+                + "file_edit or file_write). If it is not the same document, copy the content to a new drafts/ "
+                + "path and work there.");
+        }
+        else
+        {
+            sb.Append($" Edit the matching file under drafts/ (e.g. drafts/{name}) if one exists, or copy the "
+                + "content to a new drafts/ path and work there.");
+        }
+
+        if (!string.IsNullOrWhiteSpace(systemError))
+            sb.Append($" (System error: {systemError})");
+
+        return sb.ToString();
+    }
+
+    /// <summary>
+    /// A volume file outside the attachments area with the same name as
+    /// <paramref name="relativePath"/>, preferring one under <c>drafts/</c>; <c>null</c> if none.
+    /// </summary>
+    internal static string? FindMatchingDraft(FileSystemOptions options, string relativePath)
+    {
+        var name = Path.GetFileName(relativePath.Replace('\\', '/').TrimEnd('/'));
+        if (string.IsNullOrEmpty(name))
+            return null;
+
+        var dir = ConfiguredDirectory(options);
+        var exact = MissingFile.FindSimilar(options.BasePath, relativePath,
+                exclude: rel => dir is not null
+                    && (rel.Equals(dir, StringComparison.OrdinalIgnoreCase)
+                        || rel.StartsWith(dir + "/", StringComparison.OrdinalIgnoreCase)))
+            .Where(rel => Path.GetFileName(rel).Equals(name, StringComparison.OrdinalIgnoreCase))
+            .ToList();
+
+        return exact.FirstOrDefault(rel => rel.StartsWith("drafts/", StringComparison.OrdinalIgnoreCase))
+            ?? exact.FirstOrDefault();
+    }
+
+    /// <summary>The configured directory, normalized to forward slashes without surrounding ones; null if disabled.</summary>
+    private static string? ConfiguredDirectory(FileSystemOptions options)
+    {
+        var dir = options.AttachmentsDirectory?.Replace('\\', '/').Trim('/');
+        return string.IsNullOrWhiteSpace(dir) ? null : dir;
+    }
+}
+
+/// <summary>
+/// Spots a new file that looks like a renamed copy of one whose overwrite was just refused,
+/// e.g. <c>deck-revised.md</c> after <c>deck.md</c>. Diagnostic only (issue #677): it tells us
+/// whether the refusal text keeps the model from working around the guard.
+/// </summary>
+internal static partial class SiblingCopy
+{
+    [System.Text.RegularExpressions.GeneratedRegex(
+        @"^[-_. ]?(revised|revision|rev\d*|v\d+|new|copy|updated|update|edited|edit|final|fixed|modified|\d+)$",
+        System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.CultureInvariant)]
+    private static partial System.Text.RegularExpressions.Regex Suffix();
+
+    /// <summary>
+    /// Whether <paramref name="newPath"/> is <paramref name="originalPath"/>'s name plus a
+    /// copy-style suffix, with the same extension. Directories are not compared.
+    /// </summary>
+    public static bool IsLikely(string newPath, string originalPath)
+    {
+        var newName = Path.GetFileName(newPath);
+        var oldName = Path.GetFileName(originalPath);
+        if (newName.Equals(oldName, StringComparison.OrdinalIgnoreCase))
+            return false;
+        if (!Path.GetExtension(newName).Equals(Path.GetExtension(oldName), StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        var newStem = Path.GetFileNameWithoutExtension(newName);
+        var oldStem = Path.GetFileNameWithoutExtension(oldName);
+        if (oldStem.Length == 0 || !newStem.StartsWith(oldStem, StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        return Suffix().IsMatch(newStem[oldStem.Length..]);
     }
 }
 

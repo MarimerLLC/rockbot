@@ -328,7 +328,10 @@ and return the path so a follow-up MCP call can attach it.
 - `file_write` refuses to replace a file you have not read in full in this session.
   `file_read` pages large files. Keep reading at the `offset=` its footer names until
   it says "end of file". When an overwrite is refused, do what the message says. Do
-  not rebuild the file from a summary or a partial view.
+  not rebuild the file from a summary or a partial view, and do not write a renamed
+  copy (`deck-revised.md`) instead: the original goes stale.
+- `attachments/` holds downloaded files and is read-only for file tools. Change the
+  matching file under `drafts/`, or copy the content to a new `drafts/` path.
 - Copy `file_edit`'s `old_string` from `file_read` output, not from a summary. When
   it does not match, the error shows the nearest region of the file with line
   numbers. Copy from that.
