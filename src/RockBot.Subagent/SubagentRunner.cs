@@ -141,7 +141,7 @@ internal sealed class SubagentRunner(
         // Working memory tools scoped to this subagent's namespace. The TTL floor keeps
         // findings alive until the primary reads them after batch consolidation.
         var sessionWorkingMemoryTools = new WorkingMemoryTools(workingMemory, subagentNamespace, logger,
-            workingMemoryOptions.Value.BackgroundTaskMinimumTtl);
+            workingMemoryOptions.Value.BackgroundTaskMinimumTtl, workingMemoryOptions.Value);
 
         // Registry tools — include MCP data tools and web/script tools.
         // Excluded:

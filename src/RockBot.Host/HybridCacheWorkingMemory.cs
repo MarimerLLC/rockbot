@@ -37,7 +37,8 @@ internal sealed class HybridCacheWorkingMemory : IWorkingMemory
         DateTimeOffset StoredAt,
         DateTimeOffset ExpiresAt,
         string? Category,
-        IReadOnlyList<string> Tags);
+        IReadOnlyList<string> Tags,
+        string? Writer = null);
 
     public HybridCacheWorkingMemory(
         IMemoryCache cache,
@@ -72,10 +73,32 @@ internal sealed class HybridCacheWorkingMemory : IWorkingMemory
 
     public Task SetAsync(string key, string value, TimeSpan? ttl = null,
         string? category = null, IReadOnlyList<string>? tags = null)
+        => SetAsync(key, value, ttl, category, tags, writer: null);
+
+    public Task SetAsync(string key, string value, TimeSpan? ttl, string? category,
+        IReadOnlyList<string>? tags, string? writer)
     {
-        var effectiveTtl = ttl ?? _options.DefaultTtl;
         var now = DateTimeOffset.UtcNow;
-        var expiresAt = now + effectiveTtl;
+        var expiresAt = now + (ttl ?? _options.DefaultTtl);
+        return SetCoreAsync(key, value, now, expiresAt, category, tags, writer);
+    }
+
+    /// <summary>
+    /// Re-seeds an entry loaded from disk, keeping its original stored-at and writer. Going
+    /// through <see cref="SetAsync(string, string, TimeSpan?, string?, IReadOnlyList{string}?)"/>
+    /// would stamp it with the restart time — which made a days-old patrol snapshot look like
+    /// it had just been written (issue #668). A <c>default</c> <paramref name="storedAt"/>
+    /// (legacy file with no timestamp) is kept as "unknown".
+    /// </summary>
+    internal Task RestoreAsync(string key, string value, DateTimeOffset storedAt, DateTimeOffset expiresAt,
+        string? category, IReadOnlyList<string>? tags, string? writer)
+        => SetCoreAsync(key, value, storedAt, expiresAt, category, tags, writer);
+
+    private Task SetCoreAsync(string key, string value, DateTimeOffset storedAt, DateTimeOffset expiresAt,
+        string? category, IReadOnlyList<string>? tags, string? writer)
+    {
+        var now = DateTimeOffset.UtcNow;
+        var effectiveTtl = expiresAt - now;
 
         var ns = GetNamespace(key);
         var nsCount = _index.Count(kvp =>
@@ -90,7 +113,7 @@ internal sealed class HybridCacheWorkingMemory : IWorkingMemory
             return Task.CompletedTask;
         }
 
-        _index[key] = new EntryMeta(now, expiresAt, category, tags ?? []);
+        _index[key] = new EntryMeta(storedAt, expiresAt, category, tags ?? [], writer);
         _cache.Set(CacheKey(key), value, new MemoryCacheEntryOptions
         {
             AbsoluteExpiration = expiresAt
@@ -154,6 +177,22 @@ internal sealed class HybridCacheWorkingMemory : IWorkingMemory
         return Task.FromResult(value);
     }
 
+    public Task<WorkingMemoryEntry?> GetEntryAsync(string key)
+    {
+        if (!_index.TryGetValue(key, out var meta) || meta.ExpiresAt <= DateTimeOffset.UtcNow)
+        {
+            _index.TryRemove(key, out _);
+            _embeddings.TryRemove(key, out _);
+            return Task.FromResult<WorkingMemoryEntry?>(null);
+        }
+
+        if (!_cache.TryGetValue<string>(CacheKey(key), out var value) || value is null)
+            return Task.FromResult<WorkingMemoryEntry?>(null);
+
+        return Task.FromResult<WorkingMemoryEntry?>(
+            new WorkingMemoryEntry(key, value, meta.StoredAt, meta.ExpiresAt, meta.Category, meta.Tags, meta.Writer));
+    }
+
     public async Task<ContentEditResult> EditAsync(string key, string oldText, string newText, bool replaceAll = false)
     {
         ArgumentNullException.ThrowIfNull(oldText);
@@ -185,13 +224,20 @@ internal sealed class HybridCacheWorkingMemory : IWorkingMemory
 
             // Reuse the window the entry was stored with, restarting it from now. Going back
             // through SetAsync is what re-arms the cache expiry and re-embeds the new value.
-            var window = meta.ExpiresAt - meta.StoredAt;
+            // A restored legacy entry has no stored-at, so its original window is unknowable;
+            // fall back to what is left of it rather than computing from year 0001.
+            // The writer is kept: the edit does not say who made it, and the original writer
+            // is still the best provenance available.
+            var window = meta.StoredAt != default
+                ? meta.ExpiresAt - meta.StoredAt
+                : meta.ExpiresAt - DateTimeOffset.UtcNow;
             await SetAsync(
                 key,
                 edit.Content!,
                 window > TimeSpan.Zero ? window : null,
                 meta.Category,
-                meta.Tags);
+                meta.Tags,
+                meta.Writer);
 
             _logger.LogDebug(
                 "Working memory edit: key={Key} replacements={Count} {Old}->{New} chars",
@@ -225,7 +271,7 @@ internal sealed class HybridCacheWorkingMemory : IWorkingMemory
             if (_cache.TryGetValue<string>(CacheKey(kvp.Key), out var value))
             {
                 var meta = kvp.Value;
-                entries.Add(new WorkingMemoryEntry(kvp.Key, value!, meta.StoredAt, meta.ExpiresAt, meta.Category, meta.Tags));
+                entries.Add(new WorkingMemoryEntry(kvp.Key, value!, meta.StoredAt, meta.ExpiresAt, meta.Category, meta.Tags, meta.Writer));
             }
             else
             {

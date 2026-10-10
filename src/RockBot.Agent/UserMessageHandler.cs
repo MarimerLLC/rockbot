@@ -60,7 +60,8 @@ internal sealed class UserMessageHandler(
     TierRoutingLogger tierRoutingLogger,
     ISkillUsageStore? skillUsageStore = null,
     LlmTierOptions? llmTierOptions = null,
-    IMcpSkillSurface? mcpSkillSurface = null) : IMessageHandler<UserMessage>
+    IMcpSkillSurface? mcpSkillSurface = null,
+    IOptions<WorkingMemoryOptions>? workingMemoryOptions = null) : IMessageHandler<UserMessage>
 {
     private static readonly TimeSpan ProgressMessageThreshold = TimeSpan.FromSeconds(5);
 
@@ -208,7 +209,8 @@ internal sealed class UserMessageHandler(
 
             // Per-message working memory tools — namespace scoped to this session
             var sessionNamespace = $"session/{message.SessionId}";
-            var sessionWorkingMemoryTools = new WorkingMemoryTools(workingMemory, sessionNamespace, logger);
+            var sessionWorkingMemoryTools = new WorkingMemoryTools(workingMemory, sessionNamespace, logger,
+                options: workingMemoryOptions?.Value);
 
             // Per-turn attachment tool — attach_image stages files for this turn's final reply.
             var attachmentReplyTools = new AttachmentReplyTools(
