@@ -55,4 +55,11 @@ public sealed class LoopDiagnostics
 
     /// <summary>Why the run escalated mid-turn; null when it did not.</summary>
     public string? EscalationReason { get; set; }
+
+    /// <summary>
+    /// The run's tool-call ledger (#683), set when <see cref="AgentLoopRunner.RunAsync"/> starts, so
+    /// the caller can read every call the run made — even after a timeout or failure.
+    /// <c>SubagentRunner</c> carries a compact copy on its result for the synthesis turn's check.
+    /// </summary>
+    public LoopToolCallLedger? ToolCallLedger { get; set; }
 }
