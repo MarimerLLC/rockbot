@@ -39,8 +39,23 @@ public sealed class SubagentToolSkillProvider : IToolSkillProvider
           to deliver this subagent's result immediately as its own independent response.
           Use consolidate: false when the user asks for results "as they come in",
           "one at a time", or indicates they want streaming/immediate delivery.
+        - inputs (optional): array of exact working-memory keys or shared-volume file
+          paths the subagent must build on, e.g.
+          ["subagent/6a393b675e2f/mcp-spec-summary", "drafts/outline.md"]. Checked at
+          spawn — a key or path that doesn't exist fails the spawn and lists close
+          matches, so copy keys exactly from the completion message.
+        - Iteration floor: a description that asks to research, verify, synthesize,
+          outline or draft (or write a deck/document) runs with at least 20 iterations.
 
         Returns: task_id — use this to track or cancel the subagent.
+
+        ## Prior work reaches the subagent automatically
+        Every subagent starts with a "Prior work in this conversation" block: the
+        user's request, each earlier subagent result (summary + saved keys), the
+        files written or uploaded so far, and the full text of the most relevant
+        earlier results. In a pipeline (research → outline → deck) you do not have
+        to copy findings into the next description — but do pass the key results
+        and the outline path as `inputs` so they are guaranteed to be used.
 
         ## cancel_subagent
         Cancel a running subagent by its task_id.

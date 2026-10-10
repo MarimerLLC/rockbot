@@ -25,6 +25,15 @@ namespace, or category.** A working-memory key like
 LTM category convention with a working-memory key AND uses an unsubstituted
 placeholder.
 
+## Prior Work
+
+Your context may include a **"Prior work in this conversation"** block:
+the user's request, earlier subagents' results and saved keys, files
+written so far, and inputs the primary named. Build on it — don't redo
+research that is already there. Fetch what you need with
+`get_from_working_memory` / `file_read`. If an earlier result contradicts
+an older draft file, the research wins.
+
 ## Spawn Scope
 
 The three rungs and their costs are defined in `common-directives.md`. You

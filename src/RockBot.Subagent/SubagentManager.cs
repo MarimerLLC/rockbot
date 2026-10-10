@@ -15,7 +15,8 @@ public sealed class SubagentManager(
     IOptions<SubagentOptions> options,
     IMessagePublisher publisher,
     AgentIdentity agent,
-    ILogger<SubagentManager> logger) : ISubagentManager, ISubagentSessionResolver
+    ILogger<SubagentManager> logger,
+    ISessionWorkRegistry? sessionWorkRegistry = null) : ISubagentManager, ISubagentSessionResolver
 {
     private readonly ConcurrentDictionary<string, SubagentEntry> _active = new();
 
@@ -35,9 +36,21 @@ public sealed class SubagentManager(
         string? batchId = null,
         bool consolidate = true,
         int? maxIterations = null,
-        string? originatingUserRequest = null)
+        string? originatingUserRequest = null,
+        IReadOnlyList<SubagentInput>? inputs = null)
     {
         originatingUserRequest = CapOriginatingRequest(originatingUserRequest);
+
+        // #665: research and synthesis need room to search, read and cross-check. A cap the primary
+        // set lower than the floor produced an outline written mostly from model priors.
+        var floor = options.Value.ResearchIterationFloor;
+        if (ApplyResearchIterationFloor(description, maxIterations, floor) is { } raised && raised != maxIterations)
+        {
+            logger.LogInformation(
+                "Subagent spawn: raised max_iterations from {Requested} to {Floor} for a research/synthesis task",
+                maxIterations, raised);
+            maxIterations = raised;
+        }
 
         // Clean up completed tasks first
         foreach (var key in _active.Keys.ToList())
@@ -65,7 +78,12 @@ public sealed class SubagentManager(
         var cts = new CancellationTokenSource();
         cts.CancelAfter(timeoutSpan);
 
-        var task = RunSubagentAsync(taskId, subagentSessionId, description, context, primarySessionId, batchId, consolidate, maxIterations, originatingUserRequest, timeoutSpan, cts.Token);
+        // #665: the subagent's tool calls (and those of its workers and wisps) count toward the
+        // primary's conversation in the session work registry. Linked before the run starts.
+        sessionWorkRegistry?.LinkSession(subagentSessionId, primarySessionId);
+        sessionWorkRegistry?.LinkSession($"subagent/{taskId}", primarySessionId);
+
+        var task = RunSubagentAsync(taskId, subagentSessionId, description, context, primarySessionId, batchId, consolidate, maxIterations, originatingUserRequest, inputs, timeoutSpan, cts.Token);
 
         var newEntry = new SubagentEntry
         {
@@ -126,6 +144,7 @@ public sealed class SubagentManager(
         bool consolidate,
         int? maxIterations,
         string? originatingUserRequest,
+        IReadOnlyList<SubagentInput>? inputs,
         TimeSpan timeout,
         CancellationToken ct)
     {
@@ -138,7 +157,7 @@ public sealed class SubagentManager(
             await using var scope = scopeFactory.CreateAsyncScope();
             var runner = scope.ServiceProvider.GetRequiredService<SubagentRunner>();
             await runner.RunAsync(taskId, subagentSessionId, description, context, primarySessionId, batchId, consolidate, maxIterations, timeout, ct,
-                originatingUserRequest: originatingUserRequest);
+                originatingUserRequest: originatingUserRequest, inputs: inputs);
         }
         catch (Exception ex)
         {
@@ -159,7 +178,8 @@ public sealed class SubagentManager(
                     Timestamp = DateTimeOffset.UtcNow,
                     BatchId = batchId,
                     Consolidate = consolidate,
-                    OriginatingUserRequest = originatingUserRequest
+                    OriginatingUserRequest = originatingUserRequest,
+                    Description = description
                 };
                 var envelope = result.ToEnvelope<SubagentResultMessage>(source: $"subagent-{taskId}");
                 await publisher.PublishAsync($"{SubagentTopics.Result}.{agent.Name}", envelope, CancellationToken.None);
@@ -178,6 +198,27 @@ public sealed class SubagentManager(
 
     /// <summary>Longest originating user request kept with a task; the evaluator reads less than this.</summary>
     internal const int MaxOriginatingRequestChars = 4000;
+
+    /// <summary>
+    /// The <c>max_iterations</c> to run with (#665): <paramref name="requested"/> raised to
+    /// <paramref name="floor"/> when the description asks for research or synthesis and the
+    /// requested cap is below the floor. An unset cap (model default) is left alone.
+    /// </summary>
+    internal static int? ApplyResearchIterationFloor(string description, int? requested, int floor) =>
+        requested is { } cap && floor > 0 && cap < floor && IsResearchOrSynthesisTask(description)
+            ? floor
+            : requested;
+
+    /// <summary>True when the description asks the subagent to research, verify, ground, synthesize, outline or draft.</summary>
+    internal static bool IsResearchOrSynthesisTask(string description) =>
+        !string.IsNullOrWhiteSpace(description) && ResearchVerbRegex.IsMatch(description);
+
+    private static readonly System.Text.RegularExpressions.Regex ResearchVerbRegex = new(
+        @"\b(research\w*|investigat\w*|verif\w*|ground\w*|synthesi[sz]\w*|outlin\w*|draft\w*)\b" +
+        @"|\b(write|writing|create|creating|build|building|produce|producing|prepare|preparing)\b[^.\n]{0,60}?\b(deck|slides?|presentation|document|doc|report|white\s*paper|article|essay|brief)\b",
+        System.Text.RegularExpressions.RegexOptions.IgnoreCase
+        | System.Text.RegularExpressions.RegexOptions.CultureInvariant
+        | System.Text.RegularExpressions.RegexOptions.Compiled);
 
     internal static string? CapOriginatingRequest(string? request) =>
         string.IsNullOrWhiteSpace(request) ? null

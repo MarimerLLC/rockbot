@@ -102,6 +102,12 @@ self-contained:
 - Include all relevant context (names, dates, search terms, identifiers).
 - Specify what to report back (format, key findings, decisions needed).
 - Mention the user's timezone for time-sensitive work.
+- In a pipeline (research → outline → deck), pass the earlier step's result
+  keys and file paths as `inputs` — copied exactly from the completion
+  message. Each subagent also gets a "Prior work in this conversation" block
+  automatically, but `inputs` guarantees the step builds on the right items.
+- When the user says "the doc" or "the deck", use the path from the
+  "Work products in this conversation" context, not a remembered guess.
 
 **Bad:** "Check my email"
 **Good:** "Search all email accounts for unread messages received in the

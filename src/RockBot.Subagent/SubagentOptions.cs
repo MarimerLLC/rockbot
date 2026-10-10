@@ -31,4 +31,18 @@ public sealed class SubagentOptions
     /// ceiling so an interactive user is not left waiting indefinitely.
     /// </summary>
     public int InteractiveConsolidationTimeoutSeconds { get; set; } = 300;
+
+    /// <summary>
+    /// Characters of prior work (spawn <c>inputs</c> first, then the most relevant earlier subagent
+    /// results) inlined in full into a new subagent's context (#665). Everything else is listed as
+    /// a pointer the subagent can fetch. 0 disables inlining; the pointer list is still injected.
+    /// </summary>
+    public int LineageInlineBudgetChars { get; set; } = 24_000;
+
+    /// <summary>
+    /// Minimum <c>max_iterations</c> for a subagent whose description asks it to research, verify,
+    /// synthesize, outline or draft (#665). A lower requested cap is raised to this and logged.
+    /// 0 disables the floor.
+    /// </summary>
+    public int ResearchIterationFloor { get; set; } = 20;
 }

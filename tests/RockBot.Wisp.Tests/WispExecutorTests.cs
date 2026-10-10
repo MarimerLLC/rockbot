@@ -159,6 +159,45 @@ public class WispExecutorTests
     }
 
     [TestMethod]
+    public async Task ExecuteAsync_DirectUploadStep_IsRecordedForTheSpawningConversation()
+    {
+        // #665: a direct step runs outside any agent loop; its upload still becomes an artifact of
+        // the conversation whose subagent spawned the wisp.
+        var registry = new FakeToolRegistry();
+        registry.Register(
+            new ToolRegistration { Name = "mcp_invoke_tool", Description = "MCP", Source = "mcp:management" },
+            new FakeToolExecutor("uploaded"));
+        var work = new SessionWorkRegistry();
+        work.LinkSession("subagent-abc123", "session/s1");
+        var executor = new WispExecutor(registry, new FakeWorkingMemory(), agentLoopRunner: null!,
+            new WispOptions(), NullLogger<WispExecutor>.Instance, sessionWorkRegistry: work);
+
+        var definition = new WispDefinition
+        {
+            Description = "Upload the deck",
+            Steps =
+            [
+                new WispStep
+                {
+                    Id = "upload",
+                    Mode = StepMode.Direct,
+                    Gateway = GatewayType.Mcp,
+                    Server = "onedrive",
+                    Tool = "upload_file",
+                    Params = JsonDocument.Parse("""{"local_path":"drafts/deck.md","remote_path":"/Talks/deck.md"}""").RootElement
+                }
+            ]
+        };
+
+        var result = await executor.ExecuteAsync(definition, "wisp-upload-1", parentSessionId: "subagent/abc123", CancellationToken.None);
+
+        Assert.IsTrue(result.IsSuccess, result.StepResults[0].Error?.Message);
+        var artifact = work.GetSnapshot("s1").Artifacts.Single();
+        Assert.AreEqual("drafts/deck.md", artifact.Path);
+        Assert.AreEqual("onedrive:/Talks/deck.md", artifact.RemoteTarget);
+    }
+
+    [TestMethod]
     public async Task ExecuteAsync_McpManagementToolRegistersDuringWait_StepSucceeds()
     {
         // The readiness wait should let a step that fires just before the bridge
