@@ -33,7 +33,8 @@ internal sealed class SubagentResultHandler(
     ISessionTracker sessionTracker,
     SessionOriginStore originStore,
     ILogger<SubagentResultHandler> logger,
-    IMcpSkillSurface? mcpSkillSurface = null) : IMessageHandler<SubagentResultMessage>
+    IMcpSkillSurface? mcpSkillSurface = null,
+    ISessionWorkRegistry? sessionWorkRegistry = null) : IMessageHandler<SubagentResultMessage>
 {
     public async Task HandleAsync(SubagentResultMessage message, MessageHandlerContext context)
     {
@@ -97,6 +98,23 @@ internal sealed class SubagentResultHandler(
               $"Keys: {string.Join(", ", whiteboardEntries.Select(e => $"'{e.Key}'"))}. " +
               "Retrieve and present them to the user using get_from_working_memory with the full key."
             : string.Empty;
+
+        // #665: record the result in the conversation's work registry, so the next subagent this
+        // conversation spawns starts with it (and the primary's context names its keys).
+        try
+        {
+            sessionWorkRegistry?.RecordSubagentResult(sessionNamespace, SubagentWorkResult.Create(
+                message.TaskId,
+                message.Description ?? "(task description not recorded)",
+                safeOutput,
+                whiteboardEntries.Select(e => e.Key),
+                message.IsSuccess,
+                message.Timestamp));
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "Failed to record subagent {TaskId} in the session work registry", message.TaskId);
+        }
 
         // Add synthetic user turn to conversation memory.
         // On the failure path, explicitly point the primary at the structured

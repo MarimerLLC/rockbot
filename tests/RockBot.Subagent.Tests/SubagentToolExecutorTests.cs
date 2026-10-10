@@ -279,14 +279,21 @@ public class SubagentToolExecutorTests
         public Task<string> SpawnAsync(string description, string? context, int? timeoutMinutes,
             string primarySessionId, CancellationToken ct,
             string? batchId = null, bool consolidate = true, int? maxIterations = null,
-            string? originatingUserRequest = null)
+            string? originatingUserRequest = null,
+            IReadOnlyList<SubagentInput>? inputs = null)
         {
+            SpawnCount++;
             LastMaxIterations = maxIterations;
             LastOriginatingUserRequest = originatingUserRequest;
+            LastInputs = inputs;
+            LastDescription = description;
             return Task.FromResult(SpawnResult);
         }
 
         public string? LastOriginatingUserRequest { get; private set; }
+        public IReadOnlyList<SubagentInput>? LastInputs { get; private set; }
+        public string? LastDescription { get; private set; }
+        public int SpawnCount { get; private set; }
 
         public Task<bool> CancelAsync(string taskId) =>
             Task.FromResult(CancelResult);

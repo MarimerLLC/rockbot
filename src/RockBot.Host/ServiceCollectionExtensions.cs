@@ -51,6 +51,10 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<SessionClientCapabilityStore>();
         services.AddSingleton<ReplyAttachmentBuffer>();
         services.AddSingleton<SessionOriginStore>();
+        // #665: per-conversation record of subagent results and artifacts.
+        services.Configure<SessionWorkRegistryOptions>(_ => { });
+        services.AddSingleton<ISessionWorkRegistry>(sp => new SessionWorkRegistry(
+            sp.GetService<IOptions<SessionWorkRegistryOptions>>()?.Value));
         services.AddSingleton<IUserActivityMonitor, UserActivityMonitor>();
         services.AddSingleton<ISessionTracker, SessionBackgroundTaskTracker>();
         services.AddSingleton<IAgentWorkSerializer, AgentWorkSerializer>();

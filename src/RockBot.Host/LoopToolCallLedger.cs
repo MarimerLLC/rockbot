@@ -17,12 +17,41 @@ public sealed class LoopToolCallLedger
 {
     private readonly List<LoopToolCall> _calls = [];
     private readonly Lock _lock = new();
+    private readonly Action<string, IEnumerable<KeyValuePair<string, object?>>?, bool>? _observer;
+
+    /// <summary>A ledger with no observer.</summary>
+    public LoopToolCallLedger() { }
+
+    /// <summary>
+    /// A ledger that also hands every recorded call, with its full arguments, to
+    /// <paramref name="observer"/> — the one hook through which every tool call of the run passes,
+    /// native and text paths alike. The session work registry (#665) records artifacts this way.
+    /// An observer that throws is ignored.
+    /// </summary>
+    public LoopToolCallLedger(Action<string, IEnumerable<KeyValuePair<string, object?>>?, bool>? observer)
+    {
+        _observer = observer;
+    }
 
     /// <summary>Records a finished (or failed) tool call.</summary>
-    public void Record(string name, string? arguments, bool succeeded)
+    /// <param name="name">The tool name as the model called it.</param>
+    /// <param name="arguments">Shortened argument summary kept in the ledger.</param>
+    /// <param name="succeeded">False when the call threw or returned an error result.</param>
+    /// <param name="rawArguments">The call's full arguments, for the observer only. May be null.</param>
+    public void Record(string name, string? arguments, bool succeeded,
+        IEnumerable<KeyValuePair<string, object?>>? rawArguments = null)
     {
         if (string.IsNullOrEmpty(name)) return;
         lock (_lock) _calls.Add(new LoopToolCall(name, arguments, succeeded));
+        if (_observer is null) return;
+        try
+        {
+            _observer(name, rawArguments, succeeded);
+        }
+        catch
+        {
+            // Observation is best-effort; it must never fail the tool call.
+        }
     }
 
     /// <summary>A snapshot of the calls recorded so far.</summary>

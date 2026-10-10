@@ -158,6 +158,50 @@ public class WorkingMemoryToolsTests
         Assert.AreEqual("alert-data", result);
     }
 
+    // ── GetFromWorkingMemory misses under subagent/ (#665) ─────────────────
+
+    [TestMethod]
+    public async Task GetFromWorkingMemory_MissUnderSubagent_ListsTheKeysThatExist()
+    {
+        _memory.Store["subagent/e951ad95c4c1/talk-outline"] = "outline";
+        _memory.Store["subagent/e951ad95c4c1/notes"] = "notes";
+        _memory.Store["subagent/e951ad95c4c1/web-https___example.com-chunk0"] = "chunk";
+
+        var result = await _tools.GetFromWorkingMemory("subagent/e951ad95c4c1/mcp-v2-authoritative-research");
+
+        StringAssert.Contains(result, "not found");
+        StringAssert.Contains(result, "Keys that do exist under 'subagent/e951ad95c4c1'");
+        StringAssert.Contains(result, "'subagent/e951ad95c4c1/talk-outline'");
+        StringAssert.Contains(result, "'subagent/e951ad95c4c1/notes'");
+        StringAssert.Contains(result, "1 web/tool chunk key(s)");
+        Assert.IsFalse(result.Contains("chunk0"), "chunk keys are counted, not listed");
+    }
+
+    [TestMethod]
+    public async Task GetFromWorkingMemory_WrongTaskId_PointsAtTheSameKeyUnderAnotherTask()
+    {
+        // The 2026-10-09 failure: the key name was copied from an earlier subagent.
+        _memory.Store["subagent/16493b466542/mcp-v2-authoritative-research"] = "research";
+        _memory.Store["subagent/c02ab8be3f5a/deck"] = "deck";
+
+        var result = await _tools.GetFromWorkingMemory("subagent/e951ad95c4c1/mcp-v2-authoritative-research");
+
+        StringAssert.Contains(result, "Nothing is stored under 'subagent/e951ad95c4c1'");
+        StringAssert.Contains(result, "'subagent/16493b466542/mcp-v2-authoritative-research'");
+        StringAssert.Contains(result, "Recent subagent namespaces:");
+        StringAssert.Contains(result, "subagent/c02ab8be3f5a");
+    }
+
+    [TestMethod]
+    public async Task GetFromWorkingMemory_MissOutsideSubagent_IsUnchanged()
+    {
+        _memory.Store["session/s1/other"] = "x";
+
+        var result = await _tools.GetFromWorkingMemory("session/s1/missing");
+
+        Assert.AreEqual("Working memory entry 'session/s1/missing' not found or has expired.", result);
+    }
+
     // ── DeleteFromWorkingMemory ───────────────────────────────────────────
 
     [TestMethod]
@@ -366,7 +410,15 @@ public class WorkingMemoryToolsTests
         }
 
         public Task<IReadOnlyList<WorkingMemoryEntry>> ListAsync(string? prefix = null) =>
-            Task.FromResult<IReadOnlyList<WorkingMemoryEntry>>([]);
+            Task.FromResult<IReadOnlyList<WorkingMemoryEntry>>(Store
+                .Where(kv => prefix is null || kv.Key.StartsWith(prefix, StringComparison.Ordinal))
+                .Select(kv => new WorkingMemoryEntry(kv.Key, kv.Value,
+                    StoredAt.TryGetValue(kv.Key, out var at) ? at : DateTimeOffset.UtcNow,
+                    DateTimeOffset.UtcNow.AddHours(1)))
+                .ToList());
+
+        /// <summary>Optional stored-at times by key, for ordering in listings.</summary>
+        public Dictionary<string, DateTimeOffset> StoredAt { get; } = new();
 
         public Task DeleteAsync(string key)
         {
