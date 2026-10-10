@@ -30,7 +30,8 @@ public sealed partial class AgentLoopRunner(
     IConversationMemory conversationMemory,
     ILogger<AgentLoopRunner> logger,
     InjectedMemoryTracker? injectedMemoryTracker = null,
-    ITypedToolSurface? typedToolSurface = null)
+    ITypedToolSurface? typedToolSurface = null,
+    ISessionWorkRegistry? sessionWorkRegistry = null)
 {
     private readonly IServiceSearchIndex? _serviceSearchIndex = serviceSearchIndexProviders.FirstOrDefault();
     private const int MaxConsecutiveTimeoutIterations = 2;
@@ -511,7 +512,10 @@ public sealed partial class AgentLoopRunner(
 
         // #666: every tool call this run makes, for the completion evaluator's gate and input.
         // Kept outside the chat history, which context trimming can shorten.
-        var toolCallLedger = new LoopToolCallLedger();
+        // #665: the same hook records the files and uploads this run writes, for later turns and subagents.
+        var toolCallLedger = new LoopToolCallLedger(sessionWorkRegistry is null || string.IsNullOrEmpty(sessionId)
+            ? null
+            : (name, rawArgs, ok) => sessionWorkRegistry.RecordToolCall(sessionId!, name, rawArgs, ok));
         using var ________ = LoopToolCallLedgerContext.Set(toolCallLedger);
 
         // #666: the user request this run serves, for tools that start work whose result comes
@@ -1429,7 +1433,8 @@ public sealed partial class AgentLoopRunner(
                     LoopToolCallLedgerContext.Value?.Record(
                         toolName, TruncateLedgerArgs(argsJson),
                         succeeded: textToolStatus == "ok"
-                            && !RockBotFunctionInvokingChatClient.IsErrorResult(textResultStr));
+                            && !RockBotFunctionInvokingChatClient.IsErrorResult(textResultStr),
+                        rawArguments: args);
 
                     // Chunking is handled by ChunkingAIFunction wrapper on the tool itself.
                     // Per-tool-result cap: text-parsed calls have no callId so the cap falls
@@ -1574,7 +1579,8 @@ public sealed partial class AgentLoopRunner(
                 LoopToolCallLedgerContext.Value?.Record(
                     fc.Name, TruncateLedgerArgs(argsSummary),
                     succeeded: toolStatus == "ok"
-                        && !RockBotFunctionInvokingChatClient.IsErrorResult(nativeResultStr));
+                        && !RockBotFunctionInvokingChatClient.IsErrorResult(nativeResultStr),
+                    rawArguments: fc.Arguments);
 
                 // Per-tool-result cap (text-loop native path). Same intent as the cap
                 // applied by RockBotFunctionInvokingChatClient on the FICC path: stash

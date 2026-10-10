@@ -1,5 +1,6 @@
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using RockBot.Host;
 using RockBot.Tools;
 
 namespace RockBot.Subagent;
@@ -10,7 +11,8 @@ namespace RockBot.Subagent;
 internal sealed class SubagentToolRegistrar(
     IToolRegistry registry,
     ISubagentManager subagentManager,
-    ILogger<SubagentToolRegistrar> logger) : IHostedService
+    ILogger<SubagentToolRegistrar> logger,
+    IWorkingMemory? workingMemory = null) : IHostedService
 {
     private const string SpawnSchema = """
         {
@@ -35,6 +37,11 @@ internal sealed class SubagentToolRegistrar(
             "consolidate": {
               "type": "boolean",
               "description": "When true (default), this subagent's result will be batched with sibling subagent results into a single consolidated response. Set to false to deliver this subagent's result immediately as its own response."
+            },
+            "inputs": {
+              "type": "array",
+              "items": { "type": "string" },
+              "description": "Optional. Exact working-memory keys (e.g. 'subagent/<task-id>/<key>') or shared-volume file paths (e.g. 'drafts/outline.md') the subagent must build on, such as an earlier subagent's research or outline. Checked at spawn: a key or path that does not exist fails the spawn and lists close matches. Their content is placed in the subagent's starting context."
             }
           },
           "required": ["description"]
@@ -63,11 +70,13 @@ internal sealed class SubagentToolRegistrar(
                 Spawn an isolated subagent to handle a long-running or complex task in the background.
                 Returns a task_id immediately. The subagent will report progress via the primary session
                 and send a final result when complete. Use this when a task would take many tool calls
-                or a long time to complete.
+                or a long time to complete. The subagent automatically sees earlier subagent results and
+                files from this conversation; pass `inputs` to name the exact keys or files it must use.
                 """,
             ParametersSchema = SpawnSchema,
             Source = "subagent"
-        }, new SpawnSubagentExecutor(subagentManager));
+        }, new SpawnSubagentExecutor(subagentManager,
+            workingMemory is null ? null : new SubagentInputResolver(workingMemory, registry)));
         logger.LogInformation("Registered tool: spawn_subagent");
 
         registry.Register(new ToolRegistration

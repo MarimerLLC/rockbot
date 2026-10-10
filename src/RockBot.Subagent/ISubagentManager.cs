@@ -10,11 +10,14 @@ public interface ISubagentManager
     /// Returns an error message string if the concurrency limit is reached.
     /// <paramref name="originatingUserRequest"/> is the user message that led to the spawn (#666);
     /// it travels with the task to the result so the synthesis turn can be checked against it.
+    /// <paramref name="inputs"/> are the resolved <c>spawn_subagent</c> inputs (#665); they are
+    /// inlined into the subagent's starting context ahead of other prior work.
     /// </summary>
     Task<string> SpawnAsync(string description, string? context, int? timeoutMinutes,
         string primarySessionId, CancellationToken ct,
         string? batchId = null, bool consolidate = true, int? maxIterations = null,
-        string? originatingUserRequest = null);
+        string? originatingUserRequest = null,
+        IReadOnlyList<SubagentInput>? inputs = null);
 
     /// <summary>
     /// Cancels a running subagent by task ID. Returns true if found and cancelled.
