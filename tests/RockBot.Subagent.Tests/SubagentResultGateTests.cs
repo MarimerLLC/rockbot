@@ -340,7 +340,8 @@ public class SubagentResultGateTests
 
         public Task<string> SpawnAsync(string description, string? context, int? timeoutMinutes,
             string primarySessionId, CancellationToken ct,
-            string? batchId = null, bool consolidate = true, int? maxIterations = null) =>
+            string? batchId = null, bool consolidate = true, int? maxIterations = null,
+            string? originatingUserRequest = null) =>
             Task.FromResult("fake-task-id");
 
         public Task<bool> CancelAsync(string taskId)
@@ -360,7 +361,8 @@ public class SubagentResultGateTests
 
         public Task<string> SpawnAsync(string description, string? context, int? timeoutMinutes,
             string primarySessionId, CancellationToken ct,
-            string? batchId = null, bool consolidate = true, int? maxIterations = null) =>
+            string? batchId = null, bool consolidate = true, int? maxIterations = null,
+            string? originatingUserRequest = null) =>
             Task.FromResult("fake-task-id");
 
         public Task<bool> CancelAsync(string taskId)
