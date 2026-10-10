@@ -47,4 +47,12 @@ public sealed class LoopDiagnostics
 
     /// <summary>Model ID reported by the LLM for this loop run (last seen value when multiple responses occur).</summary>
     public string? ModelId { get; set; }
+
+    // ── Mid-turn tier escalation (#663) ──
+
+    /// <summary>The tier the run escalated to mid-turn, or null when it stayed on its routed tier.</summary>
+    public ModelTier? EscalatedTier { get; set; }
+
+    /// <summary>Why the run escalated mid-turn; null when it did not.</summary>
+    public string? EscalationReason { get; set; }
 }

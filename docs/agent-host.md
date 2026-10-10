@@ -227,14 +227,35 @@ Scores prompts using a keyword + length heuristic — no embeddings, no external
 
 - **Length score** (0 – 0.40) — longer prompts tend to be more complex
 - **Keyword score** (0 – 0.35) — high-signal words (`analyze`, `research`, `distributed`, …)
-  increase the score; simplex words (`what is`, `define`, `list the`, …) decrease it
+  increase the score; simplex words (`define`, `capital of`, `list the`, …) decrease it
 - **Structural score** (0 – 0.25) — code blocks, math notation, multi-step markers
 
 Scores at or below `lowCeiling` → Low; at or below `balancedCeiling` → Balanced; above → High.
 
+For **user messages**, thread state then raises the tier (#663). Each decision records the
+rule that decided it (`TierClassification.Rule`, logged as `rule=` and stored as
+`routingRule` in the routing log):
+
+| Rule | Effect |
+|---|---|
+| `score-band` / `high-gate` / `trivial-guard` | The score band, capped at Balanced without a complexity signal, or forced Low when trivial |
+| `active-thread-floor` | On an established thread, any non-trivial message routes at least Balanced (no length limit) |
+| `active-subagent-floor` | While the session has a subagent running, at least Balanced |
+| `balanced-floor-keyword` | A dream-learned floor keyword lifts Low to Balanced (#486) |
+| `research-question-floor` | A question naming a technical subject (acronym, version, spec/protocol/API) lifts Low to Balanced |
+| `inherited-tier` | At least the highest tier the session's last three turns earned on their own (within 30 min) — kept in the in-memory `SessionTierHistory` |
+| `trivial-ack` | A pure acknowledgement/greeting ("thanks", "ok", "👍") skipped the floors and stayed Low |
+
+A turn routed Low that makes a side-effecting tool call (by verb in the tool name — see
+`ToolSideEffects`) or hits two tool errors finishes its loop on Balanced
+(`TierEscalationContext`; logged as `Tier escalated Low→Balanced mid-turn: …`). Pinned tiers
+(`LLM:FixedTier`) are exempt from all of this.
+
 The parameterless constructor always uses compiled-in defaults (used in tests). The DI
 constructor hot-reloads `{BasePath}/tier-selector.json` every 60 seconds so thresholds and
-keyword lists can be tuned without a pod restart.
+keyword lists can be tuned without a pod restart. Keyword lists in the file are merged with
+the compiled defaults; retired low signals (`what is`, `what's`, `tell me about`, `look up`,
+`show me`, `i think`, …) are dropped from the merged list even when the file names them.
 
 ### `tier-selector.json` (hot-reloadable)
 
@@ -245,7 +266,7 @@ keyword lists can be tuned without a pod restart.
   "lowCeiling": 0.15,
   "balancedCeiling": 0.46,
   "highSignalKeywords": ["analyze", "research", "distributed", "..."],
-  "lowSignalKeywords":  ["what is", "define ", "list the", "..."]
+  "lowSignalKeywords":  ["define", "list the", "..."]
 }
 ```
 

@@ -51,6 +51,7 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<SessionClientCapabilityStore>();
         services.AddSingleton<ReplyAttachmentBuffer>();
         services.AddSingleton<SessionOriginStore>();
+        services.AddSingleton<SessionTierHistory>();
         services.AddSingleton<IUserActivityMonitor, UserActivityMonitor>();
         services.AddSingleton<ISessionTracker, SessionBackgroundTaskTracker>();
         services.AddSingleton<IAgentWorkSerializer, AgentWorkSerializer>();
