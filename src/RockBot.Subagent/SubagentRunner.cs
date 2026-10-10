@@ -40,7 +40,9 @@ internal sealed class SubagentRunner(
     ISessionA2AAwaiter? a2aAwaiter = null,
     IMcpSkillSurface? mcpSkillSurface = null,
     IMcpToolDirectory? mcpToolDirectory = null,
-    IEnumerable<ISessionEndListener>? sessionEndListeners = null)
+    IEnumerable<ISessionEndListener>? sessionEndListeners = null,
+    ISessionWorkRegistry? sessionWorkRegistry = null,
+    IOptions<SubagentOptions>? subagentOptions = null)
 {
     public async Task RunAsync(
         string taskId,
@@ -55,7 +57,9 @@ internal sealed class SubagentRunner(
         CancellationToken ct,
         // #666: the user message that led to the spawn; passed through to the result so the
         // primary's synthesis turn is checked against it.
-        string? originatingUserRequest = null)
+        string? originatingUserRequest = null,
+        // #665: spawn_subagent inputs, resolved at spawn; inlined ahead of other prior work.
+        IReadOnlyList<SubagentInput>? inputs = null)
     {
         var classification = tierSelector.Classify(description, new TierRoutingContext(Origin: "subagent"));
         var tier = classification.Tier;
@@ -127,6 +131,18 @@ internal sealed class SubagentRunner(
 
         if (!string.IsNullOrEmpty(context))
             chatMessages.Add(new ChatMessage(ChatRole.System, $"Context: {context}"));
+
+        // #665: what earlier subagents in this conversation produced, the files it wrote, the user's
+        // request, and the inputs the primary named — so this task builds on prior research even
+        // when the primary did not pass it along.
+        var lineage = await BuildLineageAsync(description, context, primarySessionId, originatingUserRequest, inputs);
+        if (lineage is not null)
+        {
+            chatMessages.Add(new ChatMessage(ChatRole.System, lineage));
+            logger.LogInformation(
+                "Subagent {TaskId}: injected prior-work lineage ({Chars} chars, {Inputs} input(s))",
+                taskId, lineage.Length, inputs?.Count ?? 0);
+        }
 
         chatMessages.Add(new ChatMessage(ChatRole.User, description));
 
@@ -362,13 +378,38 @@ internal sealed class SubagentRunner(
             Timestamp = DateTimeOffset.UtcNow,
             BatchId = batchId,
             Consolidate = consolidate,
-            OriginatingUserRequest = originatingUserRequest
+            OriginatingUserRequest = originatingUserRequest,
+            Description = description
         };
 
         var envelope = result.ToEnvelope<SubagentResultMessage>(source: subagentId);
         await publisher.PublishAsync($"{SubagentTopics.Result}.{agent.Name}", envelope, CancellationToken.None);
 
         logger.LogInformation("Subagent {TaskId} published result (success={Success})", taskId, isSuccess);
+    }
+
+    /// <summary>
+    /// The prior-work block for this subagent (#665), or null when there is none. Never throws:
+    /// lineage is an aid, and a failure building it must not stop the task.
+    /// </summary>
+    private async Task<string?> BuildLineageAsync(
+        string description, string? context, string primarySessionId,
+        string? originatingUserRequest, IReadOnlyList<SubagentInput>? inputs)
+    {
+        try
+        {
+            var snapshot = sessionWorkRegistry?.GetSnapshot(primarySessionId)
+                ?? SessionWorkSnapshot.Empty(SessionWorkRegistry.NormalizeSessionId(primarySessionId));
+            var budget = (subagentOptions?.Value ?? new SubagentOptions()).LineageInlineBudgetChars;
+            return await SubagentLineage.BuildAsync(
+                snapshot, description, context, originatingUserRequest, inputs ?? [],
+                budget, key => workingMemory.GetAsync(key), DateTimeOffset.UtcNow);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            logger.LogWarning(ex, "Could not build prior-work lineage for a subagent of {Session}", primarySessionId);
+            return null;
+        }
     }
 
     /// <summary>

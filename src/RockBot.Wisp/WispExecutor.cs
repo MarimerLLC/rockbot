@@ -23,7 +23,8 @@ internal sealed class WispExecutor(
     ILlmClient? llmClient = null,
     ISessionA2ACanceller? a2aCanceller = null,
     IMcpPreflightRecovery? preflightRecovery = null,
-    IMcpToolDirectory? mcpToolDirectory = null)
+    IMcpToolDirectory? mcpToolDirectory = null,
+    ISessionWorkRegistry? sessionWorkRegistry = null)
 {
     private const int DefaultLlmStepMaxIterations = 10;
     private const int InputChunkingThreshold = 8_000;
@@ -99,6 +100,13 @@ internal sealed class WispExecutor(
         var resultsByStepId = new Dictionary<string, WispStepResult>(StringComparer.OrdinalIgnoreCase);
         var wispNamespace = $"wisp/{wispId}";
         var skipToStepId = (string?)null;
+
+        // #665: files a wisp writes or uploads count toward the conversation that spawned it.
+        if (!string.IsNullOrEmpty(parentSessionId))
+        {
+            sessionWorkRegistry?.LinkSession(wispId, parentSessionId);
+            sessionWorkRegistry?.LinkSession(wispNamespace, parentSessionId);
+        }
 
         for (var i = 0; i < definition.Steps.Count; i++)
         {
@@ -507,6 +515,17 @@ internal sealed class WispExecutor(
 
         var response = await executor.ExecuteAsync(request, ct);
         stepSw.Stop();
+
+        // #665: a direct step runs outside any agent loop, so record its artifact here.
+        try
+        {
+            sessionWorkRegistry?.RecordToolCall(request.SessionId!, route.ToolName!,
+                SessionWorkRegistry.ParseArguments(route.Arguments), succeeded: !response.IsError);
+        }
+        catch (Exception ex)
+        {
+            logger.LogDebug(ex, "Wisp {WispId}: could not record step {StepId} in the session work registry", wispId, step.Id);
+        }
 
         if (response.IsError)
         {

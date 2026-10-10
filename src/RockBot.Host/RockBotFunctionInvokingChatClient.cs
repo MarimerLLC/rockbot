@@ -208,7 +208,8 @@ public class RockBotFunctionInvokingChatClient : FunctionInvokingChatClient
             }
             TierEscalationContext.Value?.ObserveToolResult(callContent.Name, isError: true);
             LoopToolCallLedgerContext.Value?.Record(
-                callContent.Name, AgentLoopRunner.TruncateLedgerArgs(argsSummary), succeeded: false);
+                callContent.Name, AgentLoopRunner.TruncateLedgerArgs(argsSummary), succeeded: false,
+                rawArguments: callContent.Arguments);
             throw;
         }
         sw.Stop();
@@ -315,7 +316,8 @@ public class RockBotFunctionInvokingChatClient : FunctionInvokingChatClient
                 : resultStr;
         }
         LoopToolCallLedgerContext.Value?.Record(
-            callContent.Name, AgentLoopRunner.TruncateLedgerArgs(argsSummary), succeeded: status == "ok");
+            callContent.Name, AgentLoopRunner.TruncateLedgerArgs(argsSummary), succeeded: status == "ok",
+            rawArguments: callContent.Arguments);
 
         // Log tool-call event for sequence analysis (fire-and-forget)
         if (_toolCallLog is not null && ToolCallSessionContext.SessionId is { } sid)

@@ -1,6 +1,7 @@
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using RockBot.Host;
 
 namespace RockBot.Subagent.Worker;
 
@@ -12,7 +13,8 @@ namespace RockBot.Subagent.Worker;
 public sealed class WorkerManager(
     IServiceScopeFactory scopeFactory,
     IOptions<WorkerOptions> options,
-    ILogger<WorkerManager> logger) : IWorkerManager
+    ILogger<WorkerManager> logger,
+    ISessionWorkRegistry? sessionWorkRegistry = null) : IWorkerManager
 {
     public async Task<WorkerBatchResult> SpawnBatchAsync(
         IReadOnlyList<WorkerDefinition> definitions,
@@ -76,6 +78,11 @@ public sealed class WorkerManager(
         try
         {
             var taskId = Guid.NewGuid().ToString("N")[..12];
+
+            // #665: files the worker writes count toward the conversation that spawned it.
+            sessionWorkRegistry?.LinkSession($"worker-{taskId}", primarySessionId);
+            sessionWorkRegistry?.LinkSession($"worker/{taskId}", primarySessionId);
+
             var timeoutMin = definition.TimeoutMinutes ?? opts.DefaultTimeoutMinutes;
             var timeout = TimeSpan.FromMinutes(timeoutMin);
 

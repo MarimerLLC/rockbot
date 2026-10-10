@@ -39,7 +39,8 @@ public sealed class AgentContextBuilder(
     ICapabilityClaimVerifier? capabilityClaimVerifier = null,
     IToolCallLog? toolCallLog = null,
     IOptions<AgentHostOptions>? agentHostOptions = null,
-    IOptions<WorkingMemoryOptions>? workingMemoryOptions = null)
+    IOptions<WorkingMemoryOptions>? workingMemoryOptions = null,
+    ISessionWorkRegistry? sessionWorkRegistry = null)
 #pragma warning restore CS9113
 {
     /// <summary>Host options, defaulted when not supplied so existing callers and tests are unaffected.</summary>
@@ -798,6 +799,19 @@ public sealed class AgentContextBuilder(
                 chatMessages.Add(new ChatMessage(ChatRole.System, subagentContext));
                 logger.LogInformation("Injected {Count} subagent index entries into context (of {Total} total, {ContentCount} content chunks available)",
                     selected.Distinct().Count(), indexEntries.Count, nonIndexCount);
+            }
+        }
+
+        // #665: what this conversation has produced so far (files, uploads, subagent result keys),
+        // so "the doc" or "the deck" resolves to a concrete path rather than a guess.
+        if (isUserSession && sessionWorkRegistry is not null)
+        {
+            var workContext = SessionWorkContext.RenderForPrimary(sessionWorkRegistry.GetSnapshot(sessionId));
+            if (workContext is not null)
+            {
+                chatMessages.Add(new ChatMessage(ChatRole.System, workContext));
+                logger.LogInformation("Injected session work products ({Chars} chars) for session {SessionId}",
+                    workContext.Length, sessionId);
             }
         }
 
