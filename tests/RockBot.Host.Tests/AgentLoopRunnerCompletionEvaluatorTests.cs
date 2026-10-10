@@ -204,6 +204,162 @@ public class AgentLoopRunnerCompletionEvaluatorTests
         Assert.AreEqual(1, llm.LoopRequests.Count);
     }
 
+    // ── #683: subagent evidence, the user's actual request, neutral re-prompts ──
+
+    private static List<ChatMessage> SynthesisConversation() =>
+        Conversation("[Subagent task abc123 completed]: " + CompletionEvalTriggersTests.DeckRevisionReport);
+
+    private static ScriptedLlmClient SynthesisLlm(string[] loopReplies, string[] evaluatorReplies) =>
+        new(loopReplies, evaluatorReplies)
+        {
+            // The synthesis turn itself only reads the subagent's saved output.
+            OnLoopCall = () =>
+                LoopToolCallLedgerContext.Value!.Record("get_from_working_memory", "key=subagent/abc123/deck-summary", succeeded: true),
+        };
+
+    [TestMethod]
+    public async Task SubagentSynthesis_SubagentWroteAndUploaded_EvaluatorSeesItsCalls_AndCompletes()
+    {
+        var llm = SynthesisLlm([CompletionEvalTriggersTests.DeckRevisionReport], [CompleteVerdict]);
+        var runner = CreateRunner(llm);
+        var relayed = new RelayedSubagentWork("abc123",
+            CompletionEvalTriggers.SummarizeForRelay(CompletionEvalTriggersTests.DeckSubagentCalls()), 6);
+
+        var result = await runner.RunAsync(
+            SynthesisConversation(), new ChatOptions(), "s1",
+            enableFollowUp: false, cancellationToken: CancellationToken.None,
+            subagentSynthesis: true,
+            originatingUserRequest: CompletionEvalTriggersTests.DeckRevisionRequest,
+            relayedWork: [relayed]);
+
+        Assert.AreEqual(CompletionEvalTriggersTests.DeckRevisionReport, result);
+        Assert.AreEqual(1, llm.EvaluatorRequests.Count);
+        Assert.AreEqual(1, llm.LoopRequests.Count, "COMPLETE: no re-prompt");
+
+        var evalInput = llm.EvaluatorRequests[0];
+        var section = evalInput[evalInput.IndexOf("## Tool calls made by subagent abc123 (the relayed work)", StringComparison.Ordinal)..];
+        StringAssert.Contains(section, "- file_write (ok, changes state)");
+        StringAssert.Contains(section, "- mcp_invoke_tool → upload_file (ok, changes state)");
+        StringAssert.Contains(evalInput, "- get_from_working_memory (ok)");
+        StringAssert.Contains(evalInput, "UserAskedFor: instruction");
+    }
+
+    [TestMethod]
+    public async Task SubagentSynthesis_ClaimedUploadNeverMade_IsVisible_AndThe_RepromptIsInternal()
+    {
+        var llm = SynthesisLlm(
+            [CompletionEvalTriggersTests.DeckRevisionReport, "The deck and notes are revised; the upload to OneDrive did not happen."],
+            ["{\"complete\": false, \"reason\": \"the report claims an OneDrive upload, but the subagent's calls show none\"}"]);
+        var runner = CreateRunner(llm);
+        var relayed = new RelayedSubagentWork("abc123",
+            CompletionEvalTriggers.SummarizeForRelay(CompletionEvalTriggersTests.DeckSubagentCalls(uploaded: false)), 4);
+
+        await runner.RunAsync(
+            SynthesisConversation(), new ChatOptions(), "s1",
+            enableFollowUp: false, cancellationToken: CancellationToken.None,
+            subagentSynthesis: true,
+            originatingUserRequest: CompletionEvalTriggersTests.DeckRevisionRequest,
+            relayedWork: [relayed]);
+
+        var evalInput = llm.EvaluatorRequests[0];
+        var section = evalInput[evalInput.IndexOf("## Tool calls made by subagent abc123", StringComparison.Ordinal)..];
+        Assert.IsFalse(section[..section.IndexOf("## Why this reply", StringComparison.Ordinal)]
+            .Contains("upload", StringComparison.OrdinalIgnoreCase), "no upload in the subagent's calls");
+
+        Assert.AreEqual(2, llm.LoopRequests.Count, "INCOMPLETE re-prompts once");
+        var nudge = llm.LoopRequests[1].Last(m => m.Role == ChatRole.User).Text!;
+        Assert.IsTrue(nudge.StartsWith("[Internal completion check — not a message from the user]", StringComparison.Ordinal), nudge);
+        StringAssert.Contains(nudge, "the subagent's calls show none");
+        StringAssert.Contains(nudge, "do not say \"you're right\" or \"you were right\"");
+        StringAssert.Contains(nudge, "Do not address or thank the user for feedback");
+        StringAssert.Contains(nudge, CompletionEvalTriggersTests.DeckRevisionRequest);
+        Assert.IsFalse(nudge.Contains("[Subagent task abc123", StringComparison.Ordinal),
+            "the subagent's report is not quoted as the user's message");
+        StringAssert.Contains(nudge, "what the user originally asked for");
+        StringAssert.Contains(nudge, "do not disown it");
+    }
+
+    [TestMethod]
+    public async Task SubagentSynthesis_InformationOnlyRequest_IsJudgedOnAccuracyOnly()
+    {
+        var llm = SynthesisLlm(
+            ["Noted — since the talk doesn't exist yet, I've captured the outline the subagent drafted.", "Corrected."],
+            ["{\"complete\": false, \"reason\": \"the outline's date is wrong\"}"]);
+        var runner = CreateRunner(llm);
+
+        await runner.RunAsync(
+            SynthesisConversation(), new ChatOptions(), "s1",
+            enableFollowUp: false, cancellationToken: CancellationToken.None,
+            subagentSynthesis: true,
+            originatingUserRequest: CompletionEvalTriggersTests.ContextOnlyUser,
+            relayedWork: [new RelayedSubagentWork("abc123", [], 0)]);
+
+        var evalInput = llm.EvaluatorRequests[0];
+        StringAssert.Contains(evalInput, "UserAskedFor: information-only");
+        StringAssert.Contains(evalInput, "Do NOT mark it INCOMPLETE because the user's wider goal implies more work");
+
+        var nudge = llm.LoopRequests[1].Last(m => m.Role == ChatRole.User).Text!;
+        StringAssert.Contains(nudge, "do not start work the user did not ask for");
+        Assert.IsFalse(nudge.Contains("Continue working on the original request", StringComparison.Ordinal));
+        Assert.IsFalse(nudge.Contains("do the remaining work", StringComparison.Ordinal));
+    }
+
+    [TestMethod]
+    public async Task ContextOnlyUserMessage_WithSideEffect_GetsInformationOnlyRubric()
+    {
+        var llm = new ScriptedLlmClient(
+            loopReplies: ["Got it — I've noted that the talk is still to be written."],
+            evaluatorReplies: [CompleteVerdict])
+        {
+            OnLoopCall = () => LoopToolCallLedgerContext.Value!.Record("file_write", "path=notes/talk.md", succeeded: true),
+        };
+        var runner = CreateRunner(llm);
+
+        await runner.RunAsync(
+            Conversation(CompletionEvalTriggersTests.ContextOnlyUser), new ChatOptions(), "s1",
+            enableFollowUp: false, cancellationToken: CancellationToken.None);
+
+        Assert.AreEqual(1, llm.EvaluatorRequests.Count);
+        StringAssert.Contains(llm.EvaluatorRequests[0], "UserAskedFor: information-only");
+    }
+
+    [TestMethod]
+    public async Task Incomplete_CounterIsTaggedByTrigger_AndUserAskedFor()
+    {
+        var measurements = new List<(long Value, Dictionary<string, object?> Tags)>();
+        using var listener = new System.Diagnostics.Metrics.MeterListener();
+        listener.InstrumentPublished = (instrument, l) =>
+        {
+            if (ReferenceEquals(instrument, HostDiagnostics.CompletionCheckIncomplete))
+                l.EnableMeasurementEvents(instrument);
+        };
+        listener.SetMeasurementEventCallback<long>((_, value, tags, _) =>
+        {
+            var copy = new Dictionary<string, object?>();
+            foreach (var tag in tags) copy[tag.Key] = tag.Value;
+            lock (measurements) measurements.Add((value, copy));
+        });
+        listener.Start();
+
+        var llm = new ScriptedLlmClient(
+            loopReplies: [CompletionEvalTriggersTests.WebSearchReply, "Per the spec (section 4.2), the limit is 64 KiB."],
+            evaluatorReplies: [IncompleteVerdict]);
+        var runner = CreateRunner(llm);
+
+        await runner.RunAsync(
+            Conversation(CompletionEvalTriggersTests.WebSearchUser), new ChatOptions(), "s1",
+            enableFollowUp: false, cancellationToken: CancellationToken.None);
+
+        lock (measurements)
+        {
+            Assert.IsTrue(measurements.Any(m =>
+                    m.Value == 1
+                    && Equals(m.Tags.GetValueOrDefault("rockbot.completion_check.trigger"), "promise-no-action")
+                    && Equals(m.Tags.GetValueOrDefault("rockbot.completion_check.user_asked_for"), "instruction")),
+                string.Join("; ", measurements.Select(m => string.Join(",", m.Tags.Select(t => $"{t.Key}={t.Value}")))));
+        }
+    }
+
     // ── Harness ─────────────────────────────────────────────────────────────
 
     private static List<ChatMessage> Conversation(string userMessage) =>

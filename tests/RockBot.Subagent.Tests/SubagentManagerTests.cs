@@ -410,6 +410,57 @@ public class SubagentManagerTests
         Assert.IsNotNull(await publisher.WaitForResultAsync(TimeSpan.FromSeconds(10)));
     }
 
+    /// <summary>
+    /// #683: the subagent's own tool calls travel on its result, so the primary's synthesis check
+    /// sees the write and upload the report describes.
+    /// </summary>
+    [TestMethod]
+    public async Task SubagentResult_CarriesTheRunsToolCalls()
+    {
+        var publisher = new CapturingPublisher();
+        var services = new ServiceCollection();
+        services.AddLogging();
+        AddSubagentRunnerStubs(services, new LedgerRecordingLlmClient());
+        services.AddSingleton<IMessagePublisher>(publisher);
+        var provider = services.BuildServiceProvider();
+        var manager = new SubagentManager(
+            provider.GetRequiredService<IServiceScopeFactory>(),
+            Options.Create(new SubagentOptions()),
+            publisher,
+            new AgentIdentity("TestBot"),
+            NullLogger<SubagentManager>.Instance);
+
+        await manager.SpawnAsync("Revise the deck and upload it", null, null, "session/s1", CancellationToken.None);
+        var result = await publisher.WaitForResultAsync(TimeSpan.FromSeconds(10));
+
+        Assert.IsNotNull(result);
+        Assert.AreEqual(2, result.ToolCallCount);
+        Assert.IsNotNull(result.ToolCalls);
+        Assert.AreEqual(new SubagentToolCallSummary("file_write", true, true, "path=deck.md"), result.ToolCalls[0]);
+        Assert.AreEqual("mcp_invoke_tool → upload_file", result.ToolCalls[1].Name);
+        Assert.IsTrue(result.ToolCalls[1].ChangesState);
+    }
+
+    /// <summary>Stands in for the FICC: records a write and an upload into the run's ledger, then answers.</summary>
+    private sealed class LedgerRecordingLlmClient : ILlmClient
+    {
+        public Task<ChatResponse> GetResponseAsync(
+            IEnumerable<ChatMessage> messages, ChatOptions? options = null, CancellationToken cancellationToken = default)
+        {
+            if (LoopToolCallLedgerContext.Value is { } ledger && ledger.Snapshot().Count == 0)
+            {
+                ledger.Record("file_write", "path=deck.md", succeeded: true);
+                ledger.Record("mcp_invoke_tool", "server_name=onedrive, tool_name=upload_file, path=/Talks/deck.md", succeeded: true);
+            }
+            return Task.FromResult(new ChatResponse([new ChatMessage(ChatRole.Assistant, "Deck revised and uploaded.")]));
+        }
+
+        public Task<ChatResponse> GetResponseAsync(
+            IEnumerable<ChatMessage> messages, ModelTier tier, ChatOptions? options = null,
+            CancellationToken cancellationToken = default) =>
+            GetResponseAsync(messages, options, cancellationToken);
+    }
+
     private sealed class ListLogger<T> : ILogger<T>
     {
         public List<string> Messages { get; } = [];

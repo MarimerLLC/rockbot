@@ -28,4 +28,25 @@ public sealed record SubagentResultMessage
     /// Null on results from an older build.
     /// </summary>
     public string? Description { get; init; }
+
+    /// <summary>
+    /// The tool calls the subagent made, oldest first, compacted and capped (#683). The primary's
+    /// synthesis turn makes no write calls of its own, so without these the completion check saw
+    /// every honest relay of a subagent's writes and uploads as an unsupported claim. Null on
+    /// results from an older build; an empty list means the subagent made no tool calls.
+    /// </summary>
+    public IReadOnlyList<SubagentToolCallSummary>? ToolCalls { get; init; }
+
+    /// <summary>
+    /// How many tool calls the subagent made in all (#683). Larger than <see cref="ToolCalls"/>'s
+    /// count when the list was capped. Null on results from an older build.
+    /// </summary>
+    public int? ToolCallCount { get; init; }
 }
+
+/// <summary>One tool call a subagent made, as carried on <see cref="SubagentResultMessage.ToolCalls"/> (#683).</summary>
+/// <param name="Name">The tool name as the subagent called it; generic proxies show their target, e.g. <c>mcp_invoke_tool → upload_file</c>.</param>
+/// <param name="Succeeded">False when the call threw or returned an error result.</param>
+/// <param name="ChangesState">True when the call changed something outside the subagent's own scratch state (wrote, uploaded, sent…).</param>
+/// <param name="Arguments">A short argument summary, or null.</param>
+public sealed record SubagentToolCallSummary(string Name, bool Succeeded, bool ChangesState, string? Arguments);

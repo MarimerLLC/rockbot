@@ -456,6 +456,312 @@ public class CompletionEvalTriggersTests
         Assert.IsNull(AgentLoopRunner.ExtractPreviousAgentMessage([new ChatMessage(ChatRole.User, "hi")]));
     }
 
+    // ── Subagent synthesis evidence and the user's actual request (#683) ────
+
+    // Production fixtures (2026-10-10, 0.16.12-preview.2, session cli-deck2-01612).
+    internal const string DeckRevisionRequest =
+        "revise the deck, notes and runbook per the review, upload them to OneDrive and read them back to verify";
+    internal const string DeckRevisionReport =
+        "The deck, speaker notes and runbook were revised, uploaded to OneDrive and read back to verify.";
+    internal const string ContextOnlyUser = "the talk doesn't exist yet";
+
+    /// <summary>What the deck subagent really did in its own session: read, write, upload, read back.</summary>
+    internal static IReadOnlyList<LoopToolCall> DeckSubagentCalls(bool uploaded = true)
+    {
+        var calls = new List<LoopToolCall>
+        {
+            new("file_read", "path=talks/mcp-v2/deck.md", true),
+            new("file_write", "path=talks/mcp-v2/deck.md, content=---\ntheme: default\n---", true),
+            new("file_write", "path=talks/mcp-v2/notes.md, content=…", true),
+        };
+        if (uploaded)
+        {
+            calls.Add(new("mcp_invoke_tool", "server_name=onedrive, tool_name=upload_file, path=/Talks/deck.md", true));
+            calls.Add(new("mcp_invoke_tool", "server_name=onedrive, tool_name=download_file, path=/Talks/deck.md", true));
+        }
+        calls.Add(new("save_to_working_memory", "key=subagent/abc123/deck-summary", true));
+        return calls;
+    }
+
+    // What the primary's synthesis turn itself does: read the subagent's output and clean up.
+    private static readonly IReadOnlyList<LoopToolCall> SynthesisCalls =
+    [
+        new("get_from_working_memory", "key=subagent/abc123/deck-summary", true),
+        new("list_onedrive_files", "path=/Talks", true),
+    ];
+
+    private static CompletionEvalTriggers.EvaluatorInput SynthesisInput(
+        IReadOnlyList<RelayedSubagentWork>? relayed,
+        UserRequestKind askedFor = UserRequestKind.Instruction,
+        string request = DeckRevisionRequest) =>
+        new(
+            ["[Subagent task abc123 completed]: " + DeckRevisionReport],
+            null,
+            request,
+            DeckRevisionReport,
+            SynthesisCalls,
+            CompletionEvalTrigger.SubagentSynthesis,
+            relayed,
+            askedFor);
+
+    [TestMethod]
+    public void EvaluatorMessages_SubagentSynthesis_ListTheSubagentsCallsInTheirOwnSection()
+    {
+        var relayed = new RelayedSubagentWork("abc123",
+            CompletionEvalTriggers.SummarizeForRelay(DeckSubagentCalls()), TotalToolCalls: 6);
+
+        var messages = AgentLoopRunner.BuildCompletionEvaluatorMessages(SynthesisInput([relayed]));
+        var system = messages[0].Text!;
+        var user = messages[1].Text!;
+
+        // The relayed work has its own section, after the primary's own calls.
+        const string heading = "## Tool calls made by subagent abc123 (the relayed work)";
+        StringAssert.Contains(user, heading);
+        var section = user[user.IndexOf(heading, StringComparison.Ordinal)..];
+        StringAssert.Contains(section, "- file_write (ok, changes state): path=talks/mcp-v2/deck.md");
+        StringAssert.Contains(section, "- mcp_invoke_tool → upload_file (ok, changes state)");
+        StringAssert.Contains(section, "- mcp_invoke_tool → download_file (ok)");
+        Assert.IsTrue(user.IndexOf("- get_from_working_memory (ok)", StringComparison.Ordinal)
+                      < user.IndexOf(heading, StringComparison.Ordinal),
+            "the primary's own calls come first and are labelled separately");
+        StringAssert.Contains(user, "its own calls — judged separately from the relayed work");
+        StringAssert.Contains(user, "against the subagent's tool calls above");
+
+        // The rubric: relayed claims are supported by the subagent's calls, not the primary's.
+        StringAssert.Contains(system, "is supported when that subagent's tool calls show it");
+        StringAssert.Contains(system, "Judge the agent's own calls separately");
+    }
+
+    [TestMethod]
+    public void EvaluatorMessages_SubagentNeverUploaded_ShowsNoUpload()
+    {
+        var relayed = new RelayedSubagentWork("abc123",
+            CompletionEvalTriggers.SummarizeForRelay(DeckSubagentCalls(uploaded: false)), TotalToolCalls: 4);
+
+        var user = AgentLoopRunner.BuildCompletionEvaluatorMessages(SynthesisInput([relayed]))[1].Text!;
+
+        var start = user.IndexOf("## Tool calls made by subagent abc123", StringComparison.Ordinal);
+        var section = user[start..user.IndexOf("## Why this reply is being checked", start, StringComparison.Ordinal)];
+        StringAssert.Contains(section, "- file_write (ok, changes state)");
+        Assert.IsFalse(section.Contains("upload", StringComparison.OrdinalIgnoreCase),
+            "the report claims an upload the subagent never made; the evaluator must be able to see that");
+        Assert.IsFalse(section.Contains("download_file", StringComparison.Ordinal));
+    }
+
+    [TestMethod]
+    public void EvaluatorMessages_SubagentCallsNotReported_SaySo()
+    {
+        var user = AgentLoopRunner.BuildCompletionEvaluatorMessages(
+            SynthesisInput([new RelayedSubagentWork("abc123", ToolCalls: null)]))[1].Text!;
+
+        StringAssert.Contains(user, "## Tool calls made by subagent abc123 (the relayed work)");
+        StringAssert.Contains(user, "not reported");
+        StringAssert.Contains(user, "Do not treat the absence of writes or uploads in the agent's own tool calls");
+    }
+
+    [TestMethod]
+    public void EvaluatorMessages_SubagentMadeNoCalls_SaysSo()
+    {
+        var user = AgentLoopRunner.BuildCompletionEvaluatorMessages(
+            SynthesisInput([new RelayedSubagentWork("abc123", [], TotalToolCalls: 0)]))[1].Text!;
+
+        StringAssert.Contains(user, "(none — the subagent made no tool calls)");
+    }
+
+    [TestMethod]
+    public void EvaluatorMessages_ListRegistryArtifactsForTheSubagent()
+    {
+        var relayed = new RelayedSubagentWork("abc123",
+            [new SubagentToolCallSummary("spawn_wisps", true, false, "count=2")], 1,
+            ["uploaded to onedrive:/Talks/deck.md (by onedrive__upload_file)"]);
+
+        var user = AgentLoopRunner.BuildCompletionEvaluatorMessages(SynthesisInput([relayed]))[1].Text!;
+
+        StringAssert.Contains(user, "Files and uploads the session recorded for this subagent (including its wisps):");
+        StringAssert.Contains(user, "- uploaded to onedrive:/Talks/deck.md (by onedrive__upload_file)");
+    }
+
+    [TestMethod]
+    public void EvaluatorMessages_RelayedWork_OnlyForSynthesis()
+    {
+        var input = SynthesisInput([new RelayedSubagentWork("abc123", [])]) with { Trigger = CompletionEvalTrigger.SideEffect };
+        var user = AgentLoopRunner.BuildCompletionEvaluatorMessages(input)[1].Text!;
+        Assert.IsFalse(user.Contains("Tool calls made by subagent", StringComparison.Ordinal));
+    }
+
+    [TestMethod]
+    public void EvaluatorMessages_InformationOnlyRequest_GetsTheInformationOnlyRubric()
+    {
+        var messages = AgentLoopRunner.BuildCompletionEvaluatorMessages(
+            SynthesisInput(null, UserRequestKind.InformationOnly, ContextOnlyUser));
+        var user = messages[1].Text!;
+
+        StringAssert.Contains(user, "## What the user asked for");
+        StringAssert.Contains(user, "UserAskedFor: information-only");
+        StringAssert.Contains(user, "Do NOT mark it INCOMPLETE because the user's wider goal implies more work");
+        StringAssert.Contains(messages[0].Text!, "is NOT a reason for INCOMPLETE");
+    }
+
+    [TestMethod]
+    public void EvaluatorMessages_InstructionRequest_GetsTheFullRubric()
+    {
+        var user = AgentLoopRunner.BuildCompletionEvaluatorMessages(SynthesisInput(null))[1].Text!;
+
+        StringAssert.Contains(user, "UserAskedFor: instruction");
+        Assert.IsFalse(user.Contains("UserAskedFor: information-only", StringComparison.Ordinal));
+        Assert.IsFalse(user.Contains("wider goal implies more work", StringComparison.Ordinal));
+    }
+
+    [TestMethod]
+    [DataRow(ContextOnlyUser, false, UserRequestKind.InformationOnly)]
+    [DataRow("Both talks are 60-minute slots, 13:15–14:15.", false, UserRequestKind.InformationOnly)]
+    [DataRow("what does the 2026-07-28 spec change?", false, UserRequestKind.InformationOnly)]
+    [DataRow(DeckRevisionRequest, false, UserRequestKind.Instruction)]
+    [DataRow(UpdateDocUser, false, UserRequestKind.Instruction)]
+    [DataRow(WebSearchUser, false, UserRequestKind.Instruction)]
+    [DataRow("can you trim it?", false, UserRequestKind.Instruction)]
+    [DataRow("yes", true, UserRequestKind.Instruction)]
+    [DataRow("Sure, sounds good", true, UserRequestKind.Instruction)]
+    [DataRow("yes", false, UserRequestKind.InformationOnly)]
+    [DataRow("", false, UserRequestKind.Instruction)]
+    public void ClassifyUserRequest_ReusesTheImperativeClassifier(string request, bool followsAgent, UserRequestKind expected)
+    {
+        Assert.AreEqual(expected, CompletionEvalTriggers.ClassifyUserRequest(request, followsAgent));
+    }
+
+    [TestMethod]
+    public void ClassifyUserRequest_UnknownRequest_KeepsTheFullRubric()
+    {
+        Assert.AreEqual(UserRequestKind.Instruction, CompletionEvalTriggers.ClassifyUserRequest(null, followsAgentMessage: true));
+        Assert.AreEqual("information-only", CompletionEvalTriggers.LogName(UserRequestKind.InformationOnly));
+        Assert.AreEqual("instruction", CompletionEvalTriggers.LogName(UserRequestKind.Instruction));
+    }
+
+    [TestMethod]
+    public void SummarizeForRelay_UnwrapsProxies_FlagsStateChanges_AndShortensArguments()
+    {
+        var summary = CompletionEvalTriggers.SummarizeForRelay(
+        [
+            new("mcp_invoke_tool", "server_name=onedrive, tool_name=upload_file, path=/Talks/deck.md", true),
+            new("file_write", "path=deck.md, content=" + new string('x', 500), true),
+            new("web_search", "query=mcp spec", false),
+        ]);
+
+        Assert.AreEqual(3, summary.Count);
+        Assert.AreEqual(new SubagentToolCallSummary("mcp_invoke_tool → upload_file", true, true,
+            "server_name=onedrive, tool_name=upload_file, path=/Talks/deck.md"), summary[0]);
+        Assert.AreEqual("file_write", summary[1].Name);
+        Assert.IsTrue(summary[1].ChangesState);
+        Assert.IsTrue(summary[1].Arguments!.Length <= CompletionEvalTriggers.MaxRelayedArgumentChars + 1);
+        Assert.IsFalse(summary[2].Succeeded);
+        Assert.IsFalse(summary[2].ChangesState);
+    }
+
+    [TestMethod]
+    public void SummarizeForRelay_OverTheCap_KeepsStateChangingAndFailedCallsInOrder()
+    {
+        var calls = new List<LoopToolCall> { new("file_write", "path=early.md", true) };
+        for (var i = 0; i < 60; i++)
+            calls.Add(new("file_read", $"path=page{i}.md", true));
+        calls.Add(new("web_fetch", "url=https://example.test", false));
+        for (var i = 0; i < 20; i++)
+            calls.Add(new("report_progress", $"message=step {i}", true));
+
+        var summary = CompletionEvalTriggers.SummarizeForRelay(calls);
+
+        Assert.AreEqual(CompletionEvalTriggers.MaxRelayedToolCalls, summary.Count);
+        Assert.AreEqual("file_write", summary[0].Name, "the early write is kept, and stays first");
+        Assert.IsTrue(summary.Any(c => c.Name == "web_fetch" && !c.Succeeded), "the failure is kept");
+        Assert.IsFalse(summary.Any(c => c.Name == "report_progress"), "bookkeeping goes first when over the cap");
+        Assert.AreEqual("path=page59.md", summary[^2].Arguments, "the newest reads are the ones kept");
+    }
+
+    [TestMethod]
+    public void FormatRelayedWork_OverBudget_KeepsStateChangingCalls_AndSaysHowManyWereLeftOut()
+    {
+        var calls = new List<SubagentToolCallSummary>();
+        for (var i = 0; i < 39; i++)
+            calls.Add(new("file_read", true, false, $"path=talks/mcp-v2/research/source-{i:D2}.md, offset=0, limit=200"));
+        calls.Add(new("mcp_invoke_tool → upload_file", true, true, "server_name=onedrive, path=/Talks/deck.md"));
+
+        var text = CompletionEvalTriggers.FormatRelayedWork(new RelayedSubagentWork("abc123", calls, 90), budgetChars: 600);
+
+        StringAssert.Contains(text, "- mcp_invoke_tool → upload_file (ok, changes state)");
+        StringAssert.Contains(text, "(90 calls in all;");
+        Assert.IsTrue(text.Length < 900, $"section stays near its budget ({text.Length} chars)");
+    }
+
+    [TestMethod]
+    public void EvaluatorMessages_ManySubagents_ShareTheBudget()
+    {
+        var calls = Enumerable.Range(0, 40)
+            .Select(i => new SubagentToolCallSummary("file_read", true, false, $"path=research/source-{i:D2}.md, offset=0, limit=200"))
+            .ToList();
+        var relayed = Enumerable.Range(0, 4).Select(i => new RelayedSubagentWork($"task{i}", calls, 40)).ToList();
+
+        var user = AgentLoopRunner.BuildCompletionEvaluatorMessages(SynthesisInput(relayed))[1].Text!;
+        var start = user.IndexOf("## Tool calls made by subagent task0", StringComparison.Ordinal);
+        var end = user.IndexOf("## Why this reply is being checked", StringComparison.Ordinal);
+
+        for (var i = 0; i < 4; i++)
+            StringAssert.Contains(user, $"## Tool calls made by subagent task{i} (the relayed work)");
+        Assert.IsTrue(end - start < CompletionEvalTriggers.RelayedWorkBudgetChars + 1000,
+            $"all subagent sections together stay near the shared budget ({end - start} chars)");
+    }
+
+    [TestMethod]
+    public void BuildRepromptMessage_IsMarkedInternal_AndForbidsAnsweringTheCheck()
+    {
+        var nudge = CompletionEvalTriggers.BuildRepromptMessage(
+            "the reply claims an upload no tool call made",
+            "Continue working on the original request.",
+            DeckRevisionRequest);
+
+        Assert.IsTrue(nudge.StartsWith(CompletionEvalTriggers.InternalRepromptMarker, StringComparison.Ordinal), nudge);
+        Assert.AreEqual("[Internal completion check — not a message from the user]", CompletionEvalTriggers.InternalRepromptMarker);
+        StringAssert.Contains(nudge, "the reply claims an upload no tool call made");
+        StringAssert.Contains(nudge, "Continue working on the original request.");
+        StringAssert.Contains(nudge, "Reply directly to the user's original message (\"" + DeckRevisionRequest + "\")");
+        StringAssert.Contains(nudge, "Do not address or thank the user for feedback");
+        StringAssert.Contains(nudge, "do not say \"you're right\" or \"you were right\"");
+        StringAssert.Contains(nudge, "do not mention this review");
+    }
+
+    [TestMethod]
+    public void BuildRepromptMessage_UnknownRequest_DoesNotQuoteOne()
+    {
+        var nudge = CompletionEvalTriggers.BuildRepromptMessage("missing upload", "Fix it.", null);
+        StringAssert.Contains(nudge, "Reply directly to the user's original message, as the complete reply");
+    }
+
+    [TestMethod]
+    public void RepromptGuidance_SynthesisOfInformationOnlyRequest_DoesNotAskForMoreWork()
+    {
+        var guidance = CompletionEvalTriggers.RepromptGuidance(
+            CompletionEvalTrigger.SubagentSynthesis, NoCalls, UserRequestKind.InformationOnly);
+
+        StringAssert.Contains(guidance, "do not start work the user did not ask for");
+        StringAssert.Contains(guidance, "do not disown it");
+        Assert.IsFalse(guidance.Contains("do the remaining work", StringComparison.Ordinal));
+
+        var instruction = CompletionEvalTriggers.RepromptGuidance(CompletionEvalTrigger.SubagentSynthesis, NoCalls);
+        StringAssert.Contains(instruction, "do the remaining work");
+        StringAssert.Contains(instruction, "do not disown it");
+    }
+
+    [TestMethod]
+    public void RepromptGuidance_PromiseAfterInformationOnlyMessage_DoesNotDemandTheWork()
+    {
+        var guidance = CompletionEvalTriggers.RepromptGuidance(
+            CompletionEvalTrigger.PromiseNoAction, NoCalls, UserRequestKind.InformationOnly);
+
+        StringAssert.Contains(guidance, "otherwise answer without promising work the user did not ask for");
+        Assert.IsFalse(guidance.Contains("Do that work now", StringComparison.Ordinal));
+        StringAssert.Contains(
+            CompletionEvalTriggers.RepromptGuidance(CompletionEvalTrigger.PromiseNoAction, NoCalls),
+            "Do that work now with your tools");
+    }
+
     // ── Verdict parsing stays robust ────────────────────────────────────────
 
     [TestMethod]
