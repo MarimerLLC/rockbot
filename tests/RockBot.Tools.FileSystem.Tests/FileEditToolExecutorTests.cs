@@ -142,7 +142,8 @@ public class FileEditToolExecutorTests
 
         Assert.IsTrue(response.IsError);
         StringAssert.Contains(response.Content!, "File not found");
-        StringAssert.Contains(response.Content!, "file_write");
+        // Points at finding the right path first, not at creating a new file (issue #664).
+        StringAssert.Contains(response.Content!, "file_list");
     }
 
     [TestMethod]

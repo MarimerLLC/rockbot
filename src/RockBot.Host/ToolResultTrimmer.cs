@@ -51,6 +51,12 @@ internal static class ToolResultTrimmer
         // this catches any future edit that reintroduces a non-shrinking path.
         var maxPasses = messages.Count * 4 + 32;
 
+        // Self-paging results (file_read) are trimmed only once every other tool result has
+        // been reduced to the elision floor. The model reads a file immediately before
+        // editing it; eliding that read on the next round-trip recreates the partial-view
+        // overwrite of issue #664. See SelfPagingTools. Flips to true at most once.
+        var selfPagingOnly = false;
+
         for (var pass = 0; ; pass++)
         {
             if (pass >= maxPasses)
@@ -79,7 +85,10 @@ internal static class ToolResultTrimmer
                         // Never re-stash an explicit working-memory retrieval — re-stashing
                         // mints a fresh key on every pass and loops the model forever
                         // re-fetching its own growing reference. See StashExemptTools.
-                        if (StashExemptTools.Contains(ExtractToolNameForCallId(messages, frc.CallId)))
+                        var toolName = ExtractToolNameForCallId(messages, frc.CallId);
+                        if (StashExemptTools.Contains(toolName))
+                            continue;
+                        if (SelfPagingTools.Contains(toolName) != selfPagingOnly)
                             continue;
                         bestMsg = i; bestContent = j; bestLen = len;
                     }
@@ -87,7 +96,14 @@ internal static class ToolResultTrimmer
             }
 
             if (bestMsg < 0)
+            {
+                if (!selfPagingOnly)
+                {
+                    selfPagingOnly = true;
+                    continue;
+                }
                 break;
+            }
 
             var old = (FunctionResultContent)messages[bestMsg].Contents[bestContent];
             var oldStr = old.Result?.ToString() ?? string.Empty;
@@ -104,6 +120,12 @@ internal static class ToolResultTrimmer
                 var legacyTrimmed = oldStr[..legacyTarget] + "\n[truncated to fit context window]";
                 if (legacyTrimmed.Length >= oldStr.Length)
                 {
+                    if (!selfPagingOnly && HasSelfPagingCandidate(messages))
+                    {
+                        // Nothing else can shrink; self-paging reads are the last resort.
+                        selfPagingOnly = true;
+                        continue;
+                    }
                     logger.LogWarning(
                         "Tool-result trim (legacy) cannot reach budget: total {Total:N0} > budget {Budget:N0} " +
                         "chars, but the largest tool result ({Len:N0} chars) is already at the elision floor. " +
@@ -139,6 +161,12 @@ internal static class ToolResultTrimmer
             // always pick the largest result, nothing smaller can reach the budget either.
             if (trimmed.Length >= oldStr.Length)
             {
+                if (!selfPagingOnly && HasSelfPagingCandidate(messages))
+                {
+                    // Nothing else can shrink; self-paging reads are the last resort.
+                    selfPagingOnly = true;
+                    continue;
+                }
                 logger.LogWarning(
                     "Tool-result trim cannot reach budget: total {Total:N0} > budget {Budget:N0} chars, " +
                     "but the largest tool result ({Len:N0} chars, call {CallId}) is already at the elision " +
@@ -180,6 +208,27 @@ internal static class ToolResultTrimmer
                 "Trimmed tool result for call {CallId}: {Before:N0} → {After:N0} chars (head {Head}, tail {Tail})",
                 old.CallId, bestLen, trimmed.Length, headLen, tailLen);
         }
+    }
+
+    /// <summary>
+    /// Whether any tool result in <paramref name="messages"/> came from a self-paging tool,
+    /// and so is still available to trim once everything else is at the elision floor.
+    /// </summary>
+    private static bool HasSelfPagingCandidate(List<ChatMessage> messages)
+    {
+        foreach (var msg in messages)
+        {
+            if (msg.Role != ChatRole.Tool) continue;
+            foreach (var content in msg.Contents)
+            {
+                if (content is FunctionResultContent frc
+                    && SelfPagingTools.Contains(ExtractToolNameForCallId(messages, frc.CallId)))
+                {
+                    return true;
+                }
+            }
+        }
+        return false;
     }
 
     /// <summary>

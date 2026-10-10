@@ -46,7 +46,7 @@ public sealed class ChunkingAIFunction(
         var result = await inner.InvokeAsync(arguments, cancellationToken);
         var resultStr = result?.ToString() ?? string.Empty;
 
-        if (StashExemptTools.Contains(inner.Name))
+        if (StashExemptTools.Contains(inner.Name) || SelfPagingTools.Contains(inner.Name))
             return result;
 
         if (resultStr.Length <= chunkingThreshold)

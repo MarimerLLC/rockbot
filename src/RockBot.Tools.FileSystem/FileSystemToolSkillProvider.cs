@@ -58,6 +58,33 @@ internal sealed class FileSystemToolSkillProvider(IServiceProvider services) : I
         long after the edit.
 
 
+        ## Read Before You Overwrite
+
+        `file_write` refuses to replace an existing file unless **this session** has seen
+        the file's current version in full. That means one of these:
+        - one `file_read` returned the whole file;
+        - paged `file_read` calls on the same version together covered every line;
+        - you wrote that version yourself with `file_write`.
+
+        The refusal tells you which lines you are missing and the offset to read next. Do
+        what it says, or switch to `file_edit`. Do not try to get around it. If the file
+        changed after you read it (another session, a subagent, or a script wrote it),
+        read it again. A subagent is a separate session. If a subagent wrote a file, read
+        it yourself before replacing it.
+
+        Never rebuild a file from a summary, a subagent's report, or a partial view and
+        write that back. You will lose whatever you did not see.
+
+
+        ## Undo: .prev/
+
+        When `file_write` replaces a file or `file_edit` changes one, the previous content
+        is kept at `.prev/<same path>` (e.g. `.prev/drafts/deck.md`). Only one generation is
+        kept: the next change replaces it. `file_list` hides `.prev/` unless you pass
+        `prefix: ".prev/"`. To undo a bad change, read the `.prev/` copy and restore what
+        was lost with `file_edit`, or with `file_write` after reading the current file in full.
+
+
         ## Tool Reference
 
         ### file_edit
@@ -74,41 +101,62 @@ internal sealed class FileSystemToolSkillProvider(IServiceProvider services) : I
 
         Rules:
         - `old_string` must match the file **exactly**, including whitespace and
-          indentation. Read the file first and copy the text verbatim rather than
-          reconstructing it from memory.
+          indentation. Read the file first and copy the text verbatim from `file_read`
+          output. Do not reconstruct it from memory or copy it from a summary.
         - `old_string` must match **exactly once**. If it appears more than once the edit
           is refused — include more surrounding text to make the match unique, or pass
           `replace_all: true` to change every occurrence.
         - Use an empty `new_string` to delete the matched text.
-        - The file must already exist; use `file_write` to create it.
+        - The file must already exist on the shared volume.
 
-        A refused edit is information, not an obstacle. "Not found" means your `old_string`
-        does not match the file — re-read it rather than retrying the same text. "Occurs N
-        times" means you must disambiguate; do not switch to `file_write` to work around it.
+        A refused edit is information, not an obstacle:
+        - "Not found" comes with the closest region of the file, with line numbers. Copy
+          the real text from that excerpt (without the line numbers) and retry.
+        - "Occurs N times" means you must disambiguate. Do not switch to `file_write` to
+          work around it.
+        - "File not found on the shared volume" lists files with the same name that do
+          exist, such as `drafts/<name>`. Use one of those paths. A OneDrive, SharePoint,
+          or other remote path is not a local file. Edit the shared-volume copy and upload
+          it again.
 
         ### file_write
         Write UTF-8 text to a file on the shared volume. Parent directories are created
-        automatically. Replaces the whole file — see the section above before using it on
-        a file that already exists.
+        automatically. Replaces the whole file. Before using it on a file that already
+        exists, read the two sections above: it is refused unless you have read that file
+        in full.
 
         ```
         file_write(path: "drafts/report.md", content: "# Weekly Report\n...")
         ```
 
         ### file_read
-        Read the UTF-8 text content of a file.
+        Read the UTF-8 text content of a file. A file that fits the read budget (64,000
+        characters by default) comes back whole, exactly as stored, with nothing added.
+
+        A larger file comes back one page at a time. Pages end on whole lines, and each
+        page carries a header and a footer:
 
         ```
-        file_read(path: "drafts/report.md")
+        file_read(path: "drafts/big.md")
+        // → [file_read drafts/big.md: lines 1–812 of 2400]
+        //   ...text...
+        //   [lines 1–812 of 2400 (63,950 of 190,210 chars) — call file_read with offset=813 to continue.]
+        file_read(path: "drafts/big.md", offset: 813)
+        // → ... until the footer says "end of file"
         ```
+
+        Pass `offset` (1-based line) and `limit` (line count) to read only part of a file.
+        The header and footer are not part of the file. Never copy them into `old_string`
+        or into content you write.
 
         ### file_list
         List all files as a JSON array of relative paths. Use the optional `prefix`
         parameter to filter by directory.
 
         ```
-        file_list()                       // all files
+        file_list()                       // all files (except .prev/ backups)
         file_list(prefix: "drafts/")      // only files under drafts/
+        file_list(prefix: ".prev/")       // the backups of replaced versions
         ```
 
         ### file_delete
