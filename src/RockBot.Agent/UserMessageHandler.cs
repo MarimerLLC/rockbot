@@ -564,7 +564,9 @@ internal sealed class UserMessageHandler(
                     await PublishReplyAsync(stage, replyTo, correlationId, sessionId, turnId, isFinal: false, ct2);
                     lastProgressAt = DateTimeOffset.UtcNow;
                 },
-                cancellationToken: ct);
+                cancellationToken: ct,
+                // #685: external changes need this message (or the proposal it accepts) to ask for them.
+                actionGate: ActionGateScope.ForUserTurn);
 
             logger.LogInformation(
                 "Native path complete — final text {TextLen} chars", text.Length);
@@ -721,7 +723,9 @@ internal sealed class UserMessageHandler(
                     await PublishReplyAsync(stage, replyTo, correlationId, sessionId, turnId, isFinal: false, ct2);
                     lastProgressAt = DateTimeOffset.UtcNow;
                 },
-                cancellationToken: ct);
+                cancellationToken: ct,
+                // #685: external changes need this message (or the proposal it accepts) to ask for them.
+                actionGate: ActionGateScope.ForUserTurn);
 
             RecordEscalation(sessionId, turnId, bgDiag);
 

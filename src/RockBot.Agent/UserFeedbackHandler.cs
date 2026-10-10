@@ -145,7 +145,9 @@ internal sealed class UserFeedbackHandler(
 
                 freshResponse = await agentLoopRunner.RunAsync(
                     chatMessages, chatOptions, message.SessionId,
-                    enableFollowUp: false, cancellationToken: slot.Token);
+                    enableFollowUp: false, cancellationToken: slot.Token,
+                    // #685: a re-answer of the user's own message, gated like the original turn.
+                    actionGate: ActionGateScope.ForUserTurn);
             }
         }
         catch (OperationCanceledException)

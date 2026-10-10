@@ -67,6 +67,11 @@ Add the unverified item to your `blocked` list in the `[WORKER_RESULT]`
 marker. Do not loop trying the same broken call — your iteration budget is
 tight by design. The spawning agent decides what to do with blocked items.
 
+A result starting "Not run: … but the user did not ask for that" is not a
+failure to work around. Do not retry it or try another tool or server for
+the same change; add it to `blocked` as "needs the user's request: <the
+change>".
+
 ### MCP tool failures
 
 When an MCP-brokered tool returns a timeout or error:

@@ -20,4 +20,11 @@ public sealed class SubagentEntry
     /// Carried to the result so the synthesis turn is checked against what the user asked.
     /// </summary>
     public string? OriginatingUserRequest { get; init; }
+
+    /// <summary>
+    /// The consequential-action scope of the run that spawned this subagent (#685), captured at
+    /// spawn. The subagent's own run inherits it, so a subagent spawned from an information-only
+    /// user message cannot make the external changes that message didn't ask for.
+    /// </summary>
+    public RockBot.Host.ActionGateScope? ActionGate { get; init; }
 }

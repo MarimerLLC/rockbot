@@ -41,6 +41,10 @@ public sealed class SubagentManager(
     {
         originatingUserRequest = CapOriginatingRequest(originatingUserRequest);
 
+        // #685: the spawning run's consequential-action scope (set by AgentLoopRunner.RunAsync on
+        // this async flow). The subagent runs under it, as a subagent of that run.
+        var actionGate = ActionGateContext.Scope?.ForSubagent();
+
         // #665: research and synthesis need room to search, read and cross-check. A cap the primary
         // set lower than the floor produced an outline written mostly from model priors.
         var floor = options.Value.ResearchIterationFloor;
@@ -83,7 +87,7 @@ public sealed class SubagentManager(
         sessionWorkRegistry?.LinkSession(subagentSessionId, primarySessionId);
         sessionWorkRegistry?.LinkSession($"subagent/{taskId}", primarySessionId);
 
-        var task = RunSubagentAsync(taskId, subagentSessionId, description, context, primarySessionId, batchId, consolidate, maxIterations, originatingUserRequest, inputs, timeoutSpan, cts.Token);
+        var task = RunSubagentAsync(taskId, subagentSessionId, description, context, primarySessionId, batchId, consolidate, maxIterations, originatingUserRequest, inputs, actionGate, timeoutSpan, cts.Token);
 
         var newEntry = new SubagentEntry
         {
@@ -96,7 +100,8 @@ public sealed class SubagentManager(
             Task = task,
             BatchId = batchId,
             Consolidate = consolidate,
-            OriginatingUserRequest = originatingUserRequest
+            OriginatingUserRequest = originatingUserRequest,
+            ActionGate = actionGate
         };
 
         _active[taskId] = newEntry;
@@ -145,6 +150,7 @@ public sealed class SubagentManager(
         int? maxIterations,
         string? originatingUserRequest,
         IReadOnlyList<SubagentInput>? inputs,
+        ActionGateScope? actionGate,
         TimeSpan timeout,
         CancellationToken ct)
     {
@@ -157,7 +163,7 @@ public sealed class SubagentManager(
             await using var scope = scopeFactory.CreateAsyncScope();
             var runner = scope.ServiceProvider.GetRequiredService<SubagentRunner>();
             await runner.RunAsync(taskId, subagentSessionId, description, context, primarySessionId, batchId, consolidate, maxIterations, timeout, ct,
-                originatingUserRequest: originatingUserRequest, inputs: inputs);
+                originatingUserRequest: originatingUserRequest, inputs: inputs, actionGate: actionGate);
         }
         catch (Exception ex)
         {
@@ -183,6 +189,8 @@ public sealed class SubagentManager(
                     // #683: it never ran, so it made no tool calls.
                     ToolCalls = [],
                     ToolCallCount = 0,
+                    RunOrigin = actionGate is null ? null : ActionGateScope.LogName(actionGate.Origin),
+                    UserAskedFor = actionGate?.UserAskedFor is { } askedFor ? CompletionEvalTriggers.LogName(askedFor) : null,
                 };
                 var envelope = result.ToEnvelope<SubagentResultMessage>(source: $"subagent-{taskId}");
                 await publisher.PublishAsync($"{SubagentTopics.Result}.{agent.Name}", envelope, CancellationToken.None);
