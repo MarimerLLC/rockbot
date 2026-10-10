@@ -259,6 +259,16 @@ public static class HostDiagnostics
             unit: "{check}",
             description: "Completion evaluation skipped due to force termination");
 
+    /// <summary>
+    /// A tool call that would change an external system was refused because the originating user
+    /// message asked for nothing (#685). Tagged <c>rockbot.tool.name</c> and <c>rockbot.action_gate.origin</c>.
+    /// </summary>
+    public static readonly Counter<long> ConsequentialActionGated =
+        Meter.CreateCounter<long>(
+            "rockbot.agent.consequential_action.gated",
+            unit: "{call}",
+            description: "External-change tool calls refused because the user did not ask for them");
+
     // ── Follow-up passes ──────────────────────────────────────────────────
 
     /// <summary>Follow-up evaluator found proactive opportunities — triggered a follow-up pass.</summary>

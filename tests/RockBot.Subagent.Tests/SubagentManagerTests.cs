@@ -284,6 +284,63 @@ public class SubagentManagerTests
         Assert.AreEqual("trim the deck to about 11 slides", result.OriginatingUserRequest);
     }
 
+    // ── Consequential-action scope (#685) ───────────────────────────────────────
+
+    [TestMethod]
+    public async Task SpawnAsync_CapturesTheSpawningRunsActionScope_AsASubagents()
+    {
+        var (manager, release) = CreateBlockingManager();
+        string taskId;
+        using (ActionGateContext.Set(new ActionGateScope(RunOrigin.UserTurn, UserRequestKind.InformationOnly),
+                   new ConsequentialActionGate(Options.Create(new AgentHostOptions()))))
+        {
+            taskId = await manager.SpawnAsync(
+                "Place prep blocks for the talk", context: null, timeoutMinutes: 10,
+                primarySessionId: "session/cli", ct: CancellationToken.None,
+                originatingUserRequest: "the talk doesn't exist yet");
+        }
+        await Task.Delay(100);
+
+        var entry = manager.ListActive().Single(e => e.TaskId == taskId);
+        Assert.AreEqual(new ActionGateScope(RunOrigin.SubagentOfUserTurn, UserRequestKind.InformationOnly), entry.ActionGate);
+
+        release.SetResult(true);
+        await manager.CancelAsync(taskId);
+    }
+
+    [TestMethod]
+    public async Task SpawnAsync_PublishedResultCarriesTheActionScope()
+    {
+        var publisher = new CapturingPublisher();
+        var services = new ServiceCollection();
+        services.AddLogging();
+        AddSubagentRunnerStubs(services, new NoopLlmClient());
+        services.AddSingleton<IMessagePublisher>(publisher); // last registration wins
+        var provider = services.BuildServiceProvider();
+
+        var manager = new SubagentManager(
+            provider.GetRequiredService<IServiceScopeFactory>(),
+            Options.Create(new SubagentOptions { MaxConcurrentSubagents = 3 }),
+            publisher,
+            new AgentIdentity("TestBot"),
+            NullLogger<SubagentManager>.Instance);
+
+        using (ActionGateContext.Set(new ActionGateScope(RunOrigin.UserTurn, UserRequestKind.InformationOnly),
+                   new ConsequentialActionGate(Options.Create(new AgentHostOptions()))))
+        {
+            await manager.SpawnAsync(
+                "Place prep blocks", context: null, timeoutMinutes: null,
+                primarySessionId: "session/cli", ct: CancellationToken.None);
+        }
+
+        var result = await publisher.WaitForResultAsync(TimeSpan.FromSeconds(10));
+        Assert.IsNotNull(result, "the runner should publish a result");
+        Assert.AreEqual("subagent-of-user-turn", result.RunOrigin);
+        Assert.AreEqual("information-only", result.UserAskedFor);
+        Assert.AreEqual(new ActionGateScope(RunOrigin.UserTurn, UserRequestKind.InformationOnly),
+            ActionGateScope.FromRelayedResults([result]), "the synthesis turn runs under the same gate");
+    }
+
     [TestMethod]
     public void CapOriginatingRequest_BlankIsNull_LongIsCapped()
     {

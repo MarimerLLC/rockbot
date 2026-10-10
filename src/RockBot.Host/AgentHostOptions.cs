@@ -341,4 +341,12 @@ public sealed class AgentHostOptions
     /// Default 5. Set to 0 to disable aging and leave all skill bodies in context.
     /// </summary>
     public int SkillBodyUnloadAfterIterations { get; set; } = 5;
+
+    /// <summary>
+    /// The consequential-action gate (#685): in a run whose originating user message asked for
+    /// nothing, tool calls that would change an external system (MCP writes, the agent's scheduled
+    /// tasks) are refused and the model is told to propose them instead. Configure under
+    /// <c>AgentHost:ConsequentialActionGate</c> (env: <c>AgentHost__ConsequentialActionGate__Enabled</c>).
+    /// </summary>
+    public ConsequentialActionGateOptions ConsequentialActionGate { get; } = new();
 }

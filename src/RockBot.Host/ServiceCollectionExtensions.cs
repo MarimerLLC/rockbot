@@ -45,6 +45,8 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<ILlmGateway, LlmGateway>();
         services.AddTransient<ILlmClient, LlmClient>();
         services.AddSingleton<IToolProgressNotifier, ToolProgressNotifier>();
+        // #685: refuses external changes in runs whose originating user message asked for nothing.
+        services.TryAddSingleton<IConsequentialActionGate, ConsequentialActionGate>();
         services.AddTransient<AgentLoopRunner>();
         services.AddScoped<AgentContextBuilder>();
         services.AddSingleton<SessionStartTracker>();

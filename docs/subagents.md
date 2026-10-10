@@ -303,8 +303,18 @@ public sealed record SubagentResultMessage
     public string? Description { get; init; }            // #665
     public IReadOnlyList<SubagentToolCallSummary>? ToolCalls { get; init; } // #683
     public int? ToolCallCount { get; init; }             // #683
+    public string? RunOrigin { get; init; }              // #685
+    public string? UserAskedFor { get; init; }           // #685
 }
 ```
+
+`RunOrigin` and `UserAskedFor` are the consequential-action scope the subagent ran under (#685):
+`SubagentManager` captures the spawning run's scope at spawn (`SubagentEntry.ActionGate`, origin
+`subagent-of-user-turn` for a user turn) and `SubagentRunner` runs under it, so a subagent spawned
+from an information-only user message cannot create events, send mail or upload files — the call
+comes back "Not run: …" and the subagent reports the change as a proposal instead. Wisps and
+workers it starts inherit the same scope. The synthesis turn relaying the result runs under it
+too. See [Consequential-action gate](agent-host.md#consequential-action-gate).
 
 `ToolCalls` is a compact copy of the subagent run's tool-call ledger: up to 40 calls, each with
 its name, ok/failed, whether it changed state, and a short argument summary. `ToolCallCount` is

@@ -134,7 +134,9 @@ internal sealed class ScheduledTaskHandler(
 
             finalText = await agentLoopRunner.RunAsync(
                 chatMessages, chatOptions, sessionId: sessionId,
-                enableFollowUp: false, cancellationToken: ct);
+                enableFollowUp: false, cancellationToken: ct,
+                // #685: user-configured automation keeps acting without a fresh request.
+                actionGate: ActionGateScope.ForScheduledTask);
             succeeded = true;
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)

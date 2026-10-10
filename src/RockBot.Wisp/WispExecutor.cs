@@ -453,6 +453,30 @@ internal sealed class WispExecutor(
         }
 
     invoke:
+        // #685: a direct step runs inside its parent's tool call, under the parent run's
+        // consequential-action scope. An external change the originating user message didn't ask
+        // for is refused before the tool is resolved or run.
+        if (ActionGateContext.Check(route.ToolName!, route.Arguments) is { } refusal)
+        {
+            stepSw.Stop();
+            logger.LogInformation("Wisp {WispId} step {StepId}: {Tool} refused by the consequential-action gate",
+                wispId, step.Id, route.ToolName);
+            return new WispStepResult
+            {
+                StepId = step.Id,
+                StepIndex = index,
+                IsSuccess = false,
+                Content = refusal,
+                Error = new WispStepError
+                {
+                    Category = FailureCategory.Judgment,
+                    Message = refusal,
+                    ToolName = route.ToolName
+                },
+                Duration = stepSw.Elapsed
+            };
+        }
+
         // Resolve the executor from the registry. MCP management tools (e.g.
         // mcp_invoke_tool) are registered lazily on the first McpServersIndexed
         // message from the bridge, so a step firing in the startup/reconnect window

@@ -31,10 +31,19 @@ public sealed partial class AgentLoopRunner(
     ILogger<AgentLoopRunner> logger,
     InjectedMemoryTracker? injectedMemoryTracker = null,
     ITypedToolSurface? typedToolSurface = null,
-    ISessionWorkRegistry? sessionWorkRegistry = null)
+    ISessionWorkRegistry? sessionWorkRegistry = null,
+    IConsequentialActionGate? consequentialActionGate = null)
 {
     private readonly IServiceSearchIndex? _serviceSearchIndex = serviceSearchIndexProviders.FirstOrDefault();
+
+    // #685: consulted before every tool call through ActionGateContext. Hosts that construct the
+    // runner by hand still get the configured gate.
+    private readonly IConsequentialActionGate _actionGate =
+        consequentialActionGate ?? new ConsequentialActionGate(hostOptions);
     private const int MaxConsecutiveTimeoutIterations = 2;
+
+    /// <summary>The <c>rockbot.tool.status</c> of a call the consequential-action gate refused (#685).</summary>
+    internal const string ConsequentialActionGatedStatus = "gated";
 
     /// <summary>
     /// Detects when a model claims to have performed tool actions in plain text without
@@ -352,6 +361,10 @@ public sealed partial class AgentLoopRunner(
           except that a question asked must be answered, and judge only whether the reply's facts,
           numbers and claims are supported and accurately stated (questions 3–5). That the user's
           wider goal implies more work this message did not ask for is NOT a reason for INCOMPLETE.
+        - An "External changes the user did not ask for" section means the agent (or a subagent it
+          relays) changed a calendar, mailbox, the user's files or todos, or other external data
+          although the user's message asked for nothing. That is INCOMPLETE, with a reason starting
+          "unrequested external change:" that names what changed.
 
         In "reason", name the specific unmet requirement, contradicted number or unsupported
         claim, so the agent can fix it.
@@ -393,6 +406,8 @@ public sealed partial class AgentLoopRunner(
 
         ## Bad follow-ups (NEVER suggest these):
         - Anything the agent already did in its response
+        - Creating, changing, sending or deleting anything in the user's external systems
+          (calendar events, mail, files in their accounts, todos) that the user did not ask for
         - Generic offers ("would you like me to...") — the agent should ACT, not ask
         - Unrelated tangents or speculative actions
         - Repeating searches or lookups the agent already performed
@@ -450,7 +465,11 @@ public sealed partial class AgentLoopRunner(
         string? originatingUserRequest = null,
         // #683: for a subagent synthesis, the tool calls (and recorded artifacts) of each subagent
         // whose result this loop relays, so the evaluator can check the relayed claims against them.
-        IReadOnlyList<RelayedSubagentWork>? relayedWork = null)
+        IReadOnlyList<RelayedSubagentWork>? relayedWork = null,
+        // #685: what started this run, for the consequential-action gate. Null inherits the scope
+        // of the run this one is nested in (wisp LLM steps, workers, subagents spawned in-flow);
+        // with no enclosing run it is RunOrigin.Unknown, which allows external changes.
+        ActionGateScope? actionGate = null)
     {
         using var _ = ToolCallSessionContext.Set(sessionId);
         // Set the per-async-flow override so RockBotFunctionInvokingChatClient
@@ -548,6 +567,13 @@ public sealed partial class AgentLoopRunner(
             : originalUserRequest;
         var userAskedFor = CompletionEvalTriggers.ClassifyUserRequest(
             judgedUserRequest, followsAgentMessage: subagentSynthesis || previousAgentMessage is not null);
+
+        // #685: the consequential-action gate's scope for every tool call this run (and anything it
+        // starts) makes. A user turn whose scope carries no classification is judged by the same
+        // request the evaluator judges: a bare "yes" after an agent proposal is an instruction.
+        var gateScope = ResolveActionGateScope(actionGate, ActionGateContext.Scope, userAskedFor);
+        using var __________ = ActionGateContext.Set(gateScope, _actionGate);
+        var externalChangesNeedRequest = gateScope.RequiresUserInstruction;
 
         var maxReprompts = modelBehavior.MaxCompletionRepromptsOverride
             ?? hostOptions.Value.MaxCompletionReprompts;
@@ -777,7 +803,8 @@ public sealed partial class AgentLoopRunner(
                     loopToolCalls,
                     trigger,
                     relayedForEval,
-                    userAskedFor),
+                    userAskedFor,
+                    externalChangesNeedRequest),
                 cancellationToken);
 
             if (complete)
@@ -841,12 +868,16 @@ public sealed partial class AgentLoopRunner(
             // feedback ("You're right…") and disowned work its subagent had really done. It stays in
             // the user role: the history ends on the draft (assistant), and a trailing system
             // message is hoisted or rejected by some provider paths.
+            // #685: external changes an information-only user message led to anyway.
+            var unrequestedChanges = externalChangesNeedRequest && userAskedFor == UserRequestKind.InformationOnly
+                ? CompletionEvalTriggers.ExternalChanges(loopToolCalls, relayedForEval)
+                : [];
             var instructions = CapabilityDenialRegex.IsMatch(result.Response)
                 ? "You DO have access to external services. " + HowToReachServices() + " Do not give up without trying."
                 : userAskedFor == UserRequestKind.InformationOnly
                     ? "Fix what it flagged. Use your tools if you need to check a fact, but do not start work " +
                       "the user did not ask for." +
-                      CompletionEvalTriggers.RepromptGuidance(trigger, loopToolCalls, userAskedFor)
+                      CompletionEvalTriggers.RepromptGuidance(trigger, loopToolCalls, userAskedFor, unrequestedChanges)
                     : "Continue working on the original request. Use your available tools — do not claim you " +
                       "lack access without trying them first." +
                       CompletionEvalTriggers.RepromptGuidance(trigger, loopToolCalls, userAskedFor);
@@ -1405,6 +1436,14 @@ public sealed partial class AgentLoopRunner(
                     }
 
                     object? result;
+                    // #685: an external change the user did not ask for is refused, not run.
+                    if (ActionGateContext.Check(toolName, argsJson) is { } textRefusal)
+                    {
+                        toolSw.Stop();
+                        result = textRefusal;
+                        textToolStatus = ConsequentialActionGatedStatus;
+                    }
+                    else
                     try
                     {
                         result = await tool.InvokeAsync(args, cancellationToken);
@@ -1556,6 +1595,14 @@ public sealed partial class AgentLoopRunner(
                 var toolSw = Stopwatch.StartNew();
                 var toolStatus = "ok";
                 object? result;
+                // #685: an external change the user did not ask for is refused, not run.
+                if (ActionGateContext.Check(fc.Name, argsSummary) is { } refusal)
+                {
+                    toolSw.Stop();
+                    result = refusal;
+                    toolStatus = ConsequentialActionGatedStatus;
+                }
+                else
                 try
                 {
                     result = await tool.InvokeAsync(args, cancellationToken);
@@ -3200,6 +3247,20 @@ public sealed partial class AgentLoopRunner(
     /// The agent's last message before the latest user message, so the evaluator can resolve
     /// "do it" or "that" against what the agent had proposed. Null when there is none.
     /// </summary>
+    /// <summary>
+    /// The consequential-action scope a run uses (#685): the caller's, else the enclosing run's,
+    /// else <see cref="ActionGateScope.Unknown"/>. A scope that needs a user instruction but carries
+    /// no classification takes <paramref name="classified"/> — the run's own judged user request.
+    /// </summary>
+    internal static ActionGateScope ResolveActionGateScope(
+        ActionGateScope? requested, ActionGateScope? enclosing, UserRequestKind classified)
+    {
+        var scope = requested ?? enclosing ?? ActionGateScope.Unknown;
+        return scope.RequiresUserInstruction && scope.UserAskedFor is null
+            ? scope with { UserAskedFor = classified }
+            : scope;
+    }
+
     internal static string? ExtractPreviousAgentMessage(List<ChatMessage> chatMessages)
     {
         var i = chatMessages.Count - 1;

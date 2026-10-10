@@ -102,7 +102,8 @@ internal sealed class ResearchAgentTaskHandler(
 
             var finalContent = await agentLoopRunner.RunAsync(
                 chatMessages, chatOptions, sessionId, tier: ModelTier.High,
-                onProgress: onProgress, enableFollowUp: false, cancellationToken: ct);
+                onProgress: onProgress, enableFollowUp: false, cancellationToken: ct,
+                actionGate: ActionGateScope.ForA2AInbound);
 
             // If the loop exhausted iterations before synthesising (returns empty or very short),
             // the model likely saved findings to working memory. Read them back and synthesise

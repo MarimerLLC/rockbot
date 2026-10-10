@@ -250,7 +250,10 @@ internal sealed class SubagentResultHandler(
                 originatingUserRequest: CombineOriginatingRequests(batchedResults),
                 // #683: what each relayed subagent actually did, so the check doesn't read an honest
                 // relay of its writes and uploads as an unsupported claim.
-                relayedWork: BuildRelayedWork(batchedResults, sessionWorkRegistry, sessionNamespace));
+                relayedWork: BuildRelayedWork(batchedResults, sessionWorkRegistry, sessionNamespace),
+                // #685: the relay runs under the gate the subagent ran under — an information-only
+                // request doesn't become an instruction because a subagent reported back.
+                actionGate: ActionGateScope.FromRelayedResults(batchedResults));
 
             await conversationMemory.AddTurnAsync(
                 rawSessionId,

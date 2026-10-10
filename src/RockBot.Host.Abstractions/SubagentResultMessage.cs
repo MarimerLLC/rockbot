@@ -42,6 +42,20 @@ public sealed record SubagentResultMessage
     /// count when the list was capped. Null on results from an older build.
     /// </summary>
     public int? ToolCallCount { get; init; }
+
+    /// <summary>
+    /// What started the run that spawned this subagent, as the consequential-action gate names it
+    /// (#685): <c>user-turn</c>, <c>subagent-of-user-turn</c>, <c>scheduled</c>, <c>a2a</c>,
+    /// <c>background</c> or <c>unknown</c>. The synthesis turn relaying this result runs under the
+    /// same gate. Null on results from an older build.
+    /// </summary>
+    public string? RunOrigin { get; init; }
+
+    /// <summary>
+    /// For a subagent spawned from a user turn, whether that turn's message asked for anything
+    /// (#685): <c>instruction</c> or <c>information-only</c>. Null when unknown or not a user turn.
+    /// </summary>
+    public string? UserAskedFor { get; init; }
 }
 
 /// <summary>One tool call a subagent made, as carried on <see cref="SubagentResultMessage.ToolCalls"/> (#683).</summary>

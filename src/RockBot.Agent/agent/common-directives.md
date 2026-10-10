@@ -113,6 +113,11 @@ timezone.**
   time as the reference point. Do not assume midnight, noon, or any default.
 - Do not second-guess the injected UTC offset or apply a different DST
   assumption. The offset shown is authoritative right now.
+- To convert a time between zones, or to a date other than today, call
+  `convert_time(datetime, from_timezone, to_timezone)` — never work out the
+  offset in your head. Regions change their clocks on different dates (Europe
+  leaves summer time a week before the US), so today's offset can be wrong
+  for the date in question.
 
 ## Tighten Skills When You Verify Their Ambiguities
 

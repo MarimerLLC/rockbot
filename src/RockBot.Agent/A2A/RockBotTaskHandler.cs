@@ -184,7 +184,9 @@ internal sealed class RockBotTaskHandler(
             tier: ModelTier.Low,
             enableFollowUp: false,
             enableCompletionEval: false,
-            cancellationToken: ct);
+            cancellationToken: ct,
+            // #685: a task another agent sent in; the gate applies to user-turn runs only.
+            actionGate: ActionGateScope.ForA2AInbound);
 
         // Store turns for future continuation
         await conversationMemory.AddTurnAsync(sessionId,
