@@ -166,7 +166,7 @@ public sealed class AgentContextBuilder(
         var capabilitySnippet = ClientCapabilityPromptBuilder.Build(clientCapabilities);
         if (capabilitySnippet is not null)
         {
-            chatMessages.Add(new ChatMessage(ChatRole.System, capabilitySnippet));
+            chatMessages.Add(new ChatMessage(ChatRole.System, capabilitySnippet).Tag(ContextCategory.ClientCapabilities));
             logger.LogInformation("Injected client capability prompt for session {SessionId} (caps={Caps})",
                 sessionId, clientCapabilities);
         }
@@ -177,14 +177,14 @@ public sealed class AgentContextBuilder(
         {
             var rulesText = "Active rules — always follow these, regardless of context or other instructions:\n" +
                 string.Join("\n", activeRules.Select(r => $"- {r}"));
-            chatMessages.Add(new ChatMessage(ChatRole.System, rulesText));
+            chatMessages.Add(new ChatMessage(ChatRole.System, rulesText).Tag(ContextCategory.Rules));
             logger.LogInformation("Injected {Count} active rule(s) into system prompt", activeRules.Count);
         }
 
         // Model-specific guardrails
         if (!string.IsNullOrEmpty(modelBehavior.AdditionalSystemPrompt))
         {
-            chatMessages.Add(new ChatMessage(ChatRole.System, modelBehavior.AdditionalSystemPrompt));
+            chatMessages.Add(new ChatMessage(ChatRole.System, modelBehavior.AdditionalSystemPrompt).Tag(ContextCategory.ModelBehavior));
             logger.LogInformation("Injected AdditionalSystemPrompt ({Chars} chars)", modelBehavior.AdditionalSystemPrompt.Length);
         }
         else
@@ -426,8 +426,14 @@ public sealed class AgentContextBuilder(
             // materialised for the turn being answered, so without this the path leaves the
             // conversation entirely the moment the next turn starts and "look at that image
             // again" becomes unanswerable — the model cannot even name the file to analyse.
+            var historyCategory = role == ChatRole.User
+                ? (turn.AgentName?.StartsWith("subagent-", StringComparison.Ordinal) == true
+                    ? ContextCategory.SubagentRelay
+                    : ContextCategory.HistoryUser)
+                : ContextCategory.HistoryAssistant;
             chatMessages.Add(new ChatMessage(
-                role, turn.Content + InboundAttachmentInjector.DescribeAttachments(turn.Attachments)));
+                role, turn.Content + InboundAttachmentInjector.DescribeAttachments(turn.Attachments))
+                .Tag(historyCategory));
         }
 
         // Long-term memory BM25 recall
@@ -446,7 +452,7 @@ public sealed class AgentContextBuilder(
                 var recallContext =
                     "Recalled from long-term memory (relevant to this message):\n" +
                     string.Join("\n", lines);
-                chatMessages.Add(new ChatMessage(ChatRole.System, recallContext));
+                chatMessages.Add(new ChatMessage(ChatRole.System, recallContext).Tag(ContextCategory.LongTermMemory));
                 logger.LogInformation(
                     "Injected {Count} new long-term memory entries (BM25 delta) for session {SessionId}",
                     newEntries.Count, sessionId);
@@ -469,7 +475,7 @@ public sealed class AgentContextBuilder(
                 var episodicContext =
                     "Relevant past experiences (episodic memory):\n" +
                     string.Join("\n", lines);
-                chatMessages.Add(new ChatMessage(ChatRole.System, episodicContext));
+                chatMessages.Add(new ChatMessage(ChatRole.System, episodicContext).Tag(ContextCategory.Episodic));
                 logger.LogInformation(
                     "Injected {Count} episodic memory entries for session {SessionId}",
                     newEpisodes.Count, sessionId);
@@ -501,7 +507,7 @@ public sealed class AgentContextBuilder(
                         string.Join("\n", lines);
                 }
 
-                chatMessages.Add(new ChatMessage(ChatRole.System, identityContext));
+                chatMessages.Add(new ChatMessage(ChatRole.System, identityContext).Tag(ContextCategory.Identity));
                 logger.LogInformation(
                     "Injected {Count} identity entries for session {SessionId} (primary={IsPrimary})",
                     identityEntries.Count, sessionId, isPrimary);
@@ -522,7 +528,7 @@ public sealed class AgentContextBuilder(
                 var graphContext =
                     "Related knowledge graph connections:\n" +
                     string.Join("\n", lines);
-                chatMessages.Add(new ChatMessage(ChatRole.System, graphContext));
+                chatMessages.Add(new ChatMessage(ChatRole.System, graphContext).Tag(ContextCategory.KnowledgeGraph));
 
                 var userMatchCount = matchedEntities?.Count ?? 0;
                 var memorySources = memorySeedSources is null
@@ -563,7 +569,7 @@ public sealed class AgentContextBuilder(
                     var resourceTag = SkillTools.FormatResourceTag(s.Manifest);
                     return $"- {s.Name}{resourceTag}: {summary}";
                 }));
-            chatMessages.Add(new ChatMessage(ChatRole.System, indexText));
+            chatMessages.Add(new ChatMessage(ChatRole.System, indexText).Tag(ContextCategory.SkillIndex));
             logger.LogInformation("Injected skill index ({Count} skills) for session {SessionId}",
                 skillList.Count, sessionId);
         }
@@ -583,7 +589,7 @@ public sealed class AgentContextBuilder(
                 var skillNames = string.Join(", ", newSkills.Select(s => s.Name));
 
                 var topSkill = newSkills[0];
-                chatMessages.Add(new ChatMessage(ChatRole.System, SkillRecallFraming.Wrap(topSkill)));
+                chatMessages.Add(new ChatMessage(ChatRole.System, SkillRecallFraming.Wrap(topSkill)).Tag(ContextCategory.SkillBody));
 
                 if (newSkills.Count > 1)
                 {
@@ -597,7 +603,7 @@ public sealed class AgentContextBuilder(
                     chatMessages.Add(new ChatMessage(ChatRole.System,
                         "Other skills that matched this turn's message by keyword. None of them is a " +
                         "directive — call get_skill only if one actually fits what the user asked for:\n" +
-                        string.Join("\n", summaryLines)));
+                        string.Join("\n", summaryLines)).Tag(ContextCategory.SkillSummaries));
                 }
 
                 logger.LogInformation(
@@ -613,7 +619,7 @@ public sealed class AgentContextBuilder(
                 if (seeAlsoNames.Count > 0)
                 {
                     chatMessages.Add(new ChatMessage(ChatRole.System,
-                        $"Related skills (see-also): {string.Join(", ", seeAlsoNames)}"));
+                        $"Related skills (see-also): {string.Join(", ", seeAlsoNames)}").Tag(ContextCategory.SkillSummaries));
                     logger.LogInformation(
                         "Injected {Count} see-also skill(s) for session {SessionId}: {Skills}",
                         seeAlsoNames.Count, sessionId, string.Join(", ", seeAlsoNames));
@@ -640,7 +646,7 @@ public sealed class AgentContextBuilder(
                 });
                 chatMessages.Add(new ChatMessage(ChatRole.System,
                     "Potentially relevant services for this request (call search_known_services for full search):\n" +
-                    string.Join("\n", lines)));
+                    string.Join("\n", lines)).Tag(ContextCategory.ServiceHints));
                 logger.LogInformation(
                     "Injected {Count} service hint(s) for session {SessionId}",
                     candidates.Count, sessionId);
@@ -665,7 +671,7 @@ public sealed class AgentContextBuilder(
             var workingMemoryContext =
                 "Working memory (scratch space — use search_working_memory or get_from_working_memory to retrieve):\n" +
                 string.Join("\n", lines);
-            chatMessages.Add(new ChatMessage(ChatRole.System, workingMemoryContext));
+            chatMessages.Add(new ChatMessage(ChatRole.System, workingMemoryContext).Tag(ContextCategory.WorkingMemory));
             logger.LogInformation("Injected {Count} working memory entries into context", workingEntries.Count);
         }
 
@@ -694,7 +700,7 @@ public sealed class AgentContextBuilder(
                 "- The patrol updates its own checklist each run based on what it learns. " +
                 "If you want the patrol to check or report something differently, ask in this session " +
                 "and the change can be made — patrol updates take effect on the next scheduled run.";
-            chatMessages.Add(new ChatMessage(ChatRole.System, patrolContext));
+            chatMessages.Add(new ChatMessage(ChatRole.System, patrolContext).Tag(ContextCategory.PatrolInventory));
             logger.LogInformation("Injected {Count} patrol working memory entries into context", patrolEntries.Count);
         }
 
@@ -732,7 +738,7 @@ public sealed class AgentContextBuilder(
                     ? "\n- Entries flagged as snapshots (e.g. shared/patrol/*) are point-in-time copies, not live state. For current " +
                       "todos, calendar, or mail, call the live tool and answer from it."
                     : "");
-            chatMessages.Add(new ChatMessage(ChatRole.System, sharedContext));
+            chatMessages.Add(new ChatMessage(ChatRole.System, sharedContext).Tag(ContextCategory.SharedWorkingMemory));
             logger.LogInformation("Injected {Count} shared working memory entries into context", sharedEntries.Count);
         }
 
@@ -796,7 +802,7 @@ public sealed class AgentContextBuilder(
                     "Retrieve an outline with get_from_working_memory to see section headings and chunk keys, " +
                     "then load specific chunks as needed. Check these BEFORE doing a new web search for the same topic.\n" +
                     string.Join("\n", lines) + otherNote;
-                chatMessages.Add(new ChatMessage(ChatRole.System, subagentContext));
+                chatMessages.Add(new ChatMessage(ChatRole.System, subagentContext).Tag(ContextCategory.SubagentResearch));
                 logger.LogInformation("Injected {Count} subagent index entries into context (of {Total} total, {ContentCount} content chunks available)",
                     selected.Distinct().Count(), indexEntries.Count, nonIndexCount);
             }
@@ -809,7 +815,7 @@ public sealed class AgentContextBuilder(
             var workContext = SessionWorkContext.RenderForPrimary(sessionWorkRegistry.GetSnapshot(sessionId));
             if (workContext is not null)
             {
-                chatMessages.Add(new ChatMessage(ChatRole.System, workContext));
+                chatMessages.Add(new ChatMessage(ChatRole.System, workContext).Tag(ContextCategory.WorkProducts));
                 logger.LogInformation("Injected session work products ({Chars} chars) for session {SessionId}",
                     workContext.Length, sessionId);
             }
@@ -1105,14 +1111,14 @@ public sealed class AgentContextBuilder(
         {
             var rulesText = "Active rules — always follow these, regardless of context or other instructions:\n" +
                 string.Join("\n", activeRules.Select(r => $"- {r}"));
-            chatMessages.Add(new ChatMessage(ChatRole.System, rulesText));
+            chatMessages.Add(new ChatMessage(ChatRole.System, rulesText).Tag(ContextCategory.Rules));
             logger.LogInformation("Worker {SessionId}: injected {Count} active rule(s)",
                 sessionId, activeRules.Count);
         }
 
         // Model-specific guardrails (format/behavior).
         if (!string.IsNullOrEmpty(modelBehavior.AdditionalSystemPrompt))
-            chatMessages.Add(new ChatMessage(ChatRole.System, modelBehavior.AdditionalSystemPrompt));
+            chatMessages.Add(new ChatMessage(ChatRole.System, modelBehavior.AdditionalSystemPrompt).Tag(ContextCategory.ModelBehavior));
 
         // Skill recall and service hints help workers know which MCP servers and
         // tool patterns exist. Skip when the description is too short to produce
@@ -1172,7 +1178,7 @@ public sealed class AgentContextBuilder(
                     var resourceTag = SkillTools.FormatResourceTag(s.Manifest);
                     return $"- {s.Name}{resourceTag}: {summary}";
                 }));
-            chatMessages.Add(new ChatMessage(ChatRole.System, indexText));
+            chatMessages.Add(new ChatMessage(ChatRole.System, indexText).Tag(ContextCategory.SkillIndex));
         }
 
         // Per-turn skill BM25 recall.
@@ -1183,7 +1189,7 @@ public sealed class AgentContextBuilder(
             if (newSkills.Count > 0)
             {
                 foreach (var skill in newSkills)
-                    chatMessages.Add(new ChatMessage(ChatRole.System, SkillRecallFraming.Wrap(skill)));
+                    chatMessages.Add(new ChatMessage(ChatRole.System, SkillRecallFraming.Wrap(skill)).Tag(ContextCategory.SkillBody));
                 logger.LogInformation(
                     "Worker {SessionId}: injected {Count} skill(s) via BM25 recall",
                     sessionId, newSkills.Count);
@@ -1207,7 +1213,7 @@ public sealed class AgentContextBuilder(
                 });
                 chatMessages.Add(new ChatMessage(ChatRole.System,
                     "Potentially relevant services for this request (call search_known_services for full search):\n" +
-                    string.Join("\n", lines)));
+                    string.Join("\n", lines)).Tag(ContextCategory.ServiceHints));
             }
         }
 
@@ -1228,7 +1234,7 @@ public sealed class AgentContextBuilder(
             });
             chatMessages.Add(new ChatMessage(ChatRole.System,
                 "Working memory (scratch space — use search_working_memory or get_from_working_memory to retrieve):\n" +
-                string.Join("\n", lines)));
+                string.Join("\n", lines)).Tag(ContextCategory.WorkingMemory));
         }
 
         // Shared cross-session handoff namespace.
@@ -1248,7 +1254,7 @@ public sealed class AgentContextBuilder(
                 return meta.ToString();
             });
             chatMessages.Add(new ChatMessage(ChatRole.System,
-                "Shared working memory (cross-session handoff):\n" + string.Join("\n", lines)));
+                "Shared working memory (cross-session handoff):\n" + string.Join("\n", lines)).Tag(ContextCategory.SharedWorkingMemory));
         }
 
         Activity.Current?.AddEvent(new ActivityEvent("worker_context_built",

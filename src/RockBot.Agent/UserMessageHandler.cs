@@ -220,7 +220,7 @@ internal sealed class UserMessageHandler(
                 if (File.Exists(sessionStartPath))
                 {
                     var sessionStartContent = await File.ReadAllTextAsync(sessionStartPath, ct);
-                    chatMessages.Insert(1, new ChatMessage(ChatRole.System, sessionStartContent));
+                    chatMessages.Insert(1, new ChatMessage(ChatRole.System, sessionStartContent).Tag(ContextCategory.SessionStart));
                     logger.LogInformation("Injected session-start directive for session {SessionId}", message.SessionId);
                 }
             }

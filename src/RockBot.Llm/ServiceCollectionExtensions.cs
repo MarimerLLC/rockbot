@@ -82,6 +82,7 @@ public static class LlmServiceCollectionExtensions
             var behavior = sp.GetRequiredService<ModelBehavior>();
             var logger = sp.GetRequiredService<ILogger<RockBotFunctionInvokingChatClient>>();
             var diagLogger = sp.GetRequiredService<ILogger<DiagnosticLoggingChatClient>>();
+            var accountingLogger = sp.GetRequiredService<ILogger<RequestAccountingChatClient>>();
             var progressNotifier = sp.GetService<IToolProgressNotifier>();
             var toolCallLog = sp.GetService<IToolCallLog>();
             var costEstimator = sp.GetRequiredService<LlmCostEstimator>();
@@ -92,7 +93,10 @@ public static class LlmServiceCollectionExtensions
                 // Diagnostic-watch sits between the OpenAI client and the function-invoking
                 // middleware so it sees each tool iteration's raw response, including the
                 // assistant message before any RockBot post-processing.
-                var watched = new DiagnosticLoggingChatClient(raw, diagLogger, tierLabel);
+                // Request accounting (#670) sits innermost so each request the provider sees is
+                // measured once — every function-invoking iteration, not the loop's summed usage.
+                var watched = new DiagnosticLoggingChatClient(
+                    new RequestAccountingChatClient(raw, accountingLogger, tierLabel), diagLogger, tierLabel);
                 if (behavior.UseTextBasedToolCalling)
                 {
                     // Tools stay in ChatOptions for AgentLoopRunner to dispatch parsed calls.
@@ -116,7 +120,9 @@ public static class LlmServiceCollectionExtensions
             // The escalation target is the Balanced tier's raw client (with its own diagnostic
             // watch), not its function-invoking wrapper: the Low tier's loop keeps running and
             // only its model changes.
-            var escalationTarget = new DiagnosticLoggingChatClient(balancedInnerClient, diagLogger, "Balanced (escalated)");
+            var escalationTarget = new DiagnosticLoggingChatClient(
+                new RequestAccountingChatClient(balancedInnerClient, accountingLogger, "Balanced (escalated)"),
+                diagLogger, "Balanced (escalated)");
 
             return new TieredChatClientRegistry(
                 Wrap(lowInnerClient, "Low", escalateTo: escalationTarget),

@@ -501,6 +501,9 @@ public sealed partial class AgentLoopRunner(
         // Expose the per-call diagnostics handle to the native FICC so it can
         // record per-tool-call state from its singleton context.
         using var ___ = LoopDiagnosticsContext.Set(diagnostics);
+        // #670: every request this run sends is measured into this scope, which logs the
+        // per-turn summary (per-request median/max, sums) when the run returns.
+        using var requestAccounting = RequestAccountingContext.Begin(sessionId, logger, diagnostics);
         // Per-run stash state (issue #337): registry of overflow-trimmed tool results
         // plus a callId→argsSummary dictionary so the native path can contribute the
         // argument summaries it sees on dispatch. Exposed via AsyncLocal so the FICC
@@ -1000,6 +1003,8 @@ public sealed partial class AgentLoopRunner(
         if (nativeInputTokens > 0)
         {
             var cachePct = nativeCachedInputTokens * 100.0 / nativeInputTokens;
+            // Summed by the function-invoking loop across all of its iterations: a per-pass total,
+            // not a request size. Per-request sizes are logged as "LLM request:" (#670).
             logger.LogInformation(
                 "Native loop usage: tier={Tier} input={InputTokens} cached={CachedTokens} ({CachePct:F1}%) output={OutputTokens}",
                 tier, nativeInputTokens, nativeCachedInputTokens, cachePct, nativeOutputTokens);
@@ -1010,8 +1015,9 @@ public sealed partial class AgentLoopRunner(
         {
             if (!string.IsNullOrWhiteSpace(nativeFinalText))
                 diagNative.LastAssistantText = nativeFinalText;
-            diagNative.InputTokens = nativeInputTokens;
-            diagNative.OutputTokens = nativeOutputTokens;
+            // Accumulate: a re-prompt or follow-up pass is another native loop in the same turn.
+            diagNative.InputTokens += nativeInputTokens;
+            diagNative.OutputTokens += nativeOutputTokens;
             diagNative.ModelId = response.ModelId;
         }
 
@@ -1059,7 +1065,7 @@ public sealed partial class AgentLoopRunner(
                 break;
             }
         }
-        chatMessages.Insert(insertAt, new ChatMessage(ChatRole.System, text));
+        chatMessages.Insert(insertAt, new ChatMessage(ChatRole.System, text).Tag(ContextCategory.DateTime));
     }
 
     /// <summary>
@@ -1078,7 +1084,7 @@ public sealed partial class AgentLoopRunner(
             return;
 
         var insertAt = chatMessages.Count > 0 && chatMessages[0].Role == ChatRole.System ? 1 : 0;
-        chatMessages.Insert(insertAt, new ChatMessage(ChatRole.System, orientation));
+        chatMessages.Insert(insertAt, new ChatMessage(ChatRole.System, orientation).Tag(ContextCategory.McpOrientation));
     }
 
     /// <summary>
@@ -1138,7 +1144,7 @@ public sealed partial class AgentLoopRunner(
             }
         }
 
-        chatMessages.Insert(insertAt, new ChatMessage(ChatRole.System, text));
+        chatMessages.Insert(insertAt, new ChatMessage(ChatRole.System, text).Tag(ContextCategory.Scaffolding));
     }
 
     private const string TaskListMarker = "Current task list:";
@@ -1189,7 +1195,7 @@ public sealed partial class AgentLoopRunner(
             sb.AppendLine($"  {item.Id}. [{item.Status}] {item.Description}");
         var text = sb.ToString().TrimEnd();
 
-        var msg = new ChatMessage(ChatRole.System, text);
+        var msg = new ChatMessage(ChatRole.System, text).Tag(ContextCategory.TaskList);
         if (existingIndex >= 0)
         {
             chatMessages[existingIndex] = msg;
@@ -1834,8 +1840,8 @@ public sealed partial class AgentLoopRunner(
             HostDiagnostics.TurnToolCalls.Record(totalToolCalls, tierTag);
             if (LoopDiagnosticsContext.Value is { } diagTextFinal)
             {
-                diagTextFinal.InputTokens = totalInputTokens;
-                diagTextFinal.OutputTokens = totalOutputTokens;
+                diagTextFinal.InputTokens += totalInputTokens;
+                diagTextFinal.OutputTokens += totalOutputTokens;
                 diagTextFinal.ModelId ??= lastModelId;
             }
         }
@@ -2170,7 +2176,7 @@ public sealed partial class AgentLoopRunner(
         }
         var text = sb.ToString().TrimEnd();
 
-        var msg = new ChatMessage(ChatRole.System, text);
+        var msg = new ChatMessage(ChatRole.System, text).Tag(ContextCategory.StashRegistry);
         if (existingIndex >= 0)
         {
             chatMessages[existingIndex] = msg;
@@ -2408,11 +2414,10 @@ public sealed partial class AgentLoopRunner(
     }
 
     /// <summary>
-    /// Temporary diagnostic (issue: context-bloat investigation) — emits a per-LLM-call
-    /// breakdown of the current message list for scheduled-task sessions only. Categorises
-    /// by role, lists the top-15 largest messages with a short preview, and reports
-    /// estimated tokens. Gated on <paramref name="sessionId"/> starting with <c>patrol/</c>
-    /// so user-session logs are unaffected. Remove after the bloat root cause is identified.
+    /// Debug-level breakdown of the message list at a loop boundary: by role, plus the
+    /// top-15 largest messages with a short preview and estimated tokens. The Information-level
+    /// per-request view, with provider token counts and context categories, is
+    /// <see cref="RequestAccountingChatClient"/>'s "LLM request:" line (#670).
     /// </summary>
     internal static void LogContextBreakdown(
         IList<ChatMessage> messages,
@@ -2421,12 +2426,7 @@ public sealed partial class AgentLoopRunner(
         ILogger logger,
         ImageCostOptions? imageCost = null)
     {
-        if (sessionId is null
-            || !(sessionId.StartsWith("patrol/", StringComparison.Ordinal)
-                 || sessionId.StartsWith("subagent-", StringComparison.Ordinal)
-                 || sessionId.StartsWith("worker-", StringComparison.Ordinal)))
-            return;
-        if (!logger.IsEnabled(LogLevel.Information))
+        if (!logger.IsEnabled(LogLevel.Debug))
             return;
 
         var totalChars = 0;
@@ -2461,13 +2461,13 @@ public sealed partial class AgentLoopRunner(
             entries.Add((i, role, chars, preview));
         }
 
-        logger.LogInformation(
+        logger.LogDebug(
             "ContextBreakdown[{Label}] session={Session} msgs={Count} chars={Chars:N0} ~tokens={Tokens:N0}",
             label, sessionId, messages.Count, totalChars, totalChars / 4);
 
         foreach (var kv in byRole.OrderByDescending(static kv => kv.Value.Chars))
         {
-            logger.LogInformation(
+            logger.LogDebug(
                 "  ByRole {Role,-10} {Count,3} msgs  {Chars,9:N0} chars  ~{Tokens,7:N0} tok  ({Pct,5:F1}%)",
                 kv.Key, kv.Value.Count, kv.Value.Chars, kv.Value.Chars / 4,
                 totalChars > 0 ? 100.0 * kv.Value.Chars / totalChars : 0);
@@ -2475,16 +2475,15 @@ public sealed partial class AgentLoopRunner(
 
         foreach (var e in entries.OrderByDescending(static x => x.Chars).Take(15))
         {
-            logger.LogInformation(
+            logger.LogDebug(
                 "  Msg[{Idx,3}] {Role,-10} {Chars,8:N0} chars  {Preview}",
                 e.Idx, e.Role, e.Chars, e.Preview);
         }
     }
 
     /// <summary>
-    /// Temporary diagnostic — compact one-line size summary for use inside tight loops
-    /// where the full breakdown would be too verbose (e.g. between tool invocations
-    /// inside the native FICC loop). Gated like <see cref="LogContextBreakdown"/>.
+    /// Debug-level one-line size summary for use inside tight loops where the full breakdown
+    /// would be too verbose (e.g. between tool invocations inside the native FICC loop).
     /// </summary>
     internal static void LogContextSize(
         IList<ChatMessage> messages,
@@ -2493,16 +2492,11 @@ public sealed partial class AgentLoopRunner(
         ILogger logger,
         ImageCostOptions? imageCost = null)
     {
-        if (sessionId is null
-            || !(sessionId.StartsWith("patrol/", StringComparison.Ordinal)
-                 || sessionId.StartsWith("subagent-", StringComparison.Ordinal)
-                 || sessionId.StartsWith("worker-", StringComparison.Ordinal)))
-            return;
-        if (!logger.IsEnabled(LogLevel.Information))
+        if (!logger.IsEnabled(LogLevel.Debug))
             return;
 
         var totalChars = messages.Sum(m => EstimateMessageChars(m, imageCost, logger));
-        logger.LogInformation(
+        logger.LogDebug(
             "ContextSize[{Label}] session={Session} msgs={Count} chars={Chars:N0} ~tokens={Tokens:N0}",
             label, sessionId, messages.Count, totalChars, totalChars / 4);
     }
@@ -3429,7 +3423,7 @@ public sealed partial class AgentLoopRunner(
                     sb.AppendLine($"\n## Skill: {skill.Name}");
                     sb.AppendLine(skill.Content);
                 }
-                chatMessages.Add(new ChatMessage(ChatRole.System, sb.ToString()));
+                chatMessages.Add(new ChatMessage(ChatRole.System, sb.ToString()).Tag(ContextCategory.SkillBody));
                 logger.LogInformation(
                     "Completion re-prompt: injected {Count} skill(s) via enriched search: {Skills}",
                     skills.Count, string.Join(", ", skills.Select(s => s.Name)));
@@ -3461,7 +3455,7 @@ public sealed partial class AgentLoopRunner(
                             sb.AppendLine($"  Top skills: {string.Join(", ", c.TopItems)}");
                         }
                     }
-                    chatMessages.Add(new ChatMessage(ChatRole.System, sb.ToString()));
+                    chatMessages.Add(new ChatMessage(ChatRole.System, sb.ToString()).Tag(ContextCategory.ServiceHints));
                     logger.LogInformation(
                         "Completion re-prompt: injected {Count} service hint(s) via enriched search: {Services}",
                         candidates.Count, string.Join(", ", candidates.Select(c => c.Id)));

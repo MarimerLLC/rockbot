@@ -154,7 +154,7 @@ internal sealed class SubagentRunner(
         var lineage = await BuildLineageAsync(description, context, primarySessionId, originatingUserRequest, inputs);
         if (lineage is not null)
         {
-            chatMessages.Add(new ChatMessage(ChatRole.System, lineage));
+            chatMessages.Add(new ChatMessage(ChatRole.System, lineage).Tag(ContextCategory.Lineage));
             logger.LogInformation(
                 "Subagent {TaskId}: injected prior-work lineage ({Chars} chars, {Inputs} input(s))",
                 taskId, lineage.Length, inputs?.Count ?? 0);
