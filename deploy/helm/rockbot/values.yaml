@@ -44,6 +44,11 @@ agent:
   #   AgentHost__DeferRareToolFamilies: "false"
   #   AgentHost__HistoryOlderTurnMaxChars: "0"
   #   AgentHost__RelayedSubagentTurnMaxChars: "0"
+  #
+  # Requests to OpenAI and Azure OpenAI carry a per-session prompt_cache_key so
+  # the provider routes them to their cached prefix (#693). To stop sending it:
+  #
+  #   AgentHost__PromptCacheKey: "false"
   extraEnv: {}
   # HTTP endpoint the frontends upload attachments to. Bytes for a screenshot-sized file go
   # here rather than through RabbitMQ, which holds message bodies in memory until they are

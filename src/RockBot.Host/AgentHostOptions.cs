@@ -217,6 +217,15 @@ public sealed class AgentHostOptions
     public float? RepetitionPenalty { get; set; }
 
     /// <summary>
+    /// When true (the default), chat completions sent to OpenAI and Azure OpenAI endpoints carry
+    /// a <c>prompt_cache_key</c> derived from the run's session and model (#693), so a
+    /// conversation's requests route to the backend holding their cached prefix. Injected by
+    /// <see cref="PromptCacheKeyPolicy"/>; other OpenAI-compatible hosts are never sent it.
+    /// Set false (<c>AgentHost__PromptCacheKey=false</c>) to send requests without it.
+    /// </summary>
+    public bool PromptCacheKey { get; set; } = true;
+
+    /// <summary>
     /// Cap on tokens generated per reply. Null (the default) leaves the provider default,
     /// which on some hosts is low enough to truncate long replies mid-sentence. Raise it for
     /// agents that are expected to produce long-form prose.

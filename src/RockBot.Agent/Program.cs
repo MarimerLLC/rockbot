@@ -159,6 +159,18 @@ IChatClient BuildOpenAIClient(LlmTierConfig config, bool sdkRetries = true)
         Console.WriteLine($"    repetition_penalty={repetitionPenalty.Value} (body-injected)");
     }
 
+    // Prompt-cache routing (#693): OpenAI and Azure OpenAI route requests that share a
+    // prompt_cache_key to the backend holding their cached prefix. Keyed per session and model;
+    // other OpenAI-compatible hosts (OpenRouter fallbacks) never get the field.
+    if (builder.Configuration.GetValue<bool?>("AgentHost:PromptCacheKey") ?? true)
+    {
+        if (PromptCacheKeyPolicy.AppliesTo(clientOptions.Endpoint))
+        {
+            clientOptions.AddPolicy(new PromptCacheKeyPolicy(), PipelinePosition.PerCall);
+            Console.WriteLine("    prompt_cache_key=on (session+model, body-injected)");
+        }
+    }
+
     // Reasoning effort is per-tier: a cheap Low tier and a deliberating High tier want
     // different budgets. Injected into the body for the same reason as repetition_penalty —
     // ChatOptions cannot express OpenRouter's nested reasoning object, and the flat
