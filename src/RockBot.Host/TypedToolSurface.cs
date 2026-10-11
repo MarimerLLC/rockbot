@@ -253,6 +253,10 @@ public static class TypedToolSurfaceContext
 /// (a name from a skill or from memory), so the function-invoking loop finds and runs them
 /// instead of answering "unknown tool". Both act on the options instance the loop dispatches
 /// against. A no-op unless the run activates typed tools.
+/// <para>
+/// It does the same for the run's deferred tool families (#670): a <c>get_tool_guide</c> call for
+/// a family, or a call to one of its tools, adds that family's tools before the loop dispatches.
+/// </para>
 /// </summary>
 internal sealed class TypedToolSurfaceChatClient(IChatClient innerClient) : DelegatingChatClient(innerClient)
 {
@@ -260,6 +264,7 @@ internal sealed class TypedToolSurfaceChatClient(IChatClient innerClient) : Dele
         IEnumerable<ChatMessage> messages, ChatOptions? options = null, CancellationToken cancellationToken = default)
     {
         TypedToolSurfaceContext.AddActivated(options);
+        DeferredToolContext.AddActivated(options);
 
         var response = await base.GetResponseAsync(messages, options, cancellationToken);
 
@@ -268,7 +273,11 @@ internal sealed class TypedToolSurfaceChatClient(IChatClient innerClient) : Dele
             var present = tools.Select(t => t.Name).ToHashSet(StringComparer.Ordinal);
             foreach (var call in response.Messages.SelectMany(m => m.Contents.OfType<FunctionCallContent>()))
             {
-                if (!present.Contains(call.Name) && TypedToolSurfaceContext.TryActivate(options, call.Name) is not null)
+                if (call.Name == DeferredToolFamilies.LoaderToolName)
+                    DeferredToolContext.Observe(options, call.Name, DeferredToolContext.GuideName(call.Arguments));
+                else if (!present.Contains(call.Name)
+                    && (TypedToolSurfaceContext.TryActivate(options, call.Name)
+                        ?? DeferredToolContext.TryActivate(options, call.Name)) is not null)
                     present.Add(call.Name);
             }
         }
@@ -280,6 +289,7 @@ internal sealed class TypedToolSurfaceChatClient(IChatClient innerClient) : Dele
         IEnumerable<ChatMessage> messages, ChatOptions? options = null, CancellationToken cancellationToken = default)
     {
         TypedToolSurfaceContext.AddActivated(options);
+        DeferredToolContext.AddActivated(options);
         return base.GetStreamingResponseAsync(messages, options, cancellationToken);
     }
 }

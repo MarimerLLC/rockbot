@@ -251,4 +251,41 @@ public class AgentLoopRunnerSkillBodyAgingTests
             new Dictionary<string, object?> { ["other"] = "qux" }));
         Assert.IsNull(AgentLoopRunner.TryGetSkillNameArgument(null));
     }
+
+    [TestMethod]
+    public void TryExtract_RecognisesBodyFramedBySkillRecallFraming()
+    {
+        // #670: the turn-start recall wraps the body in a preamble; the extractor must still
+        // find the name, or the body is never aged out.
+        var skill = new Skill("decks/slidev", "Slidev decks", "# Body", DateTimeOffset.UtcNow);
+        var msg = new ChatMessage(ChatRole.System, SkillRecallFraming.Wrap(skill));
+
+        Assert.IsTrue(AgentLoopRunner.TryExtractLoadedSkillName(msg, out var name));
+        Assert.AreEqual("decks/slidev", name);
+    }
+
+    [TestMethod]
+    public void Age_FramedBodyPastThreshold_IsUnloaded()
+    {
+        var state = new LoadedSkillsContext.State();
+        var skill = new Skill("decks/slidev", "Slidev decks", "# Body", DateTimeOffset.UtcNow);
+        var messages = new List<ChatMessage>
+        {
+            new(ChatRole.System, "persona"),
+            new(ChatRole.System, SkillRecallFraming.Wrap(skill)),
+            new(ChatRole.User, "do the thing"),
+        };
+
+        var removed = 0;
+        for (var i = 0; i < 5; i++)
+        {
+            removed += AgentLoopRunner.RegisterAndAgeSkillBodies(
+                messages, state, toolName: "web_search", toolArgs: null,
+                unloadAfter: 3, logger: NullLogger.Instance);
+        }
+
+        Assert.AreEqual(1, removed);
+        Assert.AreEqual(2, messages.Count);
+        Assert.IsFalse(messages.Any(m => m.Text?.Contains("# Body") == true));
+    }
 }

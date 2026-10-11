@@ -32,8 +32,14 @@ public sealed partial class AgentLoopRunner(
     InjectedMemoryTracker? injectedMemoryTracker = null,
     ITypedToolSurface? typedToolSurface = null,
     ISessionWorkRegistry? sessionWorkRegistry = null,
-    IConsequentialActionGate? consequentialActionGate = null)
+    IConsequentialActionGate? consequentialActionGate = null,
+    DeferredToolActivations? deferredToolActivations = null)
 {
+    // #670: which deferred tool families each session has loaded. Process-wide: the runner is
+    // transient, and a family loaded on one turn stays in the session's list on the next.
+    private readonly DeferredToolActivations _deferredActivations =
+        deferredToolActivations ?? DeferredToolActivations.Shared;
+
     private readonly IServiceSearchIndex? _serviceSearchIndex = serviceSearchIndexProviders.FirstOrDefault();
 
     // #685: consulted before every tool call through ActionGateContext. Hosts that construct the
@@ -486,7 +492,11 @@ public sealed partial class AgentLoopRunner(
         // #686: when set, the completion evaluator runs only for these triggers. The first one that
         // matches wins; a disabled trigger never hides a later enabled one. Subagents use this to
         // check their own claims of work before reporting back.
-        IReadOnlySet<CompletionEvalTrigger>? completionEvalTriggers = null)
+        IReadOnlySet<CompletionEvalTrigger>? completionEvalTriggers = null,
+        // #670: when true (and AgentHost:DeferRareToolFamilies is on), rarely used tool families
+        // stay out of the list until the session loads them. Interactive turns opt in; background,
+        // subagent and wisp runs keep the list their caller built.
+        bool deferRareTools = false)
     {
         using var _ = ToolCallSessionContext.Set(sessionId);
         // Always bind (possibly null) so a nested run — a subagent started from a tool call —
@@ -501,6 +511,9 @@ public sealed partial class AgentLoopRunner(
         // Expose the per-call diagnostics handle to the native FICC so it can
         // record per-tool-call state from its singleton context.
         using var ___ = LoopDiagnosticsContext.Set(diagnostics);
+        // #670: every request this run sends is measured into this scope, which logs the
+        // per-turn summary (per-request median/max, sums) when the run returns.
+        using var requestAccounting = RequestAccountingContext.Begin(sessionId, logger, diagnostics);
         // Per-run stash state (issue #337): registry of overflow-trimmed tool results
         // plus a callId→argsSummary dictionary so the native path can contribute the
         // argument summaries it sees on dispatch. Exposed via AsyncLocal so the FICC
@@ -521,6 +534,15 @@ public sealed partial class AgentLoopRunner(
         TypedToolSurfaceContext.Shape(chatOptions);
         TypedToolSurfaceContext.AddActivated(chatOptions);
         EnsureMcpOrientation(chatMessages, chatOptions);
+
+        // Rarely used tool families wait until the session asks for them (#670). Always bound
+        // (possibly to nothing) so a nested run never inherits its parent's pool.
+        using var deferredScope = DeferredToolContext.Set(
+            deferRareTools && hostOptions.Value.DeferRareToolFamilies ? _deferredActivations : null,
+            sessionId, logger);
+        var deferredCount = DeferredToolContext.Partition(chatOptions);
+        if (deferredCount > 0)
+            EnsureDeferredToolsOrientation(chatMessages);
 
         // MCP hand-back: a server's mid-call question comes back to this run only if it can answer.
         using var _______ = McpHandbackContext.Set(chatOptions);
@@ -1000,6 +1022,8 @@ public sealed partial class AgentLoopRunner(
         if (nativeInputTokens > 0)
         {
             var cachePct = nativeCachedInputTokens * 100.0 / nativeInputTokens;
+            // Summed by the function-invoking loop across all of its iterations: a per-pass total,
+            // not a request size. Per-request sizes are logged as "LLM request:" (#670).
             logger.LogInformation(
                 "Native loop usage: tier={Tier} input={InputTokens} cached={CachedTokens} ({CachePct:F1}%) output={OutputTokens}",
                 tier, nativeInputTokens, nativeCachedInputTokens, cachePct, nativeOutputTokens);
@@ -1010,8 +1034,9 @@ public sealed partial class AgentLoopRunner(
         {
             if (!string.IsNullOrWhiteSpace(nativeFinalText))
                 diagNative.LastAssistantText = nativeFinalText;
-            diagNative.InputTokens = nativeInputTokens;
-            diagNative.OutputTokens = nativeOutputTokens;
+            // Accumulate: a re-prompt or follow-up pass is another native loop in the same turn.
+            diagNative.InputTokens += nativeInputTokens;
+            diagNative.OutputTokens += nativeOutputTokens;
             diagNative.ModelId = response.ModelId;
         }
 
@@ -1059,7 +1084,25 @@ public sealed partial class AgentLoopRunner(
                 break;
             }
         }
-        chatMessages.Insert(insertAt, new ChatMessage(ChatRole.System, text));
+        chatMessages.Insert(insertAt, new ChatMessage(ChatRole.System, text).Tag(ContextCategory.DateTime));
+    }
+
+    /// <summary>
+    /// Puts the list of deferred tool families (#670) right behind the system prompt, once per
+    /// message list. A no-op when the run defers nothing.
+    /// </summary>
+    internal static void EnsureDeferredToolsOrientation(List<ChatMessage> chatMessages)
+    {
+        if (DeferredToolContext.Orientation() is not { } orientation
+            || chatMessages.Any(m => m.Role == ChatRole.System
+                && (m.Text?.StartsWith(DeferredToolContext.OrientationHeading, StringComparison.Ordinal) ?? false)))
+            return;
+
+        // Same slot as the MCP orientation: right after the system prompt, ahead of everything that
+        // varies by turn. The text lists every deferred family whether loaded or not, so it doesn't
+        // change from turn to turn and the cached prefix holds.
+        var insertAt = chatMessages.Count > 0 && chatMessages[0].Role == ChatRole.System ? 1 : 0;
+        chatMessages.Insert(insertAt, new ChatMessage(ChatRole.System, orientation).Tag(ContextCategory.DeferredTools));
     }
 
     /// <summary>
@@ -1078,7 +1121,7 @@ public sealed partial class AgentLoopRunner(
             return;
 
         var insertAt = chatMessages.Count > 0 && chatMessages[0].Role == ChatRole.System ? 1 : 0;
-        chatMessages.Insert(insertAt, new ChatMessage(ChatRole.System, orientation));
+        chatMessages.Insert(insertAt, new ChatMessage(ChatRole.System, orientation).Tag(ContextCategory.McpOrientation));
     }
 
     /// <summary>
@@ -1138,7 +1181,7 @@ public sealed partial class AgentLoopRunner(
             }
         }
 
-        chatMessages.Insert(insertAt, new ChatMessage(ChatRole.System, text));
+        chatMessages.Insert(insertAt, new ChatMessage(ChatRole.System, text).Tag(ContextCategory.Scaffolding));
     }
 
     private const string TaskListMarker = "Current task list:";
@@ -1189,7 +1232,7 @@ public sealed partial class AgentLoopRunner(
             sb.AppendLine($"  {item.Id}. [{item.Status}] {item.Description}");
         var text = sb.ToString().TrimEnd();
 
-        var msg = new ChatMessage(ChatRole.System, text);
+        var msg = new ChatMessage(ChatRole.System, text).Tag(ContextCategory.TaskList);
         if (existingIndex >= 0)
         {
             chatMessages[existingIndex] = msg;
@@ -1263,8 +1306,10 @@ public sealed partial class AgentLoopRunner(
                 // results that recorded earlier task_update calls have been trimmed.
                 RefreshTaskListContext(chatMessages, taskList);
 
-                // Typed tools activated by the previous iteration's calls (#612).
+                // Typed tools activated by the previous iteration's calls (#612), and deferred
+                // families loaded by them (#670).
                 TypedToolSurfaceContext.AddActivated(chatOptions);
+                DeferredToolContext.AddActivated(chatOptions);
 
                 var stashState = AgentLoopStashContext.Value
                     ?? throw new InvalidOperationException("AgentLoopStashContext was not initialised — RunAsync must set it before invoking the loop.");
@@ -1417,10 +1462,13 @@ public sealed partial class AgentLoopRunner(
 
                 foreach (var (toolName, argsJson) in textCalls)
                 {
+                    if (toolName == DeferredToolFamilies.LoaderToolName)
+                        DeferredToolContext.Observe(chatOptions, toolName, DeferredToolContext.GuideNameFromJson(argsJson));
                     var tool = chatOptions.Tools?
                         .OfType<AIFunction>()
                         .FirstOrDefault(t => t.Name.Equals(toolName, StringComparison.OrdinalIgnoreCase))
-                        ?? TypedToolSurfaceContext.TryActivate(chatOptions, toolName);
+                        ?? TypedToolSurfaceContext.TryActivate(chatOptions, toolName)
+                        ?? DeferredToolContext.TryActivate(chatOptions, toolName);
 
                     if (tool is null)
                     {
@@ -1613,10 +1661,13 @@ public sealed partial class AgentLoopRunner(
                     stashCapture.ArgsSummaries[fc.CallId] = TruncateArgsSummary(argsSummary);
                 }
 
+                if (fc.Name == DeferredToolFamilies.LoaderToolName)
+                    DeferredToolContext.Observe(chatOptions, fc.Name, DeferredToolContext.GuideName(fc.Arguments));
                 var tool = chatOptions.Tools?
                     .OfType<AIFunction>()
                     .FirstOrDefault(t => t.Name.Equals(fc.Name, StringComparison.OrdinalIgnoreCase))
-                    ?? TypedToolSurfaceContext.TryActivate(chatOptions, fc.Name);
+                    ?? TypedToolSurfaceContext.TryActivate(chatOptions, fc.Name)
+                    ?? DeferredToolContext.TryActivate(chatOptions, fc.Name);
 
                 if (tool is null)
                 {
@@ -1834,8 +1885,8 @@ public sealed partial class AgentLoopRunner(
             HostDiagnostics.TurnToolCalls.Record(totalToolCalls, tierTag);
             if (LoopDiagnosticsContext.Value is { } diagTextFinal)
             {
-                diagTextFinal.InputTokens = totalInputTokens;
-                diagTextFinal.OutputTokens = totalOutputTokens;
+                diagTextFinal.InputTokens += totalInputTokens;
+                diagTextFinal.OutputTokens += totalOutputTokens;
                 diagTextFinal.ModelId ??= lastModelId;
             }
         }
@@ -1895,6 +1946,12 @@ public sealed partial class AgentLoopRunner(
     private const string SkillBodyMessagePrefix = "Skill: ";
 
     /// <summary>
+    /// The same push as framed by <see cref="SkillRecallFraming.Wrap"/>: preamble, blank line,
+    /// then the "Skill: " line.
+    /// </summary>
+    private const string FramedSkillBodyPrefix = SkillRecallFraming.Preamble + "\n\n" + SkillBodyMessagePrefix;
+
+    /// <summary>
     /// Tool name (case-insensitive) the model calls to (re-)fetch a skill body. A call
     /// to this tool refreshes the named skill's last-use counter, keeping the body
     /// resident even if it's already past the unload threshold.
@@ -1913,10 +1970,19 @@ public sealed partial class AgentLoopRunner(
         if (message.Role != ChatRole.System) return false;
 
         var text = message.Text;
-        if (text is null || text.Length <= SkillBodyMessagePrefix.Length) return false;
-        if (!text.StartsWith(SkillBodyMessagePrefix, StringComparison.Ordinal)) return false;
+        if (text is null) return false;
 
-        var nameStart = SkillBodyMessagePrefix.Length;
+        // SkillRecallFraming.Wrap puts its #492 preamble ahead of the "Skill: " line (#670:
+        // matching only the bare prefix left every recalled body resident for the whole run).
+        int nameStart;
+        if (text.StartsWith(SkillBodyMessagePrefix, StringComparison.Ordinal))
+            nameStart = SkillBodyMessagePrefix.Length;
+        else if (text.StartsWith(FramedSkillBodyPrefix, StringComparison.Ordinal))
+            nameStart = FramedSkillBodyPrefix.Length;
+        else
+            return false;
+        if (text.Length <= nameStart) return false;
+
         var newlineIdx = text.IndexOf('\n', nameStart);
         if (newlineIdx <= nameStart) return false;
 
@@ -2170,7 +2236,7 @@ public sealed partial class AgentLoopRunner(
         }
         var text = sb.ToString().TrimEnd();
 
-        var msg = new ChatMessage(ChatRole.System, text);
+        var msg = new ChatMessage(ChatRole.System, text).Tag(ContextCategory.StashRegistry);
         if (existingIndex >= 0)
         {
             chatMessages[existingIndex] = msg;
@@ -2408,11 +2474,10 @@ public sealed partial class AgentLoopRunner(
     }
 
     /// <summary>
-    /// Temporary diagnostic (issue: context-bloat investigation) — emits a per-LLM-call
-    /// breakdown of the current message list for scheduled-task sessions only. Categorises
-    /// by role, lists the top-15 largest messages with a short preview, and reports
-    /// estimated tokens. Gated on <paramref name="sessionId"/> starting with <c>patrol/</c>
-    /// so user-session logs are unaffected. Remove after the bloat root cause is identified.
+    /// Debug-level breakdown of the message list at a loop boundary: by role, plus the
+    /// top-15 largest messages with a short preview and estimated tokens. The Information-level
+    /// per-request view, with provider token counts and context categories, is
+    /// <see cref="RequestAccountingChatClient"/>'s "LLM request:" line (#670).
     /// </summary>
     internal static void LogContextBreakdown(
         IList<ChatMessage> messages,
@@ -2421,12 +2486,7 @@ public sealed partial class AgentLoopRunner(
         ILogger logger,
         ImageCostOptions? imageCost = null)
     {
-        if (sessionId is null
-            || !(sessionId.StartsWith("patrol/", StringComparison.Ordinal)
-                 || sessionId.StartsWith("subagent-", StringComparison.Ordinal)
-                 || sessionId.StartsWith("worker-", StringComparison.Ordinal)))
-            return;
-        if (!logger.IsEnabled(LogLevel.Information))
+        if (!logger.IsEnabled(LogLevel.Debug))
             return;
 
         var totalChars = 0;
@@ -2461,13 +2521,13 @@ public sealed partial class AgentLoopRunner(
             entries.Add((i, role, chars, preview));
         }
 
-        logger.LogInformation(
+        logger.LogDebug(
             "ContextBreakdown[{Label}] session={Session} msgs={Count} chars={Chars:N0} ~tokens={Tokens:N0}",
             label, sessionId, messages.Count, totalChars, totalChars / 4);
 
         foreach (var kv in byRole.OrderByDescending(static kv => kv.Value.Chars))
         {
-            logger.LogInformation(
+            logger.LogDebug(
                 "  ByRole {Role,-10} {Count,3} msgs  {Chars,9:N0} chars  ~{Tokens,7:N0} tok  ({Pct,5:F1}%)",
                 kv.Key, kv.Value.Count, kv.Value.Chars, kv.Value.Chars / 4,
                 totalChars > 0 ? 100.0 * kv.Value.Chars / totalChars : 0);
@@ -2475,16 +2535,15 @@ public sealed partial class AgentLoopRunner(
 
         foreach (var e in entries.OrderByDescending(static x => x.Chars).Take(15))
         {
-            logger.LogInformation(
+            logger.LogDebug(
                 "  Msg[{Idx,3}] {Role,-10} {Chars,8:N0} chars  {Preview}",
                 e.Idx, e.Role, e.Chars, e.Preview);
         }
     }
 
     /// <summary>
-    /// Temporary diagnostic — compact one-line size summary for use inside tight loops
-    /// where the full breakdown would be too verbose (e.g. between tool invocations
-    /// inside the native FICC loop). Gated like <see cref="LogContextBreakdown"/>.
+    /// Debug-level one-line size summary for use inside tight loops where the full breakdown
+    /// would be too verbose (e.g. between tool invocations inside the native FICC loop).
     /// </summary>
     internal static void LogContextSize(
         IList<ChatMessage> messages,
@@ -2493,16 +2552,11 @@ public sealed partial class AgentLoopRunner(
         ILogger logger,
         ImageCostOptions? imageCost = null)
     {
-        if (sessionId is null
-            || !(sessionId.StartsWith("patrol/", StringComparison.Ordinal)
-                 || sessionId.StartsWith("subagent-", StringComparison.Ordinal)
-                 || sessionId.StartsWith("worker-", StringComparison.Ordinal)))
-            return;
-        if (!logger.IsEnabled(LogLevel.Information))
+        if (!logger.IsEnabled(LogLevel.Debug))
             return;
 
         var totalChars = messages.Sum(m => EstimateMessageChars(m, imageCost, logger));
-        logger.LogInformation(
+        logger.LogDebug(
             "ContextSize[{Label}] session={Session} msgs={Count} chars={Chars:N0} ~tokens={Tokens:N0}",
             label, sessionId, messages.Count, totalChars, totalChars / 4);
     }
@@ -3420,16 +3474,29 @@ public sealed partial class AgentLoopRunner(
         // Search for relevant skills
         try
         {
-            var skills = await skillStore.SearchAsync(enrichedQuery, maxResults: 3, ct);
+            // #670: skip skills whose body is already in context; inject the best new one in full,
+            // framed like the turn-start recall so skill-body aging can unload it, and name the rest.
+            var loaded = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var m in chatMessages)
+            {
+                if (TryExtractLoadedSkillName(m, out var loadedName))
+                    loaded.Add(loadedName);
+            }
+            var skills = (await skillStore.SearchAsync(enrichedQuery, maxResults: 3, ct))
+                .Where(s => !loaded.Contains(s.Name))
+                .ToList();
             if (skills.Count > 0)
             {
-                var sb = new StringBuilder("Relevant skills for this task:\n");
-                foreach (var skill in skills)
+                chatMessages.Add(new ChatMessage(ChatRole.System, SkillRecallFraming.Wrap(skills[0]))
+                    .Tag(ContextCategory.SkillBody));
+                if (skills.Count > 1)
                 {
-                    sb.AppendLine($"\n## Skill: {skill.Name}");
-                    sb.AppendLine(skill.Content);
+                    var others = skills.Skip(1).Select(s =>
+                        $"- {s.Name}: {(string.IsNullOrWhiteSpace(s.Summary) ? "(summary pending)" : s.Summary)}");
+                    chatMessages.Add(new ChatMessage(ChatRole.System,
+                        "Other skills that may help with this task — call get_skill for one that fits:\n" +
+                        string.Join("\n", others)).Tag(ContextCategory.SkillSummaries));
                 }
-                chatMessages.Add(new ChatMessage(ChatRole.System, sb.ToString()));
                 logger.LogInformation(
                     "Completion re-prompt: injected {Count} skill(s) via enriched search: {Skills}",
                     skills.Count, string.Join(", ", skills.Select(s => s.Name)));
@@ -3461,7 +3528,7 @@ public sealed partial class AgentLoopRunner(
                             sb.AppendLine($"  Top skills: {string.Join(", ", c.TopItems)}");
                         }
                     }
-                    chatMessages.Add(new ChatMessage(ChatRole.System, sb.ToString()));
+                    chatMessages.Add(new ChatMessage(ChatRole.System, sb.ToString()).Tag(ContextCategory.ServiceHints));
                     logger.LogInformation(
                         "Completion re-prompt: injected {Count} service hint(s) via enriched search: {Services}",
                         candidates.Count, string.Join(", ", candidates.Select(c => c.Id)));

@@ -5,7 +5,7 @@ namespace RockBot.Host.Tests;
 /// <summary>
 /// Tests for the session-kind classifier used as a tag on the per-LLM-call context-size
 /// histogram. The buckets match the gate on <see cref="AgentLoopRunner"/>'s
-/// ContextBreakdown logging so the metric and the log share a vocabulary.
+/// ContextBreakdown and per-request accounting logs so the metric and the log share a vocabulary.
 /// </summary>
 [TestClass]
 public class AgentLoopRunnerSessionClassifierTests

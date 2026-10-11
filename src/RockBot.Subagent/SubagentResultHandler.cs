@@ -1,5 +1,6 @@
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using RockBot.Host;
 using RockBot.Llm;
 using RockBot.Memory;
@@ -35,7 +36,8 @@ internal sealed class SubagentResultHandler(
     ILogger<SubagentResultHandler> logger,
     IMcpSkillSurface? mcpSkillSurface = null,
     SessionTierHistory? tierHistory = null,
-    ISessionWorkRegistry? sessionWorkRegistry = null) : IMessageHandler<SubagentResultMessage>
+    ISessionWorkRegistry? sessionWorkRegistry = null,
+    IOptions<AgentHostOptions>? hostOptions = null) : IMessageHandler<SubagentResultMessage>
 {
     public async Task HandleAsync(SubagentResultMessage message, MessageHandlerContext context)
     {
@@ -104,6 +106,24 @@ internal sealed class SubagentResultHandler(
               $"Keys: {string.Join(", ", whiteboardEntries.Select(e => $"'{e.Key}'"))}. " +
               "Retrieve and present them to the user using get_from_working_memory with the full key."
             : string.Empty;
+
+        // #670: once relayed, this result replays in history shortened to its start and end. Keep
+        // the full text in working memory so a later turn can still read it. Saved after the
+        // whiteboard hint is built, so the synthesis isn't told to fetch what it already has inline.
+        var relayCap = hostOptions?.Value.RelayedSubagentTurnMaxChars ?? new AgentHostOptions().RelayedSubagentTurnMaxChars;
+        if (relayCap > 0 && safeOutput.Length > relayCap)
+        {
+            try
+            {
+                await workingMemory.SetAsync(
+                    HistoryCompaction.SubagentOutputKey(message.TaskId), safeOutput,
+                    ttl: TimeSpan.FromHours(24), category: "subagent-output");
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                logger.LogWarning(ex, "Failed to keep the full output of subagent {TaskId} in working memory", message.TaskId);
+            }
+        }
 
         // #665: record the result in the conversation's work registry, so the next subagent this
         // conversation spawns starts with it (and the primary's context names its keys).
@@ -259,7 +279,9 @@ internal sealed class SubagentResultHandler(
                 relayedWork: BuildRelayedWork(batchedResults, sessionWorkRegistry, sessionNamespace),
                 // #685: the relay runs under the gate the subagent ran under — an information-only
                 // request doesn't become an instruction because a subagent reported back.
-                actionGate: ActionGateScope.FromRelayedResults(batchedResults));
+                actionGate: ActionGateScope.FromRelayedResults(batchedResults),
+                // #670: the primary's own tool surface, rare families included only once loaded.
+                deferRareTools: true);
 
             await conversationMemory.AddTurnAsync(
                 rawSessionId,

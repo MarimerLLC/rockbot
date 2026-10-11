@@ -39,11 +39,21 @@ public sealed class LoopDiagnostics
 
     // ── Token usage (populated by AgentLoopRunner after the loop completes) ──
 
-    /// <summary>Total input tokens consumed across all loop iterations.</summary>
+    /// <summary>
+    /// Total input tokens consumed across all loop iterations and every pass of the run
+    /// (re-prompts and follow-ups included). This is a per-turn sum: each iteration re-sends
+    /// the whole context, so it is not the size of any one request — see <see cref="MaxRequestInputTokens"/>.
+    /// </summary>
     public long InputTokens { get; set; }
 
-    /// <summary>Total output tokens produced across all loop iterations.</summary>
+    /// <summary>Total output tokens produced across all loop iterations and passes.</summary>
     public long OutputTokens { get; set; }
+
+    /// <summary>Number of LLM requests the run sent, auxiliary calls included (#670).</summary>
+    public int LlmRequests { get; set; }
+
+    /// <summary>Input tokens of the largest single request the run sent (#670).</summary>
+    public long MaxRequestInputTokens { get; set; }
 
     /// <summary>Model ID reported by the LLM for this loop run (last seen value when multiple responses occur).</summary>
     public string? ModelId { get; set; }

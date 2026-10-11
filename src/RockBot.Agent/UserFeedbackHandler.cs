@@ -147,7 +147,9 @@ internal sealed class UserFeedbackHandler(
                     chatMessages, chatOptions, message.SessionId,
                     enableFollowUp: false, cancellationToken: slot.Token,
                     // #685: a re-answer of the user's own message, gated like the original turn.
-                    actionGate: ActionGateScope.ForUserTurn);
+                    actionGate: ActionGateScope.ForUserTurn,
+                    // #670: the same tool surface as the turn it re-answers.
+                    deferRareTools: true);
             }
         }
         catch (OperationCanceledException)
