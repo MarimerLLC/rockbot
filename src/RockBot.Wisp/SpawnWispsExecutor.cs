@@ -562,7 +562,9 @@ internal sealed class SpawnWispsExecutor(
 
     /// <summary>
     /// Reports the batch's outcome on the running tool call (#686). The call failed when any wisp
-    /// failed. The wisps' own tool calls are attached either way, so a relay can show which
+    /// failed, or when any state-changing call inside a wisp failed. The second case covers a wisp
+    /// that kept going past a failed write (<c>on_failure: skip_to</c>) and still counts as
+    /// succeeded. The wisps' own tool calls are attached either way, so a relay can show which
     /// creates and writes actually happened. When there are more than
     /// <see cref="MaxReportedNestedCalls"/>, the failed and state-changing ones are kept first.
     /// </summary>
@@ -571,6 +573,7 @@ internal sealed class SpawnWispsExecutor(
         if (outcome is null) return;
 
         var calls = batch.Results.SelectMany(r => r.ToolCalls).ToList();
+        var (handledFailedWrites, writes) = CountHandledFailedWrites(batch);
         if (calls.Count > MaxReportedNestedCalls)
         {
             calls = calls
@@ -584,12 +587,33 @@ internal sealed class SpawnWispsExecutor(
         }
         outcome.AddNested(calls);
 
+        var handledNote = handledFailedWrites > 0
+            ? $"; {handledFailedWrites} more state-changing calls failed in steps on_failure skipped past"
+            : string.Empty;
         outcome.Report(
-            succeeded: batch.FailedCount == 0,
-            detail: batch.FailedCount == 0
-                ? $"all {batch.TotalCount} wisps succeeded"
-                : $"{batch.FailedCount} of {batch.TotalCount} wisps failed");
+            succeeded: batch.FailedCount == 0 && handledFailedWrites == 0,
+            detail: batch.FailedCount > 0
+                ? $"{batch.FailedCount} of {batch.TotalCount} wisps failed{handledNote}"
+                : handledFailedWrites > 0
+                    ? $"all {batch.TotalCount} wisps completed, but {handledFailedWrites} of {writes} state-changing calls failed (handled by on_failure)"
+                    : $"all {batch.TotalCount} wisps succeeded");
     }
+
+    // The failed state-changing calls of steps whose failure on_failure handled, and the batch's
+    // state-changing calls in all. A failure that aborted its wisp already counts as a failed wisp.
+    private static (int HandledFailed, int Total) CountHandledFailedWrites(WispBatchResult batch)
+    {
+        var handled = batch.Results
+            .SelectMany(r => r.StepResults.Where(s => s.FailureHandled))
+            .SelectMany(s => s.ToolCalls ?? [])
+            .Count(c => !c.Succeeded && ToolSideEffects.IsSideEffecting(c));
+        var total = batch.Results.SelectMany(r => r.ToolCalls).Count(ToolSideEffects.IsSideEffecting);
+        return (handled, total);
+    }
+
+    // The step a failed wisp aborted at: the last failure that on_failure did not handle.
+    private static WispStepResult? AbortStep(WispExecutionResult result) =>
+        result.StepResults.LastOrDefault(s => !s.IsSuccess && !s.FailureHandled) ?? result.FailedStep;
 
     internal static string FormatBatchResult(WispBatchResult batch)
     {
@@ -603,6 +627,11 @@ internal sealed class SpawnWispsExecutor(
                 ? $"ALL {batch.TotalCount} WISPS FAILED. None of their work completed past the failed step; do not report it as done."
                 : $"PARTIAL FAILURE: {batch.FailedCount} of {batch.TotalCount} wisps failed. Their steps after the failure did NOT run; do not report them as done. Report only the work of the wisps marked [ok], and do not re-run those.");
         }
+        else if (CountHandledFailedWrites(batch) is { HandledFailed: > 0 } writes)
+        {
+            // A wisp that skips past a failed write (on_failure) still counts as succeeded.
+            sb.AppendLine($"WRITES FAILED: {writes.HandledFailed} of {writes.Total} state-changing calls failed inside wisps that continued past them (on_failure). Those changes did NOT happen; do not report them as done.");
+        }
 
         sb.AppendLine($"{batch.TotalCount} wisp(s) completed ({batch.SucceededCount} succeeded, {batch.FailedCount} failed, {batch.TotalDuration.TotalSeconds:F1}s total):");
         sb.AppendLine();
@@ -612,7 +641,7 @@ internal sealed class SpawnWispsExecutor(
             var status = result.IsSuccess ? "ok" : "failed";
             sb.AppendLine($"- `{result.WispId}`: \"{result.Definition.Description}\" [{status}] ({result.Duration.TotalMilliseconds:F0}ms)");
 
-            if (!result.IsSuccess && result.FailedStep?.Error is { } err)
+            if (!result.IsSuccess && AbortStep(result) is { Error: { } err } abortStep)
             {
                 sb.AppendLine($"  Error ({err.Category}): {err.Message}");
                 if (err.ToolName is not null)
@@ -620,15 +649,20 @@ internal sealed class SpawnWispsExecutor(
 
                 // #686: steps that ran before the failure did take effect. Name them, so the
                 // model neither redoes them nor counts the whole wisp as done.
-                var failedIndex = result.FailedStep.StepIndex;
                 var completed = result.StepResults
-                    .Where(s => s.StepIndex < failedIndex && s.IsSuccess && !s.WasSkipped)
+                    .Where(s => s.StepIndex < abortStep.StepIndex && s.IsSuccess && !s.WasSkipped)
                     .Select(s => s.StepId)
                     .ToList();
                 sb.AppendLine(completed.Count > 0
-                    ? $"  Steps completed before the failure: {string.Join(", ", completed)}; failed at: {result.FailedStep.StepId}"
-                    : $"  Failed at the first step run ({result.FailedStep.StepId}); nothing in this wisp completed");
+                    ? $"  Steps completed before the failure: {string.Join(", ", completed)}; failed at: {abortStep.StepId}"
+                    : $"  Failed at the first step run ({abortStep.StepId}); nothing in this wisp completed");
             }
+
+            // #686: a failure on_failure handled leaves the wisp [ok], but that step's work did not
+            // happen. Before this, only the last step's output was shown, so a failed create
+            // followed by an empty verify read as success.
+            foreach (var handled in result.StepResults.Where(s => s.FailureHandled))
+                sb.AppendLine($"  Step {handled.StepId} FAILED (handled by on_failure, the wisp continued): {handled.Error?.Message ?? "no error message"}");
 
             if (result.IsSuccess)
             {

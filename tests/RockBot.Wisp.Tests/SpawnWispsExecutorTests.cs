@@ -534,6 +534,47 @@ public class SpawnWispsExecutorTests
     }
 
     [TestMethod]
+    public async Task ExecuteAsync_FailedCreatesSkippedPast_StillReportFailedWrites()
+    {
+        // The live replay on 2026-10-11: each wisp ran create with on_failure skip_to verify. All
+        // three creates failed, yet every wisp counted as succeeded, and the result showed only the
+        // empty verify output.
+        var executor = CreateCalendarExecutor();
+        var outcome = new ToolCallOutcome();
+        var request = new ToolInvokeRequest
+        {
+            ToolCallId = "tc-686-skip",
+            ToolName = "spawn_wisps",
+            Arguments = JsonSerializer.Serialize(new
+            {
+                definitions = Enumerable.Range(2, 3).Select(i => new
+                {
+                    description = $"Prep block {i}",
+                    steps = new object[]
+                    {
+                        new { id = "create", mode = "Direct", gateway = "Mcp", server = "calendar-mcp", tool = "create_event",
+                              @params = new { title = $"Prep {i}", calendarId = "primary" },
+                              on_failure = new { action = "skip_to", skip_to = "verify" } },
+                        new { id = "verify", mode = "Direct", gateway = "Mcp", server = "calendar-mcp", tool = "get_event",
+                              @params = new { title = $"Prep {i}" } },
+                    },
+                }),
+            }),
+        };
+
+        ToolInvokeResponse response;
+        using (ToolCallOutcomeContext.Set(outcome))
+            response = await executor.ExecuteAsync(request, CancellationToken.None);
+
+        StringAssert.Contains(response.Content, "3 wisp(s) completed (3 succeeded, 0 failed");
+        StringAssert.StartsWith(response.Content, "WRITES FAILED: 3 of 3 state-changing calls failed");
+        StringAssert.Contains(response.Content, "Step create FAILED (handled by on_failure, the wisp continued): Failed to create event");
+
+        Assert.AreEqual(false, outcome.Succeeded, "a batch whose writes all failed is not a success");
+        Assert.AreEqual("all 3 wisps completed, but 3 of 3 state-changing calls failed (handled by on_failure)", outcome.Detail);
+    }
+
+    [TestMethod]
     public async Task ExecuteAsync_AllWispsSucceed_ReportsSuccess_WithNestedCalls()
     {
         var executor = CreateCalendarExecutor();
