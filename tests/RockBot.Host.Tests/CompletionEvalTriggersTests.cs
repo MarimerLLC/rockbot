@@ -271,6 +271,22 @@ public class CompletionEvalTriggersTests
     [DataRow("Thanks, now send it to Bob")]
     [DataRow("you didn't save the file")]
     [DataRow("that's way too long")]
+    [DataRow(ExplicitStepsUser)]
+    [DataRow("Please do exactly this:\n- create the doc\n- share it with Bob")]
+    [DataRow("do precisely the following")]
+    [DataRow("Do just that.")]
+    [DataRow("Spawn a subagent to research the venue")]
+    [DataRow("delegate this to a subagent")]
+    [DataRow("Tell me how many events exist")]
+    [DataRow("show me the draft")]
+    [DataRow("List the open PRs")]
+    [DataRow("Report back when it's done")]
+    [DataRow("verify the upload")]
+    [DataRow("confirm the booking")]
+    [DataRow("Follow these steps: open the deck, cut slide 4.")]
+    [DataRow("The steps are: 1. open the deck 2. cut slide 4")]
+    [DataRow("Here's what to do: open the deck and cut slide 4.")]
+    [DataRow("can you list my meetings for tomorrow?")]
     public void ImperativeInstruction_Matches(string userMessage)
     {
         Assert.IsTrue(CompletionEvalTriggers.IsImperativeInstruction(userMessage), userMessage);
@@ -286,6 +302,15 @@ public class CompletionEvalTriggersTests
     [DataRow("I think the venue is in Minneapolis.")]
     [DataRow("good morning")]
     [DataRow("Can you explain how the scheduler works?")]
+    [DataRow("List of attendees is in the doc.")]
+    [DataRow("Report from Bob: the venue moved.")]
+    [DataRow("Report: all green.")]
+    [DataRow("The show starts at 8.")]
+    [DataRow("Show starts at 8.")]
+    [DataRow("Do you list the speakers anywhere?")]
+    [DataRow("I'll tell Bob tomorrow.")]
+    [DataRow("Confirmation number is 1234.")]
+    [DataRow("The steps are documented in the README.")]
     public void ImperativeInstruction_DoesNotMatch(string userMessage)
     {
         Assert.IsFalse(CompletionEvalTriggers.IsImperativeInstruction(userMessage), userMessage);
@@ -475,6 +500,16 @@ public class CompletionEvalTriggersTests
         "The deck, speaker notes and runbook were revised, uploaded to OneDrive and read back to verify.";
     internal const string ContextOnlyUser = "the talk doesn't exist yet";
 
+    /// <summary>The #690 replay message the #685 gate misread as information-only, refusing its creates.</summary>
+    internal const string ExplicitStepsUser =
+        "This is a test of wisp failure reporting (issue 686). Please do exactly this:\n\n" +
+        "Spawn a subagent whose task is to create three 15-minute test events on my work calendar with ONE " +
+        "spawn_wisps call containing three wisps (one wisp per event).\n\n" +
+        "- Wisp 1: subject \"ZZ-686 test block 1\", Tue Oct 13 2026 7:00-7:15 AM.\n" +
+        "- Wisp 2: subject \"ZZ-686 test block 2\", Tue Oct 13 2026 7:15-7:30 AM.\n\n" +
+        "No attendees, no reminders. The subagent should report exactly which events were created and verified. " +
+        "When it reports back, tell me how many of the three test events now exist.";
+
     /// <summary>What the deck subagent really did in its own session: read, write, upload, read back.</summary>
     internal static IReadOnlyList<LoopToolCall> DeckSubagentCalls(bool uploaded = true)
     {
@@ -630,6 +665,7 @@ public class CompletionEvalTriggersTests
     [DataRow(UpdateDocUser, false, UserRequestKind.Instruction)]
     [DataRow(WebSearchUser, false, UserRequestKind.Instruction)]
     [DataRow("can you trim it?", false, UserRequestKind.Instruction)]
+    [DataRow(ExplicitStepsUser, false, UserRequestKind.Instruction)]
     [DataRow("yes", true, UserRequestKind.Instruction)]
     [DataRow("Sure, sounds good", true, UserRequestKind.Instruction)]
     [DataRow("yes", false, UserRequestKind.InformationOnly)]

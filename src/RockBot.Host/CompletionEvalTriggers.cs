@@ -135,24 +135,35 @@ public static class CompletionEvalTriggers
         @"schedule|cancel|move|rename|change|build|generate|draft|search|find|look\s+(?:up|into|for)|check|research|try|run|" +
         @"put|set\s+up|reduce|shorten|revise|redo|rework|finish|publish|save|reply|forward|replace|convert|merge|split|" +
         @"rerun|retry|proceed|continue|implement|apply|prepare|compile|resend|share|archive|clean\s+up|get\s+(?:me|it|that|rid)|" +
-        @"pull|fetch|grab|download|attach|insert|tighten|shrink|expand|extend|lengthen|condense|restructure|reorgani[sz]e|rearrange";
+        @"pull|fetch|grab|download|attach|insert|tighten|shrink|expand|extend|lengthen|condense|restructure|reorgani[sz]e|rearrange|" +
+        // #690: delegation, reporting and step-following verbs. A noun guard stops "List of attendees…",
+        // "Report from Bob…" and "Show starts at 8" from counting.
+        @"spawn|delegate|tell|verify|confirm|follow|" +
+        @"show(?!\s+(?:is|was|starts|started|runs|ran|went|ends|ended)\b)|" +
+        @"list(?!\s+(?:of|is|was|has|had|includes|included)\b)|" +
+        @"report(?!\s+(?:from|on|of|is|was|has|had|says|said|shows|showed)\b)";
 
     /// <summary>
     /// A user message that gives an instruction — explicit ("do it", "so do it now", "go ahead",
     /// "figure out a way to update the doc", "can you trim it?") or implicit pushback that asks
-    /// for a change ("why didn't you search?", "30 slides is a lot", "try again"). When the loop
-    /// answering it made no tool calls, the reply is checked. Questions ("how do I fix…?",
-    /// "do you know…?") and acknowledgements do not match.
+    /// for a change ("why didn't you search?", "30 slides is a lot", "try again"). Explicit step
+    /// lists count too ("Please do exactly this:", "Spawn a subagent…", "the steps are:", #690).
+    /// When the loop answering it made no tool calls, the reply is checked. Questions ("how do I
+    /// fix…?", "do you know…?") and acknowledgements do not match.
     /// </summary>
     public static readonly Regex ImperativeInstructionRegex = new(
         // Sentence-start imperative, optionally after a softener: "so do it now", "ok, go ahead", "please trim it"
         @"(?:^|[.!?;:\n,—–]\s*|\s-\s+|\b(?:so|then|ok(?:ay)?|alright|please)[,!.]?\s+)" +
         @"(?:(?:please|just|now|so|then|ok(?:ay)?|go\s+ahead\s+and)[,]?\s+)*" +
-        @"(?:do(?!\s+(?:you|i|we|they|u|people|not|n" + Ap + @"t|y" + Ap + @"all)\b)(?=\s+(?:it|that|this|so|them|the|a|an|what|as|one|both|all|some|those|these|now)\b|\s*[.!]*\s*$)" +
+        // "do it", "do exactly this", "do precisely the following"
+        @"(?:do(?!\s+(?:you|i|we|they|u|people|not|n" + Ap + @"t|y" + Ap + @"all)\b)" +
+        @"(?=(?:\s+(?:exactly|precisely|just|only|literally|all\s+of))*\s+(?:it|that|this|so|them|the|a|an|what|as|one|both|all|some|those|these|now|following)\b|\s*[.!]*\s*$)" +
         @"|(?:" + ActionVerbs + @")\b(?![\-'’:]))" +
         // "can you trim it?", "could you please update the doc"
         @"|\b(?:can|could|would|will)\s+(?:you|u)\s+(?:please\s+)?(?:just\s+)?(?:do\b|(?:" + ActionVerbs + @")\b)" +
         @"|\bI\s+(?:need|want|" + Ap + @"d\s+like|would\s+like)\s+you\s+to\b" +
+        // Explicit step lists: "the steps are:", "here's what to do:"
+        @"|\bthe\s+steps\s+are\s*:|\bhere" + Ap + @"?s\s+what\s+to\s+do\b" +
         // Implicit instruction: pushback on what was (not) done
         @"|\bwhy\s+(?:didn" + Ap + @"?t|did\s+not|haven" + Ap + @"?t|have\s+not|wouldn" + Ap + @"?t|aren" + Ap + @"?t|don" + Ap + @"?t)\s+you\b" +
         @"|\byou\s+(?:didn" + Ap + @"?t|did\s+not|forgot|missed|never|haven" + Ap + @"?t)\b" +
