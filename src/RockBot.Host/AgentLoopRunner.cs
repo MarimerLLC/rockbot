@@ -1901,6 +1901,12 @@ public sealed partial class AgentLoopRunner(
     private const string SkillBodyMessagePrefix = "Skill: ";
 
     /// <summary>
+    /// The same push as framed by <see cref="SkillRecallFraming.Wrap"/>: preamble, blank line,
+    /// then the "Skill: " line.
+    /// </summary>
+    private const string FramedSkillBodyPrefix = SkillRecallFraming.Preamble + "\n\n" + SkillBodyMessagePrefix;
+
+    /// <summary>
     /// Tool name (case-insensitive) the model calls to (re-)fetch a skill body. A call
     /// to this tool refreshes the named skill's last-use counter, keeping the body
     /// resident even if it's already past the unload threshold.
@@ -1919,10 +1925,19 @@ public sealed partial class AgentLoopRunner(
         if (message.Role != ChatRole.System) return false;
 
         var text = message.Text;
-        if (text is null || text.Length <= SkillBodyMessagePrefix.Length) return false;
-        if (!text.StartsWith(SkillBodyMessagePrefix, StringComparison.Ordinal)) return false;
+        if (text is null) return false;
 
-        var nameStart = SkillBodyMessagePrefix.Length;
+        // SkillRecallFraming.Wrap puts its #492 preamble ahead of the "Skill: " line (#670:
+        // matching only the bare prefix left every recalled body resident for the whole run).
+        int nameStart;
+        if (text.StartsWith(SkillBodyMessagePrefix, StringComparison.Ordinal))
+            nameStart = SkillBodyMessagePrefix.Length;
+        else if (text.StartsWith(FramedSkillBodyPrefix, StringComparison.Ordinal))
+            nameStart = FramedSkillBodyPrefix.Length;
+        else
+            return false;
+        if (text.Length <= nameStart) return false;
+
         var newlineIdx = text.IndexOf('\n', nameStart);
         if (newlineIdx <= nameStart) return false;
 
@@ -3414,16 +3429,29 @@ public sealed partial class AgentLoopRunner(
         // Search for relevant skills
         try
         {
-            var skills = await skillStore.SearchAsync(enrichedQuery, maxResults: 3, ct);
+            // #670: skip skills whose body is already in context; inject the best new one in full,
+            // framed like the turn-start recall so skill-body aging can unload it, and name the rest.
+            var loaded = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var m in chatMessages)
+            {
+                if (TryExtractLoadedSkillName(m, out var loadedName))
+                    loaded.Add(loadedName);
+            }
+            var skills = (await skillStore.SearchAsync(enrichedQuery, maxResults: 3, ct))
+                .Where(s => !loaded.Contains(s.Name))
+                .ToList();
             if (skills.Count > 0)
             {
-                var sb = new StringBuilder("Relevant skills for this task:\n");
-                foreach (var skill in skills)
+                chatMessages.Add(new ChatMessage(ChatRole.System, SkillRecallFraming.Wrap(skills[0]))
+                    .Tag(ContextCategory.SkillBody));
+                if (skills.Count > 1)
                 {
-                    sb.AppendLine($"\n## Skill: {skill.Name}");
-                    sb.AppendLine(skill.Content);
+                    var others = skills.Skip(1).Select(s =>
+                        $"- {s.Name}: {(string.IsNullOrWhiteSpace(s.Summary) ? "(summary pending)" : s.Summary)}");
+                    chatMessages.Add(new ChatMessage(ChatRole.System,
+                        "Other skills that may help with this task — call get_skill for one that fits:\n" +
+                        string.Join("\n", others)).Tag(ContextCategory.SkillSummaries));
                 }
-                chatMessages.Add(new ChatMessage(ChatRole.System, sb.ToString()).Tag(ContextCategory.SkillBody));
                 logger.LogInformation(
                     "Completion re-prompt: injected {Count} skill(s) via enriched search: {Skills}",
                     skills.Count, string.Join(", ", skills.Select(s => s.Name)));
