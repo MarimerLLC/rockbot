@@ -283,6 +283,18 @@ Batch ID: `batch-abc123def456ab`
 Batch summary: `wisp/batch-batch-abc123def456ab/summary`
 ```
 
+If any wisp failed, the result opens with `PARTIAL FAILURE: N of M wisps failed…`, or with
+`ALL M WISPS FAILED…` when none succeeded. Each failed wisp lists the steps that completed
+before the failure (#686). A wisp that `on_failure: skip_to` carried past a failed step still
+counts as `[ok]`. The failed step is now listed under it (`Step create FAILED (handled by
+on_failure…)`). When any such step's write failed, the result opens with `WRITES FAILED: N of M
+state-changing calls failed…` and the call counts as failed. The response stays a non-error, so the model doesn't re-run the wisps
+that worked. The `spawn_wisps` call is still recorded as failed in the ledger and the tool-call
+log, with the counts and every call the wisps' steps made: the one call of a direct step (an MCP
+step named `{server}__{tool}`), and every substantive call of an LLM step. An LLM step whose
+state-changing calls all failed is itself a failed step. See
+[agent-host.md](agent-host.md#when-the-completion-evaluator-runs).
+
 ### When to parallelize
 
 Split independent work into separate wisp definitions. For example, searching 5

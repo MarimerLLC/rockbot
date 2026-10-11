@@ -1,3 +1,5 @@
+using RockBot.Host;
+
 namespace RockBot.Wisp;
 
 /// <summary>
@@ -45,4 +47,12 @@ public sealed record WispStepResult
     /// When true, the failure does not abort the pipeline.
     /// </summary>
     public bool FailureHandled { get; init; }
+
+    /// <summary>
+    /// The tool calls this step made (#686): the one call of a direct step, every substantive call
+    /// of an LLM step's loop. Null when the step made none (a validation failure, a skipped step).
+    /// They are reported on the parent's <c>spawn_wisps</c> call so a claim about the wisps' work
+    /// can be checked against what actually ran.
+    /// </summary>
+    public IReadOnlyList<LoopToolCall>? ToolCalls { get; init; }
 }

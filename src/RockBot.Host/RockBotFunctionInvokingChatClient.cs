@@ -188,6 +188,10 @@ public class RockBotFunctionInvokingChatClient : FunctionInvokingChatClient
         var sw = System.Diagnostics.Stopwatch.StartNew();
         var status = "ok";
         object? result;
+        // #686: a batch tool reports failures of the work it ran (and the calls it made) here,
+        // since its result is deliberately not an error.
+        var outcome = new ToolCallOutcome();
+        using var outcomeScope = ToolCallOutcomeContext.Set(outcome);
         try
         {
             result = await base.InvokeFunctionAsync(context, cancellationToken);
@@ -229,7 +233,7 @@ public class RockBotFunctionInvokingChatClient : FunctionInvokingChatClient
             TierEscalationContext.Value?.ObserveToolResult(callContent.Name, isError: true);
             LoopToolCallLedgerContext.Value?.Record(
                 callContent.Name, AgentLoopRunner.TruncateLedgerArgs(argsSummary), succeeded: false,
-                rawArguments: callContent.Arguments);
+                rawArguments: callContent.Arguments, outcome: outcome);
             throw;
         }
         sw.Stop();
@@ -266,6 +270,16 @@ public class RockBotFunctionInvokingChatClient : FunctionInvokingChatClient
         if (status == "ok" && resultStr is not null && IsErrorResult(resultStr))
         {
             status = ToolError.Codes.ExecutionFailed;
+        }
+
+        // #686: a batch tool whose result is not an error but whose work partly failed (spawn_wisps
+        // with aborted wisps) is a failed call for the ledger, the log and the evaluator. The
+        // result the model sees is unchanged, so it does not re-run the parts that worked.
+        if (status == "ok" && outcome.Succeeded == false)
+        {
+            status = ToolError.Codes.ExecutionFailed;
+            _logger.LogInformation("Tool {Name} reported a failed outcome: {Detail}",
+                callContent.Name, outcome.Detail ?? "(no detail)");
         }
 
         TierEscalationContext.Value?.ObserveToolResult(callContent.Name, isError: status != "ok");
@@ -337,7 +351,7 @@ public class RockBotFunctionInvokingChatClient : FunctionInvokingChatClient
         }
         LoopToolCallLedgerContext.Value?.Record(
             callContent.Name, AgentLoopRunner.TruncateLedgerArgs(argsSummary), succeeded: status == "ok",
-            rawArguments: callContent.Arguments);
+            rawArguments: callContent.Arguments, outcome: outcome);
 
         // Log tool-call event for sequence analysis (fire-and-forget)
         if (_toolCallLog is not null && ToolCallSessionContext.SessionId is { } sid)
@@ -348,7 +362,12 @@ public class RockBotFunctionInvokingChatClient : FunctionInvokingChatClient
                 ArgumentsSummary: argsSummary,
                 Succeeded: status == "ok",
                 DurationMs: (int)sw.ElapsedMilliseconds,
-                Timestamp: DateTimeOffset.UtcNow));
+                Timestamp: DateTimeOffset.UtcNow)
+            {
+                ErrorMessage = outcome.Succeeded == false ? outcome.Detail : null,
+                Detail = outcome.Detail,
+                NestedCalls = ToolCallOutcome.FormatNested(outcome.NestedSnapshot()),
+            });
         }
 
         if (_progressNotifier is not null)

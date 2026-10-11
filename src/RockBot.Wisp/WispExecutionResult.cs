@@ -1,3 +1,5 @@
+using RockBot.Host;
+
 namespace RockBot.Wisp;
 
 /// <summary>
@@ -29,6 +31,10 @@ public sealed record WispExecutionResult
     /// The step that caused failure, if any.
     /// </summary>
     public WispStepResult? FailedStep => StepResults.FirstOrDefault(s => !s.IsSuccess);
+
+    /// <summary>Every tool call the wisp's steps made, in order (#686).</summary>
+    public IReadOnlyList<LoopToolCall> ToolCalls =>
+        StepResults.SelectMany(s => s.ToolCalls ?? []).ToList();
 
     /// <summary>
     /// The original wisp definition for provenance tracking.

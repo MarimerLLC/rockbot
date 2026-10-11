@@ -358,7 +358,8 @@ Triggers are checked in this order, and the first match is logged:
 | `promise-no-action` | The loop made no tool calls and the reply promises or describes work: "I should have…", "I'm cutting it… now", "I've got the right path", "I'll search…", or a closing "Let me…". |
 | `bare-claim` | The reply opens with a bare completion claim such as "Done." or "Updated.". |
 | `imperative-no-tools` | The loop made no tool calls and the user gave an instruction ("do it", "go ahead", "figure out…", "can you trim it?") or pushed back ("why didn't you…", "30 slides is a lot", "try again"). |
-| `side-effect` | The loop made a side-effecting tool call. `ToolSideEffects` decides this from the verb in the tool name; for `mcp_invoke_tool` it reads the `tool_name` argument. |
+| `side-effect` | The loop made a side-effecting tool call. `ToolSideEffects` decides this from the verb in the tool name; for `mcp_invoke_tool` it reads the `tool_name` argument. A batch tool such as `spawn_wisps` counts when any call it made on the agent's behalf is side-effecting (#686). |
+| `claimed-change` | The reply claims anywhere in it that something was created, updated, sent, scheduled or verified ("I have also updated…", "Scheduled and verified seven…", "has been created"), and no call in the loop changed anything (#686). |
 | `pattern` | The pre-#666 gate: the hallucinated-action or capability-denial regex matched, the reply is under 20 characters (unless the user only said "thanks", "ok" or "hi"), or the loop hit its iteration cap. |
 
 The agent's own bookkeeping (task list, working memory, long-term memory, progress reports)
@@ -366,6 +367,20 @@ doesn't count as a tool call for the "no tool calls" triggers, and it isn't a si
 that calls `spawn_subagent` or `invoke_agent` is still skipped, because its results arrive later.
 The loop records its tool calls in `LoopToolCallLedger` instead of reading the chat history,
 because context trimming can shorten the history.
+
+A caller can pass `completionEvalTriggers` to enable only some triggers. The first enabled
+trigger that matches wins, so a disabled one never hides a later enabled one. `SubagentRunner`
+enables `side-effect`, `bare-claim` and `claimed-change` (#686). A subagent's own claims of work
+are then checked before its result is relayed, and nothing pushes it to do more than its task.
+
+**Outcomes of batch tools (#686).** A batch tool's result stays a non-error even when part of its
+work failed. This keeps the model from re-running the parts that worked. The tool reports its real
+outcome through `ToolCallOutcomeContext`, a holder that the native and text-based paths bind
+around every tool call. `spawn_wisps` reports a failed outcome when any wisp failed (for example
+`6 of 7 wisps failed`), along with every call its wisps' steps made. The ledger and the tool-call
+log record the call as failed, together with that detail and the nested calls. The evaluator
+lists the nested calls under the call that made them as `↳` lines, each with its own outcome. A
+claimed count must match the successful calls.
 
 The evaluator reads the user's last three messages, the agent's previous message, every tool
 call the loop made (name, ok or failed, and whether it changed state), what the user asked for,

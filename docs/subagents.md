@@ -325,6 +325,13 @@ synthesis turn's own read-only calls. See
 [When the completion evaluator runs](agent-host.md#when-the-completion-evaluator-runs).
 Both properties are null on results from an older build.
 
+A batch call such as `spawn_wisps` carries a `Detail` (`6 of 7 wisps failed`) and up to 15
+`Nested` calls, which are the calls its wisps made, each with its own outcome (#686). Before this,
+a batch whose wisps all aborted was relayed as one successful `spawn_wisps`. A subagent also runs
+the evaluator on its own reply before the result is published. It runs only for the
+`side-effect`, `bare-claim` and `claimed-change` triggers, so a claim like "seven events created
+and verified" or "I updated the checklist" must be backed by the subagent's own calls.
+
 Topic: `subagent.result`
 
 ---

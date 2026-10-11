@@ -30,4 +30,15 @@ public sealed record ToolCallEvent(
     /// Error message when the tool call failed. Null for successful calls.
     /// </summary>
     public string? ErrorMessage { get; init; }
+
+    /// <summary>
+    /// The tool's own summary of its outcome (#686), e.g. <c>6 of 7 wisps failed</c>, or null.
+    /// </summary>
+    public string? Detail { get; init; }
+
+    /// <summary>
+    /// The calls a batch tool such as <c>spawn_wisps</c> made on the agent's behalf (#686), one
+    /// line each (<c>calendar-mcp__create_event FAILED (wisp wisp-9eaa… step create)</c>), or null.
+    /// </summary>
+    public IReadOnlyList<string>? NestedCalls { get; init; }
 }

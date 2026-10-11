@@ -27,6 +27,7 @@ internal sealed class WispExecutor(
     ISessionWorkRegistry? sessionWorkRegistry = null)
 {
     private const int DefaultLlmStepMaxIterations = 10;
+    private const int MaxNestedArgumentChars = 300;
     private const int InputChunkingThreshold = 8_000;
     private const int ChunkMaxLength = 20_000;
     private const string NoCorrectionSentinel = "NO_CORRECTION";
@@ -473,7 +474,8 @@ internal sealed class WispExecutor(
                     Message = refusal,
                     ToolName = route.ToolName
                 },
-                Duration = stepSw.Elapsed
+                Duration = stepSw.Elapsed,
+                ToolCalls = [NestedCall(step, wispId, route.ToolName, route.Arguments, succeeded: false)]
             };
         }
 
@@ -567,7 +569,8 @@ internal sealed class WispExecutor(
                     Message = response.Content ?? "Tool returned an error with no message",
                     ToolName = route.ToolName
                 },
-                Duration = stepSw.Elapsed
+                Duration = stepSw.Elapsed,
+                ToolCalls = [NestedCall(step, wispId, route.ToolName, route.Arguments, succeeded: false)]
             };
         }
 
@@ -590,7 +593,8 @@ internal sealed class WispExecutor(
                     Message = softErrorMessage,
                     ToolName = route.ToolName
                 },
-                Duration = stepSw.Elapsed
+                Duration = stepSw.Elapsed,
+                ToolCalls = [NestedCall(step, wispId, route.ToolName, route.Arguments, succeeded: false)]
             };
         }
 
@@ -614,8 +618,24 @@ internal sealed class WispExecutor(
             StepIndex = index,
             IsSuccess = true,
             Content = response.Content,
-            Duration = stepSw.Elapsed
+            Duration = stepSw.Elapsed,
+            ToolCalls = [NestedCall(step, wispId, route.ToolName, route.Arguments, succeeded: true)]
         };
+    }
+
+    /// <summary>
+    /// A direct step's tool call as reported on the parent's <c>spawn_wisps</c> call (#686). An MCP
+    /// step routed through <c>mcp_invoke_tool</c> is named <c>{server}__{tool}</c>, like its typed
+    /// wrapper, so the evaluator and the side-effect classifier see the downstream tool.
+    /// </summary>
+    internal static LoopToolCall NestedCall(WispStep step, string wispId, string? toolName, string? arguments, bool succeeded)
+    {
+        var name = string.Equals(toolName, "mcp_invoke_tool", StringComparison.OrdinalIgnoreCase)
+                   && !string.IsNullOrEmpty(step.Server) && !string.IsNullOrEmpty(step.Tool)
+            ? $"{step.Server}__{step.Tool}"
+            : toolName ?? step.Tool ?? step.Id;
+        var args = arguments is { Length: > MaxNestedArgumentChars } ? arguments[..MaxNestedArgumentChars] : arguments;
+        return new LoopToolCall(name, args, succeeded) { Detail = $"wisp {wispId} step {step.Id}" };
     }
 
     private async Task<WispStepResult> ExecuteLlmStepAsync(
@@ -709,7 +729,9 @@ internal sealed class WispExecutor(
             Tools = scopedTools
         };
 
-        // Run with minimal AgentLoopRunner config: Low tier, no follow-up, no completion eval
+        // Run with minimal AgentLoopRunner config: Low tier, no follow-up, no completion eval.
+        // The diagnostics carry the run's ledger out, so the step's calls can be reported (#686).
+        var diagnostics = new LoopDiagnostics();
         string llmOutput;
         try
         {
@@ -718,6 +740,7 @@ internal sealed class WispExecutor(
                 tier: ModelTier.Low,
                 enableFollowUp: false,
                 enableCompletionEval: false,
+                diagnostics: diagnostics,
                 cancellationToken: ct);
         }
         catch (Exception ex)
@@ -733,11 +756,30 @@ internal sealed class WispExecutor(
                     Category = FailureCategory.Judgment,
                     Message = $"LLM step failed: {ex.Message}"
                 },
-                Duration = stepSw.Elapsed
+                Duration = stepSw.Elapsed,
+                ToolCalls = LlmStepCalls(diagnostics, wispId, step)
             };
         }
 
         stepSw.Stop();
+
+        // #686: a loop that ended normally has still failed when every state-changing call it made
+        // failed. Its output would describe work that did not happen.
+        var stepCalls = LlmStepCalls(diagnostics, wispId, step);
+        if (AllStateChangesFailed(stepCalls) is { } writeFailure)
+        {
+            logger.LogWarning("Wisp {WispId} LLM step {StepId}: {Error}", wispId, step.Id, writeFailure.Message);
+            return new WispStepResult
+            {
+                StepId = step.Id,
+                StepIndex = index,
+                IsSuccess = false,
+                Content = llmOutput,
+                Error = writeFailure,
+                Duration = stepSw.Elapsed,
+                ToolCalls = stepCalls
+            };
+        }
 
         // Always write step output to working memory for inter-step access
         var llmOutputKey = $"{wispNamespace}/{step.Id}/output";
@@ -758,8 +800,42 @@ internal sealed class WispExecutor(
             StepIndex = index,
             IsSuccess = true,
             Content = llmOutput,
-            Duration = stepSw.Elapsed
+            Duration = stepSw.Elapsed,
+            ToolCalls = stepCalls
         };
+    }
+
+    /// <summary>
+    /// The error for an LLM step whose state-changing calls all failed (#686), or null when it made
+    /// none or at least one succeeded. Such a loop still ends normally, and its output then
+    /// describes writes that never happened.
+    /// </summary>
+    internal static WispStepError? AllStateChangesFailed(IReadOnlyList<LoopToolCall>? calls)
+    {
+        var changing = calls?.Where(ToolSideEffects.IsSideEffecting).ToList() ?? [];
+        if (changing.Count == 0 || changing.Any(c => c.Succeeded))
+            return null;
+        return new WispStepError
+        {
+            Category = FailureCategory.External,
+            Message = $"All {changing.Count} state-changing tool call(s) of this step failed " +
+                      $"({string.Join(", ", changing.Select(c => c.Name).Distinct())}).",
+            ToolName = changing[0].Name
+        };
+    }
+
+    /// <summary>
+    /// The substantive tool calls an LLM step's loop made (#686), tagged with the wisp and step, or
+    /// null when there were none. Bookkeeping such as working memory and the task list is left out.
+    /// </summary>
+    private static IReadOnlyList<LoopToolCall>? LlmStepCalls(LoopDiagnostics diagnostics, string wispId, WispStep step)
+    {
+        if (diagnostics.ToolCallLedger is not { } ledger) return null;
+        var where = $"wisp {wispId} step {step.Id}";
+        var calls = CompletionEvalTriggers.SubstantiveCalls(ledger.Snapshot())
+            .Select(c => c with { Detail = c.Detail is null ? where : $"{where}: {c.Detail}" })
+            .ToList();
+        return calls.Count > 0 ? calls : null;
     }
 
     /// <summary>

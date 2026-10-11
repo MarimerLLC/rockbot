@@ -90,8 +90,14 @@ public static partial class ToolSideEffects
     /// <summary>True when the call is the agent's own bookkeeping (task list, memory, progress).</summary>
     public static bool IsBookkeeping(string toolName) => BookkeepingTools.Contains(toolName);
 
-    /// <summary>True when <paramref name="call"/> changed something outside the agent's own state.</summary>
-    public static bool IsSideEffecting(LoopToolCall call) => IsSideEffecting(call.Name, call.Arguments);
+    /// <summary>
+    /// True when <paramref name="call"/> changed something outside the agent's own state, or tried
+    /// to. A batch tool such as <c>spawn_wisps</c> counts as changing state when any call it made
+    /// on the agent's behalf (<see cref="LoopToolCall.Nested"/>, #686) does.
+    /// </summary>
+    public static bool IsSideEffecting(LoopToolCall call) =>
+        IsSideEffecting(call.Name, call.Arguments)
+        || (call.Nested?.Any(IsSideEffecting) ?? false);
 
     /// <summary>
     /// True when a call to <paramref name="toolName"/> with <paramref name="arguments"/> (a
