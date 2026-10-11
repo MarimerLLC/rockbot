@@ -566,7 +566,9 @@ internal sealed class UserMessageHandler(
                 },
                 cancellationToken: ct,
                 // #685: external changes need this message (or the proposal it accepts) to ask for them.
-                actionGate: ActionGateScope.ForUserTurn);
+                actionGate: ActionGateScope.ForUserTurn,
+                // #670: rarely used tool families wait until the conversation loads them.
+                deferRareTools: true);
 
             logger.LogInformation(
                 "Native path complete — final text {TextLen} chars", text.Length);
@@ -725,7 +727,9 @@ internal sealed class UserMessageHandler(
                 },
                 cancellationToken: ct,
                 // #685: external changes need this message (or the proposal it accepts) to ask for them.
-                actionGate: ActionGateScope.ForUserTurn);
+                actionGate: ActionGateScope.ForUserTurn,
+                // #670: rarely used tool families wait until the conversation loads them.
+                deferRareTools: true);
 
             RecordEscalation(sessionId, turnId, bgDiag);
 

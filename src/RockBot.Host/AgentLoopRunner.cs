@@ -32,8 +32,14 @@ public sealed partial class AgentLoopRunner(
     InjectedMemoryTracker? injectedMemoryTracker = null,
     ITypedToolSurface? typedToolSurface = null,
     ISessionWorkRegistry? sessionWorkRegistry = null,
-    IConsequentialActionGate? consequentialActionGate = null)
+    IConsequentialActionGate? consequentialActionGate = null,
+    DeferredToolActivations? deferredToolActivations = null)
 {
+    // #670: which deferred tool families each session has loaded. Process-wide: the runner is
+    // transient, and a family loaded on one turn stays in the session's list on the next.
+    private readonly DeferredToolActivations _deferredActivations =
+        deferredToolActivations ?? DeferredToolActivations.Shared;
+
     private readonly IServiceSearchIndex? _serviceSearchIndex = serviceSearchIndexProviders.FirstOrDefault();
 
     // #685: consulted before every tool call through ActionGateContext. Hosts that construct the
@@ -486,7 +492,11 @@ public sealed partial class AgentLoopRunner(
         // #686: when set, the completion evaluator runs only for these triggers. The first one that
         // matches wins; a disabled trigger never hides a later enabled one. Subagents use this to
         // check their own claims of work before reporting back.
-        IReadOnlySet<CompletionEvalTrigger>? completionEvalTriggers = null)
+        IReadOnlySet<CompletionEvalTrigger>? completionEvalTriggers = null,
+        // #670: when true (and AgentHost:DeferRareToolFamilies is on), rarely used tool families
+        // stay out of the list until the session loads them. Interactive turns opt in; background,
+        // subagent and wisp runs keep the list their caller built.
+        bool deferRareTools = false)
     {
         using var _ = ToolCallSessionContext.Set(sessionId);
         // Always bind (possibly null) so a nested run — a subagent started from a tool call —
@@ -524,6 +534,15 @@ public sealed partial class AgentLoopRunner(
         TypedToolSurfaceContext.Shape(chatOptions);
         TypedToolSurfaceContext.AddActivated(chatOptions);
         EnsureMcpOrientation(chatMessages, chatOptions);
+
+        // Rarely used tool families wait until the session asks for them (#670). Always bound
+        // (possibly to nothing) so a nested run never inherits its parent's pool.
+        using var deferredScope = DeferredToolContext.Set(
+            deferRareTools && hostOptions.Value.DeferRareToolFamilies ? _deferredActivations : null,
+            sessionId, logger);
+        var deferredCount = DeferredToolContext.Partition(chatOptions);
+        if (deferredCount > 0)
+            EnsureDeferredToolsOrientation(chatMessages);
 
         // MCP hand-back: a server's mid-call question comes back to this run only if it can answer.
         using var _______ = McpHandbackContext.Set(chatOptions);
@@ -1069,6 +1088,24 @@ public sealed partial class AgentLoopRunner(
     }
 
     /// <summary>
+    /// Puts the list of deferred tool families (#670) right behind the system prompt, once per
+    /// message list. A no-op when the run defers nothing.
+    /// </summary>
+    internal static void EnsureDeferredToolsOrientation(List<ChatMessage> chatMessages)
+    {
+        if (DeferredToolContext.Orientation() is not { } orientation
+            || chatMessages.Any(m => m.Role == ChatRole.System
+                && (m.Text?.StartsWith(DeferredToolContext.OrientationHeading, StringComparison.Ordinal) ?? false)))
+            return;
+
+        // Same slot as the MCP orientation: right after the system prompt, ahead of everything that
+        // varies by turn. The text lists every deferred family whether loaded or not, so it doesn't
+        // change from turn to turn and the cached prefix holds.
+        var insertAt = chatMessages.Count > 0 && chatMessages[0].Role == ChatRole.System ? 1 : 0;
+        chatMessages.Insert(insertAt, new ChatMessage(ChatRole.System, orientation).Tag(ContextCategory.DeferredTools));
+    }
+
+    /// <summary>
     /// Puts the MCP orientation for the run's mode (#614) right behind the system prompt. Only
     /// the run knows its mode — the context is built before the tier picks one — so this is the
     /// one place every handler's runs get it. Any earlier copy is removed first, so a re-run on the
@@ -1269,8 +1306,10 @@ public sealed partial class AgentLoopRunner(
                 // results that recorded earlier task_update calls have been trimmed.
                 RefreshTaskListContext(chatMessages, taskList);
 
-                // Typed tools activated by the previous iteration's calls (#612).
+                // Typed tools activated by the previous iteration's calls (#612), and deferred
+                // families loaded by them (#670).
                 TypedToolSurfaceContext.AddActivated(chatOptions);
+                DeferredToolContext.AddActivated(chatOptions);
 
                 var stashState = AgentLoopStashContext.Value
                     ?? throw new InvalidOperationException("AgentLoopStashContext was not initialised — RunAsync must set it before invoking the loop.");
@@ -1423,10 +1462,13 @@ public sealed partial class AgentLoopRunner(
 
                 foreach (var (toolName, argsJson) in textCalls)
                 {
+                    if (toolName == DeferredToolFamilies.LoaderToolName)
+                        DeferredToolContext.Observe(chatOptions, toolName, DeferredToolContext.GuideNameFromJson(argsJson));
                     var tool = chatOptions.Tools?
                         .OfType<AIFunction>()
                         .FirstOrDefault(t => t.Name.Equals(toolName, StringComparison.OrdinalIgnoreCase))
-                        ?? TypedToolSurfaceContext.TryActivate(chatOptions, toolName);
+                        ?? TypedToolSurfaceContext.TryActivate(chatOptions, toolName)
+                        ?? DeferredToolContext.TryActivate(chatOptions, toolName);
 
                     if (tool is null)
                     {
@@ -1619,10 +1661,13 @@ public sealed partial class AgentLoopRunner(
                     stashCapture.ArgsSummaries[fc.CallId] = TruncateArgsSummary(argsSummary);
                 }
 
+                if (fc.Name == DeferredToolFamilies.LoaderToolName)
+                    DeferredToolContext.Observe(chatOptions, fc.Name, DeferredToolContext.GuideName(fc.Arguments));
                 var tool = chatOptions.Tools?
                     .OfType<AIFunction>()
                     .FirstOrDefault(t => t.Name.Equals(fc.Name, StringComparison.OrdinalIgnoreCase))
-                    ?? TypedToolSurfaceContext.TryActivate(chatOptions, fc.Name);
+                    ?? TypedToolSurfaceContext.TryActivate(chatOptions, fc.Name)
+                    ?? DeferredToolContext.TryActivate(chatOptions, fc.Name);
 
                 if (tool is null)
                 {

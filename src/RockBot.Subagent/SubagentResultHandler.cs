@@ -279,7 +279,9 @@ internal sealed class SubagentResultHandler(
                 relayedWork: BuildRelayedWork(batchedResults, sessionWorkRegistry, sessionNamespace),
                 // #685: the relay runs under the gate the subagent ran under — an information-only
                 // request doesn't become an instruction because a subagent reported back.
-                actionGate: ActionGateScope.FromRelayedResults(batchedResults));
+                actionGate: ActionGateScope.FromRelayedResults(batchedResults),
+                // #670: the primary's own tool surface, rare families included only once loaded.
+                deferRareTools: true);
 
             await conversationMemory.AddTurnAsync(
                 rawSessionId,

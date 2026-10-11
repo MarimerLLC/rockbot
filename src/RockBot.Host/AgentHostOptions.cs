@@ -275,6 +275,15 @@ public sealed class AgentHostOptions
     public int RelayedSubagentTurnMaxChars { get; set; } = 1_200;
 
     /// <summary>
+    /// When true (the default), interactive turns leave rarely used tool families — A2A, scheduling,
+    /// wisps, workers, skill authoring, memory administration, MCP server administration — out of
+    /// the tool list until the conversation loads them with <c>get_tool_guide</c> or calls one of
+    /// their tools by name (#670; see <see cref="DeferredToolFamilies"/>). Set false
+    /// (<c>AgentHost__DeferRareToolFamilies=false</c>) to send every tool on every request.
+    /// </summary>
+    public bool DeferRareToolFamilies { get; set; } = true;
+
+    /// <summary>
     /// Maximum number of times the completion evaluator can re-prompt the agent when it
     /// determines the task is incomplete. Set to 0 to disable completion evaluation entirely.
     /// Individual models may override this via <c>ModelBehavior.MaxCompletionRepromptsOverride</c>.
