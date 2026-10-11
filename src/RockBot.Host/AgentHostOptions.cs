@@ -252,6 +252,29 @@ public sealed class AgentHostOptions
     public int MaxLlmContextTurns { get; set; } = 20;
 
     /// <summary>
+    /// How many of the most recent history turns are replayed in full (#670). Older turns inside
+    /// the <see cref="MaxLlmContextTurns"/> window keep only their start and end, up to
+    /// <see cref="HistoryOlderTurnMaxChars"/>. Conversation memory always keeps the full text.
+    /// Default 6.
+    /// </summary>
+    public int HistoryFullTurns { get; set; } = 6;
+
+    /// <summary>
+    /// Character budget for a history turn older than the last <see cref="HistoryFullTurns"/>
+    /// (#670). Set to 0 to replay every turn in full. Default 2,000.
+    /// </summary>
+    public int HistoryOlderTurnMaxChars { get; set; } = 2_000;
+
+    /// <summary>
+    /// Character budget for a subagent result in history once the primary has relayed it to the
+    /// user (#670). The relay turn holds the subagent's whole report — 15K chars has been seen —
+    /// and the synthesized reply that follows repeats what mattered. The full report is kept in
+    /// working memory (<c>subagent/{taskId}/output</c>, 24 hours) when it is longer than this.
+    /// Set to 0 to replay relays in full. Default 1,200.
+    /// </summary>
+    public int RelayedSubagentTurnMaxChars { get; set; } = 1_200;
+
+    /// <summary>
     /// Maximum number of times the completion evaluator can re-prompt the agent when it
     /// determines the task is incomplete. Set to 0 to disable completion evaluation entirely.
     /// Individual models may override this via <c>ModelBehavior.MaxCompletionRepromptsOverride</c>.

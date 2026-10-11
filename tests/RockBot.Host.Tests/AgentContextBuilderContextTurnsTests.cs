@@ -77,6 +77,89 @@ public class AgentContextBuilderContextTurnsTests
             "A window larger than the available history must not pad or throw.");
     }
 
+    // ── #670: history compaction ─────────────────────────────────────────────
+
+    private static string Long(string label, int chars) =>
+        label + " " + new string('x', chars) + " END-" + label;
+
+    [TestMethod]
+    public async Task OlderTurns_KeepStartAndEnd_RecentTurnsStayFull()
+    {
+        var turns = Enumerable.Range(0, 10)
+            .Select(i => new ConversationTurn(i % 2 == 0 ? "user" : "assistant", Long($"turn-{i}", 5_000), DateTimeOffset.UtcNow))
+            .ToList();
+        var builder = BuildBuilder(new ListConversationMemory(turns),
+            new AgentHostOptions { HistoryFullTurns = 4, HistoryOlderTurnMaxChars = 1_000 });
+
+        var messages = await builder.BuildAsync("s", "current", CancellationToken.None);
+        var replayed = HistoryTurns(messages).ToList();
+
+        Assert.AreEqual(10, replayed.Count);
+        for (var i = 0; i < 6; i++)
+        {
+            Assert.IsTrue(replayed[i].Length < 1_200, $"turn-{i} should be cut");
+            StringAssert.Contains(replayed[i], "chars of this earlier turn elided");
+            StringAssert.EndsWith(replayed[i], $"END-turn-{i}", "the end of an older turn is kept");
+        }
+        for (var i = 6; i < 10; i++)
+            Assert.AreEqual(turns[i].Content, replayed[i], $"turn-{i} is one of the last 4 and stays full");
+    }
+
+    [TestMethod]
+    public async Task RelayedSubagentResult_IsShortened_LatestUnansweredRelayStaysFull()
+    {
+        var turns = new List<ConversationTurn>
+        {
+            new("user", "turn-ask research it", DateTimeOffset.UtcNow),
+            new("assistant", "turn-on it", DateTimeOffset.UtcNow),
+            new("user", "turn-" + Long("[Subagent task aaa completed]:", 8_000), DateTimeOffset.UtcNow) { AgentName = "subagent-aaa" },
+            new("assistant", "turn-here is the synthesis", DateTimeOffset.UtcNow),
+            new("user", "turn-" + Long("[Subagent task bbb completed]:", 8_000), DateTimeOffset.UtcNow) { AgentName = "subagent-bbb" },
+        };
+        var builder = BuildBuilder(new ListConversationMemory(turns),
+            new AgentHostOptions { RelayedSubagentTurnMaxChars = 1_000 });
+
+        var messages = await builder.BuildAsync("s", "current", CancellationToken.None);
+        var replayed = HistoryTurns(messages).ToList();
+
+        Assert.IsTrue(replayed[2].Length < 1_400, "the relayed result is cut");
+        StringAssert.Contains(replayed[2], "already relayed to the user");
+        StringAssert.Contains(replayed[2], "'subagent/aaa/output'");
+        Assert.AreEqual(turns[4].Content, replayed[4], "the relay the synthesis is about to answer stays full");
+        Assert.AreEqual(ContextCategory.SubagentRelay,
+            ContextTags.Get(messages.First(m => m.Text == replayed[2])));
+    }
+
+    [TestMethod]
+    public async Task ConsolidationNote_IsDroppedOnceAnswered_AndKeptBeforeTheSynthesis()
+    {
+        var answered = new List<ConversationTurn>
+        {
+            new("user", "turn-ask", DateTimeOffset.UtcNow),
+            new("system", "turn-[All 2 subagent tasks completed. Synthesize]", DateTimeOffset.UtcNow),
+            new("assistant", "turn-synthesis", DateTimeOffset.UtcNow),
+            new("user", "turn-next", DateTimeOffset.UtcNow),
+        };
+        var pending = answered.Take(2).ToList();
+
+        var afterAnswer = HistoryTurns(await BuildBuilder(new ListConversationMemory(answered))
+            .BuildAsync("s", "current", CancellationToken.None)).ToList();
+        var beforeAnswer = HistoryTurns(await BuildBuilder(new ListConversationMemory(pending))
+            .BuildAsync("s", "current", CancellationToken.None)).ToList();
+
+        CollectionAssert.AreEqual(new[] { "turn-ask", "turn-synthesis", "turn-next" }, afterAnswer);
+        CollectionAssert.Contains(beforeAnswer, "turn-[All 2 subagent tasks completed. Synthesize]");
+    }
+
+    [TestMethod]
+    public void HeadTail_ShortTextAndDisabledLimit_AreUnchanged()
+    {
+        Assert.AreEqual("short", HistoryCompaction.HeadTail("short", 100, "{0}"));
+        var longText = new string('a', 500);
+        Assert.AreEqual(longText, HistoryCompaction.HeadTail(longText, 0, "{0}"));
+        StringAssert.Contains(HistoryCompaction.HeadTail(longText, 100, "cut {0}"), "[cut 400]");
+    }
+
     // ── Helpers ──────────────────────────────────────────────────────────────
 
     /// <summary>Synthetic history turns are the only messages whose text starts with "turn-".</summary>
@@ -141,6 +224,20 @@ public class AgentContextBuilderContextTurnsTests
 
         public Task<IReadOnlyList<ConversationTurn>> GetTurnsAsync(string sessionId, CancellationToken cancellationToken = default) =>
             Task.FromResult(_turns);
+
+        public Task ClearAsync(string sessionId, CancellationToken cancellationToken = default) => Task.CompletedTask;
+
+        public Task<IReadOnlyList<string>> ListSessionsAsync(CancellationToken cancellationToken = default) =>
+            Task.FromResult<IReadOnlyList<string>>([]);
+    }
+
+    private sealed class ListConversationMemory(IReadOnlyList<ConversationTurn> turns) : IConversationMemory
+    {
+        public Task AddTurnAsync(string sessionId, ConversationTurn turn, CancellationToken cancellationToken = default) =>
+            Task.CompletedTask;
+
+        public Task<IReadOnlyList<ConversationTurn>> GetTurnsAsync(string sessionId, CancellationToken cancellationToken = default) =>
+            Task.FromResult(turns);
 
         public Task ClearAsync(string sessionId, CancellationToken cancellationToken = default) => Task.CompletedTask;
 

@@ -418,21 +418,41 @@ public sealed class AgentContextBuilder(
 
         // Recent conversation history
         var startIndex = Math.Max(0, history.Count - MaxLlmContextTurns);
+        // #670: turns before the last few replay shortened, and a subagent result the primary has
+        // already answered keeps only its start and end. Both cuts depend only on a turn's position.
+        var fullFrom = history.Count - Math.Max(1, _hostOptions.HistoryFullTurns);
+        var lastAssistantIdx = -1;
+        for (var i = history.Count - 1; i >= 0; i--)
+        {
+            if (history[i].Role == "assistant")
+            {
+                lastAssistantIdx = i;
+                break;
+            }
+        }
         for (var i = startIndex; i < history.Count; i++)
         {
             var turn = history[i];
+            // A "system" turn is a batch-consolidation note for the synthesis that follows it; once
+            // that synthesis has answered, it is spent.
+            if (turn.Role == "system" && i < lastAssistantIdx)
+                continue;
             var role = turn.Role == "user" ? ChatRole.User : ChatRole.Assistant;
+            var relayTaskId = role == ChatRole.User ? HistoryCompaction.SubagentTaskId(turn.AgentName) : null;
+            var content = turn.Content;
+            if (relayTaskId is not null && i < lastAssistantIdx)
+                content = HistoryCompaction.RelayedSubagentTurn(content, relayTaskId, _hostOptions.RelayedSubagentTurnMaxChars);
+            else if (i < fullFrom)
+                content = HistoryCompaction.OlderTurn(content, _hostOptions.HistoryOlderTurnMaxChars);
             // A turn that carried files keeps a note of where they went. The bytes are only
             // materialised for the turn being answered, so without this the path leaves the
             // conversation entirely the moment the next turn starts and "look at that image
             // again" becomes unanswerable — the model cannot even name the file to analyse.
             var historyCategory = role == ChatRole.User
-                ? (turn.AgentName?.StartsWith("subagent-", StringComparison.Ordinal) == true
-                    ? ContextCategory.SubagentRelay
-                    : ContextCategory.HistoryUser)
+                ? (relayTaskId is not null ? ContextCategory.SubagentRelay : ContextCategory.HistoryUser)
                 : ContextCategory.HistoryAssistant;
             chatMessages.Add(new ChatMessage(
-                role, turn.Content + InboundAttachmentInjector.DescribeAttachments(turn.Attachments))
+                role, content + InboundAttachmentInjector.DescribeAttachments(turn.Attachments))
                 .Tag(historyCategory));
         }
 
