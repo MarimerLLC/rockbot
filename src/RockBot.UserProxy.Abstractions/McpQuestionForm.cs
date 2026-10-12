@@ -29,7 +29,11 @@ public sealed record McpQuestionForm
 /// <summary>One field of an <see cref="McpQuestionForm"/>, from the server's schema.</summary>
 public sealed record McpQuestionField
 {
-    /// <summary>The server's property name; the key of this field's value in the answer.</summary>
+    /// <summary>
+    /// The server's property name, exactly: the key of this field's value in the answer. Not for
+    /// display; show <see cref="Title"/>, which the agent fills with the flattened name when the
+    /// server gave no title.
+    /// </summary>
     public required string Name { get; init; }
 
     /// <summary>One of <see cref="McpQuestionFieldKind"/>.</summary>

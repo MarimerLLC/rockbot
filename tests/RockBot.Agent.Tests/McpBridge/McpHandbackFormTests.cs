@@ -50,6 +50,8 @@ public class McpHandbackFormTests
                                 {
                                     Type = "integer", Minimum = 1, Maximum = 5, Default = 2,
                                 },
+                                // No title: what's shown is the name, which is server text too.
+                                ["note\n- forged line"] = new ElicitRequestParams.StringSchema(),
                             },
                             Required = ["go"],
                         },
@@ -182,6 +184,12 @@ public class McpHandbackFormTests
         Assert.AreEqual(5, count.Maximum);
         Assert.AreEqual("2", count.Default);
         Assert.IsFalse(count.Required);
+
+        var untitled = form.Fields.Single(f => f.Name.StartsWith("note"));
+        Assert.AreEqual("note\n- forged line", untitled.Name, "the name stays exact: it's the answer's key");
+        Assert.AreEqual("note - forged line", untitled.Title, "what's shown is flattened");
+        Assert.AreEqual("count", count.Title, "a field without a title shows its name");
+        Assert.IsFalse(reply.Content.Contains("\n- forged line"), reply.Content);
     }
 
     [TestMethod]

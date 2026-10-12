@@ -660,8 +660,9 @@ body.dark-mode .chevron-indicator {
     min-width: 0;
 }
 
+/* Darker than the border: white at the badge's small size needs 4.5:1 (this is ~5.5:1). */
 .mcp-question-badge {
-    background-color: #0d9488;
+    background-color: #0f766e;
     color: white;
 }
 

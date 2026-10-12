@@ -43,7 +43,7 @@ public class McpQuestionAnswerHandlerTests
         _handler = CreateHandler(_answerer);
     }
 
-    private McpQuestionAnswerHandler CreateHandler(IMcpQuestionAnswerer? answerer)
+    private McpQuestionAnswerHandler CreateHandler(IMcpQuestionAnswerer? answerer, IAgentWorkSerializer? serializer = null)
     {
         var llmClient = new ConfigurableLlmClient("The search found three invoices.");
         var agent = new AgentIdentity(AgentName);
@@ -90,7 +90,7 @@ public class McpQuestionAnswerHandlerTests
             new StubToolRegistry(),
             new RulesTools(new StubRulesStore(), clock, NullLogger<RulesTools>.Instance),
             new ToolGuideTools([], NullLogger<ToolGuideTools>.Instance),
-            new StubWorkSerializer(),
+            serializer ?? new StubWorkSerializer(),
             new SessionClientCapabilityStore(),
             NullLogger<McpQuestionAnswerHandler>.Instance,
             answerer);
@@ -258,8 +258,54 @@ public class McpQuestionAnswerHandlerTests
         Assert.IsTrue(text.Split('\n').All(l => l.Length < 330), "each value is capped");
     }
 
+    [TestMethod]
+    public async Task TheResult_IsRecordedOnlyOnceTheTurnThatShowedTheFormIsDone()
+    {
+        // The turn that showed the form still holds the work slot and is writing its reply.
+        var serializer = new RecordingSerializer(_conversation, SessionId);
+        var handler = CreateHandler(_answerer, serializer);
+
+        await handler.ProcessAsync(Answer(), CancellationToken.None);
+
+        Assert.IsFalse(serializer.TurnsAtAcquire!.Any(t => t.AgentName == McpQuestionAnswerHandler.BridgeTurnAgentName),
+            "the result must follow that turn's reply, not precede it");
+        Assert.IsTrue((await _conversation.GetTurnsAsync(SessionId)).Any(t => t.AgentName == McpQuestionAnswerHandler.BridgeTurnAgentName));
+    }
+
+    [TestMethod]
+    public async Task AFailure_ReopensTheForm_InsteadOfLeavingItWaiting()
+    {
+        _answerer.Throw = new InvalidOperationException("bus down");
+
+        await _handler.ProcessAsync(Answer(), CancellationToken.None);
+
+        var status = Published<McpQuestionStatus>().Single();
+        Assert.AreEqual(McpQuestionState.Rejected, status.State);
+        StringAssert.Contains(status.Reason, "bus down");
+        Assert.AreEqual(0, Published<AgentReply>().Count);
+    }
+
+    /// <summary>Records the conversation as it stood when the work slot was granted.</summary>
+    private sealed class RecordingSerializer(IConversationMemory conversation, string sessionId) : IAgentWorkSerializer
+    {
+        private readonly StubWorkSerializer _inner = new();
+
+        public IReadOnlyList<ConversationTurn>? TurnsAtAcquire { get; private set; }
+
+        public async Task<IAsyncDisposable> AcquireForUserAsync(CancellationToken ct)
+        {
+            TurnsAtAcquire = [.. await conversation.GetTurnsAsync(sessionId, ct)];
+            return await _inner.AcquireForUserAsync(ct);
+        }
+
+        public Task<IScheduledTaskSlot?> TryAcquireForScheduledAsync(CancellationToken ct) =>
+            _inner.TryAcquireForScheduledAsync(ct);
+    }
+
     private sealed class FakeAnswerer(IConversationMemory conversation) : IMcpQuestionAnswerer
     {
+        public Exception? Throw { get; set; }
+
         public McpAnswerQuestionResponse Response { get; set; } = new()
         {
             QuestionId = McpQuestionAnswerHandlerTests.QuestionId,
@@ -282,6 +328,8 @@ public class McpQuestionAnswerHandlerTests
             Answers = answersJson;
             Decline = decline;
             TurnsAtCall = [.. await conversation.GetTurnsAsync(sessionId["session/".Length..], ct)];
+            if (Throw is not null)
+                throw Throw;
             return Response;
         }
     }

@@ -67,9 +67,11 @@ internal static class McpQuestionFormMapper
         var isDecision = McpElicitationCoordinator.IsDecisionField(definition);
         var field = new McpQuestionField
         {
+            // The name stays exact: it's the key the answer carries, and the bridge's validator
+            // matches it. What's shown is the title, or the name flattened when there's no title.
             Name = name,
             Kind = McpQuestionFieldKind.String,
-            Title = OptionalText(definition.Title),
+            Title = OptionalText(definition.Title) ?? Text(name, LabelMaxChars),
             Description = OptionalText(definition.Description),
             Required = required,
             IsDecision = isDecision,

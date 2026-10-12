@@ -60,6 +60,12 @@ internal sealed class McpQuestionAnswerHandler(
     {
         // The resumed call can run for the tool-call budget and the reply after it for a model
         // turn: neither should hold this topic's single consumer, or the message's ack.
+        //
+        // Acking first loses nothing a held ack could save. The parked call lives in this
+        // process, so if the process dies the call dies with it, and a redelivered answer could
+        // only be refused as "interrupted". On restart the bridge announces the interruption and
+        // tells the chat to close the form. A failure short of that reopens the form (below).
+        // The native user-message path acks early for the same reason (#122).
         var ct = lifetime?.ApplicationStopping ?? CancellationToken.None;
         _ = Task.Run(() => ProcessAsync(message, ct), CancellationToken.None);
         return Task.CompletedTask;
@@ -80,6 +86,19 @@ internal sealed class McpQuestionAnswerHandler(
         {
             logger.LogError(ex, "Form answer to MCP question {QuestionId} in session {SessionId} failed",
                 message.QuestionId, message.SessionId);
+
+            // Don't leave the form waiting on an answer nothing will act on. If the bridge did
+            // settle the question before the failure, its own status has already closed the form,
+            // and the chat ignores a later "rejected" for a closed form.
+            try
+            {
+                await PublishStatusAsync(message, McpQuestionState.Rejected,
+                    $"the answer couldn't be processed ({ex.Message}); try again", CancellationToken.None);
+            }
+            catch (Exception publishEx)
+            {
+                logger.LogWarning(publishEx, "Could not reopen the form for MCP question {QuestionId}", message.QuestionId);
+            }
         }
     }
 
@@ -164,9 +183,6 @@ internal sealed class McpQuestionAnswerHandler(
         }
 
         var syntheticTurn = turn.ToString();
-        await conversationMemory.AddTurnAsync(sessionId,
-            new ConversationTurn("user", syntheticTurn, DateTimeOffset.UtcNow) { AgentName = BridgeTurnAgentName },
-            ct);
 
         string finalContent;
         try
@@ -174,6 +190,12 @@ internal sealed class McpQuestionAnswerHandler(
             // Wait for the turn that showed the form to finish its reply, rather than cancel it.
             await using (await workSerializer.AcquireForUserAsync(ct))
             {
+                // Recorded only now: the turn that showed the form may have still been writing its
+                // "fill in the form" reply, which must come before the result, not after it.
+                await conversationMemory.AddTurnAsync(sessionId,
+                    new ConversationTurn("user", syntheticTurn, DateTimeOffset.UtcNow) { AgentName = BridgeTurnAgentName },
+                    ct);
+
                 var chatMessages = await agentContextBuilder.BuildAsync(
                     sessionId, syntheticTurn, ct, clientCapabilities: clientCapabilityStore.Get(sessionId));
 
