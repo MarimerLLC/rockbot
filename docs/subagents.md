@@ -251,12 +251,17 @@ outlive it.
 
 `SubagentRunner` injects a **"Prior work in this conversation"** block into each new
 subagent's context: the user request that led to the spawn, the inputs, every earlier
-result (summary and keys) and every artifact, and then the full text of the most relevant
-items up to `SubagentOptions.LineageInlineBudgetChars` (24,000). Inputs come first; results
-are ranked by keyword overlap between the new task and each result's description and summary,
-most recent first on a tie (with no overlap, only the most recent result is inlined). The
+result (summary and keys) and every artifact. Under **"Read these first"** it names the two
+earlier results most relevant to the new task, with the exact `get_from_working_memory` calls
+that fetch them — ranked by keyword overlap between the new task and each result's description
+and summary, most recent first on a tie (with no overlap, only the most recent result). The
 block tells the subagent to ground its work in these results and that research wins over an
 older draft.
+
+The block is re-sent on every iteration of the subagent's loop, so it carries pointers rather
+than bodies (#695). Full text is inlined, up to `SubagentOptions.LineageInlineBudgetChars`
+(8,000), only for the spawn's `inputs` — what the primary passed on purpose — and for a
+relevant result that saved no keys, whose text could not be fetched any other way.
 
 For user turns, `AgentContextBuilder` adds a short **"Work products in this conversation"**
 section (≤1,500 characters) listing the files, uploads and result keys, so "the deck" resolves
@@ -424,7 +429,7 @@ public sealed class SubagentOptions
 {
     public int MaxConcurrentSubagents { get; set; } = 3;
     public int DefaultTimeoutMinutes { get; set; } = 10;
-    public int LineageInlineBudgetChars { get; set; } = 24_000; // prior work inlined per subagent
+    public int LineageInlineBudgetChars { get; set; } = 8_000;  // inputs inlined per subagent (#695)
     public int ResearchIterationFloor { get; set; } = 20;       // min max_iterations for research tasks
     // (consolidation timeouts omitted)
 }

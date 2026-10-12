@@ -151,7 +151,7 @@ internal sealed class SubagentRunner(
         // #665: what earlier subagents in this conversation produced, the files it wrote, the user's
         // request, and the inputs the primary named — so this task builds on prior research even
         // when the primary did not pass it along.
-        var lineage = await BuildLineageAsync(description, context, primarySessionId, originatingUserRequest, inputs);
+        var lineage = BuildLineage(description, context, primarySessionId, originatingUserRequest, inputs);
         if (lineage is not null)
         {
             chatMessages.Add(new ChatMessage(ChatRole.System, lineage).Tag(ContextCategory.Lineage));
@@ -424,7 +424,7 @@ internal sealed class SubagentRunner(
     /// The prior-work block for this subagent (#665), or null when there is none. Never throws:
     /// lineage is an aid, and a failure building it must not stop the task.
     /// </summary>
-    private async Task<string?> BuildLineageAsync(
+    private string? BuildLineage(
         string description, string? context, string primarySessionId,
         string? originatingUserRequest, IReadOnlyList<SubagentInput>? inputs)
     {
@@ -433,9 +433,9 @@ internal sealed class SubagentRunner(
             var snapshot = sessionWorkRegistry?.GetSnapshot(primarySessionId)
                 ?? SessionWorkSnapshot.Empty(SessionWorkRegistry.NormalizeSessionId(primarySessionId));
             var budget = (subagentOptions?.Value ?? new SubagentOptions()).LineageInlineBudgetChars;
-            return await SubagentLineage.BuildAsync(
+            return SubagentLineage.Build(
                 snapshot, description, context, originatingUserRequest, inputs ?? [],
-                budget, key => workingMemory.GetAsync(key), DateTimeOffset.UtcNow);
+                budget, DateTimeOffset.UtcNow);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {

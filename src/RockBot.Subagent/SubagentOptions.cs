@@ -33,11 +33,13 @@ public sealed class SubagentOptions
     public int InteractiveConsolidationTimeoutSeconds { get; set; } = 300;
 
     /// <summary>
-    /// Characters of prior work (spawn <c>inputs</c> first, then the most relevant earlier subagent
-    /// results) inlined in full into a new subagent's context (#665). Everything else is listed as
-    /// a pointer the subagent can fetch. 0 disables inlining; the pointer list is still injected.
+    /// Characters of full text inlined into a new subagent's prior-work block (#665): the spawn
+    /// <c>inputs</c> the primary passed, then any relevant earlier result that saved no keys. Earlier
+    /// results with saved keys are listed as summary and keys for the subagent to fetch (#695) — the
+    /// block is re-sent on every iteration of the subagent's loop, so inlined text is paid for each
+    /// time. 0 disables inlining; the pointer list is still injected. Default 8,000.
     /// </summary>
-    public int LineageInlineBudgetChars { get; set; } = 24_000;
+    public int LineageInlineBudgetChars { get; set; } = 8_000;
 
     /// <summary>
     /// Minimum <c>max_iterations</c> for a subagent whose description asks it to research, verify,

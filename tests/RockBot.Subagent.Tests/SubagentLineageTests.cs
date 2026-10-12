@@ -20,33 +20,45 @@ public class SubagentLineageTests
     private static SessionWorkSnapshot Snapshot(params SubagentWorkResult[] results) =>
         new("s1", results.OrderByDescending(r => r.CompletedAt).ToList(), []);
 
-    private static Func<string, Task<string?>> Loader(Dictionary<string, string> values) =>
-        key => Task.FromResult(values.TryGetValue(key, out var v) ? v : null);
-
     private static Task<string?> Build(SessionWorkSnapshot snapshot, string description,
-        Dictionary<string, string>? values = null, IReadOnlyList<SubagentInput>? inputs = null,
-        int budget = 24_000, string? request = null) =>
-        SubagentLineage.BuildAsync(snapshot, description, null, request, inputs ?? [], budget,
-            Loader(values ?? []), Now);
+        IReadOnlyList<SubagentInput>? inputs = null, int budget = 8_000, string? request = null) =>
+        Task.FromResult(SubagentLineage.Build(snapshot, description, null, request, inputs ?? [], budget, Now));
+
+    private static string ReadFirst(string text)
+    {
+        var start = text.IndexOf(SubagentLineage.ReadFirstHeading, StringComparison.Ordinal);
+        var end = text.IndexOf("### Earlier subagent results", start, StringComparison.Ordinal);
+        return text[start..end];
+    }
 
     // ── The block ────────────────────────────────────────────────────────────
 
     [TestMethod]
-    public async Task SecondSubagent_GetsTheResearchSummaryInlinedAndItsKeyListed()
+    public async Task SecondSubagent_IsPointedAtTheResearchKey_NotGivenItsBody()
     {
         const string key = "subagent/r1/mcp-v2-authoritative-research";
         var snapshot = Snapshot(Result("r1", "Research the MCP v2 spec from primary sources",
             "Research complete; findings saved.", 10, keys: key));
 
-        var text = (await Build(snapshot, "Outline a talk on the MCP v2 spec",
-            new() { [key] = "The 2026-07-28 spec adds server/discover and a stateless core." }))!;
+        var text = (await Build(snapshot, "Outline a talk on the MCP v2 spec"))!;
 
         StringAssert.StartsWith(text, SubagentLineage.Heading);
         StringAssert.Contains(text, SubagentLineage.GroundingInstruction);
-        StringAssert.Contains(text, "task r1");
-        StringAssert.Contains(text, $"`{key}` (inlined below)");
-        StringAssert.Contains(text, "server/discover");
+        StringAssert.Contains(ReadFirst(text), $"task r1 (Research the MCP v2 spec from primary sources): get_from_working_memory('{key}')");
+        StringAssert.Contains(text, $"Saved keys: `{key}`");
         StringAssert.Contains(text, "Summary: Research complete; findings saved.");
+        Assert.IsFalse(text.Contains("### Full text"), "#695: a result with saved keys is fetched, not inlined");
+    }
+
+    [TestMethod]
+    public async Task RelevantResultWithNoKeys_HasItsTextInlined()
+    {
+        var snapshot = Snapshot(Result("r1", "Research the MCP v2 spec", "The 2026-07-28 spec adds server/discover.", 10));
+
+        var text = (await Build(snapshot, "Outline the MCP v2 talk"))!;
+
+        StringAssert.Contains(ReadFirst(text), "task r1 (Research the MCP v2 spec): its result text is inlined below");
+        StringAssert.Contains(text[text.IndexOf("### Full text", StringComparison.Ordinal)..], "server/discover");
     }
 
     [TestMethod]
@@ -59,10 +71,10 @@ public class SubagentLineageTests
 
         var text = (await Build(snapshot, "Create a Slidev deck on the MCP v2 spec and server discovery"))!;
 
-        var full = text[text.IndexOf("### Full text", StringComparison.Ordinal)..];
-        Assert.IsTrue(full.IndexOf("MCP2-OUTPUT", StringComparison.Ordinal) < full.IndexOf("MCP-OUTPUT", StringComparison.Ordinal),
+        var first = ReadFirst(text);
+        Assert.IsTrue(first.IndexOf("task mcp2", StringComparison.Ordinal) < first.IndexOf("task mcp ", StringComparison.Ordinal),
             "more overlap ranks first");
-        Assert.IsFalse(full.Contains("EMAIL-OUTPUT"), "an unrelated result is not inlined");
+        Assert.IsFalse(first.Contains("task mail"), "an unrelated result is not recommended");
         StringAssert.Contains(text, "task mail", "but it is still listed");
     }
 
@@ -72,7 +84,7 @@ public class SubagentLineageTests
         var older = Result("old", "Research MCP", "x", 30);
         var newer = Result("new", "Research MCP", "y", 5);
 
-        var ranked = SubagentLineage.RankForInlining([older, newer], SubagentLineage.Tokenize("mcp deck"));
+        var ranked = SubagentLineage.RankByRelevance([older, newer], SubagentLineage.Tokenize("mcp deck"));
 
         CollectionAssert.AreEqual(new[] { "new", "old" }, ranked.Select(r => r.TaskId).ToArray());
     }
@@ -80,7 +92,7 @@ public class SubagentLineageTests
     [TestMethod]
     public void Relevance_NoOverlap_KeepsOnlyTheMostRecentSuccessfulResult()
     {
-        var ranked = SubagentLineage.RankForInlining(
+        var ranked = SubagentLineage.RankByRelevance(
         [
             Result("a", "Find the venue address", "x", 30),
             Result("b", "Look up flight times", "y", 5),
@@ -91,30 +103,27 @@ public class SubagentLineageTests
     }
 
     [TestMethod]
-    public async Task Budget_TruncatesTheInlinedTextAndSaysWhereTheRestIs()
+    public async Task Budget_TruncatesAnInputAndSaysWhereTheRestIs()
     {
         const string key = "subagent/r1/research";
-        var snapshot = Snapshot(Result("r1", "Research the MCP v2 spec", "short", 10, keys: key));
+        var inputs = new[] { new SubagentInput(key, SubagentInputKind.WorkingMemory, new string('R', 10_000)) };
 
-        var text = (await Build(snapshot, "Outline the MCP v2 spec talk",
-            new() { [key] = new string('R', 10_000) }, budget: 2_000))!;
+        var text = (await Build(SessionWorkSnapshot.Empty("s1"), "Outline the MCP v2 spec talk", inputs, budget: 2_000))!;
 
         var inlined = text.Count(c => c == 'R');
         Assert.IsTrue(inlined is > 0 and < 2_000, $"inlined {inlined} chars");
         StringAssert.Contains(text, $"truncated to fit — get_from_working_memory('{key}')");
-        StringAssert.Contains(text, "(partly inlined below)");
+        StringAssert.Contains(text, "(partly inlined below — fetch the rest with");
     }
 
     [TestMethod]
     public async Task ZeroBudget_ListsPointersButInlinesNothing()
     {
-        const string key = "subagent/r1/research";
-        var snapshot = Snapshot(Result("r1", "Research the MCP v2 spec", "OUTPUT", 10, keys: key));
+        var snapshot = Snapshot(Result("r1", "Research the MCP v2 spec", "OUTPUT-TEXT", 10));
 
-        var text = (await Build(snapshot, "Outline the MCP v2 talk", new() { [key] = "CONTENT" }, budget: 0))!;
+        var text = (await Build(snapshot, "Outline the MCP v2 talk", budget: 0))!;
 
-        StringAssert.Contains(text, key);
-        Assert.IsFalse(text.Contains("CONTENT"));
+        StringAssert.Contains(text, "task r1");
         Assert.IsFalse(text.Contains("### Full text"));
     }
 
@@ -127,6 +136,7 @@ public class SubagentLineageTests
 
         StringAssert.Contains(text, "task f1 (FAILED");
         Assert.IsFalse(text.Contains("### Full text"));
+        Assert.IsFalse(text.Contains(SubagentLineage.ReadFirstHeading), "a failed result is never recommended");
     }
 
     [TestMethod]
@@ -136,15 +146,14 @@ public class SubagentLineageTests
         var snapshot = Snapshot(Result("r1", "Research the MCP v2 spec", new string('O', 3_000), 10, keys: key));
         var inputs = new[] { new SubagentInput("drafts/outline.md", SubagentInputKind.File, "OUTLINE " + new string('I', 1_500)) };
 
-        var text = (await Build(snapshot, "Build the MCP v2 deck", new() { [key] = new string('K', 3_000) },
-            inputs, budget: 2_500))!;
+        var text = (await Build(snapshot, "Build the MCP v2 deck", inputs, budget: 2_500))!;
 
         StringAssert.Contains(text, "### Inputs you must use");
         StringAssert.Contains(text, "file `drafts/outline.md` (inlined in full below)");
         var full = text[text.IndexOf("### Full text", StringComparison.Ordinal)..];
         Assert.IsTrue(full.IndexOf("#### Input: drafts/outline.md", StringComparison.Ordinal) == full.IndexOf("####", StringComparison.Ordinal),
             "the input comes first");
-        Assert.IsFalse(text.Contains(new string('K', 100)), "the budget ran out before the result's key");
+        Assert.IsFalse(full.Contains(new string('O', 100)), "a result with saved keys is never inlined (its summary is listed above)");
     }
 
     [TestMethod]
