@@ -186,6 +186,15 @@
                     </div>
                 </div>
             }
+            else if (message.Category == MessageCategory.McpQuestion)
+            {
+                <!-- A question an MCP server handed back, answered in a form built from its schema -->
+                <div class="message-wrapper mb-3 agent-message">
+                    <div class="message-bubble mcp-question-bubble p-3 rounded">
+                        <McpQuestionCard Message="message" DisplayZone="_displayZone" OnSubmit="SubmitMcpAnswer" />
+                    </div>
+                </div>
+            }
             else
             {
                 <!-- Standard expanded bubble: user input, primary final, scheduled user, error -->
@@ -749,6 +758,31 @@
         catch (Exception ex)
         {
             ChatState.AddError($"Could not send feedback: {ex.Message}");
+        }
+    }
+
+    // The user answered (or declined) a handed-back MCP question in its form. The answer goes to
+    // the agent, which hands it straight to the bridge; the agent replies once the call resumes.
+    private async Task SubmitMcpAnswer(McpQuestionSubmission submission)
+    {
+        if (!ChatState.TryBeginQuestionSubmit(submission.QuestionId))
+            return;
+
+        ChatState.SetProcessing(true);
+        try
+        {
+            await ProxyService.SendMcpAnswerAsync(new McpQuestionAnswer
+            {
+                SessionId = SessionId,
+                UserId = UserId,
+                QuestionId = submission.QuestionId,
+                Answers = submission.AnswersJson,
+                Decline = submission.Decline,
+            });
+        }
+        catch (Exception ex)
+        {
+            ChatState.FailQuestionSubmit(submission.QuestionId, $"the answer couldn't be sent ({ex.Message})");
         }
     }
 

@@ -435,6 +435,7 @@ builder.Services.AddRockBotHost(agent =>
     agent.HandleMessage<ScheduledTaskMessage, ScheduledTaskHandler>();
     agent.HandleMessage<UserMessage, UserMessageHandler>();
     agent.HandleMessage<UserFeedback, UserFeedbackHandler>();
+    agent.HandleMessage<McpQuestionAnswer, McpQuestionAnswerHandler>();
     agent.HandleMessage<CancelSessionRequest, CancelSessionHandler>();
     agent.HandleMessage<ClearContextRequest, ClearContextHandler>();
     agent.HandleMessage<ConversationHistoryRequest, ConversationHistoryRequestHandler>();
@@ -448,6 +449,7 @@ builder.Services.AddRockBotHost(agent =>
     agent.HandleMessage<AttachmentUploadRequest, AttachmentUploadHandler>();
     agent.SubscribeTo($"{UserProxyTopics.UserMessage}.{agentName}");
     agent.SubscribeTo($"{UserProxyTopics.UserFeedback}.{agentName}");
+    agent.SubscribeTo($"{UserProxyTopics.McpAnswer}.{agentName}");
     agent.SubscribeTo($"{UserProxyTopics.CancelSession}.{agentName}");
     agent.SubscribeTo($"{UserProxyTopics.ClearContext}.{agentName}");
     agent.SubscribeTo($"{UserProxyTopics.ConversationHistoryRequest}.{agentName}");

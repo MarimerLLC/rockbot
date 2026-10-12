@@ -29,9 +29,11 @@ internal sealed record HandbackReplyTarget(
 /// <summary>
 /// What settled a pending question: the agent's answer and where the resumed call reports, or —
 /// with no <see cref="Target"/> — the question was abandoned (expired, its server removed, the
-/// bridge stopping) and nobody is waiting for the call.
+/// bridge stopping) and nobody is waiting for the call. <see cref="FromUser"/> marks an answer the
+/// user gave in the chat's form rather than the agent through <c>mcp_answer</c>; it labels the
+/// outcome and changes no check.
 /// </summary>
-internal sealed record McpAnswerSubmission(McpHandbackOutcome Outcome, HandbackReplyTarget? Target);
+internal sealed record McpAnswerSubmission(McpHandbackOutcome Outcome, HandbackReplyTarget? Target, bool FromUser = false);
 
 /// <summary>A question handed back to the agent and not yet settled.</summary>
 internal sealed class PendingQuestion

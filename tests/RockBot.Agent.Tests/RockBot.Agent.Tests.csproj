@@ -34,6 +34,8 @@
     <!-- Inbound-attachment bus proof: drives the real client call over a real broker. -->
     <ProjectReference Include="..\..\src\RockBot.Messaging.RabbitMQ\RockBot.Messaging.RabbitMQ.csproj" />
     <ProjectReference Include="..\..\src\RockBot.UserProxy\RockBot.UserProxy.csproj" />
+    <!-- Aliased: its McpServer.* namespace would otherwise shadow the SDK's McpServer type. -->
+    <ProjectReference Include="..\..\src\McpServer.ElicitationFixture\McpServer.ElicitationFixture.csproj" Aliases="fixture" />
   </ItemGroup>
 
 </Project>

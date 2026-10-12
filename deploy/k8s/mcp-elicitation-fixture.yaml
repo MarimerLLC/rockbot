@@ -1,0 +1,61 @@
+# Fixture MCP server for exercising elicitation hand-back, and the chat's question form,
+# against a live agent.
+#
+# NOT part of a normal deployment. It is deliberately outside the Helm chart: it exists to be
+# applied when someone is testing hand-back, and deleted afterwards.
+#
+#   kubectl apply -f deploy/k8s/mcp-elicitation-fixture.yaml
+#   # register it in the agent's mcp.json (see src/McpServer.ElicitationFixture/README.md)
+#   kubectl delete -f deploy/k8s/mcp-elicitation-fixture.yaml
+#
+# It only asks questions and echoes the answers — no credentials, no external calls, no state.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mcp-elicitation-fixture
+  namespace: rockbot
+  labels:
+    app: mcp-elicitation-fixture
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mcp-elicitation-fixture
+  template:
+    metadata:
+      labels:
+        app: mcp-elicitation-fixture
+    spec:
+      containers:
+        - name: fixture
+          image: rockylhotka/rockbot-elicitation-fixture-mcp:0.16.13
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8080
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 10m
+              memory: 64Mi
+            limits:
+              memory: 192Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mcp-elicitation-fixture
+  namespace: rockbot
+  labels:
+    app: mcp-elicitation-fixture
+spec:
+  selector:
+    app: mcp-elicitation-fixture
+  ports:
+    - port: 80
+      targetPort: 8080
+      name: http

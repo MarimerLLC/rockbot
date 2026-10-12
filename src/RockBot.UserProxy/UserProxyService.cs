@@ -388,6 +388,22 @@ public sealed class UserProxyService(
     }
 
     /// <summary>
+    /// Publishes the user's answer to a handed-back MCP question shown as a form.
+    /// Fire-and-forget: the agent replies unsolicited once the resumed call finishes, and a
+    /// refusal comes back as an <see cref="McpQuestionStatus"/>.
+    /// </summary>
+    public async Task SendMcpAnswerAsync(
+        McpQuestionAnswer answer,
+        CancellationToken cancellationToken = default)
+    {
+        var envelope = answer.ToEnvelope<McpQuestionAnswer>(source: options.ProxyId);
+        await publisher.PublishAsync($"{UserProxyTopics.McpAnswer}.{options.AgentName}", envelope, cancellationToken);
+
+        logger.LogInformation("Published form {Action} for MCP question {QuestionId} in session {SessionId}",
+            answer.Decline ? "decline" : "answer", answer.QuestionId, answer.SessionId);
+    }
+
+    /// <summary>
     /// Sends a user message without waiting for a reply.
     /// </summary>
     public async Task SendFireAndForgetAsync(
@@ -448,6 +464,25 @@ public sealed class UserProxyService(
             catch (Exception ex)
             {
                 logger.LogWarning(ex, "Failed to handle AgentNameChanged notification");
+            }
+            return Task.FromResult(MessageResult.Ack);
+        }
+
+        // A handed-back MCP question shown as a form changed state.
+        if (envelope.MessageType == typeof(McpQuestionStatus).FullName)
+        {
+            try
+            {
+                var status = envelope.GetPayload<McpQuestionStatus>();
+                if (status is not null)
+                {
+                    logger.LogDebug("MCP question {QuestionId} is {State}", status.QuestionId, status.State);
+                    _ = frontend.OnMcpQuestionStatusAsync(status, ct);
+                }
+            }
+            catch (Exception ex)
+            {
+                logger.LogWarning(ex, "Failed to handle McpQuestionStatus notification");
             }
             return Task.FromResult(MessageResult.Ack);
         }

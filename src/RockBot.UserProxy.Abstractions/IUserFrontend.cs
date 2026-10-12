@@ -29,4 +29,12 @@ public interface IUserFrontend
     /// </summary>
     Task OnAgentNameChangedAsync(string agentName, CancellationToken cancellationToken = default) =>
         Task.CompletedTask;
+
+    /// <summary>
+    /// Called when a handed-back MCP question shown as an <see cref="McpQuestionForm"/> changes
+    /// state (answered, declined, expired, rejected…). Frontends that render the form update it;
+    /// others ignore it, since the agent's own reply tells the user what happened.
+    /// </summary>
+    Task OnMcpQuestionStatusAsync(McpQuestionStatus status, CancellationToken cancellationToken = default) =>
+        Task.CompletedTask;
 }

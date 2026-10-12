@@ -187,6 +187,13 @@ public sealed record McpAnswerQuestionRequest
 
     /// <summary>Refuse the question: the server continues without the value.</summary>
     public bool Decline { get; init; }
+
+    /// <summary>
+    /// The user gave this answer in the chat's form, not the agent through <c>mcp_answer</c>. It
+    /// labels the outcome only; every check runs as for the agent's answer. The model has no way
+    /// to set it.
+    /// </summary>
+    public bool FromUser { get; init; }
 }
 
 /// <summary>
@@ -208,6 +215,12 @@ public sealed record McpAnswerQuestionResponse
     public ToolInvokeResponse? Result { get; init; }
 
     public string? Error { get; init; }
+
+    /// <summary>
+    /// With <see cref="Error"/>: the question can't be answered any more (unknown, expired,
+    /// answered, interrupted), as opposed to an answer that didn't fit and may be corrected.
+    /// </summary>
+    public bool QuestionClosed { get; init; }
 }
 
 /// <summary>

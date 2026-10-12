@@ -119,11 +119,30 @@ public class McpHandbackEndToEndTests
 
     private static List<PendingQuestionEntry> ReadLedger(BridgeHarness harness)
     {
-        using var document = JsonDocument.Parse(File.ReadAllText(harness.LedgerPath));
+        using var document = JsonDocument.Parse(ReadSharedFile(harness.LedgerPath));
         Assert.AreEqual(PendingQuestionLedger.CurrentVersion, document.RootElement.GetProperty("version").GetInt32());
         return JsonSerializer.Deserialize<List<PendingQuestionEntry>>(
             document.RootElement.GetProperty("entries").GetRawText(),
             new JsonSerializerOptions { PropertyNameCaseInsensitive = true })!;
+    }
+
+    /// <summary>
+    /// Reads a file the bridge may be replacing at that moment. On Windows, the atomic replace
+    /// briefly holds the file, so a poll that lands on it gets a sharing violation; retry it.
+    /// </summary>
+    private static string ReadSharedFile(string path)
+    {
+        for (var attempt = 1; ; attempt++)
+        {
+            try
+            {
+                return File.ReadAllText(path);
+            }
+            catch (IOException) when (attempt < 20 && File.Exists(path))
+            {
+                Thread.Sleep(10);
+            }
+        }
     }
 
     [TestMethod]
@@ -435,7 +454,7 @@ public class McpHandbackEndToEndTests
         }
     }
 
-    private sealed class RecordingConversationMemory : IConversationMemory
+    internal sealed class RecordingConversationMemory : IConversationMemory
     {
         private readonly ConcurrentDictionary<string, List<ConversationTurn>> _turns = new();
 
@@ -465,7 +484,7 @@ public class McpHandbackEndToEndTests
             Task.FromResult<IReadOnlyList<string>>([.. _turns.Keys]);
     }
 
-    private sealed class RecordingWorkingMemory : IWorkingMemory
+    internal sealed class RecordingWorkingMemory : IWorkingMemory
     {
         public ConcurrentDictionary<string, string> Store { get; } = new();
 

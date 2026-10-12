@@ -1,0 +1,250 @@
+@using RockBot.UserProxy.Blazor.Services
+@implements IDisposable
+
+@* A question an MCP server handed back, as a form built from the server's own schema. Every
+   string here except the question id is the server's: it is rendered as text (@value), never as
+   markup, and the agent flattened it before sending. The answer goes straight to the bridge. *@
+
+@if (Message.Question is not { } form || _model is null)
+{
+    <div class="message-content">@Message.Content</div>
+}
+else
+{
+    var now = DateTimeOffset.UtcNow;
+    var closed = McpQuestionState.IsClosed(Message.QuestionState) || now >= form.ExpiresAt;
+    var disabled = closed || Message.IsSubmitting;
+    var idPrefix = $"mcpq-{form.QuestionId}";
+
+    <div class="mcp-question-header">
+        <span class="category-badge mcp-question-badge">Question</span>
+        <span class="mcp-question-server">@form.ServerName</span>
+        <span class="mcp-question-tool">· @form.ToolName</span>
+    </div>
+    <p class="mcp-question-message">@form.Message</p>
+
+    <form class="mcp-question-form" @onsubmit="SubmitAsync" @onsubmit:preventDefault="true">
+        <fieldset disabled="@disabled">
+            @for (var i = 0; i < form.Fields.Count; i++)
+            {
+                var field = form.Fields[i];
+                var id = $"{idPrefix}-{i}";
+                var error = _errors.GetValueOrDefault(field.Name);
+
+                <div class="mcp-question-field mb-2">
+                    <label class="form-label mb-1" for="@id">
+                        @(field.Title ?? field.Name)
+                        @if (field.Required)
+                        {
+                            <span class="mcp-question-required" title="Required">*</span>
+                        }
+                        @if (field.IsDecision)
+                        {
+                            <span class="mcp-question-decision">your decision</span>
+                        }
+                    </label>
+                    @if (!string.IsNullOrEmpty(field.Description))
+                    {
+                        <div class="form-text mt-0 mb-1">@field.Description</div>
+                    }
+
+                    @switch (field.Kind)
+                    {
+                        case McpQuestionFieldKind.Boolean:
+                            <div class="d-flex gap-3" id="@id" role="radiogroup">
+                                <div class="form-check">
+                                    <input class="form-check-input" type="radio" name="@id" id="@($"{id}-yes")"
+                                           checked="@(_model.GetFlag(field.Name) == true)"
+                                           @onchange="() => _model.SetFlag(field.Name, true)" />
+                                    <label class="form-check-label" for="@($"{id}-yes")">Yes</label>
+                                </div>
+                                <div class="form-check">
+                                    <input class="form-check-input" type="radio" name="@id" id="@($"{id}-no")"
+                                           checked="@(_model.GetFlag(field.Name) == false)"
+                                           @onchange="() => _model.SetFlag(field.Name, false)" />
+                                    <label class="form-check-label" for="@($"{id}-no")">No</label>
+                                </div>
+                            </div>
+                            break;
+
+                        case McpQuestionFieldKind.SingleSelect when field.Options is { Count: <= 4 } options:
+                            <div class="d-flex flex-wrap gap-3" id="@id" role="radiogroup">
+                                @for (var o = 0; o < options.Count; o++)
+                                {
+                                    var option = options[o];
+                                    var optionId = $"{id}-{o}";
+                                    <div class="form-check">
+                                        <input class="form-check-input" type="radio" name="@id" id="@optionId"
+                                               checked="@(_model.GetText(field.Name) == option.Value)"
+                                               @onchange="() => _model.SetText(field.Name, option.Value)" />
+                                        <label class="form-check-label" for="@optionId">@option.Label</label>
+                                    </div>
+                                }
+                            </div>
+                            break;
+
+                        case McpQuestionFieldKind.SingleSelect:
+                            <select class="form-select form-select-sm" id="@id"
+                                    value="@(_model.GetText(field.Name) ?? "")"
+                                    @onchange="e => _model.SetText(field.Name, NullIfEmpty(e.Value?.ToString()))">
+                                <option value="">Choose…</option>
+                                @foreach (var option in field.Options ?? [])
+                                {
+                                    <option value="@option.Value">@option.Label</option>
+                                }
+                            </select>
+                            break;
+
+                        case McpQuestionFieldKind.MultiSelect:
+                            <div class="d-flex flex-wrap gap-3" id="@id">
+                                @for (var o = 0; o < (field.Options?.Count ?? 0); o++)
+                                {
+                                    var option = field.Options![o];
+                                    var optionId = $"{id}-{o}";
+                                    <div class="form-check">
+                                        <input class="form-check-input" type="checkbox" id="@optionId"
+                                               checked="@_model.IsChosen(field.Name, option.Value)"
+                                               @onchange="e => _model.SetChosen(field.Name, option.Value, e.Value is true)" />
+                                        <label class="form-check-label" for="@optionId">@option.Label</label>
+                                    </div>
+                                }
+                            </div>
+                            break;
+
+                        case McpQuestionFieldKind.Number:
+                        case McpQuestionFieldKind.Integer:
+                            <input class="form-control form-control-sm" type="number" id="@id"
+                                   step="@(field.Kind == McpQuestionFieldKind.Integer ? "1" : "any")"
+                                   min="@field.Minimum" max="@field.Maximum"
+                                   value="@_model.GetText(field.Name)"
+                                   @oninput="e => _model.SetText(field.Name, e.Value?.ToString())" />
+                            break;
+
+                        default:
+                            <input class="form-control form-control-sm" type="@InputType(field.Format)" id="@id"
+                                   maxlength="@field.MaxLength"
+                                   placeholder="@(field.Format == "date-time" ? "2026-10-12T14:30:00Z" : null)"
+                                   value="@_model.GetText(field.Name)"
+                                   @oninput="e => _model.SetText(field.Name, e.Value?.ToString())" />
+                            break;
+                    }
+
+                    @if (error is not null)
+                    {
+                        <div class="mcp-question-error small">@error</div>
+                    }
+                </div>
+            }
+
+            @if (!closed)
+            {
+                <div class="d-flex align-items-center gap-2 mt-2">
+                    <button type="submit" class="btn btn-sm btn-primary">Submit</button>
+                    <button type="button" class="btn btn-sm btn-outline-secondary" @onclick="DeclineAsync">Decline</button>
+                    @if (Message.IsSubmitting)
+                    {
+                        <span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>
+                        <span class="small text-muted">Sending…</span>
+                    }
+                    else
+                    {
+                        <span class="small text-muted ms-auto">
+                            Open until @TimeZoneInfo.ConvertTime(form.ExpiresAt, DisplayZone).ToString("HH:mm")
+                        </span>
+                    }
+                </div>
+            }
+        </fieldset>
+    </form>
+
+    @if (Message.QuestionState == McpQuestionState.Rejected && !string.IsNullOrEmpty(Message.QuestionReason))
+    {
+        <div class="mcp-question-error small mt-2">Not accepted: @Message.QuestionReason</div>
+    }
+
+    @if (closed)
+    {
+        <div class="mcp-question-closed small mt-2">@ClosedText(form, now)</div>
+    }
+
+    <div class="message-time">
+        @TimeZoneInfo.ConvertTimeFromUtc(Message.Timestamp, DisplayZone).ToString("HH:mm:ss")
+    </div>
+}
+
+@code {
+    [Parameter, EditorRequired] public ChatMessage Message { get; set; } = default!;
+    [Parameter] public TimeZoneInfo DisplayZone { get; set; } = TimeZoneInfo.Utc;
+    [Parameter] public EventCallback<McpQuestionSubmission> OnSubmit { get; set; }
+
+    private McpQuestionFormModel? _model;
+    private IReadOnlyDictionary<string, string> _errors = new Dictionary<string, string>();
+    private Timer? _expiryTimer;
+
+    protected override void OnParametersSet()
+    {
+        if (Message.Question is not { } form || _model?.Form.QuestionId == form.QuestionId)
+            return;
+
+        _model = new McpQuestionFormModel(form);
+        _errors = new Dictionary<string, string>();
+
+        // Redraw as closed when the question expires, even if the bridge's notice is lost.
+        _expiryTimer?.Dispose();
+        var due = form.ExpiresAt - DateTimeOffset.UtcNow;
+        if (due > TimeSpan.Zero && due < TimeSpan.FromDays(1))
+            _expiryTimer = new Timer(_ => InvokeAsync(StateHasChanged), null, due + TimeSpan.FromSeconds(1), Timeout.InfiniteTimeSpan);
+    }
+
+    private async Task SubmitAsync()
+    {
+        if (_model is null || Message.IsSubmitting)
+            return;
+
+        _errors = _model.Validate();
+        if (_errors.Count > 0)
+            return;
+
+        await OnSubmit.InvokeAsync(new McpQuestionSubmission(_model.Form.QuestionId, _model.BuildAnswersJson(), Decline: false));
+    }
+
+    private async Task DeclineAsync()
+    {
+        if (_model is null || Message.IsSubmitting)
+            return;
+
+        _errors = new Dictionary<string, string>();
+        await OnSubmit.InvokeAsync(new McpQuestionSubmission(_model.Form.QuestionId, null, Decline: true));
+    }
+
+    private string ClosedText(McpQuestionForm form, DateTimeOffset now)
+    {
+        var byAgent = Message.QuestionAnsweredBy == "agent";
+        return Message.QuestionState switch
+        {
+            McpQuestionState.Answered => byAgent ? "Answered by the agent." : "Answered.",
+            McpQuestionState.Declined => byAgent ? "Declined by the agent." : "Declined.",
+            McpQuestionState.Cancelled => WithReason("This question was withdrawn"),
+            McpQuestionState.Interrupted => "The agent restarted before this question was answered.",
+            McpQuestionState.Unavailable => WithReason("This question is no longer open"),
+            McpQuestionState.Expired => "This question expired.",
+            _ when now >= form.ExpiresAt => "This question expired.",
+            _ => "This question is closed.",
+        };
+
+        string WithReason(string text) =>
+            string.IsNullOrEmpty(Message.QuestionReason) ? text + "." : $"{text}: {Message.QuestionReason}";
+    }
+
+    private static string InputType(string? format) => format switch
+    {
+        "email" => "email",
+        "uri" => "url",
+        "date" => "date",
+        _ => "text",
+    };
+
+    private static string? NullIfEmpty(string? value) => string.IsNullOrEmpty(value) ? null : value;
+
+    public void Dispose() => _expiryTimer?.Dispose();
+}
