@@ -7,9 +7,15 @@ namespace RockBot.Subagent;
 /// <summary>
 /// Builds the "Prior work in this conversation" block a new subagent starts with (#665): the user
 /// request behind the task, the inputs the primary named, every earlier subagent result in the
-/// conversation and the files it wrote — and the full text of the most relevant of them, up to a
-/// budget. It is framework-side, so a later subagent sees earlier research even when the primary
-/// forgets to pass it along.
+/// conversation and the files it wrote. It is framework-side, so a later subagent sees earlier
+/// research even when the primary forgets to pass it along.
+/// <para>
+/// The block is re-sent with every iteration of the subagent's loop, so it carries pointers, not
+/// bodies (#695): each earlier result appears as its summary and saved keys, and the ones most
+/// relevant to the new task are named first with the exact call that fetches them. Full text is
+/// inlined, up to a budget, only for the inputs the primary passed on purpose — and for a relevant
+/// result that saved no keys, whose text could not be fetched any other way.
+/// </para>
 /// </summary>
 internal static partial class SubagentLineage
 {
@@ -18,6 +24,11 @@ internal static partial class SubagentLineage
     internal const string GroundingInstruction =
         "Ground your work in these prior results; fetch the full items with get_from_working_memory / " +
         "file_read when needed; if a prior result contradicts an older draft, the research wins.";
+
+    internal const string ReadFirstHeading = "### Read these first";
+
+    /// <summary>How many of the most relevant earlier results are named under <see cref="ReadFirstHeading"/>.</summary>
+    internal const int MaxReadFirstResults = 2;
 
     /// <summary>Below this many characters of budget left, nothing more is inlined.</summary>
     private const int MinUsefulInlineChars = 200;
@@ -36,16 +47,14 @@ internal static partial class SubagentLineage
     /// <param name="originatingUserRequest">The user message that led to the spawn (#666).</param>
     /// <param name="inputs">Resolved <c>spawn_subagent</c> inputs; inlined first.</param>
     /// <param name="budgetChars">Characters of full text to inline in total.</param>
-    /// <param name="loadKey">Reads a working-memory key; null when missing.</param>
     /// <param name="now">The current time, for "completed N min ago".</param>
-    public static async Task<string?> BuildAsync(
+    public static string? Build(
         SessionWorkSnapshot snapshot,
         string description,
         string? context,
         string? originatingUserRequest,
         IReadOnlyList<SubagentInput> inputs,
         int budgetChars,
-        Func<string, Task<string?>> loadKey,
         DateTimeOffset now)
     {
         var request = string.IsNullOrWhiteSpace(originatingUserRequest) ? null : originatingUserRequest.Trim();
@@ -93,21 +102,15 @@ internal static partial class SubagentLineage
             TryInline(input.Reference, $"#### Input: {input.Reference}", input.Content, hint);
         }
 
+        // The most relevant earlier results are named first. One that saved keys is fetched by the
+        // subagent when it needs it; one that saved none has only its text, so that is inlined.
         var query = Tokenize(description + " " + context);
-        var ranked = RankForInlining(snapshot.Results, query);
-        foreach (var result in ranked)
+        var readFirst = RankByRelevance(snapshot.Results, query).Take(MaxReadFirstResults).ToList();
+        foreach (var result in readFirst.Where(r => r.Keys.Count == 0))
         {
             if (remaining < MinUsefulInlineChars) break;
             TryInline(ResultRef(result), $"#### Result of task {result.TaskId}: {SessionWorkContext.OneLine(result.Description, 160)}",
                 result.Output, "the full result is in the primary agent's conversation");
-            foreach (var key in result.Keys)
-            {
-                if (remaining < MinUsefulInlineChars) break;
-                if (inlined.Contains(key)) continue;
-                var value = await loadKey(key);
-                if (value is null) continue;
-                TryInline(key, $"#### {key}", value, $"get_from_working_memory('{key}')");
-            }
         }
 
         // ── Render ──────────────────────────────────────────────────────────
@@ -132,6 +135,20 @@ internal static partial class SubagentLineage
             }
         }
 
+        if (readFirst.Count > 0)
+        {
+            sb.AppendLine();
+            sb.AppendLine(ReadFirstHeading);
+            sb.AppendLine("The earlier results most relevant to your task. Read them before you start:");
+            foreach (var r in readFirst)
+            {
+                var what = r.Keys.Count > 0
+                    ? string.Join(", ", r.Keys.Select(k => $"get_from_working_memory('{k}')"))
+                    : inlined.Contains(ResultRef(r)) ? "its result text is inlined below" : "its summary is listed below";
+                sb.AppendLine($"- task {r.TaskId} ({SessionWorkContext.OneLine(r.Description, 120)}): {what}");
+            }
+        }
+
         if (snapshot.Results.Count > 0)
         {
             sb.AppendLine();
@@ -144,8 +161,7 @@ internal static partial class SubagentLineage
                     sb.AppendLine($"  Summary: {SessionWorkContext.OneLine(r.Summary, SessionWorkRegistry.MaxSummaryChars)}");
                 if (r.Keys.Count > 0 || r.ChunkKeyCount > 0)
                 {
-                    var keys = string.Join(", ", r.Keys.Select(k =>
-                        $"`{k}`" + (inlined.Contains(k) ? (truncated.Contains(k) ? " (partly inlined below)" : " (inlined below)") : string.Empty)));
+                    var keys = string.Join(", ", r.Keys.Select(k => $"`{k}`"));
                     if (r.ChunkKeyCount > 0)
                         keys += (keys.Length > 0 ? ", plus " : string.Empty) + $"{r.ChunkKeyCount} web/tool chunk key(s) under subagent/{r.TaskId}/";
                     sb.AppendLine($"  Saved keys: {keys}");
@@ -166,7 +182,7 @@ internal static partial class SubagentLineage
         if (pieces.Count > 0)
         {
             sb.AppendLine();
-            sb.AppendLine("### Full text of the most relevant prior work");
+            sb.AppendLine("### Full text of the inputs (and of relevant results with no saved keys)");
             foreach (var piece in pieces)
             {
                 sb.AppendLine(piece.Header);
@@ -181,13 +197,13 @@ internal static partial class SubagentLineage
     }
 
     /// <summary>
-    /// The results worth inlining, most relevant first: keyword overlap between the new task and
-    /// each result's description and summary, most recent first on a tie. Results with no overlap
-    /// are left out — except that when none overlaps, the most recent successful result is kept,
-    /// since a pipeline's next step usually builds on the step just before it. Failed results are
-    /// listed but never inlined.
+    /// The results worth reading first, most relevant first: keyword overlap between the new task
+    /// and each result's description and summary, most recent first on a tie. Results with no
+    /// overlap are left out — except that when none overlaps, the most recent successful result is
+    /// kept, since a pipeline's next step usually builds on the step just before it. Failed results
+    /// are listed but never recommended.
     /// </summary>
-    internal static IReadOnlyList<SubagentWorkResult> RankForInlining(
+    internal static IReadOnlyList<SubagentWorkResult> RankByRelevance(
         IReadOnlyList<SubagentWorkResult> results, IReadOnlySet<string> query)
     {
         var successful = results.Where(r => r.IsSuccess).ToList();
