@@ -31,6 +31,7 @@ public enum ClientCapabilities : ulong
     DiscordEmbed      = 1UL << 32,
     SlackBlockKit     = 1UL << 33,
     TeamsAdaptiveCard = 1UL << 34,
+    InteractiveForms  = 1UL << 35,   // renders an McpQuestionForm and sends back an McpQuestionAnswer
 }
 
 /// <summary>
@@ -48,7 +49,8 @@ public static class ClientCapabilityPresets
         ClientCapabilities.Text | ClientCapabilities.MarkdownBasic | ClientCapabilities.MarkdownHeadings |
         ClientCapabilities.MarkdownTables | ClientCapabilities.MarkdownCode | ClientCapabilities.LinkInline |
         ClientCapabilities.MarkdownStrikethrough | ClientCapabilities.MarkdownTaskList |
-        ClientCapabilities.HtmlInline | ClientCapabilities.SvgInline | ClientCapabilities.ImageAttachment;
+        ClientCapabilities.HtmlInline | ClientCapabilities.SvgInline | ClientCapabilities.ImageAttachment |
+        ClientCapabilities.InteractiveForms;
 
     // Documented in advance so capability-vocabulary decisions stay coherent —
     // not used by code until those proxies ship.

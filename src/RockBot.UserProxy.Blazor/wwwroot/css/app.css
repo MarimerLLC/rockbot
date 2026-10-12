@@ -643,6 +643,79 @@ body.dark-mode .chevron-indicator {
     flex: 1;
 }
 
+/* ── MCP question bubble (a server's question, answered in a form) ─── */
+
+/* Qualified past `.agent-message .message-bubble`, which would otherwise win. */
+.agent-message .message-bubble.mcp-question-bubble {
+    border: 2px solid #0d9488;
+    background-color: #f0fdfa;
+    box-shadow: 0 1px 3px rgba(13, 148, 136, 0.15);
+}
+
+.mcp-question-header {
+    display: flex;
+    align-items: baseline;
+    gap: 0.4rem;
+    margin-bottom: 0.4rem;
+    min-width: 0;
+}
+
+/* Darker than the border: white at the badge's small size needs 4.5:1 (this is ~5.5:1). */
+.mcp-question-badge {
+    background-color: #0f766e;
+    color: white;
+}
+
+.mcp-question-server {
+    font-weight: 600;
+    font-size: 0.9rem;
+    overflow-wrap: anywhere;
+}
+
+.mcp-question-tool {
+    font-size: 0.8rem;
+    color: #6b7280;
+    overflow-wrap: anywhere;
+}
+
+.mcp-question-message {
+    margin-bottom: 0.6rem;
+    overflow-wrap: anywhere;
+}
+
+.mcp-question-form fieldset {
+    border: 0;
+    margin: 0;
+    padding: 0;
+    min-width: 0;
+}
+
+.mcp-question-required {
+    color: #dc3545;
+    margin-left: 0.15rem;
+}
+
+.mcp-question-decision {
+    margin-left: 0.4rem;
+    font-size: 0.75rem;
+    padding: 0 0.35rem;
+    border-radius: 0.25rem;
+    background-color: #fef3c7;
+    color: #92400e;
+}
+
+.mcp-question-error {
+    color: #b91c1c;
+    margin-top: 0.15rem;
+}
+
+.mcp-question-closed {
+    color: #4b5563;
+    font-style: italic;
+    padding-top: 0.4rem;
+    border-top: 1px solid rgba(0, 0, 0, 0.08);
+}
+
 /* ── Save label input ───────────────────────────────────────────────── */
 
 .save-label-input {
@@ -760,6 +833,43 @@ body.dark-mode .saved-view-content {
 
 body.dark-mode .save-label-input {
     border-top-color: rgba(255, 255, 255, 0.1);
+}
+
+/* ── Dark mode: MCP question ────────────────────────────────────────── */
+
+body.dark-mode .agent-message .message-bubble.mcp-question-bubble {
+    background-color: #102a28;
+    border-color: #2dd4bf;
+    color: #e5e7eb;
+}
+
+body.dark-mode .mcp-question-tool,
+body.dark-mode .mcp-question-closed {
+    color: #9ca3af;
+}
+
+body.dark-mode .mcp-question-closed {
+    border-top-color: rgba(255, 255, 255, 0.1);
+}
+
+body.dark-mode .mcp-question-decision {
+    background-color: #451a03;
+    color: #fcd34d;
+}
+
+body.dark-mode .mcp-question-error {
+    color: #fca5a5;
+}
+
+body.dark-mode .mcp-question-bubble .form-text,
+body.dark-mode .mcp-question-bubble .text-muted {
+    color: #9ca3af !important;
+}
+
+body.dark-mode .mcp-question-bubble .form-select {
+    background-color: #1a1a1a;
+    border-color: #444;
+    color: white;
 }
 
 /* ── Responsive: collapsible bubbles ──────────────────────────────────── */

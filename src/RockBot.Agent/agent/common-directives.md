@@ -288,6 +288,10 @@ result is the call's result.
 - **Answer from what you know** when the conversation already settles it.
 - **Otherwise ask the user**, end your turn, and call `mcp_answer` when they
   reply. The question stays open for the time it states.
+- **When the result says the user sees the question as a form**, don't ask it
+  again in prose: tell them briefly it's waiting, and end your turn. Their
+  answer goes straight to the server, and you get the call's result in a new
+  turn. If they answer in chat instead, use `mcp_answer` as usual.
 - **Never decide a yes/no, confirm or approve question yourself.** It is the
   user's decision; ask, and answer with their reply.
 - **Decline** (`decline: true`) when the user doesn't want to answer.

@@ -22,12 +22,20 @@ internal sealed class PendingQuestionStore : IDisposable
     /// <summary>Finds the last user message in a session before a call started, for the ledger.</summary>
     public delegate Task<PendingTrigger?> TriggerLookup(string sessionId, DateTimeOffset before, CancellationToken ct);
 
+    /// <summary>
+    /// Told when an open question settles: answered, declined, expired or cancelled, with the
+    /// <see cref="PendingQuestionStatus"/> it settled as. Not raised when the bridge stops: those
+    /// questions stay pending and the next start announces them.
+    /// </summary>
+    public delegate void QuestionSettled(PendingQuestion question, string status, string? reason, bool byUser);
+
     private readonly PendingQuestionLedger _ledger;
     private readonly int _maxPerSession;
     private readonly int _maxTotal;
     private readonly ILogger _logger;
     private readonly TimeProvider _time;
     private readonly TriggerLookup? _trigger;
+    private readonly QuestionSettled? _settled;
     private readonly ConcurrentDictionary<string, PendingQuestion> _open = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string, ITimer> _timers = new(StringComparer.Ordinal);
     private readonly object _gate = new();
@@ -38,7 +46,8 @@ internal sealed class PendingQuestionStore : IDisposable
         int maxTotal,
         ILogger logger,
         TimeProvider? time = null,
-        TriggerLookup? trigger = null)
+        TriggerLookup? trigger = null,
+        QuestionSettled? settled = null)
     {
         _ledger = ledger;
         _maxPerSession = maxPerSession;
@@ -46,6 +55,7 @@ internal sealed class PendingQuestionStore : IDisposable
         _logger = logger;
         _time = time ?? TimeProvider.System;
         _trigger = trigger;
+        _settled = settled;
     }
 
     public PendingQuestionLedger Ledger => _ledger;
@@ -144,11 +154,13 @@ internal sealed class PendingQuestionStore : IDisposable
         else
             McpHandbackDiagnostics.Answered(question.ServerName);
 
-        await SettleQuietlyAsync(question.QuestionId,
-            declined ? PendingQuestionStatus.Declined : PendingQuestionStatus.Answered, null, ct).ConfigureAwait(false);
+        var status = declined ? PendingQuestionStatus.Declined : PendingQuestionStatus.Answered;
+        await SettleQuietlyAsync(question.QuestionId, status, null, ct).ConfigureAwait(false);
+        RaiseSettled(question, status, null, submission.FromUser);
 
-        _logger.LogInformation("MCP question {QuestionId} for {Server}/{Tool} {Outcome} by the agent",
-            question.QuestionId, question.ServerName, question.ToolName, declined ? "declined" : "answered");
+        _logger.LogInformation("MCP question {QuestionId} for {Server}/{Tool} {Outcome} by the {Who}",
+            question.QuestionId, question.ServerName, question.ToolName, declined ? "declined" : "answered",
+            submission.FromUser ? "user" : "agent");
         return true;
     }
 
@@ -175,6 +187,7 @@ internal sealed class PendingQuestionStore : IDisposable
 
             await SettleQuietlyAsync(question.QuestionId, PendingQuestionStatus.Cancelled, reason, CancellationToken.None)
                 .ConfigureAwait(false);
+            RaiseSettled(question, PendingQuestionStatus.Cancelled, reason, byUser: false);
             _logger.LogInformation("MCP question {QuestionId} for {Server}/{Tool} cancelled: {Reason}",
                 question.QuestionId, question.ServerName, question.ToolName, reason);
         }
@@ -215,6 +228,7 @@ internal sealed class PendingQuestionStore : IDisposable
 
         McpHandbackDiagnostics.Expired(question.ServerName);
         await SettleQuietlyAsync(questionId, PendingQuestionStatus.Expired, reason, CancellationToken.None).ConfigureAwait(false);
+        RaiseSettled(question, PendingQuestionStatus.Expired, reason, byUser: false);
         _logger.LogInformation("MCP question {QuestionId} for {Server}/{Tool} expired; its call was cancelled",
             questionId, question.ServerName, question.ToolName);
     }
@@ -237,6 +251,18 @@ internal sealed class PendingQuestionStore : IDisposable
             // already settled, which its notice and the late-answer reply both cover.
             _logger.LogWarning(ex, "Could not record MCP question {QuestionId} as {Status} in the pending ledger",
                 questionId, status);
+        }
+    }
+
+    private void RaiseSettled(PendingQuestion question, string status, string? reason, bool byUser)
+    {
+        try
+        {
+            _settled?.Invoke(question, status, reason, byUser);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Settle notification for MCP question {QuestionId} failed", question.QuestionId);
         }
     }
 

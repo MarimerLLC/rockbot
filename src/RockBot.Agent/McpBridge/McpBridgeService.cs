@@ -51,6 +51,16 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
     /// <summary>Where a restart's interruption notice keeps the full ledger entry.</summary>
     private readonly IWorkingMemory? _workingMemory;
 
+    /// <summary>
+    /// What each user session's client can render: a session whose client advertises
+    /// <see cref="UserProxy.ClientCapabilities.InteractiveForms"/> gets a handed-back question as a
+    /// form in its chat. Optional; without it every question goes to the agent alone.
+    /// </summary>
+    private readonly SessionClientCapabilityStore? _clientCapabilities;
+
+    /// <summary>Questions shown to the user as a form, whose settling the chat is told about.</summary>
+    private readonly ConcurrentDictionary<string, FormShown> _formsShown = new(StringComparer.Ordinal);
+
     /// <summary>Open handed-back questions and their ledger (see <c>design/mcp-elicitation-handback.md</c>).</summary>
     private readonly PendingQuestionStore _handback;
 
@@ -131,10 +141,12 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
         IMcpElicitationResponder? elicitationResponder = null,
         IServiceProvider? services = null,
         IConversationMemory? conversationMemory = null,
-        IWorkingMemory? workingMemory = null)
+        IWorkingMemory? workingMemory = null,
+        SessionClientCapabilityStore? clientCapabilities = null)
         : this(publisher, subscriber, identity, options, logger, llmClient, tokenProviders, healthTracker,
             argGuards, elicitationResponder, services, attachmentStorage: null,
-            conversationMemory: conversationMemory, workingMemory: workingMemory)
+            conversationMemory: conversationMemory, workingMemory: workingMemory,
+            clientCapabilities: clientCapabilities)
     {
     }
 
@@ -158,7 +170,8 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
         IAttachmentStorage? attachmentStorage,
         IConversationMemory? conversationMemory = null,
         IWorkingMemory? workingMemory = null,
-        TimeProvider? timeProvider = null)
+        TimeProvider? timeProvider = null,
+        SessionClientCapabilityStore? clientCapabilities = null)
     {
         _attachmentStorage = attachmentStorage is not null
             ? new Lazy<IAttachmentStorage>(attachmentStorage)
@@ -179,6 +192,7 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
         _services = services;
         _conversationMemory = conversationMemory;
         _workingMemory = workingMemory;
+        _clientCapabilities = clientCapabilities;
         _binaryCapture = new Lazy<BinaryResponseCapture>(
             () => new BinaryResponseCapture(_attachmentStorage.Value, _logger));
 
@@ -191,7 +205,8 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
             Math.Max(1, _options.MaxPendingQuestions),
             _logger,
             timeProvider,
-            conversationMemory is null ? null : FindTriggerAsync);
+            conversationMemory is null ? null : FindTriggerAsync,
+            OnQuestionSettled);
         McpHandbackDiagnostics.ObserveParked(() => _handback.OpenCount);
     }
 
@@ -2066,17 +2081,154 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
     }
 
     /// <summary>Gives <paramref name="question"/> to the agent as the outcome it is waiting for.</summary>
-    private Task PublishHandbackAsync(PendingQuestion question, HandbackReplyTarget target, CancellationToken ct)
+    private async Task PublishHandbackAsync(PendingQuestion question, HandbackReplyTarget target, CancellationToken ct)
     {
         _logger.LogInformation("← MCP {Server}/{Tool} handed back question {QuestionId}",
             question.ServerName, question.ToolName, question.QuestionId);
 
-        return PublishToTargetAsync(new ToolInvokeResponse
+        var formShown = await TryPublishFormAsync(question, ct);
+        await PublishToTargetAsync(new ToolInvokeResponse
         {
             ToolCallId = target.ToolCallId,
             ToolName = target.ToolName,
-            Content = HandbackText.Question(question),
+            Content = HandbackText.Question(question, formShown),
         }, target, ct);
+    }
+
+    /// <summary>
+    /// Shows <paramref name="question"/> to the user as a form in their chat, when it was asked in
+    /// a user conversation whose client can render one. The form goes straight to the chat, not
+    /// through the model, so the user answers the server's own question. False when it wasn't
+    /// shown: the agent then relays the question as before.
+    /// </summary>
+    private async Task<bool> TryPublishFormAsync(PendingQuestion question, CancellationToken ct)
+    {
+        if (_clientCapabilities is null || !HandbackSessions.IsUserSession(question.SessionId))
+            return false;
+
+        var conversationId = HandbackSessions.ConversationId(question.SessionId!);
+        if (!_clientCapabilities.Get(conversationId).HasFlag(UserProxy.ClientCapabilities.InteractiveForms))
+            return false;
+
+        var form = McpQuestionFormMapper.ToForm(question);
+
+        // Recorded before publishing, so a question that settles meanwhile still closes its form;
+        // its status is held until the form is out (see OnQuestionSettled).
+        var shown = new FormShown(conversationId);
+        _formsShown[question.QuestionId] = shown;
+        try
+        {
+            await _publisher.PublishAsync($"{UserProxy.UserProxyTopics.UserResponse}.{_agentName}",
+                new UserProxy.AgentReply
+                {
+                    Content = McpQuestionFormMapper.ToText(form),
+                    SessionId = conversationId,
+                    AgentName = RestartNoticeAgentName,
+                    IsFinal = true,
+                    ContentType = UserProxy.McpQuestionForm.ContentType,
+                    StructuredData = JsonSerializer.Serialize(form, JsonOptions),
+                }.ToEnvelope<UserProxy.AgentReply>(source: _agentName), ct);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
+        {
+            _formsShown.TryRemove(question.QuestionId, out _);
+            _logger.LogWarning(ex, "Could not show MCP question {QuestionId} as a form; the agent relays it instead",
+                question.QuestionId);
+            return false;
+        }
+
+        _logger.LogInformation("MCP question {QuestionId} shown as a form in session {Session}",
+            question.QuestionId, conversationId);
+
+        // A status that arrived while the form was on its way was held back; send it now, after
+        // the form, or the chat would drop it as unknown and leave a settled form open.
+        if (shown.MarkPublished() is { } held)
+        {
+            _formsShown.TryRemove(question.QuestionId, out _);
+            await PublishQuestionStatusAsync(conversationId, question.QuestionId, held.State, held.AnsweredBy, held.Reason);
+        }
+
+        return true;
+    }
+
+    /// <summary>Tells the chat a question shown as a form has settled, so it closes the form.</summary>
+    private void OnQuestionSettled(PendingQuestion question, string status, string? reason, bool byUser)
+    {
+        if (!_formsShown.TryGetValue(question.QuestionId, out var shown))
+            return;
+
+        var answered = status is PendingQuestionStatus.Answered or PendingQuestionStatus.Declined;
+        var settled = new HeldStatus(status, answered ? (byUser ? "user" : "agent") : null, reason);
+
+        // Still being published: TryPublishFormAsync sends this once the form is out.
+        if (!shown.TryHoldUntilPublished(settled))
+            return;
+
+        _formsShown.TryRemove(question.QuestionId, out _);
+        _ = PublishQuestionStatusAsync(shown.ConversationId, question.QuestionId,
+            settled.State, settled.AnsweredBy, settled.Reason);
+    }
+
+    private sealed record HeldStatus(string State, string? AnsweredBy, string? Reason);
+
+    /// <summary>
+    /// A question shown as a form. Its settle status must reach the chat after the form, so one
+    /// that settles while the form is still being published is held and sent by the publisher.
+    /// </summary>
+    private sealed class FormShown(string conversationId)
+    {
+        private readonly Lock _gate = new();
+        private bool _published;
+        private HeldStatus? _held;
+
+        public string ConversationId => conversationId;
+
+        /// <summary>
+        /// False when the form is still being published: the status is held for the publisher.
+        /// True when it's out, and the caller sends the status itself.
+        /// </summary>
+        public bool TryHoldUntilPublished(HeldStatus status)
+        {
+            lock (_gate)
+            {
+                if (_published)
+                    return true;
+                _held = status;
+                return false;
+            }
+        }
+
+        /// <summary>Marks the form as published; returns a status held meanwhile, if any.</summary>
+        public HeldStatus? MarkPublished()
+        {
+            lock (_gate)
+            {
+                _published = true;
+                return _held;
+            }
+        }
+    }
+
+    private async Task PublishQuestionStatusAsync(
+        string conversationId, string questionId, string state, string? answeredBy, string? reason)
+    {
+        try
+        {
+            await _publisher.PublishAsync($"{UserProxy.UserProxyTopics.UserResponse}.{_agentName}",
+                new UserProxy.McpQuestionStatus
+                {
+                    SessionId = conversationId,
+                    QuestionId = questionId,
+                    State = state,
+                    AnsweredBy = answeredBy,
+                    Reason = reason is null ? null : McpElicitationSchemaDescriber.Flatten(reason),
+                }.ToEnvelope<UserProxy.McpQuestionStatus>(source: _agentName), CancellationToken.None);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Could not tell session {Session} that MCP question {QuestionId} is {State}",
+                conversationId, questionId, state);
+        }
     }
 
     private Task PublishToTargetAsync(ToolInvokeResponse response, HandbackReplyTarget target, CancellationToken ct) =>
@@ -2789,12 +2941,17 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
     /// </summary>
     private async Task HandleAnswerAsync(McpAnswerQuestionRequest req, string replyTo, string? correlationId, CancellationToken ct)
     {
-        Task RefuseAsync(string reason, string metric)
+        Task RefuseAsync(string reason, string metric, bool closed = false)
         {
             McpHandbackDiagnostics.Rejected(metric);
-            _logger.LogInformation("mcp_answer for {QuestionId} refused ({Reason})", req.QuestionId, metric);
-            return PublishResponseAsync(new McpAnswerQuestionResponse { QuestionId = req.QuestionId ?? "", Error = reason },
-                replyTo, correlationId, ct);
+            _logger.LogInformation("{Who} answer for {QuestionId} refused ({Reason})",
+                req.FromUser ? "The user's form" : "mcp_answer", req.QuestionId, metric);
+            return PublishResponseAsync(new McpAnswerQuestionResponse
+            {
+                QuestionId = req.QuestionId ?? "",
+                Error = reason,
+                QuestionClosed = closed,
+            }, replyTo, correlationId, ct);
         }
 
         // Unknown and someone else's look the same: a question exists only for the conversation
@@ -2807,22 +2964,24 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
         {
             var entry = string.IsNullOrEmpty(req.QuestionId) ? null : await TryGetLedgerEntryAsync(req.QuestionId, ct);
             if (entry is null || !SameSession(entry.SessionId, req.SessionId))
-                await RefuseAsync(unknown, "unknown");
+                await RefuseAsync(unknown, "unknown", closed: true);
             else
-                await RefuseAsync(HandbackText.Unavailable(entry), entry.Status);
+                await RefuseAsync(HandbackText.Unavailable(entry), entry.Status, closed: true);
             return;
         }
 
         if (!SameSession(question.SessionId, req.SessionId))
         {
-            await RefuseAsync(unknown, "wrong-session");
+            await RefuseAsync(unknown, "wrong-session", closed: true);
             return;
         }
 
         McpHandbackOutcome outcome;
         if (req.Decline)
         {
-            outcome = McpHandbackOutcome.Decline("the calling agent declined the question");
+            outcome = McpHandbackOutcome.Decline(req.FromUser
+                ? "the user declined the question"
+                : "the calling agent declined the question");
         }
         else
         {
@@ -2865,18 +3024,19 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
                 return;
             }
 
-            outcome = McpHandbackOutcome.Accept(validated.Content);
+            outcome = McpHandbackOutcome.Accept(validated.Content,
+                req.FromUser ? "answered by the user in the chat's form" : null);
         }
 
         var target = new HandbackReplyTarget(replyTo, correlationId, req.ToolCallId ?? "", "mcp_answer", question.QuestionId,
             question.ServerName, question.ToolName);
-        if (!await _handback.TryAnswerAsync(question, new McpAnswerSubmission(outcome, target), ct))
+        if (!await _handback.TryAnswerAsync(question, new McpAnswerSubmission(outcome, target, req.FromUser), ct))
         {
             // Settled between the lookup and now: answered by a concurrent call, or expired.
             var entry = await TryGetLedgerEntryAsync(question.QuestionId, ct);
             await RefuseAsync(entry is null
                 ? $"Question {question.QuestionId} is no longer open."
-                : HandbackText.Unavailable(entry), "settled");
+                : HandbackText.Unavailable(entry), "settled", closed: true);
         }
     }
 
@@ -3040,6 +3200,15 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
                             AgentName = RestartNoticeAgentName,
                             IsFinal = true,
                         }.ToEnvelope<UserProxy.AgentReply>(source: _agentName), ct);
+
+                    // A form for it may still be on screen; which sessions were shown one didn't
+                    // survive the restart, so tell any chat that can show forms. It ignores ids it
+                    // doesn't know.
+                    if (_clientCapabilities is not null)
+                    {
+                        await PublishQuestionStatusAsync(conversationId, entry.QuestionId,
+                            UserProxy.McpQuestionState.Interrupted, null, "the agent restarted before it was answered");
+                    }
 
                     McpHandbackDiagnostics.Notified();
                     _logger.LogInformation("Told session {Session} that MCP question {QuestionId} was interrupted by a restart",

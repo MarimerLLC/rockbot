@@ -13,6 +13,9 @@ public enum MessageCategory
     ScheduledUser,
     Error,
     SavedReference,
+
+    /// <summary>A handed-back MCP question, rendered as a form the user answers.</summary>
+    McpQuestion,
 }
 
 public sealed record ActivityLogEntry(string Content, DateTime Timestamp);
@@ -27,6 +30,20 @@ public sealed class ChatStateService
     private readonly object _lock = new();
     private string? _currentThinkingMessage;
     private bool _isProcessing;
+
+    /// <summary>
+    /// Form answers sent and still waiting for the agent's follow-up reply, by question id, with
+    /// when they were sent. Kept apart from <see cref="_isProcessing"/>: a form can be answered
+    /// while the turn that showed it is still running, and that turn's final reply must not end
+    /// the wait for the follow-up. Mutated under <see cref="_lock"/>.
+    /// </summary>
+    private readonly Dictionary<string, DateTime> _formWaits = new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// How long a form answer counts as busy without its reply: long enough for the resumed call
+    /// and a model turn, short enough that a lost reply can't disable the input for good.
+    /// </summary>
+    internal static readonly TimeSpan FormWaitLimit = TimeSpan.FromMinutes(15);
 
     /// <summary>
     /// Active activity log bubbles keyed by source key (category + agentName).
@@ -50,12 +67,29 @@ public sealed class ChatStateService
     }
 
     public string? CurrentThinkingMessage => _currentThinkingMessage;
-    public bool IsProcessing => _isProcessing;
+    /// <summary>True while a turn is running, or a form answer is waiting for the agent's follow-up.</summary>
+    public bool IsProcessing
+    {
+        get
+        {
+            if (_isProcessing)
+                return true;
+            lock (_lock)
+                return _formWaits.Values.Any(sent => DateTime.UtcNow - sent < FormWaitLimit);
+        }
+    }
 
     public void LoadHistory(IReadOnlyList<ConversationHistoryTurn> turns, string sessionId)
     {
         lock (_lock)
         {
+            // An open MCP question isn't part of the conversation history (it lives in the
+            // bridge), so keep its form across the rebuild; otherwise a reload would leave the
+            // agent's "fill in the form" with no form to fill in.
+            var openQuestions = _messages
+                .Where(m => m.Category == MessageCategory.McpQuestion && m.IsQuestionOpen(DateTimeOffset.UtcNow))
+                .ToList();
+
             _messages.Clear();
 
             // The bubbles those entries point at were just discarded, so anything left
@@ -94,6 +128,12 @@ public sealed class ChatStateService
                         or MessageCategory.UserInput
                         or MessageCategory.Error
                 });
+            }
+
+            foreach (var question in openQuestions)
+            {
+                var index = _messages.FindIndex(m => m.Timestamp > question.Timestamp);
+                _messages.Insert(index < 0 ? _messages.Count : index, question);
             }
         }
         NotifyStateChanged();
@@ -153,8 +193,18 @@ public sealed class ChatStateService
 
     public void AddAgentReply(AgentReply reply, MessageCategory category = MessageCategory.PrimaryFinal)
     {
+        if (category == MessageCategory.McpQuestion)
+        {
+            AddMcpQuestion(reply);
+            return;
+        }
+
         lock (_lock)
         {
+            // The follow-up to a form answer ends that answer's wait (and only that one).
+            if (reply.FollowsQuestionId is { } answered)
+                _formWaits.Remove(answered);
+
             // Close the activity log for the source that just finished.
             // PrimaryFinal closes the PrimaryProgress log (different category names);
             // subagent / A2A / scheduled final replies close their own category's log.
@@ -191,6 +241,92 @@ public sealed class ChatStateService
         }
         NotifyStateChanged();
     }
+
+    /// <summary>
+    /// Adds a handed-back MCP question as a form bubble. It arrives in the middle of the agent's
+    /// turn (the agent is still writing its reply), so unlike a final reply it leaves the busy
+    /// state and the activity log alone. A reply whose form can't be read shows its plain-text
+    /// <see cref="AgentReply.Content"/> instead.
+    /// </summary>
+    private void AddMcpQuestion(AgentReply reply)
+    {
+        var form = McpQuestionFormModel.TryParseForm(reply.StructuredData);
+        lock (_lock)
+        {
+            if (form is not null && _messages.Any(m => m.Question?.QuestionId == form.QuestionId))
+                return;
+
+            _messages.Add(new ChatMessage
+            {
+                Content = reply.Content,
+                IsFromUser = false,
+                Timestamp = DateTime.UtcNow,
+                AgentName = reply.AgentName,
+                SessionId = reply.SessionId,
+                ContentType = reply.ContentType,
+                Category = MessageCategory.McpQuestion,
+                Question = form,
+                IsExpanded = true,
+            });
+        }
+        NotifyStateChanged();
+    }
+
+    /// <summary>
+    /// Applies a state change to the form for <see cref="McpQuestionStatus.QuestionId"/>. A
+    /// closed form stays closed: a late <c>rejected</c> can't reopen it. Unknown ids are ignored.
+    /// </summary>
+    public void UpdateQuestionStatus(McpQuestionStatus status)
+    {
+        lock (_lock)
+        {
+            var msg = _messages.FirstOrDefault(m => m.Question?.QuestionId == status.QuestionId);
+            if (msg is null || McpQuestionState.IsClosed(msg.QuestionState))
+                return;
+
+            // Only an accepted answer or decline leads to an agent reply; anything else ends this
+            // form's wait here. A turn that's still running stays busy on its own account.
+            if (status.State is not (McpQuestionState.Answered or McpQuestionState.Declined))
+                _formWaits.Remove(status.QuestionId);
+
+            msg.QuestionState = status.State;
+            msg.QuestionReason = status.Reason;
+            msg.QuestionAnsweredBy = status.AnsweredBy;
+            msg.IsSubmitting = false;
+        }
+        NotifyStateChanged();
+    }
+
+    /// <summary>
+    /// Marks the form for <paramref name="questionId"/> as sent. False when it can't be sent: it's
+    /// unknown, closed, expired, or already being sent (another tab got there first).
+    /// </summary>
+    public bool TryBeginQuestionSubmit(string questionId)
+    {
+        lock (_lock)
+        {
+            var msg = _messages.FirstOrDefault(m => m.Question?.QuestionId == questionId);
+            if (msg is null || msg.IsSubmitting || !msg.IsQuestionOpen(DateTimeOffset.UtcNow))
+                return false;
+
+            msg.IsSubmitting = true;
+            _formWaits[questionId] = DateTime.UtcNow;
+            msg.QuestionState = null;
+            msg.QuestionReason = null;
+        }
+        NotifyStateChanged();
+        return true;
+    }
+
+    /// <summary>Re-opens a form whose answer couldn't be sent.</summary>
+    public void FailQuestionSubmit(string questionId, string reason) =>
+        UpdateQuestionStatus(new McpQuestionStatus
+        {
+            SessionId = "",
+            QuestionId = questionId,
+            State = McpQuestionState.Rejected,
+            Reason = reason,
+        });
 
     /// <summary>
     /// Appends an entry to an activity log bubble for the given source.
@@ -317,10 +453,22 @@ public sealed class ChatStateService
         {
             _messages.Clear();
             _activeActivityLogs.Clear();
+            _formWaits.Clear();
         }
         _currentThinkingMessage = null;
         _isProcessing = false;
         NotifyStateChanged();
+    }
+
+    /// <summary>
+    /// The user cancelled: stop waiting on everything, form answers included. A turn's own
+    /// completion uses <see cref="SetProcessing"/>, which leaves form waits alone.
+    /// </summary>
+    public void CancelProcessing()
+    {
+        lock (_lock)
+            _formWaits.Clear();
+        SetProcessing(false);
     }
 
     // ── Saved references ────────────────────────────────────────────────────
@@ -492,4 +640,29 @@ public sealed class ChatMessage
 
     /// <summary>Label of the saved response, shown as a badge.</summary>
     public string? SavedResponseLabel { get; init; }
+
+    /// <summary>
+    /// The handed-back MCP question this bubble shows as a form, if Category == McpQuestion.
+    /// Null when the form couldn't be read; the bubble then shows <see cref="Content"/>.
+    /// </summary>
+    public McpQuestionForm? Question { get; init; }
+
+    /// <summary>
+    /// The question's last reported <see cref="McpQuestionState"/>; null while it's open.
+    /// Mutated under the service's lock.
+    /// </summary>
+    public string? QuestionState { get; set; }
+
+    /// <summary>Why the question is in <see cref="QuestionState"/>, when the bridge said.</summary>
+    public string? QuestionReason { get; set; }
+
+    /// <summary>Who settled the question (<c>user</c> or <c>agent</c>), when it was answered or declined.</summary>
+    public string? QuestionAnsweredBy { get; set; }
+
+    /// <summary>True between sending the form's answer and hearing back.</summary>
+    public bool IsSubmitting { get; set; }
+
+    /// <summary>True while the question can still be answered: not settled and not past its expiry.</summary>
+    public bool IsQuestionOpen(DateTimeOffset now) =>
+        Question is not null && !McpQuestionState.IsClosed(QuestionState) && now < Question.ExpiresAt;
 }

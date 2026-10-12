@@ -433,7 +433,8 @@ public sealed class McpElicitationCoordinator
         if (fieldNames.Count > 0 && validated.Content.Count == 0)
             return Answer(request, McpElicitationActions.Decline, "the answer supplied none of the requested fields", scopes);
 
-        return Answer(request, McpElicitationActions.Accept, "answered by the calling agent", scopes, validated.Content);
+        return Answer(request, McpElicitationActions.Accept, outcome.Reason ?? "answered by the calling agent", scopes,
+            validated.Content);
     }
 
     /// <summary>

@@ -40,8 +40,10 @@ public sealed record McpHandbackOutcome(
     IReadOnlyDictionary<string, JsonElement>? Content = null,
     string? Reason = null)
 {
-    public static McpHandbackOutcome Accept(IReadOnlyDictionary<string, JsonElement> content) =>
-        new(McpElicitationActions.Accept, content);
+    /// <param name="content">The field values.</param>
+    /// <param name="reason">Who answered, for the note on the call's result; defaults to the calling agent.</param>
+    public static McpHandbackOutcome Accept(IReadOnlyDictionary<string, JsonElement> content, string? reason = null) =>
+        new(McpElicitationActions.Accept, content, reason);
 
     public static McpHandbackOutcome Decline(string reason) =>
         new(McpElicitationActions.Decline, null, reason);

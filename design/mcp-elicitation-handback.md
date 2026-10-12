@@ -166,8 +166,53 @@ the question stays open for 30 minutes.
   are flattened, as in `McpElicitationNote`.
 - **`question_id` is a random, unguessable id.** The server's `requestState` never reaches the
   model.
-- **A structured form for the UI is phase 5.** A tool result goes to the model, not the UI, so
-  the form needs its own path to the chat; the ledger already keeps the question structured.
+- **A client that can render a form also gets the question as one** (phase 5, below). The tool
+  result then tells the agent the user sees it, so it points to the form instead of asking.
+
+## The question as a form
+
+A tool result goes to the model, not the UI, so the form has its own path to the chat.
+
+**Shown when:**
+- the call came from a user conversation (not a subagent),
+- and the session's client advertises `ClientCapabilities.InteractiveForms` (Blazor does, the CLI
+  doesn't).
+
+**Out.** In `PublishHandbackAsync`, for every round, the bridge publishes an unsolicited
+`AgentReply` to `user.response.{agent}` before the tool result:
+- `ContentType` is `application/vnd.rockbot.mcp-question+json`.
+- `StructuredData` is an `McpQuestionForm`, mapped from the in-memory `ElicitRequestParams`: the
+  message, and each field's kind, title, description, required flag, decision flag, options and
+  limits.
+- `Content` is a plain-text rendering, for clients that can't show the form.
+- Server text is flattened and capped on the way. The client still renders it as text, never as
+  markup. A decision field never carries a default, so nothing is preselected for the user.
+
+**What the agent reads.** The tool result says the user sees a form. The agent tells them briefly,
+doesn't ask in prose, and doesn't answer decisions. It may still answer non-decision fields with
+`mcp_answer` if it knows them, or if the user answers in chat. Whichever answer comes first wins.
+
+**Back.** Submitting publishes an `McpQuestionAnswer` on `user.mcp.answer.{agent}`.
+`McpQuestionAnswerHandler`:
+1. records it as the user's own turn, before anything else;
+2. hands it to the bridge through `IMcpQuestionAnswerer`, as an `McpAnswerQuestionRequest` with
+   `FromUser`. Every check runs as for `mcp_answer`: same session, the schema, one-shot, and
+   decisions only after a person turn, which step 1 just recorded;
+3. on a refusal, sends the form an `McpQuestionStatus`: `rejected` if the answer can be corrected,
+   `unavailable` if the question is gone. No agent turn runs;
+4. otherwise, waits for the work slot without cancelling the turn that showed the form, then adds
+   the resumed result as a synthetic turn (from `mcp-bridge`, as untrusted tool output), runs the
+   agent loop, and publishes its reply. If the result is the server's next question, the bridge
+   has already shown its form.
+
+**Closing.** When a shown question settles, the store's settle callback has the bridge publish an
+`McpQuestionStatus` to the chat. The states are answered or declined (by `user` or `agent`),
+expired and cancelled. After a restart, `interrupted` is sent with the notice. The chat also
+closes a form locally once its `ExpiresAt` passes. A form that's still open survives a page
+reload, because the chat keeps it while the transcript is rebuilt.
+
+**Testing it live.** `src/McpServer.ElicitationFixture` asks one question shape per tool. Its
+README has the `mcp.json` entry.
 
 ## `mcp_answer`
 
@@ -406,8 +451,9 @@ data on how often each path is used.
    (the per-mode orientation stays fixed, for the prompt cache): answer from context when you can,
    ask the user when you can't, never guess a decision, and on an interruption notice decide
    whether the original request still needs doing before redoing the call.
-5. **UI (follow-up):** render the structured question as a form in the Blazor UI, so the user
-   answers the server's form directly. That's the strongest guarantee for decision fields.
+5. **UI (#660, done):** render the structured question as a form in the Blazor UI, so the user
+   answers the server's form directly. That's the strongest guarantee for decision fields. See
+   [The question as a form](#the-question-as-a-form).
 
 ## Open questions
 

@@ -16,6 +16,14 @@ public sealed class BlazorUserFrontend(ChatStateService chatState) : IUserFronte
 
     public Task DisplayReplyAsync(AgentReply reply, CancellationToken cancellationToken = default)
     {
+        // A handed-back MCP question, shown as a form. It comes from the bridge, not the
+        // primary agent, so it must not teach us the agent's name; nor does it end the turn.
+        if (string.Equals(reply.ContentType, McpQuestionForm.ContentType, StringComparison.OrdinalIgnoreCase))
+        {
+            chatState.AddAgentReply(reply, MessageCategory.McpQuestion);
+            return Task.CompletedTask;
+        }
+
         // Learn the primary agent name from the first final reply we see.
         if (reply.IsFinal && _primaryAgentName is null && !string.IsNullOrEmpty(reply.AgentName))
             _primaryAgentName = reply.AgentName;
@@ -64,6 +72,12 @@ public sealed class BlazorUserFrontend(ChatStateService chatState) : IUserFronte
     {
         _primaryAgentName = agentName;
         chatState.SetAgentInfo(agentName, chatState.AgentVersion ?? "");
+        return Task.CompletedTask;
+    }
+
+    public Task OnMcpQuestionStatusAsync(McpQuestionStatus status, CancellationToken cancellationToken = default)
+    {
+        chatState.UpdateQuestionStatus(status);
         return Task.CompletedTask;
     }
 

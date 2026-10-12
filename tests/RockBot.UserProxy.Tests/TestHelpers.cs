@@ -93,6 +93,14 @@ internal sealed class StubUserFrontend : IUserFrontend
         DisplayedErrors.Add(message);
         return Task.CompletedTask;
     }
+
+    public List<McpQuestionStatus> QuestionStatuses { get; } = [];
+
+    public Task OnMcpQuestionStatusAsync(McpQuestionStatus status, CancellationToken cancellationToken = default)
+    {
+        QuestionStatuses.Add(status);
+        return Task.CompletedTask;
+    }
 }
 
 /// <summary>

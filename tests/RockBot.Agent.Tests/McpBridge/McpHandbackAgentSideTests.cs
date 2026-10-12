@@ -209,6 +209,66 @@ public class McpHandbackAgentSideTests
         Assert.AreEqual(1, publisher.Count);
     }
 
+    [TestMethod]
+    [Timeout(30_000, CooperativeCancellation = true)]
+    public async Task TheUsersFormAnswer_TravelsTheExecutorToTheParkedCall()
+    {
+        await using var harness = await StartAsync();
+        var agent = await McpWrapperEndToEndTests.ConnectAgentAsync(harness, McpWrapperMode.Off);
+
+        string id;
+        using (McpHandbackContext.Set(RunWithAnswerTool()))
+        {
+            id = McpHandbackEndToEndTests.IdIn((await CallAsync(agent, "mcp_invoke_tool",
+                """{"server_name":"fixture","tool_name":"search_mail","arguments":{}}""")).Content);
+        }
+
+        // The form path isn't a tool call: it runs outside any run's marker.
+        var answered = await agent.Management.AnswerFromUserAsync(
+            Session, id, """{"mailbox":"work"}""", decline: false, CancellationToken.None);
+
+        Assert.IsNull(answered.Error, answered.Error);
+        StringAssert.StartsWith(answered.Result!.Content, "round 1 accept:work");
+        Assert.AreEqual("fixture", answered.ServerName);
+        Assert.AreEqual("search_mail", answered.ToolName);
+        Assert.IsTrue(harness.BridgeLog.Any(e => e.Message.Contains($"{id}") && e.Message.Contains("answered by the user")),
+            "the bridge records who answered");
+    }
+
+    [TestMethod]
+    [Timeout(30_000, CooperativeCancellation = true)]
+    public async Task TheUsersFormAnswer_ToAQuestionThatIsGone_IsRefusedAsClosed()
+    {
+        await using var harness = await StartAsync();
+        var agent = await McpWrapperEndToEndTests.ConnectAgentAsync(harness, McpWrapperMode.Off);
+
+        var refused = await agent.Management.AnswerFromUserAsync(
+            Session, "q_" + new string('0', 32), """{"mailbox":"work"}""", decline: false, CancellationToken.None);
+
+        StringAssert.Contains(refused.Error, "no open question");
+        Assert.IsTrue(refused.QuestionClosed);
+    }
+
+    [TestMethod]
+    [Timeout(30_000, CooperativeCancellation = true)]
+    public async Task TheModelCantPassItsAnswerOffAsTheUsers()
+    {
+        await using var harness = await StartAsync();
+        var agent = await McpWrapperEndToEndTests.ConnectAgentAsync(harness, McpWrapperMode.Off);
+
+        using (McpHandbackContext.Set(RunWithAnswerTool()))
+        {
+            var id = McpHandbackEndToEndTests.IdIn((await CallAsync(agent, "mcp_invoke_tool",
+                """{"server_name":"fixture","tool_name":"search_mail","arguments":{}}""")).Content);
+
+            await CallAsync(agent, McpHandbackContext.AnswerToolName,
+                $$$"""{"question_id":"{{{id}}}","answers":{"mailbox":"work"},"from_user":true,"fromUser":true}""");
+
+            Assert.IsTrue(harness.BridgeLog.Any(e => e.Message.Contains(id) && e.Message.Contains("answered by the agent")));
+            Assert.IsFalse(harness.BridgeLog.Any(e => e.Message.Contains(id) && e.Message.Contains("by the user")));
+        }
+    }
+
     private sealed class RecordingPublisher : RockBot.Messaging.IMessagePublisher
     {
         public int Count { get; private set; }

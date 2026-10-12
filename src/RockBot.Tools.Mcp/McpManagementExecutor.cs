@@ -24,7 +24,7 @@ namespace RockBot.Tools.Mcp;
 ///   <item><c>mcp_answer</c> — answers a question a server handed back mid-call (registered only while a server can)</item>
 /// </list>
 /// </summary>
-public sealed class McpManagementExecutor : IToolExecutor, IAsyncDisposable
+public sealed class McpManagementExecutor : IToolExecutor, IMcpQuestionAnswerer, IAsyncDisposable
 {
     private readonly McpServerIndex _index;
     private readonly McpToolProxy _proxy;
@@ -178,6 +178,54 @@ public sealed class McpManagementExecutor : IToolExecutor, IAsyncDisposable
         }
 
         return result with { ToolCallId = request.ToolCallId, ToolName = request.ToolName };
+    }
+
+    /// <summary>
+    /// Answers (or declines) a handed-back question with what the user gave in the chat's form.
+    /// The bridge checks it exactly as it checks <c>mcp_answer</c> (same session, the server's
+    /// schema, decisions only after a user turn, one-shot). Returns the bridge's response:
+    /// <see cref="McpAnswerQuestionResponse.Error"/> when refused, otherwise the resumed call's
+    /// outcome — its result, or the server's next question.
+    /// </summary>
+    /// <param name="sessionId">The run namespace of the conversation, <c>session/{id}</c>.</param>
+    public async Task<McpAnswerQuestionResponse> AnswerFromUserAsync(
+        string sessionId, string questionId, string? answersJson, bool decline, CancellationToken ct)
+    {
+        var envelope = await SendRequestAsync(new McpAnswerQuestionRequest
+        {
+            QuestionId = questionId,
+            SessionId = sessionId,
+            ToolCallId = $"form-{questionId}",
+            Answers = decline ? null : answersJson,
+            Decline = decline,
+            FromUser = true,
+        }, ct, _proxy.ResponseTimeout);
+
+        if (envelope is null)
+        {
+            return new McpAnswerQuestionResponse
+            {
+                QuestionId = questionId,
+                Result = new ToolInvokeResponse
+                {
+                    ToolCallId = $"form-{questionId}",
+                    ToolName = McpHandbackContext.AnswerToolName,
+                    Content = "The user's answer was delivered, but the MCP call didn't finish in time to report its result.",
+                    IsError = true,
+                },
+            };
+        }
+
+        var response = envelope.GetPayload<McpAnswerQuestionResponse>()
+                       ?? new McpAnswerQuestionResponse { QuestionId = questionId, Error = "The bridge's reply could not be read." };
+
+        if (response.Error is null && response.Result is { } result && response.ServerName is { Length: > 0 } serverName)
+        {
+            _typedTools?.Pin(sessionId, serverName);
+            McpDiagnostics.RecordInvocation(serverName, McpInvocationPath.Answer, result.IsError);
+        }
+
+        return response;
     }
 
     // ── mcp_list_services ────────────────────────────────────────────────────

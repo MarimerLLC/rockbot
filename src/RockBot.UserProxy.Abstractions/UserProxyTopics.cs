@@ -12,6 +12,9 @@ public static class UserProxyTopics
     public const string ConversationHistoryRequest = "user.history.request";
     public const string ConversationHistoryResponse = "user.history.response";
     public const string UserFeedback = "user.feedback";
+
+    /// <summary>The user's answer to a handed-back MCP question shown as a form (<see cref="McpQuestionAnswer"/>).</summary>
+    public const string McpAnswer = "user.mcp.answer";
     public const string AgentInfoRequest = "agent.info.request";
     public const string AgentInfoResponse = "agent.info.response";
     public const string ActiveStatusRequest = "agent.status.request";

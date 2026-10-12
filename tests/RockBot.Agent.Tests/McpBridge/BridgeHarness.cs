@@ -40,6 +40,7 @@ internal sealed class BridgeHarness : IAsyncDisposable
     private IConversationMemory? _conversationMemory;
     private IWorkingMemory? _workingMemory;
     private TimeProvider? _timeProvider;
+    private SessionClientCapabilityStore? _clientCapabilities;
     private McpBridgeService _bridge = null!;
     private TopicSubscriber _subscriber = null!;
     private CapturingPublisher _publisher = null!;
@@ -58,6 +59,12 @@ internal sealed class BridgeHarness : IAsyncDisposable
 
     /// <summary>The bridge under test.</summary>
     public McpBridgeService Bridge => _bridge;
+
+    /// <summary>
+    /// Holds a publish until the returned task completes: a test can stall one message (a form)
+    /// while something else happens, as a slow broker would.
+    /// </summary>
+    public Func<MessageEnvelope, Task>? PublishGate { get; set; }
 
     /// <summary>
     /// The in-memory bus, for wiring agent-side components (proxy, management executor) to the
@@ -123,7 +130,7 @@ internal sealed class BridgeHarness : IAsyncDisposable
     private async Task StartBridgeAsync()
     {
         _subscriber = new TopicSubscriber();
-        _publisher = new CapturingPublisher(_subscriber);
+        _publisher = new CapturingPublisher(_subscriber, e => PublishGate?.Invoke(e) ?? Task.CompletedTask);
         // Attachment storage defaults to the shared volume (/rockbot/shared), which a test runner
         // can't write; keep it inside the run's temporary directory.
         _bridge = new McpBridgeService(
@@ -131,7 +138,8 @@ internal sealed class BridgeHarness : IAsyncDisposable
             llmClient: _llmClient, tokenProviders: null, healthTracker: null, argGuards: null,
             elicitationResponder: null, services: null,
             attachmentStorage: new AttachmentStorage(AttachmentsPath),
-            conversationMemory: _conversationMemory, workingMemory: _workingMemory, timeProvider: _timeProvider);
+            conversationMemory: _conversationMemory, workingMemory: _workingMemory, timeProvider: _timeProvider,
+            clientCapabilities: _clientCapabilities);
         await _bridge.StartAsync(CancellationToken.None);
     }
 
@@ -152,7 +160,8 @@ internal sealed class BridgeHarness : IAsyncDisposable
         IConversationMemory? conversationMemory = null,
         IWorkingMemory? workingMemory = null,
         Action<string>? beforeBridgeStarts = null,
-        TimeProvider? timeProvider = null)
+        TimeProvider? timeProvider = null,
+        SessionClientCapabilityStore? clientCapabilities = null)
     {
         var builder = WebApplication.CreateSlimBuilder();
         builder.WebHost.UseUrls("http://127.0.0.1:0");
@@ -219,6 +228,7 @@ internal sealed class BridgeHarness : IAsyncDisposable
             _conversationMemory = conversationMemory,
             _workingMemory = workingMemory,
             _timeProvider = timeProvider,
+            _clientCapabilities = clientCapabilities,
         };
 
         // Lets a test seed files (the pending-question ledger) the bridge reads as it starts.
@@ -339,7 +349,7 @@ internal sealed class BridgeHarness : IAsyncDisposable
     /// </summary>
     public async Task<McpAnswerQuestionResponse> AnswerAsync(
         string questionId, string? answersJson, bool decline = false, string sessionId = "session/test",
-        TimeSpan? wait = null)
+        TimeSpan? wait = null, bool fromUser = false)
     {
         var correlationId = Guid.NewGuid().ToString("N");
         var replyTo = $"reply.{correlationId}";
@@ -350,6 +360,7 @@ internal sealed class BridgeHarness : IAsyncDisposable
             ToolCallId = "answer-call",
             Answers = answersJson,
             Decline = decline,
+            FromUser = fromUser,
         }.ToEnvelope(source: AgentName, correlationId: correlationId, replyTo: replyTo);
 
         await _subscriber.DeliverAsync(McpManagementExecutor.ManageTopic, envelope);
@@ -445,7 +456,7 @@ internal sealed class BridgeHarness : IAsyncDisposable
         }
     }
 
-    private sealed class CapturingPublisher(TopicSubscriber subscriber) : IMessagePublisher
+    private sealed class CapturingPublisher(TopicSubscriber subscriber, Func<MessageEnvelope, Task>? holdUntil) : IMessagePublisher
     {
         private readonly object _gate = new();
         private readonly List<(string Topic, MessageEnvelope Envelope)> _published = [];
@@ -455,10 +466,13 @@ internal sealed class BridgeHarness : IAsyncDisposable
             get { lock (_gate) return [.. _published]; }
         }
 
-        public Task PublishAsync(string topic, MessageEnvelope envelope, CancellationToken cancellationToken = default)
+        public async Task PublishAsync(string topic, MessageEnvelope envelope, CancellationToken cancellationToken = default)
         {
+            // A held publish is recorded only once released, as a slow broker would deliver it.
+            if (holdUntil is not null)
+                await holdUntil(envelope);
             lock (_gate) _published.Add((topic, envelope));
-            return subscriber.TryDeliverAsync(topic, envelope);
+            await subscriber.TryDeliverAsync(topic, envelope);
         }
 
         public ValueTask DisposeAsync() => default;
