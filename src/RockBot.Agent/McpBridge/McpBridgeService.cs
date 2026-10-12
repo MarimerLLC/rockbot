@@ -59,7 +59,7 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
     private readonly SessionClientCapabilityStore? _clientCapabilities;
 
     /// <summary>Questions shown to the user as a form, whose settling the chat is told about.</summary>
-    private readonly ConcurrentDictionary<string, string> _formsShown = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, FormShown> _formsShown = new(StringComparer.Ordinal);
 
     /// <summary>Open handed-back questions and their ledger (see <c>design/mcp-elicitation-handback.md</c>).</summary>
     private readonly PendingQuestionStore _handback;
@@ -2112,8 +2112,10 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
 
         var form = McpQuestionFormMapper.ToForm(question);
 
-        // Recorded before publishing, so a question that settles meanwhile still closes its form.
-        _formsShown[question.QuestionId] = conversationId;
+        // Recorded before publishing, so a question that settles meanwhile still closes its form;
+        // its status is held until the form is out (see OnQuestionSettled).
+        var shown = new FormShown(conversationId);
+        _formsShown[question.QuestionId] = shown;
         try
         {
             await _publisher.PublishAsync($"{UserProxy.UserProxyTopics.UserResponse}.{_agentName}",
@@ -2137,18 +2139,74 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
 
         _logger.LogInformation("MCP question {QuestionId} shown as a form in session {Session}",
             question.QuestionId, conversationId);
+
+        // A status that arrived while the form was on its way was held back; send it now, after
+        // the form, or the chat would drop it as unknown and leave a settled form open.
+        if (shown.MarkPublished() is { } held)
+        {
+            _formsShown.TryRemove(question.QuestionId, out _);
+            await PublishQuestionStatusAsync(conversationId, question.QuestionId, held.State, held.AnsweredBy, held.Reason);
+        }
+
         return true;
     }
 
     /// <summary>Tells the chat a question shown as a form has settled, so it closes the form.</summary>
     private void OnQuestionSettled(PendingQuestion question, string status, string? reason, bool byUser)
     {
-        if (!_formsShown.TryRemove(question.QuestionId, out var conversationId))
+        if (!_formsShown.TryGetValue(question.QuestionId, out var shown))
             return;
 
         var answered = status is PendingQuestionStatus.Answered or PendingQuestionStatus.Declined;
-        _ = PublishQuestionStatusAsync(conversationId, question.QuestionId, status,
-            answered ? (byUser ? "user" : "agent") : null, reason);
+        var settled = new HeldStatus(status, answered ? (byUser ? "user" : "agent") : null, reason);
+
+        // Still being published: TryPublishFormAsync sends this once the form is out.
+        if (!shown.TryHoldUntilPublished(settled))
+            return;
+
+        _formsShown.TryRemove(question.QuestionId, out _);
+        _ = PublishQuestionStatusAsync(shown.ConversationId, question.QuestionId,
+            settled.State, settled.AnsweredBy, settled.Reason);
+    }
+
+    private sealed record HeldStatus(string State, string? AnsweredBy, string? Reason);
+
+    /// <summary>
+    /// A question shown as a form. Its settle status must reach the chat after the form, so one
+    /// that settles while the form is still being published is held and sent by the publisher.
+    /// </summary>
+    private sealed class FormShown(string conversationId)
+    {
+        private readonly Lock _gate = new();
+        private bool _published;
+        private HeldStatus? _held;
+
+        public string ConversationId => conversationId;
+
+        /// <summary>
+        /// False when the form is still being published: the status is held for the publisher.
+        /// True when it's out, and the caller sends the status itself.
+        /// </summary>
+        public bool TryHoldUntilPublished(HeldStatus status)
+        {
+            lock (_gate)
+            {
+                if (_published)
+                    return true;
+                _held = status;
+                return false;
+            }
+        }
+
+        /// <summary>Marks the form as published; returns a status held meanwhile, if any.</summary>
+        public HeldStatus? MarkPublished()
+        {
+            lock (_gate)
+            {
+                _published = true;
+                return _held;
+            }
+        }
     }
 
     private async Task PublishQuestionStatusAsync(

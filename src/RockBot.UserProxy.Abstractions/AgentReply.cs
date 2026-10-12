@@ -21,6 +21,14 @@ public sealed record AgentReply
     public string? ContentType { get; init; }
 
     /// <summary>
+    /// Set on the agent's reply after the user answered a handed-back MCP question in its form
+    /// (<see cref="McpQuestionAnswer"/>): that question's id. It lets a frontend tell the reply it
+    /// is waiting for apart from the final reply of a turn that was still running when the form
+    /// was submitted. Null on every other reply.
+    /// </summary>
+    public string? FollowsQuestionId { get; init; }
+
+    /// <summary>
     /// Provenance for an unsolicited reply (subagent completion, scheduled task, A2A
     /// result, idle inbox batch). Null for replies that are a direct response to the
     /// user's current turn. Frontends render a short anchor preamble from this so the

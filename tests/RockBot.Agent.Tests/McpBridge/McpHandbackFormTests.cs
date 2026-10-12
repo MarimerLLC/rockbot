@@ -283,6 +283,43 @@ public class McpHandbackFormTests
 
     [TestMethod]
     [Timeout(30_000, CooperativeCancellation = true)]
+    public async Task AQuestionThatSettlesWhileItsFormIsOnItsWay_IsClosedAfterTheFormArrives()
+    {
+        var time = new ManualTimeProvider(DateTimeOffset.UtcNow);
+        await using var harness = await StartAsync(Capabilities(ClientCapabilityPresets.Blazor), timeProvider: time);
+
+        // Stall the form on its way to the chat.
+        var formHeld = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        harness.PublishGate = envelope =>
+        {
+            if (envelope.MessageType != typeof(AgentReply).FullName
+                || envelope.GetPayload<AgentReply>()?.ContentType != McpQuestionForm.ContentType)
+                return Task.CompletedTask;
+            formHeld.TrySetResult();
+            return release.Task;
+        };
+
+        var invoke = harness.InvokeAsync("search_mail", "{}", sessionId: Session, canAnswer: true);
+        await formHeld.Task;
+
+        // The question expires before the form has reached the chat.
+        time.Advance(TimeSpan.FromMinutes(31));
+        await Task.Delay(200);
+        Assert.AreEqual(0, Statuses(harness).Count, "a status ahead of its form would be dropped as unknown");
+
+        release.SetResult();
+        var id = IdIn((await invoke).Content);
+
+        var status = await StatusAsync(harness, id);
+        Assert.AreEqual(McpQuestionState.Expired, status.State);
+        var order = harness.PublishedOn(ResponseTopic).Select(e => e.MessageType).ToList();
+        Assert.IsTrue(order.IndexOf(typeof(AgentReply).FullName!) < order.IndexOf(typeof(McpQuestionStatus).FullName!),
+            "the form reaches the chat before the status that closes it");
+    }
+
+    [TestMethod]
+    [Timeout(30_000, CooperativeCancellation = true)]
     public async Task TheServersNextQuestion_GetsAFormOfItsOwn()
     {
         await using var harness = await StartAsync(Capabilities(ClientCapabilityPresets.Blazor), tools: [MailboxTool(rounds: 2)]);

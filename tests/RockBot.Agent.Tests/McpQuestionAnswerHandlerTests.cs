@@ -152,6 +152,7 @@ public class McpQuestionAnswerHandlerTests
         Assert.AreEqual(AgentName, reply.AgentName);
         Assert.IsTrue(reply.IsFinal);
         Assert.AreEqual("The search found three invoices.", reply.Content);
+        Assert.AreEqual(QuestionId, reply.FollowsQuestionId, "the chat ends this form's wait on it");
         Assert.AreEqual(0, Published<McpQuestionStatus>().Count, "the bridge, not the handler, closes an answered form");
     }
 
@@ -191,6 +192,7 @@ public class McpQuestionAnswerHandlerTests
         var status = Published<McpQuestionStatus>().Single();
         Assert.AreEqual(McpQuestionState.Rejected, status.State);
         Assert.AreEqual(SessionId, status.SessionId);
+        Assert.IsNull(status.AnsweredBy, "a rejected answer settled nothing");
         StringAssert.Contains(status.Reason, "must be one of");
         Assert.AreEqual(0, Published<AgentReply>().Count);
 

@@ -32,6 +32,20 @@ public sealed class ChatStateService
     private bool _isProcessing;
 
     /// <summary>
+    /// Form answers sent and still waiting for the agent's follow-up reply, by question id, with
+    /// when they were sent. Kept apart from <see cref="_isProcessing"/>: a form can be answered
+    /// while the turn that showed it is still running, and that turn's final reply must not end
+    /// the wait for the follow-up. Mutated under <see cref="_lock"/>.
+    /// </summary>
+    private readonly Dictionary<string, DateTime> _formWaits = new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// How long a form answer counts as busy without its reply: long enough for the resumed call
+    /// and a model turn, short enough that a lost reply can't disable the input for good.
+    /// </summary>
+    internal static readonly TimeSpan FormWaitLimit = TimeSpan.FromMinutes(15);
+
+    /// <summary>
     /// Active activity log bubbles keyed by source key (category + agentName).
     /// Multiple sources can accumulate concurrently (e.g. primary + subagent).
     /// </summary>
@@ -53,7 +67,17 @@ public sealed class ChatStateService
     }
 
     public string? CurrentThinkingMessage => _currentThinkingMessage;
-    public bool IsProcessing => _isProcessing;
+    /// <summary>True while a turn is running, or a form answer is waiting for the agent's follow-up.</summary>
+    public bool IsProcessing
+    {
+        get
+        {
+            if (_isProcessing)
+                return true;
+            lock (_lock)
+                return _formWaits.Values.Any(sent => DateTime.UtcNow - sent < FormWaitLimit);
+        }
+    }
 
     public void LoadHistory(IReadOnlyList<ConversationHistoryTurn> turns, string sessionId)
     {
@@ -177,6 +201,10 @@ public sealed class ChatStateService
 
         lock (_lock)
         {
+            // The follow-up to a form answer ends that answer's wait (and only that one).
+            if (reply.FollowsQuestionId is { } answered)
+                _formWaits.Remove(answered);
+
             // Close the activity log for the source that just finished.
             // PrimaryFinal closes the PrimaryProgress log (different category names);
             // subagent / A2A / scheduled final replies close their own category's log.
@@ -256,10 +284,10 @@ public sealed class ChatStateService
             if (msg is null || McpQuestionState.IsClosed(msg.QuestionState))
                 return;
 
-            // The user is waiting on this form's answer. Only an accepted answer or decline
-            // leads to an agent reply; anything else ends the wait here.
-            if (msg.IsSubmitting && status.State is not (McpQuestionState.Answered or McpQuestionState.Declined))
-                _isProcessing = false;
+            // Only an accepted answer or decline leads to an agent reply; anything else ends this
+            // form's wait here. A turn that's still running stays busy on its own account.
+            if (status.State is not (McpQuestionState.Answered or McpQuestionState.Declined))
+                _formWaits.Remove(status.QuestionId);
 
             msg.QuestionState = status.State;
             msg.QuestionReason = status.Reason;
@@ -282,6 +310,7 @@ public sealed class ChatStateService
                 return false;
 
             msg.IsSubmitting = true;
+            _formWaits[questionId] = DateTime.UtcNow;
             msg.QuestionState = null;
             msg.QuestionReason = null;
         }
@@ -424,10 +453,22 @@ public sealed class ChatStateService
         {
             _messages.Clear();
             _activeActivityLogs.Clear();
+            _formWaits.Clear();
         }
         _currentThinkingMessage = null;
         _isProcessing = false;
         NotifyStateChanged();
+    }
+
+    /// <summary>
+    /// The user cancelled: stop waiting on everything, form answers included. A turn's own
+    /// completion uses <see cref="SetProcessing"/>, which leaves form waits alone.
+    /// </summary>
+    public void CancelProcessing()
+    {
+        lock (_lock)
+            _formWaits.Clear();
+        SetProcessing(false);
     }
 
     // ── Saved references ────────────────────────────────────────────────────

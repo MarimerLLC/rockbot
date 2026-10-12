@@ -546,7 +546,7 @@
         // user is free to send again right away.
         var cts = _sendCts;
         _sendCts = null;
-        ChatState.SetProcessing(false);
+        ChatState.CancelProcessing();
         cts?.Cancel();
 
         try
@@ -765,10 +765,11 @@
     // the agent, which hands it straight to the bridge; the agent replies once the call resumes.
     private async Task SubmitMcpAnswer(McpQuestionSubmission submission)
     {
+        // Starting the submit also marks the chat busy until the agent's follow-up arrives. That
+        // wait is tracked apart from a turn still running, so the turn's reply can't end it.
         if (!ChatState.TryBeginQuestionSubmit(submission.QuestionId))
             return;
 
-        ChatState.SetProcessing(true);
         try
         {
             await ProxyService.SendMcpAnswerAsync(new McpQuestionAnswer

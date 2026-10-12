@@ -122,7 +122,7 @@ public sealed class ChatStateServiceMcpQuestionTests
 
         Assert.IsTrue(_sut.TryBeginQuestionSubmit(QuestionId));
         Assert.IsFalse(_sut.TryBeginQuestionSubmit(QuestionId), "a second tab can't send it again");
-        _sut.SetProcessing(true);
+        Assert.IsTrue(_sut.IsProcessing, "sending the form makes the chat wait for the agent");
 
         // Accepted: the form closes, but the user still waits for the agent's reply.
         await _frontend.OnMcpQuestionStatusAsync(Status(McpQuestionState.Answered, answeredBy: "user"));
@@ -132,7 +132,43 @@ public sealed class ChatStateServiceMcpQuestionTests
         await _frontend.DisplayReplyAsync(new AgentReply
         {
             Content = "Found 3 invoices.", SessionId = "blazor-session", AgentName = "rockbot", IsFinal = true,
+            FollowsQuestionId = QuestionId,
         });
+        Assert.IsFalse(_sut.IsProcessing);
+    }
+
+    [TestMethod]
+    public async Task TheReplyOfTheTurnThatShowedTheForm_DoesNotEndTheFormsWait()
+    {
+        // The form arrives while its turn is still running, and the user answers at once.
+        _sut.SetProcessing(true);
+        await _frontend.DisplayReplyAsync(FormReply());
+        _sut.TryBeginQuestionSubmit(QuestionId);
+
+        // That turn finishes: its reply, and its send loop's own SetProcessing(false).
+        await _frontend.DisplayReplyAsync(new AgentReply
+        {
+            Content = "There's a form waiting for you.", SessionId = "blazor-session", AgentName = "rockbot", IsFinal = true,
+        });
+        _sut.SetProcessing(false);
+        Assert.IsTrue(_sut.IsProcessing, "the form's follow-up is still to come");
+
+        await _frontend.DisplayReplyAsync(new AgentReply
+        {
+            Content = "Found 3 invoices.", SessionId = "blazor-session", AgentName = "rockbot", IsFinal = true,
+            FollowsQuestionId = QuestionId,
+        });
+        Assert.IsFalse(_sut.IsProcessing);
+    }
+
+    [TestMethod]
+    public async Task Cancelling_StopsWaitingOnAFormAnswerToo()
+    {
+        await _frontend.DisplayReplyAsync(FormReply());
+        _sut.TryBeginQuestionSubmit(QuestionId);
+
+        _sut.CancelProcessing();
+
         Assert.IsFalse(_sut.IsProcessing);
     }
 
@@ -141,7 +177,6 @@ public sealed class ChatStateServiceMcpQuestionTests
     {
         await _frontend.DisplayReplyAsync(FormReply());
         _sut.TryBeginQuestionSubmit(QuestionId);
-        _sut.SetProcessing(true);
 
         await _frontend.OnMcpQuestionStatusAsync(Status(McpQuestionState.Rejected, reason: "mailbox is too short"));
 
@@ -157,7 +192,6 @@ public sealed class ChatStateServiceMcpQuestionTests
     {
         await _frontend.DisplayReplyAsync(FormReply());
         _sut.TryBeginQuestionSubmit(QuestionId);
-        _sut.SetProcessing(true);
 
         _sut.FailQuestionSubmit(QuestionId, "the answer couldn't be sent (bus down)");
 

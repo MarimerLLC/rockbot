@@ -246,6 +246,7 @@ internal sealed class McpQuestionAnswerHandler(
                 SessionId = sessionId,
                 AgentName = agent.Name,
                 IsFinal = true,
+                FollowsQuestionId = message.QuestionId,
             }.ToEnvelope<AgentReply>(source: agent.Name), ct);
 
         logger.LogInformation("Replied after the form answer to MCP question {QuestionId} ({Length} chars)",
@@ -259,7 +260,8 @@ internal sealed class McpQuestionAnswerHandler(
                 SessionId = message.SessionId,
                 QuestionId = message.QuestionId,
                 State = state,
-                AnsweredBy = "user",
+                // No AnsweredBy: a rejected answer settled nothing, and an unavailable question
+                // was settled by whatever settled it. The bridge labels real answers and declines.
                 Reason = reason,
             }.ToEnvelope<McpQuestionStatus>(source: agent.Name), ct);
 

@@ -61,6 +61,12 @@ internal sealed class BridgeHarness : IAsyncDisposable
     public McpBridgeService Bridge => _bridge;
 
     /// <summary>
+    /// Holds a publish until the returned task completes: a test can stall one message (a form)
+    /// while something else happens, as a slow broker would.
+    /// </summary>
+    public Func<MessageEnvelope, Task>? PublishGate { get; set; }
+
+    /// <summary>
     /// The in-memory bus, for wiring agent-side components (proxy, management executor) to the
     /// bridge: a publish is captured and delivered to whatever subscribed to that exact topic.
     /// </summary>
@@ -124,7 +130,7 @@ internal sealed class BridgeHarness : IAsyncDisposable
     private async Task StartBridgeAsync()
     {
         _subscriber = new TopicSubscriber();
-        _publisher = new CapturingPublisher(_subscriber);
+        _publisher = new CapturingPublisher(_subscriber, e => PublishGate?.Invoke(e) ?? Task.CompletedTask);
         // Attachment storage defaults to the shared volume (/rockbot/shared), which a test runner
         // can't write; keep it inside the run's temporary directory.
         _bridge = new McpBridgeService(
@@ -450,7 +456,7 @@ internal sealed class BridgeHarness : IAsyncDisposable
         }
     }
 
-    private sealed class CapturingPublisher(TopicSubscriber subscriber) : IMessagePublisher
+    private sealed class CapturingPublisher(TopicSubscriber subscriber, Func<MessageEnvelope, Task>? holdUntil) : IMessagePublisher
     {
         private readonly object _gate = new();
         private readonly List<(string Topic, MessageEnvelope Envelope)> _published = [];
@@ -460,10 +466,13 @@ internal sealed class BridgeHarness : IAsyncDisposable
             get { lock (_gate) return [.. _published]; }
         }
 
-        public Task PublishAsync(string topic, MessageEnvelope envelope, CancellationToken cancellationToken = default)
+        public async Task PublishAsync(string topic, MessageEnvelope envelope, CancellationToken cancellationToken = default)
         {
+            // A held publish is recorded only once released, as a slow broker would deliver it.
+            if (holdUntil is not null)
+                await holdUntil(envelope);
             lock (_gate) _published.Add((topic, envelope));
-            return subscriber.TryDeliverAsync(topic, envelope);
+            await subscriber.TryDeliverAsync(topic, envelope);
         }
 
         public ValueTask DisposeAsync() => default;

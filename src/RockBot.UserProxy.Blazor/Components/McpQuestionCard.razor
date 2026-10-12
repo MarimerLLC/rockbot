@@ -32,6 +32,11 @@ else
                 var labelId = $"{id}-label";
                 var descriptionId = string.IsNullOrEmpty(field.Description) ? null : $"{id}-description";
                 var error = _errors.GetValueOrDefault(field.Name);
+                var errorId = error is null ? null : $"{id}-error";
+
+                // A screen reader hears the description and, after a failed submit, the error.
+                var describedBy = JoinIds(descriptionId, errorId);
+                var invalid = error is null ? null : "true";
 
                 // A label can only point (for=) at one control. A radio or checkbox group takes
                 // its name from the label instead (aria-labelledby).
@@ -58,7 +63,7 @@ else
                     {
                         case McpQuestionFieldKind.Boolean:
                             <div class="d-flex gap-3" id="@id" role="radiogroup"
-                                 aria-labelledby="@labelId" aria-describedby="@descriptionId">
+                                 aria-labelledby="@labelId" aria-describedby="@describedBy" aria-invalid="@invalid">
                                 <div class="form-check">
                                     <input class="form-check-input" type="radio" name="@id" id="@($"{id}-yes")"
                                            checked="@(_model.GetFlag(field.Name) == true)"
@@ -76,7 +81,7 @@ else
 
                         case McpQuestionFieldKind.SingleSelect when field.Options is { Count: <= 4 } options:
                             <div class="d-flex flex-wrap gap-3" id="@id" role="radiogroup"
-                                 aria-labelledby="@labelId" aria-describedby="@descriptionId">
+                                 aria-labelledby="@labelId" aria-describedby="@describedBy" aria-invalid="@invalid">
                                 @for (var o = 0; o < options.Count; o++)
                                 {
                                     var option = options[o];
@@ -92,7 +97,7 @@ else
                             break;
 
                         case McpQuestionFieldKind.SingleSelect:
-                            <select class="form-select form-select-sm" id="@id" aria-describedby="@descriptionId"
+                            <select class="form-select form-select-sm" id="@id" aria-describedby="@describedBy" aria-invalid="@invalid"
                                     value="@(_model.GetText(field.Name) ?? "")"
                                     @onchange="e => _model.SetText(field.Name, NullIfEmpty(e.Value?.ToString()))">
                                 <option value="">Choose…</option>
@@ -105,7 +110,7 @@ else
 
                         case McpQuestionFieldKind.MultiSelect:
                             <div class="d-flex flex-wrap gap-3" id="@id" role="group"
-                                 aria-labelledby="@labelId" aria-describedby="@descriptionId">
+                                 aria-labelledby="@labelId" aria-describedby="@describedBy" aria-invalid="@invalid">
                                 @for (var o = 0; o < (field.Options?.Count ?? 0); o++)
                                 {
                                     var option = field.Options![o];
@@ -122,7 +127,7 @@ else
 
                         case McpQuestionFieldKind.Number:
                         case McpQuestionFieldKind.Integer:
-                            <input class="form-control form-control-sm" type="number" id="@id" aria-describedby="@descriptionId"
+                            <input class="form-control form-control-sm" type="number" id="@id" aria-describedby="@describedBy" aria-invalid="@invalid"
                                    step="@(field.Kind == McpQuestionFieldKind.Integer ? "1" : "any")"
                                    min="@field.Minimum" max="@field.Maximum"
                                    value="@_model.GetText(field.Name)"
@@ -130,7 +135,7 @@ else
                             break;
 
                         default:
-                            <input class="form-control form-control-sm" type="@InputType(field.Format)" id="@id" aria-describedby="@descriptionId"
+                            <input class="form-control form-control-sm" type="@InputType(field.Format)" id="@id" aria-describedby="@describedBy" aria-invalid="@invalid"
                                    maxlength="@field.MaxLength"
                                    placeholder="@(field.Format == "date-time" ? "2026-10-12T14:30:00Z" : null)"
                                    value="@_model.GetText(field.Name)"
@@ -140,7 +145,7 @@ else
 
                     @if (error is not null)
                     {
-                        <div class="mcp-question-error small">@error</div>
+                        <div class="mcp-question-error small" id="@errorId" role="alert">@error</div>
                     }
                 </div>
             }
@@ -168,12 +173,12 @@ else
 
     @if (Message.QuestionState == McpQuestionState.Rejected && !string.IsNullOrEmpty(Message.QuestionReason))
     {
-        <div class="mcp-question-error small mt-2">Not accepted: @Message.QuestionReason</div>
+        <div class="mcp-question-error small mt-2" role="alert">Not accepted: @Message.QuestionReason</div>
     }
 
     @if (closed)
     {
-        <div class="mcp-question-closed small mt-2">@ClosedText(form, now)</div>
+        <div class="mcp-question-closed small mt-2" role="status">@ClosedText(form, now)</div>
     }
 
     <div class="message-time">
@@ -252,6 +257,13 @@ else
         McpQuestionFieldKind.SingleSelect => field.Options is { Count: <= 4 },
         _ => false,
     };
+
+    /// <summary>Space-separated ids for an aria-*by attribute, or null (attribute omitted) when none.</summary>
+    private static string? JoinIds(params string?[] ids)
+    {
+        var present = ids.Where(i => !string.IsNullOrEmpty(i)).ToArray();
+        return present.Length == 0 ? null : string.Join(' ', present);
+    }
 
     private static string InputType(string? format) => format switch
     {
