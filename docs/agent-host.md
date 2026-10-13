@@ -468,6 +468,7 @@ Every RUN, COMPLETE and INCOMPLETE log line includes `trigger=` and `userAskedFo
 | `rockbot.agent.follow_up.skipped` | Follow-up evaluation skipped (disabled, force term) |
 | `rockbot.agent.consequential_action.gated` | The consequential-action gate refused an external change (tagged `rockbot.tool.name` and `rockbot.action_gate.origin`) |
 | `rockbot.agent.consequential_action.decisions` | The gate's decision model judged a change the regex would have refused (tagged `rockbot.tool.name` and `rockbot.action_gate.decision`: `allowed`, `refused`, `allowed-on-failure`, `refused-on-failure`) |
+| `rockbot.decision.calls` / `rockbot.decision.duration` | Shared decision-model calls and latency, tagged `rockbot.decision.purpose` and `rockbot.decision.outcome` (see [Decision model](decision-model.md)) |
 
 ### Consequential-action gate
 
@@ -538,16 +539,15 @@ At or above the threshold the call runs; below it, it is refused as above.
   (tool, system changed, arguments up to 600 chars). Only a `UserTurn` attaches a request. A subagent
   that inherited none never sends its own task description, which the agent wrote and which would
   launder an information-only message into an instruction.
-- **Failure.** On timeout, an HTTP error (including 429) or an unreadable answer, `AllowOnFailure`
-  decides (default `true`: the call runs, logged at Warning as `allowed-on-failure`). The regex has
-  already said no, so this only decides who gets the benefit of the doubt. At capacity 1 a
-  Decision-1 deployment allows one request per minute, so size the deployment before relying on it.
+- **Failure.** On timeout, an HTTP error (including 429) or an unreadable answer,
+  `AgentHost:ConsequentialActionGate:AllowOnDecisionFailure` decides (default `true`: the call runs,
+  logged at Warning as `allowed-on-failure`). The regex has already said no, so this only decides
+  who gets the benefit of the doubt.
 - **Logs.** `Decision model: user asked for <tool>? p=<0–1> threshold=<t> → allowed|refused`, or
   `Decision model unavailable for <tool>; allowed-on-failure|refused-on-failure`. A non-2xx response
   or a body without a readable probability logs the body (truncated) at Warning.
-- **Response shape.** `{"answers":{"user_asked":{"noul":0.989,"type":"noul"}}}` (observed
-  2026-10-13). `FoundryDecisionIntentClassifier.ReadProbability` also accepts a bare number and the
-  usual field names, in case another systemone model differs.
+- **Service.** The gate calls the shared `IDecisionService` with purpose `ActionGate`; see
+  [Decision model](decision-model.md) for the client, configuration and the other uses.
 
 Probe of 2026-10-13 against `decision-1` (300–480 ms per call, about 233 input tokens): the three
 preview.2 todo messages, "yes please" after an offer, and "you can check it off" scored 0.75–0.9995.
@@ -572,35 +572,11 @@ should rarely fire.
 `AgentHost:ConsequentialActionGate:ExternalTools` (native tool names to gate like MCP writes;
 default empty).
 
-The decision model is configured under `AgentHost:ConsequentialActionGate:DecisionModel`. It is
-used only when `Endpoint`, `ApiKey` and `Deployment` are all set; otherwise the regex alone decides.
-
-| Key | Default | Meaning |
-|---|---|---|
-| `Endpoint` | — | Foundry resource endpoint, e.g. `https://my-resource.services.ai.azure.com` |
-| `ApiKey` | — | Foundry key, sent as the `api-key` header |
-| `Deployment` | — | Deployment name of `Microsoft-Decision-1` (the request's `model`) |
-| `Path` | `/providers/microsoft/v1/systemone` | Decision API path on the endpoint |
-| `Threshold` | `0.5` | Probability at or above which the user asked for the change |
-| `TimeoutSeconds` | `5` | Per-call timeout |
-| `AllowOnFailure` | `true` | Allow (`true`) or refuse (`false`) when the model can't answer |
-
-In Helm, the non-secret keys are `agent.decisionModel.{endpoint,deployment,threshold,timeoutSeconds,allowOnFailure}`
-(the configmap renders them only when `endpoint` and `deployment` are both set). The key is
-`secrets.decisionModel.apiKey`. When that is empty, the secret uses `secrets.llm.balanced.apiKey`,
-which is right when the same Foundry account serves the LLM tiers and Decision-1, since an account
-key covers every deployment on it. **If the balanced tier moves to another provider, set
-`secrets.decisionModel.apiKey` explicitly**: otherwise every question fails with 401, and with
-`AllowOnFailure` on, every gated change runs.
-
-To create the deployment (Decision-1 is `DataZoneStandard` in eastus2; re-run with a new
-`--sku-capacity` to resize it in place):
-
-```bash
-az cognitiveservices account deployment create -n <account> -g <resource-group> \
-  --deployment-name decision-1 --model-name Microsoft-Decision-1 --model-format Microsoft \
-  --model-version 1 --sku-name DataZoneStandard --sku-capacity 20
-```
+The decision model itself (endpoint, key, deployment, per-use switches and thresholds) is the
+shared `DecisionModel` section described in [Decision model](decision-model.md). The gate's
+threshold is `DecisionModel:Uses:ActionGate:Threshold` (default 0.5);
+`AgentHost:ConsequentialActionGate:AllowOnDecisionFailure` (default `true`) decides what happens
+when the model can't answer.
 
 **Time conversion.** The same incident relayed 09:45 Amsterdam on 2026-10-28 as 2:45 AM Chicago
 (it is 3:45 — Europe left summer time on Oct 25, the US does on Nov 1). The `convert_time`

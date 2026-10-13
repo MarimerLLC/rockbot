@@ -27,7 +27,9 @@ public sealed partial class CorrectionDetector(
     IDecisionService? decisions = null,
     ILogger<CorrectionDetector>? logger = null)
 {
-    private const double DefaultThreshold = 0.5;
+    // Probed 2026-10-13: real corrections scored >= 0.999; the highest non-correction ("I have no
+    // idea what time it starts" after a scheduling reply) 0.651.
+    private const double DefaultThreshold = 0.7;
     private const int MaxFieldChars = 3000;
     internal const string QuestionName = "corrects_agent";
 
