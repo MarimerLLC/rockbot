@@ -34,10 +34,14 @@ public sealed partial class AgentLoopRunner(
     ISessionWorkRegistry? sessionWorkRegistry = null,
     IConsequentialActionGate? consequentialActionGate = null,
     DeferredToolActivations? deferredToolActivations = null,
-    CompletionCheckClassifier? completionCheck = null)
+    CompletionCheckClassifier? completionCheck = null,
+    FollowUpGate? followUpGate = null)
 {
     // Second opinion for the completion-evaluator gate when its regexes find nothing.
     private readonly CompletionCheckClassifier _completionCheck = completionCheck ?? new CompletionCheckClassifier();
+
+    // Skips the follow-up evaluator's LLM call when the decision model sees nothing to explore.
+    private readonly FollowUpGate _followUpGate = followUpGate ?? new FollowUpGate();
 
     // #670: which deferred tool families each session has loaded. Process-wide: the runner is
     // transient, and a family loaded on one turn stays in the session's list on the next.
@@ -811,11 +815,15 @@ public sealed partial class AgentLoopRunner(
             // The regexes found nothing: on a user turn (no explicit trigger set, not a relay), ask
             // the decision model whether the reply promises work, claims an unbacked change or
             // denies a capability. Subagents keep their narrower self-check set.
+            // A Pattern verdict from the model means it saw a capability denial the regex missed;
+            // the re-prompt below then uses the "you do have access" instructions.
+            var modelSawDenial = false;
             if (trigger == CompletionEvalTrigger.None && completionEvalTriggers is null && !subagentSynthesis
                 && result.ExitReason == LoopExitReason.ModelStopped && _completionCheck.IsEnabled)
             {
                 trigger = await _completionCheck.SecondOpinionAsync(
                     result.Response, originalUserRequest, loopToolCalls, cancellationToken);
+                modelSawDenial = trigger == CompletionEvalTrigger.Pattern;
             }
 
             if (trigger == CompletionEvalTrigger.None)
@@ -942,7 +950,7 @@ public sealed partial class AgentLoopRunner(
             var unrequestedChanges = externalChangesNeedRequest && userAskedFor == UserRequestKind.InformationOnly
                 ? CompletionEvalTriggers.ExternalChanges(loopToolCalls, relayedForEval)
                 : [];
-            var instructions = CapabilityDenialRegex.IsMatch(result.Response)
+            var instructions = CapabilityDenialRegex.IsMatch(result.Response) || modelSawDenial
                 ? "You DO have access to external services. " + HowToReachServices() + " Do not give up without trying."
                 : userAskedFor == UserRequestKind.InformationOnly
                     ? "Fix what it flagged. Use your tools if you need to check a fact, but do not start work " +
@@ -3065,6 +3073,15 @@ public sealed partial class AgentLoopRunner(
             logger.LogInformation(
                 "Follow-up evaluator: SKIPPED (low complexity score {Score:F3})",
                 complexityScore.Value);
+            return null;
+        }
+
+        // Most turns are closed requests the evaluator would decline anyway; a confident no from
+        // the decision model saves its LLM call.
+        if (!await _followUpGate.WorthEvaluatingAsync(originalUserRequest, completedResponse, cancellationToken))
+        {
+            HostDiagnostics.FollowUpSkipped.Add(1);
+            logger.LogInformation("Follow-up evaluator: SKIPPED (decision model: closed request)");
             return null;
         }
 

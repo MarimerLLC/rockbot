@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using RockBot.Llm;
@@ -25,8 +26,15 @@ public sealed class CompletionCheckClassifier(
     internal const string UnbackedClaim = "claims_change_no_call_made";
     internal const string Denial = "denies_capability";
 
+    private const int MaxCached = 64;
+    private static readonly TimeSpan CacheLifetime = TimeSpan.FromMinutes(5);
+
     private readonly IDecisionService _decisions = decisions ?? NullDecisionService.Instance;
     private readonly ILogger _logger = (ILogger?)logger ?? NullLogger.Instance;
+
+    // A no-tool first reply that the fast path flags is re-run in the background loop, whose
+    // completion check would ask about the same reply again. Answers are kept briefly by content.
+    private readonly ConcurrentDictionary<string, (CompletionEvalTrigger Trigger, DateTimeOffset At)> _recent = new();
 
     /// <summary>True when the model is configured and this use is on.</summary>
     public bool IsEnabled => _decisions.IsEnabled(DecisionPurposes.CompletionCheck);
@@ -44,6 +52,10 @@ public sealed class CompletionCheckClassifier(
         // "thanks" → "You're welcome!" needs no second look.
         if (CompletionEvalTriggers.IsTrivialChat(userMessage))
             return CompletionEvalTrigger.None;
+
+        var key = CacheKey(response, userMessage, toolCalls);
+        if (_recent.TryGetValue(key, out var cached) && DateTimeOffset.UtcNow - cached.At < CacheLifetime)
+            return cached.Trigger;
 
         var result = await _decisions.DecideAsync(BuildRequest(response, userMessage, toolCalls), cancellationToken)
             .ConfigureAwait(false);
@@ -66,8 +78,17 @@ public sealed class CompletionCheckClassifier(
             "Decision model: completion check promise={Promise:0.000} unbacked-claim={Claim:0.000} denial={Denial:0.000} " +
             "threshold={Threshold:0.00} → {Trigger}",
             promise, claim, denial, threshold, CompletionEvalTriggers.LogName(trigger));
+
+        if (_recent.Count >= MaxCached)
+            foreach (var stale in _recent.Where(e => DateTimeOffset.UtcNow - e.Value.At >= CacheLifetime).Select(e => e.Key).ToList())
+                _recent.TryRemove(stale, out _);
+        if (_recent.Count < MaxCached)
+            _recent[key] = (trigger, DateTimeOffset.UtcNow);
         return trigger;
     }
+
+    private static string CacheKey(string response, string? userMessage, IReadOnlyList<LoopToolCall> toolCalls) =>
+        $"{userMessage}\u0000{response}\u0000{CompletionEvalTriggers.SubstantiveCalls(toolCalls).Count}";
 
     internal static DecisionRequest BuildRequest(string response, string? userMessage, IReadOnlyList<LoopToolCall> toolCalls)
     {

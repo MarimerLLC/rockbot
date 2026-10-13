@@ -57,7 +57,8 @@ agent:
     timeoutSeconds: ""      # "" = 5
     allowOnGateFailure: ""  # "" = true; false makes the action gate refuse when the model can't answer
     # Per-purpose switches and thresholds (ActionGate, Correction, CompletionCheck,
-    # TrailingOffer, MemoryDuplicate, MemoryContradiction, TierRouting), e.g.
+    # TrailingOffer, MemoryDuplicate, MemoryContradiction, TierRouting, IncompleteReply,
+    # FollowUp, SkillRecall), e.g.
     #   uses:
     #     TierRouting: { enabled: false }
     #     ActionGate: { threshold: 0.6 }

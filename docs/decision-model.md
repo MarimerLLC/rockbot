@@ -61,6 +61,9 @@ Observed response shapes (2026-10-13):
 | `MemoryDuplicate` | Similarity ≥ threshold and no missing names or numbers → reinforce, drop new text | Before reinforcing | Reinforced, as before | 0.5 |
 | `MemoryContradiction` | Keyword valence plus overlap picks candidates | There are candidates. One call covers up to 10 | Keyword verdict | 0.5 |
 | `TierRouting` | Keyword selector score bands, floors and guards | The score band decided and the score is within `TierRoutingMargin` (0.08) of a ceiling | Keyword tier | 0.6 confidence; moves at most one tier |
+| `IncompleteReply` | Reply ends with ":" or "..." (`IsIncompleteSetupPhrase`) | A candidate, at first-response routing, the native-path summary fallback and subagent reports | Candidate treated as incomplete | 0.5 |
+| `FollowUp` | Follow-ups off, or complexity ≤ 0.15 → skip | Before the follow-up evaluator's LLM call | Evaluate | Evaluate at ≥ 0.3 |
+| `SkillRecall` | Skill search ranks the newly recalled skills | Some were newly recalled this turn (already-recalled skills aren't asked about again) | Rank-1 gets the full body | 0.6 confidence |
 
 What each use asks:
 
@@ -84,6 +87,21 @@ What each use asks:
   superseded.
 - **TierRouting** — a choice between `low`, `balanced` and `high`, with descriptions. The routing
   log records rule `decision-model` when the model changed the tier.
+- **CompletionCheck on the fast path** — a no-tool first reply that no regex flags used to go
+  straight to the user, never reaching the loop's completion check. It now gets the same three
+  questions. A flagged reply goes through the background loop, whose check reuses the cached
+  answer (5 minutes, keyed by reply and user message). A model-detected capability denial also
+  gets the "you do have access" re-prompt, as a regex-detected one did.
+- **IncompleteReply** — "Does the whole reply stop before delivering what it announces?" Asked
+  only where a false positive is visible: first-response routing (sends "I'm working on that" and
+  re-runs the turn), the native-path summary fallback (replaces the reply), and subagent reports
+  (appends "ran out of steps"). The text-loop nudges stay deterministic: a false positive there
+  costs one extra iteration, and the end-of-loop completion check backs them up.
+- **FollowUp** — "Did user_request ask to investigate, research, catch up on or connect
+  information across sources, leaving more to explore?" Below 0.3 the follow-up evaluator's
+  Low-tier LLM call is skipped, so this saves more LLM calls than it adds decision calls.
+- **SkillRecall** — a choice among the newly recalled skills (by summary) plus `none`. The pick
+  gets the full body, `none` injects summaries only, and an unsure answer keeps rank-1.
 
 Also fixed while here, with no model involved: the dream's at-risk detection read session-summary
 feedback with `Contains("poor") || Contains("fair")`, which matched "unfair", "fairly" and tool
@@ -100,6 +118,9 @@ names. It now reads the evaluator's `overallQuality` field.
 | MemoryDuplicate | 3 | 3/3. Negation and new value 0.001, restatement 1.000 |
 | MemoryContradiction | 2 | 2/2. "Use X, never Y" vs "always use X" 0.085; vs "never use X" 0.998 |
 | TierRouting | 3 | 3/3. Each ≥ 0.994 |
+| IncompleteReply | 5 | 5/5. Real lead-ins ≥ 0.947; complete replies ending in "..." or a time ≤ 0.014 |
+| FollowUp | 5 | 5/5 at the 0.3 skip line. Closed requests 0.002; "catch me up" 0.679, Henderson 0.835 |
+| SkillRecall | 4 | 4/4, including `none` for an off-topic message. Each ≥ 0.989 |
 
 ## Configuration
 

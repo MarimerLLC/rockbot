@@ -28,6 +28,7 @@ public class RockBotFunctionInvokingChatClient : FunctionInvokingChatClient
     private readonly IWorkingMemory _workingMemory;
     private readonly IOptions<AgentHostOptions> _hostOptions;
     private readonly ILogger _logger;
+    private readonly IncompleteReplyCheck _incompleteCheck;
 
     private int _consecutiveTimeoutIterations;
     private int? _knownContextLimit;
@@ -41,8 +42,10 @@ public class RockBotFunctionInvokingChatClient : FunctionInvokingChatClient
         LlmCostEstimator costEstimator,
         IWorkingMemory workingMemory,
         IOptions<AgentHostOptions> hostOptions,
-        ILogger logger) : base(new TypedToolSurfaceChatClient(innerClient))
+        ILogger logger,
+        IncompleteReplyCheck? incompleteCheck = null) : base(new TypedToolSurfaceChatClient(innerClient))
     {
+        _incompleteCheck = incompleteCheck ?? new IncompleteReplyCheck();
         _progressNotifier = progressNotifier;
         _toolCallLog = toolCallLog;
         _modelBehavior = modelBehavior;
@@ -434,7 +437,9 @@ public class RockBotFunctionInvokingChatClient : FunctionInvokingChatClient
         // If the response looks like max-iterations was hit (incomplete setup phrase),
         // make one follow-up call asking for a backward-looking summary.
         var text = ExtractAssistantText(response);
-        if (AgentLoopRunner.IsIncompleteSetupPhrase(text) || string.IsNullOrWhiteSpace(text))
+        // Empty is deterministic; a trailing ":" or "..." is only a candidate, confirmed by the
+        // decision model before the reply is replaced with a summary.
+        if (string.IsNullOrWhiteSpace(text) || await _incompleteCheck.IsIncompleteAsync(text, cancellationToken))
         {
             var hasToolCalls = response.Messages
                 .Any(m => m.Contents.OfType<FunctionCallContent>().Any());

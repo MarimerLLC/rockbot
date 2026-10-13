@@ -40,9 +40,13 @@ public sealed class AgentContextBuilder(
     IToolCallLog? toolCallLog = null,
     IOptions<AgentHostOptions>? agentHostOptions = null,
     IOptions<WorkingMemoryOptions>? workingMemoryOptions = null,
-    ISessionWorkRegistry? sessionWorkRegistry = null)
+    ISessionWorkRegistry? sessionWorkRegistry = null,
+    SkillRecallPicker? skillRecallPicker = null)
 #pragma warning restore CS9113
 {
+    /// <summary>Picks which recalled skill gets its full body (rank-1 without a decision model).</summary>
+    private readonly SkillRecallPicker _skillRecallPicker = skillRecallPicker ?? new SkillRecallPicker();
+
     /// <summary>Host options, defaulted when not supplied so existing callers and tests are unaffected.</summary>
     private readonly AgentHostOptions _hostOptions = agentHostOptions?.Value ?? new AgentHostOptions();
 
@@ -631,7 +635,8 @@ public sealed class AgentContextBuilder(
                 skillList.Count, sessionId);
         }
 
-        // Per-turn skill BM25 recall: rank-1 full body, ranks 2+ summary-only.
+        // Per-turn skill recall: one full body (the decision model's pick, or rank-1), the rest
+        // summary-only.
         // Why: production tool-call logs show ~1% of tool calls are get_skill while every
         // non-short turn pushes ~5 full bodies — most are unread. Rank-1 is usually the
         // genuinely-relevant skill; ranks 2+ are noise the agent can pull on demand.
@@ -645,12 +650,21 @@ public sealed class AgentContextBuilder(
             {
                 var skillNames = string.Join(", ", newSkills.Select(s => s.Name));
 
-                var topSkill = newSkills[0];
-                var (topText, appendedCompanion) = await WrapRecalledSkillAsync(topSkill, sessionId, newSkills);
-                chatMessages.Add(new ChatMessage(ChatRole.System, topText).Tag(ContextCategory.SkillBody));
+                // Search ranks the candidates; the decision model picks which one, if any, is
+                // worth its full body (rank-1 when the model is off or unsure). Recalled skills are
+                // not recalled again this session, so a wrong full-body pick is never corrected.
+                var pick = await _skillRecallPicker.PickAsync(currentUserContent, newSkills, ct);
+                string? appendedCompanion = null;
+                Skill? topSkill = pick >= 0 ? newSkills[pick] : null;
+                if (topSkill is not null)
+                {
+                    (var topText, appendedCompanion) = await WrapRecalledSkillAsync(topSkill, sessionId, newSkills);
+                    chatMessages.Add(new ChatMessage(ChatRole.System, topText).Tag(ContextCategory.SkillBody));
+                }
 
                 // A companion whose lessons rode along with its guide isn't listed again.
-                var otherSkills = newSkills.Skip(1)
+                var otherSkills = newSkills
+                    .Where(s => !ReferenceEquals(s, topSkill))
                     .Where(s => !s.Name.Equals(appendedCompanion, StringComparison.OrdinalIgnoreCase))
                     .ToList();
                 if (otherSkills.Count > 0)
@@ -669,8 +683,8 @@ public sealed class AgentContextBuilder(
                 }
 
                 logger.LogInformation(
-                    "Injected {Count} skill(s) (BM25 recall: rank-1 full, ranks 2+ summary) for session {SessionId}: {Skills}",
-                    newSkills.Count, sessionId, skillNames);
+                    "Injected {Count} skill(s) (full body: {Full}; others summary) for session {SessionId}: {Skills}",
+                    newSkills.Count, topSkill?.Name ?? "none", sessionId, skillNames);
 
                 var seeAlsoNames = newSkills
                     .SelectMany(s => s.SeeAlso ?? [])
