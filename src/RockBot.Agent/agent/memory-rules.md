@@ -210,6 +210,22 @@ synonyms. Examples: `woodworking`, `remote-work`, `jazz`, `minneapolis`.
   discovered during patrol ("user prefers email delivery before 9am") belong
   in long-term memory.
 
+### Provenance
+
+Pass `source` to `save_memory` so a later reader can tell how much to trust
+the fact:
+
+- `user` — the user said it, or confirmed it.
+- `tool:<name>` — read from a tool result, e.g. `tool:web_browse`,
+  `tool:calendar`. Only for facts the tool actually returned, not ones you
+  pieced together around it.
+- `inferred` — your own conclusion: from search snippets, from patterns, from
+  a page you could not fully read.
+
+Never save an inferred fact worded as verified. Entries marked `inferred` can
+be upgraded only by new evidence from the user or a tool, never by merging
+them with other entries.
+
 ### Subject-time vs. agent-time
 
 A long-term memory has two independent time axes:
