@@ -65,7 +65,8 @@ internal sealed class UserMessageHandler(
     SessionTierHistory? tierHistory = null,
     RockBot.Subagent.ISubagentManager? subagentManager = null,
     CorrectionDetector? correctionDetector = null,
-    TrailingOfferStripper? offerStripper = null) : IMessageHandler<UserMessage>
+    TrailingOfferStripper? offerStripper = null,
+    TierRoutingRefiner? tierRefiner = null) : IMessageHandler<UserMessage>
 {
     private static readonly TimeSpan ProgressMessageThreshold = TimeSpan.FromSeconds(5);
 
@@ -171,6 +172,8 @@ internal sealed class UserMessageHandler(
                 ThreadEstablished: threadEstablished,
                 RecentMaxTier: recentMaxTier,
                 ActiveSubagent: activeSubagent));
+        if (tierRefiner is not null)
+            classification = await tierRefiner.RefineAsync(message.Content, "user-message", classification, ct);
         var tier = classification.Tier;
         logger.LogInformation(
             "Routing user message to tier={Tier} (rule={Rule}, score={Score:F3}, threadEstablished={ThreadEstablished}, " +

@@ -38,6 +38,15 @@ public sealed class DecisionModelOptions
     /// </summary>
     public Dictionary<string, DecisionUseOptions> Uses { get; set; } = new(StringComparer.OrdinalIgnoreCase);
 
+    /// <summary>Default for <see cref="TierRoutingMargin"/>.</summary>
+    public const double DefaultTierRoutingMargin = 0.08;
+
+    /// <summary>
+    /// Tier routing asks the model only when the keyword score is within this distance of a tier
+    /// ceiling (ceilings default to 0.25 and 0.55). Default 0.08. 0 effectively turns it off.
+    /// </summary>
+    public double TierRoutingMargin { get; set; } = DefaultTierRoutingMargin;
+
     /// <summary>True when the endpoint, key and deployment are all set.</summary>
     public bool IsConfigured =>
         !string.IsNullOrWhiteSpace(Endpoint) && !string.IsNullOrWhiteSpace(ApiKey) && !string.IsNullOrWhiteSpace(Deployment);

@@ -54,6 +54,7 @@ public static class ServiceCollectionExtensions
         services.TryAddSingleton<CorrectionDetector>();
         services.TryAddSingleton<TrailingOfferStripper>();
         services.TryAddSingleton<CompletionCheckClassifier>();
+        services.TryAddSingleton<TierRoutingRefiner>();
         services.AddTransient<AgentLoopRunner>();
         // #670: which rarely used tool families each session has loaded; outlives the transient runner.
         services.TryAddSingleton(_ => new DeferredToolActivations());

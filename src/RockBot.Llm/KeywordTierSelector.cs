@@ -170,6 +170,18 @@ public sealed class KeywordTierSelector : ILlmTierSelector
 
     private TierClassification ClassifyCore(string promptText, TierRoutingContext? context)
     {
+        var classification = ClassifyBands(promptText, context);
+        var config = GetEffectiveConfig();
+        return classification with
+        {
+            BoundaryDistance = Math.Min(
+                Math.Abs(classification.ComplexityScore - config.LowCeiling),
+                Math.Abs(classification.ComplexityScore - config.BalancedCeiling)),
+        };
+    }
+
+    private TierClassification ClassifyBands(string promptText, TierRoutingContext? context)
+    {
         var config = GetEffectiveConfig();
         var lower = promptText.ToLowerInvariant();
 
