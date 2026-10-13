@@ -617,6 +617,16 @@ public sealed partial class AgentLoopRunner(
         // starts) makes. A user turn whose scope carries no classification is judged by the same
         // request the evaluator judges: a bare "yes" after an agent proposal is an instruction.
         var gateScope = ResolveActionGateScope(actionGate, ActionGateContext.Scope, userAskedFor);
+        // The message the decision model judges when the regex reads it as information-only. Only a
+        // user turn attaches one, and only the user's own words: a subagent's task description is
+        // written by the agent and would launder an information-only message into an instruction.
+        // Subagents inherit their parent's request (and its cached decisions) through the scope.
+        if (gateScope.Origin == RunOrigin.UserTurn && gateScope.Request is null
+            && !string.IsNullOrWhiteSpace(judgedUserRequest))
+            gateScope = gateScope with
+            {
+                Request = new ActionGateRequest(judgedUserRequest, subagentSynthesis ? null : previousAgentMessage),
+            };
         using var __________ = ActionGateContext.Set(gateScope, _actionGate);
         var externalChangesNeedRequest = gateScope.RequiresUserInstruction;
 
@@ -1524,7 +1534,7 @@ public sealed partial class AgentLoopRunner(
                     object? result;
                     var textOutcome = new ToolCallOutcome(); // #686, see RockBotFunctionInvokingChatClient
                     // #685: an external change the user did not ask for is refused, not run.
-                    if (ActionGateContext.Check(toolName, argsJson) is { } textRefusal)
+                    if (await ActionGateContext.CheckAsync(toolName, argsJson, cancellationToken) is { } textRefusal)
                     {
                         toolSw.Stop();
                         result = textRefusal;
@@ -1692,7 +1702,7 @@ public sealed partial class AgentLoopRunner(
                 object? result;
                 var nativeOutcome = new ToolCallOutcome(); // #686, see RockBotFunctionInvokingChatClient
                 // #685: an external change the user did not ask for is refused, not run.
-                if (ActionGateContext.Check(fc.Name, argsSummary) is { } refusal)
+                if (await ActionGateContext.CheckAsync(fc.Name, argsSummary, cancellationToken) is { } refusal)
                 {
                     toolSw.Stop();
                     result = refusal;

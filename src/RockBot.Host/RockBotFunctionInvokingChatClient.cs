@@ -68,7 +68,7 @@ public class RockBotFunctionInvokingChatClient : FunctionInvokingChatClient
 
         // #685: an external change the user did not ask for is refused, not run. The refusal is
         // the tool result, recorded as a failed call so the evaluator and relays don't count it.
-        if (ActionGateContext.Check(callContent.Name, argsSummary) is { } refusal)
+        if (await ActionGateContext.CheckAsync(callContent.Name, argsSummary, cancellationToken) is { } refusal)
         {
             ToolDiagnostics.Invocations.Add(1,
                 new KeyValuePair<string, object?>("rockbot.tool.name", callContent.Name),

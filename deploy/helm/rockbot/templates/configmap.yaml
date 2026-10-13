@@ -156,6 +156,23 @@ data:
   Telemetry__ServiceName: {{ .Values.telemetry.serviceName | quote }}
   {{- end }}
 
+  {{- with (default dict .Values.agent.decisionModel) }}
+  {{- if and .endpoint .deployment }}
+  # ── Consequential-action gate decision model (Microsoft-Decision-1) ──────
+  AgentHost__ConsequentialActionGate__DecisionModel__Endpoint: {{ .endpoint | quote }}
+  AgentHost__ConsequentialActionGate__DecisionModel__Deployment: {{ .deployment | quote }}
+  {{- with .threshold }}
+  AgentHost__ConsequentialActionGate__DecisionModel__Threshold: {{ . | quote }}
+  {{- end }}
+  {{- with .timeoutSeconds }}
+  AgentHost__ConsequentialActionGate__DecisionModel__TimeoutSeconds: {{ . | quote }}
+  {{- end }}
+  {{- if ne (toString .allowOnFailure) "" }}
+  AgentHost__ConsequentialActionGate__DecisionModel__AllowOnFailure: {{ .allowOnFailure | quote }}
+  {{- end }}
+  {{- end }}
+  {{- end }}
+
   {{- with .Values.agent.extraEnv }}
   # ── Operator-supplied raw config keys (agent.extraEnv) ─────────────────────
   # Escape hatch for .NET configuration keys that have no dedicated value above.
