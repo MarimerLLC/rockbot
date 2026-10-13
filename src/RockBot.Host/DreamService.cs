@@ -1525,10 +1525,14 @@ internal sealed class DreamService : IHostedService, IDisposable
         metadata[FoldedFromKey] = string.Join(",", foldedFrom);
         metadata[FoldedAtKey] = now.ToString("O");
 
+        // Identical text seen several times: like a reinforcement, the best source wins.
+        var source = copies.Aggregate(MemoryProvenance.Get(survivor.Metadata),
+            (best, copy) => MemoryProvenance.MostTrusted(best, MemoryProvenance.Get(copy.Metadata)));
+
         return survivor with
         {
             Tags = tags,
-            Metadata = metadata,
+            Metadata = source is null ? metadata : MemoryProvenance.With(metadata, source),
             CreatedAt = copies.Select(c => c.CreatedAt).Append(survivor.CreatedAt).Min(),
             ImportanceScore = copies.Select(c => c.ImportanceScore).Append(survivor.ImportanceScore).Max(),
             LastSeenAt = copies.Select(c => c.LastSeenAt).Append(survivor.LastSeenAt).Max(),
@@ -1580,10 +1584,15 @@ internal sealed class DreamService : IHostedService, IDisposable
             metadata[MergedAtKey] = now.ToString("O");
         }
 
+        // The sources were genuinely merged into this text: it is no more trusted than the
+        // weakest of them.
+        var provenance = MemoryProvenance.LeastTrusted(
+            [MemoryProvenance.Get(existing.Metadata), MemoryProvenance.Get(merged.Metadata)]);
+
         return existing with
         {
             Tags = tags,
-            Metadata = metadata,
+            Metadata = MemoryProvenance.With(metadata, provenance),
             CreatedAt = merged.CreatedAt < existing.CreatedAt ? merged.CreatedAt : existing.CreatedAt,
             ImportanceScore = Math.Max(existing.ImportanceScore, merged.ImportanceScore),
             LastSeenAt = merged.LastSeenAt > existing.LastSeenAt ? merged.LastSeenAt : existing.LastSeenAt,
@@ -1791,7 +1800,7 @@ internal sealed class DreamService : IHostedService, IDisposable
                 $"{i + 1}. [ID:{e.Id}] category={e.Category ?? "uncategorized"} " +
                 $"importance={e.ImportanceScore:F2} reinforced={e.ReinforcementCount}× " +
                 $"first={e.CreatedAt:yyyy-MM-dd} last={e.LastSeenAt:yyyy-MM-dd}" +
-                $"{subjectTime} tags=[{tags}]");
+                $"{subjectTime}{MemoryProvenance.Format(e.Metadata)} tags=[{tags}]");
             userMessage.AppendLine($"   {e.Content}");
         }
 
@@ -1933,7 +1942,11 @@ internal sealed class DreamService : IHostedService, IDisposable
 
                 withProvenance[MergedFromKey] = string.Join(",", sources.Select(s => s.Id));
                 withProvenance[MergedAtKey] = DateTimeOffset.UtcNow.ToString("O");
-                mergedMetadata = withProvenance;
+
+                // Merged text is no more trusted than its weakest source, so a merge cannot
+                // launder an inferred fact into a trusted one.
+                mergedMetadata = MemoryProvenance.With(withProvenance,
+                    MemoryProvenance.LeastTrusted(sources.Select(s => MemoryProvenance.Get(s.Metadata))));
             }
 
             var entry = new MemoryEntry(

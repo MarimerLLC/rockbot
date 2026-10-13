@@ -208,6 +208,41 @@ spec:
             {{- toYaml .Values.introspectionMcp.resources | nindent 12 }}
         {{- end }}
 
+        {{- if (default dict .Values.browser).enabled }}
+        # Headless-browser render service for web_browse. Shares the pod network, which is
+        # why it refuses loopback and private targets itself. Listens on 8083.
+        - name: browser
+          image: {{ .Values.browser.image.repository }}:{{ .Values.browser.image.tag }}
+          imagePullPolicy: {{ .Values.imagePullPolicy }}
+          ports:
+            - name: http-browser
+              containerPort: 8083
+          env:
+            - name: ASPNETCORE_URLS
+              value: http://+:8083
+            - name: Browser__MaxConcurrency
+              value: {{ .Values.browser.maxConcurrency | default 2 | quote }}
+          volumeMounts:
+            # Chromium keeps renderer memory in /dev/shm; the container default is 64MB.
+            - name: browser-shm
+              mountPath: /dev/shm
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8083
+            initialDelaySeconds: 10
+            periodSeconds: 15
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8083
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          resources:
+            {{- toYaml .Values.browser.resources | nindent 12 }}
+        {{- end }}
+
       volumes:
         - name: agent-data
           persistentVolumeClaim:
@@ -215,3 +250,9 @@ spec:
         - name: shared-data
           persistentVolumeClaim:
             claimName: {{ include "rockbot.sharedPvcName" . }}
+        {{- if (default dict .Values.browser).enabled }}
+        - name: browser-shm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 256Mi
+        {{- end }}

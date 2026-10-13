@@ -227,6 +227,13 @@ public sealed record MemoryAuditSnapshot
     /// </summary>
     public int? EmbeddingDupClusters { get; init; }
 
+    /// <summary>
+    /// Live entries by provenance (<see cref="MemoryProvenance"/>): <c>user</c>, <c>tool</c>,
+    /// <c>inferred</c>, and <c>none</c> for entries saved without a source.
+    /// </summary>
+    public IReadOnlyDictionary<string, int> Sources { get; init; } =
+        new Dictionary<string, int>();
+
     /// <summary>Histogram of reinforcement counts across live entries, bucket label → count.</summary>
     public IReadOnlyDictionary<string, int> Reinforcement { get; init; } =
         new Dictionary<string, int>();

@@ -78,4 +78,24 @@ public sealed class WebToolOptions
     /// Time-to-live in minutes for web chunks saved to working memory. Defaults to 20.
     /// </summary>
     public int ChunkTtlMinutes { get; set; } = 20;
+
+    /// <summary>
+    /// Base URL of the headless-browser render service (the <c>RockBot.Browser</c> sidecar),
+    /// e.g. <c>http://localhost:8083</c>. When set, <c>web_browse</c> retries a page in the
+    /// browser if the plain HTTP fetch comes back as a consent wall or a JavaScript shell, and
+    /// honours <c>render: true</c>. Null (the default) turns rendering off; shells are still
+    /// detected and reported.
+    /// </summary>
+    public string? RenderServiceUrl { get; set; }
+
+    /// <summary>
+    /// How long the render service may spend on one page, in seconds. Defaults to 30.
+    /// </summary>
+    public int RenderTimeoutSeconds { get; set; } = 30;
+
+    /// <summary>
+    /// Readable characters below which a fetched page counts as a possible shell rather than
+    /// content. Text inside recognised consent banners does not count. Defaults to 200.
+    /// </summary>
+    public int ShellMinContentChars { get; set; } = 200;
 }

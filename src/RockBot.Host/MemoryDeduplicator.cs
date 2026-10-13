@@ -179,10 +179,14 @@ internal sealed class MemoryDeduplicator : IMemoryDeduplicator
         // UpdatedAt moves here and not on the reinforce path: the content changed, so the
         // consolidation-reviewed hash no longer matches and the entry is rightly re-reviewed
         // next cycle. A pure reinforcement changes no text and stays withheld.
+        // Combined text is no more trusted than its weaker half (MemoryProvenance.LeastTrusted),
+        // unlike a reinforcement, where the same fact seen again can only gain trust.
         var extended = reinforced with
         {
             Content = kept + "\n\n" + addition,
             UpdatedAt = now,
+            Metadata = MemoryProvenance.With(reinforced.Metadata, MemoryProvenance.LeastTrusted(
+                [MemoryProvenance.Get(existing.Metadata), MemoryProvenance.Get(candidate.Metadata)])),
         };
 
         await _memory.SaveAsync(extended, cancellationToken);
@@ -227,7 +231,11 @@ internal sealed class MemoryDeduplicator : IMemoryDeduplicator
                 if (!merged.ContainsKey(key))
                     merged[key] = value;
 
-            metadata = merged;
+            // Except provenance: the same fact stated again by a more trusted source (the user
+            // confirming something inferred) raises the entry's trust.
+            var best = MemoryProvenance.MostTrusted(
+                MemoryProvenance.Get(existing.Metadata), MemoryProvenance.Get(candidate.Metadata));
+            metadata = best is null ? merged : MemoryProvenance.With(merged, best);
         }
 
         return existing with

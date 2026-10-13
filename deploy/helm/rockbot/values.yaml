@@ -497,6 +497,30 @@ introspectionMcp:
       cpu: 200m
       memory: 128Mi
 
+# ── Browser render service ────────────────────────────────────────────────────
+# Sidecar container in the agent pod running headless Chromium (RockBot.Browser).
+# web_browse sends a page here when the plain HTTP fetch comes back as a
+# cookie-consent wall or a JavaScript shell, or when the model asks for
+# `render: true`. Anonymous: it holds no cookies or credentials, so pages behind
+# a login stay out of reach. It refuses loopback, private and link-local targets,
+# so a page cannot reach the agent's own endpoints on localhost.
+# Reachable from the agent at http://localhost:8083/. Disable to fall back to
+# plain HTTP only — shells are then reported to the model instead of rendered.
+browser:
+  enabled: true
+  image:
+    repository: rockylhotka/rockbot-browser
+    tag: latest
+  # Pages rendered at once; each holds a Chromium renderer.
+  maxConcurrency: 2
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
+
 # ── TodoApp MCP server ────────────────────────────────────────────────────────
 # Standalone MCP server that exposes a persistent to-do list to the agent.
 # Data is stored in a Longhorn PVC mounted at /data inside the container.

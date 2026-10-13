@@ -64,7 +64,60 @@ public class WebBrowseToolExecutorTests
         var response = await executor.ExecuteAsync(MakeRequest("""{"url": "https://example.com"}"""), CancellationToken.None);
 
         Assert.IsFalse(response.IsError);
-        Assert.AreEqual("Just the body content", response.Content);
+        Assert.AreEqual("Source: https://example.com (via http)\n\nJust the body content", response.Content);
+    }
+
+    [TestMethod]
+    public async Task ExecuteAsync_PassesRenderFlagToProvider()
+    {
+        var provider = new CapturingBrowseProvider(new WebPageContent
+        {
+            Title = "T",
+            Content = "Body",
+            SourceUrl = "https://example.com"
+        });
+        var executor = new WebBrowseToolExecutor(provider, null, DefaultOptions);
+
+        await executor.ExecuteAsync(MakeRequest("""{"url": "https://example.com", "render": true}"""), CancellationToken.None);
+
+        Assert.IsTrue(provider.LastOptions?.ForceRender);
+    }
+
+    [TestMethod]
+    public async Task ExecuteAsync_ShellPage_LeadsWithStatusLine()
+    {
+        var provider = new CapturingBrowseProvider(new WebPageContent
+        {
+            Title = "Schedule",
+            Content = "",
+            SourceUrl = "https://conf.example/schedule",
+            Status = WebFetchStatus.BlockedByConsentWall,
+            Note = FallbackWebBrowseProvider.RenderUnavailable
+        });
+        var executor = new WebBrowseToolExecutor(provider, null, DefaultOptions);
+
+        var response = await executor.ExecuteAsync(MakeRequest("""{"url": "https://conf.example/schedule"}"""), CancellationToken.None);
+
+        Assert.IsFalse(response.IsError, "A shell is a status, not a tool failure");
+        StringAssert.StartsWith(response.Content, "Source: https://conf.example/schedule (via http)");
+        StringAssert.Contains(response.Content, "[web_browse status: blocked_by_consent_wall]");
+        StringAssert.Contains(response.Content, "NOT read");
+        StringAssert.Contains(response.Content, FallbackWebBrowseProvider.RenderUnavailable);
+    }
+
+    [TestMethod]
+    public void BuildPreamble_RenderedPage_NamesBrowserAndDismissal()
+    {
+        var preamble = WebBrowseToolExecutor.BuildPreamble(new WebPageContent
+        {
+            Title = "T",
+            Content = "Body",
+            SourceUrl = "https://conf.example/x",
+            FetchedVia = WebFetchMethod.Browser,
+            ConsentDismissed = true
+        });
+
+        Assert.AreEqual("Source: https://conf.example/x (via headless browser, consent banner dismissed)", preamble);
     }
 
     [TestMethod]
@@ -157,10 +210,15 @@ public class WebBrowseToolExecutorTests
     private sealed class CapturingBrowseProvider(WebPageContent result) : IWebBrowseProvider
     {
         public string? LastUrl { get; private set; }
+        public WebFetchOptions? LastOptions { get; private set; }
 
         public Task<WebPageContent> FetchAsync(string url, CancellationToken ct)
+            => FetchAsync(url, WebFetchOptions.Default, ct);
+
+        public Task<WebPageContent> FetchAsync(string url, WebFetchOptions options, CancellationToken ct)
         {
             LastUrl = url;
+            LastOptions = options;
             return Task.FromResult(result);
         }
     }

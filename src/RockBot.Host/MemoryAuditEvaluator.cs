@@ -156,8 +156,8 @@ internal sealed class MemoryAuditEvaluator(ILlmClient llm, ILogger logger)
             var text = new StringBuilder();
             text.AppendLine("Sources that were merged away:");
             foreach (var source in sources)
-                text.AppendLine($"  - [{source.Id}] {Render(source.Content, ref truncated)}");
-            text.AppendLine($"Replacement kept in memory: {Render(merge.Content, ref truncated)}");
+                text.AppendLine($"  - [{source.Id}]{MemoryProvenance.Format(source.Metadata)} {Render(source.Content, ref truncated)}");
+            text.AppendLine($"Replacement kept in memory{MemoryProvenance.Format(merge.Metadata)}: {Render(merge.Content, ref truncated)}");
 
             // Run over the full content, not the rendered text: the check is the one thing in the
             // prompt that can see past a cut.

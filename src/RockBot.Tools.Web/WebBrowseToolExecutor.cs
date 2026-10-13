@@ -12,6 +12,7 @@ internal sealed class WebBrowseToolExecutor(
     public async Task<ToolInvokeResponse> ExecuteAsync(ToolInvokeRequest request, CancellationToken ct)
     {
         string url;
+        bool render;
 
         try
         {
@@ -20,6 +21,7 @@ internal sealed class WebBrowseToolExecutor(
                 return Error(request, "Missing required argument: url");
 
             url = urlElement.GetString() ?? string.Empty;
+            render = args.TryGetValue("render", out var renderElement) && IsTrue(renderElement);
         }
         catch (Exception ex)
         {
@@ -28,7 +30,8 @@ internal sealed class WebBrowseToolExecutor(
 
         try
         {
-            var page = await browseProvider.FetchAsync(url, ct);
+            var page = await browseProvider.FetchAsync(url, new WebFetchOptions { ForceRender = render }, ct);
+            var preamble = BuildPreamble(page);
 
             var fullContent = string.IsNullOrWhiteSpace(page.Title)
                 ? page.Content
@@ -40,7 +43,7 @@ internal sealed class WebBrowseToolExecutor(
                 {
                     ToolCallId = request.ToolCallId,
                     ToolName = request.ToolName,
-                    Content = fullContent,
+                    Content = $"{preamble}\n\n{fullContent}",
                     IsError = false
                 };
             }
@@ -48,7 +51,7 @@ internal sealed class WebBrowseToolExecutor(
             // Large content path
             if (workingMemory != null && request.SessionId != null)
             {
-                return await ChunkIntoWorkingMemoryAsync(request, page, fullContent, url, ct);
+                return await ChunkIntoWorkingMemoryAsync(request, page, preamble, fullContent, url, ct);
             }
 
             // Fallback: no session or working memory — truncate for backward compatibility
@@ -59,7 +62,7 @@ internal sealed class WebBrowseToolExecutor(
             {
                 ToolCallId = request.ToolCallId,
                 ToolName = request.ToolName,
-                Content = truncated,
+                Content = $"{preamble}\n\n{truncated}",
                 IsError = false
             };
         }
@@ -72,6 +75,7 @@ internal sealed class WebBrowseToolExecutor(
     private async Task<ToolInvokeResponse> ChunkIntoWorkingMemoryAsync(
         ToolInvokeRequest request,
         WebPageContent page,
+        string preamble,
         string fullContent,
         string url,
         CancellationToken ct)
@@ -96,6 +100,8 @@ internal sealed class WebBrowseToolExecutor(
         await workingMemory!.SetAsync(indexKey, outline, ttl, category: "web");
 
         var index = new StringBuilder();
+        index.AppendLine(preamble);
+        index.AppendLine();
         index.AppendLine($"Page \"{page.Title}\" has been split into {chunks.Count} chunk(s) stored in working memory.");
         index.AppendLine($"A document outline is stored at key `{indexKey}` — retrieve it with " +
             "get_from_working_memory to navigate the content by section heading.");
@@ -119,6 +125,54 @@ internal sealed class WebBrowseToolExecutor(
             IsError = false
         };
     }
+
+    /// <summary>
+    /// Where the content came from and, when the page was not actually read, a status line
+    /// that says so in words the model cannot mistake for page content.
+    /// </summary>
+    internal static string BuildPreamble(WebPageContent page)
+    {
+        var via = page.FetchedVia switch
+        {
+            WebFetchMethod.Browser => page.ConsentDismissed
+                ? "headless browser, consent banner dismissed"
+                : "headless browser",
+            WebFetchMethod.Api => "site API",
+            _ => "http"
+        };
+
+        var sb = new StringBuilder($"Source: {page.SourceUrl} (via {via})");
+
+        if (page.Status != WebFetchStatus.Ok)
+        {
+            var (code, what) = page.Status switch
+            {
+                WebFetchStatus.BlockedByConsentWall => ("blocked_by_consent_wall",
+                    "The site answered with a cookie-consent wall; the page body was NOT read."),
+                WebFetchStatus.JsRequired => ("js_required",
+                    "The page builds its content with JavaScript; the page body was NOT read."),
+                _ => ("empty", "The page returned almost no readable text; the page body was NOT read.")
+            };
+            sb.Append($"\n[web_browse status: {code}] {what}");
+            if (!string.IsNullOrWhiteSpace(page.Note))
+                sb.Append($" {page.Note}");
+            sb.Append(" Do not present facts about this page as confirmed: tell the user you could not " +
+                "read it, and label anything taken from search results as unconfirmed.");
+        }
+        else if (!string.IsNullOrWhiteSpace(page.Note))
+        {
+            sb.Append($"\nNote: {page.Note}");
+        }
+
+        return sb.ToString();
+    }
+
+    private static bool IsTrue(JsonElement element) => element.ValueKind switch
+    {
+        JsonValueKind.True => true,
+        JsonValueKind.String => bool.TryParse(element.GetString(), out var b) && b,
+        _ => false
+    };
 
     private static string SanitizeUrlForKey(string url)
     {

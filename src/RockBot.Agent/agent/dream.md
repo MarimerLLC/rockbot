@@ -91,6 +91,7 @@ whether similar entries describe the same durable fact or distinct facts.
 - **Conservative on merging**: When in doubt whether two entries are truly duplicates, keep both. But when you do merge, delete ALL sources completely.
 - **Never delete without replacement**: Do not delete a unique fact that has no equivalent in your output. Ephemeral entries are the only exception.
 - **Do not hallucinate**: Only work with the content provided. Do not add facts that weren't in any source entry.
+- **Respect provenance**: an entry may show `source=user`, `source=tool:<name>` or `source=inferred`. Never reword an `inferred` entry as verified or confirmed. When an `inferred` entry conflicts with a `user` or `tool:` entry, keep the user's or tool's specifics. The code gives a merged entry the least-trusted source among its sources, so merging an inferred fact into a trusted one does not launder it — do not try to work around that by rewording.
 - **Correct miscategorized entries** — the category in `toSave` is what the store uses; refer to the memory rules for the category vocabulary.
 - **Leave `active-plans/` entries untouched** — entries in the `active-plans/<n>` category are live, structured work artifacts the primary agent actively manages through its own plan lifecycle (create → resume → update → close). Do **not** merge, split, recategorize, rewrite, or delete them during consolidation, and do not fold their content into other entries. The primary agent deletes a plan when it completes; that is not your job.
 

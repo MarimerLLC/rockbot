@@ -78,11 +78,16 @@ internal sealed class WebToolSkillProvider : IToolSkillProvider
 
         ## Step 3 — Browse for Full Content (when needed)
 
-        Search snippets are often sufficient for simple factual questions. Only call
-        `web_browse` when you need the complete page content.
+        Search snippets are often sufficient for a general orientation. When the answer
+        turns on specifics — names, titles, dates, rooms, prices, version numbers — read
+        the page with `web_browse`: snippets are fragments and often mix in neighbouring
+        content, so a specific taken only from a snippet is unconfirmed.
 
         **Parameters**
         - `url` (string, required) — the full URL of the page to fetch
+        - `render` (boolean, optional) — render the page in a headless browser first. Only
+          for pages you know build their content with JavaScript; shells are retried in the
+          browser automatically.
 
         ```
         web_browse(url: "https://learn.microsoft.com/dotnet/csharp/asynchronous-programming/")
@@ -91,6 +96,24 @@ internal sealed class WebToolSkillProvider : IToolSkillProvider
         - Browse the highest-confidence URL from Step 2 first
         - You can browse a URL directly without searching first when you already know
           the authoritative source (e.g. official docs, GitHub releases page)
+
+        ### Source and Status Lines
+
+        Every result starts with a `Source:` line naming the URL and how it was fetched
+        (`http`, `headless browser`, or `site API`).
+
+        A `[web_browse status: ...]` line means the page body was **not** read:
+        - `blocked_by_consent_wall` — a cookie-consent wall stood in front of the content
+        - `js_required` — the page builds its content with JavaScript
+        - `empty` — the page returned almost no readable text
+
+        The line also says whether headless rendering was tried. When you see it, do not
+        report facts about that page as confirmed. Try another route (an API, a different
+        page on the site, a script), and if nothing works, tell the user plainly that you
+        could not read the page. Anything you then offer from search results is unconfirmed
+        and must be labelled that way.
+
+        The browser has no credentials: pages behind a login stay out of reach either way.
 
         ### Large Pages — Automatic Chunking
 
@@ -136,7 +159,8 @@ internal sealed class WebToolSkillProvider : IToolSkillProvider
         - Summarize the relevant findings rather than quoting large blocks of raw content
         - Cite the source URL so the user can verify or read further
         - Note the publication or last-updated date for time-sensitive information
-        - Distinguish between what you found and what you inferred from it
+        - Distinguish between what you read on the page and what you inferred from
+          snippets; never call a snippet-derived specific "confirmed" or "verified"
 
 
         ## Step 5 — Save Useful Sources as a Skill
@@ -188,6 +212,7 @@ internal sealed class WebToolSkillProvider : IToolSkillProvider
         - Browsing every search result instead of evaluating snippets first
         - Treating a snippet as the full answer when the detail is in the page body
         - Ignoring the chunk index and reporting incomplete content as complete
+        - Ignoring a `[web_browse status: ...]` line and filling the gap from search snippets
         - Not citing sources, making it hard for the user to verify findings
         """;
 }

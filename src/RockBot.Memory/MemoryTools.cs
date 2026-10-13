@@ -152,10 +152,18 @@ public sealed class MemoryTools
     public Task<string> SaveMemory(
         [Description("The content to remember — can be a natural-language sentence or a compound fact")] string content,
         [Description("Optional category hint (e.g. 'user-preferences/pets')")] string? category = null,
-        [Description("Optional comma-separated tags hint")] string? tags = null)
+        [Description("Optional comma-separated tags hint")] string? tags = null,
+        [Description("Where the fact came from: 'user' (the user said or confirmed it), 'tool:<name>' " +
+                     "(read from that tool's result, e.g. 'tool:web_browse'), or 'inferred' (your own " +
+                     "conclusion, e.g. from search snippets or a page you could not fully read).")] string? source = null)
     {
-        _logger.LogInformation("Tool call: SaveMemory (queuing background task) content={Content}, category={Category}",
-            content, category);
+        _logger.LogInformation("Tool call: SaveMemory (queuing background task) content={Content}, category={Category}, source={Source}",
+            content, category, source);
+
+        var normalizedSource = MemoryProvenance.Normalize(source);
+        var sourceHint = source is not null && normalizedSource is null
+            ? $" Source '{source}' was not recognised and was dropped; use user, tool:<name> or inferred."
+            : string.Empty;
 
         // Phase 2 soft gate — capability-claim language is flagged as an observation
         // (write proceeds; the appended observation tag rides through to the persisted entry).
@@ -167,13 +175,13 @@ public sealed class MemoryTools
         // direct so the category and content survive verbatim.
         if (IsScopedCategory(category))
         {
-            _ = Task.Run(() => SaveScopedDirectAsync(content, category!, augmentedTags));
-            return Task.FromResult($"Memory save queued.{hint}");
+            _ = Task.Run(() => SaveScopedDirectAsync(content, category!, augmentedTags, normalizedSource));
+            return Task.FromResult($"Memory save queued.{hint}{sourceHint}");
         }
 
-        _ = Task.Run(() => SaveMemoryBackgroundAsync(content, category, augmentedTags));
+        _ = Task.Run(() => SaveMemoryBackgroundAsync(content, category, augmentedTags, normalizedSource));
 
-        return Task.FromResult($"Memory save queued.{hint}");
+        return Task.FromResult($"Memory save queued.{hint}{sourceHint}");
     }
 
     private static bool IsScopedCategory(string? category) =>
@@ -184,7 +192,7 @@ public sealed class MemoryTools
     /// Direct save path for scoped categories — bypasses LLM extraction so the caller's
     /// category and tags are preserved exactly. The contradiction detector still runs.
     /// </summary>
-    private async Task SaveScopedDirectAsync(string content, string category, string? tags)
+    private async Task SaveScopedDirectAsync(string content, string category, string? tags, string? source)
     {
         try
         {
@@ -193,7 +201,8 @@ public sealed class MemoryTools
                 Content: content,
                 Category: category,
                 Tags: ParseTagsList(tags) ?? [],
-                CreatedAt: DateTimeOffset.UtcNow);
+                CreatedAt: DateTimeOffset.UtcNow,
+                Metadata: MemoryProvenance.With(null, source));
 
             var resolved = await ApplyContradictionResolutionAsync(entry);
             await _memory.SaveAsync(resolved);
@@ -292,7 +301,8 @@ public sealed class MemoryTools
             var age = FormatAge(entry);
             var dates = FormatDates(entry);
             var subject = FormatSubjectTime(entry.Metadata);
-            sb.AppendLine($"- [{entry.Id}] ({entry.Category ?? "uncategorized"}, importance={entry.ImportanceScore:F2}, {age}, {dates}){subject}: {entry.Content}");
+            var source = MemoryProvenance.Get(entry.Metadata) is { } s ? $", source={s}" : "";
+            sb.AppendLine($"- [{entry.Id}] ({entry.Category ?? "uncategorized"}, importance={entry.ImportanceScore:F2}, {age}, {dates}{source}){subject}: {entry.Content}");
             if (entry.Tags.Count > 0)
                 sb.AppendLine($"  Tags: {string.Join(", ", entry.Tags)}");
         }
@@ -492,11 +502,14 @@ public sealed class MemoryTools
     /// Background worker for <see cref="SaveMemory"/>. Calls the LLM to enrich
     /// the raw content into well-structured entries, then persists them.
     /// </summary>
-    private async Task SaveMemoryBackgroundAsync(string content, string? category, string? tags)
+    private async Task SaveMemoryBackgroundAsync(string content, string? category, string? tags, string? source)
     {
         try
         {
+            // The caller's source applies to every entry the extraction produces.
             var entries = await ExpandToMemoryEntriesAsync(content, category, tags);
+            if (source is not null)
+                entries = entries.Select(e => e with { Metadata = MemoryProvenance.With(e.Metadata, source) }).ToList();
             var tally = new MemorySaveTally();
 
             foreach (var entry in entries)

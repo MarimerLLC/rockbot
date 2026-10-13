@@ -1,0 +1,39 @@
+# Headless-browser render service (RockBot.Browser), run as a sidecar in the agent pod.
+#
+# Build from the repo root:
+#   docker build -f deploy/Dockerfile.browser -t rockylhotka/rockbot-browser:latest .
+
+FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
+WORKDIR /src
+
+# Clear Windows-specific NuGet fallback folders that break Linux builds
+RUN printf '<configuration><fallbackPackageFolders><clear /></fallbackPackageFolders></configuration>' \
+    > /src/NuGet.config
+
+COPY Directory.Build.props .
+COPY src/RockBot.Browser/RockBot.Browser.csproj src/RockBot.Browser/
+RUN dotnet restore src/RockBot.Browser/RockBot.Browser.csproj -r linux-x64
+
+COPY src/RockBot.Browser/ src/RockBot.Browser/
+# linux-x64 so the publish output carries only the Linux Playwright driver (node + cli).
+RUN dotnet publish src/RockBot.Browser/RockBot.Browser.csproj -c Release -r linux-x64 \
+    --self-contained false --no-restore -o /app/publish /p:UseAppHost=false
+
+FROM mcr.microsoft.com/dotnet/aspnet:10.0 AS final
+ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+WORKDIR /app
+COPY --from=build /app/publish .
+
+# Install the Chromium headless shell that this Microsoft.Playwright version expects, plus
+# its system libraries, with the driver bundled in the package — no PowerShell needed.
+RUN /app/.playwright/node/linux-x64/node /app/.playwright/package/cli.js \
+        install --with-deps --only-shell chromium \
+    && rm -rf /var/lib/apt/lists/* \
+    && chmod -R a+rX /ms-playwright /app/.playwright \
+    && chmod a+x /app/.playwright/node/linux-x64/node
+
+USER $APP_UID
+ENV ASPNETCORE_URLS=http://+:8083
+ENV ASPNETCORE_ENVIRONMENT=Production
+EXPOSE 8083
+ENTRYPOINT ["dotnet", "RockBot.Browser.dll"]

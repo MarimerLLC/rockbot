@@ -35,10 +35,19 @@ public static class WebServiceCollectionExtensions
             client.DefaultRequestHeaders.Accept.ParseAdd("application/vnd.github.v3+json");
         });
 
+        builder.Services.AddHttpClient(RenderServiceWebBrowseProvider.HttpClientName, client =>
+        {
+            // The service enforces the page budget itself; leave it room to answer.
+            client.Timeout = TimeSpan.FromSeconds(options.RenderTimeoutSeconds + 15);
+        });
+
         builder.Services.AddSingleton<IWebSearchProvider, BraveSearchProvider>();
-        // HttpWebBrowseProvider registered as concrete type so GitHubApiWebBrowseProvider
-        // can inject it directly as a fallback for non-GitHub URLs.
+        // Browse chain: GitHub API for issue/PR URLs, then plain HTTP with a headless-browser
+        // retry for shells. The inner providers are registered as concrete types so each
+        // layer can inject the next directly.
         builder.Services.AddSingleton<HttpWebBrowseProvider>();
+        builder.Services.AddSingleton<RenderServiceWebBrowseProvider>();
+        builder.Services.AddSingleton<FallbackWebBrowseProvider>();
         builder.Services.AddSingleton<IWebBrowseProvider, GitHubApiWebBrowseProvider>();
 
         builder.Services.AddSingleton<IToolSkillProvider, WebToolSkillProvider>();
