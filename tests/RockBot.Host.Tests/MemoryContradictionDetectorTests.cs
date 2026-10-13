@@ -306,8 +306,53 @@ public class MemoryContradictionDetectorTests
 
     // --- helpers --------------------------------------------------------------
 
-    private static MemoryContradictionDetector NewDetector(ILongTermMemory memory) =>
-        new(memory, NullLogger<MemoryContradictionDetector>.Instance);
+    private static MemoryContradictionDetector NewDetector(ILongTermMemory memory,
+        RockBot.Llm.IDecisionService? decisions = null) =>
+        new(memory, NullLogger<MemoryContradictionDetector>.Instance, decisions);
+
+    // ── Decision model confirms the keyword candidates ──────────────────────
+
+    [TestMethod]
+    [DataRow(0.02, false, DisplayName = "model: no contradiction → nothing superseded")]
+    [DataRow(0.95, true, DisplayName = "model: contradiction → newer wins")]
+    [DataRow(null, true, DisplayName = "model unavailable → keyword verdict")]
+    public async Task ResolveAsync_Feedback_KeywordCandidate_ConfirmedByTheDecisionModel(double? p, bool superseded)
+    {
+        // "Use X, never Y" reads as negative to the keyword pass, though it agrees with "use X".
+        var memory = new RecordingMemory();
+        memory.Existing.Add(NewEntry(
+            category: "feedback/from-agent/style",
+            content: "Always use bullet points for status reports",
+            id: "old-1"));
+        var decisions = new FakeDecisionService(p);
+
+        var resolution = await NewDetector(memory, decisions).ResolveAsync(NewEntry(
+            category: "feedback/from-agent/style",
+            content: "Use bullet points for status reports, never numbered lists",
+            id: "new-1"));
+
+        Assert.AreEqual(superseded, resolution.HasContradiction);
+        Assert.AreEqual(1, decisions.Requests.Count);
+        Assert.AreEqual(RockBot.Llm.DecisionPurposes.MemoryContradiction, decisions.Requests[0].Purpose);
+    }
+
+    [TestMethod]
+    public async Task ResolveAsync_NoKeywordCandidate_NoCall()
+    {
+        var memory = new RecordingMemory();
+        memory.Existing.Add(NewEntry(
+            category: "feedback/from-agent/style",
+            content: "Always use bullet points for status reports",
+            id: "old-1"));
+        var decisions = new FakeDecisionService(0.99);
+
+        await NewDetector(memory, decisions).ResolveAsync(NewEntry(
+            category: "feedback/from-agent/style",
+            content: "Always use bullet points for weekly reports too",
+            id: "new-1"));
+
+        Assert.AreEqual(0, decisions.Requests.Count);
+    }
 
     private static MemoryEntry NewEntry(
         string category,

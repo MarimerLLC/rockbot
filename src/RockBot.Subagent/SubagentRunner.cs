@@ -42,7 +42,9 @@ internal sealed class SubagentRunner(
     IMcpToolDirectory? mcpToolDirectory = null,
     IEnumerable<ISessionEndListener>? sessionEndListeners = null,
     ISessionWorkRegistry? sessionWorkRegistry = null,
-    IOptions<SubagentOptions>? subagentOptions = null)
+    IOptions<SubagentOptions>? subagentOptions = null,
+    TrailingOfferStripper? offerStripper = null,
+    TierRoutingRefiner? tierRefiner = null)
 {
     /// <summary>
     /// The completion-evaluator triggers a subagent's own loop runs on (#686): claims of work it
@@ -78,6 +80,8 @@ internal sealed class SubagentRunner(
         ActionGateScope? actionGate = null)
     {
         var classification = tierSelector.Classify(description, new TierRoutingContext(Origin: "subagent"));
+        if (tierRefiner is not null)
+            classification = await tierRefiner.RefineAsync(description, "subagent", classification, ct);
         var tier = classification.Tier;
         logger.LogInformation(
             "Subagent {TaskId} starting (session {SessionId}) tier={Tier} (score={Score:F3})",
@@ -268,7 +272,7 @@ internal sealed class SubagentRunner(
                 cancellationToken: ct,
                 actionGate: actionGate,
                 completionEvalTriggers: SelfCheckTriggers);
-            finalOutput = ResponseSanitizer.StripTrailingOffers(finalOutput);
+            finalOutput = await (offerStripper ?? new TrailingOfferStripper()).StripAsync(finalOutput, ct);
             isSuccess = true;
             subagentActivity?.SetStatus(ActivityStatusCode.Ok);
         }

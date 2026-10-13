@@ -274,11 +274,60 @@ public class MemoryDeduplicatorTests
         Assert.AreEqual(2, stored.ReinforcementCount);
     }
 
+    // ── Decision model: does the near-duplicate really cover the new entry? ──
+
+    [TestMethod]
+    [DataRow(0.03, MemorySaveAction.Created, 2, DisplayName = "model: not covered → saved as new")]
+    [DataRow(0.97, MemorySaveAction.Reinforced, 1, DisplayName = "model: covered → reinforced")]
+    public async Task NearDuplicateWithNothingMissing_AsksTheDecisionModel(double covers, MemorySaveAction expected, int entries)
+    {
+        // Embedding-similar, no missing names or numbers — the deterministic checks would fold the
+        // reversal into the old fact and drop it.
+        var memory = new ScriptedLookupMemory();
+        memory.Seed(Entry("existing", "Rocky drinks coffee every morning"));
+        memory.NextMatch = Match(memory.Entries[0], 0.93, MemorySimilarityMeasure.Embedding);
+        var decisions = new FakeDecisionService(covers);
+
+        var outcome = await Create(memory, decisions: decisions)
+            .SaveOrReinforceAsync(Entry("new", "Rocky no longer drinks coffee every morning"));
+
+        Assert.AreEqual(expected, outcome.Action);
+        Assert.AreEqual(entries, memory.Entries.Count);
+        Assert.AreEqual(RockBot.Llm.DecisionPurposes.MemoryDuplicate, decisions.Requests.Single().Purpose);
+    }
+
+    [TestMethod]
+    public async Task NearDuplicate_ModelUnavailable_ReinforcesAsBefore()
+    {
+        var memory = new ScriptedLookupMemory();
+        memory.Seed(Entry("existing", "Rocky drinks coffee every morning"));
+        memory.NextMatch = Match(memory.Entries[0], 0.93, MemorySimilarityMeasure.Embedding);
+
+        var outcome = await Create(memory, decisions: new FakeDecisionService(null))
+            .SaveOrReinforceAsync(Entry("new", "Rocky drinks coffee every morning"));
+
+        Assert.AreEqual(MemorySaveAction.Reinforced, outcome.Action);
+    }
+
+    [TestMethod]
+    public async Task BelowThreshold_NoCall()
+    {
+        var memory = new ScriptedLookupMemory();
+        memory.Seed(Entry("existing", "Rocky prefers concise status"));
+        memory.NextMatch = Match(memory.Entries[0], 0.50, MemorySimilarityMeasure.Embedding);
+        var decisions = new FakeDecisionService(0.99);
+
+        await Create(memory, decisions: decisions).SaveOrReinforceAsync(Entry("new", "Different fact"));
+
+        Assert.AreEqual(0, decisions.Requests.Count);
+    }
+
     // ── Helpers ──────────────────────────────────────────────────────────────
 
     private static MemoryDeduplicator Create(
         ILongTermMemory memory,
-        Action<MemoryOptions>? configure = null)
+        Action<MemoryOptions>? configure = null,
+        RockBot.Llm.IDecisionService? decisions = null)
     {
         var options = new MemoryOptions();
         configure?.Invoke(options);
@@ -287,7 +336,8 @@ public class MemoryDeduplicatorTests
             memory,
             Options.Create(options),
             Options.Create(new AgentProfileOptions()),
-            NullLogger<MemoryDeduplicator>.Instance);
+            NullLogger<MemoryDeduplicator>.Instance,
+            decisions: decisions);
     }
 
     private static MemorySimilarityMatch Match(MemoryEntry entry, double score, MemorySimilarityMeasure measure) =>

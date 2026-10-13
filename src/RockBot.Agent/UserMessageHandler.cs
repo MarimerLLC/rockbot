@@ -63,7 +63,10 @@ internal sealed class UserMessageHandler(
     IMcpSkillSurface? mcpSkillSurface = null,
     IOptions<WorkingMemoryOptions>? workingMemoryOptions = null,
     SessionTierHistory? tierHistory = null,
-    RockBot.Subagent.ISubagentManager? subagentManager = null) : IMessageHandler<UserMessage>
+    RockBot.Subagent.ISubagentManager? subagentManager = null,
+    CorrectionDetector? correctionDetector = null,
+    TrailingOfferStripper? offerStripper = null,
+    TierRoutingRefiner? tierRefiner = null) : IMessageHandler<UserMessage>
 {
     private static readonly TimeSpan ProgressMessageThreshold = TimeSpan.FromSeconds(5);
 
@@ -78,9 +81,38 @@ internal sealed class UserMessageHandler(
     // Shared with AgentLoopRunner — single source of truth for hallucinated-action detection.
     private static readonly Regex HallucinatedActionRegex = AgentLoopRunner.HallucinatedActionRegex;
 
-    private static readonly Regex CorrectionRegex = new(
-        @"\b(no[,\s]|that'?s?\s+(wrong|incorrect|not right)|you were wrong|actually[,\s]|that didn'?t work|try again)\b",
-        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+    private readonly CorrectionDetector _correctionDetector = correctionDetector ?? new CorrectionDetector();
+    private readonly TrailingOfferStripper _offerStripper = offerStripper ?? new TrailingOfferStripper();
+
+    /// <summary>
+    /// Writes a <see cref="FeedbackSignalType.Correction"/> entry when the message corrects the
+    /// agent's previous reply (<see cref="CorrectionDetector"/>). Never throws.
+    /// </summary>
+    private async Task RecordCorrectionAsync(string sessionId, string content)
+    {
+        try
+        {
+            var turns = await conversationMemory.GetTurnsAsync(sessionId);
+            // The last turn is this message; the agent's reply is the latest one before it.
+            var previousAgentMessage = turns.Take(Math.Max(0, turns.Count - 1))
+                .LastOrDefault(t => !string.Equals(t.Role, "user", StringComparison.OrdinalIgnoreCase))?.Content;
+
+            if (!await _correctionDetector.IsCorrectionAsync(content, previousAgentMessage))
+                return;
+
+            await feedbackStore.AppendAsync(new FeedbackEntry(
+                Id: Guid.NewGuid().ToString("N")[..12],
+                SessionId: sessionId,
+                SignalType: FeedbackSignalType.Correction,
+                Summary: "User message detected as a correction",
+                Detail: content.Length > 200 ? content[..200] : content,
+                Timestamp: DateTimeOffset.UtcNow));
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "Correction detection failed for session {SessionId}", sessionId);
+        }
+    }
 
     public async Task HandleAsync(UserMessage message, MessageHandlerContext context)
     {
@@ -140,6 +172,8 @@ internal sealed class UserMessageHandler(
                 ThreadEstablished: threadEstablished,
                 RecentMaxTier: recentMaxTier,
                 ActiveSubagent: activeSubagent));
+        if (tierRefiner is not null)
+            classification = await tierRefiner.RefineAsync(message.Content, "user-message", classification, ct);
         var tier = classification.Tier;
         logger.LogInformation(
             "Routing user message to tier={Tier} (rule={Rule}, score={Score:F3}, threadEstablished={ThreadEstablished}, " +
@@ -180,16 +214,8 @@ internal sealed class UserMessageHandler(
                 },
                 ct);
 
-            if (CorrectionRegex.IsMatch(message.Content))
-            {
-                _ = feedbackStore.AppendAsync(new FeedbackEntry(
-                    Id: Guid.NewGuid().ToString("N")[..12],
-                    SessionId: message.SessionId,
-                    SignalType: FeedbackSignalType.Correction,
-                    Summary: "User message detected as a correction",
-                    Detail: message.Content.Length > 200 ? message.Content[..200] : message.Content,
-                    Timestamp: DateTimeOffset.UtcNow));
-            }
+            // Off the reply path: the detector may ask the decision model.
+            _ = RecordCorrectionAsync(message.SessionId, message.Content);
 
             // Build context using shared builder
             var chatMessages = await agentContextBuilder.BuildAsync(
@@ -594,7 +620,7 @@ internal sealed class UserMessageHandler(
                 ToolCallCount = nativeDiag.ToolCalls > 0 ? nativeDiag.ToolCalls : null,
             });
 
-            text = ResponseSanitizer.StripTrailingOffers(text);
+            text = await _offerStripper.StripAsync(text, ct);
 
             await conversationMemory.AddTurnAsync(
                 sessionId,

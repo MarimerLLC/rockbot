@@ -9,6 +9,19 @@ namespace RockBot.Llm.Tests;
 [TestClass]
 public class KeywordTierSelectorTests
 {
+    [TestMethod]
+    public void Classify_ReportsTheDistanceToTheNearestCeiling()
+    {
+        // Defaults: Low ceiling 0.25, Balanced ceiling 0.55. The decision-model refiner asks only
+        // about scores close to one of them.
+        var classification = new KeywordTierSelector().Classify("hello there");
+
+        Assert.IsNotNull(classification.BoundaryDistance);
+        Assert.AreEqual(
+            Math.Min(Math.Abs(classification.ComplexityScore - 0.25), Math.Abs(classification.ComplexityScore - 0.55)),
+            classification.BoundaryDistance!.Value, 1e-9);
+    }
+
     private readonly KeywordTierSelector _selector = new();
 
     // ── Low tier (score ≤ 0.28) ───────────────────────────────────────────────

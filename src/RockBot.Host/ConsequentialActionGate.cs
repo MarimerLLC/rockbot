@@ -1,4 +1,5 @@
 using System.Text.RegularExpressions;
+using RockBot.Llm;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
@@ -51,7 +52,7 @@ public sealed record ActionGateScope(RunOrigin Origin, UserRequestKind? UserAske
 
     /// <summary>
     /// The user message behind the run and the gate's decisions about it, for the decision model
-    /// (<see cref="IUserIntentClassifier"/>). Set by <see cref="AgentLoopRunner.RunAsync"/>; shared
+    /// (<see cref="IDecisionService"/>). Set by <see cref="AgentLoopRunner.RunAsync"/>; shared
     /// with subagents through <see cref="ForSubagent"/>. Null when the message is unknown.
     /// </summary>
     public ActionGateRequest? Request { get; init; }
@@ -143,10 +144,13 @@ public sealed class ConsequentialActionGateOptions
     public List<string> ExternalTools { get; set; } = [];
 
     /// <summary>
-    /// The decision model asked before a call is refused (<see cref="IUserIntentClassifier"/>).
-    /// Unconfigured by default: the regex classifier alone decides.
+    /// What the gate does when the decision model (<see cref="IDecisionService"/>, purpose
+    /// <see cref="DecisionPurposes.ActionGate"/>) is asked but can't answer: true (default) allows
+    /// the call, false refuses it as the regex alone would. The regex has already said no, so this
+    /// only decides who gets the benefit of the doubt. The threshold is
+    /// <c>DecisionModel:Uses:ActionGate:Threshold</c> (default 0.5).
     /// </summary>
-    public DecisionModelOptions DecisionModel { get; } = new();
+    public bool AllowOnDecisionFailure { get; set; } = true;
 }
 
 /// <summary>
@@ -301,17 +305,19 @@ public interface IConsequentialActionGate
 /// <remarks>
 /// The information-only reading comes from a regex verb list, which misses requests it has no verb
 /// for ("mark them complete now" was refused in 0.16.14-preview.2). Before refusing, the gate asks
-/// the decision model (<see cref="IUserIntentClassifier"/>), when one is configured, whether the
+/// the decision model (<see cref="IDecisionService"/>), when one is configured, whether the
 /// user asked for this change. The answer is cached per run and effective tool name, so a turn
 /// that completes five todos asks once.
 /// </remarks>
 public sealed class ConsequentialActionGate(
     IOptions<AgentHostOptions> options,
     ILogger<ConsequentialActionGate>? logger = null,
-    IUserIntentClassifier? intentClassifier = null) : IConsequentialActionGate
+    IDecisionService? decisions = null) : IConsequentialActionGate
 {
+    private const double DefaultThreshold = 0.5;
+
     private readonly ILogger _logger = (ILogger?)logger ?? NullLogger.Instance;
-    private readonly IUserIntentClassifier _classifier = intentClassifier ?? NullUserIntentClassifier.Instance;
+    private readonly IDecisionService _decisions = decisions ?? NullDecisionService.Instance;
 
     /// <inheritdoc />
     public async ValueTask<string?> CheckAsync(string toolName, string? arguments, ActionGateScope? scope,
@@ -325,10 +331,10 @@ public sealed class ConsequentialActionGate(
 
         var effective = ToolSideEffects.EffectiveToolName(toolName, arguments);
         var display = ConsequentialActions.DisplayName(toolName, arguments);
-        if (scope.Request is { } request && _classifier.IsEnabled)
+        if (scope.Request is { } request && _decisions.IsEnabled(DecisionPurposes.ActionGate))
         {
             var asked = await request.Decisions.GetOrAdd(effective,
-                _ => AskDecisionModelAsync(request, toolName, arguments, display, gateOptions.DecisionModel,
+                _ => AskDecisionModelAsync(request, toolName, arguments, display, gateOptions.AllowOnDecisionFailure,
                     cancellationToken)).ConfigureAwait(false);
             if (asked) return null;
         }
@@ -345,28 +351,29 @@ public sealed class ConsequentialActionGate(
     }
 
     private async Task<bool> AskDecisionModelAsync(ActionGateRequest request, string toolName, string? arguments,
-        string display, DecisionModelOptions model, CancellationToken cancellationToken)
+        string display, bool allowOnFailure, CancellationToken cancellationToken)
     {
         var query = new UserIntentQuery(request.UserRequest, request.PreviousAgentMessage, display,
             ConsequentialActions.DescribeTarget(toolName, arguments), arguments);
-        var probability = await _classifier.ProbabilityUserAskedForAsync(query, cancellationToken)
-            .ConfigureAwait(false);
+        var result = await _decisions.DecideAsync(query.ToDecisionRequest(), cancellationToken).ConfigureAwait(false);
+        var probability = result?.Probability(UserIntentQuery.QuestionName);
+        var threshold = _decisions.ThresholdFor(DecisionPurposes.ActionGate, DefaultThreshold);
 
         string outcome;
         bool asked;
         if (probability is null)
         {
-            asked = model.AllowOnFailure;
+            asked = allowOnFailure;
             outcome = asked ? "allowed-on-failure" : "refused-on-failure";
             _logger.LogWarning("Decision model unavailable for {Tool}; {Outcome}", display, outcome);
         }
         else
         {
-            asked = probability.Value >= model.Threshold;
+            asked = probability.Value >= threshold;
             outcome = asked ? "allowed" : "refused";
             _logger.LogInformation(
                 "Decision model: user asked for {Tool}? p={Probability:0.000} threshold={Threshold:0.00} → {Outcome}",
-                display, probability.Value, model.Threshold, outcome);
+                display, probability.Value, threshold, outcome);
         }
 
         HostDiagnostics.ConsequentialActionDecisions.Add(1,

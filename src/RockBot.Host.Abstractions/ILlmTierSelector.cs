@@ -30,6 +30,13 @@ public sealed record TierClassification(
     /// distinguish the two (treat as <see cref="Tier"/>).
     /// </summary>
     public ModelTier? IntrinsicTier { get; init; }
+
+    /// <summary>
+    /// How far <see cref="ComplexityScore"/> is from the nearest tier ceiling. Small means the
+    /// keyword score could have gone either way; the decision-model refiner asks about those.
+    /// Null when the selector has no score bands.
+    /// </summary>
+    public double? BoundaryDistance { get; init; }
 }
 
 /// <summary>
@@ -55,6 +62,9 @@ public static class TierRoutingRules
 
     /// <summary>The turn inherited the highest tier routed for the session in its recent turns.</summary>
     public const string InheritedTier = "inherited-tier";
+
+    /// <summary>The keyword score sat near a tier boundary and the decision model picked the tier.</summary>
+    public const string DecisionModel = "decision-model";
 
     /// <summary>A dream-learned balanced-floor keyword escalated Low to Balanced (#486).</summary>
     public const string BalancedFloorKeyword = "balanced-floor-keyword";
