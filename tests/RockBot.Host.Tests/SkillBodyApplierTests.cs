@@ -26,23 +26,100 @@ public class SkillBodyApplierTests
         Assert.IsNotNull(outcome.Revert);
     }
 
-    [TestMethod]
-    public async Task Apply_CodeOwnedSkill_FailsWithTheRefusal_AndWritesNothing()
+    // -- Code-owned guides go to their companion (#699) --------------------------
+
+    private static async Task<(InMemorySkillStore Store, Skill Guide)> StoreWithGuide()
     {
         var store = new InMemorySkillStore();
-        var guide = new Skill("mcp", "summary", "Guide text.", DateTimeOffset.UtcNow, CodeOwned: true);
+        var guide = new Skill("mcp", "summary", "# MCP guide\n\n## Argument tips\n\nGuide text.\n",
+            DateTimeOffset.UtcNow, CodeOwned: true);
         await store.SaveAsync(guide);
+        return (store, guide);
+    }
 
-        var applier = NewApplier(store);
-        var ticket = NewTicket("""
-            { "skill": "mcp", "ops": [ { "op": "append", "text": "Lesson." } ] }
-            """);
+    [TestMethod]
+    public async Task Apply_CodeOwnedGuide_AppendsToANewCompanion_AndLeavesTheGuide()
+    {
+        var (store, guide) = await StoreWithGuide();
 
-        var ex = await Assert.ThrowsExactlyAsync<InvalidOperationException>(
-            () => applier.ApplyAsync(ticket, CancellationToken.None));
+        var outcome = await NewApplier(store).ApplyAsync(NewTicket("""
+            { "skill": "mcp", "ops": [ { "op": "append", "text": "Pass the server explicitly." } ] }
+            """), CancellationToken.None);
 
-        Assert.AreEqual(CodeOwnedSkills.RefusalMessage("mcp"), ex.Message);
         Assert.AreSame(guide, await store.GetAsync("mcp"));
+        var companion = (await store.GetAsync("mcp-learned"))!;
+        Assert.IsNotNull(companion);
+        Assert.IsFalse(companion.CodeOwned);
+        CollectionAssert.AreEqual(new[] { "mcp" }, companion.SeeAlso!.ToArray());
+        StringAssert.Contains(companion.Content, "get_tool_guide(\"mcp\")");
+        StringAssert.Contains(companion.Content, "Pass the server explicitly.");
+        Assert.AreEqual("mcp-learned", outcome.AppliedDiff.GetProperty("skill").GetString());
+        Assert.AreEqual("mcp", outcome.AppliedDiff.GetProperty("redirectedFrom").GetString());
+    }
+
+    [TestMethod]
+    public async Task Apply_CodeOwnedGuide_ReplaceSection_AddsItToTheCompanion_ThenUpdatesItInPlace()
+    {
+        var (store, guide) = await StoreWithGuide();
+        var applier = NewApplier(store);
+
+        await applier.ApplyAsync(NewTicket("""
+            { "skill": "mcp", "ops": [ { "op": "replaceSection", "header": "## Argument tips", "text": "Always pass timeZone." } ] }
+            """), CancellationToken.None);
+        await applier.ApplyAsync(NewTicket("""
+            { "skill": "mcp", "ops": [ { "op": "replaceSection", "header": "## Argument tips", "text": "Pass timeZone as IANA." } ] }
+            """), CancellationToken.None);
+
+        Assert.AreSame(guide, await store.GetAsync("mcp"));
+        var content = (await store.GetAsync("mcp-learned"))!.Content;
+        Assert.AreEqual(1, content.Split("## Argument tips").Length - 1, "the second ticket replaces, not duplicates");
+        StringAssert.Contains(content, "## Argument tips\n\nPass timeZone as IANA.");
+        Assert.IsFalse(content.Contains("Always pass timeZone."));
+    }
+
+    [TestMethod]
+    public async Task Apply_CodeOwnedGuide_DeleteSectionOfTheGuide_FailsAndWritesNothing()
+    {
+        var (store, guide) = await StoreWithGuide();
+
+        var ex = await Assert.ThrowsExactlyAsync<InvalidOperationException>(() => NewApplier(store).ApplyAsync(NewTicket("""
+            { "skill": "mcp", "ops": [ { "op": "deleteSection", "header": "## Argument tips" } ] }
+            """), CancellationToken.None));
+
+        StringAssert.Contains(ex.Message, "maintained in code");
+        Assert.AreSame(guide, await store.GetAsync("mcp"));
+        Assert.IsNull(await store.GetAsync("mcp-learned"));
+    }
+
+    [TestMethod]
+    public async Task Revert_CodeOwnedGuide_DeletesACompanionItCreated()
+    {
+        var (store, _) = await StoreWithGuide();
+
+        var outcome = await NewApplier(store).ApplyAsync(NewTicket("""
+            { "skill": "mcp", "ops": [ { "op": "append", "text": "Lesson." } ] }
+            """), CancellationToken.None);
+        await outcome.Revert!(CancellationToken.None);
+
+        Assert.IsNull(await store.GetAsync("mcp-learned"));
+        Assert.IsNotNull(await store.GetAsync("mcp"));
+    }
+
+    [TestMethod]
+    public async Task Revert_CodeOwnedGuide_RestoresAnExistingCompanion()
+    {
+        var (store, _) = await StoreWithGuide();
+        await store.SaveAsync(new Skill("mcp-learned", "s", "# Earlier lessons", DateTimeOffset.UtcNow,
+            DateTimeOffset.UtcNow.AddDays(-1), SeeAlso: ["mcp"]));
+
+        var outcome = await NewApplier(store).ApplyAsync(NewTicket("""
+            { "skill": "mcp", "ops": [ { "op": "append", "text": "Lesson." } ] }
+            """), CancellationToken.None);
+        StringAssert.Contains((await store.GetAsync("mcp-learned"))!.Content, "Lesson.");
+
+        await outcome.Revert!(CancellationToken.None);
+
+        Assert.AreEqual("# Earlier lessons", (await store.GetAsync("mcp-learned"))!.Content);
     }
 
     [TestMethod]

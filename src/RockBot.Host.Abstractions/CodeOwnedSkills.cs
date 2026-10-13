@@ -34,6 +34,32 @@ public static class CodeOwnedSkills
     /// <summary>The companion skill for lessons learned using guide <paramref name="name"/>.</summary>
     public static string CompanionName(string name) => name + CompanionSuffix;
 
+    /// <summary>
+    /// The companion of guide <paramref name="guideName"/>, ready to append a lesson to:
+    /// <paramref name="existing"/> with a <see cref="Skill.SeeAlso"/> link back to the guide
+    /// added if it lacks one, or a new (unsaved) stub when there is no companion yet.
+    /// </summary>
+    public static Skill Companion(Skill? existing, string guideName, DateTimeOffset now)
+    {
+        if (existing is not null)
+        {
+            var seeAlso = existing.SeeAlso ?? [];
+            return seeAlso.Contains(guideName, StringComparer.OrdinalIgnoreCase)
+                ? existing
+                : existing with { SeeAlso = [.. seeAlso, guideName] };
+        }
+
+        return new Skill(
+            Name: CompanionName(guideName),
+            Summary: $"Lessons learned using the {guideName} tool guide.",
+            Content: $"# {guideName}: lessons learned\n\n" +
+                     $"Read the built-in guide first with `get_tool_guide(\"{guideName}\")`; " +
+                     "these are lessons learned while following it.",
+            CreatedAt: now,
+            UpdatedAt: now,
+            SeeAlso: [guideName]);
+    }
+
     /// <summary>The refusal every writer returns for a code-owned skill.</summary>
     public static string RefusalMessage(string name) =>
         $"'{name}' is a built-in tool guide maintained in code and can't be changed. " +

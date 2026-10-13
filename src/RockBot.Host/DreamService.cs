@@ -2475,35 +2475,6 @@ internal sealed class DreamService : IHostedService, IDisposable
     }
 
     /// <summary>
-    /// The <c>{name}-learned</c> companion of code-owned guide <paramref name="guideName"/>,
-    /// created (unsaved) when it doesn't exist yet. It links back to the guide via
-    /// <see cref="Skill.SeeAlso"/>.
-    /// </summary>
-    private async Task<Skill> GetOrCreateCompanionSkillAsync(string guideName)
-    {
-        var companionName = CodeOwnedSkills.CompanionName(guideName);
-        var companion = await _skillStore!.GetAsync(companionName);
-        if (companion is not null)
-        {
-            var seeAlso = companion.SeeAlso ?? [];
-            return seeAlso.Contains(guideName, StringComparer.OrdinalIgnoreCase)
-                ? companion
-                : companion with { SeeAlso = [.. seeAlso, guideName] };
-        }
-
-        var now = DateTimeOffset.UtcNow;
-        return new Skill(
-            Name: companionName,
-            Summary: $"Lessons learned using the {guideName} tool guide.",
-            Content: $"# {guideName}: lessons learned\n\n" +
-                     $"Read the built-in guide first with `get_tool_guide(\"{guideName}\")`; " +
-                     "these are lessons learned while following it.",
-            CreatedAt: now,
-            UpdatedAt: now,
-            SeeAlso: [guideName]);
-    }
-
-    /// <summary>
     /// Loads the built-in skill consolidation and optimization directives without reading
     /// any directive files, so tests can drive the skill passes directly.
     /// </summary>
@@ -4897,7 +4868,9 @@ internal sealed class DreamService : IHostedService, IDisposable
                 if (protectedNames.TryGetValue(targetName, out var guideName))
                 {
                     // A lesson about a code-owned tool guide goes to its companion skill (#699).
-                    existing = await GetOrCreateCompanionSkillAsync(guideName);
+                    existing = CodeOwnedSkills.Companion(
+                        await _skillStore.GetAsync(CodeOwnedSkills.CompanionName(guideName)),
+                        guideName, DateTimeOffset.UtcNow);
                     targetName = existing.Name;
                 }
                 else

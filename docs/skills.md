@@ -163,7 +163,11 @@ Nothing else changes them:
 - The dream passes never show them to the LLM, and drop any merge, rewrite, deletion or new
   skill that names one. Wisp-failure lessons about a guide go to its `{guide}-learned`
   companion, which lists the guide in `seeAlso`.
-- Repair tickets (`SkillBody`) fail on them, and the MCP skill-name migration skips them.
+- A repair ticket (`SkillBody`) aimed at one is applied to its `{guide}-learned` companion
+  instead. A `replaceSection` for a section the companion lacks adds it there; a
+  `deleteSection` of the guide's own text fails. Reverting deletes a companion the ticket
+  created.
+- The MCP skill-name migration skips them.
 
 ---
 
