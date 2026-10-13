@@ -505,7 +505,7 @@ public sealed class AgentContextBuilder(
             if (newEntries.Count > 0)
             {
                 var lines = newEntries.Select(e =>
-                    $"- [{e.Id}] ({e.Category ?? "general"}, importance={e.ImportanceScore:F2}): {e.Content}{ClaimAnnotation(uncertainClaimAnnotations, e.Id)}");
+                    $"- [{e.Id}] ({e.Category ?? "general"}, importance={e.ImportanceScore:F2}{SourceAnnotation(e)}): {e.Content}{ClaimAnnotation(uncertainClaimAnnotations, e.Id)}");
                 var recallContext =
                     "Recalled from long-term memory (relevant to this message):\n" +
                     string.Join("\n", lines);
@@ -971,6 +971,10 @@ public sealed class AgentContextBuilder(
 
         return keep;
     }
+
+    // ", source=inferred" etc., so the model can tell a fact the user stated from its own guess.
+    private static string SourceAnnotation(MemoryEntry entry) =>
+        MemoryProvenance.Get(entry.Metadata) is { } source ? $", source={source}" : string.Empty;
 
     private static string ClaimAnnotation(IReadOnlyDictionary<string, string> uncertain, string id) =>
         uncertain.TryGetValue(id, out var detail)

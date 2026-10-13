@@ -313,6 +313,7 @@ internal static class MemoryAuditAnalyzer
             NearDupEntries = nearDupEntries.Count,
             EmbeddingDupClusters = embeddingDupClusters,
             Reinforcement = reinforcement,
+            Sources = CountSources(live),
             ReinforcedWithoutMergeSinceLast = reinforcedWithoutMerge,
             RejectedMergeSourcesSinceLast = rejectedSourceIds.Count,
             RejectedMergeClustersRepeated = repeatedClusters,
@@ -368,6 +369,17 @@ internal static class MemoryAuditAnalyzer
     /// <summary>Category path for grouping, with a stable label for the null case.</summary>
     internal static string CategoryOf(MemoryEntry entry) =>
         string.IsNullOrWhiteSpace(entry.Category) ? Uncategorized : entry.Category;
+
+    /// <summary>Live entries by provenance: user, tool (any tool), inferred, none.</summary>
+    internal static IReadOnlyDictionary<string, int> CountSources(IEnumerable<MemoryEntry> live) =>
+        live.GroupBy(e => MemoryProvenance.Get(e.Metadata) switch
+            {
+                null => "none",
+                MemoryProvenance.User => MemoryProvenance.User,
+                MemoryProvenance.Inferred => MemoryProvenance.Inferred,
+                _ => "tool"
+            })
+            .ToDictionary(g => g.Key, g => g.Count());
 
     /// <summary>
     /// The ids an entry's merge provenance names, or an empty list when it is not a merge.

@@ -769,6 +769,60 @@ public class MemoryToolsTests
         Assert.AreEqual("Rocky has a Sheltie named Milo", saved[0].Content);
     }
 
+    // -------------------------------------------------------------------------
+    // SaveMemory — provenance (#667)
+    // -------------------------------------------------------------------------
+
+    [TestMethod]
+    public async Task SaveMemory_Source_IsStampedOnExtractedEntries()
+    {
+        var memory = new StubLongTermMemory();
+        var tools = MakeToolsWith(memory, new StubChatClient { Response = ExtractionResponse });
+
+        await tools.SaveMemory("Rocky has a Sheltie named Milo", category: "user-preferences/pets", source: "tool:web_browse");
+
+        var saved = await WaitForSavedAsync(memory, expected: 1);
+        Assert.AreEqual("tool:web_browse", MemoryProvenance.Get(saved[0].Metadata));
+    }
+
+    [TestMethod]
+    public async Task SaveMemory_ScopedCategory_NormalizesInferenceAlias()
+    {
+        var memory = new StubLongTermMemory();
+        var tools = MakeToolsWith(memory, new StubChatClient());
+
+        await tools.SaveMemory("Prefer bullet lists in summaries", category: "feedback/from-agent/style", source: "inference");
+
+        var saved = await WaitForSavedAsync(memory, expected: 1);
+        Assert.AreEqual("inferred", MemoryProvenance.Get(saved[0].Metadata));
+    }
+
+    [TestMethod]
+    public async Task SaveMemory_UnknownSource_IsDroppedAndReported()
+    {
+        var memory = new StubLongTermMemory();
+        var tools = MakeToolsWith(memory, new StubChatClient { Response = ExtractionResponse });
+
+        var result = await tools.SaveMemory("Rocky has a Sheltie named Milo", source: "search results");
+
+        StringAssert.Contains(result, "was not recognised");
+        var saved = await WaitForSavedAsync(memory, expected: 1);
+        Assert.IsNull(MemoryProvenance.Get(saved[0].Metadata));
+    }
+
+    [TestMethod]
+    public async Task SearchMemory_ShowsTheEntrySource()
+    {
+        var memory = new StubLongTermMemory();
+        memory.Add(new MemoryEntry("id1", "Talk is on Tuesday", null, [], DateTimeOffset.UtcNow,
+            Metadata: MemoryProvenance.With(null, MemoryProvenance.Inferred)));
+        var tools = MakeTools(memory);
+
+        var result = await tools.SearchMemory("talk");
+
+        StringAssert.Contains(result, "source=inferred");
+    }
+
     /// <summary>One extracted entry, so the extraction path yields something to persist.</summary>
     private const string ExtractionResponse =
         """[{"content": "Rocky has a Sheltie named Milo", "category": "user-preferences/pets"}]""";
