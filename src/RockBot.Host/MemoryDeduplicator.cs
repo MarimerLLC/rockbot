@@ -1,5 +1,6 @@
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using RockBot.Llm;
 
 namespace RockBot.Host;
 
@@ -33,6 +34,7 @@ internal sealed class MemoryDeduplicator : IMemoryDeduplicator
     private readonly AgentProfileOptions _profileOptions;
     private readonly DreamOptions? _dreamOptions;
     private readonly ILogger<MemoryDeduplicator> _logger;
+    private readonly IDecisionService _decisions;
 
     /// <summary>
     /// Serializes lookup-then-write. Two background saves of the same fact — two turns
@@ -51,8 +53,10 @@ internal sealed class MemoryDeduplicator : IMemoryDeduplicator
         IOptions<MemoryOptions> options,
         IOptions<AgentProfileOptions> profileOptions,
         ILogger<MemoryDeduplicator> logger,
-        IOptions<DreamOptions>? dreamOptions = null)
+        IOptions<DreamOptions>? dreamOptions = null,
+        IDecisionService? decisions = null)
     {
+        _decisions = decisions ?? NullDecisionService.Instance;
         _memory = memory;
         _lookup = memory as IMemorySimilarityLookup;
         _options = options.Value;
@@ -60,6 +64,41 @@ internal sealed class MemoryDeduplicator : IMemoryDeduplicator
         _dreamOptions = dreamOptions?.Value;
         _logger = logger;
     }
+
+    internal const string CoversQuestion = "existing_covers_new";
+    private const double DefaultCoverThreshold = 0.5;
+
+    /// <summary>
+    /// True when <paramref name="existing"/> already states everything in <paramref name="candidate"/>
+    /// with nothing changed, negated or updated — or when the decision model can't say (the
+    /// deterministic verdict stands).
+    /// </summary>
+    private async Task<bool> ExistingCoversAsync(MemoryEntry existing, MemoryEntry candidate, CancellationToken ct)
+    {
+        if (!_decisions.IsEnabled(DecisionPurposes.MemoryDuplicate))
+            return true;
+
+        var result = await _decisions.DecideAsync(BuildCoverRequest(existing.Content, candidate.Content), ct);
+        if (result?.Probability(CoversQuestion) is not { } p)
+            return true;
+
+        var threshold = _decisions.ThresholdFor(DecisionPurposes.MemoryDuplicate, DefaultCoverThreshold);
+        _logger.LogInformation(
+            "Decision model: {MatchId} covers new memory {Id}? p={Probability:0.000} threshold={Threshold:0.00}",
+            existing.Id, candidate.Id, p, threshold);
+        return p >= threshold;
+    }
+
+    internal static DecisionRequest BuildCoverRequest(string existing, string candidate) =>
+        DecisionRequest.Single(DecisionPurposes.MemoryDuplicate,
+            new Dictionary<string, object?> { ["existing_memory"] = existing, ["new_memory"] = candidate },
+            CoversQuestion,
+            new NoulQuestion(
+                "Does existing_memory already state everything new_memory states, with nothing in new_memory " +
+                "changed, negated, updated or contradicted?",
+                WhenTrue: "new_memory is a restatement of existing_memory; keeping only existing_memory loses nothing",
+                WhenFalse: "new_memory adds, updates, reverses or contradicts something (\"no longer\", a new " +
+                           "value, a different time or place, an exception)"));
 
     public async Task<MemorySaveOutcome> SaveOrReinforceAsync(
         MemoryEntry candidate,
@@ -146,6 +185,21 @@ internal sealed class MemoryDeduplicator : IMemoryDeduplicator
 
         var now = DateTimeOffset.UtcNow;
         var reinforced = Reinforce(existing, candidate, now);
+
+        // Similarity and the names/numbers check can't see meaning: "User no longer drinks coffee"
+        // scores as a duplicate of "User drinks coffee" with nothing missing, and the negation was
+        // discarded. Before reinforcing (which drops the new text), ask the decision model whether
+        // the existing entry really says everything the new one does.
+        if (missing.Count == 0 && !await ExistingCoversAsync(existing, candidate, cancellationToken))
+        {
+            _logger.LogInformation(
+                "Memory dedupe: saving {Id} as new — the decision model says {MatchId} does not cover it " +
+                "(similarity {Score:F2}, {Measure}): {Content}",
+                candidate.Id, existing.Id, match.Score, match.Measure, candidate.Content);
+
+            await _memory.SaveAsync(candidate, cancellationToken);
+            return new MemorySaveOutcome(MemorySaveAction.Created, candidate.Id);
+        }
 
         if (missing.Count == 0)
         {

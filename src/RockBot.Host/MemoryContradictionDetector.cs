@@ -1,5 +1,6 @@
 using System.Text.RegularExpressions;
 using Microsoft.Extensions.Logging;
+using RockBot.Llm;
 
 namespace RockBot.Host;
 
@@ -51,15 +52,74 @@ internal sealed partial class MemoryContradictionDetector : IMemoryContradiction
 
     private const float MinFeedbackOverlap = 0.3f;
 
+    private const double DefaultThreshold = 0.5;
+    private const int MaxCandidatesAsked = 10;
+
     private readonly ILongTermMemory _memory;
     private readonly ILogger<MemoryContradictionDetector> _logger;
+    private readonly IDecisionService _decisions;
 
     public MemoryContradictionDetector(
         ILongTermMemory memory,
-        ILogger<MemoryContradictionDetector> logger)
+        ILogger<MemoryContradictionDetector> logger,
+        IDecisionService? decisions = null)
     {
         _memory = memory ?? throw new ArgumentNullException(nameof(memory));
         _logger = logger;
+        _decisions = decisions ?? NullDecisionService.Instance;
+    }
+
+    /// <summary>
+    /// The keyword pass picks candidates by valence (negation words, directive words) and overlap,
+    /// which reads "use X, never Y" as negative and flips on any "unable to". A supersede is
+    /// silent, so before acting, the decision model (<see cref="DecisionPurposes.MemoryContradiction"/>)
+    /// is asked, in one call, which candidates really contradict the incoming entry. Candidates past
+    /// the first <see cref="MaxCandidatesAsked"/>, and every candidate when the model can't answer,
+    /// keep the keyword verdict.
+    /// </summary>
+    private async Task<List<MemoryEntry>> ConfirmAsync(MemoryEntry incoming, List<MemoryEntry> candidates, CancellationToken ct)
+    {
+        if (candidates.Count == 0 || !_decisions.IsEnabled(DecisionPurposes.MemoryContradiction))
+            return candidates;
+
+        var asked = candidates.Take(MaxCandidatesAsked).ToList();
+        var result = await _decisions.DecideAsync(BuildRequest(incoming, asked), ct);
+        if (result is null)
+            return candidates;
+
+        var threshold = _decisions.ThresholdFor(DecisionPurposes.MemoryContradiction, DefaultThreshold);
+        var confirmed = new List<MemoryEntry>();
+        for (var i = 0; i < asked.Count; i++)
+        {
+            var p = result.Probability(QuestionName(i)) ?? 1;
+            _logger.LogInformation(
+                "Decision model: {IncomingId} contradicts {ExistingId}? p={Probability:0.000} threshold={Threshold:0.00}",
+                incoming.Id, asked[i].Id, p, threshold);
+            if (p >= threshold)
+                confirmed.Add(asked[i]);
+        }
+        confirmed.AddRange(candidates.Skip(MaxCandidatesAsked));
+        return confirmed;
+    }
+
+    internal static string QuestionName(int index) => $"contradicts_{index}";
+
+    internal static DecisionRequest BuildRequest(MemoryEntry incoming, IReadOnlyList<MemoryEntry> candidates)
+    {
+        var existing = new Dictionary<string, object?>();
+        var questions = new Dictionary<string, DecisionQuestion>();
+        for (var i = 0; i < candidates.Count; i++)
+        {
+            existing[$"existing_{i}"] = candidates[i].Content;
+            questions[QuestionName(i)] = new NoulQuestion(
+                $"Does new_memory contradict existing_{i}, so that both cannot be true or followed at once?",
+                WhenTrue: "They make opposite claims or give opposite rules about the same thing",
+                WhenFalse: "They are about different things, agree, or one only adds detail to the other");
+        }
+
+        return new DecisionRequest(DecisionPurposes.MemoryContradiction,
+            new Dictionary<string, object?> { ["new_memory"] = incoming.Content, ["existing"] = existing },
+            questions);
     }
 
     public async Task<ContradictionResolution> ResolveAsync(
@@ -102,6 +162,7 @@ internal sealed partial class MemoryContradictionDetector : IMemoryContradiction
             candidates.Add(e);
         }
 
+        candidates = await ConfirmAsync(incoming, candidates, ct);
         if (candidates.Count == 0)
             return ContradictionResolution.None;
 
@@ -169,6 +230,7 @@ internal sealed partial class MemoryContradictionDetector : IMemoryContradiction
             contradicted.Add(e);
         }
 
+        contradicted = await ConfirmAsync(incoming, contradicted, ct);
         if (contradicted.Count == 0)
             return ContradictionResolution.None;
 
