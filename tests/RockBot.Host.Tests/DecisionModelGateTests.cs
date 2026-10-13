@@ -1,8 +1,6 @@
-using System.Net;
-using System.Text.Json.Nodes;
 using Microsoft.Extensions.AI;
-using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Options;
+using RockBot.Llm;
 
 namespace RockBot.Host.Tests;
 
@@ -19,18 +17,18 @@ public class DecisionModelGateTests
     // No verb the regex knows: "is in" and "got ordered" read as information-only.
     private const string MarkThemComplete = "the furnace filter is in and the propane got ordered yesterday";
 
-    /// <summary>The body Microsoft-Decision-1 returned for this question on 2026-10-13.</summary>
-    private const string ObservedResponse =
-        """{"model":"microsoft-decision-1","answers":{"user_asked":{"noul":0.9890130586123322,"type":"noul"}},"usage":{"input_tokens":233,"output_tokens":1}}""";
+    private static IDictionary<string, object?> State(DecisionRequest request) =>
+        (IDictionary<string, object?>)request.State;
 
     private static ActionGateScope InformationOnly(string userMessage = MarkThemComplete, string? previous = null) =>
         new(RunOrigin.UserTurn, UserRequestKind.InformationOnly) { Request = new ActionGateRequest(userMessage, previous) };
 
-    private static ConsequentialActionGate Gate(FakeClassifier classifier, Action<DecisionModelOptions>? configure = null)
+    private static ConsequentialActionGate Gate(FakeDecisionService decisions,
+        Action<ConsequentialActionGateOptions>? configure = null)
     {
         var host = new AgentHostOptions();
-        configure?.Invoke(host.ConsequentialActionGate.DecisionModel);
-        return new ConsequentialActionGate(Options.Create(host), intentClassifier: classifier);
+        configure?.Invoke(host.ConsequentialActionGate);
+        return new ConsequentialActionGate(Options.Create(host), decisions: decisions);
     }
 
     // ── Gate decisions ──────────────────────────────────────────────────────
@@ -38,19 +36,21 @@ public class DecisionModelGateTests
     [TestMethod]
     public async Task ModelSaysUserAsked_CallRuns()
     {
-        var classifier = new FakeClassifier(0.99);
+        var decisions = new FakeDecisionService(0.99);
 
-        Assert.IsNull(await Gate(classifier).CheckAsync(CompleteTask, "id=1", InformationOnly()));
-        var query = classifier.Queries.Single();
-        Assert.AreEqual(MarkThemComplete, query.UserRequest);
-        Assert.AreEqual(CompleteTask, query.ToolName);
-        Assert.AreEqual("todo", query.Target);
+        Assert.IsNull(await Gate(decisions).CheckAsync(CompleteTask, "id=1", InformationOnly()));
+        var request = decisions.Requests.Single();
+        Assert.AreEqual(DecisionPurposes.ActionGate, request.Purpose);
+        Assert.AreEqual(MarkThemComplete, State(request)["user_message"]);
+        var action = (IDictionary<string, object?>)State(request)["proposed_action"]!;
+        Assert.AreEqual(CompleteTask, action["tool"]);
+        Assert.AreEqual("todo", action["system_changed"]);
     }
 
     [TestMethod]
     public async Task ModelSaysUserDidNotAsk_CallIsRefused()
     {
-        var refusal = await Gate(new FakeClassifier(0.01)).CheckAsync(CompleteTask, "id=1", InformationOnly("why did it refuse?"));
+        var refusal = await Gate(new FakeDecisionService(0.01)).CheckAsync(CompleteTask, "id=1", InformationOnly("why did it refuse?"));
 
         Assert.IsTrue(ConsequentialActions.IsRefusal(refusal), refusal);
     }
@@ -60,8 +60,12 @@ public class DecisionModelGateTests
     {
         var scope = InformationOnly();
 
-        Assert.IsNotNull(await Gate(new FakeClassifier(0.6), o => o.Threshold = 0.7).CheckAsync(CompleteTask, null, scope));
-        Assert.IsNull(await Gate(new FakeClassifier(0.6), o => o.Threshold = 0.5).CheckAsync(CompleteTask, null, InformationOnly()));
+        var strict = new FakeDecisionService(0.6);
+        strict.Thresholds[DecisionPurposes.ActionGate] = 0.7;
+
+        Assert.IsNotNull(await Gate(strict).CheckAsync(CompleteTask, null, scope));
+        Assert.IsNull(await Gate(new FakeDecisionService(0.6)).CheckAsync(CompleteTask, null, InformationOnly()),
+            "default threshold 0.5");
     }
 
     [TestMethod]
@@ -69,7 +73,7 @@ public class DecisionModelGateTests
     [DataRow(false, DisplayName = "refuse on failure")]
     public async Task ModelFails_FollowsAllowOnFailure(bool allowOnFailure)
     {
-        var result = await Gate(new FakeClassifier(null), o => o.AllowOnFailure = allowOnFailure)
+        var result = await Gate(new FakeDecisionService(null), o => o.AllowOnDecisionFailure = allowOnFailure)
             .CheckAsync(CompleteTask, null, InformationOnly());
 
         Assert.AreEqual(allowOnFailure, result is null);
@@ -78,34 +82,34 @@ public class DecisionModelGateTests
     [TestMethod]
     public async Task ModelNotConfigured_RegexAloneDecides()
     {
-        var classifier = new FakeClassifier(0.99) { Enabled = false };
+        var decisions = new FakeDecisionService(0.99) { Enabled = false };
 
-        Assert.IsNotNull(await Gate(classifier).CheckAsync(CompleteTask, null, InformationOnly()));
-        Assert.AreEqual(0, classifier.Queries.Count);
+        Assert.IsNotNull(await Gate(decisions).CheckAsync(CompleteTask, null, InformationOnly()));
+        Assert.AreEqual(0, decisions.Requests.Count);
     }
 
     [TestMethod]
     public async Task RegexAlreadyAllows_ModelNotAsked()
     {
-        var classifier = new FakeClassifier(0.01);
+        var decisions = new FakeDecisionService(0.01);
         var instructed = new ActionGateScope(RunOrigin.UserTurn, UserRequestKind.Instruction)
         {
             Request = new ActionGateRequest("mark them complete", null),
         };
 
-        Assert.IsNull(await Gate(classifier).CheckAsync(CompleteTask, null, instructed));
-        Assert.IsNull(await Gate(classifier).CheckAsync("todo__list_tasks", null, InformationOnly()), "reads are never gated");
-        Assert.AreEqual(0, classifier.Queries.Count);
+        Assert.IsNull(await Gate(decisions).CheckAsync(CompleteTask, null, instructed));
+        Assert.IsNull(await Gate(decisions).CheckAsync("todo__list_tasks", null, InformationOnly()), "reads are never gated");
+        Assert.AreEqual(0, decisions.Requests.Count);
     }
 
     [TestMethod]
     public async Task NoUserRequest_ModelNotAsked()
     {
-        var classifier = new FakeClassifier(0.99);
+        var decisions = new FakeDecisionService(0.99);
 
-        Assert.IsNotNull(await Gate(classifier).CheckAsync(CompleteTask, null,
+        Assert.IsNotNull(await Gate(decisions).CheckAsync(CompleteTask, null,
             new ActionGateScope(RunOrigin.UserTurn, UserRequestKind.InformationOnly)));
-        Assert.AreEqual(0, classifier.Queries.Count);
+        Assert.AreEqual(0, decisions.Requests.Count);
     }
 
     // ── Caching and subagents ───────────────────────────────────────────────
@@ -113,18 +117,18 @@ public class DecisionModelGateTests
     [TestMethod]
     public async Task OneQuestionPerToolPerTurn_SharedWithSubagents()
     {
-        var classifier = new FakeClassifier(0.99);
-        var gate = Gate(classifier);
+        var decisions = new FakeDecisionService(0.99);
+        var gate = Gate(decisions);
         var turn = InformationOnly();
         var subagent = turn.ForSubagent();
 
         Assert.AreSame(turn.Request, subagent.Request, "a subagent judges its parent's user message");
         Assert.IsNull(await gate.CheckAsync(CompleteTask, "id=1", turn));
         Assert.IsNull(await gate.CheckAsync(CompleteTask, "id=2", subagent));
-        Assert.AreEqual(1, classifier.Queries.Count, "the second completion reuses the first answer");
+        Assert.AreEqual(1, decisions.Requests.Count, "the second completion reuses the first answer");
 
         await gate.CheckAsync("calendar-mcp__create_event", null, subagent);
-        Assert.AreEqual(2, classifier.Queries.Count, "a different change is asked about separately");
+        Assert.AreEqual(2, decisions.Requests.Count, "a different change is asked about separately");
     }
 
     [TestMethod]
@@ -142,7 +146,7 @@ public class DecisionModelGateTests
     [DataRow(true, DisplayName = "text-based")]
     public async Task UserTurn_RegexMissesTheRequest_ModelAllows_ToolRuns(bool textBased)
     {
-        var classifier = new FakeClassifier(0.99);
+        var decisions = new FakeDecisionService(0.99);
         List<ChatMessage> messages =
         [
             new(ChatRole.System, "You are a test agent."),
@@ -152,12 +156,12 @@ public class DecisionModelGateTests
         ];
 
         var run = await ConsequentialActionGateTests.RunWithToolAsync(textBased, messages, CompleteTask,
-            actionGate: ActionGateScope.ForUserTurn, classifier: classifier);
+            actionGate: ActionGateScope.ForUserTurn, decisions: decisions);
 
         Assert.AreEqual(1, run.Executed.Count);
-        var query = classifier.Queries.Single();
-        Assert.AreEqual(MarkThemComplete, query.UserRequest);
-        Assert.AreEqual("Install furnace filter and Order propane are overdue.", query.PreviousAgentMessage);
+        var state = State(decisions.Requests.Single());
+        Assert.AreEqual(MarkThemComplete, state["user_message"]);
+        Assert.AreEqual("Install furnace filter and Order propane are overdue.", state["agent_message_before_it"]);
     }
 
     [TestMethod]
@@ -165,7 +169,7 @@ public class DecisionModelGateTests
     {
         var run = await ConsequentialActionGateTests.RunWithToolAsync(false,
             ConsequentialActionGateTests.Conversation("the talk doesn't exist yet"), "calendar-mcp__create_event",
-            actionGate: ActionGateScope.ForUserTurn, classifier: new FakeClassifier(0.007));
+            actionGate: ActionGateScope.ForUserTurn, decisions: new FakeDecisionService(0.007));
 
         Assert.AreEqual(0, run.Executed.Count);
         StringAssert.Contains(run.ToolResult, "Not run:");
@@ -176,161 +180,15 @@ public class DecisionModelGateTests
     {
         // A subagent's task description is imperative because the agent wrote it. Judging it as the
         // user's message would launder an information-only turn into an instruction.
-        var classifier = new FakeClassifier(0.99);
+        var decisions = new FakeDecisionService(0.99);
 
         var run = await ConsequentialActionGateTests.RunWithToolAsync(false,
             ConsequentialActionGateTests.Conversation("Create prep blocks for the Techorama talk."),
             "calendar-mcp__create_event",
             actionGate: new ActionGateScope(RunOrigin.SubagentOfUserTurn, UserRequestKind.InformationOnly),
-            classifier: classifier);
+            decisions: decisions);
 
         Assert.AreEqual(0, run.Executed.Count);
-        Assert.AreEqual(0, classifier.Queries.Count);
-    }
-
-    // ── The Foundry client ──────────────────────────────────────────────────
-
-    [TestMethod]
-    public void ReadProbability_ParsesTheObservedResponse()
-    {
-        Assert.AreEqual(0.9890130586123322, FoundryDecisionIntentClassifier.ReadProbability(ObservedResponse)!.Value, 1e-12);
-    }
-
-    [TestMethod]
-    [DataRow("""{"answers":{"user_asked":0.42}}""", 0.42)]
-    [DataRow("""{"answers":{"user_asked":{"probability":0.3}}}""", 0.3)]
-    [DataRow("""{"answers":{"user_asked":{"noul":1.7}}}""", 1.0)]
-    public void ReadProbability_AcceptsOtherShapes(string body, double expected)
-    {
-        Assert.AreEqual(expected, FoundryDecisionIntentClassifier.ReadProbability(body)!.Value, 1e-12);
-    }
-
-    [TestMethod]
-    [DataRow("""{"answers":{}}""")]
-    [DataRow("""{"answers":{"user_asked":{"type":"noul"}}}""")]
-    public void ReadProbability_NoAnswer_IsNull(string body)
-    {
-        Assert.IsNull(FoundryDecisionIntentClassifier.ReadProbability(body));
-    }
-
-    [TestMethod]
-    public void RequestBody_IsOneNoulQuestionWithTheConversationAndCallAsState()
-    {
-        var body = FoundryDecisionIntentClassifier.BuildRequestBody("decision-1",
-            new UserIntentQuery("mark them complete now", "Both are overdue.", CompleteTask, "todo", "id=1"));
-
-        Assert.AreEqual("decision-1", (string?)body["model"]);
-        Assert.AreEqual("mark them complete now", (string?)body["state"]!["user_message"]);
-        Assert.AreEqual("Both are overdue.", (string?)body["state"]!["agent_message_before_it"]);
-        Assert.AreEqual(CompleteTask, (string?)body["state"]!["proposed_action"]!["tool"]);
-        Assert.AreEqual("noul", (string?)body["questions"]!["user_asked"]!["type"]);
-        Assert.IsNotNull(body["questions"]!["user_asked"]!["criteria"]!["true"]);
-    }
-
-    [TestMethod]
-    public async Task Client_PostsToSystemOneWithTheKey_AndReadsTheProbability()
-    {
-        var handler = new StubHandler(HttpStatusCode.OK, ObservedResponse);
-        var classifier = Client(handler);
-
-        Assert.IsTrue(classifier.IsEnabled);
-        var p = await classifier.ProbabilityUserAskedForAsync(Query(), CancellationToken.None);
-
-        Assert.AreEqual(0.989, p!.Value, 0.001);
-        Assert.AreEqual("https://acct.services.ai.azure.com/providers/microsoft/v1/systemone", handler.Uri!.ToString());
-        Assert.AreEqual("test-key", handler.ApiKey);
-        Assert.AreEqual("decision-1", (string?)JsonNode.Parse(handler.Body!)!["model"]);
-    }
-
-    [TestMethod]
-    [DataRow(HttpStatusCode.TooManyRequests)]
-    [DataRow(HttpStatusCode.InternalServerError)]
-    public async Task Client_HttpError_IsNull(HttpStatusCode status)
-    {
-        var p = await Client(new StubHandler(status, """{"error":{"code":"RateLimitReached"}}"""))
-            .ProbabilityUserAskedForAsync(Query(), CancellationToken.None);
-
-        Assert.IsNull(p);
-    }
-
-    [TestMethod]
-    public async Task Client_Timeout_IsNull()
-    {
-        var p = await Client(new StubHandler(HttpStatusCode.OK, ObservedResponse, delay: TimeSpan.FromSeconds(5)),
-                o => o.TimeoutSeconds = 0.5)
-            .ProbabilityUserAskedForAsync(Query(), CancellationToken.None);
-
-        Assert.IsNull(p);
-    }
-
-    [TestMethod]
-    public void Options_BindFromTheHelmEnvKeys()
-    {
-        var config = new ConfigurationBuilder()
-            .AddInMemoryCollection(new Dictionary<string, string?>
-            {
-                ["AgentHost:ConsequentialActionGate:DecisionModel:Endpoint"] = "https://acct.services.ai.azure.com",
-                ["AgentHost:ConsequentialActionGate:DecisionModel:ApiKey"] = "k",
-                ["AgentHost:ConsequentialActionGate:DecisionModel:Deployment"] = "decision-1",
-                ["AgentHost:ConsequentialActionGate:DecisionModel:Threshold"] = "0.6",
-                ["AgentHost:ConsequentialActionGate:DecisionModel:AllowOnFailure"] = "false",
-            })
-            .Build();
-        var host = new AgentHostOptions();
-
-        config.GetSection("AgentHost").Bind(host);
-
-        var model = host.ConsequentialActionGate.DecisionModel;
-        Assert.IsTrue(model.IsConfigured);
-        Assert.AreEqual(0.6, model.Threshold);
-        Assert.IsFalse(model.AllowOnFailure);
-    }
-
-    [TestMethod]
-    public void Client_Unconfigured_IsDisabled()
-    {
-        Assert.IsFalse(new FoundryDecisionIntentClassifier(Options.Create(new AgentHostOptions())).IsEnabled);
-    }
-
-    private static UserIntentQuery Query() => new(MarkThemComplete, null, CompleteTask, "todo", "id=1");
-
-    private static FoundryDecisionIntentClassifier Client(StubHandler handler, Action<DecisionModelOptions>? configure = null)
-    {
-        var host = new AgentHostOptions();
-        var model = host.ConsequentialActionGate.DecisionModel;
-        model.Endpoint = "https://acct.services.ai.azure.com/";
-        model.ApiKey = "test-key";
-        model.Deployment = "decision-1";
-        configure?.Invoke(model);
-        return new FoundryDecisionIntentClassifier(Options.Create(host), httpClient: new HttpClient(handler));
-    }
-
-    private sealed class FakeClassifier(double? probability) : IUserIntentClassifier
-    {
-        public bool Enabled { get; init; } = true;
-        public List<UserIntentQuery> Queries { get; } = [];
-        public bool IsEnabled => Enabled;
-
-        public Task<double?> ProbabilityUserAskedForAsync(UserIntentQuery query, CancellationToken cancellationToken)
-        {
-            lock (Queries) Queries.Add(query);
-            return Task.FromResult(probability);
-        }
-    }
-
-    private sealed class StubHandler(HttpStatusCode status, string body, TimeSpan? delay = null) : HttpMessageHandler
-    {
-        public Uri? Uri { get; private set; }
-        public string? ApiKey { get; private set; }
-        public string? Body { get; private set; }
-
-        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
-        {
-            Uri = request.RequestUri;
-            ApiKey = request.Headers.TryGetValues("api-key", out var keys) ? keys.Single() : null;
-            Body = request.Content is null ? null : await request.Content.ReadAsStringAsync(cancellationToken);
-            if (delay is { } d) await Task.Delay(d, cancellationToken);
-            return new HttpResponseMessage(status) { Content = new StringContent(body) };
-        }
+        Assert.AreEqual(0, decisions.Requests.Count);
     }
 }

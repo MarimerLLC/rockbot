@@ -45,17 +45,23 @@ agent:
   #   AgentHost__HistoryOlderTurnMaxChars: "0"
   #   AgentHost__RelayedSubagentTurnMaxChars: "0"
   extraEnv: {}
-  # Decision model for the consequential-action gate. When the regex classifier reads a user
-  # message as asking for nothing, the gate asks this model whether the user asked for the
-  # change before refusing it. Off while endpoint or deployment is empty. The API key is
+  # Shared decision model (Microsoft-Decision-1). Deterministic checks — the action gate's
+  # regex, correction detection, completion triggers, offer stripping, memory dedupe and
+  # contradiction, tier routing — run first; this model is asked only about what they can't
+  # settle. Off while endpoint or deployment is empty. The API key is
   # secrets.decisionModel.apiKey, or the balanced tier's key when that is empty (the same
-  # Foundry account usually serves both).
+  # Foundry account usually serves both). See docs/decision-model.md.
   decisionModel:
     endpoint: ""            # e.g. https://my-resource.services.ai.azure.com
     deployment: ""          # Foundry deployment name of Microsoft-Decision-1
-    threshold: ""           # "" = 0.5; probability at or above which the user asked
     timeoutSeconds: ""      # "" = 5
-    allowOnFailure: ""      # "" = true; false refuses when the model can't answer
+    allowOnGateFailure: ""  # "" = true; false makes the action gate refuse when the model can't answer
+    # Per-purpose switches and thresholds (ActionGate, Correction, CompletionCheck,
+    # TrailingOffer, MemoryDuplicate, MemoryContradiction, TierRouting), e.g.
+    #   uses:
+    #     TierRouting: { enabled: false }
+    #     ActionGate: { threshold: 0.6 }
+    uses: {}
   # HTTP endpoint the frontends upload attachments to. Bytes for a screenshot-sized file go
   # here rather than through RabbitMQ, which holds message bodies in memory until they are
   # acked. Disabling it is safe — clients fall back to the bus, which works from anywhere but

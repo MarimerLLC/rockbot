@@ -158,17 +158,22 @@ data:
 
   {{- with (default dict .Values.agent.decisionModel) }}
   {{- if and .endpoint .deployment }}
-  # ── Consequential-action gate decision model (Microsoft-Decision-1) ──────
-  AgentHost__ConsequentialActionGate__DecisionModel__Endpoint: {{ .endpoint | quote }}
-  AgentHost__ConsequentialActionGate__DecisionModel__Deployment: {{ .deployment | quote }}
-  {{- with .threshold }}
-  AgentHost__ConsequentialActionGate__DecisionModel__Threshold: {{ . | quote }}
-  {{- end }}
+  # ── Shared decision model (Microsoft-Decision-1) ─────────────────────────
+  DecisionModel__Endpoint: {{ .endpoint | quote }}
+  DecisionModel__Deployment: {{ .deployment | quote }}
   {{- with .timeoutSeconds }}
-  AgentHost__ConsequentialActionGate__DecisionModel__TimeoutSeconds: {{ . | quote }}
+  DecisionModel__TimeoutSeconds: {{ . | quote }}
   {{- end }}
-  {{- if ne (toString .allowOnFailure) "" }}
-  AgentHost__ConsequentialActionGate__DecisionModel__AllowOnFailure: {{ .allowOnFailure | quote }}
+  {{- range $purpose, $use := (default dict .uses) }}
+  {{- if hasKey $use "enabled" }}
+  DecisionModel__Uses__{{ $purpose }}__Enabled: {{ $use.enabled | quote }}
+  {{- end }}
+  {{- with $use.threshold }}
+  DecisionModel__Uses__{{ $purpose }}__Threshold: {{ . | quote }}
+  {{- end }}
+  {{- end }}
+  {{- if ne (toString .allowOnGateFailure) "" }}
+  AgentHost__ConsequentialActionGate__AllowOnDecisionFailure: {{ .allowOnGateFailure | quote }}
   {{- end }}
   {{- end }}
   {{- end }}

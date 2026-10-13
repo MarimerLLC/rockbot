@@ -469,6 +469,10 @@ builder.Services.Configure<AgentProfileOptions>(builder.Configuration.GetSection
 // Allow MaxToolIterations and other AgentHostOptions to be overridden via appsettings.json or env vars.
 builder.Services.Configure<AgentHostOptions>(builder.Configuration.GetSection("AgentHost"));
 
+// Shared decision model (Microsoft-Decision-1) — e.g. DecisionModel__Endpoint, DecisionModel__ApiKey,
+// DecisionModel__Deployment, DecisionModel__Uses__Correction__Enabled=false. Off until configured.
+builder.Services.Configure<DecisionModelOptions>(builder.Configuration.GetSection("DecisionModel"));
+
 // Working memory — e.g. WorkingMemory__SnapshotStaleAfter=08:00:00 or
 // WorkingMemory__SnapshotKeyPrefixes__0=shared/patrol/ (issue #668). Composes with the
 // defaults registered by WithMemory(); unset keys keep their defaults.

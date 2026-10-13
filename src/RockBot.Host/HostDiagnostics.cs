@@ -294,6 +294,26 @@ public static class HostDiagnostics
     /// gate asked whether the user asked for the change anyway. Tagged <c>rockbot.tool.name</c> and
     /// <c>rockbot.action_gate.decision</c> (allowed, refused, allowed-on-failure, refused-on-failure).
     /// </summary>
+    /// <summary>
+    /// Calls to the shared decision model (<see cref="FoundryDecisionService"/>), tagged
+    /// <c>rockbot.decision.purpose</c> and <c>rockbot.decision.outcome</c> (ok, rate-limited,
+    /// http-error, timeout, unreadable, error).
+    /// </summary>
+    public static readonly Counter<long> DecisionCalls =
+        Meter.CreateCounter<long>(
+            "rockbot.decision.calls",
+            unit: "{call}",
+            description: "Calls to the decision model, by purpose and outcome");
+
+    /// <summary>Latency of decision-model calls, tagged like <see cref="DecisionCalls"/>.</summary>
+    public static readonly Histogram<double> DecisionDuration =
+        Meter.CreateHistogram<double>(
+            "rockbot.decision.duration",
+            unit: "ms",
+            description: "Duration of decision-model calls",
+            tags: null,
+            advice: new InstrumentAdvice<double> { HistogramBucketBoundaries = RequestDurationBuckets });
+
     public static readonly Counter<long> ConsequentialActionDecisions =
         Meter.CreateCounter<long>(
             "rockbot.agent.consequential_action.decisions",
