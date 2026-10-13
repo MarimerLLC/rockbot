@@ -52,6 +52,7 @@ public static class ServiceCollectionExtensions
         services.Configure<DecisionModelOptions>(_ => { });
         services.TryAddSingleton<IDecisionService, FoundryDecisionService>();
         services.TryAddSingleton<CorrectionDetector>();
+        services.TryAddSingleton<TrailingOfferStripper>();
         services.AddTransient<AgentLoopRunner>();
         // #670: which rarely used tool families each session has loaded; outlives the transient runner.
         services.TryAddSingleton(_ => new DeferredToolActivations());

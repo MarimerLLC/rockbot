@@ -47,19 +47,31 @@ public static partial class ResponseSanitizer
     /// Returns the original text if no pattern matches, or the trimmed text
     /// with trailing whitespace cleaned up.
     /// </summary>
-    public static string StripTrailingOffers(string text)
+    public static string StripTrailingOffers(string text) =>
+        FindTrailingOffer(text) is { } split ? split.Kept : text;
+
+    /// <summary>
+    /// The trailing offer paragraph <see cref="StripTrailingOffers"/> would remove, and what would be
+    /// left; null when there is none or removing it would take most of the reply.
+    /// <see cref="TrailingOfferStripper"/> asks the decision model before acting on it.
+    /// </summary>
+    public static (string Kept, string Offer)? FindTrailingOffer(string text)
     {
         if (string.IsNullOrEmpty(text))
-            return text;
+            return null;
 
-        var result = TrailingOfferPattern().Replace(text, string.Empty).TrimEnd();
+        var match = TrailingOfferPattern().Match(text);
+        if (!match.Success)
+            return null;
+
+        var kept = text[..match.Index].TrimEnd();
 
         // Don't strip if it would remove most of the content — only strip
         // trailing fluff, not the substance.
-        if (result.Length < text.Length * 0.3)
-            return text;
+        if (kept.Length < text.Length * 0.3)
+            return null;
 
-        return result;
+        return (kept, match.Value.Trim());
     }
 
     // Matches a trailing paragraph that narrates a memory write — the production

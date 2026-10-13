@@ -64,7 +64,8 @@ internal sealed class UserMessageHandler(
     IOptions<WorkingMemoryOptions>? workingMemoryOptions = null,
     SessionTierHistory? tierHistory = null,
     RockBot.Subagent.ISubagentManager? subagentManager = null,
-    CorrectionDetector? correctionDetector = null) : IMessageHandler<UserMessage>
+    CorrectionDetector? correctionDetector = null,
+    TrailingOfferStripper? offerStripper = null) : IMessageHandler<UserMessage>
 {
     private static readonly TimeSpan ProgressMessageThreshold = TimeSpan.FromSeconds(5);
 
@@ -80,6 +81,7 @@ internal sealed class UserMessageHandler(
     private static readonly Regex HallucinatedActionRegex = AgentLoopRunner.HallucinatedActionRegex;
 
     private readonly CorrectionDetector _correctionDetector = correctionDetector ?? new CorrectionDetector();
+    private readonly TrailingOfferStripper _offerStripper = offerStripper ?? new TrailingOfferStripper();
 
     /// <summary>
     /// Writes a <see cref="FeedbackSignalType.Correction"/> entry when the message corrects the
@@ -615,7 +617,7 @@ internal sealed class UserMessageHandler(
                 ToolCallCount = nativeDiag.ToolCalls > 0 ? nativeDiag.ToolCalls : null,
             });
 
-            text = ResponseSanitizer.StripTrailingOffers(text);
+            text = await _offerStripper.StripAsync(text, ct);
 
             await conversationMemory.AddTurnAsync(
                 sessionId,
