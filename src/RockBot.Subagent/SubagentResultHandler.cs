@@ -37,7 +37,8 @@ internal sealed class SubagentResultHandler(
     IMcpSkillSurface? mcpSkillSurface = null,
     SessionTierHistory? tierHistory = null,
     ISessionWorkRegistry? sessionWorkRegistry = null,
-    IOptions<AgentHostOptions>? hostOptions = null) : IMessageHandler<SubagentResultMessage>
+    IOptions<AgentHostOptions>? hostOptions = null,
+    IncompleteReplyCheck? incompleteCheck = null) : IMessageHandler<SubagentResultMessage>
 {
     public async Task HandleAsync(SubagentResultMessage message, MessageHandlerContext context)
     {
@@ -68,7 +69,8 @@ internal sealed class SubagentResultHandler(
 
         // ── Phase 1: immediate per-result work (every result) ──────────────────
 
-        var safeOutput = message.IsSuccess && AgentLoopRunner.IsIncompleteSetupPhrase(message.Output)
+        var safeOutput = message.IsSuccess
+                         && await (incompleteCheck ?? new IncompleteReplyCheck()).IsIncompleteAsync(message.Output, ct)
             ? message.Output.TrimEnd(':').TrimEnd() +
               " — but the task ran out of steps before completing this action. No data was saved to shared memory."
             : message.Output;

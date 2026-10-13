@@ -66,7 +66,9 @@ internal sealed class UserMessageHandler(
     RockBot.Subagent.ISubagentManager? subagentManager = null,
     CorrectionDetector? correctionDetector = null,
     TrailingOfferStripper? offerStripper = null,
-    TierRoutingRefiner? tierRefiner = null) : IMessageHandler<UserMessage>
+    TierRoutingRefiner? tierRefiner = null,
+    IncompleteReplyCheck? incompleteCheck = null,
+    CompletionCheckClassifier? completionCheck = null) : IMessageHandler<UserMessage>
 {
     private static readonly TimeSpan ProgressMessageThreshold = TimeSpan.FromSeconds(5);
 
@@ -83,6 +85,8 @@ internal sealed class UserMessageHandler(
 
     private readonly CorrectionDetector _correctionDetector = correctionDetector ?? new CorrectionDetector();
     private readonly TrailingOfferStripper _offerStripper = offerStripper ?? new TrailingOfferStripper();
+    private readonly IncompleteReplyCheck _incompleteCheck = incompleteCheck ?? new IncompleteReplyCheck();
+    private readonly CompletionCheckClassifier _completionCheck = completionCheck ?? new CompletionCheckClassifier();
 
     /// <summary>
     /// Writes a <see cref="FeedbackSignalType.Correction"/> entry when the message corrects the
@@ -367,7 +371,7 @@ internal sealed class UserMessageHandler(
                 {
                     var text = agentLoopRunner.ExtractAssistantText(firstResponse);
 
-                    if (AgentLoopRunner.IsIncompleteSetupPhrase(text))
+                    if (await _incompleteCheck.IsIncompleteAsync(text, ct))
                     {
                         logger.LogInformation(
                             "First response is an incomplete setup phrase ({Length} chars); routing to background loop",
@@ -400,7 +404,11 @@ internal sealed class UserMessageHandler(
                             chatMessages, chatOptions, firstResponse, classification, message.Content, postInjectionTokenEstimate,
                             message.SessionId, turnId, replyTo, correlationId, sessionHandle.Generation, wipMessageId, turnActivity, sessionCt);
                     }
-                    else if (CompletionEvalTriggers.NeedsCheckWithoutTools(text, message.Content))
+                    else if (CompletionEvalTriggers.NeedsCheckWithoutTools(text, message.Content)
+                        // The regexes found nothing: the decision model's completion check, which the
+                        // background loop's own check then reuses from its cache.
+                        || await _completionCheck.SecondOpinionAsync(text, message.Content, [], ct)
+                            != CompletionEvalTrigger.None)
                     {
                         // #666: a no-tool reply that promises work, claims "Done."/"Updated.", or
                         // answers an instruction would otherwise go straight to the user without

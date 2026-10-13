@@ -114,7 +114,8 @@ public static class LlmServiceCollectionExtensions
                     ? watched
                     : new TierEscalatingChatClient(watched, escalateTo);
                 return new RockBotFunctionInvokingChatClient(inner, progressNotifier, toolCallLog, behavior,
-                    costEstimator, workingMemory, sp.GetRequiredService<IOptions<AgentHostOptions>>(), logger);
+                    costEstimator, workingMemory, sp.GetRequiredService<IOptions<AgentHostOptions>>(), logger,
+                    sp.GetService<IncompleteReplyCheck>());
             }
 
             // The escalation target is the Balanced tier's raw client (with its own diagnostic

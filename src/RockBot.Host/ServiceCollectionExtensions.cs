@@ -55,6 +55,9 @@ public static class ServiceCollectionExtensions
         services.TryAddSingleton<TrailingOfferStripper>();
         services.TryAddSingleton<CompletionCheckClassifier>();
         services.TryAddSingleton<TierRoutingRefiner>();
+        services.TryAddSingleton<IncompleteReplyCheck>();
+        services.TryAddSingleton<FollowUpGate>();
+        services.TryAddSingleton<SkillRecallPicker>();
         services.AddTransient<AgentLoopRunner>();
         // #670: which rarely used tool families each session has loaded; outlives the transient runner.
         services.TryAddSingleton(_ => new DeferredToolActivations());
@@ -133,7 +136,8 @@ public static class ServiceCollectionExtensions
                 sp.GetRequiredService<LlmCostEstimator>(),
                 sp.GetRequiredService<IWorkingMemory>(),
                 sp.GetRequiredService<IOptions<AgentHostOptions>>(),
-                sp.GetRequiredService<ILogger<RockBotFunctionInvokingChatClient>>());
+                sp.GetRequiredService<ILogger<RockBotFunctionInvokingChatClient>>(),
+                sp.GetService<IncompleteReplyCheck>());
         });
 
         // LlmClient now requires TieredChatClientRegistry. When a single client is

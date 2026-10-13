@@ -54,6 +54,15 @@ public static class DecisionPurposes
 
     /// <summary>Which model tier should answer a message the keyword selector was unsure about?</summary>
     public const string TierRouting = "TierRouting";
+
+    /// <summary>Does a reply ending in ":" or "..." really stop before delivering what it announces?</summary>
+    public const string IncompleteReply = "IncompleteReply";
+
+    /// <summary>Is a finished turn worth the follow-up evaluator's LLM call?</summary>
+    public const string FollowUp = "FollowUp";
+
+    /// <summary>Which recalled skill, if any, gets its full instructions injected?</summary>
+    public const string SkillRecall = "SkillRecall";
 }
 
 /// <summary>One request: the state to judge and the named questions to answer about it.</summary>
