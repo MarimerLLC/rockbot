@@ -1,5 +1,4 @@
 using System.Diagnostics;
-using System.Net.Http.Json;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using Microsoft.Extensions.Logging;
@@ -112,9 +111,12 @@ public sealed class FoundryDecisionService : IDecisionService
         timeout.CancelAfter(TimeSpan.FromSeconds(Math.Max(0.5, options.TimeoutSeconds)));
 
         var url = options.Endpoint!.TrimEnd('/') + "/" + options.Path.TrimStart('/');
+        // StringContent, not JsonContent: the systemone endpoint rejects a request without
+        // Content-Length (HTTP 400 no_content_length_header), and JsonContent streams without one.
         using var message = new HttpRequestMessage(HttpMethod.Post, url)
         {
-            Content = JsonContent.Create(BuildBody(options.Deployment!, request)),
+            Content = new StringContent(BuildBody(options.Deployment!, request).ToJsonString(),
+                System.Text.Encoding.UTF8, "application/json"),
         };
         message.Headers.Add("api-key", options.ApiKey);
 
