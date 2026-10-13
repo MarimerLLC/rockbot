@@ -1,5 +1,4 @@
 using System.Collections.Concurrent;
-using System.Net.Http.Json;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using Microsoft.Extensions.Logging;
@@ -161,9 +160,12 @@ public sealed class FoundryDecisionIntentClassifier : IUserIntentClassifier
         timeout.CancelAfter(TimeSpan.FromSeconds(Math.Max(0.5, model.TimeoutSeconds)));
 
         var url = model.Endpoint!.TrimEnd('/') + "/" + model.Path.TrimStart('/');
+        // StringContent, not JsonContent: the systemone endpoint rejects a request without
+        // Content-Length (HTTP 400 no_content_length_header), and JsonContent streams without one.
         using var request = new HttpRequestMessage(HttpMethod.Post, url)
         {
-            Content = JsonContent.Create(BuildRequestBody(model.Deployment!, query)),
+            Content = new StringContent(BuildRequestBody(model.Deployment!, query).ToJsonString(),
+                System.Text.Encoding.UTF8, "application/json"),
         };
         request.Headers.Add("api-key", model.ApiKey);
 

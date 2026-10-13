@@ -239,6 +239,7 @@ public class DecisionModelGateTests
         Assert.AreEqual(0.989, p!.Value, 0.001);
         Assert.AreEqual("https://acct.services.ai.azure.com/providers/microsoft/v1/systemone", handler.Uri!.ToString());
         Assert.AreEqual("test-key", handler.ApiKey);
+        Assert.AreEqual(handler.Body!.Length, handler.ContentLength, "systemone needs Content-Length (HTTP 400 otherwise)");
         Assert.AreEqual("decision-1", (string?)JsonNode.Parse(handler.Body!)!["model"]);
     }
 
@@ -323,11 +324,14 @@ public class DecisionModelGateTests
         public Uri? Uri { get; private set; }
         public string? ApiKey { get; private set; }
         public string? Body { get; private set; }
+        public long? ContentLength { get; private set; }
 
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
             Uri = request.RequestUri;
             ApiKey = request.Headers.TryGetValues("api-key", out var keys) ? keys.Single() : null;
+            // Read before the body: Foundry rejects a request without Content-Length.
+            ContentLength = request.Content?.Headers.ContentLength;
             Body = request.Content is null ? null : await request.Content.ReadAsStringAsync(cancellationToken);
             if (delay is { } d) await Task.Delay(d, cancellationToken);
             return new HttpResponseMessage(status) { Content = new StringContent(body) };
