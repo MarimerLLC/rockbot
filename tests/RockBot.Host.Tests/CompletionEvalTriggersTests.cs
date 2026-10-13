@@ -287,6 +287,17 @@ public class CompletionEvalTriggersTests
     [DataRow("The steps are: 1. open the deck 2. cut slide 4")]
     [DataRow("Here's what to do: open the deck and cut slide 4.")]
     [DataRow("can you list my meetings for tomorrow?")]
+    [DataRow(OverdueTodosUser)]
+    [DataRow("do mark them complete")]
+    [DataRow(OverdueTodosUser + "\n\nmark them complete now")]
+    [DataRow("Mark the propane task as done")]
+    [DataRow("complete both tasks")]
+    [DataRow("accept the invite from Bob")]
+    [DataRow("decline the 3pm meeting")]
+    [DataRow("check off the furnace filter")]
+    [DataRow("close the issue")]
+    [DataRow("unsubscribe me from that list")]
+    [DataRow("it was supposed to be sent yesterday")]
     public void ImperativeInstruction_Matches(string userMessage)
     {
         Assert.IsTrue(CompletionEvalTriggers.IsImperativeInstruction(userMessage), userMessage);
@@ -311,6 +322,12 @@ public class CompletionEvalTriggersTests
     [DataRow("I'll tell Bob tomorrow.")]
     [DataRow("Confirmation number is 1234.")]
     [DataRow("The steps are documented in the README.")]
+    [DataRow("Mark called about the venue.")]
+    [DataRow("Book club is on Tuesday.")]
+    [DataRow("Invite from Bob: lunch on Friday.")]
+    [DataRow("Complete list of attendees is in the doc.")]
+    [DataRow("Close call on the flight, but I made it.")]
+    [DataRow("Decline in signups since last week.")]
     public void ImperativeInstruction_DoesNotMatch(string userMessage)
     {
         Assert.IsFalse(CompletionEvalTriggers.IsImperativeInstruction(userMessage), userMessage);
@@ -500,6 +517,12 @@ public class CompletionEvalTriggersTests
         "The deck, speaker notes and runbook were revised, uploaded to OneDrive and read back to verify.";
     internal const string ContextOnlyUser = "the talk doesn't exist yet";
 
+    /// <summary>The 0.16.14-preview.2 message the #685 gate misread as information-only, refusing todo completions.</summary>
+    internal const string OverdueTodosUser =
+        "these todo items should have been marked as complete earlier today:\n\n" +
+        "Install furnace filter – due Sunday, Oct. 11\n" +
+        "Order propane for Rabbit Lake – due Monday, Oct. 12";
+
     /// <summary>The #690 replay message the #685 gate misread as information-only, refusing its creates.</summary>
     internal const string ExplicitStepsUser =
         "This is a test of wisp failure reporting (issue 686). Please do exactly this:\n\n" +
@@ -666,6 +689,8 @@ public class CompletionEvalTriggersTests
     [DataRow(WebSearchUser, false, UserRequestKind.Instruction)]
     [DataRow("can you trim it?", false, UserRequestKind.Instruction)]
     [DataRow(ExplicitStepsUser, false, UserRequestKind.Instruction)]
+    [DataRow(OverdueTodosUser, false, UserRequestKind.Instruction)]
+    [DataRow("do mark them complete", true, UserRequestKind.Instruction)]
     [DataRow("yes", true, UserRequestKind.Instruction)]
     [DataRow("Sure, sounds good", true, UserRequestKind.Instruction)]
     [DataRow("yes", false, UserRequestKind.InformationOnly)]

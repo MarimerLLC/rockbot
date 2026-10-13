@@ -237,10 +237,19 @@ public static partial class ConsequentialActions
     }
 
     /// <summary>The tool result a refused call returns instead of running (#685).</summary>
-    public static string BuildRefusal(string toolName, string? arguments) =>
-        $"Not run: {DisplayName(toolName, arguments)} would change {DescribeTarget(toolName, arguments)} " +
-        "but the user did not ask for that. Propose it to the user in one sentence (what, when, where) " +
-        "and wait for them to ask. Do not retry this call or route it through another tool.";
+    /// <remarks>
+    /// The refusal names RockBot as the one refusing: models read "would change todo but the user
+    /// did not ask" as the todo service refusing, and told the user the service had blocked them.
+    /// </remarks>
+    public static string BuildRefusal(string toolName, string? arguments)
+    {
+        var target = DescribeTarget(toolName, arguments);
+        return $"Not run: {DisplayName(toolName, arguments)} would change {target} but the user did not ask for that. " +
+               $"RockBot's own action gate stopped this call before it reached {target}; {target} did not refuse it. " +
+               "The gate did not read the user's latest message as a request for this change. " +
+               "Propose it to the user in one sentence (what, when, where) and wait for them to ask. " +
+               "Do not retry this call or route it through another tool.";
+    }
 
     /// <summary>True when <paramref name="result"/> is a refusal built by <see cref="BuildRefusal"/>.</summary>
     public static bool IsRefusal(string? result) =>

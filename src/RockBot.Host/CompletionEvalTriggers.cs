@@ -141,7 +141,17 @@ public static class CompletionEvalTriggers
         @"spawn|delegate|tell|verify|confirm|follow|" +
         @"show(?!\s+(?:is|was|starts|started|runs|ran|went|ends|ended)\b)|" +
         @"list(?!\s+(?:of|is|was|has|had|includes|included)\b)|" +
-        @"report(?!\s+(?:from|on|of|is|was|has|had|says|said|shows|showed)\b)";
+        @"report(?!\s+(?:from|on|of|is|was|has|had|says|said|shows|showed)\b)|" +
+        // State changes on todo, calendar and mail items. Without these the #685 gate refused
+        // "mark them complete now" and "accept the invite" as information-only.
+        // Noun guards keep "Mark called…", "Book club is…", "Invite from Bob…" from counting.
+        @"mark(?!\s+(?:called|said|says|is|was|has|had|and|will|wants|wanted|asked|thinks|thought|sent|from|of)\b)|" +
+        @"complete(?!\s+(?:list|set|guide|overview|history|record|mess|waste|failure|picture)\b)|" +
+        @"uncheck|check\s+off|tick\s+off|cross\s+off|close(?!\s+(?:to|call|by|enough)\b)|reopen|" +
+        @"accept|decline(?!\s+(?:in|of|is|was)\b)|approve|reject|respond|rsvp|" +
+        @"invite(?!\s+(?:from|is|was|for|list)\b)|book(?!\s+(?:club|is|was|has|had|title|of|review|signing)\b)|" +
+        @"reserve|reschedule|postpone|" +
+        @"snooze|dismiss|flag|unflag|pin|unpin|restore|undo|unsubscribe|assign|submit";
 
     /// <summary>
     /// A user message that gives an instruction — explicit ("do it", "so do it now", "go ahead",
@@ -157,7 +167,9 @@ public static class CompletionEvalTriggers
         @"(?:(?:please|just|now|so|then|ok(?:ay)?|go\s+ahead\s+and)[,]?\s+)*" +
         // "do it", "do exactly this", "do precisely the following"
         @"(?:do(?!\s+(?:you|i|we|they|u|people|not|n" + Ap + @"t|y" + Ap + @"all)\b)" +
-        @"(?=(?:\s+(?:exactly|precisely|just|only|literally|all\s+of))*\s+(?:it|that|this|so|them|the|a|an|what|as|one|both|all|some|those|these|now|following)\b|\s*[.!]*\s*$)" +
+        @"(?=(?:\s+(?:exactly|precisely|just|only|literally|all\s+of))*\s+(?:it|that|this|so|them|the|a|an|what|as|one|both|all|some|those|these|now|following)\b|\s*[.!]*\s*$" +
+        // Emphatic "do": "do mark them complete"
+        @"|\s+(?:" + ActionVerbs + @")\b)" +
         @"|(?:" + ActionVerbs + @")\b(?![\-'’:]))" +
         // "can you trim it?", "could you please update the doc"
         @"|\b(?:can|could|would|will)\s+(?:you|u)\s+(?:please\s+)?(?:just\s+)?(?:do\b|(?:" + ActionVerbs + @")\b)" +
@@ -168,6 +180,9 @@ public static class CompletionEvalTriggers
         @"|\bwhy\s+(?:didn" + Ap + @"?t|did\s+not|haven" + Ap + @"?t|have\s+not|wouldn" + Ap + @"?t|aren" + Ap + @"?t|don" + Ap + @"?t)\s+you\b" +
         @"|\byou\s+(?:didn" + Ap + @"?t|did\s+not|forgot|missed|never|haven" + Ap + @"?t)\b" +
         @"|\b(?:is|are|that" + Ap + @"s|it" + Ap + @"s|seems?)\s+(?:a\s+lot|way\s+too\s+\w+|too\s+(?:many|much|long|short|big|small|few|wordy|dense))\b" +
+        // "these should have been marked complete earlier today", "it was supposed to be sent"
+        @"|\b(?:should|ought\s+to)(?:\s+have|" + Ap + @"ve)\s+(?:already\s+)?been\b" +
+        @"|\b(?:was|were)\s+supposed\s+to\s+(?:be|have)\b" +
         @"|\btry\s+again\b",
         Opts);
 

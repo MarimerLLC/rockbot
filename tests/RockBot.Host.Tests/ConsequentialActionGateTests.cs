@@ -66,6 +66,8 @@ public class ConsequentialActionGateTests
         var typed = ConsequentialActions.BuildRefusal(CreateEvent, null);
         Assert.AreEqual(
             "Not run: calendar-mcp__create_event would change calendar-mcp but the user did not ask for that. " +
+            "RockBot's own action gate stopped this call before it reached calendar-mcp; calendar-mcp did not refuse it. " +
+            "The gate did not read the user's latest message as a request for this change. " +
             "Propose it to the user in one sentence (what, when, where) and wait for them to ask. " +
             "Do not retry this call or route it through another tool.",
             typed);
