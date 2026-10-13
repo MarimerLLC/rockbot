@@ -9,10 +9,10 @@ namespace RockBot.Tools.Web;
 /// <summary>
 /// Routes GitHub issue and pull-request URLs to the GitHub REST API so content
 /// is returned without requiring JavaScript or authentication on public repos.
-/// All other URLs fall through to the inner <see cref="IWebBrowseProvider"/>.
+/// All other URLs fall through to <see cref="FallbackWebBrowseProvider"/>.
 /// </summary>
 internal sealed partial class GitHubApiWebBrowseProvider(
-    HttpWebBrowseProvider fallback,
+    FallbackWebBrowseProvider fallback,
     IHttpClientFactory httpClientFactory,
     ILogger<GitHubApiWebBrowseProvider> logger) : IWebBrowseProvider
 {
@@ -24,7 +24,10 @@ internal sealed partial class GitHubApiWebBrowseProvider(
     [GeneratedRegex(@"^https?://github\.com/(?<owner>[^/]+)/(?<repo>[^/]+)/pull/(?<number>\d+)", RegexOptions.IgnoreCase)]
     private static partial Regex PullUrlPattern();
 
-    public async Task<WebPageContent> FetchAsync(string url, CancellationToken ct)
+    public Task<WebPageContent> FetchAsync(string url, CancellationToken ct)
+        => FetchAsync(url, WebFetchOptions.Default, ct);
+
+    public async Task<WebPageContent> FetchAsync(string url, WebFetchOptions options, CancellationToken ct)
     {
         var issueMatch = IssueUrlPattern().Match(url);
         if (issueMatch.Success)
@@ -35,6 +38,7 @@ internal sealed partial class GitHubApiWebBrowseProvider(
                 int.Parse(issueMatch.Groups["number"].Value),
                 isPr: false,
                 url,
+                options,
                 ct);
         }
 
@@ -47,14 +51,15 @@ internal sealed partial class GitHubApiWebBrowseProvider(
                 int.Parse(prMatch.Groups["number"].Value),
                 isPr: true,
                 url,
+                options,
                 ct);
         }
 
-        return await fallback.FetchAsync(url, ct);
+        return await fallback.FetchAsync(url, options, ct);
     }
 
     private async Task<WebPageContent> FetchIssueOrPrAsync(
-        string owner, string repo, int number, bool isPr, string originalUrl, CancellationToken ct)
+        string owner, string repo, int number, bool isPr, string originalUrl, WebFetchOptions options, CancellationToken ct)
     {
         var kind = isPr ? "pulls" : "issues";
         var apiUrl = $"https://api.github.com/repos/{owner}/{repo}/{kind}/{number}";
@@ -70,7 +75,7 @@ internal sealed partial class GitHubApiWebBrowseProvider(
         catch (HttpRequestException ex)
         {
             logger.LogWarning("GitHub API request failed for {Url}: {Message}", apiUrl, ex.Message);
-            return await fallback.FetchAsync(originalUrl, ct);
+            return await fallback.FetchAsync(originalUrl, options, ct);
         }
 
         var title = item.TryGetString("title") ?? "(no title)";
@@ -106,7 +111,8 @@ internal sealed partial class GitHubApiWebBrowseProvider(
         {
             Title = $"{kindLabel} #{number}: {title} [{owner}/{repo}]",
             Content = sb.ToString(),
-            SourceUrl = originalUrl
+            SourceUrl = originalUrl,
+            FetchedVia = WebFetchMethod.Api
         };
     }
 }

@@ -38,6 +38,10 @@ internal sealed class WebToolRegistrar(
             "url": {
               "type": "string",
               "description": "The URL of the web page to fetch"
+            },
+            "render": {
+              "type": "boolean",
+              "description": "Render the page in a headless browser first. Use for pages you know build their content with JavaScript; otherwise leave it off — shells are retried in the browser automatically."
             }
           },
           "required": ["url"]
@@ -66,6 +70,10 @@ internal sealed class WebToolRegistrar(
                 each chunk you need — read the heading column first to identify relevant sections,
                 then retrieve only those before answering. Do not report on the page until you
                 have read the chunks that contain the answer.
+                The result starts with a Source line. If it also carries a
+                "[web_browse status: ...]" line, the page body was NOT read (consent wall,
+                JavaScript-only page, or empty response): say so, and do not present facts
+                about that page as confirmed.
                 """,
             ParametersSchema = BrowseSchema,
             Source = "web"
