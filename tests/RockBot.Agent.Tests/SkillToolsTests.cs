@@ -699,6 +699,32 @@ public class SkillToolsTests
     }
 
     [TestMethod]
+    public async Task GetSkill_CodeOwned_AppendsItsCompanionsLessons()
+    {
+        var store = new StubSkillStore();
+        store.Add(Guide());
+        store.Add(new Skill("memory-learned", "s", "Search before saving.", DateTimeOffset.UtcNow));
+        var tools = new SkillTools(store, new StubChatClient(), NullLogger<SkillTools>.Instance);
+
+        var result = await tools.GetSkill("memory");
+
+        StringAssert.StartsWith(result, "# Memory guide");
+        StringAssert.Contains(result, "## Lessons learned (skill: memory-learned)\n\nSearch before saving.");
+        Assert.IsNotNull((await store.GetAsync("memory-learned"))!.LastUsedAt, "loading the guide counts as using its lessons");
+    }
+
+    [TestMethod]
+    public async Task GetSkill_OrdinarySkill_DoesNotLookForACompanion()
+    {
+        var store = new StubSkillStore();
+        store.Add(new Skill("plan", "s", "# Plan", DateTimeOffset.UtcNow));
+        store.Add(new Skill("plan-learned", "s", "Not a guide's companion.", DateTimeOffset.UtcNow));
+        var tools = new SkillTools(store, new StubChatClient(), NullLogger<SkillTools>.Instance);
+
+        Assert.AreEqual("# Plan", await tools.GetSkill("plan"));
+    }
+
+    [TestMethod]
     public async Task SkillWrites_OrdinarySkill_AreUnaffected()
     {
         var store = new StubSkillStore();

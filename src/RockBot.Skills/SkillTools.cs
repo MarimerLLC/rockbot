@@ -112,11 +112,17 @@ public sealed class SkillTools
                 Timestamp: DateTimeOffset.UtcNow));
         }
 
+        var response = skill.Content;
         var manifestBlock = FormatManifestBlock(name, skill.Manifest);
         if (manifestBlock.Length > 0)
-            return skill.Content + "\n" + manifestBlock;
+            response += "\n" + manifestBlock;
 
-        return skill.Content;
+        // A tool guide carries the lessons its companion skill has gathered (#699).
+        if (skill.CodeOwned
+            && await CodeOwnedSkills.LessonsBlockAsync(_skillStore, skill.Name, markUsed: true) is { } lessons)
+            response += "\n\n" + lessons;
+
+        return response;
     }
 
     /// <summary>

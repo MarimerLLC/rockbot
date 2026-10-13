@@ -169,6 +169,15 @@ Nothing else changes them:
   created.
 - The MCP skill-name migration skips them.
 
+**Lessons travel with the guide.** Wherever a guide is delivered — `get_tool_guide`,
+`get_skill`, or per-turn auto-recall (main and worker contexts) — the text of its
+`{guide}-learned` companion is appended under `## Lessons learned (skill: {guide}-learned)`,
+minus the companion's stub preamble. A companion over 4,000 characters is reduced to its
+summary and a `get_skill` pointer. In auto-recall the companion is marked recalled for the
+session so it isn't injected a second time, and it's skipped if it was already injected
+earlier. An explicit load (`get_tool_guide`, `get_skill`) also stamps the companion's
+`lastUsedAt`, so the dream prune keeps lessons that are being read.
+
 ---
 
 ## Dream cycle — skill passes
