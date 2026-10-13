@@ -134,6 +134,27 @@ public class McpSkillNameMigrationServiceTests
         Assert.IsNotNull(await store.GetAsync("calendar-mcp"));
     }
 
+    [TestMethod]
+    public async Task MigrateAsync_SkipsCodeOwnedSkill_NamedLikeAServer()
+    {
+        // A server named like a tool guide must not rename or delete the guide's starter skill (#699).
+        var store = new InMemorySkillStore();
+        await store.SaveAsync(MakeSkill("web", "web guide") with { CodeOwned = true });
+        await store.SaveAsync(MakeSkill("files", "files guide") with { CodeOwned = true });
+        await store.SaveAsync(MakeSkill("mcp/files", "already there"));
+
+        var service = CreateService(store);
+        var summary = await service.MigrateAsync(
+            new[] { Server("web"), Server("files") },
+            CancellationToken.None);
+
+        Assert.AreEqual(0, summary.Renamed);
+        Assert.AreEqual(0, summary.RemovedDuplicate);
+        Assert.AreEqual("web guide", (await store.GetAsync("web"))!.Content);
+        Assert.AreEqual("files guide", (await store.GetAsync("files"))!.Content);
+        Assert.IsNull(await store.GetAsync("mcp/web"));
+    }
+
     private static McpSkillNameMigrationService CreateService(ISkillStore store)
     {
         return new McpSkillNameMigrationService(

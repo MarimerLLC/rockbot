@@ -135,16 +135,35 @@ The dream cycle queries the last 30 days of events to:
 
 ## Starter skills
 
-`StarterSkillService` seeds the skill store at agent startup from registered
-`IToolSkillProvider` implementations. These provide usage guides for built-in tool subsystems:
+`StarterSkillService` syncs the skill store at agent startup from registered
+`IToolSkillProvider` implementations. Each provider's usage guide is stored as a skill under
+the provider's name, for example:
 
 | Provider | Skill name | Contents |
 |---|---|---|
-| `SkillToolSkillProvider` | `skills-and-rules` | When and how to create, retrieve, and update skills |
-| `MemoryToolSkillProvider` | `memory-systems` | How to use long-term, working, and conversation memory |
-| `McpToolSkillProvider` | `mcp-tool-guide` | How to discover, invoke, and register MCP tools |
+| `SkillToolSkillProvider` | `skills` | When and how to create, retrieve, and update skills and rules |
+| `MemoryToolSkillProvider` | `memory` | How to use long-term, working, and conversation memory |
+| `McpToolSkillProvider` | `mcp` | How to discover, invoke, and register MCP tools |
 
-These are additive — existing skills are never overwritten on startup.
+Other guides include `files`, `subagent`, `worker`, `wisp`, `a2a`, `service-search`,
+`scripts`, `scheduling`, `web` and `memory-audit`, depending on which tool services are
+registered.
+
+**Code owns these skills** (#699). They are stored with `codeOwned: true`, and on every
+startup a missing copy is seeded and a copy whose content or summary differs from code — an
+edited copy included — is overwritten. A re-sync keeps the skill's `createdAt`, `lastUsedAt`,
+`seeAlso` and attached resources. A flagged skill whose guide is no longer registered is
+released back to an ordinary skill.
+
+Nothing else changes them:
+
+- `save_skill`, `edit_skill` and `delete_skill` refuse a code-owned skill and suggest a
+  companion skill such as `{guide}-learned` instead. `get_skill` and `promote_skill_asset`
+  work as usual.
+- The dream passes never show them to the LLM, and drop any merge, rewrite, deletion or new
+  skill that names one. Wisp-failure lessons about a guide go to its `{guide}-learned`
+  companion, which lists the guide in `seeAlso`.
+- Repair tickets (`SkillBody`) fail on them, and the MCP skill-name migration skips them.
 
 ---
 

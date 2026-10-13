@@ -32,6 +32,7 @@ Review them and:
 - **Surgical changes**: Change as little as possible. A single added step or clarified instruction is better than a complete rewrite.
 - **Preserve specificity**: Retain all specific tool names, parameter names, account identifiers, and exact phrasings from the original.
 - **List the original name in sourceNames**: This triggers replacement of the original skill with the improved version.
+- **Built-in tool guides are off limits**: Built-in tool guides are maintained in code and aren't listed here. Never create a skill with a tool guide's name.
 - **Skip when uncertain**: If you cannot confidently identify a specific actionable improvement, return the skill in neither `toDelete` nor `toSave`.
 
 ## Output format

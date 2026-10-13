@@ -27,6 +27,25 @@ public class SkillBodyApplierTests
     }
 
     [TestMethod]
+    public async Task Apply_CodeOwnedSkill_FailsWithTheRefusal_AndWritesNothing()
+    {
+        var store = new InMemorySkillStore();
+        var guide = new Skill("mcp", "summary", "Guide text.", DateTimeOffset.UtcNow, CodeOwned: true);
+        await store.SaveAsync(guide);
+
+        var applier = NewApplier(store);
+        var ticket = NewTicket("""
+            { "skill": "mcp", "ops": [ { "op": "append", "text": "Lesson." } ] }
+            """);
+
+        var ex = await Assert.ThrowsExactlyAsync<InvalidOperationException>(
+            () => applier.ApplyAsync(ticket, CancellationToken.None));
+
+        Assert.AreEqual(CodeOwnedSkills.RefusalMessage("mcp"), ex.Message);
+        Assert.AreSame(guide, await store.GetAsync("mcp"));
+    }
+
+    [TestMethod]
     public async Task Apply_ReplaceSection_RewritesIdentifiedSection()
     {
         var initial =

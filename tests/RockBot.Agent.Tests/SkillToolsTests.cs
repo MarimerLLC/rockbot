@@ -637,6 +637,85 @@ public class SkillToolsTests
         Assert.AreEqual(0, surface.CaptureCalls);
     }
 
+    // ── Code-owned skills (#699) ──────────────────────────────────────────────
+
+    private static Skill Guide(string content = "# Memory guide") =>
+        new("memory", "guide summary", content, DateTimeOffset.UtcNow, CodeOwned: true);
+
+    [TestMethod]
+    public async Task SaveSkill_CodeOwned_IsRefused_AndWritesNothing()
+    {
+        var store = new StubSkillStore();
+        var guide = Guide();
+        store.Add(guide);
+        var tools = new SkillTools(store, new StubChatClient(), NullLogger<SkillTools>.Instance);
+
+        var result = await tools.SaveSkill("memory", "my rewrite");
+
+        Assert.AreEqual(CodeOwnedSkills.RefusalMessage("memory"), result);
+        StringAssert.Contains(result, "memory-learned");
+        Assert.AreSame(guide, await store.GetAsync("memory"));
+    }
+
+    [TestMethod]
+    public async Task EditSkill_CodeOwned_IsRefused_AndWritesNothing()
+    {
+        var store = new StubSkillStore();
+        store.Add(Guide());
+        var tools = new SkillTools(store, new StubChatClient(), NullLogger<SkillTools>.Instance);
+
+        var result = await tools.EditSkill("memory", "guide", "notes");
+
+        Assert.AreEqual(CodeOwnedSkills.RefusalMessage("memory"), result);
+        Assert.AreEqual("# Memory guide", (await store.GetAsync("memory"))!.Content);
+    }
+
+    [TestMethod]
+    public async Task DeleteSkill_CodeOwned_IsRefused_AndWritesNothing()
+    {
+        var store = new StubSkillStore();
+        store.Add(Guide());
+        var tools = new SkillTools(store, new StubChatClient(), NullLogger<SkillTools>.Instance);
+
+        var result = await tools.DeleteSkill("memory");
+
+        Assert.AreEqual(CodeOwnedSkills.RefusalMessage("memory"), result);
+        Assert.IsNotNull(await store.GetAsync("memory"));
+    }
+
+    [TestMethod]
+    public async Task GetSkill_CodeOwned_StillWorks_AndKeepsTheFlag()
+    {
+        var store = new StubSkillStore();
+        store.Add(Guide());
+        var tools = new SkillTools(store, new StubChatClient(), NullLogger<SkillTools>.Instance);
+
+        var result = await tools.GetSkill("memory");
+
+        Assert.AreEqual("# Memory guide", result);
+        var stored = (await store.GetAsync("memory"))!;
+        Assert.IsTrue(stored.CodeOwned);
+        Assert.IsNotNull(stored.LastUsedAt);
+    }
+
+    [TestMethod]
+    public async Task SkillWrites_OrdinarySkill_AreUnaffected()
+    {
+        var store = new StubSkillStore();
+        store.Add(Guide());
+        store.Add(new Skill("memory-learned", "s", "lesson one", DateTimeOffset.UtcNow));
+        var tools = new SkillTools(store, new StubChatClient(), NullLogger<SkillTools>.Instance);
+
+        StringAssert.Contains(await tools.EditSkill("memory-learned", "one", "two"), "edited");
+        Assert.AreEqual("lesson two", (await store.GetAsync("memory-learned"))!.Content);
+
+        StringAssert.Contains(await tools.SaveSkill("memory-learned", "rewritten"), "saved");
+        Assert.AreEqual("rewritten", (await store.GetAsync("memory-learned"))!.Content);
+
+        StringAssert.Contains(await tools.DeleteSkill("memory-learned"), "deleted");
+        Assert.IsNull(await store.GetAsync("memory-learned"));
+    }
+
     private sealed class StubSkillSurface : IMcpSkillSurface
     {
         public SkillBaselineCapture Capture { get; set; } = SkillBaselineCapture.NotRecorded("not configured");

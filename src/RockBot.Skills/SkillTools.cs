@@ -195,6 +195,8 @@ public sealed class SkillTools
 
         var now = DateTimeOffset.UtcNow;
         var existing = await _skillStore.GetAsync(name);
+        if (CodeOwnedSkills.IsCodeOwned(existing))
+            return CodeOwnedSkills.RefusalMessage(name);
 
         // When resources is null the caller is only updating the markdown/metadata;
         // preserve the existing manifest so resource files on disk stay in sync.
@@ -229,6 +231,9 @@ public sealed class SkillTools
         [Description("Replace every occurrence instead of refusing an ambiguous match. Default false.")] bool replace_all = false)
     {
         _logger.LogInformation("Tool call: EditSkill(name={Name}, replaceAll={ReplaceAll})", name, replace_all);
+
+        if (CodeOwnedSkills.IsCodeOwned(await _skillStore.GetAsync(name)))
+            return CodeOwnedSkills.RefusalMessage(name);
 
         var result = await _skillStore.EditContentAsync(
             name, old_string ?? string.Empty, new_string ?? string.Empty, replace_all);
@@ -338,6 +343,8 @@ public sealed class SkillTools
         var existing = await _skillStore.GetAsync(name);
         if (existing is null)
             return $"Skill '{name}' not found. Call list_skills to see available skills.";
+        if (CodeOwnedSkills.IsCodeOwned(existing))
+            return CodeOwnedSkills.RefusalMessage(name);
 
         await _skillStore.DeleteAsync(name);
 

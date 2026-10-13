@@ -6,16 +6,18 @@ using RockBot.Tools;
 namespace RockBot.Host;
 
 /// <summary>
-/// On startup, seeds the skill store with a skill for each registered
-/// <see cref="IToolSkillProvider"/> that doesn't already have one.
+/// On startup, syncs the skill store with a skill for each registered
+/// <see cref="IToolSkillProvider"/>: the starter skills.
 ///
 /// This makes tool-service guides (memory, MCP, web, etc.) discoverable through
 /// the normal skill injection paths — session index injection and per-turn BM25
 /// recall — rather than requiring the agent to proactively call list_tool_guides.
 ///
-/// Seeding is intentionally additive: an existing skill is never overwritten, so
-/// the agent (or dream cycle) can refine the content over time without it being
-/// reset on every restart.
+/// Code owns these skills (#699). Each is stored with <see cref="Skill.CodeOwned"/> set, and a
+/// stored copy whose content or summary differs from the provider's — an edited copy included —
+/// is overwritten from code. The agent's skill tools and the dream passes refuse to change them;
+/// lessons about a guide go to a <c>{name}-learned</c> companion skill. A flagged skill whose
+/// guide is no longer registered is released back to an ordinary skill.
 /// </summary>
 internal sealed class StarterSkillService : IHostedService
 {
@@ -45,45 +47,101 @@ internal sealed class StarterSkillService : IHostedService
             return;
         }
 
-        if (_skillStore is null || _providers.Count == 0)
+        if (_skillStore is null)
             return;
 
-        var seeded = 0;
+        int seeded = 0, resynced = 0;
         foreach (var provider in _providers)
         {
+            var content = provider.GetDocument();
             var existing = await _skillStore.GetAsync(provider.Name);
-            if (existing is not null)
+
+            if (existing is not null
+                && existing.CodeOwned
+                && existing.Content == content
+                && existing.Summary == provider.Summary)
             {
-                _logger.LogDebug("StarterSkillService: skill '{Name}' already exists; skipping", provider.Name);
+                _logger.LogDebug("StarterSkillService: skill '{Name}' matches code; skipping", provider.Name);
                 continue;
             }
 
-            var skill = new Skill(
-                Name: provider.Name,
-                Summary: provider.Summary,
-                Content: provider.GetDocument(),
-                CreatedAt: DateTimeOffset.UtcNow,
-                UpdatedAt: DateTimeOffset.UtcNow,
-                LastUsedAt: null);
+            var now = DateTimeOffset.UtcNow;
+            // A re-sync keeps the skill's history, cross-references and attached resources.
+            var skill = existing is null
+                ? new Skill(
+                    Name: provider.Name,
+                    Summary: provider.Summary,
+                    Content: content,
+                    CreatedAt: now,
+                    UpdatedAt: now,
+                    LastUsedAt: null,
+                    CodeOwned: true)
+                : existing with
+                {
+                    Summary = provider.Summary,
+                    Content = content,
+                    UpdatedAt = now,
+                    CodeOwned = true
+                };
 
             try
             {
                 await _skillStore.SaveAsync(skill);
-                seeded++;
-                _logger.LogInformation("StarterSkillService: seeded starter skill '{Name}'", provider.Name);
+                if (existing is null)
+                {
+                    seeded++;
+                    _logger.LogInformation("StarterSkillService: seeded starter skill '{Name}'", provider.Name);
+                }
+                else
+                {
+                    resynced++;
+                    _logger.LogInformation("StarterSkillService: re-synced starter skill '{Name}' from code", provider.Name);
+                }
             }
             catch (Exception ex)
             {
                 // Seeding is best-effort — a starter skill failing to save must not crash the host.
                 _logger.LogWarning(ex,
-                    "StarterSkillService: failed to seed starter skill '{Name}'; continuing",
+                    "StarterSkillService: failed to save starter skill '{Name}'; continuing",
                     provider.Name);
             }
         }
 
+        var released = await ReleaseOrphansAsync();
+
         _logger.LogInformation(
-            "StarterSkillService: startup complete — {Seeded} skill(s) seeded, {Existing} already present",
-            seeded, _providers.Count - seeded);
+            "StarterSkillService: startup complete — {Seeded} skill(s) seeded, {Resynced} re-synced, " +
+            "{Unchanged} already present, {Released} released",
+            seeded, resynced, _providers.Count - seeded - resynced, released);
+    }
+
+    /// <summary>
+    /// A flagged skill whose guide is no longer registered (its tools were turned off, say)
+    /// becomes an ordinary skill rather than staying locked with nothing to re-sync it.
+    /// </summary>
+    private async Task<int> ReleaseOrphansAsync()
+    {
+        var guideNames = new HashSet<string>(_providers.Select(p => p.Name), StringComparer.OrdinalIgnoreCase);
+        var released = 0;
+        try
+        {
+            foreach (var skill in await _skillStore!.ListAsync())
+            {
+                if (!skill.CodeOwned || guideNames.Contains(skill.Name))
+                    continue;
+
+                await _skillStore.SaveAsync(skill with { CodeOwned = false });
+                released++;
+                _logger.LogInformation(
+                    "StarterSkillService: released skill '{Name}' — no tool guide registers it any more",
+                    skill.Name);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "StarterSkillService: failed to release orphaned starter skills; continuing");
+        }
+        return released;
     }
 
     public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;

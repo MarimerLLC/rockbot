@@ -237,7 +237,8 @@ multiple servers stay topical and are NOT under `mcp/`.
 
 If you complete a real task using a tool guide and no skill exists yet, save
 one. Combine the guide's instructions with what you discovered — edge cases,
-better argument patterns, pitfalls.
+better argument patterns, pitfalls. Give it its own name, such as
+`{guide}-learned`; built-in guide names are read-only.
 
 ## Persistence When Facing Obstacles
 

@@ -50,6 +50,8 @@ internal sealed class SkillBodyApplier : IRepairTargetApplier
 
         var existing = await _skillStore.GetAsync(skill)
             ?? throw new InvalidOperationException($"Skill '{skill}' not found.");
+        if (CodeOwnedSkills.IsCodeOwned(existing))
+            throw new InvalidOperationException(CodeOwnedSkills.RefusalMessage(skill));
 
         var preBody = existing.Content ?? string.Empty;
         var preHash = HashOf(preBody);

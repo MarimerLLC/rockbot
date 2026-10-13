@@ -697,7 +697,7 @@ When the agent process starts:
 
 1. `AgentHostBuilder.Build()` registers all services with the DI container
 2. `IHostedService` implementations start in registration order:
-   - `StarterSkillService` — seeds starter skills from registered `IToolSkillProvider`s
+   - `StarterSkillService` — seeds and re-syncs the code-owned starter skills from registered `IToolSkillProvider`s
    - `McpBridgeService` — connects to configured MCP servers
    - `FileConversationMemory` — reloads sessions within `SessionIdleTimeout`
    - `SessionSummaryService` — begins polling for sessions to evaluate
