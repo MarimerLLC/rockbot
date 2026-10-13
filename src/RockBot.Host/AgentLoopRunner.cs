@@ -33,8 +33,12 @@ public sealed partial class AgentLoopRunner(
     ITypedToolSurface? typedToolSurface = null,
     ISessionWorkRegistry? sessionWorkRegistry = null,
     IConsequentialActionGate? consequentialActionGate = null,
-    DeferredToolActivations? deferredToolActivations = null)
+    DeferredToolActivations? deferredToolActivations = null,
+    CompletionCheckClassifier? completionCheck = null)
 {
+    // Second opinion for the completion-evaluator gate when its regexes find nothing.
+    private readonly CompletionCheckClassifier _completionCheck = completionCheck ?? new CompletionCheckClassifier();
+
     // #670: which deferred tool families each session has loaded. Process-wide: the runner is
     // transient, and a family loaded on one turn stays in the session's list on the next.
     private readonly DeferredToolActivations _deferredActivations =
@@ -803,6 +807,16 @@ public sealed partial class AgentLoopRunner(
                 subagentSynthesis,
                 modelStopped: result.ExitReason == LoopExitReason.ModelStopped,
                 enabled: completionEvalTriggers);
+
+            // The regexes found nothing: on a user turn (no explicit trigger set, not a relay), ask
+            // the decision model whether the reply promises work, claims an unbacked change or
+            // denies a capability. Subagents keep their narrower self-check set.
+            if (trigger == CompletionEvalTrigger.None && completionEvalTriggers is null && !subagentSynthesis
+                && result.ExitReason == LoopExitReason.ModelStopped && _completionCheck.IsEnabled)
+            {
+                trigger = await _completionCheck.SecondOpinionAsync(
+                    result.Response, originalUserRequest, loopToolCalls, cancellationToken);
+            }
 
             if (trigger == CompletionEvalTrigger.None)
             {
