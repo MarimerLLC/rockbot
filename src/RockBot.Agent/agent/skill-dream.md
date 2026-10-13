@@ -60,6 +60,7 @@ entity (e.g. `mcp/{server-name}` binds to a specific MCP server). For these:
 - **Do not hallucinate**: Only work with the content provided. Do not invent procedures, tool names, or steps not present in the source skills.
 - **Preserve specificity**: Merged skills must retain all specific tool names, parameter names, account identifiers, and nuances from all sources.
 - **Search-keyword preservation**: When merging, the new summary must preserve search-relevant keywords from each original source — tool names, service names, and other distinguishing terms — so BM25 recall on any original query still surfaces the merged skill. A merged skill that drops the keywords its sources used is unreachable.
+- **Built-in tool guides are off limits**: Built-in tool guides are maintained in code and aren't listed here. Never create a skill with a tool guide's name.
 - **Never silently drop attached resources**: If you omit a source attachment without listing it in `resources` for a different merged skill, the asset is destroyed. The default (omit `resources`) carries everything forward — only deviate when you've decided two attachments are redundant.
 
 ## Output format

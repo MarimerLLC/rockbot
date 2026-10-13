@@ -116,6 +116,79 @@ public class AgentContextBuilderSkillRecallFramingTests
             "Worker skill recall must carry the same not-an-instruction framing as the main path.");
     }
 
+    // ── Tool guides carry their companion's lessons (#699) ───────────────────
+
+    private static Skill McpGuide() =>
+        new("mcp", "MCP tools", "# MCP guide\n\nCall mcp_find_tools first.", DateTimeOffset.UtcNow, CodeOwned: true);
+
+    private static Skill McpCompanion()
+    {
+        var stub = CodeOwnedSkills.Companion(null, "mcp", DateTimeOffset.UtcNow);
+        return stub with { Content = stub.Content + "\n\n## Wisp Failure Pattern\n\nPass the server name explicitly." };
+    }
+
+    [TestMethod]
+    public async Task RecalledGuide_CarriesItsCompanionsLessons()
+    {
+        var companion = McpCompanion();
+        var (builder, _) = BuildBuilder(skillStore: new StubSkillStore([McpGuide()], companion));
+
+        var messages = await builder.BuildAsync("session-guide", LongMessage, CancellationToken.None);
+
+        var injected = FindSystemMessageContaining(messages, "Skill: mcp\n");
+        Assert.IsNotNull(injected);
+        StringAssert.Contains(injected, "## Lessons learned (skill: mcp-learned)");
+        StringAssert.Contains(injected, "Pass the server name explicitly.");
+        Assert.IsFalse(injected.Contains("Read the built-in guide first"), "the companion's pointer back to the guide is dropped");
+    }
+
+    [TestMethod]
+    public async Task RecalledGuide_CompanionInTheSameTurn_IsNotListedAgain()
+    {
+        var companion = McpCompanion();
+        var (builder, _) = BuildBuilder(skillStore: new StubSkillStore(
+            [McpGuide(), companion, new Skill("second-skill", "A second summary.", "body", DateTimeOffset.UtcNow)],
+            companion));
+
+        var messages = await builder.BuildAsync("session-guide-batch", LongMessage, CancellationToken.None);
+
+        StringAssert.Contains(FindSystemMessageContaining(messages, "Skill: mcp\n"), "Pass the server name explicitly.");
+        var summaries = FindSystemMessageContaining(messages, "second-skill: A second summary.");
+        Assert.IsNotNull(summaries);
+        Assert.IsFalse(summaries.Contains("mcp-learned"), "the companion already rode along with its guide");
+    }
+
+    [TestMethod]
+    public async Task RecalledGuide_CompanionAlreadyInjectedThisSession_IsNotRepeated()
+    {
+        // Written by the agent with save_skill, so no see-also link marks the guide recalled too.
+        var companion = McpCompanion() with { SeeAlso = null };
+        var search = new List<Skill> { companion };
+        var (builder, _) = BuildBuilder(skillStore: new StubSkillStore(search, companion));
+
+        await builder.BuildAsync("session-guide-later", LongMessage, CancellationToken.None);
+        search[0] = McpGuide();
+        var messages = await builder.BuildAsync("session-guide-later", LongMessage, CancellationToken.None);
+
+        var injected = FindSystemMessageContaining(messages, "Skill: mcp\n");
+        Assert.IsNotNull(injected);
+        Assert.IsFalse(injected.Contains("Lessons learned"));
+    }
+
+    [TestMethod]
+    public async Task WorkerContext_GuideCarriesItsCompanion_AndTheCompanionIsNotInjectedTwice()
+    {
+        var companion = McpCompanion();
+        var (builder, _) = BuildBuilder(skillStore: new StubSkillStore([companion, McpGuide()], companion));
+
+        var messages = await builder.BuildForWorkerAsync(
+            "worker/guide-1", LongMessage, CancellationToken.None,
+            workingMemoryNamespace: "worker/guide-1", systemPromptOverride: "You are a worker.");
+
+        StringAssert.Contains(FindSystemMessageContaining(messages, "Skill: mcp\n"), "Pass the server name explicitly.");
+        Assert.IsNull(FindSystemMessageContaining(messages, "Skill: mcp-learned"));
+    }
+
     // ── Helpers ──────────────────────────────────────────────────────────────
 
     private static string? FindSystemMessageContaining(IEnumerable<ChatMessage> messages, string fragment)
@@ -174,10 +247,11 @@ public class AgentContextBuilderSkillRecallFramingTests
 
     // ── Stubs ────────────────────────────────────────────────────────────────
 
-    private sealed class StubSkillStore(IReadOnlyList<Skill> search) : ISkillStore
+    private sealed class StubSkillStore(IReadOnlyList<Skill> search, params Skill[] stored) : ISkillStore
     {
         public Task SaveAsync(Skill skill) => Task.CompletedTask;
-        public Task<Skill?> GetAsync(string name) => Task.FromResult<Skill?>(null);
+        public Task<Skill?> GetAsync(string name) =>
+            Task.FromResult(stored.FirstOrDefault(s => s.Name.Equals(name, StringComparison.OrdinalIgnoreCase)));
         public Task<IReadOnlyList<Skill>> ListAsync() => Task.FromResult<IReadOnlyList<Skill>>([]);
         public Task DeleteAsync(string name) => Task.CompletedTask;
 

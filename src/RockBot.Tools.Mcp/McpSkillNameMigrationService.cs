@@ -115,6 +115,10 @@ internal sealed class McpSkillNameMigrationService : IHostedService
             if (skill.Name.Contains('/')) continue;
             if (!serverNames.Contains(skill.Name)) continue;
 
+            // A server named like a tool guide (web, files...) must not rename or delete the
+            // guide's code-owned starter skill (#699).
+            if (CodeOwnedSkills.IsCodeOwned(skill)) continue;
+
             var newName = $"mcp/{skill.Name.ToLowerInvariant()}";
 
             var existing = await _skillStore.GetAsync(newName);

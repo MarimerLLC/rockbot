@@ -2171,15 +2171,19 @@ internal sealed class DreamService : IHostedService, IDisposable
         { "content": "the repaired merged entry" }
         """;
 
-    private async Task ConsolidateSkillsAsync(CancellationToken ct)
+    internal async Task ConsolidateSkillsAsync(CancellationToken ct)
     {
         var all = await _skillStore!.ListAsync();
+        var protectedNames = ProtectedSkillNames(all);
 
         // Prune skills that have not been used in 18 months
         var threshold = DateTimeOffset.UtcNow.AddMonths(-18);
         var pruned = 0;
         foreach (var skill in all)
         {
+            if (protectedNames.Contains(skill.Name))
+                continue;
+
             var lastActivity = skill.LastUsedAt ?? skill.UpdatedAt ?? skill.CreatedAt;
             if (lastActivity < threshold)
             {
@@ -2193,6 +2197,10 @@ internal sealed class DreamService : IHostedService, IDisposable
 
         if (pruned > 0)
             all = await _skillStore!.ListAsync();
+
+        // Code-owned tool guides are maintained in code (#699): the LLM never sees them, so it
+        // can't merge, rewrite or delete them.
+        all = all.Where(s => !protectedNames.Contains(s.Name)).ToList();
 
         if (all.Count < 2)
         {
@@ -2252,26 +2260,21 @@ internal sealed class DreamService : IHostedService, IDisposable
             _skillDreamDirective!,
             userMessage,
             ct,
-            SkillCorpusFingerprint(all, singletonPrefixes));
+            SkillCorpusFingerprint(all, singletonPrefixes, protectedNames));
         if (result is null) return;
 
         var deleted = 0;
         var saved = 0;
 
-        // Union of explicit toDelete names and all sourceNames referenced by saved skills.
-        // Mirrors the exhaustive-deletion contract used for memory consolidation.
-        var allToDelete = new HashSet<string>(
-            result.ToDelete ?? [],
-            StringComparer.OrdinalIgnoreCase);
-
-        foreach (var dto in result.ToSave ?? [])
-            foreach (var srcName in dto.SourceNames ?? [])
-                allToDelete.Add(srcName);
+        // Union of explicit toDelete names and all sourceNames referenced by saved skills,
+        // less anything code-owned. Mirrors the exhaustive-deletion contract used for memory
+        // consolidation.
+        var (toSave, allToDelete) = WithoutCodeOwnedSkills(result, protectedNames, "skill consolidation");
 
         // Safety guard: refuse to delete skills when nothing is being saved in return.
         // The directive says "never delete without replacement" — enforce it in code so an
         // LLM that violates the rule cannot silently destroy the skill library.
-        if (allToDelete.Count > 0 && (result.ToSave is null || result.ToSave.Count == 0))
+        if (allToDelete.Count > 0 && toSave.Count == 0)
         {
             _logger.LogWarning(
                 "DreamService: skill consolidation LLM proposed deleting {Count} skill(s) with no replacements — refusing to execute (possible LLM directive violation)",
@@ -2286,7 +2289,7 @@ internal sealed class DreamService : IHostedService, IDisposable
         // wisps and scripts since FileSkillStore's manifest-preserve only fires when
         // the destination already exists on disk.
         var capturedResourcesByDto = new Dictionary<string, IReadOnlyList<SkillResourceInput>>(StringComparer.OrdinalIgnoreCase);
-        foreach (var dto in result.ToSave ?? [])
+        foreach (var dto in toSave)
         {
             if (string.IsNullOrWhiteSpace(dto.Name) || dto.SourceNames is null || dto.SourceNames.Count == 0)
                 continue;
@@ -2317,7 +2320,7 @@ internal sealed class DreamService : IHostedService, IDisposable
             s => s.Name, s => s.SurfaceBaseline,
             StringComparer.OrdinalIgnoreCase);
 
-        foreach (var dto in result.ToSave ?? [])
+        foreach (var dto in toSave)
         {
             if (string.IsNullOrWhiteSpace(dto.Name) || string.IsNullOrWhiteSpace(dto.Content))
                 continue;
@@ -2407,14 +2410,91 @@ internal sealed class DreamService : IHostedService, IDisposable
         return candidates.MinBy(b => b!.RecordedAt);
     }
 
+    // ── Code-owned skills (#699) ──────────────────────────────────────────────
+
+    /// <summary>
+    /// Skill names no dream pass may create, rewrite, merge or delete: every registered tool
+    /// guide plus any skill flagged <see cref="Skill.CodeOwned"/>.
+    /// </summary>
+    private HashSet<string> ProtectedSkillNames(IEnumerable<Skill> skills) =>
+        CodeOwnedSkills.Names(_toolSkillProviders.Select(p => p.Name), skills);
+
+    private void LogCodeOwnedRefusal(string passName, string skillName) =>
+        _logger.LogWarning(
+            "DreamService: {Pass} refused to change code-owned skill '{Name}'", passName, skillName);
+
+    /// <summary>
+    /// Strips code-owned names out of a consolidation or optimization result: a save under a
+    /// protected name is dropped, protected names leave every <c>sourceNames</c> list, and they
+    /// never reach the deletion set. A source consumed only by a dropped save keeps its skill,
+    /// since its replacement was the save that was refused. Returns the saves to apply and the
+    /// names to delete (explicit deletions plus the kept saves' sources).
+    /// </summary>
+    private (List<SkillDreamEntryDto> ToSave, HashSet<string> ToDelete) WithoutCodeOwnedSkills(
+        SkillDreamResultDto result, IReadOnlySet<string> protectedNames, string passName)
+    {
+        var toSave = new List<SkillDreamEntryDto>();
+        var refusedSources = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var refused = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var dto in result.ToSave ?? [])
+        {
+            if (dto.Name is not null && protectedNames.Contains(dto.Name.Trim()))
+            {
+                refused.Add(dto.Name.Trim());
+                refusedSources.UnionWith(dto.SourceNames ?? []);
+                continue;
+            }
+
+            if (dto.SourceNames is { Count: > 0 } sources && sources.Any(n => protectedNames.Contains(n.Trim())))
+            {
+                refused.UnionWith(sources.Where(n => protectedNames.Contains(n.Trim())).Select(n => n.Trim()));
+                toSave.Add(dto with { SourceNames = sources.Where(n => !protectedNames.Contains(n.Trim())).ToList() });
+                continue;
+            }
+
+            toSave.Add(dto);
+        }
+
+        var toDelete = new HashSet<string>(result.ToDelete ?? [], StringComparer.OrdinalIgnoreCase);
+        var keptSources = new HashSet<string>(
+            toSave.SelectMany(d => d.SourceNames ?? []), StringComparer.OrdinalIgnoreCase);
+        toDelete.UnionWith(keptSources);
+        toDelete.RemoveWhere(n => refusedSources.Contains(n) && !keptSources.Contains(n));
+
+        foreach (var name in toDelete.Where(n => protectedNames.Contains(n.Trim())).ToList())
+        {
+            refused.Add(name.Trim());
+            toDelete.Remove(name);
+        }
+
+        foreach (var name in refused)
+            LogCodeOwnedRefusal(passName, name);
+
+        return (toSave, toDelete);
+    }
+
+    /// <summary>
+    /// Loads the built-in skill consolidation and optimization directives without reading
+    /// any directive files, so tests can drive the skill passes directly.
+    /// </summary>
+    internal void UseBuiltInSkillDirectives()
+    {
+        _skillDreamDirective = BuiltInSkillDirective;
+        _skillOptimizeDirective = BuiltInSkillOptimizeDirective;
+    }
+
     /// <summary>
     /// Identifies skills associated with poor-quality sessions and asks the LLM to improve them.
     /// Skipped when the skill usage store or feedback store is unavailable, or no at-risk skills are found.
     /// </summary>
-    private async Task OptimizeSkillsAsync(CancellationToken ct)
+    internal async Task OptimizeSkillsAsync(CancellationToken ct)
     {
         if (_skillUsageStore is null || _feedbackStore is null || _skillOptimizeDirective is null)
             return;
+
+        var allSkills = await _skillStore!.ListAsync();
+        var protectedNames = ProtectedSkillNames(allSkills);
 
         var since = DateTimeOffset.UtcNow.AddDays(-30);
 
@@ -2471,10 +2551,12 @@ internal sealed class DreamService : IHostedService, IDisposable
             return;
         }
 
-        // Collect at-risk skill names from those sessions
+        // Collect at-risk skill names from those sessions. Code-owned tool guides are
+        // maintained in code (#699) and never offered for a rewrite.
         var atRiskSkillNames = usageEvents
             .Where(e => atRiskSessions.Contains(e.SessionId))
             .Select(e => e.SkillName)
+            .Where(n => !protectedNames.Contains(n))
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
         // Load full content of at-risk skills
@@ -2490,9 +2572,10 @@ internal sealed class DreamService : IHostedService, IDisposable
         // A sparse skill (very short content, not brand-new) may have been recalled many times
         // but never actually improved — the agent should add examples or steps.
         var sparseCutoff = DateTimeOffset.UtcNow.AddDays(-7);
-        var sparseSkills = (await _skillStore!.ListAsync())
+        var sparseSkills = allSkills
             .Where(s => s.Content.Length < 200 && s.CreatedAt < sparseCutoff
-                        && !atRiskSkillNames.Contains(s.Name))
+                        && !atRiskSkillNames.Contains(s.Name)
+                        && !protectedNames.Contains(s.Name))
             .ToList();
 
         if (atRiskSkills.Count == 0 && sparseSkills.Count == 0)
@@ -2597,10 +2680,7 @@ internal sealed class DreamService : IHostedService, IDisposable
         var deleted = 0;
         var saved = 0;
 
-        var allToDelete = new HashSet<string>(result.ToDelete ?? [], StringComparer.OrdinalIgnoreCase);
-        foreach (var dto in result.ToSave ?? [])
-            foreach (var srcName in dto.SourceNames ?? [])
-                allToDelete.Add(srcName);
+        var (toSave, allToDelete) = WithoutCodeOwnedSkills(result, protectedNames, "skill optimization");
 
         // Capture attachments BEFORE deletion so the improved skill carries them
         // forward. Optimize is the surgical-prose path — it rewrites content for
@@ -2608,7 +2688,7 @@ internal sealed class DreamService : IHostedService, IDisposable
         // takes the slot. Without this capture the rewrite orphans every
         // attached wisp and script.
         var capturedResourcesByDto = new Dictionary<string, IReadOnlyList<SkillResourceInput>>(StringComparer.OrdinalIgnoreCase);
-        foreach (var dto in result.ToSave ?? [])
+        foreach (var dto in toSave)
         {
             if (string.IsNullOrWhiteSpace(dto.Name) || dto.SourceNames is null || dto.SourceNames.Count == 0)
                 continue;
@@ -2631,7 +2711,7 @@ internal sealed class DreamService : IHostedService, IDisposable
         var createdAtByName = (await _skillStore!.ListAsync())
             .ToDictionary(s => s.Name, s => s.CreatedAt, StringComparer.OrdinalIgnoreCase);
 
-        foreach (var dto in result.ToSave ?? [])
+        foreach (var dto in toSave)
         {
             if (string.IsNullOrWhiteSpace(dto.Name) || string.IsNullOrWhiteSpace(dto.Content))
                 continue;
@@ -2679,7 +2759,7 @@ internal sealed class DreamService : IHostedService, IDisposable
     /// Runs before skill consolidation so that the consolidation pass can deduplicate
     /// any new skills alongside existing ones.
     /// </summary>
-    private async Task RunSkillGapDetectionPassAsync(CancellationToken ct)
+    internal async Task RunSkillGapDetectionPassAsync(CancellationToken ct)
     {
         if (_conversationLog is null || _skillStore is null || !_options.SkillGapEnabled)
             return;
@@ -2836,11 +2916,18 @@ internal sealed class DreamService : IHostedService, IDisposable
             ct);
         if (result is null) return;
         var saved = 0;
+        var protectedNames = ProtectedSkillNames(existingSkills);
 
         foreach (var dto in result?.ToSave ?? [])
         {
             if (string.IsNullOrWhiteSpace(dto.Name) || string.IsNullOrWhiteSpace(dto.Content))
                 continue;
+
+            if (protectedNames.Contains(dto.Name.Trim()))
+            {
+                LogCodeOwnedRefusal("skill gap", dto.Name.Trim());
+                continue;
+            }
 
             // A name collision overwrites the skill; keep its baseline rather than dropping a stale
             // mcp/{server} skill back to unknown (#615).
@@ -4552,7 +4639,7 @@ internal sealed class DreamService : IHostedService, IDisposable
     /// and synthesize them into reusable skills. Requires <see cref="IToolCallLog"/> and
     /// <see cref="ISkillStore"/> to be available.
     /// </summary>
-    private async Task RunSequenceSkillDetectionPassAsync(CancellationToken ct)
+    internal async Task RunSequenceSkillDetectionPassAsync(CancellationToken ct)
     {
         if (_toolCallLog is null || _skillStore is null || !_options.SequenceSkillDetectionEnabled)
             return;
@@ -4622,23 +4709,31 @@ internal sealed class DreamService : IHostedService, IDisposable
                 EventWatermarkFingerprint(events.Select(e => e.Timestamp)));
             if (result is null) return;
             var created = 0;
+            var protectedNames = ProtectedSkillNames(existingSkills);
 
             foreach (var dto in result?.ToSave ?? [])
             {
                 if (string.IsNullOrWhiteSpace(dto.Name) || string.IsNullOrWhiteSpace(dto.Content))
                     continue;
 
-                // Skip if skill already exists
-                var existing = await _skillStore.GetAsync(dto.Name);
+                var name = dto.Name.Trim();
+                if (protectedNames.Contains(name))
+                {
+                    LogCodeOwnedRefusal("sequence skill detection", name);
+                    continue;
+                }
+
+                // Skip if skill already exists — under the trimmed name, which is what gets saved
+                var existing = await _skillStore.GetAsync(name);
                 if (existing is not null)
                 {
-                    _logger.LogDebug("DreamService: sequence skill '{Name}' already exists; skipping", dto.Name);
+                    _logger.LogDebug("DreamService: sequence skill '{Name}' already exists; skipping", name);
                     continue;
                 }
 
                 var skill = new Skill(
-                    Name: dto.Name.Trim(),
-                    Summary: dto.Summary?.Trim() ?? dto.Name,
+                    Name: name,
+                    Summary: dto.Summary?.Trim() ?? name,
                     Content: dto.Content.Trim(),
                     CreatedAt: DateTimeOffset.UtcNow,
                     UpdatedAt: DateTimeOffset.UtcNow);
@@ -4692,7 +4787,7 @@ internal sealed class DreamService : IHostedService, IDisposable
     /// Analyzes wisp execution records to detect recurring failure patterns and propose
     /// skill corrections. Requires <see cref="IWispExecutionLog"/> and <see cref="ISkillStore"/>.
     /// </summary>
-    private async Task RunWispFailureAnalysisPassAsync(CancellationToken ct)
+    internal async Task RunWispFailureAnalysisPassAsync(CancellationToken ct)
     {
         if (_wispExecutionLog is null || _skillStore is null || !_options.WispFailureAnalysisEnabled)
             return;
@@ -4760,6 +4855,7 @@ internal sealed class DreamService : IHostedService, IDisposable
                 EventWatermarkFingerprint(records.Select(r => r.Timestamp)));
             if (result is null) return;
             var updated = 0;
+            var protectedNames = ProtectedSkillNames(existingSkills);
 
             // Apply skill updates
             foreach (var update in result?.SkillUpdates ?? [])
@@ -4767,7 +4863,21 @@ internal sealed class DreamService : IHostedService, IDisposable
                 if (string.IsNullOrWhiteSpace(update.Name) || string.IsNullOrWhiteSpace(update.Annotation))
                     continue;
 
-                var existing = await _skillStore.GetAsync(update.Name);
+                var targetName = update.Name.Trim();
+                Skill? existing;
+                if (protectedNames.TryGetValue(targetName, out var guideName))
+                {
+                    // A lesson about a code-owned tool guide goes to its companion skill (#699).
+                    existing = CodeOwnedSkills.Companion(
+                        await _skillStore.GetAsync(CodeOwnedSkills.CompanionName(guideName)),
+                        guideName, DateTimeOffset.UtcNow);
+                    targetName = existing.Name;
+                }
+                else
+                {
+                    existing = await _skillStore.GetAsync(targetName);
+                }
+
                 if (existing is null)
                 {
                     _logger.LogDebug("DreamService: wisp failure analysis — skill '{Name}' not found; skipping update", update.Name);
@@ -4785,7 +4895,7 @@ internal sealed class DreamService : IHostedService, IDisposable
                 updated++;
                 _logger.LogInformation(
                     "DreamService: wisp failure analysis annotated skill '{Name}' with failure pattern",
-                    update.Name);
+                    targetName);
             }
 
             // Log patterns and promotion candidates
@@ -6242,7 +6352,8 @@ internal sealed class DreamService : IHostedService, IDisposable
     /// </summary>
     internal static string SkillCorpusFingerprint(
         IReadOnlyList<Skill> skills,
-        IReadOnlyCollection<string> singletonPrefixes) =>
+        IReadOnlyCollection<string> singletonPrefixes,
+        IReadOnlyCollection<string>? protectedNames = null) =>
         CorpusFingerprint(
             skills
                 .OrderBy(s => s.Name, StringComparer.OrdinalIgnoreCase)
@@ -6257,7 +6368,13 @@ internal sealed class DreamService : IHostedService, IDisposable
                         .Select(r => $"{r.Filename}:{r.Type}:{(r.Provisional ? "prov" : "conf")}"))))
                 .Concat(singletonPrefixes
                     .OrderBy(p => p, StringComparer.Ordinal)
-                    .Select(p => "singleton:" + p)));
+                    .Select(p => "singleton:" + p))
+                // The protected set shapes what the pass may touch, so a change to the
+                // registered tool guides reopens the gate.
+                .Concat((protectedNames ?? [])
+                    .Select(n => n.ToLowerInvariant())
+                    .OrderBy(n => n, StringComparer.Ordinal)
+                    .Select(n => "protected:" + n)));
 
     /// <summary>
     /// Fingerprint of the knowledge graph. <c>LastReferencedAt</c> is included at day granularity

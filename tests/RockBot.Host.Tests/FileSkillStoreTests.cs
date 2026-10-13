@@ -1047,6 +1047,28 @@ public class FileSkillStoreTests
 
     // ── Helpers ───────────────────────────────────────────────────────────────
 
+    // ── Code-owned flag (#699) ────────────────────────────────────────────────
+
+    [TestMethod]
+    public async Task CodeOwned_RoundTrips_AndOldFilesLoadAsFalse()
+    {
+        // A file written before #699 has no codeOwned property at all.
+        Directory.CreateDirectory(_tempDir);
+        await File.WriteAllTextAsync(Path.Combine(_tempDir, "legacy.json"), """
+            { "name": "legacy", "summary": "s", "content": "body", "createdAt": "2026-01-01T00:00:00+00:00" }
+            """);
+
+        var store = CreateStore();
+        await store.SaveAsync(new Skill("memory", "s", "guide", DateTimeOffset.UtcNow, CodeOwned: true));
+
+        Assert.IsTrue((await CreateStore().GetAsync("memory"))!.CodeOwned, "survives a fresh load from disk");
+        StringAssert.Contains(await File.ReadAllTextAsync(Path.Combine(_tempDir, "memory.json")), "\"codeOwned\": true");
+
+        var legacy = await store.GetAsync("legacy");
+        Assert.IsNotNull(legacy);
+        Assert.IsFalse(legacy!.CodeOwned);
+    }
+
     private FileSkillStore CreateStore() =>
         new(Options.Create(new SkillOptions { BasePath = _tempDir }),
             Options.Create(new AgentProfileOptions()),

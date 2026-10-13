@@ -2,6 +2,7 @@ using System.ComponentModel;
 using System.Text;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
+using RockBot.Host;
 
 namespace RockBot.Tools;
 
@@ -18,16 +19,24 @@ namespace RockBot.Tools;
 /// Each tool service registers an <see cref="IToolSkillProvider"/> via DI; this class
 /// collects them all at construction time so the guide list reflects exactly what is
 /// in scope for this agent process.
+///
+/// A guide is returned with the lessons its <c>{name}-learned</c> companion skill has
+/// gathered appended, when a skill store is registered and the companion exists (#699).
 /// </summary>
 public sealed class ToolGuideTools
 {
     private readonly IReadOnlyDictionary<string, IToolSkillProvider> _providers;
     private readonly ILogger<ToolGuideTools> _logger;
+    private readonly ISkillStore? _skillStore;
 
-    public ToolGuideTools(IEnumerable<IToolSkillProvider> providers, ILogger<ToolGuideTools> logger)
+    public ToolGuideTools(
+        IEnumerable<IToolSkillProvider> providers,
+        ILogger<ToolGuideTools> logger,
+        IEnumerable<ISkillStore>? skillStores = null)
     {
         _providers = providers.ToDictionary(p => p.Name, p => p, StringComparer.OrdinalIgnoreCase);
         _logger = logger;
+        _skillStore = skillStores?.FirstOrDefault();
 
         // Tool names are pinned to snake_case rather than inherited from the method
         // names: every prompt and directive in the repo refers to them that way, and
@@ -66,7 +75,7 @@ public sealed class ToolGuideTools
         "Load the full usage guide for a named tool service. " +
         "Call list_tool_guides first to see what names are available, " +
         "then call this with the exact name to get instructions, parameter details, and examples.")]
-    public Task<string> GetToolGuide(
+    public async Task<string> GetToolGuide(
         [Description("The guide name as shown by list_tool_guides (e.g. 'web', 'mcp')")] string name)
     {
         _logger.LogInformation("Tool call: GetToolGuide(name={Name})", name);
@@ -74,13 +83,27 @@ public sealed class ToolGuideTools
         if (!_providers.TryGetValue(name, out var provider))
         {
             var available = string.Join(", ", _providers.Keys.OrderBy(k => k));
-            return Task.FromResult(
+            return
                 $"No tool guide named '{name}'. " +
                 (available.Length > 0
                     ? $"Available guides: {available}."
-                    : "No guides are registered in this agent."));
+                    : "No guides are registered in this agent.");
         }
 
-        return Task.FromResult(provider.GetDocument());
+        var document = provider.GetDocument();
+        if (_skillStore is null)
+            return document;
+
+        try
+        {
+            var lessons = await CodeOwnedSkills.LessonsBlockAsync(_skillStore, provider.Name, markUsed: true);
+            return lessons is null ? document : document + "\n\n" + lessons;
+        }
+        catch (Exception ex)
+        {
+            // The guide is what was asked for; a skill store failure must not withhold it.
+            _logger.LogWarning(ex, "Loading the lessons for tool guide {Name} failed", provider.Name);
+            return document;
+        }
     }
 }

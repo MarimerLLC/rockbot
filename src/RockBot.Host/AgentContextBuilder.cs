@@ -58,6 +58,43 @@ public sealed class AgentContextBuilder(
     private readonly KnowledgeGraphOptions _graphOptions = knowledgeGraphOptions.Value;
     private readonly IEmbeddingGenerator<string, Embedding<float>>? _embeddingGenerator = embeddingGenerators.FirstOrDefault();
 
+    /// <summary>
+    /// The auto-recall text for <paramref name="skill"/>. A code-owned tool guide carries the
+    /// lessons of its companion skill (#699), unless the companion was already injected earlier in
+    /// the session. Returns the companion's name when its lessons were appended; the companion is
+    /// then marked recalled so it isn't injected again on its own, and callers drop it from the
+    /// current <paramref name="batch"/>.
+    /// </summary>
+    private async Task<(string Text, string? Companion)> WrapRecalledSkillAsync(
+        Skill skill, string sessionId, IReadOnlyCollection<Skill> batch)
+    {
+        var text = SkillRecallFraming.Wrap(skill);
+        if (!skill.CodeOwned)
+            return (text, null);
+
+        var companion = CodeOwnedSkills.CompanionName(skill.Name);
+        var inBatch = batch.Any(s => s.Name.Equals(companion, StringComparison.OrdinalIgnoreCase));
+        if (!inBatch && !skillRecallTracker.TryMarkAsRecalled(sessionId, companion))
+            return (text, null);
+
+        try
+        {
+            var lessons = await CodeOwnedSkills.LessonsBlockAsync(skillStore, skill.Name, markUsed: false);
+            if (lessons is null)
+                return (text, null);
+
+            logger.LogInformation(
+                "Appended companion {Companion} to recalled tool guide {Guide} for session {SessionId}",
+                companion, skill.Name, sessionId);
+            return (text + "\n\n" + lessons, companion);
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "Loading the lessons for tool guide {Guide} failed", skill.Name);
+            return (text, null);
+        }
+    }
+
     /// <summary>How many prior turns are folded into the enriched search query.</summary>
     private const int RecentWindowTurns = 2;
 
@@ -609,11 +646,16 @@ public sealed class AgentContextBuilder(
                 var skillNames = string.Join(", ", newSkills.Select(s => s.Name));
 
                 var topSkill = newSkills[0];
-                chatMessages.Add(new ChatMessage(ChatRole.System, SkillRecallFraming.Wrap(topSkill)).Tag(ContextCategory.SkillBody));
+                var (topText, appendedCompanion) = await WrapRecalledSkillAsync(topSkill, sessionId, newSkills);
+                chatMessages.Add(new ChatMessage(ChatRole.System, topText).Tag(ContextCategory.SkillBody));
 
-                if (newSkills.Count > 1)
+                // A companion whose lessons rode along with its guide isn't listed again.
+                var otherSkills = newSkills.Skip(1)
+                    .Where(s => !s.Name.Equals(appendedCompanion, StringComparison.OrdinalIgnoreCase))
+                    .ToList();
+                if (otherSkills.Count > 0)
                 {
-                    var summaryLines = newSkills.Skip(1).Select(s =>
+                    var summaryLines = otherSkills.Select(s =>
                     {
                         var summary = string.IsNullOrWhiteSpace(s.Summary)
                             ? "(summary pending)"
@@ -1208,8 +1250,20 @@ public sealed class AgentContextBuilder(
                 .ToList();
             if (newSkills.Count > 0)
             {
+                var wrapped = new List<(Skill Skill, string Text, string? Companion)>();
                 foreach (var skill in newSkills)
-                    chatMessages.Add(new ChatMessage(ChatRole.System, SkillRecallFraming.Wrap(skill)).Tag(ContextCategory.SkillBody));
+                {
+                    var (text, companion) = await WrapRecalledSkillAsync(skill, sessionId, newSkills);
+                    wrapped.Add((skill, text, companion));
+                }
+
+                // A companion whose lessons rode along with its guide isn't injected again.
+                var appended = wrapped
+                    .Select(w => w.Companion)
+                    .OfType<string>()
+                    .ToHashSet(StringComparer.OrdinalIgnoreCase);
+                foreach (var w in wrapped.Where(w => !appended.Contains(w.Skill.Name)))
+                    chatMessages.Add(new ChatMessage(ChatRole.System, w.Text).Tag(ContextCategory.SkillBody));
                 logger.LogInformation(
                     "Worker {SessionId}: injected {Count} skill(s) via BM25 recall",
                     sessionId, newSkills.Count);

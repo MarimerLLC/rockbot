@@ -10,6 +10,8 @@ namespace RockBot.Host;
 /// skill's body via append, replaceSection, or deleteSection ops. The original
 /// body is captured at apply time so verify failures can revert the change
 /// before the next attempt.
+/// A ticket aimed at a code-owned tool guide is applied to the guide's <c>{name}-learned</c>
+/// companion instead (#699): the guide itself is maintained in code.
 /// </summary>
 internal sealed class SkillBodyApplier : IRepairTargetApplier
 {
@@ -51,6 +53,17 @@ internal sealed class SkillBodyApplier : IRepairTargetApplier
         var existing = await _skillStore.GetAsync(skill)
             ?? throw new InvalidOperationException($"Skill '{skill}' not found.");
 
+        string? guide = null;
+        var createdCompanion = false;
+        if (CodeOwnedSkills.IsCodeOwned(existing))
+        {
+            guide = existing.Name;
+            var companion = await _skillStore.GetAsync(CodeOwnedSkills.CompanionName(guide));
+            createdCompanion = companion is null;
+            existing = CodeOwnedSkills.Companion(companion, guide, DateTimeOffset.UtcNow);
+            skill = existing.Name;
+        }
+
         var preBody = existing.Content ?? string.Empty;
         var preHash = HashOf(preBody);
         var preUpdatedAt = existing.UpdatedAt;
@@ -59,7 +72,7 @@ internal sealed class SkillBodyApplier : IRepairTargetApplier
         var newBody = preBody;
         foreach (var op in change.Ops)
         {
-            newBody = ApplyOp(newBody, op);
+            newBody = guide is null ? ApplyOp(newBody, op) : ApplyCompanionOp(newBody, op, guide);
         }
 
         var postHash = HashOf(newBody);
@@ -75,11 +88,18 @@ internal sealed class SkillBodyApplier : IRepairTargetApplier
         var diff = JsonSerializer.SerializeToElement(new
         {
             skill = skill,
+            redirectedFrom = guide,
             preHash,
             postHash,
             ops = change.Ops,
         }, JsonOptions);
 
+        if (guide is not null)
+        {
+            _logger.LogInformation(
+                "SkillBodyApplier: ticket targets code-owned guide {Guide}; applied to companion {Skill} instead",
+                guide, skill);
+        }
         _logger.LogInformation(
             "SkillBodyApplier: applied {OpCount} op(s) to skill {Skill} (pre={PreHash} post={PostHash})",
             change.Ops.Count, skill, preHash, postHash);
@@ -102,6 +122,14 @@ internal sealed class SkillBodyApplier : IRepairTargetApplier
                 _logger.LogWarning(
                     "SkillBodyApplier revert: skill {Skill} updated by another writer (expected {Expected}, found {Actual}); skipping revert",
                     skill, updated.UpdatedAt, current.UpdatedAt);
+                return;
+            }
+
+            // A companion this ticket created goes away again rather than lingering as a stub.
+            if (createdCompanion)
+            {
+                await _skillStore.DeleteAsync(skill);
+                _logger.LogInformation("SkillBodyApplier reverted: deleted companion {Skill} it had created", skill);
                 return;
             }
 
@@ -160,6 +188,30 @@ internal sealed class SkillBodyApplier : IRepairTargetApplier
             string.IsNullOrWhiteSpace(op.Header)
                 ? throw new ArgumentException($"Op '{op.Op}' requires 'header'.")
                 : op.Header.TrimEnd();
+    }
+
+    /// <summary>
+    /// Applies an op aimed at code-owned <paramref name="guide"/> to its companion's body. Ops
+    /// name the guide's sections, which the companion usually lacks: a replacement for a missing
+    /// section is added as a new section under that heading (so a later ticket with the same
+    /// heading updates it in place), and deleting a missing section is refused — the guide's own
+    /// text can't be removed.
+    /// </summary>
+    internal static string ApplyCompanionOp(string body, SkillBodyOp op, string guide)
+    {
+        var kind = op.Op?.ToLowerInvariant();
+        if (kind is "replacesection" or "deletesection"
+            && !string.IsNullOrWhiteSpace(op.Header)
+            && FindSection(body, op.Header.TrimEnd()).Start < 0)
+        {
+            if (kind == "deletesection")
+                throw new InvalidOperationException(
+                    $"Section '{op.Header.TrimEnd()}' is part of the built-in '{guide}' tool guide, which is maintained in code and can't be changed.");
+
+            return Append(body, op.Header.TrimEnd() + "\n\n" + (op.Text ?? string.Empty));
+        }
+
+        return ApplyOp(body, op);
     }
 
     private static string Append(string body, string text)
