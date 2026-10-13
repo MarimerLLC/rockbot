@@ -229,7 +229,7 @@ acting as actionable constraints during inference.
 
 | Tool | Purpose |
 |---|---|
-| `save_memory(content, category?, tags?)` | Queue a memory for background enrichment and save |
+| `save_memory(content, category?, tags?, source?)` | Queue a memory for background enrichment and save; `source` records provenance (see below) |
 | `search_memory(query?, category?, mode?)` | Hybrid/regex search with an optional category prefix filter; omit `query` to browse and get the category taxonomy |
 | `delete_memory(id)` | Archive an entry (recoverable until purge) |
 | `update_memory_importance(id, importance)` | Re-score an existing entry |
@@ -248,6 +248,32 @@ The tool result says so, in the hope the model stops treating deletion as free.
 When `save_memory` is called, a background task calls the LLM to expand the raw content into
 focused, well-formed memory entries (the expansion prompt is in `memory-rules.md`). The
 original content is saved immediately; expansion never blocks the response.
+
+#### Provenance
+
+`save_memory` takes an optional `source`, stored in `Metadata["source"]` through
+`MemoryProvenance`:
+
+| Source | Meaning |
+|---|---|
+| `user` | The user said it, or confirmed it |
+| `tool:<name>` | Read from that tool's result, e.g. `tool:web_browse` |
+| `inferred` | The agent's own conclusion: search snippets, patterns, a page it could not read (`inference` is accepted as an alias) |
+
+Unrecognised values are dropped, and the tool result says so. The source shows as `source=…` in
+`search_memory` results, in recalled-memory context, in the dream consolidation prompt and in
+the memory-audit merge samples; the audit snapshot counts live entries per source.
+
+Trust only rises with new evidence and never through combining text:
+
+- **Reinforcement and exact-duplicate folds** keep the *most* trusted source: the same fact seen
+  again, so a user confirming an inferred fact upgrades it to `user`.
+- **Dedup extensions, dream merges and merge folds** take the *least* trusted source: combined
+  text is no more trusted than its weakest part. Any `inferred` part makes it `inferred`, and any
+  part with no source makes the source unknown. Merging cannot launder an inferred fact.
+
+Issue #667 motivated this. A "verified" fact built from search snippets looked the same as one
+read from the source.
 
 #### Save-time deduplication
 

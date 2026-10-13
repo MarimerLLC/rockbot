@@ -836,11 +836,43 @@ opts.ApiKey = "...";           // or opts.ApiKeyEnvVar = "BRAVE_API_KEY"
 opts.MaxSearchResults = 5;     // default
 ```
 
-### `web_browse(url)`
+### `web_browse(url, render?)`
 
 Fetches a web page and converts it to markdown using AngleSharp (HTML parsing) and
-ReverseMarkdown. Noise elements (scripts, styles, nav, footer, sidebars) are stripped before
-conversion.
+ReverseMarkdown (`HtmlPageConverter`). Noise elements (scripts, styles, nav, footer, sidebars,
+`[hidden]` elements, recognised cookie-consent banners) are stripped before conversion.
+Unrecognised wrappers such as `<main>`, `<article>` and `<section>` are bypassed, not dropped,
+so their content survives.
+
+Every result starts with a `Source:` line naming the URL and how it was fetched (`http`,
+`headless browser`, or `site API`).
+
+**Shell detection and the headless browser:** `PageShellDetector` judges whether the result is
+the page or a shell standing in for it: a cookie-consent wall, a JavaScript loader, or an
+empty body. It measures readable text with consent banners removed (`ShellMinContentChars`,
+default 200). A shell is retried in the headless browser of the `RockBot.Browser` render
+service (`FallbackWebBrowseProvider`), as is an HTTP 403/503 refusal. `render: true` renders
+first. Without a render service, or when rendering also fails, the result carries a status line
+saying the body was not read:
+
+```
+Source: https://conf.example/schedule (via http)
+[web_browse status: blocked_by_consent_wall] The site answered with a cookie-consent wall; the
+page body was NOT read. Headless rendering is not available in this deployment. Do not present
+facts about this page as confirmed: ...
+```
+
+Statuses: `blocked_by_consent_wall`, `js_required`, `empty`. The result is not an error, so the
+model can still use whatever text came back, but it is told plainly not to treat it as the page.
+
+**Render service (`RockBot.Browser`):** an ASP.NET sidecar running headless Chromium via
+Microsoft.Playwright (`POST /render {url, timeoutMs}`, `GET /health`). Each page gets a fresh
+browser context, so no cookies or storage carry over. It clicks away common consent banners,
+refusing before accepting. It is anonymous by design: pages behind a login stay out of reach.
+Because it shares the agent pod's network, it refuses loopback, private, link-local and
+metadata addresses for the page, every subresource and the landing URL. Helm runs it in the
+agent pod when `browser.enabled` is true (the default) and sets
+`WebTools__RenderServiceUrl=http://localhost:8083`. Image: `deploy/Dockerfile.browser`.
 
 **Large page chunking:** When the markdown content exceeds `ChunkingThreshold` (default 8000
 characters), the page is split into chunks using `ContentChunker` (from `RockBot.Host`):
@@ -873,6 +905,8 @@ agent.AddWebTools(opts =>
     opts.ChunkingThreshold = 8000;
     opts.ChunkMaxLength = 4000;
     opts.ChunkTtlMinutes = 30;
+    opts.RenderServiceUrl = "http://localhost:8083";  // optional; null disables rendering
+    opts.RenderTimeoutSeconds = 30;
 });
 ```
 
