@@ -467,6 +467,7 @@ Every RUN, COMPLETE and INCOMPLETE log line includes `trigger=` and `userAskedFo
 | `rockbot.agent.follow_up.none` | Follow-up evaluator found nothing worth doing |
 | `rockbot.agent.follow_up.skipped` | Follow-up evaluation skipped (disabled, force term) |
 | `rockbot.agent.consequential_action.gated` | The consequential-action gate refused an external change (tagged `rockbot.tool.name` and `rockbot.action_gate.origin`) |
+| `rockbot.agent.consequential_action.decisions` | The gate's decision model judged a change the regex would have refused (tagged `rockbot.tool.name` and `rockbot.action_gate.decision`: `allowed`, `refused`, `allowed-on-failure`, `refused-on-failure`) |
 
 ### Consequential-action gate
 
@@ -506,14 +507,52 @@ message. `SubagentResultMessage.RunOrigin` / `.UserAskedFor` carry the scope bac
 turn runs under the same gate (`ActionGateScope.FromRelayedResults`; siblings that disagree resolve
 to instruction; results from an older build keep the old behaviour).
 
-**Where it checks.** `ActionGateContext.Check(tool, args)` runs at every dispatch site:
-`RockBotFunctionInvokingChatClient.InvokeFunctionAsync` (native path), both dispatch sites of the
-text-based loop, and `WispExecutor`'s direct steps. A refused call is not executed. Its tool result
-is:
+**Where it checks.** `await ActionGateContext.CheckAsync(tool, args, ct)` runs at every dispatch
+site: `RockBotFunctionInvokingChatClient.InvokeFunctionAsync` (native path), both dispatch sites of
+the text-based loop, and `WispExecutor`'s direct steps. A refused call is not executed. Its tool
+result is:
 
 > Not run: calendar-mcp__create_event would change calendar-mcp but the user did not ask for that.
-> Propose it to the user in one sentence (what, when, where) and wait for them to ask. Do not retry
-> this call or route it through another tool.
+> RockBot's own action gate stopped this call before it reached calendar-mcp; calendar-mcp did not
+> refuse it. The gate did not read the user's latest message as a request for this change. Propose
+> it to the user in one sentence (what, when, where) and wait for them to ask. Do not retry this
+> call or route it through another tool.
+
+The second sentence is there because models read the shorter refusal as the *server* refusing, and
+told the user the Todo service had blocked them (0.16.14-preview.2).
+
+**Decision model (second opinion).** The `information-only` reading comes from a regex verb list
+(`ImperativeInstructionRegex`). A request phrased with a verb the list lacks reads as
+information-only and is refused: in 0.16.14-preview.2 "mark them complete now" blocked every todo
+completion. #702 added the missing verbs, but before refusing, the gate can also ask a systemone
+decision model (`Microsoft-Decision-1` on Microsoft Foundry) one `noul` (yes/no probability)
+question: *did the user's message, read after the agent's previous message, ask for this change?*
+At or above the threshold the call runs; below it, it is refused as above.
+
+- **When it is asked.** Only when the regex would refuse, so instructions the regex recognises cost
+  nothing. The answer is cached per turn and effective tool name on the turn's `ActionGateRequest`
+  (`ActionGateScope.Request`), so five todo completions ask once. Subagents inherit the parent's
+  request, and its cache, through `ForSubagent()`.
+- **What it sees.** `state` holds `user_message` (the user's own words, up to 4,000 chars),
+  `agent_message_before_it` (when there is one; omitted on synthesis turns) and `proposed_action`
+  (tool, system changed, arguments up to 600 chars). Only a `UserTurn` attaches a request. A subagent
+  that inherited none never sends its own task description, which the agent wrote and which would
+  launder an information-only message into an instruction.
+- **Failure.** On timeout, an HTTP error (including 429) or an unreadable answer, `AllowOnFailure`
+  decides (default `true`: the call runs, logged at Warning as `allowed-on-failure`). The regex has
+  already said no, so this only decides who gets the benefit of the doubt. At capacity 1 a
+  Decision-1 deployment allows one request per minute, so size the deployment before relying on it.
+- **Logs.** `Decision model: user asked for <tool>? p=<0–1> threshold=<t> → allowed|refused`, or
+  `Decision model unavailable for <tool>; allowed-on-failure|refused-on-failure`. A non-2xx response
+  or a body without a readable probability logs the body (truncated) at Warning.
+- **Response shape.** `{"answers":{"user_asked":{"noul":0.989,"type":"noul"}}}` (observed
+  2026-10-13). `FoundryDecisionIntentClassifier.ReadProbability` also accepts a bare number and the
+  usual field names, in case another systemone model differs.
+
+Probe of 2026-10-13 against `decision-1` (300–480 ms per call, about 233 input tokens): the three
+preview.2 todo messages, "yes please" after an offer, and "you can check it off" scored 0.75–0.9995.
+The #685 context-only calendar case, "why did it refuse?", "what's on my todo list today?" and two
+other non-requests scored at most 0.007. The default threshold of 0.5 sits in the gap.
 
 The call is recorded in the run's ledger as failed (so it neither counts as a side effect nor
 shows as relayed work that happened), logged at Information as
@@ -532,6 +571,36 @@ should rarely fire.
 `AgentHost__ConsequentialActionGate__Enabled=false` turns the gate off) and
 `AgentHost:ConsequentialActionGate:ExternalTools` (native tool names to gate like MCP writes;
 default empty).
+
+The decision model is configured under `AgentHost:ConsequentialActionGate:DecisionModel`. It is
+used only when `Endpoint`, `ApiKey` and `Deployment` are all set; otherwise the regex alone decides.
+
+| Key | Default | Meaning |
+|---|---|---|
+| `Endpoint` | — | Foundry resource endpoint, e.g. `https://my-resource.services.ai.azure.com` |
+| `ApiKey` | — | Foundry key, sent as the `api-key` header |
+| `Deployment` | — | Deployment name of `Microsoft-Decision-1` (the request's `model`) |
+| `Path` | `/providers/microsoft/v1/systemone` | Decision API path on the endpoint |
+| `Threshold` | `0.5` | Probability at or above which the user asked for the change |
+| `TimeoutSeconds` | `5` | Per-call timeout |
+| `AllowOnFailure` | `true` | Allow (`true`) or refuse (`false`) when the model can't answer |
+
+In Helm, the non-secret keys are `agent.decisionModel.{endpoint,deployment,threshold,timeoutSeconds,allowOnFailure}`
+(the configmap renders them only when `endpoint` and `deployment` are both set). The key is
+`secrets.decisionModel.apiKey`. When that is empty, the secret uses `secrets.llm.balanced.apiKey`,
+which is right when the same Foundry account serves the LLM tiers and Decision-1, since an account
+key covers every deployment on it. **If the balanced tier moves to another provider, set
+`secrets.decisionModel.apiKey` explicitly**: otherwise every question fails with 401, and with
+`AllowOnFailure` on, every gated change runs.
+
+To create the deployment (Decision-1 is `DataZoneStandard` in eastus2; re-run with a new
+`--sku-capacity` to resize it in place):
+
+```bash
+az cognitiveservices account deployment create -n <account> -g <resource-group> \
+  --deployment-name decision-1 --model-name Microsoft-Decision-1 --model-format Microsoft \
+  --model-version 1 --sku-name DataZoneStandard --sku-capacity 20
+```
 
 **Time conversion.** The same incident relayed 09:45 Amsterdam on 2026-10-28 as 2:45 AM Chicago
 (it is 3:45 — Europe left summer time on Oct 25, the US does on Nov 1). The `convert_time`
