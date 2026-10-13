@@ -121,6 +121,10 @@ data:
   McpBridge__DefaultServers__todo: "http://mcp-todo.{{ .Values.namespace }}.svc.cluster.local/"
   {{- end }}
   ModelBehaviors__BasePath: "/data/agent/model-behaviors"
+  {{- if (default dict .Values.browser).enabled }}
+  # Headless-browser sidecar for web_browse (see browser: in values.yaml).
+  WebTools__RenderServiceUrl: "http://localhost:8083"
+  {{- end }}
 
   {{- if .Values.workiq.enabled }}
   # ── Microsoft Work IQ auth (MSAL) ──────────────────────────────────────────
