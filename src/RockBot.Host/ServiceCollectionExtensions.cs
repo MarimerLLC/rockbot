@@ -51,6 +51,7 @@ public static class ServiceCollectionExtensions
         // deterministic checks. Does nothing until DecisionModel:Endpoint/ApiKey/Deployment are set.
         services.Configure<DecisionModelOptions>(_ => { });
         services.TryAddSingleton<IDecisionService, FoundryDecisionService>();
+        services.TryAddSingleton<CorrectionDetector>();
         services.AddTransient<AgentLoopRunner>();
         // #670: which rarely used tool families each session has loaded; outlives the transient runner.
         services.TryAddSingleton(_ => new DeferredToolActivations());

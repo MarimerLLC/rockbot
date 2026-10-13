@@ -2542,12 +2542,8 @@ internal sealed class DreamService : IHostedService, IDisposable
 
             if (fb.SignalType is FeedbackSignalType.Correction or FeedbackSignalType.UserThumbsDown)
                 atRiskSessions.Add(fb.SessionId);
-            else if (fb.SignalType == FeedbackSignalType.SessionSummary)
-            {
-                var text = (fb.Summary + " " + fb.Detail).ToLowerInvariant();
-                if (text.Contains("poor") || text.Contains("fair"))
-                    atRiskSessions.Add(fb.SessionId);
-            }
+            else if (fb.SignalType == FeedbackSignalType.SessionSummary && IsLowQualitySessionSummary(fb))
+                atRiskSessions.Add(fb.SessionId);
         }
 
         // Tool-retry signal: sessions that called the same tool repeatedly with different args
@@ -3995,6 +3991,42 @@ internal sealed class DreamService : IHostedService, IDisposable
             _logger.LogWarning(ex, "DreamService: failed to scan tool-call log for retry patterns");
             return [];
         }
+    }
+
+    /// <summary>
+    /// True when a <see cref="FeedbackSignalType.SessionSummary"/> entry graded the session fair or
+    /// poor. Reads <c>overallQuality</c> from the evaluator's JSON in <see cref="FeedbackEntry.Detail"/>
+    /// (<see cref="SessionSummaryService"/>); an entry without it falls back to the whole words "fair"
+    /// or "poor" in the summary. The old substring check over Summary + Detail also matched
+    /// "unfair", "fairly", "poorly-named" and tool names inside the JSON.
+    /// </summary>
+    internal static bool IsLowQualitySessionSummary(FeedbackEntry entry)
+    {
+        if (!string.IsNullOrWhiteSpace(entry.Detail))
+        {
+            try
+            {
+                using var doc = JsonDocument.Parse(entry.Detail);
+                if (doc.RootElement.ValueKind == JsonValueKind.Object)
+                {
+                    foreach (var property in doc.RootElement.EnumerateObject())
+                    {
+                        if (property.Name.Equals("overallQuality", StringComparison.OrdinalIgnoreCase))
+                        {
+                            var quality = property.Value.ValueKind == JsonValueKind.String ? property.Value.GetString() : null;
+                            return string.Equals(quality, "fair", StringComparison.OrdinalIgnoreCase)
+                                   || string.Equals(quality, "poor", StringComparison.OrdinalIgnoreCase);
+                        }
+                    }
+                }
+            }
+            catch (JsonException)
+            {
+                // Not the evaluator's JSON; fall through to the summary text.
+            }
+        }
+
+        return Regex.IsMatch(entry.Summary ?? "", @"\b(?:fair|poor)\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
     }
 
     private async Task<Dictionary<string, List<string>>> DetectToolRetrySessionsAsync(
