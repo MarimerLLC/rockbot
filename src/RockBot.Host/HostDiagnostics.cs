@@ -289,6 +289,17 @@ public static class HostDiagnostics
             unit: "{call}",
             description: "External-change tool calls refused because the user did not ask for them");
 
+    /// <summary>
+    /// The decision model's verdict when the regex read the user message as information-only and the
+    /// gate asked whether the user asked for the change anyway. Tagged <c>rockbot.tool.name</c> and
+    /// <c>rockbot.action_gate.decision</c> (allowed, refused, allowed-on-failure, refused-on-failure).
+    /// </summary>
+    public static readonly Counter<long> ConsequentialActionDecisions =
+        Meter.CreateCounter<long>(
+            "rockbot.agent.consequential_action.decisions",
+            unit: "{call}",
+            description: "Decision-model verdicts on external changes the regex classifier would have refused");
+
     // ── Follow-up passes ──────────────────────────────────────────────────
 
     /// <summary>Follow-up evaluator found proactive opportunities — triggered a follow-up pass.</summary>

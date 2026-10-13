@@ -47,6 +47,9 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<IToolProgressNotifier, ToolProgressNotifier>();
         // #685: refuses external changes in runs whose originating user message asked for nothing.
         services.TryAddSingleton<IConsequentialActionGate, ConsequentialActionGate>();
+        // Its second opinion: a systemone decision model (Microsoft-Decision-1), used only when
+        // AgentHost:ConsequentialActionGate:DecisionModel is configured.
+        services.TryAddSingleton<IUserIntentClassifier, FoundryDecisionIntentClassifier>();
         services.AddTransient<AgentLoopRunner>();
         // #670: which rarely used tool families each session has loaded; outlives the transient runner.
         services.TryAddSingleton(_ => new DeferredToolActivations());

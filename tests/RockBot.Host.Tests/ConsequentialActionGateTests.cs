@@ -238,7 +238,7 @@ public class ConsequentialActionGateTests
         await RunWithToolAsync(false, Conversation(ContextOnly), CreateEvent, actionGate: ActionGateScope.ForUserTurn);
 
         Assert.IsNull(ActionGateContext.Scope);
-        Assert.IsNull(ActionGateContext.Check(CreateEvent, null), "no run → nothing to gate");
+        Assert.IsNull(await ActionGateContext.CheckAsync(CreateEvent, null), "no run → nothing to gate");
     }
 
     // ── Evaluator backstop ──────────────────────────────────────────────────
@@ -306,21 +306,22 @@ public class ConsequentialActionGateTests
         UserAskedFor = askedFor,
     };
 
-    private static List<ChatMessage> Conversation(string userMessage) =>
+    internal static List<ChatMessage> Conversation(string userMessage) =>
     [
         new(ChatRole.System, "You are a test agent."),
         new(ChatRole.User, userMessage),
     ];
 
-    private sealed record RunResult(List<string> Executed, string ToolResult, IReadOnlyList<LoopToolCall> Ledger);
+    internal sealed record RunResult(List<string> Executed, string ToolResult, IReadOnlyList<LoopToolCall> Ledger);
 
-    private static async Task<RunResult> RunWithToolAsync(
+    internal static async Task<RunResult> RunWithToolAsync(
         bool textBased,
         List<ChatMessage> messages,
         string tool,
         ActionGateScope? actionGate,
         Dictionary<string, object?>? args = null,
-        AgentHostOptions? hostOptions = null)
+        AgentHostOptions? hostOptions = null,
+        IUserIntentClassifier? classifier = null)
     {
         var model = new ToolThenTextChatClient(
             new FunctionCallContent("call-1", tool, args ?? new Dictionary<string, object?> { ["title"] = "Prep" }),
@@ -335,7 +336,7 @@ public class ConsequentialActionGateTests
             }, tool)]
         };
         var diagnostics = new LoopDiagnostics();
-        var runner = CreateRunner(model, textBased, hostOptions ?? new AgentHostOptions());
+        var runner = CreateRunner(model, textBased, hostOptions ?? new AgentHostOptions(), classifier: classifier);
 
         await runner.RunAsync(messages, options, "s1",
             enableFollowUp: false, enableCompletionEval: false, diagnostics: diagnostics,
@@ -347,7 +348,7 @@ public class ConsequentialActionGateTests
 
     // Shared with ToolCallOutcomeTests (#686).
     internal static AgentLoopRunner CreateRunner(IChatClient model, bool textBased, AgentHostOptions host,
-        IToolCallLog? toolCallLog = null)
+        IToolCallLog? toolCallLog = null, IUserIntentClassifier? classifier = null)
     {
         var profileOpts = Options.Create(new AgentProfileOptions
         {
@@ -381,7 +382,7 @@ public class ConsequentialActionGateTests
             Array.Empty<IServiceSearchIndex>(),
             new StubConversationMemory(),
             NullLogger<AgentLoopRunner>.Instance,
-            consequentialActionGate: new ConsequentialActionGate(hostOptions));
+            consequentialActionGate: new ConsequentialActionGate(hostOptions, intentClassifier: classifier));
     }
 
     /// <summary>First call returns a tool call; later calls record the tool result and return text.</summary>

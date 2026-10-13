@@ -457,7 +457,7 @@ internal sealed class WispExecutor(
         // #685: a direct step runs inside its parent's tool call, under the parent run's
         // consequential-action scope. An external change the originating user message didn't ask
         // for is refused before the tool is resolved or run.
-        if (ActionGateContext.Check(route.ToolName!, route.Arguments) is { } refusal)
+        if (await ActionGateContext.CheckAsync(route.ToolName!, route.Arguments, ct) is { } refusal)
         {
             stepSw.Stop();
             logger.LogInformation("Wisp {WispId} step {StepId}: {Tool} refused by the consequential-action gate",

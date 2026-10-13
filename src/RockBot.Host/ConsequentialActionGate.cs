@@ -49,6 +49,13 @@ public sealed record ActionGateScope(RunOrigin Origin, UserRequestKind? UserAske
     /// <summary>Neither stated nor inherited: external changes are allowed.</summary>
     public static ActionGateScope Unknown { get; } = new(RunOrigin.Unknown);
 
+    /// <summary>
+    /// The user message behind the run and the gate's decisions about it, for the decision model
+    /// (<see cref="IUserIntentClassifier"/>). Set by <see cref="AgentLoopRunner.RunAsync"/>; shared
+    /// with subagents through <see cref="ForSubagent"/>. Null when the message is unknown.
+    /// </summary>
+    public ActionGateRequest? Request { get; init; }
+
     /// <summary>True when an external change needs the originating user message to have asked for it.</summary>
     public bool RequiresUserInstruction => Origin is RunOrigin.UserTurn or RunOrigin.SubagentOfUserTurn;
 
@@ -134,6 +141,12 @@ public sealed class ConsequentialActionGateOptions
     /// state (files on its volume, memory, skills, rules, task list).
     /// </summary>
     public List<string> ExternalTools { get; set; } = [];
+
+    /// <summary>
+    /// The decision model asked before a call is refused (<see cref="IUserIntentClassifier"/>).
+    /// Unconfigured by default: the regex classifier alone decides.
+    /// </summary>
+    public DecisionModelOptions DecisionModel { get; } = new();
 }
 
 /// <summary>
@@ -274,7 +287,9 @@ public interface IConsequentialActionGate
     /// <param name="toolName">The tool name as called.</param>
     /// <param name="arguments">A <c>key=value</c> summary or JSON of the arguments; may be null.</param>
     /// <param name="scope">The run's scope; null allows the call.</param>
-    string? Check(string toolName, string? arguments, ActionGateScope? scope);
+    /// <param name="cancellationToken">Cancels a decision-model call.</param>
+    ValueTask<string?> CheckAsync(string toolName, string? arguments, ActionGateScope? scope,
+        CancellationToken cancellationToken = default);
 }
 
 /// <summary>
@@ -283,14 +298,24 @@ public interface IConsequentialActionGate
 /// asked for nothing (<see cref="UserRequestKind.InformationOnly"/>). Runs that do not trace back
 /// to a user message — scheduled tasks, patrol, A2A tasks, dream passes — are never refused.
 /// </summary>
+/// <remarks>
+/// The information-only reading comes from a regex verb list, which misses requests it has no verb
+/// for ("mark them complete now" was refused in 0.16.14-preview.2). Before refusing, the gate asks
+/// the decision model (<see cref="IUserIntentClassifier"/>), when one is configured, whether the
+/// user asked for this change. The answer is cached per run and effective tool name, so a turn
+/// that completes five todos asks once.
+/// </remarks>
 public sealed class ConsequentialActionGate(
     IOptions<AgentHostOptions> options,
-    ILogger<ConsequentialActionGate>? logger = null) : IConsequentialActionGate
+    ILogger<ConsequentialActionGate>? logger = null,
+    IUserIntentClassifier? intentClassifier = null) : IConsequentialActionGate
 {
     private readonly ILogger _logger = (ILogger?)logger ?? NullLogger.Instance;
+    private readonly IUserIntentClassifier _classifier = intentClassifier ?? NullUserIntentClassifier.Instance;
 
     /// <inheritdoc />
-    public string? Check(string toolName, string? arguments, ActionGateScope? scope)
+    public async ValueTask<string?> CheckAsync(string toolName, string? arguments, ActionGateScope? scope,
+        CancellationToken cancellationToken = default)
     {
         var gateOptions = options.Value.ConsequentialActionGate;
         if (!gateOptions.Enabled || scope is null || scope.AllowsExternalChanges)
@@ -298,16 +323,56 @@ public sealed class ConsequentialActionGate(
         if (!ConsequentialActions.IsConsequential(toolName, arguments, gateOptions.ExternalTools))
             return null;
 
+        var effective = ToolSideEffects.EffectiveToolName(toolName, arguments);
         var display = ConsequentialActions.DisplayName(toolName, arguments);
+        if (scope.Request is { } request && _classifier.IsEnabled)
+        {
+            var asked = await request.Decisions.GetOrAdd(effective,
+                _ => AskDecisionModelAsync(request, toolName, arguments, display, gateOptions.DecisionModel,
+                    cancellationToken)).ConfigureAwait(false);
+            if (asked) return null;
+        }
+
         _logger.LogInformation(
             "Consequential action gated: {Tool} (originating request: {UserAskedFor}, origin={Origin})",
             display, CompletionEvalTriggers.LogName(scope.UserAskedFor ?? UserRequestKind.Instruction),
             ActionGateScope.LogName(scope.Origin));
         HostDiagnostics.ConsequentialActionGated.Add(1,
-            new KeyValuePair<string, object?>("rockbot.tool.name", ToolSideEffects.EffectiveToolName(toolName, arguments)),
+            new KeyValuePair<string, object?>("rockbot.tool.name", effective),
             new KeyValuePair<string, object?>("rockbot.action_gate.origin", ActionGateScope.LogName(scope.Origin)));
 
         return ConsequentialActions.BuildRefusal(toolName, arguments);
+    }
+
+    private async Task<bool> AskDecisionModelAsync(ActionGateRequest request, string toolName, string? arguments,
+        string display, DecisionModelOptions model, CancellationToken cancellationToken)
+    {
+        var query = new UserIntentQuery(request.UserRequest, request.PreviousAgentMessage, display,
+            ConsequentialActions.DescribeTarget(toolName, arguments), arguments);
+        var probability = await _classifier.ProbabilityUserAskedForAsync(query, cancellationToken)
+            .ConfigureAwait(false);
+
+        string outcome;
+        bool asked;
+        if (probability is null)
+        {
+            asked = model.AllowOnFailure;
+            outcome = asked ? "allowed-on-failure" : "refused-on-failure";
+            _logger.LogWarning("Decision model unavailable for {Tool}; {Outcome}", display, outcome);
+        }
+        else
+        {
+            asked = probability.Value >= model.Threshold;
+            outcome = asked ? "allowed" : "refused";
+            _logger.LogInformation(
+                "Decision model: user asked for {Tool}? p={Probability:0.000} threshold={Threshold:0.00} → {Outcome}",
+                display, probability.Value, model.Threshold, outcome);
+        }
+
+        HostDiagnostics.ConsequentialActionDecisions.Add(1,
+            new KeyValuePair<string, object?>("rockbot.tool.name", ToolSideEffects.EffectiveToolName(toolName, arguments)),
+            new KeyValuePair<string, object?>("rockbot.action_gate.decision", outcome));
+        return asked;
     }
 }
 
@@ -338,8 +403,11 @@ public static class ActionGateContext
     /// Null when the call may run (or no loop is running on this flow); otherwise the refusal to
     /// return as the tool result instead of running it.
     /// </summary>
-    public static string? Check(string toolName, string? arguments) =>
-        Current.Value is { } state ? state.Gate.Check(toolName, arguments, state.Scope) : null;
+    public static ValueTask<string?> CheckAsync(string toolName, string? arguments,
+        CancellationToken cancellationToken = default) =>
+        Current.Value is { } state
+            ? state.Gate.CheckAsync(toolName, arguments, state.Scope, cancellationToken)
+            : ValueTask.FromResult<string?>(null);
 
     private sealed class Restore(State? previous) : IDisposable
     {
