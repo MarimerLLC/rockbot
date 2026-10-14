@@ -43,7 +43,7 @@ internal sealed class AnthropicRequestShapingChatClient : DelegatingChatClient
     {
         try
         {
-            return await base.GetResponseAsync(PlaceSystemMessages(messages), Shape(options), cancellationToken);
+            return await base.GetResponseAsync(Prepare(messages), Shape(options), cancellationToken);
         }
         catch (AnthropicException ex) when (Translate(ex) is { } translated)
         {
@@ -57,7 +57,7 @@ internal sealed class AnthropicRequestShapingChatClient : DelegatingChatClient
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
         // A yield cannot sit inside a try with a catch, so the enumerator is driven by hand.
-        await using var updates = base.GetStreamingResponseAsync(PlaceSystemMessages(messages), Shape(options), cancellationToken)
+        await using var updates = base.GetStreamingResponseAsync(Prepare(messages), Shape(options), cancellationToken)
             .GetAsyncEnumerator(cancellationToken);
         while (true)
         {
@@ -71,6 +71,56 @@ internal sealed class AnthropicRequestShapingChatClient : DelegatingChatClient
             }
             yield return updates.Current;
         }
+    }
+
+    internal IEnumerable<ChatMessage> Prepare(IEnumerable<ChatMessage> messages)
+    {
+        var placed = PlaceSystemMessages(messages);
+        return _cacheControl is null ? placed : MarkSystemPrompt(placed, _cacheControl);
+    }
+
+    /// <summary>
+    /// Puts a cache breakpoint on the last block of the leading system prompt. The automatic
+    /// breakpoint follows the conversation tail, so anything that rewrites earlier history
+    /// (tool-result trimming) leaves it nothing to hit; this one keeps the tools and system
+    /// prompt cached across those rewrites. The marked content is a copy, so the caller's
+    /// history is untouched.
+    /// </summary>
+    internal static IEnumerable<ChatMessage> MarkSystemPrompt(
+        IEnumerable<ChatMessage> messages, CacheControlEphemeral cacheControl)
+    {
+        var list = messages as IReadOnlyList<ChatMessage> ?? messages.ToList();
+
+        var last = -1;
+        while (last + 1 < list.Count && list[last + 1].Role == ChatRole.System)
+            last++;
+        if (last < 0)
+            return list;
+
+        var system = list[last];
+        var textIndex = -1;
+        for (var i = system.Contents.Count - 1; i >= 0 && textIndex < 0; i--)
+            if (system.Contents[i] is TextContent { Text.Length: > 0 })
+                textIndex = i;
+        if (textIndex < 0)
+            return list;
+
+        var original = (TextContent)system.Contents[textIndex];
+        var marked = new TextContent(original.Text)
+        {
+            AdditionalProperties = original.AdditionalProperties?.Clone(),
+        }.WithCacheControl(cacheControl);
+
+        var contents = system.Contents.ToList();
+        contents[textIndex] = marked;
+
+        List<ChatMessage> rewritten = [.. list];
+        rewritten[last] = new ChatMessage(system.Role, contents)
+        {
+            AuthorName = system.AuthorName,
+            AdditionalProperties = system.AdditionalProperties,
+        };
+        return rewritten;
     }
 
     /// <summary>

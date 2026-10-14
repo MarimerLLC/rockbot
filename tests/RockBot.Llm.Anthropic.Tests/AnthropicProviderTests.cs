@@ -148,6 +148,39 @@ public class AnthropicProviderTests
     }
 
     [TestMethod]
+    public async Task Request_MarksTheLastSystemBlockForCaching()
+    {
+        // Second breakpoint: keeps tools + system prompt cached when earlier history is rewritten.
+        var (client, handler) = Build(new AnthropicProviderOptions { CacheTtl = "1h" });
+        ChatMessage[] input =
+        [
+            new(ChatRole.System, "first"),
+            new(ChatRole.System, "second"),
+            new(ChatRole.User, "hello"),
+        ];
+
+        await client.GetResponseAsync(input);
+
+        var system = handler.Requests.Single().GetProperty("system");
+        Assert.AreEqual(2, system.GetArrayLength());
+        Assert.IsFalse(system[0].TryGetProperty("cache_control", out _));
+        Assert.AreEqual("ephemeral", system[1].GetProperty("cache_control").GetProperty("type").GetString());
+        Assert.AreEqual("1h", system[1].GetProperty("cache_control").GetProperty("ttl").GetString());
+        Assert.IsNull(input[1].Contents[0].AdditionalProperties, "The caller's message is not mutated");
+    }
+
+    [TestMethod]
+    public async Task Request_PromptCachingOff_MarksNoSystemBlock()
+    {
+        var (client, handler) = Build(new AnthropicProviderOptions { PromptCaching = false });
+
+        await client.GetResponseAsync(Hello);
+
+        StringAssert.DoesNotMatch(handler.Requests.Single().GetRawText(),
+            new System.Text.RegularExpressions.Regex("cache_control"));
+    }
+
+    [TestMethod]
     public async Task Request_SystemNudgeAfterAssistant_IsSentAsUser()
     {
         // The completion review appends a system message straight after the assistant's reply;
