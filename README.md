@@ -171,6 +171,7 @@ Each tier can use a different LLM **provider** — mix and match within the same
 
 - **OpenAI-compatible** (default) — any endpoint with API key: OpenRouter, Azure OpenAI, local Ollama, etc. Per-token billing.
 - **GitHub Copilot SDK** (`Provider=Copilot`) — uses a GitHub Copilot license via the CLI subprocess. Per-request billing. Set `GITHUB_TOKEN` with `copilot` scope.
+- **Anthropic** (`Provider=Anthropic`) — the Claude API through the official Anthropic SDK. Needs `ApiKey` and `ModelId`; `Endpoint` is optional. Use this rather than pointing the OpenAI-compatible provider at Anthropic's compatibility endpoint, which cannot cache prompts. Prompt caching is on by default; `LLM:Anthropic:CacheTtl` (`5m` default, or `1h`), `LLM:Anthropic:PromptCaching` (`false` to turn it off) and `LLM:Anthropic:DefaultMaxOutputTokens` (default 16000) apply to every Anthropic tier. A tier's `ReasoningEffort` is sent as Claude's effort level (`minimal` maps to `low`; `xhigh` and `max` are accepted; `none` is not, because current Claude models can't turn thinking off). Temperature and other sampling settings are dropped, since current Claude models reject them.
 
 Set a global default provider (`LLM:Provider`) and override per tier (`LLM:Low:Provider`, `LLM:Balanced:Provider`, `LLM:High:Provider`). For example: Low on Copilot, Balanced on Azure Foundry, High on OpenRouter.
 
@@ -288,7 +289,7 @@ rabbitmq:
 secrets:
   create: true
   llm:
-    # Global provider: "" = OpenAI-compatible (default), "Copilot" = GitHub Copilot SDK
+    # Global provider: "" = OpenAI-compatible (default), "Copilot" = GitHub Copilot SDK, "Anthropic" = Claude API
     # Each tier can override with its own provider field.
     # provider: "Copilot"
     # gitHubToken: "<github-token-with-copilot-scope>"

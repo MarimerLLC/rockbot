@@ -91,7 +91,7 @@ internal sealed class LlmClient(
                 if (cachedInputTokens > 0)
                     HostDiagnostics.LlmTokenInputCached.Add(cachedInputTokens, tierTag, modelTag);
 
-                var costUsd = costEstimator.EstimateCost(modelId, inputTokens, outputTokens);
+                var costUsd = costEstimator.EstimateCost(modelId, usage);
                 if (costUsd > 0)
                 {
                     HostDiagnostics.LlmCostUsd.Add(costUsd, tierTag, modelTag);

@@ -45,6 +45,7 @@
     <Project Path="src/RockBot.Subagent/RockBot.Subagent.csproj" />
     <Project Path="src/RockBot.Wisp/RockBot.Wisp.csproj" />
     <Project Path="src/RockBot.Llm.Copilot/RockBot.Llm.Copilot.csproj" />
+    <Project Path="src/RockBot.Llm.Anthropic/RockBot.Llm.Anthropic.csproj" />
     <Project Path="src/RockBot.SampleAgent/RockBot.SampleAgent.csproj" />
     <Project Path="src/RockBot.SampleAgent.Http/RockBot.SampleAgent.Http.csproj" />
     <Project Path="src/RockBot.ResearchAgent/RockBot.ResearchAgent.csproj" />
@@ -72,6 +73,7 @@
     <Project Path="tests/RockBot.Subagent.Tests/RockBot.Subagent.Tests.csproj" />
     <Project Path="tests/RockBot.Wisp.Tests/RockBot.Wisp.Tests.csproj" />
     <Project Path="tests/RockBot.Llm.Copilot.Tests/RockBot.Llm.Copilot.Tests.csproj" />
+    <Project Path="tests/RockBot.Llm.Anthropic.Tests/RockBot.Llm.Anthropic.Tests.csproj" />
     <Project Path="tests/RockBot.UserProxy.Blazor.Tests/RockBot.UserProxy.Blazor.Tests.csproj" />
     <Project Path="tests/RockBot.UserProxy.WorkIqAuth.Tests/RockBot.UserProxy.WorkIqAuth.Tests.csproj" />
     <Project Path="tests/RockBot.A2A.IntegrationTests/RockBot.A2A.IntegrationTests.csproj" />
