@@ -45,6 +45,25 @@ internal static class UsageReader
     }
 
     /// <summary>
+    /// Returns the input tokens written to the provider's prompt cache, or 0 when the provider
+    /// doesn't report writes. The Anthropic adapter publishes them as
+    /// <c>AdditionalCounts["CacheCreationInputTokens"]</c>; OpenAI caching has no write charge.
+    /// </summary>
+    public static long GetCacheWriteTokens(UsageDetails usage) =>
+        usage.AdditionalCounts?.TryGetValue(CacheWriteKey, out var v) == true ? v : 0;
+
+    /// <summary>
+    /// Returns the part of <see cref="GetCacheWriteTokens"/> written with the 1-hour TTL (billed
+    /// at 2x input rather than 1.25x). The SDK adapter doesn't split writes by TTL, so the
+    /// Anthropic provider adds this count from the raw response.
+    /// </summary>
+    public static long GetCacheWrite1hTokens(UsageDetails usage) =>
+        usage.AdditionalCounts?.TryGetValue(CacheWrite1hKey, out var v) == true ? v : 0;
+
+    private const string CacheWriteKey = "CacheCreationInputTokens";
+    private const string CacheWrite1hKey = "CacheCreation1hInputTokens";
+
+    /// <summary>
     /// Returns a diagnostic string of all keys and values present in
     /// <see cref="UsageDetails.AdditionalCounts"/>, or an empty string when none are
     /// present. Used to confirm what the provider/adapter is actually publishing when

@@ -499,7 +499,7 @@ public class RockBotFunctionInvokingChatClient : FunctionInvokingChatClient
                         HostDiagnostics.LlmTokenOutput.Add(outputTokens, modelTag);
                     if (cachedInputTokens > 0)
                         HostDiagnostics.LlmTokenInputCached.Add(cachedInputTokens, modelTag);
-                    var costUsd = _costEstimator.EstimateCost(summaryModelId, inputTokens, outputTokens);
+                    var costUsd = _costEstimator.EstimateCost(summaryModelId, summaryUsage);
                     if (costUsd > 0)
                     {
                         HostDiagnostics.LlmCostUsd.Add(costUsd, modelTag);

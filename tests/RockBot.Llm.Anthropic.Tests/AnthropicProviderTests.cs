@@ -256,6 +256,34 @@ public class AnthropicProviderTests
         Assert.AreEqual(5310, response.Usage.InputTokenCount, "input + cache writes + cache reads");
     }
 
+    [TestMethod]
+    public async Task Response_ReportsOneHourCacheWritesSeparately()
+    {
+        // 1-hour writes cost 2x input, 5-minute writes 1.25x; the adapter only reports the total.
+        const string body = """
+            {"id":"msg_1","type":"message","role":"assistant","model":"claude-sonnet-5-5",
+             "content":[{"type":"text","text":"hi"}],"stop_reason":"end_turn","stop_sequence":null,
+             "usage":{"input_tokens":10,"output_tokens":2,"cache_creation_input_tokens":700,"cache_read_input_tokens":0,
+                      "cache_creation":{"ephemeral_5m_input_tokens":300,"ephemeral_1h_input_tokens":400}}}
+            """;
+        var (client, _) = Build(body: body);
+
+        var response = await client.GetResponseAsync(Hello);
+
+        Assert.AreEqual(700, response.Usage!.AdditionalCounts!["CacheCreationInputTokens"]);
+        Assert.AreEqual(400, response.Usage.AdditionalCounts["CacheCreation1hInputTokens"]);
+    }
+
+    [TestMethod]
+    public async Task Response_WithoutOneHourWrites_AddsNoBreakdown()
+    {
+        var (client, _) = Build();
+
+        var response = await client.GetResponseAsync(Hello);
+
+        Assert.IsFalse(response.Usage!.AdditionalCounts!.ContainsKey("CacheCreation1hInputTokens"));
+    }
+
     // ── error translation ────────────────────────────────────────────────────
 
     [TestMethod]

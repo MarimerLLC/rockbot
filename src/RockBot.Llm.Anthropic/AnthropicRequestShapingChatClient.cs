@@ -43,7 +43,9 @@ internal sealed class AnthropicRequestShapingChatClient : DelegatingChatClient
     {
         try
         {
-            return await base.GetResponseAsync(Prepare(messages), Shape(options), cancellationToken);
+            var response = await base.GetResponseAsync(Prepare(messages), Shape(options), cancellationToken);
+            AddCacheWriteBreakdown(response);
+            return response;
         }
         catch (AnthropicException ex) when (Translate(ex) is { } translated)
         {
@@ -70,6 +72,21 @@ internal sealed class AnthropicRequestShapingChatClient : DelegatingChatClient
                 throw translated;
             }
             yield return updates.Current;
+        }
+    }
+
+    /// <summary>
+    /// The SDK adapter reports cache writes as one total, but 1-hour writes cost 2x input and
+    /// 5-minute writes 1.25x. Adds the 1-hour share from the raw response so cost estimates
+    /// can price it. The key matches <c>UsageReader.GetCacheWrite1hTokens</c> in RockBot.Host.
+    /// </summary>
+    internal static void AddCacheWriteBreakdown(ChatResponse response)
+    {
+        if (response.RawRepresentation is Message { Usage.CacheCreation: { } creation }
+            && creation.Ephemeral1hInputTokens is > 0
+            && response.Usage is { } usage)
+        {
+            (usage.AdditionalCounts ??= [])["CacheCreation1hInputTokens"] = creation.Ephemeral1hInputTokens;
         }
     }
 

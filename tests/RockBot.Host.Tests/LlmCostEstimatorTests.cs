@@ -79,4 +79,87 @@ public class LlmCostEstimatorTests
             File.Delete(path);
         }
     }
+
+    private static LlmCostEstimator BuiltIn() =>
+        NewEstimator(Path.Combine(Path.GetTempPath(), $"missing-{Guid.NewGuid():N}.json"));
+
+    [TestMethod]
+    [DataRow("claude-sonnet-5-5", 12.00)]
+    [DataRow("claude-opus-5-5", 24.00)]
+    [DataRow("claude-haiku-5-5", 0.60)]
+    [DataRow("claude-fable-5-1", 60.00)]
+    public void EstimateCost_BuiltInDefaults_CoverClaude5Models(string modelId, double expected)
+    {
+        using var estimator = BuiltIn();
+
+        Assert.AreEqual(expected, estimator.EstimateCost(modelId, 1_000_000, 1_000_000), 0.0001);
+    }
+
+    [TestMethod]
+    public void EstimateCost_PricesCacheReadsAndWrites()
+    {
+        using var estimator = BuiltIn();
+
+        // Sonnet 5.5: $2/M input, $0.20/M cache read, 5m write 1.25x = $2.50/M, 1h write 2x = $4/M.
+        // 4M total input = 1M uncached + 1M read + 1M 5m-write + 1M 1h-write.
+        var cost = estimator.EstimateCost("claude-sonnet-5-5",
+            inputTokens: 4_000_000, outputTokens: 0,
+            cachedInputTokens: 1_000_000, cacheWriteTokens: 2_000_000, cacheWrite1hTokens: 1_000_000);
+
+        Assert.AreEqual(2.00 + 0.20 + 2.50 + 4.00, cost, 0.0001);
+    }
+
+    [TestMethod]
+    public void EstimateCost_WithoutCachedRate_PricesReadsAtFullInput()
+    {
+        // gpt-5.4 has no cachedInputPerM: no discount is assumed, same as before cache pricing.
+        using var estimator = BuiltIn();
+
+        Assert.AreEqual(
+            estimator.EstimateCost("gpt-5.4", 1_000_000, 0),
+            estimator.EstimateCost("gpt-5.4", 1_000_000, 0, 800_000, 0, 0), 0.0001);
+    }
+
+    [TestMethod]
+    public void EstimateCost_FromUsageDetails_ReadsAnthropicCounts()
+    {
+        using var estimator = BuiltIn();
+        var usage = new Microsoft.Extensions.AI.UsageDetails
+        {
+            InputTokenCount = 3_000_000,
+            CachedInputTokenCount = 1_000_000,
+            OutputTokenCount = 0,
+            AdditionalCounts = new()
+            {
+                ["CacheCreationInputTokens"] = 1_000_000,
+                ["CacheCreation1hInputTokens"] = 1_000_000,
+            },
+        };
+
+        // 1M uncached ($2) + 1M read ($0.20) + 1M 1h-write ($4).
+        Assert.AreEqual(6.20, estimator.EstimateCost("claude-sonnet-5-5", usage), 0.0001);
+    }
+
+    [TestMethod]
+    public void EstimateCost_FileEntry_HonoursExplicitCacheRates()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"pricing-{Guid.NewGuid():N}.json");
+        File.WriteAllText(path, """
+            [
+              { "prefix": "m", "inputPerM": 10.0, "outputPerM": 0.0,
+                "cachedInputPerM": 1.0, "cacheWrite5mPerM": 11.0, "cacheWrite1hPerM": 15.0 }
+            ]
+            """);
+        try
+        {
+            using var estimator = NewEstimator(path);
+
+            Assert.AreEqual(1.0 + 11.0 + 15.0,
+                estimator.EstimateCost("m", 3_000_000, 0, 1_000_000, 2_000_000, 1_000_000), 0.0001);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
 }

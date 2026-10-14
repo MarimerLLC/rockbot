@@ -14,6 +14,8 @@ public sealed class LlmPricingTools(IConfiguration configuration)
         "Returns the agent's LLM pricing table as JSON: an array of " +
         "{prefix, inputPerM, outputPerM} entries giving USD cost per million tokens " +
         "for each model prefix. Cost = (inputTokens * inputPerM + outputTokens * outputPerM) / 1_000_000. " +
+        "Optional cachedInputPerM prices prompt-cache reads; optional cacheWrite5mPerM/cacheWrite1hPerM " +
+        "price cache writes (default 1.25x and 2x inputPerM). " +
         "The first entry whose prefix is contained in the model ID wins (longest-prefix-first ordering). " +
         "Use this to estimate the cost of an LLM call before making it, or to explain pricing to the user.")]
     public async Task<string> GetLlmPricingAsync()
