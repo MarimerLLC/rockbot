@@ -390,6 +390,47 @@ public class FallbackChatClientTests
     }
 
     [TestMethod]
+    [DataRow(400, "HTTP 400 (invalid_request_error: )\n\nYour credit balance is too low to access " +
+                  "the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.")]
+    [DataRow(400, "HTTP 400 (invalid_request_error: )\n\nYou have reached your specified API usage " +
+                  "limits. You will regain access on 2026-11-01 at 00:00 UTC.")]
+    [DataRow(429, "HTTP 429 (insufficient_quota: insufficient_quota)\n\nYou exceeded your current " +
+                  "quota, please check your plan and billing details.")]
+    public async Task ClientResultException_OutOfCredits_FallsBackAndDegrades(int status, string message)
+    {
+        // Regression: Anthropic reports exhausted credits as a 400, which status-only
+        // classification mapped to Unknown and rethrew, so a Balanced chain with Claude
+        // first never reached its fallbacks. OpenAI's 429 insufficient_quota only paused
+        // the model for 30s instead of degrading it.
+        var first  = new FixedStub(ex: new ClientResultException(message, new StatusOnlyPipelineResponse(status)));
+        var second = new FixedStub(response: OkResponse("from-fallback"));
+        var client = Build([("claude", first), ("fallback", second)], maxRetries: 0);
+
+        var r1 = await client.GetResponseAsync([]);
+        await client.GetResponseAsync([]);
+
+        Assert.AreEqual("from-fallback", r1.Messages[^1].Text);
+        Assert.AreEqual(1, first.CallCount, "Out-of-credit model should be degraded; second call must skip it");
+        Assert.AreEqual(2, second.CallCount);
+    }
+
+    [TestMethod]
+    public async Task ClientResultException_ContextLength400_StillPropagates()
+    {
+        // The quota phrase match must not catch other 400s: a context overflow has to reach
+        // the caller so it can trim and retry, not silently degrade the model.
+        var first  = new FixedStub(ex: new ClientResultException(
+            "HTTP 400 (invalid_request_error: context_length_exceeded)\n\nThis model's maximum " +
+            "context length is 128000 tokens. However, your messages resulted in 130000 tokens.",
+            new StatusOnlyPipelineResponse(400)));
+        var second = new FixedStub(response: OkResponse());
+        var client = Build([("m1", first), ("m2", second)], maxRetries: 0);
+
+        await Assert.ThrowsExactlyAsync<ClientResultException>(() => client.GetResponseAsync([]));
+        Assert.AreEqual(0, second.CallCount);
+    }
+
+    [TestMethod]
     public async Task ClientResultException_Status0_TreatsAsTransient_AndFallsBack()
     {
         // Regression: when the OpenAI/Azure SDK exhausts its own internal retry policy

@@ -357,6 +357,17 @@ public sealed class FallbackChatClient : IChatClient
         if (ContainsAny(ex.Message, "content_filter"))
             return FallbackErrorCategory.ContentFilter;
 
+        // Out-of-credit errors don't share a status code: Anthropic sends 400
+        // invalid_request_error ("Your credit balance is too low…", "You have reached your
+        // specified API usage limits…") and OpenAI sends 429 insufficient_quota. Classified by
+        // status alone, the 400 is Unknown and rethrown, and the 429 only pauses the model for
+        // its retry-after window. Match the body text first so the model is degraded and the
+        // chain moves on. The phrases are narrow on purpose: a context-length 400 ("maximum
+        // context length … exceeded") must stay Unknown so the caller can trim and retry.
+        if (ex is HttpRequestException or ClientResultException
+            && ContainsAny(ex.Message, QuotaExhaustedPhrases))
+            return FallbackErrorCategory.QuotaExhausted;
+
         if (ex is HttpRequestException hre)
         {
             // StatusCode is null when the request failed before any response was received
@@ -401,6 +412,9 @@ public sealed class FallbackChatClient : IChatClient
 
         return FallbackErrorCategory.Unknown;
     }
+
+    private static readonly string[] QuotaExhaustedPhrases =
+        ["credit balance", "API usage limits", "insufficient_quota"];
 
     private static bool ContainsAny(string text, params string[] values) =>
         values.Any(v => text.Contains(v, StringComparison.OrdinalIgnoreCase));
