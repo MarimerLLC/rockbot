@@ -147,6 +147,68 @@ public class AnthropicProviderTests
         Assert.AreEqual("https://api.anthropic.com/v1/messages", handler.Uris.Single().GetLeftPart(UriPartial.Path));
     }
 
+    [TestMethod]
+    public async Task Request_SystemNudgeAfterAssistant_IsSentAsUser()
+    {
+        // The completion review appends a system message straight after the assistant's reply;
+        // the API rejects role 'system' there ("must follow a 'user' message").
+        var (client, handler) = Build();
+
+        await client.GetResponseAsync(
+        [
+            new(ChatRole.System, "be brief"),
+            new(ChatRole.User, "hello"),
+            new(ChatRole.Assistant, "hi"),
+            new(ChatRole.System, "review your answer"),
+        ]);
+
+        var messages = handler.Requests.Single().GetProperty("messages");
+        Assert.AreEqual(3, messages.GetArrayLength());
+        Assert.AreEqual("user", messages[2].GetProperty("role").GetString());
+        StringAssert.Contains(messages[2].GetProperty("content").GetRawText(), "review your answer");
+        StringAssert.Contains(handler.Requests.Single().GetProperty("system").GetRawText(), "be brief");
+    }
+
+    [TestMethod]
+    public void PlaceSystemMessages_KeepsSystemAfterUserOrToolResult()
+    {
+        ChatMessage[] input =
+        [
+            new(ChatRole.System, "a"),
+            new(ChatRole.User, "u"),
+            new(ChatRole.System, "after user"),
+            new(ChatRole.Assistant, [new FunctionCallContent("c1", "f")]),
+            new(ChatRole.Tool, [new FunctionResultContent("c1", "r")]),
+            new(ChatRole.System, "after tool"),
+        ];
+
+        var output = AnthropicRequestShapingChatClient.PlaceSystemMessages(input);
+
+        Assert.AreSame(input, output, "Nothing to rewrite, so the original list is passed through");
+    }
+
+    [TestMethod]
+    public void PlaceSystemMessages_RewritesEveryMessageInARunAfterAssistant()
+    {
+        ChatMessage[] input =
+        [
+            new(ChatRole.User, "u"),
+            new(ChatRole.Assistant, "a"),
+            new(ChatRole.System, "s1"),
+            new(ChatRole.System, "s2"),
+            new(ChatRole.User, "u2"),
+            new(ChatRole.System, "s3"),
+        ];
+
+        var output = AnthropicRequestShapingChatClient.PlaceSystemMessages(input).ToList();
+
+        CollectionAssert.AreEqual(
+            new[] { ChatRole.User, ChatRole.Assistant, ChatRole.User, ChatRole.User, ChatRole.User, ChatRole.System },
+            output.Select(m => m.Role).ToArray());
+        Assert.AreEqual("s1", output[2].Text);
+        Assert.AreEqual(ChatRole.System, input[2].Role, "The caller's messages are not mutated");
+    }
+
     // ── response mapping ─────────────────────────────────────────────────────
 
     [TestMethod]

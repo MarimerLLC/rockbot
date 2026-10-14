@@ -43,7 +43,7 @@ internal sealed class AnthropicRequestShapingChatClient : DelegatingChatClient
     {
         try
         {
-            return await base.GetResponseAsync(messages, Shape(options), cancellationToken);
+            return await base.GetResponseAsync(PlaceSystemMessages(messages), Shape(options), cancellationToken);
         }
         catch (AnthropicException ex) when (Translate(ex) is { } translated)
         {
@@ -57,7 +57,7 @@ internal sealed class AnthropicRequestShapingChatClient : DelegatingChatClient
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
         // A yield cannot sit inside a try with a catch, so the enumerator is driven by hand.
-        await using var updates = base.GetStreamingResponseAsync(messages, Shape(options), cancellationToken)
+        await using var updates = base.GetStreamingResponseAsync(PlaceSystemMessages(messages), Shape(options), cancellationToken)
             .GetAsyncEnumerator(cancellationToken);
         while (true)
         {
@@ -71,6 +71,39 @@ internal sealed class AnthropicRequestShapingChatClient : DelegatingChatClient
             }
             yield return updates.Current;
         }
+    }
+
+    /// <summary>
+    /// Leading system messages become the top-level <c>system</c> prompt; the SDK sends any later
+    /// one as a mid-conversation <c>{"role":"system"}</c> message, which the API accepts only after
+    /// a user turn (tool results count). RockBot's loop also injects system nudges straight after
+    /// an assistant reply (completion review, hallucination checks), so those are re-sent as user
+    /// messages. Rewriting in place, rather than hoisting into the system prompt, keeps the
+    /// earlier prefix unchanged so the prompt cache still hits.
+    /// </summary>
+    internal static IEnumerable<ChatMessage> PlaceSystemMessages(IEnumerable<ChatMessage> messages)
+    {
+        var list = messages as IReadOnlyList<ChatMessage> ?? messages.ToList();
+        List<ChatMessage>? rewritten = null;
+        ChatRole? previous = null;   // last non-system role; null while still in the leading block
+
+        for (var i = 0; i < list.Count; i++)
+        {
+            var message = list[i];
+            if (message.Role != ChatRole.System)
+                previous = message.Role;
+            else if (previous == ChatRole.Assistant)
+            {
+                rewritten ??= [.. list];
+                rewritten[i] = new ChatMessage(ChatRole.User, message.Contents)
+                {
+                    AuthorName = message.AuthorName,
+                    AdditionalProperties = message.AdditionalProperties,
+                };
+            }
+        }
+
+        return rewritten ?? list;
     }
 
     internal ChatOptions Shape(ChatOptions? options)
