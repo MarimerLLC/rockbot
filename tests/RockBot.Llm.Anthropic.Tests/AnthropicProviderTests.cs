@@ -203,43 +203,64 @@ public class AnthropicProviderTests
     }
 
     [TestMethod]
-    public void PlaceSystemMessages_KeepsSystemAfterUserOrToolResult()
+    public void PlaceSystemMessages_SendsEveryNonLeadingSystemMessageAsUser()
     {
+        // The API also rejects a system message that is followed by a user/tool message
+        // ("must precede an 'assistant' message or end the array"), so placement can't be
+        // judged per position; all mid-conversation system messages become user messages.
         ChatMessage[] input =
         [
             new(ChatRole.System, "a"),
+            new(ChatRole.System, "b"),
             new(ChatRole.User, "u"),
             new(ChatRole.System, "after user"),
             new(ChatRole.Assistant, [new FunctionCallContent("c1", "f")]),
             new(ChatRole.Tool, [new FunctionResultContent("c1", "r")]),
             new(ChatRole.System, "after tool"),
-        ];
-
-        var output = AnthropicRequestShapingChatClient.PlaceSystemMessages(input);
-
-        Assert.AreSame(input, output, "Nothing to rewrite, so the original list is passed through");
-    }
-
-    [TestMethod]
-    public void PlaceSystemMessages_RewritesEveryMessageInARunAfterAssistant()
-    {
-        ChatMessage[] input =
-        [
-            new(ChatRole.User, "u"),
+            new(ChatRole.User, "u2"),
             new(ChatRole.Assistant, "a"),
             new(ChatRole.System, "s1"),
             new(ChatRole.System, "s2"),
-            new(ChatRole.User, "u2"),
-            new(ChatRole.System, "s3"),
         ];
 
         var output = AnthropicRequestShapingChatClient.PlaceSystemMessages(input).ToList();
 
         CollectionAssert.AreEqual(
-            new[] { ChatRole.User, ChatRole.Assistant, ChatRole.User, ChatRole.User, ChatRole.User, ChatRole.System },
+            new[]
+            {
+                ChatRole.System, ChatRole.System, ChatRole.User, ChatRole.User, ChatRole.Assistant,
+                ChatRole.Tool, ChatRole.User, ChatRole.User, ChatRole.Assistant, ChatRole.User, ChatRole.User,
+            },
             output.Select(m => m.Role).ToArray());
-        Assert.AreEqual("s1", output[2].Text);
-        Assert.AreEqual(ChatRole.System, input[2].Role, "The caller's messages are not mutated");
+        Assert.AreEqual("after tool", output[6].Text);
+        Assert.AreEqual(ChatRole.System, input[3].Role, "The caller's messages are not mutated");
+    }
+
+    [TestMethod]
+    public void PlaceSystemMessages_LeadingOnly_PassesTheListThrough()
+    {
+        ChatMessage[] input = [new(ChatRole.System, "a"), new(ChatRole.User, "u"), new(ChatRole.Assistant, "x")];
+
+        Assert.AreSame(input, AnthropicRequestShapingChatClient.PlaceSystemMessages(input));
+    }
+
+    [TestMethod]
+    public async Task Request_SystemBeforeUser_IsSentAsUser()
+    {
+        // messages.19 in the live failure: a system message followed by more user content.
+        var (client, handler) = Build();
+
+        await client.GetResponseAsync(
+        [
+            new(ChatRole.System, "be brief"),
+            new(ChatRole.User, "hello"),
+            new(ChatRole.System, "nudge"),
+            new(ChatRole.User, "more"),
+        ]);
+
+        var raw = handler.Requests.Single().GetProperty("messages").GetRawText();
+        StringAssert.DoesNotMatch(raw, new System.Text.RegularExpressions.Regex("\"role\":\"system\""));
+        StringAssert.Contains(raw, "nudge");
     }
 
     // ── response mapping ─────────────────────────────────────────────────────

@@ -142,24 +142,26 @@ internal sealed class AnthropicRequestShapingChatClient : DelegatingChatClient
 
     /// <summary>
     /// Leading system messages become the top-level <c>system</c> prompt; the SDK sends any later
-    /// one as a mid-conversation <c>{"role":"system"}</c> message, which the API accepts only after
-    /// a user turn (tool results count). RockBot's loop also injects system nudges straight after
-    /// an assistant reply (completion review, hallucination checks), so those are re-sent as user
-    /// messages. Rewriting in place, rather than hoisting into the system prompt, keeps the
-    /// earlier prefix unchanged so the prompt cache still hits.
+    /// one as a mid-conversation <c>{"role":"system"}</c> message, which the API accepts only
+    /// between a user turn (tool results count) and an assistant turn or the end of the array.
+    /// RockBot's loop injects system nudges in other places too (straight after an assistant
+    /// reply, or ahead of further user content), so every non-leading system message is sent as a
+    /// user message. Converting all of them, rather than only the misplaced ones, means a message
+    /// is sent the same way on every later call, so the prefix stays byte-stable and the prompt
+    /// cache keeps hitting; hoisting into the system prompt would invalidate it.
     /// </summary>
     internal static IEnumerable<ChatMessage> PlaceSystemMessages(IEnumerable<ChatMessage> messages)
     {
         var list = messages as IReadOnlyList<ChatMessage> ?? messages.ToList();
         List<ChatMessage>? rewritten = null;
-        ChatRole? previous = null;   // last non-system role; null while still in the leading block
+        var leading = true;
 
         for (var i = 0; i < list.Count; i++)
         {
             var message = list[i];
             if (message.Role != ChatRole.System)
-                previous = message.Role;
-            else if (previous == ChatRole.Assistant)
+                leading = false;
+            else if (!leading)
             {
                 rewritten ??= [.. list];
                 rewritten[i] = new ChatMessage(ChatRole.User, message.Contents)
