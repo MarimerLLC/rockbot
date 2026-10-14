@@ -424,7 +424,7 @@ public class RockBotFunctionInvokingChatClient : FunctionInvokingChatClient
             response = await base.GetResponseAsync(messageList, options, cancellationToken);
         }
         catch (ClientResultException ex)
-            when (ex.Status == 400 && TryParseContextOverflow(ex.Message, out var max, out var used))
+            when (ex.Status == 400 && ContextOverflowParser.TryParse(ex.Message, out var max, out var used))
         {
             _knownContextLimit = max;
             _logger.LogWarning(
@@ -613,21 +613,6 @@ public class RockBotFunctionInvokingChatClient : FunctionInvokingChatClient
         return (orphanedCalls, orphanedResults);
     }
 
-    private static bool TryParseContextOverflow(string message, out int maxTokens, out int usedTokens)
-    {
-        maxTokens = 0;
-        usedTokens = 0;
-
-        var maxMatch = Regex.Match(message, @"maximum context length is (\d+)");
-        var usedMatch = Regex.Match(message, @"resulted in (\d+) tokens");
-
-        if (!maxMatch.Success || !usedMatch.Success)
-            return false;
-
-        maxTokens = int.Parse(maxMatch.Groups[1].Value);
-        usedTokens = int.Parse(usedMatch.Groups[1].Value);
-        return true;
-    }
 
     private static string ExtractAssistantText(ChatResponse response)
     {

@@ -69,6 +69,14 @@ public sealed class LlmTierConfig
     /// </summary>
     public bool IsCopilot(string? globalProvider) =>
         string.Equals(EffectiveProvider(globalProvider), "Copilot", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Returns true when this tier is configured for the native Anthropic provider (Claude API
+    /// through the Anthropic SDK). Needs <see cref="ApiKey"/> and <see cref="ModelId"/>;
+    /// <see cref="Endpoint"/> is optional.
+    /// </summary>
+    public bool IsAnthropic(string? globalProvider) =>
+        string.Equals(EffectiveProvider(globalProvider), "Anthropic", StringComparison.OrdinalIgnoreCase);
 }
 
 /// <summary>

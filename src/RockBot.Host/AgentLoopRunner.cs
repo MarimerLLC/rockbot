@@ -1384,7 +1384,7 @@ public sealed partial class AgentLoopRunner(
                     response = await llmClient.GetResponseAsync(chatMessages, tier, chatOptions, cancellationToken);
                 }
                 catch (ClientResultException ex)
-                    when (ex.Status == 400 && TryParseContextOverflow(ex.Message, out var max, out var used))
+                    when (ex.Status == 400 && ContextOverflowParser.TryParse(ex.Message, out var max, out var used))
                 {
                     _knownContextLimit = max;
                     logger.LogWarning(
@@ -2593,21 +2593,6 @@ public sealed partial class AgentLoopRunner(
             label, sessionId, messages.Count, totalChars, totalChars / 4);
     }
 
-    private static bool TryParseContextOverflow(string message, out int maxTokens, out int usedTokens)
-    {
-        maxTokens = 0;
-        usedTokens = 0;
-
-        var maxMatch = Regex.Match(message, @"maximum context length is (\d+)");
-        var usedMatch = Regex.Match(message, @"resulted in (\d+) tokens");
-
-        if (!maxMatch.Success || !usedMatch.Success)
-            return false;
-
-        maxTokens = int.Parse(maxMatch.Groups[1].Value);
-        usedTokens = int.Parse(usedMatch.Groups[1].Value);
-        return true;
-    }
 
     // ── Content filter recovery ───────────────────────────────────────────────
 

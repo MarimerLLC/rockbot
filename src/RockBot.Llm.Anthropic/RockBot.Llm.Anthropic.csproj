@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <RootNamespace>RockBot.Llm.Anthropic</RootNamespace>
+    <IsPackable>true</IsPackable>
+    <Description>Native Anthropic (Claude API) LLM provider for RockBot, with prompt caching, exposed via Microsoft.Extensions.AI.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="RockBot.Llm.Anthropic.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Anthropic" Version="12.55.0" />
+    <PackageReference Include="Microsoft.Extensions.AI.Abstractions" Version="10.*" />
+    <!-- Errors are rethrown as ClientResultException so the rest of RockBot (fallback
+         classification, context-overflow recovery) handles them like the OpenAI SDK's. -->
+    <PackageReference Include="System.ClientModel" Version="1.16.0" />
+  </ItemGroup>
+
+</Project>

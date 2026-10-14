@@ -25,6 +25,7 @@ using RockBot.Subagent;
 using RockBot.Subagent.Worker;
 using RockBot.Wisp;
 using RockBot.Llm.Copilot;
+using RockBot.Llm.Anthropic;
 using GitHub.Copilot.SDK;
 using RockBot.Tools.FileSystem;
 using RockBot.Tools.Scheduling;
@@ -96,9 +97,14 @@ if (!tierOptions.Balanced.IsConfigured && tierOptions.BalancedModels.Count > 0)
 builder.Services.AddSingleton(tierOptions);
 
 // ── Per-tier client builder — each tier can use a different provider ─────────
-// Global provider default: LLM__Provider (Copilot | empty = OpenAI-compatible)
+// Global provider default: LLM__Provider (Copilot | Anthropic | empty = OpenAI-compatible)
 // Per-tier override: LLM__Low__Provider, LLM__Balanced__Provider, LLM__High__Provider
 var globalProvider = llmSection["Provider"];
+
+// Provider-wide Anthropic settings (prompt caching, cache TTL, default output cap):
+// LLM__Anthropic__PromptCaching, LLM__Anthropic__CacheTtl, LLM__Anthropic__DefaultMaxOutputTokens
+var anthropicOptions = new AnthropicProviderOptions();
+llmSection.GetSection("Anthropic").Bind(anthropicOptions);
 
 // Lazy-initialized Copilot singleton — created only if at least one tier uses Copilot.
 CopilotClient? copilotClient = null;
@@ -220,12 +226,41 @@ async Task<IChatClient> BuildClientForTierAsync(LlmTierConfig config, string tie
             copilotSessionEvents);
     }
 
+    if (config.IsAnthropic(globalProvider))
+    {
+        if (string.IsNullOrEmpty(config.ApiKey) || string.IsNullOrEmpty(config.ModelId))
+            throw new InvalidOperationException(
+                $"{tierName}: the Anthropic provider needs both ApiKey and ModelId.");
+
+        Console.WriteLine($"  {tierName}: Anthropic ({config.ModelId}" +
+                          (string.IsNullOrEmpty(config.Endpoint) ? ")" : $" @ {config.Endpoint})"));
+        Console.WriteLine(anthropicOptions.PromptCaching
+            ? $"    prompt caching on (ttl={anthropicOptions.CacheTtl ?? "5m"})"
+            : "    prompt caching OFF");
+        if (!AnthropicChatClientFactory.TryParseEffort(config.ReasoningEffort, out var effort))
+        {
+            // Same reasoning as the OpenAI path: the model still answers, so a bad value only
+            // shows up as a bill that never came down.
+            Console.WriteLine($"    WARNING: ignoring ReasoningEffort '{config.ReasoningEffort}' " +
+                              "(expected minimal/low/medium/high/xhigh/max; current Claude models can't disable thinking)");
+        }
+        else if (effort is not null)
+        {
+            Console.WriteLine($"    output_config.effort from ReasoningEffort={config.ReasoningEffort}");
+        }
+
+        return AnthropicChatClientFactory.Create(
+            config.ApiKey, config.ModelId, config.Endpoint, config.ReasoningEffort,
+            anthropicOptions, sdkRetries, timeout: TimeSpan.FromMinutes(5));
+    }
+
     Console.WriteLine($"  {tierName}: OpenAI-compatible ({config.ModelId} @ {config.Endpoint})");
     return BuildOpenAIClient(config, sdkRetries);
 }
 
 // Determine whether any tier is configured.
 var anyConfigured = tierOptions.Balanced.IsConfigured
+    || (tierOptions.Balanced.IsAnthropic(globalProvider) && tierOptions.Balanced.HasModelId)
     || tierOptions.BalancedModels.Count > 0
     || !string.IsNullOrEmpty(globalProvider)
     || tierOptions.Low.IsCopilot(globalProvider)
