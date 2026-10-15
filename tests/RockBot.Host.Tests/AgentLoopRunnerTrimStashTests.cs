@@ -377,7 +377,8 @@ public class AgentLoopRunnerTrimStashTests
             new(ChatRole.Tool, [new FunctionResultContent("call-norm", biggerNormal)]),
         };
 
-        await runner.TrimLargeToolResultsAsync(messages, maxTokens: 200, "sess-1", stashState);
+        // ≈5,000-char budget: reachable by cutting the normal result alone.
+        await runner.TrimLargeToolResultsAsync(messages, maxTokens: 1_400, "sess-1", stashState);
 
         var retrieval = (FunctionResultContent)messages[3].Contents[0];
         Assert.AreEqual(bigRetrieval, retrieval.Result?.ToString(),
@@ -448,6 +449,38 @@ public class AgentLoopRunnerTrimStashTests
         // would be ~22 trims. Stepping down to half the budget leaves room for several appends.
         Assert.IsTrue(trims is > 0 and <= 7,
             $"Thirty 1,500-char results against a 12,000-char budget should trim in a few large steps, not {trims}.");
+    }
+
+    [TestMethod]
+    [Timeout(10_000)]
+    public async Task Trim_WhenUntrimmableContentKeepsItOverBudget_LeavesFloorSizedHistoryAlone()
+    {
+        // Live run, #710: dozens of working-memory retrievals (never trimmed) kept the context far
+        // over budget, so the target was out of reach and every trim dragged the oldest results from
+        // the floor to 200 chars, rewriting the start of the loop and losing the whole cache.
+        var wm = new TestWorkingMemory();
+        var runner = NewRunner(wm);
+        var stashState = new AgentLoopStashContext.State { SessionId = "sess-1" };
+        var messages = new List<ChatMessage> { new(ChatRole.System, "system prompt"), new(ChatRole.User, "go") };
+        for (var i = 1; i <= 4; i++)
+        {
+            messages.Add(BuildAssistantWithCall("fetch_url", $"old-{i}"));
+            messages.Add(new ChatMessage(ChatRole.Tool, [new FunctionResultContent($"old-{i}", new string('o', 950))]));
+        }
+        messages.Add(BuildAssistantWithCall("get_from_working_memory", "ret-1"));
+        messages.Add(new ChatMessage(ChatRole.Tool, [new FunctionResultContent("ret-1", new string('r', 40_000))]));
+        messages.Add(BuildAssistantWithCall("fetch_url", "new-1"));
+        messages.Add(new ChatMessage(ChatRole.Tool, [new FunctionResultContent("new-1", new string('n', 3_000))]));
+
+        var olderBefore = messages.Take(10).SelectMany(m => m.Contents).ToList();
+
+        // ~12,000-char budget, unreachable: the retrieval alone is 40,000.
+        await runner.TrimLargeToolResultsAsync(messages, maxTokens: 3_334, "sess-1", stashState);
+
+        CollectionAssert.AreEqual(olderBefore, messages.Take(10).SelectMany(m => m.Contents).ToList(),
+            "Results already at the floor stay as they are when cutting them further can't reach the goal.");
+        Assert.AreEqual(3_000, ((FunctionResultContent)messages[^1].Contents[0]).Result!.ToString()!.Length,
+            "The latest batch isn't cut for a budget it can't meet.");
     }
 
     [TestMethod]

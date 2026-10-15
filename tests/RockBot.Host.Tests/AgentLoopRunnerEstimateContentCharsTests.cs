@@ -302,8 +302,10 @@ public class AgentLoopRunnerEstimateContentCharsTests
         var toolResult = new string('A', 1_500) + "TAIL-MARKER-END";
         var messages = BuildConversation(toolResult, withImage: true);
 
-        // ≈2,880-char budget: the text alone (~1,600 chars) fits, the image does not.
-        await runner.TrimLargeToolResultsAsync(messages, maxTokens: 800, "sess-1", stashState);
+        // ≈7,000-char budget: the text alone (~1,600 chars) fits, and so does the image (6,144) once
+        // the tool result is cut, but not the two together. (The trim leaves alone a context it
+        // can't get under budget, so the image alone must fit.)
+        await runner.TrimLargeToolResultsAsync(messages, maxTokens: 1_945, "sess-1", stashState);
 
         var frc = (FunctionResultContent)messages[^1].Contents[0];
         var trimmed = frc.Result?.ToString() ?? string.Empty;
@@ -328,7 +330,7 @@ public class AgentLoopRunnerEstimateContentCharsTests
         var toolResult = new string('A', 1_500) + "TAIL-MARKER-END";
         var messages = BuildConversation(toolResult, withImage: false);
 
-        await runner.TrimLargeToolResultsAsync(messages, maxTokens: 800, "sess-1", stashState);
+        await runner.TrimLargeToolResultsAsync(messages, maxTokens: 1_945, "sess-1", stashState);
 
         var frc = (FunctionResultContent)messages[^1].Contents[0];
         Assert.AreEqual(toolResult, frc.Result?.ToString(),

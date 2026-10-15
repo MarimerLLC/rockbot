@@ -91,8 +91,20 @@ internal static class ToolResultTrimmer
             (selfPaging, charBudget, MinFloorChars),
         ];
 
-        foreach (var (set, goal, passFloor) in passes)
+        for (var p = 0; p < passes.Length; p++)
         {
+            var (set, goal, passFloor) = passes[p];
+            if (totalChars <= goal)
+                continue;
+
+            // Past the first pass, cutting is only worth it when it gets the context under budget.
+            // When content the trim can't touch (system prompt, tool schemas, working-memory
+            // retrievals) keeps it over budget regardless, the trim fires again on the next call
+            // anyway, and cutting old results further, or the result the model just asked for,
+            // saves little and loses the cache from the earliest rewritten message.
+            if (p > 0 && totalChars - Reclaimable(messages, set, passFloor) > charBudget)
+                continue;
+
             foreach (var candidate in set)
             {
                 if (totalChars <= goal)
@@ -119,12 +131,25 @@ internal static class ToolResultTrimmer
 
         if (totalChars > charBudget)
         {
-            logger.LogWarning(
-                "Tool-result trim cannot reach budget: total {Total:N0} > budget {Budget:N0} chars with every " +
-                "trimmable tool result at the elision floor. Context may still exceed the limit.",
+            // The trim runs before every tool call; once per run is enough to say it can't keep up.
+            var level = stashState is null || !stashState.BudgetUnreachableWarned ? LogLevel.Warning : LogLevel.Debug;
+            if (stashState is not null)
+                stashState.BudgetUnreachableWarned = true;
+            logger.Log(level,
+                "Tool-result trim cannot reach budget: total {Total:N0} > budget {Budget:N0} chars; the rest is " +
+                "content the trim doesn't cut (system prompt, tool schemas, working-memory retrievals) or results " +
+                "it won't cut further. Context may still exceed the limit.",
                 totalChars, charBudget);
         }
     }
+
+    /// <summary>The most a pass could save by cutting every result in <paramref name="set"/> to <paramref name="floor"/>.</summary>
+    private static int Reclaimable(List<ChatMessage> messages, List<Candidate> set, int floor) =>
+        set.Sum(c =>
+        {
+            var len = (messages[c.MessageIndex].Contents[c.ContentIndex] as FunctionResultContent)?.Result?.ToString()?.Length ?? 0;
+            return Math.Max(0, len - floor);
+        });
 
     private enum CandidateKind { Ordinary, LatestBatch, SelfPaging }
 

@@ -471,7 +471,10 @@ messages an earlier one sent. So within a run, the loop treats history as **appe
   `ToolResultStashTrimTargetRatio` of the watermark. Each result goes to
   `ToolResultTrimFloorChars` first, and lower only if the target needs it. The most recent
   batch of results and `file_read` results are cut only when the hard budget can't be met
-  otherwise. One large step leaves room for several more iterations that append onto a cached
+  otherwise. Older results go below the floor, and protected results are cut, only when that gets
+  the context under budget. Content the trim never cuts can keep the context over budget anyway:
+  the system prompt, tool schemas and `get_from_working_memory` retrievals. Then every call
+  would trim again, and cutting further would only throw away the cache. One large step leaves room for several more iterations that append onto a cached
   prefix. Trimming a little before every call would miss the cache on every call.
 - **Stash-registry and task-list notes.** A new stash key or a task-list change becomes a new
   system message at the end of the conversation. Earlier notes are never rewritten or moved.

@@ -29,6 +29,9 @@ internal static class AgentLoopStashContext
         /// </summary>
         public int? WatermarkTokens { get; set; }
 
+        /// <summary>Whether this run has already warned that the trim can't reach its budget.</summary>
+        public bool BudgetUnreachableWarned { get; set; }
+
         /// <summary>Registry entries already rendered into a stash-registry message.</summary>
         public int RenderedRegistryCount { get; set; }
 
