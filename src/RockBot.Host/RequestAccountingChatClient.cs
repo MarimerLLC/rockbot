@@ -84,6 +84,7 @@ public sealed class RequestAccountingChatClient(
         if (input > 0)
             HostDiagnostics.LlmRequestTokensInput.Record(input, tierTag, kindTag);
         HostDiagnostics.LlmRequestTools.Record(toolCount, tierTag, kindTag);
+        ObserveToolListChange(sessionId, tools, tierTag, kindTag);
 
         if (!logger.IsEnabled(LogLevel.Information)) return;
 
@@ -104,6 +105,36 @@ public sealed class RequestAccountingChatClient(
                 i, categories[i], sizes[i], Preview(messages[i]));
         }
     }
+
+    private const int MaxNamesLogged = 10;
+
+    private void ObserveToolListChange(
+        string? sessionId, IList<AITool>? tools,
+        KeyValuePair<string, object?> tierTag, KeyValuePair<string, object?> kindTag)
+    {
+        if (RequestAccountingContext.Value?.ObserveTools(tierLabel, tools) is not { } change) return;
+
+        HostDiagnostics.LlmRequestToolListChanges.Add(1, tierTag, kindTag,
+            new KeyValuePair<string, object?>("rockbot.tool_list.change", change.Requested ? "requested" : "unrequested"));
+
+        if (change.Requested)
+        {
+            logger.LogDebug(
+                "Tool list changed after a tool call: session={Session} tier={Tier} tools {Before}->{After} added=[{Added}] removed=[{Removed}]",
+                sessionId, tierLabel, change.PreviousCount, change.Count, Names(change.Added), Names(change.Removed));
+            return;
+        }
+
+        logger.LogWarning(
+            "Tool list changed without a tool call, so this request misses the prompt cache (#712): " +
+            "session={Session} tier={Tier} tools {Before}->{After} added=[{Added}] removed=[{Removed}]",
+            sessionId, tierLabel, change.PreviousCount, change.Count, Names(change.Added), Names(change.Removed));
+    }
+
+    private static string Names(IReadOnlyList<string> names) =>
+        names.Count <= MaxNamesLogged
+            ? string.Join(", ", names)
+            : string.Join(", ", names.Take(MaxNamesLogged)) + $", … +{names.Count - MaxNamesLogged}";
 
     /// <summary>Characters a tool contributes to the request: its name, description and parameter schema.</summary>
     internal static int MeasureSchema(AITool tool) =>

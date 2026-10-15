@@ -1,3 +1,4 @@
+using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
 
 namespace RockBot.Host;
@@ -69,7 +70,59 @@ public static class RequestAccountingContext
         {
             lock (_gate) return [.. _records];
         }
+
+        private string? _toolTier;
+        private string[]? _toolNames;
+        private int _toolCallsAtToolNames;
+
+        /// <summary>
+        /// Compares a request's tool list with the run's previous request that carried tools on the
+        /// same tier (#712). Tool definitions open the cached prompt prefix, so any change to the list,
+        /// or to its order, makes the request miss the cache entirely. A change is requested when the
+        /// run executed a tool since that request (a loader call, or a call to a typed tool not yet in
+        /// the list); otherwise it's unrequested. Returns null when the list is unchanged, the request
+        /// carries no tools (an auxiliary call, which neither compares nor replaces the baseline), it's
+        /// the first on its tier, or the run has no <see cref="LoopDiagnostics"/> to count tool calls.
+        /// </summary>
+        /// <remarks>
+        /// A tool call and a programmatic change in the same gap read as requested. The gaps this
+        /// guards, the completion re-prompt and the follow-up pass, contain no tool calls.
+        /// </remarks>
+        public ToolListChange? ObserveTools(string tier, IList<AITool>? tools)
+        {
+            if (diagnostics is null || tools is not { Count: > 0 }) return null;
+
+            var names = tools.Select(t => t.Name).ToArray();
+            lock (_gate)
+            {
+                var previous = _toolTier == tier ? _toolNames : null;
+                var callsBefore = _toolCallsAtToolNames;
+                _toolTier = tier;
+                _toolNames = names;
+                _toolCallsAtToolNames = diagnostics.ToolCalls;
+
+                if (previous is null || previous.SequenceEqual(names, StringComparer.Ordinal)) return null;
+
+                return new ToolListChange(
+                    Requested: diagnostics.ToolCalls > callsBefore,
+                    Added: names.Except(previous, StringComparer.Ordinal).ToList(),
+                    Removed: previous.Except(names, StringComparer.Ordinal).ToList(),
+                    PreviousCount: previous.Length,
+                    Count: names.Length);
+            }
+        }
     }
+
+    /// <summary>
+    /// A request's tool list differed from the previous one in the run (#712). When
+    /// <see cref="Added"/> and <see cref="Removed"/> are both empty, only the order changed.
+    /// </summary>
+    public sealed record ToolListChange(
+        bool Requested,
+        IReadOnlyList<string> Added,
+        IReadOnlyList<string> Removed,
+        int PreviousCount,
+        int Count);
 
     /// <summary>
     /// The per-turn figures #670 is judged on. Loop requests (ones that carried tools) are reported

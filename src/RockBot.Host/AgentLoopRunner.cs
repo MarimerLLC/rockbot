@@ -939,7 +939,7 @@ public sealed partial class AgentLoopRunner(
             // has no overlap with "calendar"). Search using the evaluator reason + original
             // request combined, which WILL contain domain terms like "calendar", "email", etc.
             await EnrichContextForRepromptAsync(
-                chatMessages, chatOptions, servedUserRequest, reason ?? string.Empty, cancellationToken);
+                chatMessages, servedUserRequest, reason ?? string.Empty, cancellationToken);
 
             // Build a targeted continuation nudge. #683: it is marked as an internal check and tells
             // the model to answer the user's original message — unmarked, the model took it for user
@@ -3012,7 +3012,7 @@ public sealed partial class AgentLoopRunner(
         // Enrich context with skills/services relevant to the follow-up.
         var searchTerms = followUp.SearchTerms ?? followUp.Prompt;
         await EnrichContextForRepromptAsync(
-            chatMessages, chatOptions, originalUserRequest, searchTerms, cancellationToken);
+            chatMessages, originalUserRequest, searchTerms, cancellationToken);
 
         // Inject the completed response and the follow-up instruction.
         chatMessages.Add(new ChatMessage(ChatRole.Assistant, completedResponse));
@@ -3369,13 +3369,14 @@ public sealed partial class AgentLoopRunner(
 
     /// <summary>
     /// One MCP server's lines in the re-prompt's service hints. With typed tools on, the
-    /// candidate's top items are typed names (see <c>ServiceSearchIndex</c>) and the hint says to
-    /// call them; in lazy mode they're activated first, so the names it gives are callable.
+    /// candidate's top items are typed names (see <c>ServiceSearchIndex</c>). In lazy mode the hint
+    /// only names them: activating them here would change the tool list, and tool definitions open
+    /// the cached prompt prefix, so the next request would miss the cache entirely (#712). The model
+    /// loads them itself, and the list grows inside a tool call, after a request that was cached.
     /// </summary>
-    private void AppendMcpServiceHint(StringBuilder sb, ServiceSearchCandidate candidate, ChatOptions chatOptions)
+    internal static void AppendMcpServiceHint(StringBuilder sb, ServiceSearchCandidate candidate, string? loaderToolName)
     {
         var mode = TypedToolSurfaceContext.Mode ?? TypedToolMode.Off;
-        var activating = mode is TypedToolMode.Lazy or TypedToolMode.Pinned;
         if (mode == TypedToolMode.Off || !candidate.TopItemsAreTypedTools)
         {
             sb.AppendLine($"  Sample tools: {string.Join(", ", candidate.TopItems)}");
@@ -3384,18 +3385,16 @@ public sealed partial class AgentLoopRunner(
             return;
         }
 
-        if (activating)
+        if (mode is TypedToolMode.Lazy or TypedToolMode.Pinned)
         {
-            var present = (chatOptions.Tools ?? []).Select(t => t.Name).ToHashSet(StringComparer.Ordinal);
-            foreach (var name in candidate.TopItems.Where(n => !present.Contains(n)))
-                TypedToolSurfaceContext.TryActivate(chatOptions, name);
+            sb.AppendLine($"  Typed tools: {string.Join(", ", candidate.TopItems)} — load them first with " +
+                $"{loaderToolName} (a few keywords) or " +
+                $"mcp_get_service_details(server_name=\"{candidate.Id}\"), then call them by name.");
+            return;
         }
 
         sb.AppendLine($"  Typed tools: {string.Join(", ", candidate.TopItems)} — call them directly.");
-        sb.AppendLine(activating
-            ? $"  For another tool on this server, call {typedToolSurface!.LoaderToolName} " +
-              $"or mcp_get_service_details(server_name=\"{candidate.Id}\")."
-            : $"  For the rest of this server's tools, call mcp_get_service_details(server_name=\"{candidate.Id}\").");
+        sb.AppendLine($"  For the rest of this server's tools, call mcp_get_service_details(server_name=\"{candidate.Id}\").");
     }
 
     /// <summary>
@@ -3406,7 +3405,6 @@ public sealed partial class AgentLoopRunner(
     /// </summary>
     private async Task EnrichContextForRepromptAsync(
         List<ChatMessage> chatMessages,
-        ChatOptions chatOptions,
         string originalUserRequest,
         string evaluatorReason,
         CancellationToken ct)
@@ -3466,7 +3464,7 @@ public sealed partial class AgentLoopRunner(
                     {
                         sb.AppendLine($"\n### {c.Id} ({c.Type}): {c.Summary}");
                         if (c.Type == "mcp")
-                            AppendMcpServiceHint(sb, c, chatOptions);
+                            AppendMcpServiceHint(sb, c, typedToolSurface?.LoaderToolName);
                         else if (c.TopItems.Count > 0)
                         {
                             sb.AppendLine($"  Top skills: {string.Join(", ", c.TopItems)}");

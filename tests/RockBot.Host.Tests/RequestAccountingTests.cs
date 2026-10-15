@@ -211,4 +211,181 @@ public class RequestAccountingTests
 
         Assert.AreEqual(ContextCategory.SkillBody, ContextCategorizer.Classify([new(ChatRole.System, "p"), msg])[1]);
     }
+
+    // ── Tool-list changes (#712) ─────────────────────────────────────────────
+
+    private static readonly List<ChatMessage> Turn = [new(ChatRole.System, "persona"), new(ChatRole.User, "hi")];
+
+    private static RequestAccountingContext.State Begin(out IDisposable scope, LoopDiagnostics? diagnostics)
+    {
+        scope = RequestAccountingContext.Begin("s", new CapturingLogger<RequestAccountingChatClient>(), diagnostics);
+        return RequestAccountingContext.Value!;
+    }
+
+    private static async Task<(List<string> Changes, CapturingLogger<RequestAccountingChatClient> Logger)> RunRequests(
+        Func<RequestAccountingChatClient, LoopDiagnostics, Task> requests)
+    {
+        var changes = new List<string>();
+        var logger = new CapturingLogger<RequestAccountingChatClient>();
+        var sut = new RequestAccountingChatClient(new UsageChatClient(1_000, 0, 10), logger, "Balanced");
+        var diagnostics = new LoopDiagnostics();
+
+        using var listener = new System.Diagnostics.Metrics.MeterListener();
+        listener.InstrumentPublished = (instrument, l) =>
+        {
+            if (ReferenceEquals(instrument, HostDiagnostics.LlmRequestToolListChanges))
+                l.EnableMeasurementEvents(instrument);
+        };
+        listener.SetMeasurementEventCallback<long>((_, _, tags, _) =>
+        {
+            foreach (var tag in tags)
+            {
+                if (tag.Key == "rockbot.tool_list.change")
+                    lock (changes) changes.Add((string)tag.Value!);
+            }
+        });
+        listener.Start();
+
+        using (RequestAccountingContext.Begin("tool-list-test", logger, diagnostics))
+            await requests(sut, diagnostics);
+
+        return (changes, logger);
+    }
+
+    private static bool WarnedOfCacheMiss(CapturingLogger<RequestAccountingChatClient> logger) =>
+        logger.Entries.Any(e => e.Level == LogLevel.Warning && e.Text.Contains("misses the prompt cache"));
+
+    [TestMethod]
+    public void ObserveTools_SameList_IsNoChange()
+    {
+        var state = Begin(out var scope, new LoopDiagnostics());
+        using (scope)
+        {
+            Assert.IsNull(state.ObserveTools("Balanced", OptionsWithTools("a", "b").Tools));
+            Assert.IsNull(state.ObserveTools("Balanced", OptionsWithTools("a", "b").Tools));
+        }
+    }
+
+    [TestMethod]
+    public void ObserveTools_GrowthWithoutAToolCall_IsUnrequested()
+    {
+        var state = Begin(out var scope, new LoopDiagnostics());
+        using (scope)
+        {
+            state.ObserveTools("Balanced", OptionsWithTools("a", "b").Tools);
+            var change = state.ObserveTools("Balanced", OptionsWithTools("a", "b", "cal__get_events").Tools);
+
+            Assert.IsNotNull(change);
+            Assert.IsFalse(change.Requested);
+            CollectionAssert.AreEqual(new[] { "cal__get_events" }, change.Added.ToArray());
+            Assert.AreEqual(0, change.Removed.Count);
+            Assert.AreEqual(2, change.PreviousCount);
+            Assert.AreEqual(3, change.Count);
+        }
+    }
+
+    [TestMethod]
+    public void ObserveTools_GrowthAfterAToolCall_IsRequested()
+    {
+        var diagnostics = new LoopDiagnostics();
+        var state = Begin(out var scope, diagnostics);
+        using (scope)
+        {
+            state.ObserveTools("Balanced", OptionsWithTools("a", "mcp_find_tools").Tools);
+            diagnostics.ToolCalls++; // the model called the loader
+            var change = state.ObserveTools("Balanced", OptionsWithTools("a", "mcp_find_tools", "cal__get_events").Tools);
+
+            Assert.IsTrue(change!.Requested);
+        }
+    }
+
+    [TestMethod]
+    public void ObserveTools_Reorder_IsAChange()
+    {
+        var state = Begin(out var scope, new LoopDiagnostics());
+        using (scope)
+        {
+            state.ObserveTools("Balanced", OptionsWithTools("a", "b").Tools);
+            var change = state.ObserveTools("Balanced", OptionsWithTools("b", "a").Tools);
+
+            Assert.IsFalse(change!.Requested);
+            Assert.AreEqual(0, change.Added.Count + change.Removed.Count);
+        }
+    }
+
+    [TestMethod]
+    public void ObserveTools_ToollessRequest_NeitherComparesNorReplacesTheBaseline()
+    {
+        var state = Begin(out var scope, new LoopDiagnostics());
+        using (scope)
+        {
+            state.ObserveTools("Balanced", OptionsWithTools("a", "b").Tools);
+            Assert.IsNull(state.ObserveTools("Balanced", null), "the completion evaluator sends no tools");
+            Assert.IsNull(state.ObserveTools("Balanced", OptionsWithTools("a", "b").Tools));
+        }
+    }
+
+    [TestMethod]
+    public void ObserveTools_TierSwitch_StartsAFreshBaseline()
+    {
+        var state = Begin(out var scope, new LoopDiagnostics());
+        using (scope)
+        {
+            state.ObserveTools("Balanced", OptionsWithTools("a", "b").Tools);
+            Assert.IsNull(state.ObserveTools("High", OptionsWithTools("a").Tools),
+                "another model has its own cache; its first request has nothing to compare with");
+        }
+    }
+
+    [TestMethod]
+    public void ObserveTools_WithoutDiagnostics_IsNotClassified()
+    {
+        var state = Begin(out var scope, diagnostics: null);
+        using (scope)
+        {
+            state.ObserveTools("Balanced", OptionsWithTools("a").Tools);
+            Assert.IsNull(state.ObserveTools("Balanced", OptionsWithTools("a", "b").Tools));
+        }
+    }
+
+    [TestMethod]
+    public async Task Client_UnrequestedChange_CountsAndWarns()
+    {
+        var (changes, logger) = await RunRequests(async (sut, _) =>
+        {
+            await sut.GetResponseAsync(Turn, OptionsWithTools("a", "b"));
+            await sut.GetResponseAsync(Turn, OptionsWithTools("a", "b", "cal__get_events"));
+        });
+
+        CollectionAssert.AreEqual(new[] { "unrequested" }, changes);
+        Assert.IsTrue(WarnedOfCacheMiss(logger));
+        Assert.IsTrue(logger.Entries.Any(e => e.Text.Contains("added=[cal__get_events]")));
+    }
+
+    [TestMethod]
+    public async Task Client_RequestedChange_CountsWithoutWarning()
+    {
+        var (changes, logger) = await RunRequests(async (sut, diagnostics) =>
+        {
+            await sut.GetResponseAsync(Turn, OptionsWithTools("a", "mcp_find_tools"));
+            diagnostics.ToolCalls++;
+            await sut.GetResponseAsync(Turn, OptionsWithTools("a", "mcp_find_tools", "cal__get_events"));
+        });
+
+        CollectionAssert.AreEqual(new[] { "requested" }, changes);
+        Assert.IsFalse(WarnedOfCacheMiss(logger));
+    }
+
+    [TestMethod]
+    public async Task Client_UnchangedList_RecordsNothing()
+    {
+        var (changes, logger) = await RunRequests(async (sut, _) =>
+        {
+            await sut.GetResponseAsync(Turn, OptionsWithTools("a", "b"));
+            await sut.GetResponseAsync(Turn, OptionsWithTools("a", "b"));
+        });
+
+        Assert.AreEqual(0, changes.Count);
+        Assert.IsFalse(WarnedOfCacheMiss(logger));
+    }
 }

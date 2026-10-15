@@ -244,6 +244,18 @@ public static class HostDiagnostics
             description: "Tools sent with each single LLM request");
 
     /// <summary>
+    /// A request's tool list differed from the previous request of the same run and tier, which
+    /// makes it miss the prompt cache entirely (#712). Tagged <c>rockbot.tool_list.change</c>:
+    /// <c>requested</c> when the run executed a tool in between (a loader call), <c>unrequested</c>
+    /// otherwise. Unrequested should stay at zero.
+    /// </summary>
+    public static readonly Counter<long> LlmRequestToolListChanges =
+        Meter.CreateCounter<long>(
+            "rockbot.llm.request.tool_list_changes",
+            unit: "{change}",
+            description: "Tool-list changes between requests of one run, by whether the model asked for them");
+
+    /// <summary>
     /// A content part whose type <c>AgentLoopRunner.EstimateContentChars</c> does not model
     /// appeared in the message list and was charged the flat placeholder size. Tagged with
     /// <c>rockbot.content.type</c> (the CLR type name) so the specific gap is identifiable.
