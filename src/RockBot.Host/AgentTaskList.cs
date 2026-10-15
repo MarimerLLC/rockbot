@@ -23,6 +23,12 @@ internal sealed class AgentTaskList
 
     public sealed record TaskItem(int Id, string Description, string Status);
 
+    /// <summary>
+    /// Text of the last task-list note added to the conversation, or null when none is
+    /// showing. Lets <see cref="ContextNotes.TakeTaskListUpdate"/> add a note only on change.
+    /// </summary>
+    public string? LastRendered { get; set; }
+
     public bool IsEmpty
     {
         get { lock (_gate) return _items.Count == 0; }

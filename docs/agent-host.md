@@ -456,6 +456,41 @@ Every RUN, COMPLETE and INCOMPLETE log line includes `trigger=` and `userAskedFo
 | `AgentHost:MaxFollowUpPasses` | `AgentHostOptions` | 1 | Max proactive follow-up passes (0 = disabled) |
 | `MaxFollowUpPassesOverride` | `ModelBehavior` | null (use host default) | Per-model override |
 
+### Context trimming and the prompt cache
+
+Providers cache a request's prompt prefix (OpenAI automatically; Anthropic with the breakpoints
+`RockBot.Llm.Anthropic` sets). A cache read only happens when a request starts with exactly the
+messages an earlier one sent. So within a run, the loop treats history as **append-only**
+(#710). The exceptions are rare tool-result trims and skill-body aging.
+
+- **Tool-result cap.** A result over `ToolResultMaxChars` is cut to a head + elision marker +
+  tail when it arrives, before anything caches it. The full original is stashed in working
+  memory.
+- **Watermark trim.** Nothing happens until the context exceeds the watermark. Then the trim
+  cuts older results, oldest first, until the context is down to
+  `ToolResultStashTrimTargetRatio` of the watermark. Each result goes to
+  `ToolResultTrimFloorChars` first, and lower only if the target needs it. The most recent
+  batch of results and `file_read` results are cut only when the hard budget can't be met
+  otherwise. Older results go below the floor, and protected results are cut, only when that gets
+  the context under budget. Content the trim never cuts can keep the context over budget anyway:
+  the system prompt, tool schemas and `get_from_working_memory` retrievals. Then every call
+  would trim again, and cutting further would only throw away the cache. One large step leaves room for several more iterations that append onto a cached
+  prefix. Trimming a little before every call would miss the cache on every call.
+- **Stash-registry and task-list notes.** A new stash key or a task-list change becomes a new
+  system message at the end of the conversation. Earlier notes are never rewritten or moved.
+  Inside the native loop, `ContextNoteChatClient` adds the note to the next request, so it
+  never splits an assistant turn from its tool results. Afterwards `AgentLoopRunner` copies
+  the note into its own history at the same position. A re-prompt or follow-up pass then
+  starts with the prefix the provider already has.
+
+| Setting | Default | Purpose |
+|---|---|---|
+| `AgentHost:ToolResultMaxChars` | 8,000 | Per-result cap, applied on arrival (0 = off) |
+| `AgentHost:ToolResultStashWatermarkTokens` | 30,000 | Context size that triggers the watermark trim (0 = trim only after a provider overflow) |
+| `AgentHost:ToolResultStashWatermarkTokensByTier:<Tier>` | none | Per-tier watermark, e.g. `AgentHost__ToolResultStashWatermarkTokensByTier__High=120000` for a large-context model |
+| `AgentHost:ToolResultStashTrimTargetRatio` | 0.5 | Where a trim stops, as a fraction of the watermark (1.0 = trim just enough) |
+| `AgentHost:ToolResultTrimFloorChars` | 1,000 | Size older results are cut to on the way to the target |
+
 ### Diagnostics counters
 
 | Counter | Fires when |

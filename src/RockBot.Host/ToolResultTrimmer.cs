@@ -17,20 +17,38 @@ internal static class ToolResultTrimmer
     private const int CharsPerToken = 4;
 
     /// <summary>
-    /// Repeatedly replaces the largest tool result with a head+tail surface (stashing the
-    /// full original in working memory under <c>stash/{sessionId}/{callId}</c>) until the
-    /// estimated context size fits <paramref name="maxTokens"/>.
+    /// Smallest surface a result is ever cut to, and only to get back under the hard budget.
+    /// </summary>
+    private const int MinFloorChars = 200;
+
+    /// <summary>Default <see cref="AgentHostOptions.ToolResultTrimFloorChars"/>.</summary>
+    public const int DefaultFloorChars = 1_000;
+
+    private const string LegacySuffix = "\n[truncated to fit context window]";
+
+    /// <summary>
+    /// Brings the estimated context size back under <paramref name="maxTokens"/> by replacing
+    /// tool results with a head+tail surface, stashing each full original in working memory
+    /// under <c>stash/{sessionId}/{callId}</c>.
     ///
-    /// <para><b>Termination.</b> The loop is bounded three ways, any one of which is
-    /// sufficient: (1) it stops once the budget is met; (2) it stops when the largest
-    /// remaining tool result cannot be shrunk (already at the elision floor, where
-    /// re-adding the marker would keep it the same size or grow it) — since the largest
-    /// can't shrink, nothing smaller can bring the total under budget either; (3) a hard
-    /// pass cap as defence-in-depth. Without (2)/(3), a context whose <i>non-tool</i>
-    /// content alone exceeds the budget (system prompt + injected skill bodies + the
-    /// stash registry) re-trims the same floor-sized results forever — the 2026-06-05
-    /// incident: 400k+ identical "Trimmed tool result" log lines, CPU pegged at ~2
-    /// cores, until the pod was killed.</para>
+    /// <para><b>Cache stability (#710).</b> Every trim rewrites history the provider has
+    /// already cached, so the next call reads nothing past the trimmed message. The trim
+    /// therefore fires rarely and does a lot when it does: nothing happens until the context
+    /// exceeds the budget, and then results are cut, oldest first, until it is down to
+    /// <paramref name="targetRatio"/> of the budget. The iterations that follow append onto
+    /// an unchanged prefix until the budget is crossed again. Oldest-first keeps the rewrite
+    /// to the earliest point in the loop that can give up space, and leaves recent results,
+    /// which the model is most likely still working from, intact.</para>
+    ///
+    /// <para><b>Protected results.</b> The most recent batch of tool results and results
+    /// from self-paging tools (<see cref="SelfPagingTools"/>, issue #664) are cut only when
+    /// the hard budget can't be met any other way, and then only by as much as it takes.
+    /// Explicit working-memory retrievals (<see cref="StashExemptTools"/>) are never cut.</para>
+    ///
+    /// <para><b>Termination.</b> Each pass visits every candidate at most once, so the trim
+    /// always ends; a context whose non-tool content alone exceeds the budget logs a warning
+    /// instead of spinning (the 2026-06-05 incident: 400k+ identical "Trimmed tool result"
+    /// log lines, CPU pegged at ~2 cores, until the pod was killed).</para>
     /// </summary>
     public static async Task TrimAsync(
         List<ChatMessage> messages,
@@ -41,194 +59,224 @@ internal static class ToolResultTrimmer
         double headTailRatio,
         int stashTtlMinutes,
         ILogger logger,
-        ImageCostOptions? imageCost = null)
+        ImageCostOptions? imageCost = null,
+        double targetRatio = 1.0,
+        int floorChars = DefaultFloorChars)
     {
         var charBudget = (int)(maxTokens * CharsPerToken * 0.9);
+        var totalChars = messages.Sum(m => AgentLoopRunner.EstimateMessageChars(m, imageCost, logger));
+        if (totalChars <= charBudget)
+            return;
+
+        var targetBudget = (int)(charBudget * Math.Clamp(targetRatio, 0.05, 1.0));
+        var floor = Math.Max(MinFloorChars, floorChars);
         var headRatio = Math.Clamp(headTailRatio, 0.0, 1.0);
         var ttl = TimeSpan.FromMinutes(Math.Max(1, stashTtlMinutes));
+        var startChars = totalChars;
+        var trimmedCount = 0;
 
-        // Defence-in-depth pass cap. The no-progress breaks below are the real guarantee;
-        // this catches any future edit that reintroduces a non-shrinking path.
-        var maxPasses = messages.Count * 4 + 32;
+        var candidates = CollectCandidates(messages);
+        var ordinary = candidates.Where(c => c.Kind == CandidateKind.Ordinary).ToList();
+        var latest = candidates.Where(c => c.Kind == CandidateKind.LatestBatch).ToList();
+        var selfPaging = candidates.Where(c => c.Kind == CandidateKind.SelfPaging).ToList();
 
-        // Self-paging results (file_read) are trimmed only once every other tool result has
-        // been reduced to the elision floor. The model reads a file immediately before
-        // editing it; eliding that read on the next round-trip recreates the partial-view
-        // overwrite of issue #664. See SelfPagingTools. Flips to true at most once.
-        var selfPagingOnly = false;
+        // Down to the low-water mark with older results — to the floor first, then below it, so
+        // floor-sized results piling up over a long loop can't pin the context near the budget
+        // and bring back a trim every iteration — then the hard budget at any cost.
+        (List<Candidate> Set, int Goal, int Floor)[] passes =
+        [
+            (ordinary, targetBudget, floor),
+            (ordinary, targetBudget, MinFloorChars),
+            (latest, charBudget, MinFloorChars),
+            (selfPaging, charBudget, MinFloorChars),
+        ];
 
-        for (var pass = 0; ; pass++)
+        for (var p = 0; p < passes.Length; p++)
         {
-            if (pass >= maxPasses)
-            {
-                logger.LogWarning(
-                    "Tool-result trim exceeded {MaxPasses} passes without reaching the {Budget:N0}-char " +
-                    "budget; stopping to avoid a non-terminating loop. Context may still exceed the limit.",
-                    maxPasses, charBudget);
-                break;
-            }
-
-            var totalChars = messages.Sum(m => AgentLoopRunner.EstimateMessageChars(m, imageCost, logger));
-            if (totalChars <= charBudget)
-                break;
-
-            int bestMsg = -1, bestContent = -1, bestLen = 0;
-            for (var i = 0; i < messages.Count; i++)
-            {
-                if (messages[i].Role != ChatRole.Tool) continue;
-                for (var j = 0; j < messages[i].Contents.Count; j++)
-                {
-                    if (messages[i].Contents[j] is FunctionResultContent frc)
-                    {
-                        var len = frc.Result?.ToString()?.Length ?? 0;
-                        if (len <= bestLen) continue;
-                        // Never re-stash an explicit working-memory retrieval — re-stashing
-                        // mints a fresh key on every pass and loops the model forever
-                        // re-fetching its own growing reference. See StashExemptTools.
-                        var toolName = ExtractToolNameForCallId(messages, frc.CallId);
-                        if (StashExemptTools.Contains(toolName))
-                            continue;
-                        if (SelfPagingTools.Contains(toolName) != selfPagingOnly)
-                            continue;
-                        bestMsg = i; bestContent = j; bestLen = len;
-                    }
-                }
-            }
-
-            if (bestMsg < 0)
-            {
-                if (!selfPagingOnly)
-                {
-                    selfPagingOnly = true;
-                    continue;
-                }
-                break;
-            }
-
-            var old = (FunctionResultContent)messages[bestMsg].Contents[bestContent];
-            var oldStr = old.Result?.ToString() ?? string.Empty;
-            var excess = totalChars - charBudget;
-
-            // No callId or no stash state → legacy head-only truncation. The model has no
-            // way to retrieve elided content (nothing registered), so the elision marker
-            // would only mislead.
-            if (stashState is null || string.IsNullOrEmpty(old.CallId))
-            {
-                // Clamp the slice length so the 200-char floor can never index past the
-                // end of a short result (which would throw).
-                var legacyTarget = Math.Min(oldStr.Length, Math.Max(200, oldStr.Length - excess - 60));
-                var legacyTrimmed = oldStr[..legacyTarget] + "\n[truncated to fit context window]";
-                if (legacyTrimmed.Length >= oldStr.Length)
-                {
-                    if (!selfPagingOnly && HasSelfPagingCandidate(messages))
-                    {
-                        // Nothing else can shrink; self-paging reads are the last resort.
-                        selfPagingOnly = true;
-                        continue;
-                    }
-                    logger.LogWarning(
-                        "Tool-result trim (legacy) cannot reach budget: total {Total:N0} > budget {Budget:N0} " +
-                        "chars, but the largest tool result ({Len:N0} chars) is already at the elision floor. " +
-                        "Stopping to avoid a non-terminating loop; context may still exceed the limit.",
-                        totalChars, charBudget, oldStr.Length);
-                    break;
-                }
-                messages[bestMsg].Contents[bestContent] =
-                    new FunctionResultContent(old.CallId, legacyTrimmed);
-                logger.LogInformation(
-                    "Trimmed tool result (no callId, legacy mode): {Before:N0} → {After:N0} chars",
-                    bestLen, legacyTrimmed.Length);
+            var (set, goal, passFloor) = passes[p];
+            if (totalChars <= goal)
                 continue;
-            }
 
-            var marker = AgentLoopRunner.BuildElisionMarker(old.CallId);
-            // Total surface = head + marker + tail. Budget the surface so the trimmed
-            // message ends up shorter than the original by at least the excess.
-            var surfaceBudget = Math.Max(200, oldStr.Length - excess - 60 - marker.Length);
-            if (surfaceBudget >= oldStr.Length) surfaceBudget = oldStr.Length - 1;
-            var headLen = (int)Math.Round(surfaceBudget * headRatio);
-            var tailLen = surfaceBudget - headLen;
-            if (headLen < 0) headLen = 0;
-            if (tailLen < 0) tailLen = 0;
-            if (headLen + tailLen >= oldStr.Length) headLen = Math.Max(0, oldStr.Length - tailLen - 1);
+            // Past the first pass, cutting is only worth it when it gets the context under budget.
+            // When content the trim can't touch (system prompt, tool schemas, working-memory
+            // retrievals) keeps it over budget regardless, the trim fires again on the next call
+            // anyway, and cutting old results further, or the result the model just asked for,
+            // saves little and loses the cache from the earliest rewritten message.
+            if (p > 0 && totalChars - Reclaimable(messages, set, passFloor) > charBudget)
+                continue;
 
-            var head = headLen > 0 ? oldStr[..headLen] : string.Empty;
-            var tail = tailLen > 0 ? oldStr[^tailLen..] : string.Empty;
-            var trimmed = string.Concat(head, "\n\n", marker, "\n\n", tail);
-
-            // No-progress guard: the largest tool result is already at/under the elision
-            // floor, so rewriting it (re-adding the marker) does not shrink it. Since we
-            // always pick the largest result, nothing smaller can reach the budget either.
-            if (trimmed.Length >= oldStr.Length)
+            foreach (var candidate in set)
             {
-                if (!selfPagingOnly && HasSelfPagingCandidate(messages))
+                if (totalChars <= goal)
+                    break;
+
+                var saved = await TrimOneAsync(
+                    messages, candidate, desiredReduction: totalChars - goal, passFloor,
+                    sessionId, stashState, workingMemory, headRatio, ttl, logger);
+                if (saved > 0)
                 {
-                    // Nothing else can shrink; self-paging reads are the last resort.
-                    selfPagingOnly = true;
-                    continue;
+                    totalChars -= saved;
+                    trimmedCount++;
                 }
-                logger.LogWarning(
-                    "Tool-result trim cannot reach budget: total {Total:N0} > budget {Budget:N0} chars, " +
-                    "but the largest tool result ({Len:N0} chars, call {CallId}) is already at the elision " +
-                    "floor. Stopping to avoid a non-terminating loop; context may still exceed the limit.",
-                    totalChars, charBudget, oldStr.Length, old.CallId);
-                break;
             }
+        }
 
-            // First trim of this callId: stash the full original and register the entry
-            // so the next RefreshStashRegistryContext call surfaces it.
-            if (!stashState.Registry.Contains(old.CallId))
-            {
-                var stashKey = AgentLoopRunner.BuildStashKey(sessionId, old.CallId);
-                try
-                {
-                    await workingMemory.SetAsync(
-                        stashKey, oldStr, ttl,
-                        category: "tool-result-stash",
-                        tags: ["stash", "tool-result"]);
-                }
-                catch (Exception ex)
-                {
-                    logger.LogWarning(ex,
-                        "Failed to stash original tool result for call {CallId}; trimming without stash",
-                        old.CallId);
-                }
-
-                stashState.ArgsSummaries.TryGetValue(old.CallId, out var argsSummary);
-                stashState.Registry.Add(new ToolResultStashRegistry.Entry(
-                    CallId: old.CallId,
-                    ToolName: ExtractToolNameForCallId(messages, old.CallId),
-                    ArgsSummary: argsSummary ?? "(args unavailable)",
-                    Key: stashKey));
-            }
-
-            messages[bestMsg].Contents[bestContent] = new FunctionResultContent(old.CallId, trimmed);
-
+        if (trimmedCount > 0)
+        {
             logger.LogInformation(
-                "Trimmed tool result for call {CallId}: {Before:N0} → {After:N0} chars (head {Head}, tail {Tail})",
-                old.CallId, bestLen, trimmed.Length, headLen, tailLen);
+                "Tool-result trim: {Before:N0} → {After:N0} chars across {Count} result(s) " +
+                "(budget {Budget:N0}, target {Target:N0})",
+                startChars, totalChars, trimmedCount, charBudget, targetBudget);
+        }
+
+        if (totalChars > charBudget)
+        {
+            // The trim runs before every tool call; once per run is enough to say it can't keep up.
+            var level = stashState is null || !stashState.BudgetUnreachableWarned ? LogLevel.Warning : LogLevel.Debug;
+            if (stashState is not null)
+                stashState.BudgetUnreachableWarned = true;
+            logger.Log(level,
+                "Tool-result trim cannot reach budget: total {Total:N0} > budget {Budget:N0} chars; the rest is " +
+                "content the trim doesn't cut (system prompt, tool schemas, working-memory retrievals) or results " +
+                "it won't cut further. Context may still exceed the limit.",
+                totalChars, charBudget);
         }
     }
 
-    /// <summary>
-    /// Whether any tool result in <paramref name="messages"/> came from a self-paging tool,
-    /// and so is still available to trim once everything else is at the elision floor.
-    /// </summary>
-    private static bool HasSelfPagingCandidate(List<ChatMessage> messages)
-    {
-        foreach (var msg in messages)
+    /// <summary>The most a pass could save by cutting every result in <paramref name="set"/> to <paramref name="floor"/>.</summary>
+    private static int Reclaimable(List<ChatMessage> messages, List<Candidate> set, int floor) =>
+        set.Sum(c =>
         {
-            if (msg.Role != ChatRole.Tool) continue;
-            foreach (var content in msg.Contents)
+            var len = (messages[c.MessageIndex].Contents[c.ContentIndex] as FunctionResultContent)?.Result?.ToString()?.Length ?? 0;
+            return Math.Max(0, len - floor);
+        });
+
+    private enum CandidateKind { Ordinary, LatestBatch, SelfPaging }
+
+    private sealed record Candidate(int MessageIndex, int ContentIndex, CandidateKind Kind);
+
+    /// <summary>
+    /// Trimmable tool results in message order (oldest first), classified. The latest batch is
+    /// the tool results after the assistant message that issued the most recent answered calls:
+    /// in the text loop that is the tail of the list, and inside the function-invoking loop's
+    /// pre-invoke hook it is the batch before the assistant turn now being executed.
+    /// </summary>
+    private static List<Candidate> CollectCandidates(List<ChatMessage> messages)
+    {
+        var lastTool = messages.FindLastIndex(m => m.Role == ChatRole.Tool);
+        var latestBatchStart = lastTool < 0
+            ? int.MaxValue
+            : messages.FindLastIndex(lastTool, m => m.Role == ChatRole.Assistant) + 1;
+
+        var candidates = new List<Candidate>();
+        for (var i = 0; i < messages.Count; i++)
+        {
+            if (messages[i].Role != ChatRole.Tool) continue;
+            for (var j = 0; j < messages[i].Contents.Count; j++)
             {
-                if (content is FunctionResultContent frc
-                    && SelfPagingTools.Contains(ExtractToolNameForCallId(messages, frc.CallId)))
-                {
-                    return true;
-                }
+                if (messages[i].Contents[j] is not FunctionResultContent frc) continue;
+                var toolName = ExtractToolNameForCallId(messages, frc.CallId);
+                // Never re-stash an explicit working-memory retrieval — re-stashing mints a
+                // fresh key on every pass and loops the model forever re-fetching its own
+                // growing reference. See StashExemptTools.
+                if (StashExemptTools.Contains(toolName)) continue;
+
+                var kind = SelfPagingTools.Contains(toolName) ? CandidateKind.SelfPaging
+                    : i >= latestBatchStart ? CandidateKind.LatestBatch
+                    : CandidateKind.Ordinary;
+                candidates.Add(new Candidate(i, j, kind));
             }
         }
-        return false;
+        return candidates;
+    }
+
+    /// <summary>
+    /// Cuts one tool result by up to <paramref name="desiredReduction"/> chars, never below
+    /// <paramref name="floor"/>. Returns the chars saved, or 0 when the result is already at the
+    /// floor and rewriting it would not shrink it.
+    /// </summary>
+    private static async Task<int> TrimOneAsync(
+        List<ChatMessage> messages,
+        Candidate candidate,
+        int desiredReduction,
+        int floor,
+        string? sessionId,
+        AgentLoopStashContext.State? stashState,
+        IWorkingMemory workingMemory,
+        double headRatio,
+        TimeSpan ttl,
+        ILogger logger)
+    {
+        var old = (FunctionResultContent)messages[candidate.MessageIndex].Contents[candidate.ContentIndex];
+        var oldStr = old.Result?.ToString() ?? string.Empty;
+        var desiredLen = Math.Max(floor, oldStr.Length - desiredReduction);
+        if (desiredLen >= oldStr.Length)
+            return 0;
+
+        // No callId or no stash state → legacy head-only truncation. The model has no way to
+        // retrieve elided content (nothing registered), so the elision marker would only mislead.
+        if (stashState is null || string.IsNullOrEmpty(old.CallId))
+        {
+            var keep = desiredLen - LegacySuffix.Length;
+            if (keep <= 0)
+                return 0;
+            var legacyTrimmed = oldStr[..keep] + LegacySuffix;
+            messages[candidate.MessageIndex].Contents[candidate.ContentIndex] =
+                new FunctionResultContent(old.CallId, legacyTrimmed);
+            logger.LogInformation(
+                "Trimmed tool result (no callId, legacy mode): {Before:N0} → {After:N0} chars",
+                oldStr.Length, legacyTrimmed.Length);
+            return oldStr.Length - legacyTrimmed.Length;
+        }
+
+        var marker = AgentLoopRunner.BuildElisionMarker(old.CallId);
+        // Total surface = head + "\n\n" + marker + "\n\n" + tail.
+        var surfaceBudget = desiredLen - marker.Length - 4;
+        if (surfaceBudget <= 0)
+            return 0;
+        var headLen = (int)Math.Round(surfaceBudget * headRatio);
+        var tailLen = surfaceBudget - headLen;
+
+        var head = headLen > 0 ? oldStr[..headLen] : string.Empty;
+        var tail = tailLen > 0 ? oldStr[^tailLen..] : string.Empty;
+        var trimmed = string.Concat(head, "\n\n", marker, "\n\n", tail);
+        if (trimmed.Length >= oldStr.Length)
+            return 0;
+
+        // First trim of this callId: stash the full original and register the entry so the
+        // next stash-registry update surfaces its key.
+        if (!stashState.Registry.Contains(old.CallId))
+        {
+            var stashKey = AgentLoopRunner.BuildStashKey(sessionId, old.CallId);
+            try
+            {
+                await workingMemory.SetAsync(
+                    stashKey, oldStr, ttl,
+                    category: "tool-result-stash",
+                    tags: ["stash", "tool-result"]);
+            }
+            catch (Exception ex)
+            {
+                logger.LogWarning(ex,
+                    "Failed to stash original tool result for call {CallId}; trimming without stash",
+                    old.CallId);
+            }
+
+            stashState.ArgsSummaries.TryGetValue(old.CallId, out var argsSummary);
+            stashState.Registry.Add(new ToolResultStashRegistry.Entry(
+                CallId: old.CallId,
+                ToolName: ExtractToolNameForCallId(messages, old.CallId),
+                ArgsSummary: argsSummary ?? "(args unavailable)",
+                Key: stashKey));
+        }
+
+        messages[candidate.MessageIndex].Contents[candidate.ContentIndex] =
+            new FunctionResultContent(old.CallId, trimmed);
+
+        logger.LogInformation(
+            "Trimmed tool result for call {CallId}: {Before:N0} → {After:N0} chars (head {Head}, tail {Tail})",
+            old.CallId, oldStr.Length, trimmed.Length, headLen, tailLen);
+        return oldStr.Length - trimmed.Length;
     }
 
     /// <summary>

@@ -179,10 +179,10 @@ public class AgentLoopRunnerTrimStashTests
     }
 
     [TestMethod]
-    public void RefreshStashRegistryContext_InsertsSystemMessageWithKey()
+    public void AppendStashRegistryDelta_FirstEntry_AppendsNoteWithKeyAtTail()
     {
-        var registry = new ToolResultStashRegistry();
-        registry.Add(new ToolResultStashRegistry.Entry(
+        var state = new AgentLoopStashContext.State { SessionId = "sess-1" };
+        state.Registry.Add(new ToolResultStashRegistry.Entry(
             "call-1", "fetch_url", "url=https://example.com", "stash/sess-1/call-1"));
 
         var messages = new List<ChatMessage>
@@ -191,56 +191,111 @@ public class AgentLoopRunnerTrimStashTests
             new(ChatRole.User, "do the thing"),
         };
 
-        AgentLoopRunner.RefreshStashRegistryContext(messages, registry);
+        AgentLoopRunner.AppendStashRegistryDelta(messages, state);
 
-        var stashMsg = messages.FirstOrDefault(m =>
-            m.Role == ChatRole.System &&
-            m.Text?.StartsWith(StashRegistryMarker, StringComparison.Ordinal) == true);
-        Assert.IsNotNull(stashMsg, "A system message starting with the stash registry marker must be inserted.");
-        StringAssert.Contains(stashMsg!.Text!, "id=call-1");
-        StringAssert.Contains(stashMsg!.Text!, "tool=fetch_url");
-        StringAssert.Contains(stashMsg!.Text!, "key=stash/sess-1/call-1");
-        StringAssert.Contains(stashMsg!.Text!, "get_from_working_memory",
+        Assert.AreEqual(3, messages.Count);
+        var stashMsg = messages[^1];
+        Assert.AreEqual(ChatRole.System, stashMsg.Role);
+        Assert.IsTrue(stashMsg.Text!.StartsWith(StashRegistryMarker, StringComparison.Ordinal),
+            "The note goes at the end of the conversation, not ahead of the user message (#710).");
+        StringAssert.Contains(stashMsg.Text!, "id=call-1");
+        StringAssert.Contains(stashMsg.Text!, "tool=fetch_url");
+        StringAssert.Contains(stashMsg.Text!, "key=stash/sess-1/call-1");
+        StringAssert.Contains(stashMsg.Text!, "get_from_working_memory",
             "Message must instruct the model how to retrieve the elided content.");
     }
 
     [TestMethod]
-    public void RefreshStashRegistryContext_EmptyRegistry_RemovesExistingMessage()
+    public void AppendStashRegistryDelta_NoNewEntries_AppendsNothing()
     {
-        var messages = new List<ChatMessage>
-        {
-            new(ChatRole.System, "preamble"),
-            new(ChatRole.System, $"{StashRegistryMarker} stale content"),
-            new(ChatRole.User, "do the thing"),
-        };
+        var state = new AgentLoopStashContext.State();
+        state.Registry.Add(new ToolResultStashRegistry.Entry("c1", "t", "args", "stash/_/c1"));
+        var messages = new List<ChatMessage> { new(ChatRole.System, "preamble"), new(ChatRole.User, "do it") };
 
-        AgentLoopRunner.RefreshStashRegistryContext(messages, new ToolResultStashRegistry());
+        AgentLoopRunner.AppendStashRegistryDelta(messages, state);
+        AgentLoopRunner.AppendStashRegistryDelta(messages, state);
+        AgentLoopRunner.AppendStashRegistryDelta(messages, new AgentLoopStashContext.State());
 
-        Assert.IsFalse(messages.Any(m =>
-            m.Text?.StartsWith(StashRegistryMarker, StringComparison.Ordinal) == true),
-            "Empty registry must clear the existing stash-registry system message.");
+        Assert.AreEqual(1, messages.Count(m => m.Text?.StartsWith(StashRegistryMarker, StringComparison.Ordinal) == true),
+            "An unchanged registry adds no further note; an empty one adds none at all.");
     }
 
     [TestMethod]
-    public void RefreshStashRegistryContext_ExistingMessage_IsReplacedNotDuplicated()
+    public void AppendStashRegistryDelta_NewEntry_AppendsOnlyIt_AndLeavesTheEarlierNoteUntouched()
     {
-        var registry = new ToolResultStashRegistry();
-        registry.Add(new ToolResultStashRegistry.Entry("c1", "t", "args", "stash/_/c1"));
+        var state = new AgentLoopStashContext.State();
+        state.Registry.Add(new ToolResultStashRegistry.Entry("c1", "t", "args", "stash/_/c1"));
+        var messages = new List<ChatMessage> { new(ChatRole.System, "preamble"), new(ChatRole.User, "do it") };
+        AgentLoopRunner.AppendStashRegistryDelta(messages, state);
+        var firstNote = messages[^1];
+        var firstText = firstNote.Text;
+        messages.Add(new ChatMessage(ChatRole.Assistant, "working"));
 
-        var messages = new List<ChatMessage>
+        state.Registry.Add(new ToolResultStashRegistry.Entry("c2", "t", "args", "stash/_/c2"));
+        AgentLoopRunner.AppendStashRegistryDelta(messages, state);
+
+        Assert.AreSame(firstNote, messages[2], "The earlier note keeps its position and instance.");
+        Assert.AreEqual(firstText, messages[2].Text, "The earlier note's text is not rewritten.");
+        var delta = messages[^1].Text!;
+        StringAssert.StartsWith(delta, StashRegistryMarker);
+        StringAssert.Contains(delta, "key=stash/_/c2");
+        Assert.IsFalse(delta.Contains("key=stash/_/c1"), "The delta lists only entries no earlier note listed.");
+    }
+
+    [TestMethod]
+    public void TakeTaskListUpdate_RendersOnlyOnChange()
+    {
+        var taskList = new AgentTaskList();
+        Assert.IsNull(ContextNotes.TakeTaskListUpdate(taskList), "An empty list that was never shown adds nothing.");
+
+        taskList.CreateOrReplace(["first step"]);
+        var first = ContextNotes.TakeTaskListUpdate(taskList);
+        Assert.IsNotNull(first);
+        StringAssert.Contains(first.Text, "first step");
+        Assert.IsNull(ContextNotes.TakeTaskListUpdate(taskList), "An unchanged list adds no note.");
+
+        taskList.CreateOrReplace(["first step", "second step"]);
+        var second = ContextNotes.TakeTaskListUpdate(taskList);
+        Assert.IsNotNull(second);
+        StringAssert.Contains(second.Text, "second step");
+        StringAssert.Contains(second.Text, "supersedes");
+    }
+
+    [TestMethod]
+    public void SplicePlacedNotes_InsertsEachNoteAfterItsAnchor_InPlacementOrder()
+    {
+        var system = new ChatMessage(ChatRole.System, "preamble");
+        var user = new ChatMessage(ChatRole.User, "do it");
+        var call = BuildAssistantWithCall("fetch_url", "call-1");
+        var result = new ChatMessage(ChatRole.Tool, [new FunctionResultContent("call-1", "ok")]);
+        var reply = new ChatMessage(ChatRole.Assistant, "done");
+        var noteA = new ChatMessage(ChatRole.System, "[stash-registry] a");
+        var noteB = new ChatMessage(ChatRole.System, "[stash-registry] b");
+        var noteC = new ChatMessage(ChatRole.System, "[stash-registry] c");
+
+        var state = new AgentLoopStashContext.State();
+        state.PlacedNotes.Add(new ContextNotes.Placed(user, noteA));
+        state.PlacedNotes.Add(new ContextNotes.Placed(result, noteB));
+        state.PlacedNotes.Add(new ContextNotes.Placed(result, noteC));
+        var messages = new List<ChatMessage> { system, user, call, result, reply };
+
+        AgentLoopRunner.SplicePlacedNotes(messages, state);
+
+        CollectionAssert.AreEqual(new[] { system, user, noteA, call, result, noteB, noteC, reply }, messages);
+        Assert.AreEqual(0, state.PlacedNotes.Count, "Spliced notes are forgotten.");
+    }
+
+    [TestMethod]
+    public void ResolveToolResultStashWatermarkTokens_UsesTheTierOverride_ElseTheGlobalValue()
+    {
+        var options = new AgentHostOptions
         {
-            new(ChatRole.System, "preamble"),
-            new(ChatRole.System, $"{StashRegistryMarker} stale"),
-            new(ChatRole.User, "do it"),
+            ToolResultStashWatermarkTokens = 30_000,
+            ToolResultStashWatermarkTokensByTier = { [ModelTier.High] = 120_000 },
         };
 
-        AgentLoopRunner.RefreshStashRegistryContext(messages, registry);
-        AgentLoopRunner.RefreshStashRegistryContext(messages, registry);
-
-        var count = messages.Count(m =>
-            m.Role == ChatRole.System &&
-            m.Text?.StartsWith(StashRegistryMarker, StringComparison.Ordinal) == true);
-        Assert.AreEqual(1, count, "Refresh must replace in place, never duplicate.");
+        Assert.AreEqual(120_000, options.ResolveToolResultStashWatermarkTokens(ModelTier.High));
+        Assert.AreEqual(30_000, options.ResolveToolResultStashWatermarkTokens(ModelTier.Balanced));
     }
 
     [TestMethod]
@@ -322,7 +377,8 @@ public class AgentLoopRunnerTrimStashTests
             new(ChatRole.Tool, [new FunctionResultContent("call-norm", biggerNormal)]),
         };
 
-        await runner.TrimLargeToolResultsAsync(messages, maxTokens: 200, "sess-1", stashState);
+        // ≈5,000-char budget: reachable by cutting the normal result alone.
+        await runner.TrimLargeToolResultsAsync(messages, maxTokens: 1_400, "sess-1", stashState);
 
         var retrieval = (FunctionResultContent)messages[3].Contents[0];
         Assert.AreEqual(bigRetrieval, retrieval.Result?.ToString(),
@@ -335,6 +391,96 @@ public class AgentLoopRunnerTrimStashTests
         Assert.AreEqual(1, stashState.Registry.Snapshot().Count,
             "Only the normal result should be stashed.");
         Assert.AreEqual("call-norm", stashState.Registry.Snapshot()[0].CallId);
+    }
+
+    [TestMethod]
+    [Timeout(10_000)]
+    public async Task Trim_OverBudget_CutsOldestFirstToTheTarget_AndSparesTheLatestBatch()
+    {
+        var wm = new TestWorkingMemory();
+        var runner = NewRunner(wm);
+        var stashState = new AgentLoopStashContext.State { SessionId = "sess-1" };
+        var messages = new List<ChatMessage> { new(ChatRole.System, "system prompt"), new(ChatRole.User, "go") };
+        for (var i = 1; i <= 5; i++)
+        {
+            messages.Add(BuildAssistantWithCall("fetch_url", $"call-{i}"));
+            messages.Add(new ChatMessage(ChatRole.Tool, [new FunctionResultContent($"call-{i}", new string((char)('a' + i), 3_000))]));
+        }
+
+        // Budget ~ 3,334 x 4 x 0.9 ~ 12,000 chars; the five results (~15,000) cross it. The target
+        // is half the budget, so the trim keeps going well past the budget, oldest first.
+        await runner.TrimLargeToolResultsAsync(messages, maxTokens: 3_334, "sess-1", stashState);
+
+        for (var i = 1; i <= 4; i++)
+        {
+            var older = ((FunctionResultContent)messages[2 * i + 1].Contents[0]).Result!.ToString()!;
+            StringAssert.Contains(older, ElisionMarkerPrefix, $"call-{i} is older and gives up its space.");
+            Assert.IsTrue(older.Length <= ToolResultTrimmer.DefaultFloorChars, $"call-{i} is cut to the floor, not just enough.");
+        }
+        var latest = ((FunctionResultContent)messages[^1].Contents[0]).Result!.ToString()!;
+        Assert.AreEqual(3_000, latest.Length, "The latest batch is spared while older results can reach the target.");
+        Assert.AreEqual(4, stashState.Registry.Snapshot().Count);
+    }
+
+    [TestMethod]
+    [Timeout(10_000)]
+    public async Task Trim_AfterAStepDown_LeavesHistoryAloneUntilTheBudgetIsCrossedAgain()
+    {
+        // The point of the step down (#710): the iterations that follow append onto an
+        // unchanged prefix, so the provider's prompt cache keeps hitting.
+        var wm = new TestWorkingMemory();
+        var runner = NewRunner(wm);
+        var stashState = new AgentLoopStashContext.State { SessionId = "sess-1" };
+        var messages = new List<ChatMessage> { new(ChatRole.System, "system prompt"), new(ChatRole.User, "go") };
+        var trims = 0;
+        for (var i = 1; i <= 30; i++)
+        {
+            messages.Add(BuildAssistantWithCall("fetch_url", $"call-{i}"));
+            messages.Add(new ChatMessage(ChatRole.Tool, [new FunctionResultContent($"call-{i}", new string('x', 1_500))]));
+
+            var before = messages.SelectMany(m => m.Contents).ToList();
+            await runner.TrimLargeToolResultsAsync(messages, maxTokens: 3_334, "sess-1", stashState);
+            var after = messages.SelectMany(m => m.Contents).ToList();
+            if (!before.SequenceEqual(after))
+                trims++;
+        }
+
+        // The budget is first crossed around iteration 8; trimming every iteration from there
+        // would be ~22 trims. Stepping down to half the budget leaves room for several appends.
+        Assert.IsTrue(trims is > 0 and <= 7,
+            $"Thirty 1,500-char results against a 12,000-char budget should trim in a few large steps, not {trims}.");
+    }
+
+    [TestMethod]
+    [Timeout(10_000)]
+    public async Task Trim_WhenUntrimmableContentKeepsItOverBudget_LeavesFloorSizedHistoryAlone()
+    {
+        // Live run, #710: dozens of working-memory retrievals (never trimmed) kept the context far
+        // over budget, so the target was out of reach and every trim dragged the oldest results from
+        // the floor to 200 chars, rewriting the start of the loop and losing the whole cache.
+        var wm = new TestWorkingMemory();
+        var runner = NewRunner(wm);
+        var stashState = new AgentLoopStashContext.State { SessionId = "sess-1" };
+        var messages = new List<ChatMessage> { new(ChatRole.System, "system prompt"), new(ChatRole.User, "go") };
+        for (var i = 1; i <= 4; i++)
+        {
+            messages.Add(BuildAssistantWithCall("fetch_url", $"old-{i}"));
+            messages.Add(new ChatMessage(ChatRole.Tool, [new FunctionResultContent($"old-{i}", new string('o', 950))]));
+        }
+        messages.Add(BuildAssistantWithCall("get_from_working_memory", "ret-1"));
+        messages.Add(new ChatMessage(ChatRole.Tool, [new FunctionResultContent("ret-1", new string('r', 40_000))]));
+        messages.Add(BuildAssistantWithCall("fetch_url", "new-1"));
+        messages.Add(new ChatMessage(ChatRole.Tool, [new FunctionResultContent("new-1", new string('n', 3_000))]));
+
+        var olderBefore = messages.Take(10).SelectMany(m => m.Contents).ToList();
+
+        // ~12,000-char budget, unreachable: the retrieval alone is 40,000.
+        await runner.TrimLargeToolResultsAsync(messages, maxTokens: 3_334, "sess-1", stashState);
+
+        CollectionAssert.AreEqual(olderBefore, messages.Take(10).SelectMany(m => m.Contents).ToList(),
+            "Results already at the floor stay as they are when cutting them further can't reach the goal.");
+        Assert.AreEqual(3_000, ((FunctionResultContent)messages[^1].Contents[0]).Result!.ToString()!.Length,
+            "The latest batch isn't cut for a budget it can't meet.");
     }
 
     [TestMethod]
