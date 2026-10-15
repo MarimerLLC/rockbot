@@ -1679,6 +1679,22 @@ public sealed partial class AgentLoopRunner(
                 toolActivity?.SetTag("rockbot.tool.name", fc.Name);
                 var toolSw = Stopwatch.StartNew();
                 var toolStatus = "ok";
+
+                // As the text-parsed branch does: the in-flight trail, and the tool-call count the
+                // tool-list guard reads to tell a loader's activation from an unrequested one (#712).
+                if (LoopDiagnosticsContext.Value is { } diagNativePre)
+                {
+                    diagNativePre.ToolCalls++;
+                    diagNativePre.LastToolName = fc.Name;
+                    diagNativePre.LastToolArguments = argsSummary is { Length: > 500 }
+                        ? argsSummary[..500] + "…"
+                        : argsSummary;
+                    diagNativePre.LastToolStartedAt = DateTimeOffset.UtcNow;
+                    diagNativePre.LastToolCompletedAt = null;
+                    diagNativePre.LastToolResult = null;
+                    diagNativePre.LastToolStatus = "in-flight";
+                }
+
                 TierEscalationContext.Value?.ObserveToolCall(fc.Name, fc.Arguments);
                 object? result;
                 var nativeOutcome = new ToolCallOutcome(); // #686, see RockBotFunctionInvokingChatClient
@@ -1729,6 +1745,14 @@ public sealed partial class AgentLoopRunner(
                 ToolDiagnostics.Invocations.Add(1,
                     new KeyValuePair<string, object?>("rockbot.tool.name", fc.Name),
                     new KeyValuePair<string, object?>("rockbot.tool.status", toolStatus));
+                if (LoopDiagnosticsContext.Value is { } diagNativePost)
+                {
+                    diagNativePost.LastToolCompletedAt = DateTimeOffset.UtcNow;
+                    diagNativePost.LastToolStatus = toolStatus;
+                    diagNativePost.LastToolResult = nativeResultStr is { Length: > 500 }
+                        ? nativeResultStr[..500] + "…"
+                        : nativeResultStr;
+                }
                 LoopToolCallLedgerContext.Value?.Record(
                     fc.Name, TruncateLedgerArgs(argsSummary),
                     succeeded: toolStatus == "ok"

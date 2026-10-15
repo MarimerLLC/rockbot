@@ -377,6 +377,58 @@ public class RequestAccountingTests
     }
 
     [TestMethod]
+    public async Task TextBasedLoop_StructuredLoaderCall_NextRequestIsRequested()
+    {
+        // The manual loop also dispatches structured FunctionCallContent. That branch must count the
+        // call, or a loader's activation reads as unrequested on the next request (#712 review).
+        var changes = new List<string>();
+        using var listener = new System.Diagnostics.Metrics.MeterListener();
+        listener.InstrumentPublished = (instrument, l) =>
+        {
+            if (ReferenceEquals(instrument, HostDiagnostics.LlmRequestToolListChanges))
+                l.EnableMeasurementEvents(instrument);
+        };
+        listener.SetMeasurementEventCallback<long>((_, _, tags, _) =>
+        {
+            foreach (var tag in tags)
+            {
+                if (tag.Key == "rockbot.tool_list.change")
+                    lock (changes) changes.Add((string)tag.Value!);
+            }
+        });
+        listener.Start();
+
+        var options = new ChatOptions();
+        var activated = AIFunctionFactory.Create(() => "events", "cal__get_events");
+        options.Tools =
+        [
+            AIFunctionFactory.Create((string? query = null) =>
+            {
+                options.Tools!.Add(activated); // what a loader's activation does
+                return "cal__get_events is now callable";
+            }, "mcp_find_tools"),
+        ];
+
+        var logger = new CapturingLogger<RequestAccountingChatClient>();
+        var model = new RequestAccountingChatClient(
+            new ConsequentialActionGateTests.ToolThenTextChatClient(
+                new FunctionCallContent("call-1", "mcp_find_tools", new Dictionary<string, object?> { ["query"] = "calendar" }),
+                "Reply."),
+            logger, "Balanced");
+        var diagnostics = new LoopDiagnostics();
+        var runner = ConsequentialActionGateTests.CreateRunner(model, textBased: true, new AgentHostOptions());
+
+        await runner.RunAsync(ConsequentialActionGateTests.Conversation("What's on my calendar?"), options, "s1",
+            enableFollowUp: false, enableCompletionEval: false, diagnostics: diagnostics,
+            cancellationToken: CancellationToken.None);
+
+        Assert.AreEqual(1, diagnostics.ToolCalls);
+        Assert.AreEqual("mcp_find_tools", diagnostics.LastToolName);
+        CollectionAssert.AreEqual(new[] { "requested" }, changes);
+        Assert.IsFalse(WarnedOfCacheMiss(logger));
+    }
+
+    [TestMethod]
     public async Task Client_UnchangedList_RecordsNothing()
     {
         var (changes, logger) = await RunRequests(async (sut, _) =>
