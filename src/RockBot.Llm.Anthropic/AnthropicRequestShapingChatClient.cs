@@ -99,7 +99,7 @@ internal sealed class AnthropicRequestShapingChatClient : DelegatingChatClient
     /// <summary>
     /// Puts a cache breakpoint on the last block of the leading system prompt. The automatic
     /// breakpoint follows the conversation tail, so anything that rewrites earlier history
-    /// (tool-result trimming) leaves it nothing to hit; this one keeps the tools and system
+    /// (a watermark trim of tool results, rare since #710) leaves it nothing to hit; this one keeps the tools and system
     /// prompt cached across those rewrites. The marked content is a copy, so the caller's
     /// history is untouched.
     /// </summary>

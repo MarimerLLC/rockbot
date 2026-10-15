@@ -15,7 +15,8 @@ namespace RockBot.Host;
 /// <see cref="AgentLoopRunner"/> previously provided for native tool-calling models:
 /// progress notifications, consecutive timeout detection, and context overflow recovery.
 /// Its inner client is wrapped in <see cref="TypedToolSurfaceChatClient"/>, so typed tools a
-/// session activates mid-loop are offered, and callable, on the loop's next iteration.
+/// session activates mid-loop are offered, and callable, on the loop's next iteration, and in
+/// <see cref="ContextNoteChatClient"/>, so stash-registry notes join each request append-only.
 /// </summary>
 public class RockBotFunctionInvokingChatClient : FunctionInvokingChatClient
 {
@@ -43,7 +44,7 @@ public class RockBotFunctionInvokingChatClient : FunctionInvokingChatClient
         IWorkingMemory workingMemory,
         IOptions<AgentHostOptions> hostOptions,
         ILogger logger,
-        IncompleteReplyCheck? incompleteCheck = null) : base(new TypedToolSurfaceChatClient(innerClient))
+        IncompleteReplyCheck? incompleteCheck = null) : base(new TypedToolSurfaceChatClient(new ContextNoteChatClient(innerClient)))
     {
         _incompleteCheck = incompleteCheck ?? new IncompleteReplyCheck();
         _progressNotifier = progressNotifier;
@@ -134,16 +135,16 @@ public class RockBotFunctionInvokingChatClient : FunctionInvokingChatClient
         // The 'pre-invoke' point is the right hook because (N-1) prior tool results have
         // already been appended to context.Messages by this point — we trim the tail
         // accumulated so far before letting FICC append yet another large result.
+        // Any stash entries it adds are rendered by ContextNoteChatClient before the next
+        // request: a message added here would split this assistant turn from its results.
         if (context.Messages is List<ChatMessage> trimList
-            && _hostOptions.Value.ToolResultStashWatermarkTokens is int watermarkTokens
+            && WatermarkTokens is int watermarkTokens
             and > 0)
         {
             int effectiveLimit = _knownContextLimit is int hardLimit
                 ? Math.Min(watermarkTokens, hardLimit)
                 : watermarkTokens;
             await TrimLargeToolResultsAsync(trimList, effectiveLimit);
-            if (AgentLoopStashContext.Value is { } stashStateInner)
-                AgentLoopRunner.RefreshStashRegistryContext(trimList, stashStateInner.Registry);
         }
 
         using var activity = ToolDiagnostics.Source.StartActivity(
@@ -321,20 +322,10 @@ public class RockBotFunctionInvokingChatClient : FunctionInvokingChatClient
                 _hostOptions.Value.ToolResultStashHeadTailRatio,
                 ttl,
                 _logger);
+            // The new stash key reaches the model through ContextNoteChatClient, which adds a
+            // registry note to the next request.
             if (!ReferenceEquals(capped, resultStr))
-            {
                 result = capped;
-                // Refresh the stash registry system message so the next LLM round-trip
-                // can see (and instruct the model to use) the new stash key. FICC won't
-                // re-enter our pre-invoke hook before posting the current tool result
-                // back to the model, so this is the right place to do it.
-                if (context.Messages is List<ChatMessage> registryMessages
-                    && AgentLoopStashContext.Value is { } stashStateForRegistry)
-                {
-                    AgentLoopRunner.RefreshStashRegistryContext(
-                        registryMessages, stashStateForRegistry.Registry);
-                }
-            }
         }
 
         ToolDiagnostics.InvokeDuration.Record(sw.Elapsed.TotalMilliseconds,
@@ -407,7 +398,7 @@ public class RockBotFunctionInvokingChatClient : FunctionInvokingChatClient
         // ToolResultStashWatermarkTokens, without waiting for a provider 400.
         // Falls back to _knownContextLimit when the watermark is disabled or larger
         // than the learned hard limit. (issue: context-bloat investigation)
-        var watermark = _hostOptions.Value.ToolResultStashWatermarkTokens;
+        var watermark = WatermarkTokens;
         int? effectiveLimit = (watermark, _knownContextLimit) switch
         {
             (> 0, int hard) => Math.Min(watermark, hard),
@@ -548,8 +539,17 @@ public class RockBotFunctionInvokingChatClient : FunctionInvokingChatClient
             _hostOptions.Value.ToolResultStashHeadTailRatio,
             _hostOptions.Value.ToolResultStashTtlMinutes,
             _logger,
-            _hostOptions.Value.ImageCost);
+            _hostOptions.Value.ImageCost,
+            _hostOptions.Value.ToolResultStashTrimTargetRatio,
+            _hostOptions.Value.ToolResultTrimFloorChars);
     }
+
+    /// <summary>
+    /// The watermark for the run in progress: the tier-resolved value
+    /// <see cref="AgentLoopRunner"/> put on the stash state, else the global option.
+    /// </summary>
+    private int WatermarkTokens =>
+        AgentLoopStashContext.Value?.WatermarkTokens ?? _hostOptions.Value.ToolResultStashWatermarkTokens;
 
     /// <summary>
     /// Removes <see cref="FunctionCallContent"/> entries whose CallId has no matching

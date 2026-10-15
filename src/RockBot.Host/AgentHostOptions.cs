@@ -343,6 +343,39 @@ public sealed class AgentHostOptions
     public int ToolResultStashWatermarkTokens { get; set; } = 30_000;
 
     /// <summary>
+    /// Per-tier override of <see cref="ToolResultStashWatermarkTokens"/>, for tiers whose
+    /// models have far larger context windows than the global default assumes. A tier with
+    /// no entry uses the global value. Env:
+    /// <c>AgentHost__ToolResultStashWatermarkTokensByTier__High=120000</c>.
+    /// </summary>
+    public Dictionary<ModelTier, int> ToolResultStashWatermarkTokensByTier { get; set; } = [];
+
+    /// <summary>
+    /// Once the watermark trim fires, it keeps cutting until the context is down to this
+    /// fraction of the watermark (#710). Each trim rewrites history the provider has cached,
+    /// so it is done in one large step rather than a little on every iteration: the loop then
+    /// appends onto an unchanged, cached prefix until the watermark is crossed again. Default
+    /// 0.5. 1.0 restores trim-just-enough. Clamped to [0.05, 1.0] at use time.
+    /// </summary>
+    public double ToolResultStashTrimTargetRatio { get; set; } = 0.5;
+
+    /// <summary>
+    /// Size, in characters, that the watermark trim cuts an older tool result down to while
+    /// working toward <see cref="ToolResultStashTrimTargetRatio"/>. Results can go below it
+    /// (to 200 chars) only when the hard budget can't be met otherwise. Default 1,000.
+    /// </summary>
+    public int ToolResultTrimFloorChars { get; set; } = ToolResultTrimmer.DefaultFloorChars;
+
+    /// <summary>
+    /// The watermark in effect for <paramref name="tier"/>: its
+    /// <see cref="ToolResultStashWatermarkTokensByTier"/> entry, else the global value.
+    /// </summary>
+    public int ResolveToolResultStashWatermarkTokens(ModelTier tier) =>
+        ToolResultStashWatermarkTokensByTier.TryGetValue(tier, out var tokens)
+            ? tokens
+            : ToolResultStashWatermarkTokens;
+
+    /// <summary>
     /// Per-tool-result hard cap in characters. Any single tool result longer than this
     /// is immediately stashed in working memory and replaced in-context with a
     /// head + elision marker + tail surface (same mechanism as the watermark trimmer,

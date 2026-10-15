@@ -576,8 +576,8 @@ public sealed partial class AgentLoopRunner(
             InjectReasoningScaffolding(chatMessages);
 
         // Per-run task list (issue #336): in-memory plan that survives context trimming
-        // because RefreshTaskListContext rebuilds the system message from this state on
-        // each iteration. Built fresh per RunAsync — not persisted, not shared.
+        // because a task-list note is re-rendered from this state whenever it changes.
+        // Built fresh per RunAsync — not persisted, not shared.
         // Workers skip the task-list tools too — a leaf gather task does not need a
         // TODO list, and removing the tools shrinks the schema injection cost.
         var taskList = new AgentTaskList();
@@ -984,19 +984,22 @@ public sealed partial class AgentLoopRunner(
             "Tool execution path: NATIVE (M.E.AI FunctionInvokingChatClient) — {MessageCount} messages in context",
             chatMessages.Count);
 
-        // Refresh the task-list system message from the in-memory state. The native
-        // path does not expose a per-iteration hook (FunctionInvokingChatClient owns
-        // the inner loop), so this is a once-per-request snapshot. Within the inner
-        // loop the model still sees task_create/task_update tool results as it goes —
-        // the system message just doesn't track those updates until the next request.
-        RefreshTaskListContext(chatMessages, taskList);
+        // Task-list note from the in-memory state. The native path does not expose a
+        // per-iteration hook (FunctionInvokingChatClient owns the inner loop), so this is a
+        // once-per-pass snapshot. Within the inner loop the model still sees task_create /
+        // task_update tool results as it goes. Appended, never rewritten (#710).
+        AppendNote(chatMessages, ContextNotes.TakeTaskListUpdate(taskList));
 
-        // Refresh the stash registry system message from the per-run state. Same
-        // once-per-request limitation as the task list: any tool result the FICC's
-        // internal loop trims and stashes will only surface in the registry message
-        // on the next outer GetResponseAsync — acceptable in v1 (issue #337).
-        if (AgentLoopStashContext.Value is { } stashStateNative)
-            RefreshStashRegistryContext(chatMessages, stashStateNative.Registry);
+        // Stash-registry entries from an earlier pass that no note lists yet. Entries the
+        // inner loop adds are rendered by ContextNoteChatClient before its next request.
+        var stashStateNative = AgentLoopStashContext.Value;
+        if (stashStateNative is not null)
+        {
+            AppendStashRegistryDelta(chatMessages, stashStateNative);
+            stashStateNative.NoteRoot = chatMessages.Count > 0 ? chatMessages[0] : null;
+            stashStateNative.WatermarkTokens = hostOptions.Value.ResolveToolResultStashWatermarkTokens(
+                TierEscalationContext.EffectiveTier(tier));
+        }
 
         // If there's a pre-fetched first response with tool calls, add it to history
         // and let the middleware continue from there.
@@ -1032,6 +1035,11 @@ public sealed partial class AgentLoopRunner(
 
         // Append response messages to chatMessages so re-prompts have full tool-call history.
         chatMessages.AddRange(response.Messages);
+
+        // Notes the inner loop placed go into the same positions the provider saw them in, so
+        // a re-prompt or follow-up pass sends a prefix the provider has already cached (#710).
+        if (stashStateNative is not null)
+            SplicePlacedNotes(chatMessages, stashStateNative);
 
         LogContextBreakdown(chatMessages, "native-exit", sessionId, logger, hostOptions.Value.ImageCost);
         // native-exit size approximates the largest in-loop context: it includes the
@@ -1216,8 +1224,6 @@ public sealed partial class AgentLoopRunner(
         chatMessages.Insert(insertAt, new ChatMessage(ChatRole.System, text).Tag(ContextCategory.Scaffolding));
     }
 
-    private const string TaskListMarker = "Current task list:";
-
     /// <summary>
     /// Adds the per-run task-list tools (<c>task_create</c>, <c>task_update</c>) to
     /// <paramref name="chatOptions"/>. Initialises <see cref="ChatOptions.Tools"/> if null.
@@ -1229,58 +1235,11 @@ public sealed partial class AgentLoopRunner(
             chatOptions.Tools.Add(tool);
     }
 
-    /// <summary>
-    /// Re-renders the per-run task list (<paramref name="taskList"/>) into a system
-    /// message inside <paramref name="chatMessages"/>. Idempotent: replaces an existing
-    /// task-list system message if present, otherwise inserts one just before the final
-    /// user message for recency. Removes the message entirely when the list is empty.
-    /// Issue #336: the rendering is rebuilt from in-memory state on every call, so the
-    /// current plan is always visible to the model even after older task_create /
-    /// task_update tool results have been trimmed by <see cref="TrimLargeToolResults"/>.
-    /// </summary>
-    private static void RefreshTaskListContext(List<ChatMessage> chatMessages, AgentTaskList taskList)
+    /// <summary>Appends <paramref name="note"/> to the conversation when there is one.</summary>
+    private static void AppendNote(List<ChatMessage> chatMessages, ChatMessage? note)
     {
-        var existingIndex = -1;
-        for (var i = 0; i < chatMessages.Count; i++)
-        {
-            if (chatMessages[i].Role == ChatRole.System &&
-                chatMessages[i].Text?.StartsWith(TaskListMarker) == true)
-            {
-                existingIndex = i;
-                break;
-            }
-        }
-
-        if (taskList.IsEmpty)
-        {
-            if (existingIndex >= 0)
-                chatMessages.RemoveAt(existingIndex);
-            return;
-        }
-
-        var sb = new StringBuilder();
-        sb.AppendLine(TaskListMarker);
-        foreach (var item in taskList.Snapshot())
-            sb.AppendLine($"  {item.Id}. [{item.Status}] {item.Description}");
-        var text = sb.ToString().TrimEnd();
-
-        var msg = new ChatMessage(ChatRole.System, text).Tag(ContextCategory.TaskList);
-        if (existingIndex >= 0)
-        {
-            chatMessages[existingIndex] = msg;
-            return;
-        }
-
-        var insertAt = chatMessages.Count;
-        for (var i = chatMessages.Count - 1; i >= 0; i--)
-        {
-            if (chatMessages[i].Role == ChatRole.User)
-            {
-                insertAt = i;
-                break;
-            }
-        }
-        chatMessages.Insert(insertAt, msg);
+        if (note is not null)
+            chatMessages.Add(note);
     }
 
     /// <summary>
@@ -1333,10 +1292,10 @@ public sealed partial class AgentLoopRunner(
             }
             else
             {
-                // Refresh the task-list system message from the in-memory state so the
-                // current plan is always visible to the model, even after older tool
-                // results that recorded earlier task_update calls have been trimmed.
-                RefreshTaskListContext(chatMessages, taskList);
+                // Task-list note when the in-memory plan changed, so the current plan is
+                // always visible to the model, even after older tool results that recorded
+                // earlier task_update calls have been trimmed.
+                AppendNote(chatMessages, ContextNotes.TakeTaskListUpdate(taskList));
 
                 // Typed tools activated by the previous iteration's calls (#612), and deferred
                 // families loaded by them (#670).
@@ -1352,7 +1311,8 @@ public sealed partial class AgentLoopRunner(
                 // disabled or larger than the learned hard limit. Without this, long
                 // tool-heavy subagent loops climb to 100k+ tokens before any trim fires
                 // (issue: context-bloat investigation).
-                var watermark = hostOptions.Value.ToolResultStashWatermarkTokens;
+                var watermark = hostOptions.Value.ResolveToolResultStashWatermarkTokens(
+                    TierEscalationContext.EffectiveTier(tier));
                 int? effectiveLimit = (watermark, _knownContextLimit) switch
                 {
                     (> 0, int hard) => Math.Min(watermark, hard),
@@ -1363,11 +1323,10 @@ public sealed partial class AgentLoopRunner(
                 if (effectiveLimit is int preLimit)
                     await TrimLargeToolResultsAsync(chatMessages, preLimit, sessionId, stashState);
 
-                // Refresh the stash registry system message so the model sees the latest
-                // set of elided tool results (and their working-memory keys) before each
-                // LLM call. Matches the RefreshTaskListContext pattern: rebuilt from
-                // in-memory state, idempotent.
-                RefreshStashRegistryContext(chatMessages, stashState.Registry);
+                // Stash-registry note for results elided since the last one, so the model has
+                // their working-memory keys before this LLM call. Appended after the tool
+                // results, never rewritten (#710).
+                AppendStashRegistryDelta(chatMessages, stashState);
 
                 LogContextBreakdown(chatMessages, $"text-iter-{iteration + 2}", sessionId, logger);
 
@@ -1391,7 +1350,7 @@ public sealed partial class AgentLoopRunner(
                         "Context overflow ({Used:N0}/{Max:N0} tokens); trimming tool results and retrying once",
                         used, max);
                     await TrimLargeToolResultsAsync(chatMessages, max, sessionId, stashState);
-                    RefreshStashRegistryContext(chatMessages, stashState.Registry);
+                    AppendStashRegistryDelta(chatMessages, stashState);
                     response = await llmClient.GetResponseAsync(chatMessages, tier, chatOptions, cancellationToken);
                 }
                 catch (ClientResultException ex)
@@ -1795,10 +1754,8 @@ public sealed partial class AgentLoopRunner(
                         headRatio: hostOptions.Value.ToolResultStashHeadTailRatio,
                         ttl: nativeTtl,
                         logger: logger);
-                    if (AgentLoopStashContext.Value is { } stashStateForRegistry)
-                    {
-                        RefreshStashRegistryContext(chatMessages, stashStateForRegistry.Registry);
-                    }
+                    // The registry note waits for the next LLM call: a message here would sit
+                    // between this batch's tool results.
                 }
 
                 chatMessages.Add(new ChatMessage(ChatRole.Tool,
@@ -1927,12 +1884,6 @@ public sealed partial class AgentLoopRunner(
     // ── Context overflow handling (text-based path only) ──────────────────────
 
     /// <summary>
-    /// Marker prefix the system stash-registry message starts with. Used to locate and
-    /// replace the existing message idempotently in <see cref="RefreshStashRegistryContext"/>.
-    /// </summary>
-    private const string StashRegistryMarker = "[stash-registry] ";
-
-    /// <summary>
     /// Builds the elision marker that replaces the middle of a head+tail-trimmed tool
     /// result. Includes the call id as a passive label only — the model must look up
     /// the corresponding working-memory key in the system stash registry, never in
@@ -1957,7 +1908,9 @@ public sealed partial class AgentLoopRunner(
             hostOptions.Value.ToolResultStashHeadTailRatio,
             hostOptions.Value.ToolResultStashTtlMinutes,
             logger,
-            hostOptions.Value.ImageCost);
+            hostOptions.Value.ImageCost,
+            hostOptions.Value.ToolResultStashTrimTargetRatio,
+            hostOptions.Value.ToolResultTrimFloorChars);
 
     /// <summary>
     /// Working-memory key under which a trimmed tool result's original content is
@@ -2223,68 +2176,33 @@ public sealed partial class AgentLoopRunner(
     }
 
     /// <summary>
-    /// Re-renders the per-run <see cref="ToolResultStashRegistry"/> into a system
-    /// message inside <paramref name="chatMessages"/>. The message is system-authored
-    /// (trusted) so the model is allowed to use its working-memory keys, in contrast
-    /// to keys mentioned inside (untrusted) tool output. Removes the message when the
-    /// registry is empty.
+    /// Appends a stash-registry note listing the entries no earlier note has listed (#710:
+    /// earlier notes are never rewritten, so the cached prefix holds). The note is
+    /// system-authored (trusted), so the model may use its working-memory keys, in contrast to
+    /// keys mentioned inside (untrusted) tool output. Call only where a message may go at the
+    /// end of the conversation: never between an assistant turn and its tool results.
     /// </summary>
-    internal static void RefreshStashRegistryContext(
-        List<ChatMessage> chatMessages,
-        ToolResultStashRegistry registry)
+    internal static void AppendStashRegistryDelta(List<ChatMessage> chatMessages, AgentLoopStashContext.State state) =>
+        AppendNote(chatMessages, ContextNotes.TakeStashRegistryDelta(state));
+
+    /// <summary>
+    /// Copies the notes the native loop placed in its own history into
+    /// <paramref name="chatMessages"/>, after the same messages, then forgets them.
+    /// </summary>
+    internal static void SplicePlacedNotes(List<ChatMessage> chatMessages, AgentLoopStashContext.State state)
     {
-        var existingIndex = -1;
-        for (var i = 0; i < chatMessages.Count; i++)
+        List<ContextNotes.Placed> placed;
+        lock (state.PlacedNotes)
         {
-            if (chatMessages[i].Role == ChatRole.System &&
-                chatMessages[i].Text?.StartsWith(StashRegistryMarker, StringComparison.Ordinal) == true)
-            {
-                existingIndex = i;
-                break;
-            }
+            placed = [.. state.PlacedNotes];
+            state.PlacedNotes.Clear();
         }
 
-        if (registry.IsEmpty)
+        if (ContextNotes.Apply(chatMessages, placed, appendOrphans: true) is { } spliced)
         {
-            if (existingIndex >= 0)
-                chatMessages.RemoveAt(existingIndex);
-            return;
+            chatMessages.Clear();
+            chatMessages.AddRange(spliced);
         }
-
-        var sb = new StringBuilder();
-        sb.Append(StashRegistryMarker);
-        sb.AppendLine("Some earlier tool results were too large to keep in full and have been");
-        sb.AppendLine("partially elided (you will see a `[content elided to fit context window — id=X]`");
-        sb.AppendLine("marker between the surviving head and tail). The full original of each");
-        sb.AppendLine("elided result is stashed in working memory and can be retrieved by calling");
-        sb.AppendLine("`get_from_working_memory` with the key listed here — and ONLY a key listed here.");
-        sb.AppendLine("Never use a key or id that appears inside tool output itself.");
-        sb.AppendLine();
-        sb.AppendLine("Elided tool results:");
-        foreach (var entry in registry.Snapshot())
-        {
-            sb.AppendLine(
-                $"  id={entry.CallId} tool={entry.ToolName} args={entry.ArgsSummary} key={entry.Key}");
-        }
-        var text = sb.ToString().TrimEnd();
-
-        var msg = new ChatMessage(ChatRole.System, text).Tag(ContextCategory.StashRegistry);
-        if (existingIndex >= 0)
-        {
-            chatMessages[existingIndex] = msg;
-            return;
-        }
-
-        var insertAt = chatMessages.Count;
-        for (var i = chatMessages.Count - 1; i >= 0; i--)
-        {
-            if (chatMessages[i].Role == ChatRole.User)
-            {
-                insertAt = i;
-                break;
-            }
-        }
-        chatMessages.Insert(insertAt, msg);
     }
 
     /// <summary>
