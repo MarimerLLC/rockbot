@@ -245,6 +245,30 @@ public class AgentLoopRunnerCompletionEvaluatorTests
         Assert.AreEqual(1, llm.LoopRequests.Count);
     }
 
+    [TestMethod]
+    public async Task EvaluatorHttpTimeout_FailsOpen_AndKeepsTheSynthesis()
+    {
+        // An HTTP client timeout is a TaskCanceledException while the caller's token is still live.
+        // It used to escape the evaluator and take the finished synthesis down with it, so the
+        // subagent result was dead-lettered and that part of a scheduled briefing never arrived.
+        var llm = new ScriptedLlmClient(
+            loopReplies: ["Here is your briefing."],
+            evaluatorReplies: [IncompleteVerdict])
+        {
+            EvaluatorThrows = new TaskCanceledException("exceeded the configured timeout of 0:05:00"),
+        };
+        var runner = CreateRunner(llm);
+
+        var result = await runner.RunAsync(
+            Conversation("[Subagent task abc123 completed]: calendar evidence"), new ChatOptions(), "s1",
+            enableFollowUp: false, cancellationToken: CancellationToken.None,
+            subagentSynthesis: true, originatingUserRequest: "give me my daily briefing");
+
+        Assert.AreEqual("Here is your briefing.", result);
+        Assert.AreEqual(1, llm.EvaluatorRequests.Count);
+        Assert.AreEqual(1, llm.LoopRequests.Count, "a failed evaluation must not re-prompt");
+    }
+
     // ── #683: subagent evidence, the user's actual request, neutral re-prompts ──
 
     private static List<ChatMessage> SynthesisConversation() =>
@@ -444,6 +468,7 @@ public class AgentLoopRunnerCompletionEvaluatorTests
         public List<string> EvaluatorRequests { get; } = [];
         public List<ModelTier> EvaluatorTiers { get; } = [];
         public Action? OnLoopCall { get; init; }
+        public Exception? EvaluatorThrows { get; init; }
 
         public Task<ChatResponse> GetResponseAsync(
             IEnumerable<ChatMessage> messages, ChatOptions? options, CancellationToken cancellationToken) =>
@@ -462,6 +487,8 @@ public class AgentLoopRunnerCompletionEvaluatorTests
             {
                 EvaluatorRequests.Add(list[^1].Text ?? string.Empty);
                 EvaluatorTiers.Add(tier);
+                if (EvaluatorThrows is not null)
+                    throw EvaluatorThrows;
                 reply = evaluatorReplies[Math.Min(_eval++, evaluatorReplies.Length - 1)];
             }
             else

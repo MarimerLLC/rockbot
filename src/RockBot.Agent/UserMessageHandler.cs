@@ -554,7 +554,7 @@ internal sealed class UserMessageHandler(
 
         try
         {
-            await using var slot = await workSerializer.AcquireForUserAsync(ct);
+            await using var slot = await workSerializer.AcquireForUserAsync($"user session '{sessionId}'", ct);
 
             logger.LogInformation("Native LLM loop started for session {SessionId}", sessionId);
 
@@ -716,7 +716,7 @@ internal sealed class UserMessageHandler(
             // Acquire the single execution slot, preempting any running scheduled
             // task. If this session itself is cancelled (new user message) while
             // waiting, the await throws OperationCanceledException and we exit.
-            await using var slot = await workSerializer.AcquireForUserAsync(ct);
+            await using var slot = await workSerializer.AcquireForUserAsync($"user session '{sessionId}'", ct);
 
             logger.LogInformation("Background tool loop started for session {SessionId}", sessionId);
 

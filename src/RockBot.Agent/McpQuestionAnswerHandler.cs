@@ -201,7 +201,7 @@ internal sealed class McpQuestionAnswerHandler(
         try
         {
             // Wait for the turn that showed the form to finish its reply, rather than cancel it.
-            await using (await workSerializer.AcquireForUserAsync(ct))
+            await using (await workSerializer.AcquireForUserAsync("MCP question answer", ct))
             {
                 // Recorded only now: the turn that showed the form may have still been writing its
                 // "fill in the form" reply, which must come before the result, not after it.

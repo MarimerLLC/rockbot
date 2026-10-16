@@ -190,6 +190,44 @@ public class SubagentToolExecutorTests
     }
 
     [TestMethod]
+    public async Task SpawnSubagentExecutor_ConsolidateFalse_InUserSession_IsHonored()
+    {
+        var manager = new FakeSubagentManager([]);
+        var executor = new SpawnSubagentExecutor(manager);
+        var request = new ToolInvokeRequest
+        {
+            ToolCallId = "call-1",
+            ToolName = "spawn_subagent",
+            Arguments = JsonSerializer.Serialize(new { description = "Slice", consolidate = false }),
+            SessionId = "session/blazor-session"
+        };
+
+        await executor.ExecuteAsync(request, CancellationToken.None);
+
+        Assert.IsFalse(manager.LastConsolidate);
+    }
+
+    [TestMethod]
+    public async Task SpawnSubagentExecutor_ConsolidateFalse_InScheduledTaskSession_IsForcedTrue()
+    {
+        // A scheduled briefing spawned three slices with consolidate=false and delivered two
+        // separate full briefings. No user in a patrol session asked for results one at a time.
+        var manager = new FakeSubagentManager([]);
+        var executor = new SpawnSubagentExecutor(manager);
+        var request = new ToolInvokeRequest
+        {
+            ToolCallId = "call-1",
+            ToolName = "spawn_subagent",
+            Arguments = JsonSerializer.Serialize(new { description = "Slice", consolidate = false }),
+            SessionId = "patrol/daily-operational-brief"
+        };
+
+        await executor.ExecuteAsync(request, CancellationToken.None);
+
+        Assert.IsTrue(manager.LastConsolidate);
+    }
+
+    [TestMethod]
     public async Task SpawnSubagentExecutor_PassesTheLoopsUserRequestToManager()
     {
         // #666: AgentLoopRunner.RunAsync sets the ambient request for its run; the spawn
@@ -275,6 +313,7 @@ public class SubagentToolExecutorTests
         public string SpawnResult { get; set; } = "fake-task-id";
         public bool CancelResult { get; set; }
         public int? LastMaxIterations { get; private set; }
+        public bool? LastConsolidate { get; private set; }
 
         public Task<string> SpawnAsync(string description, string? context, int? timeoutMinutes,
             string primarySessionId, CancellationToken ct,
@@ -284,6 +323,7 @@ public class SubagentToolExecutorTests
         {
             SpawnCount++;
             LastMaxIterations = maxIterations;
+            LastConsolidate = consolidate;
             LastOriginatingUserRequest = originatingUserRequest;
             LastInputs = inputs;
             LastDescription = description;

@@ -38,7 +38,7 @@ internal sealed class ScheduledTaskHandler(
     public async Task HandleAsync(ScheduledTaskMessage message, MessageHandlerContext context)
     {
         var ct = context.CancellationToken;
-        var sessionId = $"patrol/{message.TaskName}";
+        var sessionId = $"{WellKnownSessions.ScheduledTaskPrefix}{message.TaskName}";
         logger.LogInformation("Executing scheduled task '{TaskName}'", message.TaskName);
 
         // Build full agent context using an ephemeral session ID so no history accumulates

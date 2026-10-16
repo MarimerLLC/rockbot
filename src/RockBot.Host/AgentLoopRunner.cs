@@ -3264,7 +3264,9 @@ public sealed partial class AgentLoopRunner(
 
             return verdict;
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+        // An HTTP timeout surfaces as TaskCanceledException without our token being cancelled.
+        // That is an evaluator failure like any other: fail open rather than lose the reply.
+        catch (Exception ex) when (ex is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
         {
             logger.LogWarning(ex, "Completion evaluator failed; defaulting to complete");
             return (true, "evaluator error");

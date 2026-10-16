@@ -103,12 +103,12 @@ internal sealed class UserFeedbackHandler(
         }
 
         // Try to acquire the execution slot as a scheduled task — yields to user messages.
-        var slot = await workSerializer.TryAcquireForScheduledAsync(ct);
+        var slot = await workSerializer.TryAcquireForScheduledAsync("feedback re-evaluation", ct);
         if (slot is null)
         {
             logger.LogInformation(
-                "Skipping re-evaluation for session {SessionId} — user session is active",
-                message.SessionId);
+                "Skipping re-evaluation for session {SessionId} — agent busy with {Holder}",
+                message.SessionId, workSerializer.CurrentHolder ?? "other work");
             return;
         }
 

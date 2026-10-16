@@ -17,4 +17,9 @@ public static class WellKnownSessions
     /// user-requested scheduled tasks so housekeeping does not read as a reply.
     /// </summary>
     public const string ScheduledSystem = "scheduled-system";
+
+    /// <summary>
+    /// Prefix of the session a scheduled task's agent loop runs in (<c>patrol/{task name}</c>).
+    /// </summary>
+    public const string ScheduledTaskPrefix = "patrol/";
 }

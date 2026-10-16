@@ -217,7 +217,7 @@ internal sealed class McpTaskResultHandler(
         try
         {
             // Wait for any turn in progress to finish its reply rather than cancel it.
-            await using (await workSerializer.AcquireForUserAsync(ct))
+            await using (await workSerializer.AcquireForUserAsync("MCP task result", ct))
             {
                 await conversationMemory.AddTurnAsync(conversationId,
                     new ConversationTurn("user", turn, DateTimeOffset.UtcNow) { AgentName = BridgeTurnAgentName }, ct);

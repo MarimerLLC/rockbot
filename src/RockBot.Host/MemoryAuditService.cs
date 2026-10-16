@@ -302,7 +302,7 @@ internal sealed class MemoryAuditService : IHostedService, IDisposable, IPrunabl
         IScheduledTaskSlot? slot;
         try
         {
-            slot = await _workSerializer.TryAcquireForScheduledAsync(ct);
+            slot = await _workSerializer.TryAcquireForScheduledAsync("memory audit", ct);
         }
         catch (Exception ex) when (ex is ObjectDisposedException or OperationCanceledException)
         {
@@ -311,7 +311,8 @@ internal sealed class MemoryAuditService : IHostedService, IDisposable, IPrunabl
 
         if (slot is null)
         {
-            _logger.LogInformation("MemoryAuditService: agent busy, deferring this run to the next slot");
+            _logger.LogInformation("MemoryAuditService: agent busy with {Holder}, deferring this run to the next slot",
+                _workSerializer.CurrentHolder ?? "other work");
             return null;
         }
 
@@ -402,7 +403,7 @@ internal sealed class MemoryAuditService : IHostedService, IDisposable, IPrunabl
         IScheduledTaskSlot? slot;
         try
         {
-            slot = await _workSerializer.TryAcquireForScheduledAsync(ct);
+            slot = await _workSerializer.TryAcquireForScheduledAsync("memory audit eval", ct);
         }
         catch (Exception ex) when (ex is ObjectDisposedException or OperationCanceledException)
         {
@@ -411,7 +412,8 @@ internal sealed class MemoryAuditService : IHostedService, IDisposable, IPrunabl
 
         if (slot is null)
         {
-            _logger.LogInformation("MemoryAuditService: agent busy, deferring the sample eval");
+            _logger.LogInformation("MemoryAuditService: agent busy with {Holder}, deferring the sample eval",
+                _workSerializer.CurrentHolder ?? "other work");
             return null;
         }
 
