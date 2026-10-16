@@ -201,15 +201,16 @@ internal sealed class SchedulerService : IHostedService, ISchedulerService
     {
         if (_cts.IsCancellationRequested) return;
 
-        // Acquire the work slot before dispatching. If a user session already
-        // holds it, we'd only have dispatched a message that the handler would
-        // immediately skip — so retry in a few minutes instead.
-        var slot = await _workSerializer.TryAcquireForScheduledAsync(_cts.Token);
+        // Acquire the work slot before dispatching. If a user session or other
+        // background work already holds it, we'd only have dispatched a message
+        // that the handler would immediately skip — so retry in a few minutes instead.
+        var slot = await _workSerializer.TryAcquireForScheduledAsync(
+            $"scheduled task '{task.Name}'", _cts.Token);
         if (slot is null)
         {
             _logger.LogInformation(
-                "Scheduled task '{Name}' preempted by active user session — scheduling retry",
-                task.Name);
+                "Scheduled task '{Name}' deferred: agent busy with {Holder} — scheduling retry",
+                task.Name, _workSerializer.CurrentHolder ?? "other work");
             ScheduleRetry(task);
             return;
         }

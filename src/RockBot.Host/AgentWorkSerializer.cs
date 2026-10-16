@@ -20,9 +20,21 @@ internal sealed class AgentWorkSerializer : IAgentWorkSerializer, IDisposable
     // throwing ObjectDisposedException out of an unobserved task.
     private bool _disposed;
 
+    // What holds the slot, for log messages only. Set by the holder after it acquires
+    // the slot and cleared before it releases it.
+    private volatile string? _holder;
+
+    private const string UnnamedUserHolder = "a user session";
+    private const string UnnamedScheduledHolder = "background work";
+
+    public string? CurrentHolder => _holder;
+
     // ── User loop ─────────────────────────────────────────────────────────────
 
-    public async Task<IAsyncDisposable> AcquireForUserAsync(CancellationToken ct)
+    public Task<IAsyncDisposable> AcquireForUserAsync(CancellationToken ct) =>
+        AcquireForUserAsync(UnnamedUserHolder, ct);
+
+    public async Task<IAsyncDisposable> AcquireForUserAsync(string holder, CancellationToken ct)
     {
         // Signal any running scheduled task to stop so the slot becomes free.
         CancellationTokenSource newPreempt;
@@ -35,13 +47,17 @@ internal sealed class AgentWorkSerializer : IAgentWorkSerializer, IDisposable
 
         // Wait for the slot — the preempted task releases it on cancellation.
         await _slot.WaitAsync(ct);
+        _holder = holder;
 
-        return new SlotHandle(_slot);
+        return new SlotHandle(this);
     }
 
     // ── Scheduled task ────────────────────────────────────────────────────────
 
-    public Task<IScheduledTaskSlot?> TryAcquireForScheduledAsync(CancellationToken ct)
+    public Task<IScheduledTaskSlot?> TryAcquireForScheduledAsync(CancellationToken ct) =>
+        TryAcquireForScheduledAsync(UnnamedScheduledHolder, ct);
+
+    public Task<IScheduledTaskSlot?> TryAcquireForScheduledAsync(string holder, CancellationToken ct)
     {
         CancellationToken preemptToken;
 
@@ -56,15 +72,17 @@ internal sealed class AgentWorkSerializer : IAgentWorkSerializer, IDisposable
             if (_disposed)
                 return Task.FromResult<IScheduledTaskSlot?>(null);
 
-            // Non-blocking: if the slot is held by a user loop, skip this run.
+            // Non-blocking: if the slot is held (by a user loop or other background work),
+            // skip this run. CurrentHolder says which.
             if (!_slot.Wait(0))
                 return Task.FromResult<IScheduledTaskSlot?>(null);
 
+            _holder = holder;
             preemptToken = _preemptCts.Token;
         }
 
         var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, preemptToken);
-        return Task.FromResult<IScheduledTaskSlot?>(new ScheduledTaskSlot(_slot, linked));
+        return Task.FromResult<IScheduledTaskSlot?>(new ScheduledTaskSlot(this, linked));
     }
 
     public void Dispose()
@@ -86,11 +104,12 @@ internal sealed class AgentWorkSerializer : IAgentWorkSerializer, IDisposable
     /// still running. Work that outruns host shutdown has nothing left to hand the slot
     /// back to, so the release is a no-op rather than a failure.
     /// </summary>
-    private static void ReleaseQuietly(SemaphoreSlim slot)
+    private void ReleaseQuietly()
     {
+        _holder = null;
         try
         {
-            slot.Release();
+            _slot.Release();
         }
         catch (ObjectDisposedException)
         {
@@ -98,23 +117,23 @@ internal sealed class AgentWorkSerializer : IAgentWorkSerializer, IDisposable
         }
     }
 
-    private sealed class SlotHandle(SemaphoreSlim slot) : IAsyncDisposable
+    private sealed class SlotHandle(AgentWorkSerializer owner) : IAsyncDisposable
     {
         public ValueTask DisposeAsync()
         {
-            ReleaseQuietly(slot);
+            owner.ReleaseQuietly();
             return ValueTask.CompletedTask;
         }
     }
 
-    private sealed class ScheduledTaskSlot(SemaphoreSlim slot, CancellationTokenSource cts)
+    private sealed class ScheduledTaskSlot(AgentWorkSerializer owner, CancellationTokenSource cts)
         : IScheduledTaskSlot
     {
         public CancellationToken Token => cts.Token;
 
         public ValueTask DisposeAsync()
         {
-            ReleaseQuietly(slot);
+            owner.ReleaseQuietly();
             cts.Dispose();
             return ValueTask.CompletedTask;
         }

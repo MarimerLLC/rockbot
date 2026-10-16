@@ -308,7 +308,10 @@ internal sealed class SubagentResultHandler(
             var envelope = reply.ToEnvelope<AgentReply>(source: agent.Name);
             await publisher.PublishAsync($"{UserProxyTopics.UserResponse}.{agent.Name}", envelope, ct);
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+        // An HTTP timeout surfaces as TaskCanceledException without ct being cancelled. Treat it
+        // like any other synthesis failure: rethrowing dead-letters the message and the user
+        // gets nothing at all.
+        catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
         {
             logger.LogError(ex,
                 "Failed to handle subagent result consolidation for session {SessionId} — emitting degraded reply",

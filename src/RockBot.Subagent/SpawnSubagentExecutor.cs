@@ -33,6 +33,12 @@ internal sealed class SpawnSubagentExecutor(
 
         var primarySessionId = request.SessionId ?? "unknown";
 
+        // consolidate=false exists for a user who asks for results as they come in. A scheduled
+        // task has no such user, and each unbatched result writes its own full report — a
+        // briefing that fans out to three subagents would deliver up to three overlapping briefings.
+        if (!consolidate && primarySessionId.StartsWith(WellKnownSessions.ScheduledTaskPrefix, StringComparison.Ordinal))
+            consolidate = true;
+
         // #666: the user request the spawning loop serves (set by AgentLoopRunner.RunAsync on this
         // async flow). It goes with the task so the synthesis turn is judged against what the user
         // asked, not just against the description the primary wrote for the subagent.

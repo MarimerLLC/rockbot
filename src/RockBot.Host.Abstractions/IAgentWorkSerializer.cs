@@ -41,6 +41,27 @@ public interface IAgentWorkSerializer
     /// Returns <c>null</c> if the slot could not be acquired.
     /// </returns>
     Task<IScheduledTaskSlot?> TryAcquireForScheduledAsync(CancellationToken ct);
+
+    /// <summary>
+    /// <see cref="AcquireForUserAsync(CancellationToken)"/>, recording <paramref name="holder"/>
+    /// as the work that holds the slot (see <see cref="CurrentHolder"/>).
+    /// </summary>
+    Task<IAsyncDisposable> AcquireForUserAsync(string holder, CancellationToken ct) =>
+        AcquireForUserAsync(ct);
+
+    /// <summary>
+    /// <see cref="TryAcquireForScheduledAsync(CancellationToken)"/>, recording
+    /// <paramref name="holder"/> as the work that holds the slot (see <see cref="CurrentHolder"/>).
+    /// </summary>
+    Task<IScheduledTaskSlot?> TryAcquireForScheduledAsync(string holder, CancellationToken ct) =>
+        TryAcquireForScheduledAsync(ct);
+
+    /// <summary>
+    /// What holds the slot right now (e.g. <c>"scheduled task 'x'"</c>), for logging why a
+    /// scheduled acquisition was refused. Null when the slot is free or the holder is unknown.
+    /// Advisory only: it can change the moment after it is read.
+    /// </summary>
+    string? CurrentHolder => null;
 }
 
 /// <summary>

@@ -714,7 +714,7 @@ internal sealed class DreamService : IHostedService, IDisposable
         IScheduledTaskSlot? slot;
         try
         {
-            slot = await _workSerializer.TryAcquireForScheduledAsync(_stopping.Token);
+            slot = await _workSerializer.TryAcquireForScheduledAsync("dream cycle", _stopping.Token);
         }
         catch (Exception ex) when (ex is ObjectDisposedException or OperationCanceledException)
         {
@@ -725,7 +725,8 @@ internal sealed class DreamService : IHostedService, IDisposable
 
         if (slot is null)
         {
-            _logger.LogInformation("DreamService: agent busy, deferring dream cycle");
+            _logger.LogInformation("DreamService: agent busy with {Holder}, deferring dream cycle",
+                _workSerializer.CurrentHolder ?? "other work");
             return DreamCycleOutcome.Deferred;
         }
 
