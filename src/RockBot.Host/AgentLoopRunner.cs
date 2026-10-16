@@ -1917,6 +1917,13 @@ public sealed partial class AgentLoopRunner(
         $"[content elided to fit context window — id={callId}]";
 
     /// <summary>
+    /// Marker for a cut working-memory retrieval (#713). It names the key the model already
+    /// read rather than a new stash key, so re-reading gives back the same content.
+    /// </summary>
+    internal static string BuildRetrievalElisionMarker(string key) =>
+        $"[retrieved content elided to fit context window — re-read it with get_from_working_memory(key='{key}')]";
+
+    /// <summary>
     /// Replaces oversized tool results with a head+tail surface that fits the context
     /// budget, stashing the full original in working memory under
     /// <c>stash/{sessionId}/{callId}</c> so the model can recover it via

@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
 using RockBot.Tools;
@@ -42,8 +43,16 @@ internal static class ToolResultTrimmer
     ///
     /// <para><b>Protected results.</b> The most recent batch of tool results and results
     /// from self-paging tools (<see cref="SelfPagingTools"/>, issue #664) are cut only when
-    /// the hard budget can't be met any other way, and then only by as much as it takes.
-    /// Explicit working-memory retrievals (<see cref="StashExemptTools"/>) are never cut.</para>
+    /// the hard budget can't be met any other way, and then only by as much as it takes.</para>
+    ///
+    /// <para><b>Working-memory retrievals (#713).</b> Explicit retrievals
+    /// (<see cref="StashExemptTools"/>) are never re-stashed: that mints a fresh key and loops
+    /// the model re-fetching its own growing reference. An older <c>get_from_working_memory</c>
+    /// result is still cut like any other, but its marker names the key the model already
+    /// fetched, so re-reading it returns the same content and the stash registry gains nothing.
+    /// A retrieval in the latest batch is never cut, nor is one whose key is namespace-relative
+    /// (the trim can't resolve it) or has expired (it couldn't be re-read).
+    /// <c>search_working_memory</c> results are never cut.</para>
     ///
     /// <para><b>Termination.</b> Each pass visits every candidate at most once, so the trim
     /// always ends; a context whose non-tool content alone exceeds the budget logs a warning
@@ -75,7 +84,7 @@ internal static class ToolResultTrimmer
         var startChars = totalChars;
         var trimmedCount = 0;
 
-        var candidates = CollectCandidates(messages);
+        var candidates = await CollectCandidatesAsync(messages, workingMemory, logger);
         var ordinary = candidates.Where(c => c.Kind == CandidateKind.Ordinary).ToList();
         var latest = candidates.Where(c => c.Kind == CandidateKind.LatestBatch).ToList();
         var selfPaging = candidates.Where(c => c.Kind == CandidateKind.SelfPaging).ToList();
@@ -137,8 +146,8 @@ internal static class ToolResultTrimmer
                 stashState.BudgetUnreachableWarned = true;
             logger.Log(level,
                 "Tool-result trim cannot reach budget: total {Total:N0} > budget {Budget:N0} chars; the rest is " +
-                "content the trim doesn't cut (system prompt, tool schemas, working-memory retrievals) or results " +
-                "it won't cut further. Context may still exceed the limit.",
+                "content the trim doesn't cut (system prompt, tool schemas, recent or unresolvable working-memory " +
+                "retrievals) or results it won't cut further. Context may still exceed the limit.",
                 totalChars, charBudget);
         }
     }
@@ -153,7 +162,11 @@ internal static class ToolResultTrimmer
 
     private enum CandidateKind { Ordinary, LatestBatch, SelfPaging }
 
-    private sealed record Candidate(int MessageIndex, int ContentIndex, CandidateKind Kind);
+    /// <param name="RetrievalKey">
+    /// For a <c>get_from_working_memory</c> result, the key it read. The result is cut with a
+    /// marker pointing back at that key rather than stashed (#713).
+    /// </param>
+    private sealed record Candidate(int MessageIndex, int ContentIndex, CandidateKind Kind, string? RetrievalKey = null);
 
     /// <summary>
     /// Trimmable tool results in message order (oldest first), classified. The latest batch is
@@ -161,7 +174,8 @@ internal static class ToolResultTrimmer
     /// in the text loop that is the tail of the list, and inside the function-invoking loop's
     /// pre-invoke hook it is the batch before the assistant turn now being executed.
     /// </summary>
-    private static List<Candidate> CollectCandidates(List<ChatMessage> messages)
+    private static async Task<List<Candidate>> CollectCandidatesAsync(
+        List<ChatMessage> messages, IWorkingMemory workingMemory, ILogger logger)
     {
         var lastTool = messages.FindLastIndex(m => m.Role == ChatRole.Tool);
         var latestBatchStart = lastTool < 0
@@ -178,8 +192,17 @@ internal static class ToolResultTrimmer
                 var toolName = ExtractToolNameForCallId(messages, frc.CallId);
                 // Never re-stash an explicit working-memory retrieval — re-stashing mints a
                 // fresh key on every pass and loops the model forever re-fetching its own
-                // growing reference. See StashExemptTools.
-                if (StashExemptTools.Contains(toolName)) continue;
+                // growing reference. See StashExemptTools. An older retrieval can still be cut,
+                // with a marker pointing back at the key it read (#713).
+                if (StashExemptTools.Contains(toolName))
+                {
+                    if (i >= latestBatchStart)
+                        continue;
+                    var key = await ResolveRetrievalKeyAsync(messages, frc.CallId, toolName, workingMemory, logger);
+                    if (key is not null)
+                        candidates.Add(new Candidate(i, j, CandidateKind.Ordinary, key));
+                    continue;
+                }
 
                 var kind = SelfPagingTools.Contains(toolName) ? CandidateKind.SelfPaging
                     : i >= latestBatchStart ? CandidateKind.LatestBatch
@@ -188,6 +211,42 @@ internal static class ToolResultTrimmer
             }
         }
         return candidates;
+    }
+
+    /// <summary>
+    /// The key a <c>get_from_working_memory</c> call read, when the trim can safely cut its result:
+    /// the key is a full path (a plain key is relative to a namespace the trim doesn't know) and
+    /// the entry still exists, so the model can re-read it. Null otherwise, and for any other tool.
+    /// </summary>
+    private static async Task<string?> ResolveRetrievalKeyAsync(
+        List<ChatMessage> messages, string callId, string toolName, IWorkingMemory workingMemory, ILogger logger)
+    {
+        if (!StashExemptTools.IsKeyedRetrieval(toolName))
+            return null;
+
+        var call = messages.SelectMany(m => m.Contents).OfType<FunctionCallContent>()
+            .FirstOrDefault(c => string.Equals(c.CallId, callId, StringComparison.Ordinal));
+        if (call?.Arguments is null || !call.Arguments.TryGetValue("key", out var raw))
+            return null;
+
+        var key = raw switch
+        {
+            string str => str,
+            JsonElement { ValueKind: JsonValueKind.String } e => e.GetString(),
+            _ => null,
+        };
+        if (string.IsNullOrWhiteSpace(key) || !key.Contains('/'))
+            return null;
+
+        try
+        {
+            return await workingMemory.GetAsync(key) is null ? null : key;
+        }
+        catch (Exception ex)
+        {
+            logger.LogDebug(ex, "Could not check working-memory entry {Key}; leaving its retrieval intact", key);
+            return null;
+        }
     }
 
     /// <summary>
@@ -212,6 +271,9 @@ internal static class ToolResultTrimmer
         var desiredLen = Math.Max(floor, oldStr.Length - desiredReduction);
         if (desiredLen >= oldStr.Length)
             return 0;
+
+        if (candidate.RetrievalKey is { } retrievalKey)
+            return TrimRetrieval(messages, candidate, oldStr, desiredLen, retrievalKey, headRatio, logger);
 
         // No callId or no stash state → legacy head-only truncation. The model has no way to
         // retrieve elided content (nothing registered), so the elision marker would only mislead.
@@ -276,6 +338,44 @@ internal static class ToolResultTrimmer
         logger.LogInformation(
             "Trimmed tool result for call {CallId}: {Before:N0} → {After:N0} chars (head {Head}, tail {Tail})",
             old.CallId, oldStr.Length, trimmed.Length, headLen, tailLen);
+        return oldStr.Length - trimmed.Length;
+    }
+
+    /// <summary>
+    /// Cuts a working-memory retrieval to a head+tail surface whose marker names the key it read.
+    /// Nothing is stashed and nothing is registered: re-reading the key returns the same content,
+    /// so there is no fresh key for the model to chase (#713, the 2026-06-10 loop).
+    /// </summary>
+    private static int TrimRetrieval(
+        List<ChatMessage> messages,
+        Candidate candidate,
+        string oldStr,
+        int desiredLen,
+        string key,
+        double headRatio,
+        ILogger logger)
+    {
+        var old = (FunctionResultContent)messages[candidate.MessageIndex].Contents[candidate.ContentIndex];
+        var marker = AgentLoopRunner.BuildRetrievalElisionMarker(key);
+        // Total surface = head + "\n\n" + marker + "\n\n" + tail.
+        var surfaceBudget = desiredLen - marker.Length - 4;
+        if (surfaceBudget <= 0)
+            return 0;
+        var headLen = (int)Math.Round(surfaceBudget * headRatio);
+        var tailLen = surfaceBudget - headLen;
+
+        var head = headLen > 0 ? oldStr[..headLen] : string.Empty;
+        var tail = tailLen > 0 ? oldStr[^tailLen..] : string.Empty;
+        var trimmed = string.Concat(head, "\n\n", marker, "\n\n", tail);
+        if (trimmed.Length >= oldStr.Length)
+            return 0;
+
+        messages[candidate.MessageIndex].Contents[candidate.ContentIndex] =
+            new FunctionResultContent(old.CallId, trimmed);
+
+        logger.LogInformation(
+            "Trimmed working-memory retrieval of {Key} for call {CallId}: {Before:N0} → {After:N0} chars",
+            key, old.CallId, oldStr.Length, trimmed.Length);
         return oldStr.Length - trimmed.Length;
     }
 
