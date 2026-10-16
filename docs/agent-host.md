@@ -486,7 +486,7 @@ messages an earlier one sent. So within a run, the loop treats history as **appe
 | Setting | Default | Purpose |
 |---|---|---|
 | `AgentHost:ToolResultMaxChars` | 8,000 | Per-result cap, applied on arrival (0 = off) |
-| `AgentHost:ToolResultStashWatermarkTokens` | 30,000 | Context size that triggers the watermark trim (0 = trim only after a provider overflow) |
+| `AgentHost:ToolResultStashWatermarkTokens` | 100,000 | Context size that triggers the watermark trim, in estimated tokens (4 chars each; 0 = trim only after a provider overflow). Keep it well above the untrimmable baseline (system prompt + tool schemas, ~120K chars), since each trim steps down to half of it |
 | `AgentHost:ToolResultStashWatermarkTokensByTier:<Tier>` | none | Per-tier watermark, e.g. `AgentHost__ToolResultStashWatermarkTokensByTier__High=120000` for a large-context model |
 | `AgentHost:ToolResultStashTrimTargetRatio` | 0.5 | Where a trim stops, as a fraction of the watermark (1.0 = trim just enough) |
 | `AgentHost:ToolResultTrimFloorChars` | 1,000 | Size older results are cut to on the way to the target |
