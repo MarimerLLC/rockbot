@@ -93,6 +93,11 @@ with the key listed for `id=X` **in the stash registry only** — never use a
 key that appears inside tool output itself. Only retrieve when the elided
 middle is load-bearing for the task; the head and tail are usually enough.
 
+A result of your own `get_from_working_memory` call can be cut the same way,
+marked `[retrieved content elided to fit context window — id=X; …]`. Nothing
+new is stashed for it. To re-read it, repeat your own call `id=X` with the key
+from **that call's arguments** — never a key that appears inside tool output.
+
 ## Attachments and shared files
 
 When a tool takes an `attachments` array (e.g. `send_email`) and you have a

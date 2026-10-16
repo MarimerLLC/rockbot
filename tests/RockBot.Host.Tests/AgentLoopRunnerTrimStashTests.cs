@@ -508,14 +508,57 @@ public class AgentLoopRunnerTrimStashTests
         await runner.TrimLargeToolResultsAsync(messages, maxTokens: 800, "sess-1", stashState);
 
         var retrieval = ((FunctionResultContent)messages[3].Contents[0]).Result!.ToString()!;
-        StringAssert.Contains(retrieval, AgentLoopRunner.BuildRetrievalElisionMarker(key),
-            "The marker must point back at the key the model already fetched.");
+        StringAssert.Contains(retrieval, AgentLoopRunner.BuildRetrievalElisionMarker("call-ret"),
+            "The marker must send the model back to its own call.");
+        Assert.IsFalse(retrieval.Contains(key),
+            "The marker carries no key: keys inside tool output are untrusted, and the key is in the model's own call.");
         StringAssert.Contains(retrieval, "RET-TAIL", "The cut keeps a head and a tail like any other trim.");
-        Assert.IsFalse(retrieval.Contains("id=call-ret"),
-            "The retrieval must not be advertised under its own call id — that is the re-stash loop.");
+        Assert.IsFalse(retrieval.Contains(ElisionMarkerPrefix),
+            "The retrieval must not be advertised as a stash entry under its own call id — that is the re-stash loop.");
         Assert.IsTrue(retrieval.Length < 4000);
         Assert.IsTrue(stashState.Registry.IsEmpty, "A retrieval is never registered as a new stash entry.");
         Assert.AreEqual(0, wm.WriteCount, "A retrieval is never written back to working memory.");
+    }
+
+    [TestMethod]
+    [Timeout(10_000)]
+    public async Task Trim_RetrievalWhoseMarkerExceedsTheFloor_IsCutToTheMarker_WhenThatReachesTheBudget()
+    {
+        // A long call id makes the marker longer than the 200-char hard floor. Cutting to the floor
+        // must still be possible (to the marker alone), and the reachability check must not count
+        // savings below the marker.
+        var wm = new TestWorkingMemory();
+        const string key = "stash/sess-1/orig-call";
+        wm.Seed(key, "value");
+        var runner = NewRunner(wm);
+        var stashState = new AgentLoopStashContext.State { SessionId = "sess-1" };
+        var callId = "call-" + new string('x', 400);
+        var marker = AgentLoopRunner.BuildRetrievalElisionMarker(callId);
+        Assert.IsTrue(marker.Length > 200, "Setup: the marker must be longer than the hard floor.");
+
+        var messages = new List<ChatMessage>
+        {
+            new(ChatRole.System, "system prompt"),
+            new(ChatRole.User, "do the thing"),
+            BuildAssistantWithCall("get_from_working_memory", callId, key),
+            new(ChatRole.Tool, [new FunctionResultContent(callId, new string('R', 4000))]),
+            BuildAssistantWithCall("fetch_url", "call-new"),
+            new(ChatRole.Tool, [new FunctionResultContent("call-new", "small")]),
+        };
+
+        // Budget: reachable with the retrieval cut to its marker, not with it at the 1,000-char floor.
+        var others = messages.Where((_, i) => i != 3).Sum(m => AgentLoopRunner.EstimateMessageChars(m));
+        var maxTokens = (int)Math.Ceiling((others + marker.Length + 200) / 3.6);
+        var charBudget = (int)(maxTokens * 4 * 0.9);
+        Assert.IsTrue(others + 1_000 > charBudget && others + marker.Length <= charBudget, "Setup: budget window.");
+
+        await runner.TrimLargeToolResultsAsync(messages, maxTokens, "sess-1", stashState);
+
+        Assert.AreEqual(marker, ((FunctionResultContent)messages[3].Contents[0]).Result?.ToString(),
+            "Below the marker's own length the retrieval is cut to the marker alone.");
+        Assert.IsTrue(messages.Sum(m => AgentLoopRunner.EstimateMessageChars(m)) <= charBudget);
+        Assert.IsTrue(stashState.Registry.IsEmpty);
+        Assert.AreEqual(0, wm.WriteCount);
     }
 
     [TestMethod]

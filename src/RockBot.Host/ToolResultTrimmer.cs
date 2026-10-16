@@ -48,8 +48,9 @@ internal static class ToolResultTrimmer
     /// <para><b>Working-memory retrievals (#713).</b> Explicit retrievals
     /// (<see cref="StashExemptTools"/>) are never re-stashed: that mints a fresh key and loops
     /// the model re-fetching its own growing reference. An older <c>get_from_working_memory</c>
-    /// result is still cut like any other, but its marker names the key the model already
-    /// fetched, so re-reading it returns the same content and the stash registry gains nothing.
+    /// result is still cut like any other, but its marker sends the model back to its own call
+    /// and the key it passed there, so re-reading returns the same content and the stash
+    /// registry gains nothing.
     /// A retrieval in the latest batch is never cut, nor is one whose key is namespace-relative
     /// (the trim can't resolve it) or has expired (it couldn't be re-read).
     /// <c>search_working_memory</c> results are never cut.</para>
@@ -152,12 +153,19 @@ internal static class ToolResultTrimmer
         }
     }
 
-    /// <summary>The most a pass could save by cutting every result in <paramref name="set"/> to <paramref name="floor"/>.</summary>
+    /// <summary>
+    /// The most a pass could save by cutting every result in <paramref name="set"/> to <paramref name="floor"/>,
+    /// or, for a retrieval, to its marker when that is longer than the floor (see <see cref="TrimRetrieval"/>).
+    /// </summary>
     private static int Reclaimable(List<ChatMessage> messages, List<Candidate> set, int floor) =>
         set.Sum(c =>
         {
-            var len = (messages[c.MessageIndex].Contents[c.ContentIndex] as FunctionResultContent)?.Result?.ToString()?.Length ?? 0;
-            return Math.Max(0, len - floor);
+            var frc = messages[c.MessageIndex].Contents[c.ContentIndex] as FunctionResultContent;
+            var len = frc?.Result?.ToString()?.Length ?? 0;
+            var min = c.RetrievalKey is not null && frc is not null
+                ? Math.Max(floor, AgentLoopRunner.BuildRetrievalElisionMarker(frc.CallId).Length)
+                : floor;
+            return Math.Max(0, len - min);
         });
 
     private enum CandidateKind { Ordinary, LatestBatch, SelfPaging }
@@ -342,9 +350,11 @@ internal static class ToolResultTrimmer
     }
 
     /// <summary>
-    /// Cuts a working-memory retrieval to a head+tail surface whose marker names the key it read.
-    /// Nothing is stashed and nothing is registered: re-reading the key returns the same content,
-    /// so there is no fresh key for the model to chase (#713, the 2026-06-10 loop).
+    /// Cuts a working-memory retrieval to a head+tail surface whose marker sends the model back to
+    /// its own earlier call. The marker carries no key: keys inside tool output are untrusted, and
+    /// the key the model needs is in its own call's arguments. Nothing is stashed and nothing is
+    /// registered: repeating the call returns the same content, so there is no fresh key for the
+    /// model to chase (#713, the 2026-06-10 loop).
     /// </summary>
     private static int TrimRetrieval(
         List<ChatMessage> messages,
@@ -356,17 +366,23 @@ internal static class ToolResultTrimmer
         ILogger logger)
     {
         var old = (FunctionResultContent)messages[candidate.MessageIndex].Contents[candidate.ContentIndex];
-        var marker = AgentLoopRunner.BuildRetrievalElisionMarker(key);
-        // Total surface = head + "\n\n" + marker + "\n\n" + tail.
+        var marker = AgentLoopRunner.BuildRetrievalElisionMarker(old.CallId);
+        // Total surface = head + "\n\n" + marker + "\n\n" + tail. Below that, the marker alone:
+        // the floor can be smaller than the marker, and the marker is all the model needs.
         var surfaceBudget = desiredLen - marker.Length - 4;
+        string trimmed;
         if (surfaceBudget <= 0)
-            return 0;
-        var headLen = (int)Math.Round(surfaceBudget * headRatio);
-        var tailLen = surfaceBudget - headLen;
-
-        var head = headLen > 0 ? oldStr[..headLen] : string.Empty;
-        var tail = tailLen > 0 ? oldStr[^tailLen..] : string.Empty;
-        var trimmed = string.Concat(head, "\n\n", marker, "\n\n", tail);
+        {
+            trimmed = marker;
+        }
+        else
+        {
+            var headLen = (int)Math.Round(surfaceBudget * headRatio);
+            var tailLen = surfaceBudget - headLen;
+            var head = headLen > 0 ? oldStr[..headLen] : string.Empty;
+            var tail = tailLen > 0 ? oldStr[^tailLen..] : string.Empty;
+            trimmed = string.Concat(head, "\n\n", marker, "\n\n", tail);
+        }
         if (trimmed.Length >= oldStr.Length)
             return 0;
 
