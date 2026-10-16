@@ -23,7 +23,8 @@ namespace RockBot.Host;
 /// at full size for the rest of the run. So once a <c>get_from_working_memory</c> result is
 /// no longer in the latest batch, the watermark trim (<see cref="ToolResultTrimmer"/>) may cut
 /// it, with a marker sending the model back to its own earlier call and the key it passed
-/// there. That mints no new key and registers nothing, so the loop above cannot start.</para>
+/// there (or saying the entry is gone, when it has been deleted or has expired). That mints no
+/// new key and registers nothing, so the loop above cannot start.</para>
 /// </summary>
 internal static class StashExemptTools
 {

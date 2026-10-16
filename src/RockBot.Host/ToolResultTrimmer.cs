@@ -51,8 +51,10 @@ internal static class ToolResultTrimmer
     /// result is still cut like any other, but its marker sends the model back to its own call
     /// and the key it passed there, so re-reading returns the same content and the stash
     /// registry gains nothing.
-    /// A retrieval in the latest batch is never cut, nor is one whose key is namespace-relative
-    /// (the trim can't resolve it) or has expired (it couldn't be re-read).
+    /// A retrieval in the latest batch is never cut. An older one is cut even when its entry has
+    /// since been deleted or has expired: the model often deletes chunks once it has taken notes,
+    /// and leaving those reads whole kept them in context for the rest of the run. The marker then
+    /// says the entry is gone, so the model doesn't try to re-read it.
     /// <c>search_working_memory</c> results are never cut.</para>
     ///
     /// <para><b>Termination.</b> Each pass visits every candidate at most once, so the trim
@@ -162,19 +164,26 @@ internal static class ToolResultTrimmer
         {
             var frc = messages[c.MessageIndex].Contents[c.ContentIndex] as FunctionResultContent;
             var len = frc?.Result?.ToString()?.Length ?? 0;
-            var min = c.RetrievalKey is not null && frc is not null
-                ? Math.Max(floor, AgentLoopRunner.BuildRetrievalElisionMarker(frc.CallId).Length)
+            var min = c.Retrieval is { } r && frc is not null
+                ? Math.Max(floor, AgentLoopRunner.BuildRetrievalElisionMarker(frc.CallId, r.Gone).Length)
                 : floor;
             return Math.Max(0, len - min);
         });
 
     private enum CandidateKind { Ordinary, LatestBatch, SelfPaging }
 
-    /// <param name="RetrievalKey">
+    /// <param name="Retrieval">
     /// For a <c>get_from_working_memory</c> result, the key it read. The result is cut with a
-    /// marker pointing back at that key rather than stashed (#713).
+    /// marker pointing back at the model's own call rather than stashed (#713).
     /// </param>
-    private sealed record Candidate(int MessageIndex, int ContentIndex, CandidateKind Kind, string? RetrievalKey = null);
+    private sealed record Candidate(int MessageIndex, int ContentIndex, CandidateKind Kind, RetrievalInfo? Retrieval = null);
+
+    /// <param name="Key">The key the call passed, as the model wrote it.</param>
+    /// <param name="Gone">
+    /// True when the entry is known to be deleted or expired, so the marker must not invite a re-read.
+    /// False when it exists, or when the key is relative to a namespace the trim can't resolve.
+    /// </param>
+    private sealed record RetrievalInfo(string Key, bool Gone);
 
     /// <summary>
     /// Trimmable tool results in message order (oldest first), classified. The latest batch is
@@ -206,9 +215,9 @@ internal static class ToolResultTrimmer
                 {
                     if (i >= latestBatchStart)
                         continue;
-                    var key = await ResolveRetrievalKeyAsync(messages, frc.CallId, toolName, workingMemory, logger);
-                    if (key is not null)
-                        candidates.Add(new Candidate(i, j, CandidateKind.Ordinary, key));
+                    var retrieval = await ResolveRetrievalAsync(messages, frc.CallId, toolName, workingMemory, logger);
+                    if (retrieval is not null)
+                        candidates.Add(new Candidate(i, j, CandidateKind.Ordinary, retrieval));
                     continue;
                 }
 
@@ -222,11 +231,11 @@ internal static class ToolResultTrimmer
     }
 
     /// <summary>
-    /// The key a <c>get_from_working_memory</c> call read, when the trim can safely cut its result:
-    /// the key is a full path (a plain key is relative to a namespace the trim doesn't know) and
-    /// the entry still exists, so the model can re-read it. Null otherwise, and for any other tool.
+    /// The key a <c>get_from_working_memory</c> call read, and whether its entry is known to be gone.
+    /// Only a full-path key can be checked; a plain key is relative to a namespace the trim doesn't
+    /// know, so it is assumed to still exist. Null for any other tool or a call with no key.
     /// </summary>
-    private static async Task<string?> ResolveRetrievalKeyAsync(
+    private static async Task<RetrievalInfo?> ResolveRetrievalAsync(
         List<ChatMessage> messages, string callId, string toolName, IWorkingMemory workingMemory, ILogger logger)
     {
         if (!StashExemptTools.IsKeyedRetrieval(toolName))
@@ -243,17 +252,19 @@ internal static class ToolResultTrimmer
             JsonElement { ValueKind: JsonValueKind.String } e => e.GetString(),
             _ => null,
         };
-        if (string.IsNullOrWhiteSpace(key) || !key.Contains('/'))
+        if (string.IsNullOrWhiteSpace(key))
             return null;
+        if (!key.Contains('/'))
+            return new RetrievalInfo(key, Gone: false);
 
         try
         {
-            return await workingMemory.GetAsync(key) is null ? null : key;
+            return new RetrievalInfo(key, Gone: await workingMemory.GetAsync(key) is null);
         }
         catch (Exception ex)
         {
-            logger.LogDebug(ex, "Could not check working-memory entry {Key}; leaving its retrieval intact", key);
-            return null;
+            logger.LogDebug(ex, "Could not check working-memory entry {Key}; assuming it still exists", key);
+            return new RetrievalInfo(key, Gone: false);
         }
     }
 
@@ -280,8 +291,8 @@ internal static class ToolResultTrimmer
         if (desiredLen >= oldStr.Length)
             return 0;
 
-        if (candidate.RetrievalKey is { } retrievalKey)
-            return TrimRetrieval(messages, candidate, oldStr, desiredLen, retrievalKey, headRatio, logger);
+        if (candidate.Retrieval is { } retrieval)
+            return TrimRetrieval(messages, candidate, oldStr, desiredLen, retrieval, headRatio, logger);
 
         // No callId or no stash state → legacy head-only truncation. The model has no way to
         // retrieve elided content (nothing registered), so the elision marker would only mislead.
@@ -354,19 +365,19 @@ internal static class ToolResultTrimmer
     /// its own earlier call. The marker carries no key: keys inside tool output are untrusted, and
     /// the key the model needs is in its own call's arguments. Nothing is stashed and nothing is
     /// registered: repeating the call returns the same content, so there is no fresh key for the
-    /// model to chase (#713, the 2026-06-10 loop).
+    /// model to chase (#713, the 2026-06-10 loop). When the entry is gone the marker says so instead.
     /// </summary>
     private static int TrimRetrieval(
         List<ChatMessage> messages,
         Candidate candidate,
         string oldStr,
         int desiredLen,
-        string key,
+        RetrievalInfo retrieval,
         double headRatio,
         ILogger logger)
     {
         var old = (FunctionResultContent)messages[candidate.MessageIndex].Contents[candidate.ContentIndex];
-        var marker = AgentLoopRunner.BuildRetrievalElisionMarker(old.CallId);
+        var marker = AgentLoopRunner.BuildRetrievalElisionMarker(old.CallId, retrieval.Gone);
         // Total surface = head + "\n\n" + marker + "\n\n" + tail. Below that, the marker alone:
         // the floor can be smaller than the marker, and the marker is all the model needs.
         var surfaceBudget = desiredLen - marker.Length - 4;
@@ -390,8 +401,8 @@ internal static class ToolResultTrimmer
             new FunctionResultContent(old.CallId, trimmed);
 
         logger.LogInformation(
-            "Trimmed working-memory retrieval of {Key} for call {CallId}: {Before:N0} → {After:N0} chars",
-            key, old.CallId, oldStr.Length, trimmed.Length);
+            "Trimmed working-memory retrieval of {Key}{Gone} for call {CallId}: {Before:N0} → {After:N0} chars",
+            retrieval.Key, retrieval.Gone ? " (entry gone)" : string.Empty, old.CallId, oldStr.Length, trimmed.Length);
         return oldStr.Length - trimmed.Length;
     }
 

@@ -590,12 +590,17 @@ public class AgentLoopRunnerTrimStashTests
     }
 
     [TestMethod]
-    [DataRow("notes", true, DisplayName = "plain key: namespace the trim can't resolve")]
-    [DataRow("stash/sess-1/expired", false, DisplayName = "expired entry: couldn't be re-read")]
-    public async Task Trim_OlderRetrievalThatCannotBeReRead_IsLeftIntact(string key, bool seeded)
+    [Timeout(10_000)]
+    [DataRow("notes", false, false, DisplayName = "plain key: can't be checked, assumed to exist")]
+    [DataRow("stash/sess-1/expired", false, true, DisplayName = "expired entry")]
+    [DataRow("session/sess-1/web-page-chunk3", true, true, DisplayName = "entry the model deleted after reading it")]
+    public async Task Trim_OlderRetrieval_IsCut_AndTheMarkerSaysWhetherItCanBeReRead(string key, bool deleteAfterRead, bool gone)
     {
+        // Live run, #713 follow-up: the model read every chunk of a page, saved notes, then deleted the
+        // chunks. Leaving reads of deleted entries whole kept ~200K chars in context for the rest of the
+        // run, so they are cut too; the marker says the entry is gone rather than inviting a re-read.
         var wm = new TestWorkingMemory();
-        if (seeded)
+        if (deleteAfterRead)
             wm.Seed(key, "value");
         var runner = NewRunner(wm);
         var stashState = new AgentLoopStashContext.State { SessionId = "sess-1" };
@@ -610,10 +615,40 @@ public class AgentLoopRunnerTrimStashTests
             BuildAssistantWithCall("fetch_url", "call-new"),
             new(ChatRole.Tool, [new FunctionResultContent("call-new", "small")]),
         };
+        if (deleteAfterRead)
+            await wm.DeleteAsync(key);
 
         await runner.TrimLargeToolResultsAsync(messages, maxTokens: 800, "sess-1", stashState);
 
-        Assert.AreEqual(bigRetrieval, ((FunctionResultContent)messages[3].Contents[0]).Result?.ToString());
+        var retrieval = ((FunctionResultContent)messages[3].Contents[0]).Result!.ToString()!;
+        Assert.IsTrue(retrieval.Length < bigRetrieval.Length, "An older retrieval is cut whether or not it can be re-read.");
+        StringAssert.Contains(retrieval, AgentLoopRunner.BuildRetrievalElisionMarker("call-ret", entryGone: gone));
+        Assert.IsTrue(stashState.Registry.IsEmpty);
+        Assert.AreEqual(0, wm.WriteCount);
+    }
+
+    [TestMethod]
+    public async Task Trim_OlderRetrievalWithoutAKeyArgument_IsLeftIntact()
+    {
+        var wm = new TestWorkingMemory();
+        var runner = NewRunner(wm);
+        var stashState = new AgentLoopStashContext.State { SessionId = "sess-1" };
+        var bigRetrieval = new string('R', 4000);
+
+        var messages = new List<ChatMessage>
+        {
+            new(ChatRole.System, "system prompt"),
+            new(ChatRole.User, "do the thing"),
+            BuildAssistantWithCall("get_from_working_memory", "call-ret"),
+            new(ChatRole.Tool, [new FunctionResultContent("call-ret", bigRetrieval)]),
+            BuildAssistantWithCall("fetch_url", "call-new"),
+            new(ChatRole.Tool, [new FunctionResultContent("call-new", "small")]),
+        };
+
+        await runner.TrimLargeToolResultsAsync(messages, maxTokens: 800, "sess-1", stashState);
+
+        Assert.AreEqual(bigRetrieval, ((FunctionResultContent)messages[3].Contents[0]).Result?.ToString(),
+            "With no key, the marker would have nothing to point back at.");
         Assert.IsTrue(stashState.Registry.IsEmpty);
         Assert.AreEqual(0, wm.WriteCount);
     }
