@@ -86,6 +86,25 @@ public class McpTaskLedgerTests
     }
 
     [TestMethod]
+    public async Task AWriteWaitsOutAReaderHoldingTheFileOpen()
+    {
+        var ledger = new McpTaskLedger(LedgerPath, NullLogger.Instance);
+        await ledger.AddAsync(Entry("t_1"));
+
+        // On Windows the rename over the ledger fails while a reader has it open.
+        Task write;
+        using (new FileStream(LedgerPath, FileMode.Open, FileAccess.Read, FileShare.Read))
+        {
+            write = ledger.AddAsync(Entry("t_2"));
+            await Task.Delay(100);
+        }
+
+        await write.WaitAsync(TimeSpan.FromSeconds(5));
+        var reopened = new McpTaskLedger(LedgerPath, NullLogger.Instance);
+        Assert.AreEqual(2, (await reopened.ReadAllAsync()).Count);
+    }
+
+    [TestMethod]
     public async Task UnknownPropertiesAreTolerated()
     {
         Directory.CreateDirectory(Path.GetDirectoryName(LedgerPath)!);

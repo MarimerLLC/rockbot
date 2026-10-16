@@ -97,7 +97,9 @@ internal sealed class LateA2ANotificationHandler(
 
             var finalContent = await agentLoopRunner.RunAsync(
                 chatMessages, chatOptions, rawSessionId,
-                enableFollowUp: false, cancellationToken: ct);
+                enableFollowUp: false, cancellationToken: ct,
+                // Under the scope of the work being folded back, when it carried one (#685).
+                actionGate: ActionGateScope.FromRelayed(message.RunOrigin, message.UserAskedFor));
 
             await conversationMemory.AddTurnAsync(
                 rawSessionId,

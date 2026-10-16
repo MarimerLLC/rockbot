@@ -284,7 +284,8 @@ internal sealed class BridgeHarness : IAsyncDisposable
     /// </summary>
     public async Task<ToolInvokeResponse> InvokeAsync(
         string tool, string? argumentsJson, string server = ServerName,
-        string sessionId = "session-1", bool canAnswer = false, bool canReceiveLater = false)
+        string sessionId = "session-1", bool canAnswer = false, bool canReceiveLater = false,
+        IReadOnlyDictionary<string, string>? extraHeaders = null)
     {
         var request = new ToolInvokeRequest
         {
@@ -299,6 +300,8 @@ internal sealed class BridgeHarness : IAsyncDisposable
             headers[McpHeaders.Handback] = McpHeaders.HandbackCapable;
         if (canReceiveLater)
             headers[McpHeaders.Tasks] = McpHeaders.TasksCapable;
+        foreach (var (key, value) in extraHeaders ?? new Dictionary<string, string>())
+            headers[key] = value;
 
         var reply = await SendAsync(McpToolProxy.InvokeTopic, request, headers);
 

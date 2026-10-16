@@ -218,12 +218,34 @@ internal sealed class JsonLedger<TEntry> where TEntry : class, ILedgerEntry<TEnt
         {
             // Not cancellable: a write abandoned halfway would leave the cache ahead of the file.
             await File.WriteAllTextAsync(temp, json, CancellationToken.None);
-            File.Move(temp, _path, overwrite: true);
+            await MoveIntoPlaceAsync(temp);
         }
         catch
         {
             try { File.Delete(temp); } catch { /* the write already failed */ }
             throw;
+        }
+    }
+
+    /// <summary>
+    /// Renames the written temporary file over the ledger. On Windows the rename fails while
+    /// anything else has the ledger open (a reader, a backup or virus scan), so a refusal is
+    /// retried briefly before the write counts as failed. On Linux the rename always succeeds.
+    /// </summary>
+    private async Task MoveIntoPlaceAsync(string temp)
+    {
+        const int attempts = 10;
+        for (var attempt = 1; ; attempt++)
+        {
+            try
+            {
+                File.Move(temp, _path, overwrite: true);
+                return;
+            }
+            catch (Exception ex) when (ex is UnauthorizedAccessException or IOException && attempt < attempts)
+            {
+                await Task.Delay(TimeSpan.FromMilliseconds(20 * attempt), CancellationToken.None);
+            }
         }
     }
 

@@ -325,6 +325,19 @@ public sealed record McpTaskResult
     public string? WorkingMemoryKey { get; init; }
 
     /// <summary>
+    /// The consequential-action origin of the run that started the task (<c>user-turn</c>,
+    /// <c>subagent-of-user-turn</c>, <c>scheduled</c>, …), so the turn that answers its result
+    /// runs under the same authorization (#685). Null when the run didn't state one.
+    /// </summary>
+    public string? RunOrigin { get; init; }
+
+    /// <summary>
+    /// With a user-turn <see cref="RunOrigin"/>: whether the originating user request asked for
+    /// anything (<c>instruction</c> or <c>information-only</c>).
+    /// </summary>
+    public string? UserAskedFor { get; init; }
+
+    /// <summary>
     /// Whether the session should get a reply. False for an ending the agent asked for itself
     /// (<c>mcp_cancel_task</c>): it's recorded in the conversation, but there's nothing to say.
     /// </summary>

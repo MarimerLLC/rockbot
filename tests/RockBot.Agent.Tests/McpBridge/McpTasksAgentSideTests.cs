@@ -97,6 +97,31 @@ public class McpTasksAgentSideTests
     }
 
     [TestMethod]
+    [Timeout(30_000, CooperativeCancellation = true)]
+    public async Task TheRunsAuthorization_IsSentWithTheCall_AndComesBackWithTheResult()
+    {
+        var gate = new TaskCompletionSource<string>();
+        await using var harness = await StartAsync(gate);
+        var agent = await McpWrapperEndToEndTests.ConnectAgentAsync(harness, McpWrapperMode.Off);
+
+        ToolInvokeResponse started;
+        using (ActionGateContext.Set(new ActionGateScope(RunOrigin.UserTurn, UserRequestKind.InformationOnly), new AllowAll()))
+            started = await CallAsync(agent, "mcp_invoke_tool", Research);
+        var taskId = System.Text.RegularExpressions.Regex.Match(started.Content!, "t_[0-9a-f]{24}").Value;
+
+        gate.SetResult("ok");
+        var result = await harness.WaitForTaskResultAsync(r => r.TaskId == taskId);
+        Assert.AreEqual("user-turn", result.RunOrigin);
+        Assert.AreEqual("information-only", result.UserAskedFor);
+    }
+
+    private sealed class AllowAll : IConsequentialActionGate
+    {
+        public ValueTask<string?> CheckAsync(string toolName, string? arguments, ActionGateScope? scope,
+            CancellationToken cancellationToken = default) => ValueTask.FromResult<string?>(null);
+    }
+
+    [TestMethod]
     public void OnlyConversationsAndSubagents_CanTakeALaterResult()
     {
         Assert.IsTrue(McpTaskContext.CanReceiveLater("session/abc"));

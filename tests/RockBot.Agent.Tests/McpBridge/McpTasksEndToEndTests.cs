@@ -7,6 +7,7 @@ using ModelContextProtocol.Server;
 using RockBot.Agent.McpBridge;
 using RockBot.Agent.McpBridge.Tasks;
 using RockBot.Host;
+using RockBot.Messaging;
 using RockBot.Tools;
 using RockBot.Tools.Mcp;
 using RockBot.Tools.Mcp.Elicitation;
@@ -471,6 +472,108 @@ public class McpTasksEndToEndTests
 
         // By the time the wait ends, the result is among the subagent's outputs.
         StringAssert.Contains(workingMemory.Store[$"{subagent}/mcp-task/{BridgeHarness.ServerName}/{taskId}/result"], "researched a");
+    }
+
+    [TestMethod]
+    public async Task TheCallersAuthorization_TravelsWithTheTask_AcrossARestart()
+    {
+        var gate = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+        await using var harness = await StartAsync([ResearchTool(gate)]);
+
+        var taskId = StartedTaskId(await harness.InvokeAsync("research", """{"topic":"a"}""", sessionId: Session,
+            canReceiveLater: true, extraHeaders: new Dictionary<string, string>
+            {
+                [McpHeaders.RunOrigin] = "user-turn",
+                [McpHeaders.UserAskedFor] = "information-only",
+            }));
+        await harness.RestartBridgeAsync();
+        gate.SetResult("ok");
+
+        var result = await harness.WaitForTaskResultAsync(r => r.TaskId == taskId);
+        Assert.AreEqual("user-turn", result.RunOrigin);
+        Assert.AreEqual("information-only", result.UserAskedFor);
+    }
+
+    [TestMethod]
+    public async Task AQuestionThatCantBeDelivered_IsDeclined_RatherThanLeftWaiting()
+    {
+        await using var harness = await StartAsync([AskingTool()],
+            configure: e => e.Elicitation = new McpElicitationConfig { Mode = McpElicitationConfig.ModeHandback });
+        harness.PublishGate = e =>
+            e.MessageType == typeof(McpTaskResult).FullName && e.GetPayload<McpTaskResult>()!.Kind == McpTaskResult.KindQuestion
+                ? throw new InvalidOperationException("broker unavailable")
+                : Task.CompletedTask;
+
+        StartedTaskId(await harness.InvokeAsync(
+            "plan", """{"topic":"mercury"}""", sessionId: Session, canAnswer: true, canReceiveLater: true));
+
+        var result = await harness.WaitForTaskResultAsync(r => r.Kind == McpTaskResult.KindCompleted);
+        StringAssert.Contains(result.Content, "mercury: decline:");
+    }
+
+    [TestMethod]
+    public async Task AFailedDelivery_IsRetried_AndASubagentWaitsForIt()
+    {
+        var gate = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var registry = new McpTaskRegistry();
+        await using var harness = await StartAsync([ResearchTool(gate)], registry: registry);
+        var failures = 0;
+        harness.PublishGate = e =>
+            e.MessageType == typeof(McpTaskResult).FullName && Interlocked.Increment(ref failures) <= 2
+                ? throw new InvalidOperationException("broker unavailable")
+                : Task.CompletedTask;
+        const string subagent = "subagent/retry";
+
+        var taskId = StartedTaskId(await harness.InvokeAsync("research", """{"topic":"a"}""", sessionId: subagent, canReceiveLater: true));
+        var waiting = registry.WaitForSessionAsync(subagent, CancellationToken.None);
+        gate.SetResult("ok");
+
+        var result = await harness.WaitForTaskResultAsync(r => r.TaskId == taskId);
+        StringAssert.Contains(result.Content, "researched a");
+        Assert.IsTrue(failures >= 3, "delivered on a retry");
+        await waiting.WaitAsync(TimeSpan.FromSeconds(10));
+        await WaitForLedgerAsync(harness, taskId, e => e.TryGetProperty("deliveredAt", out _));
+    }
+
+    [TestMethod]
+    public async Task RemovingARenamedServer_CancelsTheTasksStartedUnderItsOldName()
+    {
+        var gate = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var cancelled = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        await using var harness = await StartAsync([ResearchTool(gate, cancelled)], configureBridge: o => o.ConfigPollIntervalSeconds = 1);
+
+        var taskId = StartedTaskId(await harness.InvokeAsync("research", """{"topic":"a"}""", sessionId: Session, canReceiveLater: true));
+
+        // Renamed while the agent is down; the entry keeps its stable id.
+        await harness.Bridge.StopAsync(CancellationToken.None);
+        var config = harness.ReadPersistedConfig();
+        var entry = config.McpServers[BridgeHarness.ServerName];
+        config.McpServers.Remove(BridgeHarness.ServerName);
+        config.McpServers["renamed"] = entry;
+        await File.WriteAllTextAsync(harness.ConfigPath, JsonSerializer.Serialize(config,
+            new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase }));
+        await harness.RestartBridgeAsync();
+
+        await File.WriteAllTextAsync(harness.ConfigPath, """{"mcpServers":{}}""");
+
+        await cancelled.Task.WaitAsync(TimeSpan.FromSeconds(15));
+        var ended = await harness.WaitForTaskResultAsync(r => r.TaskId == taskId);
+        Assert.AreEqual("cancelled", ended.Status);
+    }
+
+    [TestMethod]
+    public async Task ASurfaceRefresh_KeepsTheServersTasksAndHandbackFlags()
+    {
+        var gate = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+        await using var harness = await StartAsync([ResearchTool(gate)],
+            configure: e => e.Elicitation = new McpElicitationConfig { Mode = McpElicitationConfig.ModeHandback });
+
+        harness.AddServerTool(EchoTool());
+        Assert.IsTrue(await harness.Bridge.RefreshSurfaceAsync(BridgeHarness.ServerName, CancellationToken.None));
+
+        var summary = harness.IndexMessages.Last().Servers.Single();
+        Assert.IsTrue(summary.Tasks, "mcp_cancel_task must stay registered");
+        Assert.IsTrue(summary.Handback, "mcp_answer must stay registered");
     }
 
     /// <summary>Waits for the task's ledger entry to satisfy <paramref name="match"/>; returns it as JSON.</summary>

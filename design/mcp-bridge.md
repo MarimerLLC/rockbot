@@ -397,7 +397,16 @@ agent: McpTaskResultHandler ──► synthetic turn + agent run + reply (user c
   After a restart the original arguments are gone (the ledger keeps only redacted ones), so the
   argument-dependent attachment rewrite and hints are skipped; binary capture still runs. The
   text goes into working memory at `{session}/mcp-task/{server}/{task_id}/result` *before* the
-  publish, so a subagent's awaiter can't see the task end before its output exists.
+  publish, so a subagent's awaiter can't see the task end before its output exists. A failed
+  delivery (working memory or the broker) is retried with backoff, and the task stays registered
+  until it goes out; if the bridge stops first, the ledger still shows it undelivered.
+- **Authorization.** The task's result is answered under the authorization of the request that
+  started it (#685). The agent side sends the run's `ActionGateContext` scope with the call
+  (`rb-run-origin`, `rb-user-asked-for`); the bridge keeps it in the ledger and on every
+  `McpTaskResult`; the handler restores it with `ActionGateScope.FromRelayed`, as
+  `SubagentResultHandler` does for subagent results. A task started by an information-only
+  question can't make external changes on the way back. A fold-back from an exited subagent
+  carries it on `LateA2ANotificationMessage`.
 - **Agent side.** `McpTaskResultHandler` acks at once and works on its own:
   - user conversation: waits for the work slot, adds a synthetic turn (`mcp-bridge`, marked as
     the tool's output), runs `AgentLoopRunner` with the main profile and publishes the reply. An
@@ -408,7 +417,10 @@ agent: McpTaskResultHandler ──► synthetic turn + agent run + reply (user c
   - exited subagent: the result is stashed under the primary's `notifications/mcp/…` and a
     `LateA2ANotificationMessage` with peer `mcp:{server}` folds it into a primary turn.
 
-  Delivery is at least once; the handler drops a repeat it has already handled.
+  Delivery is at least once; the handler drops a repeat it has already handled. The message's
+  work record (`IWipTracker`) stays open until the handler has finished, so if the agent stops
+  mid-reply, WIP recovery replays it at the next start; a failure clears the repeat marker so the
+  replay isn't dropped.
 
 ### Questions mid-task
 

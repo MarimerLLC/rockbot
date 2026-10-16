@@ -611,7 +611,7 @@ public sealed partial class McpBridgeService : IHostedService, IAsyncDisposable
         if (priorConfig is { RunsTasks: true }
             && (!config.RunsTasks || priorConfig.IdentityHash() != config.IdentityHash()))
         {
-            await CancelServerTasksAsync(name, $"the MCP server \"{name}\" was reconfigured");
+            await CancelServerTasksAsync(name, priorConfig.Id, $"the MCP server \"{name}\" was reconfigured");
         }
 
         // Record the config before attempting the connection so the reconnect sweep can retry a
@@ -826,7 +826,8 @@ public sealed partial class McpBridgeService : IHostedService, IAsyncDisposable
     private async Task DisconnectServerAsync(string name)
     {
         // Before the connection goes, so the server can still be asked to stop them.
-        await CancelServerTasksAsync(name, $"the MCP server \"{name}\" was removed");
+        _connections.TryGetConfig(name, out var removedConfig);
+        await CancelServerTasksAsync(name, removedConfig?.Id, $"the MCP server \"{name}\" was removed");
 
         using (await _connections.LockAsync(name, CancellationToken.None))
         {
@@ -1208,7 +1209,10 @@ public sealed partial class McpBridgeService : IHostedService, IAsyncDisposable
             Fingerprint = fingerprint,
             ToolFingerprints = toolFingerprints,
             Version = current.Metadata.Version,
-            IdentityHash = current.Config.IdentityHash()
+            IdentityHash = current.Config.IdentityHash(),
+            // Unchanged by a new surface: they follow the entry's policy and the connection's protocol.
+            Handback = current.Summary.Handback,
+            Tasks = current.Summary.Tasks
         };
 
         // Same connection, new surface: the snapshot keeps its resources, so nothing is retired.
@@ -1964,6 +1968,8 @@ public sealed partial class McpBridgeService : IHostedService, IAsyncDisposable
         {
             Task = task,
             TaskHandbackCapable = IsHandbackCapable(envelope),
+            TaskRunOrigin = envelope.Headers.GetValueOrDefault(McpHeaders.RunOrigin),
+            TaskUserAskedFor = envelope.Headers.GetValueOrDefault(McpHeaders.UserAskedFor),
             ToolDescription = toolDefinition.Tool?.Description,
             ReleaseTask = task is null ? null : () => ReleaseUnstartedTask(task),
             Request = request,
@@ -2041,6 +2047,15 @@ public sealed partial class McpBridgeService : IHostedService, IAsyncDisposable
 
         /// <summary>The caller can answer a handed-back question, which a task's questions need too.</summary>
         public bool TaskHandbackCapable { get; init; }
+
+        /// <summary>
+        /// The caller's consequential-action origin and request kind (<c>rb-run-origin</c>,
+        /// <c>rb-user-asked-for</c>), so a task's result is answered under the same authorization.
+        /// </summary>
+        public string? TaskRunOrigin { get; init; }
+
+        /// <inheritdoc cref="TaskRunOrigin"/>
+        public string? TaskUserAskedFor { get; init; }
 
         /// <summary>The tool's description from <c>tools/list</c>, for a task's ledger entry.</summary>
         public string? ToolDescription { get; init; }

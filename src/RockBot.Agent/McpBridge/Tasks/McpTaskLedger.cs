@@ -124,6 +124,12 @@ internal sealed class McpTaskEntry : ILedgerEntry<McpTaskEntry>
     /// <summary>The caller could answer a handed-back question (<c>rb-mcp-handback</c>).</summary>
     public bool HandbackCapable { get; set; }
 
+    /// <summary>The calling run's consequential-action origin (<c>rb-run-origin</c>), if it stated one.</summary>
+    public string? RunOrigin { get; set; }
+
+    /// <summary>What the originating user request asked for (<c>rb-user-asked-for</c>), if stated.</summary>
+    public string? UserAskedFor { get; set; }
+
     public DateTimeOffset StartedAt { get; set; }
 
     /// <summary>When the bridge gives up on it and cancels it.</summary>

@@ -31,4 +31,17 @@ public static class McpHeaders
 
     /// <summary>The value of <see cref="Tasks"/> that marks a caller able to take a later result.</summary>
     public const string TasksCapable = "1";
+
+    /// <summary>
+    /// On a call that may run as a background task: the calling run's origin for the
+    /// consequential-action gate (#685), as <c>ActionGateScope.LogName</c> writes it. The task's
+    /// result is answered later under the same authorization the request had.
+    /// </summary>
+    public const string RunOrigin = "rb-run-origin";
+
+    /// <summary>
+    /// With <see cref="RunOrigin"/>: whether the originating user request asked for anything, as
+    /// <c>CompletionEvalTriggers.LogName</c> writes it.
+    /// </summary>
+    public const string UserAskedFor = "rb-user-asked-for";
 }

@@ -113,6 +113,38 @@ public sealed partial class McpBridgeService
         }
 
         var created = started.TaskCreated!;
+
+        // From here the task exists on the server. Nothing below may be cut short by the invoke's
+        // token (its timeout, or the bridge's message handling): either the task is recorded and
+        // polled, or it is cancelled on the server. Never left running with nobody tracking it.
+        try
+        {
+            return await BeginTaskAsync(task, state, server, created);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Could not take on background task {Server}/{Tool} (server task {ServerTaskId}); cancelling it",
+                server.Name, request.ToolName, created.TaskId);
+            await TryCancelOnServerAsync(server.Client, created.TaskId, server.Name);
+
+            // A result, not an exception: an exception would have the call retried on a new connection.
+            return new CallToolResult
+            {
+                IsError = true,
+                Content = [new TextContentBlock { Text = $"[rockbot] {request.ToolName} on \"{server.Name}\" was not started: " +
+                    "the agent couldn't record it as a background task. Try again later." }],
+            };
+        }
+    }
+
+    /// <summary>
+    /// Records a task the server just created (write-ahead) and starts polling it. Runs on no
+    /// cancellation token: see <see cref="StartAsTaskAsync"/>.
+    /// </summary>
+    private async Task<CallToolResult> BeginTaskAsync(
+        RunningMcpTask task, InvocationState state, ConnectedServer server, CreateTaskResult created)
+    {
+        var request = state.Request;
         var now = _time.GetUtcNow();
         var timeout = TimeSpan.FromMinutes(Math.Max(1, server.Config.TaskTimeoutMinutes ?? _options.DefaultTaskTimeoutMinutes));
         var entry = new McpTaskEntry
@@ -126,8 +158,10 @@ public sealed partial class McpBridgeService
             Tool = request.ToolName,
             ToolDescription = Truncate(FlattenOrNull(state.ToolDescription), TaskToolDescriptionMaxChars),
             Arguments = LlmElicitationResponder.RedactArguments(request.Arguments),
-            TriggeredBy = await FindTaskTriggerAsync(task.SessionId, now, ct),
+            TriggeredBy = await FindTaskTriggerAsync(task.SessionId, now, CancellationToken.None),
             HandbackCapable = state.TaskHandbackCapable,
+            RunOrigin = state.TaskRunOrigin,
+            UserAskedFor = state.TaskUserAskedFor,
             StartedAt = now,
             Deadline = now + timeout,
             PollIntervalMs = created.PollIntervalMs,
@@ -135,24 +169,7 @@ public sealed partial class McpBridgeService
 
         // Write-ahead: the agent hears of no task the ledger doesn't hold, or a restart would leave
         // it running on the server with nobody polling it.
-        try
-        {
-            await _taskLedger.AddAsync(entry, ct);
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
-        {
-            _logger.LogError(ex, "Could not record background task {Server}/{Tool} in the task ledger; cancelling it",
-                server.Name, request.ToolName);
-            await TryCancelOnServerAsync(server.Client, created.TaskId, server.Name);
-
-            // A result, not an exception: an exception would have the call retried on a new connection.
-            return new CallToolResult
-            {
-                IsError = true,
-                Content = [new TextContentBlock { Text = $"[rockbot] {request.ToolName} on \"{server.Name}\" was not started: " +
-                    "the agent couldn't record it as a background task. Try again later." }],
-            };
-        }
+        await _taskLedger.AddAsync(entry, CancellationToken.None);
 
         LaunchTask(task, entry, request.Arguments, resumed: false);
         McpTaskDiagnostics.Record(server.Name, "started");
@@ -428,7 +445,7 @@ public sealed partial class McpBridgeService
         _logger.LogInformation("← MCP {Server}/{Tool} background task {TaskId} handed back question {QuestionId}",
             entry.Server, entry.Tool, entry.TaskId, question.QuestionId);
 
-        await PublishTaskResultAsync(new McpTaskResult
+        var delivered = await PublishTaskResultAsync(new McpTaskResult
         {
             SessionId = entry.SessionId,
             TaskId = entry.TaskId,
@@ -438,7 +455,13 @@ public sealed partial class McpBridgeService
             Content = McpTaskText.Question(entry, question, formShown),
             QuestionId = question.QuestionId,
             FormShown = formShown,
+            RunOrigin = entry.RunOrigin,
+            UserAskedFor = entry.UserAskedFor,
         }, ct);
+
+        // Nobody received it, so nobody will answer: the hand-back closes it and declines.
+        if (!delivered)
+            throw new InvalidOperationException($"question {question.QuestionId} of background task {entry.TaskId} couldn't be delivered");
     }
 
     /// <summary>Maps a completed task's result as a synchronous call's would be, and delivers it.</summary>
@@ -494,7 +517,7 @@ public sealed partial class McpBridgeService
         await _handback.CancelTaskAsync(entry.TaskId, "its background task ended");
 
         var completed = status == McpTaskEntryStatus.Completed;
-        var delivered = await PublishTaskResultAsync(new McpTaskResult
+        var ending = new McpTaskResult
         {
             SessionId = entry.SessionId,
             TaskId = entry.TaskId,
@@ -505,7 +528,30 @@ public sealed partial class McpBridgeService
             Content = completed ? content ?? "" : McpTaskText.Ended(entry),
             IsError = !completed || isError,
             NeedsReply = !(status == McpTaskEntryStatus.Cancelled && entry.CancelledByAgent),
-        }, CancellationToken.None);
+            RunOrigin = entry.RunOrigin,
+            UserAskedFor = entry.UserAskedFor,
+        };
+
+        // A failed delivery (working memory or the broker) is retried until it goes out. The task
+        // stays registered meanwhile, so a subagent waiting on it isn't released before its output
+        // exists. If the bridge stops first, the ledger still shows it undelivered and the next
+        // start delivers it.
+        var delivered = await PublishTaskResultAsync(ending, CancellationToken.None);
+        var retryDelay = PollDelay(entry.PollIntervalMs);
+        while (!delivered && !_lifetime.IsCancellationRequested)
+        {
+            try
+            {
+                await Task.Delay(retryDelay, _time, _lifetime.Token);
+            }
+            catch (OperationCanceledException)
+            {
+                break;
+            }
+
+            retryDelay = Backoff(retryDelay);
+            delivered = await PublishTaskResultAsync(ending, CancellationToken.None);
+        }
 
         if (delivered)
         {
@@ -598,11 +644,20 @@ public sealed partial class McpBridgeService
     /// longer runs tasks or points elsewhere. The server is asked to stop each one now, while the
     /// connection that started it is still current; each task's loop then tells its session.
     /// </summary>
-    private async Task CancelServerTasksAsync(string serverName, string reason)
+    /// <param name="serverId">
+    /// The server entry's stable id: a task resumed after the server was renamed still records the
+    /// old name, and is found by this.
+    /// </param>
+    private async Task CancelServerTasksAsync(string serverName, string? serverId, string reason)
     {
         foreach (var task in _tasks.All())
         {
-            if (task.Entry is not { } entry || !string.Equals(entry.Server, serverName, StringComparison.OrdinalIgnoreCase))
+            if (task.Entry is not { } entry)
+                continue;
+
+            var sameServer = string.Equals(entry.Server, serverName, StringComparison.OrdinalIgnoreCase)
+                             || (!string.IsNullOrEmpty(serverId) && string.Equals(entry.ServerId, serverId, StringComparison.Ordinal));
+            if (!sameServer)
                 continue;
 
             task.CancelledOnServer = true;

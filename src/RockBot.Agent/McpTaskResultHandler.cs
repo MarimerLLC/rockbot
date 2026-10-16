@@ -50,7 +50,8 @@ internal sealed class McpTaskResultHandler(
     ISubagentSessionResolver? subagentSessions = null,
     SessionOriginStore? originStore = null,
     IMcpSkillSurface? mcpSkillSurface = null,
-    IHostApplicationLifetime? lifetime = null) : IMessageHandler<McpTaskResult>
+    IHostApplicationLifetime? lifetime = null,
+    IWipTracker? wipTracker = null) : IMessageHandler<McpTaskResult>
 {
     /// <summary>Who the turns this handler writes are attributed to.</summary>
     internal const string BridgeTurnAgentName = "mcp-bridge";
@@ -66,18 +67,59 @@ internal sealed class McpTaskResultHandler(
     public Task HandleAsync(McpTaskResult message, MessageHandlerContext context)
     {
         // Running the agent can take a model turn; it mustn't hold this topic's single consumer.
-        // Acking first loses nothing: the content is already in working memory, and the bridge
-        // redelivers an ending it couldn't record as delivered after a restart.
+        // The message's work record stays open until processing succeeds: the bridge has already
+        // recorded the delivery, so if the agent stops mid-reply, WIP recovery replays this
+        // message at the next start rather than the update being lost.
+        string? wipMessageId = null;
+        if (wipTracker is not null
+            && context.Items.TryGetValue(WipConstants.MessageIdKey, out var id) && id is string messageId)
+        {
+            wipMessageId = messageId;
+            context.Items[WipConstants.DeferredKey] = true;
+        }
+
         var ct = lifetime?.ApplicationStopping ?? CancellationToken.None;
-        _ = Task.Run(() => ProcessAsync(message, ct), CancellationToken.None);
+        _ = Task.Run(() => ProcessAndCompleteAsync(message, wipMessageId, ct), CancellationToken.None);
         return Task.CompletedTask;
     }
 
-    internal async Task ProcessAsync(McpTaskResult message, CancellationToken ct)
+    private async Task ProcessAndCompleteAsync(McpTaskResult message, string? wipMessageId, CancellationToken ct)
     {
+        if (!await ProcessAsync(message, ct) || wipMessageId is null)
+            return;
+
+        try
+        {
+            await wipTracker!.CompleteAsync(wipMessageId, CancellationToken.None);
+        }
+        catch (Exception ex)
+        {
+            // At worst the message is replayed at the next start, and handled again.
+            logger.LogWarning(ex, "Could not complete the work record of background task {TaskId}'s {Kind}",
+                message.TaskId, message.Kind);
+        }
+    }
+
+    /// <summary>
+    /// Handles <paramref name="message"/>. False when it failed or was cut short, so its work
+    /// record stays open for recovery and a redelivery isn't taken for a repeat.
+    /// </summary>
+    internal async Task<bool> ProcessAsync(McpTaskResult message, CancellationToken ct)
+    {
+        var deliveryId = $"{message.TaskId}/{message.Kind}/{message.QuestionId}";
+        if (Handled.Count > 10_000)
+            Handled.Clear();
+        if (!Handled.TryAdd(deliveryId, 0))
+        {
+            logger.LogInformation("Background task {TaskId}'s {Kind} was already handled; ignoring the repeat",
+                message.TaskId, message.Kind);
+            return true;
+        }
+
         try
         {
             await ProcessCoreAsync(message, ct);
+            return true;
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
@@ -89,20 +131,13 @@ internal sealed class McpTaskResultHandler(
             logger.LogError(ex, "Handling background task {TaskId}'s {Kind} for {Session} failed",
                 message.TaskId, message.Kind, message.SessionId);
         }
+
+        Handled.TryRemove(deliveryId, out _);
+        return false;
     }
 
     private async Task ProcessCoreAsync(McpTaskResult message, CancellationToken ct)
     {
-        var deliveryId = $"{message.TaskId}/{message.Kind}/{message.QuestionId}";
-        if (Handled.Count > 10_000)
-            Handled.Clear();
-        if (!Handled.TryAdd(deliveryId, 0))
-        {
-            logger.LogInformation("Background task {TaskId}'s {Kind} was already handled; ignoring the repeat",
-                message.TaskId, message.Kind);
-            return;
-        }
-
         var sessionId = message.SessionId;
         var key = message.WorkingMemoryKey;
         if (key is null && message.Kind != McpTaskResult.KindQuestion)
@@ -212,7 +247,11 @@ internal sealed class McpTaskResultHandler(
 
                 finalContent = await agentLoopRunner.RunAsync(
                     chatMessages, chatOptions, conversationId,
-                    enableFollowUp: false, cancellationToken: ct);
+                    enableFollowUp: false, cancellationToken: ct,
+                    // The turn answers the request that started the task, so it runs under that
+                    // request's authorization (#685): a task started by an information-only
+                    // question doesn't get to make external changes on the way back.
+                    actionGate: ActionGateScope.FromRelayed(message.RunOrigin, message.UserAskedFor));
             }
         }
         catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
@@ -285,7 +324,9 @@ internal sealed class McpTaskResultHandler(
             SubagentName: $"subagent-{subagentTaskId}",
             PeerAgent: LateA2ANotificationMessage.McpPeerPrefix + message.ServerName,
             Kind: kind,
-            WorkingMemoryKey: wmKey);
+            WorkingMemoryKey: wmKey,
+            RunOrigin: message.RunOrigin,
+            UserAskedFor: message.UserAskedFor);
 
         await publisher.PublishAsync($"{a2aOptions.LateNotificationTopic}.{agent.Name}",
             notification.ToEnvelope<LateA2ANotificationMessage>(source: agent.Name), ct);

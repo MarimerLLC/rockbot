@@ -1,5 +1,6 @@
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using RockBot.A2A;
@@ -43,7 +44,7 @@ public class McpTaskResultHandlerTests
         _handler = CreateHandler();
     }
 
-    private McpTaskResultHandler CreateHandler()
+    private McpTaskResultHandler CreateHandler(IConversationMemory? conversation = null, IWipTracker? wipTracker = null)
     {
         var llmClient = new ConfigurableLlmClient("The research is in: Mercury is closest to the sun.");
         var agent = new AgentIdentity(AgentName);
@@ -71,7 +72,7 @@ public class McpTaskResultHandlerTests
             NullLogger<AgentContextBuilder>.Instance);
 
         return new McpTaskResultHandler(
-            _conversation, llmClient, _publisher, agent, agentLoopRunner, agentContextBuilder, _workingMemory,
+            conversation ?? _conversation, llmClient, _publisher, agent, agentLoopRunner, agentContextBuilder, _workingMemory,
             new MemoryTools(new StubLongTermMemory(), llmClient, profileOptions, NullLogger<MemoryTools>.Instance),
             new StubSkillStore(), new StubToolRegistry(),
             new RulesTools(new StubRulesStore(), clock, NullLogger<RulesTools>.Instance),
@@ -79,7 +80,8 @@ public class McpTaskResultHandlerTests
             new StubWorkSerializer(), new SessionClientCapabilityStore(),
             NullLogger<McpTaskResultHandler>.Instance,
             a2aOptions: new A2AOptions(),
-            subagentSessions: _subagents);
+            subagentSessions: _subagents,
+            wipTracker: wipTracker);
     }
 
     private static McpTaskResult Result(string session = $"session/{Conversation}", string? key = null,
@@ -186,6 +188,139 @@ public class McpTaskResultHandlerTests
         Assert.AreEqual(NotificationKind.Result, folded.Kind);
         Assert.AreEqual(message.Content, _workingMemory.Store[folded.WorkingMemoryKey]);
         Assert.AreEqual(0, Published<AgentReply>().Count);
+    }
+
+    [TestMethod]
+    public async Task ASuccessfulDelivery_CompletesItsWorkRecordOnlyAfterProcessing()
+    {
+        var wip = new RecordingWip();
+        var handler = CreateHandler(wipTracker: wip);
+        var context = Context("wip-1");
+
+        await handler.HandleAsync(Result(), context);
+
+        Assert.IsTrue(context.Items.ContainsKey(WipConstants.DeferredKey), "the middleware must not complete it on return");
+        await WaitUntilAsync(() => wip.Completed.Contains("wip-1"));
+        Assert.AreEqual(1, Published<AgentReply>().Count);
+    }
+
+    [TestMethod]
+    public async Task AFailedDelivery_LeavesItsWorkRecordOpen_AndIsNotTakenForARepeat()
+    {
+        var wip = new RecordingWip();
+        var flaky = new FlakyConversationMemory(_conversation);
+        var message = Result(kind: McpTaskResult.KindEnded, content: "[rockbot] The task was lost.", needsReply: false);
+
+        await CreateHandler(flaky, wip).HandleAsync(message, Context("wip-2"));
+        await WaitUntilAsync(() => flaky.Failures == 1);
+        await Task.Delay(100);
+        Assert.IsFalse(wip.Completed.Contains("wip-2"), "left for recovery to replay at the next start");
+
+        // The replay (or a redelivery) is handled, not dropped as already seen.
+        Assert.IsTrue(await CreateHandler().ProcessAsync(message, CancellationToken.None));
+        StringAssert.Contains((await _conversation.GetTurnsAsync(Conversation)).Single().Content, "was lost");
+    }
+
+    [TestMethod]
+    public void TheOriginatingAuthorization_IsRestoredForTheReply()
+    {
+        var informationOnly = ActionGateScope.FromRelayed("user-turn", "information-only")!;
+        Assert.AreEqual(RunOrigin.UserTurn, informationOnly.Origin);
+        Assert.IsFalse(informationOnly.AllowsExternalChanges);
+
+        var fromSubagent = ActionGateScope.FromRelayed("subagent-of-user-turn", "instruction")!;
+        Assert.AreEqual(RunOrigin.UserTurn, fromSubagent.Origin);
+        Assert.IsTrue(fromSubagent.AllowsExternalChanges);
+
+        Assert.AreEqual(RunOrigin.Scheduled, ActionGateScope.FromRelayed("scheduled", null)!.Origin);
+        Assert.IsNull(ActionGateScope.FromRelayed(null, null), "nothing carried: pre-#685 behaviour");
+    }
+
+    [TestMethod]
+    public async Task AFoldBack_CarriesTheOriginatingAuthorization()
+    {
+        _subagents.Active = false;
+        _subagents.Primary = $"session/{Conversation}";
+
+        await _handler.ProcessAsync(Result(session: "subagent/abc") with
+        {
+            RunOrigin = "subagent-of-user-turn",
+            UserAskedFor = "information-only",
+        }, CancellationToken.None);
+
+        var folded = Published<LateA2ANotificationMessage>().Single();
+        Assert.AreEqual("subagent-of-user-turn", folded.RunOrigin);
+        Assert.AreEqual("information-only", folded.UserAskedFor);
+    }
+
+    private static MessageHandlerContext Context(string wipMessageId)
+    {
+        var context = new MessageHandlerContext
+        {
+            Envelope = new McpTaskResult
+            {
+                SessionId = "x", TaskId = "x", ServerName = "x", ToolName = "x", Kind = McpTaskResult.KindCompleted,
+            }.ToEnvelope("bridge"),
+            Agent = new AgentIdentity(AgentName),
+            Services = new Microsoft.Extensions.DependencyInjection.ServiceCollection().BuildServiceProvider(),
+            CancellationToken = CancellationToken.None,
+        };
+        context.Items[WipConstants.MessageIdKey] = wipMessageId;
+        return context;
+    }
+
+    private static async Task WaitUntilAsync(Func<bool> condition)
+    {
+        var deadline = DateTime.UtcNow.AddSeconds(10);
+        while (!condition())
+        {
+            if (DateTime.UtcNow > deadline)
+                Assert.Fail("Condition not met within 10 s.");
+            await Task.Delay(20);
+        }
+    }
+
+    private sealed class RecordingWip : IWipTracker
+    {
+        public System.Collections.Concurrent.ConcurrentBag<string> Completed { get; } = [];
+
+        public Task<WipEntry> BeginAsync(MessageEnvelope envelope, CancellationToken ct = default) =>
+            throw new NotSupportedException();
+
+        public Task CompleteAsync(string messageId, CancellationToken ct = default)
+        {
+            Completed.Add(messageId);
+            return Task.CompletedTask;
+        }
+
+        public Task AbandonAsync(string messageId, string reason, CancellationToken ct = default) => Task.CompletedTask;
+
+        public Task<IReadOnlyList<WipEntry>> GetIncompleteAsync(CancellationToken ct = default) =>
+            Task.FromResult<IReadOnlyList<WipEntry>>([]);
+    }
+
+    /// <summary>Fails the first turn it is asked to record, as a storage hiccup would.</summary>
+    private sealed class FlakyConversationMemory(IConversationMemory inner) : IConversationMemory
+    {
+        private int _failures;
+
+        public int Failures => Volatile.Read(ref _failures);
+
+        public Task AddTurnAsync(string sessionId, ConversationTurn turn, CancellationToken cancellationToken = default)
+        {
+            if (Interlocked.CompareExchange(ref _failures, 1, 0) == 0)
+                throw new IOException("conversation store unavailable");
+            return inner.AddTurnAsync(sessionId, turn, cancellationToken);
+        }
+
+        public Task<IReadOnlyList<ConversationTurn>> GetTurnsAsync(string sessionId, CancellationToken cancellationToken = default) =>
+            inner.GetTurnsAsync(sessionId, cancellationToken);
+
+        public Task ClearAsync(string sessionId, CancellationToken cancellationToken = default) =>
+            inner.ClearAsync(sessionId, cancellationToken);
+
+        public Task<IReadOnlyList<string>> ListSessionsAsync(CancellationToken cancellationToken = default) =>
+            inner.ListSessionsAsync(cancellationToken);
     }
 
     private sealed class FakeSubagents : ISubagentSessionResolver

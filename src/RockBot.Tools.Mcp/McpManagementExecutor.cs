@@ -626,7 +626,18 @@ public sealed class McpManagementExecutor : IToolExecutor, IMcpQuestionAnswerer,
         // A server with tasks enabled may run the call in the background, but only for a run whose
         // session the result can reach later.
         if (McpTaskContext.CanReceiveLater(outer.SessionId))
+        {
             extraHeaders[McpHeaders.Tasks] = McpHeaders.TasksCapable;
+
+            // The result is answered in a later turn; it must run under this request's
+            // authorization, not whatever a turn with no originating user message would get.
+            if (ActionGateContext.Scope is { } gate)
+            {
+                extraHeaders[McpHeaders.RunOrigin] = ActionGateScope.LogName(gate.Origin);
+                if (gate.UserAskedFor is { } askedFor)
+                    extraHeaders[McpHeaders.UserAskedFor] = CompletionEvalTriggers.LogName(askedFor);
+            }
+        }
 
         var response = await _proxy.ExecuteAsync(innerRequest, extraHeaders, ct);
 
