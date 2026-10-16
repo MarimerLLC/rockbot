@@ -331,16 +331,27 @@ public sealed class AgentHostOptions
     /// Soft context-size watermark in tokens. When the running message list exceeds
     /// this size before an LLM call, large tool results are trimmed into the WM stash
     /// proactively — without waiting for a provider-side context-overflow error.
-    /// Default 30,000 tokens (≈108,000 chars at the 4-chars-per-token estimate, which
-    /// trims to a ~27k-token effective ceiling because the trimmer targets 90% of
-    /// the char budget). The per-tool-result cap (<see cref="ToolResultMaxChars"/>)
-    /// already prevents any single tool from singlehandedly bloating the loop, so the
-    /// watermark mostly catches cumulative bloat across many medium-sized results;
-    /// dropping it to 25k forced hyper-elision of recent results in live runs.
-    /// Set to 0 to disable proactive trimming and fall back to the legacy behaviour
-    /// (trim only after a 400 overflow has been observed).
+    ///
+    /// <para>The "tokens" are the context estimate's 4 chars per token, so the trim's char
+    /// budget is <c>tokens × 4 × 0.9</c>. Billed tokens run nearer 2.3 chars each, so a full
+    /// budget costs roughly 1.7× the configured figure in real input tokens.</para>
+    ///
+    /// <para><b>Sizing.</b> The budget must sit well above the content the trim can't cut —
+    /// the system prompt, tool schemas and history, about 120,000 chars at the first call of
+    /// a turn as of 2026-10. Once it fires, the trim steps the context down to
+    /// <see cref="ToolResultStashTrimTargetRatio"/> of the budget, so that target needs to clear
+    /// the baseline too. The former default of 30,000 (108,000 chars) was below the baseline
+    /// itself: the trim could never reach its budget, never cut below its floor, and never
+    /// touched <c>file_read</c> pages or the latest batch. Default 100,000: trims start at
+    /// 360,000 chars (~155,000 billed tokens, inside every configured tier's window) and step
+    /// down to 180,000, leaving ~60,000 chars of room above the baseline.</para>
+    ///
+    /// <para>The per-tool-result cap (<see cref="ToolResultMaxChars"/>) already prevents any
+    /// single tool from bloating the loop, so the watermark catches cumulative growth across
+    /// many results. Set to 0 to disable proactive trimming and fall back to the legacy
+    /// behaviour (trim only after a 400 overflow has been observed).</para>
     /// </summary>
-    public int ToolResultStashWatermarkTokens { get; set; } = 30_000;
+    public int ToolResultStashWatermarkTokens { get; set; } = 100_000;
 
     /// <summary>
     /// Per-tier override of <see cref="ToolResultStashWatermarkTokens"/>, for tiers whose
