@@ -1,7 +1,8 @@
 # ResearchAgent as an MCP Server
 
-**Status:** Proposed. MCP elicitation (#593) and the `conversation` responder are in place;
-the remaining phases start with the MCP C# SDK 2.x upgrade (#602).
+**Status:** Proposed. MCP elicitation (#593), the `conversation` responder, the SDK 2.x upgrade
+(#602, #607), hand-back (#608) and the Tasks-aware bridge (#658, the bridge half of Phase 4) are
+in place. The research server itself (Phase 2) is next.
 
 ## Problem
 
@@ -75,7 +76,7 @@ AdvisorCouncil ──ResearchAgentInvoker─┘   KEDA ScaledJob: one pod per me
 | Feature | C# SDK 2.x surface | Relevance |
 |---|---|---|
 | Multi Round-Trip Requests | Tool throws `InputRequiredException` with `InputRequest.ForElicitation(...)` and an opaque `requestState`; client re-issues the same `tools/call` with `inputResponses`. `McpClient` resolves the loop through the registered `McpClientHandlers.ElicitationHandler`. | Replaces A2A `InputRequired`. Stateless — no session affinity. |
-| Tasks extension | `ModelContextProtocol.Extensions.Tasks`; server `.WithTasks(IMcpTaskStore)`; client `CallToolAsTaskAsync` / `CallToolWithPollingAsync`. MRTR flows through the task store, so a running task can pause for input. | Long research runs without a single long-held request. |
+| Tasks extension | `ModelContextProtocol.Extensions.Tasks`; server `.WithTasks(IMcpTaskStore)`; client `CallToolAsTaskAsync` / `CallToolWithPollingAsync`. Inside a task the tool's `ElicitAsync` goes through the task store, so a running task can pause for input. A tool that throws `InputRequiredException` (MRTR) inside a task fails it in 2.2.0. | Long research runs without a single long-held request. |
 | Stateless HTTP by default | `HttpServerTransportOptions.Stateless = true` | Any replica can serve any call. |
 | Legacy server→client requests | `ElicitAsync` / `SampleAsync` / `RequestRootsAsync` deprecated (MCP9005) and throw in stateless mode | #593 is written against the 1.4 `elicitation/create` path; see Phase 1. |
 
@@ -110,9 +111,12 @@ The directive changes from "never ask" to "ask at most once, and only up front":
 - The server runs a cheap **scoping pass** (Balanced tier, no tools) over `question`,
   `context` and `constraints` before spending any search budget. If the question is genuinely
   ambiguous in a way that would send the research in different directions ("Mercury — the
-  planet, the element, or the band?"), it throws `InputRequiredException` with a single
-  form-mode elicitation: a single enum of the candidate interpretations, and no free-text
-  field. The `conversation` responder never fills free text in from the user's conversation
+  planet, the element, or the band?"), it asks a single form-mode elicitation: a single enum
+  of the candidate interpretations, and no free-text field. Called synchronously (the council),
+  it throws `InputRequiredException`; running as a task (the primary agent, through the bridge),
+  it must call `ElicitAsync` instead, which the Tasks extension routes through the task store.
+  SDK 2.2.0 fails a task whose tool throws `InputRequiredException` ("MRTR and tasks cannot be
+  composed via [McpServerTool] yet"), so the tool has to check which way it is running. The `conversation` responder never fills free text in from the user's conversation
   (it declines the whole form), so anything open-ended belongs in the tool's `context`
   argument instead.
 - It never asks mid-research. A mid-run question means a declined answer wastes the search
@@ -166,7 +170,8 @@ So the two callers want different things:
   result in working memory and inject a synthetic turn naming the key. This is new bridge
   work, and is the largest piece of this design.
 
-Until the Tasks-aware bridge exists, the primary agent stays on A2A research.
+The Tasks-aware bridge exists (#658; see `design/mcp-bridge.md`, "Long-running tools"). Until the
+research server does, the primary agent stays on A2A research.
 
 ### Hosting
 
@@ -231,11 +236,14 @@ than answered in place — which is what research's clarifying question needs.
 
 ### Phase 4 — Tasks-aware bridge; primary agent switches
 
-- Bridge: per-server opt-in (`"tasks": true` in `mcp.json`) to invoke via
+- Bridge (done, #658): per-server opt-in (`"tasks": true` in `mcp.json`) to invoke via
   `CallToolAsTaskAsync`, return immediately, poll in the background, and deliver the result
-  as a working-memory entry + synthetic turn.
+  as a working-memory entry + synthetic turn. A task's questions go through the server's
+  elicitation policy, including hand-back to the conversation; tasks survive a restart of the
+  agent through a task ledger; caps, `mcp_cancel_task` and cancel-on-removal bound them. See
+  `design/mcp-bridge.md`, "Long-running tools".
 - Primary agent: research is now an MCP tool; remove the `ResearchAgent` entry from
-  `well-known-agents.json`.
+  `well-known-agents.json`. Give the research entry `"tasks": true` and its `elicitation` block.
 
 ### Phase 5 — Retire the A2A research path
 
@@ -245,10 +253,8 @@ ResearchAgent sections of `docs/a2a.md`.
 
 ## Open questions
 
-1. **Tasks-aware bridge scope.** Is Phase 4 worth building for research alone, or is it the
-   general "long-running MCP tool" capability the bridge needs anyway? If other servers will
-   want it, design it generally; if not, the primary agent could stay on A2A research
-   indefinitely and Phase 5 shrinks to the council's path.
+1. **Tasks-aware bridge scope.** Resolved: #658 built it as the bridge's general
+   "long-running MCP tool" capability, opted into per server, not as something research-only.
 2. **Responder quality.** Measure how often the `conversation` responder settles research
    clarifications versus declining them back to the agent, before investing in the #602
    hand-back path for this server.

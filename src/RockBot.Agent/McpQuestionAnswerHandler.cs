@@ -149,6 +149,19 @@ internal sealed class McpQuestionAnswerHandler(
             return;
         }
 
+        // A background task's question: the answer went to the task, which carries on. There is no
+        // result to respond to yet; it arrives as its own turn when the task finishes.
+        if (response.TaskContinues)
+        {
+            await conversationMemory.AddTurnAsync(sessionId,
+                new ConversationTurn("user", response.Result?.Content ?? "[rockbot] The answer was sent to the background task.",
+                    DateTimeOffset.UtcNow) { AgentName = BridgeTurnAgentName },
+                ct);
+            logger.LogInformation("Form answer to MCP question {QuestionId} went to a background task; no reply until it finishes",
+                message.QuestionId);
+            return;
+        }
+
         await RespondAsync(message, response, ct);
     }
 

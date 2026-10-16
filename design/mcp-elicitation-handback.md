@@ -462,9 +462,13 @@ data on how often each path is used.
    `InputRequiredResult` instead of auto-resolution. The ledger could then store `requestState`
    (encrypted at rest; it's the server's opaque continuation), and reconciliation could re-park
    the call instead of announcing an interruption.
-2. **Asynchronous tools.** When the Tasks-aware bridge lands, a task's input request should use
-   the same hand-back, not a parked `CallToolAsync`. The pending store and `mcp_answer` are
-   meant to serve both.
+2. **Asynchronous tools.** Resolved by #658. A background task's input request uses the same
+   hand-back: the pending store (an entry now carries the `taskId`), `mcp_answer` and the chat
+   form. Since `tasks/get` returns the input request as data, nothing is parked; the question is
+   delivered to the session as its own turn, `mcp_answer` replies at once that the answer was
+   sent, and the task's poll sends it with `tasks/update`. Because the task (and its question)
+   lives on the server, a restart doesn't announce an interrupted call: the next poll asks again.
+   See `design/mcp-bridge.md`, "Long-running tools".
 3. **Per-question routing.** Could a server's choice-only questions go to `conversation` in-band
    and everything else hand back? That would be simple to add to the coordinator once both
    paths have usage data.

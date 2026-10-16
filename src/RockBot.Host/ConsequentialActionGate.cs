@@ -99,6 +99,27 @@ public sealed record ActionGateScope(RunOrigin Origin, UserRequestKind? UserAske
     };
 
     /// <summary>
+    /// The scope a turn relaying one piece of deferred work runs under, from the origin and
+    /// request kind the work carried (a background MCP task's result, a late reply): the
+    /// originating run's scope, folded back into the primary's user turn as
+    /// <see cref="FromRelayedResults"/> does. Null when no origin was carried — the run then keeps
+    /// the pre-#685 behaviour.
+    /// </summary>
+    public static ActionGateScope? FromRelayed(string? runOrigin, string? userAskedFor)
+    {
+        if (ParseOrigin(runOrigin) is not { } origin)
+            return null;
+
+        if (origin is not (RunOrigin.UserTurn or RunOrigin.SubagentOfUserTurn))
+            return new ActionGateScope(origin);
+
+        return new ActionGateScope(RunOrigin.UserTurn,
+            ParseUserAskedFor(userAskedFor) == UserRequestKind.InformationOnly
+                ? UserRequestKind.InformationOnly
+                : UserRequestKind.Instruction);
+    }
+
+    /// <summary>
     /// The scope a synthesis turn relaying <paramref name="results"/> runs under: the scope each
     /// subagent ran under, folded back into the primary's user turn. Null when no result carries
     /// one (results from an older build) — the run then keeps the pre-#685 behaviour. When

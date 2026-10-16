@@ -48,8 +48,13 @@ internal sealed class LateA2ANotificationHandler(
             : sessionNamespace;
 
         var kindSlug = message.Kind.ToString().ToLowerInvariant();
+
+        // A background MCP task a subagent started folds back the same way; its peer is "mcp:{server}".
+        var from = message.PeerAgent.StartsWith(LateA2ANotificationMessage.McpPeerPrefix, StringComparison.Ordinal)
+            ? $"MCP server '{message.PeerAgent[LateA2ANotificationMessage.McpPeerPrefix.Length..]}' (a background task)"
+            : $"A2A peer '{message.PeerAgent}'";
         var syntheticUserTurn =
-            $"A late {kindSlug} arrived from A2A peer '{message.PeerAgent}' for your completed subagent " +
+            $"A late {kindSlug} arrived from {from} for your completed subagent " +
             $"'{message.SubagentName}'. The payload is in working memory at '{message.WorkingMemoryKey}'. " +
             $"Call get_from_working_memory with that key to read it, decide whether to act on it, and inform " +
             $"the user if it is relevant. Make clear this is a late result from earlier background work so the " +
@@ -92,7 +97,9 @@ internal sealed class LateA2ANotificationHandler(
 
             var finalContent = await agentLoopRunner.RunAsync(
                 chatMessages, chatOptions, rawSessionId,
-                enableFollowUp: false, cancellationToken: ct);
+                enableFollowUp: false, cancellationToken: ct,
+                // Under the scope of the work being folded back, when it carried one (#685).
+                actionGate: ActionGateScope.FromRelayed(message.RunOrigin, message.UserAskedFor));
 
             await conversationMemory.AddTurnAsync(
                 rawSessionId,

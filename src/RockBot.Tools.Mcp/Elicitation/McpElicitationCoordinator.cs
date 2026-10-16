@@ -152,6 +152,45 @@ public sealed class McpElicitationCoordinator
         return scope;
     }
 
+    /// <summary>
+    /// A scope for a call that isn't in flight as far as the server's other questions go: a
+    /// background task, whose input requests arrive on the bridge's poll rather than inside a
+    /// tool call. It isn't registered with the coordinator, so a question from another call
+    /// can't be attributed to it; its own questions go through
+    /// <see cref="HandleForCallAsync"/>, which names it explicitly. Its attempts and records
+    /// accumulate across rounds as an open call's do, so <c>maxPerCall</c> and the result's
+    /// note work the same, and it outlives a reconnect: any later connection's coordinator can
+    /// answer for it. Disposing it does nothing.
+    /// </summary>
+    public static McpElicitationCallScope BeginDetachedCall(
+        string toolName, string? arguments, string? sessionId, IMcpHandbackChannel? handback = null)
+        => new(toolName, arguments, sessionId, _ => { }, handback);
+
+    /// <summary>
+    /// Answers one question asked by the call behind <paramref name="scope"/>, exactly as
+    /// <see cref="HandleAsync"/> would for a question attributed to that call alone. Never throws.
+    /// </summary>
+    public async ValueTask<ElicitResult> HandleForCallAsync(
+        ElicitRequestParams? request, McpElicitationCallScope scope, CancellationToken ct)
+    {
+        IReadOnlyList<McpElicitationCallScope> scopes = [scope];
+        try
+        {
+            return await HandleCoreAsync(request, [scope], exact: true, ct).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            _logger.LogDebug("Elicitation for MCP server {Server} was cancelled before it was answered", _serverName);
+            return Answer(request, McpElicitationActions.Cancel,
+                "the request was cancelled before an answer was ready", scopes);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Elicitation handling failed for MCP server {Server}", _serverName);
+            return Answer(request, McpElicitationActions.Decline, "the client could not process the request", scopes);
+        }
+    }
+
     /// <summary>The call open in the current async flow, if any (see <see cref="BeginCall"/>).</summary>
     private static readonly AsyncLocal<McpElicitationCallScope?> CurrentCall = new();
 
@@ -173,7 +212,9 @@ public sealed class McpElicitationCoordinator
     {
         try
         {
-            return await HandleCoreAsync(request, ct).ConfigureAwait(false);
+            var scopes = AttributableCalls();
+            var exact = scopes is [var only] && ReferenceEquals(CurrentCall.Value, only);
+            return await HandleCoreAsync(request, scopes, exact, ct).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
@@ -190,12 +231,15 @@ public sealed class McpElicitationCoordinator
         }
     }
 
-    private async ValueTask<ElicitResult> HandleCoreAsync(ElicitRequestParams? request, CancellationToken ct)
+    /// <param name="exact">
+    /// The question is known to come from <paramref name="scopes"/>' single call (MRTR in that
+    /// call's own flow, or a background task's poll), so it may be handed back.
+    /// </param>
+    private async ValueTask<ElicitResult> HandleCoreAsync(
+        ElicitRequestParams? request, List<McpElicitationCallScope> scopes, bool exact, CancellationToken ct)
     {
         if (request is null)
             return Answer(null, McpElicitationActions.Decline, "the request carried no parameters", null);
-
-        var scopes = AttributableCalls();
 
         // An elicitation with nothing in flight has no caller waiting on it and no tool-call
         // context to answer from — during discovery, say. Decline rather than guess.
@@ -278,7 +322,7 @@ public sealed class McpElicitationCoordinator
         // else falls through to the responder, as in auto mode.
         if (_config.ResolveMode() == McpElicitationConfig.ModeHandback
             && scopes is [{ Handback: { } channel } only]
-            && ReferenceEquals(CurrentCall.Value, only))
+            && exact)
         {
             return await HandBackAsync(request, only, channel, defaults, fieldNames, ct).ConfigureAwait(false);
         }

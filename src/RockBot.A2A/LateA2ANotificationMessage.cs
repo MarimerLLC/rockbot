@@ -26,4 +26,17 @@ public sealed record LateA2ANotificationMessage(
     string SubagentName,
     string PeerAgent,
     NotificationKind Kind,
-    string WorkingMemoryKey);
+    string WorkingMemoryKey,
+    string? RunOrigin = null,
+    string? UserAskedFor = null)
+{
+    // RunOrigin / UserAskedFor: the consequential-action scope (#685) of the run whose work this
+    // is, as ActionGateScope.LogName and CompletionEvalTriggers.LogName write them. The folding
+    // turn runs under it. Null when unknown (A2A late replies don't carry it yet).
+
+    /// <summary>
+    /// Prefix of <see cref="PeerAgent"/> when the late reply is a background MCP task's, not an A2A
+    /// peer's: <c>mcp:{server}</c>.
+    /// </summary>
+    public const string McpPeerPrefix = "mcp:";
+}

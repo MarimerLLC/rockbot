@@ -8,9 +8,11 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
+using ModelContextProtocol.Extensions.Tasks;
 using ModelContextProtocol.Server;
 using RockBot.Agent.McpBridge;
 using RockBot.Agent.McpBridge.Attachments;
+using RockBot.Agent.McpBridge.Tasks;
 using RockBot.Host;
 using RockBot.Messaging;
 using RockBot.Tools;
@@ -41,6 +43,7 @@ internal sealed class BridgeHarness : IAsyncDisposable
     private IWorkingMemory? _workingMemory;
     private TimeProvider? _timeProvider;
     private SessionClientCapabilityStore? _clientCapabilities;
+    private McpTaskRegistry? _taskRegistry;
     private McpBridgeService _bridge = null!;
     private TopicSubscriber _subscriber = null!;
     private CapturingPublisher _publisher = null!;
@@ -139,7 +142,7 @@ internal sealed class BridgeHarness : IAsyncDisposable
             elicitationResponder: null, services: null,
             attachmentStorage: new AttachmentStorage(AttachmentsPath),
             conversationMemory: _conversationMemory, workingMemory: _workingMemory, timeProvider: _timeProvider,
-            clientCapabilities: _clientCapabilities);
+            clientCapabilities: _clientCapabilities, taskRegistry: _taskRegistry);
         await _bridge.StartAsync(CancellationToken.None);
     }
 
@@ -161,7 +164,10 @@ internal sealed class BridgeHarness : IAsyncDisposable
         IWorkingMemory? workingMemory = null,
         Action<string>? beforeBridgeStarts = null,
         TimeProvider? timeProvider = null,
-        SessionClientCapabilityStore? clientCapabilities = null)
+        SessionClientCapabilityStore? clientCapabilities = null,
+        IMcpTaskStore? taskStore = null,
+        Action<McpTasksOptions>? configureTasks = null,
+        McpTaskRegistry? taskRegistry = null)
     {
         var builder = WebApplication.CreateSlimBuilder();
         builder.WebHost.UseUrls("http://127.0.0.1:0");
@@ -173,6 +179,9 @@ internal sealed class BridgeHarness : IAsyncDisposable
             mcp.WithPrompts(prompts);
         if (resources is not null)
             mcp.WithResources(resources);
+        // The Tasks extension (SEP-2663): tools run as tasks for a client that asks for one.
+        if (taskStore is not null)
+            mcp.WithTasks(taskStore, configureTasks ?? (_ => { }));
         builder.Services.Configure<McpServerOptions>(o =>
         {
             o.ServerInfo = new ModelContextProtocol.Protocol.Implementation { Name = "harness", Version = HarnessServerVersion };
@@ -229,6 +238,7 @@ internal sealed class BridgeHarness : IAsyncDisposable
             _workingMemory = workingMemory,
             _timeProvider = timeProvider,
             _clientCapabilities = clientCapabilities,
+            _taskRegistry = taskRegistry,
         };
 
         // Lets a test seed files (the pending-question ledger) the bridge reads as it starts.
@@ -274,7 +284,8 @@ internal sealed class BridgeHarness : IAsyncDisposable
     /// </summary>
     public async Task<ToolInvokeResponse> InvokeAsync(
         string tool, string? argumentsJson, string server = ServerName,
-        string sessionId = "session-1", bool canAnswer = false)
+        string sessionId = "session-1", bool canAnswer = false, bool canReceiveLater = false,
+        IReadOnlyDictionary<string, string>? extraHeaders = null)
     {
         var request = new ToolInvokeRequest
         {
@@ -287,6 +298,10 @@ internal sealed class BridgeHarness : IAsyncDisposable
         var headers = new Dictionary<string, string> { [McpHeaders.ServerName] = server };
         if (canAnswer)
             headers[McpHeaders.Handback] = McpHeaders.HandbackCapable;
+        if (canReceiveLater)
+            headers[McpHeaders.Tasks] = McpHeaders.TasksCapable;
+        foreach (var (key, value) in extraHeaders ?? new Dictionary<string, string>())
+            headers[key] = value;
 
         var reply = await SendAsync(McpToolProxy.InvokeTopic, request, headers);
 
@@ -334,6 +349,39 @@ internal sealed class BridgeHarness : IAsyncDisposable
         var reply = await SendAsync(McpManagementExecutor.ManageTopic,
             new McpReadResourceRequest { ServerName = server, Uri = uri }, headers: null);
         return reply.GetPayload<McpReadResourceResponse>()!;
+    }
+
+    /// <summary>Where the bridge keeps its background-task ledger in this run.</summary>
+    public string TaskLedgerPath => Path.Combine(_configDir, "mcp", "tasks.json");
+
+    /// <summary>Topic the bridge delivers background tasks' results and questions on.</summary>
+    public static string TaskResultTopic => $"{McpTaskResult.TopicPrefix}.{AgentName}";
+
+    /// <summary>Everything the bridge has delivered for background tasks, in order.</summary>
+    public IReadOnlyList<McpTaskResult> TaskResults =>
+        [.. PublishedOn(TaskResultTopic).Select(e => e.GetPayload<McpTaskResult>()!)];
+
+    /// <summary>Waits until the bridge delivers something for a background task that matches <paramref name="match"/>.</summary>
+    public async Task<McpTaskResult> WaitForTaskResultAsync(Func<McpTaskResult, bool> match, TimeSpan? timeout = null)
+    {
+        var deadline = DateTime.UtcNow + (timeout ?? TimeSpan.FromSeconds(15));
+        while (true)
+        {
+            if (TaskResults.FirstOrDefault(match) is { } found)
+                return found;
+            if (DateTime.UtcNow > deadline)
+                Assert.Fail($"The bridge delivered no matching background-task message. Delivered: " +
+                            string.Join(" | ", TaskResults.Select(r => $"{r.Kind}/{r.Status}: {r.Content}")));
+            await Task.Delay(25);
+        }
+    }
+
+    /// <summary>Sends an <c>mcp_cancel_task</c> request.</summary>
+    public async Task<McpCancelTaskResponse> CancelTaskAsync(string taskId, string sessionId)
+    {
+        var reply = await SendAsync(McpManagementExecutor.ManageTopic,
+            new McpCancelTaskRequest { TaskId = taskId, SessionId = sessionId }, headers: null);
+        return reply.GetPayload<McpCancelTaskResponse>()!;
     }
 
     /// <summary>Where the bridge keeps its pending-question ledger in this run.</summary>

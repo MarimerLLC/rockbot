@@ -58,4 +58,11 @@ public sealed record McpServerSummary
     /// the agent offers <c>mcp_answer</c>.
     /// </summary>
     public bool Handback { get; init; }
+
+    /// <summary>
+    /// The server runs long tools as background tasks (<c>"tasks": true</c> in its operator entry,
+    /// and it speaks the 2026-07-28 protocol). While any connected server does, the agent offers
+    /// <c>mcp_cancel_task</c>.
+    /// </summary>
+    public bool Tasks { get; init; }
 }

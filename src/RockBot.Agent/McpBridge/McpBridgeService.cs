@@ -10,6 +10,7 @@ using ModelContextProtocol.Protocol;
 using RockBot.Agent.McpBridge.ArgGuards;
 using RockBot.Agent.McpBridge.Attachments;
 using RockBot.Agent.McpBridge.Handback;
+using RockBot.Agent.McpBridge.Tasks;
 using RockBot.Host;
 using RockBot.Messaging;
 using RockBot.Agent.McpBridge.Auth;
@@ -24,7 +25,7 @@ namespace RockBot.Agent.McpBridge;
 /// Hosted service that manages MCP server connections, handles tool invoke requests
 /// from the message bus, and publishes tool discovery/response messages.
 /// </summary>
-public sealed class McpBridgeService : IHostedService, IAsyncDisposable
+public sealed partial class McpBridgeService : IHostedService, IAsyncDisposable
 {
     private readonly IMessagePublisher _publisher;
     private readonly IMessageSubscriber _subscriber;
@@ -142,11 +143,12 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
         IServiceProvider? services = null,
         IConversationMemory? conversationMemory = null,
         IWorkingMemory? workingMemory = null,
-        SessionClientCapabilityStore? clientCapabilities = null)
+        SessionClientCapabilityStore? clientCapabilities = null,
+        McpTaskRegistry? taskRegistry = null)
         : this(publisher, subscriber, identity, options, logger, llmClient, tokenProviders, healthTracker,
             argGuards, elicitationResponder, services, attachmentStorage: null,
             conversationMemory: conversationMemory, workingMemory: workingMemory,
-            clientCapabilities: clientCapabilities)
+            clientCapabilities: clientCapabilities, taskRegistry: taskRegistry)
     {
     }
 
@@ -171,7 +173,8 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
         IConversationMemory? conversationMemory = null,
         IWorkingMemory? workingMemory = null,
         TimeProvider? timeProvider = null,
-        SessionClientCapabilityStore? clientCapabilities = null)
+        SessionClientCapabilityStore? clientCapabilities = null,
+        McpTaskRegistry? taskRegistry = null)
     {
         _attachmentStorage = attachmentStorage is not null
             ? new Lazy<IAttachmentStorage>(attachmentStorage)
@@ -208,6 +211,14 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
             conversationMemory is null ? null : FindTriggerAsync,
             OnQuestionSettled);
         McpHandbackDiagnostics.ObserveParked(() => _handback.OpenCount);
+
+        var taskLedgerPath = Path.IsPathRooted(_options.TaskLedgerPath)
+            ? _options.TaskLedgerPath
+            : Path.Combine(Path.GetDirectoryName(_configPath) ?? AppContext.BaseDirectory, _options.TaskLedgerPath);
+        _taskLedger = new McpTaskLedger(taskLedgerPath, _logger, timeProvider);
+        _tasks = taskRegistry ?? new McpTaskRegistry();
+        _time = timeProvider ?? TimeProvider.System;
+        McpTaskDiagnostics.ObserveRunning(() => _tasks.Count);
     }
 
     public async Task StartAsync(CancellationToken cancellationToken)
@@ -247,6 +258,10 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
         // Load config and connect to servers
         await LoadConfigAndConnectAsync(cancellationToken);
         _startupCompletedAt = DateTimeOffset.UtcNow;
+
+        // Background tasks outlive a restart on their servers: poll them again, or tell their
+        // sessions they were lost. After connecting, so a task's server is known to be gone or not.
+        await ResumeTasksAsync(cancellationToken);
 
         // Watch for config changes
         SetupConfigWatcher();
@@ -295,6 +310,9 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
             if (_configPollTask is not null)
                 await _configPollTask.ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
             _sweepCts.Dispose();
+
+            // DisposeAsync repeats this shutdown; it must not cancel a disposed source.
+            _sweepCts = null;
         }
 
         if (_invokeSubscription is not null)
@@ -589,6 +607,13 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
         if (_connections.TryGetConfig(name, out var priorConfig) && IsHandbackServer(priorConfig) && !IsHandbackServer(config))
             await _handback.CancelServerAsync(name, $"the MCP server \"{name}\" no longer takes answers from the agent");
 
+        // Likewise background tasks, when the entry stops running them or now points elsewhere.
+        if (priorConfig is { RunsTasks: true }
+            && (!config.RunsTasks || priorConfig.IdentityHash() != config.IdentityHash()))
+        {
+            await CancelServerTasksAsync(name, priorConfig.Id, $"the MCP server \"{name}\" was reconfigured");
+        }
+
         // Record the config before attempting the connection so the reconnect sweep can retry a
         // server that never connected.
         _connections.SetConfig(name, config);
@@ -689,7 +714,8 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
                     ToolFingerprints = toolFingerprints,
                     Version = metadata.Version,
                     IdentityHash = config.IdentityHash(),
-                    Handback = IsHandbackServer(config) && IsJuly2026OrLater(newClient.NegotiatedProtocolVersion)
+                    Handback = IsHandbackServer(config) && IsJuly2026OrLater(newClient.NegotiatedProtocolVersion),
+                    Tasks = config.RunsTasks && IsJuly2026OrLater(newClient.NegotiatedProtocolVersion)
                 };
 
                 var resources = new ConnectionResources(newClient);
@@ -799,6 +825,10 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
 
     private async Task DisconnectServerAsync(string name)
     {
+        // Before the connection goes, so the server can still be asked to stop them.
+        _connections.TryGetConfig(name, out var removedConfig);
+        await CancelServerTasksAsync(name, removedConfig?.Id, $"the MCP server \"{name}\" was removed");
+
         using (await _connections.LockAsync(name, CancellationToken.None))
         {
             _connections.Remove(name, forgetConfig: true);
@@ -1179,7 +1209,10 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
             Fingerprint = fingerprint,
             ToolFingerprints = toolFingerprints,
             Version = current.Metadata.Version,
-            IdentityHash = current.Config.IdentityHash()
+            IdentityHash = current.Config.IdentityHash(),
+            // Unchanged by a new surface: they follow the entry's policy and the connection's protocol.
+            Handback = current.Summary.Handback,
+            Tasks = current.Summary.Tasks
         };
 
         // Same connection, new surface: the snapshot keeps its resources, so nothing is retired.
@@ -1905,9 +1938,40 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
         // while CallToolAsync is still awaiting, not on this async context, so the only way to
         // tie such a question back to the call that provoked it is to record the call as in flight.
         // A call that can take a hand-back passes its channel, which then owns its cancellation.
+        // A server with tasks on runs the call as a background task for a caller that can take its
+        // result later. Its place under the caps is taken now, so a refusal is an ordinary error.
+        RunningMcpTask? task = null;
+        if (WantsTask(envelope, request, server))
+        {
+            task = ReserveTask(request, out var refusal);
+            if (task is null)
+            {
+                await PublishResponseAsync(new ToolError
+                {
+                    ToolCallId = request.ToolCallId,
+                    ToolName = request.ToolName,
+                    Code = ToolError.Codes.ExecutionFailed,
+                    Message = refusal!,
+                    IsRetryable = false
+                }, replyTo, envelope.CorrelationId, ct);
+                return MessageResult.Ack;
+            }
+
+            task.Arguments = arguments;
+            task.SentArguments = sentArguments;
+            task.InputSchema = inputSchema;
+            task.RewriteResponse = rewriteResponse;
+        }
+
         var handback = CreateHandbackCall(envelope, request, server, toolDefinition.Tool, timeoutMs);
         var state = new InvocationState
         {
+            Task = task,
+            TaskHandbackCapable = IsHandbackCapable(envelope),
+            TaskRunOrigin = envelope.Headers.GetValueOrDefault(McpHeaders.RunOrigin),
+            TaskUserAskedFor = envelope.Headers.GetValueOrDefault(McpHeaders.UserAskedFor),
+            ToolDescription = toolDefinition.Tool?.Description,
+            ReleaseTask = task is null ? null : () => ReleaseUnstartedTask(task),
             Request = request,
             Server = server,
             TimeoutMs = timeoutMs,
@@ -1975,11 +2039,36 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
         public McpElicitationCallScope? ElicitationScope { get; init; }
         public HandbackCall? Handback { get; init; }
 
+        /// <summary>
+        /// The background task this call starts, when it runs as one; reserved under the caps until
+        /// the server creates it. Null for an ordinary call.
+        /// </summary>
+        public RunningMcpTask? Task { get; init; }
+
+        /// <summary>The caller can answer a handed-back question, which a task's questions need too.</summary>
+        public bool TaskHandbackCapable { get; init; }
+
+        /// <summary>
+        /// The caller's consequential-action origin and request kind (<c>rb-run-origin</c>,
+        /// <c>rb-user-asked-for</c>), so a task's result is answered under the same authorization.
+        /// </summary>
+        public string? TaskRunOrigin { get; init; }
+
+        /// <inheritdoc cref="TaskRunOrigin"/>
+        public string? TaskUserAskedFor { get; init; }
+
+        /// <summary>The tool's description from <c>tools/list</c>, for a task's ledger entry.</summary>
+        public string? ToolDescription { get; init; }
+
+        /// <summary>Frees a reservation the call never turned into a task.</summary>
+        public Action? ReleaseTask { get; init; }
+
         /// <summary>Held only while parked: the invoke handler's own lease ends with the message.</summary>
         public ServerLease? Lease { get; set; }
 
         public void Dispose()
         {
+            ReleaseTask?.Invoke();
             ElicitationScope?.Dispose();
             if (Handback is not null)
                 Handback.Dispose();
@@ -1989,10 +2078,16 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
         }
     }
 
-    /// <summary>Starts the downstream call. Async so that any failure surfaces through the task.</summary>
-    private static async Task<CallToolResult> StartCallAsync(InvocationState state) =>
-        await state.Server.Client.CallToolAsync(
-            state.Request.ToolName, state.Arguments, cancellationToken: state.CallCts.Token);
+    /// <summary>
+    /// Starts the downstream call. Async so that any failure surfaces through the task. A call that
+    /// runs as a background task completes as soon as the server has created the task, with a
+    /// "started" result.
+    /// </summary>
+    private async Task<CallToolResult> StartCallAsync(InvocationState state) =>
+        state.Task is not null
+            ? await StartAsTaskAsync(state, state.Server, state.CallCts.Token)
+            : await state.Server.Client.CallToolAsync(
+                state.Request.ToolName, state.Arguments, cancellationToken: state.CallCts.Token);
 
     /// <summary>
     /// A hand-back channel for this call, or null when it can't take one: the server's own policy
@@ -2255,6 +2350,89 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
             : PublishResponseAsync(error, target.ReplyTo, target.CorrelationId, ct);
 
     /// <summary>
+    /// Turns a server's <see cref="CallToolResult"/> into what the agent gets: the attachment
+    /// rewrite (when <paramref name="rewriteGateway"/> is given), binary capture, content mapping,
+    /// the note on any question the server asked, and error hints on an error result. Shared by a
+    /// call's first attempt, its reconnect-and-retry, and a background task's result.
+    /// </summary>
+    private async Task<ToolInvokeResponse> MapResultAsync(
+        CallToolResult result,
+        ConnectedServer server,
+        string toolName,
+        string toolCallId,
+        string responseToolName,
+        AttachmentGateway? rewriteGateway,
+        Dictionary<string, object?>? arguments,
+        Dictionary<string, object?>? sentArguments,
+        string? inputSchema,
+        IReadOnlyList<McpElicitationRecord> elicitations,
+        long elapsedMs,
+        CancellationToken ct)
+    {
+        var serverName = server.Name;
+
+        if (rewriteGateway is not null && arguments is not null)
+            result = await rewriteGateway.RewriteResponseAsync(toolName, arguments, result, ct);
+
+        result = await CaptureBinaryContentAsync(serverName, server.Config, toolName, result, ct);
+
+        var blocks = McpToolExecutor.MapContentBlocks(result, serverName);
+
+        // A question the bridge declined usually means a thin or partial result. Say so in
+        // the tool output, or the agent retries the identical call and gets the same answer.
+        if (McpElicitationNote.Build(elicitations, GetToolParameterNames(server, toolName)) is { } elicitationNote)
+            blocks = McpElicitationNote.AppendTo(blocks, elicitationNote);
+
+        var content = blocks is not null ? McpToolExecutor.TextFromBlocks(blocks) : null;
+
+        if (result.IsError == true)
+        {
+            _logger.LogWarning("← MCP {Server}/{Tool} ERROR in {ElapsedMs}ms: {Content}",
+                serverName, toolName, elapsedMs, content);
+
+            if (sentArguments is not null)
+            {
+                (blocks, content) = AppendArgumentHint(
+                    serverName, toolName, inputSchema, sentArguments, blocks, content);
+            }
+
+            if (toolName == "invoke_tool"
+                && arguments is not null
+                && GetStringArgument(arguments, "arguments") is { } innerArgs
+                && !innerArgs.TrimStart().StartsWith('{'))
+            {
+                var targetTool = GetStringArgument(arguments, "toolName") ?? "the target tool";
+                content = (content ?? string.Empty) +
+                    $"\n\nThe 'arguments' field must be a JSON object string, not a plain string. " +
+                    $"Re-call invoke_tool with arguments formatted as a JSON object. " +
+                    $"For example, if {targetTool} takes a 'message' parameter: " +
+                    $"arguments = {{\"message\": \"{innerArgs}\"}}";
+                _logger.LogInformation(
+                    "Appended invoke_tool arguments-format hint (inner args was a plain string)");
+            }
+        }
+        else
+        {
+            var nonTextCount = blocks?.Count(b => b.Type != "text") ?? 0;
+            if (nonTextCount > 0)
+                _logger.LogInformation("← MCP {Server}/{Tool} OK in {ElapsedMs}ms ({ContentLen} chars, {NonTextCount} non-text block(s))",
+                    serverName, toolName, elapsedMs, content?.Length ?? 0, nonTextCount);
+            else
+                _logger.LogInformation("← MCP {Server}/{Tool} OK in {ElapsedMs}ms ({ContentLen} chars)",
+                    serverName, toolName, elapsedMs, content?.Length ?? 0);
+        }
+
+        return new ToolInvokeResponse
+        {
+            ToolCallId = toolCallId,
+            ToolName = responseToolName,
+            ContentBlocks = blocks,
+            Content = content,
+            IsError = result.IsError == true
+        };
+    }
+
+    /// <summary>
     /// Waits for the downstream call and publishes its outcome to <paramref name="target"/>: the
     /// result with its elicitation note and error hints, or the error — after one transparent
     /// reconnect-and-retry when the connection looks dead.
@@ -2277,67 +2455,12 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
         try
         {
             var result = await callTask;
-
-            if (rewriteResponse && attachmentGateway is not null)
-            {
-                result = await attachmentGateway.RewriteResponseAsync(
-                    request.ToolName, arguments, result, ct);
-            }
-
-            result = await CaptureBinaryContentAsync(serverName, server.Config, request.ToolName, result, ct);
-
             sw.Stop();
-            var blocks = McpToolExecutor.MapContentBlocks(result, serverName);
 
-            // A question the bridge declined usually means a thin or partial result. Say so in
-            // the tool output, or the agent retries the identical call and gets the same answer.
-            IReadOnlyList<McpElicitationRecord> elicitations = elicitationScope?.Records ?? [];
-            if (McpElicitationNote.Build(elicitations, GetToolParameterNames(server, request.ToolName)) is { } elicitationNote)
-                blocks = McpElicitationNote.AppendTo(blocks, elicitationNote);
-
-            var content = blocks is not null ? McpToolExecutor.TextFromBlocks(blocks) : null;
-
-            if (result.IsError == true)
-            {
-                _logger.LogWarning("← MCP {Server}/{Tool} ERROR in {ElapsedMs}ms: {Content}",
-                    serverName, request.ToolName, sw.ElapsedMilliseconds, content);
-
-                (blocks, content) = AppendArgumentHint(
-                    serverName, request.ToolName, inputSchema, sentArguments, blocks, content);
-
-                if (request.ToolName == "invoke_tool"
-                    && GetStringArgument(arguments, "arguments") is { } innerArgs
-                    && !innerArgs.TrimStart().StartsWith('{'))
-                {
-                    var targetTool = GetStringArgument(arguments, "toolName") ?? "the target tool";
-                    content = (content ?? string.Empty) +
-                        $"\n\nThe 'arguments' field must be a JSON object string, not a plain string. " +
-                        $"Re-call invoke_tool with arguments formatted as a JSON object. " +
-                        $"For example, if {targetTool} takes a 'message' parameter: " +
-                        $"arguments = {{\"message\": \"{innerArgs}\"}}";
-                    _logger.LogInformation(
-                        "Appended invoke_tool arguments-format hint (inner args was a plain string)");
-                }
-            }
-            else
-            {
-                var nonTextCount = blocks?.Count(b => b.Type != "text") ?? 0;
-                if (nonTextCount > 0)
-                    _logger.LogInformation("← MCP {Server}/{Tool} OK in {ElapsedMs}ms ({ContentLen} chars, {NonTextCount} non-text block(s))",
-                        serverName, request.ToolName, sw.ElapsedMilliseconds, content?.Length ?? 0, nonTextCount);
-                else
-                    _logger.LogInformation("← MCP {Server}/{Tool} OK in {ElapsedMs}ms ({ContentLen} chars)",
-                        serverName, request.ToolName, sw.ElapsedMilliseconds, content?.Length ?? 0);
-            }
-
-            var response = new ToolInvokeResponse
-            {
-                ToolCallId = target.ToolCallId,
-                ToolName = target.ToolName,
-                ContentBlocks = blocks,
-                Content = content,
-                IsError = result.IsError == true
-            };
+            var response = await MapResultAsync(
+                result, server, request.ToolName, target.ToolCallId, target.ToolName,
+                rewriteResponse ? attachmentGateway : null, arguments, sentArguments, inputSchema,
+                elicitationScope?.Records ?? [], sw.ElapsedMilliseconds, ct);
 
             await PublishToTargetAsync(response, target, ct);
         }
@@ -2501,46 +2624,20 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
                         retryElicitationScope = fresh.Elicitation
                             ?.BeginCall(request.ToolName, request.Arguments, request.SessionId);
 
-                        var retryResult = await fresh.Client.CallToolAsync(
-                            request.ToolName, arguments, cancellationToken: retryCts.Token);
-
-                        if (rewriteResponse && fresh.AttachmentGateway.Value is { } freshGateway)
-                        {
-                            retryResult = await freshGateway.RewriteResponseAsync(
-                                request.ToolName, arguments, retryResult, ct);
-                        }
-
-                        retryResult = await CaptureBinaryContentAsync(
-                            serverName, fresh.Config, request.ToolName, retryResult, ct);
-
+                        // A call that would run as a background task starts as one on the retry too.
+                        var retryResult = state.Task is not null
+                            ? await StartAsTaskAsync(state, fresh, retryCts.Token)
+                            : await fresh.Client.CallToolAsync(
+                                request.ToolName, arguments, cancellationToken: retryCts.Token);
                         sw.Stop();
-                        var retryBlocks = McpToolExecutor.MapContentBlocks(retryResult, serverName);
 
-                        IReadOnlyList<McpElicitationRecord> retryElicitations =
-                            retryElicitationScope?.Records ?? [];
-                        if (McpElicitationNote.Build(retryElicitations, GetToolParameterNames(fresh, request.ToolName)) is { } retryNote)
-                            retryBlocks = McpElicitationNote.AppendTo(retryBlocks, retryNote);
+                        _logger.LogInformation("← MCP {Server}/{Tool} answered after a transparent reconnect",
+                            serverName, request.ToolName);
 
-                        var retryContent = retryBlocks is not null ? McpToolExecutor.TextFromBlocks(retryBlocks) : null;
-
-                        if (retryResult.IsError == true)
-                        {
-                            (retryBlocks, retryContent) = AppendArgumentHint(
-                                serverName, request.ToolName, inputSchema, sentArguments, retryBlocks, retryContent);
-                        }
-
-                        _logger.LogInformation(
-                            "← MCP {Server}/{Tool} OK after transparent reconnect ({ContentLen} chars)",
-                            serverName, request.ToolName, retryContent?.Length ?? 0);
-
-                        var retryResponse = new ToolInvokeResponse
-                        {
-                            ToolCallId = target.ToolCallId,
-                            ToolName = target.ToolName,
-                            ContentBlocks = retryBlocks,
-                            Content = retryContent,
-                            IsError = retryResult.IsError == true
-                        };
+                        var retryResponse = await MapResultAsync(
+                            retryResult, fresh, request.ToolName, target.ToolCallId, target.ToolName,
+                            rewriteResponse ? fresh.AttachmentGateway.Value : null, arguments, sentArguments, inputSchema,
+                            retryElicitationScope?.Records ?? [], sw.ElapsedMilliseconds, ct);
 
                         await PublishToTargetAsync(retryResponse, target, ct);
                         return;
@@ -2927,6 +3024,13 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
             // published by the parked call, so a slow resume doesn't hold up management requests.
             await HandleAnswerAsync(req, replyTo, envelope.CorrelationId, ct);
         }
+        else if (envelope.MessageType == typeof(McpCancelTaskRequest).FullName)
+        {
+            var req = envelope.GetPayload<McpCancelTaskRequest>();
+            if (req is null) return MessageResult.DeadLetter;
+
+            await PublishResponseAsync(await CancelTaskByAgentAsync(req, ct), replyTo, envelope.CorrelationId, ct);
+        }
         else
         {
             _logger.LogWarning("Unknown management message type: {MessageType}", envelope.MessageType);
@@ -3037,6 +3141,27 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
             await RefuseAsync(entry is null
                 ? $"Question {question.QuestionId} is no longer open."
                 : HandbackText.Unavailable(entry), "settled", closed: true);
+            return;
+        }
+
+        // A background task's question: the task's poll sends the answer on and the task carries
+        // on in the background, so there is nothing to wait for here. Its result arrives later.
+        if (question.Call.TaskId is { } taskId)
+        {
+            var declined = !string.Equals(outcome.Action, McpElicitationActions.Accept, StringComparison.OrdinalIgnoreCase);
+            await PublishResponseAsync(new McpAnswerQuestionResponse
+            {
+                QuestionId = question.QuestionId,
+                ServerName = question.ServerName,
+                ToolName = question.ToolName,
+                TaskContinues = true,
+                Result = new ToolInvokeResponse
+                {
+                    ToolCallId = target.ToolCallId,
+                    ToolName = target.ToolName,
+                    Content = McpTaskText.AnswerSent(question, taskId, declined),
+                },
+            }, replyTo, correlationId, ct);
         }
     }
 
@@ -3128,10 +3253,23 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
         {
             var now = DateTimeOffset.UtcNow;
             var marked = 0;
+            var reasked = new List<PendingQuestionEntry>();
             await _handback.Ledger.UpdateAllAsync(entry =>
             {
                 if (entry.Status != PendingQuestionStatus.Pending)
                     return;
+
+                // A background task's question isn't a lost call: the task lives on its server,
+                // which still has the question and puts it again on the next poll, where it is
+                // handed back afresh. This entry is closed without a notice.
+                if (entry.TaskId is not null)
+                {
+                    entry.Status = PendingQuestionStatus.Cancelled;
+                    entry.Reason = "the agent restarted; the task asks again";
+                    entry.ResolvedAt = now;
+                    reasked.Add(entry);
+                    return;
+                }
 
                 if (entry.ExpiresAt <= now)
                 {
@@ -3144,6 +3282,16 @@ public sealed class McpBridgeService : IHostedService, IAsyncDisposable
                 entry.Status = PendingQuestionStatus.Interrupted;
                 marked++;
             }, ct);
+
+            // A form still showing one of those questions closes; the task's next poll shows it anew.
+            if (_clientCapabilities is not null)
+            {
+                foreach (var entry in reasked.Where(e => HandbackSessions.IsUserSession(e.SessionId)))
+                {
+                    await PublishQuestionStatusAsync(HandbackSessions.ConversationId(entry.SessionId!), entry.QuestionId,
+                        UserProxy.McpQuestionState.Cancelled, null, "the agent restarted; the question will be asked again");
+                }
+            }
 
             if (marked > 0)
             {
