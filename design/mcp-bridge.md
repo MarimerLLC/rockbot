@@ -29,7 +29,7 @@ Each agent process hosts its own bridge, scoped to that agent's `mcp.json`. The 
 2. Connects to each configured MCP server
 3. Lists its tools, prompts and resources, applies allow/deny filters, and writes an LLM summary of the server
 4. Publishes `McpServersIndexed` on `tool.meta.mcp.{agentName}`
-5. The agent's `McpServersIndexedHandler` updates `McpServerIndex`. On the first message it registers the eight `mcp_*` management tools in `IToolRegistry` (plus `mcp_find_tools` when a tier is `Lazy` or `Pinned`), and `McpWrapperCatalog` reconciles the typed tools. Downstream tools are not registered under their bare names.
+5. The agent's `McpServersIndexedHandler` updates `McpServerIndex`. On the first message it registers the eight `mcp_*` management tools in `IToolRegistry` (plus `mcp_find_tools` when a tier is `Lazy` or `Pinned`), and `McpWrapperCatalog` reconciles the typed tools. On every message it keeps `mcp_answer` registered while a server hands questions back, and `mcp_cancel_task` while a server runs background tasks. Downstream tools are not registered under their bare names.
 
 ### Tool Invocation
 
@@ -323,6 +323,158 @@ supply the value on the next call.
 
 See `design/mcp-elicitation.md`.
 
+## Long-running tools (Tasks)
+
+Issue #658; Phase 4 of `design/research-agent-mcp.md`. A research run or an advisor council can
+take minutes. A synchronous `tools/call` holds the agent's turn, and the user, for all of it,
+bounded only by `toolTimeoutMs`. The MCP **Tasks** extension (SEP-2663,
+`ModelContextProtocol.Extensions.Tasks` 2.2.0) lets the server keep the work in a task store while
+the client polls. The bridge uses it to return at once and deliver the result later, the way
+`A2ATaskResultHandler` delivers an A2A result.
+
+### What the SDK gives the client
+
+- `CallToolAsTaskAsync(params)` returns either the result (the server ran the tool synchronously)
+  or a `CreateTaskResult` (task id, status, suggested poll interval, TTL). It declares the tasks
+  capability in the request's `_meta` only on the 2026-07-28 protocol.
+- `GetTaskAsync(taskId)` returns `Working`, `InputRequired` (with the outstanding `InputRequests`),
+  `Completed` (the `CallToolResult` JSON, error results included), `Failed` (a JSON-RPC error) or
+  `Cancelled`. Unlike MRTR on `CallToolAsync`, nothing is resolved behind the caller's back: an
+  input request comes back to the bridge as data.
+- `UpdateTaskAsync` sends input responses; `CancelTaskAsync` asks the server to stop
+  (cooperative, an acknowledgement only). Task requests are routed by task id, so any connection
+  to the server can poll, which is what lets polling survive reconnects and restarts.
+- A server answers `tasks/get` for a task it doesn't know with `-32602`. That is how a lost task
+  (an `InMemoryMcpTaskStore` that restarted, or a task past its TTL) shows up.
+- Server side, inside a task the tool's `ElicitAsync` is intercepted into the task store and
+  waits for `tasks/update`. A tool that throws `InputRequiredException` (MRTR) inside a task fails
+  it in 2.2.0 ("MRTR and tasks cannot be composed via [McpServerTool] yet"). Task servers must ask
+  with `ElicitAsync`.
+
+### Opt-in and who gets a task
+
+- `"tasks": true` in a server's own `mcp.json` entry, plus optional `taskTimeoutMinutes`. It is
+  operator policy (#603): `mcp_register_server` can't set it, and an entry that sets it is no
+  longer the model's to remove. A model-registered server therefore can't opt in.
+- A call runs as a task only when the server opted in, speaks 2026-07-28, and the caller can take
+  a later result. `McpManagementExecutor.InvokeDownstreamAsync` marks such calls with the
+  `rb-mcp-tasks` header (`McpTaskContext.CanReceiveLater`): the session is a user conversation
+  (`session/{id}`) or a subagent (`subagent/{id}`), and the flow isn't a wisp's step
+  (`WispExecutor` suppresses it, as it suppresses hand-back). Patrols, workers, scheduled tasks
+  and wisps make an ordinary synchronous call, bounded by `toolTimeoutMs` as before.
+- `McpServerSummary.Tasks` tells the agent side; `mcp_cancel_task` is registered while any
+  connected server has it, as `mcp_answer` follows `.Handback`.
+
+### Flow
+
+```
+agent ──tool call (rb-mcp-tasks)──► bridge: reserve a place under the caps
+                                       │ CallToolAsTaskAsync
+       server ◄────────────────────────┘
+       server ──CreateTaskResult──► bridge: write the task ledger entry (write-ahead)
+                                            start the poll loop on the bridge lifetime
+agent ◄──"started as a background task (task_id t_…)"── bridge
+                 ...
+bridge ──tasks/get──► server ──Working / InputRequired / Completed / Failed / Cancelled
+                 (InputRequired: the server's elicitation policy, or a hand-back; then tasks/update)
+bridge: map the result as a synchronous call's, store it in working memory,
+        publish McpTaskResult on mcp.task.result.{agent}, mark the ledger entry delivered
+agent: McpTaskResultHandler ──► synthetic turn + agent run + reply (user conversation)
+                              └► working memory only (running subagent) / fold-back (exited one)
+```
+
+- **Start.** `InvokeOnServerAsync` reserves the task before anything else, so a cap refusal is an
+  ordinary tool error naming the session's running tasks. The start rides the existing invoke
+  path (`StartCallAsync`): the "started" text is a `CallToolResult` like any other, so mapping,
+  the elicitation scope for a synchronous answer, and reconnect-and-retry need no special case.
+  A retry starts the task anew only if the first attempt never created one.
+- **Poll.** One loop per task (`RunTaskAsync`), tracked with the parked calls so shutdown waits
+  for it. The delay is the server's suggestion clamped to `TaskPollMinMs`..`TaskPollMaxMs`. Each
+  poll leases the server by name, falling back to the entry's stable id after a rename. Transport
+  failures back off and count; `TaskPollFailureLimit` in a row ends the task as lost.
+- **Deliver.** `MapResultAsync` (extracted from `CompleteCallAsync`, which uses it too) applies
+  the attachment rewrite, binary capture, content mapping, the elicitation note and error hints.
+  After a restart the original arguments are gone (the ledger keeps only redacted ones), so the
+  argument-dependent attachment rewrite and hints are skipped; binary capture still runs. The
+  text goes into working memory at `{session}/mcp-task/{server}/{task_id}/result` *before* the
+  publish, so a subagent's awaiter can't see the task end before its output exists.
+- **Agent side.** `McpTaskResultHandler` acks at once and works on its own:
+  - user conversation: waits for the work slot, adds a synthetic turn (`mcp-bridge`, marked as
+    the tool's output), runs `AgentLoopRunner` with the main profile and publishes the reply. An
+    ending the agent asked for (`mcp_cancel_task`) is recorded without a reply;
+  - running subagent: nothing more. `SubagentRunner` now takes every `ISessionA2AAwaiter`, and
+    `McpTaskSessionAwaiter` (over the bridge's `McpTaskRegistry`) holds the subagent until its
+    tasks have delivered, so `SubagentResultHandler`'s whiteboard listing includes the results;
+  - exited subagent: the result is stashed under the primary's `notifications/mcp/…` and a
+    `LateA2ANotificationMessage` with peer `mcp:{server}` folds it into a primary turn.
+
+  Delivery is at least once; the handler drops a repeat it has already handled.
+
+### Questions mid-task
+
+A task's `InputRequired` poll yields elicitation requests keyed by the server. Keys already
+answered are skipped (and persisted, so a restart doesn't re-answer them). Each new one goes to
+the server's current `McpElicitationCoordinator` through `HandleForCallAsync`, with the task's own
+`McpElicitationCallScope` from `BeginDetachedCall`: not registered as in flight, so no other
+call's question is attributed to it, but counting attempts and records across rounds and
+reconnects. Everything the coordinator does for a synchronous call applies: credential and denied
+fields, url mode, `defaults`, `maxPerCall`, the responder.
+
+In hand-back mode, a task started by a conversation whose run had `mcp_answer` gets a
+`TaskHandbackCall` as its channel. The question goes through `PendingQuestionStore` (caps, TTL,
+the write-ahead ledger entry, which now carries `taskId`), then is delivered like a result: an
+`McpTaskResult` of kind `question`, plus the chat form where the client can show one.
+`mcp_answer` validates exactly as before (session, schema, decisions need the user, one-shot).
+For a task's question the bridge replies at once ("answer sent; the result arrives later") with
+`TaskContinues` set, and the poll loop sends the answer with `tasks/update`. A form answer to a
+task's question records the user's turn and runs no agent turn. An expired, declined or abandoned
+question goes to the server as decline or cancel, and the server decides what the task does.
+
+Subagents' tasks don't hand back: a running subagent can't be reached mid-run, so the server's
+responder answers. Sampling and roots requests aren't offered by this client; a task that sends
+one is cancelled and its session told why.
+
+This resolves open question 2 of `design/mcp-elicitation-handback.md`.
+
+### Restart survival: the task ledger
+
+`McpTaskLedger`, `McpBridge:TaskLedgerPath` (default `mcp/tasks.json` beside `mcp.json`), version
+1. It shares `JsonLedger<T>` with the pending-question ledger: write-ahead, temp-file-and-rename
+writes, a `.corrupt` copy of an unreadable file, and a 24 h purge of settled entries. An entry
+holds the bridge's and the server's task ids, the session, the server's name and id, the tool,
+redacted arguments, a truncated tool description, the triggering user excerpt (scrubbed), the
+hand-back flag, the deadline, the suggested poll interval, the input keys already answered, and
+the status (`running`, `completed`, `failed`, `cancelled`, `lost`, `timed-out`). It settles only
+when its ending has been delivered.
+
+On startup, after reconnecting:
+
+- every `running` entry (and a `completed` or `failed` one not yet delivered) is polled again at
+  once. The server either still has it or answers that it doesn't, which ends it as lost;
+- a `lost`, `cancelled` or `timed-out` entry not yet delivered (the bridge decided it before the
+  restart) has its ending delivered;
+- a server no longer configured ends its tasks as lost;
+- pending hand-back questions that belong to a task are closed quietly rather than announced as
+  interrupted calls, and a chat form still showing one is closed: the task still holds the
+  question on its server, and the next poll hands it back afresh.
+
+So after a restart each in-flight task is either polled again or reported lost, deterministically.
+
+### Limits and cancellation
+
+- `MaxTasksPerSession` (3) and `MaxTasks` (20). A resumed task is never refused.
+- `taskTimeoutMinutes` per server, else `DefaultTaskTimeoutMinutes` (60). The deadline is in the
+  ledger and runs on the bridge's clock, so it holds across restarts. When it passes, the bridge
+  sends `tasks/cancel` and delivers "timed out".
+- `mcp_cancel_task(task_id)`: only the session that started the task. The bridge sends
+  `tasks/cancel`, stops polling, closes any open question of the task, and delivers "cancelled"
+  without asking for a reply. Unknown ids and other sessions' tasks look the same.
+- Removing a server, turning `tasks` off, or pointing the entry at another URL cancels its tasks.
+  `tasks/cancel` goes out while the old connection is still current.
+- Metrics on the `RockBot.Tools` meter: `rockbot.mcp.tasks` (outcome
+  `started|completed|failed|cancelled|lost|timed-out|resumed|refused`),
+  `rockbot.mcp.tasks.input_requests` (action) and the `rockbot.mcp.tasks.running` gauge.
+
 ## Configuration (mcp.json)
 
 ```json
@@ -377,5 +529,5 @@ the sessions stateless mode removes.
 | Project | Role |
 |---|---|
 | `RockBot.Tools.Mcp` | Agent side: `McpToolProxy`, `McpServersIndexedHandler`, `McpManagementExecutor`, typed tools (`McpWrapperCatalog`, `McpTypedToolSurface`), `McpOrientation`; plus types the bridge shares (`McpServersIndexed`, management messages, `McpCallDiagnostics`, elicitation) |
-| `RockBot.Agent` (`McpBridge/`) | The bridge: `McpBridgeService` (hosted service), `McpServerConnections`, `mcp.json` config, arg guards, attachments, auth |
+| `RockBot.Agent` (`McpBridge/`) | The bridge: `McpBridgeService` (hosted service), `McpServerConnections`, `mcp.json` config, arg guards, attachments, auth, hand-back (`Handback/`) and background tasks (`Tasks/`, `McpBridgeService.Tasks.cs`) |
 | `RockBot.Messaging.Abstractions` | `WellKnownHeaders` constants |

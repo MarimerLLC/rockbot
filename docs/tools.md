@@ -223,8 +223,8 @@ Servers are declared in `mcp.json` (Helm sets `McpBridge__ConfigPath` to
   but skipped with a warning — the bridge runs inside the agent and does not launch server
   processes.
 - Other per-server fields: `allowedTools`, `deniedTools`, `headers`, `auth`, `toolTimeoutMs`,
-  `attachments`, `argGuards` and `elicitation` (the last three are described below). `id` and
-  `origin` are written by the bridge.
+  `attachments`, `argGuards`, `elicitation`, `tasks` and `taskTimeoutMinutes` (the last five are
+  described below). `id` and `origin` are written by the bridge.
 - `McpBridge:DefaultServers:{name}` (Helm configmap) maps a name to a URL; each is seeded into
   `mcp.json` as an `sse` entry unless an entry already points at that URL.
 - The bridge watches `mcp.json` (file watcher plus a `ConfigPollIntervalSeconds` poll) and
@@ -250,7 +250,9 @@ management tools that give the agent runtime control over MCP servers:
 
 A ninth, `mcp_find_tools(query, limit?)`, is registered alongside them when some tier's
 wrapper mode is `Lazy` or `Pinned` (see below). Runs in an `Off` or `Eager` tier drop it from
-their tool list.
+their tool list. Two more follow the connected servers: `mcp_answer` while a server can hand
+questions back (see [Elicitation](#elicitation)), and `mcp_cancel_task` while a server runs
+background tasks (see [Background tasks](#background-tasks-long-running-tools)).
 
 **Critical:** `mcp_invoke_tool` requires the exact `server_name` from `mcp_list_services`. The
 `rb-mcp-server` header carries the server name through the message bus so the bridge routes
@@ -652,6 +654,82 @@ Behavior:
   implemented; the capability is not advertised.
 
 See `design/mcp-elicitation.md` for the design rationale.
+
+### Background tasks (long-running tools)
+
+A research run or an advisor council can take minutes. A synchronous tool call would hold the
+agent's turn, and the user, for that long. A server that supports the MCP **Tasks** extension
+(SEP-2663; `.WithTasks(store)` in the C# SDK) can instead run such a call as a background task,
+and the bridge delivers its result later, the way an A2A result arrives.
+
+Turn it on in the server's own `mcp.json` entry:
+
+```json
+{
+  "mcpServers": {
+    "research": {
+      "type": "http",
+      "url": "http://research-agent:8080/mcp",
+      "tasks": true,
+      "taskTimeoutMinutes": 30,
+      "elicitation": { "mode": "handback", "responder": "conversation" }
+    }
+  }
+}
+```
+
+What happens:
+
+- **Start.** The call goes out with `CallToolAsTaskAsync`. When the server creates a task, the
+  tool result comes back at once: it says the tool "started as a background task" and gives a
+  `task_id` (`t_…`, the bridge's own id). A tool the server runs synchronously just answers.
+- **Poll.** The bridge polls `tasks/get` on its own lifetime, at the interval the server
+  suggests (clamped to `McpBridge:TaskPollMinMs`..`TaskPollMaxMs`, 500 ms to 30 s). Polling
+  leases the server by name each time, so reconnects don't interrupt it.
+- **Deliver.** The result goes through the same mapping a synchronous result gets (binary
+  capture, content mapping, the elicitation note, error hints). It is stored in the session's
+  working memory at `{session}/mcp-task/{server}/{task_id}/result`, then published to
+  `mcp.task.result.{agent}`. `McpTaskResultHandler` takes it from there:
+  - a **user conversation** gets a turn naming the result (inline when short) and the agent
+    runs, so the user gets a reply;
+  - a **subagent** still running keeps the result among its outputs. `SubagentRunner` waits for
+    its tasks before it reports, as it does for A2A tasks;
+  - a **subagent that has exited** has it folded back into its primary conversation, as a late
+    A2A reply is.
+- **Questions mid-task.** A task's `elicitation/create` goes through the server's elicitation
+  policy exactly as a synchronous call's does: credential fields declined, `defaults`, the
+  responder, `maxPerCall`. In `handback` mode, for a conversation whose run has `mcp_answer`,
+  the question arrives as its own turn (and as a form in a chat that can show one). The agent
+  answers with `mcp_answer` as usual; the reply only confirms the answer was sent, and the
+  task's result still arrives later. Subagents' tasks get the server's responder instead.
+- **Who gets a task.** Only a run whose session a later result can reach: a user conversation
+  (`session/{id}`) or a subagent (`subagent/{id}`). The agent side marks those calls with the
+  `rb-mcp-tasks` header. Wisps, workers, scheduled tasks and patrols make an ordinary synchronous
+  call, even to a server with `tasks` on.
+- **Restarts.** A task lives on its server, so it survives a restart of the agent. Each task is
+  written to a ledger, `McpBridge:TaskLedgerPath` (default `mcp/tasks.json` beside `mcp.json`),
+  before the agent hears of it. On startup the bridge polls every unfinished task again. If the
+  server no longer knows it (for example an `InMemoryMcpTaskStore` that restarted), or the
+  server is no longer configured, the session is told the task was lost. A question the task
+  had open is asked again, not announced as an interruption. The ledger keeps redacted
+  arguments, never results or answers.
+- **Limits.** `McpBridge:MaxTasksPerSession` (3) and `McpBridge:MaxTasks` (20). Past them the
+  call is refused with an error that names the session's running tasks. `taskTimeoutMinutes`
+  (default `McpBridge:DefaultTaskTimeoutMinutes`, 60) bounds a task's run; the bridge then
+  cancels it and tells the session. `McpBridge:TaskPollFailureLimit` (10) consecutive failed
+  polls also end it as lost.
+- **Cancelling.** `mcp_cancel_task(task_id)` stops a task the same conversation started (the
+  bridge sends `tasks/cancel`; the ending is recorded without an extra reply). Removing a server,
+  turning `tasks` off, or pointing the entry at another URL cancels its tasks.
+- **Ownership.** `tasks` is operator policy like `elicitation`: `mcp_register_server` can't set
+  it, and an entry that has it can't be removed by the model.
+
+A task server must ask its mid-run questions with `ElicitAsync`, which the Tasks extension routes
+through the task store. In SDK 2.2.0 a tool that throws `InputRequiredException` (MRTR) inside a
+task fails it ("MRTR and tasks cannot be composed via [McpServerTool] yet"); the session is told
+the task failed.
+
+See `design/mcp-bridge.md` ("Long-running tools") for the design.
 
 ---
 
