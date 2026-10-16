@@ -1917,6 +1917,16 @@ public sealed partial class AgentLoopRunner(
         $"[content elided to fit context window — id={callId}]";
 
     /// <summary>
+    /// Marker for a cut working-memory retrieval (#713). It points the model at its own earlier
+    /// call rather than a new stash key, so re-reading gives back the same content. It carries no
+    /// key: the agent's safety rules forbid using a key that appears in tool output, and the key
+    /// is already in the model's own call arguments, which the directives allow it to repeat.
+    /// </summary>
+    internal static string BuildRetrievalElisionMarker(string callId) =>
+        $"[retrieved content elided to fit context window — id={callId}; to re-read it, repeat your own " +
+        "get_from_working_memory call with that id, using the same key]";
+
+    /// <summary>
     /// Replaces oversized tool results with a head+tail surface that fits the context
     /// budget, stashing the full original in working memory under
     /// <c>stash/{sessionId}/{callId}</c> so the model can recover it via

@@ -18,6 +18,12 @@ namespace RockBot.Host;
 ///
 /// <para>Exempting these tools means an explicit retrieval is honoured in full and left
 /// alone — matching the long-standing chunking exemption these same tools already had.</para>
+///
+/// <para><b>Watermark trim (#713).</b> Left alone forever, every retrieval stays in context
+/// at full size for the rest of the run. So once a <c>get_from_working_memory</c> result is
+/// no longer in the latest batch, the watermark trim (<see cref="ToolResultTrimmer"/>) may cut
+/// it, with a marker sending the model back to its own earlier call and the key it passed
+/// there. That mints no new key and registers nothing, so the loop above cannot start.</para>
 /// </summary>
 internal static class StashExemptTools
 {
@@ -42,4 +48,12 @@ internal static class StashExemptTools
     /// </summary>
     public static bool Contains(string? toolName) =>
         !string.IsNullOrEmpty(toolName) && Names.Contains(toolName);
+
+    /// <summary>
+    /// True when <paramref name="toolName"/> reads a single entry by key, so a cut result can
+    /// point back at that key (#713). Search results have no single key and are never cut.
+    /// </summary>
+    public static bool IsKeyedRetrieval(string? toolName) =>
+        string.Equals(toolName, "get_from_working_memory", StringComparison.OrdinalIgnoreCase)
+        || string.Equals(toolName, "GetFromWorkingMemory", StringComparison.OrdinalIgnoreCase);
 }

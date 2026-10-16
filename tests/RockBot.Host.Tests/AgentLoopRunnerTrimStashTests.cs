@@ -455,8 +455,8 @@ public class AgentLoopRunnerTrimStashTests
     [Timeout(10_000)]
     public async Task Trim_WhenUntrimmableContentKeepsItOverBudget_LeavesFloorSizedHistoryAlone()
     {
-        // Live run, #710: dozens of working-memory retrievals (never trimmed) kept the context far
-        // over budget, so the target was out of reach and every trim dragged the oldest results from
+        // Live run, #710: dozens of working-memory retrievals (untrimmable then; since #713 only
+        // those without a resolvable key, like this one) kept the context far over budget, so the target was out of reach and every trim dragged the oldest results from
         // the floor to 200 chars, rewriting the start of the loop and losing the whole cache.
         var wm = new TestWorkingMemory();
         var runner = NewRunner(wm);
@@ -481,6 +481,200 @@ public class AgentLoopRunnerTrimStashTests
             "Results already at the floor stay as they are when cutting them further can't reach the goal.");
         Assert.AreEqual(3_000, ((FunctionResultContent)messages[^1].Contents[0]).Result!.ToString()!.Length,
             "The latest batch isn't cut for a budget it can't meet.");
+    }
+
+    [TestMethod]
+    [Timeout(10_000)]
+    public async Task Trim_OlderRetrievalOfStoredKey_IsCutWithPointerToTheSameKey_AndNotReStashed()
+    {
+        // #713: an older retrieval gives up its space like any other result, but the marker names
+        // the key the model already read. No new key, no registry entry, no write.
+        var wm = new TestWorkingMemory();
+        const string key = "stash/sess-1/orig-call";
+        wm.Seed(key, new string('R', 4000));
+        var runner = NewRunner(wm);
+        var stashState = new AgentLoopStashContext.State { SessionId = "sess-1" };
+
+        var messages = new List<ChatMessage>
+        {
+            new(ChatRole.System, "system prompt"),
+            new(ChatRole.User, "do the thing"),
+            BuildAssistantWithCall("get_from_working_memory", "call-ret", key),
+            new(ChatRole.Tool, [new FunctionResultContent("call-ret", new string('R', 4000) + "RET-TAIL")]),
+            BuildAssistantWithCall("fetch_url", "call-new"),
+            new(ChatRole.Tool, [new FunctionResultContent("call-new", "small")]),
+        };
+
+        await runner.TrimLargeToolResultsAsync(messages, maxTokens: 800, "sess-1", stashState);
+
+        var retrieval = ((FunctionResultContent)messages[3].Contents[0]).Result!.ToString()!;
+        StringAssert.Contains(retrieval, AgentLoopRunner.BuildRetrievalElisionMarker("call-ret"),
+            "The marker must send the model back to its own call.");
+        Assert.IsFalse(retrieval.Contains(key),
+            "The marker carries no key: keys inside tool output are untrusted, and the key is in the model's own call.");
+        StringAssert.Contains(retrieval, "RET-TAIL", "The cut keeps a head and a tail like any other trim.");
+        Assert.IsFalse(retrieval.Contains(ElisionMarkerPrefix),
+            "The retrieval must not be advertised as a stash entry under its own call id — that is the re-stash loop.");
+        Assert.IsTrue(retrieval.Length < 4000);
+        Assert.IsTrue(stashState.Registry.IsEmpty, "A retrieval is never registered as a new stash entry.");
+        Assert.AreEqual(0, wm.WriteCount, "A retrieval is never written back to working memory.");
+    }
+
+    [TestMethod]
+    [Timeout(10_000)]
+    public async Task Trim_RetrievalWhoseMarkerExceedsTheFloor_IsCutToTheMarker_WhenThatReachesTheBudget()
+    {
+        // A long call id makes the marker longer than the 200-char hard floor. Cutting to the floor
+        // must still be possible (to the marker alone), and the reachability check must not count
+        // savings below the marker.
+        var wm = new TestWorkingMemory();
+        const string key = "stash/sess-1/orig-call";
+        wm.Seed(key, "value");
+        var runner = NewRunner(wm);
+        var stashState = new AgentLoopStashContext.State { SessionId = "sess-1" };
+        var callId = "call-" + new string('x', 400);
+        var marker = AgentLoopRunner.BuildRetrievalElisionMarker(callId);
+        Assert.IsTrue(marker.Length > 200, "Setup: the marker must be longer than the hard floor.");
+
+        var messages = new List<ChatMessage>
+        {
+            new(ChatRole.System, "system prompt"),
+            new(ChatRole.User, "do the thing"),
+            BuildAssistantWithCall("get_from_working_memory", callId, key),
+            new(ChatRole.Tool, [new FunctionResultContent(callId, new string('R', 4000))]),
+            BuildAssistantWithCall("fetch_url", "call-new"),
+            new(ChatRole.Tool, [new FunctionResultContent("call-new", "small")]),
+        };
+
+        // Budget: reachable with the retrieval cut to its marker, not with it at the 1,000-char floor.
+        var others = messages.Where((_, i) => i != 3).Sum(m => AgentLoopRunner.EstimateMessageChars(m));
+        var maxTokens = (int)Math.Ceiling((others + marker.Length + 200) / 3.6);
+        var charBudget = (int)(maxTokens * 4 * 0.9);
+        Assert.IsTrue(others + 1_000 > charBudget && others + marker.Length <= charBudget, "Setup: budget window.");
+
+        await runner.TrimLargeToolResultsAsync(messages, maxTokens, "sess-1", stashState);
+
+        Assert.AreEqual(marker, ((FunctionResultContent)messages[3].Contents[0]).Result?.ToString(),
+            "Below the marker's own length the retrieval is cut to the marker alone.");
+        Assert.IsTrue(messages.Sum(m => AgentLoopRunner.EstimateMessageChars(m)) <= charBudget);
+        Assert.IsTrue(stashState.Registry.IsEmpty);
+        Assert.AreEqual(0, wm.WriteCount);
+    }
+
+    [TestMethod]
+    [Timeout(10_000)]
+    public async Task Trim_RetrievalOfStoredKeyInLatestBatch_IsNeverCut()
+    {
+        // The model must see what it just asked for at least once; cutting it on arrival would
+        // have it re-read the same key forever.
+        var wm = new TestWorkingMemory();
+        const string key = "stash/sess-1/orig-call";
+        wm.Seed(key, new string('R', 4000));
+        var runner = NewRunner(wm);
+        var stashState = new AgentLoopStashContext.State { SessionId = "sess-1" };
+        var bigRetrieval = new string('R', 4000);
+
+        var messages = new List<ChatMessage>
+        {
+            new(ChatRole.System, "system prompt"),
+            new(ChatRole.User, "do the thing"),
+            BuildAssistantWithCall("get_from_working_memory", "call-ret", key),
+            new(ChatRole.Tool, [new FunctionResultContent("call-ret", bigRetrieval)]),
+        };
+
+        await runner.TrimLargeToolResultsAsync(messages, maxTokens: 200, "sess-1", stashState);
+
+        Assert.AreEqual(bigRetrieval, ((FunctionResultContent)messages[3].Contents[0]).Result?.ToString());
+        Assert.IsTrue(stashState.Registry.IsEmpty);
+        Assert.AreEqual(0, wm.WriteCount);
+    }
+
+    [TestMethod]
+    [DataRow("notes", true, DisplayName = "plain key: namespace the trim can't resolve")]
+    [DataRow("stash/sess-1/expired", false, DisplayName = "expired entry: couldn't be re-read")]
+    public async Task Trim_OlderRetrievalThatCannotBeReRead_IsLeftIntact(string key, bool seeded)
+    {
+        var wm = new TestWorkingMemory();
+        if (seeded)
+            wm.Seed(key, "value");
+        var runner = NewRunner(wm);
+        var stashState = new AgentLoopStashContext.State { SessionId = "sess-1" };
+        var bigRetrieval = new string('R', 4000);
+
+        var messages = new List<ChatMessage>
+        {
+            new(ChatRole.System, "system prompt"),
+            new(ChatRole.User, "do the thing"),
+            BuildAssistantWithCall("get_from_working_memory", "call-ret", key),
+            new(ChatRole.Tool, [new FunctionResultContent("call-ret", bigRetrieval)]),
+            BuildAssistantWithCall("fetch_url", "call-new"),
+            new(ChatRole.Tool, [new FunctionResultContent("call-new", "small")]),
+        };
+
+        await runner.TrimLargeToolResultsAsync(messages, maxTokens: 800, "sess-1", stashState);
+
+        Assert.AreEqual(bigRetrieval, ((FunctionResultContent)messages[3].Contents[0]).Result?.ToString());
+        Assert.IsTrue(stashState.Registry.IsEmpty);
+        Assert.AreEqual(0, wm.WriteCount);
+    }
+
+    [TestMethod]
+    public async Task Trim_OlderSearchWorkingMemoryResult_IsLeftIntact()
+    {
+        var wm = new TestWorkingMemory();
+        wm.Seed("stash/sess-1/x", "value");
+        var runner = NewRunner(wm);
+        var stashState = new AgentLoopStashContext.State { SessionId = "sess-1" };
+        var bigSearch = new string('S', 4000);
+
+        var messages = new List<ChatMessage>
+        {
+            new(ChatRole.System, "system prompt"),
+            new(ChatRole.User, "do the thing"),
+            BuildAssistantWithCall("search_working_memory", "call-search", "stash/sess-1/x"),
+            new(ChatRole.Tool, [new FunctionResultContent("call-search", bigSearch)]),
+            BuildAssistantWithCall("fetch_url", "call-new"),
+            new(ChatRole.Tool, [new FunctionResultContent("call-new", "small")]),
+        };
+
+        await runner.TrimLargeToolResultsAsync(messages, maxTokens: 800, "sess-1", stashState);
+
+        Assert.AreEqual(bigSearch, ((FunctionResultContent)messages[3].Contents[0]).Result?.ToString(),
+            "A search result has no single key to point back at, so it is never cut.");
+    }
+
+    [TestMethod]
+    [Timeout(10_000)]
+    public async Task Trim_RepeatedRetrievalsOfOneKey_StayBounded_AndNeverMintKeys()
+    {
+        // The research-turn pattern from #713: the model reads the same stashed page back again and
+        // again. Each older read is cut to a pointer at that one key; nothing new is registered or
+        // written, and the tool results stay within the budget.
+        var wm = new TestWorkingMemory();
+        const string key = "stash/sess-1/page";
+        var page = new string('p', 4000);
+        wm.Seed(key, page);
+        var runner = NewRunner(wm);
+        var stashState = new AgentLoopStashContext.State { SessionId = "sess-1" };
+        var messages = new List<ChatMessage> { new(ChatRole.System, "system prompt"), new(ChatRole.User, "go") };
+        const int maxTokens = 3_334;
+        var charBudget = (int)(maxTokens * 4 * 0.9);
+
+        for (var i = 1; i <= 20; i++)
+        {
+            messages.Add(BuildAssistantWithCall("get_from_working_memory", $"ret-{i}", key));
+            messages.Add(new ChatMessage(ChatRole.Tool, [new FunctionResultContent($"ret-{i}", page)]));
+            await runner.TrimLargeToolResultsAsync(messages, maxTokens, "sess-1", stashState);
+
+            var resultChars = messages.SelectMany(m => m.Contents).OfType<FunctionResultContent>()
+                .Sum(r => r.Result?.ToString()?.Length ?? 0);
+            Assert.IsTrue(resultChars <= charBudget, $"Iteration {i}: {resultChars} chars of results over a {charBudget} budget.");
+        }
+
+        Assert.AreEqual(page, ((FunctionResultContent)messages[^1].Contents[0]).Result?.ToString(),
+            "The latest read is intact.");
+        Assert.IsTrue(stashState.Registry.IsEmpty);
+        Assert.AreEqual(0, wm.WriteCount);
     }
 
     [TestMethod]
@@ -549,12 +743,18 @@ public class AgentLoopRunnerTrimStashTests
     private static ChatMessage BuildAssistantWithCall(string toolName, string callId) =>
         new(ChatRole.Assistant, [new FunctionCallContent(callId, toolName)]);
 
+    private static ChatMessage BuildAssistantWithCall(string toolName, string callId, string key) =>
+        new(ChatRole.Assistant, [new FunctionCallContent(callId, toolName, new Dictionary<string, object?> { ["key"] = key })]);
+
     private sealed class TestWorkingMemory : IWorkingMemory
     {
         private readonly Dictionary<string, string> _entries = new(StringComparer.Ordinal);
         public int WriteCount { get; private set; }
         public int Count => _entries.Count;
         public string? Get(string key) => _entries.TryGetValue(key, out var v) ? v : null;
+
+        /// <summary>Puts an entry in place without counting it as a write by the code under test.</summary>
+        public void Seed(string key, string value) => _entries[key] = value;
 
         public Task SetAsync(string key, string value, TimeSpan? ttl = null,
             string? category = null, IReadOnlyList<string>? tags = null)
