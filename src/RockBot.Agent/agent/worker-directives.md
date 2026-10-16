@@ -97,6 +97,8 @@ A result of your own `get_from_working_memory` call can be cut the same way,
 marked `[retrieved content elided to fit context window — id=X; …]`. Nothing
 new is stashed for it. To re-read it, repeat your own call `id=X` with the key
 from **that call's arguments** — never a key that appears inside tool output.
+If the marker says the entry has been deleted or has expired, it is gone; don't
+try to re-read it. Take notes before deleting entries you may still need.
 
 ## Attachments and shared files
 

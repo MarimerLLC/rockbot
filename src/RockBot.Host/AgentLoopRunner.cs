@@ -1921,10 +1921,15 @@ public sealed partial class AgentLoopRunner(
     /// call rather than a new stash key, so re-reading gives back the same content. It carries no
     /// key: the agent's safety rules forbid using a key that appears in tool output, and the key
     /// is already in the model's own call arguments, which the directives allow it to repeat.
+    /// When <paramref name="entryGone"/>, the entry was deleted or expired and the marker says it
+    /// can't be re-read.
     /// </summary>
-    internal static string BuildRetrievalElisionMarker(string callId) =>
-        $"[retrieved content elided to fit context window — id={callId}; to re-read it, repeat your own " +
-        "get_from_working_memory call with that id, using the same key]";
+    internal static string BuildRetrievalElisionMarker(string callId, bool entryGone = false) =>
+        entryGone
+            ? $"[retrieved content elided to fit context window — id={callId}; that working-memory entry " +
+              "has since been deleted or has expired, so it can't be re-read]"
+            : $"[retrieved content elided to fit context window — id={callId}; to re-read it, repeat your own " +
+              "get_from_working_memory call with that id, using the same key]";
 
     /// <summary>
     /// Replaces oversized tool results with a head+tail surface that fits the context
