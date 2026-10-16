@@ -49,6 +49,7 @@ public sealed class McpServersIndexedHandler(
         }
 
         SyncAnswerTool();
+        SyncCancelTaskTool();
 
         // Typed {server}__{tool} tools follow the index; a no-op unless some tier's wrapper mode is on.
         if (wrappers is not null)
@@ -87,6 +88,43 @@ public sealed class McpServersIndexedHandler(
             logger.LogInformation("Unregistered {Tool}: no connected MCP server hands questions back", McpHandbackContext.AnswerToolName);
         }
     }
+
+    /// <summary>
+    /// <c>mcp_cancel_task</c> is offered only while some connected server runs long tools as
+    /// background tasks, for the same reason.
+    /// </summary>
+    private void SyncCancelTaskTool()
+    {
+        const string name = McpManagementExecutor.CancelTaskToolName;
+        var wanted = index.Servers.Any(s => s.Tasks);
+        var registered = registry.GetExecutor(name) is not null;
+
+        if (wanted && !registered)
+        {
+            registry.Register(new ToolRegistration
+            {
+                Name = name,
+                Description = CancelTaskToolDescription,
+                ParametersSchema = CancelTaskToolSchema,
+                Source = "mcp:management"
+            }, executor);
+            logger.LogInformation("Registered {Tool}: a connected MCP server runs background tasks", name);
+        }
+        else if (!wanted && registered)
+        {
+            registry.Unregister(name);
+            logger.LogInformation("Unregistered {Tool}: no connected MCP server runs background tasks", name);
+        }
+    }
+
+    internal const string CancelTaskToolDescription =
+        "Stop a background task an MCP tool started. Some long-running MCP tools return \"started as a background " +
+        "task\" with a task_id instead of a result; the result then arrives on its own as a later message. Use this " +
+        "only when the task is no longer wanted (the user changed their mind, or it was started by mistake). You " +
+        "never need it to wait for or check on a task: don't poll, and don't call the tool again while it runs.";
+
+    internal const string CancelTaskToolSchema =
+        """{"type":"object","properties":{"task_id":{"type":"string","description":"The task_id from the \"started\" result, exactly as given (t_...)."}},"required":["task_id"]}""";
 
     internal const string AnswerToolDescription =
         "Answer a question an MCP server asked in the middle of a tool call. When a tool result says the server " +

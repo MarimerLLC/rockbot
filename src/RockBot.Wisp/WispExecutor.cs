@@ -96,6 +96,9 @@ internal sealed class WispExecutor(
         // handed back to a caller that can't answer it.
         using var noHandback = McpHandbackContext.Suppress();
 
+        // Nor can it take a result in a later turn: a step needs its tool's result now.
+        using var noBackgroundTasks = McpTaskContext.Suppress();
+
         var overallSw = Stopwatch.StartNew();
         var stepResults = new List<WispStepResult>();
         var resultsByStepId = new Dictionary<string, WispStepResult>(StringComparer.OrdinalIgnoreCase);

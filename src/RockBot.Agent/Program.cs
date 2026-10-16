@@ -471,6 +471,7 @@ builder.Services.AddRockBotHost(agent =>
     agent.HandleMessage<UserMessage, UserMessageHandler>();
     agent.HandleMessage<UserFeedback, UserFeedbackHandler>();
     agent.HandleMessage<McpQuestionAnswer, McpQuestionAnswerHandler>();
+    agent.HandleMessage<McpTaskResult, McpTaskResultHandler>();
     agent.HandleMessage<CancelSessionRequest, CancelSessionHandler>();
     agent.HandleMessage<ClearContextRequest, ClearContextHandler>();
     agent.HandleMessage<ConversationHistoryRequest, ConversationHistoryRequestHandler>();
@@ -485,6 +486,7 @@ builder.Services.AddRockBotHost(agent =>
     agent.SubscribeTo($"{UserProxyTopics.UserMessage}.{agentName}");
     agent.SubscribeTo($"{UserProxyTopics.UserFeedback}.{agentName}");
     agent.SubscribeTo($"{UserProxyTopics.McpAnswer}.{agentName}");
+    agent.SubscribeTo($"{McpTaskResult.TopicPrefix}.{agentName}");
     agent.SubscribeTo($"{UserProxyTopics.CancelSession}.{agentName}");
     agent.SubscribeTo($"{UserProxyTopics.ClearContext}.{agentName}");
     agent.SubscribeTo($"{UserProxyTopics.ConversationHistoryRequest}.{agentName}");
@@ -562,6 +564,11 @@ builder.Services.AddKeyedSingleton<RockBot.Tools.Mcp.Elicitation.IMcpElicitation
 // questions the call's own arguments cannot settle. Never the default.
 builder.Services.AddKeyedSingleton<RockBot.Tools.Mcp.Elicitation.IMcpElicitationResponder,
     ConversationElicitationResponder>(ConversationElicitationResponder.Key);
+
+// Background MCP tasks (servers with "tasks": true): the bridge's registry of running tasks, shared
+// with the awaiter that lets a subagent wait for its own tasks before it reports, as it does for A2A.
+builder.Services.AddSingleton<RockBot.Agent.McpBridge.Tasks.McpTaskRegistry>();
+builder.Services.AddSingleton<ISessionA2AAwaiter, RockBot.Agent.McpBridge.Tasks.McpTaskSessionAwaiter>();
 
 builder.Services.AddHostedService<McpBridgeService>();
 

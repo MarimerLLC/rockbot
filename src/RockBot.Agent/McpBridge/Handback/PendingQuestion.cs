@@ -60,8 +60,8 @@ internal sealed class PendingQuestion
 
     public required DateTimeOffset ExpiresAt { get; init; }
 
-    /// <summary>The parked call this question belongs to.</summary>
-    public required HandbackCall Call { get; init; }
+    /// <summary>The parked call, or background task, this question belongs to.</summary>
+    public required IHandbackOwner Call { get; init; }
 
     /// <summary>Completes once the question is answered or abandoned.</summary>
     public Task<McpAnswerSubmission> Submission => _submission.Task;

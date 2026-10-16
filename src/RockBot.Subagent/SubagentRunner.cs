@@ -37,7 +37,7 @@ internal sealed class SubagentRunner(
     IOptions<WorkingMemoryOptions> workingMemoryOptions,
     ILogger<SubagentRunner> logger,
     ISkillResourceUsageStore? skillResourceUsageStore = null,
-    ISessionA2AAwaiter? a2aAwaiter = null,
+    IEnumerable<ISessionA2AAwaiter>? a2aAwaiters = null,
     IMcpSkillSurface? mcpSkillSurface = null,
     IMcpToolDirectory? mcpToolDirectory = null,
     IEnumerable<ISessionEndListener>? sessionEndListeners = null,
@@ -335,22 +335,25 @@ internal sealed class SubagentRunner(
         // working-memory keys (subagent/{taskId}/a2a/.../result) are populated and
         // SubagentResultHandler's existing whiteboard listing surfaces them to the
         // primary agent's synthesis turn automatically.
-        if (a2aAwaiter is not null)
+        //
+        // Background MCP tasks the subagent started are awaited the same way (each awaiter covers
+        // one kind of outstanding work): their results land under subagent/{taskId}/mcp-task/.
+        foreach (var awaiter in a2aAwaiters ?? [])
         {
             try
             {
-                var awaited = await a2aAwaiter.WaitForSessionAsync(subagentNamespace, ct);
+                var awaited = await awaiter.WaitForSessionAsync(subagentNamespace, ct);
                 if (awaited > 0)
                 {
                     logger.LogInformation(
-                        "Subagent {TaskId} awaited {Count} A2A task(s) before publishing result",
-                        taskId, awaited);
+                        "Subagent {TaskId} awaited {Count} outstanding task(s) ({Kind}) before publishing result",
+                        taskId, awaited, awaiter.GetType().Name);
                 }
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
                 logger.LogWarning(ex,
-                    "Subagent {TaskId} A2A await threw — continuing to publish anyway", taskId);
+                    "Subagent {TaskId} {Kind} await threw — continuing to publish anyway", taskId, awaiter.GetType().Name);
             }
         }
 

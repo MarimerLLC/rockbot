@@ -32,81 +32,34 @@ internal sealed class PendingQuestionLedger
     public const int CurrentVersion = 1;
 
     /// <summary>How long a settled entry is kept before it is purged.</summary>
-    public static readonly TimeSpan RetainSettled = TimeSpan.FromHours(24);
+    public static readonly TimeSpan RetainSettled = JsonLedger<PendingQuestionEntry>.RetainSettled;
 
-    private static readonly JsonSerializerOptions JsonOptions = new()
-    {
-        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
-        PropertyNameCaseInsensitive = true,
-        WriteIndented = true,
-        DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
-    };
+    private readonly JsonLedger<PendingQuestionEntry> _ledger;
 
-    private readonly string _path;
-    private readonly ILogger _logger;
-    private readonly TimeProvider _time;
-    private readonly SemaphoreSlim _gate = new(1, 1);
-    private List<PendingQuestionEntry>? _entries;
-
-    public PendingQuestionLedger(string path, ILogger logger, TimeProvider? time = null)
-    {
-        _path = path;
-        _logger = logger;
-        _time = time ?? TimeProvider.System;
-    }
+    public PendingQuestionLedger(string path, ILogger logger, TimeProvider? time = null) =>
+        _ledger = new JsonLedger<PendingQuestionEntry>(path, "MCP pending-question ledger", CurrentVersion, logger, time);
 
     /// <summary>Where the ledger lives.</summary>
-    public string Path => _path;
+    public string Path => _ledger.Path;
 
     /// <summary>A copy of every entry.</summary>
-    public async Task<IReadOnlyList<PendingQuestionEntry>> ReadAllAsync(CancellationToken ct = default)
-    {
-        await _gate.WaitAsync(ct);
-        try
-        {
-            return [.. Load().Select(e => e.Clone())];
-        }
-        finally
-        {
-            _gate.Release();
-        }
-    }
+    public Task<IReadOnlyList<PendingQuestionEntry>> ReadAllAsync(CancellationToken ct = default) =>
+        _ledger.ReadAllAsync(ct);
 
     /// <summary>A copy of one entry, or null.</summary>
-    public async Task<PendingQuestionEntry?> GetAsync(string questionId, CancellationToken ct = default)
-    {
-        await _gate.WaitAsync(ct);
-        try
-        {
-            return Load().FirstOrDefault(e => e.QuestionId == questionId)?.Clone();
-        }
-        finally
-        {
-            _gate.Release();
-        }
-    }
+    public Task<PendingQuestionEntry?> GetAsync(string questionId, CancellationToken ct = default) =>
+        _ledger.GetAsync(questionId, ct);
 
     /// <summary>Adds an entry and writes the ledger before returning.</summary>
     public Task AddAsync(PendingQuestionEntry entry, CancellationToken ct = default) =>
-        MutateAsync(entries => entries.Add(entry.Clone()), ct);
+        _ledger.AddAsync(entry, ct);
 
     /// <summary>
     /// Applies <paramref name="update"/> to the entry for <paramref name="questionId"/>, if there is
     /// one, and writes the ledger. Returns whether the entry existed.
     /// </summary>
-    public async Task<bool> UpdateAsync(string questionId, Action<PendingQuestionEntry> update, CancellationToken ct = default)
-    {
-        var found = false;
-        await MutateAsync(entries =>
-        {
-            if (entries.FirstOrDefault(e => e.QuestionId == questionId) is { } entry)
-            {
-                update(entry);
-                found = true;
-            }
-        }, ct);
-        return found;
-    }
+    public Task<bool> UpdateAsync(string questionId, Action<PendingQuestionEntry> update, CancellationToken ct = default) =>
+        _ledger.UpdateAsync(questionId, update, ct);
 
     /// <summary>Settles a pending entry with <paramref name="status"/>, unless it has already settled.</summary>
     public Task SettleAsync(string questionId, string status, string? reason = null, CancellationToken ct = default) =>
@@ -116,117 +69,14 @@ internal sealed class PendingQuestionLedger
                 return;
             entry.Status = status;
             entry.Reason = reason;
-            entry.ResolvedAt = _time.GetUtcNow();
+            entry.ResolvedAt = _ledger.Time.GetUtcNow();
         }, ct);
 
     /// <summary>
     /// Applies <paramref name="update"/> to every entry in one write (startup reconciliation).
     /// </summary>
     public Task UpdateAllAsync(Action<PendingQuestionEntry> update, CancellationToken ct = default) =>
-        MutateAsync(entries => entries.ForEach(update), ct);
-
-    private async Task MutateAsync(Action<List<PendingQuestionEntry>> mutate, CancellationToken ct)
-    {
-        await _gate.WaitAsync(ct);
-        try
-        {
-            // Change a copy and keep it only once it is on disk, so a failed write leaves memory
-            // and file agreeing on the previous ledger.
-            var entries = Load().Select(e => e.Clone()).ToList();
-            mutate(entries);
-            Purge(entries);
-            await WriteAsync(entries);
-            _entries = entries;
-        }
-        finally
-        {
-            _gate.Release();
-        }
-    }
-
-    private void Purge(List<PendingQuestionEntry> entries)
-    {
-        var cutoff = _time.GetUtcNow() - RetainSettled;
-        entries.RemoveAll(e => e.IsSettled && e.ResolvedAt is { } at && at < cutoff);
-    }
-
-    /// <summary>Reads the file once; later calls use the cached copy, which only this class changes.</summary>
-    private List<PendingQuestionEntry> Load()
-    {
-        if (_entries is not null)
-            return _entries;
-
-        _entries = [];
-        if (!File.Exists(_path))
-            return _entries;
-
-        try
-        {
-            var file = JsonSerializer.Deserialize<LedgerFile>(File.ReadAllText(_path), JsonOptions);
-            if (file is null)
-                return _entries;
-
-            if (file.Version > CurrentVersion)
-            {
-                _logger.LogWarning(
-                    "MCP pending-question ledger {Path} is version {Version}, newer than this build's {Current}; reading it as is",
-                    _path, file.Version, CurrentVersion);
-            }
-
-            _entries = [.. file.Entries.Where(e => !string.IsNullOrEmpty(e.QuestionId))];
-        }
-        catch (Exception ex) when (ex is JsonException or IOException or UnauthorizedAccessException)
-        {
-            // An unreadable ledger can't say which calls a restart interrupted. Keep a copy for a
-            // person to look at and start empty rather than refuse to run.
-            _logger.LogError(ex, "MCP pending-question ledger {Path} could not be read; starting with an empty ledger", _path);
-            TryPreserveCorrupt();
-        }
-
-        return _entries;
-    }
-
-    private void TryPreserveCorrupt()
-    {
-        try
-        {
-            File.Copy(_path, _path + ".corrupt", overwrite: true);
-        }
-        catch
-        {
-            // Best effort.
-        }
-    }
-
-    private async Task WriteAsync(List<PendingQuestionEntry> entries)
-    {
-        var json = JsonSerializer.Serialize(new LedgerFile { Version = CurrentVersion, Entries = entries }, JsonOptions);
-
-        var directory = System.IO.Path.GetDirectoryName(_path);
-        if (string.IsNullOrEmpty(directory))
-            directory = ".";
-        else
-            Directory.CreateDirectory(directory);
-
-        var temp = System.IO.Path.Combine(directory, $".{System.IO.Path.GetFileName(_path)}.{Guid.NewGuid():N}.tmp");
-        try
-        {
-            // Not cancellable: a write abandoned halfway would leave the cache ahead of the file.
-            await File.WriteAllTextAsync(temp, json, CancellationToken.None);
-            File.Move(temp, _path, overwrite: true);
-        }
-        catch
-        {
-            try { File.Delete(temp); } catch { /* the write already failed */ }
-            throw;
-        }
-    }
-
-    private sealed class LedgerFile
-    {
-        public int Version { get; set; } = CurrentVersion;
-        public List<PendingQuestionEntry> Entries { get; set; } = [];
-    }
+        _ledger.UpdateAllAsync(update, ct);
 }
 
 /// <summary>Status values of a <see cref="PendingQuestionEntry"/>.</summary>
@@ -255,9 +105,16 @@ internal static class PendingQuestionStatus
 }
 
 /// <summary>One handed-back question, with enough about its call for a restarted agent to act on.</summary>
-internal sealed class PendingQuestionEntry
+internal sealed class PendingQuestionEntry : ILedgerEntry<PendingQuestionEntry>
 {
     public string QuestionId { get; set; } = "";
+
+    /// <summary>
+    /// Set when the question came from a background task (its bridge task id). A restart doesn't
+    /// end such a call: the task lives on the server, which asks again on the next poll, so the
+    /// question is closed quietly rather than announced as an interrupted call.
+    /// </summary>
+    public string? TaskId { get; set; }
     public string Status { get; set; } = PendingQuestionStatus.Pending;
     public string? SessionId { get; set; }
     public DateTimeOffset CreatedAt { get; set; }
@@ -275,6 +132,8 @@ internal sealed class PendingQuestionEntry
     /// <summary>Settled: nothing more will happen to it but the purge.</summary>
     [JsonIgnore]
     public bool IsSettled => Status is not (PendingQuestionStatus.Pending or PendingQuestionStatus.Interrupted);
+
+    string ILedgerEntry<PendingQuestionEntry>.Key => QuestionId;
 
     public PendingQuestionEntry Clone() =>
         JsonSerializer.Deserialize<PendingQuestionEntry>(JsonSerializer.Serialize(this))!;

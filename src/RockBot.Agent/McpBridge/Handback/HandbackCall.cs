@@ -21,13 +21,32 @@ internal sealed record HandbackCallInfo(
     TimeSpan Ttl);
 
 /// <summary>
+/// What a <see cref="PendingQuestion"/> belongs to: a parked tool call (<see cref="HandbackCall"/>)
+/// or a background task (<see cref="Tasks.TaskHandbackCall"/>). The store uses it for the ledger
+/// entry, the TTL and abandoning the question.
+/// </summary>
+internal interface IHandbackOwner
+{
+    HandbackCallInfo Info { get; }
+
+    /// <summary>Questions answered or declined so far: what was asked, and the names of the fields answered.</summary>
+    IReadOnlyList<PendingEarlierRound> EarlierRounds { get; }
+
+    /// <summary>The background task the question came from, or null for a parked call.</summary>
+    string? TaskId => null;
+
+    /// <summary>The question is being abandoned (expired, server removed, bridge stopping).</summary>
+    void Abort(string reason);
+}
+
+/// <summary>
 /// One tool call that can take a hand-back. It is the call's <see cref="IMcpHandbackChannel"/>:
 /// a question from the server becomes a <see cref="PendingQuestion"/>, the invoke path hears of it
 /// through <see cref="NextAsync"/>, and the server's handler waits until <c>mcp_answer</c> settles
 /// it. It also owns the call's cancellation, so the tool-call timeout can be suspended while a
 /// question waits and the call can be abandoned.
 /// </summary>
-internal sealed class HandbackCall : IMcpHandbackChannel, IDisposable
+internal sealed class HandbackCall : IMcpHandbackChannel, IHandbackOwner, IDisposable
 {
     private readonly PendingQuestionStore _store;
     private readonly int _timeoutMs;

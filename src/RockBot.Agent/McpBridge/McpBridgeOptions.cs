@@ -97,6 +97,38 @@ public sealed class McpBridgeOptions
     public string PendingLedgerPath { get; set; } = "mcp/pending-questions.json";
 
     /// <summary>
+    /// The durable ledger of background MCP tasks, which lets a restarted bridge resume polling
+    /// them (or say they were lost). A relative path resolves next to <see cref="ConfigPath"/>.
+    /// Default <c>mcp/tasks.json</c> beside <c>mcp.json</c>.
+    /// </summary>
+    public string TaskLedgerPath { get; set; } = "mcp/tasks.json";
+
+    /// <summary>Most background tasks one session can have running at once.</summary>
+    public int MaxTasksPerSession { get; set; } = 3;
+
+    /// <summary>Most background tasks the bridge runs at once.</summary>
+    public int MaxTasks { get; set; } = 20;
+
+    /// <summary>
+    /// Longest a background task may run, in minutes, when its server sets no
+    /// <c>taskTimeoutMinutes</c>. The bridge then cancels it and tells the session.
+    /// </summary>
+    public int DefaultTaskTimeoutMinutes { get; set; } = 60;
+
+    /// <summary>Shortest wait between polls of a task, whatever interval the server suggests.</summary>
+    public int TaskPollMinMs { get; set; } = 500;
+
+    /// <summary>Longest wait between polls of a task, whatever interval the server suggests.</summary>
+    public int TaskPollMaxMs { get; set; } = 30_000;
+
+    /// <summary>
+    /// Consecutive failed polls (the server unreachable, the connection broken) after which a task
+    /// is given up on and its session told. A server that answers that it doesn't know the task
+    /// ends it at once.
+    /// </summary>
+    public int TaskPollFailureLimit { get; set; } = 10;
+
+    /// <summary>
     /// Reads <c>DefaultElicitation:Defaults</c> from the bridge's configuration section.
     /// </summary>
     /// <remarks>

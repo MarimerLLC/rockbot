@@ -22,6 +22,7 @@ namespace RockBot.Tools.Mcp;
 ///   <item><c>mcp_list_resources</c> — lists a server's resources and resource templates</item>
 ///   <item><c>mcp_read_resource</c> — reads one resource by the server's URI</item>
 ///   <item><c>mcp_answer</c> — answers a question a server handed back mid-call (registered only while a server can)</item>
+///   <item><c>mcp_cancel_task</c> — stops a background task (registered only while a server runs them)</item>
 /// </list>
 /// </summary>
 public sealed class McpManagementExecutor : IToolExecutor, IMcpQuestionAnswerer, IAsyncDisposable
@@ -94,8 +95,47 @@ public sealed class McpManagementExecutor : IToolExecutor, IMcpQuestionAnswerer,
             "mcp_list_resources"      => ListResourcesAsync(request, ct),
             "mcp_read_resource"       => ReadResourceAsync(request, ct),
             McpHandbackContext.AnswerToolName => AnswerAsync(request, ct),
+            CancelTaskToolName        => CancelTaskAsync(request, ct),
             _ => Task.FromResult(Error(request, $"Unknown management tool: {request.ToolName}"))
         };
+
+    /// <summary>The management tool that stops a background task (registered only while a server runs them).</summary>
+    public const string CancelTaskToolName = "mcp_cancel_task";
+
+    // ── mcp_cancel_task ──────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Stops a background task this session started. The bridge asks the server to cancel it and
+    /// stops polling; the session then gets the task's ending like any other.
+    /// </summary>
+    private async Task<ToolInvokeResponse> CancelTaskAsync(ToolInvokeRequest request, CancellationToken ct)
+    {
+        var args = ParseArguments(request.Arguments);
+        if (!TryGetString(args, "task_id", out var taskId))
+            return Error(request, "Missing required parameter: task_id");
+
+        var envelope = await SendRequestAsync(new McpCancelTaskRequest
+        {
+            TaskId = taskId,
+            SessionId = request.SessionId,
+        }, ct);
+
+        if (envelope is null)
+            return Error(request, "Timed out waiting for the bridge to cancel the task");
+
+        var response = envelope.GetPayload<McpCancelTaskResponse>();
+        if (response is null)
+            return Error(request, "Failed to deserialize the mcp_cancel_task response");
+        if (response.Error is not null)
+            return Error(request, response.Error);
+
+        return new ToolInvokeResponse
+        {
+            ToolCallId = request.ToolCallId,
+            ToolName = request.ToolName,
+            Content = response.Message ?? $"Task {taskId} was cancelled.",
+        };
+    }
 
     // ── mcp_answer ───────────────────────────────────────────────────────────
 
@@ -582,6 +622,11 @@ public sealed class McpManagementExecutor : IToolExecutor, IMcpQuestionAnswerer,
         // run that can answer it with mcp_answer.
         if (McpHandbackContext.CanAnswer)
             extraHeaders[McpHeaders.Handback] = McpHeaders.HandbackCapable;
+
+        // A server with tasks enabled may run the call in the background, but only for a run whose
+        // session the result can reach later.
+        if (McpTaskContext.CanReceiveLater(outer.SessionId))
+            extraHeaders[McpHeaders.Tasks] = McpHeaders.TasksCapable;
 
         var response = await _proxy.ExecuteAsync(innerRequest, extraHeaders, ct);
 

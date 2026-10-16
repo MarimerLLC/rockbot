@@ -123,6 +123,8 @@ internal sealed class McpToolSkillProvider : IToolSkillProvider
           below. Workers don't have these two.
         - `mcp_answer`: only while a server can hand questions back (see "Questions from a
           server").
+        - `mcp_cancel_task`: only while a server runs long tools in the background (see
+          "Background tasks").
 
         ## Questions from a server
 
@@ -142,6 +144,21 @@ internal sealed class McpToolSkillProvider : IToolSkillProvider
         - `mcp_answer(question_id, decline: true)` refuses; the server goes on without it.
         - A question is answered once, only from the conversation that caused it, and expires
           after the time it states. A restart ends the call; you'll be told what it was doing.
+
+        ## Background tasks
+
+        Some servers run long tools (research, analysis) in the background. Such a call returns
+        at once: it says the tool "started as a background task" and gives a `task_id`.
+
+        - Don't wait for it, poll it or call the tool again for the same request. Its result
+          arrives on its own as a later message in the conversation, with the `task_id`.
+        - If the user is waiting, tell them it's underway and end your turn.
+        - A task may pause to ask a question. That arrives as a message too, with a
+          `question_id`: answer it with `mcp_answer` as above. The reply only confirms the answer
+          was sent; the result still comes later.
+        - `mcp_cancel_task(task_id)` stops a task that's no longer wanted.
+        - A task outlives a restart of the agent. If its server loses it, you're told it was
+          lost; call the tool again only if it's still needed.
 
         ## Names
 

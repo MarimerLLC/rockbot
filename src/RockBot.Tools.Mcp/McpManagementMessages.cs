@@ -221,6 +221,13 @@ public sealed record McpAnswerQuestionResponse
     /// answered, interrupted), as opposed to an answer that didn't fit and may be corrected.
     /// </summary>
     public bool QuestionClosed { get; init; }
+
+    /// <summary>
+    /// The question came from a background task. The answer went to the server, but the task
+    /// doesn't finish in this reply: <see cref="Result"/> only says so, and the task's result
+    /// arrives later as an <see cref="McpTaskResult"/>.
+    /// </summary>
+    public bool TaskContinues { get; init; }
 }
 
 /// <summary>
@@ -231,4 +238,95 @@ public sealed record McpAnswerQuestionResponse
 public sealed record McpReleaseSessionQuestionsRequest
 {
     public required string SessionId { get; init; }
+}
+
+// ── Background tasks ─────────────────────────────────────────────────────────
+
+/// <summary>
+/// <c>mcp_cancel_task</c>: stop a background task this session started. Published to
+/// <c>mcp.manage</c>.
+/// </summary>
+public sealed record McpCancelTaskRequest
+{
+    /// <summary>The task id from the "started" result (<c>t_…</c>).</summary>
+    public required string TaskId { get; init; }
+
+    /// <summary>Session of the run cancelling; only the session that started the task may.</summary>
+    public string? SessionId { get; init; }
+}
+
+public sealed record McpCancelTaskResponse
+{
+    public required string TaskId { get; init; }
+
+    /// <summary>What happened, for the agent.</summary>
+    public string? Message { get; init; }
+
+    /// <summary>The task couldn't be cancelled (unknown, another session's, or already finished).</summary>
+    public string? Error { get; init; }
+}
+
+/// <summary>
+/// Something a background MCP task has for the session that started it, published by the bridge
+/// to <c>mcp.task.result.{agent}</c>: the task's result or how it ended, or a question the server
+/// asked mid-task that the session must answer with <c>mcp_answer</c>.
+/// </summary>
+/// <remarks>
+/// Delivery is at least once: a restart between publishing and recording the delivery repeats it,
+/// and <see cref="TaskId"/> (plus <see cref="QuestionId"/>) lets a repeat be recognized.
+/// </remarks>
+public sealed record McpTaskResult
+{
+    /// <summary>Topic prefix; the agent's name follows.</summary>
+    public const string TopicPrefix = "mcp.task.result";
+
+    /// <summary>The task's result is in <see cref="Content"/>.</summary>
+    public const string KindCompleted = "completed";
+
+    /// <summary>The task ended without a result (failed, cancelled, lost, timed out): <see cref="Content"/> says how.</summary>
+    public const string KindEnded = "ended";
+
+    /// <summary>The server asked a question mid-task; <see cref="Content"/> is the hand-back text.</summary>
+    public const string KindQuestion = "question";
+
+    /// <summary>The run namespace that started the task: <c>session/{id}</c> or <c>subagent/{id}</c>.</summary>
+    public required string SessionId { get; init; }
+
+    /// <summary>The bridge's id for the task (<c>t_…</c>), as the "started" result gave it.</summary>
+    public required string TaskId { get; init; }
+
+    public required string ServerName { get; init; }
+
+    public required string ToolName { get; init; }
+
+    /// <summary>One of <see cref="KindCompleted"/>, <see cref="KindEnded"/>, <see cref="KindQuestion"/>.</summary>
+    public required string Kind { get; init; }
+
+    /// <summary>Final task status for <see cref="KindEnded"/> (failed, cancelled, lost, timed-out).</summary>
+    public string? Status { get; init; }
+
+    /// <summary>The text for the session: the mapped tool result, the ending, or the question.</summary>
+    public string Content { get; init; } = "";
+
+    /// <summary>The result is an error result, or the task ended without one.</summary>
+    public bool IsError { get; init; }
+
+    /// <summary>For <see cref="KindQuestion"/>: the question's id.</summary>
+    public string? QuestionId { get; init; }
+
+    /// <summary>For <see cref="KindQuestion"/>: the user also sees the question as a form in their chat.</summary>
+    public bool FormShown { get; init; }
+
+    /// <summary>
+    /// Where the bridge already stored <see cref="Content"/> in the session's working memory, or
+    /// null when it couldn't (the handler stores it then). Stored before publishing, so a
+    /// subagent that waits for its tasks finds the result among its outputs.
+    /// </summary>
+    public string? WorkingMemoryKey { get; init; }
+
+    /// <summary>
+    /// Whether the session should get a reply. False for an ending the agent asked for itself
+    /// (<c>mcp_cancel_task</c>): it's recorded in the conversation, but there's nothing to say.
+    /// </summary>
+    public bool NeedsReply { get; init; } = true;
 }

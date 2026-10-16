@@ -116,6 +116,25 @@ public sealed class McpBridgeServerConfig
     public McpServerAuthConfig? Auth { get; set; }
 
     /// <summary>
+    /// Run this server's tools as background tasks (the MCP Tasks extension, SEP-2663) when the
+    /// server offers that for a tool: the call returns "started" at once, and the result reaches
+    /// the session later as a new turn. Only for callers whose session outlives the call (a user
+    /// conversation or a subagent); everyone else gets an ordinary synchronous call. Like any
+    /// policy here it is the operator's: <c>mcp_register_server</c> can't set it, and an entry that
+    /// sets it is no longer the agent's to remove (#603). See <c>design/mcp-bridge.md</c>.
+    /// </summary>
+    public bool? Tasks { get; set; }
+
+    /// <summary>
+    /// Longest a background task on this server may run, in minutes, before the bridge cancels it
+    /// and tells the session it timed out. When omitted, <c>McpBridge:DefaultTaskTimeoutMinutes</c>.
+    /// </summary>
+    public int? TaskTimeoutMinutes { get; set; }
+
+    /// <summary>Whether this entry runs tools as background tasks.</summary>
+    public bool RunsTasks => Tasks == true;
+
+    /// <summary>
     /// True when the agent may unregister this entry: it created the entry with
     /// <c>mcp_register_server</c>, and the entry carries nothing that tool can't express (#603).
     /// </summary>
@@ -141,6 +160,8 @@ public sealed class McpBridgeServerConfig
         || Elicitation is not null
         || Attachments is not null
         || ToolTimeoutMs is not null
+        || Tasks is not null
+        || TaskTimeoutMinutes is not null
         || !string.Equals(TransportMode?.Trim() ?? "auto", "auto", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>

@@ -26,4 +26,11 @@ public sealed record LateA2ANotificationMessage(
     string SubagentName,
     string PeerAgent,
     NotificationKind Kind,
-    string WorkingMemoryKey);
+    string WorkingMemoryKey)
+{
+    /// <summary>
+    /// Prefix of <see cref="PeerAgent"/> when the late reply is a background MCP task's, not an A2A
+    /// peer's: <c>mcp:{server}</c>.
+    /// </summary>
+    public const string McpPeerPrefix = "mcp:";
+}

@@ -72,7 +72,7 @@ internal sealed class PendingQuestionStore : IDisposable
     /// it in-band).
     /// </summary>
     public async Task<(PendingQuestion? Question, string? Refusal)> OpenAsync(
-        HandbackCall call, McpHandbackQuestion question, CancellationToken ct)
+        IHandbackOwner call, McpHandbackQuestion question, CancellationToken ct)
     {
         var info = call.Info;
         var now = _time.GetUtcNow();
@@ -178,6 +178,14 @@ internal sealed class PendingQuestionStore : IDisposable
     public Task CancelSessionAsync(string sessionId, string reason) =>
         CancelWhereAsync(q => string.Equals(q.SessionId, sessionId, StringComparison.Ordinal), reason);
 
+    /// <summary>Abandons one open question, if it is still open.</summary>
+    public Task CancelQuestionAsync(string questionId, string reason) =>
+        CancelWhereAsync(q => string.Equals(q.QuestionId, questionId, StringComparison.Ordinal), reason);
+
+    /// <summary>Abandons every open question of one background task (it ended or was cancelled).</summary>
+    public Task CancelTaskAsync(string taskId, string reason) =>
+        CancelWhereAsync(q => string.Equals(q.Call.TaskId, taskId, StringComparison.Ordinal), reason);
+
     private async Task CancelWhereAsync(Func<PendingQuestion, bool> match, string reason)
     {
         foreach (var question in _open.Values.Where(match).ToList())
@@ -282,7 +290,7 @@ internal sealed class PendingQuestionStore : IDisposable
         }
     }
 
-    private static PendingQuestionEntry BuildEntry(PendingQuestion pending, HandbackCall call, PendingTrigger? trigger)
+    private static PendingQuestionEntry BuildEntry(PendingQuestion pending, IHandbackOwner call, PendingTrigger? trigger)
     {
         var info = call.Info;
         var schema = pending.Request.RequestedSchema;
@@ -291,6 +299,7 @@ internal sealed class PendingQuestionStore : IDisposable
         return new PendingQuestionEntry
         {
             QuestionId = pending.QuestionId,
+            TaskId = call.TaskId,
             Status = PendingQuestionStatus.Pending,
             SessionId = pending.SessionId,
             CreatedAt = pending.CreatedAt,
