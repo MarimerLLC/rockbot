@@ -50,7 +50,7 @@ public static class SafeMarkdownRenderer
         string html;
         try
         {
-            var document = Markdown.Parse(markdown, Pipeline);
+            var document = Markdown.Parse(SeparateTablesFromParagraphs(markdown), Pipeline);
             LiteralizeUnknownTags(document);
             html = document.ToHtml(Pipeline);
         }
@@ -63,6 +63,62 @@ public static class SafeMarkdownRenderer
 
         return Sanitizer.Sanitize(html);
     }
+
+    /// <summary>
+    /// Inserts a blank line between a line of text and a pipe-table header row
+    /// directly below it. GFM renders <c>**Caption**\n| a | b |\n|---|---|</c> as
+    /// a caption plus a table, but Markdig only recognizes a pipe table at the
+    /// start of a paragraph, so without the blank line the whole table comes out
+    /// as literal <c>|</c>-separated text. Fenced code blocks are left untouched.
+    /// </summary>
+    private static string SeparateTablesFromParagraphs(string markdown)
+    {
+        if (!markdown.Contains('|'))
+            return markdown;
+
+        var lines = markdown.Split('\n');
+        var result = new List<string>(lines.Length + 4);
+        string? fence = null;
+
+        for (var i = 0; i < lines.Length; i++)
+        {
+            var line = lines[i];
+            var trimmed = line.Trim();
+
+            if (fence is not null)
+            {
+                if (trimmed.StartsWith(fence, StringComparison.Ordinal) && trimmed.Trim(fence[0]).Length == 0)
+                    fence = null;
+            }
+            else if (trimmed.StartsWith("```", StringComparison.Ordinal) || trimmed.StartsWith("~~~", StringComparison.Ordinal))
+            {
+                fence = new string(trimmed[0], trimmed.TakeWhile(c => c == trimmed[0]).Count());
+            }
+            else if (i > 0 && i + 1 < lines.Length
+                     && trimmed.Contains('|')
+                     && IsTableDelimiterRow(lines[i + 1])
+                     && StripContainerPrefix(lines[i - 1]) is { Length: > 0 } previous
+                     && !previous.StartsWith('|'))
+            {
+                // Keep the blank line inside the same blockquote / list indentation.
+                result.Add(line[..(line.Length - line.TrimStart(' ', '\t', '>').Length)].TrimEnd());
+            }
+
+            result.Add(line);
+        }
+
+        return result.Count == lines.Length ? markdown : string.Join('\n', result);
+    }
+
+    private static bool IsTableDelimiterRow(string line)
+    {
+        var trimmed = StripContainerPrefix(line);
+        return trimmed.Contains('|') && trimmed.Contains('-')
+            && trimmed.All(c => c is '|' or '-' or ':' or ' ' or '\t');
+    }
+
+    private static string StripContainerPrefix(string line) =>
+        line.TrimStart(' ', '\t', '>').TrimEnd();
 
     /// <summary>
     /// Replaces raw-HTML nodes that only look like tags (<c>&lt;folder&gt;</c>,

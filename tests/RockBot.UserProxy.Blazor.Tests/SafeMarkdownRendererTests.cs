@@ -43,6 +43,42 @@ public class SafeMarkdownRendererTests
     }
 
     [TestMethod]
+    public void Renders_GfmTable_DirectlyAfterParagraphLine()
+    {
+        // Agents often put a bold caption on the line right above a table, with
+        // no blank line between — GFM still renders that as a table.
+        var html = SafeMarkdownRenderer.RenderSafe(
+            "Intro paragraph.\n\n**Rest of day, in order**\n| Time | Item |\n|---|---|\n| 10:00 | Open |\n\nAfter.");
+
+        StringAssert.Contains(html, "<strong>Rest of day, in order</strong>");
+        StringAssert.Contains(html, "<table");
+        StringAssert.Contains(html, "<th>Time</th>");
+        StringAssert.Contains(html, "<td>10:00</td>");
+        Assert.IsFalse(html.Contains("|---|"), html);
+    }
+
+    [TestMethod]
+    public void Renders_GfmTable_DirectlyAfterParagraphLine_InBlockquote()
+    {
+        var html = SafeMarkdownRenderer.RenderSafe(
+            "> Caption\n> | a | b |\n> |---|---|\n> | 1 | 2 |");
+
+        StringAssert.Contains(html, "<blockquote>");
+        StringAssert.Contains(html, "<td>1</td>");
+    }
+
+    [TestMethod]
+    public void TableLikeTextInFencedCode_IsLeftAlone()
+    {
+        var markdown = "```\nCaption\n| a | b |\n|---|---|\n```";
+
+        var html = SafeMarkdownRenderer.RenderSafe(markdown);
+
+        Assert.IsFalse(html.Contains("<table"), html);
+        StringAssert.Contains(html, "Caption\n| a | b |\n|---|---|");
+    }
+
+    [TestMethod]
     public void Renders_Strikethrough()
     {
         var html = SafeMarkdownRenderer.RenderSafe("~~deleted~~");
