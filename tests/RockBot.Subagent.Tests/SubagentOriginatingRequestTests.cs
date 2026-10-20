@@ -102,11 +102,37 @@ public class SubagentOriginatingRequestTests
     }
 
     [TestMethod]
-    public void LaterUserMessages_SkipsTheOriginatingRequestItself()
+    public void LaterUserMessages_KeepsARepeatOfTheOriginalThatUndoesACorrection()
     {
-        var turns = new List<ConversationTurn> { UserTurn("trim the deck", Spawn.AddSeconds(5)) };
+        // work → personal → work: the repeat is the user's latest word and must not be dropped.
+        const string work = "What's on my work calendar tomorrow?";
+        var turns = new List<ConversationTurn>
+        {
+            UserTurn(work, Spawn.AddSeconds(-1)),
+            UserTurn("personal calendar instead", Spawn.AddSeconds(10)),
+            UserTurn(work, Spawn.AddSeconds(20)),
+        };
 
-        Assert.AreEqual(0, SubagentResultHandler.LaterUserMessages(turns, [Spawned("a", "trim the deck", Spawn)]).Count);
+        var later = SubagentResultHandler.LaterUserMessages(turns, [Spawned("a", work, Spawn)]);
+
+        CollectionAssert.AreEqual(new[] { "personal calendar instead", work }, later.ToArray());
+    }
+
+    [TestMethod]
+    public void ComposedRequest_FromALongOriginal_KeepsTheCorrectionThroughTheSpawnCap()
+    {
+        // A follow-on spawn records the composed request; the spawn cap keeps its start. The
+        // correction predates that subagent's own spawn, so this record is the only place it lives.
+        var original = "List my work calendar events. " + new string('x', 5000);
+        const string correction = "no, I meant my personal calendar, not work";
+
+        var composed = CompletionEvalTriggers.WithLaterUserMessages(original, [correction])!;
+        var recorded = SubagentManager.CapOriginatingRequest(composed)!;
+
+        Assert.AreEqual(composed, recorded, "the composed request must fit the spawn cap untouched");
+        Assert.IsTrue(composed.Length <= CompletionEvalTriggers.MaxComposedRequestChars);
+        StringAssert.StartsWith(composed, "List my work calendar events.");
+        StringAssert.EndsWith(composed, "- " + correction);
     }
 
     [TestMethod]

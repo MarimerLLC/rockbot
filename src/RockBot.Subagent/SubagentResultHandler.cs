@@ -395,8 +395,10 @@ internal sealed class SubagentResultHandler(
     /// (#715), oldest first, at most <see cref="CompletionEvalTriggers.RecentUserMessageCount"/>. A
     /// correction sent while a subagent ran ("no, I meant my personal calendar") amends the request
     /// the subagent was spawned for. Synthetic user-role turns (subagent and A2A reports, bridge
-    /// notices) carry an agent name and are skipped, as is any message that is itself one of the
-    /// batch's originating requests. Empty when no result records its spawn time.
+    /// notices) carry an agent name and are skipped. The turn that led to a spawn is recorded
+    /// before its loop runs, so the time filter alone leaves it out; a later message with the
+    /// same text is kept, since repeating the original request can undo a correction. Empty when
+    /// no result records its spawn time.
     /// </summary>
     internal static IReadOnlyList<string> LaterUserMessages(
         IReadOnlyList<ConversationTurn> turns, IReadOnlyList<SubagentResultMessage> results)
@@ -406,17 +408,11 @@ internal sealed class SubagentResultHandler(
             return [];
         var earliestSpawn = spawns.Min();
 
-        var originating = results
-            .Select(r => r.OriginatingUserRequest?.Trim())
-            .Where(r => !string.IsNullOrEmpty(r))
-            .ToHashSet(StringComparer.Ordinal);
-
         var later = turns
             .Where(t => string.Equals(t.Role, "user", StringComparison.OrdinalIgnoreCase)
                         && t.AgentName is null
                         && t.Timestamp > earliestSpawn
-                        && !string.IsNullOrWhiteSpace(t.Content)
-                        && !originating.Contains(t.Content.Trim()))
+                        && !string.IsNullOrWhiteSpace(t.Content))
             .OrderBy(t => t.Timestamp)
             .Select(t => t.Content.Trim())
             .ToList();

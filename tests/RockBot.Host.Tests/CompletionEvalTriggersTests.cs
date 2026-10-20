@@ -524,6 +524,39 @@ public class CompletionEvalTriggersTests
     }
 
     [TestMethod]
+    public void WithLaterUserMessages_LongOriginal_FitsTheEvaluatorDisplayWithTheCorrection()
+    {
+        var original = "List my work calendar events. " + new string('x', 5000);
+        const string correction = "no, I meant my personal calendar, not work";
+
+        var composed = CompletionEvalTriggers.WithLaterUserMessages(original, [correction])!;
+
+        Assert.IsTrue(composed.Length <= CompletionEvalTriggers.MaxComposedRequestChars);
+        StringAssert.Contains(composed, " … ");
+        StringAssert.EndsWith(composed, "- " + correction);
+
+        // A follow-on subagent's synthesis shows the composed request as its original request.
+        var messages = AgentLoopRunner.BuildCompletionEvaluatorMessages(new CompletionEvalTriggers.EvaluatorInput(
+            ["[Subagent task abc123 completed]: done"], null, composed, "Done.", [],
+            CompletionEvalTrigger.SubagentSynthesis));
+        StringAssert.Contains(messages[1].Text!, "- " + correction);
+    }
+
+    [TestMethod]
+    public void WithLaterUserMessages_ComposedAgain_KeepsBothAmendments()
+    {
+        // A follow-on subagent's own synthesis composes on top of an already composed request.
+        var first = CompletionEvalTriggers.WithLaterUserMessages(
+            "List my work calendar events. " + new string('x', 5000), ["personal calendar instead"])!;
+
+        var second = CompletionEvalTriggers.WithLaterUserMessages(first, ["only the morning"])!;
+
+        Assert.IsTrue(second.Length <= CompletionEvalTriggers.MaxComposedRequestChars);
+        StringAssert.Contains(second, "- personal calendar instead");
+        StringAssert.EndsWith(second, "- only the morning");
+    }
+
+    [TestMethod]
     public void ForLog_IsOneTruncatedLine()
     {
         Assert.AreEqual("(none)", CompletionEvalTriggers.ForLog(null));

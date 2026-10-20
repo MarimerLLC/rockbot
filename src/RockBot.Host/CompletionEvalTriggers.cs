@@ -409,30 +409,54 @@ public static class CompletionEvalTriggers
         IReadOnlyList<string>? LaterUserMessages = null);
 
     /// <summary>
+    /// The longest request <see cref="WithLaterUserMessages"/> composes (#715). It fits both the
+    /// evaluator's display of the original request and the cap a spawn records, so a follow-on
+    /// subagent's recorded request never loses the amendments to truncation.
+    /// </summary>
+    public const int MaxComposedRequestChars = MaxUserMessageChars;
+
+    /// <summary>
     /// The request a subagent synthesis serves once the user has written again since the spawn
     /// (#715): <paramref name="request"/> followed by the later messages, which win where they
     /// conflict. A subagent spawned from the synthesis records this, so it is judged against the
-    /// corrected request rather than the one the correction replaced.
+    /// corrected request rather than the one the correction replaced. The result stays within
+    /// <see cref="MaxComposedRequestChars"/>: the later messages get up to two thirds of it, and
+    /// the original is shortened in the middle to fit the rest, so a long original cannot push
+    /// the amendments out, and the amendments of an already composed request survive at its end.
     /// </summary>
     public static string? WithLaterUserMessages(string? request, IReadOnlyList<string>? later)
     {
         if (later is not { Count: > 0 })
             return request;
 
-        var sb = new StringBuilder();
-        if (!string.IsNullOrWhiteSpace(request))
-        {
-            sb.AppendLine(request.Trim());
-            sb.AppendLine();
-            sb.AppendLine("The user later said (this overrides the request above where they conflict):");
-        }
-        else
-        {
-            sb.AppendLine("The user said:");
-        }
+        var hasRequest = !string.IsNullOrWhiteSpace(request);
+        var amendments = new StringBuilder();
+        amendments.AppendLine(hasRequest
+            ? "The user later said (this overrides the request above where they conflict):"
+            : "The user said:");
+        var perMessage = Math.Max(MinComposedMessageChars, MaxComposedRequestChars * 2 / 3 / later.Count);
         foreach (var message in later)
-            sb.Append("- ").AppendLine(message.Trim());
-        return sb.ToString().TrimEnd();
+            amendments.Append("- ").AppendLine(Truncate(message.Trim(), perMessage));
+        var amendmentText = amendments.ToString().TrimEnd();
+
+        if (!hasRequest)
+            return amendmentText;
+
+        var separator = Environment.NewLine + Environment.NewLine;
+        var room = Math.Max(MinComposedMessageChars, MaxComposedRequestChars - amendmentText.Length - separator.Length);
+        return TruncateMiddle(request!.Trim(), room) + separator + amendmentText;
+    }
+
+    private const int MinComposedMessageChars = 200;
+
+    /// <summary>Shortens <paramref name="text"/> to <paramref name="max"/> characters by cutting its middle.</summary>
+    private static string TruncateMiddle(string text, int max)
+    {
+        const string gap = " … ";
+        if (text.Length <= max) return text;
+        var head = (max - gap.Length) * 3 / 5;
+        var tail = max - gap.Length - head;
+        return text[..head] + gap + text[^tail..];
     }
 
     /// <summary>The judged request as one log-friendly line, truncated (#715).</summary>
