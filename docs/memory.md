@@ -435,6 +435,11 @@ them.
 executing, and the output names the resolved prefix and full keys. Outside a run (no loop has
 bound a prefix) it says no stash is reachable.
 
+`save_to_working_memory` and `edit_working_memory` refuse keys under `stash/`, so every entry
+there was written by the loop. That is what lets the keys in a stash listing be trusted the way
+`[stash-registry]` keys are: `safety-rules.md` and the common and worker directives name both as
+sources, while a key inside a content preview is still tool output and never one.
+
 The stash prefix follows the **session id handed to `AgentLoopRunner.RunAsync`**, never the
 `WorkingMemoryTools` namespace. The two differ by context — a user session's tools write under
 `session/{id}` but stash under `stash/{id}`; a subagent's tools write under `subagent/{taskId}`

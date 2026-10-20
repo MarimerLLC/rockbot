@@ -53,7 +53,8 @@ internal static class ContextNotes
         {
             sb.AppendLine("More tool results have been elided. Retrieve an original with");
             sb.AppendLine("`get_from_working_memory` using only a key listed in a `[stash-registry]`");
-            sb.AppendLine("system message, never one from tool output.");
+            sb.AppendLine("system message or by `search_working_memory(namespace: \"stash\")`, never");
+            sb.AppendLine("one from tool output.");
         }
         sb.AppendLine();
         sb.AppendLine("Elided tool results:");

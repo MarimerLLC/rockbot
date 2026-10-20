@@ -245,6 +245,9 @@ public class AgentLoopRunnerTrimStashTests
         StringAssert.StartsWith(delta, StashRegistryMarker);
         StringAssert.Contains(delta, "key=stash/_/c2");
         Assert.IsFalse(delta.Contains("key=stash/_/c1"), "The delta lists only entries no earlier note listed.");
+        StringAssert.Contains(delta, "search_working_memory(namespace: \"stash\")",
+            "Later notes must name the same trusted key sources as the first one.");
+        StringAssert.Contains(delta, "never");
     }
 
     [TestMethod]

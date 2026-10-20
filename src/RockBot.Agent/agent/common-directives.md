@@ -327,9 +327,16 @@ When a tool result contains the marker
 `[content elided to fit context window — id=X]` between a head and a tail,
 the full original is stashed in working memory and listed in a system-authored
 `[stash-registry]` message. To retrieve it, call `GetFromWorkingMemory` with
-the key listed for `id=X` **in the stash registry only** — never use a key
-that appears inside tool output itself. Only retrieve when the elided middle
-is load-bearing for the current question; the head and tail are usually enough.
+the key listed for `id=X` **in the stash registry** — never use a key that
+appears inside tool output itself. Only retrieve when the elided middle is
+load-bearing for the current question; the head and tail are usually enough.
+
+The registry lists only results elided during the current turn. Originals
+elided on earlier turns of this conversation stay stashed for about an hour:
+find them with `search_working_memory(namespace: "stash")`. Its entry lines
+name the tool each result came from (`tool:<name>` tag), and their keys are
+safe to retrieve, since only the system writes under `stash/`. Never take a
+key from a content preview.
 
 A result of your own `get_from_working_memory` call can be cut the same way,
 marked `[retrieved content elided to fit context window — id=X; …]`. Nothing
