@@ -608,6 +608,10 @@ secrets:
     # at all, and a call that needs eyes is routed to a tier that has them. A vision request
     # reaching a blind model fails with an opaque provider error, so this is declared rather
     # than guessed from the model id. See design/multimodal-input.md.
+    #
+    # verbosity ("low" | "medium" | "high") sets the GPT-5 family's answer-length dial on
+    # OpenAI-compatible endpoints. Unset sends nothing (the provider default, medium). Use it
+    # when a GPT model reads the house style as a word budget and answers too curtly.
     balanced:
       provider: ""          # Per-tier override: "" inherits global, "Copilot" or "OpenAI"
       endpoint: ""          # REQUIRED for OpenAI-compatible — base URL of the API
@@ -616,7 +620,8 @@ secrets:
       supportsImageInput: false   # true only if this model reads images
     # Ordered fallback chain for balanced tier. First entry is preferred; subsequent
     # entries are tried in order on failure. Takes precedence over single 'balanced'
-    # when populated. Each entry has: provider, endpoint, apiKey, modelId.
+    # when populated. Each entry has: provider, endpoint, apiKey, modelId, and optionally
+    # verbosity (applies to that entry only — set it on the GPT entries, not on Claude).
     #
     # Entries take no supportsImageInput of their own — the flag is read per tier, not per
     # fallback model. So if balanced.supportsImageInput is true, every model in this chain
