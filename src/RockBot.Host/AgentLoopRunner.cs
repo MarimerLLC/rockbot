@@ -528,6 +528,8 @@ public sealed partial class AgentLoopRunner(
         // singleton can reach it without ctor plumbing.
         var stashState = new AgentLoopStashContext.State { SessionId = sessionId };
         using var ____ = AgentLoopStashContext.Set(stashState);
+        // #532: tools reach "the stash" through the run's prefix, not their own namespace.
+        using var stashPrefixScope = ToolResultStash.EnterRun(sessionId);
 
         // Per-run skill-body aging state. AgentContextBuilder's BM25 rank-1 push
         // injects up to one full skill body per turn as a system message; this state
@@ -1955,11 +1957,8 @@ public sealed partial class AgentLoopRunner(
     /// Working-memory key under which a trimmed tool result's original content is
     /// stashed. Namespaced by session so concurrent runs don't collide.
     /// </summary>
-    internal static string BuildStashKey(string? sessionId, string callId)
-    {
-        var ns = string.IsNullOrEmpty(sessionId) ? "_" : sessionId;
-        return $"stash/{ns}/{callId}";
-    }
+    internal static string BuildStashKey(string? sessionId, string callId) =>
+        ToolResultStash.Key(sessionId, callId);
 
     /// <summary>
     /// Prefix on the system message that <see cref="AgentContextBuilder"/> uses to inject
@@ -2190,7 +2189,7 @@ public sealed partial class AgentLoopRunner(
                 await workingMemory.SetAsync(
                     stashKey, resultStr, ttl,
                     category: "tool-result-stash",
-                    tags: ["stash", "tool-result"]);
+                    tags: [ToolResultStash.Tag, "tool-result", ToolResultStash.ToolTag(toolName)]);
             }
             catch (Exception ex)
             {
