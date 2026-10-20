@@ -394,6 +394,8 @@ public static class CompletionEvalTriggers
     /// <param name="Trigger">Why the evaluator is running.</param>
     /// <param name="RelayedWork">For a subagent synthesis, the work of each subagent whose result is relayed (#683).</param>
     /// <param name="UserAskedFor">Whether the request being judged gave an instruction (#683).</param>
+    /// <param name="ExternalChangesNeedRequest">Whether external changes need a user instruction (#685).</param>
+    /// <param name="LaterUserMessages">For a subagent synthesis, the user's messages sent after the spawn, oldest first (#715).</param>
     public sealed record EvaluatorInput(
         IReadOnlyList<string> RecentUserMessages,
         string? PreviousAgentMessage,
@@ -403,7 +405,63 @@ public static class CompletionEvalTriggers
         CompletionEvalTrigger Trigger,
         IReadOnlyList<RelayedSubagentWork>? RelayedWork = null,
         UserRequestKind UserAskedFor = UserRequestKind.Instruction,
-        bool ExternalChangesNeedRequest = false);
+        bool ExternalChangesNeedRequest = false,
+        IReadOnlyList<string>? LaterUserMessages = null);
+
+    /// <summary>
+    /// The longest request <see cref="WithLaterUserMessages"/> composes (#715). It fits both the
+    /// evaluator's display of the original request and the cap a spawn records, so a follow-on
+    /// subagent's recorded request never loses the amendments to truncation.
+    /// </summary>
+    public const int MaxComposedRequestChars = MaxUserMessageChars;
+
+    /// <summary>
+    /// The request a subagent synthesis serves once the user has written again since the spawn
+    /// (#715): <paramref name="request"/> followed by the later messages, which win where they
+    /// conflict. A subagent spawned from the synthesis records this, so it is judged against the
+    /// corrected request rather than the one the correction replaced. The result stays within
+    /// <see cref="MaxComposedRequestChars"/>: the later messages get up to two thirds of it, and
+    /// the original is shortened in the middle to fit the rest, so a long original cannot push
+    /// the amendments out, and the amendments of an already composed request survive at its end.
+    /// </summary>
+    public static string? WithLaterUserMessages(string? request, IReadOnlyList<string>? later)
+    {
+        if (later is not { Count: > 0 })
+            return request;
+
+        var hasRequest = !string.IsNullOrWhiteSpace(request);
+        var amendments = new StringBuilder();
+        amendments.AppendLine(hasRequest
+            ? "The user later said (this overrides the request above where they conflict):"
+            : "The user said:");
+        var perMessage = Math.Max(MinComposedMessageChars, MaxComposedRequestChars * 2 / 3 / later.Count);
+        foreach (var message in later)
+            amendments.Append("- ").AppendLine(Truncate(message.Trim(), perMessage));
+        var amendmentText = amendments.ToString().TrimEnd();
+
+        if (!hasRequest)
+            return amendmentText;
+
+        var separator = Environment.NewLine + Environment.NewLine;
+        var room = Math.Max(MinComposedMessageChars, MaxComposedRequestChars - amendmentText.Length - separator.Length);
+        return TruncateMiddle(request!.Trim(), room) + separator + amendmentText;
+    }
+
+    private const int MinComposedMessageChars = 200;
+
+    /// <summary>Shortens <paramref name="text"/> to <paramref name="max"/> characters by cutting its middle.</summary>
+    private static string TruncateMiddle(string text, int max)
+    {
+        const string gap = " … ";
+        if (text.Length <= max) return text;
+        var head = (max - gap.Length) * 3 / 5;
+        var tail = max - gap.Length - head;
+        return text[..head] + gap + text[^tail..];
+    }
+
+    /// <summary>The judged request as one log-friendly line, truncated (#715).</summary>
+    public static string ForLog(string? request, int max = 160) =>
+        CompactArguments(request, max) ?? "(none)";
 
     /// <summary>What the evaluator is told when an information-only request led to external changes (#685).</summary>
     public const string UnrequestedExternalChangeRubric =
@@ -451,6 +509,15 @@ public static class CompletionEvalTriggers
         {
             sb.AppendLine("## Original user request (the request this subagent result must satisfy)");
             sb.AppendLine(Truncate(input.OriginatingUserRequest!, MaxUserMessageChars));
+            sb.AppendLine();
+        }
+
+        // #715: a correction sent while the subagent ran replaces what it was spawned for.
+        if (input.LaterUserMessages is { Count: > 0 } later)
+        {
+            sb.AppendLine("## Later user messages (sent after the original request, oldest first; where they conflict, the later one wins)");
+            for (var i = 0; i < later.Count; i++)
+                sb.AppendLine($"{i + 1}. {Truncate(later[i], MaxUserMessageChars)}");
             sb.AppendLine();
         }
 

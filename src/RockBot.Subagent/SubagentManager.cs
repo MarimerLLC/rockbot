@@ -87,7 +87,9 @@ public sealed class SubagentManager(
         sessionWorkRegistry?.LinkSession(subagentSessionId, primarySessionId);
         sessionWorkRegistry?.LinkSession($"subagent/{taskId}", primarySessionId);
 
-        var task = RunSubagentAsync(taskId, subagentSessionId, description, context, primarySessionId, batchId, consolidate, maxIterations, originatingUserRequest, inputs, actionGate, timeoutSpan, cts.Token);
+        // #715: user messages sent after this moment amend the request the subagent was spawned for.
+        var spawnedAt = DateTimeOffset.UtcNow;
+        var task = RunSubagentAsync(taskId, subagentSessionId, description, context, primarySessionId, batchId, consolidate, maxIterations, originatingUserRequest, inputs, actionGate, spawnedAt, timeoutSpan, cts.Token);
 
         var newEntry = new SubagentEntry
         {
@@ -95,7 +97,7 @@ public sealed class SubagentManager(
             SubagentSessionId = subagentSessionId,
             PrimarySessionId = primarySessionId,
             Description = description,
-            StartedAt = DateTimeOffset.UtcNow,
+            StartedAt = spawnedAt,
             CancellationTokenSource = cts,
             Task = task,
             BatchId = batchId,
@@ -151,6 +153,7 @@ public sealed class SubagentManager(
         string? originatingUserRequest,
         IReadOnlyList<SubagentInput>? inputs,
         ActionGateScope? actionGate,
+        DateTimeOffset spawnedAt,
         TimeSpan timeout,
         CancellationToken ct)
     {
@@ -163,7 +166,7 @@ public sealed class SubagentManager(
             await using var scope = scopeFactory.CreateAsyncScope();
             var runner = scope.ServiceProvider.GetRequiredService<SubagentRunner>();
             await runner.RunAsync(taskId, subagentSessionId, description, context, primarySessionId, batchId, consolidate, maxIterations, timeout, ct,
-                originatingUserRequest: originatingUserRequest, inputs: inputs, actionGate: actionGate);
+                originatingUserRequest: originatingUserRequest, inputs: inputs, actionGate: actionGate, spawnedAt: spawnedAt);
         }
         catch (Exception ex)
         {
@@ -185,6 +188,7 @@ public sealed class SubagentManager(
                     BatchId = batchId,
                     Consolidate = consolidate,
                     OriginatingUserRequest = originatingUserRequest,
+                    SpawnedAt = spawnedAt,
                     Description = description,
                     // #683: it never ran, so it made no tool calls.
                     ToolCalls = [],

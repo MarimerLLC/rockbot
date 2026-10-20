@@ -361,6 +361,11 @@ public sealed partial class AgentLoopRunner(
         - When an "Original user request" section is present, the agent is relaying a subagent's
           result: judge it against that original request, not against the subagent's own task
           description or self-report.
+        - When a "Later user messages" section is present, the user wrote again after that original
+          request, and a later message overrides it where they conflict (for example "no, I meant
+          my personal calendar, not work"). Judge the reply against the request as the user last
+          stated it. A reply that follows the later message instead of the original request is
+          not INCOMPLETE for that.
         - When a "Tool calls made by subagent …" section is present, that subagent did the relayed
           work in its own session. A claim in the relayed report (a file written, a deck uploaded,
           a read-back verified) is supported when that subagent's tool calls show it; the agent's
@@ -504,7 +509,11 @@ public sealed partial class AgentLoopRunner(
         // #670: when true (and AgentHost:DeferRareToolFamilies is on), rarely used tool families
         // stay out of the list until the session loads them. Interactive turns opt in; background,
         // subagent and wisp runs keep the list their caller built.
-        bool deferRareTools = false)
+        bool deferRareTools = false,
+        // #715: for a subagent synthesis, the user's messages sent after the relayed subagents were
+        // spawned, oldest first. They amend originatingUserRequest: a correction sent while the
+        // subagent ran overrides the request it replaced.
+        IReadOnlyList<string>? laterUserMessages = null)
     {
         using var _ = ToolCallSessionContext.Set(sessionId);
         // Always bind (possibly null) so a nested run — a subagent started from a tool call —
@@ -604,9 +613,15 @@ public sealed partial class AgentLoopRunner(
 
         // #666: the user request this run serves, for tools that start work whose result comes
         // back later (spawn_subagent records it so the synthesis turn is checked against it).
-        var servedUserRequest = string.IsNullOrWhiteSpace(originatingUserRequest)
-            ? originalUserRequest
-            : originatingUserRequest;
+        // #715: on a synthesis turn, user messages sent since the spawn amend that request, so a
+        // subagent spawned from here records the corrected request, not the one it replaced.
+        var laterRequests = subagentSynthesis && laterUserMessages is { Count: > 0 } ? laterUserMessages : null;
+        var servedUserRequest = laterRequests is not null
+            ? CompletionEvalTriggers.WithLaterUserMessages(
+                string.IsNullOrWhiteSpace(originatingUserRequest) ? null : originatingUserRequest, laterRequests)!
+            : string.IsNullOrWhiteSpace(originatingUserRequest)
+                ? originalUserRequest
+                : originatingUserRequest;
         using var _________ = OriginatingUserRequestContext.Set(servedUserRequest);
 
         // Captured before any re-prompt nudge joins the history, so the evaluator reads only
@@ -617,11 +632,13 @@ public sealed partial class AgentLoopRunner(
         // #683: the user message the reply is judged against, and whether it asked for anything.
         // A synthesis turn's latest user-role message is the subagent's report, so it is judged
         // against the request behind the spawn; when that is unknown, the full rubric applies.
-        var judgedUserRequest = subagentSynthesis
+        var spawnUserRequest = subagentSynthesis
             ? (string.IsNullOrWhiteSpace(originatingUserRequest) ? null : originatingUserRequest)
             : originalUserRequest;
         var userAskedFor = CompletionEvalTriggers.ClassifyUserRequest(
-            judgedUserRequest, followsAgentMessage: subagentSynthesis || previousAgentMessage is not null);
+            spawnUserRequest, followsAgentMessage: subagentSynthesis || previousAgentMessage is not null);
+        // #715: amended by the user's later messages, when there are any.
+        var judgedUserRequest = laterRequests is not null ? servedUserRequest : spawnUserRequest;
 
         // #685: the consequential-action gate's scope for every tool call this run (and anything it
         // starts) makes. A user turn whose scope carries no classification is judged by the same
@@ -865,11 +882,13 @@ public sealed partial class AgentLoopRunner(
             var triggerTag = new KeyValuePair<string, object?>("rockbot.completion_check.trigger", triggerName);
             var askedForTag = new KeyValuePair<string, object?>("rockbot.completion_check.user_asked_for", askedForName);
             var relayedForEval = trigger == CompletionEvalTrigger.SubagentSynthesis ? relayedWork : null;
+            // #715: the judged request is logged, so a verdict against the wrong request shows.
             logger.LogInformation(
                 "Completion evaluator: RUN (trigger={Trigger}, userAskedFor={UserAskedFor}) — {ToolCalls} tool call(s), " +
-                "{RelayedCalls} relayed subagent call(s), {ResponseLen} chars",
+                "{RelayedCalls} relayed subagent call(s), {ResponseLen} chars, {LaterCount} later user message(s), judged=\"{JudgedRequest}\"",
                 triggerName, askedForName, loopToolCalls.Count,
-                relayedForEval?.Sum(w => w.ToolCalls?.Count ?? 0) ?? 0, result.Response.Length);
+                relayedForEval?.Sum(w => w.ToolCalls?.Count ?? 0) ?? 0, result.Response.Length,
+                laterRequests?.Count ?? 0, CompletionEvalTriggers.ForLog(judgedUserRequest));
 
             if (onStageProgress is not null)
                 await onStageProgress("Reviewing response…", cancellationToken);
@@ -884,7 +903,8 @@ public sealed partial class AgentLoopRunner(
                     trigger,
                     relayedForEval,
                     userAskedFor,
-                    externalChangesNeedRequest),
+                    externalChangesNeedRequest,
+                    laterRequests),
                 cancellationToken);
 
             if (complete)
@@ -961,7 +981,9 @@ public sealed partial class AgentLoopRunner(
                     : "Continue working on the original request. Use your available tools — do not claim you " +
                       "lack access without trying them first." +
                       CompletionEvalTriggers.RepromptGuidance(trigger, loopToolCalls, userAskedFor);
-            var nudge = CompletionEvalTriggers.BuildRepromptMessage(reason, instructions, judgedUserRequest);
+            // #715: after a correction, the reply answers the user's latest message.
+            var nudge = CompletionEvalTriggers.BuildRepromptMessage(
+                reason, instructions, laterRequests is not null ? laterRequests[^1] : judgedUserRequest);
 
             chatMessages.Add(new ChatMessage(ChatRole.User, nudge));
         }

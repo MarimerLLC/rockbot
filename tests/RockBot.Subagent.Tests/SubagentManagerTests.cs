@@ -282,6 +282,9 @@ public class SubagentManagerTests
         var result = await publisher.WaitForResultAsync(TimeSpan.FromSeconds(10));
         Assert.IsNotNull(result, "the runner should publish a result");
         Assert.AreEqual("trim the deck to about 11 slides", result.OriginatingUserRequest);
+        // #715: the spawn time travels too, so the synthesis can see what the user said since.
+        Assert.IsNotNull(result.SpawnedAt);
+        Assert.IsTrue(result.SpawnedAt <= result.Timestamp);
     }
 
     // ── Consequential-action scope (#685) ───────────────────────────────────────

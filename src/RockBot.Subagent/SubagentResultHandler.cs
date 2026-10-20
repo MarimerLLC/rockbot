@@ -260,6 +260,9 @@ internal sealed class SubagentResultHandler(
                      ..rulesTools.Tools, ..toolGuideTools.Tools, ..registryTools]
         };
 
+        // #715: what the user has said since the spawn amends the request the results are judged by.
+        var laterUserMessages = await ReadLaterUserMessagesAsync(rawSessionId, batchedResults, ct);
+
         try
         {
             using var progressCtx = ToolProgressNotifier.SetContext(new ToolProgressContext
@@ -283,7 +286,8 @@ internal sealed class SubagentResultHandler(
                 // request doesn't become an instruction because a subagent reported back.
                 actionGate: ActionGateScope.FromRelayedResults(batchedResults),
                 // #670: the primary's own tool surface, rare families included only once loaded.
-                deferRareTools: true);
+                deferRareTools: true,
+                laterUserMessages: laterUserMessages);
 
             await conversationMemory.AddTurnAsync(
                 rawSessionId,
@@ -384,6 +388,61 @@ internal sealed class SubagentResultHandler(
             1 => distinct[0],
             _ => string.Join("\n\n", distinct.Select((r, i) => $"({i + 1}) {r}")),
         };
+    }
+
+    /// <summary>
+    /// The user's own messages in <paramref name="turns"/> sent after the earliest spawn in the batch
+    /// (#715), oldest first, at most <see cref="CompletionEvalTriggers.RecentUserMessageCount"/>. A
+    /// correction sent while a subagent ran ("no, I meant my personal calendar") amends the request
+    /// the subagent was spawned for. Synthetic user-role turns (subagent and A2A reports, bridge
+    /// notices) carry an agent name and are skipped. The turn that led to a spawn is recorded
+    /// before its loop runs, so the time filter alone leaves it out; a later message with the
+    /// same text is kept, since repeating the original request can undo a correction. Empty when
+    /// no result records its spawn time.
+    /// </summary>
+    internal static IReadOnlyList<string> LaterUserMessages(
+        IReadOnlyList<ConversationTurn> turns, IReadOnlyList<SubagentResultMessage> results)
+    {
+        var spawns = results.Where(r => r.SpawnedAt is not null).Select(r => r.SpawnedAt!.Value).ToList();
+        if (spawns.Count == 0)
+            return [];
+        var earliestSpawn = spawns.Min();
+
+        var later = turns
+            .Where(t => string.Equals(t.Role, "user", StringComparison.OrdinalIgnoreCase)
+                        && t.AgentName is null
+                        && t.Timestamp > earliestSpawn
+                        && !string.IsNullOrWhiteSpace(t.Content))
+            .OrderBy(t => t.Timestamp)
+            .Select(t => t.Content.Trim())
+            .ToList();
+
+        return later.Count > CompletionEvalTriggers.RecentUserMessageCount
+            ? later[^CompletionEvalTriggers.RecentUserMessageCount..]
+            : later;
+    }
+
+    /// <summary><see cref="LaterUserMessages"/> for the session. Never throws — the messages are an aid.</summary>
+    private async Task<IReadOnlyList<string>> ReadLaterUserMessagesAsync(
+        string rawSessionId, IReadOnlyList<SubagentResultMessage> results, CancellationToken ct)
+    {
+        if (!results.Any(r => r.SpawnedAt is not null))
+            return [];
+        try
+        {
+            var turns = await conversationMemory.GetTurnsAsync(rawSessionId, ct);
+            var later = LaterUserMessages(turns, results);
+            if (later.Count > 0)
+                logger.LogInformation(
+                    "Synthesis for session {SessionId}: {Count} user message(s) arrived after the spawn; judged as amending the request",
+                    rawSessionId, later.Count);
+            return later;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            logger.LogWarning(ex, "Failed to read later user messages for session {SessionId}", rawSessionId);
+            return [];
+        }
     }
 
     /// <summary>
