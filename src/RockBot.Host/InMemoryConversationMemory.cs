@@ -31,7 +31,24 @@ internal sealed class InMemoryConversationMemory : IConversationMemory, IDisposa
 
     public Task AddTurnAsync(string sessionId, ConversationTurn turn, CancellationToken cancellationToken = default)
     {
-        var session = _sessions.GetOrAdd(sessionId, _ => new SessionData());
+        AddTurn(sessionId, turn);
+        return Task.CompletedTask;
+    }
+
+    /// <summary>
+    /// Records a turn and reports what that did to the session: whether the turn started it
+    /// (nothing was held for <paramref name="sessionId"/>, including after idle expiry), and the
+    /// turns evicted past <see cref="ConversationMemoryOptions.MaxTurnsPerSession"/>, oldest first.
+    /// </summary>
+    internal (bool Started, IReadOnlyList<ConversationTurn> Evicted) AddTurn(string sessionId, ConversationTurn turn)
+    {
+        var started = false;
+        var session = _sessions.GetOrAdd(sessionId, _ =>
+        {
+            started = true;
+            return new SessionData();
+        });
+        List<ConversationTurn>? evicted = null;
 
         lock (session.Lock)
         {
@@ -41,12 +58,16 @@ internal sealed class InMemoryConversationMemory : IConversationMemory, IDisposa
             // Sliding window: evict oldest turns when limit exceeded (O(1) removal)
             while (session.Turns.Count > _options.MaxTurnsPerSession)
             {
+                (evicted ??= []).Add(session.Turns.First!.Value);
                 session.Turns.RemoveFirst();
             }
         }
 
-        return Task.CompletedTask;
+        return (started, evicted ?? (IReadOnlyList<ConversationTurn>)[]);
     }
+
+    /// <summary>Whether <paramref name="sessionId"/> is currently held (not cleared or expired).</summary>
+    internal bool HasSession(string sessionId) => _sessions.ContainsKey(sessionId);
 
     public Task<IReadOnlyList<ConversationTurn>> GetTurnsAsync(string sessionId, CancellationToken cancellationToken = default)
     {

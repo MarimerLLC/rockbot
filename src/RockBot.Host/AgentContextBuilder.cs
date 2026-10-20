@@ -473,10 +473,16 @@ public sealed class AgentContextBuilder(
         }
         // #530: turns before the window leave a marker where they would have been, carrying the
         // ones that match this message. Server-side, because a recall tool the model had to choose
-        // to call was never chosen.
-        var outOfWindow = OutOfWindowRecall.Build(
-            history, startIndex, currentUserContent,
-            _hostOptions.OutOfWindowRecallMaxTurns, _hostOptions.OutOfWindowRecallMaxCharsPerTurn);
+        // to call was never chosen. #509: turns evicted past retention come first, so recall reaches
+        // the whole live conversation rather than only what memory still holds.
+        var archived = await conversationMemory.GetArchivedTurnsAsync(sessionId, ct);
+        var outOfWindow = archived.Count == 0
+            ? OutOfWindowRecall.Build(
+                history, startIndex, currentUserContent,
+                _hostOptions.OutOfWindowRecallMaxTurns, _hostOptions.OutOfWindowRecallMaxCharsPerTurn)
+            : OutOfWindowRecall.Build(
+                [.. archived, .. history], archived.Count + startIndex, currentUserContent,
+                _hostOptions.OutOfWindowRecallMaxTurns, _hostOptions.OutOfWindowRecallMaxCharsPerTurn);
         if (outOfWindow is not null)
         {
             chatMessages.Add(new ChatMessage(ChatRole.System, outOfWindow.Text).Tag(ContextCategory.OutOfWindowRecall));

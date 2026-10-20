@@ -127,6 +127,45 @@ public class AgentContextBuilderContextTurnsTests
         StringAssert.Contains(marker.Text, "> turn-Here's a throwaway confirmation code: XJ-4421.");
     }
 
+    // ── #509: turns evicted past retention ───────────────────────────────────
+
+    [TestMethod]
+    public async Task ArchivedTurn_MatchingTheMessage_IsQuotedWithItsPlaceInTheConversation()
+    {
+        var archived = new List<ConversationTurn>
+        {
+            new("user", "turn-Here's a throwaway confirmation code: XJ-4421.", DateTimeOffset.UtcNow),
+            new("assistant", "turn-Noted.", DateTimeOffset.UtcNow),
+        };
+        var retained = Enumerable.Range(0, 6)
+            .Select(i => new ConversationTurn(i % 2 == 0 ? "user" : "assistant", $"turn-filler-{i}", DateTimeOffset.UtcNow))
+            .ToList();
+        var builder = BuildBuilder(new ListConversationMemory(retained, archived), new AgentHostOptions { MaxLlmContextTurns = 4 });
+
+        var messages = await builder.BuildAsync("session-archive",
+            "What was the throwaway confirmation code I gave you earlier?", CancellationToken.None);
+
+        var marker = messages.Single(m => ContextTags.Get(m) == ContextCategory.OutOfWindowRecall);
+        StringAssert.StartsWith(marker.Text, "[4 earlier turn(s) of this conversation");
+        StringAssert.Contains(marker.Text, "[turn 1 of 8 · user");
+        StringAssert.Contains(marker.Text, "> turn-Here's a throwaway confirmation code: XJ-4421.");
+        Assert.AreEqual(4, CountHistoryTurns(messages));
+    }
+
+    [TestMethod]
+    public async Task ArchivedTurns_GetAMarker_EvenWhenTheWindowCoversEveryRetainedTurn()
+    {
+        var archived = new List<ConversationTurn> { new("user", "turn-old", DateTimeOffset.UtcNow) };
+        var retained = new List<ConversationTurn> { new("assistant", "turn-recent", DateTimeOffset.UtcNow) };
+        var builder = BuildBuilder(new ListConversationMemory(retained, archived), new AgentHostOptions { MaxLlmContextTurns = 20 });
+
+        var messages = await builder.BuildAsync("session-archive", "current message", CancellationToken.None);
+
+        var marker = messages.Single(m => ContextTags.Get(m) == ContextCategory.OutOfWindowRecall);
+        StringAssert.StartsWith(marker.Text, "[1 earlier turn(s) of this conversation");
+        Assert.AreEqual(messages.FindIndex(m => m.Text == "turn-recent") - 1, messages.IndexOf(marker));
+    }
+
     // ── #670: history compaction ─────────────────────────────────────────────
 
     private static string Long(string label, int chars) =>
@@ -281,13 +320,17 @@ public class AgentContextBuilderContextTurnsTests
             Task.FromResult<IReadOnlyList<string>>([]);
     }
 
-    private sealed class ListConversationMemory(IReadOnlyList<ConversationTurn> turns) : IConversationMemory
+    private sealed class ListConversationMemory(
+        IReadOnlyList<ConversationTurn> turns, IReadOnlyList<ConversationTurn>? archived = null) : IConversationMemory
     {
         public Task AddTurnAsync(string sessionId, ConversationTurn turn, CancellationToken cancellationToken = default) =>
             Task.CompletedTask;
 
         public Task<IReadOnlyList<ConversationTurn>> GetTurnsAsync(string sessionId, CancellationToken cancellationToken = default) =>
             Task.FromResult(turns);
+
+        public Task<IReadOnlyList<ConversationTurn>> GetArchivedTurnsAsync(string sessionId, CancellationToken cancellationToken = default) =>
+            Task.FromResult(archived ?? []);
 
         public Task ClearAsync(string sessionId, CancellationToken cancellationToken = default) => Task.CompletedTask;
 
