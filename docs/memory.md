@@ -446,9 +446,9 @@ The tool names, headlines, and scope phrases are `const`s on `RecallTools` in
 rename or a re-wording from silently desynchronising a family whose members are registered
 from assemblies that do not reference each other.
 
-A third member — `search_conversation_history`, for turns that have scrolled out of the
-context window — is tracked by [#509](https://github.com/MarimerLLC/rockbot/issues/509) and
-blocked on [#530](https://github.com/MarimerLLC/rockbot/issues/530).
+Turns that have scrolled out of the context window are not recalled by a tool: the model did not
+choose one when it was offered (#511). They are recalled server-side instead — see
+[Out-of-window turns](#out-of-window-turns).
 
 ---
 
@@ -469,6 +469,31 @@ across sessions or restarts.
 
 The last `MaxLlmContextTurns` (default 20) turns are replayed into each LLM request. Older
 turns are dropped to keep context bounded.
+
+### Out-of-window turns
+
+A turn that falls out of the window is still retained (up to `MaxTurnsPerSession`), but used to
+leave nothing in context, so the model could not know it had forgotten. A recall tool plus a
+directive telling the model to use it was validated live in #511 and never fired on its own: the
+model said "I don't have it in the visible conversation" and stopped. #530 does it server-side.
+
+Once a session outgrows the window, `AgentContextBuilder` places one system message
+(`OutOfWindowRecall`, context category `out-of-window-recall`) immediately before the first
+replayed turn, where the elided turns would have been. It says how many earlier turns are
+hidden and their time span, and quotes the out-of-window turns that BM25-match the incoming
+user message's content words (function words and recall phrasing like "earlier" or "told" are
+dropped, so a bare "what did you say earlier?" recalls nothing). Quoted turns keep conversation
+order, carry `turn i of N · role · time` provenance, and every quoted line is prefixed `> ` inside
+a frame stating it is conversation record, not instructions. The message tells the model to say
+it cannot see a part of the conversation rather than that it never happened.
+
+| Option (`AgentHost__…`) | Default | Effect |
+|---|---|---|
+| `OutOfWindowRecallMaxTurns` | 3 | Matching turns quoted; 0 keeps the marker only |
+| `OutOfWindowRecallMaxCharsPerTurn` | 800 | Per-turn budget (start and end kept); 0 quotes in full |
+
+Recall reaches only retained turns; turns past `MaxTurnsPerSession` are tracked by
+[#509](https://github.com/MarimerLLC/rockbot/issues/509).
 
 ### Conversation log
 

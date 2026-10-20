@@ -77,6 +77,56 @@ public class AgentContextBuilderContextTurnsTests
             "A window larger than the available history must not pad or throw.");
     }
 
+    // ── #530: out-of-window marker ───────────────────────────────────────────
+
+    [TestMethod]
+    public async Task HistoryLongerThanWindow_MarkerStandsJustBeforeTheReplayedTurns()
+    {
+        var builder = BuildBuilder(
+            new FixedHistoryConversationMemory(turnCount: 30),
+            new AgentHostOptions { MaxLlmContextTurns = 20 });
+
+        var messages = await builder.BuildAsync("session-marker", "current message", CancellationToken.None);
+        var firstTurn = messages.FindIndex(m => m.Text == "turn-10");
+
+        Assert.IsTrue(firstTurn > 0);
+        var marker = messages[firstTurn - 1];
+        Assert.AreEqual(ChatRole.System, marker.Role);
+        Assert.AreEqual(ContextCategory.OutOfWindowRecall, ContextTags.Get(marker));
+        StringAssert.StartsWith(marker.Text, "[10 earlier turn(s) of this conversation");
+        Assert.AreEqual(1, messages.Count(m => ContextTags.Get(m) == ContextCategory.OutOfWindowRecall));
+    }
+
+    [TestMethod]
+    public async Task HistoryWithinWindow_HasNoMarker()
+    {
+        var builder = BuildBuilder(new FixedHistoryConversationMemory(turnCount: 20));
+
+        var messages = await builder.BuildAsync("session-fits", "current message", CancellationToken.None);
+
+        Assert.IsFalse(messages.Any(m => ContextTags.Get(m) == ContextCategory.OutOfWindowRecall));
+    }
+
+    [TestMethod]
+    public async Task OutOfWindowTurn_MatchingTheMessage_IsQuotedIntoContext()
+    {
+        var turns = new List<ConversationTurn>
+        {
+            new("user", "turn-Here's a throwaway confirmation code: XJ-4421.", DateTimeOffset.UtcNow),
+            new("assistant", "turn-Noted.", DateTimeOffset.UtcNow),
+        };
+        turns.AddRange(Enumerable.Range(0, 4).Select(i =>
+            new ConversationTurn(i % 2 == 0 ? "user" : "assistant", $"turn-filler-{i}", DateTimeOffset.UtcNow)));
+        var builder = BuildBuilder(new ListConversationMemory(turns), new AgentHostOptions { MaxLlmContextTurns = 4 });
+
+        var messages = await builder.BuildAsync("session-recall",
+            "What was the throwaway confirmation code I gave you earlier?", CancellationToken.None);
+
+        Assert.IsFalse(HistoryTurns(messages).Any(t => t.Contains("XJ-4421")), "the turn itself is out of the window");
+        var marker = messages.Single(m => ContextTags.Get(m) == ContextCategory.OutOfWindowRecall);
+        StringAssert.Contains(marker.Text, "> turn-Here's a throwaway confirmation code: XJ-4421.");
+    }
+
     // ── #670: history compaction ─────────────────────────────────────────────
 
     private static string Long(string label, int chars) =>

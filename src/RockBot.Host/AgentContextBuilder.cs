@@ -471,6 +471,25 @@ public sealed class AgentContextBuilder(
                 break;
             }
         }
+        // #530: turns before the window leave a marker where they would have been, carrying the
+        // ones that match this message. Server-side, because a recall tool the model had to choose
+        // to call was never chosen.
+        var outOfWindow = OutOfWindowRecall.Build(
+            history, startIndex, currentUserContent,
+            _hostOptions.OutOfWindowRecallMaxTurns, _hostOptions.OutOfWindowRecallMaxCharsPerTurn);
+        if (outOfWindow is not null)
+        {
+            chatMessages.Add(new ChatMessage(ChatRole.System, outOfWindow.Text).Tag(ContextCategory.OutOfWindowRecall));
+            logger.LogInformation(
+                "Out-of-window marker for session {SessionId}: {Hidden} turn(s) outside the window, {Recalled} recalled",
+                sessionId, outOfWindow.HiddenTurns, outOfWindow.RecalledTurns);
+            Activity.Current?.AddEvent(new ActivityEvent("out_of_window_recall",
+                tags: new ActivityTagsCollection
+                {
+                    { "hidden_turns", outOfWindow.HiddenTurns },
+                    { "recalled_turns", outOfWindow.RecalledTurns }
+                }));
+        }
         for (var i = startIndex; i < history.Count; i++)
         {
             var turn = history[i];
