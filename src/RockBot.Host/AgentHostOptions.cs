@@ -252,6 +252,20 @@ public sealed class AgentHostOptions
     public int MaxLlmContextTurns { get; set; } = 20;
 
     /// <summary>
+    /// How many turns from outside the <see cref="MaxLlmContextTurns"/> window are quoted back
+    /// into context when they match the incoming user message (#530). Once a session outgrows the
+    /// window, a system message stands where the older turns would be: how many are hidden, and
+    /// the best keyword matches among them. Set to 0 to keep only the marker. Default 3.
+    /// </summary>
+    public int OutOfWindowRecallMaxTurns { get; set; } = 3;
+
+    /// <summary>
+    /// Character budget for each turn quoted by out-of-window recall; longer turns keep their
+    /// start and end. Set to 0 to quote turns in full. Default 800.
+    /// </summary>
+    public int OutOfWindowRecallMaxCharsPerTurn { get; set; } = 800;
+
+    /// <summary>
     /// How many of the most recent history turns are replayed in full (#670). Older turns inside
     /// the <see cref="MaxLlmContextTurns"/> window keep only their start and end, up to
     /// <see cref="HistoryOlderTurnMaxChars"/>. Conversation memory always keeps the full text.

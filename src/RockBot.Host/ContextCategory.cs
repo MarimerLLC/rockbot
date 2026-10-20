@@ -14,6 +14,7 @@ public static class ContextCategory
     public const string Rules = "rules";
     public const string ModelBehavior = "model-behavior";
     public const string SessionStart = "session-start";
+    public const string OutOfWindowRecall = "out-of-window-recall";
     public const string HistoryUser = "history-user";
     public const string HistoryAssistant = "history-assistant";
     public const string SubagentRelay = "subagent-relay";
