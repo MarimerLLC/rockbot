@@ -77,7 +77,9 @@ internal sealed class SubagentRunner(
         IReadOnlyList<SubagentInput>? inputs = null,
         // #685: the consequential-action scope captured at spawn (already marked as a subagent's).
         // Null leaves RunAsync to inherit whatever scope flows in, or none.
-        ActionGateScope? actionGate = null)
+        ActionGateScope? actionGate = null,
+        // #715: when the subagent was spawned; null uses the run's own start time.
+        DateTimeOffset? spawnedAt = null)
     {
         var classification = tierSelector.Classify(description, new TierRoutingContext(Origin: "subagent"));
         if (tierRefiner is not null)
@@ -413,6 +415,7 @@ internal sealed class SubagentRunner(
             BatchId = batchId,
             Consolidate = consolidate,
             OriginatingUserRequest = originatingUserRequest,
+            SpawnedAt = spawnedAt ?? startedAt,
             Description = description,
             ToolCalls = ledgerCalls is null ? null : CompletionEvalTriggers.SummarizeForRelay(ledgerCalls),
             ToolCallCount = ledgerCalls?.Count,

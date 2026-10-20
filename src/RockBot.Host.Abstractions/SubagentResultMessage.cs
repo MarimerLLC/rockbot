@@ -23,6 +23,13 @@ public sealed record SubagentResultMessage
     public string? OriginatingUserRequest { get; init; }
 
     /// <summary>
+    /// When the subagent was spawned (#715). The synthesis turn treats user messages sent after it
+    /// as amending <see cref="OriginatingUserRequest"/>: a correction sent while the subagent ran
+    /// overrides the request it replaced. Null on results from an older build.
+    /// </summary>
+    public DateTimeOffset? SpawnedAt { get; init; }
+
+    /// <summary>
     /// The task description the subagent was spawned with (#665). Recorded with the result in the
     /// session work registry so later subagents in the conversation can see what this one did.
     /// Null on results from an older build.

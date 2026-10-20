@@ -212,6 +212,63 @@ public class AgentLoopRunnerCompletionEvaluatorTests
     }
 
     [TestMethod]
+    public async Task SubagentSynthesis_WithLaterUserMessage_JudgesAgainstTheCorrection()
+    {
+        // #715: the user corrected the target while the subagent ran. The relay is judged against
+        // the corrected request, and a spawn from this turn records it too.
+        const string original = "What's on my work calendar tomorrow? Just list the events, don't change anything.";
+        const string correction = "no, I meant my personal calendar, not work. Just list the events, don't change anything.";
+        const string synthetic = "[Subagent task abc123 completed]: Personal calendar, Oct 14: dentist at 9:00.";
+        string? requestSeenByTool = null;
+
+        var llm = new ScriptedLlmClient(
+            loopReplies: ["Your personal calendar tomorrow: dentist at 9:00.", "Your personal calendar tomorrow: dentist at 9:00."],
+            evaluatorReplies: [CompleteVerdict])
+        {
+            OnLoopCall = () => requestSeenByTool ??= OriginatingUserRequestContext.Value,
+        };
+        var runner = CreateRunner(llm);
+
+        var result = await runner.RunAsync(
+            Conversation(synthetic), new ChatOptions(), "s1",
+            enableFollowUp: false, cancellationToken: CancellationToken.None,
+            subagentSynthesis: true, originatingUserRequest: original,
+            laterUserMessages: [correction]);
+
+        Assert.AreEqual("Your personal calendar tomorrow: dentist at 9:00.", result);
+        Assert.AreEqual(1, llm.EvaluatorRequests.Count);
+        var evalInput = llm.EvaluatorRequests[0];
+        StringAssert.Contains(evalInput, "## Original user request");
+        StringAssert.Contains(evalInput, "## Later user messages");
+        StringAssert.Contains(evalInput, correction);
+        Assert.IsTrue(evalInput.IndexOf(original, StringComparison.Ordinal)
+                      < evalInput.IndexOf(correction, StringComparison.Ordinal));
+
+        Assert.IsNotNull(requestSeenByTool);
+        StringAssert.Contains(requestSeenByTool, original);
+        StringAssert.Contains(requestSeenByTool, "The user later said");
+        StringAssert.Contains(requestSeenByTool, correction);
+    }
+
+    [TestMethod]
+    public async Task LaterUserMessages_OutsideASynthesis_AreIgnored()
+    {
+        string? requestSeenByTool = null;
+        var llm = new ScriptedLlmClient(loopReplies: ["Canberra."], evaluatorReplies: [IncompleteVerdict])
+        {
+            OnLoopCall = () => requestSeenByTool ??= OriginatingUserRequestContext.Value,
+        };
+        var runner = CreateRunner(llm);
+
+        await runner.RunAsync(
+            Conversation("What's the capital of Australia?"), new ChatOptions(), "s1",
+            enableFollowUp: false, cancellationToken: CancellationToken.None,
+            laterUserMessages: ["something else"]);
+
+        Assert.AreEqual("What's the capital of Australia?", requestSeenByTool);
+    }
+
+    [TestMethod]
     public async Task FinalReprompt_IsNotEvaluatedAgain()
     {
         var llm = new ScriptedLlmClient(

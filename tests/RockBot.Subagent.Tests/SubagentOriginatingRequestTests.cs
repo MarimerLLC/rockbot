@@ -72,6 +72,75 @@ public class SubagentOriginatingRequestTests
         Assert.AreEqual("trim the deck to about 11 slides", back.OriginatingUserRequest);
     }
 
+    // ── Later user messages (#715) ───────────────────────────────────────────────
+
+    private static readonly DateTimeOffset Spawn = new(2026, 10, 13, 16, 41, 0, TimeSpan.Zero);
+
+    private static SubagentResultMessage Spawned(string taskId, string? request, DateTimeOffset? at) =>
+        Result(taskId, request) with { SpawnedAt = at };
+
+    private static ConversationTurn UserTurn(string content, DateTimeOffset at, string? agentName = null) =>
+        new("user", content, at) { AgentName = agentName };
+
+    [TestMethod]
+    public void LaterUserMessages_TakesTheUsersOwnTurnsAfterTheSpawn()
+    {
+        const string original = "What's on my work calendar tomorrow?";
+        var turns = new List<ConversationTurn>
+        {
+            UserTurn("earlier chat", Spawn.AddMinutes(-5)),
+            UserTurn(original, Spawn.AddSeconds(-2)),
+            new("assistant", "Checking your work calendar…", Spawn.AddSeconds(1)),
+            UserTurn("no, I meant my personal calendar, not work", Spawn.AddSeconds(20)),
+            UserTurn("[Subagent task a completed]: …", Spawn.AddSeconds(30), agentName: "subagent-a"),
+            UserTurn("[A2A result]", Spawn.AddSeconds(31), agentName: "peer-agent"),
+        };
+
+        var later = SubagentResultHandler.LaterUserMessages(turns, [Spawned("a", original, Spawn)]);
+
+        CollectionAssert.AreEqual(new[] { "no, I meant my personal calendar, not work" }, later.ToArray());
+    }
+
+    [TestMethod]
+    public void LaterUserMessages_SkipsTheOriginatingRequestItself()
+    {
+        var turns = new List<ConversationTurn> { UserTurn("trim the deck", Spawn.AddSeconds(5)) };
+
+        Assert.AreEqual(0, SubagentResultHandler.LaterUserMessages(turns, [Spawned("a", "trim the deck", Spawn)]).Count);
+    }
+
+    [TestMethod]
+    public void LaterUserMessages_UsesTheEarliestSpawnInTheBatch_AndKeepsTheLastThree()
+    {
+        var turns = Enumerable.Range(1, 5)
+            .Select(i => UserTurn($"m{i}", Spawn.AddSeconds(i * 10)))
+            .ToList();
+
+        var later = SubagentResultHandler.LaterUserMessages(turns,
+        [
+            Spawned("a", "x", Spawn.AddSeconds(25)),
+            Spawned("b", "x", Spawn.AddSeconds(5)),
+        ]);
+
+        CollectionAssert.AreEqual(new[] { "m3", "m4", "m5" }, later.ToArray());
+    }
+
+    [TestMethod]
+    public void LaterUserMessages_NoSpawnTime_ReturnsNone()
+    {
+        var turns = new List<ConversationTurn> { UserTurn("no, personal", Spawn.AddSeconds(5)) };
+
+        Assert.AreEqual(0, SubagentResultHandler.LaterUserMessages(turns, [Spawned("a", "work calendar", null)]).Count);
+    }
+
+    [TestMethod]
+    public void ResultMessage_RoundTripsTheSpawnTime()
+    {
+        var envelope = Spawned("a", "x", Spawn).ToEnvelope<SubagentResultMessage>(source: "subagent-a");
+
+        Assert.AreEqual(Spawn, envelope.GetPayload<SubagentResultMessage>()!.SpawnedAt);
+    }
+
     [TestMethod]
     public void ResultMessage_FromAnOlderBuild_DeserializesWithNullRequest()
     {
@@ -87,5 +156,6 @@ public class SubagentOriginatingRequestTests
         var back = envelope.GetPayload<SubagentResultMessage>()!;
         Assert.AreEqual("a", back.TaskId);
         Assert.IsNull(back.OriginatingUserRequest);
+        Assert.IsNull(back.SpawnedAt);
     }
 }

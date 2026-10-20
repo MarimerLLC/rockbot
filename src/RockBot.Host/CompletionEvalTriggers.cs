@@ -394,6 +394,8 @@ public static class CompletionEvalTriggers
     /// <param name="Trigger">Why the evaluator is running.</param>
     /// <param name="RelayedWork">For a subagent synthesis, the work of each subagent whose result is relayed (#683).</param>
     /// <param name="UserAskedFor">Whether the request being judged gave an instruction (#683).</param>
+    /// <param name="ExternalChangesNeedRequest">Whether external changes need a user instruction (#685).</param>
+    /// <param name="LaterUserMessages">For a subagent synthesis, the user's messages sent after the spawn, oldest first (#715).</param>
     public sealed record EvaluatorInput(
         IReadOnlyList<string> RecentUserMessages,
         string? PreviousAgentMessage,
@@ -403,7 +405,39 @@ public static class CompletionEvalTriggers
         CompletionEvalTrigger Trigger,
         IReadOnlyList<RelayedSubagentWork>? RelayedWork = null,
         UserRequestKind UserAskedFor = UserRequestKind.Instruction,
-        bool ExternalChangesNeedRequest = false);
+        bool ExternalChangesNeedRequest = false,
+        IReadOnlyList<string>? LaterUserMessages = null);
+
+    /// <summary>
+    /// The request a subagent synthesis serves once the user has written again since the spawn
+    /// (#715): <paramref name="request"/> followed by the later messages, which win where they
+    /// conflict. A subagent spawned from the synthesis records this, so it is judged against the
+    /// corrected request rather than the one the correction replaced.
+    /// </summary>
+    public static string? WithLaterUserMessages(string? request, IReadOnlyList<string>? later)
+    {
+        if (later is not { Count: > 0 })
+            return request;
+
+        var sb = new StringBuilder();
+        if (!string.IsNullOrWhiteSpace(request))
+        {
+            sb.AppendLine(request.Trim());
+            sb.AppendLine();
+            sb.AppendLine("The user later said (this overrides the request above where they conflict):");
+        }
+        else
+        {
+            sb.AppendLine("The user said:");
+        }
+        foreach (var message in later)
+            sb.Append("- ").AppendLine(message.Trim());
+        return sb.ToString().TrimEnd();
+    }
+
+    /// <summary>The judged request as one log-friendly line, truncated (#715).</summary>
+    public static string ForLog(string? request, int max = 160) =>
+        CompactArguments(request, max) ?? "(none)";
 
     /// <summary>What the evaluator is told when an information-only request led to external changes (#685).</summary>
     public const string UnrequestedExternalChangeRubric =
@@ -451,6 +485,15 @@ public static class CompletionEvalTriggers
         {
             sb.AppendLine("## Original user request (the request this subagent result must satisfy)");
             sb.AppendLine(Truncate(input.OriginatingUserRequest!, MaxUserMessageChars));
+            sb.AppendLine();
+        }
+
+        // #715: a correction sent while the subagent ran replaces what it was spawned for.
+        if (input.LaterUserMessages is { Count: > 0 } later)
+        {
+            sb.AppendLine("## Later user messages (sent after the original request, oldest first; where they conflict, the later one wins)");
+            for (var i = 0; i < later.Count; i++)
+                sb.AppendLine($"{i + 1}. {Truncate(later[i], MaxUserMessageChars)}");
             sb.AppendLine();
         }
 

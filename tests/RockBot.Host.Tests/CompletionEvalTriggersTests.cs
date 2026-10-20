@@ -471,6 +471,67 @@ public class CompletionEvalTriggersTests
     }
 
     [TestMethod]
+    public void EvaluatorMessages_SubagentSynthesis_ListsLaterUserMessagesAfterTheOriginal()
+    {
+        var messages = AgentLoopRunner.BuildCompletionEvaluatorMessages(new CompletionEvalTriggers.EvaluatorInput(
+            ["[Subagent task abc123 completed]: Personal calendar: dentist at 9:00."],
+            null,
+            OriginatingUserRequest: "What's on my work calendar tomorrow?",
+            "Your personal calendar tomorrow: dentist at 9:00.",
+            [],
+            CompletionEvalTrigger.SubagentSynthesis,
+            LaterUserMessages: ["no, I meant my personal calendar, not work"]));
+
+        var user = messages[1].Text!;
+        var original = user.IndexOf("## Original user request", StringComparison.Ordinal);
+        var later = user.IndexOf("## Later user messages", StringComparison.Ordinal);
+        Assert.IsTrue(original >= 0 && later > original);
+        Assert.IsTrue(later < user.IndexOf("## Recent user messages", StringComparison.Ordinal));
+        StringAssert.Contains(user, "1. no, I meant my personal calendar, not work");
+        StringAssert.Contains(messages[0].Text!, "a later message overrides it where they conflict");
+    }
+
+    [TestMethod]
+    public void EvaluatorMessages_NoLaterUserMessages_HasNoLaterSection()
+    {
+        var messages = AgentLoopRunner.BuildCompletionEvaluatorMessages(new CompletionEvalTriggers.EvaluatorInput(
+            ["[Subagent task abc123 completed]: done"], null, "trim the deck", "Done.", [],
+            CompletionEvalTrigger.SubagentSynthesis, LaterUserMessages: []));
+
+        Assert.IsFalse(messages[1].Text!.Contains("## Later user messages", StringComparison.Ordinal));
+    }
+
+    [TestMethod]
+    public void WithLaterUserMessages_AppendsThemAsOverriding()
+    {
+        var composed = CompletionEvalTriggers.WithLaterUserMessages(
+            "What's on my work calendar tomorrow?", ["no, I meant my personal calendar"])!;
+
+        Assert.AreEqual(
+            "What's on my work calendar tomorrow?\n\n" +
+            "The user later said (this overrides the request above where they conflict):\n" +
+            "- no, I meant my personal calendar",
+            composed.ReplaceLineEndings("\n"));
+    }
+
+    [TestMethod]
+    public void WithLaterUserMessages_NoneOrNoRequest()
+    {
+        Assert.AreEqual("trim the deck", CompletionEvalTriggers.WithLaterUserMessages("trim the deck", []));
+        Assert.AreEqual("trim the deck", CompletionEvalTriggers.WithLaterUserMessages("trim the deck", null));
+        Assert.AreEqual("The user said:\n- use the personal calendar",
+            CompletionEvalTriggers.WithLaterUserMessages(null, ["use the personal calendar"])!.ReplaceLineEndings("\n"));
+    }
+
+    [TestMethod]
+    public void ForLog_IsOneTruncatedLine()
+    {
+        Assert.AreEqual("(none)", CompletionEvalTriggers.ForLog(null));
+        Assert.AreEqual("a b", CompletionEvalTriggers.ForLog("a\n\nb"));
+        Assert.AreEqual(new string('x', 10) + "…", CompletionEvalTriggers.ForLog(new string('x', 50), max: 10));
+    }
+
+    [TestMethod]
     public void FormatToolCalls_UnwrapsGenericMcpProxy()
     {
         var text = CompletionEvalTriggers.FormatToolCalls(
