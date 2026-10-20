@@ -472,7 +472,7 @@ turns are dropped to keep context bounded.
 
 ### Out-of-window turns
 
-A turn that falls out of the window is still retained (up to `MaxTurnsPerSession`), but used to
+A turn that falls out of the window is still retained (up to `MaxTurnsPerSession`, then archived), but used to
 leave nothing in context, so the model could not know it had forgotten. A recall tool plus a
 directive telling the model to use it was validated live in #511 and never fired on its own: the
 model said "I don't have it in the visible conversation" and stopped. #530 does it server-side.
@@ -492,8 +492,27 @@ it cannot see a part of the conversation rather than that it never happened.
 | `OutOfWindowRecallMaxTurns` | 3 | Matching turns quoted; 0 keeps the marker only |
 | `OutOfWindowRecallMaxCharsPerTurn` | 800 | Per-turn budget (start and end kept); 0 quotes in full |
 
-Recall reaches only retained turns; turns past `MaxTurnsPerSession` are tracked by
-[#509](https://github.com/MarimerLLC/rockbot/issues/509).
+### Turns past retention
+
+Retention used to be a hard edge as well: a turn evicted past `MaxTurnsPerSession` (50) was gone
+from the session file, and the conversation log that still had it is cleared every dream cycle.
+The Blazor UI keeps one session (`blazor-session`) for as long as it stays active, so a long
+afternoon reached that edge. Now `FileConversationMemory` appends each evicted turn to
+`{ArchivePath}/{sessionId}.jsonl` (#509), and `AgentContextBuilder` puts the archive ahead of the
+retained turns before running out-of-window recall. The recall corpus is then the whole live
+conversation, and `turn i of N` counts from its first turn.
+
+The archive belongs to the live session, not to the session id. A session that starts afresh
+discards it on its first turn: a new session, or one whose memory expired after
+`SessionIdleTimeout`, which also overwrites the session file. `ClearAsync` discards it too. An
+expired session's archive is never recalled, even before that first turn. So recall never quotes
+a conversation that has already ended as part of the current one. Recall across sessions is a
+separate problem, and durable memory and the dream cycle cover it.
+
+| Option (`ConversationMemory__…`) | Default | Effect |
+|---|---|---|
+| `MaxArchivedTurnsPerSession` | 500 | Evicted turns kept for recall, oldest dropped first; 0 discards them as before |
+| `ArchivePath` | `conversations-archive` | Archive directory, resolved like `BasePath`; kept apart so it is never read as a session |
 
 ### Conversation log
 

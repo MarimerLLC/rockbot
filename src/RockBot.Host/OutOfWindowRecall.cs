@@ -48,7 +48,7 @@ public static class OutOfWindowRecall
     /// The system message that stands in for <paramref name="history"/>[0..<paramref name="windowStart"/>),
     /// or <c>null</c> when nothing is out of the window.
     /// </summary>
-    /// <param name="history">The session's full retained history, oldest first.</param>
+    /// <param name="history">The session's history, oldest first: any archived turns (#509), then the retained ones.</param>
     /// <param name="windowStart">Index of the first turn replayed into context.</param>
     /// <param name="userMessage">The incoming user message, used as the recall query.</param>
     /// <param name="maxTurns">How many matching turns to quote; 0 renders the marker alone.</param>

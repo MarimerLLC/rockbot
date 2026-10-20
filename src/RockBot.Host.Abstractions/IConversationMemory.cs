@@ -17,6 +17,15 @@ public interface IConversationMemory
     Task<IReadOnlyList<ConversationTurn>> GetTurnsAsync(string sessionId, CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Returns turns of the specified live session that were evicted from
+    /// <see cref="GetTurnsAsync"/>'s retention window, oldest first. They come before the retained
+    /// turns, and are only ever read for recall (#509). Stores that discard evicted turns return
+    /// none.
+    /// </summary>
+    Task<IReadOnlyList<ConversationTurn>> GetArchivedTurnsAsync(string sessionId, CancellationToken cancellationToken = default)
+        => Task.FromResult<IReadOnlyList<ConversationTurn>>([]);
+
+    /// <summary>
     /// Clears all turns for the specified session.
     /// </summary>
     Task ClearAsync(string sessionId, CancellationToken cancellationToken = default);

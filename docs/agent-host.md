@@ -129,14 +129,18 @@ Wraps `InMemoryConversationMemory` with file-backed persistence:
 - On startup, sessions whose last turn falls within `SessionIdleTimeout` are reloaded — so
   recent conversations survive agent restarts
 - Per-session `SemaphoreSlim` prevents concurrent write races on the same file
+- Turns evicted past `MaxTurnsPerSession` are appended to `{ArchivePath}/{sessionId}.jsonl`
+  (capped at `MaxArchivedTurnsPerSession`) for out-of-window recall; see `docs/memory.md`
 - If `IConversationLog` is registered, every turn is also appended to the conversation log for
   the dream preference-inference pass
 
 **Session lifecycle:**
 1. First message in a session creates the file
 2. Subsequent messages append turns and re-serialize
-3. `ClearAsync` removes both the in-memory state and the file
+3. `ClearAsync` removes the in-memory state, the file, and the archive
 4. Stale sessions (beyond `SessionIdleTimeout`) are not loaded on restart
+5. A session's first turn (including the first after idle expiry) discards any archive left over
+   from the conversation that ended
 
 ---
 
