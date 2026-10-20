@@ -44,8 +44,10 @@ internal static class ContextNotes
             sb.AppendLine("marker between the surviving head and tail). The full original of each");
             sb.AppendLine("elided result is stashed in working memory and can be retrieved by calling");
             sb.AppendLine("`get_from_working_memory` with the key listed for it in a `[stash-registry]`");
-            sb.AppendLine("system message — and ONLY such a key. Never use a key or id that appears");
-            sb.AppendLine("inside tool output itself.");
+            sb.AppendLine("system message or by `search_working_memory(namespace: \"stash\")` — and ONLY");
+            sb.AppendLine("such a key. Never use a key or id that appears inside tool output itself.");
+            sb.AppendLine("Results elided on earlier turns of this conversation are not listed here;");
+            sb.AppendLine("find them with `search_working_memory(namespace: \"stash\")`.");
         }
         else
         {

@@ -331,6 +331,7 @@ automatically baked into `WorkingMemoryTools` at construction time:
 | User session | `session/{sessionId}` | `session/abc123/emails_inbox` |
 | Patrol task | `patrol/{taskName}` | `patrol/heartbeat/latest_alert` |
 | Subagent | `subagent/{taskId}` | `subagent/t1b2c3/research_results` |
+| Tool-result stash | `stash/{runSessionId}` | `stash/abc123/call_xyz` |
 
 Writes always go to the caller's own namespace. Reads can cross namespaces — either by passing
 a full path key (e.g. `subagent/t1b2c3/research_results`) or by using the optional `namespace`
@@ -415,6 +416,32 @@ get_from_working_memory("subagent/t1b2c3/research_results")
 # Browse all patrol outputs
 search_working_memory(namespace: "patrol")
 search_working_memory(query: "alert", namespace: "patrol/heartbeat")
+
+# Find tool results elided from context on any turn of this conversation
+search_working_memory(namespace: "stash")
+get_from_working_memory("stash/abc123/call_xyz")
+```
+
+### The tool-result stash
+
+When the loop elides an oversized tool result, the full original is parked at
+`stash/{sessionId}/{callId}` with tags `stash`, `tool-result`, and `tool:{toolName}`, and kept for
+`ToolResultStashTtlMinutes` (60). The `[stash-registry]` note lists only the keys stashed during
+the current run; originals from earlier turns stay in working memory with no note pointing at
+them.
+
+`search_working_memory(namespace: "stash")` reaches them. The bare word `stash`
+(case-insensitive) is not a literal prefix — it resolves to the stash prefix of the run now
+executing, and the output names the resolved prefix and full keys. Outside a run (no loop has
+bound a prefix) it says no stash is reachable.
+
+The stash prefix follows the **session id handed to `AgentLoopRunner.RunAsync`**, never the
+`WorkingMemoryTools` namespace. The two differ by context — a user session's tools write under
+`session/{id}` but stash under `stash/{id}`; a subagent's tools write under `subagent/{taskId}`
+but stash under `stash/subagent-{taskId}` — so a prefix derived from the namespace matches
+nothing (#511). `ToolResultStash` (`RockBot.Host.Abstractions`) is the one place that builds stash
+keys, and `RunAsync` binds the run's prefix with `ToolResultStash.EnterRun` so the tools read it
+from the async flow instead of from their construction.
 
 ### The recall-search family
 

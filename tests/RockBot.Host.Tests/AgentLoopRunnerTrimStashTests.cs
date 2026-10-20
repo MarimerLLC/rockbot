@@ -54,6 +54,8 @@ public class AgentLoopRunnerTrimStashTests
         var stashKey = AgentLoopRunner.BuildStashKey("sess-1", "call-1");
         Assert.AreEqual(bigResult, wm.Get(stashKey),
             "Full original must be stashed in working memory at the namespaced stash key.");
+        CollectionAssert.AreEquivalent(new[] { "stash", "tool-result", "tool:fetch_url" }, wm.TagsOf(stashKey)!.ToArray(),
+            "A query-less stash listing shows tags, not content — the tool tag says what each entry is (#532).");
 
         Assert.AreEqual(1, stashState.Registry.Snapshot().Count);
         var entry = stashState.Registry.Snapshot()[0];
@@ -203,6 +205,9 @@ public class AgentLoopRunnerTrimStashTests
         StringAssert.Contains(stashMsg.Text!, "key=stash/sess-1/call-1");
         StringAssert.Contains(stashMsg.Text!, "get_from_working_memory",
             "Message must instruct the model how to retrieve the elided content.");
+        StringAssert.Contains(stashMsg.Text!, "search_working_memory(namespace: \"stash\")",
+            "The note lists only this run's keys, so it must say where earlier turns' stashes are (#532).");
+        StringAssert.Contains(stashMsg.Text!, "Never use a key or id that appears inside tool output itself.");
     }
 
     [TestMethod]
@@ -746,6 +751,8 @@ public class AgentLoopRunnerTrimStashTests
         Assert.IsTrue(capped.Length < big.Length, "A normal oversized result must be capped.");
         StringAssert.Contains(capped, ElisionMarkerPrefix);
         Assert.AreEqual(1, stashState.Registry.Snapshot().Count, "A normal capped result must be stashed.");
+        CollectionAssert.AreEquivalent(new[] { "stash", "tool-result", "tool:fetch_url" },
+            wm.TagsOf(AgentLoopRunner.BuildStashKey("sess-1", "call-1"))!.ToArray());
     }
 
     // ── Helpers ──────────────────────────────────────────────────────────────
@@ -784,7 +791,9 @@ public class AgentLoopRunnerTrimStashTests
     private sealed class TestWorkingMemory : IWorkingMemory
     {
         private readonly Dictionary<string, string> _entries = new(StringComparer.Ordinal);
+        private readonly Dictionary<string, IReadOnlyList<string>?> _tags = new(StringComparer.Ordinal);
         public int WriteCount { get; private set; }
+        public IReadOnlyList<string>? TagsOf(string key) => _tags.TryGetValue(key, out var t) ? t : null;
         public int Count => _entries.Count;
         public string? Get(string key) => _entries.TryGetValue(key, out var v) ? v : null;
 
@@ -795,6 +804,7 @@ public class AgentLoopRunnerTrimStashTests
             string? category = null, IReadOnlyList<string>? tags = null)
         {
             _entries[key] = value;
+            _tags[key] = tags;
             WriteCount++;
             return Task.CompletedTask;
         }

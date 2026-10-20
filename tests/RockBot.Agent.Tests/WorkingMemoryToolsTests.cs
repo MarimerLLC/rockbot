@@ -344,6 +344,95 @@ public class WorkingMemoryToolsTests
         CollectionAssert.AreEqual(new[] { "urgent", "inbox" }, _memory.LastCriteria?.Tags?.ToArray());
     }
 
+    // ── SearchWorkingMemory — the run's tool-result stash (issue #532) ────
+
+    [TestMethod]
+    public async Task SearchWorkingMemory_StashNamespace_ListsOnlyTheRunsOwnStash()
+    {
+        _memory.FilterSearchByPrefix = true;
+        _memory.SearchResults =
+        [
+            Entry("stash/abc/call_1", "ORIGINAL", tags: ["stash", "tool-result", "tool:fetch_url"]),
+            Entry("stash/abcd/call_2", "OTHER SESSION"),
+            Entry("stash/xyz/call_3", "OTHER SESSION"),
+        ];
+
+        string result;
+        using (ToolResultStash.EnterRun("abc"))
+            result = await _tools.SearchWorkingMemory(@namespace: "stash");
+
+        Assert.AreEqual("stash/abc/", _memory.LastPrefix);
+        StringAssert.Contains(result, "Working memory 'stash/abc/' (1 entries):");
+        StringAssert.Contains(result, "- stash/abc/call_1 (expires in ");
+        StringAssert.Contains(result, "tool:fetch_url");
+        Assert.IsFalse(result.Contains("call_2"), "Session 'abcd' must not match the prefix of session 'abc'.");
+        Assert.IsFalse(result.Contains("call_3"));
+    }
+
+    [TestMethod]
+    [DataRow("Stash")]
+    [DataRow("STASH")]
+    [DataRow(" stash ")]
+    public async Task SearchWorkingMemory_StashNamespace_IsCaseInsensitive(string ns)
+    {
+        using (ToolResultStash.EnterRun("abc"))
+            await _tools.SearchWorkingMemory(@namespace: ns);
+
+        Assert.AreEqual("stash/abc/", _memory.LastPrefix);
+    }
+
+    [TestMethod]
+    public async Task SearchWorkingMemory_StashNamespace_FollowsTheRunsSessionId_NotTheToolsNamespace()
+    {
+        // The tools are built with 'subagent/t1' while the subagent's run stashes under
+        // 'stash/subagent-t1' — the mismatch #511's namespace-derived alias never matched.
+        var tools = new WorkingMemoryTools(_memory, "subagent/t1", NullLogger.Instance);
+
+        using (ToolResultStash.EnterRun("subagent-t1"))
+            await tools.SearchWorkingMemory("report", @namespace: "stash");
+
+        Assert.AreEqual("stash/subagent-t1/", _memory.LastPrefix);
+        Assert.AreEqual("report", _memory.LastCriteria?.Query);
+    }
+
+    [TestMethod]
+    public async Task SearchWorkingMemory_StashNamespace_OutsideARun_SaysNoStashIsReachable()
+    {
+        var result = await _tools.SearchWorkingMemory(@namespace: "stash");
+
+        StringAssert.Contains(result, "No tool-result stash is reachable here");
+        Assert.IsNull(_memory.LastCriteria, "No prefix exists to search, so the store must not be queried.");
+    }
+
+    [TestMethod]
+    public async Task SearchWorkingMemory_StashNamespace_EmptyStash_NamesThePrefix()
+    {
+        string result;
+        using (ToolResultStash.EnterRun("abc"))
+            result = await _tools.SearchWorkingMemory(@namespace: "stash");
+
+        StringAssert.Contains(result, "'stash/abc/' is empty");
+    }
+
+    [TestMethod]
+    public async Task SearchWorkingMemory_StashNamespace_QueryMatchesNothing_PointsAtTheSiblingRecallTool()
+    {
+        string result;
+        using (ToolResultStash.EnterRun("abc"))
+            result = await _tools.SearchWorkingMemory("nothing-matches-this", @namespace: "stash");
+
+        StringAssert.Contains(result, "'stash/abc/'");
+        StringAssert.Contains(result, RecallTools.DurableMemory);
+    }
+
+    [TestMethod]
+    public void SearchWorkingMemory_Description_AdvertisesTheStash()
+    {
+        var search = _tools.Tools.OfType<AIFunction>().Single(f => f.Name == "search_working_memory");
+
+        StringAssert.Contains(search.Description, "'stash' for the full originals of tool results");
+    }
+
     // ── Helpers ───────────────────────────────────────────────────────────
 
     // ── Recall-family empty results ───────────────────────────────────────
@@ -436,11 +525,18 @@ public class WorkingMemoryToolsTests
             return Task.CompletedTask;
         }
 
+        /// <summary>When true, <see cref="SearchAsync"/> applies the prefix like the real store does.</summary>
+        public bool FilterSearchByPrefix { get; set; }
+
         public Task<IReadOnlyList<WorkingMemoryEntry>> SearchAsync(MemorySearchCriteria criteria, string? prefix = null)
         {
             LastCriteria = criteria;
             LastPrefix = prefix;
-            return Task.FromResult(SearchResults);
+            if (!FilterSearchByPrefix || prefix is null)
+                return Task.FromResult(SearchResults);
+            return Task.FromResult<IReadOnlyList<WorkingMemoryEntry>>(SearchResults
+                .Where(e => e.Key.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+                .ToList());
         }
     }
 }

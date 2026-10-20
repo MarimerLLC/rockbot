@@ -329,12 +329,13 @@ internal static class ToolResultTrimmer
         if (!stashState.Registry.Contains(old.CallId))
         {
             var stashKey = AgentLoopRunner.BuildStashKey(sessionId, old.CallId);
+            var toolName = ExtractToolNameForCallId(messages, old.CallId);
             try
             {
                 await workingMemory.SetAsync(
                     stashKey, oldStr, ttl,
                     category: "tool-result-stash",
-                    tags: ["stash", "tool-result"]);
+                    tags: [ToolResultStash.Tag, "tool-result", ToolResultStash.ToolTag(toolName)]);
             }
             catch (Exception ex)
             {
@@ -346,7 +347,7 @@ internal static class ToolResultTrimmer
             stashState.ArgsSummaries.TryGetValue(old.CallId, out var argsSummary);
             stashState.Registry.Add(new ToolResultStashRegistry.Entry(
                 CallId: old.CallId,
-                ToolName: ExtractToolNameForCallId(messages, old.CallId),
+                ToolName: toolName,
                 ArgsSummary: argsSummary ?? "(args unavailable)",
                 Key: stashKey));
         }

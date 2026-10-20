@@ -273,15 +273,29 @@ public sealed class WorkingMemoryTools
                  "Supply query to rank cached content by relevance. Filter with category and/or tags. " +
                  "Defaults to your own namespace; pass a namespace prefix to browse another context — " +
                  "'subagent/task1' for what a completed subagent stored, 'patrol' for all patrol task " +
-                 "outputs, 'shared' for the cross-session handoff namespace. " +
+                 "outputs, 'shared' for the cross-session handoff namespace, " +
+                 "'stash' for the full originals of tool results that were elided from context earlier in " +
+                 "this conversation (read one with get_from_working_memory using the key listed). " +
                  $"Sibling recall tool — {RecallTools.TryDurable}.")]
     public async Task<string> SearchWorkingMemory(
         [Description("Keywords to search for in cached content. Omit to list all entries in the namespace/category/tag scope.")] string? query = null,
         [Description("Optional category prefix to filter by (e.g. 'research', 'email')")] string? category = null,
         [Description("Optional comma-separated tags that entries must have (e.g. 'urgent,inbox')")] string? tags = null,
-        [Description("Optional namespace prefix to search (e.g. 'subagent/task1', 'patrol'). Omit to search your own namespace.")] string? @namespace = null)
+        [Description("Optional namespace prefix to search (e.g. 'subagent/task1', 'patrol', 'stash'). Omit to search your own namespace.")] string? @namespace = null)
     {
         var prefix = string.IsNullOrWhiteSpace(@namespace) ? _namespace : @namespace.Trim();
+
+        // 'stash' names this run's tool-result stash, whose prefix follows the run's session id
+        // rather than this tool's namespace (#532). The trailing slash keeps session "abc" from
+        // matching session "abcd".
+        var isStash = string.Equals(prefix, ToolResultStash.Tag, StringComparison.OrdinalIgnoreCase);
+        if (isStash)
+        {
+            if (ToolResultStash.CurrentPrefix is not { } stashPrefix)
+                return "No tool-result stash is reachable here — stashes belong to a running conversation, " +
+                       "and none is active in this context.";
+            prefix = stashPrefix + "/";
+        }
         var trimmedQuery = string.IsNullOrWhiteSpace(query) ? null : query.Trim();
 
         // No query means "browse this scope" rather than "rank by relevance" — the surface the
@@ -309,9 +323,11 @@ public sealed class WorkingMemoryTools
             // An unfiltered listing over an empty scope isn't a failed search — keep the
             // plain-language wording the list tool used.
             if (isListing && criteria.Category is null && criteria.Tags is null)
-                return prefix == _namespace
-                    ? "Working memory is empty."
-                    : $"No entries found in namespace '{prefix}'.";
+                return isStash
+                    ? $"No tool results from this conversation are stashed ('{prefix}' is empty)."
+                    : prefix == _namespace
+                        ? "Working memory is empty."
+                        : $"No entries found in namespace '{prefix}'.";
 
             var desc = BuildSearchDesc(query, category, tags);
             return $"No working memory entries matched {desc} in namespace '{prefix}'. " +
