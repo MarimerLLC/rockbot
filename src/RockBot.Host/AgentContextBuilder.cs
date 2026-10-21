@@ -230,7 +230,9 @@ public sealed class AgentContextBuilder(
         }
         else
         {
-            logger.LogInformation("No AdditionalSystemPrompt configured for this model");
+            // The serving model's own prompt, if any, is added below the fallback chain by
+            // ModelBehaviorPromptChatClient (#730); this only reports the startup model.
+            logger.LogInformation("No AdditionalSystemPrompt configured for the startup model");
         }
 
         // Short low-signal messages ("ok", "I'll find out soon", "any idea why?")

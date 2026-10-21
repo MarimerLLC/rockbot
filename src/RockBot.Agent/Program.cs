@@ -184,6 +184,20 @@ IChatClient BuildOpenAIClient(LlmTierConfig config, bool sdkRetries = true)
                           $"'{config.ReasoningEffort}' (expected minimal/low/medium/high/none)");
     }
 
+    // GPT-5 verbosity: the provider's own answer-length dial (#730). Body-injected because
+    // ChatOptions has no field for it.
+    var verbosity = VerbosityPolicy.Normalise(config.Verbosity);
+    if (verbosity is not null)
+    {
+        clientOptions.AddPolicy(new VerbosityPolicy(verbosity), PipelinePosition.PerCall);
+        Console.WriteLine($"    verbosity={verbosity} (body-injected)");
+    }
+    else if (!string.IsNullOrWhiteSpace(config.Verbosity))
+    {
+        Console.WriteLine($"    WARNING: ignoring unrecognised Verbosity " +
+                          $"'{config.Verbosity}' (expected low/medium/high)");
+    }
+
     // OpenRouter attributes spend to whatever app the client names in its headers; without
     // them every call shows up as "unknown" on the activity dashboard. Registered only for
     // OpenRouter endpoints so the app name is not disclosed to unrelated providers.
@@ -203,7 +217,25 @@ IChatClient BuildOpenAIClient(LlmTierConfig config, bool sdkRetries = true)
         .GetChatClient(config.ModelId!).AsIChatClient();
 }
 
+// Each concrete model client carries its own model's AdditionalSystemPrompt (#730). The
+// context builder injects the startup model's prompt, which is wrong for every other model —
+// fallback entries and the Low/High tiers. The behavior provider only exists once the host is
+// built, so the wrapper resolves it through this deferred reference.
+IModelBehaviorProvider? modelBehaviorProvider = null;
+var modelBehaviorLogger = LoggerFactory.Create(b => b.AddConsole().SetMinimumLevel(LogLevel.Information))
+    .CreateLogger<ModelBehaviorPromptChatClient>();
+
 async Task<IChatClient> BuildClientForTierAsync(LlmTierConfig config, string tierName, bool sdkRetries = true)
+{
+    var client = await BuildRawClientForTierAsync(config, tierName, sdkRetries);
+    var modelId = config.ModelId ?? copilotBaseOptions?.ModelId;
+    return string.IsNullOrEmpty(modelId)
+        ? client
+        : new ModelBehaviorPromptChatClient(client, modelId,
+            id => modelBehaviorProvider?.GetBehavior(id), modelBehaviorLogger);
+}
+
+async Task<IChatClient> BuildRawClientForTierAsync(LlmTierConfig config, string tierName, bool sdkRetries = true)
 {
     if (config.IsCopilot(globalProvider))
     {
@@ -617,6 +649,9 @@ builder.Services.AddRemoteScriptRunner("RockBot");
 }
 
 var app = builder.Build();
+
+// Wire the deferred behavior provider for the per-model prompt wrappers (#730).
+modelBehaviorProvider = app.Services.GetService<IModelBehaviorProvider>();
 
 // Wire the deferred service provider for Copilot session event bridge.
 (copilotSessionEvents as CopilotSessionEventsBridge)?.SetServiceProvider(app.Services);

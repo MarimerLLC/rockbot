@@ -75,6 +75,18 @@ internal sealed class LlmClient(
                 ct => InvokeWithNullArgRetryAsync(client, messages, options, ct),
                 cancellationToken);
 
+            // A fallback chain can hand the call to another model mid-flight; the id read
+            // before the call names the model it started on. Usage, cost and metrics belong
+            // to the model that actually answered (#730).
+            var servedModelId = ServedModelId(modelId, response.ModelId);
+            if (servedModelId != modelId)
+            {
+                logger.LogInformation("LLM call: tier={Tier} served by {ServedModelId} (started on {ModelId})",
+                    tier, servedModelId, modelId);
+                modelId = servedModelId;
+                activity?.SetTag("rockbot.llm.model", modelId);
+            }
+
             if (response.Usage is { } usage)
             {
                 var inputTokens = usage.InputTokenCount ?? 0;
@@ -137,6 +149,18 @@ internal sealed class LlmClient(
                 new KeyValuePair<string, object?>("rockbot.llm.model", modelId));
         }
     }
+
+    /// <summary>
+    /// The model to attribute a response to: <paramref name="configuredModelId"/> when the
+    /// provider reports the same model (a dated snapshot such as <c>gpt-5.6-terra-2026-07-09</c>
+    /// counts as the same), otherwise the reported id. Keeping the configured id in the common
+    /// case keeps metric labels stable.
+    /// </summary>
+    internal static string ServedModelId(string configuredModelId, string? reportedModelId) =>
+        string.IsNullOrEmpty(reportedModelId)
+        || reportedModelId.StartsWith(configuredModelId, StringComparison.OrdinalIgnoreCase)
+            ? configuredModelId
+            : reportedModelId;
 
     /// <summary>
     /// Calls the underlying chat client, retrying once on known model-specific SDK

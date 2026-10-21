@@ -173,6 +173,8 @@ Each tier can use a different LLM **provider** — mix and match within the same
 - **GitHub Copilot SDK** (`Provider=Copilot`) — uses a GitHub Copilot license via the CLI subprocess. Per-request billing. Set `GITHUB_TOKEN` with `copilot` scope.
 - **Anthropic** (`Provider=Anthropic`) — the Claude API through the official Anthropic SDK. Needs `ApiKey` and `ModelId`; `Endpoint` is optional. Use this rather than pointing the OpenAI-compatible provider at Anthropic's compatibility endpoint, which cannot cache prompts. Prompt caching is on by default; `LLM:Anthropic:CacheTtl` (`5m` default, or `1h`), `LLM:Anthropic:PromptCaching` (`false` to turn it off) and `LLM:Anthropic:DefaultMaxOutputTokens` (default 16000) apply to every Anthropic tier. A tier's `ReasoningEffort` is sent as Claude's effort level (`minimal` maps to `low`; `xhigh` and `max` are accepted; `none` is not, because current Claude models can't turn thinking off). Temperature and other sampling settings are dropped, since current Claude models reject them.
 
+An OpenAI-compatible tier or fallback entry can also set `Verbosity` (`low`, `medium` or `high`) to send the GPT-5 family's `verbosity` parameter — the provider's own answer-length dial. Unset sends nothing (GPT-5 defaults to `medium`).
+
 Set a global default provider (`LLM:Provider`) and override per tier (`LLM:Low:Provider`, `LLM:Balanced:Provider`, `LLM:High:Provider`). For example: Low on Copilot, Balanced on Azure Foundry, High on OpenRouter.
 
 **OpenRouter app attribution.** OpenRouter identifies the calling app from two self-reported headers, and reports activity as "unknown" without them. `LLM:AppName` (default `rockbot`) sets `X-Title`, the display name; `LLM:AppUrl` (default `https://rockbot.dev`) sets `HTTP-Referer`, which is the key OpenRouter *groups* activity by — keep it stable, since changing it starts a fresh app with no history. Give each deployment sharing an OpenRouter account its own `LLM:AppName` to keep their spend separable. The headers are sent to OpenRouter endpoints only; every other OpenAI-compatible endpoint sees an unchanged request.
@@ -183,7 +185,7 @@ Tier selection uses `KeywordTierSelector` — a lightweight keyword + prompt-len
 
 Per-model behavior overrides are loaded from `model-behaviors/{model-prefix}/` and can include:
 
-- **Additional system prompt** — model-specific guardrails appended to every request.
+- **Additional system prompt** — model-specific guardrails appended to every request. It follows the model that serves the request, so fallback models and the Low/High tiers get their own.
 - **Pre-tool-loop prompt** — constraints injected before tool-calling iterations.
 - **Hallucination nudges** — detects when a model claims to have called a tool without actually doing so.
 - **Tool iteration limits** — tuned per model based on convergence characteristics.

@@ -31,6 +31,18 @@ public sealed class LlmTierConfig
     public string? ReasoningEffort { get; set; }
 
     /// <summary>
+    /// How long the model's answers run: <c>low</c>, <c>medium</c> or <c>high</c>. Null (the
+    /// default) sends no verbosity field, leaving the provider's default (<c>medium</c> on
+    /// GPT-5) in place and keeping the request byte-identical to before this setting existed.
+    /// </summary>
+    /// <remarks>
+    /// Only meaningful for OpenAI-compatible endpoints serving a model that takes the GPT-5
+    /// <c>verbosity</c> parameter; see <c>VerbosityPolicy</c>. Ignored for the Anthropic and
+    /// Copilot providers.
+    /// </remarks>
+    public string? Verbosity { get; set; }
+
+    /// <summary>
     /// Whether this tier's model accepts images as input alongside text. Defaults to
     /// <c>false</c>: a model that cannot see rejects a request carrying image content with an
     /// opaque provider error deep in the stack, so the capability is opt-in per tier rather

@@ -635,6 +635,13 @@ data volume. The model prefix is matched case-insensitively against the deployed
 | `additional-system-prompt.md` | Appended to every system prompt (guardrails, output constraints) |
 | `pre-tool-loop-prompt.md` | Injected before each tool-calling iteration |
 
+`additional-system-prompt.md` follows the model that actually serves each request: every
+concrete model client — each `LLM:BalancedModels` fallback entry and the Low and High tiers —
+is wrapped in `ModelBehaviorPromptChatClient`, which swaps in its own model's prompt (or drops
+the startup model's when it has none). So a GPT fallback behind a Claude primary gets the
+`gpt` prompt. The flag properties below are still resolved once, from the Balanced tier's first
+model.
+
 Additional properties are configurable in `appsettings.json` under `ModelBehaviors:Models:{prefix}`:
 
 | Property | Type | Default | Purpose |
