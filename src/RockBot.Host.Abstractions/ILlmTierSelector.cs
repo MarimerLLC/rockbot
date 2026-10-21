@@ -23,8 +23,9 @@ public sealed record TierClassification(
     public string Rule { get; init; } = TierRoutingRules.ScoreBand;
 
     /// <summary>
-    /// The tier the message earns on its own — score band, gates, and the message/thread
-    /// floors — before it inherits a higher tier from the session's recent turns. Callers
+    /// The tier the message earns on its own — score band, gates, and the content floors
+    /// (research question, balanced-floor keyword) — before thread-state rules (the
+    /// active-subagent floor, the inherited tier) raise it (#729). Callers
     /// that keep a per-session tier history record this value, not <see cref="Tier"/>, so an
     /// inherited tier decays instead of perpetuating itself. Null when the selector does not
     /// distinguish the two (treat as <see cref="Tier"/>).
@@ -54,7 +55,11 @@ public static class TierRoutingRules
     /// <summary>The trivial guard forced an objectively simple prompt down to Low.</summary>
     public const string TrivialGuard = "trivial-guard";
 
-    /// <summary>A follow-up on an established thread was floored at Balanced.</summary>
+    /// <summary>
+    /// A follow-up on an established thread was floored at Balanced. No longer emitted since
+    /// #729 — the inherited tier covers threads that earned Balanced — but kept so older
+    /// routing-log entries stay readable.
+    /// </summary>
     public const string ActiveThreadFloor = "active-thread-floor";
 
     /// <summary>The session had a subagent running, so the turn was floored at Balanced.</summary>
@@ -93,14 +98,17 @@ public static class TierRoutingRules
 /// follow-up messages on an established thread benefit from Balanced-tier capacity
 /// to weigh recent history against injected memory — without this, smaller Low-tier
 /// models tend to summarise injected memory instead of continuing the thread.
-/// See issue #383. Defaults to <c>false</c>, preserving prior routing behaviour.
-/// Since #663 a user message on an established thread is floored at Balanced unless it is
-/// a pure acknowledgement or greeting, whatever its length.
+/// See issue #383. Defaults to <c>false</c>. From #663 until #729 every non-ack user message on
+/// an established thread was floored at Balanced; <c>KeywordTierSelector</c> no longer
+/// routes on it — a thread stays Balanced through <paramref name="RecentMaxTier"/> only while
+/// a recent turn earned it. Still logged with each routing decision.
 /// </param>
 /// <param name="RecentMaxTier">
-/// The highest tier routed for this session in its recent turns (bounded by count and by
+/// The highest tier this session's recent turns earned (bounded by count and by
 /// <see cref="ShortMessageHeuristics.ThreadEstablishedRecency"/>), or null when there is no
-/// recent history. A user message inherits it unless it is a pure acknowledgement. See #663.
+/// recent history. A turn earns its intrinsic tier, raised when it escalated mid-turn or did
+/// work on the user's behalf. A user message inherits it unless it is a pure acknowledgement.
+/// See #663, #729.
 /// </param>
 /// <param name="ActiveSubagent">
 /// True when the session has at least one subagent still running. A user message is then

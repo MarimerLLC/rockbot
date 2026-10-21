@@ -84,6 +84,33 @@ public static partial class ToolSideEffects
         "close", "install", "uninstall", "store", "change",
     };
 
+    /// <summary>
+    /// Reads of the agent's own memory, working memory, skills and tool guides. Nearly every
+    /// turn opens with some of these (briefing queue, active plans), so they say nothing about
+    /// whether the thread is doing real work. Compared in snake_case, so the PascalCase names
+    /// some paths log match too.
+    /// </summary>
+    private static readonly HashSet<string> ContextReadTools = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "search_memory", "search_working_memory", "get_from_working_memory",
+        "list_skills", "get_skill", "get_skill_resource",
+        "list_tool_guides", "get_tool_guide",
+    };
+
+    /// <summary>
+    /// True when <paramref name="call"/> is work on the user's behalf rather than the agent's
+    /// own context loading or bookkeeping: any external call (MCP, web, files, scripts), read or
+    /// write, and delegation. A user turn that made one keeps the session's tier at Balanced for
+    /// the next few turns (#729), even when the turn itself was routed Balanced and so never
+    /// escalated mid-turn.
+    /// </summary>
+    public static bool IsThreadWork(LoopToolCall call)
+    {
+        if (string.IsNullOrWhiteSpace(call.Name)) return false;
+        var name = string.Join('_', SplitWords(call.Name));
+        return !IsBookkeeping(name) && !ContextReadTools.Contains(name);
+    }
+
     /// <summary>True when the call is one the agent uses to delegate (<c>spawn_subagent</c>, <c>invoke_agent</c>).</summary>
     public static bool IsDelegation(string toolName) => DelegationTools.Contains(toolName);
 

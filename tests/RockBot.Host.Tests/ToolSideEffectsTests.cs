@@ -53,6 +53,37 @@ public class ToolSideEffectsTests
     }
 
     [TestMethod]
+    [DataRow("mcp_invoke_tool")]
+    [DataRow("calendar__list_events")]
+    [DataRow("web_search")]
+    [DataRow("file_read")]
+    [DataRow("file_write")]
+    [DataRow("spawn_subagent")]
+    [DataRow("execute_python_script")]
+    public void ThreadWork(string name)
+    {
+        Assert.IsTrue(ToolSideEffects.IsThreadWork(new LoopToolCall(name, null, true)), name);
+    }
+
+    [TestMethod]
+    [DataRow("search_memory")]
+    [DataRow("SearchMemory")]                 // PascalCase form some paths log
+    [DataRow("search_working_memory")]
+    [DataRow("GetFromWorkingMemory")]
+    [DataRow("get_skill")]
+    [DataRow("list_tool_guides")]
+    [DataRow("save_memory")]
+    [DataRow("SaveToWorkingMemory")]
+    [DataRow("task_create")]
+    [DataRow("TaskUpdate")]
+    [DataRow("")]
+    public void NotThreadWork(string name)
+    {
+        // Context loading and bookkeeping happen on nearly every turn, small talk included (#729).
+        Assert.IsFalse(ToolSideEffects.IsThreadWork(new LoopToolCall(name, null, true)), name);
+    }
+
+    [TestMethod]
     public void EffectiveToolName_UnwrapsProxiesAndTypedNames()
     {
         Assert.AreEqual("send_mail", ToolSideEffects.EffectiveToolName("mcp_invoke_tool", "server_name=m, tool_name=send_mail"));

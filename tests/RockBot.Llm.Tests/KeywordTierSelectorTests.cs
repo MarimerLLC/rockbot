@@ -703,19 +703,26 @@ public class KeywordTierSelectorTests
         }
     }
 
-    // ── Active-thread short-message override (issue #383) ────────────────────
+    // ── Active-thread short-message override (issue #383, removed in #729) ───
 
     [TestMethod]
-    public void ActiveThreadOverride_ShortMessage_PromotesLowToBalanced()
+    public void ActiveThreadOverride_ShortMessage_InheritsBalancedOnlyWhenEarned()
     {
-        // 18-char production reproducer — would otherwise route Low for a user-origin
-        // message. With ThreadEstablished=true, the override pushes it to Balanced.
-        var result = _selector.Classify(
+        // 18-char #383 reproducer. Until #729 an established thread alone floored it at
+        // Balanced. Now it inherits Balanced only when a recent turn earned it; on a casual
+        // thread it stays Low, where the short-message BM25 gate and the memory-summary
+        // reply guard (both tier-independent) carry the #383 defense.
+        var casual = _selector.Classify(
             "I'll find out soon",
-            new TierRoutingContext(Origin: "user-message", ThreadEstablished: true));
+            new TierRoutingContext(Origin: "user-message", ThreadEstablished: true, RecentMaxTier: ModelTier.Low));
+        var earned = _selector.Classify(
+            "I'll find out soon",
+            new TierRoutingContext(Origin: "user-message", ThreadEstablished: true, RecentMaxTier: ModelTier.Balanced));
 
-        Assert.AreEqual(ModelTier.Balanced, result.Tier,
-            "Short follow-up on an established thread should route Balanced, not Low.");
+        Assert.AreEqual(ModelTier.Low, casual.Tier, "A casual thread's short follow-up stays Low.");
+        Assert.AreEqual(ModelTier.Balanced, earned.Tier,
+            "Short follow-up on a thread that earned Balanced should route Balanced, not Low.");
+        Assert.AreEqual(TierRoutingRules.InheritedTier, earned.Rule);
     }
 
     [TestMethod]
@@ -731,23 +738,23 @@ public class KeywordTierSelectorTests
     }
 
     [TestMethod]
-    public void ActiveThreadOverride_LongMessage_AlsoFloorsAtBalanced()
+    public void ActiveThreadOverride_LongMessage_InheritsBalancedOnlyWhenEarned()
     {
-        // Since #663 the active-thread floor is gated on message shape (trivial ack or not),
-        // not length: a longer follow-up on an established thread is just as much a
-        // continuation of the thread's work. It floors at Balanced and never goes above.
+        // Inheritance is gated on message shape (trivial ack or not), not length: a longer
+        // follow-up on a thread that earned Balanced inherits it and never goes above.
         const string clearlyLong = "Who was Abraham Lincoln and what did he do?"; // 43 chars
-        var withThread = _selector.Classify(
+        var earned = _selector.Classify(
+            clearlyLong,
+            new TierRoutingContext(Origin: "user-message", ThreadEstablished: true, RecentMaxTier: ModelTier.Balanced));
+        var establishedOnly = _selector.Classify(
             clearlyLong,
             new TierRoutingContext(Origin: "user-message", ThreadEstablished: true));
-        var withoutThread = _selector.Classify(
-            clearlyLong,
-            new TierRoutingContext(Origin: "user-message"));
 
-        Assert.AreEqual(ModelTier.Low, withoutThread.Tier, "Test premise: routes Low without a thread.");
-        Assert.AreEqual(ModelTier.Balanced, withThread.Tier,
-            "A non-trivial follow-up on an established thread floors at Balanced, whatever its length.");
-        Assert.AreEqual(TierRoutingRules.ActiveThreadFloor, withThread.Rule);
+        Assert.AreEqual(ModelTier.Low, establishedOnly.Tier,
+            "An established thread alone no longer floors a follow-up (#729).");
+        Assert.AreEqual(ModelTier.Balanced, earned.Tier,
+            "A non-trivial follow-up on a thread that earned Balanced inherits it, whatever its length.");
+        Assert.AreEqual(TierRoutingRules.InheritedTier, earned.Rule);
     }
 
     [TestMethod]
@@ -996,17 +1003,17 @@ public class KeywordTierSelectorTests
     }
 
     [TestMethod]
-    public void ActiveThreadOverride_MatchedHighKeyword_AlsoFloorsAtBalanced()
+    public void ActiveThreadOverride_MatchedHighKeyword_AlsoInheritsBalanced()
     {
         // Until #663 the override skipped prompts with a high-signal keyword, which left a
-        // short "architect it now" on Low — the opposite of what the keyword signals. The
-        // floor now applies to every non-trivial follow-up on an established thread.
+        // short "architect it now" on Low — the opposite of what the keyword signals. On a
+        // thread that earned Balanced, every non-trivial follow-up inherits it.
         var withKeyword = _selector.Classify(
             "architect it now",
-            new TierRoutingContext(Origin: "user-message", ThreadEstablished: true));
+            new TierRoutingContext(Origin: "user-message", ThreadEstablished: true, RecentMaxTier: ModelTier.Balanced));
         var withoutKeyword = _selector.Classify(
             "do it now",
-            new TierRoutingContext(Origin: "user-message", ThreadEstablished: true));
+            new TierRoutingContext(Origin: "user-message", ThreadEstablished: true, RecentMaxTier: ModelTier.Balanced));
 
         Assert.IsTrue(withKeyword.MatchedHighKeywords.Count > 0,
             "Test premise: 'architect' must register as a high-signal keyword.");

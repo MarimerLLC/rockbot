@@ -17,9 +17,9 @@ namespace RockBot.Llm;
 /// from <c>{AgentBasePath}/tier-selector.json</c> (falls back to compiled defaults if missing).
 /// </para>
 /// <para>
-/// For user messages, compiled thread-state rules run after the score (#663): the
-/// active-thread and active-subagent Balanced floors, the research-question floor, and the
-/// inherited tier — with pure acknowledgements exempt. They are not dream-tunable. Each
+/// For user messages, compiled rules run after the score (#663): the research-question
+/// floor, then the thread-state rules — the active-subagent Balanced floor and the inherited
+/// tier — with pure acknowledgements exempt. They are not dream-tunable. Each
 /// classification names the rule that decided it (<see cref="TierClassification.Rule"/>).
 /// </para>
 /// </summary>
@@ -249,32 +249,11 @@ public sealed class KeywordTierSelector : ILlmTierSelector
         // ── User-message floors (#663) ────────────────────────────────────────
         // Keyword scoring sees only the current message; on an interactive thread the
         // real complexity lives in the thread (an open deck, a running subagent, a task
-        // list). The floors below route from thread state. A pure acknowledgement or
-        // greeting ("thanks", "ok", "👍") is the one message shape exempt from them.
+        // list). The content floors below come first; the thread-state rules after them route
+        // from thread state. A pure acknowledgement or greeting ("thanks", "ok", "👍") is the
+        // one message shape exempt from the thread-state rules.
         var isTrivialAck = ConversationalSignals.IsTrivialAck(promptText);
         var floorSuppressed = false;
-
-        if (tier == ModelTier.Low)
-        {
-            // Active-thread floor: any follow-up on an established thread routes at least
-            // Balanced. The Low-tier model otherwise summarises injected memory instead of
-            // continuing the thread (#383), and short instructions like "figure out a way to
-            // update the doc" are continuations of heavy work. Until #663 this only fired
-            // for messages ≤ 30 chars — a 34-char instruction slipped through to Low.
-            if (context.ThreadEstablished)
-            {
-                if (isTrivialAck) floorSuppressed = true;
-                else { tier = ModelTier.Balanced; rule = TierRoutingRules.ActiveThreadFloor; }
-            }
-
-            // Active-subagent floor: the session has delegated work still running, so the
-            // thread is mid-task even if the conversation itself is young.
-            if (tier == ModelTier.Low && context.ActiveSubagent)
-            {
-                if (isTrivialAck) floorSuppressed = true;
-                else { tier = ModelTier.Balanced; rule = TierRoutingRules.ActiveSubagentFloor; }
-            }
-        }
 
         // Balanced-floor override: a first-turn user query naming a known tool/topic
         // (e.g. "what's on my todo list?") scores near-zero → Low, where the small model
@@ -299,12 +278,29 @@ public sealed class KeywordTierSelector : ILlmTierSelector
             rule = TierRoutingRules.ResearchQuestionFloor;
         }
 
+        // The tier the message earns from its own content. Captured before the thread-state
+        // rules below, so a turn raised only by thread state records its own tier in the
+        // session history and the thread can decay (#729).
         var intrinsicTier = tier;
 
+        // Active-subagent floor: the session has delegated work still running, so the
+        // thread is mid-task even if the conversation itself is young.
+        if (tier == ModelTier.Low && context.ActiveSubagent)
+        {
+            if (isTrivialAck) floorSuppressed = true;
+            else { tier = ModelTier.Balanced; rule = TierRoutingRules.ActiveSubagentFloor; }
+        }
+
         // Inherited tier: a turn routes at least as high as the highest tier the session
-        // used in its recent turns, so "do that" after a High analysis stays High. The
-        // caller records IntrinsicTier (not the inherited tier) in its history, so the
-        // inheritance decays after a run of turns that don't earn it on their own.
+        // used in its recent turns, so "do that" after a High analysis stays High and short
+        // instructions on a deck thread stay Balanced. The caller records IntrinsicTier (not
+        // the inherited tier) in its history, raised when the turn did real work, so the
+        // inheritance decays after a run of turns that neither earn it nor do work.
+        //
+        // This replaces the active-thread floor (#383, #663), which raised every non-ack
+        // follow-up on a 3+-turn thread to Balanced. It fired on small talk, and because it
+        // ran before IntrinsicTier was captured it kept a busy thread on Balanced forever.
+        // A thread now stays Balanced only while a recent turn earned it (#729).
         if (context.RecentMaxTier is { } recentMax && recentMax > tier)
         {
             if (isTrivialAck) floorSuppressed = true;

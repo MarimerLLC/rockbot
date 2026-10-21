@@ -607,7 +607,7 @@ internal sealed class UserMessageHandler(
             logger.LogInformation(
                 "Native path complete — final text {TextLen} chars", text.Length);
 
-            RecordEscalation(sessionId, turnId, nativeDiag);
+            RecordTurnOutcome(sessionId, turnId, nativeDiag);
 
             _ = tierRoutingLogger.AppendAsync(new TierRoutingEntry
             {
@@ -765,7 +765,7 @@ internal sealed class UserMessageHandler(
                 // #670: rarely used tool families wait until the conversation loads them.
                 deferRareTools: true);
 
-            RecordEscalation(sessionId, turnId, bgDiag);
+            RecordTurnOutcome(sessionId, turnId, bgDiag);
 
             // Routing telemetry written here (terminal point) so the entry carries the
             // multi-iteration aggregate token usage accumulated across the whole loop.
@@ -915,13 +915,29 @@ internal sealed class UserMessageHandler(
     }
 
     /// <summary>
-    /// Raises this turn's entry in the session tier history when the loop escalated
-    /// mid-turn, so the next turns inherit the tier the work actually needed.
+    /// Raises this turn's entry in the session tier history to the tier its work earned
+    /// (<see cref="EarnedTier"/>), so the next turns inherit it.
     /// </summary>
-    private void RecordEscalation(string sessionId, string turnId, LoopDiagnostics diagnostics)
+    private void RecordTurnOutcome(string sessionId, string turnId, LoopDiagnostics diagnostics)
     {
-        if (diagnostics.EscalatedTier is { } escalated)
-            tierHistory?.Raise(sessionId, turnId, escalated);
+        if (EarnedTier(diagnostics) is { } earned)
+            tierHistory?.Raise(sessionId, turnId, earned);
+    }
+
+    /// <summary>
+    /// The tier a finished turn earned by what it did, or null when it earned nothing beyond
+    /// its routing: the mid-turn escalation target, or at least Balanced when the turn did work
+    /// on the user's behalf (<see cref="ToolSideEffects.IsThreadWork"/>). Escalation only fires
+    /// on Low-routed runs, so without the second check a Balanced turn that inherited its tier
+    /// and then edited a deck would record Low and let the thread decay mid-task (#729).
+    /// </summary>
+    internal static ModelTier? EarnedTier(LoopDiagnostics diagnostics)
+    {
+        var earned = diagnostics.EscalatedTier;
+        if (earned is null or < ModelTier.Balanced
+            && diagnostics.ToolCallLedger?.Snapshot().Any(ToolSideEffects.IsThreadWork) == true)
+            earned = ModelTier.Balanced;
+        return earned;
     }
 
     /// <summary>

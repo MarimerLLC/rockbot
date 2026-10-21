@@ -16,7 +16,9 @@ namespace RockBot.Host;
 /// Callers record a turn's <see cref="TierClassification.IntrinsicTier"/> — the tier it
 /// earned on its own — not the inherited tier, so an inherited tier decays after
 /// <see cref="MaxTurnsPerSession"/> turns that don't earn it rather than perpetuating itself.
-/// A turn that escalates mid-loop raises its own entry via <see cref="Raise"/>.
+/// A turn that escalates mid-loop, or does work on the user's behalf (an MCP call, a file
+/// edit, a subagent — not memory reads), raises its own entry via <see cref="Raise"/>, so a
+/// busy thread stays Balanced while small talk decays back to Low (#729).
 /// </para>
 /// </summary>
 public sealed class SessionTierHistory(TimeProvider? timeProvider = null)
