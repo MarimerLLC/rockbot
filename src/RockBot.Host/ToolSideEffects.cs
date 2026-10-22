@@ -108,8 +108,17 @@ public static partial class ToolSideEffects
     {
         if (string.IsNullOrWhiteSpace(call.Name)) return false;
         var name = string.Join('_', SplitWords(call.Name));
+
+        // spawn_workers is bookkeeping for side effects — its workers' calls run in their own
+        // loops and are judged there — but it hands real work to them, and those calls never
+        // reach this turn's ledger. Without this a turn whose only work is a worker batch
+        // would record Low and the thread would decay mid-task.
+        if (string.Equals(name, SpawnWorkersToolName, StringComparison.OrdinalIgnoreCase)) return true;
+
         return !IsBookkeeping(name) && !ContextReadTools.Contains(name);
     }
+
+    private const string SpawnWorkersToolName = "spawn_workers";
 
     /// <summary>True when the call is one the agent uses to delegate (<c>spawn_subagent</c>, <c>invoke_agent</c>).</summary>
     public static bool IsDelegation(string toolName) => DelegationTools.Contains(toolName);

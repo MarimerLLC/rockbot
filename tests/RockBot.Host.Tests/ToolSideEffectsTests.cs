@@ -59,6 +59,8 @@ public class ToolSideEffectsTests
     [DataRow("file_read")]
     [DataRow("file_write")]
     [DataRow("spawn_subagent")]
+    [DataRow("spawn_workers")]                // bookkeeping for side effects, but hands work to workers
+    [DataRow("SpawnWorkers")]
     [DataRow("execute_python_script")]
     public void ThreadWork(string name)
     {

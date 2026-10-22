@@ -43,6 +43,18 @@ public class TurnEarnedTierTests
     }
 
     [TestMethod]
+    public void WorkerBatchOnly_EarnsBalanced()
+    {
+        // Workers run their own loops, so their calls never reach this turn's ledger; the
+        // spawn_workers call is the only sign the turn did work.
+        var diagnostics = WithCalls("search_memory", "spawn_workers");
+
+        Assert.AreEqual(ModelTier.Balanced, UserMessageHandler.EarnedTier(diagnostics));
+        Assert.IsFalse(ToolSideEffects.IsSideEffecting("spawn_workers"),
+            "Its side-effect classification is unchanged.");
+    }
+
+    [TestMethod]
     public void Escalation_IsKept()
     {
         var diagnostics = WithCalls("file_write");

@@ -60,7 +60,7 @@ public class ThreadAwareTierRoutingTests
 
     [TestMethod]
     [DataRow("I ordered the propane")]
-    [DataRow("we're trying to schedule the ablation for January")]
+    [DataRow("we're thinking about a trip in January")]
     [DataRow("I'll find out soon")]
     [DataRow("any plans for the weekend?")]
     public void CasualThread_NonAckFollowUp_StaysLow(string prompt)
@@ -350,8 +350,8 @@ public class ThreadAwareTierRoutingTests
         [
             "good morning",
             "I ordered the propane",
-            "right now I'm in a-flutter, not a-fib - so the symptoms aren't too bad, mostly fatigue.",
-            "we're trying to schedule the ablation for January",
+            "the weather has been great here lately, we might go for a walk this afternoon.",
+            "we're thinking about a trip in January",
             "I'll find out soon",
         ];
 
