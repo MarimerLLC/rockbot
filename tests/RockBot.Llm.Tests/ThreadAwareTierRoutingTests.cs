@@ -7,8 +7,8 @@ using RockBot.Llm;
 namespace RockBot.Llm.Tests;
 
 /// <summary>
-/// Thread-aware tier routing (#663): the active-thread floor gated on message shape rather
-/// than length, inherited tiers, the active-subagent floor, the research-question floor, the
+/// Thread-aware tier routing (#663, #729): inherited tiers that decay, casual threads that
+/// stay Low, the active-subagent floor, the research-question floor, the
 /// trivial-acknowledgement exemption, retired low signals, and the rule each decision reports.
 /// </summary>
 [TestClass]
@@ -21,30 +21,24 @@ public class ThreadAwareTierRoutingTests
         new(Origin: "user-message", ThreadEstablished: threadEstablished,
             RecentMaxTier: recentMaxTier, ActiveSubagent: activeSubagent);
 
-    // ── Active-thread floor ──────────────────────────────────────────────────
-
-    [TestMethod]
-    public void EstablishedThread_34CharFollowUp_RoutesBalanced()
-    {
-        // Production reproducer: 34 chars, just over the old 30-char gate, so it went Low —
-        // and that Low turn rewrote a file from a partial read.
-        const string prompt = "figure out a way to update the doc";
-        Assert.AreEqual(34, prompt.Length, "Test premise: the production message length.");
-
-        var result = _selector.Classify(prompt, User(threadEstablished: true));
-
-        Assert.AreEqual(ModelTier.Balanced, result.Tier);
-        Assert.AreEqual(TierRoutingRules.ActiveThreadFloor, result.Rule);
-    }
+    // ── Thread that earned Balanced vs. casual thread (#729) ─────────────────
 
     [TestMethod]
     public void EstablishedThread_34CharFollowUp_WithRecentBalancedTurn_RoutesBalanced()
     {
-        // Acceptance test from the issue: established thread + a recent Balanced turn.
-        var result = _selector.Classify("figure out a way to update the doc",
+        // Production reproducer: 34 chars, just over the old 30-char gate, so it went Low —
+        // and that Low turn rewrote a file from a partial read. The thread had earned Balanced
+        // (deck work), so the follow-up inherits it.
+        const string prompt = "figure out a way to update the doc";
+        Assert.AreEqual(34, prompt.Length, "Test premise: the production message length.");
+
+        var result = _selector.Classify(prompt,
             User(threadEstablished: true, recentMaxTier: ModelTier.Balanced));
 
         Assert.AreEqual(ModelTier.Balanced, result.Tier);
+        Assert.AreEqual(TierRoutingRules.InheritedTier, result.Rule);
+        Assert.AreEqual(ModelTier.Low, result.IntrinsicTier,
+            "Recorded intrinsically as Low, so the thread decays unless this turn does work.");
     }
 
     [TestMethod]
@@ -55,12 +49,31 @@ public class ThreadAwareTierRoutingTests
     [DataRow("why didn't you do a web search to find the details?")]
     [DataRow("yes")]
     [DataRow("go ahead")]
-    public void EstablishedThread_WorkInstructions_NeverRouteLow(string prompt)
+    public void EarnedThread_WorkInstructions_NeverRouteLow(string prompt)
     {
-        var result = _selector.Classify(prompt, User(threadEstablished: true));
+        var result = _selector.Classify(prompt,
+            User(threadEstablished: true, recentMaxTier: ModelTier.Balanced));
 
         Assert.AreNotEqual(ModelTier.Low, result.Tier,
             $"\"{prompt}\" continues the thread's work and must not route Low (rule={result.Rule}).");
+    }
+
+    [TestMethod]
+    [DataRow("I ordered the propane")]
+    [DataRow("we're thinking about a trip in January")]
+    [DataRow("I'll find out soon")]
+    [DataRow("any plans for the weekend?")]
+    public void CasualThread_NonAckFollowUp_StaysLow(string prompt)
+    {
+        // Small talk past turn 3, on a thread whose recent turns all earned Low and did no work.
+        // Until #729 the active-thread floor raised these to Balanced.
+        foreach (var recent in new ModelTier?[] { null, ModelTier.Low })
+        {
+            var result = _selector.Classify(prompt, User(threadEstablished: true, recentMaxTier: recent));
+
+            Assert.AreEqual(ModelTier.Low, result.Tier, $"\"{prompt}\" (recentMaxTier={recent}) rule={result.Rule}");
+            Assert.AreEqual(TierRoutingRules.ScoreBand, result.Rule);
+        }
     }
 
     [TestMethod]
@@ -71,13 +84,23 @@ public class ThreadAwareTierRoutingTests
     [DataRow("👍")]
     [DataRow("Thanks so much, that's great")]
     [DataRow("good morning")]
-    public void EstablishedThread_TrivialAck_MayStayLow(string prompt)
+    public void EarnedThread_TrivialAck_MayStayLow(string prompt)
     {
-        var result = _selector.Classify(prompt, User(threadEstablished: true));
+        var result = _selector.Classify(prompt,
+            User(threadEstablished: true, recentMaxTier: ModelTier.Balanced));
 
         Assert.AreEqual(ModelTier.Low, result.Tier, $"\"{prompt}\" is a pure acknowledgement.");
         Assert.AreEqual(TierRoutingRules.TrivialAck, result.Rule,
-            "The log must say the thread floor was skipped because the message is a trivial ack.");
+            "The log must say the inherited tier was skipped because the message is a trivial ack.");
+    }
+
+    [TestMethod]
+    public void ThreadEstablished_AloneNoLongerFloors()
+    {
+        var result = _selector.Classify("figure out a way to update the doc", User(threadEstablished: true));
+
+        Assert.AreEqual(ModelTier.Low, result.Tier);
+        Assert.AreNotEqual(TierRoutingRules.ActiveThreadFloor, result.Rule, "The active-thread floor was removed in #729.");
     }
 
     [TestMethod]
@@ -99,7 +122,7 @@ public class ThreadAwareTierRoutingTests
 
         Assert.AreEqual(ModelTier.High, result.Tier);
         Assert.AreEqual(TierRoutingRules.InheritedTier, result.Rule);
-        Assert.AreEqual(ModelTier.Balanced, result.IntrinsicTier,
+        Assert.AreEqual(ModelTier.Low, result.IntrinsicTier,
             "The intrinsic tier (recorded in history) excludes inheritance so it decays.");
     }
 
@@ -149,6 +172,18 @@ public class ThreadAwareTierRoutingTests
 
         Assert.AreEqual(ModelTier.Balanced, result.Tier);
         Assert.AreEqual(TierRoutingRules.ActiveSubagentFloor, result.Rule);
+        Assert.AreEqual(ModelTier.Low, result.IntrinsicTier,
+            "Thread-state floors are not part of the intrinsic tier, so they don't keep the thread sticky (#729).");
+    }
+
+    [TestMethod]
+    public void ResearchQuestionFloor_CountsTowardIntrinsicTier()
+    {
+        var result = _selector.Classify("what are the key features of the MCP version 2 spec",
+            User(threadEstablished: true));
+
+        Assert.AreEqual(ModelTier.Balanced, result.IntrinsicTier,
+            "Content floors describe the message itself, so they are what a thread inherits.");
     }
 
     [TestMethod]
@@ -274,16 +309,18 @@ public class ThreadAwareTierRoutingTests
         // computes it: each exchange adds two conversation turns, and a thread is established
         // from ShortMessageHeuristics.ThreadEstablishedMinTurns prior turns. The first message
         // is a statement on a fresh session; every turn after it is research or deck work.
-        string[] turns =
+        // History records each turn's intrinsic tier, raised to Balanced when the turn did work
+        // on the user's behalf (web search, file writes) as the handler does since #729.
+        (string Prompt, bool DidWork)[] turns =
         [
-            "you should now be running against the latest gpt models (terra and sol)",
-            "what are the key features of the MCP version 2 spec",
-            "why didn't you do a web search to find the details?",
-            "ok, create a deck for me to review",
-            "I see the outline - 30 slides is a lot - I typically estimate 5-6 minutes per slide",
-            "figure out a way to update the doc",
-            "so do it now",
-            "do that",
+            ("you should now be running against the latest gpt models (terra and sol)", false),
+            ("what are the key features of the MCP version 2 spec", true),
+            ("why didn't you do a web search to find the details?", true),
+            ("ok, create a deck for me to review", true),
+            ("I see the outline - 30 slides is a lot - I typically estimate 5-6 minutes per slide", true),
+            ("figure out a way to update the doc", true),
+            ("so do it now", true),
+            ("do that", true),
         ];
 
         var recent = new List<ModelTier>();
@@ -292,13 +329,65 @@ public class ThreadAwareTierRoutingTests
             var priorTurns = i * 2;
             var context = User(
                 threadEstablished: priorTurns >= ShortMessageHeuristics.ThreadEstablishedMinTurns,
-                recentMaxTier: recent.Count > 0 ? recent.TakeLast(3).Max() : null);
-            var result = _selector.Classify(turns[i], context);
-            recent.Add(result.IntrinsicTier ?? result.Tier);
+                recentMaxTier: recent.Count > 0 ? recent.TakeLast(SessionTierHistory.MaxTurnsPerSession).Max() : null);
+            var result = _selector.Classify(turns[i].Prompt, context);
+            var recorded = result.IntrinsicTier ?? result.Tier;
+            if (turns[i].DidWork && recorded < ModelTier.Balanced)
+                recorded = ModelTier.Balanced;
+            recent.Add(recorded);
 
             if (i > 0)
                 Assert.IsTrue(result.Tier >= ModelTier.Balanced,
-                    $"Turn {i + 1} \"{turns[i]}\" routed {result.Tier} (rule={result.Rule}, score={result.ComplexityScore:F3}).");
+                    $"Turn {i + 1} \"{turns[i].Prompt}\" routed {result.Tier} (rule={result.Rule}, score={result.ComplexityScore:F3}).");
+        }
+    }
+
+    [TestMethod]
+    public void Replay_CasualSession_StaysLowPastTurnThree()
+    {
+        // Small talk with no tool work: nothing earns Balanced, so nothing is inherited (#729).
+        string[] turns =
+        [
+            "good morning",
+            "I ordered the propane",
+            "the weather has been great here lately, we might go for a walk this afternoon.",
+            "we're thinking about a trip in January",
+            "I'll find out soon",
+        ];
+
+        var history = new SessionTierHistory();
+        for (var i = 0; i < turns.Length; i++)
+        {
+            var result = _selector.Classify(turns[i], User(
+                threadEstablished: i * 2 >= ShortMessageHeuristics.ThreadEstablishedMinTurns,
+                recentMaxTier: history.GetRecentMax("s")));
+            history.Record("s", $"t{i}", result.IntrinsicTier ?? result.Tier);
+
+            Assert.AreEqual(ModelTier.Low, result.Tier,
+                $"Turn {i + 1} \"{turns[i]}\" routed {result.Tier} (rule={result.Rule}, score={result.ComplexityScore:F3}).");
+        }
+    }
+
+    [TestMethod]
+    public void BalancedTurn_FollowUpsInherit_ThenDecayToLow()
+    {
+        var history = new SessionTierHistory();
+
+        // A turn that earned Balanced on its own content.
+        var research = _selector.Classify("what are the key features of the MCP version 2 spec", User());
+        Assert.AreEqual(ModelTier.Balanced, research.IntrinsicTier);
+        history.Record("s", "t0", research.IntrinsicTier!.Value);
+
+        // Short non-ack follow-ups that do no work inherit Balanced for MaxTurnsPerSession turns...
+        string[] followUps = ["interesting", "I'll find out soon", "my brother is visiting", "we'll grab dinner later"];
+        for (var i = 0; i < followUps.Length; i++)
+        {
+            var result = _selector.Classify(followUps[i], User(threadEstablished: true, recentMaxTier: history.GetRecentMax("s")));
+            history.Record("s", $"t{i + 1}", result.IntrinsicTier ?? result.Tier);
+
+            var expected = i < SessionTierHistory.MaxTurnsPerSession ? ModelTier.Balanced : ModelTier.Low;
+            Assert.AreEqual(expected, result.Tier,
+                $"Follow-up {i + 1} \"{followUps[i]}\" (rule={result.Rule}).");
         }
     }
 }

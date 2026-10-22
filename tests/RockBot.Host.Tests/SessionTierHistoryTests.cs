@@ -51,6 +51,23 @@ public class SessionTierHistoryTests
     }
 
     [TestMethod]
+    public void Balanced_DecaysToLowAfterMaxTurnsPerSessionLowTurns()
+    {
+        // Follow-ups that inherited Balanced record their own (Low) tier, so the thread drops
+        // back to Low instead of staying Balanced for as long as it is active (#729).
+        var history = new SessionTierHistory();
+        history.Record("s1", "t0", ModelTier.Balanced);
+        for (var i = 1; i < SessionTierHistory.MaxTurnsPerSession; i++)
+            history.Record("s1", $"t{i}", ModelTier.Low);
+
+        Assert.AreEqual(ModelTier.Balanced, history.GetRecentMax("s1"), "Still within the window.");
+
+        history.Record("s1", "tN", ModelTier.Low);
+
+        Assert.AreEqual(ModelTier.Low, history.GetRecentMax("s1"));
+    }
+
+    [TestMethod]
     public void Entries_ExpireAfterThreadRecency()
     {
         var time = new ManualTime(T0);

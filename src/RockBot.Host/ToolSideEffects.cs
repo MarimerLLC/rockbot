@@ -84,6 +84,53 @@ public static partial class ToolSideEffects
         "close", "install", "uninstall", "store", "change",
     };
 
+    /// <summary>
+    /// Reads of the agent's own memory, working memory, skills and tool guides. Nearly every
+    /// turn opens with some of these (briefing queue, active plans), so they say nothing about
+    /// whether the thread is doing real work. Compared in snake_case, so the PascalCase names
+    /// some paths log match too.
+    /// </summary>
+    private static readonly HashSet<string> ContextReadTools = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "search_memory", "search_working_memory", "get_from_working_memory",
+        "list_skills", "get_skill", "get_skill_resource",
+        "list_tool_guides", "get_tool_guide",
+    };
+
+    /// <summary>
+    /// Instant lookups that answer a one-line question ("what time is it in Tokyo?") without
+    /// touching anything the user is working on. A turn that only uses these is small talk, so
+    /// it should not keep the thread on Balanced (#729). Compared in snake_case.
+    /// </summary>
+    private static readonly HashSet<string> TrivialUtilityTools = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "convert_time", "get_agent_name", "ping",
+    };
+
+    /// <summary>
+    /// True when <paramref name="call"/> is work on the user's behalf rather than the agent's
+    /// own context loading, bookkeeping or an instant utility lookup (<c>convert_time</c>):
+    /// any external call (MCP, web, files, scripts), read or
+    /// write, and delegation. A user turn that made one keeps the session's tier at Balanced for
+    /// the next few turns (#729), even when the turn itself was routed Balanced and so never
+    /// escalated mid-turn.
+    /// </summary>
+    public static bool IsThreadWork(LoopToolCall call)
+    {
+        if (string.IsNullOrWhiteSpace(call.Name)) return false;
+        var name = string.Join('_', SplitWords(call.Name));
+
+        // spawn_workers is bookkeeping for side effects — its workers' calls run in their own
+        // loops and are judged there — but it hands real work to them, and those calls never
+        // reach this turn's ledger. Without this a turn whose only work is a worker batch
+        // would record Low and the thread would decay mid-task.
+        if (string.Equals(name, SpawnWorkersToolName, StringComparison.OrdinalIgnoreCase)) return true;
+
+        return !IsBookkeeping(name) && !ContextReadTools.Contains(name) && !TrivialUtilityTools.Contains(name);
+    }
+
+    private const string SpawnWorkersToolName = "spawn_workers";
+
     /// <summary>True when the call is one the agent uses to delegate (<c>spawn_subagent</c>, <c>invoke_agent</c>).</summary>
     public static bool IsDelegation(string toolName) => DelegationTools.Contains(toolName);
 

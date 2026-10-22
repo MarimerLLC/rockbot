@@ -8,8 +8,8 @@ namespace RockBot.Host;
 /// was actually said. Consumers include <see cref="AgentContextBuilder"/>'s
 /// per-turn search gate and the AgentLoopRunner memory-summary-reply guard. See
 /// issue #383. The tier selector's active-thread floor used the char threshold until
-/// #663; it now applies to every non-trivial follow-up on an established thread, and
-/// reads only <see cref="ThreadEstablishedMinTurns"/> and <see cref="ThreadEstablishedRecency"/>.
+/// #663 and was removed in #729; follow-ups now keep a thread's tier only through the
+/// session tier history, which expires after <see cref="ThreadEstablishedRecency"/>.
 /// </summary>
 public static class ShortMessageHeuristics
 {
