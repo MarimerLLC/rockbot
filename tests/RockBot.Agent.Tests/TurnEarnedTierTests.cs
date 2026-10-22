@@ -34,6 +34,16 @@ public class TurnEarnedTierTests
     }
 
     [TestMethod]
+    public void UtilityLookupOnly_EarnsNothing()
+    {
+        // Live-test finding: "what time is it in Amsterdam?" called convert_time and kept the
+        // next three turns on Balanced.
+        var diagnostics = WithCalls("search_memory", "convert_time");
+
+        Assert.IsNull(UserMessageHandler.EarnedTier(diagnostics));
+    }
+
+    [TestMethod]
     public void ExternalCall_EarnsBalanced()
     {
         // A Balanced-routed turn never escalates mid-turn, so this is what keeps a busy thread Balanced.

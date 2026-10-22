@@ -78,6 +78,10 @@ public class ToolSideEffectsTests
     [DataRow("SaveToWorkingMemory")]
     [DataRow("task_create")]
     [DataRow("TaskUpdate")]
+    [DataRow("convert_time")]                 // instant utility lookups
+    [DataRow("ConvertTime")]
+    [DataRow("get_agent_name")]
+    [DataRow("ping")]
     [DataRow("")]
     public void NotThreadWork(string name)
     {

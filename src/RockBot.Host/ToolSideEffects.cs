@@ -98,8 +98,19 @@ public static partial class ToolSideEffects
     };
 
     /// <summary>
+    /// Instant lookups that answer a one-line question ("what time is it in Tokyo?") without
+    /// touching anything the user is working on. A turn that only uses these is small talk, so
+    /// it should not keep the thread on Balanced (#729). Compared in snake_case.
+    /// </summary>
+    private static readonly HashSet<string> TrivialUtilityTools = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "convert_time", "get_agent_name", "ping",
+    };
+
+    /// <summary>
     /// True when <paramref name="call"/> is work on the user's behalf rather than the agent's
-    /// own context loading or bookkeeping: any external call (MCP, web, files, scripts), read or
+    /// own context loading, bookkeeping or an instant utility lookup (<c>convert_time</c>):
+    /// any external call (MCP, web, files, scripts), read or
     /// write, and delegation. A user turn that made one keeps the session's tier at Balanced for
     /// the next few turns (#729), even when the turn itself was routed Balanced and so never
     /// escalated mid-turn.
@@ -115,7 +126,7 @@ public static partial class ToolSideEffects
         // would record Low and the thread would decay mid-task.
         if (string.Equals(name, SpawnWorkersToolName, StringComparison.OrdinalIgnoreCase)) return true;
 
-        return !IsBookkeeping(name) && !ContextReadTools.Contains(name);
+        return !IsBookkeeping(name) && !ContextReadTools.Contains(name) && !TrivialUtilityTools.Contains(name);
     }
 
     private const string SpawnWorkersToolName = "spawn_workers";
