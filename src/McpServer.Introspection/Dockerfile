@@ -5,7 +5,9 @@ EXPOSE 8080
 ENV ASPNETCORE_URLS=http://+:8080
 ENV ASPNETCORE_ENVIRONMENT=Production
 
-FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
+# Runs on the build host; -a $TARGETARCH restores and publishes for the target platform
+FROM --platform=$BUILDPLATFORM mcr.microsoft.com/dotnet/sdk:10.0 AS build
+ARG TARGETARCH
 ARG BUILD_CONFIGURATION=Release
 WORKDIR /src
 
@@ -23,7 +25,7 @@ COPY src/RockBot.Host.Abstractions/RockBot.Host.Abstractions.csproj src/RockBot.
 COPY src/RockBot.Messaging.Abstractions/RockBot.Messaging.Abstractions.csproj src/RockBot.Messaging.Abstractions/
 COPY src/RockBot.UserProxy.Abstractions/RockBot.UserProxy.Abstractions.csproj src/RockBot.UserProxy.Abstractions/
 
-RUN dotnet restore src/McpServer.Introspection/McpServer.Introspection.csproj
+RUN dotnet restore src/McpServer.Introspection/McpServer.Introspection.csproj -a $TARGETARCH
 
 COPY src/McpServer.Introspection/ src/McpServer.Introspection/
 COPY src/RockBot.Host.Abstractions/ src/RockBot.Host.Abstractions/
@@ -31,11 +33,12 @@ COPY src/RockBot.Messaging.Abstractions/ src/RockBot.Messaging.Abstractions/
 COPY src/RockBot.UserProxy.Abstractions/ src/RockBot.UserProxy.Abstractions/
 
 WORKDIR /src/src/McpServer.Introspection
-RUN dotnet build McpServer.Introspection.csproj -c $BUILD_CONFIGURATION -o /app/build --no-restore
+RUN dotnet build McpServer.Introspection.csproj -c $BUILD_CONFIGURATION -o /app/build --no-restore -a $TARGETARCH
 
 FROM build AS publish
+ARG TARGETARCH
 ARG BUILD_CONFIGURATION=Release
-RUN dotnet publish McpServer.Introspection.csproj -c $BUILD_CONFIGURATION -o /app/publish /p:UseAppHost=false
+RUN dotnet publish McpServer.Introspection.csproj -c $BUILD_CONFIGURATION -a $TARGETARCH -o /app/publish /p:UseAppHost=false
 
 FROM base AS final
 WORKDIR /app

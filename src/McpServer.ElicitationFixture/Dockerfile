@@ -5,7 +5,9 @@ EXPOSE 8080
 ENV ASPNETCORE_URLS=http://+:8080
 ENV ASPNETCORE_ENVIRONMENT=Production
 
-FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
+# Runs on the build host; -a $TARGETARCH restores and publishes for the target platform
+FROM --platform=$BUILDPLATFORM mcr.microsoft.com/dotnet/sdk:10.0 AS build
+ARG TARGETARCH
 ARG BUILD_CONFIGURATION=Release
 WORKDIR /src
 
@@ -17,16 +19,17 @@ RUN printf '<configuration><fallbackPackageFolders><clear /></fallbackPackageFol
 COPY Directory.Build.props .
 COPY src/McpServer.ElicitationFixture/McpServer.ElicitationFixture.csproj src/McpServer.ElicitationFixture/
 
-RUN dotnet restore src/McpServer.ElicitationFixture/McpServer.ElicitationFixture.csproj
+RUN dotnet restore src/McpServer.ElicitationFixture/McpServer.ElicitationFixture.csproj -a $TARGETARCH
 
 COPY src/McpServer.ElicitationFixture/ src/McpServer.ElicitationFixture/
 
 WORKDIR /src/src/McpServer.ElicitationFixture
-RUN dotnet build McpServer.ElicitationFixture.csproj -c $BUILD_CONFIGURATION -o /app/build --no-restore
+RUN dotnet build McpServer.ElicitationFixture.csproj -c $BUILD_CONFIGURATION -o /app/build --no-restore -a $TARGETARCH
 
 FROM build AS publish
+ARG TARGETARCH
 ARG BUILD_CONFIGURATION=Release
-RUN dotnet publish McpServer.ElicitationFixture.csproj -c $BUILD_CONFIGURATION -o /app/publish /p:UseAppHost=false
+RUN dotnet publish McpServer.ElicitationFixture.csproj -c $BUILD_CONFIGURATION -a $TARGETARCH -o /app/publish /p:UseAppHost=false
 
 FROM base AS final
 WORKDIR /app

@@ -5,7 +5,9 @@ EXPOSE 8080
 ENV ASPNETCORE_URLS=http://+:8080
 ENV ASPNETCORE_ENVIRONMENT=Production
 
-FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
+# Runs on the build host; -a $TARGETARCH restores and publishes for the target platform
+FROM --platform=$BUILDPLATFORM mcr.microsoft.com/dotnet/sdk:10.0 AS build
+ARG TARGETARCH
 ARG BUILD_CONFIGURATION=Release
 WORKDIR /src
 
@@ -23,16 +25,17 @@ COPY src/RockBot.UserProxy.WorkIqAuth/RockBot.UserProxy.WorkIqAuth.csproj src/Ro
 COPY src/RockBot.Messaging.RabbitMQ/RockBot.Messaging.RabbitMQ.csproj src/RockBot.Messaging.RabbitMQ/
 COPY src/RockBot.Messaging.Abstractions/RockBot.Messaging.Abstractions.csproj src/RockBot.Messaging.Abstractions/
 
-RUN dotnet restore src/RockBot.UserProxy.Blazor/RockBot.UserProxy.Blazor.csproj
+RUN dotnet restore src/RockBot.UserProxy.Blazor/RockBot.UserProxy.Blazor.csproj -a $TARGETARCH
 
 COPY src/ src/
 
 WORKDIR /src/src/RockBot.UserProxy.Blazor
-RUN dotnet build RockBot.UserProxy.Blazor.csproj -c $BUILD_CONFIGURATION -o /app/build --no-restore
+RUN dotnet build RockBot.UserProxy.Blazor.csproj -c $BUILD_CONFIGURATION -o /app/build --no-restore -a $TARGETARCH
 
 FROM build AS publish
+ARG TARGETARCH
 ARG BUILD_CONFIGURATION=Release
-RUN dotnet publish RockBot.UserProxy.Blazor.csproj -c $BUILD_CONFIGURATION -o /app/publish /p:UseAppHost=false
+RUN dotnet publish RockBot.UserProxy.Blazor.csproj -c $BUILD_CONFIGURATION -a $TARGETARCH -o /app/publish /p:UseAppHost=false
 
 FROM base AS final
 WORKDIR /app
