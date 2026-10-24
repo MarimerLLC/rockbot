@@ -1,4 +1,5 @@
-FROM node:20-slim AS build
+# Runs on the build host — it only emits dist/ JavaScript; the final stage installs native bits
+FROM --platform=$BUILDPLATFORM node:20-slim AS build
 WORKDIR /app
 
 COPY package.json ./

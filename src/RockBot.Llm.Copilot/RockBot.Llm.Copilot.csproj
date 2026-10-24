@@ -7,6 +7,10 @@
     <RootNamespace>RockBot.Llm.Copilot</RootNamespace>
     <IsPackable>true</IsPackable>
     <Description>GitHub Copilot LLM provider for RockBot, exposing Copilot models via Microsoft.Extensions.AI.</Description>
+    <!-- GitHub.Copilot.SDK picks its native CLI from this project's RuntimeIdentifier, falling back to the
+         build host's. A RID-agnostic reference has the referencing app's RID stripped, so a cross-arch
+         publish (e.g. -a amd64 on an arm64 host) would bundle the host's CLI. Let the RID flow through. -->
+    <IsRidAgnostic>false</IsRidAgnostic>
   </PropertyGroup>
 
   <ItemGroup>

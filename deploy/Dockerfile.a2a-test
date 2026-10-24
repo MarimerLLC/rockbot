@@ -1,6 +1,7 @@
 # syntax=docker/dockerfile:1
-# Build stage
-FROM mcr.microsoft.com/dotnet/sdk:10.0@sha256:0a506ab0c8aa077361af42f82569d364ab1b8741e967955d883e3f23683d473a AS build
+# Build stage — runs on the build host; -a $TARGETARCH publishes for the target platform
+FROM --platform=$BUILDPLATFORM mcr.microsoft.com/dotnet/sdk:10.0@sha256:0a506ab0c8aa077361af42f82569d364ab1b8741e967955d883e3f23683d473a AS build
+ARG TARGETARCH
 WORKDIR /src
 
 # Clear Windows-specific NuGet fallback folders that break Linux builds
@@ -14,7 +15,7 @@ COPY tests/ tests/
 # BuildKit cache mount avoids re-downloading packages on every build
 RUN --mount=type=cache,target=/root/.nuget/packages \
     dotnet publish tests/RockBot.A2A.IntegrationTests/RockBot.A2A.IntegrationTests.csproj \
-    -c Release -o /app/publish
+    -c Release -a $TARGETARCH -o /app/publish
 
 # Runtime stage — console app, no ASP.NET needed
 FROM mcr.microsoft.com/dotnet/runtime:10.0@sha256:3de49150e48790fa845547e14bff5add0e4194a8901e727cf88f83423bcbe2b0 AS runtime
