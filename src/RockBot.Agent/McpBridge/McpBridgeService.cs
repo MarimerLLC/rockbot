@@ -35,8 +35,6 @@ public sealed partial class McpBridgeService : IHostedService, IAsyncDisposable
     private readonly string _configPath;
     private readonly ILogger<McpBridgeService> _logger;
     private readonly ILlmClient? _llmClient;
-    private readonly ITokenProviderRegistry? _tokenProviders;
-    private readonly WorkIqHealthTracker? _healthTracker;
     private readonly IMcpArgGuardRegistry? _argGuards;
     private readonly IMcpElicitationResponder? _elicitationResponder;
 
@@ -137,8 +135,6 @@ public sealed partial class McpBridgeService : IHostedService, IAsyncDisposable
         IOptions<McpBridgeOptions> options,
         ILogger<McpBridgeService> logger,
         ILlmClient? llmClient = null,
-        ITokenProviderRegistry? tokenProviders = null,
-        WorkIqHealthTracker? healthTracker = null,
         IMcpArgGuardRegistry? argGuards = null,
         IMcpElicitationResponder? elicitationResponder = null,
         IServiceProvider? services = null,
@@ -146,7 +142,7 @@ public sealed partial class McpBridgeService : IHostedService, IAsyncDisposable
         IWorkingMemory? workingMemory = null,
         SessionClientCapabilityStore? clientCapabilities = null,
         McpTaskRegistry? taskRegistry = null)
-        : this(publisher, subscriber, identity, options, logger, llmClient, tokenProviders, healthTracker,
+        : this(publisher, subscriber, identity, options, logger, llmClient,
             argGuards, elicitationResponder, services, attachmentStorage: null,
             conversationMemory: conversationMemory, workingMemory: workingMemory,
             clientCapabilities: clientCapabilities, taskRegistry: taskRegistry)
@@ -165,8 +161,6 @@ public sealed partial class McpBridgeService : IHostedService, IAsyncDisposable
         IOptions<McpBridgeOptions> options,
         ILogger<McpBridgeService> logger,
         ILlmClient? llmClient,
-        ITokenProviderRegistry? tokenProviders,
-        WorkIqHealthTracker? healthTracker,
         IMcpArgGuardRegistry? argGuards,
         IMcpElicitationResponder? elicitationResponder,
         IServiceProvider? services,
@@ -189,8 +183,6 @@ public sealed partial class McpBridgeService : IHostedService, IAsyncDisposable
             : Path.Combine(AppContext.BaseDirectory, _options.ConfigPath);
         _logger = logger;
         _llmClient = llmClient;
-        _tokenProviders = tokenProviders;
-        _healthTracker = healthTracker;
         _argGuards = argGuards;
         _elicitationResponder = elicitationResponder;
         _services = services;
@@ -252,13 +244,6 @@ public sealed partial class McpBridgeService : IHostedService, IAsyncDisposable
         // Sign-in requests from the user interfaces, for servers that use OAuth (#738).
         await StartSignInHandlingAsync(cancellationToken);
 
-        // Wire health-tracker changes so workiq-* tools appear/disappear
-        // from the published tool list as the auth cache becomes valid/invalid.
-        if (_healthTracker is not null)
-        {
-            _healthTracker.HealthChanged += OnAuthHealthChanged;
-        }
-
         // Load config and connect to servers
         await LoadConfigAndConnectAsync(cancellationToken);
         _startupCompletedAt = DateTimeOffset.UtcNow;
@@ -302,9 +287,6 @@ public sealed partial class McpBridgeService : IHostedService, IAsyncDisposable
 
         _reloadDebounce?.Dispose();
         _reloadDebounce = null;
-
-        if (_healthTracker is not null)
-            _healthTracker.HealthChanged -= OnAuthHealthChanged;
 
         if (_sweepCts is not null)
         {
@@ -751,18 +733,7 @@ public sealed partial class McpBridgeService : IHostedService, IAsyncDisposable
                 published = true;
                 _lastSurfaceCheck[name] = DateTimeOffset.UtcNow;
 
-                if (IsServerHiddenByAuth(config))
-                {
-                    _logger.LogInformation(
-                        "MCP server {Name} uses auth profile '{Profile}' which is currently unhealthy; suppressing publish until auth recovers",
-                        name, config.Auth?.Profile);
-                    // Make sure the agent's prior view of this server (if any) is cleared.
-                    await PublishServersIndexedAsync([], [name], ct);
-                }
-                else
-                {
-                    await PublishServersIndexedAsync([summary], [], ct);
-                }
+                await PublishServersIndexedAsync([summary], [], ct);
 
                 if (config.Auth?.OAuth is not null)
                     ClearSignInRequired(name);
@@ -923,37 +894,15 @@ public sealed partial class McpBridgeService : IHostedService, IAsyncDisposable
 
     /// <summary>
     /// Builds an <see cref="HttpClient"/> for a server config that needs custom
-    /// headers, profile bearer auth, or both. Returns <c>null</c> when neither applies,
-    /// signalling that the caller can use the transport's default client. An
-    /// <c>auth.oauth</c> server's bearer comes from the SDK's OAuth client instead, on top of
-    /// whichever client this returns.
+    /// headers. Returns <c>null</c> when it has none, signalling that the caller can use the
+    /// transport's default client. An <c>auth.oauth</c> server's bearer comes from the SDK's
+    /// OAuth client, on top of whichever client this returns.
     /// </summary>
     private HttpClient? TryBuildHttpClient(string serverName, McpBridgeServerConfig config)
     {
-        var hasHeaders = config.Headers.Count > 0;
-        var profile = config.Auth?.Profile;
-        var hasProfileAuth = !string.IsNullOrWhiteSpace(profile);
-        if (!hasHeaders && !hasProfileAuth) return null;
+        if (config.Headers.Count == 0) return null;
 
-        HttpClient httpClient;
-        if (hasProfileAuth)
-        {
-            if (_tokenProviders is null)
-            {
-                throw new InvalidOperationException(
-                    $"MCP server '{serverName}' requires auth profile '{profile}' " +
-                    $"but no ITokenProviderRegistry is registered in DI. " +
-                    $"Add a token provider (e.g. services.AddWorkIqAuth(...)) before connecting.");
-            }
-
-            var provider = _tokenProviders.Get(profile!);
-            var bearerHandler = new BearerInjectionHandler(provider, new SocketsHttpHandler());
-            httpClient = new HttpClient(bearerHandler);
-        }
-        else
-        {
-            httpClient = new HttpClient();
-        }
+        var httpClient = new HttpClient();
 
         foreach (var (key, rawValue) in config.Headers)
         {
@@ -1296,8 +1245,7 @@ public sealed partial class McpBridgeService : IHostedService, IAsyncDisposable
             "MCP server {Name} changed its surface: now {ToolCount} tools, {PromptCount} prompts and {ResourceCount} resources",
             name, tools.Count, prompts.Count, resourceLists.Count);
 
-        if (!IsServerHiddenByAuth(current.Config))
-            await PublishServersIndexedAsync([summary], [], ct);
+        await PublishServersIndexedAsync([summary], [], ct);
         return true;
 
         static bool SameToolFingerprints(Dictionary<string, string> a, Dictionary<string, string> b) =>
@@ -2618,17 +2566,15 @@ public sealed partial class McpBridgeService : IHostedService, IAsyncDisposable
                 "← MCP {Server}/{Tool} REAUTH REQUIRED after {ElapsedMs}ms (code={Code}): {Detail}",
                 serverName, request.ToolName, sw.ElapsedMilliseconds, reauth.Code, reauth.Message);
 
-            // Silent refresh failed (or never consented). Reconnecting the MCP transport
-            // will not help — the user must complete an interactive flow in the UI before
-            // any Work IQ tool will succeed.
+            // The server needs the user to sign in (never signed in, or refresh failed).
+            // Reconnecting the MCP transport will not help; the message names the server and
+            // how the user signs in to it.
             var error = new ToolError
             {
                 ToolCallId = target.ToolCallId,
                 ToolName = target.ToolName,
                 Code = ToolError.Codes.AuthRequired,
-                // An OAuth server's sign-in names the server and how to sign in to it; the
-                // profile message is Work IQ's.
-                Message = server.Config.Auth?.OAuth is not null ? reauth.Message : BuildReauthRequiredMessage(reauth),
+                Message = reauth.Message,
                 IsRetryable = false
             };
 
@@ -2636,26 +2582,6 @@ public sealed partial class McpBridgeService : IHostedService, IAsyncDisposable
             // registration) on every call; drop it so calls get the sign-in message straight away.
             if (server.Config.Auth?.OAuth is not null)
                 await DropSignedOutConnectionAsync(serverName, server.Client);
-
-            await PublishToTargetAsync(error, target, ct);
-        }
-        catch (Exception ex) when (FindAuthChallenge(ex) is { } authChallenge)
-        {
-            sw.Stop();
-            _logger.LogWarning(
-                "← MCP {Server}/{Tool} AUTH REQUIRED after {ElapsedMs}ms: {Detail}",
-                serverName, request.ToolName, sw.ElapsedMilliseconds, authChallenge.Message);
-
-            // The bearer token couldn't authenticate even after a forced refresh —
-            // reconnecting will not help; the user must re-consent interactively.
-            var error = new ToolError
-            {
-                ToolCallId = target.ToolCallId,
-                ToolName = target.ToolName,
-                Code = ToolError.Codes.AuthRequired,
-                Message = authChallenge.Message,
-                IsRetryable = false
-            };
 
             await PublishToTargetAsync(error, target, ct);
         }
@@ -3863,24 +3789,9 @@ public sealed partial class McpBridgeService : IHostedService, IAsyncDisposable
     private Task DisposeClientsAsync() => _connections.RetireAllAsync(ShutdownGrace);
 
     /// <summary>
-    /// Walks the exception chain looking for an <see cref="McpAuthChallengeException"/>.
-    /// The MCP client library may wrap the bearer handler's exception inside a transport
-    /// or protocol exception, so we search inner exceptions rather than relying on the
-    /// outer type.
-    /// </summary>
-    private static McpAuthChallengeException? FindAuthChallenge(Exception? ex)
-    {
-        for (var current = ex; current is not null; current = current.InnerException)
-        {
-            if (current is McpAuthChallengeException auth) return auth;
-        }
-        return null;
-    }
-
-    /// <summary>
     /// Walks the exception chain looking for a <see cref="TokenAcquisitionException"/>
-    /// whose code indicates that the user must complete an interactive auth flow
-    /// (initial consent never happened, or refresh-token rotation failed). Surfaces
+    /// whose code indicates that the user must sign in (they never have, or the refresh
+    /// failed). Surfaces
     /// as a dedicated <c>auth_required</c> tool error so the LLM stops retrying and
     /// reports a clear actionable message instead.
     /// </summary>
@@ -3889,89 +3800,12 @@ public sealed partial class McpBridgeService : IHostedService, IAsyncDisposable
         for (var current = ex; current is not null; current = current.InnerException)
         {
             if (current is TokenAcquisitionException tae
-                && (tae.Code == TokenAcquisitionException.Codes.ReauthRequired
-                    || tae.Code == TokenAcquisitionException.Codes.NotAuthenticated))
+                && tae.Code == TokenAcquisitionException.Codes.NotAuthenticated)
             {
                 return tae;
             }
         }
         return null;
-    }
-
-    /// <summary>
-    /// Maps a <see cref="TokenAcquisitionException"/> identified by
-    /// <see cref="FindReauthRequired"/> to the user-facing tool-error message.
-    /// Split out so unit tests can assert wording without spinning up the whole
-    /// bridge.
-    /// </summary>
-    internal static string BuildReauthRequiredMessage(TokenAcquisitionException reauth) =>
-        reauth.Code == TokenAcquisitionException.Codes.NotAuthenticated
-            ? "Microsoft 365 has not been connected yet. Open the Blazor app and click "
-              + "'Connect M365' to complete the initial sign-in. Work IQ tools will fail "
-              + "until consent is granted."
-            : "Microsoft 365 connection has expired. Open the Blazor app and click "
-              + "'Reconnect M365' to restore access. Work IQ tools will fail until "
-              + "reconnection is complete.";
-
-    /// <summary>
-    /// True when <paramref name="config"/> requires the WorkIQ auth profile and the
-    /// health tracker reports the cache cannot currently produce tokens. Callers use
-    /// this to suppress publishing the server's tools to the agent — so the LLM never
-    /// sees them and never makes calls that would just bounce back as auth_required.
-    /// </summary>
-    private bool IsServerHiddenByAuth(McpBridgeServerConfig config)
-    {
-        if (_healthTracker is null) return false;
-        if (config.Auth is null) return false;
-        if (!string.Equals(config.Auth.Profile, "workiq", StringComparison.OrdinalIgnoreCase))
-            return false;
-        return !_healthTracker.IsHealthy;
-    }
-
-    /// <summary>
-    /// Handler for <see cref="WorkIqHealthTracker.HealthChanged"/>. On the flip to
-    /// healthy, re-publish cached summaries for every workiq server so the agent
-    /// re-includes their tools. On the flip to unhealthy, publish removal entries
-    /// so the agent drops those tools from its working set.
-    /// </summary>
-    private void OnAuthHealthChanged(WorkIqHealthTracker.HealthChangedArgs args)
-    {
-        // Races are tolerated: a server added or removed mid-flip just gets the next publish cycle.
-        var workiqServers = _connections.ConfiguredNames
-            .Where(name => _connections.TryGetConfig(name, out var config)
-                && string.Equals(config.Auth?.Profile, "workiq", StringComparison.OrdinalIgnoreCase))
-            .ToList();
-
-        if (workiqServers.Count == 0) return;
-
-        _ = Task.Run(async () =>
-        {
-            try
-            {
-                if (args.NewValue)
-                {
-                    // Healthy again — re-publish each workiq server's cached summary.
-                    foreach (var name in workiqServers)
-                    {
-                        if (_connections.TryGet(name, out var server))
-                        {
-                            await PublishServersIndexedAsync([server.Summary], [], CancellationToken.None);
-                        }
-                    }
-                }
-                else
-                {
-                    // Unhealthy — tell the agent to drop these from its tool list.
-                    await PublishServersIndexedAsync([], workiqServers, CancellationToken.None);
-                }
-            }
-            catch (Exception ex)
-            {
-                _logger.LogWarning(ex,
-                    "Failed to republish MCP tool list after WorkIQ health flip to {New}",
-                    args.NewValue);
-            }
-        });
     }
 
     /// <summary>
@@ -4005,9 +3839,6 @@ public sealed partial class McpBridgeService : IHostedService, IAsyncDisposable
     {
         _configWatcher?.Dispose();
         _reloadDebounce?.Dispose();
-
-        if (_healthTracker is not null)
-            _healthTracker.HealthChanged -= OnAuthHealthChanged;
 
         if (_sweepCts is not null)
         {

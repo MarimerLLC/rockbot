@@ -108,11 +108,9 @@ public sealed class McpBridgeServerConfig
     public McpElicitationConfig? Elicitation { get; set; }
 
     /// <summary>
-    /// Optional bearer-token authentication. With <see cref="McpServerAuthConfig.Profile"/>, the
-    /// bridge resolves the profile against the token provider registry and wires a
-    /// <c>BearerInjectionHandler</c> into the HTTP client so every request carries a fresh access
-    /// token. With <see cref="McpServerAuthConfig.OAuth"/>, the bridge runs the MCP authorization
-    /// spec's OAuth client itself and the user signs in from a user interface (#738).
+    /// Optional authentication. With <see cref="McpServerAuthConfig.OAuth"/>, the bridge runs the
+    /// MCP authorization spec's OAuth client itself and the user signs in from a user interface
+    /// (#738).
     /// </summary>
     public McpServerAuthConfig? Auth { get; set; }
 

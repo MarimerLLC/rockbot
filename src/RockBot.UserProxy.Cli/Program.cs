@@ -32,8 +32,6 @@ app.Configure(config =>
     config.AddBranch("auth", auth =>
     {
         auth.SetDescription("Authentication flows that connect the agent to external services.");
-        auth.AddCommand<WorkIqAuthCommand>("workiq")
-            .WithDescription("Sign in to Microsoft 365 (Work IQ) via device code and publish the cache to the agent.");
         auth.AddCommand<McpAuthCommand>("mcp")
             .WithDescription("Sign in to an OAuth-protected MCP server the agent uses, or list them.")
             .WithExample(["auth", "mcp"])

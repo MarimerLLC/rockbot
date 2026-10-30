@@ -132,34 +132,6 @@ spec:
                   key: Auth__AllowedDomains__{{ $i }}
             {{- end }}
             {{- end }}
-            {{- if .Values.workiq.enabled }}
-            # WorkIQ device-code flow needs the same Entra app registration
-            # values the agent uses. Cache itself never lands on the Blazor pod.
-            - name: WorkIQ__TenantId
-              valueFrom:
-                configMapKeyRef:
-                  name: {{ include "rockbot.configmapName" . }}
-                  key: WorkIQ__TenantId
-            - name: WorkIQ__ClientId
-              valueFrom:
-                configMapKeyRef:
-                  name: {{ include "rockbot.configmapName" . }}
-                  key: WorkIQ__ClientId
-            {{- if .Values.workiq.scopes }}
-            - name: WorkIQ__Scopes
-              valueFrom:
-                configMapKeyRef:
-                  name: {{ include "rockbot.configmapName" . }}
-                  key: WorkIQ__Scopes
-            {{- end }}
-            {{- if .Values.workiq.authority }}
-            - name: WorkIQ__Authority
-              valueFrom:
-                configMapKeyRef:
-                  name: {{ include "rockbot.configmapName" . }}
-                  key: WorkIQ__Authority
-            {{- end }}
-            {{- end }}
           # /healthz, not /. With sign-in on, / answers 302 to /login, which the
           # kubelet scores as success — the probe would pass without asserting
           # anything. /healthz is anonymous and answers 200 either way.
