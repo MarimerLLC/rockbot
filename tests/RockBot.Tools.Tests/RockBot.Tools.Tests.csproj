@@ -21,6 +21,7 @@
     <ProjectReference Include="..\..\src\RockBot.Tools.Abstractions\RockBot.Tools.Abstractions.csproj" />
     <ProjectReference Include="..\..\src\RockBot.Tools\RockBot.Tools.csproj" />
     <ProjectReference Include="..\..\src\RockBot.Tools.Mcp\RockBot.Tools.Mcp.csproj" />
+    <ProjectReference Include="..\..\src\RockBot.Tools.Scheduling\RockBot.Tools.Scheduling.csproj" />
     <ProjectReference Include="..\..\src\RockBot.Host.Abstractions\RockBot.Host.Abstractions.csproj" />
     <ProjectReference Include="..\..\src\RockBot.Host\RockBot.Host.csproj" />
     <ProjectReference Include="..\..\src\RockBot.Messaging.Abstractions\RockBot.Messaging.Abstractions.csproj" />

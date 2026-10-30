@@ -7,7 +7,9 @@ namespace RockBot.Tools.Scheduling;
 /// <summary>
 /// Executes the <c>list_scheduled_tasks</c> tool: returns all currently scheduled tasks.
 /// </summary>
-internal sealed class ListScheduledTasksExecutor(ISchedulerService scheduler, AgentClock clock) : IToolExecutor
+/// <param name="locationEnabled">When true each task also shows its zone, and its next fire time in that zone.</param>
+internal sealed class ListScheduledTasksExecutor(ISchedulerService scheduler, AgentClock clock, bool locationEnabled = false)
+    : IToolExecutor
 {
     public async Task<ToolInvokeResponse> ExecuteAsync(ToolInvokeRequest request, CancellationToken ct)
     {
@@ -32,9 +34,17 @@ internal sealed class ListScheduledTasksExecutor(ISchedulerService scheduler, Ag
                     var next = scheduler.GetNextOccurrence(task);
                     sb.AppendLine($"**{task.Name}**");
                     sb.AppendLine($"  Cron: `{task.CronExpression}`");
-                    if (next.HasValue)
+                    if (locationEnabled)
+                    {
+                        var zone = clock.ResolveZone(task.TimeZone);
+                        sb.AppendLine($"  Time zone: {ScheduleTaskExecutor.DescribeZone(task.TimeZone, zone)}");
+                        if (next.HasValue)
+                            sb.AppendLine($"  Next fire: {TimeZoneInfo.ConvertTime(next.Value, zone):yyyy-MM-dd HH:mm:ss} ({zone.Id}){(next.Value < now ? " ⚠️ OVERDUE" : "")}");
+                    }
+                    else if (next.HasValue)
                         sb.AppendLine($"  Next fire: {next.Value:yyyy-MM-dd HH:mm:ss} ({clock.Zone.Id}){(next.Value < now ? " ⚠️ OVERDUE" : "")}");
-                    else
+
+                    if (!next.HasValue)
                         sb.AppendLine($"  Next fire: none (cron has no future occurrence — task will be removed)");
                     sb.AppendLine($"  Description: {task.Description}");
                     var createdLocal = TimeZoneInfo.ConvertTime(task.CreatedAt, clock.Zone);

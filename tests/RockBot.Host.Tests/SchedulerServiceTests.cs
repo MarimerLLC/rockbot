@@ -15,10 +15,11 @@ public sealed class SchedulerServiceTests
     private static SchedulerService MakeService(
         IScheduledTaskStore store,
         IMessagePipeline pipeline,
-        IAgentWorkSerializer? workSerializer = null) =>
+        IAgentWorkSerializer? workSerializer = null,
+        AgentClock? clock = null) =>
         new(store,
             pipeline,
-            MakeClock(),
+            clock ?? MakeClock(),
             new AgentIdentity("test-agent"),
             workSerializer ?? new AlwaysFreeWorkSerializer(),
             NullLogger<SchedulerService>.Instance);
@@ -151,6 +152,84 @@ public sealed class SchedulerServiceTests
         await service.StopAsync(CancellationToken.None);
 
         Assert.IsTrue(pipeline.DispatchCount > 0, "Pipeline should have been dispatched at least once");
+    }
+
+    // ── Per-task zones (#740) ─────────────────────────────────────────────────
+
+    private static int LocalHour(DateTimeOffset? next, TimeZoneInfo zone) =>
+        TimeZoneInfo.ConvertTime(next!.Value, zone).Hour;
+
+    [TestMethod]
+    public void GetNextOccurrence_LocalTask_FollowsCurrentZone()
+    {
+        var clock = AgentClockTests.MakeClock();
+        var service = MakeService(new FakeScheduledTaskStore([]), new NullPipeline(), clock: clock);
+        var task = new ScheduledTask("brief", "0 7 * * *", "brief", DateTimeOffset.UtcNow, TimeZone: "local");
+
+        Assert.AreEqual(7, LocalHour(service.GetNextOccurrence(task), AgentClockTests.Chicago));
+
+        clock.SetCurrentZone(AgentClockTests.Amsterdam);
+
+        Assert.AreEqual(7, LocalHour(service.GetNextOccurrence(task), AgentClockTests.Amsterdam));
+    }
+
+    [TestMethod]
+    public void GetNextOccurrence_HomeTask_IgnoresCurrentZone()
+    {
+        var clock = AgentClockTests.MakeClock();
+        var service = MakeService(new FakeScheduledTaskStore([]), new NullPipeline(), clock: clock);
+        var home = new ScheduledTask("guard", "0 7 * * *", "guard", DateTimeOffset.UtcNow, TimeZone: "home");
+        var legacy = new ScheduledTask("legacy", "0 7 * * *", "legacy", DateTimeOffset.UtcNow);
+
+        clock.SetCurrentZone(AgentClockTests.Amsterdam);
+
+        Assert.AreEqual(7, LocalHour(service.GetNextOccurrence(home), AgentClockTests.Chicago));
+        Assert.AreEqual(7, LocalHour(service.GetNextOccurrence(legacy), AgentClockTests.Chicago));
+    }
+
+    [TestMethod]
+    public void GetNextOccurrence_FixedZoneTask_IgnoresHomeAndCurrent()
+    {
+        var clock = AgentClockTests.MakeClock();
+        var service = MakeService(new FakeScheduledTaskStore([]), new NullPipeline(), clock: clock);
+        var task = new ScheduledTask("tokyo", "0 7 * * *", "tokyo", DateTimeOffset.UtcNow, TimeZone: "Asia/Tokyo");
+
+        Assert.AreEqual(7, LocalHour(service.GetNextOccurrence(task), AgentClockTests.Tokyo));
+        clock.SetCurrentZone(AgentClockTests.Amsterdam);
+        Assert.AreEqual(7, LocalHour(service.GetNextOccurrence(task), AgentClockTests.Tokyo));
+    }
+
+    [TestMethod]
+    public async Task RearmLocalTasks_RearmsOnlyLocalTasks_AndSkipsRetrying()
+    {
+        var retrying = new ScheduledTask("retrying", "* * * * * *", "busy", DateTimeOffset.UtcNow, TimeZone: "local");
+        var local = new ScheduledTask("local", "0 0 1 1 *", "new year", DateTimeOffset.UtcNow, TimeZone: "local");
+        var home = new ScheduledTask("home", "0 0 1 1 *", "new year", DateTimeOffset.UtcNow, TimeZone: "home");
+        var fixedZone = new ScheduledTask("fixed", "0 0 1 1 *", "new year", DateTimeOffset.UtcNow, TimeZone: "Asia/Tokyo");
+        var store = new FakeScheduledTaskStore([retrying, local, home, fixedZone]);
+        var serializer = new AlwaysBusyWorkSerializer();
+        var clock = AgentClockTests.MakeClock();
+        var service = MakeService(store, new NullPipeline(), serializer, clock);
+
+        await service.StartAsync(CancellationToken.None);
+        try
+        {
+            // Let the every-second task hit the busy slot so it sits on a retry timer.
+            var deadline = DateTime.UtcNow.AddSeconds(3);
+            while (serializer.AttemptCount == 0 && DateTime.UtcNow < deadline)
+                await Task.Delay(50);
+            Assert.IsTrue(serializer.AttemptCount > 0);
+            await Task.Delay(200); // the retry is recorded just after the failed acquire
+
+            clock.SetCurrentZone(AgentClockTests.Amsterdam);
+            var rearmed = await service.RearmLocalTasksAsync();
+
+            CollectionAssert.AreEquivalent(new[] { "local" }, rearmed.ToArray());
+        }
+        finally
+        {
+            await service.StopAsync(CancellationToken.None);
+        }
     }
 
     // ── Fakes ─────────────────────────────────────────────────────────────────

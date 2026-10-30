@@ -52,6 +52,7 @@ internal sealed class SchedulerService : IHostedService, ISchedulerService
     public async Task StartAsync(CancellationToken cancellationToken)
     {
         _cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        _clock.ZoneChanged += OnZoneChanged;
 
         var tasks = await _store.ListAsync();
         foreach (var task in tasks)
@@ -65,6 +66,7 @@ internal sealed class SchedulerService : IHostedService, ISchedulerService
 
     public Task StopAsync(CancellationToken cancellationToken)
     {
+        _clock.ZoneChanged -= OnZoneChanged;
         _cts.Cancel();
 
         lock (_timerLock)
@@ -115,7 +117,7 @@ internal sealed class SchedulerService : IHostedService, ISchedulerService
         try
         {
             var cron = ParseCron(task.CronExpression);
-            return cron.GetNextOccurrence(_clock.Now, _clock.Zone);
+            return cron.GetNextOccurrence(_clock.Now, _clock.ResolveZone(task.TimeZone));
         }
         catch
         {
@@ -124,6 +126,46 @@ internal sealed class SchedulerService : IHostedService, ISchedulerService
     }
 
     // ── Internals ─────────────────────────────────────────────────────────────
+
+    private void OnZoneChanged(object? sender, EventArgs e) => _ = RearmLocalTasksAsync();
+
+    /// <summary>
+    /// Re-arms every task that follows the user's current zone after that zone changes. Home and
+    /// fixed-zone tasks keep their timers, and so does a task waiting on a retry. Travelling west
+    /// can bring a local task's wall time round again the same day; that is intended.
+    /// </summary>
+    /// <returns>The names of the tasks that were re-armed.</returns>
+    internal async Task<IReadOnlyList<string>> RearmLocalTasksAsync()
+    {
+        try
+        {
+            if (_cts.IsCancellationRequested) return [];
+
+            var rearmed = new List<string>();
+            foreach (var task in await _store.ListAsync())
+            {
+                if (!string.Equals(task.TimeZone, AgentClock.LocalSpec, StringComparison.OrdinalIgnoreCase))
+                    continue;
+                lock (_timerLock)
+                {
+                    if (_retryAttempts.ContainsKey(task.Name)) continue;
+                }
+
+                ArmTimer(task);
+                rearmed.Add(task.Name);
+            }
+
+            if (rearmed.Count > 0)
+                _logger.LogInformation(
+                    "Current zone is now {Zone}; re-armed {Count} local task(s)", _clock.Zone.Id, rearmed.Count);
+            return rearmed;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to re-arm local tasks after a zone change");
+            return [];
+        }
+    }
 
     // System.Threading.Timer requires dueTime < uint.MaxValue milliseconds (~49.7 days).
     // We cap at 24 hours and re-arm in the callback when the target time hasn't been reached.
@@ -144,7 +186,7 @@ internal sealed class SchedulerService : IHostedService, ISchedulerService
         }
 
         var now = _clock.Now;
-        var next = cron.GetNextOccurrence(now, _clock.Zone);
+        var next = cron.GetNextOccurrence(now, _clock.ResolveZone(task.TimeZone));
         if (next is null)
         {
             _logger.LogWarning(

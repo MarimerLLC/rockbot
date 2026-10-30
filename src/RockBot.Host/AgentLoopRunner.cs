@@ -35,7 +35,8 @@ public sealed partial class AgentLoopRunner(
     IConsequentialActionGate? consequentialActionGate = null,
     DeferredToolActivations? deferredToolActivations = null,
     CompletionCheckClassifier? completionCheck = null,
-    FollowUpGate? followUpGate = null)
+    FollowUpGate? followUpGate = null,
+    UserLocationState? userLocation = null)
 {
     // Second opinion for the completion-evaluator gate when its regexes find nothing.
     private readonly CompletionCheckClassifier _completionCheck = completionCheck ?? new CompletionCheckClassifier();
@@ -1123,12 +1124,9 @@ public sealed partial class AgentLoopRunner(
     /// </summary>
     private void EnsureDateTimeContext(List<ChatMessage> chatMessages)
     {
-        var now = clock.Now;
-        var nowMinute = new DateTimeOffset(now.Year, now.Month, now.Day, now.Hour, now.Minute, 0, now.Offset);
-        var text =
-            $"The user's local date and time is: {nowMinute:dddd, MMMM d, yyyy} {nowMinute:HH:mm zzz} ({clock.Zone.Id}). " +
-            "Always express dates and times to the user in this timezone. Never assume UTC or any other timezone. " +
-            "When any tool returns a UTC timestamp, convert it to this local timezone before using or displaying it.";
+        var text = userLocation is null
+            ? BuildDateTimeContext(DateTimeOffset.UtcNow, clock, null, TimeSpan.Zero)
+            : BuildDateTimeContext(DateTimeOffset.UtcNow, clock, userLocation.Current, userLocation.MaxAge);
 
         for (var i = chatMessages.Count - 1; i >= 0; i--)
         {
@@ -1149,6 +1147,46 @@ public sealed partial class AgentLoopRunner(
             }
         }
         chatMessages.Insert(insertAt, new ChatMessage(ChatRole.System, text).Tag(ContextCategory.DateTime));
+    }
+
+    /// <summary>
+    /// Builds the datetime line. With no location and the user at home it is exactly the line
+    /// agents without location get. Away from home it names the home zone; with a fresh fix it
+    /// adds city-level whereabouts (never precise coordinates). The location part only changes
+    /// when a new fix arrives, so it adds no per-minute churn of its own.
+    /// </summary>
+    internal static string BuildDateTimeContext(
+        DateTimeOffset utcNow, AgentClock clock, UserLocation? location, TimeSpan maxAge)
+    {
+        var zone = clock.Zone;
+        var now = TimeZoneInfo.ConvertTime(utcNow, zone);
+        var nowMinute = new DateTimeOffset(now.Year, now.Month, now.Day, now.Hour, now.Minute, 0, now.Offset);
+        var text =
+            $"The user's local date and time is: {nowMinute:dddd, MMMM d, yyyy} {nowMinute:HH:mm zzz} ({zone.Id}). " +
+            "Always express dates and times to the user in this timezone. Never assume UTC or any other timezone. " +
+            "When any tool returns a UTC timestamp, convert it to this local timezone before using or displaying it.";
+
+        if (clock.IsAwayFromHome)
+            text += $" The user's home timezone is {clock.HomeZone.Id}; scheduled tasks marked \"home\" run on home time.";
+
+        if (location is not null && utcNow - location.ReportedAt <= maxAge)
+        {
+            var where = string.IsNullOrWhiteSpace(location.Locality)
+                ? string.Create(System.Globalization.CultureInfo.InvariantCulture,
+                    $"approximately {location.Latitude:F1}, {location.Longitude:F1}")
+                : string.IsNullOrWhiteSpace(location.CountryCode)
+                    ? location.Locality
+                    : $"{location.Locality}, {location.CountryCode}";
+
+            var reported = TimeZoneInfo.ConvertTime(location.ReportedAt, zone);
+            var when = reported.Date == now.Date
+                ? $"{reported:HH:mm}"
+                : $"{reported:HH:mm}, {reported:MMM d}";
+
+            text += $" The user's last known location is {where} (reported {when}).";
+        }
+
+        return text;
     }
 
     /// <summary>

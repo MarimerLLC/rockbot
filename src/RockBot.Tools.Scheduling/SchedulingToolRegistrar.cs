@@ -1,3 +1,4 @@
+using System.Text.Json.Nodes;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using RockBot.Host;
@@ -12,7 +13,8 @@ internal sealed class SchedulingToolRegistrar(
     IToolRegistry registry,
     ISchedulerService scheduler,
     AgentClock clock,
-    ILogger<SchedulingToolRegistrar> logger) : IHostedService
+    ILogger<SchedulingToolRegistrar> logger,
+    UserLocationState? userLocation = null) : IHostedService
 {
     private const string ScheduleSchema = """
         {
@@ -44,6 +46,35 @@ internal sealed class SchedulingToolRegistrar(
         }
         """;
 
+    // Added to schedule_task only when the agent follows the user's location (#740).
+    private const string TimeZoneProperty = """
+        {
+          "type": "string",
+          "description": "Which zone the cron fields are written in: 'local' (follows the user as they travel), 'home' (the user's home zone), or a fixed IANA id such as 'Europe/London'."
+        }
+        """;
+
+    private const string TimeZoneGuidance = """
+        TIME ZONE (required): every task is marked 'local' or 'home' (or a fixed IANA id).
+          local — tied to the user's own day wherever they are: a morning brief, "remind me at dinner".
+          home  — tied to home-office hours or to other people at home.
+          One-time relative reminders ("in 20 minutes") use local.
+        Write the cron fields in the zone you choose. When the user is away from home, your datetime
+        context shows both their current zone and their home zone.
+        """;
+
+    /// <summary>The <c>schedule_task</c> parameter schema, with a required <c>timeZone</c> when location is enabled.</summary>
+    internal static string BuildScheduleSchema(bool locationEnabled)
+    {
+        if (!locationEnabled)
+            return ScheduleSchema;
+
+        var schema = JsonNode.Parse(ScheduleSchema)!.AsObject();
+        schema["properties"]!.AsObject()["timeZone"] = JsonNode.Parse(TimeZoneProperty);
+        schema["required"]!.AsArray().Add("timeZone");
+        return schema.ToJsonString();
+    }
+
     private const string CancelSchema = """
         {
           "type": "object",
@@ -59,10 +90,39 @@ internal sealed class SchedulingToolRegistrar(
 
     public Task StartAsync(CancellationToken cancellationToken)
     {
+        var locationEnabled = userLocation is not null;
+
         registry.Register(new ToolRegistration
         {
             Name = "schedule_task",
-            Description = """
+            Description = locationEnabled ? ScheduleDescription + "\n\n" + TimeZoneGuidance : ScheduleDescription,
+            ParametersSchema = BuildScheduleSchema(locationEnabled),
+            Source = "scheduling"
+        }, new ScheduleTaskExecutor(scheduler, clock, locationEnabled));
+        logger.LogInformation("Registered scheduling tool: schedule_task");
+
+        registry.Register(new ToolRegistration
+        {
+            Name = "cancel_scheduled_task",
+            Description = "Cancel and remove a scheduled task by name.",
+            ParametersSchema = CancelSchema,
+            Source = "scheduling"
+        }, new CancelScheduledTaskExecutor(scheduler));
+        logger.LogInformation("Registered scheduling tool: cancel_scheduled_task");
+
+        registry.Register(new ToolRegistration
+        {
+            Name = "list_scheduled_tasks",
+            Description = "List all currently scheduled tasks with their cron expressions and descriptions.",
+            ParametersSchema = null,
+            Source = "scheduling"
+        }, new ListScheduledTasksExecutor(scheduler, clock, locationEnabled));
+        logger.LogInformation("Registered scheduling tool: list_scheduled_tasks");
+
+        return Task.CompletedTask;
+    }
+
+    internal const string ScheduleDescription = """
                 Schedule a one-time or recurring task. When the task fires, the agent executes the
                 description and the response is shown to the user.
 
@@ -86,32 +146,7 @@ internal sealed class SchedulingToolRegistrar(
 
                 Always set day-of-week to * for one-time tasks to avoid AND-logic issues.
                 Set runOnce=true for one-time tasks so they are automatically removed after firing.
-                """,
-            ParametersSchema = ScheduleSchema,
-            Source = "scheduling"
-        }, new ScheduleTaskExecutor(scheduler, clock));
-        logger.LogInformation("Registered scheduling tool: schedule_task");
-
-        registry.Register(new ToolRegistration
-        {
-            Name = "cancel_scheduled_task",
-            Description = "Cancel and remove a scheduled task by name.",
-            ParametersSchema = CancelSchema,
-            Source = "scheduling"
-        }, new CancelScheduledTaskExecutor(scheduler));
-        logger.LogInformation("Registered scheduling tool: cancel_scheduled_task");
-
-        registry.Register(new ToolRegistration
-        {
-            Name = "list_scheduled_tasks",
-            Description = "List all currently scheduled tasks with their cron expressions and descriptions.",
-            ParametersSchema = null,
-            Source = "scheduling"
-        }, new ListScheduledTasksExecutor(scheduler, clock));
-        logger.LogInformation("Registered scheduling tool: list_scheduled_tasks");
-
-        return Task.CompletedTask;
-    }
+                """;
 
     public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
 }

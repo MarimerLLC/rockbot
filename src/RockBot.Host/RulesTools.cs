@@ -15,13 +15,19 @@ public sealed class RulesTools
     private readonly IRulesStore _rulesStore;
     private readonly AgentClock _clock;
     private readonly ILogger<RulesTools> _logger;
+    private readonly UserLocationState? _userLocation;
     private readonly IList<AITool> _tools;
 
-    public RulesTools(IRulesStore rulesStore, AgentClock clock, ILogger<RulesTools> logger)
+    public RulesTools(
+        IRulesStore rulesStore,
+        AgentClock clock,
+        ILogger<RulesTools> logger,
+        UserLocationState? userLocation = null)
     {
         _rulesStore = rulesStore;
         _clock = clock;
         _logger = logger;
+        _userLocation = userLocation;
 
         // Tool names are pinned to snake_case rather than inherited from the method
         // names: every prompt and directive in the repo refers to them that way, and
@@ -146,6 +152,13 @@ public sealed class RulesTools
         }
 
         await _clock.SetZoneAsync(zone);
-        return $"Timezone updated to {zone.DisplayName} ({zone.Id}). All times will now be shown in this timezone.";
+        var reply = $"Timezone updated to {zone.DisplayName} ({zone.Id}). All times will now be shown in this timezone.";
+
+        // set_timezone sets the home zone; while the user is away their location keeps the current
+        // zone, so say so rather than leave the reply above looking wrong.
+        if (_userLocation is not null && _clock.IsAwayFromHome)
+            reply += $" (You're currently in {_clock.Zone.Id} per your location, so local times stay on " +
+                     $"{_clock.Zone.Id} until you're back; {zone.Id} is now your home timezone.)";
+        return reply;
     }
 }
