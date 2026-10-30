@@ -61,6 +61,35 @@ internal sealed class SchedulingToolRegistrar(
           One-time relative reminders ("in 20 minutes") use local.
         Write the cron fields in the zone you choose. When the user is away from home, your datetime
         context shows both their current zone and their home zone.
+        To change only an existing task's zone, use set_task_time_zone. Calling schedule_task with
+        the same name replaces the whole task: pass its current outputFormat (shown by
+        list_scheduled_tasks) or it falls back to plain, and its directive is dropped.
+        """;
+
+    private const string SetTimeZoneSchema = """
+        {
+          "type": "object",
+          "properties": {
+            "name": {
+              "type": "string",
+              "description": "Name of the existing scheduled task"
+            },
+            "timeZone": {
+              "type": "string",
+              "description": "'local' (follows the user as they travel), 'home' (the user's home zone), or a fixed IANA id such as 'Europe/London'."
+            }
+          },
+          "required": ["name", "timeZone"]
+        }
+        """;
+
+    internal const string SetTimeZoneDescription = """
+        Change which zone an existing scheduled task runs in, keeping everything else about it (cron,
+        description, output format, directive). The cron fields are not converted: "0 10 * * 1-5"
+        moved from home to local still fires at 10:00, now 10:00 wherever the user is.
+          local — tied to the user's own day wherever they are: a morning brief, an evening summary.
+          home  — tied to home-office hours or to other people at home.
+        list_scheduled_tasks shows each task's current zone.
         """;
 
     /// <summary>The <c>schedule_task</c> parameter schema, with a required <c>timeZone</c> when location is enabled.</summary>
@@ -118,6 +147,18 @@ internal sealed class SchedulingToolRegistrar(
             Source = "scheduling"
         }, new ListScheduledTasksExecutor(scheduler, clock, locationEnabled));
         logger.LogInformation("Registered scheduling tool: list_scheduled_tasks");
+
+        if (locationEnabled)
+        {
+            registry.Register(new ToolRegistration
+            {
+                Name = "set_task_time_zone",
+                Description = SetTimeZoneDescription,
+                ParametersSchema = SetTimeZoneSchema,
+                Source = "scheduling"
+            }, new SetTaskTimeZoneExecutor(scheduler, clock));
+            logger.LogInformation("Registered scheduling tool: set_task_time_zone");
+        }
 
         return Task.CompletedTask;
     }

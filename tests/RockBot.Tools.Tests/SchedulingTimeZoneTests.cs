@@ -4,6 +4,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using RockBot.Host;
 using RockBot.Tools.Scheduling;
+using RockBot.UserProxy;
 
 namespace RockBot.Tools.Tests;
 
@@ -167,9 +168,12 @@ public sealed class SchedulingTimeZoneTests
 
     private static readonly ScheduledTask[] Tasks =
     [
-        new("brief", "0 7 * * 1-5", "brief", DateTimeOffset.UtcNow, TimeZone: "local"),
+        new("brief", "0 7 * * 1-5", "brief", DateTimeOffset.UtcNow, TimeZone: "local",
+            ClientCapabilities: ClientCapabilityPresets.Blazor, Directive: "keep it short",
+            LastFiredAt: DateTimeOffset.UtcNow.AddDays(-1)),
         new("guard", "0 9 * * *", "guard", DateTimeOffset.UtcNow),
         new("london", "0 9 * * *", "london", DateTimeOffset.UtcNow, TimeZone: "Europe/London"),
+        new("reminder", "30 14 30 10 *", "reminder", DateTimeOffset.UtcNow, RunOnce: true, TimeZone: "Europe/Amsterdam"),
     ];
 
     [TestMethod]
@@ -180,8 +184,158 @@ public sealed class SchedulingTimeZoneTests
         var result = await executor.ExecuteAsync(Request("{}"), CancellationToken.None);
 
         Assert.IsFalse(result.Content!.Contains("Time zone:"), result.Content);
+        Assert.IsFalse(result.Content.Contains("Output format:"), result.Content);
+        Assert.IsFalse(result.Content.Contains("Run once:"), result.Content);
         StringAssert.Contains(result.Content, "  Next fire: ");
         StringAssert.Contains(result.Content, "(America/Chicago)");
+    }
+
+    [TestMethod]
+    public async Task List_WithLocation_ShowsOutputFormatAndRunOnce()
+    {
+        var executor = new ListScheduledTasksExecutor(new FakeScheduler(Tasks), MakeClock(), locationEnabled: true);
+
+        var result = await executor.ExecuteAsync(Request("{}"), CancellationToken.None);
+
+        StringAssert.Contains(result.Content, "**brief**");
+        StringAssert.Contains(result.Content, "Output format: rich");
+        StringAssert.Contains(result.Content, "Output format: plain");
+        StringAssert.Contains(result.Content, "Run once: yes");
+    }
+
+    [TestMethod]
+    public void DescribeOutputFormat_InvertsParseOutputFormat()
+    {
+        foreach (var name in new[] { "plain", "markdown", "rich" })
+            Assert.AreEqual(name,
+                ScheduleTaskExecutor.DescribeOutputFormat(ScheduleTaskExecutor.ParseOutputFormat(name)));
+
+        // What "rich" stored before the preset gained image attachments and forms; live tasks hold it.
+        Assert.AreEqual("rich", ScheduleTaskExecutor.DescribeOutputFormat((ClientCapabilities)196863));
+        Assert.AreEqual("plain", ScheduleTaskExecutor.DescribeOutputFormat(ClientCapabilities.Text));
+        Assert.AreEqual("markdown", ScheduleTaskExecutor.DescribeOutputFormat(
+            ClientCapabilities.Text | ClientCapabilities.MarkdownTables));
+    }
+
+    // ── set_task_time_zone ────────────────────────────────────────────────────
+
+    [TestMethod]
+    public async Task SetTaskTimeZone_RegisteredOnlyWithLocation()
+    {
+        var without = new CapturingRegistry();
+        await new SchedulingToolRegistrar(without, new FakeScheduler(), MakeClock(),
+            NullLogger<SchedulingToolRegistrar>.Instance).StartAsync(CancellationToken.None);
+
+        var with = new CapturingRegistry();
+        await new SchedulingToolRegistrar(with, new FakeScheduler(), MakeClock(),
+            NullLogger<SchedulingToolRegistrar>.Instance,
+            new UserLocationState(Options.Create(new UserLocationOptions()))).StartAsync(CancellationToken.None);
+
+        CollectionAssert.AreEqual(
+            new[] { "schedule_task", "cancel_scheduled_task", "list_scheduled_tasks" },
+            without.Registrations.Select(r => r.Name).ToArray());
+        Assert.IsTrue(with.Registrations.Any(r => r.Name == "set_task_time_zone"));
+        Assert.AreEqual("scheduling", with.Registrations.Single(r => r.Name == "set_task_time_zone").Source);
+        Assert.AreEqual("scheduling", RockBot.Host.DeferredToolFamilies.FamilyOf("set_task_time_zone"));
+    }
+
+    private static ToolInvokeRequest SetZoneRequest(string json) => new()
+    {
+        ToolCallId = "call-2",
+        ToolName = "set_task_time_zone",
+        Arguments = json
+    };
+
+    [TestMethod]
+    public async Task SetTaskTimeZone_ChangesOnlyTheZone()
+    {
+        var clock = MakeClock();
+        clock.SetCurrentZone(Amsterdam);
+        var original = Tasks[0] with { TimeZone = null };
+        var scheduler = new FakeScheduler(original);
+        var executor = new SetTaskTimeZoneExecutor(scheduler, clock);
+
+        var result = await executor.ExecuteAsync(
+            SetZoneRequest("""{"name":"BRIEF","timeZone":"local"}"""), CancellationToken.None);
+
+        Assert.IsFalse(result.IsError, result.Content);
+        Assert.AreEqual(original with { TimeZone = "local" }, scheduler.Saved);
+        StringAssert.Contains(result.Content, "now runs in local (Europe/Amsterdam) (was home (America/Chicago))");
+        StringAssert.Contains(result.Content, "cron '0 7 * * 1-5' is unchanged");
+    }
+
+    [TestMethod]
+    public async Task SetTaskTimeZone_RunOnceLocal_PinsCurrentZone()
+    {
+        var clock = MakeClock();
+        clock.SetCurrentZone(Amsterdam);
+        var scheduler = new FakeScheduler(Tasks[3] with { TimeZone = "home" });
+        var executor = new SetTaskTimeZoneExecutor(scheduler, clock);
+
+        await executor.ExecuteAsync(SetZoneRequest("""{"name":"reminder","timeZone":"local"}"""), CancellationToken.None);
+
+        Assert.AreEqual("Europe/Amsterdam", scheduler.Saved!.TimeZone);
+    }
+
+    [TestMethod]
+    public async Task SetTaskTimeZone_UnknownTask_IsErrorNamingTheTasks()
+    {
+        var scheduler = new FakeScheduler(Tasks);
+        var executor = new SetTaskTimeZoneExecutor(scheduler, MakeClock());
+
+        var result = await executor.ExecuteAsync(
+            SetZoneRequest("""{"name":"nope","timeZone":"local"}"""), CancellationToken.None);
+
+        Assert.IsTrue(result.IsError);
+        StringAssert.Contains(result.Content, "brief, guard, london, reminder");
+        Assert.IsNull(scheduler.Saved);
+    }
+
+    [TestMethod]
+    public async Task SetTaskTimeZone_MissingOrInvalidZone_IsError()
+    {
+        var scheduler = new FakeScheduler(Tasks);
+        var executor = new SetTaskTimeZoneExecutor(scheduler, MakeClock());
+
+        var missing = await executor.ExecuteAsync(SetZoneRequest("""{"name":"brief"}"""), CancellationToken.None);
+        var invalid = await executor.ExecuteAsync(
+            SetZoneRequest("""{"name":"brief","timeZone":"Mars/Olympus"}"""), CancellationToken.None);
+
+        Assert.IsTrue(missing.IsError);
+        StringAssert.Contains(missing.Content, "'local'");
+        Assert.IsTrue(invalid.IsError);
+        StringAssert.Contains(invalid.Content, "Mars/Olympus");
+        Assert.IsNull(scheduler.Saved);
+    }
+
+    // ── tool guide ────────────────────────────────────────────────────────────
+
+    [TestMethod]
+    public void Guide_WithoutLocation_IsUnchanged()
+    {
+        var provider = new SchedulingToolSkillProvider();
+
+        Assert.AreEqual(SchedulingToolSkillProvider.Document, provider.GetDocument());
+        Assert.AreEqual(
+            "Schedule one-time or recurring tasks with cron expressions (schedule_task, cancel_scheduled_task, list_scheduled_tasks).",
+            provider.Summary);
+        Assert.IsFalse(provider.GetDocument().Contains("set_task_time_zone"));
+        StringAssert.Contains(provider.GetDocument(), SchedulingToolSkillProvider.ZoneAnchor);
+    }
+
+    [TestMethod]
+    public void Guide_WithLocation_ExplainsZonesAndSetTaskTimeZone()
+    {
+        var doc = new SchedulingToolSkillProvider(
+            new UserLocationState(Options.Create(new UserLocationOptions()))).GetDocument();
+
+        StringAssert.Contains(doc, "Four tools let you");
+        Assert.IsFalse(doc.Contains(SchedulingToolSkillProvider.ZoneAnchor), "the old one-zone sentence must go");
+        StringAssert.Contains(doc, "### set_task_time_zone");
+        StringAssert.Contains(doc, "| `local`");
+        StringAssert.Contains(doc, "| `home`");
+        Assert.IsTrue(doc.IndexOf("## Time Zones", StringComparison.Ordinal)
+            < doc.IndexOf(SchedulingToolSkillProvider.ToolsAnchor, StringComparison.Ordinal));
     }
 
     [TestMethod]

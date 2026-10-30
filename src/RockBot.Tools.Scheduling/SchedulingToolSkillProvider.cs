@@ -1,3 +1,4 @@
+using RockBot.Host;
 using RockBot.Tools;
 
 namespace RockBot.Tools.Scheduling;
@@ -6,12 +7,76 @@ namespace RockBot.Tools.Scheduling;
 /// Provides the agent with a usage guide for the scheduling tools.
 /// Registered automatically when <c>AddSchedulingTools()</c> is called.
 /// </summary>
-internal sealed class SchedulingToolSkillProvider : IToolSkillProvider
+/// <param name="userLocation">
+/// Present when the agent follows the user's location (#740); the guide then also covers task
+/// time zones and <c>set_task_time_zone</c>. Without it the guide is unchanged.
+/// </param>
+internal sealed class SchedulingToolSkillProvider(UserLocationState? userLocation = null) : IToolSkillProvider
 {
     public string Name => "scheduling";
-    public string Summary => "Schedule one-time or recurring tasks with cron expressions (schedule_task, cancel_scheduled_task, list_scheduled_tasks).";
 
-    public string GetDocument() =>
+    public string Summary => userLocation is null
+        ? "Schedule one-time or recurring tasks with cron expressions (schedule_task, cancel_scheduled_task, list_scheduled_tasks)."
+        : "Schedule one-time or recurring tasks with cron expressions, each in the user's local or home time zone (schedule_task, cancel_scheduled_task, list_scheduled_tasks, set_task_time_zone).";
+
+    public string GetDocument() => userLocation is null ? Document : LocationDocument;
+
+    internal const string ZoneAnchor = "Timing is evaluated in the agent's configured timezone.";
+    internal const string ToolsAnchor = "## Cron Expression Format";
+
+    private const string ZoneText = """
+        Each task's cron is read in its own time zone: `local`, `home`, or a fixed IANA id
+        (see **Time Zones** below).
+        """;
+
+    private const string TimeZoneSection = """
+        ### set_task_time_zone
+        Change only the zone an existing task runs in. Everything else is kept: cron,
+        description, output format, directive.
+
+        ```
+        set_task_time_zone(name: "daily-operational-brief", timeZone: "local")
+        ```
+
+        The cron fields are not converted: a `0 10 * * 1-5` task moved from home to local
+        still fires at 10:00, now 10:00 wherever the user is.
+
+
+        ## Time Zones
+
+        The user's phone reports their location, so they have a **home** zone (the configured
+        one) and a **current** zone that follows them. Your datetime context shows the current
+        zone, and also names the home zone while they are away.
+
+        Every task is marked with the zone its cron is read in, and `schedule_task` requires
+        `timeZone`. The examples in this guide leave it out for brevity.
+
+        | timeZone        | Runs on                         | Use for                                        |
+        |-----------------|---------------------------------|------------------------------------------------|
+        | `local`         | wherever the user currently is  | their own day: morning brief, evening summary, "remind me at dinner", one-time relative reminders |
+        | `home`          | the user's home zone            | home-office hours, other people at home, cost guards and digests tied to home |
+        | IANA id         | that zone, always               | an event in a specific place ("9am London time") |
+
+        Tasks created before zones existed have none; they run on home time and
+        `list_scheduled_tasks` shows them as `home`.
+
+        A one-time `local` task is pinned to the zone the user is in when you schedule it, so
+        "remind me in 2 hours" can't drift if they cross a border meanwhile.
+
+        **Changing a task:** use `set_task_time_zone` to change only its zone. Calling
+        `schedule_task` with the same name replaces the whole task, so pass everything again:
+        `list_scheduled_tasks` shows each task's output format and whether it runs once. A
+        replaced task loses its directive.
+
+
+        """;
+
+    internal static readonly string LocationDocument = Document
+        .Replace("Three tools let you", "Four tools let you")
+        .Replace(ZoneAnchor, ZoneText.TrimEnd())
+        .Replace(ToolsAnchor, TimeZoneSection + ToolsAnchor);
+
+    internal const string Document =
         """
         # Scheduling Tools Guide
 

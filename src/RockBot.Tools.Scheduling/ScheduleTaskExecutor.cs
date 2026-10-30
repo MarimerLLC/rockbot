@@ -91,7 +91,10 @@ internal sealed class ScheduleTaskExecutor(ISchedulerService scheduler, AgentClo
     /// to the concrete zone the user is in now, so its moment can't drift if they cross zones
     /// before it fires.
     /// </summary>
-    private string ParseTimeZone(string? spec, bool runOnce)
+    private string ParseTimeZone(string? spec, bool runOnce) => NormalizeTimeZone(spec, runOnce, clock);
+
+    /// <inheritdoc cref="ParseTimeZone"/>
+    internal static string NormalizeTimeZone(string? spec, bool runOnce, AgentClock clock)
     {
         if (string.IsNullOrWhiteSpace(spec))
             throw new ArgumentException($"Missing required argument: timeZone. {TimeZoneChoices}");
@@ -156,14 +159,28 @@ internal sealed class ScheduleTaskExecutor(ISchedulerService scheduler, AgentClo
     internal static ClientCapabilities ParseOutputFormat(string? format) =>
         format?.Trim().ToLowerInvariant() switch
         {
-            "markdown" =>
-                ClientCapabilities.Text | ClientCapabilities.MarkdownBasic |
-                ClientCapabilities.MarkdownHeadings | ClientCapabilities.MarkdownTables |
-                ClientCapabilities.MarkdownCode | ClientCapabilities.LinkInline |
-                ClientCapabilities.MarkdownStrikethrough,
+            "markdown" => MarkdownFormat,
             "rich" => ClientCapabilityPresets.Blazor,
             _ => ClientCapabilities.None,
         };
+
+    private const ClientCapabilities MarkdownFormat =
+        ClientCapabilities.Text | ClientCapabilities.MarkdownBasic |
+        ClientCapabilities.MarkdownHeadings | ClientCapabilities.MarkdownTables |
+        ClientCapabilities.MarkdownCode | ClientCapabilities.LinkInline |
+        ClientCapabilities.MarkdownStrikethrough;
+
+    /// <summary>
+    /// The <c>outputFormat</c> name for a stored capability set (the inverse of
+    /// <see cref="ParseOutputFormat"/>), so a task can be re-scheduled without losing its format.
+    /// Matched on the bits that tell the presets apart rather than exactly, because the
+    /// <c>rich</c> preset has grown since early tasks were stored: inline HTML or SVG means
+    /// <c>rich</c>, any markdown means <c>markdown</c>, otherwise <c>plain</c>.
+    /// </summary>
+    internal static string DescribeOutputFormat(ClientCapabilities capabilities) =>
+        (capabilities & (ClientCapabilities.HtmlInline | ClientCapabilities.SvgInline)) != 0 ? "rich"
+        : (capabilities & MarkdownFormat & ~ClientCapabilities.Text) != 0 ? "markdown"
+        : "plain";
 
     private static ToolInvokeResponse Error(ToolInvokeRequest request, string message) => new()
     {

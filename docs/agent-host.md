@@ -692,7 +692,9 @@ coordinates never reach the prompt.
 Each scheduled task carries a zone: `local` follows the user, `home` (or no zone, as on tasks
 made before this existed) stays on home time, and an IANA id pins one zone. When the current
 zone changes, local tasks are re-armed. With location on, `schedule_task` requires the zone. A
-one-time `local` task is pinned to the zone the user is in when it's scheduled.
+one-time `local` task is pinned to the zone the user is in when it's scheduled. Location also
+adds `set_task_time_zone`, which changes only a task's zone. It also adds the zone, output format
+and run-once flag to `list_scheduled_tasks`, and a time-zones section to the scheduling tool guide.
 
 With no `BaseUrl` nothing is registered, and the clock, prompts, tool schemas and tool output are
 exactly as they are without location.

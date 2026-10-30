@@ -7,7 +7,10 @@ namespace RockBot.Tools.Scheduling;
 /// <summary>
 /// Executes the <c>list_scheduled_tasks</c> tool: returns all currently scheduled tasks.
 /// </summary>
-/// <param name="locationEnabled">When true each task also shows its zone, and its next fire time in that zone.</param>
+/// <param name="locationEnabled">
+/// When true each task also shows its zone, its next fire time in that zone, its output format and
+/// whether it runs once.
+/// </param>
 internal sealed class ListScheduledTasksExecutor(ISchedulerService scheduler, AgentClock clock, bool locationEnabled = false)
     : IToolExecutor
 {
@@ -38,6 +41,10 @@ internal sealed class ListScheduledTasksExecutor(ISchedulerService scheduler, Ag
                     {
                         var zone = clock.ResolveZone(task.TimeZone);
                         sb.AppendLine($"  Time zone: {ScheduleTaskExecutor.DescribeZone(task.TimeZone, zone)}");
+                        // What schedule_task needs to re-create the task without losing anything.
+                        sb.AppendLine($"  Output format: {ScheduleTaskExecutor.DescribeOutputFormat(task.ClientCapabilities)}");
+                        if (task.RunOnce)
+                            sb.AppendLine("  Run once: yes");
                         if (next.HasValue)
                             sb.AppendLine($"  Next fire: {TimeZoneInfo.ConvertTime(next.Value, zone):yyyy-MM-dd HH:mm:ss} ({zone.Id}){(next.Value < now ? " ⚠️ OVERDUE" : "")}");
                     }

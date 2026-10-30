@@ -21,7 +21,8 @@ public static class DeferredToolFamilies
     public static readonly IReadOnlyList<(string Family, string[] Tools)> All =
     [
         ("a2a", ["invoke_agent", "list_known_agents", "get_agent_details", "register_agent", "unregister_agent", "refresh_agent_card"]),
-        ("scheduling", ["schedule_task", "cancel_scheduled_task", "list_scheduled_tasks"]),
+        // set_task_time_zone is registered only on agents that follow the user's location (#740).
+        ("scheduling", ["schedule_task", "cancel_scheduled_task", "list_scheduled_tasks", "set_task_time_zone"]),
         ("wisp", ["spawn_wisps"]),
         ("worker", ["spawn_workers"]),
         ("skills", ["save_skill", "edit_skill", "delete_skill"]),
