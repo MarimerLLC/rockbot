@@ -68,6 +68,17 @@ public class SafeMarkdownRendererTests
     }
 
     [TestMethod]
+    public void Renders_GfmTable_DirectlyAfterParagraphLine_InListItem()
+    {
+        var html = SafeMarkdownRenderer.RenderSafe(
+            "- Pending:\n  | a | b |\n  |---|---|\n  | 1 | 2 |");
+
+        StringAssert.Contains(html, "<li>");
+        StringAssert.Contains(html, "<td>1</td>");
+        Assert.IsFalse(html.Contains("|---|"), html);
+    }
+
+    [TestMethod]
     public void TableLikeTextInFencedCode_IsLeftAlone()
     {
         var markdown = "```\nCaption\n| a | b |\n|---|---|\n```";

@@ -10,7 +10,7 @@
   <ItemGroup>
     <PackageReference Include="HtmlSanitizer" Version="9.*" />
     <PackageReference Include="Microsoft.AspNetCore.Authentication.Google" Version="10.*" />
-    <PackageReference Include="Markdig" Version="0.41.*" />
+    <PackageReference Include="Markdig" Version="1.5.*" />
   </ItemGroup>
 
   <ItemGroup>
