@@ -132,7 +132,7 @@ public sealed class McpBridgeOptions
     /// Where the bridge keeps the OAuth tokens of servers the user signed in to (<c>auth.oauth</c>
     /// in <c>mcp.json</c>, #738): one file per server, readable only by the agent. A relative path
     /// resolves next to <see cref="ConfigPath"/>. Default <c>secrets/mcp-oauth</c>, which is
-    /// <c>/data/agent/secrets/mcp-oauth</c> in the agent pod, beside the Work IQ cache.
+    /// <c>/data/agent/secrets/mcp-oauth</c> in the agent pod.
     /// </summary>
     public string OAuthTokenDirectory { get; set; } = "secrets/mcp-oauth";
 

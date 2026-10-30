@@ -138,7 +138,7 @@ internal sealed class BridgeHarness : IAsyncDisposable
         // can't write; keep it inside the run's temporary directory.
         _bridge = new McpBridgeService(
             _publisher, _subscriber, new AgentIdentity(AgentName), _options, _bridgeLog,
-            llmClient: _llmClient, tokenProviders: null, healthTracker: null, argGuards: null,
+            llmClient: _llmClient, argGuards: null,
             elicitationResponder: null, services: null,
             attachmentStorage: new AttachmentStorage(AttachmentsPath),
             conversationMemory: _conversationMemory, workingMemory: _workingMemory, timeProvider: _timeProvider,

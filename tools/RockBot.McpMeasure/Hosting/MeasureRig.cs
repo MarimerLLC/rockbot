@@ -73,7 +73,7 @@ public sealed class MeasureRig : IAsyncDisposable
                 ConfigPollIntervalSeconds = 0,
             }),
             loggers.CreateLogger<McpBridgeService>(),
-            llmClient: null, tokenProviders: null, healthTracker: null, argGuards: null,
+            llmClient: null, argGuards: null,
             elicitationResponder: null, services: null,
             attachmentStorage: new AttachmentStorage(Path.Combine(workDir, "attachments")));
         await bridge.StartAsync(ct);

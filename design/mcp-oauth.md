@@ -12,10 +12,10 @@ It then sends the user through authorization-code + PKCE in a browser, and calls
 that user. [marimerllc/mcp2-oauth](https://github.com/marimerllc/mcp2-oauth) is an Entra-backed
 example.
 
-Before this, the only authenticated path in the bridge was the Work IQ profile
-([`workiq-integration.md`](workiq-integration.md)). That path is MSAL-only, device-code-only
-and named in code, and the Blazor UI carries M365-specific login for it. This adds a
-**generic, per-server** path driven by what the server itself advertises.
+Before this, the only authenticated path in the bridge was the Work IQ profile: MSAL-only,
+device-code-only and named in code, with M365-specific login in the Blazor UI. This adds a
+**generic, per-server** path driven by what the server itself advertises. The Work IQ profile has
+since been removed (see "M365" below).
 
 ## The split
 
@@ -113,8 +113,8 @@ The bridge supplies three things:
 }
 ```
 
-- `auth` takes exactly one of `profile` (a named token provider, as for Work IQ) and `oauth`.
-  Any other combination is a config error, and the bridge refuses to connect the server.
+- `auth` takes `oauth`. An entry with no `oauth`, or with the removed `profile`, is a config
+  error, and the bridge refuses to connect the server.
 - **No client settings.** `"oauth": {}` uses the authorization server's client id metadata
   documents or dynamic client registration, when it offers them.
 - **Entra ID** offers neither of those, so the server's client must be pre-registered:
@@ -188,9 +188,12 @@ All live in `RockBot.UserProxy.Abstractions` (`McpSignInMessages.cs`).
 
 ## Not covered
 
-- **Work IQ** still uses its MSAL device-code profile. The agent365 servers are Entra-backed, so
-  moving them to `auth.oauth` needs a pre-registered client id and redirect URIs. Removing the
-  M365-specific UI (#441) is a follow-up once this path is proven against them.
+- **M365.** RockBot has no M365-specific auth code. The Work IQ MSAL profile, its device-code
+  sign-in and its Blazor/CLI UI were removed. Work IQ servers do follow the MCP authorization spec
+  (401 → protected-resource metadata → Entra), but each server is its own resource and Entra
+  needs a pre-registered client. So M365 access is meant to come through a separate MCP server
+  that owns the M365 credentials, which RockBot reaches through `auth.oauth` like any other
+  server.
 - **One user per agent.** Tokens are per server, not per user, matching the agent's single-user
   model ([`blazor-ui.md`](../docs/blazor-ui.md)).
 - **Attachments.** An `attachments` block's downloads on an OAuth server don't carry the bearer

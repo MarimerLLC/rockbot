@@ -1,14 +1,15 @@
 namespace RockBot.Agent.McpBridge;
 
 /// <summary>
-/// Auth configuration for an MCP server. Exactly one of <see cref="Profile"/> and
-/// <see cref="OAuth"/> is set. Either way refresh tokens never appear in <c>mcp.json</c>.
+/// Auth configuration for an MCP server: <see cref="OAuth"/>. Refresh tokens never appear in
+/// <c>mcp.json</c>.
 /// </summary>
 public sealed class McpServerAuthConfig
 {
     /// <summary>
-    /// Named auth profile. Resolved at connect time to an
-    /// <c>ITokenProvider</c> registered in DI.
+    /// Removed: named auth profiles existed only for the Work IQ (M365) token provider, which
+    /// is no longer part of RockBot. Still read so an entry that sets it is refused with a clear
+    /// error instead of being connected without the auth the operator declared.
     /// </summary>
     public string? Profile { get; set; }
 
@@ -26,9 +27,10 @@ public sealed class McpServerAuthConfig
     /// </summary>
     public string? Validate()
     {
-        var hasProfile = !string.IsNullOrWhiteSpace(Profile);
-        if (hasProfile == (OAuth is not null))
-            return "set exactly one of 'auth.profile' and 'auth.oauth'";
+        if (!string.IsNullOrWhiteSpace(Profile))
+            return "'auth.profile' is no longer supported (the Work IQ token provider was removed); use 'auth.oauth'";
+        if (OAuth is null)
+            return "set 'auth.oauth'";
 
         // A client metadata document's URL is the client id, and must be HTTPS. Checking the
         // scheme matters beyond that: on Linux a rooted path like "/client.json" parses as an

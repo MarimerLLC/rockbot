@@ -26,8 +26,8 @@ persists config back to disk. If a config entry could name an arbitrary CLR type
 bridge to load and execute, anything that writes mcp.json would have an arbitrary-code
 execution channel into the agent process that hosts the bridge — the exact host that the
 "nothing trusts the LLM" isolation exists to protect. Instead, config selects from a closed
-set: handlers are registered in DI (`McpArgGuardRegistration` + `McpArgGuardRegistry`,
-mirroring the `TokenProviderRegistry` pattern) and referenced by name. Adding a custom handler requires
+set: handlers are registered in DI (`McpArgGuardRegistration` + `McpArgGuardRegistry`)
+and referenced by name. Adding a custom handler requires
 compiling it into the image and one `AddSingleton` line — which is also what `Type.GetType()`
 would require in practice, minus the gadget risk.
 

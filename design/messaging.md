@@ -186,14 +186,14 @@ Every `*.dlq` is declared with these queue arguments (`RabbitMq:DlqRetention`, H
 
 #### Ephemeral subscriptions
 
-Some subscriptions belong to one process lifetime: each CLI run (`user-proxy.cli-{guid}*`), each A2A gateway request (`a2a-gw-{guid}`, `a2a-gw-status-{guid}`), and each UI pod's WorkIQ expiry listener (`ui.workiq.expired.{guid}`). These queues used to be durable with no expiry, so every run left a queue and DLQ behind.
+Some subscriptions belong to one process lifetime: each CLI run (`user-proxy.cli-{guid}*`) and each A2A gateway request (`a2a-gw-{guid}`, `a2a-gw-status-{guid}`). These queues used to be durable with no expiry, so every run left a queue and DLQ behind.
 
 These callers subscribe with `new SubscriptionOptions { Ephemeral = true }` (the CLI sets `UserProxyOptions.EphemeralQueues`):
 
 - **On dispose**, the main queue is deleted and the DLQ is deleted if it is empty.
 - **If the process dies first**, the broker deletes both queues after they have been idle for `RabbitMq:EphemeralQueueExpiry` (`x-expires`, default 24 h).
 - **The main queue** also has `x-message-ttl` = `RabbitMq:EphemeralMessageTtl` (default 1 h). A reply nobody consumed within that window is dead-lettered.
-- **An ephemeral DLQ has no consumer either**, so in a long-running process (the UI pod's WorkIQ listener) the broker may expire it after 24 h idle. Later dead-letters from that queue are then dropped until the DLQ is re-declared on the next reconnect or restart. This is acceptable for per-process notification queues.
+- **An ephemeral DLQ has no consumer either**, so in a long-running process the broker may expire it after 24 h idle. Later dead-letters from that queue are then dropped until the DLQ is re-declared on the next reconnect or restart. This is acceptable for per-process notification queues.
 
 Long-lived subscriptions (agent `{identity}.*` queues, Blazor's stable `user-proxy` identity) stay durable and shared.
 

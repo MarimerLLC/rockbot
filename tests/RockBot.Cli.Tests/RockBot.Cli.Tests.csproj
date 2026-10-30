@@ -18,7 +18,6 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\RockBot.UserProxy.Cli\RockBot.UserProxy.Cli.csproj" />
-    <ProjectReference Include="..\..\src\RockBot.UserProxy.WorkIqAuth\RockBot.UserProxy.WorkIqAuth.csproj" />
   </ItemGroup>
 
 </Project>

@@ -300,13 +300,17 @@ public class McpBridgeServerConfigTests
     }
 
     [TestMethod]
-    public void AuthValidate_RequiresExactlyOneOfProfileAndOAuth()
+    public void AuthValidate_RequiresOAuth_AndRefusesTheRemovedProfile()
     {
-        Assert.IsNull(new McpServerAuthConfig { Profile = "workiq" }.Validate());
         Assert.IsNull(new McpServerAuthConfig { OAuth = new McpServerOAuthConfig() }.Validate());
+        Assert.IsNull(new McpServerAuthConfig { Profile = " ", OAuth = new McpServerOAuthConfig() }.Validate());
         Assert.IsNotNull(new McpServerAuthConfig().Validate());
-        Assert.IsNotNull(new McpServerAuthConfig { Profile = " " }.Validate());
-        Assert.IsNotNull(new McpServerAuthConfig { Profile = "workiq", OAuth = new McpServerOAuthConfig() }.Validate());
+        // Profiles existed only for the removed Work IQ token provider. An entry that still sets
+        // one is refused rather than connected without the auth the operator declared.
+        StringAssert.Contains(new McpServerAuthConfig { Profile = "workiq" }.Validate(), "no longer supported");
+        StringAssert.Contains(
+            new McpServerAuthConfig { Profile = "workiq", OAuth = new McpServerOAuthConfig() }.Validate(),
+            "no longer supported");
     }
 
     [TestMethod]
@@ -382,7 +386,7 @@ public class McpBridgeServerConfigTests
         ["allowedTools", (Action<McpBridgeServerConfig>)(c => c.AllowedTools = ["search"])],
         ["deniedTools", (Action<McpBridgeServerConfig>)(c => c.DeniedTools = ["delete"])],
         ["headers", (Action<McpBridgeServerConfig>)(c => c.Headers = new() { ["X-Api-Key"] = "${KEY}" })],
-        ["auth", (Action<McpBridgeServerConfig>)(c => c.Auth = new McpServerAuthConfig { Profile = "workiq" })],
+        ["auth", (Action<McpBridgeServerConfig>)(c => c.Auth = new McpServerAuthConfig { OAuth = new McpServerOAuthConfig() })],
         ["argGuards", (Action<McpBridgeServerConfig>)(c => c.ArgGuards = [new McpArgGuardConfig { Handler = "path-prefix" }])],
         ["elicitation", (Action<McpBridgeServerConfig>)(c => c.Elicitation = new RockBot.Tools.Mcp.Elicitation.McpElicitationConfig { Mode = "off" })],
         ["attachments", (Action<McpBridgeServerConfig>)(c => c.Attachments = new RockBot.Agent.McpBridge.Attachments.AttachmentManifest())],

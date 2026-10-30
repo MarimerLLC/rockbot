@@ -332,7 +332,7 @@ public class McpOAuthEndToEndTests
             configureServerApp: auth.Mount);
         Assert.IsFalse((await harness.InvokeAsync("echo", """{"text":"pat"}""")).IsError);
 
-        // Both a profile and OAuth: unusable, so nothing serves under it, nor under the old auth.
+        // A removed auth profile: unusable, so nothing serves under it, nor under the old auth.
         RewriteEntry(harness, entry => entry.Auth = new McpServerAuthConfig { Profile = "workiq", OAuth = new McpServerOAuthConfig() });
         await harness.ReloadConfigAsync();
 
