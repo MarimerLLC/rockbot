@@ -37,6 +37,12 @@ internal sealed class FakeOAuthServer
     /// <summary>Every <c>/authorize</c> request's redirect URI, newest last.</summary>
     public ConcurrentQueue<string> AuthorizeRedirects { get; } = new();
 
+    /// <summary>
+    /// When set, the MCP endpoint answers authorized requests 503, as a server that is down
+    /// behind a working authorization server would.
+    /// </summary>
+    public bool Unavailable { get; set; }
+
     /// <summary>Accepts <paramref name="token"/> as a bearer, as a personal access token would be.</summary>
     public void AcceptStaticToken(string token) => _accessTokens[token] = 0;
 
@@ -61,6 +67,11 @@ internal sealed class FakeOAuthServer
                 context.Response.StatusCode = StatusCodes.Status401Unauthorized;
                 context.Response.Headers.WWWAuthenticate =
                     $"Bearer resource_metadata=\"{BaseUrl(context)}/.well-known/oauth-protected-resource/mcp\"";
+                return;
+            }
+            if (context.Request.Path.StartsWithSegments("/mcp") && Unavailable)
+            {
+                context.Response.StatusCode = StatusCodes.Status503ServiceUnavailable;
                 return;
             }
             await next();

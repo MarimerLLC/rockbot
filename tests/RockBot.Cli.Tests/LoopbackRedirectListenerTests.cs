@@ -45,12 +45,19 @@ public class LoopbackRedirectListenerTests
         StringAssert.EndsWith(listener.RedirectUri, "/callback");
 
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
-        var wait = listener.WaitAsync(cts.Token);
+        var wait = listener.WaitAsync("st", cts.Token);
 
         using var browser = new HttpClient();
         var origin = new Uri(listener.RedirectUri).GetLeftPart(UriPartial.Authority);
         var favicon = await browser.GetAsync($"{origin}/favicon.ico", cts.Token);
         Assert.AreEqual(HttpStatusCode.NotFound, favicon.StatusCode);
+
+        // Neither another sign-in's redirect nor one with no code or error ends the wait.
+        var stale = await browser.GetAsync($"{listener.RedirectUri}?code=old&state=other", cts.Token);
+        Assert.AreEqual(HttpStatusCode.BadRequest, stale.StatusCode);
+        var empty = await browser.GetAsync($"{listener.RedirectUri}?state=st", cts.Token);
+        Assert.AreEqual(HttpStatusCode.BadRequest, empty.StatusCode);
+        Assert.IsFalse(wait.IsCompleted);
 
         var page = await browser.GetAsync($"{listener.RedirectUri}?code=abc&state=st", cts.Token);
         Assert.AreEqual(HttpStatusCode.OK, page.StatusCode);

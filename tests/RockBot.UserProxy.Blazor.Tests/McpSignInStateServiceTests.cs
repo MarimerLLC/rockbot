@@ -69,6 +69,50 @@ public class McpSignInStateServiceTests
     }
 
     [TestMethod]
+    public void ARetry_KeepsItsPrompt_WhenAnOlderSignInSettles()
+    {
+        var sut = new McpSignInStateService();
+        sut.Apply(Status("tasks", McpSignInState.Failed, "first try") with { SignInId = "s1" });
+
+        sut.MarkStarted("tasks", "s2");
+        sut.Apply(Status("tasks", McpSignInState.Expired) with { SignInId = "s1" });
+
+        var entry = sut.NeedingSignIn.Single();
+        Assert.AreEqual(McpSignInState.Pending, entry.State);
+        Assert.AreEqual("s2", entry.SignInId);
+
+        sut.Apply(Status("tasks", McpSignInState.Failed, "second try") with { SignInId = "s2" });
+        Assert.AreEqual("second try", sut.NeedingSignIn.Single().Message);
+    }
+
+    [TestMethod]
+    public void ALateListResponse_DoesNotBringBackAClearedPrompt()
+    {
+        var sut = new McpSignInStateService();
+        sut.Apply(Status("tasks", McpSignInState.Required));
+        sut.Apply(Status("tasks", McpSignInState.Completed) with { SignInId = "s1" });
+
+        // A list taken before the sign-in finished arrives after it.
+        sut.Seed(new McpSignInListResponse
+        {
+            Servers = [new McpSignInServer { ServerName = "tasks", State = McpSignInState.Required }]
+        });
+
+        Assert.AreEqual(0, sut.NeedingSignIn.Count);
+    }
+
+    [TestMethod]
+    public void NotRequired_TakesThePromptDown()
+    {
+        var sut = new McpSignInStateService();
+        sut.Apply(Status("tasks", McpSignInState.Required));
+
+        sut.Apply(Status("tasks", McpSignInState.NotRequired));
+
+        Assert.AreEqual(0, sut.NeedingSignIn.Count);
+    }
+
+    [TestMethod]
     public async Task Frontend_FeedsTheState()
     {
         var sut = new McpSignInStateService();

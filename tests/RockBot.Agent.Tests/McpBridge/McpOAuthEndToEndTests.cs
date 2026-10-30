@@ -284,6 +284,100 @@ public class McpOAuthEndToEndTests
         Assert.IsFalse(signedIn.IsError, signedIn.Content);
     }
 
+    // ── Auth changes on a live entry (PR review) ─────────────────────────────
+
+    private static void RewriteEntry(BridgeHarness harness, Action<McpBridgeServerConfig> edit) =>
+        harness.EditPersistedEntry(BridgeHarness.ServerName, edit);
+
+    private static McpServerAuthConfig OAuth() =>
+        new() { OAuth = new McpServerOAuthConfig { ClientId = FakeOAuthServer.ClientId } };
+
+    private static async Task<McpSignInServer?> ListedAsync(BridgeHarness harness) =>
+        (await harness.RequestAsync(SignInTopic, new McpSignInListRequest()))
+            .GetPayload<McpSignInListResponse>()!.Servers.SingleOrDefault();
+
+    [TestMethod]
+    public async Task SwitchingBackToOAuthWithRevokedTokens_DoesNotKeepThePatConnection()
+    {
+        // Signed in, then switched to a PAT, the OAuth grant revoked, then switched back: the
+        // stored tokens exist but are refused. The PAT connection mustn't go on serving.
+        var (harness, auth) = await StartAsync();
+        await using var _harness = harness;
+        await SignInAsync(harness);
+
+        auth.AcceptStaticToken("pat-1");
+        RewriteEntry(harness, entry => { entry.Auth = null; entry.Headers["Authorization"] = "Bearer pat-1"; });
+        await harness.ReloadConfigAsync();
+        Assert.IsFalse((await harness.InvokeAsync("echo", """{"text":"pat"}""")).IsError);
+
+        auth.RevokeAll();
+        auth.AcceptStaticToken("pat-1");
+        RewriteEntry(harness, entry => { entry.Headers.Clear(); entry.Auth = OAuth(); });
+        await harness.ReloadConfigAsync();
+
+        var response = await harness.InvokeAsync("echo", """{"text":"x"}""");
+        Assert.IsTrue(response.IsError, "the PAT connection no longer serves");
+        StringAssert.Contains(response.Content, "needs the user to sign in");
+        Assert.IsFalse((await ListedAsync(harness))!.Connected);
+    }
+
+    [TestMethod]
+    public async Task InvalidAuthOnReload_RetiresTheConnection()
+    {
+        var auth = new FakeOAuthServer();
+        auth.AcceptStaticToken("pat-1");
+        await using var harness = await BridgeHarness.StartAsync(
+            [Echo()],
+            configure: entry => entry.Headers["Authorization"] = "Bearer pat-1",
+            configureServerApp: auth.Mount);
+        Assert.IsFalse((await harness.InvokeAsync("echo", """{"text":"pat"}""")).IsError);
+
+        // Both a profile and OAuth: unusable, so nothing serves under it, nor under the old auth.
+        RewriteEntry(harness, entry => entry.Auth = new McpServerAuthConfig { Profile = "workiq", OAuth = new McpServerOAuthConfig() });
+        await harness.ReloadConfigAsync();
+
+        Assert.IsTrue((await harness.InvokeAsync("echo", """{"text":"x"}""")).IsError);
+        Assert.IsTrue(harness.BridgeLog.Any(l => l.Message.Contains("invalid auth block")));
+    }
+
+    [TestMethod]
+    public async Task SignInWhoseConnectFails_IsNotReportedCompleted_UntilItConnects()
+    {
+        var (harness, auth) = await StartAsync();
+        await using var _harness = harness;
+        auth.Unavailable = true;
+
+        var start = await StartSignInAsync(harness);
+        await harness.DeliverAsync(SignInTopic, CallbackFrom(await FollowInBrowserAsync(start.AuthorizationUri!)));
+
+        var failed = await WaitForStatusAsync(harness, McpSignInState.Failed, start.SignInId);
+        StringAssert.Contains(failed.Message, "keeps retrying");
+        Assert.IsFalse(Statuses(harness).Any(s => s.State == McpSignInState.Completed));
+        Assert.AreEqual(McpSignInState.SignedIn, (await ListedAsync(harness))!.State, "the tokens are good");
+
+        // The server comes back; the next connect (here a reload, live the reconnect sweep) tells the UIs.
+        auth.Unavailable = false;
+        await harness.ReloadConfigAsync();
+        await WaitForStatusAsync(harness, McpSignInState.SignedIn);
+        Assert.IsFalse((await harness.InvokeAsync("echo", """{"text":"up"}""")).IsError);
+    }
+
+    [TestMethod]
+    public async Task EntryThatStopsUsingOAuth_TakesItsPromptDown()
+    {
+        var (harness, auth) = await StartAsync();
+        await using var _harness = harness;
+        await WaitForStatusAsync(harness, McpSignInState.Required);
+
+        auth.AcceptStaticToken("pat-1");
+        RewriteEntry(harness, entry => { entry.Auth = null; entry.Headers["Authorization"] = "Bearer pat-1"; });
+        await harness.ReloadConfigAsync();
+
+        await WaitForStatusAsync(harness, McpSignInState.NotRequired);
+        Assert.IsNull(await ListedAsync(harness), "no longer an OAuth server");
+        Assert.IsFalse((await harness.InvokeAsync("echo", """{"text":"pat"}""")).IsError);
+    }
+
     [TestMethod]
     public async Task RefusedConsent_FailsTheSignIn_WithTheReason()
     {

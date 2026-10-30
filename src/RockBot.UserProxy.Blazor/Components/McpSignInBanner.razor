@@ -14,7 +14,7 @@
     <div class="alert alert-warning mcp-signin-banner d-flex justify-content-between align-items-center mb-0"
          role="alert">
         <div>
-            @if (server.State == McpSignInState.Required)
+            @if (server.State is McpSignInState.Required or McpSignInState.Pending)
             {
                 <strong>@server.ServerName needs you to sign in.</strong>
                 <span class="ms-2 small text-muted">Its tools are unavailable until you do.</span>
@@ -104,7 +104,11 @@
             else if (response.AuthorizationUri is null)
                 _errors[serverName] = $"{serverName} didn't ask for a sign-in; it may already be connected.";
             else
+            {
                 _started[serverName] = response;
+                // The prompt now belongs to this sign-in; only its outcome takes the link away.
+                SignIns.MarkStarted(serverName, response.SignInId!);
+            }
         }
         catch (Exception ex)
         {
@@ -119,11 +123,13 @@
 
     private void HandleStateChanged() => InvokeAsync(() =>
     {
-        // A prompt that went away (completed) or came back (failed) starts fresh.
-        foreach (var name in _started.Keys.ToList())
+        // A link stays until its own sign-in settles (or the prompt goes away). The outcome of an
+        // older attempt, or a change for another server, leaves it alone.
+        foreach (var (name, started) in _started.ToList())
         {
-            if (!SignIns.NeedingSignIn.Any(s => string.Equals(s.ServerName, name, StringComparison.OrdinalIgnoreCase)
-                                                && s.State == McpSignInState.Required))
+            var entry = SignIns.NeedingSignIn.FirstOrDefault(
+                s => string.Equals(s.ServerName, name, StringComparison.OrdinalIgnoreCase));
+            if (entry is null || entry.State != McpSignInState.Pending || entry.SignInId != started.SignInId)
                 _started.Remove(name);
         }
         StateHasChanged();

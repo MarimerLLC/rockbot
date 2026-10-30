@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using System.Diagnostics;
+using System.Web;
 using Microsoft.Extensions.DependencyInjection;
 using Spectre.Console;
 using Spectre.Console.Cli;
@@ -130,12 +131,33 @@ internal sealed class McpAuthCommand : AsyncCommand<McpAuthCommand.Settings>
             TryOpenBrowser(start.AuthorizationUri);
         AnsiConsole.MarkupLine("[grey]Press Ctrl+C to cancel.[/]");
 
+        // Waited on from the start, alongside the browser: the sign-in can end without a redirect
+        // (it expires, the user abandons the tab, another app starts a newer one), and the wait is
+        // bounded by the sign-in's own expiry.
+        var wait = (start.ExpiresAt ?? DateTimeOffset.UtcNow.AddMinutes(10)) - DateTimeOffset.UtcNow + TimeSpan.FromSeconds(30);
+        var outcomeTask = proxy.WaitForMcpSignInAsync(
+            start.SignInId!, wait > TimeSpan.Zero ? wait : TimeSpan.FromSeconds(30), ct);
+
         if (listener is not null)
         {
-            var callback = await AnsiConsole.Status()
+            var expectedState = HttpUtility.ParseQueryString(new Uri(start.AuthorizationUri).Query)["state"] ?? string.Empty;
+            using var stopListening = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            var redirectTask = listener.WaitAsync(expectedState, stopListening.Token);
+
+            var first = await AnsiConsole.Status()
                 .Spinner(Spinner.Known.Dots)
-                .StartAsync("Waiting for the browser to come back...", _ => listener.WaitAsync(ct));
-            await proxy.SendMcpSignInCallbackAsync(callback, ct);
+                .StartAsync("Waiting for the browser to come back...", _ => Task.WhenAny(redirectTask, outcomeTask));
+
+            if (first == redirectTask)
+            {
+                await proxy.SendMcpSignInCallbackAsync(await redirectTask, ct);
+            }
+            else
+            {
+                // The sign-in ended (or the wait ran out) before the browser came back.
+                await stopListening.CancelAsync();
+                await redirectTask.ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
+            }
         }
         else if (settings.Paste)
         {
@@ -151,11 +173,9 @@ internal sealed class McpAuthCommand : AsyncCommand<McpAuthCommand.Settings>
         }
         // Otherwise the page at --redirect-uri relays the redirect; just wait for the outcome.
 
-        var wait = (start.ExpiresAt ?? DateTimeOffset.UtcNow.AddMinutes(10)) - DateTimeOffset.UtcNow + TimeSpan.FromSeconds(30);
         var outcome = await AnsiConsole.Status()
             .Spinner(Spinner.Known.Dots)
-            .StartAsync("Finishing the sign-in...",
-                _ => proxy.WaitForMcpSignInAsync(start.SignInId!, wait > TimeSpan.Zero ? wait : TimeSpan.FromSeconds(30), ct));
+            .StartAsync("Finishing the sign-in...", _ => outcomeTask);
 
         switch (outcome?.State)
         {

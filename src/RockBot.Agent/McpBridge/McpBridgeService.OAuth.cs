@@ -38,6 +38,12 @@ public sealed partial class McpBridgeService
     /// <summary>Servers that rejected the agent until the user signs in, with the message given out.</summary>
     private readonly ConcurrentDictionary<string, string> _signInRequired = new(StringComparer.OrdinalIgnoreCase);
 
+    /// <summary>
+    /// Servers whose sign-in got tokens but whose connect then failed. The reconnect sweep keeps
+    /// trying them; the user interfaces hear <c>signed_in</c> when one connects.
+    /// </summary>
+    private readonly ConcurrentDictionary<string, byte> _signedInNotConnected = new(StringComparer.OrdinalIgnoreCase);
+
     /// <summary>The sign-in under way for each server; a new one replaces it.</summary>
     private readonly ConcurrentDictionary<string, PendingSignIn> _signInsByServer = new(StringComparer.OrdinalIgnoreCase);
 
@@ -86,6 +92,7 @@ public sealed partial class McpBridgeService
     {
         var oauth = config.Auth!.OAuth!;
         var clientId = NullIfBlank(oauth.ClientId);
+        var clientIdentity = oauth.EffectiveClientIdentity();
         var secret = oauth.ClientSecret is null ? null : NullIfBlank(ExpandEnvVars(oauth.ClientSecret));
 
         var options = new ClientOAuthOptions
@@ -96,8 +103,8 @@ public sealed partial class McpBridgeService
             ClientMetadataDocumentUri = NullIfBlank(oauth.ClientMetadataDocumentUri) is { } cimd ? new Uri(cimd) : null,
             DynamicClientRegistration = new DynamicClientRegistrationOptions { ClientName = $"RockBot ({_agentName})" },
             TokenCache = signIn is null
-                ? OAuthTokens.CacheFor(config.Url!, clientId)
-                : signIn.TokenCache = OAuthTokens.FreshCacheFor(config.Url!, clientId),
+                ? OAuthTokens.CacheFor(config.Url!, clientIdentity)
+                : signIn.TokenCache = OAuthTokens.FreshCacheFor(config.Url!, clientIdentity),
             AuthorizationCallbackHandler = signIn is null
                 ? (_, _) => SignInRequiredAsync(serverName)
                 : signIn.WaitForUserAsync,
@@ -142,7 +149,36 @@ public sealed partial class McpBridgeService
 
     /// <summary>Whether the bridge holds tokens for an <c>auth.oauth</c> server.</summary>
     private Task<bool> HasOAuthTokensAsync(McpBridgeServerConfig config, CancellationToken ct) =>
-        OAuthTokens.HasTokensAsync(config.Url!, NullIfBlank(config.Auth!.OAuth!.ClientId), ct);
+        OAuthTokens.HasTokensAsync(config.Url!, config.Auth!.OAuth!.EffectiveClientIdentity(), ct);
+
+    /// <summary>
+    /// Retires the server's connection, if it has one, and takes its tools out of the agent's
+    /// view; the configuration stays. Called with the server's lock held.
+    /// </summary>
+    private async Task RetireConnectionAsync(string serverName, string reason, CancellationToken ct)
+    {
+        if (_connections.Remove(serverName, forgetConfig: false) is null)
+            return;
+        _lastSurfaceCheck.TryRemove(serverName, out _);
+        _logger.LogInformation("Disconnected MCP server {Name}: {Reason}", serverName, reason);
+        await PublishServersIndexedAsync([], [serverName], ct);
+    }
+
+    /// <summary>
+    /// The server no longer uses OAuth sign-in (its entry changed auth, or was removed): drop
+    /// whatever sign-in state it had and tell the user interfaces to take its prompt down.
+    /// </summary>
+    private void ForgetSignIn(string serverName)
+    {
+        var had = _signInRequired.TryRemove(serverName, out _) | _signedInNotConnected.TryRemove(serverName, out _);
+        if (_signInsByServer.TryRemove(serverName, out var pending))
+        {
+            pending.Cancel();
+            had = true;
+        }
+        if (had)
+            _ = PublishSignInStatusAsync(serverName, UserProxy.McpSignInState.NotRequired, signInId: null, message: null);
+    }
 
     /// <summary>
     /// Retires a connection whose server stopped accepting the agent's tokens, and takes its tools
@@ -167,7 +203,7 @@ public sealed partial class McpBridgeService
     /// <summary>A connect to an OAuth server succeeded: whatever sign-in it needed is done.</summary>
     private void ClearSignInRequired(string serverName)
     {
-        if (_signInRequired.TryRemove(serverName, out _))
+        if (_signInRequired.TryRemove(serverName, out _) | _signedInNotConnected.TryRemove(serverName, out _))
             _ = PublishSignInStatusAsync(serverName, UserProxy.McpSignInState.SignedIn, signInId: null, message: null);
     }
 
@@ -326,9 +362,9 @@ public sealed partial class McpBridgeService
 
         _logger.LogInformation("OAuth sign-in {SignInId} to MCP server {Name} completed; connecting", signIn.Id, name);
         _signInRequired.TryRemove(name, out _);
-        await PublishSignInStatusAsync(name, state, signIn.Id, message: null);
 
         // The entry may have changed while the user was signing in; connect with the one in force.
+        // Completed means connected, so it is only reported once the connection is in place.
         if (_connections.TryGetConfig(name, out var current))
         {
             try
@@ -340,7 +376,23 @@ public sealed partial class McpBridgeService
                 _logger.LogWarning(ex, "MCP server {Name} could not be connected after its sign-in", name);
             }
         }
-        return null;
+
+        if (_connections.IsConnected(name))
+        {
+            await PublishSignInStatusAsync(name, state, signIn.Id, message: null);
+            return null;
+        }
+
+        // Signed in, but not connected. If the server refused the new tokens it is marked sign-in
+        // required again; otherwise the tokens are good and the reconnect sweep keeps trying.
+        failure = IsSignInRequired(name)
+            ? $"The sign-in finished, but \"{name}\" didn't accept it. Sign in again."
+            : $"The sign-in finished, but RockBot couldn't connect to \"{name}\" yet. It keeps retrying; no new sign-in is needed.";
+        if (!IsSignInRequired(name))
+            _signedInNotConnected[name] = 0;
+        _logger.LogWarning("OAuth sign-in {SignInId} to MCP server {Name}: {Reason}", signIn.Id, name, failure);
+        await PublishSignInStatusAsync(name, UserProxy.McpSignInState.Failed, signIn.Id, failure);
+        return failure;
     }
 
     /// <summary>
@@ -412,7 +464,7 @@ public sealed partial class McpBridgeService
 
             var state = _signInsByServer.ContainsKey(name) ? UserProxy.McpSignInState.Pending
                 : _signInRequired.ContainsKey(name) ? UserProxy.McpSignInState.Required
-                : await OAuthTokens.HasTokensAsync(config.Url, NullIfBlank(oauth.ClientId), ct) ? UserProxy.McpSignInState.SignedIn
+                : await OAuthTokens.HasTokensAsync(config.Url, oauth.EffectiveClientIdentity(), ct) ? UserProxy.McpSignInState.SignedIn
                 : UserProxy.McpSignInState.Required;
 
             servers.Add(new UserProxy.McpSignInServer

@@ -73,4 +73,15 @@ public sealed class McpServerOAuthConfig
 
     /// <summary>Extra query parameters for the authorization request (e.g. <c>prompt</c>).</summary>
     public Dictionary<string, string> AdditionalAuthorizationParameters { get; set; } = [];
+
+    /// <summary>
+    /// Which client the bridge signs in as: the configured <see cref="ClientId"/>, else the
+    /// <see cref="ClientMetadataDocumentUri"/> (whose URL is the client id), else null for a
+    /// dynamically registered client. Two entries that differ here are different clients, with
+    /// different tokens.
+    /// </summary>
+    public string? EffectiveClientIdentity() =>
+        string.IsNullOrWhiteSpace(ClientId)
+            ? (string.IsNullOrWhiteSpace(ClientMetadataDocumentUri) ? null : ClientMetadataDocumentUri.Trim())
+            : ClientId.Trim();
 }

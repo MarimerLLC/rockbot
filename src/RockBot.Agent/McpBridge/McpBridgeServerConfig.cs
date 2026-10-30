@@ -194,11 +194,29 @@ public sealed class McpBridgeServerConfig
         // Include the auth profile so an authenticated entry is never deduped
         // against an unauthenticated one at the same URL.
         var authProfile = Auth?.Profile?.Trim().ToLowerInvariant() ?? string.Empty;
-        // Likewise an OAuth entry, which signs in as a different client per client id. Appended
-        // only when set, so every entry without OAuth keeps the identity it already had.
+        // Likewise an OAuth entry, which signs in as a different client per client identity (its
+        // client id or client metadata document). Appended only when set, so every entry without
+        // OAuth keeps the identity it already had.
         if (Auth?.OAuth is { } oauth)
-            authProfile += $"oauth:{oauth.ClientId?.Trim() ?? string.Empty}";
+            authProfile += $"oauth:{oauth.EffectiveClientIdentity() ?? string.Empty}";
         return string.Join("", type, url, transportMode, command, args, env, headers, allowedTools, deniedTools, authProfile);
+    }
+
+    /// <summary>
+    /// What a connection to this entry authenticates with: its static headers and its auth block.
+    /// A connection made under one value must not go on serving under another, or it would keep
+    /// using a credential the operator removed.
+    /// </summary>
+    internal string CredentialIdentity()
+    {
+        var headers = string.Join("\n", Headers
+            .OrderBy(kvp => kvp.Key, StringComparer.OrdinalIgnoreCase)
+            .Select(kvp => $"{kvp.Key.ToLowerInvariant()}={kvp.Value}"));
+        var profile = Auth?.Profile?.Trim().ToLowerInvariant() ?? string.Empty;
+        var oauth = Auth?.OAuth is { } o
+            ? $"oauth:{o.EffectiveClientIdentity()}:{o.ClientSecret}"
+            : string.Empty;
+        return string.Join("\u001f", headers, profile, oauth);
     }
 
     /// <summary>

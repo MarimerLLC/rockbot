@@ -523,16 +523,14 @@ public sealed class UserProxyService(
                     logger.LogDebug("MCP server {Server} sign-in is {State}", status.ServerName, status.State);
                     if (status.SignInId is { } signInId && McpSignInState.IsTerminal(status.State))
                     {
-                        if (_signInWaiters.TryRemove(signInId, out var waiter))
-                            waiter.TrySetResult(status);
-                        else
-                        {
-                            // Kept only for a waiter that arrives late; every proxy hears every
-                            // sign-in's outcome, so this mustn't grow for the life of a web app.
-                            if (_settledSignIns.Count >= 64)
-                                _settledSignIns.Clear();
-                            _settledSignIns[signInId] = status;
-                        }
+                        // Stored before looking for a waiter, so a waiter registering meanwhile
+                        // finds it either here or in the store. Kept only for a late waiter;
+                        // every proxy hears every sign-in's outcome, so the store is bounded.
+                        if (_settledSignIns.Count >= 64)
+                            _settledSignIns.Clear();
+                        _settledSignIns[signInId] = status;
+                        if (_signInWaiters.TryRemove(signInId, out var waiter) && waiter.TrySetResult(status))
+                            _settledSignIns.TryRemove(signInId, out _);
                     }
                     _ = frontend.OnMcpSignInStatusAsync(status, ct);
                 }

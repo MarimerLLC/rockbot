@@ -244,6 +244,48 @@ public class McpBridgeServerConfigTests
     }
 
     [TestMethod]
+    public void CanonicalIdentity_OAuth_DistinguishesClientMetadataDocuments()
+    {
+        static McpBridgeServerConfig Cimd(string url) => new()
+        {
+            Type = "streamable-http",
+            Url = "https://srv/",
+            Auth = new McpServerAuthConfig { OAuth = new McpServerOAuthConfig { ClientMetadataDocumentUri = url } }
+        };
+
+        // Different clients at one server: not duplicates, so dedup must keep both.
+        Assert.AreNotEqual(Cimd("https://a.example/client.json").CanonicalIdentity(),
+            Cimd("https://b.example/client.json").CanonicalIdentity());
+    }
+
+    [TestMethod]
+    public void EffectiveClientIdentity_IsTheClientId_ThenTheMetadataDocument()
+    {
+        Assert.AreEqual("abc", new McpServerOAuthConfig { ClientId = " abc ", ClientMetadataDocumentUri = "https://a/c.json" }.EffectiveClientIdentity());
+        Assert.AreEqual("https://a/c.json", new McpServerOAuthConfig { ClientMetadataDocumentUri = "https://a/c.json" }.EffectiveClientIdentity());
+        Assert.IsNull(new McpServerOAuthConfig().EffectiveClientIdentity());
+    }
+
+    [TestMethod]
+    public void CredentialIdentity_ChangesWithHeadersAndAuth_NotWithPolicy()
+    {
+        McpBridgeServerConfig Entry() => new() { Type = "http", Url = "https://srv/", Headers = { ["Authorization"] = "Bearer pat" } };
+
+        var withFilter = Entry();
+        withFilter.DeniedTools = ["x"];
+        Assert.AreEqual(Entry().CredentialIdentity(), withFilter.CredentialIdentity());
+
+        var otherPat = Entry();
+        otherPat.Headers["Authorization"] = "Bearer other";
+        Assert.AreNotEqual(Entry().CredentialIdentity(), otherPat.CredentialIdentity());
+
+        var oauth = Entry();
+        oauth.Headers.Clear();
+        oauth.Auth = new McpServerAuthConfig { OAuth = new McpServerOAuthConfig() };
+        Assert.AreNotEqual(Entry().CredentialIdentity(), oauth.CredentialIdentity());
+    }
+
+    [TestMethod]
     public void CanonicalIdentity_ProfileEntry_IsUnchangedByTheOAuthSupport()
     {
         // Existing entries keep the identity (and so the persisted id hash) they had.

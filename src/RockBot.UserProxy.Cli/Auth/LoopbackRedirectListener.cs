@@ -36,10 +36,12 @@ internal sealed class LoopbackRedirectListener : IDisposable
     }
 
     /// <summary>
-    /// Waits for the browser's redirect and returns what it carried. Requests for anything but
-    /// the callback (a browser's favicon fetch) are answered 404 and the wait goes on.
+    /// Waits for the browser's redirect for the sign-in whose authorization URL carried
+    /// <paramref name="expectedState"/>, and returns what it carried. Anything else — a browser's
+    /// favicon fetch, a stale tab's redirect, a request with neither a code nor an error — is
+    /// answered and the wait goes on, so it can't take the place of the real redirect.
     /// </summary>
-    public async Task<McpSignInCallback> WaitAsync(CancellationToken ct)
+    public async Task<McpSignInCallback> WaitAsync(string expectedState, CancellationToken ct)
     {
         while (true)
         {
@@ -59,6 +61,14 @@ internal sealed class LoopbackRedirectListener : IDisposable
             if (callback is null)
             {
                 await RespondAsync(stream, 404, "Not found", "Nothing here.", ct);
+                continue;
+            }
+
+            if (!string.Equals(callback.State, expectedState, StringComparison.Ordinal)
+                || (callback.Code is null && callback.Error is null))
+            {
+                await RespondAsync(stream, 400, "Not this sign-in",
+                    "This isn't the sign-in RockBot is waiting for. Use the link the terminal printed most recently.", ct);
                 continue;
             }
 
@@ -105,7 +115,7 @@ internal sealed class LoopbackRedirectListener : IDisposable
             $"<body style=\"font-family:system-ui,sans-serif;max-width:32rem;margin:4rem auto\">" +
             $"<h1>{WebUtility.HtmlEncode(title)}</h1><p>{WebUtility.HtmlEncode(message)}</p></body></html>");
         var head = Encoding.ASCII.GetBytes(
-            $"HTTP/1.1 {status} {(status == 200 ? "OK" : "Not Found")}\r\n" +
+            $"HTTP/1.1 {status} {status switch { 200 => "OK", 400 => "Bad Request", _ => "Not Found" }}\r\n" +
             "Content-Type: text/html; charset=utf-8\r\n" +
             $"Content-Length: {body.Length}\r\n" +
             "Connection: close\r\n\r\n");

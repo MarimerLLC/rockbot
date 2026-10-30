@@ -597,16 +597,6 @@ public sealed partial class McpBridgeService : IHostedService, IAsyncDisposable
             return;
         }
 
-        // Likewise an unusable auth block: connecting without the auth the operator declared
-        // would at best fail and at worst send unauthenticated what was meant to be authenticated.
-        if (config.Auth?.Validate() is { } authConfigError)
-        {
-            _logger.LogError(
-                "MCP server {Name} has an invalid auth block — refusing to connect: {Error}",
-                name, authConfigError);
-            return;
-        }
-
         using var serverLock = await _connections.LockAsync(name, ct);
 
         _connections.TryGet(name, out var previous);
@@ -633,6 +623,23 @@ public sealed partial class McpBridgeService : IHostedService, IAsyncDisposable
         // server that never connected.
         _connections.SetConfig(name, config);
 
+        // An entry that no longer uses OAuth has no sign-in to ask for.
+        if (config.Auth?.OAuth is null)
+            ForgetSignIn(name);
+
+        // An unusable auth block: connecting without the auth the operator declared would at best
+        // fail and at worst send unauthenticated what was meant to be authenticated. A connection
+        // made under the entry's previous auth goes too, or it would keep using that auth. The
+        // config stays recorded, so nothing reconnects under the old one.
+        if (config.Auth?.Validate() is { } authConfigError)
+        {
+            _logger.LogError(
+                "MCP server {Name} has an invalid auth block — refusing to connect: {Error}",
+                name, authConfigError);
+            await RetireConnectionAsync(name, "its auth block is invalid", ct);
+            return;
+        }
+
         // An OAuth server the user hasn't signed in to can only answer 401, and finding that out
         // can cost its authorization server a dynamic client registration on every attempt —
         // which some rate-limit. Ask the user instead; the sign-in they start connects it.
@@ -641,15 +648,7 @@ public sealed partial class McpBridgeService : IHostedService, IAsyncDisposable
             // A connection already open was made under the entry's old auth (a static token the
             // operator just replaced with OAuth, say). Keeping it would go on using the credential
             // the operator removed, so it goes, and its tools with it, until the user signs in.
-            if (previous is not null)
-            {
-                _connections.Remove(name, forgetConfig: false);
-                _lastSurfaceCheck.TryRemove(name, out _);
-                _logger.LogInformation(
-                    "Disconnected MCP server {Name}: its entry now uses OAuth and the user hasn't signed in", name);
-                await PublishServersIndexedAsync([], [name], ct);
-            }
-
+            await RetireConnectionAsync(name, "its entry uses OAuth and the user hasn't signed in", ct);
             MarkSignInRequired(name, DescribeSignInRequired(name));
             return;
         }
@@ -779,11 +778,12 @@ public sealed partial class McpBridgeService : IHostedService, IAsyncDisposable
             {
                 // The server wants the user to sign in. Retrying can't change that, and the user
                 // interfaces have been told; the sign-in connects the server when it completes.
+                // The previous connection mustn't serve meanwhile: it was made under other auth (a
+                // removed PAT, another client) or with tokens the server just refused.
                 if (!published && newClient is not null)
                     await DisposeQuietlyAsync(newClient);
-                _logger.LogInformation(
-                    "MCP server {Name} is not connected: it needs the user to sign in", name);
-                break;
+                await RetireConnectionAsync(name, "it needs the user to sign in", ct);
+                return;
             }
             catch (Exception ex)
             {
@@ -812,8 +812,15 @@ public sealed partial class McpBridgeService : IHostedService, IAsyncDisposable
         // Every attempt failed, so the previous connection (if any) keeps serving. If the config
         // changed, apply its policy to that connection now rather than at the next successful
         // connect: re-filtering the previous tool list can only narrow it, so an operator who
-        // just denied a tool isn't overruled by a server that happened to be down.
-        if (previous is not null && !ReferenceEquals(previous.Config, config))
+        // just denied a tool isn't overruled by a server that happened to be down. Except when
+        // the entry's credentials changed: that connection authenticates with the old ones, so
+        // it can't serve under the new config at all.
+        if (previous is not null && !ReferenceEquals(previous.Config, config)
+            && previous.Config.CredentialIdentity() != config.CredentialIdentity())
+        {
+            await RetireConnectionAsync(name, "its credentials changed and the new ones didn't connect", ct);
+        }
+        else if (previous is not null && !ReferenceEquals(previous.Config, config))
         {
             _connections.Publish(previous with
             {
@@ -862,6 +869,9 @@ public sealed partial class McpBridgeService : IHostedService, IAsyncDisposable
             _connections.Remove(name, forgetConfig: true);
             _lastSurfaceCheck.TryRemove(name, out _);
         }
+
+        // A removed server's sign-in prompt has nothing left to sign in to.
+        ForgetSignIn(name);
 
         await _handback.CancelServerAsync(name, $"the MCP server \"{name}\" was removed");
 

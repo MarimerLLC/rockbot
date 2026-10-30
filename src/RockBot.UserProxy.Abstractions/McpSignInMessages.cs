@@ -132,6 +132,12 @@ public static class McpSignInState
     /// <summary>A sign-in was replaced by a newer one for the same server, or the bridge stopped.</summary>
     public const string Cancelled = "cancelled";
 
+    /// <summary>
+    /// The server no longer uses OAuth sign-in: its entry changed to other auth or was removed.
+    /// Frontends take its prompt down.
+    /// </summary>
+    public const string NotRequired = "not_required";
+
     /// <summary>Whether <paramref name="state"/> settles a sign-in.</summary>
     public static bool IsTerminal(string state) =>
         state is Completed or Failed or Expired or Cancelled;

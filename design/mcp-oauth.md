@@ -58,6 +58,12 @@ browser → redirectUri?code&state&iss
 - **A revoked grant drops the connection.** When a connected server stops accepting the agent's
   tokens and refresh fails, the bridge retires the connection and withdraws its tools, keeping
   the config. Later calls then get the sign-in message without repeating the failed refresh.
+- **A connection never outlives its credentials.** A connection made under an entry's old
+  headers or auth is retired when the entry's credentials change and the new ones can't connect
+  yet. That covers a PAT replaced by OAuth (with or without stored tokens), a switch to another
+  OAuth client, and an auth block that became invalid. Otherwise the bridge would keep using a
+  credential the operator removed. A connection whose credentials didn't change keeps serving
+  through a failed reconnect as before.
 - **Sign-in is started by the user.** A start request runs a dedicated connect whose callback
   publishes the authorization URL and then waits for the redirect, for at most
   `McpBridge:OAuthSignInTimeoutSeconds` (default 10 minutes). Each server has at most one sign-in
@@ -153,12 +159,13 @@ All live in `RockBot.UserProxy.Abstractions` (`McpSignInMessages.cs`).
 | State | Meaning |
 |---|---|
 | `required` | The server needs a sign-in. |
-| `signed_in` | A normal connect succeeded after a sign-in was required. |
+| `signed_in` | A normal connect succeeded after a sign-in was required, or after a sign-in whose connect had failed. |
 | `pending` | A sign-in is under way (list only). |
-| `completed` | The sign-in finished. |
-| `failed` | The sign-in failed. |
+| `completed` | The sign-in finished and the server is connected. It is only reported once the connection is in place. |
+| `failed` | The sign-in failed, or it got tokens but the server couldn't be connected. In the second case the reconnect sweep keeps trying, and `signed_in` follows when it connects. |
 | `expired` | The sign-in was not finished in time. |
 | `cancelled` | The sign-in was replaced by a newer one, or the agent stopped. |
+| `not_required` | The entry no longer uses OAuth: it changed to other auth or was removed. UIs take its prompt down. |
 
 `UserProxyService` exposes `StartMcpSignInAsync`, `SendMcpSignInCallbackAsync`,
 `ListMcpSignInsAsync` and `WaitForMcpSignInAsync`. It also hands statuses to
