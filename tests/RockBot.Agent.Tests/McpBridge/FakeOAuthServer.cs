@@ -11,7 +11,7 @@ namespace RockBot.Agent.Tests.McpBridge;
 /// <see cref="BridgeHarness"/> fixture server: the MCP endpoint answers 401 with a
 /// <c>resource_metadata</c> challenge until a request carries a token this server issued, as an
 /// MCP server following the authorization spec does. Authorization-code + PKCE (S256) and refresh
-/// only, for one pre-registered public client.
+/// only, for one pre-registered public client and any it registers dynamically.
 /// </summary>
 internal sealed class FakeOAuthServer
 {
@@ -20,11 +20,16 @@ internal sealed class FakeOAuthServer
     private readonly ConcurrentDictionary<string, (string Challenge, string RedirectUri)> _codes = new();
     private readonly ConcurrentDictionary<string, byte> _accessTokens = new();
     private readonly ConcurrentDictionary<string, byte> _refreshTokens = new();
+    private readonly ConcurrentDictionary<string, byte> _registeredClients = new();
+    private int _registrations;
     private int _refreshGrants;
     private int _codeGrants;
 
     /// <summary>Times a refresh token was exchanged.</summary>
     public int RefreshGrants => Volatile.Read(ref _refreshGrants);
+
+    /// <summary>Clients registered dynamically (RFC 7591).</summary>
+    public int Registrations => Volatile.Read(ref _registrations);
 
     /// <summary>Times an authorization code was exchanged.</summary>
     public int CodeGrants => Volatile.Read(ref _codeGrants);
@@ -74,7 +79,22 @@ internal sealed class FakeOAuthServer
             ["grant_types_supported"] = new[] { "authorization_code", "refresh_token" },
             ["code_challenge_methods_supported"] = new[] { "S256" },
             ["token_endpoint_auth_methods_supported"] = new[] { "none" },
+            ["registration_endpoint"] = $"{BaseUrl(context)}/register",
         }));
+
+        // Dynamic client registration: any caller gets a fresh public client.
+        app.MapPost("/register", () =>
+        {
+            Interlocked.Increment(ref _registrations);
+            var clientId = "dcr_" + NewToken();
+            _registeredClients[clientId] = 0;
+            return Results.Json(new Dictionary<string, object>
+            {
+                ["client_id"] = clientId,
+                ["token_endpoint_auth_method"] = "none",
+                ["redirect_uris"] = Array.Empty<string>(),
+            }, statusCode: 201);
+        });
 
         // The user's browser lands here; a real server would show a sign-in page first.
         app.MapGet("/authorize", (HttpContext context) =>
@@ -82,7 +102,9 @@ internal sealed class FakeOAuthServer
             var q = context.Request.Query;
             var redirect = q["redirect_uri"].ToString();
             AuthorizeRedirects.Enqueue(redirect);
-            if (q["client_id"] != ClientId || q["response_type"] != "code" || q["code_challenge_method"] != "S256")
+            var clientId = q["client_id"].ToString();
+            if ((clientId != ClientId && !_registeredClients.ContainsKey(clientId))
+                || q["response_type"] != "code" || q["code_challenge_method"] != "S256")
                 return Results.BadRequest("bad authorization request");
 
             var code = NewToken();

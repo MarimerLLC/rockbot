@@ -50,6 +50,14 @@ browser → redirectUri?code&state&iss
   a person. Instead it marks the server *sign-in required*, broadcasts that once, and fails with
   `TokenAcquisitionException(not_authenticated)`. Tool calls turn that into a non-retryable
   `auth_required` tool error that names the server and tells the model how the user signs in.
+- **No network round trip before a sign-in.** If the bridge holds no tokens for a server, a
+  normal connect doesn't contact it at all. It marks the server *sign-in required* straight away.
+  Finding out over the network would cost the authorization server a dynamic client registration
+  on every startup, config reload and on-demand connect, and servers rate-limit those (the
+  scheduler allows 10 an hour per IP). Only the sign-in the user starts registers a client.
+- **A revoked grant drops the connection.** When a connected server stops accepting the agent's
+  tokens and refresh fails, the bridge retires the connection and withdraws its tools, keeping
+  the config. Later calls then get the sign-in message without repeating the failed refresh.
 - **Sign-in is started by the user.** A start request runs a dedicated connect whose callback
   publishes the authorization URL and then waits for the redirect, for at most
   `McpBridge:OAuthSignInTimeoutSeconds` (default 10 minutes). Each server has at most one sign-in

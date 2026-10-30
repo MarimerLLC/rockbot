@@ -139,6 +139,30 @@ public sealed partial class McpBridgeService
         _ = PublishSignInStatusAsync(serverName, UserProxy.McpSignInState.Required, signInId: null, message);
     }
 
+    /// <summary>Whether the bridge holds tokens for an <c>auth.oauth</c> server.</summary>
+    private Task<bool> HasOAuthTokensAsync(McpBridgeServerConfig config, CancellationToken ct) =>
+        OAuthTokens.HasTokensAsync(config.Url!, NullIfBlank(config.Auth!.OAuth!.ClientId), ct);
+
+    /// <summary>
+    /// Retires a connection whose server stopped accepting the agent's tokens, and takes its tools
+    /// out of the agent's view, until the user signs in again. The configuration stays, so the
+    /// sign-in and the sign-in prompt still know the server.
+    /// </summary>
+    private async Task DropSignedOutConnectionAsync(string serverName, McpClient client)
+    {
+        using (await _connections.LockAsync(serverName, CancellationToken.None))
+        {
+            // Someone may have reconnected it meanwhile (a sign-in that just completed).
+            if (!_connections.TryGet(serverName, out var current) || !ReferenceEquals(current.Client, client))
+                return;
+            _connections.Remove(serverName, forgetConfig: false);
+            _lastSurfaceCheck.TryRemove(serverName, out _);
+        }
+
+        _logger.LogInformation("Disconnected MCP server {Name} until the user signs in again", serverName);
+        await PublishServersIndexedAsync([], [serverName], CancellationToken.None);
+    }
+
     /// <summary>A connect to an OAuth server succeeded: whatever sign-in it needed is done.</summary>
     private void ClearSignInRequired(string serverName)
     {

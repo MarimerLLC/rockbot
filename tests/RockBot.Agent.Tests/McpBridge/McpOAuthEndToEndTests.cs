@@ -26,14 +26,15 @@ public class McpOAuthEndToEndTests
         (string text) => $"echo:{text}",
         new McpServerToolCreateOptions { Name = "echo" });
 
-    private static async Task<(BridgeHarness Harness, FakeOAuthServer Auth)> StartAsync()
+    private static async Task<(BridgeHarness Harness, FakeOAuthServer Auth)> StartAsync(
+        string? clientId = FakeOAuthServer.ClientId)
     {
         var auth = new FakeOAuthServer();
         var harness = await BridgeHarness.StartAsync(
             [Echo()],
             configure: entry => entry.Auth = new McpServerAuthConfig
             {
-                OAuth = new McpServerOAuthConfig { ClientId = FakeOAuthServer.ClientId }
+                OAuth = new McpServerOAuthConfig { ClientId = clientId }
             },
             configureServerApp: auth.Mount);
         return (harness, auth);
@@ -175,12 +176,52 @@ public class McpOAuthEndToEndTests
         var response = await harness.InvokeAsync("echo", """{"text":"x"}""");
         Assert.IsTrue(response.IsError);
         StringAssert.Contains(response.Content, "needs the user to sign in");
+
+        // The signed-out connection is dropped, so later calls don't retry the failed refresh.
+        var refreshesAfterFailure = auth.RefreshGrants;
+        response = await harness.InvokeAsync("echo", """{"text":"again"}""");
+        Assert.IsTrue(response.IsError);
+        StringAssert.Contains(response.Content, "needs the user to sign in");
+        var listed = (await harness.RequestAsync(SignInTopic, new McpSignInListRequest()))
+            .GetPayload<McpSignInListResponse>()!.Servers.Single();
+        Assert.IsFalse(listed.Connected);
+        Assert.AreEqual(McpSignInState.Required, listed.State);
+        Assert.AreEqual(refreshesAfterFailure, auth.RefreshGrants);
         Assert.AreEqual(2, Statuses(harness).Count(s => s.State == McpSignInState.Required),
             "the revoked grant is reported again, after the first sign-in cleared it");
 
         await SignInAsync(harness);
         response = await harness.InvokeAsync("echo", """{"text":"y"}""");
         Assert.IsFalse(response.IsError, response.Content);
+    }
+
+    [TestMethod]
+    public async Task DynamicRegistration_HappensOnlyForTheSignInTheUserStarts()
+    {
+        // No client id: the bridge registers with the authorization server. Startup, restarts and
+        // calls before the sign-in must not each register a client (servers rate-limit DCR).
+        var (harness, auth) = await StartAsync(clientId: null);
+        await using var _harness = harness;
+
+        await WaitForStatusAsync(harness, McpSignInState.Required);
+        await harness.RestartBridgeAsync();
+        var refused = await harness.InvokeAsync("echo", """{"text":"x"}""");
+        StringAssert.Contains(refused.Content, "needs the user to sign in");
+        Assert.AreEqual(0, auth.Registrations);
+
+        await SignInAsync(harness);
+        Assert.AreEqual(1, auth.Registrations);
+
+        var response = await harness.InvokeAsync("echo", """{"text":"dcr"}""");
+        Assert.IsFalse(response.IsError, response.Content);
+
+        // The registration is kept with the tokens: a restart refreshes without registering again.
+        await harness.RestartBridgeAsync();
+        auth.ExpireAccessTokens();
+        response = await harness.InvokeAsync("echo", """{"text":"later"}""");
+        Assert.IsFalse(response.IsError, response.Content);
+        Assert.AreEqual(1, auth.Registrations);
+        Assert.IsTrue(auth.RefreshGrants >= 1);
     }
 
     [TestMethod]

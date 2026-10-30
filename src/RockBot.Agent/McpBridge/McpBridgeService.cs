@@ -633,6 +633,15 @@ public sealed partial class McpBridgeService : IHostedService, IAsyncDisposable
         // server that never connected.
         _connections.SetConfig(name, config);
 
+        // An OAuth server the user hasn't signed in to can only answer 401, and finding that out
+        // can cost its authorization server a dynamic client registration on every attempt —
+        // which some rate-limit. Ask the user instead; the sign-in they start connects it.
+        if (config.Auth?.OAuth is not null && !await HasOAuthTokensAsync(config, ct))
+        {
+            MarkSignInRequired(name, DescribeSignInRequired(name));
+            return;
+        }
+
         var maxAttempts = 1 + Math.Max(0, _options.ConnectRetryCount);
         var delayMs = _options.ConnectRetryBaseDelayMs;
 
@@ -2600,6 +2609,11 @@ public sealed partial class McpBridgeService : IHostedService, IAsyncDisposable
                 Message = server.Config.Auth?.OAuth is not null ? reauth.Message : BuildReauthRequiredMessage(reauth),
                 IsRetryable = false
             };
+
+            // A signed-out OAuth connection would repeat the failed refresh (and possibly a client
+            // registration) on every call; drop it so calls get the sign-in message straight away.
+            if (server.Config.Auth?.OAuth is not null)
+                await DropSignedOutConnectionAsync(serverName, server.Client);
 
             await PublishToTargetAsync(error, target, ct);
         }
