@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using Microsoft.Extensions.Logging;
 using ModelContextProtocol.Authentication;
 using ModelContextProtocol.Client;
+using ModelContextProtocol.Protocol;
 using RockBot.Agent.McpBridge.Auth;
 using RockBot.Messaging;
 using RockBot.Tools.Mcp.Auth;
@@ -96,7 +97,7 @@ public sealed partial class McpBridgeService
             DynamicClientRegistration = new DynamicClientRegistrationOptions { ClientName = $"RockBot ({_agentName})" },
             TokenCache = signIn is null
                 ? OAuthTokens.CacheFor(config.Url!, clientId)
-                : OAuthTokens.FreshCacheFor(config.Url!, clientId),
+                : signIn.TokenCache = OAuthTokens.FreshCacheFor(config.Url!, clientId),
             AuthorizationCallbackHandler = signIn is null
                 ? (_, _) => SignInRequiredAsync(serverName)
                 : signIn.WaitForUserAsync,
@@ -289,12 +290,7 @@ public sealed partial class McpBridgeService
         string? failure = null;
         try
         {
-            var transport = CreateTransport(name, config, BuildOAuthOptions(name, config, signIn));
-            // The connect is only there to drive the SDK through authorization; the tokens it stores
-            // are what matters. The normal connect below opens the connection that serves calls.
-            await using (await McpClient.CreateAsync(transport, new McpClientOptions(), cancellationToken: cts.Token))
-            {
-            }
+            await AuthorizeAsync(signIn, CreateTransport(name, config, BuildOAuthOptions(name, config, signIn)), cts.Token);
             state = UserProxy.McpSignInState.Completed;
         }
         catch (OperationCanceledException) when (signIn.Cancellation.IsCancellationRequested || _lifetime.IsCancellationRequested)
@@ -345,6 +341,37 @@ public sealed partial class McpBridgeService
             }
         }
         return null;
+    }
+
+    /// <summary>
+    /// Drives the SDK's OAuth client through one authorization by sending a single request, and
+    /// returns once the sign-in's tokens are stored. Deliberately not an MCP handshake: the client's
+    /// handshake has its own timeouts (a 5-second <c>server/discover</c> probe that falls back to
+    /// <c>initialize</c>, a 60-second initialization budget), and a person at a sign-in page outlasts
+    /// both — the fallback's request asks for a second authorization and the first one is lost.
+    /// One request waits on the user for as long as the sign-in allows. The normal connect that
+    /// follows opens the connection that serves calls.
+    /// </summary>
+    private static async Task AuthorizeAsync(PendingSignIn signIn, IClientTransport transport, CancellationToken ct)
+    {
+        await using var session = await transport.ConnectAsync(ct);
+        try
+        {
+            await session.SendMessageAsync(
+                new JsonRpcRequest { Id = new RequestId(1), Method = RequestMethods.Ping }, ct);
+        }
+        catch (Exception) when (!ct.IsCancellationRequested)
+        {
+            // Authorized, but the server didn't care for a bare ping (a session server wants
+            // initialize first)? The sign-in is done all the same: its tokens are stored.
+            if (await signIn.HasTokensAsync())
+                return;
+            throw;
+        }
+
+        if (!await signIn.HasTokensAsync())
+            throw new McpSignInRefusedException(
+                $"The MCP server \"{signIn.ServerName}\" answered without asking for a sign-in, so there was nothing to sign in to.");
     }
 
     /// <summary>A user interface relayed the authorization server's redirect.</summary>
@@ -447,6 +474,13 @@ public sealed partial class McpBridgeService
         public Task<Uri> Challenge => _challenge.Task;
 
         public CancellationToken Cancellation => _cancel.Token;
+
+        /// <summary>The token cache this sign-in's connect stores into; empty until it succeeds.</summary>
+        public ITokenCache? TokenCache { get; set; }
+
+        /// <summary>Whether this sign-in has stored tokens.</summary>
+        public async Task<bool> HasTokensAsync() =>
+            TokenCache is not null && await TokenCache.GetTokensAsync(CancellationToken.None) is not null;
 
         /// <summary>The sign-in callback the SDK calls with the authorization URL.</summary>
         public async Task<AuthorizationResult?> WaitForUserAsync(AuthorizationCallbackContext context, CancellationToken ct)

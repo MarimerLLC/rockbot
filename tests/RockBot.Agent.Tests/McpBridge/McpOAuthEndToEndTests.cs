@@ -135,6 +135,32 @@ public class McpOAuthEndToEndTests
     }
 
     [TestMethod]
+    public async Task SlowUser_StillSignsIn()
+    {
+        // A person takes a while at the sign-in page. Nothing in the sign-in may time out or retry
+        // in the meantime: the SDK's 5-second server/discover probe once fell back to initialize
+        // mid-wait, which asked for a second authorization and killed the sign-in.
+        var (harness, auth) = await StartAsync();
+        await using var _harness = harness;
+
+        var start = await StartSignInAsync(harness);
+        Assert.IsNull(start.Error, start.Error);
+
+        await Task.Delay(TimeSpan.FromSeconds(7));
+        Assert.IsFalse(Statuses(harness).Any(s => McpSignInState.IsTerminal(s.State)),
+            "the sign-in is still waiting for the user");
+
+        var redirect = await FollowInBrowserAsync(start.AuthorizationUri!);
+        await harness.DeliverAsync(SignInTopic, CallbackFrom(redirect));
+        await WaitForStatusAsync(harness, McpSignInState.Completed, start.SignInId);
+        Assert.AreEqual(1, auth.CodeGrants);
+        Assert.AreEqual(1, auth.AuthorizeRedirects.Count, "one authorization, not one per retry");
+
+        var response = await harness.InvokeAsync("echo", """{"text":"slow"}""");
+        Assert.IsFalse(response.IsError, response.Content);
+    }
+
+    [TestMethod]
     public async Task SignedIn_SurvivesARestart_WithoutAskingAgain()
     {
         var (harness, auth) = await StartAsync();
