@@ -270,8 +270,14 @@ public class McpBridgeServerConfigTests
     [TestMethod]
     public void AuthValidate_RejectsARelativeClientMetadataDocument()
     {
-        var auth = new McpServerAuthConfig { OAuth = new McpServerOAuthConfig { ClientMetadataDocumentUri = "/client.json" } };
-        StringAssert.Contains(auth.Validate(), "clientMetadataDocumentUri");
+        static string? Validate(string cimd) =>
+            new McpServerAuthConfig { OAuth = new McpServerOAuthConfig { ClientMetadataDocumentUri = cimd } }.Validate();
+
+        // "/client.json" is the case that differs by platform: Linux parses it as file:///client.json.
+        foreach (var bad in new[] { "/client.json", "client.json", "file:///client.json", "http://rockbot.example/client.json" })
+            StringAssert.Contains(Validate(bad), "clientMetadataDocumentUri", bad);
+
+        Assert.IsNull(Validate("https://rockbot.example/oauth/client.json"));
     }
 
     [TestMethod]

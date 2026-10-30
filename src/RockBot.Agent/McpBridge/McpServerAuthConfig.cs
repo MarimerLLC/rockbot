@@ -30,9 +30,12 @@ public sealed class McpServerAuthConfig
         if (hasProfile == (OAuth is not null))
             return "set exactly one of 'auth.profile' and 'auth.oauth'";
 
+        // A client metadata document's URL is the client id, and must be HTTPS. Checking the
+        // scheme matters beyond that: on Linux a rooted path like "/client.json" parses as an
+        // absolute file:// URI.
         if (OAuth?.ClientMetadataDocumentUri is { Length: > 0 } cimd
-            && !Uri.TryCreate(cimd, UriKind.Absolute, out _))
-            return $"'auth.oauth.clientMetadataDocumentUri' ('{cimd}') is not an absolute URL";
+            && !(Uri.TryCreate(cimd, UriKind.Absolute, out var cimdUri) && cimdUri.Scheme == Uri.UriSchemeHttps))
+            return $"'auth.oauth.clientMetadataDocumentUri' ('{cimd}') is not an absolute https URL";
 
         return null;
     }
