@@ -129,6 +129,20 @@ public sealed class McpBridgeOptions
     public int TaskPollFailureLimit { get; set; } = 10;
 
     /// <summary>
+    /// Where the bridge keeps the OAuth tokens of servers the user signed in to (<c>auth.oauth</c>
+    /// in <c>mcp.json</c>, #738): one file per server, readable only by the agent. A relative path
+    /// resolves next to <see cref="ConfigPath"/>. Default <c>secrets/mcp-oauth</c>, which is
+    /// <c>/data/agent/secrets/mcp-oauth</c> in the agent pod, beside the Work IQ cache.
+    /// </summary>
+    public string OAuthTokenDirectory { get; set; } = "secrets/mcp-oauth";
+
+    /// <summary>
+    /// How long a started OAuth sign-in waits for the user to finish it in the browser before
+    /// the bridge gives up on it.
+    /// </summary>
+    public int OAuthSignInTimeoutSeconds { get; set; } = 600;
+
+    /// <summary>
     /// Reads <c>DefaultElicitation:Defaults</c> from the bridge's configuration section.
     /// </summary>
     /// <remarks>

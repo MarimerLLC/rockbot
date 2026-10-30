@@ -15,6 +15,13 @@ public static class UserProxyTopics
 
     /// <summary>The user's answer to a handed-back MCP question shown as a form (<see cref="McpQuestionAnswer"/>).</summary>
     public const string McpAnswer = "user.mcp.answer";
+
+    /// <summary>
+    /// MCP OAuth sign-in requests from a user interface to the agent's bridge
+    /// (<see cref="McpSignInStartRequest"/>, <see cref="McpSignInCallback"/>,
+    /// <see cref="McpSignInListRequest"/>), suffixed with the agent name.
+    /// </summary>
+    public const string McpSignIn = "user.mcp.signin";
     public const string AgentInfoRequest = "agent.info.request";
     public const string AgentInfoResponse = "agent.info.response";
     public const string ActiveStatusRequest = "agent.status.request";

@@ -289,6 +289,22 @@ not have to adopt Tailscale to be secured.
 Setup is a Google Cloud Console walkthrough plus a values block:
 [`deploy/blazor-oauth-setup.md`](../deploy/blazor-oauth-setup.md).
 
+### Signing in to MCP servers
+
+This is separate from signing in to the UI. Some MCP servers the agent uses protect themselves
+with OAuth (`auth.oauth` in `mcp.json`), and the agent can't call them until you sign in to
+them:
+
+- **The prompt.** Each such server shows a banner above the chat. **Sign in**, then **Continue to
+  sign-in**, opens the server's sign-in page in a new tab.
+- **The callback.** The page sends the browser back to `/mcp-oauth/callback`, which hands the
+  result to the agent. The agent finishes the sign-in itself and keeps the tokens, so the UI
+  never holds them.
+- **Client registration.** The server's OAuth client must accept
+  `https://<this host>/mcp-oauth/callback` as a redirect URI.
+
+See [`design/mcp-oauth.md`](../design/mcp-oauth.md).
+
 ### It is a doorman, not a tenancy model
 
 Everyone who signs in still shares one conversation with the agent — the chat page pins a

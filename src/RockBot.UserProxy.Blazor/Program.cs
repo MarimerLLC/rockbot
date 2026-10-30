@@ -30,6 +30,9 @@ builder.Services.AddUserProxy(opts =>
 builder.Services.AddSingleton<IUserFrontend, BlazorUserFrontend>();
 builder.Services.AddSingleton<ChatStateService>();
 
+// MCP OAuth sign-in prompts (#738): which servers need the user to sign in, fed by the agent.
+builder.Services.AddSingleton<McpSignInStateService>();
+
 // WorkIQ device-code flow + expired-notification listener. Always registered;
 // the flow itself fails fast with a NotConfigured error if WorkIQ settings
 // are not present in configuration, so deployments without WorkIQ pay only
@@ -89,6 +92,10 @@ app.MapGet("/attachments", (string? file) =>
 // default policy is permissive when Auth:Enabled=false, so this stays a no-op for deployments
 // that have not turned sign-in on.
 .RequireAuthorization();
+
+// Where an MCP server's authorization server sends the browser back after the user signs in;
+// relays the code to the agent, which completes the sign-in.
+app.MapMcpSignInCallback();
 
 app.MapRazorComponents<App>()
     .AddInteractiveServerRenderMode();

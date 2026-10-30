@@ -509,6 +509,13 @@ So after a restart each in-flight task is either polled again or reported lost, 
 
 `id` is assigned by the bridge when absent. Don't hand-edit it.
 
+`auth` takes one of two forms:
+
+- `{ "profile": "workiq" }` is a named token provider ([`workiq-integration.md`](workiq-integration.md)).
+- `{ "oauth": { … } }` is the MCP authorization spec's OAuth flow. The bridge runs the OAuth
+  client, and the user signs in from the web chat or `rockbot auth mcp`. See
+  [`mcp-oauth.md`](mcp-oauth.md).
+
 Only HTTP servers connect. An entry with `command`/`args`/`env` (stdio) still parses, but the bridge skips it with a warning: it runs inside the agent and doesn't launch server processes.
 
 ## Protocol versions (MCP C# SDK 2.x)

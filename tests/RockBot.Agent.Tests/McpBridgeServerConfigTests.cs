@@ -224,6 +224,74 @@ public class McpBridgeServerConfigTests
         Assert.AreEqual(a.CanonicalIdentity(), b.CanonicalIdentity());
     }
 
+    // ── OAuth (#738) ──────────────────────────────────────────────────────────
+
+    private static McpBridgeServerConfig OAuthEntry(string? clientId) => new()
+    {
+        Type = "streamable-http",
+        Url = "https://srv/",
+        Auth = new McpServerAuthConfig { OAuth = new McpServerOAuthConfig { ClientId = clientId } }
+    };
+
+    [TestMethod]
+    public void CanonicalIdentity_OAuth_DifferentiatesFromUnauthenticated_AndByClient()
+    {
+        var unauth = new McpBridgeServerConfig { Type = "streamable-http", Url = "https://srv/" };
+
+        Assert.AreNotEqual(unauth.CanonicalIdentity(), OAuthEntry(null).CanonicalIdentity());
+        Assert.AreNotEqual(OAuthEntry("a").CanonicalIdentity(), OAuthEntry("b").CanonicalIdentity());
+        Assert.AreEqual(OAuthEntry("a").CanonicalIdentity(), OAuthEntry(" a ").CanonicalIdentity());
+    }
+
+    [TestMethod]
+    public void CanonicalIdentity_ProfileEntry_IsUnchangedByTheOAuthSupport()
+    {
+        // Existing entries keep the identity (and so the persisted id hash) they had.
+        var entry = new McpBridgeServerConfig
+        {
+            Type = "streamable-http",
+            Url = "https://srv/",
+            Auth = new McpServerAuthConfig { Profile = "workiq" }
+        };
+
+        StringAssert.EndsWith(entry.CanonicalIdentity(), "workiq");
+    }
+
+    [TestMethod]
+    public void AuthValidate_RequiresExactlyOneOfProfileAndOAuth()
+    {
+        Assert.IsNull(new McpServerAuthConfig { Profile = "workiq" }.Validate());
+        Assert.IsNull(new McpServerAuthConfig { OAuth = new McpServerOAuthConfig() }.Validate());
+        Assert.IsNotNull(new McpServerAuthConfig().Validate());
+        Assert.IsNotNull(new McpServerAuthConfig { Profile = " " }.Validate());
+        Assert.IsNotNull(new McpServerAuthConfig { Profile = "workiq", OAuth = new McpServerOAuthConfig() }.Validate());
+    }
+
+    [TestMethod]
+    public void AuthValidate_RejectsARelativeClientMetadataDocument()
+    {
+        var auth = new McpServerAuthConfig { OAuth = new McpServerOAuthConfig { ClientMetadataDocumentUri = "/client.json" } };
+        StringAssert.Contains(auth.Validate(), "clientMetadataDocumentUri");
+    }
+
+    [TestMethod]
+    public void OAuthBlock_ReadsFromMcpJson()
+    {
+        var json = """
+            { "mcpServers": { "tasks": { "type": "http", "url": "https://srv/mcp",
+              "auth": { "oauth": { "clientId": "abc", "clientSecret": "${TASKS_SECRET}", "scopes": ["tasks.read"] } } } } }
+            """;
+
+        var config = System.Text.Json.JsonSerializer.Deserialize<McpBridgeConfig>(json,
+            new System.Text.Json.JsonSerializerOptions { PropertyNameCaseInsensitive = true })!;
+
+        var oauth = config.McpServers["tasks"].Auth!.OAuth!;
+        Assert.AreEqual("abc", oauth.ClientId);
+        Assert.AreEqual("${TASKS_SECRET}", oauth.ClientSecret);
+        CollectionAssert.AreEqual(new[] { "tasks.read" }, oauth.Scopes);
+        Assert.IsNull(config.McpServers["tasks"].Auth!.Validate());
+    }
+
     [TestMethod]
     public void CanonicalIdentity_DiffersOnlyByArgGuards_AreEqual()
     {

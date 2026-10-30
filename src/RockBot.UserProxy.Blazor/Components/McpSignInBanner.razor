@@ -1,0 +1,136 @@
+@using RockBot.UserProxy.Blazor.Services
+@inject McpSignInStateService SignIns
+@inject UserProxyService Proxy
+@inject NavigationManager Navigation
+@inject ILogger<McpSignInBanner> Logger
+@implements IDisposable
+
+@* One prompt per OAuth-protected MCP server the user hasn't signed in to (#738). "Sign in" asks
+   the agent for the server's authorization URL; the user opens it from a link rather than a
+   script-opened window, which a popup blocker would stop once an await sits in between. *@
+@foreach (var server in SignIns.NeedingSignIn)
+{
+    var started = _started.GetValueOrDefault(server.ServerName);
+    <div class="alert alert-warning mcp-signin-banner d-flex justify-content-between align-items-center mb-0"
+         role="alert">
+        <div>
+            @if (server.State == McpSignInState.Required)
+            {
+                <strong>@server.ServerName needs you to sign in.</strong>
+                <span class="ms-2 small text-muted">Its tools are unavailable until you do.</span>
+            }
+            else
+            {
+                <strong>Sign-in to @server.ServerName didn't finish.</strong>
+                @if (!string.IsNullOrWhiteSpace(server.Message))
+                {
+                    <span class="ms-2 small text-muted">@server.Message</span>
+                }
+            }
+            @if (_errors.GetValueOrDefault(server.ServerName) is { } error)
+            {
+                <div class="small text-danger mt-1">@error</div>
+            }
+        </div>
+        <div class="d-flex gap-2 align-items-center">
+            @if (started?.AuthorizationUri is { } authorizationUri)
+            {
+                <a class="btn btn-sm btn-warning" href="@authorizationUri" target="_blank" rel="noopener noreferrer">
+                    Continue to sign-in ↗
+                </a>
+                <button class="btn btn-sm btn-link" @onclick="() => StartAsync(server.ServerName)"
+                        disabled="@_starting.Contains(server.ServerName)" title="Start over">Restart</button>
+            }
+            else
+            {
+                <button class="btn btn-sm btn-warning" @onclick="() => StartAsync(server.ServerName)"
+                        disabled="@_starting.Contains(server.ServerName)">
+                    @(_starting.Contains(server.ServerName) ? "Starting…" : "Sign in")
+                </button>
+            }
+        </div>
+    </div>
+}
+
+@code {
+    // Per server: the sign-in this page started, and why the last start failed.
+    private readonly Dictionary<string, McpSignInStartResponse> _started = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, string> _errors = new(StringComparer.OrdinalIgnoreCase);
+    // Guards against a double click starting two sign-ins, the second replacing the first.
+    private readonly HashSet<string> _starting = new(StringComparer.OrdinalIgnoreCase);
+
+    protected override void OnInitialized()
+    {
+        SignIns.StateChanged += HandleStateChanged;
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        // The agent broadcasts changes; servers that needed a sign-in before this app started
+        // come from its list, asked once per app.
+        if (!firstRender || !SignIns.TryClaimSeed())
+            return;
+
+        try
+        {
+            var list = await Proxy.ListMcpSignInsAsync(TimeSpan.FromSeconds(15));
+            if (list is null)
+                SignIns.ReleaseSeed();
+            else
+                SignIns.Seed(list);
+        }
+        catch (Exception ex)
+        {
+            SignIns.ReleaseSeed();
+            Logger.LogWarning(ex, "Could not ask the agent which MCP servers need a sign-in");
+        }
+    }
+
+    private async Task StartAsync(string serverName)
+    {
+        if (!_starting.Add(serverName))
+            return;
+
+        _errors.Remove(serverName);
+        _started.Remove(serverName);
+        try
+        {
+            var redirectUri = new Uri(new Uri(Navigation.BaseUri), McpSignInEndpoints.CallbackPath.TrimStart('/')).AbsoluteUri;
+            var response = await Proxy.StartMcpSignInAsync(serverName, redirectUri, TimeSpan.FromSeconds(90));
+            if (response is null)
+                _errors[serverName] = "The agent didn't answer. Try again.";
+            else if (response.Error is not null)
+                _errors[serverName] = response.Error;
+            else if (response.AuthorizationUri is null)
+                _errors[serverName] = $"{serverName} didn't ask for a sign-in; it may already be connected.";
+            else
+                _started[serverName] = response;
+        }
+        catch (Exception ex)
+        {
+            Logger.LogWarning(ex, "Starting the sign-in to MCP server {Server} failed", serverName);
+            _errors[serverName] = "The sign-in couldn't be started. Try again.";
+        }
+        finally
+        {
+            _starting.Remove(serverName);
+        }
+    }
+
+    private void HandleStateChanged() => InvokeAsync(() =>
+    {
+        // A prompt that went away (completed) or came back (failed) starts fresh.
+        foreach (var name in _started.Keys.ToList())
+        {
+            if (!SignIns.NeedingSignIn.Any(s => string.Equals(s.ServerName, name, StringComparison.OrdinalIgnoreCase)
+                                                && s.State == McpSignInState.Required))
+                _started.Remove(name);
+        }
+        StateHasChanged();
+    });
+
+    public void Dispose()
+    {
+        SignIns.StateChanged -= HandleStateChanged;
+    }
+}

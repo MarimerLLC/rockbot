@@ -37,4 +37,12 @@ public interface IUserFrontend
     /// </summary>
     Task OnMcpQuestionStatusAsync(McpQuestionStatus status, CancellationToken cancellationToken = default) =>
         Task.CompletedTask;
+
+    /// <summary>
+    /// Called when an MCP server's OAuth sign-in changes: it now needs the user to sign in, or a
+    /// sign-in finished, failed or expired. Frontends with a sign-in prompt show or clear it;
+    /// others ignore it, since a tool call to the server says it needs a sign-in anyway.
+    /// </summary>
+    Task OnMcpSignInStatusAsync(McpSignInStatus status, CancellationToken cancellationToken = default) =>
+        Task.CompletedTask;
 }

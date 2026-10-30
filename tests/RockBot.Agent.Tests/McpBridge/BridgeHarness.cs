@@ -167,7 +167,8 @@ internal sealed class BridgeHarness : IAsyncDisposable
         SessionClientCapabilityStore? clientCapabilities = null,
         IMcpTaskStore? taskStore = null,
         Action<McpTasksOptions>? configureTasks = null,
-        McpTaskRegistry? taskRegistry = null)
+        McpTaskRegistry? taskRegistry = null,
+        Action<WebApplication>? configureServerApp = null)
     {
         var builder = WebApplication.CreateSlimBuilder();
         builder.WebHost.UseUrls("http://127.0.0.1:0");
@@ -204,6 +205,8 @@ internal sealed class BridgeHarness : IAsyncDisposable
         });
 
         var server = builder.Build();
+        // Lets a test put middleware in front of the MCP endpoint (an OAuth-protected server).
+        configureServerApp?.Invoke(server);
         server.MapMcp("/mcp");
         await server.StartAsync();
 
@@ -431,6 +434,33 @@ internal sealed class BridgeHarness : IAsyncDisposable
             await Task.Delay(25);
         }
     }
+
+    /// <summary>
+    /// Delivers <paramref name="payload"/> to the bridge's subscription on <paramref name="topic"/>
+    /// with a reply-to, and returns the reply it published.
+    /// </summary>
+    public Task<MessageEnvelope> RequestAsync<T>(string topic, T payload) => SendAsync(topic, payload, headers: null);
+
+    /// <summary>Delivers <paramref name="payload"/> to the bridge's subscription on <paramref name="topic"/>, expecting no reply.</summary>
+    public Task DeliverAsync<T>(string topic, T payload) =>
+        _subscriber.DeliverAsync(topic, payload.ToEnvelope(source: AgentName));
+
+    /// <summary>Waits until the bridge publishes a message on <paramref name="topic"/> that matches <paramref name="match"/>.</summary>
+    public async Task<MessageEnvelope> WaitForAsync(string topic, Func<MessageEnvelope, bool> match, TimeSpan? timeout = null)
+    {
+        var deadline = DateTime.UtcNow + (timeout ?? TimeSpan.FromSeconds(15));
+        while (true)
+        {
+            if (PublishedOn(topic).FirstOrDefault(match) is { } found)
+                return found;
+            if (DateTime.UtcNow > deadline)
+                Assert.Fail($"The bridge published nothing matching on {topic} within the wait.");
+            await Task.Delay(25);
+        }
+    }
+
+    /// <summary>Where the bridge keeps OAuth tokens in this run.</summary>
+    public string OAuthTokenDirectory => Path.Combine(_configDir, "secrets", "mcp-oauth");
 
     private async Task<MessageEnvelope> SendAsync<T>(string topic, T payload, IReadOnlyDictionary<string, string>? headers)
     {
