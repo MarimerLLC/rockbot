@@ -94,6 +94,18 @@ agent:
   # e.g. "America/Chicago", "Europe/London", "Asia/Tokyo"
   # Defaults to UTC (the k8s node timezone) if unset.
   timezone: "America/Chicago"
+  # Follow the user's location (#740). When baseUrl is set the agent polls an
+  # OwnTracks Recorder: the user's current timezone overrides `timezone` above
+  # (which stays their home zone) and each turn's datetime line names their city.
+  # Empty baseUrl = disabled; the agent behaves exactly as it does without it.
+  #   baseUrl: Recorder HTTP base, e.g. http://owntracks-recorder.<ns>.svc.cluster.local:8083
+  #   user:    Recorder user name the phone publishes as
+  #   device:  optional; empty = newest fix across the user's devices
+  userLocation:
+    owntracks:
+      baseUrl: ""
+      user: ""
+      device: ""
   # Retention cap for tier-routing-log.jsonl (the routing-decision telemetry log
   # consumed by the dream self-correction pass and the introspection MCP server's
   # get_routing_summary tool). Once the cap is reached the logger trims the oldest

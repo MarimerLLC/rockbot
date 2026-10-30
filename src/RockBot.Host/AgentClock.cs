@@ -12,8 +12,15 @@ namespace RockBot.Host;
 ///   <item><c>Agent:Timezone</c> configuration (IANA ID, e.g. "America/Chicago")</item>
 ///   <item><see cref="TimeZoneInfo.Local"/> (UTC on a typical k8s node)</item>
 /// </list>
-/// The active timezone can be changed at runtime via <see cref="SetZoneAsync"/>, which
-/// also persists the new value to the profile directory so it survives restarts.
+/// That resolved zone is the user's <see cref="HomeZone"/>. It can be changed at runtime via
+/// <see cref="SetZoneAsync"/>, which also persists the new value to the profile directory so it
+/// survives restarts.
+/// <para>
+/// A location source (see <see cref="UserLocationService"/>) can lay an in-memory current zone over
+/// the home zone with <see cref="SetCurrentZone"/> while the user is travelling. <see cref="Zone"/>
+/// and <see cref="Now"/> follow that override, so every consumer tracks the user's local time.
+/// Without an override, <see cref="Zone"/> is the home zone.
+/// </para>
 /// </summary>
 public sealed class AgentClock
 {
@@ -21,12 +28,31 @@ public sealed class AgentClock
     private readonly ILogger<AgentClock> _logger;
     private readonly SemaphoreSlim _lock = new(1, 1);
     private TimeZoneInfo _zone;
+    private volatile TimeZoneInfo? _currentOverride;
 
-    /// <summary>The timezone the agent is currently operating in.</summary>
-    public TimeZoneInfo Zone => _zone;
+    /// <summary>
+    /// The timezone the agent is currently operating in: the user's current zone when a location
+    /// source has set one, otherwise <see cref="HomeZone"/>.
+    /// </summary>
+    public TimeZoneInfo Zone => _currentOverride ?? _zone;
+
+    /// <summary>
+    /// The user's configured (home) timezone: the persisted file, then <c>Agent:Timezone</c>,
+    /// then the system local zone. Set by <see cref="SetZoneAsync"/>.
+    /// </summary>
+    public TimeZoneInfo HomeZone => _zone;
+
+    /// <summary>True when a current zone is set and its UTC offset rules differ from the home zone.</summary>
+    public bool IsAwayFromHome => _currentOverride is { } current && !SameZone(current, _zone);
+
+    /// <summary>
+    /// Raised when <see cref="SetCurrentZone"/> changes the effective <see cref="Zone"/>.
+    /// Not raised by <see cref="SetZoneAsync"/>.
+    /// </summary>
+    public event EventHandler? ZoneChanged;
 
     /// <summary>Current date and time in the agent's active timezone.</summary>
-    public DateTimeOffset Now => TimeZoneInfo.ConvertTime(DateTimeOffset.UtcNow, _zone);
+    public DateTimeOffset Now => TimeZoneInfo.ConvertTime(DateTimeOffset.UtcNow, Zone);
 
     public AgentClock(
         IConfiguration config,
@@ -45,8 +71,9 @@ public sealed class AgentClock
     }
 
     /// <summary>
-    /// Updates the active timezone and persists it to the profile directory.
-    /// Takes effect immediately for all subsequent calls to <see cref="Now"/> and <see cref="Zone"/>.
+    /// Updates the user's home timezone (<see cref="HomeZone"/>) and persists it to the profile
+    /// directory. Takes effect immediately for all subsequent calls to <see cref="Now"/> and
+    /// <see cref="Zone"/> unless a current zone set by <see cref="SetCurrentZone"/> overrides it.
     /// </summary>
     public async Task SetZoneAsync(TimeZoneInfo zone)
     {
@@ -66,6 +93,60 @@ public sealed class AgentClock
             _lock.Release();
         }
     }
+
+    /// <summary>
+    /// Sets the user's current zone, in memory only, overriding <see cref="HomeZone"/> for
+    /// <see cref="Zone"/> and <see cref="Now"/>. Pass <c>null</c> to revert to the home zone.
+    /// Raises <see cref="ZoneChanged"/> when the effective zone actually changes.
+    /// </summary>
+    public void SetCurrentZone(TimeZoneInfo? zone)
+    {
+        var before = Zone;
+        _currentOverride = zone;
+        var after = Zone;
+
+        if (before.Id == after.Id)
+            return;
+
+        _logger.LogInformation("Current timezone changed from {From} to {To} (home {Home})",
+            before.Id, after.Id, _zone.Id);
+        ZoneChanged?.Invoke(this, EventArgs.Empty);
+    }
+
+    /// <summary>Spec meaning "the user's home zone" (also the meaning of a null spec).</summary>
+    public const string HomeSpec = "home";
+
+    /// <summary>Spec meaning "wherever the user currently is".</summary>
+    public const string LocalSpec = "local";
+
+    /// <summary>
+    /// Resolves a scheduled-task zone spec: null or <c>"home"</c> → <see cref="HomeZone"/>,
+    /// <c>"local"</c> → <see cref="Zone"/>, otherwise an IANA id. An unknown id falls back to
+    /// <see cref="HomeZone"/> with a warning.
+    /// </summary>
+    public TimeZoneInfo ResolveZone(string? spec)
+    {
+        if (string.IsNullOrWhiteSpace(spec) || spec.Equals(HomeSpec, StringComparison.OrdinalIgnoreCase))
+            return HomeZone;
+        if (spec.Equals(LocalSpec, StringComparison.OrdinalIgnoreCase))
+            return Zone;
+
+        if (TimeZoneInfo.TryFindSystemTimeZoneById(spec.Trim(), out var zone))
+            return zone;
+
+        _logger.LogWarning("Unknown timezone '{Spec}' — using home zone {Home}", spec, _zone.Id);
+        return HomeZone;
+    }
+
+    /// <summary>True when <paramref name="spec"/> is <c>"home"</c>, <c>"local"</c>, or a known IANA id.</summary>
+    public static bool IsValidSpec(string? spec) =>
+        !string.IsNullOrWhiteSpace(spec)
+        && (spec.Equals(HomeSpec, StringComparison.OrdinalIgnoreCase)
+            || spec.Equals(LocalSpec, StringComparison.OrdinalIgnoreCase)
+            || TimeZoneInfo.TryFindSystemTimeZoneById(spec.Trim(), out _));
+
+    private static bool SameZone(TimeZoneInfo a, TimeZoneInfo b) =>
+        a.Id == b.Id || a.HasSameRules(b);
 
     private TimeZoneInfo LoadZone(IConfiguration config)
     {

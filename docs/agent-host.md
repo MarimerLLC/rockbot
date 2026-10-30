@@ -674,6 +674,33 @@ See [Tool result chunking](tools.md#tool-result-chunking-all-tools) for full det
 
 ---
 
+## User location and timezones
+
+`AgentClock` keeps two zones. The **home** zone is the configured one: the `timezone` file that
+`set_timezone` writes, then `Agent:Timezone`, then the system zone. The **current** zone is an
+in-memory override that a location source sets while the user travels. `AgentClock.Zone` and
+`Now` follow the current zone when there is one, so the datetime line, the MCP time defaults and
+tool output all track the user's local time.
+
+`WithUserLocation` turns this on. `UserLocationService` polls an OwnTracks Recorder's
+`/api/0/last` (requesting only time, coordinates, accuracy, timezone, locality and country) and
+sets the current zone from the newest fix. A fix older than `MaxAge`, or none at all, reverts
+to home. When the user is away, the datetime line names the home zone too, and a fresh fix adds
+the city (or coordinates rounded to about 10 km when the Recorder has no geocoder). Precise
+coordinates never reach the prompt.
+
+Each scheduled task carries a zone: `local` follows the user, `home` (or no zone, as on tasks
+made before this existed) stays on home time, and an IANA id pins one zone. When the current
+zone changes, local tasks are re-armed. With location on, `schedule_task` requires the zone. A
+one-time `local` task is pinned to the zone the user is in when it's scheduled. Location also
+adds `set_task_time_zone`, which changes only a task's zone. It also adds the zone, output format
+and run-once flag to `list_scheduled_tasks`, and a time-zones section to the scheduling tool guide.
+
+With no `BaseUrl` nothing is registered, and the clock, prompts, tool schemas and tool output are
+exactly as they are without location.
+
+---
+
 ## Agent host builder
 
 `AgentHostBuilder` is the fluent configuration API. Access it via `AddRockBotHost`:
@@ -732,6 +759,7 @@ services.AddRockBotHost(agent =>
 | `WithFeedback()` | `IFeedbackStore` + `SessionSummaryService` |
 | `WithSkills()` | `ISkillStore` + `ISkillUsageStore` + `StarterSkillService` |
 | `WithDreaming()` | `DreamService` (IHostedService) |
+| `WithUserLocation(configure)` | `UserLocationState`, `IUserLocationProvider` (OwnTracks), `UserLocationService` (IHostedService). Registers nothing when `UserLocation:OwnTracks:BaseUrl` is empty |
 
 ---
 
@@ -853,9 +881,27 @@ Key configuration sections (from `appsettings.json` or environment variables):
     "BasePath": "feedback",
     "SessionIdleThreshold": "00:10:00",
     "PollInterval": "00:05:00"
+  },
+  "UserLocation": {
+    "PollInterval": "00:05:00",
+    "MaxAge": "3.00:00:00",
+    "OwnTracks": {
+      "BaseUrl": "",
+      "User": "",
+      "Device": ""
+    }
   }
 }
 ```
+
+| Key | Default | Meaning |
+|---|---|---|
+| `Agent:Timezone` | system local | The user's home timezone (IANA id). The `timezone` file written by `set_timezone` takes precedence |
+| `UserLocation:OwnTracks:BaseUrl` | empty | OwnTracks Recorder base URL. Empty disables location entirely |
+| `UserLocation:OwnTracks:User` | empty | Recorder user the phone publishes as |
+| `UserLocation:OwnTracks:Device` | empty | Optional device id; empty takes the newest fix across the user's devices |
+| `UserLocation:PollInterval` | `00:05:00` | How often the Recorder is polled |
+| `UserLocation:MaxAge` | `3.00:00:00` | Older fixes are ignored and the agent reverts to the home zone |
 
 `LLM.Balanced` is required. `LLM.Low` and `LLM.High` are optional — when absent they fall back
 to Balanced. The flat legacy keys `LLM.Endpoint`, `LLM.ApiKey`, `LLM.ModelId` are still

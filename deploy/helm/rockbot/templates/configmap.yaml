@@ -149,6 +149,19 @@ data:
   Agent__Timezone: {{ .Values.agent.timezone | quote }}
   {{- end }}
 
+  {{- with .Values.agent.userLocation }}
+  {{- if .owntracks.baseUrl }}
+  # ── User location (OwnTracks Recorder) ─────────────────────────────────────
+  UserLocation__OwnTracks__BaseUrl: {{ .owntracks.baseUrl | quote }}
+  {{- if .owntracks.user }}
+  UserLocation__OwnTracks__User: {{ .owntracks.user | quote }}
+  {{- end }}
+  {{- if .owntracks.device }}
+  UserLocation__OwnTracks__Device: {{ .owntracks.device | quote }}
+  {{- end }}
+  {{- end }}
+  {{- end }}
+
   {{- if .Values.telemetry.enabled }}
   # ── OpenTelemetry ──────────────────────────────────────────────────────────
   Telemetry__Enabled: "true"

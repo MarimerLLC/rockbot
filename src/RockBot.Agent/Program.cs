@@ -429,6 +429,9 @@ builder.Services.AddRockBotHost(agent =>
     agent.AddToolHandler();
     // #685: convert_time, so cross-zone times use the DST rules of the date in question.
     agent.AddTimeTools();
+    // #740: follow the user's timezone and coarse whereabouts. Registers nothing unless
+    // UserLocation:OwnTracks:BaseUrl is set.
+    agent.WithUserLocation(o => builder.Configuration.GetSection("UserLocation").Bind(o));
     // The proxy must outwait the bridge: the bridge caps a tool call at MaxTimeoutMs
     // (15 min) and answers with a timeout response of its own. If the proxy gave up
     // first the caller would see a transport failure instead of that response.

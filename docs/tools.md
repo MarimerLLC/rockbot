@@ -1080,9 +1080,10 @@ Three tools for managing recurring and one-time scheduled tasks.
 
 | Tool | Purpose |
 |---|---|
-| `schedule_task(name, cron, description, run_once?)` | Create or replace a scheduled task |
+| `schedule_task(name, cron, description, run_once?, timeZone)` | Create or replace a scheduled task. `timeZone` exists only when the agent follows the user's location, and is then required |
 | `list_scheduled_tasks()` | Markdown table of all tasks with next-fire times |
 | `cancel_scheduled_task(name)` | Remove a task by name |
+| `set_task_time_zone(name, timeZone)` | Change only an existing task's zone, keeping its cron, description, output format and directive. Registered only when the agent follows the user's location |
 
 ### Cron format
 
@@ -1102,6 +1103,13 @@ for day-of-week. The scheduler automatically removes the task after it fires.
 
 **Relative times:** The scheduler always shows current time and timezone in `list_scheduled_tasks`
 output so the agent can compute correct cron expressions from requests like "remind me in 2 hours".
+
+**Home vs local:** On an agent with `WithUserLocation`, every task is marked `local` (follows the
+user as they travel, e.g. a morning brief), `home` (home-office hours), or a fixed IANA id, and
+the cron fields are read in that zone. `list_scheduled_tasks` then also shows each task's zone, output
+format and run-once flag, so the agent can re-create a task with `schedule_task` without losing anything,
+and `set_task_time_zone` moves a task between zones without re-creating it. See
+[User location and timezones](agent-host.md#user-location-and-timezones).
 
 ### DI registration
 

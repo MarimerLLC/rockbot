@@ -32,6 +32,11 @@ namespace RockBot.Host;
 /// (markdown-only). Scheduled tasks deliberately ignore the live-session capability stash
 /// because their audience is unpredictable at fire time.
 /// </param>
+/// <param name="TimeZone">
+/// Which zone the cron fields are written in: <c>"home"</c> (or null) for the user's home zone,
+/// <c>"local"</c> to follow the user's current zone as they travel, or a fixed IANA id. Null keeps
+/// the behavior of tasks scheduled before per-task zones existed.
+/// </param>
 public sealed record ScheduledTask(
     string Name,
     string CronExpression,
@@ -41,4 +46,5 @@ public sealed record ScheduledTask(
     bool RunOnce = false,
     bool IsSystemTask = false,
     string? Directive = null,
-    ClientCapabilities ClientCapabilities = ClientCapabilities.None);
+    ClientCapabilities ClientCapabilities = ClientCapabilities.None,
+    string? TimeZone = null);
