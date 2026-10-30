@@ -37,6 +37,9 @@ internal sealed class FakeOAuthServer
     /// <summary>Every <c>/authorize</c> request's redirect URI, newest last.</summary>
     public ConcurrentQueue<string> AuthorizeRedirects { get; } = new();
 
+    /// <summary>Accepts <paramref name="token"/> as a bearer, as a personal access token would be.</summary>
+    public void AcceptStaticToken(string token) => _accessTokens[token] = 0;
+
     /// <summary>Invalidates every access token, as their expiry would; refresh tokens stay good.</summary>
     public void ExpireAccessTokens() => _accessTokens.Clear();
 

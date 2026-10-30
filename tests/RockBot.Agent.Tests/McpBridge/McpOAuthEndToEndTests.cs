@@ -251,6 +251,40 @@ public class McpOAuthEndToEndTests
     }
 
     [TestMethod]
+    public async Task SwitchingAnEntryFromAStaticTokenToOAuth_StopsUsingTheToken()
+    {
+        // As done live: a server reached with a PAT header, then the header replaced by auth.oauth.
+        var auth = new FakeOAuthServer();
+        auth.AcceptStaticToken("pat-1");
+        await using var harness = await BridgeHarness.StartAsync(
+            [Echo()],
+            configure: entry => entry.Headers["Authorization"] = "Bearer pat-1",
+            configureServerApp: auth.Mount);
+
+        var before = await harness.InvokeAsync("echo", """{"text":"pat"}""");
+        Assert.IsFalse(before.IsError, before.Content);
+
+        harness.EditPersistedEntry(BridgeHarness.ServerName, entry =>
+        {
+            entry.Headers.Clear();
+            entry.Auth = new McpServerAuthConfig { OAuth = new McpServerOAuthConfig { ClientId = FakeOAuthServer.ClientId } };
+        });
+        await harness.ReloadConfigAsync();
+
+        var after = await harness.InvokeAsync("echo", """{"text":"pat"}""");
+        Assert.IsTrue(after.IsError, "the connection made with the removed token no longer serves calls");
+        StringAssert.Contains(after.Content, "needs the user to sign in");
+        var listed = (await harness.RequestAsync(SignInTopic, new McpSignInListRequest()))
+            .GetPayload<McpSignInListResponse>()!.Servers.Single();
+        Assert.IsFalse(listed.Connected);
+        Assert.AreEqual(McpSignInState.Required, listed.State);
+
+        await SignInAsync(harness);
+        var signedIn = await harness.InvokeAsync("echo", """{"text":"oauth"}""");
+        Assert.IsFalse(signedIn.IsError, signedIn.Content);
+    }
+
+    [TestMethod]
     public async Task RefusedConsent_FailsTheSignIn_WithTheReason()
     {
         var (harness, _) = await StartAsync();

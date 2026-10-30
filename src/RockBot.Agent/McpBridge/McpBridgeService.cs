@@ -638,6 +638,18 @@ public sealed partial class McpBridgeService : IHostedService, IAsyncDisposable
         // which some rate-limit. Ask the user instead; the sign-in they start connects it.
         if (config.Auth?.OAuth is not null && !await HasOAuthTokensAsync(config, ct))
         {
+            // A connection already open was made under the entry's old auth (a static token the
+            // operator just replaced with OAuth, say). Keeping it would go on using the credential
+            // the operator removed, so it goes, and its tools with it, until the user signs in.
+            if (previous is not null)
+            {
+                _connections.Remove(name, forgetConfig: false);
+                _lastSurfaceCheck.TryRemove(name, out _);
+                _logger.LogInformation(
+                    "Disconnected MCP server {Name}: its entry now uses OAuth and the user hasn't signed in", name);
+                await PublishServersIndexedAsync([], [name], ct);
+            }
+
             MarkSignInRequired(name, DescribeSignInRequired(name));
             return;
         }
@@ -3751,6 +3763,9 @@ public sealed partial class McpBridgeService : IHostedService, IAsyncDisposable
             TimeSpan.FromMilliseconds(500),
             Timeout.InfiniteTimeSpan);
     }
+
+    /// <summary>Reloads <c>mcp.json</c> now, as a detected edit does after its debounce. For tests.</summary>
+    internal Task ReloadConfigNowAsync() => LoadConfigAndConnectAsync(CancellationToken.None);
 
     private async Task ReloadConfigAsync()
     {

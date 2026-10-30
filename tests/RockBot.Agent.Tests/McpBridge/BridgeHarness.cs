@@ -459,6 +459,9 @@ internal sealed class BridgeHarness : IAsyncDisposable
         }
     }
 
+    /// <summary>Reloads <c>mcp.json</c> now, as the bridge does when it sees an edit.</summary>
+    public Task ReloadConfigAsync() => _bridge.ReloadConfigNowAsync();
+
     /// <summary>Where the bridge keeps OAuth tokens in this run.</summary>
     public string OAuthTokenDirectory => Path.Combine(_configDir, "secrets", "mcp-oauth");
 
