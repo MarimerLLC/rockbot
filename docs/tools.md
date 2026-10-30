@@ -225,6 +225,10 @@ Servers are declared in `mcp.json` (Helm sets `McpBridge__ConfigPath` to
 - Other per-server fields: `allowedTools`, `deniedTools`, `headers`, `auth`, `toolTimeoutMs`,
   `attachments`, `argGuards`, `elicitation`, `tasks` and `taskTimeoutMinutes` (the last five are
   described below). `id` and `origin` are written by the bridge.
+- An OAuth-protected server (the MCP authorization spec) takes `"auth": { "oauth": { "clientId": … } }`.
+  The bridge discovers the authorization server from the server's 401 and keeps and refreshes
+  the tokens. The user signs in once from the web chat's banner or `rockbot auth mcp <server>`.
+  Until they do, calls to the server return `auth_required`. See `design/mcp-oauth.md`.
 - `McpBridge:DefaultServers:{name}` (Helm configmap) maps a name to a URL; each is seeded into
   `mcp.json` as an `sse` entry unless an entry already points at that URL.
 - The bridge watches `mcp.json` (file watcher plus a `ConfigPollIntervalSeconds` poll) and

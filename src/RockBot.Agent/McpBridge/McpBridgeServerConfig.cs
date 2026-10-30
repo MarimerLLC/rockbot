@@ -108,10 +108,11 @@ public sealed class McpBridgeServerConfig
     public McpElicitationConfig? Elicitation { get; set; }
 
     /// <summary>
-    /// Optional bearer-token authentication. When set, the bridge resolves
-    /// <see cref="McpServerAuthConfig.Profile"/> against the token provider
-    /// registry and wires a <c>BearerInjectionHandler</c> into the HTTP client
-    /// so every request carries a fresh access token.
+    /// Optional bearer-token authentication. With <see cref="McpServerAuthConfig.Profile"/>, the
+    /// bridge resolves the profile against the token provider registry and wires a
+    /// <c>BearerInjectionHandler</c> into the HTTP client so every request carries a fresh access
+    /// token. With <see cref="McpServerAuthConfig.OAuth"/>, the bridge runs the MCP authorization
+    /// spec's OAuth client itself and the user signs in from a user interface (#738).
     /// </summary>
     public McpServerAuthConfig? Auth { get; set; }
 
@@ -193,7 +194,29 @@ public sealed class McpBridgeServerConfig
         // Include the auth profile so an authenticated entry is never deduped
         // against an unauthenticated one at the same URL.
         var authProfile = Auth?.Profile?.Trim().ToLowerInvariant() ?? string.Empty;
+        // Likewise an OAuth entry, which signs in as a different client per client identity (its
+        // client id or client metadata document). Appended only when set, so every entry without
+        // OAuth keeps the identity it already had.
+        if (Auth?.OAuth is { } oauth)
+            authProfile += $"oauth:{oauth.EffectiveClientIdentity() ?? string.Empty}";
         return string.Join("", type, url, transportMode, command, args, env, headers, allowedTools, deniedTools, authProfile);
+    }
+
+    /// <summary>
+    /// What a connection to this entry authenticates with: its static headers and its auth block.
+    /// A connection made under one value must not go on serving under another, or it would keep
+    /// using a credential the operator removed.
+    /// </summary>
+    internal string CredentialIdentity()
+    {
+        var headers = string.Join("\n", Headers
+            .OrderBy(kvp => kvp.Key, StringComparer.OrdinalIgnoreCase)
+            .Select(kvp => $"{kvp.Key.ToLowerInvariant()}={kvp.Value}"));
+        var profile = Auth?.Profile?.Trim().ToLowerInvariant() ?? string.Empty;
+        var oauth = Auth?.OAuth is { } o
+            ? $"oauth:{o.EffectiveClientIdentity()}:{o.ClientSecret}"
+            : string.Empty;
+        return string.Join("\u001f", headers, profile, oauth);
     }
 
     /// <summary>

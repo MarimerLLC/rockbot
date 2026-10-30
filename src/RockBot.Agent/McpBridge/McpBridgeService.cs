@@ -5,6 +5,7 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using ModelContextProtocol;
+using ModelContextProtocol.Authentication;
 using ModelContextProtocol.Client;
 using ModelContextProtocol.Protocol;
 using RockBot.Agent.McpBridge.ArgGuards;
@@ -248,6 +249,9 @@ public sealed partial class McpBridgeService : IHostedService, IAsyncDisposable
             HandleManagementRequestAsync,
             cancellationToken);
 
+        // Sign-in requests from the user interfaces, for servers that use OAuth (#738).
+        await StartSignInHandlingAsync(cancellationToken);
+
         // Wire health-tracker changes so workiq-* tools appear/disappear
         // from the published tool list as the auth cache becomes valid/invalid.
         if (_healthTracker is not null)
@@ -321,6 +325,7 @@ public sealed partial class McpBridgeService : IHostedService, IAsyncDisposable
             await _refreshSubscription.DisposeAsync();
         if (_manageSubscription is not null)
             await _manageSubscription.DisposeAsync();
+        await StopSignInHandlingAsync();
 
         await DisposeClientsAsync();
     }
@@ -618,6 +623,36 @@ public sealed partial class McpBridgeService : IHostedService, IAsyncDisposable
         // server that never connected.
         _connections.SetConfig(name, config);
 
+        // An entry that no longer uses OAuth has no sign-in to ask for.
+        if (config.Auth?.OAuth is null)
+            ForgetSignIn(name);
+
+        // An unusable auth block: connecting without the auth the operator declared would at best
+        // fail and at worst send unauthenticated what was meant to be authenticated. A connection
+        // made under the entry's previous auth goes too, or it would keep using that auth. The
+        // config stays recorded, so nothing reconnects under the old one.
+        if (config.Auth?.Validate() is { } authConfigError)
+        {
+            _logger.LogError(
+                "MCP server {Name} has an invalid auth block — refusing to connect: {Error}",
+                name, authConfigError);
+            await RetireConnectionAsync(name, "its auth block is invalid", ct);
+            return;
+        }
+
+        // An OAuth server the user hasn't signed in to can only answer 401, and finding that out
+        // can cost its authorization server a dynamic client registration on every attempt —
+        // which some rate-limit. Ask the user instead; the sign-in they start connects it.
+        if (config.Auth?.OAuth is not null && !await HasOAuthTokensAsync(config, ct))
+        {
+            // A connection already open was made under the entry's old auth (a static token the
+            // operator just replaced with OAuth, say). Keeping it would go on using the credential
+            // the operator removed, so it goes, and its tools with it, until the user signs in.
+            await RetireConnectionAsync(name, "its entry uses OAuth and the user hasn't signed in", ct);
+            MarkSignInRequired(name, DescribeSignInRequired(name));
+            return;
+        }
+
         var maxAttempts = 1 + Math.Max(0, _options.ConnectRetryCount);
         var delayMs = _options.ConnectRetryBaseDelayMs;
 
@@ -627,29 +662,8 @@ public sealed partial class McpBridgeService : IHostedService, IAsyncDisposable
             var published = false;
             try
             {
-                var httpTransportMode = config.TransportMode?.ToLowerInvariant() switch
-                {
-                    "sse" => ModelContextProtocol.Client.HttpTransportMode.Sse,
-                    "streamable-http" or "streamable" or "http" => ModelContextProtocol.Client.HttpTransportMode.StreamableHttp,
-                    _ => ModelContextProtocol.Client.HttpTransportMode.AutoDetect
-                };
-
-                var transportOptions = new HttpClientTransportOptions
-                {
-                    Endpoint = new Uri(config.Url),
-                    TransportMode = httpTransportMode
-                };
-
-                HttpClientTransport transport;
-                var customClient = TryBuildHttpClient(name, config);
-                if (customClient is not null)
-                {
-                    transport = new HttpClientTransport(transportOptions, customClient, loggerFactory: null, ownsHttpClient: true);
-                }
-                else
-                {
-                    transport = new HttpClientTransport(transportOptions);
-                }
+                var transport = CreateTransport(
+                    name, config, config.Auth?.OAuth is null ? null : BuildOAuthOptions(name, config, signIn: null));
 
                 // The SDK advertises the elicitation capability during initialize exactly when an
                 // elicitation handler is present, so a server configured "off" is never invited to
@@ -749,6 +763,9 @@ public sealed partial class McpBridgeService : IHostedService, IAsyncDisposable
                 {
                     await PublishServersIndexedAsync([summary], [], ct);
                 }
+
+                if (config.Auth?.OAuth is not null)
+                    ClearSignInRequired(name);
                 return;
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
@@ -756,6 +773,17 @@ public sealed partial class McpBridgeService : IHostedService, IAsyncDisposable
                 if (!published && newClient is not null)
                     await DisposeQuietlyAsync(newClient);
                 throw;
+            }
+            catch (Exception ex) when (config.Auth?.OAuth is not null && FindReauthRequired(ex) is not null)
+            {
+                // The server wants the user to sign in. Retrying can't change that, and the user
+                // interfaces have been told; the sign-in connects the server when it completes.
+                // The previous connection mustn't serve meanwhile: it was made under other auth (a
+                // removed PAT, another client) or with tokens the server just refused.
+                if (!published && newClient is not null)
+                    await DisposeQuietlyAsync(newClient);
+                await RetireConnectionAsync(name, "it needs the user to sign in", ct);
+                return;
             }
             catch (Exception ex)
             {
@@ -784,8 +812,15 @@ public sealed partial class McpBridgeService : IHostedService, IAsyncDisposable
         // Every attempt failed, so the previous connection (if any) keeps serving. If the config
         // changed, apply its policy to that connection now rather than at the next successful
         // connect: re-filtering the previous tool list can only narrow it, so an operator who
-        // just denied a tool isn't overruled by a server that happened to be down.
-        if (previous is not null && !ReferenceEquals(previous.Config, config))
+        // just denied a tool isn't overruled by a server that happened to be down. Except when
+        // the entry's credentials changed: that connection authenticates with the old ones, so
+        // it can't serve under the new config at all.
+        if (previous is not null && !ReferenceEquals(previous.Config, config)
+            && previous.Config.CredentialIdentity() != config.CredentialIdentity())
+        {
+            await RetireConnectionAsync(name, "its credentials changed and the new ones didn't connect", ct);
+        }
+        else if (previous is not null && !ReferenceEquals(previous.Config, config))
         {
             _connections.Publish(previous with
             {
@@ -835,6 +870,9 @@ public sealed partial class McpBridgeService : IHostedService, IAsyncDisposable
             _lastSurfaceCheck.TryRemove(name, out _);
         }
 
+        // A removed server's sign-in prompt has nothing left to sign in to.
+        ForgetSignIn(name);
+
         await _handback.CancelServerAsync(name, $"the MCP server \"{name}\" was removed");
 
         await PublishServersIndexedAsync([], [name], CancellationToken.None);
@@ -858,28 +896,57 @@ public sealed partial class McpBridgeService : IHostedService, IAsyncDisposable
     }, LazyThreadSafetyMode.ExecutionAndPublication);
 
     /// <summary>
+    /// The SDK transport for a server: its URL and transport mode, the HTTP client its headers and
+    /// profile auth need, and — for an <c>auth.oauth</c> server — the SDK's OAuth client.
+    /// </summary>
+    private HttpClientTransport CreateTransport(string serverName, McpBridgeServerConfig config, ClientOAuthOptions? oauth)
+    {
+        var httpTransportMode = config.TransportMode?.ToLowerInvariant() switch
+        {
+            "sse" => ModelContextProtocol.Client.HttpTransportMode.Sse,
+            "streamable-http" or "streamable" or "http" => ModelContextProtocol.Client.HttpTransportMode.StreamableHttp,
+            _ => ModelContextProtocol.Client.HttpTransportMode.AutoDetect
+        };
+
+        var transportOptions = new HttpClientTransportOptions
+        {
+            Endpoint = new Uri(config.Url!),
+            TransportMode = httpTransportMode,
+            OAuth = oauth
+        };
+
+        var customClient = TryBuildHttpClient(serverName, config);
+        return customClient is not null
+            ? new HttpClientTransport(transportOptions, customClient, loggerFactory: null, ownsHttpClient: true)
+            : new HttpClientTransport(transportOptions);
+    }
+
+    /// <summary>
     /// Builds an <see cref="HttpClient"/> for a server config that needs custom
-    /// headers, bearer auth, or both. Returns <c>null</c> when neither applies,
-    /// signalling that the caller can use the transport's default client.
+    /// headers, profile bearer auth, or both. Returns <c>null</c> when neither applies,
+    /// signalling that the caller can use the transport's default client. An
+    /// <c>auth.oauth</c> server's bearer comes from the SDK's OAuth client instead, on top of
+    /// whichever client this returns.
     /// </summary>
     private HttpClient? TryBuildHttpClient(string serverName, McpBridgeServerConfig config)
     {
         var hasHeaders = config.Headers.Count > 0;
-        var hasAuth = config.Auth is not null;
-        if (!hasHeaders && !hasAuth) return null;
+        var profile = config.Auth?.Profile;
+        var hasProfileAuth = !string.IsNullOrWhiteSpace(profile);
+        if (!hasHeaders && !hasProfileAuth) return null;
 
         HttpClient httpClient;
-        if (hasAuth)
+        if (hasProfileAuth)
         {
             if (_tokenProviders is null)
             {
                 throw new InvalidOperationException(
-                    $"MCP server '{serverName}' requires auth profile '{config.Auth!.Profile}' " +
+                    $"MCP server '{serverName}' requires auth profile '{profile}' " +
                     $"but no ITokenProviderRegistry is registered in DI. " +
                     $"Add a token provider (e.g. services.AddWorkIqAuth(...)) before connecting.");
             }
 
-            var provider = _tokenProviders.Get(config.Auth!.Profile);
+            var provider = _tokenProviders.Get(profile!);
             var bearerHandler = new BearerInjectionHandler(provider, new SocketsHttpHandler());
             httpClient = new HttpClient(bearerHandler);
         }
@@ -891,11 +958,11 @@ public sealed partial class McpBridgeService : IHostedService, IAsyncDisposable
         foreach (var (key, rawValue) in config.Headers)
         {
             // Never let static headers clobber the auth handler's bearer.
-            if (hasAuth && string.Equals(key, "Authorization", StringComparison.OrdinalIgnoreCase))
+            if (config.Auth is not null && string.Equals(key, "Authorization", StringComparison.OrdinalIgnoreCase))
             {
                 _logger.LogWarning(
-                    "MCP server '{Server}' has both static 'Authorization' header and auth profile '{Profile}'; ignoring the static header in favor of the bearer-injecting auth handler",
-                    serverName, config.Auth!.Profile);
+                    "MCP server '{Server}' has both a static 'Authorization' header and an auth block; ignoring the static header in favor of the auth block's bearer",
+                    serverName);
                 continue;
             }
 
@@ -1698,13 +1765,28 @@ public sealed partial class McpBridgeService : IHostedService, IAsyncDisposable
                 // Server is configured but not yet connected (e.g. tool call arrived during
                 // startup before the background connection completed). Attempt an on-demand
                 // connection so the call succeeds transparently rather than returning an error.
-                if (_connections.TryGetConfig(headerServer, out var pendingConfig))
+                if (_connections.TryGetConfig(headerServer, out var pendingConfig) && !IsSignInRequired(headerServer))
                 {
                     _logger.LogInformation(
                         "MCP server '{Server}' is configured but not connected; connecting on demand before tool invoke",
                         headerServer);
                     await ConnectServerAsync(headerServer, pendingConfig, ct);
                     lease = _connections.Lease(headerServer);
+                }
+
+                if (lease is null && _signInRequired.TryGetValue(headerServer, out var signInMessage))
+                {
+                    // Waiting for the user: retrying won't help until they sign in.
+                    var error = new ToolError
+                    {
+                        ToolCallId = request.ToolCallId,
+                        ToolName = request.ToolName,
+                        Code = ToolError.Codes.AuthRequired,
+                        Message = signInMessage,
+                        IsRetryable = false
+                    };
+                    await PublishResponseAsync(error, replyTo, envelope.CorrelationId, ct);
+                    return MessageResult.Ack;
                 }
 
                 if (lease is null)
@@ -2544,9 +2626,16 @@ public sealed partial class McpBridgeService : IHostedService, IAsyncDisposable
                 ToolCallId = target.ToolCallId,
                 ToolName = target.ToolName,
                 Code = ToolError.Codes.AuthRequired,
-                Message = BuildReauthRequiredMessage(reauth),
+                // An OAuth server's sign-in names the server and how to sign in to it; the
+                // profile message is Work IQ's.
+                Message = server.Config.Auth?.OAuth is not null ? reauth.Message : BuildReauthRequiredMessage(reauth),
                 IsRetryable = false
             };
+
+            // A signed-out OAuth connection would repeat the failed refresh (and possibly a client
+            // registration) on every call; drop it so calls get the sign-in message straight away.
+            if (server.Config.Auth?.OAuth is not null)
+                await DropSignedOutConnectionAsync(serverName, server.Client);
 
             await PublishToTargetAsync(error, target, ct);
         }
@@ -3571,8 +3660,10 @@ public sealed partial class McpBridgeService : IHostedService, IAsyncDisposable
         {
             while (await timer.WaitForNextTickAsync(ct))
             {
+                // A server waiting for the user to sign in would only answer 401 again; its
+                // sign-in connects it when it completes.
                 var disconnected = _connections.ConfiguredNames
-                    .Where(name => !_connections.IsConnected(name))
+                    .Where(name => !_connections.IsConnected(name) && !IsSignInRequired(name))
                     .ToList();
 
                 foreach (var name in disconnected)
@@ -3682,6 +3773,9 @@ public sealed partial class McpBridgeService : IHostedService, IAsyncDisposable
             TimeSpan.FromMilliseconds(500),
             Timeout.InfiniteTimeSpan);
     }
+
+    /// <summary>Reloads <c>mcp.json</c> now, as a detected edit does after its debounce. For tests.</summary>
+    internal Task ReloadConfigNowAsync() => LoadConfigAndConnectAsync(CancellationToken.None);
 
     private async Task ReloadConfigAsync()
     {

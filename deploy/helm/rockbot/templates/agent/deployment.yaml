@@ -112,7 +112,8 @@ spec:
               # to clear it.
               chmod 775 /data/agent/memory-audit
 
-              # Secrets directory (workiq token cache and any future per-user
+              # Secrets directory (workiq token cache, MCP OAuth tokens under
+              # mcp-oauth/, which the agent creates itself, and any future per-user
               # credential material). Mode 0700 keeps it private to the rockbot
               # user even though the PVC is single-tenant.
               mkdir -p /data/agent/secrets

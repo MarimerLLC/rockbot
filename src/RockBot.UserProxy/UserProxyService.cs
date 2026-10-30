@@ -32,6 +32,11 @@ public sealed class UserProxyService(
     private readonly ConcurrentDictionary<string, TaskCompletionSource<DeleteSavedResponseAck>> _pendingDeleteSaved = new();
     private readonly ConcurrentDictionary<string, TaskCompletionSource<ActiveStatusResponse>> _pendingActiveStatus = new();
     private readonly ConcurrentDictionary<string, TaskCompletionSource<AttachmentUploadResponse>> _pendingUpload = new();
+
+    // MCP sign-in (#738): replies arrive on the point-to-point topic, outcomes on the broadcast one.
+    private readonly ConcurrentDictionary<string, TaskCompletionSource<MessageEnvelope>> _pendingSignInReplies = new();
+    private readonly ConcurrentDictionary<string, TaskCompletionSource<McpSignInStatus>> _signInWaiters = new();
+    private readonly ConcurrentDictionary<string, McpSignInStatus> _settledSignIns = new();
     private ISubscription? _subscription;
     private ISubscription? _p2pSubscription;
     private ISubscription? _historySubscription;
@@ -210,6 +215,17 @@ public sealed class UserProxyService(
         // ObjectDisposedException can occur when StopAsync is called more than once
         // (e.g. test cleanup after an explicit stop) — safe to ignore during shutdown.
         try { _cts?.Cancel(); } catch (ObjectDisposedException) { }
+
+        foreach (var kvp in _pendingSignInReplies)
+        {
+            if (_pendingSignInReplies.TryRemove(kvp.Key, out var tcs))
+                tcs.TrySetCanceled();
+        }
+        foreach (var kvp in _signInWaiters)
+        {
+            if (_signInWaiters.TryRemove(kvp.Key, out var tcs))
+                tcs.TrySetCanceled();
+        }
 
         // Cancel all pending requests
         foreach (var kvp in _pending)
@@ -487,6 +503,45 @@ public sealed class UserProxyService(
             return Task.FromResult(MessageResult.Ack);
         }
 
+        // Replies to this proxy's MCP sign-in requests.
+        if (envelope.MessageType == typeof(McpSignInStartResponse).FullName
+            || envelope.MessageType == typeof(McpSignInListResponse).FullName)
+        {
+            if (envelope.CorrelationId is not null && _pendingSignInReplies.TryRemove(envelope.CorrelationId, out var signInReply))
+                signInReply.TrySetResult(envelope);
+            return Task.FromResult(MessageResult.Ack);
+        }
+
+        // An MCP server's sign-in changed: it needs one, or one finished.
+        if (envelope.MessageType == typeof(McpSignInStatus).FullName)
+        {
+            try
+            {
+                var status = envelope.GetPayload<McpSignInStatus>();
+                if (status is not null)
+                {
+                    logger.LogDebug("MCP server {Server} sign-in is {State}", status.ServerName, status.State);
+                    if (status.SignInId is { } signInId && McpSignInState.IsTerminal(status.State))
+                    {
+                        // Stored before looking for a waiter, so a waiter registering meanwhile
+                        // finds it either here or in the store. Kept only for a late waiter;
+                        // every proxy hears every sign-in's outcome, so the store is bounded.
+                        if (_settledSignIns.Count >= 64)
+                            _settledSignIns.Clear();
+                        _settledSignIns[signInId] = status;
+                        if (_signInWaiters.TryRemove(signInId, out var waiter) && waiter.TrySetResult(status))
+                            _settledSignIns.TryRemove(signInId, out _);
+                    }
+                    _ = frontend.OnMcpSignInStatusAsync(status, ct);
+                }
+            }
+            catch (Exception ex)
+            {
+                logger.LogWarning(ex, "Failed to handle McpSignInStatus notification");
+            }
+            return Task.FromResult(MessageResult.Ack);
+        }
+
         AgentReply? reply;
         try
         {
@@ -540,6 +595,112 @@ public sealed class UserProxyService(
         }
 
         return Task.FromResult(MessageResult.Ack);
+    }
+
+    // ── MCP sign-in (#738) ─────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Asks the agent to start signing the user in to an OAuth-protected MCP server. The response
+    /// carries the authorization URL to open in the user's browser, which the authorization server
+    /// sends back to <paramref name="redirectUri"/>; relay what arrives there with
+    /// <see cref="SendMcpSignInCallbackAsync"/>, and await the outcome with
+    /// <see cref="WaitForMcpSignInAsync"/>. Returns null if the agent doesn't answer in time.
+    /// </summary>
+    public Task<McpSignInStartResponse?> StartMcpSignInAsync(
+        string serverName,
+        string redirectUri,
+        TimeSpan? timeout = null,
+        CancellationToken cancellationToken = default) =>
+        RequestSignInAsync<McpSignInStartRequest, McpSignInStartResponse>(
+            new McpSignInStartRequest { ServerName = serverName, RedirectUri = redirectUri }, timeout, cancellationToken);
+
+    /// <summary>
+    /// Relays an authorization server's redirect (its <c>code</c>, <c>state</c> and <c>iss</c>, or
+    /// its <c>error</c>) to the agent. Fire-and-forget: the outcome is an <see cref="McpSignInStatus"/>.
+    /// </summary>
+    public async Task SendMcpSignInCallbackAsync(
+        McpSignInCallback callback,
+        CancellationToken cancellationToken = default)
+    {
+        var envelope = callback.ToEnvelope<McpSignInCallback>(source: options.ProxyId);
+        await publisher.PublishAsync($"{UserProxyTopics.McpSignIn}.{options.AgentName}", envelope, cancellationToken);
+        logger.LogInformation("Relayed an MCP sign-in {Kind} to the agent",
+            string.IsNullOrEmpty(callback.Error) ? "authorization code" : "refusal");
+    }
+
+    /// <summary>
+    /// Asks the agent which MCP servers use OAuth sign-in and where each stands. Returns null if
+    /// the agent doesn't answer in time.
+    /// </summary>
+    public Task<McpSignInListResponse?> ListMcpSignInsAsync(
+        TimeSpan? timeout = null,
+        CancellationToken cancellationToken = default) =>
+        RequestSignInAsync<McpSignInListRequest, McpSignInListResponse>(new McpSignInListRequest(), timeout, cancellationToken);
+
+    /// <summary>
+    /// Waits for the sign-in <paramref name="signInId"/> to complete, fail, expire or be replaced.
+    /// Returns null if it hasn't settled within <paramref name="timeout"/>.
+    /// </summary>
+    public async Task<McpSignInStatus?> WaitForMcpSignInAsync(
+        string signInId,
+        TimeSpan timeout,
+        CancellationToken cancellationToken = default)
+    {
+        var tcs = _signInWaiters.GetOrAdd(signInId,
+            _ => new TaskCompletionSource<McpSignInStatus>(TaskCreationOptions.RunContinuationsAsynchronously));
+
+        // It may have settled before anyone waited.
+        if (_settledSignIns.TryRemove(signInId, out var settled))
+        {
+            _signInWaiters.TryRemove(signInId, out _);
+            return settled;
+        }
+
+        try
+        {
+            return await tcs.Task.WaitAsync(timeout, cancellationToken);
+        }
+        catch (TimeoutException)
+        {
+            return null;
+        }
+        finally
+        {
+            _signInWaiters.TryRemove(signInId, out _);
+        }
+    }
+
+    private async Task<TResponse?> RequestSignInAsync<TRequest, TResponse>(
+        TRequest request, TimeSpan? timeout, CancellationToken cancellationToken) where TResponse : class
+    {
+        var effectiveTimeout = timeout ?? options.DefaultReplyTimeout;
+        var correlationId = Guid.NewGuid().ToString("N");
+        var tcs = new TaskCompletionSource<MessageEnvelope>(TaskCreationOptions.RunContinuationsAsynchronously);
+        _pendingSignInReplies[correlationId] = tcs;
+
+        try
+        {
+            var envelope = request.ToEnvelope<TRequest>(
+                source: options.ProxyId,
+                correlationId: correlationId,
+                replyTo: UserResponsePointToPointTopic);
+            await publisher.PublishAsync($"{UserProxyTopics.McpSignIn}.{options.AgentName}", envelope, cancellationToken);
+
+            try
+            {
+                var reply = await tcs.Task.WaitAsync(effectiveTimeout, cancellationToken);
+                return reply.GetPayload<TResponse>();
+            }
+            catch (TimeoutException)
+            {
+                logger.LogWarning("MCP sign-in request {Type} timed out after {Timeout}", typeof(TRequest).Name, effectiveTimeout);
+                return null;
+            }
+        }
+        finally
+        {
+            _pendingSignInReplies.TryRemove(correlationId, out _);
+        }
     }
 
     /// <summary>

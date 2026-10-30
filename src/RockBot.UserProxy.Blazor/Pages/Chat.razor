@@ -93,6 +93,7 @@
     </div>
 
     <WorkIqReconnectBanner OnReconnectClicked="OpenWorkIqModalFromBanner" />
+    <McpSignInBanner />
 
     <div class="chat-messages flex-grow-1 overflow-auto p-3" @ref="messagesContainer">
         @foreach (var message in ChatState.Messages)

@@ -101,6 +101,14 @@ internal sealed class StubUserFrontend : IUserFrontend
         QuestionStatuses.Add(status);
         return Task.CompletedTask;
     }
+
+    public List<McpSignInStatus> SignInStatuses { get; } = [];
+
+    public Task OnMcpSignInStatusAsync(McpSignInStatus status, CancellationToken cancellationToken = default)
+    {
+        SignInStatuses.Add(status);
+        return Task.CompletedTask;
+    }
 }
 
 /// <summary>

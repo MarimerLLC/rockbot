@@ -5,7 +5,7 @@ namespace RockBot.UserProxy.Blazor.Services;
 /// <summary>
 /// Blazor implementation of IUserFrontend that updates chat state for real-time UI updates.
 /// </summary>
-public sealed class BlazorUserFrontend(ChatStateService chatState) : IUserFrontend
+public sealed class BlazorUserFrontend(ChatStateService chatState, McpSignInStateService? signIns = null) : IUserFrontend
 {
     /// <summary>
     /// Learned from the first IsFinal=true reply. Used to distinguish primary agent
@@ -78,6 +78,12 @@ public sealed class BlazorUserFrontend(ChatStateService chatState) : IUserFronte
     public Task OnMcpQuestionStatusAsync(McpQuestionStatus status, CancellationToken cancellationToken = default)
     {
         chatState.UpdateQuestionStatus(status);
+        return Task.CompletedTask;
+    }
+
+    public Task OnMcpSignInStatusAsync(McpSignInStatus status, CancellationToken cancellationToken = default)
+    {
+        signIns?.Apply(status);
         return Task.CompletedTask;
     }
 
