@@ -10,7 +10,7 @@ namespace RockBot.Host.Tests;
 [TestClass]
 public sealed class OwnTracksRecorderLocationProviderTests
 {
-    // The shape a live Recorder returns for ?fields=tst,lat,lon,acc,tzname,locality,cc
+    // The shape a live Recorder returns for ?fields=tst,lat,lon,acc,tzname,locality,addr,cc
     // (coordinates are made up). Without a geocoder key there is no locality or cc.
     private const string TwoDevices = """
         [
@@ -71,7 +71,7 @@ public sealed class OwnTracksRecorderLocationProviderTests
         await provider.GetLatestAsync(CancellationToken.None);
 
         Assert.AreEqual(
-            "http://recorder.test:8083/api/0/last?user=rocky&device=rockyphone&fields=tst,lat,lon,acc,tzname,locality,cc",
+            "http://recorder.test:8083/api/0/last?user=rocky&device=rockyphone&fields=tst,lat,lon,acc,tzname,locality,addr,cc",
             handler.LastRequest!.RequestUri!.ToString());
         Assert.AreEqual(HttpMethod.Get, handler.LastRequest.Method);
     }
@@ -85,9 +85,49 @@ public sealed class OwnTracksRecorderLocationProviderTests
         await provider.GetLatestAsync(CancellationToken.None);
 
         Assert.AreEqual(
-            "http://recorder.test:8083/api/0/last?user=rocky&fields=tst,lat,lon,acc,tzname,locality,cc",
+            "http://recorder.test:8083/api/0/last?user=rocky&fields=tst,lat,lon,acc,tzname,locality,addr,cc",
             handler.LastRequest!.RequestUri!.ToString());
     }
+
+    [TestMethod]
+    public async Task GetLatest_NoLocality_TakesTheCityFromAddr_AndKeepsNoStreet()
+    {
+        // What the live Recorder (OpenCage) stores: addr and cc, no locality.
+        var provider = Make(new StubHandler("""
+            [{"tst":1793465509,"lat":39.7990,"lon":-89.6440,"acc":3,"tzname":"America/Chicago",
+              "cc":"US","addr":"unnamed road, Springfield, IL 62701, USA"}]
+            """));
+
+        var fix = await provider.GetLatestAsync(CancellationToken.None);
+
+        Assert.AreEqual("Springfield", fix!.Locality);
+        Assert.AreEqual("US", fix.CountryCode);
+        Assert.IsFalse(fix.ToString().Contains("unnamed road"), fix.ToString());
+    }
+
+    [TestMethod]
+    public async Task GetLatest_LocalityWinsOverAddr()
+    {
+        var provider = Make(new StubHandler("""
+            [{"tst":1793465509,"lat":39.80,"lon":-89.64,"locality":"Springfield","addr":"1 Main St, Chatham, IL 62629, USA"}]
+            """));
+
+        Assert.AreEqual("Springfield", (await provider.GetLatestAsync(CancellationToken.None))!.Locality);
+    }
+
+    [TestMethod]
+    [DataRow("unnamed road, Springfield, IL 62701, USA", "Springfield")]
+    [DataRow("Springfield, IL 62701, USA", null)] // first part could be a street: fall back to coordinates
+    [DataRow("Damrak 1, 1012 LG Amsterdam, Netherlands", "Amsterdam")]
+    [DataRow("10 Downing Street, London SW1A 2AA, United Kingdom", "London")]
+    [DataRow("Invalidenstraße 1, 10115 Berlin, Germany", "Berlin")]
+    [DataRow("1 Rue de Rivoli, 75001 Paris, France", "Paris")]
+    [DataRow("Some Street 5, Netherlands", null)]
+    [DataRow("Netherlands", null)]
+    [DataRow("", null)]
+    [DataRow(null, null)]
+    public void LocalityFromAddress_KeepsOnlyTheCity(string? addr, string? expected) =>
+        Assert.AreEqual(expected, OwnTracksRecorderLocationProvider.LocalityFromAddress(addr));
 
     [TestMethod]
     public async Task GetLatest_HttpError_Throws()

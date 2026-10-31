@@ -1148,4 +1148,60 @@ public class CompletionEvalTriggersTests
     {
         Assert.IsNull(AgentLoopRunner.ParseCompletionVerdict(raw));
     }
+
+    // ── Host-provided context (2026-10-31 location answers judged unsupported) ──
+
+    private const string LocationContext =
+        "The user's local date and time is: Saturday, October 31, 2026 11:54 -05:00 (America/Chicago). " +
+        "Always express dates and times to the user in this timezone. " +
+        "The user's last known location is approximately 39.8, -89.6 (reported 11:51).";
+
+    [TestMethod]
+    public void ExtractDateTimeContext_TakesTheLatestDateTimeLine()
+    {
+        List<ChatMessage> history =
+        [
+            new(ChatRole.System, "You are RockBot."),
+            new(ChatRole.System, "The user's local date and time is: an older line"),
+            new(ChatRole.User, "hi"),
+            new(ChatRole.Assistant, "hello"),
+            new(ChatRole.System, LocationContext),
+            new(ChatRole.User, "Do you know where I am now?"),
+        ];
+
+        Assert.AreEqual(LocationContext, AgentLoopRunner.ExtractDateTimeContext(history));
+    }
+
+    [TestMethod]
+    public void ExtractDateTimeContext_IgnoresUserTextWithTheSameOpening()
+    {
+        List<ChatMessage> history = [new(ChatRole.User, "The user's local date and time is: whatever")];
+
+        Assert.IsNull(AgentLoopRunner.ExtractDateTimeContext(history));
+    }
+
+    [TestMethod]
+    public void EvaluatorMessage_IncludesTheContextTheAgentWasGiven()
+    {
+        var text = CompletionEvalTriggers.BuildEvaluatorUserMessage(new CompletionEvalTriggers.EvaluatorInput(
+            ["Do you know where I am now?"], null, null,
+            "Your last known location is around 39.8, -89.6, reported at 11:51.",
+            [], CompletionEvalTrigger.Pattern, UserAskedFor: UserRequestKind.InformationOnly,
+            AgentContext: LocationContext));
+
+        StringAssert.Contains(text, "## Context the agent was given");
+        StringAssert.Contains(text, "approximately 39.8, -89.6 (reported 11:51)");
+        Assert.IsTrue(
+            text.IndexOf("## Context the agent was given", StringComparison.Ordinal)
+                < text.IndexOf("## Agent response", StringComparison.Ordinal));
+    }
+
+    [TestMethod]
+    public void EvaluatorMessage_NoContext_OmitsTheSection()
+    {
+        var text = CompletionEvalTriggers.BuildEvaluatorUserMessage(new CompletionEvalTriggers.EvaluatorInput(
+            ["hi"], null, null, "Hello.", [], CompletionEvalTrigger.Pattern));
+
+        Assert.IsFalse(text.Contains("## Context the agent was given"), text);
+    }
 }

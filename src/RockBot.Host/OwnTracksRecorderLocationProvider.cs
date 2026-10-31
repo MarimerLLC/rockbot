@@ -5,12 +5,14 @@ namespace RockBot.Host;
 
 /// <summary>
 /// Reads the user's latest fix from an OwnTracks Recorder's <c>/api/0/last</c> endpoint.
-/// Only the fields the agent uses are requested, so street addresses, battery and the like
-/// never enter the process.
+/// Only the fields the agent uses are requested, so battery and the like never enter the
+/// process. The Recorder's OpenCage geocoding fills <c>addr</c> but not always <c>locality</c>,
+/// so <c>addr</c> is requested too and cut down to its city at parse time; the street address
+/// is never kept.
 /// </summary>
 internal sealed class OwnTracksRecorderLocationProvider : IUserLocationProvider, IDisposable
 {
-    internal const string Fields = "tst,lat,lon,acc,tzname,locality,cc";
+    internal const string Fields = "tst,lat,lon,acc,tzname,locality,addr,cc";
 
     // Long-lived on purpose: Host has no IHttpClientFactory, and one client per process is the
     // documented alternative.
@@ -73,7 +75,7 @@ internal sealed class OwnTracksRecorderLocationProvider : IUserLocationProvider,
                 AccuracyMeters: TryGetDouble(item, "acc", out var acc) ? acc : null,
                 ReportedAt: DateTimeOffset.FromUnixTimeSeconds((long)tst),
                 TimeZoneId: GetString(item, "tzname"),
-                Locality: GetString(item, "locality"),
+                Locality: GetString(item, "locality") ?? LocalityFromAddress(GetString(item, "addr")),
                 CountryCode: GetString(item, "cc"));
 
             if (newest is null || fix.ReportedAt > newest.ReportedAt)
@@ -82,6 +84,36 @@ internal sealed class OwnTracksRecorderLocationProvider : IUserLocationProvider,
 
         return newest;
     }
+
+    /// <summary>
+    /// The city in a formatted address such as <c>"unnamed road, Springfield, IL 62701, USA"</c>
+    /// or <c>"Damrak 1, 1012 LG Amsterdam, Netherlands"</c>, or null when none can be told apart
+    /// from the street. The last part is the country. Walking back from the part before it, each
+    /// part loses its postcode and region-code words (any word with a digit, and all-caps words
+    /// of up to three letters); the first part with anything left is the city. The first part is
+    /// the street, so it is never returned.
+    /// </summary>
+    internal static string? LocalityFromAddress(string? address)
+    {
+        if (string.IsNullOrWhiteSpace(address))
+            return null;
+
+        var parts = address.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
+        for (var i = parts.Length - 2; i >= 1; i--)
+        {
+            var words = parts[i]
+                .Split(' ', StringSplitOptions.RemoveEmptyEntries)
+                .Where(w => !w.Any(char.IsDigit) && !IsRegionCode(w));
+            var city = string.Join(' ', words);
+            if (city.Length > 0)
+                return city;
+        }
+
+        return null;
+    }
+
+    private static bool IsRegionCode(string word) =>
+        word.Length <= 3 && word.All(c => char.IsLetter(c) && char.IsUpper(c));
 
     private static bool TryGetDouble(JsonElement item, string name, out double value)
     {
