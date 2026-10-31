@@ -353,6 +353,12 @@ public sealed partial class AgentLoopRunner(
            tools? That is INCOMPLETE.
 
         Also:
+        - A "Context the agent was given" section holds facts the host supplied to the agent
+          directly: the current date and time, the user's time zone, and the user's last known
+          location. A claim drawn from that section is supported without any tool call, and an
+          answer that reports it (for example "you were last seen near X, reported at 11:51") is
+          not invented. A claim that goes beyond it (a precise address when the section gives
+          only rough coordinates) is still unsupported.
         - If the agent hit a SPECIFIC tool error (timeout, auth failure, API error) and explained
           it clearly, that is COMPLETE.
         - If the agent claimed it lacks access to a service, cannot connect, or does not have the
@@ -629,6 +635,7 @@ public sealed partial class AgentLoopRunner(
         // what the user actually said.
         var recentUserMessages = ExtractRecentUserMessages(chatMessages, CompletionEvalTriggers.RecentUserMessageCount);
         var previousAgentMessage = ExtractPreviousAgentMessage(chatMessages);
+        var agentContext = ExtractDateTimeContext(chatMessages);
 
         // #683: the user message the reply is judged against, and whether it asked for anything.
         // A synthesis turn's latest user-role message is the subagent's report, so it is judged
@@ -905,7 +912,8 @@ public sealed partial class AgentLoopRunner(
                     relayedForEval,
                     userAskedFor,
                     externalChangesNeedRequest,
-                    laterRequests),
+                    laterRequests,
+                    agentContext),
                 cancellationToken);
 
             if (complete)
@@ -1130,11 +1138,8 @@ public sealed partial class AgentLoopRunner(
 
         for (var i = chatMessages.Count - 1; i >= 0; i--)
         {
-            if (chatMessages[i].Role == ChatRole.System
-                && chatMessages[i].Text?.StartsWith("The user's local date and time is:") == true)
-            {
+            if (IsDateTimeContext(chatMessages[i]))
                 chatMessages.RemoveAt(i);
-            }
         }
 
         var insertAt = chatMessages.Count;
@@ -1147,6 +1152,27 @@ public sealed partial class AgentLoopRunner(
             }
         }
         chatMessages.Insert(insertAt, new ChatMessage(ChatRole.System, text).Tag(ContextCategory.DateTime));
+    }
+
+    /// <summary>Opening of the datetime system message <see cref="EnsureDateTimeContext"/> injects.</summary>
+    internal const string DateTimeContextPrefix = "The user's local date and time is:";
+
+    private static bool IsDateTimeContext(ChatMessage message) =>
+        message.Role == ChatRole.System && message.Text?.StartsWith(DateTimeContextPrefix) == true;
+
+    /// <summary>
+    /// The latest datetime line in <paramref name="chatMessages"/> (date, time zone and, when
+    /// known, the user's last known location), or null when there is none. The completion
+    /// evaluator gets it so an answer drawn from it isn't judged unsupported. Internal for tests.
+    /// </summary>
+    internal static string? ExtractDateTimeContext(List<ChatMessage> chatMessages)
+    {
+        for (var i = chatMessages.Count - 1; i >= 0; i--)
+        {
+            if (IsDateTimeContext(chatMessages[i]))
+                return chatMessages[i].Text;
+        }
+        return null;
     }
 
     /// <summary>
@@ -1162,7 +1188,7 @@ public sealed partial class AgentLoopRunner(
         var now = TimeZoneInfo.ConvertTime(utcNow, zone);
         var nowMinute = new DateTimeOffset(now.Year, now.Month, now.Day, now.Hour, now.Minute, 0, now.Offset);
         var text =
-            $"The user's local date and time is: {nowMinute:dddd, MMMM d, yyyy} {nowMinute:HH:mm zzz} ({zone.Id}). " +
+            $"{DateTimeContextPrefix} {nowMinute:dddd, MMMM d, yyyy} {nowMinute:HH:mm zzz} ({zone.Id}). " +
             "Always express dates and times to the user in this timezone. Never assume UTC or any other timezone. " +
             "When any tool returns a UTC timestamp, convert it to this local timezone before using or displaying it.";
 
