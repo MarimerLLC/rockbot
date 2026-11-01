@@ -368,6 +368,7 @@ public static class CompletionEvalTriggers
     private const int MaxUserMessageChars = 2000;
     private const int MaxPreviousAgentChars = 800;
     private const int MaxResponseChars = 8000;
+    private const int MaxAgentContextChars = 1000;
     private const int MaxToolCallsListed = 40;
     private const int MaxRequestCharsInReprompt = 300;
 
@@ -406,7 +407,8 @@ public static class CompletionEvalTriggers
         IReadOnlyList<RelayedSubagentWork>? RelayedWork = null,
         UserRequestKind UserAskedFor = UserRequestKind.Instruction,
         bool ExternalChangesNeedRequest = false,
-        IReadOnlyList<string>? LaterUserMessages = null);
+        IReadOnlyList<string>? LaterUserMessages = null,
+        string? AgentContext = null);
 
     /// <summary>
     /// The longest request <see cref="WithLaterUserMessages"/> composes (#715). It fits both the
@@ -518,6 +520,16 @@ public static class CompletionEvalTriggers
             sb.AppendLine("## Later user messages (sent after the original request, oldest first; where they conflict, the later one wins)");
             for (var i = 0; i < later.Count; i++)
                 sb.AppendLine($"{i + 1}. {Truncate(later[i], MaxUserMessageChars)}");
+            sb.AppendLine();
+        }
+
+        // The host-provided facts the agent was given without a tool call (local date and time,
+        // time zone, the user's last known location). Without them a correct answer drawn from
+        // that context reads to the evaluator as unsupported.
+        if (!string.IsNullOrWhiteSpace(input.AgentContext))
+        {
+            sb.AppendLine("## Context the agent was given (host-provided facts; no tool call needed)");
+            sb.AppendLine(Truncate(input.AgentContext!, MaxAgentContextChars));
             sb.AppendLine();
         }
 
