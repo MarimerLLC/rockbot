@@ -35,7 +35,8 @@ which the bridge could store and re-issue with `inputResponses`. **MCP C# SDK 2.
 expose it.** It resolves MRTR inside the client's request pipeline on every path. A probe
 against a real 2.2.0 server showed that `CallToolAsync`, `CallToolAsync(CallToolRequestParams)`
 and the raw `McpSession.SendRequestAsync(JsonRpcRequest)` all call `ElicitationHandler` and
-return the *resumed* result. None of them returns the `InputRequiredResult`.
+return the *resumed* result. None of them returns the `InputRequiredResult`. As of 2026-11-01,
+2.3.0 and upstream `main` are unchanged; see open question 1.
 
 So the bridge **parks** the call instead:
 
@@ -493,6 +494,35 @@ data on how often each path is used.
    `InputRequiredResult` instead of auto-resolution. The ledger could then store `requestState`
    (encrypted at rest; it's the server's opaque continuation), and reconciliation could re-park
    the call instead of announcing an interruption.
+
+   **Status (2026-11-01, #661): blocked upstream.** Asked in
+   [modelcontextprotocol/csharp-sdk#1985](https://github.com/modelcontextprotocol/csharp-sdk/issues/1985).
+   - **2.3.0 (2026-10-20) and upstream `main` change nothing here.** `McpClientImpl.SendRequestAsync`
+     still resolves every `input_required` result through the client handlers, retrying up to
+     10 rounds, and doesn't return the `InputRequiredResult` on any path.
+   - **Re-issue already works.** `RequestParams.InputResponses` and `RequestParams.RequestState`
+     are public setters, so a resume could go through `CallToolAsync(CallToolRequestParams)` with
+     the original arguments, the answers and the saved state. Only capturing `requestState` is
+     missing.
+   - **Workaround considered, not built:** wrap the client `ITransport`. In `SendMessageAsync`,
+     map each outgoing `tools/call` id to the current `HandbackCall`; it runs on the caller's
+     flow, so the elicitation call scope is visible. Then read `requestState` from the matching
+     `input_required` response before the session handler does. Against it:
+     - `McpClientImpl` checks the concrete transport type (`is SseClientSessionTransport` for the
+       initialize fallback, `is StreamableHttpClientSessionTransport` for a log), so a wrapper
+       changes behaviour and would have to skip SSE.
+     - A resume needs the *unredacted* original arguments, but the ledger keeps them redacted on
+       purpose. They'd need encryption at rest too, and the agent process has no facility for that
+       yet.
+     - Ledger entries are per question, but a round with several input requests needs every
+       answer before it can resume.
+     - The server may sign `requestState` with a TTL, so a resume can still fail. It would fall
+       back to today's interruption notice.
+     - Only MRTR sessions benefit. Legacy `elicitation/create` servers have no state to keep.
+
+   If an API lands, the resume path needs ledger schema v2 with a migration
+   ([schema-migrations.md](schema-migrations.md)) and encrypted storage for `requestState` and the
+   arguments.
 2. **Asynchronous tools.** Resolved by #658. A background task's input request uses the same
    hand-back: the pending store (an entry now carries the `taskId`), `mcp_answer` and the chat
    form. Since `tasks/get` returns the input request as data, nothing is parked; the question is
