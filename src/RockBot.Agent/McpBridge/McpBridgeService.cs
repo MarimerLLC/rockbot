@@ -58,6 +58,16 @@ public sealed partial class McpBridgeService : IHostedService, IAsyncDisposable
     /// </summary>
     private readonly SessionClientCapabilityStore? _clientCapabilities;
 
+    /// <summary>
+    /// Finds a subagent's primary session and whether it is still running, for escalated questions.
+    /// Given directly in tests; otherwise resolved lazily from <see cref="_services"/>, because the
+    /// subagent manager is registered alongside the bridge rather than before it.
+    /// </summary>
+    private readonly ISubagentSessionResolver? _subagentSessionsOverride;
+
+    private ISubagentSessionResolver? SubagentSessions =>
+        _subagentSessionsOverride ?? _services?.GetService(typeof(ISubagentSessionResolver)) as ISubagentSessionResolver;
+
     /// <summary>Questions shown to the user as a form, whose settling the chat is told about.</summary>
     private readonly ConcurrentDictionary<string, FormShown> _formsShown = new(StringComparer.Ordinal);
 
@@ -169,8 +179,10 @@ public sealed partial class McpBridgeService : IHostedService, IAsyncDisposable
         IWorkingMemory? workingMemory = null,
         TimeProvider? timeProvider = null,
         SessionClientCapabilityStore? clientCapabilities = null,
-        McpTaskRegistry? taskRegistry = null)
+        McpTaskRegistry? taskRegistry = null,
+        ISubagentSessionResolver? subagentSessions = null)
     {
+        _subagentSessionsOverride = subagentSessions;
         _attachmentStorage = attachmentStorage is not null
             ? new Lazy<IAttachmentStorage>(attachmentStorage)
             : new Lazy<IAttachmentStorage>(() => new AttachmentStorage());
@@ -2165,6 +2177,7 @@ public sealed partial class McpBridgeService : IHostedService, IAsyncDisposable
     private async Task RunParkedAsync(InvocationState state, Task<CallToolResult> callTask, PendingQuestion question)
     {
         var ct = _lifetime.Token;
+        var asked = new List<string> { question.QuestionId };
         try
         {
             while (true)
@@ -2177,6 +2190,7 @@ public sealed partial class McpBridgeService : IHostedService, IAsyncDisposable
                     await ((Task)callTask).ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
                     _logger.LogInformation("← MCP {Server}/{Tool} parked call ended: {Reason}",
                         state.Server.Name, state.Request.ToolName, submission.Outcome.Reason);
+                    await TellWaitingSubagentAsync(question, submission.Outcome.Reason, ct);
                     return;
                 }
 
@@ -2187,8 +2201,9 @@ public sealed partial class McpBridgeService : IHostedService, IAsyncDisposable
                     return;
                 }
 
-                await PublishHandbackAsync(next, target, ct);
+                await PublishHandbackAsync(next, target, ct, question.Escalation);
                 question = next;
+                asked.Add(next.QuestionId);
             }
         }
         catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
@@ -2201,15 +2216,89 @@ public sealed partial class McpBridgeService : IHostedService, IAsyncDisposable
         }
         finally
         {
+            _handback.ForgetEscalations(asked);
             state.Dispose();
         }
     }
 
+    /// <summary>
+    /// An escalated question was abandoned (expired, its server removed) while the subagent that
+    /// escalated it still waits: tell it, rather than leave its <c>mcp_answer</c> to time out.
+    /// </summary>
+    private async Task TellWaitingSubagentAsync(PendingQuestion question, string? reason, CancellationToken ct)
+    {
+        if (question.Escalation is not { } escalation || ShouldFold(escalation))
+            return;
+
+        try
+        {
+            var target = escalation.WaitingTarget;
+            await PublishResponseAsync(new McpAnswerQuestionResponse
+            {
+                QuestionId = question.QuestionId,
+                ServerName = question.ServerName,
+                ToolName = question.ToolName,
+                Error = HandbackText.EscalationClosed(question, reason),
+                QuestionClosed = true,
+            }, target.ReplyTo, target.CorrelationId, ct);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
+        {
+            _logger.LogWarning(ex, "Could not tell {Subagent} that escalated MCP question {QuestionId} closed",
+                escalation.SubagentSessionId, question.QuestionId);
+        }
+    }
+
+    /// <summary>
+    /// Whether the outcome of an escalated question goes to the primary session rather than the
+    /// subagent that escalated it: the subagent stopped waiting, or its run is over.
+    /// </summary>
+    private bool ShouldFold(QuestionEscalation escalation) =>
+        escalation.IsDetached || SubagentSessions?.IsActive(escalation.SubagentSessionId) == false;
+
     /// <summary>Gives <paramref name="question"/> to the agent as the outcome it is waiting for.</summary>
-    private async Task PublishHandbackAsync(PendingQuestion question, HandbackReplyTarget target, CancellationToken ct)
+    /// <param name="earlier">The escalation of the call's previous question, if a subagent escalated it.</param>
+    private async Task PublishHandbackAsync(
+        PendingQuestion question, HandbackReplyTarget target, CancellationToken ct, QuestionEscalation? earlier = null)
     {
         _logger.LogInformation("← MCP {Server}/{Tool} handed back question {QuestionId}",
             question.ServerName, question.ToolName, question.QuestionId);
+
+        // The call was escalated and the subagent no longer waits: its next question goes where
+        // the last one went, to the user through the primary agent. (A subagent still waiting
+        // gets it as the outcome of its escalation, bound to its own session as asked.)
+        if ((target.Escalation ?? earlier) is { } escalation && ShouldFold(escalation))
+        {
+            var onward = new QuestionEscalation(escalation.SubagentSessionId, escalation.PrimarySessionId,
+                escalation.WaitingTarget, escalation.RunOrigin, escalation.UserAskedFor);
+            onward.Detach();
+            if (await _handback.TryEscalateAsync(question, onward, ct) is { } refusal)
+            {
+                await _handback.CancelQuestionAsync(question.QuestionId,
+                    $"the subagent that asked has finished, and the question could not be passed to the user ({refusal})");
+                if (target.Escalation is null)
+                {
+                    // The primary's own answer is waiting for this outcome.
+                    await PublishToTargetAsync(new ToolInvokeResponse
+                    {
+                        ToolCallId = target.ToolCallId,
+                        ToolName = target.ToolName,
+                        Content = $"[rockbot] {question.ServerName}/{question.ToolName} asked another question, but it could not be " +
+                                  $"passed on ({refusal}), so the call was cancelled.",
+                        IsError = true,
+                    }, target, ct);
+                }
+                return;
+            }
+
+            // Answered by the primary itself (its mcp_answer or the user's form): the next
+            // question goes back the way the answer came, as for any user conversation.
+            if (target.Escalation is not null)
+            {
+                await DeliverEscalatedQuestionAsync(question, onward, ct);
+                return;
+            }
+        }
 
         var formShown = await TryPublishFormAsync(question, ct);
         await PublishToTargetAsync(new ToolInvokeResponse
@@ -2356,14 +2445,57 @@ public sealed partial class McpBridgeService : IHostedService, IAsyncDisposable
         }
     }
 
-    private Task PublishToTargetAsync(ToolInvokeResponse response, HandbackReplyTarget target, CancellationToken ct) =>
-        target.AnsweringQuestionId is { } questionId
+    private async Task PublishToTargetAsync(ToolInvokeResponse response, HandbackReplyTarget target, CancellationToken ct)
+    {
+        if (await TryFoldEscalatedAsync(target, response.Content ?? "", response.IsError, ct))
+            return;
+
+        await (target.AnsweringQuestionId is { } questionId
             ? PublishResponseAsync(new McpAnswerQuestionResponse { QuestionId = questionId, ServerName = target.CallServer, ToolName = target.CallTool, Result = response },
                 target.ReplyTo, target.CorrelationId, ct)
-            : PublishResponseAsync(response, target.ReplyTo, target.CorrelationId, ct);
+            : PublishResponseAsync(response, target.ReplyTo, target.CorrelationId, ct));
+    }
 
-    private Task PublishToTargetAsync(ToolError error, HandbackReplyTarget target, CancellationToken ct) =>
-        target.AnsweringQuestionId is { } questionId
+    /// <summary>
+    /// The outcome of a call a subagent escalated, when the subagent no longer waits for it: it
+    /// goes to the primary session as a new turn instead. False when the target isn't such a call.
+    /// </summary>
+    private async Task<bool> TryFoldEscalatedAsync(HandbackReplyTarget target, string content, bool isError, CancellationToken ct)
+    {
+        if (target.Escalation is not { } escalation || !ShouldFold(escalation))
+            return false;
+
+        var server = target.CallServer ?? "";
+        var tool = target.CallTool ?? "";
+        var delivered = await PublishTaskResultAsync(new McpTaskResult
+        {
+            SessionId = escalation.PrimarySessionId,
+            TaskId = escalation.SubagentTaskId,
+            ServerName = server,
+            ToolName = tool,
+            Kind = McpTaskResult.KindEscalatedResult,
+            Content = content,
+            IsError = isError,
+            QuestionId = target.AnsweringQuestionId,
+            RunOrigin = escalation.RunOrigin,
+            UserAskedFor = escalation.UserAskedFor,
+        }, ct);
+
+        if (delivered)
+        {
+            _logger.LogInformation("← MCP {Server}/{Tool} escalated by {Subagent}: result folded back to {Primary}",
+                server, tool, escalation.SubagentSessionId, escalation.PrimarySessionId);
+        }
+
+        return true;
+    }
+
+    private async Task PublishToTargetAsync(ToolError error, HandbackReplyTarget target, CancellationToken ct)
+    {
+        if (await TryFoldEscalatedAsync(target, error.Message, isError: true, ct))
+            return;
+
+        await (target.AnsweringQuestionId is { } questionId
             ? PublishResponseAsync(new McpAnswerQuestionResponse
             {
                 QuestionId = questionId,
@@ -2377,7 +2509,8 @@ public sealed partial class McpBridgeService : IHostedService, IAsyncDisposable
                     IsError = true,
                 },
             }, target.ReplyTo, target.CorrelationId, ct)
-            : PublishResponseAsync(error, target.ReplyTo, target.CorrelationId, ct);
+            : PublishResponseAsync(error, target.ReplyTo, target.CorrelationId, ct));
+    }
 
     /// <summary>
     /// Turns a server's <see cref="CallToolResult"/> into what the agent gets: the attachment
@@ -2699,7 +2832,21 @@ public sealed partial class McpBridgeService : IHostedService, IAsyncDisposable
         if (envelope.MessageType == typeof(McpReleaseSessionQuestionsRequest).FullName)
         {
             if (envelope.GetPayload<McpReleaseSessionQuestionsRequest>() is { SessionId.Length: > 0 } release)
+            {
                 await _handback.CancelSessionAsync(release.SessionId, "the run that was asked finished without answering");
+
+                // What it escalated stays open: the user still answers it, and the outcome goes
+                // to the primary session.
+                _handback.DetachEscalations(release.SessionId);
+            }
+            return MessageResult.Ack;
+        }
+
+        // Fire-and-forget: a subagent stopped waiting for a question it escalated.
+        if (envelope.MessageType == typeof(McpDetachEscalationRequest).FullName)
+        {
+            if (envelope.GetPayload<McpDetachEscalationRequest>() is { QuestionId.Length: > 0, SessionId.Length: > 0 } detach)
+                _handback.DetachEscalation(detach.QuestionId, detach.SessionId);
             return MessageResult.Ack;
         }
 
@@ -3095,6 +3242,12 @@ public sealed partial class McpBridgeService : IHostedService, IAsyncDisposable
             return;
         }
 
+        if (req.Escalate)
+        {
+            await EscalateAsync(question, req, replyTo, correlationId, RefuseAsync, ct);
+            return;
+        }
+
         McpHandbackOutcome outcome;
         if (req.Decline)
         {
@@ -3137,7 +3290,7 @@ public sealed partial class McpBridgeService : IHostedService, IAsyncDisposable
                 .Where(p => validated.Content.ContainsKey(p.Key) && McpElicitationCoordinator.IsDecisionField(p.Value))
                 .Select(p => McpElicitationSchemaDescriber.Flatten(p.Key))
                 .ToList();
-            if (decisions.Count > 0 && !await UserSpokeSinceAsync(question.SessionId, question.CreatedAt, ct))
+            if (decisions.Count > 0 && !await UserSpokeSinceAsync(question.SessionId, question.AskedAt, ct))
             {
                 await RefuseAsync(HandbackText.DecisionNeedsUser(decisions, question.SessionId), "decision-without-user");
                 return;
@@ -3147,8 +3300,14 @@ public sealed partial class McpBridgeService : IHostedService, IAsyncDisposable
                 req.FromUser ? "answered by the user in the chat's form" : null);
         }
 
+        // An escalated question's outcome goes to the subagent that escalated it while it still
+        // waits; this answer then only hears that it was sent. Otherwise it comes here, as usual.
         var target = new HandbackReplyTarget(replyTo, correlationId, req.ToolCallId ?? "", "mcp_answer", question.QuestionId,
             question.ServerName, question.ToolName);
+        var toSubagent = question.Escalation is { } escalated && !ShouldFold(escalated);
+        if (toSubagent)
+            target = question.Escalation!.WaitingTarget;
+
         if (!await _handback.TryAnswerAsync(question, new McpAnswerSubmission(outcome, target, req.FromUser), ct))
         {
             // Settled between the lookup and now: answered by a concurrent call, or expired.
@@ -3156,6 +3315,25 @@ public sealed partial class McpBridgeService : IHostedService, IAsyncDisposable
             await RefuseAsync(entry is null
                 ? $"Question {question.QuestionId} is no longer open."
                 : HandbackText.Unavailable(entry), "settled", closed: true);
+            return;
+        }
+
+        if (toSubagent)
+        {
+            var declined = !string.Equals(outcome.Action, McpElicitationActions.Accept, StringComparison.OrdinalIgnoreCase);
+            await PublishResponseAsync(new McpAnswerQuestionResponse
+            {
+                QuestionId = question.QuestionId,
+                ServerName = question.ServerName,
+                ToolName = question.ToolName,
+                TaskContinues = true,
+                Result = new ToolInvokeResponse
+                {
+                    ToolCallId = req.ToolCallId ?? "",
+                    ToolName = "mcp_answer",
+                    Content = HandbackText.AnswerSentToSubagent(question, question.Escalation!, declined),
+                },
+            }, replyTo, correlationId, ct);
             return;
         }
 
@@ -3182,6 +3360,92 @@ public sealed partial class McpBridgeService : IHostedService, IAsyncDisposable
 
     private static bool SameSession(string? asked, string? answering) =>
         !string.IsNullOrEmpty(asked) && string.Equals(asked, answering, StringComparison.Ordinal);
+
+    /// <summary>
+    /// <c>mcp_answer</c> with <c>escalate</c>: a subagent passes the question up to the user
+    /// through its primary agent. The question is re-bound to the primary session, the primary is
+    /// told (and the user shown the form, where their chat can show one), and this request gets no
+    /// reply until the call resumes: its outcome comes back to the subagent as an answer's would.
+    /// </summary>
+    private async Task EscalateAsync(
+        PendingQuestion question, McpAnswerQuestionRequest req, string replyTo, string? correlationId,
+        Func<string, string, bool, Task> refuseAsync, CancellationToken ct)
+    {
+        var subagent = req.SessionId!;
+        if (!HandbackSessions.IsSubagentSession(subagent))
+        {
+            await refuseAsync("Only a subagent passes a question up to the user. You can ask the user yourself: " +
+                              "put the question to them, then answer with mcp_answer after they reply.", "escalate-not-subagent", false);
+            return;
+        }
+
+        if (question.Call.TaskId is not null)
+        {
+            await refuseAsync("A background task's question can't be passed up to the user from a subagent. " +
+                              "Answer it from what you know, or decline it.", "escalate-task", false);
+            return;
+        }
+
+        var primary = SubagentSessions?.ResolvePrimarySession(subagent);
+        if (primary is null || !HandbackSessions.IsUserSession(primary))
+        {
+            await refuseAsync("There's no user conversation to pass this question to. Decline it (decline: true), " +
+                              "and say in your result what the server asked.", "escalate-no-primary", false);
+            return;
+        }
+
+        var escalation = new QuestionEscalation(subagent, primary,
+            new HandbackReplyTarget(replyTo, correlationId, req.ToolCallId ?? "", "mcp_answer", question.QuestionId,
+                question.ServerName, question.ToolName),
+            req.RunOrigin, req.UserAskedFor);
+
+        switch (await _handback.TryEscalateAsync(question, escalation, ct))
+        {
+            case null:
+                break;
+            case "already-escalated":
+                await refuseAsync($"Question {question.QuestionId} has already been passed to the user.", "escalate-repeat", true);
+                return;
+            case "session-cap":
+                await refuseAsync("The user's conversation already has too many unanswered questions from MCP servers. " +
+                                  "Decline this one (decline: true), and say in your result what the server asked.", "escalate-cap", false);
+                return;
+            default:
+                var entry = await TryGetLedgerEntryAsync(question.QuestionId, ct);
+                await refuseAsync(entry is null ? $"Question {question.QuestionId} is no longer open." : HandbackText.Unavailable(entry),
+                    "settled", true);
+                return;
+        }
+
+        if (!await DeliverEscalatedQuestionAsync(question, escalation, ct))
+        {
+            // Nobody was told, so nobody will answer: close it, which tells the waiting subagent.
+            await _handback.CancelQuestionAsync(question.QuestionId, "it couldn't be passed to the user");
+        }
+    }
+
+    /// <summary>
+    /// Tells the primary session about a question a subagent escalated: the user sees it as a form
+    /// where their chat can show one, and the primary agent gets it as a new turn. False when the
+    /// turn couldn't be delivered.
+    /// </summary>
+    private async Task<bool> DeliverEscalatedQuestionAsync(PendingQuestion question, QuestionEscalation escalation, CancellationToken ct)
+    {
+        var formShown = await TryPublishFormAsync(question, ct);
+        return await PublishTaskResultAsync(new McpTaskResult
+        {
+            SessionId = escalation.PrimarySessionId,
+            TaskId = escalation.SubagentTaskId,
+            ServerName = question.ServerName,
+            ToolName = question.ToolName,
+            Kind = McpTaskResult.KindEscalatedQuestion,
+            Content = HandbackText.Escalated(question, escalation, formShown),
+            QuestionId = question.QuestionId,
+            FormShown = formShown,
+            RunOrigin = escalation.RunOrigin,
+            UserAskedFor = escalation.UserAskedFor,
+        }, ct);
+    }
 
     /// <summary>
     /// Parses <c>answers</c> as a JSON object and maps its keys onto the server's field names

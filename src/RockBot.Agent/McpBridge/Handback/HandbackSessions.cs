@@ -18,6 +18,16 @@ internal static class HandbackSessions
         && sessionId.StartsWith(SessionPrefix, StringComparison.OrdinalIgnoreCase)
         && !sessionId.StartsWith(SessionPrefix + "subagent-", StringComparison.OrdinalIgnoreCase);
 
+    private const string SubagentPrefix = "subagent/";
+
+    /// <summary>True for a subagent's run namespace (<c>subagent/{taskId}</c>), the only kind that may escalate.</summary>
+    public static bool IsSubagentSession(string? sessionId) =>
+        sessionId is not null && sessionId.StartsWith(SubagentPrefix, StringComparison.Ordinal) && sessionId.Length > SubagentPrefix.Length;
+
+    /// <summary>The task id of a subagent's run namespace.</summary>
+    public static string SubagentTaskId(string sessionId) =>
+        sessionId.StartsWith(SubagentPrefix, StringComparison.Ordinal) ? sessionId[SubagentPrefix.Length..] : sessionId;
+
     /// <summary>The bare id conversation memory and user replies are keyed by.</summary>
     public static string ConversationId(string sessionId) =>
         sessionId.StartsWith(SessionPrefix, StringComparison.OrdinalIgnoreCase)

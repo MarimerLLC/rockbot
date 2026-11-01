@@ -161,6 +161,37 @@ public class McpTaskResultHandlerTests
     }
 
     [TestMethod]
+    public async Task ASubagentsEscalatedQuestion_IsPutToThePrimaryAgent_WhoReplies()
+    {
+        var message = Result(kind: McpTaskResult.KindEscalatedQuestion, taskId: "abc",
+            content: "[rockbot] Subagent abc needs the user's answer before the MCP server \"research\" can finish research.")
+            with { QuestionId = "q_1", IsError = false };
+
+        await _handler.ProcessAsync(message, CancellationToken.None);
+
+        var turn = (await _conversation.GetTurnsAsync(Conversation)).First(t => t.Role == "user");
+        Assert.AreEqual(message.Content, turn.Content);
+        Assert.AreEqual(McpTaskResultHandler.BridgeTurnAgentName, turn.AgentName, "not a person turn: it can't settle a decision");
+        Assert.IsTrue(_workingMemory.Store.ContainsKey($"session/{Conversation}/mcp-escalated/q_1"));
+        Assert.AreEqual(Conversation, Published<AgentReply>().Single().SessionId);
+    }
+
+    [TestMethod]
+    public async Task AnEscalatedCallsResult_FoldedBackToThePrimary_SaysWhereItCameFrom()
+    {
+        var message = Result(kind: McpTaskResult.KindEscalatedResult, taskId: "abc", content: "deleted 12 rows")
+            with { QuestionId = "q_1", IsError = false };
+
+        await _handler.ProcessAsync(message, CancellationToken.None);
+
+        var turn = (await _conversation.GetTurnsAsync(Conversation)).First(t => t.Role == "user");
+        StringAssert.Contains(turn.Content, "that subagent abc passed to the user finished");
+        StringAssert.Contains(turn.Content, "deleted 12 rows");
+        Assert.AreEqual("deleted 12 rows", _workingMemory.Store[$"session/{Conversation}/mcp-escalated/q_1/result"]);
+        Assert.AreEqual(1, Published<AgentReply>().Count);
+    }
+
+    [TestMethod]
     public async Task ARunningSubagent_KeepsTheResultAmongItsOutputs()
     {
         _subagents.Active = true;

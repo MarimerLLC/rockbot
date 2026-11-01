@@ -194,6 +194,22 @@ public sealed record McpAnswerQuestionRequest
     /// to set it.
     /// </summary>
     public bool FromUser { get; init; }
+
+    /// <summary>
+    /// A subagent passes the question up to the user through its primary agent instead of
+    /// answering it: the question is re-bound to the primary's session and this request waits for
+    /// the resumed call's outcome, as an answer would. Only a subagent's session may escalate.
+    /// </summary>
+    public bool Escalate { get; init; }
+
+    /// <summary>
+    /// With <see cref="Escalate"/>: the consequential-action origin of the escalating run, so the
+    /// primary's turns about the question run under the same authorization (#685).
+    /// </summary>
+    public string? RunOrigin { get; init; }
+
+    /// <summary>With <see cref="Escalate"/>: what the originating user request asked for.</summary>
+    public string? UserAskedFor { get; init; }
 }
 
 /// <summary>
@@ -223,9 +239,10 @@ public sealed record McpAnswerQuestionResponse
     public bool QuestionClosed { get; init; }
 
     /// <summary>
-    /// The question came from a background task. The answer went to the server, but the task
-    /// doesn't finish in this reply: <see cref="Result"/> only says so, and the task's result
-    /// arrives later as an <see cref="McpTaskResult"/>.
+    /// The answer went to the server, but the call doesn't finish in this reply: <see cref="Result"/>
+    /// only says so. Either the question came from a background task, whose result arrives later
+    /// as an <see cref="McpTaskResult"/>, or a subagent escalated it and still waits, so the
+    /// result goes back to that subagent.
     /// </summary>
     public bool TaskContinues { get; init; }
 }
@@ -237,6 +254,19 @@ public sealed record McpAnswerQuestionResponse
 /// </summary>
 public sealed record McpReleaseSessionQuestionsRequest
 {
+    public required string SessionId { get; init; }
+}
+
+/// <summary>
+/// A subagent stopped waiting for a question it escalated (its wait timed out, or its run ended):
+/// the resumed call's outcome goes to the primary agent instead. Only the session that escalated
+/// the question may detach it. Fire-and-forget; no reply. Published to <c>mcp.manage</c>.
+/// </summary>
+public sealed record McpDetachEscalationRequest
+{
+    public required string QuestionId { get; init; }
+
+    /// <summary>The subagent session that escalated the question.</summary>
     public required string SessionId { get; init; }
 }
 
@@ -269,7 +299,9 @@ public sealed record McpCancelTaskResponse
 /// <summary>
 /// Something a background MCP task has for the session that started it, published by the bridge
 /// to <c>mcp.task.result.{agent}</c>: the task's result or how it ended, or a question the server
-/// asked mid-task that the session must answer with <c>mcp_answer</c>.
+/// asked mid-task that the session must answer with <c>mcp_answer</c>. The same delivery carries a
+/// question a subagent escalated to its primary session, and that call's result when the subagent
+/// is no longer there to take it (<see cref="KindEscalatedQuestion"/>, <see cref="KindEscalatedResult"/>).
 /// </summary>
 /// <remarks>
 /// Delivery is at least once: a restart between publishing and recording the delivery repeats it,
@@ -289,6 +321,20 @@ public sealed record McpTaskResult
     /// <summary>The server asked a question mid-task; <see cref="Content"/> is the hand-back text.</summary>
     public const string KindQuestion = "question";
 
+    /// <summary>
+    /// A subagent escalated a server's question to the user (<c>mcp_answer</c> with
+    /// <c>escalate</c>); <see cref="Content"/> tells the primary agent about it, and
+    /// <see cref="TaskId"/> is the subagent's task id. Not a background task's.
+    /// </summary>
+    public const string KindEscalatedQuestion = "escalated-question";
+
+    /// <summary>
+    /// The call behind an escalated question finished after the subagent that escalated it stopped
+    /// waiting: <see cref="Content"/> is its result, folded back to the primary agent.
+    /// <see cref="TaskId"/> is the subagent's task id.
+    /// </summary>
+    public const string KindEscalatedResult = "escalated-result";
+
     /// <summary>The run namespace that started the task: <c>session/{id}</c> or <c>subagent/{id}</c>.</summary>
     public required string SessionId { get; init; }
 
@@ -299,7 +345,10 @@ public sealed record McpTaskResult
 
     public required string ToolName { get; init; }
 
-    /// <summary>One of <see cref="KindCompleted"/>, <see cref="KindEnded"/>, <see cref="KindQuestion"/>.</summary>
+    /// <summary>
+    /// One of <see cref="KindCompleted"/>, <see cref="KindEnded"/>, <see cref="KindQuestion"/>,
+    /// <see cref="KindEscalatedQuestion"/>, <see cref="KindEscalatedResult"/>.
+    /// </summary>
     public required string Kind { get; init; }
 
     /// <summary>Final task status for <see cref="KindEnded"/> (failed, cancelled, lost, timed-out).</summary>
@@ -311,10 +360,10 @@ public sealed record McpTaskResult
     /// <summary>The result is an error result, or the task ended without one.</summary>
     public bool IsError { get; init; }
 
-    /// <summary>For <see cref="KindQuestion"/>: the question's id.</summary>
+    /// <summary>For <see cref="KindQuestion"/> and <see cref="KindEscalatedQuestion"/>: the question's id.</summary>
     public string? QuestionId { get; init; }
 
-    /// <summary>For <see cref="KindQuestion"/>: the user also sees the question as a form in their chat.</summary>
+    /// <summary>For a question: the user also sees it as a form in their chat.</summary>
     public bool FormShown { get; init; }
 
     /// <summary>

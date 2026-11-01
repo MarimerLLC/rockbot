@@ -148,6 +148,7 @@ public sealed class McpManagementExecutor : IToolExecutor, IMcpQuestionAnswerer,
         string? questionId = null;
         string? answers = null;
         var decline = false;
+        var escalate = false;
         try
         {
             using var document = JsonDocument.Parse(string.IsNullOrWhiteSpace(request.Arguments) ? "{}" : request.Arguments);
@@ -168,11 +169,8 @@ public sealed class McpManagementExecutor : IToolExecutor, IMcpQuestionAnswerer,
                     };
                 }
 
-                if (root.TryGetProperty("decline", out var d))
-                {
-                    decline = d.ValueKind == JsonValueKind.True
-                              || (d.ValueKind == JsonValueKind.String && bool.TryParse(d.GetString(), out var parsed) && parsed);
-                }
+                decline = IsTrue(root, "decline");
+                escalate = IsTrue(root, "escalate");
             }
         }
         catch (JsonException)
@@ -182,17 +180,46 @@ public sealed class McpManagementExecutor : IToolExecutor, IMcpQuestionAnswerer,
 
         if (string.IsNullOrWhiteSpace(questionId))
             return Error(request, "Missing required parameter: question_id");
-        if (!decline && string.IsNullOrWhiteSpace(answers))
+        if (escalate && (decline || !string.IsNullOrWhiteSpace(answers)))
+            return Error(request, "escalate: true passes the question to the user; don't combine it with answers or decline.");
+        if (!decline && !escalate && string.IsNullOrWhiteSpace(answers))
             return Error(request, "Provide answers (an object keyed by the server's field names), or decline: true.");
 
-        var envelope = await SendRequestAsync(new McpAnswerQuestionRequest
+        var gate = escalate ? ActionGateContext.Scope : null;
+        MessageEnvelope? envelope;
+        try
         {
-            QuestionId = questionId,
-            SessionId = request.SessionId,
-            ToolCallId = request.ToolCallId,
-            Answers = decline ? null : answers,
-            Decline = decline,
-        }, ct, _proxy.ResponseTimeout);
+            envelope = await SendRequestAsync(new McpAnswerQuestionRequest
+            {
+                QuestionId = questionId,
+                SessionId = request.SessionId,
+                ToolCallId = request.ToolCallId,
+                Answers = decline || escalate ? null : answers,
+                Decline = decline,
+                Escalate = escalate,
+                RunOrigin = gate is null ? null : ActionGateScope.LogName(gate.Origin),
+                UserAskedFor = gate?.UserAskedFor is { } askedFor ? CompletionEvalTriggers.LogName(askedFor) : null,
+            }, ct, _proxy.ResponseTimeout);
+        }
+        catch (OperationCanceledException) when (escalate)
+        {
+            // The run is ending (its timeout, or a cancel): the call's result goes to the primary.
+            await DetachEscalationAsync(questionId, request.SessionId);
+            throw;
+        }
+
+        if (envelope is null && escalate)
+        {
+            await DetachEscalationAsync(questionId, request.SessionId);
+            return new ToolInvokeResponse
+            {
+                ToolCallId = request.ToolCallId,
+                ToolName = request.ToolName,
+                Content = "The user hasn't answered yet. The question stays with them, through the primary agent, " +
+                          "and the call's result will go to the primary agent when they do. Don't wait for it: finish " +
+                          "your task without it, and say in your result that it is waiting for the user's answer.",
+            };
+        }
 
         if (envelope is null)
         {
@@ -218,6 +245,33 @@ public sealed class McpManagementExecutor : IToolExecutor, IMcpQuestionAnswerer,
         }
 
         return result with { ToolCallId = request.ToolCallId, ToolName = request.ToolName };
+    }
+
+    private static bool IsTrue(JsonElement root, string name) =>
+        root.TryGetProperty(name, out var value)
+        && (value.ValueKind == JsonValueKind.True
+            || (value.ValueKind == JsonValueKind.String && bool.TryParse(value.GetString(), out var parsed) && parsed));
+
+    /// <summary>
+    /// Tells the bridge this subagent stopped waiting for a question it escalated, so the call's
+    /// outcome goes to the primary agent. Best effort: the run's end releases it too.
+    /// </summary>
+    private async Task DetachEscalationAsync(string questionId, string? sessionId)
+    {
+        if (string.IsNullOrEmpty(sessionId))
+            return;
+
+        try
+        {
+            await _publisher.PublishAsync(ManageTopic,
+                new McpDetachEscalationRequest { QuestionId = questionId, SessionId = sessionId }
+                    .ToEnvelope(source: _identity.Name), CancellationToken.None);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Could not tell the bridge that {Session} stopped waiting for question {QuestionId}",
+                sessionId, questionId);
+        }
     }
 
     /// <summary>

@@ -314,7 +314,7 @@ public class McpHandbackEndToEndTests
 
     [TestMethod]
     [Timeout(30_000, CooperativeCancellation = true)]
-    public async Task ASubagentAnswersFromContext_ButDeclinesADecision()
+    public async Task ASubagentAnswersFromContext_ButCantDecideADecision()
     {
         await using var harness = await StartAsync();
         const string subagent = "subagent/task-1";
@@ -324,11 +324,12 @@ public class McpHandbackEndToEndTests
         var answered = await harness.AnswerAsync(mailbox, """{"mailbox":"work"}""", sessionId: subagent);
         StringAssert.StartsWith(answered.Result!.Content, "round 1 accept:work");
 
-        // A decision: it's told it can't ask the user, and confirming is refused.
+        // A decision: it's told to pass it to the user, and confirming it itself is refused.
         var handedBack = await harness.InvokeAsync("delete_rows", "{}", sessionId: subagent, canAnswer: true);
-        StringAssert.Contains(handedBack.Content, "you can't ask them from here");
+        StringAssert.Contains(handedBack.Content, "you can't ask them yourself");
+        StringAssert.Contains(handedBack.Content, "escalate: true");
         var refused = await harness.AnswerAsync(IdIn(handedBack.Content), """{"confirm":true}""", sessionId: subagent);
-        StringAssert.Contains(refused.Error, "decline it");
+        StringAssert.Contains(refused.Error, "escalate: true");
     }
 
     [TestMethod]

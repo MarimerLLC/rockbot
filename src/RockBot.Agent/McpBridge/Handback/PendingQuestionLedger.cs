@@ -117,6 +117,12 @@ internal sealed class PendingQuestionEntry : ILedgerEntry<PendingQuestionEntry>
     public string? TaskId { get; set; }
     public string Status { get; set; } = PendingQuestionStatus.Pending;
     public string? SessionId { get; set; }
+
+    /// <summary>
+    /// Set when a subagent escalated the question to its primary session: the subagent's run
+    /// namespace. <see cref="SessionId"/> is then the primary session.
+    /// </summary>
+    public string? EscalatedFrom { get; set; }
     public DateTimeOffset CreatedAt { get; set; }
     public DateTimeOffset ExpiresAt { get; set; }
     public PendingCallContext Call { get; set; } = new();

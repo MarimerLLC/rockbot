@@ -149,15 +149,15 @@ internal sealed class McpQuestionAnswerHandler(
             return;
         }
 
-        // A background task's question: the answer went to the task, which carries on. There is no
-        // result to respond to yet; it arrives as its own turn when the task finishes.
+        // A background task's question, or one a subagent escalated and still waits on: the answer
+        // went on, and the result arrives elsewhere (the task's own turn, or the subagent's result).
         if (response.TaskContinues)
         {
             await conversationMemory.AddTurnAsync(sessionId,
                 new ConversationTurn("user", response.Result?.Content ?? "[rockbot] The answer was sent to the background task.",
                     DateTimeOffset.UtcNow) { AgentName = BridgeTurnAgentName },
                 ct);
-            logger.LogInformation("Form answer to MCP question {QuestionId} went to a background task; no reply until it finishes",
+            logger.LogInformation("Form answer to MCP question {QuestionId} went to a background task or a waiting subagent; no reply until it finishes",
                 message.QuestionId);
             return;
         }

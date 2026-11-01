@@ -62,11 +62,12 @@ public class McpWrapperEndToEndTests
     internal static async Task<AgentSide> ConnectAgentAsync(
         BridgeHarness harness,
         McpWrapperMode mode = McpWrapperMode.Eager,
-        Action<McpToolSurfaceOptions>? configure = null)
+        Action<McpToolSurfaceOptions>? configure = null,
+        TimeSpan? responseTimeout = null)
     {
         var identity = new AgentIdentity("test-agent");
         var proxy = new McpToolProxy(harness.BusPublisher, harness.BusSubscriber, identity,
-            NullLogger<McpToolProxy>.Instance, TimeSpan.FromSeconds(10), TimeSpan.FromSeconds(10));
+            NullLogger<McpToolProxy>.Instance, TimeSpan.FromSeconds(10), responseTimeout ?? TimeSpan.FromSeconds(10));
         var index = new McpServerIndex();
         var surfaceOptions = new McpToolSurfaceOptions { WrapperMode = mode };
         configure?.Invoke(surfaceOptions);
