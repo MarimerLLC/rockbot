@@ -2250,6 +2250,26 @@ public sealed partial class McpBridgeService : IHostedService, IAsyncDisposable
     }
 
     /// <summary>
+    /// A follow-up question of an escalated call that couldn't be passed on to the primary: the
+    /// call is cancelled, and whoever waits for its outcome — the primary's own answer, or the
+    /// primary through a fold-back when the target is the departed subagent's — is told it ended.
+    /// </summary>
+    private async Task AbandonFollowUpAsync(PendingQuestion question, HandbackReplyTarget target, string why, CancellationToken ct)
+    {
+        await _handback.CancelQuestionAsync(question.QuestionId,
+            $"the subagent that asked has finished, and {why}");
+        await PublishToTargetAsync(new ToolInvokeResponse
+        {
+            ToolCallId = target.ToolCallId,
+            ToolName = target.ToolName,
+            Content = $"[rockbot] {McpElicitationSchemaDescriber.Flatten(question.ServerName)}/" +
+                      $"{McpElicitationSchemaDescriber.Flatten(question.ToolName)} asked another question after the user's answer, " +
+                      $"but {why}, so the call was cancelled. If it is still needed, call the tool again.",
+            IsError = true,
+        }, target, ct);
+    }
+
+    /// <summary>
     /// Whether the outcome of an escalated question goes to the primary session rather than the
     /// subagent that escalated it: the subagent stopped waiting, or its run is over.
     /// </summary>
@@ -2274,20 +2294,7 @@ public sealed partial class McpBridgeService : IHostedService, IAsyncDisposable
             onward.Detach();
             if (await _handback.TryEscalateAsync(question, onward, ct) is { } refusal)
             {
-                await _handback.CancelQuestionAsync(question.QuestionId,
-                    $"the subagent that asked has finished, and the question could not be passed to the user ({refusal})");
-                if (target.Escalation is null)
-                {
-                    // The primary's own answer is waiting for this outcome.
-                    await PublishToTargetAsync(new ToolInvokeResponse
-                    {
-                        ToolCallId = target.ToolCallId,
-                        ToolName = target.ToolName,
-                        Content = $"[rockbot] {question.ServerName}/{question.ToolName} asked another question, but it could not be " +
-                                  $"passed on ({refusal}), so the call was cancelled.",
-                        IsError = true,
-                    }, target, ct);
-                }
+                await AbandonFollowUpAsync(question, target, $"the question could not be passed to the user ({refusal})", ct);
                 return;
             }
 
@@ -2295,7 +2302,8 @@ public sealed partial class McpBridgeService : IHostedService, IAsyncDisposable
             // question goes back the way the answer came, as for any user conversation.
             if (target.Escalation is not null)
             {
-                await DeliverEscalatedQuestionAsync(question, onward, ct);
+                if (!await DeliverEscalatedQuestionAsync(question, onward, ct))
+                    await AbandonFollowUpAsync(question, target, "the question could not be delivered to the primary agent", ct);
                 return;
             }
         }
@@ -2467,7 +2475,7 @@ public sealed partial class McpBridgeService : IHostedService, IAsyncDisposable
 
         var server = target.CallServer ?? "";
         var tool = target.CallTool ?? "";
-        var delivered = await PublishTaskResultAsync(new McpTaskResult
+        var folded = new McpTaskResult
         {
             SessionId = escalation.PrimarySessionId,
             TaskId = escalation.SubagentTaskId,
@@ -2479,12 +2487,38 @@ public sealed partial class McpBridgeService : IHostedService, IAsyncDisposable
             QuestionId = target.AnsweringQuestionId,
             RunOrigin = escalation.RunOrigin,
             UserAskedFor = escalation.UserAskedFor,
-        }, ct);
+        };
+
+        // The call has completed and this is the only copy of its outcome, so a failed delivery
+        // (working memory or the broker) is retried until it goes out, as a task's ending is. The
+        // parked call stays open meanwhile. Redoing the call, or sending the outcome to the
+        // departed subagent, would both be wrong.
+        var delivered = await PublishTaskResultAsync(folded, ct);
+        var retryDelay = PollDelay(null);
+        while (!delivered && !_lifetime.IsCancellationRequested)
+        {
+            try
+            {
+                await Task.Delay(retryDelay, _time, _lifetime.Token);
+            }
+            catch (OperationCanceledException)
+            {
+                break;
+            }
+
+            retryDelay = Backoff(retryDelay);
+            delivered = await PublishTaskResultAsync(folded, CancellationToken.None);
+        }
 
         if (delivered)
         {
             _logger.LogInformation("← MCP {Server}/{Tool} escalated by {Subagent}: result folded back to {Primary}",
                 server, tool, escalation.SubagentSessionId, escalation.PrimarySessionId);
+        }
+        else
+        {
+            _logger.LogWarning("← MCP {Server}/{Tool} escalated by {Subagent}: the bridge stopped before the result " +
+                               "reached {Primary}", server, tool, escalation.SubagentSessionId, escalation.PrimarySessionId);
         }
 
         return true;

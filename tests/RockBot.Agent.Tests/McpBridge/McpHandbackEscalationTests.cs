@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Text.Json;
 using ModelContextProtocol.Protocol;
 using ModelContextProtocol.Server;
+using RockBot.Agent.McpBridge;
 using RockBot.Agent.McpBridge.Handback;
 using RockBot.Host;
 using RockBot.Messaging;
@@ -58,19 +59,80 @@ public class McpHandbackEscalationTests
         },
         new McpServerToolCreateOptions { Name = "delete_rows" });
 
+    /// <summary>
+    /// MRTR tool that asks which mailbox, then — once <paramref name="gate"/> opens — asks a
+    /// second question, so a test can change things between the user's answer and the next question.
+    /// </summary>
+    private static McpServerTool GatedTwoQuestionTool(TaskCompletionSource gate) => McpServerTool.Create(
+        async (RequestContext<CallToolRequestParams> context) =>
+        {
+            var round = context.Params?.RequestState is { } state ? int.Parse(state) : 0;
+            if (round >= 2)
+                return "done";
+            if (round == 1)
+                await gate.Task;
+
+            throw new InputRequiredException(
+                new Dictionary<string, InputRequest>
+                {
+                    [$"q{round}"] = InputRequest.ForElicitation(new ElicitRequestParams
+                    {
+                        Message = round == 0 ? "Which mailbox?" : "Which folder?",
+                        RequestedSchema = new ElicitRequestParams.RequestSchema
+                        {
+                            Properties = new Dictionary<string, ElicitRequestParams.PrimitiveSchemaDefinition>
+                            {
+                                [$"q{round}"] = new ElicitRequestParams.UntitledSingleSelectEnumSchema { Enum = ["a", "b"] },
+                            },
+                            Required = [$"q{round}"],
+                        },
+                    }),
+                },
+                (round + 1).ToString());
+        },
+        new McpServerToolCreateOptions { Name = "two_questions" });
+
     private static Task<BridgeHarness> StartAsync(
         FakeSubagentSessions sessions,
         IConversationMemory conversation,
         IEnumerable<McpServerTool>? tools = null,
         IWorkingMemory? workingMemory = null,
-        TimeProvider? timeProvider = null) =>
+        TimeProvider? timeProvider = null,
+        Action<McpBridgeOptions>? configureBridge = null) =>
         BridgeHarness.StartAsync(
             tools ?? [ConfirmTool(), MailboxTool(rounds: 2)],
             configure: e => e.Elicitation = new McpElicitationConfig { Mode = McpElicitationConfig.ModeHandback },
+            configureBridge: o =>
+            {
+                // Retries of a failed fold-back come quickly in tests.
+                o.TaskPollMinMs = 50;
+                o.TaskPollMaxMs = 200;
+                configureBridge?.Invoke(o);
+            },
             conversationMemory: conversation,
             workingMemory: workingMemory,
             timeProvider: timeProvider,
             subagentSessions: sessions);
+
+    /// <summary>
+    /// Escalates <c>two_questions</c>' first question and has the primary answer it while the
+    /// subagent waits; then the subagent stops waiting. The server's second question is held by the
+    /// gate, so the test decides what happens before it arrives.
+    /// </summary>
+    private static async Task<string> AnswerFirstThenDetachAsync(BridgeHarness harness)
+    {
+        var handedBack = await harness.InvokeAsync("two_questions", "{}", sessionId: Subagent, canAnswer: true);
+        var id = IdIn(handedBack.Content);
+        await harness.EscalateAsync(id, Subagent);
+        await WaitForEscalatedQuestionAsync(harness, id);
+
+        var first = await harness.AnswerAsync(id, """{"q0":"a"}""", sessionId: Primary);
+        Assert.IsTrue(first.TaskContinues, "the subagent still waited when the primary answered");
+
+        await harness.DeliverAsync(McpManagementExecutor.ManageTopic, new McpDetachEscalationRequest { QuestionId = id, SessionId = Subagent });
+        await Task.Delay(100);
+        return id;
+    }
 
     private static async Task<string> HandBackToSubagentAsync(BridgeHarness harness, string tool = "delete_rows")
     {
@@ -184,6 +246,82 @@ public class McpHandbackEscalationTests
         StringAssert.StartsWith(folded.Content, "accept:true");
         Assert.IsTrue(working.Store.ContainsKey($"{Primary}/mcp-escalated/{id}/result"));
         Assert.AreEqual(0, harness.PublishedOn(subagentReply).Count);
+    }
+
+    [TestMethod]
+    [Timeout(30_000, CooperativeCancellation = true)]
+    public async Task AFoldedResultThatFailsToDeliver_IsRetried_NotDropped()
+    {
+        var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var sessions = new FakeSubagentSessions().Running(Subagent, Primary);
+        var conversation = new RecordingConversationMemory();
+        await using var harness = await StartAsync(sessions, conversation, tools: [ConfirmTool(gate)]);
+        var id = await HandBackToSubagentAsync(harness);
+
+        await harness.EscalateAsync(id, Subagent);
+        await WaitForEscalatedQuestionAsync(harness, id);
+        await conversation.AddTurnAsync(PrimaryConversation, new ConversationTurn("user", "yes", DateTimeOffset.UtcNow));
+        await harness.AnswerAsync(id, """{"confirm":true}""", sessionId: Primary);
+        await harness.DeliverAsync(McpManagementExecutor.ManageTopic, new McpDetachEscalationRequest { QuestionId = id, SessionId = Subagent });
+        await Task.Delay(100);
+
+        // The broker refuses the first two attempts to deliver the folded result.
+        var failures = 0;
+        harness.PublishGate = e =>
+            e.GetPayload<McpTaskResult>() is { Kind: McpTaskResult.KindEscalatedResult } && Interlocked.Increment(ref failures) <= 2
+                ? throw new InvalidOperationException("broker unavailable")
+                : Task.CompletedTask;
+        gate.SetResult();
+
+        var folded = await harness.WaitForTaskResultAsync(r => r.Kind == McpTaskResult.KindEscalatedResult);
+        StringAssert.StartsWith(folded.Content, "accept:true");
+        Assert.AreEqual(3, failures, "delivered on the third attempt");
+    }
+
+    [TestMethod]
+    [Timeout(30_000, CooperativeCancellation = true)]
+    public async Task AFollowUpQuestionOverThePrimarysCap_EndsTheCall_AndThePrimaryIsTold()
+    {
+        var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var sessions = new FakeSubagentSessions().Running(Subagent, Primary);
+        await using var harness = await StartAsync(sessions, new RecordingConversationMemory(),
+            tools: [GatedTwoQuestionTool(gate), ConfirmTool()],
+            configureBridge: o => o.MaxPendingQuestionsPerSession = 1);
+        await AnswerFirstThenDetachAsync(harness);
+
+        // The primary's own call takes its one open question, so the follow-up has no room.
+        IdIn((await harness.InvokeAsync("delete_rows", "{}", sessionId: Primary, canAnswer: true)).Content);
+        gate.SetResult();
+
+        var ended = await harness.WaitForTaskResultAsync(r => r.Kind == McpTaskResult.KindEscalatedResult);
+        Assert.AreEqual(Primary, ended.SessionId);
+        Assert.IsTrue(ended.IsError);
+        StringAssert.Contains(ended.Content, "could not be passed to the user");
+        StringAssert.Contains(ended.Content, "the call was cancelled");
+    }
+
+    [TestMethod]
+    [Timeout(30_000, CooperativeCancellation = true)]
+    public async Task AFollowUpQuestionThatCantBeDelivered_EndsTheCall_AndThePrimaryIsTold()
+    {
+        var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var sessions = new FakeSubagentSessions().Running(Subagent, Primary);
+        await using var harness = await StartAsync(sessions, new RecordingConversationMemory(),
+            tools: [GatedTwoQuestionTool(gate)]);
+        var first = await AnswerFirstThenDetachAsync(harness);
+
+        // The notice of the server's second question can't be delivered.
+        harness.PublishGate = e =>
+            e.GetPayload<McpTaskResult>() is { Kind: McpTaskResult.KindEscalatedQuestion } notice && notice.QuestionId != first
+                ? throw new InvalidOperationException("broker unavailable")
+                : Task.CompletedTask;
+        gate.SetResult();
+
+        var ended = await harness.WaitForTaskResultAsync(r => r.Kind == McpTaskResult.KindEscalatedResult);
+        Assert.IsTrue(ended.IsError);
+        StringAssert.Contains(ended.Content, "could not be delivered to the primary agent");
+        Assert.AreEqual(PendingQuestionStatus.Cancelled,
+            ReadLedger(harness).Single(e => e.QuestionId != first).Status, "nothing is left parked until it expires");
     }
 
     [TestMethod]
