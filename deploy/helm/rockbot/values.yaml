@@ -101,6 +101,7 @@ agent:
   #   baseUrl: Recorder HTTP base, e.g. http://owntracks-recorder.<ns>.svc.cluster.local:8083
   #   user:    Recorder user name the phone publishes as
   #   device:  optional; empty = newest fix across the user's devices
+  # Setup guide (phone, Recorder, location MCP server, regions): docs/user-location.md
   userLocation:
     owntracks:
       baseUrl: ""
