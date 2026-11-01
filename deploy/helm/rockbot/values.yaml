@@ -558,7 +558,7 @@ todoappMcp:
 #                  secret values end up in Helm release history — use for dev/test
 #                  or seal with helm-secrets / external-secrets for production).
 # create: false → Provide existingSecretName pointing to a pre-existing Secret.
-#                  The Secret must contain all keys listed under stringData in
+#                  The Secret must contain all keys listed under data in
 #                  templates/secret.yaml.
 # ── OpenRouter app attribution (non-secret) ──────────────────────────────────
 # OpenRouter attributes activity purely from two self-reported headers. With them

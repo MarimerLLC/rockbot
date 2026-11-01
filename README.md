@@ -372,6 +372,27 @@ Published versions are treated as immutable — the workflow skips a version tha
 exists rather than replacing it, since consumers pin an exact version. Bump `version:` in
 `Chart.yaml` to publish a change.
 
+**Upgrading from chart 0.16.16 or earlier: one-time stale-key check.** Older charts rendered
+`rockbot-secrets` with `stringData:`, which `helm upgrade` can't prune. A key that stopped
+rendering (an optional value removed, a `balancedModels` entry shifting slot) stayed in the live
+secret, and the agent kept reading it (#709). The chart now uses `data:`, so later upgrades prune
+on their own. But the first upgrade to it can't remove keys that only `stringData` ever wrote.
+After that upgrade, compare key names once:
+
+```bash
+NS=rockbot   # the chart's `namespace` value
+comm -23 \
+  <(kubectl get secret rockbot-secrets -n $NS \
+      -o go-template='{{range $k, $v := .data}}{{$k}}{{"\n"}}{{end}}' | sort) \
+  <(helm template rockbot deploy/helm/rockbot -f deploy/values.personal.yaml \
+      -s templates/secret.yaml | grep -oE '^  [A-Za-z0-9_]+:' | tr -d ' :' | sort)
+```
+
+Every key it prints is one the chart no longer renders. Usually that's a leftover, but keep any
+key you added to the secret by hand on purpose; helm never prunes those. Remove the leftovers with
+`kubectl patch secret rockbot-secrets -n $NS --type=json -p '[{"op":"remove","path":"/data/<KEY>"}]'`,
+then restart the agent.
+
 #### 3. Restart pods to pick up new images
 
 After pushing updated images (all tagged `latest`):
