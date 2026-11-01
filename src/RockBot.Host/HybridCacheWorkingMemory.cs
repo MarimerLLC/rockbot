@@ -1,3 +1,4 @@
+using System.ClientModel;
 using System.Collections.Concurrent;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Caching.Memory;
@@ -122,8 +123,7 @@ internal sealed class HybridCacheWorkingMemory : IWorkingMemory
         _logger.LogDebug("Working memory set: key={Key} ttl={Ttl}", key, effectiveTtl);
 
         // Generate embedding in the background (best-effort, non-blocking).
-        // Skip wisp-scoped entries — they are ephemeral (30-60 min TTL), retrieved by exact
-        // key, and cleaned up on wisp completion. BM25 fallback is sufficient for search.
+        // Skip ephemeral exact-key namespaces (wisp, tool-result stash) — see IsEphemeralKey.
         if (_embeddingGenerator is not null && !IsEphemeralKey(key))
         {
             _ = GenerateEmbeddingAsync(key, value, category, tags);
@@ -134,9 +134,13 @@ internal sealed class HybridCacheWorkingMemory : IWorkingMemory
 
     private async Task GenerateEmbeddingAsync(string key, string value, string? category, IReadOnlyList<string>? tags)
     {
+        string? docText = null;
         try
         {
-            var docText = _preparer.Prepare(BuildDocumentText(key, value, category, tags), diagnosticKey: key);
+            // The key leads the document text, so classify the value's shape on its own —
+            // otherwise a JSON value never looks structured and gets the prose cap (#460).
+            docText = _preparer.Prepare(BuildDocumentText(key, value, category, tags),
+                diagnosticKey: key, shapeSample: value);
             var result = await _embeddingGenerator!.GenerateAsync(docText);
 
             // Only store if the entry still exists — prevents orphaned embeddings
@@ -144,9 +148,32 @@ internal sealed class HybridCacheWorkingMemory : IWorkingMemory
             if (_index.ContainsKey(key))
                 _embeddings[key] = result.Vector.ToArray();
         }
+        catch (ClientResultException ex)
+        {
+            // The exception message carries only the error type ("invalid_request_error: "),
+            // so surface the response body for the actual reason (#460).
+            _logger.LogWarning(ex,
+                "Failed to generate working memory embedding for key {Key}: HTTP {Status}, input {Chars} chars, response: {Body}",
+                key, ex.Status, docText?.Length, ReadErrorBody(ex));
+        }
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "Failed to generate working memory embedding for key {Key}", key);
+        }
+    }
+
+    private static string ReadErrorBody(ClientResultException ex)
+    {
+        const int maxChars = 500;
+        try
+        {
+            var body = ex.GetRawResponse()?.Content?.ToString();
+            if (string.IsNullOrWhiteSpace(body)) return "(empty)";
+            return body.Length <= maxChars ? body : body[..maxChars] + "…";
+        }
+        catch (Exception)
+        {
+            return "(unreadable)";
         }
     }
 
@@ -371,10 +398,19 @@ internal sealed class HybridCacheWorkingMemory : IWorkingMemory
 
     /// <summary>
     /// Keys that belong to short-lived, exact-key-lookup namespaces where embedding
-    /// generation is unnecessary (and often exceeds the model's token window).
+    /// generation is unnecessary (and often exceeds the model's token window). BM25 still
+    /// ranks them when a query is scoped to one of these namespaces.
+    /// <list type="bullet">
+    /// <item><c>wisp/</c> — wisp-scoped output (30-60 min TTL), cleaned up on wisp completion.</item>
+    /// <item><c>stash/</c> — full originals of trimmed tool results, written only by the loop
+    /// and read back by the key the stash registry surfaces. They are by definition the
+    /// largest, densest payloads, and embedding them was the main source of 400s and
+    /// minute-long embedding calls (#460).</item>
+    /// </list>
     /// </summary>
     private static bool IsEphemeralKey(string key) =>
-        key.StartsWith("wisp/", StringComparison.OrdinalIgnoreCase);
+        key.StartsWith("wisp/", StringComparison.OrdinalIgnoreCase) ||
+        key.StartsWith(ToolResultStash.Tag + "/", StringComparison.OrdinalIgnoreCase);
 
     private static bool PassesStructuralFilters(WorkingMemoryEntry entry, MemorySearchCriteria criteria)
     {
