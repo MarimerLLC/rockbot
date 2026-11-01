@@ -309,8 +309,12 @@ are the best way to tell the agent about the places that matter to you:
   configuration or memory unless a conversation puts it there.
 
 **Set one up:** on Android, open the app's menu → **Waypoints** → **+**; on iOS, use
-**Regions**. Give it a label, set the center (your current location, or pick it on the
-map) and a radius. 100–200 m suits a house or office; use more for a large site.
+**Regions**. Give it a label, a center and a radius. The center starts at your current
+location, so the easiest way is to add a region while you're at the place. For
+somewhere else, type its coordinates: long-pressing a spot in Google Maps shows them
+so you can copy them. A radius of 100–200 m suits a house or office; use more for a
+large site. Don't go much smaller: indoor GPS drifts tens of metres, and a tight
+radius makes you "leave" and "enter" while sitting still.
 Label it the way you'd say it, because the label is the name the agent sees and
 repeats back. Regions work in **Significant changes** and **Move** modes.
 
