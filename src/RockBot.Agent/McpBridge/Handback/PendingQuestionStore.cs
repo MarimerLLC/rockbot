@@ -38,6 +38,11 @@ internal sealed class PendingQuestionStore : IDisposable
     private readonly QuestionSettled? _settled;
     private readonly ConcurrentDictionary<string, PendingQuestion> _open = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string, ITimer> _timers = new(StringComparer.Ordinal);
+
+    // Escalations outlive their question's stay in _open: once answered, the parked call still
+    // owes the waiting subagent its outcome, and the subagent may still detach. The parked call
+    // forgets them when it ends.
+    private readonly ConcurrentDictionary<string, QuestionEscalation> _escalations = new(StringComparer.Ordinal);
     private readonly object _gate = new();
 
     public PendingQuestionStore(
@@ -85,6 +90,7 @@ internal sealed class PendingQuestionStore : IDisposable
             Request = question.Request,
             Round = Math.Max(1, question.Round),
             CreatedAt = now,
+            AskedAt = now,
             ExpiresAt = now + info.Ttl,
             Call = call,
         };
@@ -162,6 +168,83 @@ internal sealed class PendingQuestionStore : IDisposable
             question.QuestionId, question.ServerName, question.ToolName, declined ? "declined" : "answered",
             submission.FromUser ? "user" : "agent");
         return true;
+    }
+
+    /// <summary>
+    /// Re-binds <paramref name="question"/> to the primary session a subagent escalated it to:
+    /// only that session may answer it from now on, and a decision needs a person turn there after
+    /// this moment. Returns null on success, or why it can't be escalated.
+    /// </summary>
+    public async Task<string?> TryEscalateAsync(PendingQuestion question, QuestionEscalation escalation, CancellationToken ct)
+    {
+        lock (_gate)
+        {
+            if (!_open.ContainsKey(question.QuestionId))
+                return "closed";
+            if (question.Escalation is not null)
+                return "already-escalated";
+            if (_open.Values.Count(p => p.SessionId == escalation.PrimarySessionId) >= _maxPerSession)
+                return "session-cap";
+
+            question.SessionId = escalation.PrimarySessionId;
+            question.AskedAt = _time.GetUtcNow();
+            question.Escalation = escalation;
+            _escalations[question.QuestionId] = escalation;
+        }
+
+        try
+        {
+            await _ledger.UpdateAsync(question.QuestionId, entry =>
+            {
+                entry.SessionId = escalation.PrimarySessionId;
+                entry.EscalatedFrom = escalation.SubagentSessionId;
+            }, ct).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
+        {
+            // The in-memory binding stands. At worst a restart announces the interruption to
+            // nobody (the subagent's session) instead of the primary.
+            _logger.LogWarning(ex, "Could not record the escalation of MCP question {QuestionId} in the pending ledger",
+                question.QuestionId);
+        }
+
+        McpHandbackDiagnostics.Escalated(question.ServerName);
+        _logger.LogInformation(
+            "MCP {Server}/{Tool} question {QuestionId} escalated by {Subagent} to {Primary}",
+            question.ServerName, question.ToolName, question.QuestionId,
+            escalation.SubagentSessionId, escalation.PrimarySessionId);
+        return null;
+    }
+
+    /// <summary>
+    /// The subagent that escalated <paramref name="questionId"/> stopped waiting for it. False when
+    /// the question wasn't escalated by <paramref name="subagentSessionId"/>, or its call is over.
+    /// </summary>
+    public bool DetachEscalation(string questionId, string subagentSessionId) =>
+        _escalations.TryGetValue(questionId, out var escalation)
+        && string.Equals(escalation.SubagentSessionId, subagentSessionId, StringComparison.Ordinal)
+        && Detach(questionId, escalation);
+
+    /// <summary>Every question <paramref name="subagentSessionId"/> escalated: its run has ended.</summary>
+    public int DetachEscalations(string subagentSessionId) =>
+        _escalations.Where(e => string.Equals(e.Value.SubagentSessionId, subagentSessionId, StringComparison.Ordinal))
+            .Count(e => Detach(e.Key, e.Value));
+
+    private bool Detach(string questionId, QuestionEscalation escalation)
+    {
+        if (!escalation.Detach())
+            return false;
+
+        _logger.LogInformation("{Subagent} stopped waiting for escalated MCP question {QuestionId}; " +
+                               "its outcome goes to {Primary}", escalation.SubagentSessionId, questionId, escalation.PrimarySessionId);
+        return true;
+    }
+
+    /// <summary>Forgets the escalations of <paramref name="questionIds"/>: their call has ended.</summary>
+    public void ForgetEscalations(IEnumerable<string> questionIds)
+    {
+        foreach (var id in questionIds)
+            _escalations.TryRemove(id, out _);
     }
 
     /// <summary>

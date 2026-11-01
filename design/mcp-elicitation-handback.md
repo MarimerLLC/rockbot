@@ -130,16 +130,45 @@ behaves like `auto`, using the server's responder.
 
 **Subagents** do take hand-backs. A subagent is a full agent loop on a task, and it knows its
 task's context far better than a responder that sees only the call's arguments. It can't ask
-the user, though:
-- The hand-back tells it to decline what it can't settle, and to say in its result what the
-  server asked.
-- A decision is never accepted from it. Its session has no user turns, so the check always
-  fails, and the refusal tells it to decline.
-- When its run ends, `SubagentRunner` notifies `ISessionEndListener`s. The MCP listener sends
-  `McpReleaseSessionQuestionsRequest`, and the bridge cancels any question still open for that
-  session rather than leaving its call parked until the TTL.
+the user itself, so what it can't settle, decisions included, it **escalates** (#659):
+`mcp_answer(question_id, escalate: true)`.
 
-Passing a subagent's decision up to the user through the primary agent is a possible follow-up.
+- **Binding moves, explicitly.** The bridge resolves the subagent's primary session
+  (`ISubagentSessionResolver`) and re-binds the question to it, in memory and in the ledger
+  entry (`sessionId` becomes the primary, `escalatedFrom` records the subagent). From then on
+  only the primary session can answer it; the subagent can't, and can't escalate it again.
+  Only a `subagent/…` session may escalate, and only to a user conversation; a background
+  task's question can't be escalated.
+- **The primary is told.** The user sees the question as a form where their chat can show one,
+  and the primary agent gets it as a new turn: an `McpTaskResult` of kind `escalated-question`,
+  delivered like a background task's question, with the text in working memory at
+  `{primary}/mcp-escalated/{questionId}`. The primary asks the user and answers with
+  `mcp_answer` as for any question.
+- **The decision rule holds.** A decision needs a person turn in the **primary** session after
+  the escalation (`PendingQuestion.AskedAt`), not merely after the hand-back.
+- **The subagent waits.** The escalating `mcp_answer` gets no reply until the call resumes; its
+  reply is then the call's outcome, as for any answer (the result, or the server's next
+  question, which the subagent may answer or escalate in turn). The primary's own answer then
+  only hears that it was sent and the result goes back to the subagent (`TaskContinues`).
+- **Unless it stops waiting.** The wait is bounded by the run (its timeout and iteration budget)
+  and by the proxy's response timeout. When the executor's wait ends without a reply, it sends
+  `McpDetachEscalationRequest`; when the run ends, the session-end release does the same for
+  everything the subagent escalated. A detached escalation's outcome goes to the primary: as the
+  reply to its own `mcp_answer` if it answers after the detach, or folded back as an
+  `escalated-result` turn if the result arrives later, like a late A2A reply. A server that asks
+  again after the subagent is gone has that question bound to the primary too.
+- **Releasing questions at run end.** When its run ends, `SubagentRunner` notifies
+  `ISessionEndListener`s. The MCP listener sends `McpReleaseSessionQuestionsRequest`, and the
+  bridge cancels any question still bound to that session rather than leaving its call parked
+  until the TTL. An escalated question is bound to the primary, so it survives; only its
+  escalation is detached.
+- **If the question closes first** (it expires, or its server is removed) while the subagent
+  still waits, the subagent is told so it can finish without it.
+- **What can't be escalated** (no user conversation above it, or the primary's per-session cap
+  is full) is refused, and the subagent declines and says in its result what the server asked.
+
+A small race remains: a subagent whose wait times out in the same instant the result is
+published loses that result (it went to a waiter that had just left). The call itself completed.
 
 The run says so explicitly:
 - `AgentLoopRunner` marks a run whose tool list includes `mcp_answer`.
@@ -223,6 +252,7 @@ A new management tool alongside `mcp_invoke_tool`:
 | `question_id` | string, required | From the hand-back. |
 | `answers` | object | Field values, keyed by the server's field names. |
 | `decline` | bool | Refuse the question; the server continues without the value. |
+| `escalate` | bool | Subagents only: pass the question to the user through the primary agent (see "Subagents"). |
 
 The bridge checks the following, and any failure is a tool error the agent can act on, not a
 decline sent to the server:
@@ -237,7 +267,7 @@ decline sent to the server:
    coercion, as for every other answer.
 4. **Decision fields need the user.** A boolean or yes/no choice (the coordinator's decision
    fields) is only accepted if a **user turn** was recorded in the session's conversation memory
-   *after* the question was handed back. The agent can't confirm "overwrite 12 rows?" on its own;
+   *after* the question was handed back (or, for an escalated question, after the escalation). The agent can't confirm "overwrite 12 rows?" on its own;
    it has to put the question to the user, and the user has to answer. Other fields need no
    user turn: the agent may answer them from its context, just as it chooses tool arguments.
 5. **One-shot.** A question is answered once. A second `mcp_answer` gets "already answered".
@@ -383,7 +413,8 @@ Before the bridge accepts tool invocations:
    > `context`), or ask the user first. Full details: `get_from_working_memory("session/abc123/mcp-interrupted/q_7f3c2a…")`.
 
    Interrupted calls from subagents are logged and marked, not announced. The run that made
-   them doesn't outlive a restart.
+   them doesn't outlive a restart. A question a subagent escalated is bound to its primary
+   session, so it is announced there, naming the subagent that made the call.
 3. **Mark notified.** Delivery is at least once. A crash between notifying and marking may
    repeat a notice, and the working-memory key and `questionId` let a repeat be recognized as
    one.

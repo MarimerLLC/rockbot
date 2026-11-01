@@ -17,6 +17,10 @@ namespace RockBot.Agent.McpBridge.Handback;
 /// </param>
 /// <param name="CallServer">Server of the call being resumed, reported with an answer's outcome.</param>
 /// <param name="CallTool">Tool of the call being resumed, reported with an answer's outcome.</param>
+/// <param name="Escalation">
+/// Set when the target is a subagent waiting on a question it escalated: the outcome goes to it
+/// only while it still waits, and is folded back to its primary session otherwise.
+/// </param>
 internal sealed record HandbackReplyTarget(
     string ReplyTo,
     string? CorrelationId,
@@ -24,7 +28,54 @@ internal sealed record HandbackReplyTarget(
     string ToolName,
     string? AnsweringQuestionId = null,
     string? CallServer = null,
-    string? CallTool = null);
+    string? CallTool = null,
+    QuestionEscalation? Escalation = null);
+
+/// <summary>
+/// A question a subagent passed up to the user through its primary agent
+/// (<c>mcp_answer</c> with <c>escalate</c>). The subagent waits on <see cref="WaitingTarget"/> for
+/// the resumed call's outcome until it <see cref="Detach">detaches</see> — its wait timed out or its
+/// run ended — after which the outcome goes to the primary session.
+/// </summary>
+internal sealed class QuestionEscalation
+{
+    private int _detached;
+
+    /// <param name="waitingTarget">The subagent's escalating <c>mcp_answer</c>; its escalation is set to this one.</param>
+    public QuestionEscalation(
+        string subagentSessionId, string primarySessionId, HandbackReplyTarget waitingTarget,
+        string? runOrigin, string? userAskedFor)
+    {
+        SubagentSessionId = subagentSessionId;
+        PrimarySessionId = primarySessionId;
+        WaitingTarget = waitingTarget with { Escalation = this };
+        RunOrigin = runOrigin;
+        UserAskedFor = userAskedFor;
+    }
+
+    /// <summary>The subagent's run namespace (<c>subagent/{taskId}</c>) that escalated the question.</summary>
+    public string SubagentSessionId { get; }
+
+    /// <summary>The primary user session (<c>session/{id}</c>) the question was re-bound to.</summary>
+    public string PrimarySessionId { get; }
+
+    /// <summary>The subagent's waiting <c>mcp_answer</c>, with <see cref="HandbackReplyTarget.Escalation"/> set to this.</summary>
+    public HandbackReplyTarget WaitingTarget { get; }
+
+    /// <summary>The escalating run's consequential-action origin, for the primary's turns (#685).</summary>
+    public string? RunOrigin { get; }
+
+    public string? UserAskedFor { get; }
+
+    /// <summary>The subagent's task id: its run namespace without the <c>subagent/</c> prefix.</summary>
+    public string SubagentTaskId => HandbackSessions.SubagentTaskId(SubagentSessionId);
+
+    /// <summary>The subagent stopped waiting: the outcome goes to the primary session.</summary>
+    public bool IsDetached => Volatile.Read(ref _detached) == 1;
+
+    /// <summary>Marks the subagent as no longer waiting. False when it already was.</summary>
+    public bool Detach() => Interlocked.Exchange(ref _detached, 1) == 0;
+}
 
 /// <summary>
 /// What settled a pending question: the agent's answer and where the resumed call reports, or —
@@ -44,8 +95,20 @@ internal sealed class PendingQuestion
     /// <summary>Random, unguessable id the agent answers with. The server never sees it.</summary>
     public required string QuestionId { get; init; }
 
-    /// <summary>Session that made the call; only it may answer.</summary>
-    public required string? SessionId { get; init; }
+    /// <summary>
+    /// Session the question is bound to; only it may answer. The session that made the call, or —
+    /// once a subagent escalates the question — its primary session.
+    /// </summary>
+    public required string? SessionId { get; set; }
+
+    /// <summary>
+    /// When the question was put to its current session: <see cref="CreatedAt"/>, or the moment it
+    /// was escalated. A decision needs a person turn after this.
+    /// </summary>
+    public DateTimeOffset AskedAt { get; set; }
+
+    /// <summary>Set once a subagent escalates the question to its primary session.</summary>
+    public QuestionEscalation? Escalation { get; set; }
 
     public required string ServerName { get; init; }
 

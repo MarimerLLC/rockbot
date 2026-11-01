@@ -133,10 +133,12 @@ public sealed class McpServersIndexedHandler(
         "When you can't, ask the user and call mcp_answer after they reply. A yes/no, confirm or approve field is " +
         "the user's decision: always ask, never decide it yourself. Pass decline: true to refuse; the server then " +
         "continues without the value. Each question is answered once, from the conversation that caused it, and " +
-        "expires after the time it states.";
+        "expires after the time it states. In a subagent, which can't ask the user itself, pass escalate: true to " +
+        "hand the question to the user through the primary agent; this tool then returns the call's result once " +
+        "they answer.";
 
     internal const string AnswerToolSchema =
-        """{"type":"object","properties":{"question_id":{"type":"string","description":"The question_id from the hand-back, exactly as given."},"answers":{"type":"object","description":"Field values keyed by the server's field names, e.g. {\"mailbox\": \"work\"}. Values must fit the field types the question lists.","additionalProperties":true},"decline":{"type":"boolean","description":"Refuse the question instead of answering it."}},"required":["question_id"]}""";
+        """{"type":"object","properties":{"question_id":{"type":"string","description":"The question_id from the hand-back, exactly as given."},"answers":{"type":"object","description":"Field values keyed by the server's field names, e.g. {\"mailbox\": \"work\"}. Values must fit the field types the question lists.","additionalProperties":true},"decline":{"type":"boolean","description":"Refuse the question instead of answering it."},"escalate":{"type":"boolean","description":"Subagents only: pass the question to the user through the primary agent instead of answering it, and wait for the call's result."}},"required":["question_id"]}""";
 
     private void RegisterManagementTools()
     {

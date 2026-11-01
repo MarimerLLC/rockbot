@@ -313,9 +313,15 @@ result is the call's result.
 - **Never decide a yes/no, confirm or approve question yourself.** It is the
   user's decision; ask, and answer with their reply.
 - **Decline** (`decline: true`) when the user doesn't want to answer.
-- **In a subagent you can't ask the user.** Answer what your task's context
-  settles. Decline the rest, decisions included, and say in your result what
-  the server asked so the primary agent can take it to the user.
+- **In a subagent you can't ask the user yourself.** Answer what your task's
+  context settles. Pass the rest, decisions included, to the user with
+  `mcp_answer(question_id, escalate: true)`: it reaches them through the
+  primary agent, and its result is the call's result once they answer. If it
+  times out first, finish without it and say so in your result; the call's
+  result then goes to the primary agent.
+- **When a subagent passes you a question**, put it to the user (or point them
+  to its form), and answer with `mcp_answer` after they reply. The call's
+  result goes back to the subagent, or to you if it has finished.
 - **After a restart** you may see that a call "was interrupted by a restart".
   That call is gone. Check whether the user's request still needs it before
   calling the tool again, and include what the server was asking in the new

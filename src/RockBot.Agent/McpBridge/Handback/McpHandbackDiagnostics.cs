@@ -15,7 +15,7 @@ internal static class McpHandbackDiagnostics
             "rockbot.mcp.handback.questions",
             unit: "{question}",
             description: "MCP questions handed back to the calling agent, and what became of them. " +
-                         "Tags: server, outcome (handed_back|answered|declined|expired).");
+                         "Tags: server, outcome (handed_back|escalated|answered|declined|expired).");
 
     private static readonly Counter<long> Rejections =
         ToolDiagnostics.Meter.CreateCounter<long>(
@@ -44,6 +44,9 @@ internal static class McpHandbackDiagnostics
     public static void ObserveParked(Func<int> count) => _parked = count;
 
     public static void HandedBack(string server) => Record(server, "handed_back");
+
+    /// <summary>A subagent passed a question up to the user through its primary agent.</summary>
+    public static void Escalated(string server) => Record(server, "escalated");
 
     public static void Answered(string server) => Record(server, "answered");
 

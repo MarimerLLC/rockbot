@@ -582,11 +582,10 @@ public sealed partial class McpBridgeService
     {
         try
         {
-            if (_workingMemory is not null && message.Kind != McpTaskResult.KindQuestion)
+            if (_workingMemory is not null && McpTaskText.WorkingMemoryKey(message) is { } key)
             {
-                var key = $"{message.SessionId}/mcp-task/{message.ServerName}/{message.TaskId}/result";
                 await _workingMemory.SetAsync(key, message.Content, ttl: TaskResultTtl,
-                    category: "mcp-task-result", tags: [message.ServerName, message.TaskId]);
+                    category: McpTaskText.WorkingMemoryCategory(message), tags: [message.ServerName, message.TaskId]);
                 message = message with { WorkingMemoryKey = key };
             }
 

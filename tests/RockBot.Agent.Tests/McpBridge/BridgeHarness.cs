@@ -44,6 +44,7 @@ internal sealed class BridgeHarness : IAsyncDisposable
     private TimeProvider? _timeProvider;
     private SessionClientCapabilityStore? _clientCapabilities;
     private McpTaskRegistry? _taskRegistry;
+    private ISubagentSessionResolver? _subagentSessions;
     private McpBridgeService _bridge = null!;
     private TopicSubscriber _subscriber = null!;
     private CapturingPublisher _publisher = null!;
@@ -142,7 +143,8 @@ internal sealed class BridgeHarness : IAsyncDisposable
             elicitationResponder: null, services: null,
             attachmentStorage: new AttachmentStorage(AttachmentsPath),
             conversationMemory: _conversationMemory, workingMemory: _workingMemory, timeProvider: _timeProvider,
-            clientCapabilities: _clientCapabilities, taskRegistry: _taskRegistry);
+            clientCapabilities: _clientCapabilities, taskRegistry: _taskRegistry,
+            subagentSessions: _subagentSessions);
         await _bridge.StartAsync(CancellationToken.None);
     }
 
@@ -168,7 +170,8 @@ internal sealed class BridgeHarness : IAsyncDisposable
         IMcpTaskStore? taskStore = null,
         Action<McpTasksOptions>? configureTasks = null,
         McpTaskRegistry? taskRegistry = null,
-        Action<WebApplication>? configureServerApp = null)
+        Action<WebApplication>? configureServerApp = null,
+        ISubagentSessionResolver? subagentSessions = null)
     {
         var builder = WebApplication.CreateSlimBuilder();
         builder.WebHost.UseUrls("http://127.0.0.1:0");
@@ -242,6 +245,7 @@ internal sealed class BridgeHarness : IAsyncDisposable
             _timeProvider = timeProvider,
             _clientCapabilities = clientCapabilities,
             _taskRegistry = taskRegistry,
+            _subagentSessions = subagentSessions,
         };
 
         // Lets a test seed files (the pending-question ledger) the bridge reads as it starts.
@@ -418,6 +422,27 @@ internal sealed class BridgeHarness : IAsyncDisposable
 
         var reply = await WaitForAsync(replyTo, wait ?? TimeSpan.FromSeconds(15));
         return reply.GetPayload<McpAnswerQuestionResponse>()!;
+    }
+
+    /// <summary>
+    /// Sends <c>mcp_answer</c> with <c>escalate</c> from <paramref name="sessionId"/> and returns the
+    /// topic its reply will be published on, without waiting: an escalation is replied to only
+    /// once the user's answer resumes the call (or the question closes).
+    /// </summary>
+    public async Task<string> EscalateAsync(string questionId, string sessionId)
+    {
+        var correlationId = Guid.NewGuid().ToString("N");
+        var replyTo = $"reply.{correlationId}";
+        var envelope = new McpAnswerQuestionRequest
+        {
+            QuestionId = questionId,
+            SessionId = sessionId,
+            ToolCallId = "escalate-call",
+            Escalate = true,
+        }.ToEnvelope(source: AgentName, correlationId: correlationId, replyTo: replyTo);
+
+        await _subscriber.DeliverAsync(McpManagementExecutor.ManageTopic, envelope);
+        return replyTo;
     }
 
     /// <summary>Waits for the first message the bridge publishes on <paramref name="topic"/>.</summary>

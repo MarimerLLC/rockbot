@@ -1,5 +1,6 @@
 using System.Text;
 using RockBot.Agent.McpBridge.Handback;
+using RockBot.Tools.Mcp;
 using RockBot.Tools.Mcp.Elicitation;
 
 namespace RockBot.Agent.McpBridge.Tasks;
@@ -10,6 +11,24 @@ namespace RockBot.Agent.McpBridge.Tasks;
 /// </summary>
 internal static class McpTaskText
 {
+    /// <summary>
+    /// Where a delivery's content is kept in its session's working memory, or null for a background
+    /// task's question (the hand-back text is the turn itself).
+    /// </summary>
+    public static string? WorkingMemoryKey(McpTaskResult message) => message.Kind switch
+    {
+        McpTaskResult.KindQuestion => null,
+        McpTaskResult.KindEscalatedQuestion => $"{message.SessionId}/{HandbackText.EscalatedKeyPrefix}{message.QuestionId}",
+        McpTaskResult.KindEscalatedResult => $"{message.SessionId}/{HandbackText.EscalatedKeyPrefix}{message.QuestionId}/result",
+        _ => $"{message.SessionId}/mcp-task/{message.ServerName}/{message.TaskId}/result",
+    };
+
+    /// <summary>The working-memory category of <see cref="WorkingMemoryKey"/>.</summary>
+    public static string WorkingMemoryCategory(McpTaskResult message) =>
+        message.Kind is McpTaskResult.KindEscalatedQuestion or McpTaskResult.KindEscalatedResult
+            ? "mcp-escalation"
+            : "mcp-task-result";
+
     /// <summary>The tool result for a call that became a background task.</summary>
     public static string Started(string taskId, string server, string tool) =>
         $"[rockbot] {Flatten(server)}/{Flatten(tool)} started as a background task (task_id \"{taskId}\"). " +

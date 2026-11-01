@@ -139,8 +139,10 @@ internal sealed class McpToolSkillProvider : IToolSkillProvider
         - If the result says the user sees the question as a form, point them to it and end your
           turn; don't ask it in prose. Their answer resumes the call, and its result reaches you
           in a new turn.
-        - In a subagent you can't ask the user: decline what your task doesn't settle, and say
-          in your result what the server asked.
+        - In a subagent you can't ask the user yourself. Answer what your task settles; pass the
+          rest, decisions included, to the user with `mcp_answer(question_id, escalate: true)`.
+          It goes to them through the primary agent, and its result is the call's result once
+          they answer. If you stop waiting first, the result goes to the primary agent instead.
         - `mcp_answer(question_id, decline: true)` refuses; the server goes on without it.
         - A question is answered once, only from the conversation that caused it, and expires
           after the time it states. A restart ends the call; you'll be told what it was doing.
