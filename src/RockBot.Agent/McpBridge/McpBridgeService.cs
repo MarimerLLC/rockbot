@@ -3253,7 +3253,9 @@ public sealed partial class McpBridgeService : IHostedService, IAsyncDisposable
         {
             outcome = McpHandbackOutcome.Decline(req.FromUser
                 ? "the user declined the question"
-                : "the calling agent declined the question");
+                : question.Escalation is not null
+                    ? "escalated to the user by the subagent; the primary agent declined it"
+                    : "the calling agent declined the question");
         }
         else
         {
@@ -3296,8 +3298,13 @@ public sealed partial class McpBridgeService : IHostedService, IAsyncDisposable
                 return;
             }
 
+            // An escalated question is answered by the primary, not the subagent that made the
+            // call; say so, or the subagent reads the note as its own answer.
             outcome = McpHandbackOutcome.Accept(validated.Content,
-                req.FromUser ? "answered by the user in the chat's form" : null);
+                req.FromUser ? "answered by the user in the chat's form"
+                : question.Escalation is null ? null
+                : decisions.Count > 0 ? "escalated to the user by the subagent; answered by the primary agent with the user's reply"
+                : "escalated to the user by the subagent; answered by the primary agent");
         }
 
         // An escalated question's outcome goes to the subagent that escalated it while it still

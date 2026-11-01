@@ -123,6 +123,8 @@ public class McpHandbackEscalationTests
         var resumed = (await harness.WaitForAsync(subagentReply, TimeSpan.FromSeconds(15))).GetPayload<McpAnswerQuestionResponse>()!;
         Assert.IsNull(resumed.Error, resumed.Error);
         StringAssert.StartsWith(resumed.Result!.Content, "accept:true");
+        StringAssert.Contains(resumed.Result.Content, "answered by the primary agent with the user's reply",
+            "the note must not read as the subagent's own answer");
         Assert.IsFalse(harness.TaskResults.Any(r => r.Kind == McpTaskResult.KindEscalatedResult),
             "the subagent took the result; nothing folds back");
     }
