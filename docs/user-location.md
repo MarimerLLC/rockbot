@@ -293,8 +293,9 @@ Connected to MCP server owntracks (impl=owntracks v1.30.0) with 6 tools, 0 promp
 ## Regions: home, work and other places
 
 A **region** is a named circle you define in the OwnTracks app, such as "Home",
-"Work", "Gym" or "Cabin". Regions are the best way to tell the agent about the
-places that matter to you:
+"Work", "Gym" or "Cabin". **The Android app calls them Waypoints**, and the iOS app
+calls them Regions. Either way, each one has a label, a center and a radius. Regions
+are the best way to tell the agent about the places that matter to you:
 
 - While you're inside a region, every location report carries its name (`inregions`).
   `get_last_location` returns it as `in_regions`, and each stay in
@@ -307,11 +308,11 @@ places that matter to you:
 - The places stay on your phone. Nothing about them goes into RockBot's
   configuration or memory unless a conversation puts it there.
 
-**Set one up (Android):** open the app's menu → **Regions** → **+**. Give it a name,
-set the center (your current location, or pick it on the map) and a radius. 100–200
-m suits a house or office; use more for a large site. Name regions the way you'd say
-them, because that's the name the agent sees and repeats back. Regions work in
-**Significant changes** and **Move** modes.
+**Set one up:** on Android, open the app's menu → **Waypoints** → **+**; on iOS, use
+**Regions**. Give it a label, set the center (your current location, or pick it on the
+map) and a radius. 100–200 m suits a house or office; use more for a large site.
+Label it the way you'd say it, because the label is the name the agent sees and
+repeats back. Regions work in **Significant changes** and **Move** modes.
 
 **More than one home:** create a region for each ("Home", "Lake house", "Apartment").
 Don't set `OWNTRACKS_HOME`, which can hold only one point. "Which home am I at?" is
