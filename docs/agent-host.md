@@ -683,11 +683,17 @@ in-memory override that a location source sets while the user travels. `AgentClo
 tool output all track the user's local time.
 
 `WithUserLocation` turns this on. `UserLocationService` polls an OwnTracks Recorder's
-`/api/0/last` (requesting only time, coordinates, accuracy, timezone, locality and country) and
-sets the current zone from the newest fix. A fix older than `MaxAge`, or none at all, reverts
-to home. When the user is away, the datetime line names the home zone too, and a fresh fix adds
-the city (or coordinates rounded to about 10 km when the Recorder has no geocoder). Precise
-coordinates never reach the prompt.
+`/api/0/last` (requesting only time, coordinates, accuracy, timezone, locality, address and
+country) and sets the current zone from the newest fix. A fix older than `MaxAge`, or none at
+all, reverts to home. When the user is away, the datetime line names the home zone too, and a
+fresh fix adds the city (or coordinates rounded to about 10 km when the Recorder has no
+geocoder). When the Recorder gives an address but no locality, as its OpenCage geocoding does,
+only the city is taken from the address and the street is dropped on parse. Precise coordinates
+never reach the prompt. The completion evaluator gets the same line, so an answer drawn from it
+is not judged unsupported.
+
+For the end-to-end setup (phone app, Recorder, the optional location MCP server and regions),
+see [User location](user-location.md).
 
 Each scheduled task carries a zone: `local` follows the user, `home` (or no zone, as on tasks
 made before this existed) stays on home time, and an IANA id pins one zone. When the current
