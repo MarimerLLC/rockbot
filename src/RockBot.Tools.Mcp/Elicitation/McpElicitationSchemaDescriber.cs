@@ -65,11 +65,23 @@ public static class McpElicitationSchemaDescriber
         ElicitRequestParams.NumberSchema n => n.Type,
         ElicitRequestParams.BooleanSchema => "boolean",
         ElicitRequestParams.UntitledSingleSelectEnumSchema e => $"one of: {string.Join(", ", e.Enum)}",
-        ElicitRequestParams.TitledSingleSelectEnumSchema e => $"one of: {string.Join(", ", e.OneOf.Select(o => o.Const))}",
+        ElicitRequestParams.TitledSingleSelectEnumSchema e => $"one of: {string.Join(", ", e.OneOf.Select(DescribeOption))}",
         ElicitRequestParams.UntitledMultiSelectEnumSchema e => $"any of: {string.Join(", ", e.Items.Enum)}",
-        ElicitRequestParams.TitledMultiSelectEnumSchema e => $"any of: {string.Join(", ", e.Items.AnyOf.Select(o => o.Const))}",
+        ElicitRequestParams.TitledMultiSelectEnumSchema e => $"any of: {string.Join(", ", e.Items.AnyOf.Select(DescribeOption))}",
         _ => definition.Type,
     };
+
+    /// <summary>
+    /// A titled option as <c>value ("Title")</c>: the value is what an answer must carry, the
+    /// title is what it means. Listing only values left a reader choosing between ids like
+    /// <c>opt-2</c> with nothing to say what they stand for. A title that only repeats its value
+    /// is left out.
+    /// </summary>
+    private static string DescribeOption(ElicitRequestParams.EnumSchemaOption option) =>
+        string.IsNullOrWhiteSpace(option.Title)
+        || string.Equals(option.Title.Trim(), option.Const, StringComparison.OrdinalIgnoreCase)
+            ? option.Const
+            : $"{option.Const} (\"{option.Title.Trim()}\")";
 
     private static string DescribeConstraints(ElicitRequestParams.PrimitiveSchemaDefinition? definition)
     {

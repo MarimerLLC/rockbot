@@ -224,7 +224,7 @@ On an `Ephemeral` subscription, `MessageTtl` and `IdleExpiry` override `RabbitMq
 - `agent.task.status` is bound by every A2A caller as `{Agent}.agent-task-status`. It has the same failure mode, at far lower volume, since it only carries traffic while tasks are running. Since #654 it is subscribed with `A2ACallerServiceCollectionExtensions.StatusSubscriptionOptions`: `MessageTtl` = 10 min, `IdleExpiry` = 24 h, `DeadLetter = false`. A status update is only useful while the caller is still tracking the task, and that tracking (`A2ATaskTracker`) is in memory, so a restart makes every queued update useless anyway. It migrates through the same 406 path as discovery.
 - `AgentHost` topics take `SubscriptionOptions` through `AgentHostBuilder.SubscribeTo(topic, SubscriptionOptions)`. Every other topic on the host list is either point-to-point (`*.{agentName}`) or a work queue (`script.invoke`, the script runners), where a request whose consumer is down should wait, not expire. None of them need retention.
 - `user.response` broadcast (`user-proxy.{ProxyId}`): the CLI is ephemeral, and Blazor is a long-running deployment with a stable identity.
-- `council.research-reply.{pid}.{guid}` (AdvisorCouncil's `ResearchAgentInvoker`) is a per-process reply queue, and it was not ephemeral. It is now `Ephemeral = true`.
+- `council.research-reply.{pid}.{guid}` (AdvisorCouncil's `ResearchAgentInvoker`) was a per-process reply queue, and it was not ephemeral. It was made `Ephemeral = true`, then retired with the invoker in #717: the council calls research over MCP now.
 
 #### Alerting and broker disk limit
 

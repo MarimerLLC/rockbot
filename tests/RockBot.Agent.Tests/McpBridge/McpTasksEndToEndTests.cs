@@ -253,6 +253,26 @@ public class McpTasksEndToEndTests
     }
 
     [TestMethod]
+    public async Task ATasksQuestion_IsHandedBack_EvenWhenTheStartingRunCouldntAnswer()
+    {
+        // A run whose tool list lacked mcp_answer (it began before the bridge had connected
+        // after a restart) starts a task. The question arrives later as a turn of its own,
+        // which can answer, so it is handed back rather than declined by the responder.
+        await using var harness = await StartAsync([AskingTool()],
+            configure: e => e.Elicitation = new McpElicitationConfig { Mode = McpElicitationConfig.ModeHandback });
+
+        var taskId = StartedTaskId(await harness.InvokeAsync(
+            "plan", """{"topic":"mercury"}""", sessionId: Session, canAnswer: false, canReceiveLater: true));
+
+        var question = await harness.WaitForTaskResultAsync(r => r.Kind == McpTaskResult.KindQuestion);
+        Assert.AreEqual(taskId, question.TaskId);
+
+        await harness.AnswerAsync(question.QuestionId!, """{"meaning":"band"}""", sessionId: Session);
+        var result = await harness.WaitForTaskResultAsync(r => r.Kind == McpTaskResult.KindCompleted);
+        StringAssert.Contains(result.Content, "mercury: accept:band");
+    }
+
+    [TestMethod]
     public async Task ATasksQuestion_IsAnsweredInBand_WhenTheServerDoesntHandBack()
     {
         await using var harness = await StartAsync([AskingTool()],

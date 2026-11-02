@@ -79,6 +79,7 @@
     <Project Path="tests/RockBot.Observation.Tests/RockBot.Observation.Tests.csproj" />
     <Project Path="tests/RockBot.AdvisorCouncil.Tests/RockBot.AdvisorCouncil.Tests.csproj" />
     <Project Path="tests/RockBot.McpMeasure.Tests/RockBot.McpMeasure.Tests.csproj" />
+    <Project Path="tests/RockBot.ResearchAgent.Tests/RockBot.ResearchAgent.Tests.csproj" />
   </Folder>
   <Project Path="src/RockBot.Messaging.Abstractions/RockBot.Messaging.Abstractions.csproj" />
   <Project Path="src/RockBot.Messaging.RabbitMQ/RockBot.Messaging.RabbitMQ.csproj" />

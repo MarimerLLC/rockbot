@@ -1,3 +1,4 @@
+using Microsoft.Extensions.Options;
 using System.Text;
 using Microsoft.Extensions.Logging;
 using RockBot.AdvisorCouncil.Personas;
@@ -15,9 +16,10 @@ namespace RockBot.AdvisorCouncil.Council;
 /// agent gathers facts relevant to each persona's lens, not just the question in isolation.
 /// </summary>
 internal sealed class PreResearchStep(
-    ResearchAgentInvoker invoker,
+    IResearchClient research,
     IWorkingMemory workingMemory,
-    ILogger<PreResearchStep> logger)
+    ILogger<PreResearchStep> logger,
+    IOptions<CouncilOptions>? options = null)
 {
     /// <summary>
     /// Runs persona-aware pre-research and stores the findings in working memory.
@@ -31,9 +33,9 @@ internal sealed class PreResearchStep(
     {
         try
         {
-            var enrichedQuestion = BuildPersonaAwareQuestion(question, selectedPersonas);
-            var findings = await invoker.InvokeAsync(enrichedQuestion, ct);
-            if (string.IsNullOrWhiteSpace(findings))
+            var timeout = TimeSpan.FromSeconds(Math.Max(5, (options?.Value ?? new CouncilOptions()).PreResearchTimeoutSeconds));
+            var findings = await research.InvokeAsync(question, BuildLensContext(selectedPersonas), ct, timeout);
+            if (string.IsNullOrWhiteSpace(findings) || findings.StartsWith("(research", StringComparison.OrdinalIgnoreCase))
             {
                 logger.LogInformation("Pre-research returned empty findings; not writing to WM");
                 return false;
@@ -60,23 +62,26 @@ internal sealed class PreResearchStep(
         }
     }
 
-    private static string BuildPersonaAwareQuestion(string question, IReadOnlyList<Persona> personas)
+    /// <summary>
+    /// The research call's <c>context</c>: who is asking and through which lenses, so research
+    /// gathers facts for each lens and can settle its own clarifying question from it.
+    /// </summary>
+    internal static string BuildLensContext(IReadOnlyList<Persona> personas)
     {
-        if (personas.Count == 0)
-            return question;
-
         var sb = new StringBuilder();
-        sb.Append("Investigate the following question. The council will examine it through these lenses, ")
-          .AppendLine("so gather facts relevant to each lens, not just the question in isolation:");
-        foreach (var p in personas)
+        sb.Append("Pre-research for an advisor council that will examine this question.");
+        if (personas.Count > 0)
         {
-            sb.Append("- ").Append(p.Id);
-            if (!string.IsNullOrWhiteSpace(p.Description))
-                sb.Append(" — ").Append(p.Description);
-            sb.AppendLine();
+            sb.AppendLine(" It will look at it through these lenses, so gather facts relevant to each lens, " +
+                          "not just the question in isolation:");
+            foreach (var p in personas)
+            {
+                sb.Append("- ").Append(p.Id);
+                if (!string.IsNullOrWhiteSpace(p.Description))
+                    sb.Append(" — ").Append(p.Description);
+                sb.AppendLine();
+            }
         }
-        sb.AppendLine();
-        sb.Append("Question: ").Append(question);
-        return sb.ToString();
+        return sb.ToString().TrimEnd();
     }
 }

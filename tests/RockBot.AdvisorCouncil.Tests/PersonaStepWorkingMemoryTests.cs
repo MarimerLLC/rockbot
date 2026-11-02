@@ -29,7 +29,7 @@ public class PersonaStepWorkingMemoryTests
 
         var chat = new FakeChatClient().EnqueueResponse("persona response text");
         var opts = Options.Create(new CouncilOptions());
-        var step = new PersonaStep(chat, invoker: null!, wm, opts, NullLogger<PersonaStep>.Instance);
+        var step = new PersonaStep(chat, research: null!, wm, opts, NullLogger<PersonaStep>.Instance);
 
         var view = await step.RunAsync(MakePersona(), "Original question?", "task-99", CancellationToken.None);
 
@@ -47,7 +47,7 @@ public class PersonaStepWorkingMemoryTests
         var wm = new InMemoryWorkingMemory();
         var chat = new FakeChatClient().EnqueueResponse("My view as the skeptic.");
         var opts = Options.Create(new CouncilOptions());
-        var step = new PersonaStep(chat, invoker: null!, wm, opts, NullLogger<PersonaStep>.Instance);
+        var step = new PersonaStep(chat, research: null!, wm, opts, NullLogger<PersonaStep>.Instance);
 
         await step.RunAsync(MakePersona("skeptic"), "Q?", "task-7", CancellationToken.None);
 
@@ -61,7 +61,7 @@ public class PersonaStepWorkingMemoryTests
         var wm = new InMemoryWorkingMemory();
         var chat = new FakeChatClient().EnqueueResponse("view");
         var opts = Options.Create(new CouncilOptions());
-        var step = new PersonaStep(chat, invoker: null!, wm, opts, NullLogger<PersonaStep>.Instance);
+        var step = new PersonaStep(chat, research: null!, wm, opts, NullLogger<PersonaStep>.Instance);
 
         await step.RunAsync(MakePersona(), "Just the question.", "task-x", CancellationToken.None);
 

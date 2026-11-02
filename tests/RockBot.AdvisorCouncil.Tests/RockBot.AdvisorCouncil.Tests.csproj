@@ -14,10 +14,14 @@
     <PackageReference Include="MSTest.TestFramework" Version="3.*" />
     <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.*" />
     <PackageReference Include="Microsoft.Extensions.Options" Version="10.0.*" />
+    <PackageReference Include="ModelContextProtocol.AspNetCore" Version="2.2.0" />
+    <PackageReference Include="ModelContextProtocol.Extensions.Tasks" Version="2.2.0" />
   </ItemGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\RockBot.AdvisorCouncil\RockBot.AdvisorCouncil.csproj" />
+    <!-- The research server's real tool, for the council's MCP research client (aliased: both are executables with a top-level Program). -->
+    <ProjectReference Include="..\..\src\RockBot.ResearchAgent\RockBot.ResearchAgent.csproj" Aliases="research" />
     <ProjectReference Include="..\..\src\RockBot.A2A.Abstractions\RockBot.A2A.Abstractions.csproj" />
     <ProjectReference Include="..\..\src\RockBot.Host\RockBot.Host.csproj" />
     <ProjectReference Include="..\..\src\RockBot.Messaging.Abstractions\RockBot.Messaging.Abstractions.csproj" />

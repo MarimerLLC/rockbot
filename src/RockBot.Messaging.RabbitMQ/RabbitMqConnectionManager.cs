@@ -1,6 +1,7 @@
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using RabbitMQ.Client;
+using RabbitMQ.Client.Exceptions;
 
 namespace RockBot.Messaging.RabbitMQ;
 
@@ -118,7 +119,20 @@ public sealed class RabbitMqConnectionManager : IAsyncDisposable
 
         if (_connection is not null)
         {
-            await _connection.CloseAsync();
+            // The broker may already have closed the connection (a channel error closes it from
+            // the peer side). Closing it again throws AlreadyClosedException, which at process exit
+            // turned a finished run into a non-zero exit: a KEDA job pod then "failed" and the Job
+            // started a retry pod for a task that was already done.
+            try
+            {
+                if (_connection.IsOpen)
+                    await _connection.CloseAsync();
+            }
+            catch (Exception ex) when (ex is AlreadyClosedException or OperationInterruptedException)
+            {
+                _logger.LogInformation("RabbitMQ connection was already closed at shutdown: {Reason}", ex.Message);
+            }
+
             _connection.Dispose();
         }
 

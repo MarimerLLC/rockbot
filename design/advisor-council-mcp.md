@@ -1,8 +1,9 @@
 # AdvisorCouncil as an MCP Server
 
-**Status:** Proposed. Follows the ResearchAgent move (`design/research-agent-mcp.md`), and uses
-the MCP elicitation stack from #593 and the `conversation` responder from #605. The hosting and
-long-running-call pieces depend on the MCP C# SDK 2.x upgrade (#602).
+**Status:** Proposed; phases 1 and 3 done (#717). Follows the ResearchAgent move
+(`design/research-agent-mcp.md`, done), and uses the MCP elicitation stack from #593 and the
+`conversation` responder from #605. The council already calls research over MCP
+(`ResearchMcpClient`); the council itself is still an A2A agent.
 
 ## Problem
 
@@ -60,7 +61,7 @@ Primary agent ──invoke_agent(AdvisorCouncil, advise)──► agent.task.Adv
           1. SelectStep        personas, pre_research?, critique?     (Balanced, no tools)
           2. PreResearchStep   one research call on the question      (conditional)
           3. PersonaStep ×N    parallel; research-enabled personas get
-                               ResearchAgentInvoker as a tool         (Balanced)
+                               the research MCP client as a tool      (Balanced)
           4. CritiqueStep      revise views, name tensions            (conditional)
           5. SynthesizeStep    structured JSON + prose                (High)
 ```
@@ -172,7 +173,10 @@ receives that question.
   question. A decline is fine: research proceeds with its best interpretation and says which.
 
 This replaces `ResearchAgentInvoker` (A2A, private reply queue) with an `McpClient` call —
-the council waits synchronously today, so `CallToolWithPollingAsync` fits.
+the council waits synchronously today, so `CallToolWithPollingAsync` fits. That call opts into
+Tasks, so research runs it as a task and asks through the task store (`ElicitAsync`); the
+client resolves the question through the same registered elicitation handler
+(`design/research-agent-mcp.md`, "How the tool tells tasks from plain calls").
 
 ## Hosting and delivery
 
@@ -205,12 +209,14 @@ convention.
 ## Phases
 
 1. **ResearchAgent on MCP** (`design/research-agent-mcp.md`), including the Tasks-aware bridge.
-   The council keeps calling research over A2A until research's MCP server exists.
+   Done (#717).
 2. **`advise` arguments on the existing A2A council.** Accept `context`, `options` and the enums
    as an A2A `data` part and thread them through Select, personas and synthesis; add
    `assumptions` to the output. This is useful on its own and de-risks the MCP move.
 3. **Council research client on MCP.** Replace `ResearchAgentInvoker` with `McpClient` +
-   coordinator + `llm` responder.
+   coordinator + `llm` responder. Done (#717): `ResearchMcpClient`, which polls the task itself so
+   a timeout cancels it on the server. The `maxPerCall: 1` setting above is not configured: the
+   research server asks at most once on its own.
 4. **Council as an MCP server**, with Select-only elicitation and the early "too thin" return.
 5. **Primary agent switches** to the `advise` MCP tool; remove `AdvisorCouncil` from
    `well-known-agents.json`.

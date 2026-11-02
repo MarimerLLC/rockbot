@@ -214,8 +214,8 @@ startup from `{url}/.well-known/agent-card.json` — the A2A-spec source of trut
 ```json
 [
   {
-    "agentName": "ResearchAgent",
-    "url": "http://researchagent:5100"
+    "agentName": "AdvisorCouncil",
+    "url": "http://advisor-council:5100"
   }
 ]
 ```
@@ -287,7 +287,7 @@ The handler receives an `AgentTaskRequest`, can publish `AgentTaskStatusUpdate`
 messages (state `Working`) while processing, and must publish either an
 `AgentTaskResult` or `AgentTaskError` when done.
 
-See `RockBot.ResearchAgent` and `RockBot.SampleAgent` for working examples.
+See `RockBot.AdvisorCouncil` and `RockBot.SampleAgent` for working examples.
 
 #### Per-skill handlers (alternative to a single dispatcher)
 
@@ -552,9 +552,14 @@ curl -X POST http://localhost:5200/ \
 
 ## KEDA ephemeral pattern
 
-`ResearchAgent` uses the ephemeral one-shot pattern:
+The ephemeral one-shot pattern runs an agent as a KEDA `ScaledJob` triggered by its
+`agent.task.{Name}` queue: a pod spins up when a task arrives, completes it, and exits.
 
-- Deployed as a KEDA `ScaledJob` triggered by the `agent.task.ResearchAgent` queue.
-- Spins up when a task arrives, completes it, then exits (`EphemeralShutdownService`).
-- Registered in `well-known-agents.json` so the primary agent always knows it
-  exists and can invoke it without waiting for a live announcement.
+`AdvisorCouncil` works this way (`deploy/k8s/advisor-council-scaledjob.yaml`, with the KEDA
+secret from `deploy/k8s/keda-rabbitmq-secret.sh`).
+
+Research is no longer an A2A agent. Since #717 it is a long-lived MCP server
+(`deploy/k8s/research-agent.yaml`) serving the `research` tool at
+`http://research-agent:8080/mcp`. The primary agent reaches it through the MCP bridge, and the
+council through its own MCP client (`design/research-agent-mcp.md`). The `ResearchAgent` A2A
+agent, its ScaledJob and its `agent.task.ResearchAgent` queue are gone.

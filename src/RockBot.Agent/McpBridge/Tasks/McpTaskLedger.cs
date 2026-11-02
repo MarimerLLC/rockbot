@@ -121,7 +121,11 @@ internal sealed class McpTaskEntry : ILedgerEntry<McpTaskEntry>
     /// <summary>The last thing the user said before the call, for the record.</summary>
     public PendingTrigger? TriggeredBy { get; set; }
 
-    /// <summary>The caller could answer a handed-back question (<c>rb-mcp-handback</c>).</summary>
+    /// <summary>
+    /// The starting run could answer a handed-back question (<c>rb-mcp-handback</c>). Kept for
+    /// the record only: a task's question is delivered as a later turn of its own, so it is
+    /// handed back to any user conversation whatever the starting run offered.
+    /// </summary>
     public bool HandbackCapable { get; set; }
 
     /// <summary>The calling run's consequential-action origin (<c>rb-run-origin</c>), if it stated one.</summary>

@@ -132,7 +132,7 @@ public static class LlmServiceCollectionExtensions
         });
 
         // Keep Balanced as the primary IChatClient singleton for consumers that
-        // inject IChatClient directly (e.g. ResearchAgentTaskHandler).
+        // inject IChatClient directly (e.g. the research server's fallback synthesis).
         services.AddSingleton<IChatClient>(sp =>
             sp.GetRequiredService<TieredChatClientRegistry>().GetClient(ModelTier.Balanced));
 

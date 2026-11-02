@@ -17,7 +17,7 @@ namespace RockBot.AdvisorCouncil.Council;
 /// </summary>
 internal sealed class PersonaStep(
     IChatClient chatClient,
-    ResearchAgentInvoker invoker,
+    IResearchClient research,
     IWorkingMemory workingMemory,
     IOptions<CouncilOptions> options,
     ILogger<PersonaStep> logger)
@@ -39,11 +39,14 @@ internal sealed class PersonaStep(
             new(ChatRole.User, userPrompt)
         };
 
-        // Lambda (not method group) so the invoker reference is only dereferenced when the
+        // Lambda (not method group) so the research client is only dereferenced when the
         // tool is actually invoked. Tests that don't exercise the research path can pass
-        // null! for the invoker without constructing one.
+        // null! for it without constructing one.
+        var researchContext =
+            $"Background research for an advisor council, asked from the '{persona.Id}' perspective. " +
+            $"The council's question: {question}";
         var scopedTool = new PersonaScopedResearchTool(
-            research: (q, c) => invoker.InvokeAsync(q, c),
+            research: (q, c) => research.InvokeAsync(q, researchContext, c),
             wm: workingMemory,
             taskId: taskId,
             personaId: persona.Id,
@@ -148,7 +151,7 @@ internal sealed class PersonaStep(
 
             var findings = await _research(question!, cancellationToken);
 
-            // Skip writing failure sentinels emitted by ResearchAgentInvoker (e.g. "(research failed: ...)",
+            // Skip writing failure sentinels emitted by ResearchMcpClient (e.g. "(research failed: ...)",
             // "(research timed out)", "(research call failed: ...)") so the WM pool stays signal-rich.
             if (!string.IsNullOrWhiteSpace(findings) &&
                 !findings.StartsWith("(research", StringComparison.OrdinalIgnoreCase))

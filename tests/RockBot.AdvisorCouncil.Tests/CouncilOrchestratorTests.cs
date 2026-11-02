@@ -119,13 +119,13 @@ public class CouncilOrchestratorTests
         var opts = Options.Create(new CouncilOptions { PerPersonaTimeoutSeconds = 30, OverallTimeoutSeconds = 60 });
         var wm = new InMemoryWorkingMemory();
         var select = new SelectStep(chat, registry, NullLogger<SelectStep>.Instance);
-        // ResearchAgentInvoker passed as null! — the FakeChatClient never returns a tool-call response,
+        // The research client is passed as null! — the FakeChatClient never returns a tool-call response,
         // so PersonaStep's scoped research tool is never invoked. Same applies to PreResearchStep when
         // pre_research=false (the only case exercised by these orchestrator-shape tests).
-        var persona = new PersonaStep(chat, invoker: null!, wm, opts, NullLogger<PersonaStep>.Instance);
+        var persona = new PersonaStep(chat, research: null!, wm, opts, NullLogger<PersonaStep>.Instance);
         var critique = new CritiqueStep(chat, wm, NullLogger<CritiqueStep>.Instance);
         var synth = new SynthesizeStep(chat, NullLogger<SynthesizeStep>.Instance);
-        var preResearch = new PreResearchStep(invoker: null!, wm, NullLogger<PreResearchStep>.Instance);
+        var preResearch = new PreResearchStep(research: null!, wm, NullLogger<PreResearchStep>.Instance);
         return new CouncilOrchestrator(select, preResearch, persona, critique, synth, registry, opts,
             NullLogger<CouncilOrchestrator>.Instance);
     }

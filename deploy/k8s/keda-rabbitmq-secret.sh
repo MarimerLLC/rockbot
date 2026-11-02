@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
-# Creates the KEDA RabbitMQ authentication secret for the ResearchAgent ScaledJob.
+# Creates the KEDA RabbitMQ authentication secret the KEDA ScaledJobs scale on (today the
+# AdvisorCouncil's; the ResearchAgent ScaledJob it was written for is retired).
 # Reads credentials from existing cluster secrets/configmaps — no passwords are
 # embedded in any YAML file.
 #
-# Usage: bash deploy/k8s/research-agent-keda-secret.sh
+# Usage: bash deploy/k8s/keda-rabbitmq-secret.sh
 # Requires: kubectl configured and pointing at the target cluster.
 
 set -euo pipefail

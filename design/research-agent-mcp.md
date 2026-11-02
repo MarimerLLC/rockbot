@@ -1,8 +1,10 @@
 # ResearchAgent as an MCP Server
 
-**Status:** Proposed. MCP elicitation (#593), the `conversation` responder, the SDK 2.x upgrade
-(#602, #607), hand-back (#608) and the Tasks-aware bridge (#658, the bridge half of Phase 4) are
-in place. The research server itself (Phase 2) is next.
+**Status:** Done (#717). MCP elicitation (#593), the `conversation` responder, the SDK 2.x
+upgrade (#602, #607), hand-back (#608) and the Tasks-aware bridge (#658) came first; #717 built
+the research MCP server (Phase 2), moved the council (Phase 3) and the primary agent (Phase 4)
+onto it, and retired the A2A research path (Phase 5). "Current state" below describes the A2A
+design this replaced.
 
 ## Problem
 
@@ -52,7 +54,7 @@ without a bespoke A2A invocation path.
 - url-mode elicitation. Headless; declined, as in #593.
 - Changing how research searches or synthesises. This is a transport and hosting change.
 
-## Current state
+## Current state (before #717)
 
 ```
 Primary agent ──invoke_agent──► agent.task.ResearchAgent (RabbitMQ)
@@ -112,11 +114,14 @@ The directive changes from "never ask" to "ask at most once, and only up front":
   `context` and `constraints` before spending any search budget. If the question is genuinely
   ambiguous in a way that would send the research in different directions ("Mercury — the
   planet, the element, or the band?"), it asks a single form-mode elicitation: a single enum
-  of the candidate interpretations, and no free-text field. Called synchronously (the council),
-  it throws `InputRequiredException`; running as a task (the primary agent, through the bridge),
-  it must call `ElicitAsync` instead, which the Tasks extension routes through the task store.
-  SDK 2.2.0 fails a task whose tool throws `InputRequiredException` ("MRTR and tasks cannot be
-  composed via [McpServerTool] yet"), so the tool has to check which way it is running. The `conversation` responder never fills free text in from the user's conversation
+  of the candidate interpretations, and no free-text field. Running as a task, it must call
+  `ElicitAsync`, which the Tasks extension routes through the task store; called as a plain
+  `tools/call`, it throws `InputRequiredException` (MRTR). SDK 2.2.0 fails a task whose tool
+  throws `InputRequiredException` ("MRTR and tasks cannot be composed via [McpServerTool] yet"),
+  so the tool has to check which way it is running (see "How the tool tells tasks from plain
+  calls" below). Note that `CallToolWithPollingAsync` (the council's planned client) opts into
+  Tasks, so it runs research **as a task**, not as an MRTR call; only a plain `CallToolAsync` (an
+  external client, or the bridge with `tasks` off) takes the MRTR path. The `conversation` responder never fills free text in from the user's conversation
   (it declines the whole form), so anything open-ended belongs in the tool's `context`
   argument instead.
 - It never asks mid-research. A mid-run question means a declined answer wastes the search
@@ -130,6 +135,42 @@ The directive changes from "never ask" to "ask at most once, and only up front":
 is an untrusted continuation token: protect it with ASP.NET Core Data Protection (encrypt +
 MAC) with a short expiry (~10 minutes). A tampered or expired token is treated as absent —
 the server just re-scopes.
+
+### How the tool tells tasks from plain calls
+
+The SDK does not tell a tool whether it is running inside a task. `ResearchCallMode.IsTask`
+repeats the Tasks filter's own test (`McpTasksBuilderExtensions` in 2.2.0): the server's
+`ExecutionModeSelector` allows a task (it returns `Optional` for `research`), the request is on
+protocol `2026-07-28` or later, and the client opted into `io.modelcontextprotocol/tasks`, in its
+capabilities or in the request's `_meta`. `CallToolAsTaskAsync` and `CallToolWithPollingAsync`
+add that opt-in; `CallToolAsync` does not. `RockBot.ResearchAgent.Tests` calls the tool both ways
+and fails if the check drifts from the SDK: a task that throws `InputRequiredException` fails on
+the server, and a plain call that tries `ElicitAsync` on the stateless server never reaches the
+client.
+
+The tool also asks only a client that declares the elicitation capability; any other client
+gets the most likely reading, stated at the top of the answer. A retried MRTR call never asks a
+second time, so the round trip always ends.
+
+### Depth
+
+`research` takes an optional `depth`: `thorough` (the default) is the full run described above,
+High tier and up to 50 iterations, and a broad question measured 7.5 minutes and 26 sources.
+`quick` is a short lookup for callers on a tight budget: the Balanced tier, two or three sources,
+and a per-run tool budget (8 calls, 60 s) after which every tool tells the model to answer from
+what it has. The budget is per run on purpose: the function-invoking client's iteration limit is
+per tier and process-wide, so changing it per call would leak into concurrent runs. The council
+asks for `quick` (`Council:ResearchDepth`); the primary agent leaves the default.
+
+### The result
+
+Text content: the answer, prefixed with `Researched as: …` (a reading was chosen) or
+`Interpreted as: …` (the question was ambiguous and nobody chose), then a second text block,
+`Sources consulted:`, listing the pages `web_browse` read. `structuredContent` carries the same
+as `{answer, interpretation?, interpretationChosen?, sources: [{url, title?}]}`.
+
+The question's choices are the scoping pass's interpretations (`TitledSingleSelectEnumSchema`).
+The bridge's hand-back note and its responders' prompts show each option as `id ("label")`.
 
 ### Who answers the question
 
@@ -191,6 +232,26 @@ research server does, the primary agent stays on A2A research.
 - Concurrency: cap concurrent research tasks per pod (a `SemaphoreSlim`, default 3 — matching
   today's `maxReplicaCount`) so a burst cannot exhaust LLM quota.
 
+As built (#717):
+
+- `deploy/k8s/research-agent.yaml`: Deployment `rockbot-research-agent` (one replica,
+  `Recreate`), Service `research-agent` on port 8080; the endpoint is
+  `http://research-agent:8080/mcp`, health at `/health`.
+- `Research:MaxConcurrentRuns` (default 6, raised from 3 after a live council run: pre-research
+  plus five persona calls at once left half of them queued past their timeout) is enforced by
+  `GatedResearchRunner` around the research loop. Scoping and asking happen outside
+  the gate, so a queued run never holds a question open.
+- Each run (`ResearchRunner`) works in `research/{runId}` and clears that namespace when it
+  finishes. Page chunks get a 60-minute TTL (`WebTools.ChunkTtlMinutes`, raised from 20) so they
+  outlive a long run; clearing at the end bounds growth in the long-lived process.
+- `requestState` is sealed by `ResearchScopeToken`: Data Protection (time-limited protector,
+  `Research:ScopeTokenLifetime`, default 10 minutes), bound to a SHA-256 of the call's arguments.
+  The key ring is in memory, so a restart invalidates outstanding questions; the retried call
+  then re-scopes and proceeds with the most likely reading, without asking again.
+- The task store is `InMemoryMcpTaskStore` with a 2-hour time-to-live.
+- The A2A receiver ran alongside the MCP endpoint until the council moved, then went with
+  Phase 5. The server has no message broker now; the agent host's bus is in-process.
+
 ## Phases
 
 ### Phase 0 — MCP elicitation (done)
@@ -228,7 +289,19 @@ than answered in place — which is what research's clarifying question needs.
 - New `Deployment` + `Service`; image built from the current tree (fixes the 0.10.66 pin).
 - Directive and system-prompt update: ask at most once, up front.
 
-### Phase 3 — Council switches to MCP
+### Phase 3 — Council switches to MCP (done, #717)
+
+As built: `ResearchMcpClient` (`src/RockBot.AdvisorCouncil/Tools`) replaces
+`ResearchAgentInvoker`. It calls `research` with `CallToolAsTaskAsync` and polls the task
+itself rather than through `CallToolWithPollingAsync`, which keeps the task id to itself: on a
+timeout (`Council:ResearchAgentTimeoutSeconds`) the client cancels the task on the server, so a
+persona that gave up doesn't leave a run spending budget. Research's question arrives as the
+task's input request and is answered by #593's coordinator with the `llm` responder, from the
+call's own arguments. Pre-research and persona calls pass the council question and the asking
+lens as `context`, so those usually settle it. `Council:ResearchServerUrl` defaults to
+`http://research-agent.rockbot.svc.cluster.local:8080/mcp`.
+
+Planned:
 
 - Replace `ResearchAgentInvoker` with an `McpClient` + `CallToolWithPollingAsync` wrapper,
   registering #593's coordinator as its elicitation handler.
@@ -242,10 +315,38 @@ than answered in place — which is what research's clarifying question needs.
   elicitation policy, including hand-back to the conversation; tasks survive a restart of the
   agent through a task ledger; caps, `mcp_cancel_task` and cancel-on-removal bound them. See
   `design/mcp-bridge.md`, "Long-running tools".
-- Primary agent: research is now an MCP tool; remove the `ResearchAgent` entry from
-  `well-known-agents.json`. Give the research entry `"tasks": true` and its `elicitation` block.
+- Primary agent (done, #717): research is an MCP tool. The `ResearchAgent` entry is gone from
+  `well-known-agents.json`, the primary directive points factual lookups at the `research`
+  tool, and the research server no longer announces its A2A card
+  (`Research:AnnounceOverA2A`, default false), so the primary agent can't rediscover the A2A
+  path. The `mcp.json` entry on the agent's PVC:
 
-### Phase 5 — Retire the A2A research path
+  ```json
+  "research": {
+    "type": "http",
+    "url": "http://research-agent.rockbot.svc.cluster.local:8080/mcp",
+    "transportMode": "streamable-http",
+    "tasks": true,
+    "taskTimeoutMinutes": 30,
+    "elicitation": { "mode": "handback" }
+  }
+  ```
+
+  The PVC's `well-known-agents.json` and `directives.md` are seeded no-clobber, so a running
+  deployment needs them edited by hand, and the persisted directory (`known-agents.json`)
+  forgets the A2A entry once it stops being announced (24-hour TTL, pruned at startup).
+
+### Phase 5 — Retire the A2A research path (done, #717)
+
+As built: the research server no longer references `RockBot.A2A` or RabbitMQ;
+`ResearchAgentTaskHandler`, `research-agent-scaledjob.yaml`, `research-agent-queue-init.yaml`
+and `Research:AnnounceOverA2A` are gone. The KEDA secret script was shared with the council's
+ScaledJob, so it stays, renamed `keda-rabbitmq-secret.sh`. The cluster-side cleanup (the
+ScaledJob, deleted by name because the old manifest also defined the council's
+TriggerAuthentication, and the `rockbot.ResearchAgent.*` queues) is in the header of
+`deploy/k8s/research-agent.yaml`.
+
+Planned:
 
 Remove the A2A receiver from the research server, `research-agent-scaledjob.yaml`,
 `research-agent-queue-init.yaml`, `research-agent-keda-secret.sh`, the queue, and the
