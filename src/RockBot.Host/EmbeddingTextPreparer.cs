@@ -30,14 +30,25 @@ internal sealed class EmbeddingTextPreparer(
     /// Returns the text the embedder should receive — truncated to the appropriate
     /// per-shape cap when needed, otherwise unchanged. <paramref name="diagnosticKey"/>
     /// is purely for log correlation; it does not affect the output.
+    /// <paramref name="shapeSample"/> is the payload inside <paramref name="text"/>, for
+    /// callers that wrap it in a prose-looking prefix (a key, a title): the prefix hides a
+    /// leading <c>{</c> or <c>[</c> from the structure check, so a JSON payload would get the
+    /// prose cap and overflow the model's token window (#460). Either looking structured
+    /// selects the structured cap; the cap is always applied to <paramref name="text"/>.
     /// </summary>
-    public string Prepare(string text, string? diagnosticKey = null)
+    public string Prepare(string text, string? diagnosticKey = null, string? shapeSample = null)
     {
         if (string.IsNullOrEmpty(text))
             return text;
 
-        var structured = IsStructured(text);
-        var cap = structured ? _opts.MaxStructuredInputChars : _opts.MaxInputChars;
+        var structured = IsStructured(text)
+            || (!string.IsNullOrEmpty(shapeSample) && IsStructured(shapeSample));
+        // The structured cap is meant to be the stricter one; clamp it so a deployment that
+        // lowers MaxInputChars for a small-window model never lets structured input through
+        // at the larger default structured cap.
+        var cap = structured
+            ? Math.Min(_opts.MaxStructuredInputChars, _opts.MaxInputChars)
+            : _opts.MaxInputChars;
         if (text.Length <= cap)
             return text;
 

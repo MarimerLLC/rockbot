@@ -683,18 +683,20 @@ public class HybridCacheWorkingMemoryTests
     // ── Helpers ────────────────────────────────────────────────────────────
 
     private HybridCacheWorkingMemory CreateMemory(int maxEntries = 20, TimeSpan? defaultTtl = null,
-        IEmbeddingGenerator<string, Embedding<float>>? embeddingGenerator = null)
+        IEmbeddingGenerator<string, Embedding<float>>? embeddingGenerator = null,
+        EmbeddingOptions? embeddingOptions = null)
     {
         var opts = new WorkingMemoryOptions
         {
             DefaultTtl = defaultTtl ?? TimeSpan.FromMinutes(5),
             MaxEntriesPerNamespace = maxEntries
         };
+        var embedding = Options.Create(embeddingOptions ?? new EmbeddingOptions());
         return new HybridCacheWorkingMemory(
             _cache,
             Options.Create(opts),
-            Options.Create(new EmbeddingOptions()),
-            EmbeddingTextPreparer.ForTests(),
+            embedding,
+            new EmbeddingTextPreparer(embedding, NullLogger<EmbeddingTextPreparer>.Instance),
             NullLogger<HybridCacheWorkingMemory>.Instance,
             embeddingGenerator);
     }
@@ -731,6 +733,55 @@ public class HybridCacheWorkingMemoryTests
             "Embedding should be generated for non-wisp keys");
     }
 
+    [TestMethod]
+    public async Task SetAsync_StashKey_DoesNotGenerateEmbedding()
+    {
+        var generator = new CallTrackingEmbeddingGenerator();
+        var memory = CreateMemory(embeddingGenerator: generator);
+
+        await memory.SetAsync("stash/subagent-9c2baa39135d/call_TsEY", "{\"big\":\"payload\"}",
+            tags: [ToolResultStash.Tag]);
+
+        Assert.AreEqual(0, generator.CallCount,
+            "Embedding should not be generated for tool-result stash keys (#460)");
+    }
+
+    [TestMethod]
+    public async Task SearchAsync_NoCandidateVectors_SkipsQueryEmbedding()
+    {
+        var generator = new CallTrackingEmbeddingGenerator();
+        var memory = CreateMemory(embeddingGenerator: generator);
+
+        await memory.SetAsync("stash/subagent-abc/call_1", "quarterly revenue figures",
+            tags: [ToolResultStash.Tag]);
+
+        var results = await memory.SearchAsync(
+            new MemorySearchCriteria(Query: "revenue"), "stash/subagent-abc/");
+
+        Assert.AreEqual(1, results.Count, "BM25 still finds the stash entry");
+        Assert.AreEqual(0, generator.CallCount,
+            "No candidate has a vector, so the query should not be embedded");
+    }
+
+    [TestMethod]
+    public async Task SetAsync_JsonValue_EmbeddingInputUsesStructuredCap()
+    {
+        // The key leads the document text, which used to hide the value's leading '[' and
+        // send pretty-printed JSON through at the prose cap (#460).
+        var generator = new CallTrackingEmbeddingGenerator();
+        var memory = CreateMemory(embeddingGenerator: generator,
+            embeddingOptions: new EmbeddingOptions { MaxInputChars = 3000, MaxStructuredInputChars = 500 });
+        var json = EmbeddingTextPreparerTests.TextHeavyJson(100);
+
+        await memory.SetAsync("session/s1/results", json);
+
+        for (var i = 0; i < 20 && generator.LastInput is null; i++)
+            await Task.Delay(25);
+
+        Assert.IsNotNull(generator.LastInput);
+        Assert.AreEqual(500, generator.LastInput.Length);
+    }
+
     /// <summary>
     /// Minimal <see cref="IEmbeddingGenerator{TInput, TEmbedding}"/> that counts calls
     /// and returns a fixed-length zero vector.
@@ -739,6 +790,7 @@ public class HybridCacheWorkingMemoryTests
     {
         private int _callCount;
         public int CallCount => _callCount;
+        public volatile string? LastInput;
 
         public EmbeddingGeneratorMetadata Metadata { get; } =
             new(nameof(CallTrackingEmbeddingGenerator));
@@ -748,8 +800,10 @@ public class HybridCacheWorkingMemoryTests
             EmbeddingGenerationOptions? options = null,
             CancellationToken cancellationToken = default)
         {
+            var list = values.ToList();
+            if (list.Count > 0) LastInput = list[^1];
             Interlocked.Increment(ref _callCount);
-            var embeddings = values.Select(_ =>
+            var embeddings = list.Select(_ =>
                 new Embedding<float>(new float[4])).ToList();
             return Task.FromResult(new GeneratedEmbeddings<Embedding<float>>(embeddings));
         }
