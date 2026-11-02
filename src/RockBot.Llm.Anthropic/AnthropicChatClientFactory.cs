@@ -50,16 +50,22 @@ public static class AnthropicChatClientFactory
         TimeSpan? timeout,
         HttpClient? httpClient)
     {
+        var baseUrl = NormaliseEndpoint(endpoint);
         var clientOptions = new ClientOptions
         {
-            ApiKey = apiKey,
             MaxRetries = sdkRetries ? null : 0,
             Timeout = timeout,
         };
+        // The Claude API takes the key as x-api-key (ApiKey). A gateway that speaks the
+        // Messages API with its own keys wants Authorization: Bearer (AuthToken) instead.
+        if (UsesBearerAuth(baseUrl))
+            clientOptions.AuthToken = apiKey;
+        else
+            clientOptions.ApiKey = apiKey;
         if (httpClient is not null)
             clientOptions.HttpClient = httpClient;
         // Only when given: an explicit BaseUrl also overrides ANTHROPIC_BASE_URL.
-        if (NormaliseEndpoint(endpoint) is { } baseUrl)
+        if (baseUrl is not null)
             clientOptions.BaseUrl = baseUrl;
         var client = new AnthropicClient(clientOptions);
 
@@ -99,6 +105,21 @@ public static class AnthropicChatClientFactory
         "5m" => Ttl.Ttl5m,
         _ => null, // the API's default, 5 minutes
     };
+
+    /// <summary>
+    /// Gateways whose Anthropic-compatible Messages API authenticates with
+    /// <c>Authorization: Bearer</c>. OpenRouter (<c>https://openrouter.ai/api</c>) treats an
+    /// <c>x-api-key</c> header as a direct Anthropic credential, so its own key must go as a
+    /// bearer token. Everything else, including no endpoint (the Claude API), keeps
+    /// <c>x-api-key</c>.
+    /// </summary>
+    private static readonly string[] BearerAuthHosts = ["openrouter.ai"];
+
+    internal static bool UsesBearerAuth(string? baseUrl) =>
+        Uri.TryCreate(baseUrl, UriKind.Absolute, out var uri)
+        && BearerAuthHosts.Any(h =>
+            uri.Host.Equals(h, StringComparison.OrdinalIgnoreCase)
+            || uri.Host.EndsWith("." + h, StringComparison.OrdinalIgnoreCase));
 
     internal static string? NormaliseEndpoint(string? endpoint)
     {
