@@ -20,11 +20,15 @@ public class AnthropicProviderTests
     {
         public List<JsonElement> Requests { get; } = [];
         public List<Uri> Uris { get; } = [];
+        public List<(string? ApiKey, string? Authorization)> Auth { get; } = [];
 
         protected override async Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request, CancellationToken cancellationToken)
         {
             Uris.Add(request.RequestUri!);
+            Auth.Add((
+                request.Headers.TryGetValues("x-api-key", out var k) ? string.Join(",", k) : null,
+                request.Headers.Authorization?.ToString()));
             var json = await request.Content!.ReadAsStringAsync(cancellationToken);
             Requests.Add(JsonDocument.Parse(json).RootElement.Clone());
             return new HttpResponseMessage(status)
@@ -336,6 +340,50 @@ public class AnthropicProviderTests
 
         Assert.AreEqual(400, ex.Status);
         StringAssert.Contains(ex.Message, "prompt is too long: 208310 tokens > 200000 maximum");
+    }
+
+    // ── authentication ───────────────────────────────────────────────────────
+
+    [TestMethod]
+    [DataRow(null)]
+    [DataRow("https://api.anthropic.com")]
+    [DataRow("https://proxy.example/anthropic/v1")]
+    public async Task Auth_ClaudeApiAndOtherEndpoints_SendXApiKey(string? endpoint)
+    {
+        var (client, handler) = Build(endpoint: endpoint);
+
+        await client.GetResponseAsync(Hello);
+
+        var (apiKey, authorization) = handler.Auth.Single();
+        Assert.AreEqual("test-key", apiKey);
+        Assert.IsNull(authorization);
+    }
+
+    [TestMethod]
+    [DataRow("https://openrouter.ai/api/v1")]
+    [DataRow("https://openrouter.ai/api")]
+    [DataRow("https://eu.OpenRouter.ai/api/v1")]
+    public async Task Auth_OpenRouter_SendsBearerToken(string endpoint)
+    {
+        var (client, handler) = Build(endpoint: endpoint);
+
+        await client.GetResponseAsync(Hello);
+
+        var (apiKey, authorization) = handler.Auth.Single();
+        Assert.AreEqual("Bearer test-key", authorization);
+        Assert.IsNull(apiKey, "OpenRouter treats x-api-key as a direct Anthropic credential");
+        StringAssert.EndsWith(handler.Uris.Single().AbsolutePath, "/api/v1/messages");
+    }
+
+    [TestMethod]
+    [DataRow("https://notopenrouter.ai/api", false)]
+    [DataRow("https://openrouter.ai.evil.example/api", false)]
+    [DataRow("not a url", false)]
+    [DataRow(null, false)]
+    [DataRow("https://openrouter.ai/api", true)]
+    public void UsesBearerAuth_MatchesOpenRouterHostOnly(string? baseUrl, bool expected)
+    {
+        Assert.AreEqual(expected, AnthropicChatClientFactory.UsesBearerAuth(baseUrl));
     }
 
     // ── option parsing ───────────────────────────────────────────────────────

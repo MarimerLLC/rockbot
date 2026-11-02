@@ -594,7 +594,7 @@ secrets:
     #   - "Copilot": GitHub Copilot SDK (per-request billing via Copilot license)
     #
     # Global provider default (applies to all tiers unless overridden per-tier):
-    provider: ""            # "" = OpenAI-compatible (default), "Copilot" = GitHub Copilot SDK, "Anthropic" = Claude API (prompt caching; endpoint optional)
+    provider: ""            # "" = OpenAI-compatible (default), "Copilot" = GitHub Copilot SDK, "Anthropic" = Claude API or OpenRouter's Messages API (prompt caching; endpoint optional, https://openrouter.ai/api/v1 for OpenRouter)
     # GitHub token for Copilot provider (needs copilot scope):
     gitHubToken: ""
 
