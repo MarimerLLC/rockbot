@@ -227,8 +227,9 @@ As built (#717):
 - `deploy/k8s/research-agent.yaml`: Deployment `rockbot-research-agent` (one replica,
   `Recreate`), Service `research-agent` on port 8080; the endpoint is
   `http://research-agent:8080/mcp`, health at `/health`.
-- `Research:MaxConcurrentRuns` (default 3) is enforced by `GatedResearchRunner` around the
-  research loop, shared by the MCP tool and the A2A receiver. Scoping and asking happen outside
+- `Research:MaxConcurrentRuns` (default 6, raised from 3 after a live council run: pre-research
+  plus five persona calls at once left half of them queued past their timeout) is enforced by
+  `GatedResearchRunner` around the research loop. Scoping and asking happen outside
   the gate, so a queued run never holds a question open.
 - Each run (`ResearchRunner`) works in `research/{runId}` and clears that namespace when it
   finishes. Page chunks get a 60-minute TTL (`WebTools.ChunkTtlMinutes`, raised from 20) so they

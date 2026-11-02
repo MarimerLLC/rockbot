@@ -1,3 +1,4 @@
+using Microsoft.Extensions.Options;
 using System.Text;
 using Microsoft.Extensions.Logging;
 using RockBot.AdvisorCouncil.Personas;
@@ -17,7 +18,8 @@ namespace RockBot.AdvisorCouncil.Council;
 internal sealed class PreResearchStep(
     IResearchClient research,
     IWorkingMemory workingMemory,
-    ILogger<PreResearchStep> logger)
+    ILogger<PreResearchStep> logger,
+    IOptions<CouncilOptions>? options = null)
 {
     /// <summary>
     /// Runs persona-aware pre-research and stores the findings in working memory.
@@ -31,7 +33,8 @@ internal sealed class PreResearchStep(
     {
         try
         {
-            var findings = await research.InvokeAsync(question, BuildLensContext(selectedPersonas), ct);
+            var timeout = TimeSpan.FromSeconds(Math.Max(5, (options?.Value ?? new CouncilOptions()).PreResearchTimeoutSeconds));
+            var findings = await research.InvokeAsync(question, BuildLensContext(selectedPersonas), ct, timeout);
             if (string.IsNullOrWhiteSpace(findings) || findings.StartsWith("(research", StringComparison.OrdinalIgnoreCase))
             {
                 logger.LogInformation("Pre-research returned empty findings; not writing to WM");

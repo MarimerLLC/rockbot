@@ -23,7 +23,10 @@ internal interface IResearchClient
     /// only from the call's own arguments.
     /// </param>
     /// <param name="ct">Cancels the call (and the research task on the server).</param>
-    Task<string> InvokeAsync(string question, string? context, CancellationToken ct);
+    /// <param name="timeout">
+    /// How long to wait for the answer; defaults to <see cref="CouncilOptions.ResearchAgentTimeoutSeconds"/>.
+    /// </param>
+    Task<string> InvokeAsync(string question, string? context, CancellationToken ct, TimeSpan? timeout = null);
 }
 
 /// <summary>
@@ -105,7 +108,7 @@ internal sealed class ResearchMcpClient : IResearchClient, IAsyncDisposable
                 clientOptions, _loggerFactory, ct);
     }
 
-    public async Task<string> InvokeAsync(string question, string? context, CancellationToken ct)
+    public async Task<string> InvokeAsync(string question, string? context, CancellationToken ct, TimeSpan? timeout = null)
     {
         if (string.IsNullOrWhiteSpace(question))
             return "(empty research question)";
@@ -117,9 +120,9 @@ internal sealed class ResearchMcpClient : IResearchClient, IAsyncDisposable
         if (!string.IsNullOrWhiteSpace(context))
             arguments["context"] = JsonSerializer.SerializeToElement(context.Trim());
 
-        var timeout = TimeSpan.FromSeconds(Math.Max(5, _options.ResearchAgentTimeoutSeconds));
+        var limit = timeout ?? TimeSpan.FromSeconds(Math.Max(5, _options.ResearchAgentTimeoutSeconds));
         using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        timeoutCts.CancelAfter(timeout);
+        timeoutCts.CancelAfter(limit);
 
         // Makes this call the current one for the coordinator, so research's question is
         // answered from exactly these arguments.
@@ -145,7 +148,7 @@ internal sealed class ResearchMcpClient : IResearchClient, IAsyncDisposable
         }
         catch (OperationCanceledException)
         {
-            _logger.LogWarning("Research call timed out after {Sec}s", timeout.TotalSeconds);
+            _logger.LogWarning("Research call timed out after {Sec}s", limit.TotalSeconds);
             return "(research timed out)";
         }
         catch (McpException ex)

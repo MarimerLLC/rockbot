@@ -8,9 +8,10 @@ public sealed class ResearchOptions
 
     /// <summary>
     /// How many research runs one process works on at once; more wait their turn. Bounds LLM and
-    /// search spend under a burst. Defaults to 3, the old ScaledJob's <c>maxReplicaCount</c>.
+    /// search spend under a burst. Defaults to 6: an advisor council fans out pre-research plus a
+    /// call per persona (five or so) at once, and at 3 half of them queued past their timeout.
     /// </summary>
-    public int MaxConcurrentRuns { get; set; } = 3;
+    public int MaxConcurrentRuns { get; set; } = 6;
 
     /// <summary>
     /// How long a clarifying question's <c>requestState</c> stays valid (MRTR callers). An answer

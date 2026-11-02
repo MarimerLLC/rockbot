@@ -21,7 +21,7 @@
 # them as lost) and outstanding questions (the tool re-scopes). More replicas need a durable,
 # shared task store and key ring.
 #
-# Concurrency: Research__MaxConcurrentRuns (default 3) caps research runs in this pod.
+# Concurrency: Research__MaxConcurrentRuns (default 6) caps research runs in this pod.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -55,7 +55,7 @@ spec:
             - name: Memory__BasePath
               value: /tmp/memory
             - name: Research__MaxConcurrentRuns
-              value: "3"
+              value: "6"
           envFrom:
             - configMapRef:
                 name: rockbot-config

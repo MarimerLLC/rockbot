@@ -8,20 +8,29 @@ internal sealed class CouncilOptions
     /// <summary>Absolute path to the personas directory. Empty falls back to agent/personas next to the binary.</summary>
     public string PersonasPath { get; set; } = string.Empty;
 
-    /// <summary>Hard wall-clock cap on a council run before cancellation.</summary>
-    public int OverallTimeoutSeconds { get; set; } = 300;
+    /// <summary>
+    /// Hard wall-clock cap on a council run before cancellation. Leaves room for pre-research
+    /// (<see cref="PreResearchTimeoutSeconds"/>), the persona fan-out
+    /// (<see cref="PerPersonaTimeoutSeconds"/>), critique and synthesis.
+    /// </summary>
+    public int OverallTimeoutSeconds { get; set; } = 420;
 
     /// <summary>Per-persona soft timeout. On expiry the persona view becomes "(timed out)" and synthesis proceeds without it.</summary>
     public int PerPersonaTimeoutSeconds { get; set; } = 120;
 
-    /// <summary>Pre-research stage timeout.</summary>
-    public int PreResearchTimeoutSeconds { get; set; } = 90;
+    /// <summary>
+    /// Timeout for the pre-research call. Longer than a persona's research call: it is one broad
+    /// question for every lens, and nothing else runs while it does.
+    /// </summary>
+    public int PreResearchTimeoutSeconds { get; set; } = 150;
 
     /// <summary>
-    /// Timeout for one research call (<see cref="Tools.ResearchMcpClient"/>). On expiry the
-    /// research task is cancelled on the server and the caller gets <c>(research timed out)</c>.
+    /// Timeout for one research call a persona makes (<see cref="Tools.ResearchMcpClient"/>). On
+    /// expiry the research task is cancelled on the server and the caller gets
+    /// <c>(research timed out)</c>. Kept under <see cref="PerPersonaTimeoutSeconds"/> so a
+    /// persona still has time to answer.
     /// </summary>
-    public int ResearchAgentTimeoutSeconds { get; set; } = 90;
+    public int ResearchAgentTimeoutSeconds { get; set; } = 110;
 
     /// <summary>The research server's MCP endpoint (stateless streamable HTTP with Tasks).</summary>
     public string ResearchServerUrl { get; set; } = "http://research-agent.rockbot.svc.cluster.local:8080/mcp";
