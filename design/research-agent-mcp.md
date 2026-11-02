@@ -341,7 +341,8 @@ Planned:
 As built: the research server no longer references `RockBot.A2A` or RabbitMQ;
 `ResearchAgentTaskHandler`, `research-agent-scaledjob.yaml`, `research-agent-queue-init.yaml`
 and `Research:AnnounceOverA2A` are gone. The KEDA secret script was shared with the council's
-ScaledJob, so it stays, renamed `keda-rabbitmq-secret.sh`. The cluster-side cleanup (the
+ScaledJob, so it stayed, renamed `keda-rabbitmq-secret.sh`, until the council's own move (#758)
+retired it. The cluster-side cleanup (the
 ScaledJob, deleted by name because the old manifest also defined the council's
 TriggerAuthentication, and the `rockbot.ResearchAgent.*` queues) is in the header of
 `deploy/k8s/research-agent.yaml`.

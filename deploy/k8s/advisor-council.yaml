@@ -1,0 +1,116 @@
+# AdvisorCouncil as an MCP server (design/advisor-council-mcp.md).
+#
+# One long-lived pod serves the MCP tool `advise` at http://advisor-council:8080/mcp
+# (stateless streamable HTTP, with the Tasks extension). Its caller is the primary agent,
+# through the MCP bridge with `"tasks": true` in mcp.json. The council itself calls the
+# research server (Council__ResearchServerUrl, default research-agent:8080/mcp). It no longer
+# speaks A2A and needs no message broker or KEDA.
+#
+#   kubectl apply -f deploy/k8s/advisor-council.yaml
+#
+# The mcp.json entry on the primary agent's PVC:
+#
+#   "advisor-council": {
+#     "type": "http",
+#     "url": "http://advisor-council.rockbot.svc.cluster.local:8080/mcp",
+#     "transportMode": "streamable-http",
+#     "tasks": true,
+#     "taskTimeoutMinutes": 15,
+#     "elicitation": { "mode": "handback" }
+#   }
+#
+# One-time cleanup of the retired A2A path, on a cluster that still has it:
+#
+#   kubectl -n rockbot delete scaledjob rockbot-advisor-council --ignore-not-found
+#   kubectl -n rockbot delete triggerauthentication rockbot-keda-rabbitmq-auth --ignore-not-found
+#   kubectl -n rockbot delete secret rockbot-keda-rabbitmq --ignore-not-found
+#   kubectl -n rockbot delete job advisor-council-queue-init --ignore-not-found
+#   # then delete the RabbitMQ queues rockbot.AdvisorCouncil.* (agent-task, agent-task-cancel,
+#   # discovery, and their .dlq) in the RabbitMQ management UI or with rabbitmqadmin.
+#   # Nothing else uses KEDA after this; uninstalling KEDA itself is a separate decision.
+#
+# One replica: the task store (InMemoryMcpTaskStore) and the Data Protection key ring that
+# seals the clarifying question's state are in memory. A restart loses in-flight councils
+# (callers see them as lost tasks and can retry) and outstanding questions (the tool selects
+# again). More replicas need a durable, shared task store and key ring.
+#
+# Concurrency: Council__MaxConcurrentRuns (default 2) caps deliberations in this pod. Each one
+# fans out to several research calls; the research server's own cap is 6.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rockbot-advisor-council
+  namespace: rockbot
+  labels:
+    app: rockbot-advisor-council
+spec:
+  replicas: 1
+  # Recreate, not RollingUpdate: two pods would split tasks between two in-memory stores.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: rockbot-advisor-council
+  template:
+    metadata:
+      labels:
+        app: rockbot-advisor-council
+    spec:
+      containers:
+        - name: advisor-council
+          image: rockylhotka/rockbot-advisor-council:0.16.17
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8080
+              name: http
+          env:
+            # Working memory lives on the container's local filesystem; each council run
+            # clears its own council/{runId} namespace when it finishes. No PVC needed.
+            - name: Memory__BasePath
+              value: /tmp/memory
+            # Personas — the image ships defaults at /app/agent/personas; point this at a
+            # mounted path for operator-customized personas.
+            - name: Council__PersonasPath
+              value: /app/agent/personas
+            - name: Council__MaxConcurrentRuns
+              value: "2"
+          envFrom:
+            - configMapRef:
+                name: rockbot-config
+            - secretRef:
+                name: rockbot-secrets
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 15
+            periodSeconds: 30
+          resources:
+            requests:
+              cpu: 200m
+              memory: 256Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: advisor-council
+  namespace: rockbot
+  labels:
+    app: rockbot-advisor-council
+spec:
+  type: ClusterIP
+  selector:
+    app: rockbot-advisor-council
+  ports:
+    - port: 8080
+      targetPort: 8080
+      name: http

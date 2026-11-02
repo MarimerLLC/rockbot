@@ -3,6 +3,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using RockBot.AdvisorCouncil.Council;
 using RockBot.AdvisorCouncil.Personas;
+using RockBot.AdvisorCouncil.Schema;
 
 namespace RockBot.AdvisorCouncil.Tests;
 
@@ -31,7 +32,7 @@ public class PersonaStepWorkingMemoryTests
         var opts = Options.Create(new CouncilOptions());
         var step = new PersonaStep(chat, research: null!, wm, opts, NullLogger<PersonaStep>.Instance);
 
-        var view = await step.RunAsync(MakePersona(), "Original question?", "task-99", CancellationToken.None);
+        var view = await step.RunAsync(MakePersona(), new CouncilRequest("Original question?"), "task-99", CancellationToken.None);
 
         Assert.AreEqual("persona response text", view.View);
         var lastCall = chat.Calls[^1];
@@ -49,7 +50,7 @@ public class PersonaStepWorkingMemoryTests
         var opts = Options.Create(new CouncilOptions());
         var step = new PersonaStep(chat, research: null!, wm, opts, NullLogger<PersonaStep>.Instance);
 
-        await step.RunAsync(MakePersona("skeptic"), "Q?", "task-7", CancellationToken.None);
+        await step.RunAsync(MakePersona("skeptic"), new CouncilRequest("Q?"), "task-7", CancellationToken.None);
 
         var stored = await wm.GetAsync("council/task-7/skeptic/view");
         Assert.AreEqual("My view as the skeptic.", stored);
@@ -63,7 +64,7 @@ public class PersonaStepWorkingMemoryTests
         var opts = Options.Create(new CouncilOptions());
         var step = new PersonaStep(chat, research: null!, wm, opts, NullLogger<PersonaStep>.Instance);
 
-        await step.RunAsync(MakePersona(), "Just the question.", "task-x", CancellationToken.None);
+        await step.RunAsync(MakePersona(), new CouncilRequest("Just the question."), "task-x", CancellationToken.None);
 
         var userMessage = chat.Calls[^1].Messages.Last(m => m.Role == ChatRole.User).Text ?? string.Empty;
         Assert.AreEqual("Just the question.", userMessage);
@@ -158,7 +159,7 @@ public class PersonaStepWorkingMemoryTests
         var own = new RockBot.AdvisorCouncil.Schema.PersonaView("skeptic", "Skeptic view text.", [], []);
         var siblings = new[] { new RockBot.AdvisorCouncil.Schema.PersonaView("engineer", "Engineer view.", [], []) };
 
-        await step.RunAsync(MakePersona("skeptic"), "Question?", taskId, own, siblings, CancellationToken.None);
+        await step.RunAsync(MakePersona("skeptic"), new CouncilRequest("Question?"), taskId, own, siblings, CancellationToken.None);
 
         var userMessage = chat.Calls[^1].Messages.Last(m => m.Role == ChatRole.User).Text ?? string.Empty;
         StringAssert.Contains(userMessage, "Research findings available to the council");
@@ -180,7 +181,7 @@ public class PersonaStepWorkingMemoryTests
         var own = new RockBot.AdvisorCouncil.Schema.PersonaView("skeptic", "before", [], []);
         var siblings = new[] { new RockBot.AdvisorCouncil.Schema.PersonaView("engineer", "engineer view", [], []) };
 
-        await step.RunAsync(MakePersona("skeptic"), "Q?", taskId, own, siblings, CancellationToken.None);
+        await step.RunAsync(MakePersona("skeptic"), new CouncilRequest("Q?"), taskId, own, siblings, CancellationToken.None);
 
         var stored = await wm.GetAsync($"council/{taskId}/skeptic/view-revised");
         Assert.AreEqual("post-rebuttal text", stored);

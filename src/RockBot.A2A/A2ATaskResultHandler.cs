@@ -257,8 +257,8 @@ internal sealed class A2ATaskResultHandler(
         // Multi-part responses (text + data) preserve the structured data part under a
         // sibling key so downstream consumers — the LLM's follow-up turn, subagent
         // callers, observability tooling — can recover the structured fields. Without
-        // this, agents like AdvisorCouncil silently lose their JSON payload (per-persona
-        // views, tensions, confidence, metadata) on the receive side.
+        // this, agents that return a JSON payload alongside their prose silently lose it
+        // on the receive side.
         string? dataMemoryKey = null;
         if (!string.IsNullOrWhiteSpace(dataJson))
         {

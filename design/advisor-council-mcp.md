@@ -1,9 +1,10 @@
 # AdvisorCouncil as an MCP Server
 
-**Status:** Proposed; phases 1 and 3 done (#717). Follows the ResearchAgent move
-(`design/research-agent-mcp.md`, done), and uses the MCP elicitation stack from #593 and the
-`conversation` responder from #605. The council already calls research over MCP
-(`ResearchMcpClient`); the council itself is still an A2A agent.
+**Status:** Done. Phases 1 and 3 in #717; phases 2, 4, 5 and 6 in #758 (see "As built" at the
+end). Follows the ResearchAgent move (`design/research-agent-mcp.md`), and uses the MCP
+elicitation stack from #593, the `conversation` responder from #605 and the hand-back from #602.
+The council is an MCP server with one tool, `advise`; its A2A path, KEDA ScaledJob and RabbitMQ
+queues are gone.
 
 ## Problem
 
@@ -192,7 +193,7 @@ Same shape as ResearchAgent:
 - Concurrency cap per pod (a council fans out to several model calls); start at one replica
   with an in-memory task store, as for research.
 
-Operator configuration on the primary agent's bridge:
+Operator configuration on the primary agent's bridge, as proposed:
 
 ```json
 "advisor-council": {
@@ -204,24 +205,25 @@ Operator configuration on the primary agent's bridge:
 ```
 
 `maxPerCall: 1` makes "at most one question" a bridge-enforced limit, not just a council
-convention.
+convention. As built, the entry matches research's instead (Tasks and hand-back; see "As built").
 
 ## Phases
 
 1. **ResearchAgent on MCP** (`design/research-agent-mcp.md`), including the Tasks-aware bridge.
    Done (#717).
-2. **`advise` arguments on the existing A2A council.** Accept `context`, `options` and the enums
-   as an A2A `data` part and thread them through Select, personas and synthesis; add
-   `assumptions` to the output. This is useful on its own and de-risks the MCP move.
+2. **`advise` arguments.** Accept `context`, `options` and the enums and thread them through
+   Select, personas and synthesis; add `assumptions` to the output. Done (#758), as MCP tool
+   arguments rather than an A2A `data` part: phases 2, 4, 5 and 6 shipped together.
 3. **Council research client on MCP.** Replace `ResearchAgentInvoker` with `McpClient` +
    coordinator + `llm` responder. Done (#717): `ResearchMcpClient`, which polls the task itself so
    a timeout cancels it on the server. The `maxPerCall: 1` setting above is not configured: the
    research server asks at most once on its own.
 4. **Council as an MCP server**, with Select-only elicitation and the early "too thin" return.
+   Done (#758).
 5. **Primary agent switches** to the `advise` MCP tool; remove `AdvisorCouncil` from
-   `well-known-agents.json`.
+   `well-known-agents.json`. Done (#758).
 6. **Retire the A2A council path** — ScaledJob, queue, queue-init job, KEDA secret, and the
-   A2A sections of `design/advisor-council.md`.
+   A2A sections of `design/advisor-council.md`. Done (#758).
 
 ## Open questions
 
@@ -236,6 +238,74 @@ convention.
 4. **Persona-level gaps.** A persona may discover mid-run that it needs something the user never
    said. Today that becomes an assumption. Worth revisiting only after #602, when a question can
    reach the user without restarting the council.
+
+## As built (#758)
+
+**The server.** `RockBot.AdvisorCouncil` is an ASP.NET Core MCP server shaped like the research
+server: stateless streamable HTTP, `.WithTasks(InMemoryMcpTaskStore)` (2 h TTL), `/health`, the
+same provider-aware LLM tier builder, and the in-process message bus (no RabbitMQ). It runs as a
+single-replica `Deployment` (`Recreate`) behind the ClusterIP `Service` `advisor-council:8080`
+(`deploy/k8s/advisor-council.yaml`, which also lists the one-time cluster cleanup). Each run
+clears its `council/{runId}/` working memory when it ends.
+
+**The tool.** `CouncilTools.advise` takes the arguments in "The tool". Enum values are
+normalised; an unknown value is dropped rather than failing the call. The orchestrator is split
+into `ICouncil.SelectAsync` and `DeliberateAsync` so the tool can ask between the two, and
+`SelectStep.ApplyRequest` applies the caller's overrides in code: forced personas, `critique` /
+`pre_research` on or off, and only open, askable fields in `missing`. `preferred_option` is only
+asked when there are two or more options, and "too thin" never stands when the caller gave
+`context`.
+
+**The question.** One form, choice fields only, none required. A field left blank, a declined
+or cancelled form, or a client that can't elicit becomes an entry in
+`CouncilRequest.Unresolved`, which synthesis turns into `assumptions`.
+`metadata.clarification` records `not_asked`, `answered` or `declined`. The transport follows
+research's (`CouncilCallMode`, a copy of `ResearchCallMode`):
+- inside a task: `ElicitAsync` through the task store;
+- as a plain call: MRTR, with Select's output sealed in a Data Protection `requestState` bound to
+  the arguments (`CouncilClarificationToken`, 10 min);
+- a retried call never asks again; an expired or tampered state means Select runs again, without
+  asking.
+
+**Too thin.** Select's `too_thin` returns a normal (non-error) result naming what `context`
+should cover, with `structuredContent {status: "needs_context", needs, open_choices}`. Nothing
+else runs.
+
+**Concurrency.** `Council:MaxConcurrentRuns` (default 2) gates deliberation only; Select is
+cheap and runs freely. One council fans out to several research calls, and research's own cap
+is 6, so raise the two together.
+
+**The primary agent.** `AdvisorCouncil` is gone from `well-known-agents.json`. The directive
+points consequential decisions at the `advise` tool, tells the agent to fill `context` and the
+enums from the conversation, to confirm load-bearing assumptions, and to gather context and call
+again on `needs_context`. The `mcp.json` entry on the agent's PVC, like research's:
+
+```json
+"advisor-council": {
+  "type": "http",
+  "url": "http://advisor-council.rockbot.svc.cluster.local:8080/mcp",
+  "transportMode": "streamable-http",
+  "tasks": true,
+  "taskTimeoutMinutes": 15,
+  "elicitation": { "mode": "handback" }
+}
+```
+
+Hand-back puts the council's one question into the agent's own loop, which answers from the
+conversation or asks the user, so the round trip this design worried about ("Answering what only
+the user knows") does not happen. The PVC's `well-known-agents.json` and `directives.md` are
+seeded no-clobber, so a running deployment needs them edited by hand.
+
+**Retired.** `AdvisorCouncilTaskHandler`, the ephemeral-shutdown pair, the A2A card, the
+`RockBot.A2A` and RabbitMQ references, `advisor-council-scaledjob.yaml` (with the
+`rockbot-keda-rabbitmq-auth` TriggerAuthentication), `advisor-council-queue-init.yaml` and
+`keda-rabbitmq-secret.sh`. Nothing in the repo uses KEDA any more.
+
+**Tests.** `AdviseToolEndToEndTests` covers the tool over real HTTP: plain calls, MRTR,
+`CallToolAsTaskAsync`, the question inside a task, declines, partial answers, expired and
+tampered state, too-thin, and the concurrency cap. `AdviseArgumentsTests` covers parsing,
+overrides and assumptions. `AdvisorCouncilBridgeTests` covers the tool behind the bridge with
+`"tasks": true`, including the hand-back.
 
 ## References
 

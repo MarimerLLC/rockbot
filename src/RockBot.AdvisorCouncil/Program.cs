@@ -1,11 +1,9 @@
 using System.ClientModel;
+using Microsoft.AspNetCore.DataProtection;
 using Microsoft.Extensions.AI;
-using Microsoft.Extensions.Configuration;
-using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Hosting;
-using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
+using ModelContextProtocol.Extensions.Tasks;
 using OpenAI;
-using RockBot.A2A;
 using RockBot.AdvisorCouncil;
 using RockBot.AdvisorCouncil.Council;
 using RockBot.AdvisorCouncil.Personas;
@@ -13,12 +11,17 @@ using RockBot.AdvisorCouncil.Tools;
 using RockBot.Host;
 using RockBot.Llm;
 using RockBot.Llm.Anthropic;
-using RockBot.Messaging.RabbitMQ;
+using RockBot.Messaging.InProcess;
 
-var builder = Host.CreateApplicationBuilder(args);
-builder.Configuration.AddUserSecrets<Program>();
+// AdvisorCouncil: an MCP server with one tool, `advise` (streamable HTTP, stateless, with the
+// Tasks extension). A long-lived Deployment (design/advisor-council-mcp.md). The A2A path, its
+// KEDA ScaledJob and its RabbitMQ queues were retired in Phase 6, so it talks to no broker.
+var builder = WebApplication.CreateBuilder(args);
+builder.Configuration.AddUserSecrets<Program>(optional: true);
 
-builder.Services.AddRockBotRabbitMq(opts => builder.Configuration.GetSection("RabbitMq").Bind(opts));
+// The agent host still wants a bus (AgentHost subscribes), but nothing outside this process
+// listens: an in-process one, with no broker to reach.
+builder.Services.AddRockBotInProcessMessaging();
 
 // ── Council options ─────────────────────────────────────────────────────────
 builder.Services.Configure<CouncilOptions>(builder.Configuration.GetSection("Council"));
@@ -149,6 +152,10 @@ builder.Services.AddSingleton<PersonaStep>();
 builder.Services.AddSingleton<CritiqueStep>();
 builder.Services.AddSingleton<SynthesizeStep>();
 builder.Services.AddSingleton<CouncilOrchestrator>();
+builder.Services.AddSingleton(sp =>
+    new CouncilConcurrencyGate(sp.GetRequiredService<IOptions<CouncilOptions>>().Value.MaxConcurrentRuns));
+builder.Services.AddSingleton<ICouncil>(sp => new GatedCouncil(
+    sp.GetRequiredService<CouncilOrchestrator>(), sp.GetRequiredService<CouncilConcurrencyGate>()));
 // Research over MCP (design/research-agent-mcp.md, Phase 3): the research server's `research`
 // tool, run as a task; its clarifying question is answered by the llm responder from the call's
 // own arguments.
@@ -159,35 +166,29 @@ builder.Services.AddRockBotHost(agent =>
     agent.WithIdentity("AdvisorCouncil");
 
     // Working memory — persona branches with research write their findings here under
-    // council/{taskId}/{personaId}; namespace shared across personas for cross-pollination.
-    // Bump per-namespace cap above the default 50: a single council run can produce
-    // ~5 personas × (1 view + 3 research + 1 revised) + 1 shared = ~26 entries, with headroom.
+    // council/{runId}/{personaId}; namespace shared across personas for cross-pollination.
+    // Each run clears council/{runId}/ when it ends. Bump the per-namespace cap above the
+    // default 50: one run can produce ~5 personas × (1 view + 3 research + 1 revised) + 1
+    // shared = ~26 entries, and MaxConcurrentRuns runs share the pod.
     agent.WithWorkingMemory(opts => opts.MaxEntriesPerNamespace = 200);
-
-    agent.AddA2A(opts =>
-    {
-        opts.Card = new AgentCard
-        {
-            AgentName = "AdvisorCouncil",
-            Description = "Multi-perspective advisor council. Analyzes questions from a curated set of personas and returns integrated guidance.",
-            Version = "1.0",
-            Skills =
-            [
-                new AgentSkill
-                {
-                    Id = "advise",
-                    Name = "Advise",
-                    Description = "Take a question or idea and return multi-perspective analysis with synthesis."
-                }
-            ]
-        };
-    });
-
-    agent.Services.AddScoped<IAgentTaskHandler, AdvisorCouncilTaskHandler>();
-
-    agent.Services.AddSingleton<EphemeralShutdownCoordinator>();
-    agent.Services.AddHostedService<EphemeralShutdownService>();
 });
+
+// Data Protection seals the clarifying question's requestState. The key ring stays in memory:
+// with one replica, a restart only invalidates outstanding questions (the tool selects again).
+builder.Services.AddDataProtection().SetApplicationName("RockBot.AdvisorCouncil");
+builder.Services.AddSingleton(sp => new CouncilClarificationToken(
+    sp.GetRequiredService<IDataProtectionProvider>(),
+    sp.GetRequiredService<IOptions<CouncilOptions>>().Value.ClarificationTokenLifetime));
+
+// ── MCP server: stateless streamable HTTP + Tasks ───────────────────────────
+// One replica with an in-memory task store: a restart loses in-flight councils, which the
+// caller sees as a lost task and can retry. More replicas need a durable, shared IMcpTaskStore.
+builder.Services.AddHealthChecks();
+builder.Services.AddMcpServer()
+    .WithHttpTransport(o => o.Stateless = true)
+    .WithTasks(new InMemoryMcpTaskStore { DefaultTimeToLive = TimeSpan.FromHours(2) },
+        t => t.ExecutionModeSelector = CouncilCallMode.Select)
+    .WithTools<CouncilTools>();
 
 var app = builder.Build();
 
@@ -202,8 +203,12 @@ AppDomain.CurrentDomain.UnhandledException += (_, e) =>
 var startupLogger = app.Services.GetRequiredService<ILoggerFactory>().CreateLogger("Startup");
 var registry = app.Services.GetRequiredService<PersonaRegistry>();
 startupLogger.LogInformation(
-    "AdvisorCouncil starting — {Count} personas loaded from {Path} (hash {Hash})",
+    "AdvisorCouncil: {Count} personas loaded from {Path} (hash {Hash})",
     registry.Personas.Count, registry.PersonasPath, registry.PersonaSetHash[..8]);
-startupLogger.LogInformation("AdvisorCouncil waiting for A2A task requests");
+
+app.MapHealthChecks("/health");
+app.MapMcp("/mcp");
+
+startupLogger.LogInformation("AdvisorCouncil starting — MCP tool 'advise' at /mcp");
 
 await app.RunAsync();

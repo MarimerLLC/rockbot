@@ -4,7 +4,7 @@
 
 The multi-persona deliberation pattern isn't new — it appears across the prompting community as "council of experts," "panel of advisors," and similar variants. The immediate prompt for building it into rockbot was JD Meier's "Council of Giants" post: https://www.linkedin.com/posts/jdmeier_council-of-giants-activity-7458556131225784321-JIkl
 
-What this design adds is making the council a first-class agent in the rockbot swarm — A2A-invocable, persona library as data on the PVC, selector-driven gating, integrated with `ResearchAgent` for fact-finding — rather than a one-shot prompt template.
+What this design adds is making the council a first-class service in the rockbot swarm — callable as a tool (an MCP server since #758; an A2A agent before), persona library as data, selector-driven gating, integrated with the research server for fact-finding — rather than a one-shot prompt template.
 
 ## Problem
 
@@ -17,7 +17,7 @@ The deeper issue is that "wisdom" — the kind of thinking that surfaces tension
 - Take a question or idea and return integrated, multi-perspective guidance with explicit tensions and confidence.
 - Make the perspective set transparent and tunable (personas as data on the PVC, hot-reloaded).
 - Let personas reach for facts when they need them, by invoking the research server. (Originally over A2A; since #717 it is the research server's MCP `research` tool, through `ResearchMcpClient` — see `design/research-agent-mcp.md`.)
-- Surface the council as an A2A skill the primary agent can self-invoke before its own consequential decisions.
+- Surface the council as a tool the primary agent can call before its own consequential decisions: the MCP tool `advise` (#758; an A2A skill before, see `design/advisor-council-mcp.md`).
 - Keep cost and latency bounded with selector-driven gating (which personas, with/without research, with/without critique).
 
 ## Non-goals
@@ -29,10 +29,15 @@ The deeper issue is that "wisdom" — the kind of thinking that surfaces tension
 
 ## Architecture overview
 
+> **As built (#758):** the entry point is the MCP tool `advise` (`CouncilTools`) on a
+> long-lived Deployment, not an A2A handler on an ephemeral pod, and orchestration is the
+> imperative `CouncilOrchestrator` rather than a MAF graph. The stages are as drawn. See
+> "MCP surface" below and `design/advisor-council-mcp.md`.
+
 ```
                    ┌──────────────────────────────────────────────┐
-A2A AgentTaskRequest │             AdvisorCouncilTaskHandler        │
-   skill=advise     │  (one task per ephemeral pod, then shutdown) │
+ MCP tools/call     │                 CouncilTools                 │
+   advise           │   (as a task: result delivered by polling)   │
                    └────────────────────┬─────────────────────────┘
                                         │
                                         ▼
@@ -66,8 +71,8 @@ A2A AgentTaskRequest │             AdvisorCouncilTaskHandler        │
                    └────────────────────┼──────────────────────────┘
                                         │
                                         ▼
-                              AgentTaskResult
-                          (JSON part + text part)
+                              CallToolResult
+                  (text content + structuredContent)
 
                    ┌────────────────────────────┐
                    │   /data/advisor-council/   │
@@ -153,27 +158,32 @@ The selector is **load-bearing** — its decisions drive cost and quality. Treat
   ],
   "synthesis": "markdown prose — integrated guidance, ~500 words",
   "confidence": "low | medium | high",
+  "assumptions": ["What the advice assumed about anything the caller did not say."],
   "metadata": {
     "critique_run": true,
     "pre_research_run": false,
     "persona_count": 3,
     "duration_ms": 87234,
-    "model_calls": 9
+    "model_calls": 9,
+    "clarification": "not_asked | answered | declined"
   }
 }
 ```
 
-Returned as **two `AgentMessagePart`s** in the `AgentTaskResult`:
+Returned as an MCP `CallToolResult`:
 
-1. `kind=text` containing only the `synthesis` prose — readable by prose-consuming callers (primary agent, UI).
-2. `kind=data` (or `kind=text` with a JSON content-type header) containing the full structured object — for programmatic callers.
+1. Text content: the `synthesis` prose, with a coverage banner first when personas are missing
+   and the `assumptions` listed after it — readable by prose-consuming callers (primary agent, UI).
+2. `structuredContent`: the full object above — for programmatic callers.
 
 ## Workflow stages
 
 ### 1. Select
 
-Input: question text.
-Output: `SelectorOutput` (above).
+Input: the question and its decision brief (`context`, `options`, the enums).
+Output: `SelectorOutput` (above), plus `missing` (choice fields that would change the plan),
+`too_thin` and `needs`. The caller's overrides (forced personas, `critique` / `pre_research`
+on or off) are applied in code after parsing.
 Model: Balanced tier.
 Tools: none.
 Failure mode: if selector output fails schema validation, retry once with stricter prompt; if it fails again, fall back to a default persona set (`skeptic`, `engineer`, `long_term`) with `critique=false`, `pre_research=false`.
@@ -207,39 +217,39 @@ Critique is **per-persona-parallel** like fan-out — no further fan-in needed.
 
 Single `IChatClient` call (High tier), input: question + final persona views + identified tensions, output: structured JSON matching the output schema. Schema-validated; on validation failure, one repair pass before giving up.
 
-## A2A surface
+## MCP surface
 
-Agent card:
+The council is an MCP server (#758): one tool, `advise`, at `http://advisor-council:8080/mcp`
+(stateless streamable HTTP with the Tasks extension). The A2A agent card, its `advise` skill and
+the never-implemented `rb-council-*` headers are gone; their overrides are tool arguments now.
 
-```json
-{
-  "agentName": "AdvisorCouncil",
-  "description": "Multi-perspective advisor council. Analyzes questions from a curated set of personas and returns integrated guidance.",
-  "version": "1.0",
-  "skills": [
-    {
-      "id": "advise",
-      "name": "Advise",
-      "description": "Take a question or idea and return multi-perspective analysis with synthesis."
-    }
-  ]
-}
-```
+| Argument | Type | Purpose |
+|---|---|---|
+| `question` | string, required | The decision or idea to deliberate on. |
+| `context` | string | Goals, constraints, stakeholders, what has been tried. |
+| `options` | string[] | The options being weighed. |
+| `time_horizon` | `weeks` · `months` · `years` · `decade_plus` | How far ahead it matters. |
+| `risk_appetite` | `low` · `moderate` · `high` | How much downside is acceptable. |
+| `reversibility` | `easily_reversed` · `costly_to_reverse` · `irreversible` | How hard it is to undo. |
+| `personas` | string[] | Force the persona set. |
+| `critique` / `pre_research` | `auto` · `on` · `off` | Override the selector. |
 
-Request: standard `AgentTaskRequest` with the question as a `text` part. Optional headers:
-- `rb-council-personas`: comma-separated persona ids to force-override selection
-- `rb-council-critique`: `true|false|auto` (default `auto`)
-- `rb-council-pre-research`: `true|false|auto` (default `auto`)
+The Select step may ask one multiple-choice question about what is still open, or return early
+(`needs_context`) when the question is too thin to deliberate on. The rules are in
+`design/advisor-council-mcp.md`, "Clarifying questions".
 
 ## Project layout
 
 ```
 src/RockBot.AdvisorCouncil/
   RockBot.AdvisorCouncil.csproj
-  Program.cs
-  AdvisorCouncilTaskHandler.cs       # IAgentTaskHandler entry point
+  Program.cs                         # ASP.NET Core MCP server (/mcp, /health)
+  CouncilTools.cs                    # the `advise` MCP tool, clarifying question, result
+  CouncilCallMode.cs                 # task vs plain call (copy of ResearchCallMode)
+  CouncilClarificationToken.cs       # sealed requestState for MRTR retries
   Council/
-    CouncilWorkflow.cs               # MAF graph builder
+    CouncilOrchestrator.cs           # ICouncil: SelectAsync + DeliberateAsync
+    CouncilConcurrencyGate.cs        # Council:MaxConcurrentRuns
     SelectStep.cs
     PreResearchStep.cs
     PersonaStep.cs
@@ -249,12 +259,11 @@ src/RockBot.AdvisorCouncil/
     Persona.cs                       # record { Id, Name, Description, SystemPrompt, DefaultResearch }
     PersonaRegistry.cs               # load + hot-reload from PVC
   Schema/
+    CouncilRequest.cs                # the tool's arguments + the decision brief
     SelectorOutput.cs
     CouncilResponse.cs
   Tools/
     ResearchMcpClient.cs             # MCP client for the research server (was ResearchAgentInvoker, A2A)
-  EphemeralShutdownCoordinator.cs    # mirrors ResearchAgent
-  EphemeralShutdownService.cs
   NullFeedbackStore.cs
   agent/
     personas/
@@ -267,24 +276,31 @@ src/RockBot.AdvisorCouncil/
     directives.md
 
 deploy/
-  Dockerfile.advisor-council         # mirrors Dockerfile.agent
-  helm/rockbot/templates/
-    advisor-council-deployment.yaml  # ephemeral pod template, like research agent
+  Dockerfile.advisor-council         # aspnet runtime, like Dockerfile.research-agent
+  k8s/advisor-council.yaml           # Deployment + ClusterIP Service, like research-agent.yaml
 
 tests/
   RockBot.AdvisorCouncil.Tests/
     SelectStepTests.cs               # fake IChatClient
+    AdviseArgumentsTests.cs          # arguments, Select overrides, assumptions
+    AdviseToolEndToEndTests.cs       # the tool over real HTTP: MRTR, tasks, concurrency
     PersonaRegistryTests.cs          # hot-reload, frontmatter parsing
     CouncilResponseSchemaTests.cs    # serialization round-trips
-    CouncilWorkflowIntegrationTests.cs  # gated by ROCKBOT_LLM_KEY env var
+  RockBot.Agent.Tests/McpBridge/
+    AdvisorCouncilBridgeTests.cs     # the tool behind the bridge with "tasks": true
 ```
 
 ## Deployment
 
 - Image: `rockylhotka/rockbot-advisor-council:<version>`, tagged from `Directory.Build.props` `<Version>`. Never `:latest`.
-- Helm: new `advisorCouncil` block in `values.yaml` with `image.repository`, `image.tag`, `enabled`. Pinned tag.
-- PVC: `/data/advisor-council/` with `personas/` subdir. Init container `cp -n` from image — never overwrites running pod's customized personas.
-- One pod per task (ephemeral), `EphemeralShutdownService` exits cleanly after `AgentTaskResult` is published.
+- Kubernetes: `deploy/k8s/advisor-council.yaml` — a single-replica `Deployment` (`Recreate`)
+  behind a ClusterIP `Service` `advisor-council:8080`, probes on `/health`. It replaced the KEDA
+  `ScaledJob` (one pod per task), its queue-init job, the `rockbot.AdvisorCouncil.*` queues and
+  the KEDA RabbitMQ secret in #758; the manifest's header has the one-time cleanup commands.
+- Personas ship in the image at `/app/agent/personas` (`Council__PersonasPath`); point it at a
+  mounted path for operator-customized personas.
+- In-memory task store: a pod restart loses in-flight councils, which callers see as lost tasks.
+  `Council__MaxConcurrentRuns` (default 2) caps deliberations per pod.
 
 ## Phased delivery
 
@@ -320,6 +336,10 @@ Each phase is one PR, mergeable on its own.
 **Phase 5 — Primary-agent integration**
 - Tool/skill in the primary `RockBot.Agent` that invokes the council via A2A.
 - Directive snippet showing when to consult the council (consequential decisions, contested questions, before durable commitments).
+
+**Later — MCP (#717, #758).** Research moved to MCP first (#717); then the council itself became
+an MCP server with richer arguments and retired its A2A path (#758). See
+`design/advisor-council-mcp.md`.
 
 ## Risks and open questions
 

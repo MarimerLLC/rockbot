@@ -47,4 +47,17 @@ internal sealed class CouncilOptions
     /// so the persona answers from existing context.
     /// </summary>
     public int MaxResearchCallsPerPersona { get; set; } = 3;
+
+    /// <summary>
+    /// How many councils one process deliberates on at once; more wait their turn. A council fans
+    /// out to pre-research plus a research call per persona, and the research server runs six at
+    /// a time (<c>Research:MaxConcurrentRuns</c>), so two councils already fill it. Raise both together.
+    /// </summary>
+    public int MaxConcurrentRuns { get; set; } = 2;
+
+    /// <summary>
+    /// How long a clarifying question's <c>requestState</c> stays valid (plain MRTR callers). An
+    /// answer that comes back later runs Select again, without asking.
+    /// </summary>
+    public TimeSpan ClarificationTokenLifetime { get; set; } = TimeSpan.FromMinutes(10);
 }

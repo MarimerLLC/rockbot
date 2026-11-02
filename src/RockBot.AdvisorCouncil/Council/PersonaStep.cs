@@ -24,10 +24,11 @@ internal sealed class PersonaStep(
 {
     public async Task<PersonaView> RunAsync(
         Persona persona,
-        string question,
+        CouncilRequest request,
         string taskId,
         CancellationToken ct)
     {
+        var question = request.RenderBrief();
         var shared = await workingMemory.GetAsync($"council/{taskId}/shared");
         var userPrompt = shared is null
             ? question
@@ -42,9 +43,7 @@ internal sealed class PersonaStep(
         // Lambda (not method group) so the research client is only dereferenced when the
         // tool is actually invoked. Tests that don't exercise the research path can pass
         // null! for it without constructing one.
-        var researchContext =
-            $"Background research for an advisor council, asked from the '{persona.Id}' perspective. " +
-            $"The council's question: {question}";
+        var researchContext = BuildResearchContext(persona, request);
         var scopedTool = new PersonaScopedResearchTool(
             research: (q, c) => research.InvokeAsync(q, researchContext, c),
             wm: workingMemory,
@@ -84,6 +83,18 @@ internal sealed class PersonaStep(
             logger.LogError(ex, "PersonaStep failed for persona {Id}", persona.Id);
             return new PersonaView(persona.Id, "(persona call failed)", [], [], PersonaStatus.Failed);
         }
+    }
+
+    /// <summary>
+    /// The <c>context</c> of a persona's research calls: the asking lens, the council's question and
+    /// the caller's own context, which also settles most of research's clarifying questions.
+    /// </summary>
+    internal static string BuildResearchContext(Persona persona, CouncilRequest request)
+    {
+        var context =
+            $"Background research for an advisor council, asked from the '{persona.Id}' perspective. " +
+            $"The council's question: {request.Question}";
+        return request.Context is null ? context : $"{context}\nThe asker's context: {request.Context}";
     }
 
     /// <summary>

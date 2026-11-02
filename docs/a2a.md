@@ -78,10 +78,10 @@ call carries the structured payload.
 
 ### Structured data in responses
 
-Skills can return a `data` part alongside their text synthesis — `AdvisorCouncil`
-does this, emitting `{ personas, tensions, confidence, metadata }` as
-`application/json` next to its prose. RockBot's primary-side handler preserves
-both parts:
+Skills can return a `data` part alongside their text synthesis — for example a
+multi-perspective agent emitting `{ personas, tensions, confidence, metadata }` as
+`application/json` next to its prose (the advisor council did this before it became
+an MCP tool in #758). RockBot's primary-side handler preserves both parts:
 
 | Key | Category | Contents |
 |-----|----------|----------|
@@ -214,8 +214,8 @@ startup from `{url}/.well-known/agent-card.json` — the A2A-spec source of trut
 ```json
 [
   {
-    "agentName": "AdvisorCouncil",
-    "url": "http://advisor-council:5100"
+    "agentName": "SampleAgent-Http",
+    "url": "http://rockbot-sample-agent-http.rockbot.svc.cluster.local"
   }
 ]
 ```
@@ -287,7 +287,7 @@ The handler receives an `AgentTaskRequest`, can publish `AgentTaskStatusUpdate`
 messages (state `Working`) while processing, and must publish either an
 `AgentTaskResult` or `AgentTaskError` when done.
 
-See `RockBot.AdvisorCouncil` and `RockBot.SampleAgent` for working examples.
+See `RockBot.SampleAgent` for a working example.
 
 #### Per-skill handlers (alternative to a single dispatcher)
 
@@ -550,16 +550,17 @@ curl -X POST http://localhost:5200/ \
 
 ---
 
-## KEDA ephemeral pattern
+## KEDA ephemeral pattern (retired)
 
-The ephemeral one-shot pattern runs an agent as a KEDA `ScaledJob` triggered by its
-`agent.task.{Name}` queue: a pod spins up when a task arrives, completes it, and exits.
+The ephemeral one-shot pattern ran an agent as a KEDA `ScaledJob` triggered by its
+`agent.task.{Name}` queue: a pod spun up when a task arrived, completed it, and exited.
+`A2AOptions` still supports it, but no agent in the repo uses it any more.
 
-`AdvisorCouncil` works this way (`deploy/k8s/advisor-council-scaledjob.yaml`, with the KEDA
-secret from `deploy/k8s/keda-rabbitmq-secret.sh`).
+Research and the advisor council were the two agents that ran this way. Both are now
+long-lived MCP servers that the primary agent reaches through the MCP bridge with Tasks:
+- research since #717 (`deploy/k8s/research-agent.yaml`, the `research` tool at
+  `http://research-agent:8080/mcp`; `design/research-agent-mcp.md`);
+- the council since #758 (`deploy/k8s/advisor-council.yaml`, the `advise` tool at
+  `http://advisor-council:8080/mcp`; `design/advisor-council-mcp.md`).
 
-Research is no longer an A2A agent. Since #717 it is a long-lived MCP server
-(`deploy/k8s/research-agent.yaml`) serving the `research` tool at
-`http://research-agent:8080/mcp`. The primary agent reaches it through the MCP bridge, and the
-council through its own MCP client (`design/research-agent-mcp.md`). The `ResearchAgent` A2A
-agent, its ScaledJob and its `agent.task.ResearchAgent` queue are gone.
+Their A2A agents, ScaledJobs, `agent.task.*` queues and the KEDA RabbitMQ secret are gone.
