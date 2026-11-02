@@ -193,9 +193,16 @@ public sealed partial class McpBridgeService
         task.Cts = CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token, deadline.Token);
 
         // A question the task asks goes to its session when that session can answer one: a user
-        // conversation whose run had mcp_answer. A subagent can't be reached mid-run, so its tasks'
-        // questions get the server's responder, as a subagent's parked calls would without hand-back.
-        IMcpHandbackChannel? channel = entry.HandbackCapable && HandbackSessions.IsUserSession(entry.SessionId)
+        // conversation. A subagent can't be reached mid-run, so its tasks' questions get the
+        // server's responder, as a subagent's parked calls would without hand-back.
+        //
+        // Unlike a parked call, a task's question isn't answered by the run that started it: it
+        // arrives later as a turn of its own (DeliverTaskQuestionAsync), and that turn offers
+        // mcp_answer whenever a hand-back server is connected, which this task's server is. So
+        // whether the starting run had mcp_answer (entry.HandbackCapable) doesn't decide it. It
+        // used to, and a task started by a turn that began before the bridge had connected after
+        // a restart (its tool list built without mcp_answer) had its question declined instead.
+        IMcpHandbackChannel? channel = HandbackSessions.IsUserSession(entry.SessionId)
             ? new TaskHandbackCall(
                 _handback,
                 new HandbackCallInfo(entry.Server, entry.Tool, entry.ToolDescription, rawArguments, entry.SessionId,

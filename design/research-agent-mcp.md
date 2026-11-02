@@ -159,8 +159,7 @@ Text content: the answer, prefixed with `Researched as: …` (a reading was chos
 as `{answer, interpretation?, interpretationChosen?, sources: [{url, title?}]}`.
 
 The question's choices are the scoping pass's interpretations (`TitledSingleSelectEnumSchema`).
-The field's description also spells out `id = label` for each, because some clients (the
-bridge's hand-back note) list only the enum values.
+The bridge's hand-back note and its responders' prompts show each option as `id ("label")`.
 
 ### Who answers the question
 

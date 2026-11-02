@@ -191,10 +191,7 @@ internal sealed class ResearchTools(
                 [AnswerKey] = new ElicitRequestParams.TitledSingleSelectEnumSchema
                 {
                     Title = "Meaning",
-                    // Clients that list only the enum values (the bridge's hand-back note does)
-                    // still see what each one means.
-                    Description = "The reading of the question to research: " +
-                        string.Join("; ", scope.Interpretations.Select(i => $"{i.Id} = {i.Label}")) + ".",
+                    Description = "The reading of the question to research.",
                     OneOf = [.. scope.Interpretations.Select(i => new ElicitRequestParams.EnumSchemaOption
                     {
                         Const = i.Id,
