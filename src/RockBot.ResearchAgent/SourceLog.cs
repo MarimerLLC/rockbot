@@ -8,21 +8,34 @@ namespace RockBot.ResearchAgent;
 /// </summary>
 internal sealed class SourceLog
 {
-    private readonly ConcurrentDictionary<string, ResearchSource> _byUrl = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<string, ResearchSource> _byKey = new(StringComparer.Ordinal);
     private readonly ConcurrentQueue<string> _order = new();
 
-    /// <summary>Records <paramref name="url"/> unless it is already recorded.</summary>
+    /// <summary>Records <paramref name="url"/> unless the same page is already recorded.</summary>
     public void Add(string url, string? title)
     {
         if (string.IsNullOrWhiteSpace(url))
             return;
         url = url.Trim();
-        if (_byUrl.TryAdd(url, new ResearchSource(url, string.IsNullOrWhiteSpace(title) ? null : title.Trim())))
-            _order.Enqueue(url);
+        var key = DedupKey(url);
+        if (_byKey.TryAdd(key, new ResearchSource(url, string.IsNullOrWhiteSpace(title) ? null : title.Trim())))
+            _order.Enqueue(key);
     }
 
     /// <summary>The recorded pages, first read first.</summary>
-    public IReadOnlyList<ResearchSource> Sources => [.. _order.Select(u => _byUrl[u])];
+    public IReadOnlyList<ResearchSource> Sources => [.. _order.Select(k => _byKey[k])];
+
+    /// <summary>
+    /// What makes two URLs the same page: scheme and host compare case-insensitively (as they
+    /// are), but the path and query keep their case, because <c>/Report</c> and <c>/report</c>
+    /// can be different pages. The fragment is dropped: it names a spot on the same page. A
+    /// string that isn't an absolute URL is compared as written.
+    /// </summary>
+    internal static string DedupKey(string url) =>
+        Uri.TryCreate(url, UriKind.Absolute, out var uri) && uri.IsAbsoluteUri
+            ? uri.GetComponents(UriComponents.SchemeAndServer, UriFormat.UriEscaped).ToLowerInvariant()
+              + uri.GetComponents(UriComponents.PathAndQuery, UriFormat.UriEscaped)
+            : url;
 
     /// <summary>
     /// The page title from a <c>web_browse</c> result: its first Markdown <c># </c> heading,

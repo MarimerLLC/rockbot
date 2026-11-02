@@ -31,9 +31,30 @@ public class RockBotFunctionInvokingChatClient : FunctionInvokingChatClient
     private readonly ILogger _logger;
     private readonly IncompleteReplyCheck _incompleteCheck;
 
-    private int _consecutiveTimeoutIterations;
     private int? _knownContextLimit;
-    private readonly AgentLoopRunner.RepetitiveToolCallDetector _repetitiveCallDetector = new();
+
+    /// <summary>
+    /// The loop-tracking state of the <see cref="GetResponseAsync"/> call in progress on this
+    /// async flow. This client is a per-tier singleton (<see cref="TieredChatClientRegistry"/>)
+    /// that concurrent runs share — the primary agent's sessions and subagents, or several
+    /// research runs at once — so the state can't live in instance fields: one run's reset or
+    /// timeout would leak into another's, breaking stuck-loop detection or nudging a healthy run.
+    /// </summary>
+    private readonly AsyncLocal<CallState?> _callState = new();
+
+    /// <summary>Per-call loop tracking: consecutive tool timeouts and repeated identical calls.</summary>
+    private sealed class CallState
+    {
+        public int ConsecutiveTimeoutIterations;
+        public AgentLoopRunner.RepetitiveToolCallDetector RepetitiveCallDetector { get; } = new();
+    }
+
+    /// <summary>
+    /// The current call's state. Outside <see cref="GetResponseAsync"/> (a streaming call, which
+    /// this client doesn't override) a fresh state per tool invocation tracks nothing across
+    /// calls, which is the safe default.
+    /// </summary>
+    private CallState CurrentCallState => _callState.Value ?? new CallState();
 
     public RockBotFunctionInvokingChatClient(
         IChatClient innerClient,
@@ -248,20 +269,21 @@ public class RockBotFunctionInvokingChatClient : FunctionInvokingChatClient
             resultStr is { Length: > 200 } ? resultStr[..200] + "..." : resultStr);
 
         // Track consecutive timeouts
+        var callState = CurrentCallState;
         if (resultStr is not null && IsTimeoutResult(resultStr))
         {
             status = ToolError.Codes.Timeout;
-            _consecutiveTimeoutIterations++;
-            if (_consecutiveTimeoutIterations >= MaxConsecutiveTimeoutIterations)
+            var timeouts = Interlocked.Increment(ref callState.ConsecutiveTimeoutIterations);
+            if (timeouts >= MaxConsecutiveTimeoutIterations)
             {
                 _logger.LogWarning(
                     "Aborting: {N} consecutive iterations with tool timeouts",
-                    _consecutiveTimeoutIterations);
+                    timeouts);
             }
         }
         else
         {
-            _consecutiveTimeoutIterations = 0;
+            Volatile.Write(ref callState.ConsecutiveTimeoutIterations, 0);
         }
 
         // Detect content-level errors that didn't throw an exception. Tool executors that
@@ -289,7 +311,7 @@ public class RockBotFunctionInvokingChatClient : FunctionInvokingChatClient
         TierEscalationContext.Value?.ObserveToolResult(callContent.Name, isError: status != "ok");
 
         // Track consecutive identical (tool, args, result) triples to detect stuck loops.
-        if (_repetitiveCallDetector.Track(callContent.Name, argsSummary ?? string.Empty, resultStr ?? string.Empty))
+        if (callState.RepetitiveCallDetector.Track(callContent.Name, argsSummary ?? string.Empty, resultStr ?? string.Empty))
         {
             _logger.LogWarning(
                 "Detected {Threshold} consecutive identical tool call results for {Name}; " +
@@ -378,8 +400,10 @@ public class RockBotFunctionInvokingChatClient : FunctionInvokingChatClient
         ChatOptions? options = null,
         CancellationToken cancellationToken = default)
     {
-        _consecutiveTimeoutIterations = 0;
-        _repetitiveCallDetector.Reset();
+        // A fresh state for this call. Setting an AsyncLocal inside an async method is scoped to
+        // this call's flow: the tool invocations below see it, and a concurrent call on the same
+        // instance (another run on this tier) keeps its own.
+        _callState.Value = new CallState();
 
         // Apply per-request max iterations override if set (e.g. by a subagent
         // that was spawned with an elevated iteration budget).

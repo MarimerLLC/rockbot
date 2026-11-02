@@ -47,6 +47,15 @@ internal sealed class ResearchRunner(
         CancellationToken cancellationToken)
     {
         var workingMemoryNamespace = $"research/{runId}";
+        // The loop's session id is the bare run id, as the A2A path always used. The tool-result
+        // stash keys follow it (stash/{runId}/…), and working memory caps entries per first two
+        // path segments, so research/{runId} would put every run's stash in one shared
+        // "stash/research" bucket.
+        var loopSessionId = runId;
+        var stashPrefix = ToolResultStash.KeyPrefix(loopSessionId) + "/";
+
+        // The model reads untrusted pages, so its memory tools see only this run's prefixes.
+        var runMemory = new RunScopedWorkingMemory(workingMemory, workingMemoryNamespace + "/", stashPrefix);
         var sources = new SourceLog();
         try
         {
@@ -57,7 +66,7 @@ internal sealed class ResearchRunner(
                     r, toolRegistry.GetExecutor(r.Name)!, workingMemoryNamespace, sources))
                 .ToArray();
 
-            var workingMemoryTools = new WorkingMemoryTools(workingMemory, workingMemoryNamespace, logger);
+            var workingMemoryTools = new WorkingMemoryTools(runMemory, workingMemoryNamespace, logger);
 
             var chatOptions = new ChatOptions
             {
@@ -72,7 +81,7 @@ internal sealed class ResearchRunner(
             };
 
             var finalContent = await agentLoopRunner.RunAsync(
-                chatMessages, chatOptions, workingMemoryNamespace, tier: ModelTier.High,
+                chatMessages, chatOptions, loopSessionId, tier: ModelTier.High,
                 onProgress: onProgress, enableFollowUp: false, cancellationToken: cancellationToken,
                 actionGate: ActionGateScope.ForA2AInbound);
 
@@ -85,7 +94,7 @@ internal sealed class ResearchRunner(
                     "Research run {RunId} loop returned {Len} chars — attempting fallback synthesis from working memory",
                     runId, finalContent.Length);
 
-                finalContent = await SynthesiseFromWorkingMemoryAsync(workingMemoryNamespace, userMessage, cancellationToken);
+                finalContent = await SynthesiseFromWorkingMemoryAsync(runMemory, workingMemoryNamespace, userMessage, cancellationToken);
             }
 
             logger.LogInformation("Research run {RunId} completed, output length={Len}, sources={Sources}",
@@ -97,7 +106,8 @@ internal sealed class ResearchRunner(
         {
             try
             {
-                await workingMemory.ClearAsync(workingMemoryNamespace + "/");
+                // Both of the run's prefixes: its page chunks and findings, and its stash.
+                await runMemory.ClearAsync();
             }
             catch (Exception ex)
             {
@@ -131,9 +141,9 @@ internal sealed class ResearchRunner(
     /// Used when the tool loop exhausts its iteration limit before producing output.
     /// </summary>
     private async Task<string> SynthesiseFromWorkingMemoryAsync(
-        string @namespace, string question, CancellationToken ct)
+        IWorkingMemory runMemory, string @namespace, string question, CancellationToken ct)
     {
-        var entries = await workingMemory.ListAsync(@namespace);
+        var entries = await runMemory.ListAsync(@namespace + "/");
         if (entries.Count == 0)
         {
             logger.LogWarning("Fallback synthesis: no working memory entries found for namespace {Namespace}", @namespace);
@@ -151,7 +161,7 @@ internal sealed class ResearchRunner(
 
         foreach (var entry in entries)
         {
-            var value = await workingMemory.GetAsync(entry.Key);
+            var value = await runMemory.GetAsync(entry.Key);
             if (!string.IsNullOrWhiteSpace(value))
             {
                 sb.AppendLine();
