@@ -160,4 +160,54 @@ public class EmbeddingTextPreparerTests
         Assert.IsTrue(smallDense.Length < 1024);
         Assert.AreEqual(smallDense, preparer.Prepare(smallDense));
     }
+
+    // Pretty-printed JSON whose values are mostly text (summaries, page content): symbol
+    // density stays low enough that, with a prose prefix in front, only the leading-'['
+    // signal marks it structured — the shape that slipped through in #460.
+    internal static string TextHeavyJson(int items) =>
+        "[\n" + string.Join(",\n", Enumerable.Range(0, items).Select(i =>
+            $"  {{\n    \"summary\": \"the quick brown fox jumps over the lazy dog while the agent reads item {i}\"\n  }}")) + "\n]";
+
+    [TestMethod]
+    public void Prepare_ProsePrefixedJson_WithoutShapeSample_GetsProseCap()
+    {
+        // Pins the #460 failure mode: the prefix hides the leading '[' from the check.
+        var preparer = Build(new EmbeddingOptions { MaxInputChars = 3000, MaxStructuredInputChars = 500 });
+        var text = "stash subagent 9c2b call TsEY " + TextHeavyJson(100);
+
+        Assert.AreEqual(3000, preparer.Prepare(text).Length);
+    }
+
+    [TestMethod]
+    public void Prepare_StructuredShapeSample_SelectsStructuredCap()
+    {
+        var preparer = Build(new EmbeddingOptions { MaxInputChars = 3000, MaxStructuredInputChars = 500 });
+        var json = TextHeavyJson(100);
+        var text = "stash subagent 9c2b call TsEY " + json;
+
+        var result = preparer.Prepare(text, shapeSample: json);
+
+        Assert.AreEqual(500, result.Length);
+        Assert.IsTrue(result.StartsWith("stash subagent"), "Cap applies to the full text, prefix kept");
+    }
+
+    [TestMethod]
+    public void Prepare_ProseShapeSample_KeepsProseCap()
+    {
+        var preparer = Build(new EmbeddingOptions { MaxInputChars = 3000, MaxStructuredInputChars = 500 });
+        var prose = string.Concat(Enumerable.Repeat("the quick brown fox jumps over the lazy dog ", 200));
+
+        Assert.AreEqual(3000, preparer.Prepare("notes " + prose, shapeSample: prose).Length);
+    }
+
+    [TestMethod]
+    public void Prepare_StructuredCapAboveProseCap_ClampedToProseCap()
+    {
+        // A small-window deployment lowers MaxInputChars but leaves the structured default:
+        // structured input must not get the larger allowance.
+        var preparer = Build(new EmbeddingOptions { MaxInputChars = 400, MaxStructuredInputChars = 12_000 });
+        var json = "{\"data\":\"" + new string('x', 2000) + "\"}";
+
+        Assert.AreEqual(400, preparer.Prepare(json).Length);
+    }
 }
