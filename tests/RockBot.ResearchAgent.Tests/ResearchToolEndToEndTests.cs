@@ -84,9 +84,9 @@ public class ResearchToolEndToEndTests
         Assert.IsFalse(result.IsError ?? false, Text(result));
         Assert.AreEqual(1, seen.Count, "exactly one question");
         StringAssert.Contains(seen[0]!.Message, "Mercury");
-        var field = seen[0]!.RequestedSchema.Properties[ResearchTools.AnswerKey];
+        var field = seen[0]!.RequestedSchema!.Properties[ResearchTools.AnswerKey];
         Assert.IsInstanceOfType<ElicitRequestParams.TitledSingleSelectEnumSchema>(field);
-        Assert.AreEqual(1, seen[0]!.RequestedSchema.Properties.Count, "a single choice, no free text");
+        Assert.AreEqual(1, seen[0]!.RequestedSchema!.Properties.Count, "a single choice, no free text");
         CollectionAssert.AreEqual(
             new[] { "planet", "element", "band" },
             ((ElicitRequestParams.TitledSingleSelectEnumSchema)field).OneOf.Select(o => o.Const).ToArray());
@@ -172,7 +172,7 @@ public class ResearchToolEndToEndTests
         var started = await client.CallToolAsTaskAsync(ResearchServerHarness.Call("How far is Mars?"));
 
         Assert.IsTrue(started.IsTask, "a task-aware call gets a task back at once");
-        var taskId = started.TaskCreated.TaskId;
+        var taskId = started.TaskCreated!.TaskId;
         Assert.IsInstanceOfType<WorkingTaskResult>(await client.GetTaskAsync(taskId));
 
         hold.SetResult();

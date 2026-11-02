@@ -16,7 +16,7 @@ The deeper issue is that "wisdom" — the kind of thinking that surfaces tension
 
 - Take a question or idea and return integrated, multi-perspective guidance with explicit tensions and confidence.
 - Make the perspective set transparent and tunable (personas as data on the PVC, hot-reloaded).
-- Let personas reach for facts when they need them, by invoking the existing `ResearchAgent` via A2A.
+- Let personas reach for facts when they need them, by invoking the research server. (Originally over A2A; since #717 it is the research server's MCP `research` tool, through `ResearchMcpClient` — see `design/research-agent-mcp.md`.)
 - Surface the council as an A2A skill the primary agent can self-invoke before its own consequential decisions.
 - Keep cost and latency bounded with selector-driven gating (which personas, with/without research, with/without critique).
 
@@ -181,7 +181,7 @@ Failure mode: if selector output fails schema validation, retry once with strict
 ### 2. PreResearch (conditional)
 
 Skipped unless `SelectorOutput.pre_research = true`.
-Single A2A invocation of `ResearchAgent` with the original question, timeout ~90s.
+One call to the research server's MCP `research` tool (`ResearchMcpClient`; A2A to `ResearchAgent` before #717) with the original question and the selected lenses as `context`, timeout ~90s.
 Result stored to working memory at `council/{taskId}/preresearch` and injected into every persona branch's context.
 
 ### 3. Fan-out
@@ -191,7 +191,7 @@ Parallel MAF branches, one per selected persona. Two branch shapes:
 - **Call-only** (`needs_research=false`): single `IChatClient` call with `{system: persona.systemPrompt, user: question + optional pre-research}`. Returns persona view text.
 - **Agentic loop** (`needs_research=true`): `AgentLoopRunner.RunAsync` with:
   - `MaxToolIterationsOverride = 8` (tight)
-  - Tools: `ResearchAgentInvoker` (A2A → ResearchAgent), `working_memory_get/list` scoped to `council/{taskId}/`
+  - Tools: research (`ResearchMcpClient`, MCP → research server; A2A `ResearchAgentInvoker` before #717), `working_memory_get/list` scoped to `council/{taskId}/`
   - Findings cached to `council/{taskId}/{personaId}/` and visible to subsequent personas through the shared namespace
 
 All branches use Balanced tier. Per-persona soft timeout ~60s; on timeout the persona is dropped from the council with `view: "(timed out)"`.
@@ -252,7 +252,7 @@ src/RockBot.AdvisorCouncil/
     SelectorOutput.cs
     CouncilResponse.cs
   Tools/
-    ResearchAgentInvoker.cs          # AIFunction wrapping A2A → ResearchAgent
+    ResearchMcpClient.cs             # MCP client for the research server (was ResearchAgentInvoker, A2A)
   EphemeralShutdownCoordinator.cs    # mirrors ResearchAgent
   EphemeralShutdownService.cs
   NullFeedbackStore.cs

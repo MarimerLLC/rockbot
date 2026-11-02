@@ -10,7 +10,7 @@ namespace RockBot.ResearchAgent;
 /// <summary>
 /// Runs one research question: web search and page reads through <see cref="AgentLoopRunner"/>
 /// on the High tier, then a fallback synthesis from working memory if the loop ran out of
-/// iterations first. Shared by the MCP <c>research</c> tool and the A2A receiver.
+/// iterations first. Called by the MCP <c>research</c> tool.
 /// </summary>
 /// <remarks>
 /// Each run works in its own working-memory namespace, <c>research/{runId}</c>, and clears it when
@@ -47,7 +47,7 @@ internal sealed class ResearchRunner(
         CancellationToken cancellationToken)
     {
         var workingMemoryNamespace = $"research/{runId}";
-        // The loop's session id is the bare run id, as the A2A path always used. The tool-result
+        // The loop's session id is the bare run id (as the retired A2A path used). The tool-result
         // stash keys follow it (stash/{runId}/…), and working memory caps entries per first two
         // path segments, so research/{runId} would put every run's stash in one shared
         // "stash/research" bucket.
@@ -83,6 +83,8 @@ internal sealed class ResearchRunner(
             var finalContent = await agentLoopRunner.RunAsync(
                 chatMessages, chatOptions, loopSessionId, tier: ModelTier.High,
                 onProgress: onProgress, enableFollowUp: false, cancellationToken: cancellationToken,
+                // An inbound call from another agent. Research has no consequential tools (web
+                // search and page reads only), so the gate's origin changes nothing here.
                 actionGate: ActionGateScope.ForA2AInbound);
 
             // If the loop exhausted iterations before synthesising (returns empty or very short),

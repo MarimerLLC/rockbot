@@ -214,8 +214,8 @@ startup from `{url}/.well-known/agent-card.json` — the A2A-spec source of trut
 ```json
 [
   {
-    "agentName": "ResearchAgent",
-    "url": "http://researchagent:5100"
+    "agentName": "AdvisorCouncil",
+    "url": "http://advisor-council:5100"
   }
 ]
 ```
@@ -287,7 +287,7 @@ The handler receives an `AgentTaskRequest`, can publish `AgentTaskStatusUpdate`
 messages (state `Working`) while processing, and must publish either an
 `AgentTaskResult` or `AgentTaskError` when done.
 
-See `RockBot.ResearchAgent` and `RockBot.SampleAgent` for working examples.
+See `RockBot.AdvisorCouncil` and `RockBot.SampleAgent` for working examples.
 
 #### Per-skill handlers (alternative to a single dispatcher)
 
@@ -555,12 +555,11 @@ curl -X POST http://localhost:5200/ \
 The ephemeral one-shot pattern runs an agent as a KEDA `ScaledJob` triggered by its
 `agent.task.{Name}` queue: a pod spins up when a task arrives, completes it, and exits.
 
-`ResearchAgent` used to work this way (`deploy/k8s/research-agent-scaledjob.yaml`). Since #717 it
-is a long-lived MCP server (`deploy/k8s/research-agent.yaml`) serving the `research` tool at
-`http://research-agent:8080/mcp`, and the one-shot shutdown is gone. The primary agent reaches
-it through the MCP bridge, so it is no longer in `well-known-agents.json`, and it no longer
-announces a card on the discovery bus (`Research:AnnounceOverA2A`, off by default). It still
-consumes `agent.task.ResearchAgent`, so the council, which sends there by name, keeps working
-until it moves to the MCP tool; the A2A path, the ScaledJob and its queue are removed in Phase 5
-of `design/research-agent-mcp.md`. Scale the ScaledJob to zero once the Deployment runs, or the
-two compete for the queue.
+`AdvisorCouncil` works this way (`deploy/k8s/advisor-council-scaledjob.yaml`, with the KEDA
+secret from `deploy/k8s/keda-rabbitmq-secret.sh`).
+
+Research is no longer an A2A agent. Since #717 it is a long-lived MCP server
+(`deploy/k8s/research-agent.yaml`) serving the `research` tool at
+`http://research-agent:8080/mcp`. The primary agent reaches it through the MCP bridge, and the
+council through its own MCP client (`design/research-agent-mcp.md`). The `ResearchAgent` A2A
+agent, its ScaledJob and its `agent.task.ResearchAgent` queue are gone.

@@ -4,23 +4,24 @@ using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Options;
 using ModelContextProtocol.Extensions.Tasks;
 using OpenAI;
-using RockBot.A2A;
 using RockBot.Host;
 using RockBot.Llm;
 using RockBot.Llm.Anthropic;
-using RockBot.Messaging.RabbitMQ;
+using RockBot.Messaging.InProcess;
 using RockBot.ResearchAgent;
 using RockBot.Tools;
 using RockBot.Tools.Web;
 
 // ResearchAgent: an MCP server with one tool, `research` (streamable HTTP, stateless, with the
-// Tasks extension), plus the original A2A receiver, kept while callers move over
-// (design/research-agent-mcp.md). A long-lived Deployment, not a one-shot ScaledJob.
+// Tasks extension). A long-lived Deployment (design/research-agent-mcp.md). The A2A path it used
+// to serve was retired in Phase 5, so it talks to no message broker.
 var builder = WebApplication.CreateBuilder(args);
 
 builder.Configuration.AddUserSecrets<Program>(optional: true);
 
-builder.Services.AddRockBotRabbitMq(opts => builder.Configuration.GetSection("RabbitMq").Bind(opts));
+// The agent host still wants a bus (AgentHost subscribes, tool progress publishes), but nothing
+// outside this process listens any more: an in-process one, with no broker to reach.
+builder.Services.AddRockBotInProcessMessaging();
 
 // ── LLM configuration — three-tier (Low / Balanced / High) ──────────────────
 // Reads the same LLM__* settings as the primary agent (rockbot-secrets), so it must cope with
@@ -168,42 +169,9 @@ builder.Services.AddRockBotHost(agent =>
         // default); each run clears its namespace when it finishes, so this doesn't pile up.
         opts.ChunkTtlMinutes = Math.Max(opts.ChunkTtlMinutes, 60);
     });
-
-    // A2A receiving side: declares queue, handles incoming AgentTaskRequest messages.
-    // Kept during the migration to the MCP tool (the council still sends to
-    // agent.task.ResearchAgent); Phase 5 removes it.
-    //
-    // The card is announced on the discovery bus only when Research:AnnounceOverA2A is true.
-    // A long-lived pod re-announces every two minutes, so announcing would put ResearchAgent
-    // back in the primary agent's A2A directory beside the MCP `research` tool. Off by default:
-    // the queue is still consumed, but nobody discovers research over A2A.
-    var announceOverA2A = builder.Configuration.GetValue<bool>("Research:AnnounceOverA2A");
-    agent.AddA2A(opts =>
-    {
-        if (!announceOverA2A)
-            return;
-
-        opts.Card = new AgentCard
-        {
-            AgentName = "ResearchAgent",
-            Description = "On-demand research agent. Searches the web, fetches pages, and synthesises answers using an LLM.",
-            Version = "1.0",
-            Skills =
-            [
-                new AgentSkill
-                {
-                    Id = "research",
-                    Name = "Research",
-                    Description = "Research a topic using web search and page fetching, then synthesise a concise answer."
-                }
-            ]
-        };
-    });
-
-    agent.Services.AddScoped<IAgentTaskHandler, ResearchAgentTaskHandler>();
 });
 
-// ── Research core, shared by the MCP tool and the A2A receiver ──────────────
+// ── Research core ────────────────────────────────────────────────────────────
 builder.Services.Configure<ResearchOptions>(builder.Configuration.GetSection(ResearchOptions.SectionName));
 builder.Services.AddSingleton(sp =>
     new ResearchConcurrencyGate(sp.GetRequiredService<IOptions<ResearchOptions>>().Value.MaxConcurrentRuns));
@@ -232,8 +200,7 @@ builder.Services.AddMcpServer()
 
 var app = builder.Build();
 
-// Log crashes rather than silently dying — unhandled exceptions leave the A2A message unacked
-// so it goes to the DLX. The caller's A2ATaskTracker timeout handles the resulting silence.
+// Log crashes rather than silently dying.
 AppDomain.CurrentDomain.UnhandledException += (_, e) =>
 {
     var crashLogger = app.Services.GetRequiredService<ILoggerFactory>()
@@ -246,6 +213,6 @@ app.MapHealthChecks("/health");
 app.MapMcp("/mcp");
 
 var startupLogger = app.Services.GetRequiredService<ILoggerFactory>().CreateLogger("Startup");
-startupLogger.LogInformation("ResearchAgent starting — MCP tool 'research' at /mcp, and A2A task requests");
+startupLogger.LogInformation("ResearchAgent starting — MCP tool 'research' at /mcp");
 
 await app.RunAsync();

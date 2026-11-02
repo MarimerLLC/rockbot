@@ -535,7 +535,7 @@ flow by `RunAsync` (`ActionGateContext`):
 | `UserTurn` | `UserMessageHandler`, `UserFeedbackHandler`; a synthesis turn (`SubagentResultHandler`) relaying a user-turn subagent | Only when the originating request is an `instruction` |
 | `SubagentOfUserTurn` | `SubagentManager` captures the spawning run's scope at spawn; `SubagentRunner` passes it on | Inherits the spawning turn's classification |
 | `Scheduled` | `ScheduledTaskHandler` (scheduled tasks, patrol) | Allowed — the user configured it |
-| `A2A` | `RockBotTaskHandler`, `ResearchAgentTaskHandler` (inbound tasks) | Allowed |
+| `A2A` | `RockBotTaskHandler` (inbound tasks); the research server's runs (inbound MCP calls, which have no consequential tools) | Allowed |
 | `Unknown` | Any caller that passes nothing and is not nested in another run | Allowed (pre-#685 behaviour) |
 
 A run that passes no scope and runs inside another run's tool call — a wisp LLM step, a worker —

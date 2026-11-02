@@ -1,7 +1,7 @@
 ---
-# TriggerAuthentication — uses the same KEDA RabbitMQ secret as research-agent.
-# Defined once in research-agent-scaledjob.yaml; if applied independently of that
-# manifest, also apply research-agent-keda-secret.sh first.
+# TriggerAuthentication — references the KEDA RabbitMQ secret created by
+# keda-rabbitmq-secret.sh (run it first). The URI contains credentials and is stored
+# in a Kubernetes Secret.
 apiVersion: keda.sh/v1alpha1
 kind: TriggerAuthentication
 metadata:

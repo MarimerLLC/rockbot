@@ -1,22 +1,27 @@
-# ResearchAgent as an MCP server (design/research-agent-mcp.md, Phase 2).
+# ResearchAgent as an MCP server (design/research-agent-mcp.md).
 #
 # One long-lived pod serves the MCP tool `research` at http://research-agent:8080/mcp
-# (stateless streamable HTTP, with the Tasks extension), and keeps consuming the A2A queue
-# (agent.task.ResearchAgent) until callers have moved over (Phases 3–5).
+# (stateless streamable HTTP, with the Tasks extension). Its callers are the primary agent
+# (through the MCP bridge, `"tasks": true` in mcp.json) and the AdvisorCouncil
+# (Council__ResearchServerUrl). It no longer speaks A2A and needs no message broker.
 #
 #   kubectl apply -f deploy/k8s/research-agent.yaml
 #
-# While this Deployment runs, the old ScaledJob (research-agent-scaledjob.yaml) is a second
-# consumer of the same queue. Scale it to zero, or delete it, when this goes live:
+# One-time cleanup of the retired A2A path, on a cluster that still has it:
 #
-#   kubectl -n rockbot patch scaledjob rockbot-research-agent --type merge -p '{"spec":{"maxReplicaCount":0}}'
+#   kubectl -n rockbot delete scaledjob rockbot-research-agent
+#   # NOT `kubectl delete -f` of the old manifest: it also defined the TriggerAuthentication
+#   # rockbot-keda-rabbitmq-auth, which the AdvisorCouncil ScaledJob still uses.
+#   kubectl -n rockbot delete job research-agent-queue-init --ignore-not-found
+#   # then delete the RabbitMQ queues rockbot.ResearchAgent.* (agent-task, agent-task-cancel,
+#   # discovery, and their .dlq) in the RabbitMQ management UI or with rabbitmqadmin.
 #
 # One replica: the task store (InMemoryMcpTaskStore) and the Data Protection key ring that
 # seals clarifying-question state are in memory. A restart loses in-flight tasks (callers see
 # them as lost) and outstanding questions (the tool re-scopes). More replicas need a durable,
 # shared task store and key ring.
 #
-# Concurrency: Research__MaxConcurrentRuns (default 3) caps runs in this pod across MCP and A2A.
+# Concurrency: Research__MaxConcurrentRuns (default 3) caps research runs in this pod.
 apiVersion: apps/v1
 kind: Deployment
 metadata:

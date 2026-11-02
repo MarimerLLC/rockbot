@@ -1,9 +1,10 @@
 # ResearchAgent as an MCP Server
 
-**Status:** Phases 2 and 4 done (#717). MCP elicitation (#593), the `conversation` responder,
-the SDK 2.x upgrade (#602, #607), hand-back (#608), the Tasks-aware bridge (#658) and the
-research MCP server (#717) are in place, and the primary agent calls research as an MCP tool.
-The council (Phase 3) still sends to the A2A queue; moving it is next.
+**Status:** Done (#717). MCP elicitation (#593), the `conversation` responder, the SDK 2.x
+upgrade (#602, #607), hand-back (#608) and the Tasks-aware bridge (#658) came first; #717 built
+the research MCP server (Phase 2), moved the council (Phase 3) and the primary agent (Phase 4)
+onto it, and retired the A2A research path (Phase 5). "Current state" below describes the A2A
+design this replaced.
 
 ## Problem
 
@@ -53,7 +54,7 @@ without a bespoke A2A invocation path.
 - url-mode elicitation. Headless; declined, as in #593.
 - Changing how research searches or synthesises. This is a transport and hosting change.
 
-## Current state
+## Current state (before #717)
 
 ```
 Primary agent ──invoke_agent──► agent.task.ResearchAgent (RabbitMQ)
@@ -237,9 +238,8 @@ As built (#717):
   The key ring is in memory, so a restart invalidates outstanding questions; the retried call
   then re-scopes and proceeds with the most likely reading, without asking again.
 - The task store is `InMemoryMcpTaskStore` with a 2-hour time-to-live.
-- The A2A receiver stays (Phases 3–5 retire it). It runs the same `ResearchRunner`, without
-  scoping. While both run, the old ScaledJob is a second consumer of the same queue: scale it to
-  zero when the Deployment goes live.
+- The A2A receiver ran alongside the MCP endpoint until the council moved, then went with
+  Phase 5. The server has no message broker now; the agent host's bus is in-process.
 
 ## Phases
 
@@ -278,7 +278,19 @@ than answered in place — which is what research's clarifying question needs.
 - New `Deployment` + `Service`; image built from the current tree (fixes the 0.10.66 pin).
 - Directive and system-prompt update: ask at most once, up front.
 
-### Phase 3 — Council switches to MCP
+### Phase 3 — Council switches to MCP (done, #717)
+
+As built: `ResearchMcpClient` (`src/RockBot.AdvisorCouncil/Tools`) replaces
+`ResearchAgentInvoker`. It calls `research` with `CallToolAsTaskAsync` and polls the task
+itself rather than through `CallToolWithPollingAsync`, which keeps the task id to itself: on a
+timeout (`Council:ResearchAgentTimeoutSeconds`) the client cancels the task on the server, so a
+persona that gave up doesn't leave a run spending budget. Research's question arrives as the
+task's input request and is answered by #593's coordinator with the `llm` responder, from the
+call's own arguments. Pre-research and persona calls pass the council question and the asking
+lens as `context`, so those usually settle it. `Council:ResearchServerUrl` defaults to
+`http://research-agent.rockbot.svc.cluster.local:8080/mcp`.
+
+Planned:
 
 - Replace `ResearchAgentInvoker` with an `McpClient` + `CallToolWithPollingAsync` wrapper,
   registering #593's coordinator as its elicitation handler.
@@ -313,7 +325,17 @@ than answered in place — which is what research's clarifying question needs.
   deployment needs them edited by hand, and the persisted directory (`known-agents.json`)
   forgets the A2A entry once it stops being announced (24-hour TTL, pruned at startup).
 
-### Phase 5 — Retire the A2A research path
+### Phase 5 — Retire the A2A research path (done, #717)
+
+As built: the research server no longer references `RockBot.A2A` or RabbitMQ;
+`ResearchAgentTaskHandler`, `research-agent-scaledjob.yaml`, `research-agent-queue-init.yaml`
+and `Research:AnnounceOverA2A` are gone. The KEDA secret script was shared with the council's
+ScaledJob, so it stays, renamed `keda-rabbitmq-secret.sh`. The cluster-side cleanup (the
+ScaledJob, deleted by name because the old manifest also defined the council's
+TriggerAuthentication, and the `rockbot.ResearchAgent.*` queues) is in the header of
+`deploy/k8s/research-agent.yaml`.
+
+Planned:
 
 Remove the A2A receiver from the research server, `research-agent-scaledjob.yaml`,
 `research-agent-queue-init.yaml`, `research-agent-keda-secret.sh`, the queue, and the

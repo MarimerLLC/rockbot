@@ -29,14 +29,13 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\RockBot.A2A\RockBot.A2A.csproj" />
-    <ProjectReference Include="..\RockBot.A2A.Abstractions\RockBot.A2A.Abstractions.csproj" />
     <ProjectReference Include="..\RockBot.Host.Abstractions\RockBot.Host.Abstractions.csproj" />
     <ProjectReference Include="..\RockBot.Host\RockBot.Host.csproj" />
     <ProjectReference Include="..\RockBot.Llm\RockBot.Llm.csproj" />
     <ProjectReference Include="..\RockBot.Llm.Anthropic\RockBot.Llm.Anthropic.csproj" />
     <ProjectReference Include="..\RockBot.Messaging.Abstractions\RockBot.Messaging.Abstractions.csproj" />
-    <ProjectReference Include="..\RockBot.Messaging.RabbitMQ\RockBot.Messaging.RabbitMQ.csproj" />
+    <ProjectReference Include="..\RockBot.Messaging.InProcess\RockBot.Messaging.InProcess.csproj" />
+    <ProjectReference Include="..\RockBot.Tools\RockBot.Tools.csproj" />
     <ProjectReference Include="..\RockBot.Tools.Web\RockBot.Tools.Web.csproj" />
   </ItemGroup>
 
