@@ -19,6 +19,13 @@
 #     "elicitation": { "mode": "handback" }
 #   }
 #
+# The agent's persisted A2A directory (known-agents.json) still lists AdvisorCouncil for 24 h
+# after the last card announcement, so the agent can keep sending invoke_agent to a queue
+# nobody reads. Removing it from well-known-agents.json is not enough, and a graceful restart
+# writes the entry back. Ask RockBot to call `unregister_agent` with agent_name
+# `AdvisorCouncil` (after the agent has restarted on the edited well-known-agents.json, since
+# well-known entries can't be unregistered).
+#
 # One-time cleanup of the retired A2A path, on a cluster that still has it:
 #
 #   kubectl -n rockbot delete scaledjob rockbot-advisor-council --ignore-not-found

@@ -296,6 +296,13 @@ conversation or asks the user, so the round trip this design worried about ("Ans
 the user knows") does not happen. The PVC's `well-known-agents.json` and `directives.md` are
 seeded no-clobber, so a running deployment needs them edited by hand.
 
+The agent's persisted A2A directory (`known-agents.json`) is a separate trap: it keeps
+`AdvisorCouncil` for 24 hours after the last card announcement, and a graceful restart writes the
+in-memory entry back. In the first live test the agent took that path, and `invoke_agent` sent
+the request to a queue nothing reads any more. Ask the agent to call `unregister_agent` for
+`AdvisorCouncil` once it runs on the edited `well-known-agents.json` (well-known entries can't be
+unregistered).
+
 **Retired.** `AdvisorCouncilTaskHandler`, the ephemeral-shutdown pair, the A2A card, the
 `RockBot.A2A` and RabbitMQ references, `advisor-council-scaledjob.yaml` (with the
 `rockbot-keda-rabbitmq-auth` TriggerAuthentication), `advisor-council-queue-init.yaml` and
