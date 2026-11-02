@@ -552,9 +552,13 @@ curl -X POST http://localhost:5200/ \
 
 ## KEDA ephemeral pattern
 
-`ResearchAgent` uses the ephemeral one-shot pattern:
+The ephemeral one-shot pattern runs an agent as a KEDA `ScaledJob` triggered by its
+`agent.task.{Name}` queue: a pod spins up when a task arrives, completes it, and exits.
 
-- Deployed as a KEDA `ScaledJob` triggered by the `agent.task.ResearchAgent` queue.
-- Spins up when a task arrives, completes it, then exits (`EphemeralShutdownService`).
-- Registered in `well-known-agents.json` so the primary agent always knows it
-  exists and can invoke it without waiting for a live announcement.
+`ResearchAgent` used to work this way (`deploy/k8s/research-agent-scaledjob.yaml`). Since #717 it
+is a long-lived MCP server (`deploy/k8s/research-agent.yaml`) serving the `research` tool at
+`http://research-agent:8080/mcp`, and the one-shot shutdown is gone. It still consumes
+`agent.task.ResearchAgent` and stays in `well-known-agents.json`, so A2A callers keep working
+while they move to the MCP tool; the A2A path, the ScaledJob and its queue are removed in Phase 5
+of `design/research-agent-mcp.md`. Scale the ScaledJob to zero once the Deployment runs, or the
+two compete for the queue.

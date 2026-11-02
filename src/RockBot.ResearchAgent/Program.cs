@@ -1,9 +1,8 @@
 using System.ClientModel;
+using Microsoft.AspNetCore.DataProtection;
 using Microsoft.Extensions.AI;
-using Microsoft.Extensions.Configuration;
-using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Hosting;
-using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
+using ModelContextProtocol.Extensions.Tasks;
 using OpenAI;
 using RockBot.A2A;
 using RockBot.Host;
@@ -13,9 +12,12 @@ using RockBot.ResearchAgent;
 using RockBot.Tools;
 using RockBot.Tools.Web;
 
-var builder = Host.CreateApplicationBuilder(args);
+// ResearchAgent: an MCP server with one tool, `research` (streamable HTTP, stateless, with the
+// Tasks extension), plus the original A2A receiver, kept while callers move over
+// (design/research-agent-mcp.md). A long-lived Deployment, not a one-shot ScaledJob.
+var builder = WebApplication.CreateBuilder(args);
 
-builder.Configuration.AddUserSecrets<Program>();
+builder.Configuration.AddUserSecrets<Program>(optional: true);
 
 builder.Services.AddRockBotRabbitMq(opts => builder.Configuration.GetSection("RabbitMq").Bind(opts));
 
@@ -77,7 +79,7 @@ if (tierOptions.Balanced.IsConfigured || tierOptions.BalancedModels.Count > 0)
         balancedClient = BuildClient(tierOptions.Balanced);
     }
 
-    // ResearchAgent only uses Balanced (fallback synthesis) and High (main research loop).
+    // ResearchAgent uses Balanced (scoping pass, fallback synthesis) and High (main research loop).
     // Low is not needed — pass Balanced for the Low slot so it is never exercised.
     var highClient = BuildClient(tierOptions.Resolve(ModelTier.High));
 
@@ -98,7 +100,8 @@ builder.Services.AddSingleton<IFeedbackStore, NullFeedbackStore>();
 
 // AgentLoopRunner also depends on ISkillStore (used only on completion re-prompt,
 // which we disable via enableFollowUp:false) and IConversationMemory (used only on
-// Azure content-filter recovery). Null stores keep the ephemeral pod stateless.
+// Azure content-filter recovery). Null stores keep the server stateless apart from
+// each run's own working memory.
 builder.Services.AddSingleton<ISkillStore, NullSkillStore>();
 builder.Services.AddSingleton<IConversationMemory, NullConversationMemory>();
 
@@ -106,7 +109,8 @@ builder.Services.AddRockBotHost(agent =>
 {
     agent.WithIdentity("ResearchAgent");
 
-    // Working memory (in-memory TTL cache backed by ephemeral file path /tmp/memory).
+    // Working memory (in-memory TTL cache backed by file path Memory:BasePath, /tmp/memory in the pod).
+    // Each run uses its own research/{runId} namespace and clears it when done.
     // Must come before AddWebTools — WebToolRegistrar depends on IWorkingMemory.
     agent.WithWorkingMemory();
 
@@ -118,9 +122,13 @@ builder.Services.AddRockBotHost(agent =>
     {
         opts.ApiKey = builder.Configuration["WebTools:ApiKey"] ?? string.Empty;
         opts.MaxSearchResults = 5;
+        // Page chunks must outlive a long run (50 iterations can take well over the 20-minute
+        // default); each run clears its namespace when it finishes, so this doesn't pile up.
+        opts.ChunkTtlMinutes = Math.Max(opts.ChunkTtlMinutes, 60);
     });
 
-    // A2A receiving side: declares queue, handles incoming AgentTaskRequest messages
+    // A2A receiving side: declares queue, handles incoming AgentTaskRequest messages.
+    // Kept during the migration to the MCP tool; Phase 5 removes it.
     agent.AddA2A(opts =>
     {
         opts.Card = new AgentCard
@@ -141,15 +149,38 @@ builder.Services.AddRockBotHost(agent =>
     });
 
     agent.Services.AddScoped<IAgentTaskHandler, ResearchAgentTaskHandler>();
-
-    // Graceful one-shot shutdown: pod exits after one task completes
-    agent.Services.AddSingleton<EphemeralShutdownCoordinator>();
-    agent.Services.AddHostedService<EphemeralShutdownService>();
 });
+
+// ── Research core, shared by the MCP tool and the A2A receiver ──────────────
+builder.Services.Configure<ResearchOptions>(builder.Configuration.GetSection(ResearchOptions.SectionName));
+builder.Services.AddSingleton(sp =>
+    new ResearchConcurrencyGate(sp.GetRequiredService<IOptions<ResearchOptions>>().Value.MaxConcurrentRuns));
+// Transient, like the AgentLoopRunner it wraps; the gate is the shared piece.
+builder.Services.AddTransient<ResearchRunner>();
+builder.Services.AddTransient<IResearchRunner>(sp => new GatedResearchRunner(
+    sp.GetRequiredService<ResearchRunner>(), sp.GetRequiredService<ResearchConcurrencyGate>()));
+builder.Services.AddSingleton<IResearchScoper, ResearchScoper>();
+
+// Data Protection seals the clarifying question's requestState. The key ring stays in memory:
+// with one replica, a restart only invalidates outstanding questions (the tool re-scopes).
+builder.Services.AddDataProtection().SetApplicationName("RockBot.ResearchAgent");
+builder.Services.AddSingleton(sp => new ResearchScopeToken(
+    sp.GetRequiredService<IDataProtectionProvider>(),
+    sp.GetRequiredService<IOptions<ResearchOptions>>().Value.ScopeTokenLifetime));
+
+// ── MCP server: stateless streamable HTTP + Tasks ───────────────────────────
+// One replica with an in-memory task store: a restart loses in-flight tasks, which the caller
+// sees as a lost task and can retry. More replicas need a durable, shared IMcpTaskStore.
+builder.Services.AddHealthChecks();
+builder.Services.AddMcpServer()
+    .WithHttpTransport(o => o.Stateless = true)
+    .WithTasks(new InMemoryMcpTaskStore { DefaultTimeToLive = TimeSpan.FromHours(2) },
+        t => t.ExecutionModeSelector = ResearchCallMode.Select)
+    .WithTools<ResearchTools>();
 
 var app = builder.Build();
 
-// Log crashes rather than silently dying — unhandled exceptions leave the message unacked
+// Log crashes rather than silently dying — unhandled exceptions leave the A2A message unacked
 // so it goes to the DLX. The caller's A2ATaskTracker timeout handles the resulting silence.
 AppDomain.CurrentDomain.UnhandledException += (_, e) =>
 {
@@ -159,7 +190,10 @@ AppDomain.CurrentDomain.UnhandledException += (_, e) =>
         "Unhandled exception — ResearchAgent exiting");
 };
 
+app.MapHealthChecks("/health");
+app.MapMcp("/mcp");
+
 var startupLogger = app.Services.GetRequiredService<ILoggerFactory>().CreateLogger("Startup");
-startupLogger.LogInformation("ResearchAgent starting — waiting for A2A task requests");
+startupLogger.LogInformation("ResearchAgent starting — MCP tool 'research' at /mcp, and A2A task requests");
 
 await app.RunAsync();

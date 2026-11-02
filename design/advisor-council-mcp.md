@@ -172,7 +172,10 @@ receives that question.
   question. A decline is fine: research proceeds with its best interpretation and says which.
 
 This replaces `ResearchAgentInvoker` (A2A, private reply queue) with an `McpClient` call —
-the council waits synchronously today, so `CallToolWithPollingAsync` fits.
+the council waits synchronously today, so `CallToolWithPollingAsync` fits. That call opts into
+Tasks, so research runs it as a task and asks through the task store (`ElicitAsync`); the
+client resolves the question through the same registered elicitation handler
+(`design/research-agent-mcp.md`, "How the tool tells tasks from plain calls").
 
 ## Hosting and delivery
 

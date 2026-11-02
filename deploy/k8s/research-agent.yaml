@@ -1,0 +1,93 @@
+# ResearchAgent as an MCP server (design/research-agent-mcp.md, Phase 2).
+#
+# One long-lived pod serves the MCP tool `research` at http://research-agent:8080/mcp
+# (stateless streamable HTTP, with the Tasks extension), and keeps consuming the A2A queue
+# (agent.task.ResearchAgent) until callers have moved over (Phases 3–5).
+#
+#   kubectl apply -f deploy/k8s/research-agent.yaml
+#
+# While this Deployment runs, the old ScaledJob (research-agent-scaledjob.yaml) is a second
+# consumer of the same queue. Scale it to zero, or delete it, when this goes live:
+#
+#   kubectl -n rockbot patch scaledjob rockbot-research-agent --type merge -p '{"spec":{"maxReplicaCount":0}}'
+#
+# One replica: the task store (InMemoryMcpTaskStore) and the Data Protection key ring that
+# seals clarifying-question state are in memory. A restart loses in-flight tasks (callers see
+# them as lost) and outstanding questions (the tool re-scopes). More replicas need a durable,
+# shared task store and key ring.
+#
+# Concurrency: Research__MaxConcurrentRuns (default 3) caps runs in this pod across MCP and A2A.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rockbot-research-agent
+  namespace: rockbot
+  labels:
+    app: rockbot-research-agent
+spec:
+  replicas: 1
+  # Recreate, not RollingUpdate: two pods would split tasks between two in-memory stores.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: rockbot-research-agent
+  template:
+    metadata:
+      labels:
+        app: rockbot-research-agent
+    spec:
+      containers:
+        - name: research-agent
+          image: rockylhotka/rockbot-research-agent:0.16.17
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8080
+              name: http
+          env:
+            # Working memory lives on the container's local filesystem; each research run
+            # clears its own research/{runId} namespace when it finishes. No PVC needed.
+            - name: Memory__BasePath
+              value: /tmp/memory
+            - name: Research__MaxConcurrentRuns
+              value: "3"
+          envFrom:
+            - configMapRef:
+                name: rockbot-config
+            - secretRef:
+                name: rockbot-secrets
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 15
+            periodSeconds: 30
+          resources:
+            requests:
+              cpu: 200m
+              memory: 256Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: research-agent
+  namespace: rockbot
+  labels:
+    app: rockbot-research-agent
+spec:
+  type: ClusterIP
+  selector:
+    app: rockbot-research-agent
+  ports:
+    - port: 8080
+      targetPort: 8080
+      name: http

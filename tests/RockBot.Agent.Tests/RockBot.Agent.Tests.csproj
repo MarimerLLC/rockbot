@@ -37,6 +37,8 @@
     <ProjectReference Include="..\..\src\RockBot.UserProxy\RockBot.UserProxy.csproj" />
     <!-- Aliased: its McpServer.* namespace would otherwise shadow the SDK's McpServer type. -->
     <ProjectReference Include="..\..\src\McpServer.ElicitationFixture\McpServer.ElicitationFixture.csproj" Aliases="fixture" />
+    <!-- The research MCP server's real tool, behind the Tasks-aware bridge (#717). Aliased like the fixture. -->
+    <ProjectReference Include="..\..\src\RockBot.ResearchAgent\RockBot.ResearchAgent.csproj" Aliases="research" />
   </ItemGroup>
 
 </Project>

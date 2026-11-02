@@ -1,8 +1,9 @@
 # ResearchAgent as an MCP Server
 
-**Status:** Proposed. MCP elicitation (#593), the `conversation` responder, the SDK 2.x upgrade
-(#602, #607), hand-back (#608) and the Tasks-aware bridge (#658, the bridge half of Phase 4) are
-in place. The research server itself (Phase 2) is next.
+**Status:** Phase 2 done (#717). MCP elicitation (#593), the `conversation` responder, the SDK
+2.x upgrade (#602, #607), hand-back (#608), the Tasks-aware bridge (#658, the bridge half of
+Phase 4) and the research MCP server (#717) are in place. The council (Phase 3) and the primary
+agent (Phase 4) still call research over A2A; moving them is next.
 
 ## Problem
 
@@ -112,11 +113,14 @@ The directive changes from "never ask" to "ask at most once, and only up front":
   `context` and `constraints` before spending any search budget. If the question is genuinely
   ambiguous in a way that would send the research in different directions ("Mercury — the
   planet, the element, or the band?"), it asks a single form-mode elicitation: a single enum
-  of the candidate interpretations, and no free-text field. Called synchronously (the council),
-  it throws `InputRequiredException`; running as a task (the primary agent, through the bridge),
-  it must call `ElicitAsync` instead, which the Tasks extension routes through the task store.
-  SDK 2.2.0 fails a task whose tool throws `InputRequiredException` ("MRTR and tasks cannot be
-  composed via [McpServerTool] yet"), so the tool has to check which way it is running. The `conversation` responder never fills free text in from the user's conversation
+  of the candidate interpretations, and no free-text field. Running as a task, it must call
+  `ElicitAsync`, which the Tasks extension routes through the task store; called as a plain
+  `tools/call`, it throws `InputRequiredException` (MRTR). SDK 2.2.0 fails a task whose tool
+  throws `InputRequiredException` ("MRTR and tasks cannot be composed via [McpServerTool] yet"),
+  so the tool has to check which way it is running (see "How the tool tells tasks from plain
+  calls" below). Note that `CallToolWithPollingAsync` (the council's planned client) opts into
+  Tasks, so it runs research **as a task**, not as an MRTR call; only a plain `CallToolAsync` (an
+  external client, or the bridge with `tasks` off) takes the MRTR path. The `conversation` responder never fills free text in from the user's conversation
   (it declines the whole form), so anything open-ended belongs in the tool's `context`
   argument instead.
 - It never asks mid-research. A mid-run question means a declined answer wastes the search
@@ -130,6 +134,33 @@ The directive changes from "never ask" to "ask at most once, and only up front":
 is an untrusted continuation token: protect it with ASP.NET Core Data Protection (encrypt +
 MAC) with a short expiry (~10 minutes). A tampered or expired token is treated as absent —
 the server just re-scopes.
+
+### How the tool tells tasks from plain calls
+
+The SDK does not tell a tool whether it is running inside a task. `ResearchCallMode.IsTask`
+repeats the Tasks filter's own test (`McpTasksBuilderExtensions` in 2.2.0): the server's
+`ExecutionModeSelector` allows a task (it returns `Optional` for `research`), the request is on
+protocol `2026-07-28` or later, and the client opted into `io.modelcontextprotocol/tasks`, in its
+capabilities or in the request's `_meta`. `CallToolAsTaskAsync` and `CallToolWithPollingAsync`
+add that opt-in; `CallToolAsync` does not. `RockBot.ResearchAgent.Tests` calls the tool both ways
+and fails if the check drifts from the SDK: a task that throws `InputRequiredException` fails on
+the server, and a plain call that tries `ElicitAsync` on the stateless server never reaches the
+client.
+
+The tool also asks only a client that declares the elicitation capability; any other client
+gets the most likely reading, stated at the top of the answer. A retried MRTR call never asks a
+second time, so the round trip always ends.
+
+### The result
+
+Text content: the answer, prefixed with `Researched as: …` (a reading was chosen) or
+`Interpreted as: …` (the question was ambiguous and nobody chose), then a second text block,
+`Sources consulted:`, listing the pages `web_browse` read. `structuredContent` carries the same
+as `{answer, interpretation?, interpretationChosen?, sources: [{url, title?}]}`.
+
+The question's choices are the scoping pass's interpretations (`TitledSingleSelectEnumSchema`).
+The field's description also spells out `id = label` for each, because some clients (the
+bridge's hand-back note) list only the enum values.
 
 ### Who answers the question
 
@@ -190,6 +221,26 @@ research server does, the primary agent stays on A2A research.
   several concurrent runs.
 - Concurrency: cap concurrent research tasks per pod (a `SemaphoreSlim`, default 3 — matching
   today's `maxReplicaCount`) so a burst cannot exhaust LLM quota.
+
+As built (#717):
+
+- `deploy/k8s/research-agent.yaml`: Deployment `rockbot-research-agent` (one replica,
+  `Recreate`), Service `research-agent` on port 8080; the endpoint is
+  `http://research-agent:8080/mcp`, health at `/health`.
+- `Research:MaxConcurrentRuns` (default 3) is enforced by `GatedResearchRunner` around the
+  research loop, shared by the MCP tool and the A2A receiver. Scoping and asking happen outside
+  the gate, so a queued run never holds a question open.
+- Each run (`ResearchRunner`) works in `research/{runId}` and clears that namespace when it
+  finishes. Page chunks get a 60-minute TTL (`WebTools.ChunkTtlMinutes`, raised from 20) so they
+  outlive a long run; clearing at the end bounds growth in the long-lived process.
+- `requestState` is sealed by `ResearchScopeToken`: Data Protection (time-limited protector,
+  `Research:ScopeTokenLifetime`, default 10 minutes), bound to a SHA-256 of the call's arguments.
+  The key ring is in memory, so a restart invalidates outstanding questions; the retried call
+  then re-scopes and proceeds with the most likely reading, without asking again.
+- The task store is `InMemoryMcpTaskStore` with a 2-hour time-to-live.
+- The A2A receiver stays (Phases 3–5 retire it). It runs the same `ResearchRunner`, without
+  scoping. While both run, the old ScaledJob is a second consumer of the same queue: scale it to
+  zero when the Deployment goes live.
 
 ## Phases
 
