@@ -432,7 +432,7 @@ and a synthesis (text part is the synthesis prose; data part is the
 structured JSON).
 
 Skip the council for:
-- Factual lookups (use `ResearchAgent` instead).
+- Factual lookups (use the `research` MCP server's `research` tool instead).
 - Routine coding tasks, small fixes, mechanical work.
 - Time-sensitive operational decisions where deliberation cost exceeds value.
 - Questions where the answer is unambiguous from existing context.

@@ -17,6 +17,13 @@ public sealed class ResearchOptions
     /// that comes back later re-scopes instead.
     /// </summary>
     public TimeSpan ScopeTokenLifetime { get; set; } = TimeSpan.FromMinutes(10);
+
+    /// <summary>
+    /// Announce the A2A agent card on the discovery bus. Off by default: callers should find
+    /// research as an MCP tool, and the A2A queue keeps working for callers that send to it by
+    /// name (the council) without anyone discovering it. Read at startup.
+    /// </summary>
+    public bool AnnounceOverA2A { get; set; }
 }
 
 /// <summary>

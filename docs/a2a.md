@@ -557,8 +557,10 @@ The ephemeral one-shot pattern runs an agent as a KEDA `ScaledJob` triggered by 
 
 `ResearchAgent` used to work this way (`deploy/k8s/research-agent-scaledjob.yaml`). Since #717 it
 is a long-lived MCP server (`deploy/k8s/research-agent.yaml`) serving the `research` tool at
-`http://research-agent:8080/mcp`, and the one-shot shutdown is gone. It still consumes
-`agent.task.ResearchAgent` and stays in `well-known-agents.json`, so A2A callers keep working
-while they move to the MCP tool; the A2A path, the ScaledJob and its queue are removed in Phase 5
+`http://research-agent:8080/mcp`, and the one-shot shutdown is gone. The primary agent reaches
+it through the MCP bridge, so it is no longer in `well-known-agents.json`, and it no longer
+announces a card on the discovery bus (`Research:AnnounceOverA2A`, off by default). It still
+consumes `agent.task.ResearchAgent`, so the council, which sends there by name, keeps working
+until it moves to the MCP tool; the A2A path, the ScaledJob and its queue are removed in Phase 5
 of `design/research-agent-mcp.md`. Scale the ScaledJob to zero once the Deployment runs, or the
 two compete for the queue.

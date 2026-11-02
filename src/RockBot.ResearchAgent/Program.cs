@@ -128,9 +128,19 @@ builder.Services.AddRockBotHost(agent =>
     });
 
     // A2A receiving side: declares queue, handles incoming AgentTaskRequest messages.
-    // Kept during the migration to the MCP tool; Phase 5 removes it.
+    // Kept during the migration to the MCP tool (the council still sends to
+    // agent.task.ResearchAgent); Phase 5 removes it.
+    //
+    // The card is announced on the discovery bus only when Research:AnnounceOverA2A is true.
+    // A long-lived pod re-announces every two minutes, so announcing would put ResearchAgent
+    // back in the primary agent's A2A directory beside the MCP `research` tool. Off by default:
+    // the queue is still consumed, but nobody discovers research over A2A.
+    var announceOverA2A = builder.Configuration.GetValue<bool>("Research:AnnounceOverA2A");
     agent.AddA2A(opts =>
     {
+        if (!announceOverA2A)
+            return;
+
         opts.Card = new AgentCard
         {
             AgentName = "ResearchAgent",

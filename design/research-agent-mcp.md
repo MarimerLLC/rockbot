@@ -1,9 +1,9 @@
 # ResearchAgent as an MCP Server
 
-**Status:** Phase 2 done (#717). MCP elicitation (#593), the `conversation` responder, the SDK
-2.x upgrade (#602, #607), hand-back (#608), the Tasks-aware bridge (#658, the bridge half of
-Phase 4) and the research MCP server (#717) are in place. The council (Phase 3) and the primary
-agent (Phase 4) still call research over A2A; moving them is next.
+**Status:** Phases 2 and 4 done (#717). MCP elicitation (#593), the `conversation` responder,
+the SDK 2.x upgrade (#602, #607), hand-back (#608), the Tasks-aware bridge (#658) and the
+research MCP server (#717) are in place, and the primary agent calls research as an MCP tool.
+The council (Phase 3) still sends to the A2A queue; moving it is next.
 
 ## Problem
 
@@ -293,8 +293,26 @@ than answered in place — which is what research's clarifying question needs.
   elicitation policy, including hand-back to the conversation; tasks survive a restart of the
   agent through a task ledger; caps, `mcp_cancel_task` and cancel-on-removal bound them. See
   `design/mcp-bridge.md`, "Long-running tools".
-- Primary agent: research is now an MCP tool; remove the `ResearchAgent` entry from
-  `well-known-agents.json`. Give the research entry `"tasks": true` and its `elicitation` block.
+- Primary agent (done, #717): research is an MCP tool. The `ResearchAgent` entry is gone from
+  `well-known-agents.json`, the primary directive points factual lookups at the `research`
+  tool, and the research server no longer announces its A2A card
+  (`Research:AnnounceOverA2A`, default false), so the primary agent can't rediscover the A2A
+  path. The `mcp.json` entry on the agent's PVC:
+
+  ```json
+  "research": {
+    "type": "http",
+    "url": "http://research-agent.rockbot.svc.cluster.local:8080/mcp",
+    "transportMode": "streamable-http",
+    "tasks": true,
+    "taskTimeoutMinutes": 30,
+    "elicitation": { "mode": "handback" }
+  }
+  ```
+
+  The PVC's `well-known-agents.json` and `directives.md` are seeded no-clobber, so a running
+  deployment needs them edited by hand, and the persisted directory (`known-agents.json`)
+  forgets the A2A entry once it stops being announced (24-hour TTL, pruned at startup).
 
 ### Phase 5 — Retire the A2A research path
 
