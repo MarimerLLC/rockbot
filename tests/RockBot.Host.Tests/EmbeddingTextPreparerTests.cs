@@ -199,4 +199,15 @@ public class EmbeddingTextPreparerTests
 
         Assert.AreEqual(3000, preparer.Prepare("notes " + prose, shapeSample: prose).Length);
     }
+
+    [TestMethod]
+    public void Prepare_StructuredCapAboveProseCap_ClampedToProseCap()
+    {
+        // A small-window deployment lowers MaxInputChars but leaves the structured default:
+        // structured input must not get the larger allowance.
+        var preparer = Build(new EmbeddingOptions { MaxInputChars = 400, MaxStructuredInputChars = 12_000 });
+        var json = "{\"data\":\"" + new string('x', 2000) + "\"}";
+
+        Assert.AreEqual(400, preparer.Prepare(json).Length);
+    }
 }

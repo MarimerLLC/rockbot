@@ -747,6 +747,23 @@ public class HybridCacheWorkingMemoryTests
     }
 
     [TestMethod]
+    public async Task SearchAsync_NoCandidateVectors_SkipsQueryEmbedding()
+    {
+        var generator = new CallTrackingEmbeddingGenerator();
+        var memory = CreateMemory(embeddingGenerator: generator);
+
+        await memory.SetAsync("stash/subagent-abc/call_1", "quarterly revenue figures",
+            tags: [ToolResultStash.Tag]);
+
+        var results = await memory.SearchAsync(
+            new MemorySearchCriteria(Query: "revenue"), "stash/subagent-abc/");
+
+        Assert.AreEqual(1, results.Count, "BM25 still finds the stash entry");
+        Assert.AreEqual(0, generator.CallCount,
+            "No candidate has a vector, so the query should not be embedded");
+    }
+
+    [TestMethod]
     public async Task SetAsync_JsonValue_EmbeddingInputUsesStructuredCap()
     {
         // The key leads the document text, which used to hide the value's leading '[' and

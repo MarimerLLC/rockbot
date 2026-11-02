@@ -43,7 +43,12 @@ internal sealed class EmbeddingTextPreparer(
 
         var structured = IsStructured(text)
             || (!string.IsNullOrEmpty(shapeSample) && IsStructured(shapeSample));
-        var cap = structured ? _opts.MaxStructuredInputChars : _opts.MaxInputChars;
+        // The structured cap is meant to be the stricter one; clamp it so a deployment that
+        // lowers MaxInputChars for a small-window model never lets structured input through
+        // at the larger default structured cap.
+        var cap = structured
+            ? Math.Min(_opts.MaxStructuredInputChars, _opts.MaxInputChars)
+            : _opts.MaxInputChars;
         if (text.Length <= cap)
             return text;
 

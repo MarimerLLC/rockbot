@@ -347,8 +347,10 @@ internal sealed class HybridCacheWorkingMemory : IWorkingMemory
         if (criteria.Query is null)
             return candidates.OrderByDescending(e => e.StoredAt).Take(criteria.MaxResults).ToList();
 
-        // With query: use hybrid ranking if embeddings available, else BM25-only.
-        if (_embeddingGenerator is not null)
+        // With query: use hybrid ranking if embeddings available, else BM25-only. When no
+        // candidate has a vector (e.g. a stash- or wisp-scoped search) the vector half would
+        // score nothing, so skip the query-embedding round trip and go straight to BM25.
+        if (_embeddingGenerator is not null && candidates.Any(e => _embeddings.ContainsKey(e.Key)))
         {
             try
             {
