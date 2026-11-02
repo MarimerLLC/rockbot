@@ -54,14 +54,18 @@ internal sealed class ResearchTools(
         "synthesised answer followed by the list of sources it read. Runs take minutes. If the " +
         "question is ambiguous (e.g. \"Mercury\": planet, element or band?) it may first ask " +
         "once which reading you mean; otherwise it never asks. Put background you already have " +
-        "in context, and scope limits in constraints.")]
+        "in context, and scope limits in constraints. depth 'quick' is a short lookup (2-3 sources, " +
+        "about a minute) for callers on a tight budget; the default, 'thorough', can take several minutes.")]
     public async Task<CallToolResult> ResearchAsync(
         RequestContext<CallToolRequestParams> request,
         [Description("What to research.")] string question,
         [Description("Optional background: who is asking, why, what is already known. Helps settle what an ambiguous question means.")]
         string? context = null,
-        [Description("Optional scope limits: time range, region, sources to prefer or avoid, depth.")]
+        [Description("Optional scope limits: time range, region, sources to prefer or avoid.")]
         string? constraints = null,
+        [Description("Optional: 'quick' for a short lookup of two or three sources (about a minute), " +
+                     "or 'thorough' (the default) for a full research run that can take several minutes.")]
+        string? depth = null,
         CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrWhiteSpace(question))
@@ -76,15 +80,16 @@ internal sealed class ResearchTools(
         var research = new ResearchRequest(
             question.Trim(),
             string.IsNullOrWhiteSpace(context) ? null : context.Trim(),
-            string.IsNullOrWhiteSpace(constraints) ? null : constraints.Trim());
+            string.IsNullOrWhiteSpace(constraints) ? null : constraints.Trim(),
+            Depth: ResearchDepthProfile.Parse(depth));
 
         var runsAsTask = ResearchCallMode.IsTask(request);
         var resolved = await ResolveInterpretationAsync(request, research, runsAsTask, cancellationToken);
 
         var runId = "mcp-" + Guid.NewGuid().ToString("N")[..12];
         logger.LogInformation(
-            "research {RunId} ({Mode}): {Question}{Interpretation}",
-            runId, runsAsTask ? "task" : "call", research.Question,
+            "research {RunId} ({Mode}, {Depth}): {Question}{Interpretation}",
+            runId, runsAsTask ? "task" : "call", research.Depth, research.Question,
             resolved is null ? "" : $" — as \"{resolved.Interpretation.Label}\" ({(resolved.Chosen ? "chosen" : "assumed")})");
 
         var outcome = await runner.RunAsync(

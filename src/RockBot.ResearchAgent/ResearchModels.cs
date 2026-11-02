@@ -8,11 +8,13 @@ namespace RockBot.ResearchAgent;
 /// The reading of an ambiguous question the research should follow, chosen by the caller or
 /// assumed by the scoping pass. Null when the question was not ambiguous.
 /// </param>
+/// <param name="Depth">How much the run may spend (<see cref="ResearchDepth"/>).</param>
 internal sealed record ResearchRequest(
     string Question,
     string? Context = null,
     string? Constraints = null,
-    string? Interpretation = null);
+    string? Interpretation = null,
+    ResearchDepth Depth = ResearchDepth.Thorough);
 
 /// <summary>A page the research loop read.</summary>
 internal sealed record ResearchSource(string Url, string? Title = null);

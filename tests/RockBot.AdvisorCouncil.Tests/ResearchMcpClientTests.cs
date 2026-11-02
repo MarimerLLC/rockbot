@@ -123,6 +123,7 @@ public class ResearchMcpClientTests
         StringAssert.Contains(text, "Sources consulted:");
         StringAssert.Contains(text, "https://example.com/a");
         Assert.AreEqual("council question: should we fly there?", runner.Requests.Single().Context);
+        Assert.AreEqual(ResearchDepth.Quick, runner.Requests.Single().Depth, "the council asks for quick research by default");
     }
 
     [TestMethod]

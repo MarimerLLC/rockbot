@@ -119,6 +119,8 @@ internal sealed class ResearchMcpClient : IResearchClient, IAsyncDisposable
         };
         if (!string.IsNullOrWhiteSpace(context))
             arguments["context"] = JsonSerializer.SerializeToElement(context.Trim());
+        if (!string.IsNullOrWhiteSpace(_options.ResearchDepth))
+            arguments["depth"] = JsonSerializer.SerializeToElement(_options.ResearchDepth.Trim());
 
         var limit = timeout ?? TimeSpan.FromSeconds(Math.Max(5, _options.ResearchAgentTimeoutSeconds));
         using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);

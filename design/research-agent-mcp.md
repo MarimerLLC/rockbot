@@ -152,6 +152,16 @@ The tool also asks only a client that declares the elicitation capability; any o
 gets the most likely reading, stated at the top of the answer. A retried MRTR call never asks a
 second time, so the round trip always ends.
 
+### Depth
+
+`research` takes an optional `depth`: `thorough` (the default) is the full run described above,
+High tier and up to 50 iterations, and a broad question measured 7.5 minutes and 26 sources.
+`quick` is a short lookup for callers on a tight budget: the Balanced tier, two or three sources,
+and a per-run tool budget (8 calls, 60 s) after which every tool tells the model to answer from
+what it has. The budget is per run on purpose: the function-invoking client's iteration limit is
+per tier and process-wide, so changing it per call would leak into concurrent runs. The council
+asks for `quick` (`Council:ResearchDepth`); the primary agent leaves the default.
+
 ### The result
 
 Text content: the answer, prefixed with `Researched as: …` (a reading was chosen) or

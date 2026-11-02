@@ -32,6 +32,12 @@ internal sealed class CouncilOptions
     /// </summary>
     public int ResearchAgentTimeoutSeconds { get; set; } = 110;
 
+    /// <summary>
+    /// The research depth the council asks for: <c>quick</c> (the default) fits a persona's budget;
+    /// <c>thorough</c> runs take minutes (one measured 7.5 min) and would time out.
+    /// </summary>
+    public string ResearchDepth { get; set; } = "quick";
+
     /// <summary>The research server's MCP endpoint (stateless streamable HTTP with Tasks).</summary>
     public string ResearchServerUrl { get; set; } = "http://research-agent.rockbot.svc.cluster.local:8080/mcp";
 

@@ -68,20 +68,25 @@ internal sealed class ResearchRunner(
 
             var workingMemoryTools = new WorkingMemoryTools(runMemory, workingMemoryNamespace, logger);
 
-            var chatOptions = new ChatOptions
-            {
-                Tools = [.. webTools, .. workingMemoryTools.Tools]
-            };
+            // A quick run is bounded by its own tool budget (calls and a time box) rather than the
+            // shared client's iteration limit, which other runs on the same tier use too.
+            var profile = ResearchDepthProfile.For(request.Depth);
+            IList<AITool> tools = [.. webTools, .. workingMemoryTools.Tools];
+            if (profile.MaxToolCalls is { } maxCalls && profile.TimeBox is { } timeBox)
+                tools = new ResearchToolBudget(maxCalls, timeBox).Wrap(tools);
+
+            var chatOptions = new ChatOptions { Tools = tools };
 
             var userMessage = BuildUserMessage(request);
+            var loopMessage = profile.PromptNote is null ? userMessage : $"{userMessage}\n\n{profile.PromptNote}";
             var chatMessages = new List<ChatMessage>
             {
                 new(ChatRole.System, SystemPrompt),
-                new(ChatRole.User, userMessage)
+                new(ChatRole.User, loopMessage)
             };
 
             var finalContent = await agentLoopRunner.RunAsync(
-                chatMessages, chatOptions, loopSessionId, tier: ModelTier.High,
+                chatMessages, chatOptions, loopSessionId, tier: profile.Tier,
                 onProgress: onProgress, enableFollowUp: false, cancellationToken: cancellationToken,
                 // An inbound call from another agent. Research has no consequential tools (web
                 // search and page reads only), so the gate's origin changes nothing here.
@@ -99,8 +104,8 @@ internal sealed class ResearchRunner(
                 finalContent = await SynthesiseFromWorkingMemoryAsync(runMemory, workingMemoryNamespace, userMessage, cancellationToken);
             }
 
-            logger.LogInformation("Research run {RunId} completed, output length={Len}, sources={Sources}",
-                runId, finalContent.Length, sources.Sources.Count);
+            logger.LogInformation("Research run {RunId} ({Depth}) completed, output length={Len}, sources={Sources}",
+                runId, request.Depth, finalContent.Length, sources.Sources.Count);
 
             return new ResearchOutcome(finalContent, sources.Sources);
         }
