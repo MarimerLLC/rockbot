@@ -17,8 +17,14 @@ internal sealed class CouncilOptions
     /// <summary>Pre-research stage timeout.</summary>
     public int PreResearchTimeoutSeconds { get; set; } = 90;
 
-    /// <summary>ResearchAgent invocation timeout (used in Phase 3 by ResearchAgentInvoker).</summary>
+    /// <summary>
+    /// Timeout for one research call (<see cref="Tools.ResearchMcpClient"/>). On expiry the
+    /// research task is cancelled on the server and the caller gets <c>(research timed out)</c>.
+    /// </summary>
     public int ResearchAgentTimeoutSeconds { get; set; } = 90;
+
+    /// <summary>The research server's MCP endpoint (stateless streamable HTTP with Tasks).</summary>
+    public string ResearchServerUrl { get; set; } = "http://research-agent.rockbot.svc.cluster.local:8080/mcp";
 
     /// <summary>
     /// Maximum number of research tool calls a single persona may make during its view step.

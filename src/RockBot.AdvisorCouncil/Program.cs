@@ -92,8 +92,10 @@ builder.Services.AddSingleton<PersonaStep>();
 builder.Services.AddSingleton<CritiqueStep>();
 builder.Services.AddSingleton<SynthesizeStep>();
 builder.Services.AddSingleton<CouncilOrchestrator>();
-builder.Services.AddSingleton<ResearchAgentInvoker>();
-builder.Services.AddHostedService(sp => sp.GetRequiredService<ResearchAgentInvoker>());
+// Research over MCP (design/research-agent-mcp.md, Phase 3): the research server's `research`
+// tool, run as a task; its clarifying question is answered by the llm responder from the call's
+// own arguments.
+builder.Services.AddSingleton<IResearchClient, ResearchMcpClient>();
 
 builder.Services.AddRockBotHost(agent =>
 {

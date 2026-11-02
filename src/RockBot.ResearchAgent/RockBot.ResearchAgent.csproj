@@ -12,6 +12,7 @@
   <ItemGroup>
     <InternalsVisibleTo Include="RockBot.ResearchAgent.Tests" />
     <InternalsVisibleTo Include="RockBot.Agent.Tests" />
+    <InternalsVisibleTo Include="RockBot.AdvisorCouncil.Tests" />
   </ItemGroup>
 
   <ItemGroup>
