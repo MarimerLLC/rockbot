@@ -3,6 +3,7 @@ using System.ClientModel.Primitives;
 using System.Net;
 using System.Runtime.CompilerServices;
 using Microsoft.Extensions.AI;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 
 namespace RockBot.Llm.Tests;
@@ -731,5 +732,115 @@ public class FallbackChatClientTests
         var result = client.GetService(typeof(ChatClientMetadata));
 
         Assert.AreSame(metadata, result);
+    }
+
+    // ── provider error in degrade/fallback log lines (#760) ─────────────────
+
+    /// <summary>Records each log call's level and formatted message.</summary>
+    private sealed class CapturingLogger : ILogger
+    {
+        public List<(LogLevel Level, string Message)> Entries { get; } = [];
+
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception,
+            Func<TState, Exception?, string> formatter) =>
+            Entries.Add((logLevel, formatter(state, exception)));
+
+        public string Single(string contains) =>
+            Entries.Single(e => e.Level == LogLevel.Warning && e.Message.Contains(contains)).Message;
+    }
+
+    private static FallbackChatClient BuildLogged(
+        IReadOnlyList<(string ModelId, IChatClient Client)> entries, CapturingLogger logger, int maxRetries = 0) =>
+        new(entries, logger, retryDelay: TimeSpan.Zero, maxRetries: maxRetries);
+
+    [TestMethod]
+    public async Task QuotaExhausted_DegradedWarning_IncludesStatusErrorAndRule()
+    {
+        const string providerMessage =
+            "HTTP 400 (invalid_request_error)\nYour credit balance is too low to access the Anthropic API.";
+        var first  = new FixedStub(ex: new ClientResultException(providerMessage, new StatusOnlyPipelineResponse(400)));
+        var second = new FixedStub(response: OkResponse());
+        var logger = new CapturingLogger();
+
+        await BuildLogged([("m1", first), ("m2", second)], logger).GetResponseAsync([]);
+
+        var warning = logger.Single("marked degraded");
+        StringAssert.Contains(warning, "QuotaExhausted");
+        StringAssert.Contains(warning, "matched quota phrase");
+        StringAssert.Contains(warning, "Status 400");
+        StringAssert.Contains(warning, nameof(ClientResultException));
+        // Newlines are flattened so the message stays on one log line.
+        StringAssert.Contains(warning,
+            "HTTP 400 (invalid_request_error) Your credit balance is too low to access the Anthropic API.");
+    }
+
+    [TestMethod]
+    public async Task BroadKeywordClassification_IsVisibleInDegradedWarning()
+    {
+        var first  = new FixedStub(ex: new InvalidOperationException("Something unrelated exceeded a limit"));
+        var second = new FixedStub(response: OkResponse());
+        var logger = new CapturingLogger();
+
+        await BuildLogged([("m1", first), ("m2", second)], logger).GetResponseAsync([]);
+
+        var warning = logger.Single("marked degraded");
+        StringAssert.Contains(warning, "matched broad keyword");
+        StringAssert.Contains(warning, "Something unrelated exceeded a limit");
+    }
+
+    [TestMethod]
+    public async Task TransientRetriesExhausted_LogsErrorBeforeFallingBack()
+    {
+        var first  = new FixedStub(ex: new HttpRequestException("upstream connect error", null, HttpStatusCode.BadGateway));
+        var second = new FixedStub(response: OkResponse());
+        var logger = new CapturingLogger();
+
+        await BuildLogged([("m1", first), ("m2", second)], logger, maxRetries: 1).GetResponseAsync([]);
+
+        var warning = logger.Single("failed (Transient");
+        StringAssert.Contains(warning, "matched status 502");
+        StringAssert.Contains(warning, "after 2 attempt(s)");
+        StringAssert.Contains(warning, "Status 502");
+        StringAssert.Contains(warning, "upstream connect error");
+    }
+
+    [TestMethod]
+    public async Task ContentFilterWarning_IncludesProviderError()
+    {
+        var first  = new FixedStub(ex: AzureContentFilterEx());
+        var second = new FixedStub(response: OkResponse());
+        var logger = new CapturingLogger();
+
+        await BuildLogged([("m1", first), ("m2", second)], logger).GetResponseAsync([]);
+
+        var warning = logger.Single("content filter triggered");
+        StringAssert.Contains(warning, "Status 400");
+        StringAssert.Contains(warning, "content management policy");
+    }
+
+    [TestMethod]
+    public void TruncateErrorMessage_CapsLengthAndFlattensLines()
+    {
+        var longMessage = "line one\r\n" + new string('x', 1000);
+
+        var result = FallbackChatClient.TruncateErrorMessage(longMessage);
+
+        Assert.AreEqual(FallbackChatClient.MaxLoggedErrorLength + 1, result.Length); // + ellipsis
+        Assert.IsTrue(result.StartsWith("line one x"));
+        Assert.IsTrue(result.EndsWith('…'));
+        Assert.AreEqual(string.Empty, FallbackChatClient.TruncateErrorMessage(null));
+    }
+
+    [TestMethod]
+    public void GetStatusCode_ReadsBothExceptionShapes()
+    {
+        Assert.AreEqual(503, FallbackChatClient.GetStatusCode(ClientResultEx(503)));
+        Assert.AreEqual(402, FallbackChatClient.GetStatusCode(HttpEx(HttpStatusCode.PaymentRequired)));
+        Assert.IsNull(FallbackChatClient.GetStatusCode(ClientResultEx(0)), "Status 0 means no response");
+        Assert.IsNull(FallbackChatClient.GetStatusCode(new HttpRequestException("dns")));
+        Assert.IsNull(FallbackChatClient.GetStatusCode(new InvalidOperationException("x")));
     }
 }

@@ -140,10 +140,16 @@ public sealed class FallbackChatClient : IChatClient
                 }
                 catch (Exception ex)
                 {
-                    var category = ClassifyException(ex);
+                    var (category, rule) = ClassifyException(ex);
 
                     if (category == FallbackErrorCategory.Unknown)
                         throw; // Propagate immediately — don't retry or switch
+
+                    // Every degrade/fallback line carries the provider's error so the log
+                    // says *why* a model failed, not just the heuristic category.
+                    var status = GetStatusCode(ex);
+                    var errorType = ex.GetType().Name;
+                    var error = TruncateErrorMessage(ex.Message);
 
                     if (category == FallbackErrorCategory.RateLimited)
                     {
@@ -155,8 +161,8 @@ public sealed class FallbackChatClient : IChatClient
                         if (HasAvailableAfter(i))
                         {
                             _logger.LogWarning(
-                                "FallbackChatClient: model {ModelId} rate-limited (429); pausing it for {Pause} and trying the next model",
-                                modelId, pause);
+                                "FallbackChatClient: model {ModelId} rate-limited (429); pausing it for {Pause} and trying the next model. Error ({ErrorType}): {Error}",
+                                modelId, pause, errorType, error);
                             NotifyFallback(i, modelId, "rate limited");
                             break; // Fall through to next model
                         }
@@ -165,8 +171,8 @@ public sealed class FallbackChatClient : IChatClient
                         if (attempt < _maxRetries)
                         {
                             _logger.LogWarning(
-                                "FallbackChatClient: model {ModelId} rate-limited (429) with no fallback available; waiting {Pause}",
-                                modelId, pause);
+                                "FallbackChatClient: model {ModelId} rate-limited (429) with no fallback available; waiting {Pause}. Error ({ErrorType}): {Error}",
+                                modelId, pause, errorType, error);
                             await Task.Delay(pause, _timeProvider, cancellationToken);
                             continue;
                         }
@@ -182,8 +188,8 @@ public sealed class FallbackChatClient : IChatClient
                     if (category == FallbackErrorCategory.ContentFilter)
                     {
                         _logger.LogWarning(
-                            "FallbackChatClient: content filter triggered on {ModelId}; trying next model without degrading",
-                            modelId);
+                            "FallbackChatClient: content filter triggered on {ModelId}; trying next model without degrading. Status {Status}, error ({ErrorType}): {Error}",
+                            modelId, status, errorType, error);
                         NotifyFallback(i, modelId, "content filter");
                         break;
                     }
@@ -194,12 +200,19 @@ public sealed class FallbackChatClient : IChatClient
                         _degraded[i] = true;
                         _degradedAt[i] = DateTimeOffset.UtcNow;
                         _logger.LogWarning(
-                            "FallbackChatClient: model {ModelId} marked degraded ({Category}); will retry after {Cooldown}",
-                            modelId, category, _cooldownPeriod);
+                            "FallbackChatClient: model {ModelId} marked degraded ({Category}, matched {Rule}); will retry after {Cooldown}. Status {Status}, error ({ErrorType}): {Error}",
+                            modelId, category, rule, _cooldownPeriod, status, errorType, error);
 
                         // Advance _activeIndex past this permanently-degraded slot
                         if (i == _activeIndex)
                             _activeIndex = i + 1;
+                    }
+                    else
+                    {
+                        // Transient retries exhausted — fall through without degrading.
+                        _logger.LogWarning(
+                            "FallbackChatClient: model {ModelId} failed ({Category}, matched {Rule}) after {Attempts} attempt(s). Status {Status}, error ({ErrorType}): {Error}",
+                            modelId, category, rule, attempt + 1, status, errorType, error);
                     }
 
                     NotifyFallback(i, modelId, category.ToString());
@@ -346,16 +359,21 @@ public sealed class FallbackChatClient : IChatClient
         }
     }
 
-    private static FallbackErrorCategory ClassifyException(Exception ex)
+    /// <summary>
+    /// Classifies a provider failure and names the rule that matched, so a log line can show
+    /// whether the category came from a specific phrase, a status code, or the broad keyword
+    /// fallback — the last one is heuristic and can misclassify an unrelated error.
+    /// </summary>
+    internal static (FallbackErrorCategory Category, string Rule) ClassifyException(Exception ex)
     {
         if (ex is OperationCanceledException)
-            return FallbackErrorCategory.Transient; // Treat timeout as transient
+            return (FallbackErrorCategory.Transient, "cancelled"); // Treat timeout as transient
 
         // Azure's content filter surfaces as HTTP 400 with "content_filter" in the message
         // body. Status-code-only classification would map 400 to Unknown (immediate rethrow),
         // so check the message text first across all exception types.
         if (ContainsAny(ex.Message, "content_filter"))
-            return FallbackErrorCategory.ContentFilter;
+            return (FallbackErrorCategory.ContentFilter, "content_filter phrase");
 
         // Out-of-credit errors don't share a status code: Anthropic sends 400
         // invalid_request_error ("Your credit balance is too low…", "You have reached your
@@ -366,7 +384,7 @@ public sealed class FallbackChatClient : IChatClient
         // context length … exceeded") must stay Unknown so the caller can trim and retry.
         if (ex is HttpRequestException or ClientResultException
             && ContainsAny(ex.Message, QuotaExhaustedPhrases))
-            return FallbackErrorCategory.QuotaExhausted;
+            return (FallbackErrorCategory.QuotaExhausted, "quota phrase");
 
         if (ex is HttpRequestException hre)
         {
@@ -374,8 +392,8 @@ public sealed class FallbackChatClient : IChatClient
             // (DNS failure, TCP reset, socket close). Treat as transient so the next
             // model gets a chance.
             return hre.StatusCode is { } status
-                ? ClassifyStatusCode((int)status)
-                : FallbackErrorCategory.Transient;
+                ? (ClassifyStatusCode((int)status), $"status {(int)status}")
+                : (FallbackErrorCategory.Transient, "no response");
         }
 
         // OpenAI SDK (and other System.ClientModel-based SDKs) surface HTTP failures
@@ -389,8 +407,8 @@ public sealed class FallbackChatClient : IChatClient
             // failed after N tries."). Without this branch we'd classify it as
             // Unknown and never fall back to OpenRouter.
             return cre.Status == 0
-                ? FallbackErrorCategory.Transient
-                : ClassifyStatusCode(cre.Status);
+                ? (FallbackErrorCategory.Transient, "no response")
+                : (ClassifyStatusCode(cre.Status), $"status {cre.Status}");
         }
 
         // Socket / IO failures (DNS, TCP reset, "Resource temporarily unavailable")
@@ -398,19 +416,50 @@ public sealed class FallbackChatClient : IChatClient
         for (var inner = ex.InnerException; inner is not null; inner = inner.InnerException)
         {
             if (inner is SocketException or IOException)
-                return FallbackErrorCategory.Transient;
+                return (FallbackErrorCategory.Transient, "inner socket/io");
         }
 
         // SDK retry-exhaustion wrappers surface as a plain Exception whose message
         // is "Retry failed after N tries." with the underlying network error in
         // parentheses. Match the message so we still fall through to the next model.
         if (ContainsAny(ex.Message, "Retry failed after", "temporarily unavailable"))
-            return FallbackErrorCategory.Transient;
+            return (FallbackErrorCategory.Transient, "retry-exhausted message");
 
         if (ContainsAny(ex.Message, "credit", "quota", "billing", "insufficient_quota", "exceeded"))
-            return FallbackErrorCategory.QuotaExhausted;
+            return (FallbackErrorCategory.QuotaExhausted, "broad keyword");
 
-        return FallbackErrorCategory.Unknown;
+        return (FallbackErrorCategory.Unknown, "unmatched");
+    }
+
+    /// <summary>
+    /// The HTTP status of a provider failure: <see cref="ClientResultException.Status"/> or
+    /// <see cref="HttpRequestException.StatusCode"/>. Null when no response was received.
+    /// </summary>
+    internal static int? GetStatusCode(Exception ex) => ex switch
+    {
+        ClientResultException { Status: not 0 } cre => cre.Status,
+        HttpRequestException { StatusCode: { } status } => (int)status,
+        _ => null,
+    };
+
+    /// <summary>Max characters of a provider error message written to a log line.</summary>
+    internal const int MaxLoggedErrorLength = 500;
+
+    /// <summary>
+    /// Flattens a provider error message to one line and cuts it to
+    /// <see cref="MaxLoggedErrorLength"/> characters. Error bodies don't normally echo
+    /// request content, but there's no need to log more than enough to tell errors apart.
+    /// </summary>
+    internal static string TruncateErrorMessage(string? message)
+    {
+        if (string.IsNullOrEmpty(message)) return string.Empty;
+
+        var flat = string.Join(' ',
+            message.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
+
+        return flat.Length <= MaxLoggedErrorLength
+            ? flat
+            : string.Concat(flat.AsSpan(0, MaxLoggedErrorLength), "…");
     }
 
     private static readonly string[] QuotaExhaustedPhrases =
