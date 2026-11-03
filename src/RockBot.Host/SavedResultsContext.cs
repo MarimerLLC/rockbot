@@ -12,8 +12,12 @@ public static class SavedResultsContext
     /// <summary>Most matches listed.</summary>
     public const int MaxMatches = 3;
 
-    /// <summary>Content characters searched per entry; the topic is near the top.</summary>
-    internal const int SearchedContentChars = 4_000;
+    /// <summary>
+    /// Content characters searched per entry. A result states its topic in its label and opening;
+    /// searching deeper picks up incidental words. Live, two long unrelated saves matched a request
+    /// on "long", "term" and "memory" from deep in their bodies.
+    /// </summary>
+    internal const int SearchedContentChars = 800;
 
     /// <summary>
     /// Conversational filler that says nothing about the topic. Without this, any message would
@@ -36,9 +40,17 @@ public static class SavedResultsContext
     };
 
     /// <summary>
+    /// Kept matches score at least this share of the best match. Words common across saved
+    /// entries ("long", "memory", "control") add little, so an entry sharing only those with
+    /// the message falls well short of one sharing its rare topic words ("bbr", "cubic").
+    /// </summary>
+    internal const double MinShareOfBestScore = 0.6;
+
+    /// <summary>
     /// The saved entries that share enough topic words with <paramref name="userMessage"/>, best
-    /// match first: at least 2 distinct words, or 3 when the message has 6 or more topic words.
-    /// Ties go to the newer entry.
+    /// match first. An entry needs at least 2 distinct shared words (3 when the message has 6 or
+    /// more topic words), and a rarity-weighted score of at least <see cref="MinShareOfBestScore"/>
+    /// of the best entry's. Ties go to the newer entry.
     /// </summary>
     public static IReadOnlyList<SavedResponse> SelectMatches(
         IReadOnlyList<SavedResponse> saved, string? userMessage, int max = MaxMatches)
@@ -56,16 +68,36 @@ public static class SavedResultsContext
         // One shared word ("acme") is too weak to claim the user wants that saved result.
         var required = terms.Count >= 6 ? 3 : 2;
 
-        return saved
+        var docs = saved
             .Select(r =>
             {
                 var text = r.Label + " " +
                            (r.Content.Length <= SearchedContentChars ? r.Content : r.Content[..SearchedContentChars]);
-                var tokens = Bm25Ranker.Tokenize(text).ToHashSet(StringComparer.OrdinalIgnoreCase);
-                return (Entry: r, Shared: terms.Count(tokens.Contains));
+                return (Entry: r, Tokens: Bm25Ranker.Tokenize(text).ToHashSet(StringComparer.OrdinalIgnoreCase));
+            })
+            .ToList();
+
+        // How rare each word is across the saved entries: a word in every entry says nothing.
+        var weight = terms.ToDictionary(
+            t => t,
+            t => Math.Log(1.0 + (double)docs.Count / Math.Max(1, docs.Count(d => d.Tokens.Contains(t)))),
+            StringComparer.OrdinalIgnoreCase);
+
+        var candidates = docs
+            .Select(d =>
+            {
+                var shared = terms.Where(d.Tokens.Contains).ToList();
+                return (d.Entry, Shared: shared.Count, Score: shared.Sum(t => weight[t]));
             })
             .Where(x => x.Shared >= required)
-            .OrderByDescending(x => x.Shared)
+            .ToList();
+        if (candidates.Count == 0)
+            return [];
+
+        var best = candidates.Max(x => x.Score);
+        return candidates
+            .Where(x => x.Score >= best * MinShareOfBestScore)
+            .OrderByDescending(x => x.Score)
             .ThenByDescending(x => x.Entry.SavedAt)
             .Take(max)
             .Select(x => x.Entry)

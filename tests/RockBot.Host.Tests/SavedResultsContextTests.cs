@@ -26,6 +26,24 @@ public class SavedResultsContextTests
     }
 
     [TestMethod]
+    public void EntriesSharingOnlyCommonWords_AreDropped_WhenARealMatchExists()
+    {
+        // Live false positives: long, unrelated saves whose bodies mention "long", "term", "memory".
+        var filler = new string('x', 900) + " ";
+        var store = Store.Concat(
+        [
+            Saved("old-1", "Person lookup", "Career summary. " + filler + "Long notes; memory of the test class, term dates.", minutesAgo: 9000),
+            Saved("old-2", "Cyber vs solar punk", "Two genres. " + filler + "On memory, control and the long term future of test fiction.", minutesAgo: 9500),
+        ]).ToList();
+
+        var matches = SavedResultsContext.SelectMatches(store,
+            "This is a software test; please don't save it to long-term memory. You did a BBR vs CUBIC " +
+            "congestion-control comparison for me today but I lost it. Can you get it back for me?");
+
+        CollectionAssert.AreEqual(new[] { "tcp" }, matches.Select(m => m.Id).ToArray());
+    }
+
+    [TestMethod]
     public void ConversationalFiller_DoesNotMatch()
     {
         Assert.AreEqual(0, SavedResultsContext.SelectMatches(Store,
