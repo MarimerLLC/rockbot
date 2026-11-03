@@ -90,6 +90,10 @@ internal sealed class UserMessageHandler(
     private readonly IncompleteReplyCheck _incompleteCheck = incompleteCheck ?? new IncompleteReplyCheck();
     private readonly CompletionCheckClassifier _completionCheck = completionCheck ?? new CompletionCheckClassifier();
 
+    // This turn's saved-response tools (the handler is scoped per message), so the reply isn't
+    // auto-saved again when it only hands back a saved result (#418).
+    private SavedResponseTools? _savedResponseTools;
+
     /// <summary>
     /// Writes a <see cref="FeedbackSignalType.Correction"/> entry when the message corrects the
     /// agent's previous reply (<see cref="CorrectionDetector"/>). Never throws.
@@ -275,10 +279,11 @@ internal sealed class UserMessageHandler(
                 sessionNamespace, batchId, ToolProfiles.Main, logger: logger);
 
             // #418: saved results outlive conversation history — find earlier work instead of redoing it.
-            IEnumerable<AITool> savedResponseTools = savedResponseStore is null
-                ? []
+            _savedResponseTools = savedResponseStore is null
+                ? null
                 : new SavedResponseTools(savedResponseStore, message.SessionId,
-                    agentNameHolder.DisplayName ?? agent.Name, logger).Tools;
+                    agentNameHolder.DisplayName ?? agent.Name, logger);
+            IEnumerable<AITool> savedResponseTools = _savedResponseTools?.Tools ?? [];
 
             var allTools = memoryTools.Tools
                 .Concat(sessionWorkingMemoryTools.Tools)
@@ -848,10 +853,11 @@ internal sealed class UserMessageHandler(
 
     /// <summary>
     /// #418: a long answer that took tool work is a result worth finding after the conversation
-    /// expires; short or tool-free replies are left out (the archive decides).
+    /// expires; short or tool-free replies are left out (the archive decides). A reply that handed
+    /// back a saved result is already saved.
     /// </summary>
     private Task ArchiveReplyAsync(string userPrompt, string content, int toolCalls, string sessionId, CancellationToken ct) =>
-        resultArchive is null
+        resultArchive is null || _savedResponseTools?.ServedSavedContent == true
             ? Task.CompletedTask
             : resultArchive.ArchiveReplyAsync(
                 SummarizePrompt(userPrompt), content, toolCalls, agentNameHolder.DisplayName ?? agent.Name, sessionId, ct);

@@ -47,6 +47,12 @@ public sealed class SavedResponseTools
     /// <summary>The <see cref="AIFunction"/> instances for <see cref="ChatOptions.Tools"/>.</summary>
     public IList<AITool> Tools { get; }
 
+    /// <summary>
+    /// True once <c>get_saved_response</c> returned an entry this turn. A reply that hands back a
+    /// saved result is that result again, so the caller should not auto-save it as a new one.
+    /// </summary>
+    public bool ServedSavedContent { get; private set; }
+
     [Description("List saved results, newest first. Results of earlier work — subagent research, " +
                  "scheduled-task reports, replies from other agents, long answers that used tools — are " +
                  "saved automatically, and kept after the conversation history expires. Before redoing " +
@@ -97,6 +103,8 @@ public sealed class SavedResponseTools
         var r = string.IsNullOrWhiteSpace(id) ? null : await _store.GetAsync(id.Trim());
         if (r is null)
             return $"No saved response with id '{id}'. Call list_saved_responses to see what exists.";
+
+        ServedSavedContent = true;
 
         return $"Saved response '{r.Label}' — saved {r.SavedAt:yyyy-MM-dd HH:mm} UTC " +
                $"({r.Source ?? SavedResponseSources.User}, agent {r.AgentName}):\n\n{r.Content}";

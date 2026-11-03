@@ -104,8 +104,12 @@ public class ResultArchiveTests
         var store = new ListStore();
         await store.SaveAsync(new SavedResponse("a", "Vendor comparison", "the full report", "RockBot", "s", DateTimeOffset.UtcNow));
 
-        StringAssert.Contains(await Tools(store).GetSavedResponse("a"), "the full report");
-        StringAssert.Contains(await Tools(store).GetSavedResponse("missing"), "list_saved_responses");
+        var tools = Tools(store);
+        StringAssert.Contains(await tools.GetSavedResponse("missing"), "list_saved_responses");
+        Assert.IsFalse(tools.ServedSavedContent, "A miss served nothing");
+
+        StringAssert.Contains(await tools.GetSavedResponse("a"), "the full report");
+        Assert.IsTrue(tools.ServedSavedContent, "The turn's reply now hands back a saved result");
     }
 
     [TestMethod]
