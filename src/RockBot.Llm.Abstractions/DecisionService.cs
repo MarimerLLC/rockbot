@@ -69,6 +69,9 @@ public static class DecisionPurposes
 
     /// <summary>Does research the council already holds answer a persona's new research question?</summary>
     public const string CouncilResearchReuse = "CouncilResearchReuse";
+
+    /// <summary>Does a quick research answer miss the question, or run far past "a few short paragraphs"?</summary>
+    public const string ResearchAnswer = "ResearchAnswer";
 }
 
 /// <summary>One request: the state to judge and the named questions to answer about it.</summary>

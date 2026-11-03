@@ -10,7 +10,9 @@ namespace RockBot.ResearchAgent;
 /// <summary>
 /// Runs one research question: web search and page reads through <see cref="AgentLoopRunner"/>
 /// on the High tier, then a fallback synthesis from working memory if the loop ran out of
-/// iterations first. Called by the MCP <c>research</c> tool.
+/// iterations first. A quick run's answer is checked by the decision model
+/// (<see cref="ResearchAnswerCheck"/>) when one is configured, and rewritten once if it misses
+/// the question or runs long. Called by the MCP <c>research</c> tool.
 /// </summary>
 /// <remarks>
 /// Each run works in its own working-memory namespace, <c>research/{runId}</c>, and clears it when
@@ -22,8 +24,11 @@ internal sealed class ResearchRunner(
     IChatClient chatClient,
     IToolRegistry toolRegistry,
     IWorkingMemory workingMemory,
-    ILogger<ResearchRunner> logger) : IResearchRunner
+    ILogger<ResearchRunner> logger,
+    ResearchAnswerCheck? answerCheck = null) : IResearchRunner
 {
+    private readonly ResearchAnswerCheck _answerCheck = answerCheck ?? new ResearchAnswerCheck();
+
     internal const string SystemPrompt =
         """
         You are ResearchAgent, an on-demand research specialist.
@@ -85,12 +90,20 @@ internal sealed class ResearchRunner(
                 new(ChatRole.User, loopMessage)
             };
 
+            // A quick run is checked by the decision model instead of the loop's LLM evaluator
+            // (ResearchAnswerCheck); without a decision model the evaluator stays on, as before.
+            var checkByDecisionModel = request.Depth == ResearchDepth.Quick && _answerCheck.IsEnabled;
+
             var finalContent = await agentLoopRunner.RunAsync(
                 chatMessages, chatOptions, loopSessionId, tier: profile.Tier,
-                onProgress: onProgress, enableFollowUp: false, cancellationToken: cancellationToken,
+                onProgress: onProgress, enableFollowUp: false, enableCompletionEval: !checkByDecisionModel,
+                cancellationToken: cancellationToken,
                 // An inbound call from another agent. Research has no consequential tools (web
                 // search and page reads only), so the gate's origin changes nothing here.
                 actionGate: ActionGateScope.ForA2AInbound);
+
+            if (checkByDecisionModel && finalContent.Length >= 100)
+                finalContent = await ReviseQuickAnswerAsync(request, loopMessage, finalContent, loopSessionId, profile.Tier, cancellationToken);
 
             // If the loop exhausted iterations before synthesising (returns empty or very short),
             // the model likely saved findings to working memory. Read them back and synthesise
@@ -121,6 +134,47 @@ internal sealed class ResearchRunner(
                 logger.LogWarning(ex, "Could not clear working memory for research run {RunId}", runId);
             }
         }
+    }
+
+    /// <summary>
+    /// Asks the decision model whether a quick answer misses the question or runs long, and if so
+    /// rewrites it once: no tools, from the draft alone (the facts it needs are in the draft). The
+    /// rewrite goes through <see cref="AgentLoopRunner"/> like every LLM call here; an empty or
+    /// failed rewrite keeps the draft.
+    /// </summary>
+    private async Task<string> ReviseQuickAnswerAsync(
+        ResearchRequest request, string loopMessage, string draft, string loopSessionId, ModelTier tier, CancellationToken ct)
+    {
+        var verdict = await _answerCheck.CheckAsync(request, draft, ct);
+        if (!verdict.Rewrite)
+            return draft;
+
+        var messages = new List<ChatMessage>
+        {
+            new(ChatRole.System, SystemPrompt),
+            new(ChatRole.User, loopMessage),
+            new(ChatRole.Assistant, draft),
+            new(ChatRole.User, verdict.Guidance!),
+        };
+
+        try
+        {
+            var revised = await agentLoopRunner.RunAsync(
+                messages, new ChatOptions(), loopSessionId, tier: tier,
+                enableFollowUp: false, enableCompletionEval: false, cancellationToken: ct,
+                actionGate: ActionGateScope.ForA2AInbound);
+            if (revised.Trim().Length >= 100)
+            {
+                logger.LogInformation("Quick research answer rewritten: {Before} → {After} chars", draft.Length, revised.Length);
+                return revised;
+            }
+            logger.LogWarning("Quick research rewrite came back empty ({Len} chars); keeping the draft", revised.Length);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            logger.LogWarning(ex, "Quick research rewrite failed; keeping the draft");
+        }
+        return draft;
     }
 
     /// <summary>The question as the research loop sees it, with its context, constraints and interpretation.</summary>

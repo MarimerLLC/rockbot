@@ -138,6 +138,12 @@ else
     Console.WriteLine("Set LLM:Balanced:Endpoint (or legacy LLM:Endpoint), LLM:Balanced:ApiKey, and LLM:Balanced:ModelId to configure.");
 }
 
+// The shared decision model (Microsoft-Decision-1), from the same DecisionModel__* settings as the
+// primary agent. Off until they are set. It checks quick answers (ResearchAnswerCheck) in place of
+// the loop's LLM completion evaluator, and gives the loop's other checks their second opinion.
+builder.Services.Configure<DecisionModelOptions>(builder.Configuration.GetSection("DecisionModel"));
+builder.Services.AddSingleton<ResearchAnswerCheck>();
+
 // AgentLoopRunner requires IFeedbackStore — use no-op since we have no dreaming pipeline
 builder.Services.AddSingleton<IFeedbackStore, NullFeedbackStore>();
 
@@ -175,6 +181,14 @@ builder.Services.AddRockBotHost(agent =>
 builder.Services.Configure<ResearchOptions>(builder.Configuration.GetSection(ResearchOptions.SectionName));
 builder.Services.AddSingleton(sp =>
     new ResearchConcurrencyGate(sp.GetRequiredService<IOptions<ResearchOptions>>().Value.MaxConcurrentRuns));
+
+// Every research loop runs on High, and the host's LLM gateway allows 2 concurrent High calls by
+// default: a council's six parallel quick runs would take turns at the model. Give the High tier
+// at least one slot per concurrent run (LlmGateway__* still overrides upward).
+builder.Services.Configure<LlmGatewayOptions>(builder.Configuration.GetSection("LlmGateway"));
+builder.Services.AddOptions<LlmGatewayOptions>()
+    .PostConfigure<IOptions<ResearchOptions>>((gateway, research) =>
+        gateway.HighMaxConcurrent = Math.Max(gateway.HighMaxConcurrent, research.Value.MaxConcurrentRuns));
 // Transient, like the AgentLoopRunner it wraps; the gate is the shared piece.
 builder.Services.AddTransient<ResearchRunner>();
 builder.Services.AddTransient<IResearchRunner>(sp => new GatedResearchRunner(

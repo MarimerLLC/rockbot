@@ -156,11 +156,26 @@ second time, so the round trip always ends.
 
 `research` takes an optional `depth`: `thorough` (the default) is the full run described above,
 High tier and up to 50 iterations, and a broad question measured 7.5 minutes and 26 sources.
-`quick` is a short lookup for callers on a tight budget: the Balanced tier, two or three sources,
-and a per-run tool budget (8 calls, 60 s) after which every tool tells the model to answer from
-what it has. The budget is per run on purpose: the function-invoking client's iteration limit is
-per tier and process-wide, so changing it per call would leak into concurrent runs. The council
+`quick` is a short lookup for callers on a tight budget: two or three sources and a per-run tool
+budget (8 calls, 60 s) after which every tool tells the model to answer from what it has. The
+budget is per run on purpose: the function-invoking client's iteration limit is per tier and
+process-wide, so changing it per call would leak into concurrent runs. The council
 asks for `quick` (`Council:ResearchDepth`); the primary agent leaves the default.
+
+Both depths run on the High tier: depth bounds the work, not the model. (`quick` was Balanced
+until a live council run showed the cost of that was judgement, not time.)
+
+The 60 s box covers calls in flight, not just calls that start inside it: a call still running
+when the box ends is cancelled and returns the "answer now" note. Checking only at the start let
+one page whose server took 55.6 s to send its headers stretch a quick run to 98 s.
+
+A quick answer is checked by the decision model (`DecisionModel__*`, purpose `ResearchAnswer`)
+instead of the loop's LLM completion evaluator. The evaluator is built for the primary agent's
+turns: on a research answer it fired on a keyword trigger meant for claimed changes, and cost a
+Low-tier call before its re-prompt. The decision model asks two questions in one call: does the
+answer miss the question, and does it run far past "a few short paragraphs". On a yes, the answer
+is rewritten once from the draft, with no tools. Without a configured decision model the LLM
+evaluator stays on; a failed decision call keeps the answer as it is.
 
 ### The result
 
