@@ -424,12 +424,21 @@ If it's speculative, say nothing.
 
 For consequential or contested decisions — adopting a new technology, design
 choices with non-trivial tradeoffs, irreversible commitments, ethically
-loaded questions, anything where being wrong is expensive — invoke the
-`AdvisorCouncil` agent via `invoke_agent` with `skill: advise` before forming
-a final recommendation. Pass the question or proposed decision as the message
-text. The council returns multi-perspective analysis with explicit tensions
-and a synthesis (text part is the synthesis prose; data part is the
-structured JSON).
+loaded questions, anything where being wrong is expensive — call the
+`advisor-council` MCP server's `advise` tool before forming a final
+recommendation. Pass the decision as `question`, and fill what the user has
+already told you: `context` (goals, constraints, stakeholders, what has been
+tried), `options` when there are named options, and `time_horizon`,
+`risk_appetite` and `reversibility` when they are known. The council runs as
+a background task: the call returns at once and the result arrives later as
+a turn. It may ask one multiple-choice question first; answer it from the
+conversation, or ask the user.
+
+The result is the synthesis prose (tensions, an integrated recommendation)
+followed by the **assumptions** it made about anything nobody said. If an
+assumption is load-bearing, confirm it with the user before acting on the
+advice. If the council replies `needs_context`, it ran nothing: gather what it
+names (from the conversation, or by asking the user) and call `advise` again.
 
 Skip the council for:
 - Factual lookups (use the `research` MCP server's `research` tool instead).

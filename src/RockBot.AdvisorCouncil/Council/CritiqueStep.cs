@@ -26,7 +26,7 @@ internal sealed class CritiqueStep(
 
     public async Task<CritiqueOutput> RunAsync(
         Persona persona,
-        string question,
+        CouncilRequest request,
         string taskId,
         PersonaView ownView,
         IReadOnlyList<PersonaView> siblingViews,
@@ -44,7 +44,7 @@ internal sealed class CritiqueStep(
             "[{\"with\":\"sibling_id\",\"description\":\"...\",\"stakes\":\"...\"}] }";
 
         var researchPool = await BuildResearchPoolAsync(taskId, ct);
-        var user = BuildUserPrompt(question, ownView, siblingViews, researchPool);
+        var user = BuildUserPrompt(request, ownView, siblingViews, researchPool);
 
         var messages = new List<ChatMessage>
         {
@@ -97,13 +97,13 @@ internal sealed class CritiqueStep(
     }
 
     private static string BuildUserPrompt(
-        string question,
+        CouncilRequest request,
         PersonaView ownView,
         IReadOnlyList<PersonaView> siblings,
         IReadOnlyList<(string Key, string Snippet)> researchPool)
     {
         var sb = new StringBuilder();
-        sb.Append("Question: ").AppendLine(question).AppendLine();
+        sb.Append("Question: ").AppendLine(request.RenderBrief()).AppendLine();
         sb.AppendLine("Your earlier view:");
         sb.AppendLine(ownView.View).AppendLine();
         sb.AppendLine("Sibling persona views:");

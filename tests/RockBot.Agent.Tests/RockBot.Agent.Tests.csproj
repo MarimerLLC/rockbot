@@ -39,6 +39,8 @@
     <ProjectReference Include="..\..\src\McpServer.ElicitationFixture\McpServer.ElicitationFixture.csproj" Aliases="fixture" />
     <!-- The research MCP server's real tool, behind the Tasks-aware bridge (#717). Aliased like the fixture. -->
     <ProjectReference Include="..\..\src\RockBot.ResearchAgent\RockBot.ResearchAgent.csproj" Aliases="research" />
+    <!-- The advisor council's real `advise` tool, behind the same bridge (#758). Aliased like research. -->
+    <ProjectReference Include="..\..\src\RockBot.AdvisorCouncil\RockBot.AdvisorCouncil.csproj" Aliases="council" />
   </ItemGroup>
 
 </Project>

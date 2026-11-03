@@ -2,6 +2,7 @@ using Microsoft.Extensions.Options;
 using System.Text;
 using Microsoft.Extensions.Logging;
 using RockBot.AdvisorCouncil.Personas;
+using RockBot.AdvisorCouncil.Schema;
 using RockBot.AdvisorCouncil.Tools;
 using RockBot.Host;
 
@@ -26,7 +27,7 @@ internal sealed class PreResearchStep(
     /// Returns true if findings were written (consumed by orchestrator metadata).
     /// </summary>
     public async Task<bool> RunAsync(
-        string question,
+        CouncilRequest request,
         IReadOnlyList<Persona> selectedPersonas,
         string taskId,
         CancellationToken ct)
@@ -34,7 +35,7 @@ internal sealed class PreResearchStep(
         try
         {
             var timeout = TimeSpan.FromSeconds(Math.Max(5, (options?.Value ?? new CouncilOptions()).PreResearchTimeoutSeconds));
-            var findings = await research.InvokeAsync(question, BuildLensContext(selectedPersonas), ct, timeout);
+            var findings = await research.InvokeAsync(request.Question, BuildLensContext(selectedPersonas, request.Context), ct, timeout);
             if (string.IsNullOrWhiteSpace(findings) || findings.StartsWith("(research", StringComparison.OrdinalIgnoreCase))
             {
                 logger.LogInformation("Pre-research returned empty findings; not writing to WM");
@@ -66,7 +67,7 @@ internal sealed class PreResearchStep(
     /// The research call's <c>context</c>: who is asking and through which lenses, so research
     /// gathers facts for each lens and can settle its own clarifying question from it.
     /// </summary>
-    internal static string BuildLensContext(IReadOnlyList<Persona> personas)
+    internal static string BuildLensContext(IReadOnlyList<Persona> personas, string? askerContext = null)
     {
         var sb = new StringBuilder();
         sb.Append("Pre-research for an advisor council that will examine this question.");
@@ -82,6 +83,8 @@ internal sealed class PreResearchStep(
                 sb.AppendLine();
             }
         }
+        if (askerContext is not null)
+            sb.AppendLine().Append("The asker's context: ").AppendLine(askerContext);
         return sb.ToString().TrimEnd();
     }
 }

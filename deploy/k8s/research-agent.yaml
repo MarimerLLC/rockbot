@@ -9,9 +9,9 @@
 #
 # One-time cleanup of the retired A2A path, on a cluster that still has it:
 #
-#   kubectl -n rockbot delete scaledjob rockbot-research-agent
-#   # NOT `kubectl delete -f` of the old manifest: it also defined the TriggerAuthentication
-#   # rockbot-keda-rabbitmq-auth, which the AdvisorCouncil ScaledJob still uses.
+#   kubectl -n rockbot delete scaledjob rockbot-research-agent --ignore-not-found
+#   # The KEDA TriggerAuthentication and secret it shared with the council's ScaledJob are
+#   # removed with the council's cleanup (deploy/k8s/advisor-council.yaml).
 #   kubectl -n rockbot delete job research-agent-queue-init --ignore-not-found
 #   # then delete the RabbitMQ queues rockbot.ResearchAgent.* (agent-task, agent-task-cancel,
 #   # discovery, and their .dlq) in the RabbitMQ management UI or with rabbitmqadmin.

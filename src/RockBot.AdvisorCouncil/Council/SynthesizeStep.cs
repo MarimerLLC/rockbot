@@ -17,11 +17,15 @@ internal sealed class SynthesizeStep(
     private static readonly JsonSerializerOptions JsonOpts = new() { PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower };
 
     public sealed record SynthesisInput(
-        string Question,
+        CouncilRequest Request,
         IReadOnlyList<PersonaView> Views,
         IReadOnlyList<Tension> Tensions);
 
-    public sealed record SynthesisOutput(string Synthesis, string Confidence, IReadOnlyList<Tension> Tensions);
+    public sealed record SynthesisOutput(
+        string Synthesis,
+        string Confidence,
+        IReadOnlyList<Tension> Tensions,
+        IReadOnlyList<string>? Assumptions = null);
 
     public async Task<SynthesisOutput> RunAsync(SynthesisInput input, CancellationToken ct)
     {
@@ -57,7 +61,8 @@ internal sealed class SynthesizeStep(
                 messages.Add(new ChatMessage(ChatRole.User,
                     "Your previous response was not valid JSON matching the schema. " +
                     "Return ONLY a JSON object: { \"synthesis\": \"...\", \"confidence\": \"low|medium|high\", " +
-                    "\"tensions\": [{\"between\":[\"a\",\"b\"],\"description\":\"...\",\"stakes\":\"...\"}] }."));
+                    "\"tensions\": [{\"between\":[\"a\",\"b\"],\"description\":\"...\",\"stakes\":\"...\"}], " +
+                    "\"assumptions\": [\"...\"] }."));
             }
         }
 
@@ -67,7 +72,8 @@ internal sealed class SynthesizeStep(
             return new SynthesisOutput(
                 "Synthesis was unavailable. Persona views are included in the structured response.",
                 "low",
-                input.Tensions);
+                input.Tensions,
+                []);
         }
         return result;
     }
@@ -84,15 +90,28 @@ internal sealed class SynthesizeStep(
         - Be honest about uncertainty. Use confidence: "low" when personas disagree
           substantively, "medium" when there is partial alignment, "high" when consensus.
         - Your synthesis prose should be ~500 words, well-structured, plain markdown.
+        - List in "assumptions" what the advice assumes that the person did not say:
+          anything the decision brief leaves open that your recommendation depends on
+          (time horizon, risk appetite, reversibility, which option they lean toward,
+          constraints). One short sentence each; empty only when nothing material was assumed.
+          Where an assumption is load-bearing, let it lower confidence.
 
         Respond with JSON only:
-        { "synthesis": "markdown prose", "confidence": "low|medium|high", "tensions": [{"between":["id_a","id_b"],"description":"...","stakes":"..."}] }
+        { "synthesis": "markdown prose", "confidence": "low|medium|high", "tensions": [{"between":["id_a","id_b"],"description":"...","stakes":"..."}], "assumptions": ["..."] }
         """;
 
     private static string BuildUserPrompt(SynthesisInput input)
     {
         var sb = new StringBuilder();
-        sb.Append("Question: ").AppendLine(input.Question).AppendLine();
+        sb.Append("Question: ").AppendLine(input.Request.RenderBrief()).AppendLine();
+
+        if (input.Request.Unresolved.Count > 0)
+        {
+            sb.Append("Open points that would change the advice and that the person did not settle")
+              .Append(input.Request.Clarification == ClarificationStatus.Declined ? " (they were asked and did not answer)" : "")
+              .Append(": ").AppendLine(string.Join(", ", input.Request.Unresolved.Select(u => u.Replace('_', ' '))));
+            sb.AppendLine("State in \"assumptions\" what you assumed for each of them.").AppendLine();
+        }
 
         var contributing = input.Views.Where(v => v.Status == PersonaStatus.Ok).ToList();
         var missing = input.Views.Where(v => v.Status != PersonaStatus.Ok).ToList();
@@ -168,7 +187,17 @@ internal sealed class SynthesizeStep(
                     tensions = list;
             }
 
-            return new SynthesisOutput(synthesis!, confidence, tensions);
+            var assumptions = new List<string>();
+            if (root.TryGetProperty("assumptions", out var aEl) && aEl.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var item in aEl.EnumerateArray())
+                {
+                    if (item.ValueKind == JsonValueKind.String && item.GetString() is { } a && !string.IsNullOrWhiteSpace(a))
+                        assumptions.Add(a.Trim());
+                }
+            }
+
+            return new SynthesisOutput(synthesis!, confidence, tensions, assumptions);
         }
         catch (JsonException)
         {
