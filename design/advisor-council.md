@@ -203,12 +203,13 @@ Parallel MAF branches, one per selected persona. Two branch shapes:
   - `MaxToolIterationsOverride = 8` (tight)
   - Tools: research (`ResearchMcpClient`, MCP → research server; A2A `ResearchAgentInvoker` before #717), `working_memory_get/list` scoped to `council/{taskId}/`
   - Findings cached to `council/{taskId}/{personaId}/` and visible to subsequent personas through the shared namespace
+  - Before a research call runs, the decision model (`ResearchReuse`, purpose `CouncilResearchReuse`) checks whether research the run already holds — the shared pre-research and earlier calls — answers the new question. Above p ≥ 0.7 that finding is returned instead, with no new research run and no budget spent. The model off or unsure, the call goes ahead.
 
 All branches use the High tier (`Council:PersonaTier`), for the view and again for the critique: the personas' reasoning is what the council sells. Until #758 every step got the plain `IChatClient`, which is Balanced, so personas, critique and synthesis all ran on Balanced whatever this document said. Each step now gets its tier's client from `TieredChatClientRegistry` (`Council:SelectTier` Balanced, `PersonaTier` and `SynthesisTier` High). Per-persona soft timeout 180 s (`Council:PerPersonaTimeoutSeconds`), room for a view that makes one research call; on timeout the persona is dropped from the council with `view: "(timed out)"`.
 
 ### 4. Critique (conditional)
 
-Skipped unless `SelectorOutput.critique = true`.
+Skipped unless `SelectorOutput.critique = true`. Select decides that from the question alone, so once the views exist the decision model (`CritiqueGate`, purpose `CouncilCritique`) gets one look at them: critique is skipped when it is fairly sure they already agree (it runs at p(disagree) ≥ 0.35), and `metadata.critique_skipped` says so. A caller's `critique: on` always runs it; with the model off or failing, critique runs as selected.
 For each persona, a second `IChatClient` call: `{system: persona.systemPrompt + critique addendum, user: original question + all sibling views, instruction: "revise your view, name explicit disagreements"}`. Returns revised view + identified tensions.
 
 Critique is **per-persona-parallel** like fan-out — no further fan-in needed.

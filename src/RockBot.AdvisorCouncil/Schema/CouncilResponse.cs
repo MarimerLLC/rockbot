@@ -55,4 +55,5 @@ internal sealed record CouncilMetadata(
     [property: JsonPropertyName("selector_rationale")] string SelectorRationale,
     [property: JsonPropertyName("personas_contributed")] int PersonasContributed = 0,
     [property: JsonPropertyName("personas_missing")] IReadOnlyList<string>? PersonasMissing = null,
-    [property: JsonPropertyName("clarification")] string Clarification = ClarificationStatus.NotAsked);
+    [property: JsonPropertyName("clarification")] string Clarification = ClarificationStatus.NotAsked,
+    [property: JsonPropertyName("critique_skipped")] bool CritiqueSkipped = false);

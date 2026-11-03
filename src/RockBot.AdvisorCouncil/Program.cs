@@ -143,6 +143,14 @@ else
 
 builder.Services.AddSingleton<IFeedbackStore, NullFeedbackStore>();
 
+// The shared decision model (Microsoft-Decision-1), from the same DecisionModel__* settings as the
+// primary agent; off until they are set. Two cheap calls that can each save expensive ones:
+// skipping critique when the views already agree (CritiqueGate), and reusing research the council
+// already holds instead of a new research run (ResearchReuse).
+builder.Services.Configure<DecisionModelOptions>(builder.Configuration.GetSection("DecisionModel"));
+builder.Services.AddSingleton<CritiqueGate>();
+builder.Services.AddSingleton<ResearchReuse>();
+
 // ── Council components ──────────────────────────────────────────────────────
 builder.Services.AddSingleton<PersonaRegistry>();
 builder.Services.AddHostedService<PersonaRegistryHotReload>();

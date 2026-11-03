@@ -37,7 +37,8 @@ internal sealed class CouncilOrchestrator(
     PersonaRegistry personaRegistry,
     IOptions<CouncilOptions> options,
     ILogger<CouncilOrchestrator> logger,
-    IWorkingMemory? workingMemory = null) : ICouncil
+    IWorkingMemory? workingMemory = null,
+    CritiqueGate? critiqueGate = null) : ICouncil
 {
     /// <summary>Select, then deliberate, with no question in between.</summary>
     public async Task<CouncilResponse> RunAsync(CouncilRequest request, string runId, CancellationToken ct)
@@ -127,8 +128,18 @@ internal sealed class CouncilOrchestrator(
         modelCalls += personaViews.Length; // approximate — research path may do more calls
 
         // ── 4. Critique (conditional, per-persona parallel) ────────────────────
+        // Select chose critique from the question alone; now that the views exist, the decision
+        // model may skip it when they already agree. A caller's critique: on always runs it.
         var critiqueTensions = new List<Tension>();
-        if (selection.Critique && personaViews.Length > 1)
+        var critiqueSelected = selection.Critique && personaViews.Length > 1;
+        var critiqueSkipped = critiqueSelected
+            && request.Critique != CouncilToggle.On
+            && critiqueGate is not null
+            && !await critiqueGate.ShouldCritiqueAsync(request, personaViews, ct);
+        if (critiqueSkipped)
+            logger.LogInformation("Council {RunId}: critique skipped — the views already agree", runId);
+
+        if (critiqueSelected && !critiqueSkipped)
         {
             var critiqueTasks = personaViews.Select(async (own, idx) =>
             {
@@ -176,7 +187,7 @@ internal sealed class CouncilOrchestrator(
             Synthesis: synthesis.Synthesis,
             Confidence: synthesis.Confidence,
             Metadata: new CouncilMetadata(
-                CritiqueRun: selection.Critique && personaViews.Length > 1,
+                CritiqueRun: critiqueSelected && !critiqueSkipped,
                 PreResearchRun: preResearchRun,
                 PersonaCount: personaViews.Length,
                 DurationMs: sw.ElapsedMilliseconds,
@@ -185,7 +196,8 @@ internal sealed class CouncilOrchestrator(
                 SelectorRationale: selection.Rationale,
                 PersonasContributed: contributedCount,
                 PersonasMissing: missingIds,
-                Clarification: request.Clarification),
+                Clarification: request.Clarification,
+                CritiqueSkipped: critiqueSkipped),
             Assumptions: synthesis.Assumptions ?? []);
     }
 

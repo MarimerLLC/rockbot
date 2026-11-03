@@ -20,7 +20,8 @@ internal sealed class PersonaStep(
     IResearchClient research,
     IWorkingMemory workingMemory,
     IOptions<CouncilOptions> options,
-    ILogger<PersonaStep> logger)
+    ILogger<PersonaStep> logger,
+    ResearchReuse? researchReuse = null)
 {
     public async Task<PersonaView> RunAsync(
         Persona persona,
@@ -50,7 +51,8 @@ internal sealed class PersonaStep(
             taskId: taskId,
             personaId: persona.Id,
             maxCalls: options.Value.MaxResearchCallsPerPersona,
-            logger: logger);
+            logger: logger,
+            reuse: researchReuse is { IsEnabled: true } ? (q, c) => researchReuse.FindAsync(q, taskId, c) : null);
         var chatOptions = new ChatOptions { Tools = [scopedTool] };
 
         try
@@ -115,16 +117,23 @@ internal sealed class PersonaStep(
         private readonly string _personaId;
         private readonly int _maxCalls;
         private readonly ILogger _logger;
+        private readonly Func<string, CancellationToken, Task<string?>>? _reuse;
         private int _callCount;
 
+        /// <param name="reuse">
+        /// Checks the council's existing research first (<see cref="ResearchReuse"/>); a non-null
+        /// answer is returned instead of a new research call, and doesn't use the persona's budget.
+        /// </param>
         public PersonaScopedResearchTool(
             Func<string, CancellationToken, Task<string>> research,
             IWorkingMemory wm,
             string taskId,
             string personaId,
             int maxCalls,
-            ILogger logger)
+            ILogger logger,
+            Func<string, CancellationToken, Task<string?>>? reuse = null)
         {
+            _reuse = reuse;
             _research = research;
             _wm = wm;
             _taskId = taskId;
@@ -150,6 +159,15 @@ internal sealed class PersonaStep(
                 question = v?.ToString();
             if (string.IsNullOrWhiteSpace(question))
                 return "Error: missing required argument 'question'.";
+
+            // Research the council already holds may answer it: no new call, no budget spent, and
+            // nothing written back (it is in working memory already).
+            if (_reuse is not null && await _reuse(question!, cancellationToken) is { } reused)
+            {
+                _logger.LogInformation(
+                    "Persona {Persona} on council {Task}: reused existing research instead of a new call", _personaId, _taskId);
+                return reused;
+            }
 
             var n = Interlocked.Increment(ref _callCount);
             if (n > _maxCalls)
